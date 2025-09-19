@@ -1,0 +1,32 @@
+---
+Checks: "-*,\
+  bugprone-*,\
+  -bugprone-easily-swappable-parameters,\
+  -bugprone-narrowing-conversions,\
+  google-readability-casting,\
+  misc-*,\
+  -misc-non-private-member-variables-in-classes,\
+  -misc-const-correctness,\
+  modernize-*,\
+  -modernize-avoid-c-arrays,\
+  -modernize-use-designated-initializers,\
+  -modernize-use-trailing-return-type,\
+  performance-*,\
+  portability-*,\
+  readability-*,\
+  -readability-function-cognitive-complexity,\
+  -readability-magic-numbers,\
+  -readability-qualified-auto,\
+  "
+HeaderFilterRegex: 'Source/cm[^/]*\.(h|hxx|cxx)$'
+CheckOptions:
+  - key: modernize-use-equals-default.IgnoreMacros
+    value: "0"
+  - key: modernize-use-auto.MinTypeNameLength
+    value: "20"
+  - key: performance-move-const-arg.CheckTriviallyCopyableMove
+    value: "false"
+  - key: readability-identifier-length.MinimumParameterNameLength
+    value: "2"
+  - key: readability-identifier-length.MinimumVariableNameLength
+    value: "2"
