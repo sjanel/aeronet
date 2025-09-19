@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc-13, clang-20]
+    runs-on: ubuntu-latest
+
+    env:
+      CMAKE_BUILD_TYPE: Release
+      CC: ${{ matrix.compiler == 'gcc-13' && 'gcc-13' || 'clang-20' }}
+      CXX: ${{ matrix.compiler == 'gcc-13' && 'g++-13' || 'clang++-20' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchains
+        run: |
+          sudo apt-get update -y
+          if [[ "${{ matrix.compiler }}" == gcc-13 ]]; then
+            sudo apt-get install -y g++-13
+          else
+            # Clang 20 (from llvm apt repo)
+            wget https://apt.llvm.org/llvm.sh
+            chmod +x llvm.sh
+            sudo ./llvm.sh 20
+            sudo apt-get install -y clang-tidy-20 lld-20
+          fi
+          sudo apt-get install -y ninja-build python3
+
+      - name: Show compiler version
+        run: |
+          $CXX --version
+
+      - name: Configure (CMake)
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE -DAERONET_BUILD_TESTS=ON -DAERONET_BUILD_EXAMPLES=OFF
+
+      - name: Build
+        run: |
+          cmake --build build --parallel
+
+      - name: Run unit tests
+        run: |
+          ctest --test-dir build --output-on-failure
+
+      - name: Install artifact (optional)
+        if: always()
+        run: |
+          cmake --install build --prefix install || true
+
+      - name: Upload install dir artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeronet-${{ matrix.compiler }}
+          path: install
+          if-no-files-found: ignore
+
+  # Optional: static analysis job (can be enabled later)
+  clang-tidy:
+    if: false  # flip to true to enable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-tidy
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y clang-tidy
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - name: Run clang-tidy (example)
+        run: clang-tidy --version
