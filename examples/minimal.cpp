@@ -18,7 +18,7 @@ int main(int argc, char **argv) {
     port = static_cast<uint16_t>(std::stoi(argv[1]));
   }
 
-  aeronet::HttpServer server(port);
+  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
   server.setHandler([](const aeronet::HttpRequest &req) {
     aeronet::HttpResponse resp;
     resp.body = std::string("Hello from aeronet minimal server! You requested ") + std::string(req.target) + '\n';

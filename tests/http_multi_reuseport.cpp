@@ -42,17 +42,14 @@ std::string simpleGet(const char* host, uint16_t port, const char* path) {
 
 TEST(HttpMultiReusePort, TwoServersBindSamePort) {
   uint16_t port = 18234;  // random high port
-
-  aeronet::HttpServer serverA(port);
-  serverA.enablePortReuse(true);
+  aeronet::HttpServer serverA(aeronet::ServerConfig{}.withPort(port).withReusePort());
   serverA.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body = "A";
     return resp;
   });
 
-  aeronet::HttpServer serverB(port);
-  serverB.enablePortReuse(true);
+  aeronet::HttpServer serverB(aeronet::ServerConfig{}.withPort(port).withReusePort());
   serverB.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body = "B";
@@ -76,8 +73,22 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
   // Give kernel a moment to establish both listening sockets
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  auto resp1 = simpleGet("127.0.0.1", port, "/one");
-  auto resp2 = simpleGet("127.0.0.1", port, "/two");
+  std::string resp1 = simpleGet("127.0.0.1", port, "/one");
+  std::string resp2 = simpleGet("127.0.0.1", port, "/two");
+  bool hasA = resp1.find('A') != std::string::npos || resp2.find('A') != std::string::npos;
+  bool hasB = resp1.find('B') != std::string::npos || resp2.find('B') != std::string::npos;
+  if (!(hasA && hasB)) {
+    // try a few more connects
+    for (int i = 0; i < 5 && !(hasA && hasB); ++i) {
+      auto retryResp = simpleGet("127.0.0.1", port, "/retry");
+      if (retryResp.find('A') != std::string::npos) {
+        hasA = true;
+      }
+      if (retryResp.find('B') != std::string::npos) {
+        hasB = true;
+      }
+    }
+  }
 
   serverA.stop();
   serverB.stop();
@@ -87,9 +98,6 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
   // At least one of the responses should contain body A and one body B
   // Because of hashing, both could come from same server but with two sequential connects
   // we expect distribution eventually, so tolerate the rare case of both identical by allowing either pattern
-  bool hasA = resp1.find('A') != std::string::npos || resp2.find('A') != std::string::npos;
-  bool hasB = resp1.find('B') != std::string::npos || resp2.find('B') != std::string::npos;
-
   EXPECT_TRUE(hasA);
   EXPECT_TRUE(hasB);
 }

@@ -44,7 +44,7 @@ std::string simpleGet(uint16_t port, const std::string& target) {
 TEST(HttpServerMove, MoveConstructAndServe) {
   std::atomic_bool stop{false};
   uint16_t port = 18081;
-  aeronet::HttpServer original(port);
+  aeronet::HttpServer original(aeronet::ServerConfig{}.withPort(port));
   original.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = std::string("ORIG:") + std::string(req.target);
@@ -68,8 +68,8 @@ TEST(HttpServerMove, MoveConstructAndServe) {
 TEST(HttpServerMove, MoveAssignWhileStopped) {
   uint16_t port1 = 18082;
   uint16_t port2 = 18083;
-  aeronet::HttpServer s1(port1);
-  aeronet::HttpServer s2(port2);
+  aeronet::HttpServer s1(aeronet::ServerConfig{}.withPort(port1));
+  aeronet::HttpServer s2(aeronet::ServerConfig{}.withPort(port2));
   s1.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = "S1";

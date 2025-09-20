@@ -80,7 +80,7 @@ Integral StringToIntegral(std::string_view str) {
 inline void AppendIntegralToString(string &str, std::integral auto val) {
   const auto nbDigitsInt = nchars(val);
 
-  str.append(nbDigitsInt, '0');
+  str.append(static_cast<string::size_type>(nbDigitsInt), '0');
 
   details::ToChars(str.data() + static_cast<decltype(nbDigitsInt)>(str.size()) - nbDigitsInt, nbDigitsInt, val);
 }

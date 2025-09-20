@@ -24,8 +24,7 @@ int main(int argc, char** argv) {
   std::vector<aeronet::HttpServer> servers;
   servers.reserve(static_cast<size_t>(threads));
   for (int i = 0; i < threads; ++i) {
-    aeronet::HttpServer srv(port);
-    srv.enablePortReuse(true);
+    aeronet::HttpServer srv(aeronet::ServerConfig{}.withPort(port).withReusePort());
     srv.setHandler([](const aeronet::HttpRequest& req) {
       aeronet::HttpResponse resp;
       resp.body = "Threaded multi server response for " + std::string(req.target);

@@ -9,3 +9,19 @@ add_test(NAME http_server_move COMMAND test_http_server_move)
 add_executable(test_http_multi_reuseport http_multi_reuseport.cpp)
 target_link_libraries(test_http_multi_reuseport PRIVATE aeronet gtest_main)
 add_test(NAME http_multi_reuseport COMMAND test_http_multi_reuseport)
+
+add_executable(test_http_keepalive http_keepalive.cpp)
+target_link_libraries(test_http_keepalive PRIVATE aeronet gtest_main)
+add_test(NAME http_keepalive COMMAND test_http_keepalive)
+
+add_executable(test_http_chunked_head http_chunked_head.cpp)
+target_link_libraries(test_http_chunked_head PRIVATE aeronet gtest_main)
+add_test(NAME http_chunked_head COMMAND test_http_chunked_head)
+
+add_executable(test_http_errors http_errors.cpp)
+target_link_libraries(test_http_errors PRIVATE aeronet gtest_main)
+add_test(NAME http_errors COMMAND test_http_errors)
+
+add_executable(test_http_additional http_additional.cpp)
+target_link_libraries(test_http_additional PRIVATE aeronet gtest_main)
+add_test(NAME http_additional COMMAND test_http_additional)

@@ -1,8 +1,11 @@
 # CMake for aeronet library nested structure
+
+aux_source_directory(src/ AERONET_SRC_LIST)
+
 add_library(aeronet
-    src/server.cpp
-    src/event_loop.cpp
+    ${AERONET_SRC_LIST}
 )
+
 add_library(aeronet::aeronet ALIAS aeronet)
 
 target_include_directories(aeronet PUBLIC include)

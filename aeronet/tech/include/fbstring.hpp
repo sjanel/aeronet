@@ -264,7 +264,7 @@ void podCopy(const Pod* b, const Pod* e, Pod* d) {
 template <class Pod>
 void podMove(const Pod* b, const Pod* e, Pod* d) {
   assert(e >= b);
-  std::memmove(d, b, (e - b) * sizeof(*b));
+  std::memmove(d, b, static_cast<std::size_t>(e - b) * sizeof(*b));
 }
 } // namespace fbstring_detail
 
@@ -1566,8 +1566,8 @@ class basic_fbstring {
   }
 
   iterator erase(const_iterator first, const_iterator last) {
-    const size_type pos(first - begin());
-    erase(pos, last - first);
+    const size_type pos = static_cast<std::size_t>(first - begin());
+    erase(pos, static_cast<std::size_t>(last - first));
     return begin() + pos;
   }
 
@@ -1579,10 +1579,10 @@ class basic_fbstring {
   }
 
   /// \sjanel - Add replace from string_view
-  template <class SV, typename std::enable_if<std::is_convertible<const SV&, std::basic_string_view<E, T> >::value &&
-                                             !std::is_convertible<const SV&, const E*>::value &&
-                                             !std::is_convertible<const SV*, const basic_fbstring*>::value, bool>::type = true>
-  basic_fbstring& replace(size_type pos1, size_type n1, const SV& svLike) {
+  template <class SV>
+  basic_fbstring& replace(size_type pos1, size_type n1, const SV& svLike) requires (std::is_convertible_v<const SV&, std::basic_string_view<E, T> > &&
+                                             !std::is_convertible_v<const SV&, const E*> &&
+                                             !std::is_convertible_v<const SV*, const basic_fbstring*>) {
     auto sv = static_cast<std::basic_string_view<E, T>>(svLike);
     return replace(pos1, n1, sv.data(), sv.size());
   }
@@ -2225,7 +2225,7 @@ basic_fbstring<E, T, A, S>::find(
       // Check if done searching
       if (++j == nsize) {
         // Yay
-        return i - haystack;
+        return static_cast<size_type>(i - haystack);
       }
     }
   }
@@ -2270,9 +2270,9 @@ basic_fbstring<E, T, A, S>::insertImpl(
   Invariant checker(*this);
 
   assert(i >= cbegin() && i <= cend());
-  const size_type pos = i - cbegin();
-  auto n = std::distance(s1, s2);
-  assert(n >= 0);
+  const size_type pos = static_cast<size_type>(i - cbegin());
+  assert(s1 <= s2);
+  auto n = static_cast<std::size_t>(std::distance(s1, s2));
 
   auto oldSize = size();
   store_.expandNoinit(n, /* expGrowth = */ true);
@@ -2357,7 +2357,9 @@ inline bool basic_fbstring<E, T, A, S>::replaceAliased(
   }
   // Aliased replace, copy to new string
   basic_fbstring temp;
-  temp.reserve(size() - (i2 - i1) + std::distance(s1, s2));
+  assert(i2 >= i1);
+  assert(s1 <= s2);
+  temp.reserve(size() - static_cast<std::size_t>(i2 - i1) + static_cast<std::size_t>(std::distance(s1, s2)));
   temp.append(cbegin(), i1).append(s1, s2).append(i2, cend());
   swap(temp);
   return true;
