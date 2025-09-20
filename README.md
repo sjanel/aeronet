@@ -29,6 +29,7 @@ Core parsing & connection handling
 - [x] Header field parsing (no folding / continuations)
 - [x] Case-insensitive header lookup helper
 - [x] Persistent connections (HTTP/1.1 default, HTTP/1.0 opt-in)
+- [x] HTTP/1.0 response version preserved (no silent upgrade)
 - [x] Connection: close handling
 - [x] Pipelined sequential requests (no parallel handler execution)
 - [ ] Backpressure / partial write buffering
@@ -54,6 +55,7 @@ Status & error handling
 - [x] 431 Request Header Fields Too Large (header limit)
 - [x] 501 Not Implemented (unsupported Transfer-Encoding)
 - [x] 505 HTTP Version Not Supported
+- [x] 400 on HTTP/1.0 requests carrying Transfer-Encoding
 - [ ] 415 Unsupported Media Type (content-type based) – not required yet
 - [ ] 405 Method Not Allowed (no method allow list presently)
 
@@ -63,6 +65,7 @@ Headers & protocol niceties
 - [x] Connection keep-alive / close
 - [x] Content-Type (user supplied only)
 - [x] Expect: 100-continue handling
+- [x] Expect header ignored for HTTP/1.0 (no interim 100 sent)
 - [ ] Server header (intentionally omitted to keep minimal)
 - [ ] Access-Control-* (CORS) helpers
 

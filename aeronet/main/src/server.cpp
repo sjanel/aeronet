@@ -337,6 +337,12 @@ void HttpServer::eventLoop(int timeoutMs) {
           bool hasTE = false;
           if (std::string_view te = findHeader(req.headers, "Transfer-Encoding"); !te.empty()) {
             hasTE = true;
+            if (req.version == "HTTP/1.0") {
+              // HTTP/1.0 does not support Transfer-Encoding at all
+              sendSimpleError(fd, 400, "Bad Request", _cachedDate, true);
+              close_conn = true;
+              break;
+            }
             if (CaseInsensitiveEqual(te, "chunked")) {
               isChunked = true;
             } else {
@@ -367,9 +373,11 @@ void HttpServer::eventLoop(int timeoutMs) {
             sent100 = true;
           };
           bool expectContinue = false;
-          if (std::string_view expectVal = findHeader(req.headers, "Expect"); !expectVal.empty()) {
-            if (CaseInsensitiveEqual(expectVal, "100-continue")) {
-              expectContinue = true;
+          if (req.version == "HTTP/1.1") {
+            if (std::string_view expectVal = findHeader(req.headers, "Expect"); !expectVal.empty()) {
+              if (CaseInsensitiveEqual(expectVal, "100-continue")) {
+                expectContinue = true;
+              }
             }
           }
           size_t consumedBytes = 0;  // amount to erase from buffer after we finish handling the request
@@ -533,7 +541,7 @@ void HttpServer::eventLoop(int timeoutMs) {
           if (st.requestsServed >= _config.maxRequestsPerConnection) {
             keepAlive = false;
           }
-          auto header = resp.buildHead(_cachedDate, keepAlive, body.size());
+          auto header = resp.buildHead(req.version, _cachedDate, keepAlive, body.size());
           if (isHead) {
             // For HEAD we must send only headers; body length reflects what a GET would have sent.
             ::write(fd, header.data(), header.size());
