@@ -354,8 +354,10 @@ class sherwood_v3_table : private EntryAlloc, private Hasher, private Equal {
     }
   }
   const_iterator cbegin() const { return begin(); }
-  iterator end() { return {entries + static_cast<ptrdiff_t>(num_slots_minus_one + max_lookups)}; }
-  const_iterator end() const { return {entries + static_cast<ptrdiff_t>(num_slots_minus_one + max_lookups)}; }
+  iterator end() { return {entries + static_cast<ptrdiff_t>(num_slots_minus_one + static_cast<size_t>(max_lookups))}; }
+  const_iterator end() const {
+    return {entries + static_cast<ptrdiff_t>(num_slots_minus_one + static_cast<size_t>(max_lookups))};
+  }
   const_iterator cend() const { return end(); }
 
   iterator find(const FindKey &key) {
@@ -412,8 +414,8 @@ class sherwood_v3_table : private EntryAlloc, private Hasher, private Equal {
   void insert(std::initializer_list<value_type> il) { insert(il.begin(), il.end()); }
 
   void rehash(size_t num_buckets) {
-    num_buckets =
-        std::max(num_buckets, static_cast<size_t>(std::ceil(num_elements / static_cast<double>(_max_load_factor))));
+    num_buckets = std::max(num_buckets, static_cast<size_t>(std::ceil(static_cast<double>(num_elements) /
+                                                                      static_cast<double>(_max_load_factor))));
     if (num_buckets == 0) {
       reset_to_empty_state();
       return;
@@ -421,8 +423,9 @@ class sherwood_v3_table : private EntryAlloc, private Hasher, private Equal {
     auto new_prime_index = hash_policy.next_size_over(num_buckets);
     if (num_buckets == bucket_count()) return;
     int8_t new_max_lookups = compute_max_lookups(num_buckets);
-    EntryPointer new_buckets(AllocatorTraits::allocate(*this, num_buckets + new_max_lookups));
-    EntryPointer special_end_item = new_buckets + static_cast<ptrdiff_t>(num_buckets + new_max_lookups - 1);
+    EntryPointer new_buckets(AllocatorTraits::allocate(*this, num_buckets + static_cast<size_t>(new_max_lookups)));
+    EntryPointer special_end_item =
+        new_buckets + static_cast<ptrdiff_t>(num_buckets + static_cast<size_t>(new_max_lookups) - 1);
     for (EntryPointer it = new_buckets; it != special_end_item; ++it) it->distance_from_desired = -1;
     special_end_item->distance_from_desired = Entry::special_end_value;
     std::swap(entries, new_buckets);
@@ -432,8 +435,9 @@ class sherwood_v3_table : private EntryAlloc, private Hasher, private Equal {
     int8_t old_max_lookups = max_lookups;
     max_lookups = new_max_lookups;
     num_elements = 0;
-    for (EntryPointer it = new_buckets, end = it + static_cast<ptrdiff_t>(num_buckets + old_max_lookups); it != end;
-         ++it) {
+    for (EntryPointer it = new_buckets,
+                      end = it + static_cast<ptrdiff_t>(num_buckets + static_cast<size_t>(old_max_lookups));
+         it != end; ++it) {
       if (it->has_value()) {
         emplace(std::move(it->value));
         it->destroy_value();
@@ -495,8 +499,9 @@ class sherwood_v3_table : private EntryAlloc, private Hasher, private Equal {
   }
 
   void clear() {
-    for (EntryPointer it = entries, end = it + static_cast<ptrdiff_t>(num_slots_minus_one + max_lookups); it != end;
-         ++it) {
+    for (EntryPointer it = entries,
+                      end = it + static_cast<ptrdiff_t>(num_slots_minus_one + static_cast<size_t>(max_lookups));
+         it != end; ++it) {
       if (it->has_value()) it->destroy_value();
     }
     num_elements = 0;
@@ -565,7 +570,8 @@ class sherwood_v3_table : private EntryAlloc, private Hasher, private Equal {
   emplace_new_key(int8_t distance_from_desired, EntryPointer current_entry, Key &&key, Args &&...args) {
     using std::swap;
     if (num_slots_minus_one == 0 || distance_from_desired == max_lookups ||
-        num_elements + 1 > (num_slots_minus_one + 1) * static_cast<double>(_max_load_factor)) {
+        static_cast<double>(num_elements + 1) >
+            static_cast<double>(num_slots_minus_one + 1) * static_cast<double>(_max_load_factor)) {
       grow();
       return emplace(std::forward<Key>(key), std::forward<Args>(args)...);
     } else if (current_entry->is_empty()) {
@@ -601,7 +607,7 @@ class sherwood_v3_table : private EntryAlloc, private Hasher, private Equal {
 
   void deallocate_data(EntryPointer begin, size_t num_slots_minus_one, int8_t max_lookups) {
     if (begin != Entry::empty_default_table()) {
-      AllocatorTraits::deallocate(*this, begin, num_slots_minus_one + max_lookups + 1);
+      AllocatorTraits::deallocate(*this, begin, num_slots_minus_one + static_cast<size_t>(max_lookups) + 1);
     }
   }
 

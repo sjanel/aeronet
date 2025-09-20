@@ -1,3 +1,11 @@
 add_executable(test_http_basic http_basic.cpp)
 target_link_libraries(test_http_basic PRIVATE aeronet gtest_main)
 add_test(NAME http_basic COMMAND test_http_basic)
+
+add_executable(test_http_server_move http_server_move.cpp)
+target_link_libraries(test_http_server_move PRIVATE aeronet gtest_main)
+add_test(NAME http_server_move COMMAND test_http_server_move)
+
+add_executable(test_http_multi_reuseport http_multi_reuseport.cpp)
+target_link_libraries(test_http_multi_reuseport PRIVATE aeronet gtest_main)
+add_test(NAME http_multi_reuseport COMMAND test_http_multi_reuseport)

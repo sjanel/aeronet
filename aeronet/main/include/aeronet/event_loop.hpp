@@ -1,4 +1,5 @@
 #pragma once
+
 #include <sys/epoll.h>
 
 #include <cstdint>
@@ -10,20 +11,26 @@ namespace aeronet {
 
 class EventLoop {
  public:
-  EventLoop();
+  explicit EventLoop(int epollFlags = 0);
+
   ~EventLoop();
+
   EventLoop(const EventLoop&) = delete;
   EventLoop& operator=(const EventLoop&) = delete;
-  EventLoop(EventLoop&&) = delete;
-  EventLoop& operator=(EventLoop&&) = delete;
-  bool add(int fd, uint32_t events);
-  bool mod(int fd, uint32_t events);
-  void del(int fd);
+  EventLoop(EventLoop&& other) noexcept;
+  EventLoop& operator=(EventLoop&& other) noexcept;
+
+  [[nodiscard]] bool add(int fd, uint32_t events) const;
+
+  [[nodiscard]] bool mod(int fd, uint32_t events) const;
+
+  void del(int fd) const;
+
   int poll(int timeoutMs, const std::function<void(int fd, uint32_t ev)>& cb);
 
  private:
-  int epollFd_{-1};
-  vector<epoll_event> events_;
+  int _epollFd{-1};
+  vector<epoll_event> _events;
 };
 
 }  // namespace aeronet

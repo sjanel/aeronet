@@ -1,7 +1,9 @@
 #pragma once
+
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -33,7 +35,18 @@ class HttpServer {
  public:
   explicit HttpServer(uint16_t port);
   ~HttpServer();
+
+  HttpServer(const HttpServer&) = delete;
+  HttpServer& operator=(const HttpServer&) = delete;
+  HttpServer(HttpServer&& other) noexcept;
+  HttpServer& operator=(HttpServer&& other) noexcept;
+
   void setHandler(RequestHandler handler);
+  // Enable/disable SO_REUSEPORT before starting (must be called before run()).
+  HttpServer& enablePortReuse(bool on = true) {
+    _reusePort = on;
+    return *this;
+  }
   void run();
   void runUntil(const std::function<bool()>& predicate,
                 std::chrono::milliseconds checkPeriod = std::chrono::milliseconds{500});
@@ -49,7 +62,8 @@ class HttpServer {
   int _listenFd{-1};
   uint16_t _port{};
   bool _running{false};
+  bool _reusePort{false};
   RequestHandler _handler;
-  EventLoop* _loop{nullptr};
+  std::unique_ptr<EventLoop> _loop;
 };
 }  // namespace aeronet

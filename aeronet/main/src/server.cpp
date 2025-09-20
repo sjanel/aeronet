@@ -9,35 +9,68 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <utility>
 
 #include "aeronet/event_loop.hpp"
+#include "exception.hpp"
 
 namespace aeronet {
 namespace {
 int set_non_blocking(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
-  if (flags == -1) return -1;
-  if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) return -1;
+  if (flags == -1) {
+    return -1;
+  }
+  if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+    return -1;
+  }
   return 0;
 }
 }  // namespace
 
 HttpServer::HttpServer(uint16_t port) : _port(port) {}
+
 HttpServer::~HttpServer() { stop(); }
+
+HttpServer::HttpServer(HttpServer&& other) noexcept
+    : _listenFd(std::exchange(other._listenFd, -1)),
+      _port(std::exchange(other._port, 0)),
+      _running(std::exchange(other._running, false)),
+      _reusePort(std::exchange(other._reusePort, false)),
+      _handler(std::move(other._handler)),
+      _loop(std::move(other._loop)) {}
+
+HttpServer& HttpServer::operator=(HttpServer&& other) noexcept {
+  if (this != &other) {
+    stop();  // ensures current fd + loop closed
+    _listenFd = std::exchange(other._listenFd, -1);
+    _port = std::exchange(other._port, 0);
+    _running = std::exchange(other._running, false);
+    _reusePort = std::exchange(other._reusePort, false);
+    _handler = std::move(other._handler);
+    _loop = std::move(other._loop);
+  }
+  return *this;
+}
 
 void HttpServer::setHandler(RequestHandler handler) { _handler = std::move(handler); }
 
 void HttpServer::setupListener() {
+  if (_listenFd != -1) {
+    throw exception("Server is already listening");
+  }
   _listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (_listenFd < 0) {
     throw std::runtime_error("socket failed");
   }
-  int enable = 1;
-  ::setsockopt(_listenFd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
+  const int optName = _reusePort ? SO_REUSEPORT : SO_REUSEADDR;
+  const int enable = 1;
+  ::setsockopt(_listenFd, SOL_SOCKET, optName, &enable, sizeof(enable));
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -52,7 +85,7 @@ void HttpServer::setupListener() {
     throw std::runtime_error("failed to set non-blocking");
   }
   if (_loop == nullptr) {
-    _loop = new EventLoop();
+    _loop = std::make_unique<EventLoop>();
   }
   if (!_loop->add(_listenFd, EPOLLIN)) {
     throw std::runtime_error("EventLoop add listen socket failed");
@@ -61,7 +94,7 @@ void HttpServer::setupListener() {
 
 void HttpServer::run() {
   if (_running) {
-    return;
+    throw exception("Server is already running");
   }
   _running = true;
   setupListener();
@@ -76,10 +109,7 @@ void HttpServer::stop() {
     ::close(_listenFd);
     _listenFd = -1;
   }
-  if (_loop != nullptr) {
-    delete _loop;
-    _loop = nullptr;
-  }
+  _loop.reset();
 }
 
 void HttpServer::runUntil(const std::function<bool()>& predicate, std::chrono::milliseconds checkPeriod) {
@@ -89,9 +119,7 @@ void HttpServer::runUntil(const std::function<bool()>& predicate, std::chrono::m
   _running = true;
   setupListener();
   int timeoutMs = static_cast<int>(checkPeriod.count());
-  if (timeoutMs < 1) {
-    timeoutMs = 1;
-  }
+  timeoutMs = std::max(timeoutMs, 1);
   while (_running) {
     eventLoop(timeoutMs);
     if (predicate && predicate()) {
@@ -104,8 +132,7 @@ void HttpServer::eventLoop(int timeoutMs) {
   if (!_loop) {
     return;
   }
-  _loop->poll(timeoutMs, [&](int fd, uint32_t ev) {
-    (void)ev;
+  _loop->poll(timeoutMs, [&](int fd, [[maybe_unused]] uint32_t ev) {
     if (fd == _listenFd) {
       while (true) {
         sockaddr_in in_addr{};
@@ -227,7 +254,6 @@ void HttpServer::eventLoop(int timeoutMs) {
             req.body = std::string_view(body_start, static_cast<std::string_view::size_type>(end - body_start));
           }
         }
-        // (Debug header dump removed after verification)
         HttpResponse resp;
         if (_handler) {
           try {
