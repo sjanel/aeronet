@@ -97,6 +97,46 @@ Misc
 - [ ] Public API stability guarantee (pre-1.0)
 - [ ] License file
 
+## Test Coverage Matrix
+
+Summary of current automated test coverage (see `tests/` directory). Legend: ✅ covered by explicit test(s), ⚠ partial / indirect, ❌ not yet.
+
+| Area | Feature | Test Status | Notes / Test Files |
+|------|---------|-------------|--------------------|
+| Parsing | Request line (method/target/version) | ✅ | `http_basic.cpp`, malformed cases in `http_malformed.cpp` |
+| Parsing | Unsupported HTTP version (505) | ✅ | `http_parser_errors.cpp` (InvalidVersion505) |
+| Parsing | Header parsing & lookup | ✅ | Implicit in all request tests; malformed headers in `http_malformed.cpp` |
+| Limits | Max header size -> 431 | ✅ | `http_malformed.cpp` (OversizedHeaders) |
+| Limits | Max body size (Content-Length) -> 413 | ✅ | `http_additional.cpp` (ExplicitTooLarge413) |
+| Limits | Chunk total/body growth -> 413 | ✅ | Chunk oversize paths indirectly via size guard (add targeted test later if needed) |
+| Bodies | Content-Length body handling | ✅ | `http_basic.cpp`, others |
+| Bodies | Chunked decoding | ✅ | `http_chunked_head.cpp`, fuzz in `http_parser_errors.cpp` |
+| Bodies | Trailers exposure | ❌ | Not implemented |
+| Expect | 100-continue w/ non-zero length | ✅ | `http_parser_errors.cpp` (Expect100OnlyWithBody) |
+| Expect | No 100 for zero-length | ✅ | `http_parser_errors.cpp` (Expect100OnlyWithBody) & `http_additional.cpp` |
+| Keep-Alive | Basic keep-alive persistence | ✅ | `http_keepalive.cpp` |
+| Keep-Alive | Max requests per connection | ✅ | `http_additional.cpp` (CloseAfterLimit), `http_head_maxrequests.cpp` |
+| Keep-Alive | Idle timeout close | ⚠ | Covered indirectly (tests rely on timely closure); no explicit timeout assertion |
+| Pipelining | Sequential pipeline of requests | ✅ | `http_additional.cpp` (TwoRequestsBackToBack) |
+| Pipelining | Malformed second request handling | ✅ | `http_additional.cpp` (SecondMalformedAfterSuccess) |
+| Methods | HEAD semantics (no body) | ✅ | `http_chunked_head.cpp`, `http_head_maxrequests.cpp` |
+| Date | RFC7231 format + correctness | ✅ | `http_date.cpp` (format + caching tests) |
+| Date | Same-second caching invariance | ✅ | `http_date.cpp` (StableWithinSameSecond) |
+| Date | Second-boundary refresh | ✅ | `http_date.cpp` (ChangesAcrossSecondBoundary) |
+| Errors | 400 Bad Request (malformed line) | ✅ | `http_malformed.cpp` |
+| Errors | 431, 413, 505, 501 | ✅ | Various tests (`http_malformed.cpp`, `http_additional.cpp`, version & TE tests) |
+| Errors | PayloadTooLarge in chunk decoding | ⚠ | Path exercised via guard; add dedicated oversize chunk test future |
+| Concurrency | SO_REUSEPORT distribution | ✅ | `http_multi_reuseport.cpp` |
+| Lifecycle | Move semantics of server | ✅ | `http_server_move.cpp` |
+| Lifecycle | Graceful stop (runUntil) | ✅ | All tests using runUntil pattern |
+| Diagnostics | Parser error callback (version, bad line, limits) | ✅ | `http_parser_errors.cpp` |
+| Diagnostics | PayloadTooLarge callback (Content-Length) | ⚠ | Indirect; could add explicit capture test |
+| Performance | Date caching buffer size correctness | ✅ | Indirect via date tests + no crash (unit test ensures length) |
+| Performance | writev header+body path | ⚠ | Indirect (no specific assertion) |
+| Not Implemented | Trailers, outgoing chunked, compression, routing, TLS | ❌ | Roadmap |
+
+Planned test additions (nice-to-have): oversize single chunk explicit test, keep-alive idle timeout explicit assertion, payload-too-large callback capture for chunk paths, writev behavior inspection (mock / interception).
+
 ## Build
 
 ```bash

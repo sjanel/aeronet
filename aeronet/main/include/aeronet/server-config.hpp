@@ -15,8 +15,8 @@ struct ServerConfig {
   std::size_t maxHeaderBytes{8192};
   std::size_t maxBodyBytes{1 << 20};  // 1MB
   uint32_t maxRequestsPerConnection{100};
-  std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
   bool enableKeepAlive{true};
+  std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
 
   // Fluent builder style setters
   ServerConfig& withPort(uint16_t port) {
@@ -26,6 +26,11 @@ struct ServerConfig {
 
   ServerConfig& withReusePort(bool on = true) {
     this->reusePort = on;
+    return *this;
+  }
+
+  ServerConfig& withKeepAliveMode(bool on = true) {
+    this->enableKeepAlive = on;
     return *this;
   }
 
@@ -46,11 +51,6 @@ struct ServerConfig {
 
   ServerConfig& withKeepAliveTimeout(std::chrono::milliseconds timeout) {
     this->keepAliveTimeout = timeout;
-    return *this;
-  }
-
-  ServerConfig& withKeepAliveMode(bool on = true) {
-    this->enableKeepAlive = on;
     return *this;
   }
 };

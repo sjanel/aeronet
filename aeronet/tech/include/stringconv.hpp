@@ -1,34 +1,28 @@
 #pragma once
 
 #include <charconv>
+#include <climits>
 #include <concepts>
 #include <limits>
 #include <span>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 
 #include "exception.hpp"
 #include "fixedcapacityvector.hpp"
+#include "invalid_argument_exception.hpp"
 #include "nchars.hpp"
 #include "string.hpp"
 
 namespace aeronet {
-
-namespace details {
-inline void ToChars(char *first, std::integral auto sz, std::integral auto val) {
-  const auto [ptr, errc] = std::to_chars(first, first + sz, val);
-  if (errc != std::errc() || ptr != first + sz) {
-    throw exception("Unable to decode integral into string");
-  }
-}
-}  // namespace details
 
 inline string IntegralToString(std::integral auto val) {
   const auto nbDigitsInt = nchars(val);
 
   string str(nbDigitsInt, '0');
 
-  details::ToChars(str.data(), nbDigitsInt, val);
+  std::to_chars(str.data(), str.data() + nbDigitsInt, val);
 
   return str;
 }
@@ -54,27 +48,34 @@ inline auto IntegralToCharVector(std::integral auto val) {
   return ret;
 }
 
-template <std::integral Integral = int>
-Integral StringToIntegral(std::string_view str) {
+template <std::integral Integral>
+Integral StringToIntegral(const char *begPtr, std::size_t len) {
   // No need to value initialize ret, std::from_chars will set it in case no error is returned
   // And in case of error, exception is thrown instead
   Integral ret;
 
-  const char *begPtr = str.data();
-  const char *endPtr = begPtr + str.size();
+  const char *endPtr = begPtr + len;
   const auto [ptr, errc] = std::from_chars(begPtr, endPtr, ret);
 
   if (errc != std::errc()) {
     if (errc == std::errc::result_out_of_range) {
-      throw exception("'{}' would produce an out of range integral", str);
+      throw invalid_argument("'{}' would produce an out of range {}signed {} bits integral",
+                             std::string_view(begPtr, len), std::is_signed_v<Integral> ? "" : "un",
+                             CHAR_BIT * sizeof(Integral));
     }
-    throw exception("Unable to decode '{}' into integral", str);
+    throw invalid_argument("Unable to decode '{}' into integral", std::string_view(begPtr, len));
   }
 
   if (ptr != endPtr) {
-    throw exception("Only {} chars from {} decoded into integral {}", ptr - begPtr, str, ret);
+    throw invalid_argument("Only {} chars from {} decoded into integral {}", ptr - begPtr,
+                           std::string_view(begPtr, len), ret);
   }
   return ret;
+}
+
+template <std::integral Integral>
+Integral StringToIntegral(std::string_view str) {
+  return StringToIntegral<Integral>(str.data(), str.size());
 }
 
 inline void AppendIntegralToString(string &str, std::integral auto val) {
@@ -82,7 +83,14 @@ inline void AppendIntegralToString(string &str, std::integral auto val) {
 
   str.append(static_cast<string::size_type>(nbDigitsInt), '0');
 
-  details::ToChars(str.data() + static_cast<decltype(nbDigitsInt)>(str.size()) - nbDigitsInt, nbDigitsInt, val);
+  char *ptr = str.data() + static_cast<decltype(nbDigitsInt)>(str.size());
+  std::to_chars(ptr - nbDigitsInt, ptr, val);
+}
+
+constexpr char *AppendIntegralToCharBuf(char *buf, std::integral auto val) {
+  static constexpr auto kMaxCharsInt =
+      std::max(nchars(std::numeric_limits<decltype(val)>::max()), nchars(std::numeric_limits<decltype(val)>::min()));
+  return std::to_chars(buf, buf + kMaxCharsInt, val).ptr;
 }
 
 constexpr std::span<char> IntegralToCharBuffer(std::span<char> buf, std::integral auto val) {
@@ -92,7 +100,7 @@ constexpr std::span<char> IntegralToCharBuffer(std::span<char> buf, std::integra
     throw exception("Buffer size {} is too small to hold {} digits for integral {}", buf.size(), nbDigitsInt, val);
   }
 
-  details::ToChars(buf.data(), nbDigitsInt, val);
+  std::to_chars(buf.data(), buf.data() + nbDigitsInt, val);
 
   return buf.subspan(0, nbDigitsInt);
 }

@@ -1,0 +1,6 @@
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/aeronetTargets.cmake")
+
+# Provide version variable
+set(AERONET_VERSION "@PROJECT_VERSION@")

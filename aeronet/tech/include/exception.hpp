@@ -2,15 +2,14 @@
 
 #include <cstring>
 #include <exception>
-
-#include "format.hpp"
+#include <format>
 
 namespace aeronet {
 
 /// Non allocating basic exception class that can be constructed from a string literal or a format string (truncated).
 class exception : public std::exception {
  public:
-  static constexpr int kMsgMaxLen = 200;
+  static constexpr int kMsgMaxLen = 87;
 
   template <std::size_t N>
   explicit exception(const char (&str)[N]) noexcept
@@ -21,8 +20,8 @@ class exception : public std::exception {
   }
 
   template <typename... Args>
-  explicit exception(format_string<Args...> fmt, Args&&... args) {
-    auto sz = format_to_n(_data, kMsgMaxLen, fmt, std::forward<Args>(args)...).size;
+  explicit exception(std::format_string<Args...> fmt, Args&&... args) {
+    auto sz = std::format_to_n(_data, kMsgMaxLen, fmt, std::forward<Args>(args)...).size;
     if (sz > kMsgMaxLen) {
       std::memcpy(_data + kMsgMaxLen - 3, "...", 3);
       sz = kMsgMaxLen;

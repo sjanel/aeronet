@@ -1,9 +1,9 @@
 #pragma once
 
+#include <format>
 #include <utility>
 
 #include "exception.hpp"
-#include "format.hpp"
 
 namespace aeronet {
 
@@ -15,7 +15,8 @@ class invalid_argument : public exception {
       : exception(str) {}
 
   template <typename... Args>
-  explicit invalid_argument(format_string<Args...> fmt, Args&&... args) : exception(fmt, std::forward<Args>(args)...) {}
+  explicit invalid_argument(std::format_string<Args...> fmt, Args&&... args)
+      : exception(fmt, std::forward<Args>(args)...) {}
 };
 
 }  // namespace aeronet

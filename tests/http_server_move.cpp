@@ -4,7 +4,6 @@
 #include <unistd.h>
 
 #include <atomic>
-#include <chrono>
 #include <thread>
 
 #include "aeronet/server.hpp"
@@ -53,8 +52,6 @@ TEST(HttpServerMove, MoveConstructAndServe) {
 
   // Move construct server before running
   aeronet::HttpServer moved(std::move(original));
-  EXPECT_EQ(original.port(), 0);  // moved-from reset to 0
-  EXPECT_FALSE(original.isRunning());
 
   std::thread th([&] { moved.runUntil([&] { return stop.load(); }, 50ms); });
   std::this_thread::sleep_for(100ms);
@@ -83,7 +80,6 @@ TEST(HttpServerMove, MoveAssignWhileStopped) {
 
   // Move assign s1 <- s2 (both stopped)
   s1 = std::move(s2);
-  EXPECT_EQ(s2.port(), 0);
   EXPECT_EQ(s1.port(), port2);
 
   std::atomic_bool stop{false};

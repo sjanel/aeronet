@@ -10,6 +10,7 @@
 #include "http-request.hpp"
 #include "http-response.hpp"
 #include "string.hpp"
+#include "timedef.hpp"
 
 namespace aeronet {
 
@@ -28,6 +29,15 @@ class EventLoop;  // forward declaration
 class HttpServer {
  public:
   using RequestHandler = std::function<HttpResponse(const HttpRequest&)>;
+  enum class ParserError : std::uint8_t {
+    BadRequestLine,
+    VersionUnsupported,
+    HeadersTooLarge,
+    PayloadTooLarge,
+    MalformedChunk,
+    GenericBadRequest
+  };
+  using ParserErrorCallback = std::function<void(ParserError)>;
 
   HttpServer() noexcept = default;
 
@@ -41,6 +51,7 @@ class HttpServer {
   ~HttpServer();
 
   void setHandler(RequestHandler handler);
+  void setParserErrorCallback(ParserErrorCallback cb) { _parserErrCb = std::move(cb); }
 
   void run();
   void runUntil(const std::function<bool()>& predicate,
@@ -54,14 +65,6 @@ class HttpServer {
   [[nodiscard]] bool isRunning() const { return _running; }
 
  private:
-  void setupListener();
-  void eventLoop(int timeoutMs);
-
-  int _listenFd{-1};
-  bool _running{false};
-  RequestHandler _handler;
-  std::unique_ptr<EventLoop> _loop;
-  ServerConfig _config{};  // holds port & reusePort & limits
   struct ConnStateInternal {
     string buffer;       // accumulated raw data
     string bodyStorage;  // decoded body lifetime
@@ -69,8 +72,34 @@ class HttpServer {
     uint32_t requestsServed{0};
     bool shouldClose{false};
   };
+  void setupListener();
+  void eventLoop(int timeoutMs);
+  void refreshCachedDate();
+  void sweepIdleConnections();
+  void acceptNewConnections();
+  void handleReadableClient(int fd);
+  bool processRequestsOnConnection(int fd, ConnStateInternal& state);
+  // Split helpers
+  bool parseNextRequestFromBuffer(int fd, ConnStateInternal& state, HttpRequest& outReq, std::size_t& headerEnd,
+                                  bool& closeConn);
+  bool decodeBodyIfReady(int fd, ConnStateInternal& state, const HttpRequest& req, std::size_t headerEnd,
+                         bool isChunked, bool expectContinue, bool& closeConn, size_t& consumedBytes);
+  bool decodeFixedLengthBody(int fd, ConnStateInternal& state, const HttpRequest& req, std::size_t headerEnd,
+                             bool expectContinue, bool& closeConn, size_t& consumedBytes);
+  bool decodeChunkedBody(int fd, ConnStateInternal& state, const HttpRequest& req, std::size_t headerEnd,
+                         bool expectContinue, bool& closeConn, size_t& consumedBytes);
+  void finalizeAndSendResponse(int fd, ConnStateInternal& state, HttpRequest& req, HttpResponse& resp,
+                               size_t consumedBytes, bool& closeConn);
+  void closeConnection(int fd);
+
+  int _listenFd{-1};
+  bool _running{false};
+  RequestHandler _handler;
+  std::unique_ptr<EventLoop> _loop;
+  ServerConfig _config{};                             // holds port & reusePort & limits
   flat_hash_map<int, ConnStateInternal> _connStates;  // per-server connection states
   string _cachedDate;
-  std::time_t _cachedDateEpoch{0};
+  TimePoint _cachedDateEpoch;  // last second-aligned timestamp used for Date header
+  ParserErrorCallback _parserErrCb;
 };
 }  // namespace aeronet

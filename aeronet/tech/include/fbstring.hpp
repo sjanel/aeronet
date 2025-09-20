@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <format>
 #include <iosfwd>
 #include <limits>
 #include <stdexcept>
@@ -33,9 +34,6 @@
 #include <utility>
 
 #include "config.hpp"
-#ifndef AERONET_DISABLE_SPDLOG
-#include <spdlog/fmt/fmt.h>
-#endif
 
 #define FOLLY_HAS_STRING_VIEW 1
 #define FOLLY_ALWAYS_INLINE AERONET_ALWAYS_INLINE
@@ -2913,18 +2911,14 @@ FOLLY_POP_WARNING
 #undef FOLLY_SANITIZE_ADDRESS
 #undef FBSTRING_DISABLE_SSO
 
-#ifndef AERONET_DISABLE_SPDLOG
-
 template <class E, class T, class A, class S>
-struct fmt::formatter<::folly::basic_fbstring<E, T, A, S>> : fmt::formatter<std::basic_string_view<E, T>> {
+struct std::formatter<::folly::basic_fbstring<E, T, A, S>> : std::formatter<std::basic_string_view<E, T>> {
   template <typename FormatContext>
   auto format(const ::folly::basic_fbstring<E, T, A, S> &str, FormatContext &ctx) const -> decltype(ctx.out()) {
     using SVType = std::basic_string_view<E, T>;
-    return fmt::formatter<SVType>::format(SVType(str), ctx);
+    return std::formatter<SVType>::format(SVType(str), ctx);
   }
 };
-
-#endif
 
 namespace folly {
 template <class T>
