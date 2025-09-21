@@ -60,3 +60,8 @@ add_test(NAME http_stats COMMAND test_http_stats)
 add_project_executable(test_http_routing http_routing.cpp)
 target_link_libraries(test_http_routing PRIVATE aeronet gtest_main)
 add_test(NAME http_routing COMMAND test_http_routing)
+
+# Multi server wrapper test
+add_project_executable(test_http_multi_wrapper http_multi_wrapper.cpp)
+target_link_libraries(test_http_multi_wrapper PRIVATE aeronet gtest_main)
+add_test(NAME http_multi_wrapper COMMAND test_http_multi_wrapper)

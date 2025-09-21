@@ -128,7 +128,7 @@ class HttpServer {
     uint64_t totalBytesWrittenFlush;
     uint64_t deferredWriteEvents;
     uint64_t flushCycles;
-    size_t maxConnectionOutboundBuffer;
+    std::size_t maxConnectionOutboundBuffer;
   };
 
   [[nodiscard]] StatsPublic stats() const {

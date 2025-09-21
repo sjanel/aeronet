@@ -119,7 +119,7 @@ void HttpServer::setupListener() {
     throw std::runtime_error("socket failed");
   }
   // Always enable SO_REUSEADDR for quick restarts; enable SO_REUSEPORT when requested
-  const int enable = 1;
+  static constexpr int enable = 1;
   ::setsockopt(_listenFd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
   if (_config.reusePort) {
     ::setsockopt(_listenFd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));

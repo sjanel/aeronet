@@ -14,7 +14,7 @@ Legend:
 
 | Status | Feature | Summary | Key Design Points | Dependencies |
 |--------|---------|---------|-------------------|--------------|
-| ⏳ | Partial Write Buffering & Backpressure | Handle partial socket writes safely | Per-connection output buffer, EPOLLOUT re-arm, max buffer cap | None (current) |
+| ✅ | Partial Write Buffering & Backpressure | Handle partial socket writes safely | Implemented: per-connection outBuffer + EPOLLOUT re-arm + high-water tracking | None |
 | ⏳ | Streaming / Outgoing Chunked Responses | Send dynamic data without pre-buffering | HttpResponseWriter API, auto chunked if no length | Write buffering |
 | ⏳ | Header Read Timeout (Slowloris) | Abort very slow header arrivals | Track header start time + last progress, 408/close | Timing sweep |
 | ⏳ | Request Metrics Hook | Expose per-request stats | Struct with method, status, durations, bytes | None |
@@ -25,8 +25,9 @@ Legend:
 | Status | Feature | Summary | Notes |
 |--------|---------|---------|-------|
 | ⏳ | Trailer Header Parsing (Incoming) | Parse and expose chunked trailers | Size limit + map storage |
-| ⏳ | Structured Logging Interface | Pluggable logger levels | Replace stderr printing |
-| ⏳ | Compression (gzip/br) | On-the-fly body compression | Threshold + content-type allowlist |
+| ⏳ | Structured Logging Interface | Pluggable logger levels / sinks | Fallback logger implemented; need abstraction layer |
+| ⏳ | Enhanced Logging (trace IDs) | Optional request correlation id injection | Depends on structured logging |
+| ⏳ | Compression (gzip/br) | On-the-fly body compression | Threshold + content-type allowlist; gzip first, br later |
 | ⏳ | Graceful Draining Mode | Stop accepting new connections; finish in-flight | server.beginDrain() + state flag |
 | ⏳ | Enhanced Parser Diagnostics (offset) | Provide error location info | Extend callback signature |
 
@@ -43,6 +44,9 @@ Legend:
 
 | Feature | Notes |
 |---------|-------|
+| Partial Write Buffering & Backpressure | Outbound queue + EPOLLOUT driven flushing + stats |
+| MultiHttpServer Wrapper | Horizontal scaling orchestration, ephemeral port resolution, aggregated stats |
+| Lightweight Logging Fallback | spdlog-style API, ISO8601 timestamps, formatting fallback |
 | Parser Error Enum & Callback | `ParserError` with granular reasons + hook |
 | RFC7231 Date Tests & Caching Validation | Format stability + boundary refresh tests |
 | Request Processing Refactor | Split monolithic loop into cohesive helpers |
@@ -50,20 +54,20 @@ Legend:
 | HEAD Max Requests Test | Ensures keep-alive request cap applies to HEAD |
 | Malformed & Limit Tests | 400 / 431 / 413 / 505 coverage |
 
-## Proposed Ordering (First Pass)
+## Proposed Ordering (Next Pass)
 
-1. Partial Write Buffering
-2. Streaming Response API
-3. Header Read Timeout
-4. Metrics Hook
-5. sendfile Support
-6. Trailer Parsing
-7. Logging Interface
-8. Compression
-9. Draining Mode
-10. Enhanced Parser Diagnostics (offset)
-11. TLS
-12. Fuzz Harness (extended)
+1. Streaming Response API (foundation for compression & large bodies)
+2. Header Read Timeout (Slowloris mitigation)
+3. Metrics Hook (per-request instrumentation)
+4. Compression (gzip) negotiation + basic gzip compressor
+5. Trailer Parsing (incoming chunked trailers)
+6. Draining Mode (graceful connection wind-down)
+7. Zero-copy sendfile() support (static files)
+8. Enhanced Parser Diagnostics (byte offset)
+9. Structured Logging Interface (pluggable sinks / structured fields)
+10. brotli compression (if demand) and streaming compression integration
+11. TLS termination (OpenSSL minimal)
+12. Fuzz Harness (extended corpus / sanitizer CI)
 
 ## Design Sketches
 
@@ -113,7 +117,19 @@ server.setMetricsCallback([](const RequestMetrics& m){ /* export */ });
 - Attempt writev; if partial, store remaining (flatten into buffer or keep iovec queue).
 - Register EPOLLOUT; on writable, continue draining.
 - While pending output exists, do not read/parse new requests (fairness + ordering).
-- Configurable cap: `withMaxWriteBufferBytes(size_t)`; exceed -> close or 503.
+- Configurable cap: `withMaxWriteBufferBytes(size_t)`; exceed -> connection marked to close after flush (current behavior) or future configurable strategy (e.g., 503).
+
+### Compression Design Notes (Planned)
+
+Phased approach:
+
+1. Negotiation: Parse `Accept-Encoding` (simple token scan) – support `identity` and `gzip` initially.
+2. Threshold & Eligibility: Only compress for bodies over configurable N bytes and for explicit content-types (e.g., text/*, application/json). Allow user-supplied predicate.
+3. Implementation: Use zlib / miniz (header-only) optional dependency guarded by CMake option; fallback to identity if library absent.
+4. Streaming Integration: When streaming API active and no Content-Length known, wrap writes through compressor producing chunked output automatically.
+5. Buffering Strategy: Small sliding window 8–32KB; flush on end() or when output buffer would exceed high-water mark.
+6. Stats: Track compressed vs original bytes (ratio) per request metrics structure.
+7. Future: Add brotli (static dictionary optional) once gzip path stable.
 
 ## Testing Roadmap Highlights
 

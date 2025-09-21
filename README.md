@@ -22,7 +22,9 @@ Features currently implemented:
 - Optional per-path handler routing with method allow‑lists (exact path match)
 - Transparent heterogeneous lookup for path handlers (std::string / std::string_view / const char*)
 - Backpressure-aware outbound buffering with statistics for tuning
-- Tests for basics, move semantics, reuseport distribution, keep-alive, header/body limits, chunked, HEAD, Expect
+- Multi-instance orchestration wrapper (`MultiHttpServer`) for convenient horizontal scaling (ephemeral port resolution + aggregated stats)
+- Lightweight spdlog-style logging API with ISO 8601 UTC timestamps (fallback internally; pluggable interface planned)
+- Tests for basics, move semantics, reuseport distribution, keep-alive, header/body limits, chunked, HEAD, Expect, multi-server wrapper
 
 ## HTTP/1.1 Feature Matrix
 
@@ -78,6 +80,7 @@ Performance / architecture
 
 - [x] Single-thread event loop (one server instance)
 - [x] Horizontal scaling via SO_REUSEPORT (multi-reactor)
+- [x] Multi-instance orchestration wrapper (`MultiHttpServer`) (auto reuseport, aggregated stats)
 - [x] writev scatter-gather for response header + body
 - [x] Outbound write buffering with EPOLLOUT-driven backpressure
 - [ ] Benchmarks & profiling docs
@@ -95,12 +98,15 @@ Developer experience
 - [x] Builder style ServerConfig
 - [x] Simple lambda handler signature
 - [x] Simple exact-match per-path routing (`addPathHandler`)
+- [x] Lightweight built-in logging (spdlog optional integration) – pluggable interface TBD
 - [ ] Middleware helpers
-- [ ] Pluggable logging interface
+- [ ] Pluggable logging interface (abstract sink / formatting hooks)
 
 Misc
 
 - [x] Move semantics for HttpServer
+- [x] MultiHttpServer convenience wrapper
+- [ ] Compression (gzip / br) (planned)
 - [ ] Public API stability guarantee (pre-1.0)
 - [ ] License file
 
@@ -238,6 +244,65 @@ You can start several independent event loops on the same port (kernel load bala
 
 Each thread owns its own listening socket (SO_REUSEPORT) and epoll instance – no shared locks in the accept path.
 This is the simplest horizontal scaling strategy before introducing a worker pool.
+
+### MultiHttpServer Convenience Wrapper
+
+Instead of manually creating N threads and N `HttpServer` instances, you can use `MultiHttpServer` to spin up a "farm" of identical servers on the same port. It:
+
+- Accepts a base `ServerConfig` (set `port=0` for ephemeral bind; the chosen port is propagated to all instances)
+- Forces `reusePort=true` automatically when thread count > 1
+- Replicates either a global handler or all registered path handlers across each underlying server
+- Exposes `stats()` returning both per-instance and aggregated totals (sums; `maxConnectionOutboundBuffer` is a max)
+- Manages lifecycle with internal `std::jthread`s; `stop()` requests shutdown of every instance
+- Provides the resolved listening `port()` after start (even for ephemeral port 0 requests)
+
+Minimal example:
+
+```cpp
+#include <aeronet/multi-http-server.hpp>
+using namespace aeronet;
+
+int main() {
+  ServerConfig cfg; cfg.port = 0; cfg.reusePort = true; // ephemeral, auto-propagated
+  MultiHttpServer multi(cfg, 4); // 4 underlying event loops
+  multi.setHandler([](const HttpRequest& req){
+    HttpResponse r; r.statusCode=200; r.reason="OK"; r.body="hello\n"; r.contentType="text/plain"; return r; });
+  multi.start();
+  std::printf("Listening on %u\n", multi.port());
+  // ... run until external signal ...
+  std::this_thread::sleep_for(std::chrono::seconds(30));
+  auto agg = multi.stats();
+  std::printf("instances=%zu queued=%llu\n", agg.per.size(), (unsigned long long)agg.total.totalBytesQueued);
+  multi.stop();
+}
+```
+
+Handler rules mirror `HttpServer`:
+
+- Call `setHandler()` once OR register multiple `addPathHandler()` entries before `start()`.
+- Mixing global handler with path handlers is rejected.
+- After `start()`, further registration throws.
+
+Ephemeral port binding: `multi.start()` launches threads and spin‑waits briefly until the first server resolves its kernel-assigned port (captured via `getsockname()` in the internal `HttpServer`). The resolved value is then visible via `multi.port()` and reused for all subsequent instances.
+
+Stats aggregation example:
+
+```cpp
+auto st = multi.stats();
+for (size_t i = 0; i < st.per.size(); ++i) {
+  const auto& s = st.per[i];
+  std::printf("[srv%zu] queued=%llu imm=%llu flush=%llu\n", i,
+    (unsigned long long)s.totalBytesQueued,
+    (unsigned long long)s.totalBytesWrittenImmediate,
+    (unsigned long long)s.totalBytesWrittenFlush);
+}
+```
+
+### Logging
+
+Logging uses `spdlog` if `AERONET_ENABLE_SPDLOG` is defined at build time; otherwise a lightweight fallback provides the same call style (`log::info("message {}", value)`). The fallback uses `std::vformat` when available and degrades gracefully if formatting fails (appends arguments). Timestamps are ISO 8601 UTC with millisecond precision. Levels: trace, debug, info, warn, error, critical. You can adjust level in fallback with `aeronet::log::set_level(aeronet::log::level::debug);`.
+
+Pluggable logging sinks / structured logging hooks are planned; current design keeps logging dependency-free by default.
 
 ## Configuration API (builder style)
 
