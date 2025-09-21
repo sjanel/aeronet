@@ -20,17 +20,50 @@ find_package(OpenSSL REQUIRED)
 include(cmake/CommonSettings.cmake)
 include(cmake/AddUnitTest.cmake)
 
+# External dependencies (linked with FetchContent)
+include(FetchContent)
+
+set(fetchContentPackagesToMakeAvailable "")
+
+find_package(amc CONFIG)
+if(NOT amc_FOUND)
+  FetchContent_Declare(
+    amadeusamc
+    URL https://github.com/AmadeusITGroup/amc/archive/refs/tags/v2.6.0.tar.gz
+    URL_HASH SHA256=381cda7834c73cd81f51693739eb3132cfb822a41499972d98621d914924de5f
+  )
+
+  list(APPEND fetchContentPackagesToMakeAvailable amadeusamc)
+endif()
+
 if(AERONET_BUILD_TESTS)
-    enable_testing()
-    include(FetchContent)
+  find_package(GTest CONFIG)
+
+  if(NOT GTest_FOUND)
     FetchContent_Declare(
-        googletest
-        URL https://github.com/google/googletest/archive/refs/tags/v1.17.0.tar.gz
-        URL_HASH SHA256=65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c
+      googletest
+      URL https://github.com/google/googletest/archive/refs/tags/v1.17.0.tar.gz
+      URL_HASH SHA256=65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c
     )
+
     # Use modern position independent etc.
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
+
+    list(APPEND fetchContentPackagesToMakeAvailable googletest)
+  endif()
+
+  enable_testing()
+endif()
+
+# Make fetch content available
+if(fetchContentPackagesToMakeAvailable)
+  message(STATUS "Configuring packages ${fetchContentPackagesToMakeAvailable}")
+
+  FetchContent_MakeAvailable("${fetchContentPackagesToMakeAvailable}")
+endif()
+
+if(AERONET_BUILD_TESTS)
+    enable_testing()
     add_subdirectory(tests)
 endif()
 

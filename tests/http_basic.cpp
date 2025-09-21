@@ -4,7 +4,6 @@
 #include <unistd.h>
 
 #include <atomic>
-#include <chrono>
 #include <string>
 #include <thread>
 
@@ -32,11 +31,11 @@ std::string httpGet(uint16_t port, const std::string& target, const std::string&
   char buf[4096];
   std::string out;
   while (true) {
-    ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
-    if (n <= 0) {
+    ssize_t nbRead = ::recv(fd, buf, sizeof(buf), 0);
+    if (nbRead <= 0) {
       break;
     }
-    out.append(buf, buf + n);
+    out.append(buf, buf + nbRead);
   }
   ::close(fd);
   return out;

@@ -7,14 +7,18 @@
 #include "test_util.hpp"
 using namespace std::chrono_literals;
 
-static std::string sendRaw(uint16_t port, const std::string& raw) {
+namespace {
+std::string sendRaw(uint16_t port, const std::string& raw) {
   int fd = tu_connect(port);
-  if (fd < 0) return {};
+  if (fd < 0) {
+    return {};
+  }
   tu_sendAll(fd, raw);
   std::string resp = tu_recvWithTimeout(fd, 300ms);
   // server may close depending on error severity
   return resp;
 }
+}  // anonymous namespace
 
 TEST(HttpMalformed, MissingSpacesInRequestLine) {
   uint16_t port = 18620;

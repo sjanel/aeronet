@@ -12,7 +12,7 @@ TEST(HttpHead, MaxRequestsApplied) {
   aeronet::ServerConfig cfg;
   cfg.withPort(port).withMaxRequestsPerConnection(3);
   aeronet::HttpServer server(cfg);
-  server.setHandler([](const aeronet::HttpRequest& req) {
+  server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = "IGNORED";
     return resp;

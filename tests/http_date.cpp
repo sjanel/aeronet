@@ -4,7 +4,6 @@
 #include <unistd.h>
 
 #include <atomic>
-#include <chrono>
 #include <regex>
 #include <string>
 #include <thread>
@@ -44,15 +43,15 @@ std::string rawGet(uint16_t port) {
 
 std::string headerValue(const std::string& resp, const std::string& name) {
   std::string needle = name + ": ";
-  size_t p = resp.find(needle);
-  if (p == std::string::npos) {
+  size_t pos = resp.find(needle);
+  if (pos == std::string::npos) {
     return {};
   }
-  size_t end = resp.find("\r\n", p);
+  size_t end = resp.find("\r\n", pos);
   if (end == std::string::npos) {
     return {};
   }
-  return resp.substr(p + needle.size(), end - (p + needle.size()));
+  return resp.substr(pos + needle.size(), end - (pos + needle.size()));
 }
 }  // namespace
 
@@ -68,7 +67,7 @@ TEST(HttpDate, PresentAndFormat) {
   th.join();
   ASSERT_FALSE(resp.empty());
   auto date = headerValue(resp, "Date");
-  ASSERT_EQ(29u, date.size()) << date;
+  ASSERT_EQ(29U, date.size()) << date;
   std::regex re("[A-Z][a-z]{2}, [0-9]{2} [A-Z][a-z]{2} [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT");
   ASSERT_TRUE(std::regex_match(date, re)) << date;
 }
@@ -102,13 +101,15 @@ TEST(HttpDate, ChangesAcrossSecondBoundary) {
   std::this_thread::sleep_for(50ms);
   auto first = rawGet(port);
   auto d1 = headerValue(first, "Date");
-  ASSERT_EQ(29u, d1.size());
+  ASSERT_EQ(29U, d1.size());
   // spin until date changes (max ~1500ms)
   std::string d2;
   for (int i = 0; i < 40; ++i) {
     std::this_thread::sleep_for(50ms);
     d2 = headerValue(rawGet(port), "Date");
-    if (d2 != d1 && !d2.empty()) break;
+    if (d2 != d1 && !d2.empty()) {
+      break;
+    }
   }
   stop.store(true);
   th.join();

@@ -1,5 +1,7 @@
 # Aeronet
 
+![Aeronet Logo](resources/logo.png)
+
 Experimental HTTP server library (Linux / epoll) – work in progress.
 
 Features currently implemented:

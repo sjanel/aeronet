@@ -29,11 +29,11 @@ std::string simpleGet(uint16_t port, const std::string& target) {
   char buf[4096];
   std::string out;
   while (true) {
-    ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
-    if (n <= 0) {
+    ssize_t nbRead = ::recv(fd, buf, sizeof(buf), 0);
+    if (nbRead <= 0) {
       break;
     }
-    out.append(buf, buf + n);
+    out.append(buf, buf + nbRead);
   }
   ::close(fd);
   return out;
