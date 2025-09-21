@@ -353,7 +353,6 @@ server.addPathHandler("/echo", http::Method::GET, [](const HttpRequest& req){
 
 Internal bitmask order follows enum declaration in `http-method.hpp`.
 
-
 ### Limits
 
 - 431 is returned if the header section exceeds `maxHeaderBytes`.
@@ -381,7 +380,7 @@ Use these to gauge backpressure behavior and tune `maxOutboundBufferBytes`. When
 - [ ] Richer routing (wildcards, parameter extraction)
 - [ ] TLS (OpenSSL) support
 - [ ] Benchmarks & perf tuning notes
- 
+
 ## License
 
 Licensed under the MIT License. See [LICENSE](LICENSE).

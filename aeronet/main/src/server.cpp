@@ -313,14 +313,14 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
       if (it == _pathHandlers.end()) {
         resp.statusCode = 404;
         resp.reason = "Not Found";
-        resp.body = "Not Found";
+        resp.body = resp.reason;
         resp.contentType = "text/plain";
       } else {
         auto method = http::toMethodEnum(req.method);
         if (!http::methodAllowed(it->second.methodMask, method)) {
           resp.statusCode = 405;
           resp.reason = string(http::ReasonMethodNotAllowed);
-          resp.body = string(http::ReasonMethodNotAllowed);
+          resp.body = resp.reason;
           resp.contentType = "text/plain";
         } else {
           try {
@@ -329,13 +329,13 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
             std::cerr << "Exception in path handler: " << ex.what() << '\n';
             resp.statusCode = 500;
             resp.reason = string(http::ReasonInternalServerError);
-            resp.body = string(http::ReasonInternalServerError);
+            resp.body = resp.reason;
             resp.contentType = "text/plain";
           } catch (...) {
             std::cerr << "Unknown exception in path handler." << '\n';
             resp.statusCode = 500;
             resp.reason = string(http::ReasonInternalServerError);
-            resp.body = string(http::ReasonInternalServerError);
+            resp.body = resp.reason;
             resp.contentType = "text/plain";
           }
         }
@@ -347,13 +347,13 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
         std::cerr << "Exception in request handler: " << ex.what() << '\n';
         resp.statusCode = 500;
         resp.reason = string(http::ReasonInternalServerError);
-        resp.body = string(http::ReasonInternalServerError);
+        resp.body = resp.reason;
         resp.contentType = "text/plain";
       } catch (...) {
         std::cerr << "Unknown exception in request handler." << '\n';
         resp.statusCode = 500;
         resp.reason = string(http::ReasonInternalServerError);
-        resp.body = string(http::ReasonInternalServerError);
+        resp.body = resp.reason;
         resp.contentType = "text/plain";
       }
     }
