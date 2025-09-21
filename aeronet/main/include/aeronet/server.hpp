@@ -2,6 +2,7 @@
 
 #include <sys/uio.h>  // iovec
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -14,6 +15,7 @@
 #include "http-method.hpp"
 #include "http-request.hpp"
 #include "http-response.hpp"
+#include "raw-chars.hpp"
 #include "string.hpp"
 #include "timedef.hpp"
 
@@ -59,17 +61,14 @@ class HttpServer {
   // Register a handler for a specific absolute path and a set of allowed HTTP methods.
   // Methods are supplied via http::MethodsSet (small fixed-capacity flat set, non-allocating).
   // Mutually exclusive with setHandler: using both is invalid and will throw.
-  void addPathHandler(std::string_view path, const http::MethodSet& methods, RequestHandler handler);
+  void addPathHandler(std::string_view path, const http::MethodSet& methods, const RequestHandler& handler);
   // Convenience overload for a single method.
-  void addPathHandler(std::string_view path, http::Method method, RequestHandler handler);
-  // Clear all path handlers (developer convenience); only valid if setHandler not set.
-  void clearPathHandlers();
-  [[nodiscard]] bool hasPathHandlers() const { return !_pathHandlers.empty(); }
+  void addPathHandler(std::string_view path, http::Method method, const RequestHandler& handler);
+
   void setParserErrorCallback(ParserErrorCallback cb) { _parserErrCb = std::move(cb); }
 
   void run();
-  void runUntil(const std::function<bool()>& predicate,
-                std::chrono::milliseconds checkPeriod = std::chrono::milliseconds{500});
+  void runUntil(const std::function<bool()>& predicate, Duration checkPeriod = std::chrono::milliseconds{500});
 
   void stop();
 
@@ -79,19 +78,17 @@ class HttpServer {
   [[nodiscard]] bool isRunning() const { return _running; }
 
  private:
-  // (moved) method mask helpers now live in http-method-build.hpp as free functions under aeronet::http
-
   struct ConnStateInternal {
-    string buffer;       // accumulated raw data
-    string bodyStorage;  // decoded body lifetime
-    string outBuffer;    // pending outbound bytes not yet written
+    RawChars buffer;       // accumulated raw data
+    RawChars bodyStorage;  // decoded body lifetime
+    RawChars outBuffer;    // pending outbound bytes not yet written
     std::chrono::steady_clock::time_point lastActivity{std::chrono::steady_clock::now()};
     uint32_t requestsServed{0};
     bool shouldClose{false};      // request to close once outBuffer drains
     bool waitingWritable{false};  // EPOLLOUT registered
   };
   void setupListener();
-  void eventLoop(int timeoutMs);
+  void eventLoop(Duration timeout);
   void refreshCachedDate();
   void sweepIdleConnections();
   void acceptNewConnections();
@@ -147,15 +144,14 @@ class HttpServer {
   bool _running{false};
   RequestHandler _handler;
   struct PathHandlerEntry {
-    uint32_t methodMask{0};  // bitmask of allowed methods
-    RequestHandler handler;
+    uint32_t methodMask{};
+    std::array<RequestHandler, http::kNbMethods> handlers;
   };
 
   flat_hash_map<string, PathHandlerEntry, std::hash<std::string_view>, std::equal_to<>> _pathHandlers;  // path -> entry
-  bool _usingPathHandlers{false};
 
   std::unique_ptr<EventLoop> _loop;
-  ServerConfig _config{};                             // holds port & reusePort & limits
+  ServerConfig _config;
   flat_hash_map<int, ConnStateInternal> _connStates;  // per-server connection states
   string _cachedDate;
   TimePoint _cachedDateEpoch;  // last second-aligned timestamp used for Date header

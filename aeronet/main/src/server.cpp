@@ -15,6 +15,7 @@
 #include <cstring>
 #include <ctime>
 #include <iostream>
+#include <type_traits>
 #include <utility>
 
 #include "aeronet/event-loop.hpp"
@@ -23,6 +24,7 @@
 #include "http-constants.hpp"
 #include "http-error-build.hpp"
 #include "http-method-build.hpp"
+#include "http-method.hpp"
 #include "string-equal-ignore-case.hpp"
 #include "timestring.hpp"
 
@@ -50,7 +52,6 @@ HttpServer::HttpServer(HttpServer&& other) noexcept
       _running(std::exchange(other._running, false)),
       _handler(std::move(other._handler)),
       _pathHandlers(std::move(other._pathHandlers)),
-      _usingPathHandlers(std::exchange(other._usingPathHandlers, false)),
       _loop(std::move(other._loop)),
       _config(std::move(other._config)),
       _connStates(std::move(other._connStates)),
@@ -65,7 +66,6 @@ HttpServer& HttpServer::operator=(HttpServer&& other) noexcept {
     _running = std::exchange(other._running, false);
     _handler = std::move(other._handler);
     _pathHandlers = std::move(other._pathHandlers);
-    _usingPathHandlers = std::exchange(other._usingPathHandlers, false);
     _loop = std::move(other._loop);
     _config = std::move(other._config);
     _connStates = std::move(other._connStates);
@@ -78,43 +78,36 @@ HttpServer& HttpServer::operator=(HttpServer&& other) noexcept {
 
 void HttpServer::setHandler(RequestHandler handler) { _handler = std::move(handler); }
 
-void HttpServer::addPathHandler(std::string_view path, const http::MethodSet& methods, RequestHandler handler) {
+void HttpServer::addPathHandler(std::string_view path, const http::MethodSet& methods, const RequestHandler& handler) {
   if (_handler) {
     throw exception("Cannot use addPathHandler after setHandler has been set");
   }
-  _usingPathHandlers = true;
-  auto ins = _pathHandlers.find(path);
-  uint32_t mask = http::methodListToMask(methods);
-  if (ins == _pathHandlers.end()) {
-    _pathHandlers.emplace(std::make_pair(string(path), PathHandlerEntry{mask, std::move(handler)}));
+  auto it = _pathHandlers.find(path);
+  PathHandlerEntry* pPathHandlerEntry;
+  if (it == _pathHandlers.end()) {
+    pPathHandlerEntry = &_pathHandlers[string(path)];
   } else {
-    // Merge methods; overwrite handler (common pattern)
-    ins->second.methodMask |= mask;
-    ins->second.handler = std::move(handler);
+    pPathHandlerEntry = &it->second;
+  }
+  pPathHandlerEntry->methodMask = http::methodListToMask(methods);
+  for (http::Method method : methods) {
+    pPathHandlerEntry->handlers[static_cast<std::underlying_type_t<http::Method>>(method)] = handler;
   }
 }
 
-void HttpServer::addPathHandler(std::string_view path, http::Method method, RequestHandler handler) {
+void HttpServer::addPathHandler(std::string_view path, http::Method method, const RequestHandler& handler) {
   if (_handler) {
     throw exception("Cannot use addPathHandler after setHandler has been set");
   }
-  _usingPathHandlers = true;
-  auto ins = _pathHandlers.find(path);
-  uint32_t mask = http::singleMethodToMask(method);
-  if (ins == _pathHandlers.end()) {
-    _pathHandlers.emplace(std::make_pair(string(path), PathHandlerEntry{mask, std::move(handler)}));
+  auto it = _pathHandlers.find(path);
+  PathHandlerEntry* pPathHandlerEntry;
+  if (it == _pathHandlers.end()) {
+    pPathHandlerEntry = &_pathHandlers[string(path)];
   } else {
-    ins->second.methodMask |= mask;
-    ins->second.handler = std::move(handler);
+    pPathHandlerEntry = &it->second;
   }
-}
-
-void HttpServer::clearPathHandlers() {
-  if (_handler) {
-    throw exception("Cannot clear path handlers when a global handler is set");
-  }
-  _pathHandlers.clear();
-  _usingPathHandlers = false;
+  pPathHandlerEntry->methodMask = http::singleMethodToMask(method);
+  pPathHandlerEntry->handlers[static_cast<std::underlying_type_t<http::Method>>(method)] = handler;
 }
 
 void HttpServer::setupListener() {
@@ -167,7 +160,7 @@ void HttpServer::run() {
   _running = true;
   setupListener();
   while (_running) {
-    eventLoop(500);
+    eventLoop(std::chrono::milliseconds{500});
   }
 }
 
@@ -179,16 +172,14 @@ void HttpServer::stop() {
   }
 }
 
-void HttpServer::runUntil(const std::function<bool()>& predicate, std::chrono::milliseconds checkPeriod) {
+void HttpServer::runUntil(const std::function<bool()>& predicate, Duration checkPeriod) {
   if (_running) {
     return;
   }
   _running = true;
   setupListener();
-  int timeoutMs = static_cast<int>(checkPeriod.count());
-  timeoutMs = std::max(timeoutMs, 1);
   while (_running) {
-    eventLoop(timeoutMs);
+    eventLoop(checkPeriod);
     if (predicate && predicate()) {
       stop();
     }
@@ -317,7 +308,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
       break;  // need more bytes or error
     }
     HttpResponse resp;
-    if (_usingPathHandlers) {
+    if (!_pathHandlers.empty()) {
       auto it = _pathHandlers.find(std::string_view(req.target));
       if (it == _pathHandlers.end()) {
         resp.statusCode = 404;
@@ -325,25 +316,26 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
         resp.body = "Not Found";
         resp.contentType = "text/plain";
       } else {
-        if (!http::methodAllowed(it->second.methodMask, http::toMethodEnum(req.method))) {
+        auto method = http::toMethodEnum(req.method);
+        if (!http::methodAllowed(it->second.methodMask, method)) {
           resp.statusCode = 405;
-          resp.reason = "Method Not Allowed";
-          resp.body = "Method Not Allowed";
+          resp.reason = string(http::ReasonMethodNotAllowed);
+          resp.body = string(http::ReasonMethodNotAllowed);
           resp.contentType = "text/plain";
         } else {
           try {
-            resp = it->second.handler(req);
+            resp = it->second.handlers[static_cast<std::underlying_type_t<http::Method>>(method)](req);
           } catch (const std::exception& ex) {
             std::cerr << "Exception in path handler: " << ex.what() << '\n';
             resp.statusCode = 500;
-            resp.reason = "Internal Server Error";
-            resp.body = "Internal Server Error";
+            resp.reason = string(http::ReasonInternalServerError);
+            resp.body = string(http::ReasonInternalServerError);
             resp.contentType = "text/plain";
           } catch (...) {
             std::cerr << "Unknown exception in path handler." << '\n';
             resp.statusCode = 500;
-            resp.reason = "Internal Server Error";
-            resp.body = "Internal Server Error";
+            resp.reason = string(http::ReasonInternalServerError);
+            resp.body = string(http::ReasonInternalServerError);
             resp.contentType = "text/plain";
           }
         }
@@ -354,14 +346,14 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
       } catch (const std::exception& ex) {
         std::cerr << "Exception in request handler: " << ex.what() << '\n';
         resp.statusCode = 500;
-        resp.reason = "Internal Server Error";
-        resp.body = "Internal Server Error";
+        resp.reason = string(http::ReasonInternalServerError);
+        resp.body = string(http::ReasonInternalServerError);
         resp.contentType = "text/plain";
       } catch (...) {
         std::cerr << "Unknown exception in request handler." << '\n';
         resp.statusCode = 500;
-        resp.reason = "Internal Server Error";
-        resp.body = "Internal Server Error";
+        resp.reason = string(http::ReasonInternalServerError);
+        resp.body = string(http::ReasonInternalServerError);
         resp.contentType = "text/plain";
       }
     }
@@ -375,13 +367,15 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
 
 bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, HttpRequest& outReq,
                                             std::size_t& headerEnd, bool& closeConn) {
-  headerEnd = state.buffer.find("\r\n\r\n");
-  if (headerEnd == string::npos) {
+  static constexpr std::string_view kDoubleCRLF = "\r\n\r\n";
+  auto rng = std::ranges::search(state.buffer, kDoubleCRLF);
+  if (rng.empty()) {
     return false;  // need more bytes
   }
+  headerEnd = rng.begin() - state.buffer.data();
   if (headerEnd > _config.maxHeaderBytes) {
     string err;
-    buildSimpleError(err, 431, "Request Header Fields Too Large", _cachedDate, true);
+    buildSimpleError(err, 431, http::ReasonHeadersTooLarge, _cachedDate, true);
     queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::HeadersTooLarge);
@@ -394,7 +388,7 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, Ht
   const char* raw_line_nl = static_cast<const char*>(std::memchr(begin, '\n', static_cast<size_t>(headerEnd)));
   if (raw_line_nl == nullptr) {
     string err;
-    buildSimpleError(err, 400, "Bad Request", _cachedDate, true);
+    buildSimpleError(err, 400, http::ReasonBadRequest, _cachedDate, true);
     queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::BadRequestLine);
@@ -411,7 +405,7 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, Ht
       static_cast<const char*>(std::memchr(line_start, ' ', static_cast<size_t>(line_end_trim - line_start)));
   if (sp1 == nullptr) {
     string err;
-    buildSimpleError(err, 400, "Bad Request", _cachedDate, true);
+    buildSimpleError(err, 400, http::ReasonBadRequest, _cachedDate, true);
     queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::BadRequestLine);
@@ -422,7 +416,7 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, Ht
   const char* sp2 = static_cast<const char*>(std::memchr(sp1 + 1, ' ', static_cast<size_t>(line_end_trim - (sp1 + 1))));
   if (sp2 == nullptr) {
     string err;
-    buildSimpleError(err, 400, "Bad Request", _cachedDate, true);
+    buildSimpleError(err, 400, http::ReasonBadRequest, _cachedDate, true);
     queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::BadRequestLine);
@@ -435,7 +429,7 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, Ht
   outReq.version = {sp2 + 1, static_cast<size_t>(line_end_trim - (sp2 + 1))};
   if (!(outReq.version == http::HTTP11 || outReq.version == http::HTTP10)) {
     string err;
-    buildSimpleError(err, 505, "HTTP Version Not Supported", _cachedDate, true);
+    buildSimpleError(err, 505, http::ReasonHTTPVersionNotSupported, _cachedDate, true);
     queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::VersionUnsupported);
@@ -531,13 +525,14 @@ bool HttpServer::decodeChunkedBody(int fd, ConnStateInternal& state, const HttpR
   string decodedBody;
   decodedBody.reserve(1024);
   bool needMore = false;
+  static constexpr std::string_view kCRLF = "\r\n";
   while (true) {
-    size_t lineEnd = state.buffer.find("\r\n", pos);
-    if (lineEnd == string::npos) {
+    auto lineEndIt = std::search(state.buffer.begin() + pos, state.buffer.end(), kCRLF.begin(), kCRLF.end());
+    if (lineEndIt == state.buffer.end()) {
       needMore = true;
       break;
     }
-    std::string_view sizeLine(state.buffer.data() + pos, lineEnd - pos);
+    std::string_view sizeLine(state.buffer.data() + pos, lineEndIt);
     size_t chunkSize = 0;
     for (char ch : sizeLine) {
       if (ch == ';') {
@@ -559,7 +554,7 @@ bool HttpServer::decodeChunkedBody(int fd, ConnStateInternal& state, const HttpR
         break;
       }
     }
-    pos = lineEnd + 2;
+    pos = (lineEndIt - state.buffer.data()) + 2;
     if (chunkSize > _config.maxBodyBytes) {
       string err;
       buildSimpleError(err, 413, http::ReasonPayloadTooLarge, _cachedDate, true);
@@ -579,7 +574,7 @@ bool HttpServer::decodeChunkedBody(int fd, ConnStateInternal& state, const HttpR
         needMore = true;
         break;
       }
-      if (state.buffer.compare(pos, 2, "\r\n") != 0) {
+      if (std::memcmp(state.buffer.data() + pos, kCRLF.data(), 2) != 0) {
         needMore = true;
         break;
       }
@@ -598,7 +593,7 @@ bool HttpServer::decodeChunkedBody(int fd, ConnStateInternal& state, const HttpR
       return false;
     }
     pos += chunkSize;
-    if (state.buffer.compare(pos, 2, "\r\n") != 0) {
+    if (std::memcmp(state.buffer.data() + pos, kCRLF.data(), 2) != 0) {
       needMore = true;
       break;
     }
@@ -647,7 +642,7 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnStateInternal& state, HttpR
     queueVec(fd, state, iov, 2);
   }
   if (consumedBytes > 0) {
-    state.buffer.erase(0, consumedBytes);
+    state.buffer.erase_front(consumedBytes);
   }
   if (!keepAlive) {
     closeConn = true;
@@ -662,9 +657,9 @@ void HttpServer::handleReadableClient(int fd) {
   ConnStateInternal& state = itState->second;
   state.lastActivity = std::chrono::steady_clock::now();
   bool closeCnx = false;
-  char buf[4096];
   while (true) {
-    ssize_t count = ::read(fd, buf, sizeof(buf));
+    state.buffer.ensureAvailableCapacity(4096);
+    ssize_t count = ::read(fd, state.buffer.data() + state.buffer.size(), 4096);
     if (count < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         break;
@@ -677,7 +672,7 @@ void HttpServer::handleReadableClient(int fd) {
       closeCnx = true;
       break;
     }
-    state.buffer.append(buf, buf + count);
+    state.buffer.setSize(state.buffer.size() + count);
     if (state.buffer.size() > _config.maxHeaderBytes + _config.maxBodyBytes) {
       closeCnx = true;
       break;
@@ -812,7 +807,7 @@ void HttpServer::flushOutbound(int fd, ConnStateInternal& state) {
         state.outBuffer.clear();
         break;
       }
-      state.outBuffer.erase(0, static_cast<size_t>(written));
+      state.outBuffer.erase_front(static_cast<size_t>(written));
       continue;
     }
     if (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
@@ -842,13 +837,13 @@ void HttpServer::handleWritableClient(int fd, uint32_t /*ev*/) {
   flushOutbound(fd, it->second);
 }
 
-void HttpServer::eventLoop(int timeoutMs) {
+void HttpServer::eventLoop(Duration timeout) {
   if (!_loop) {
     return;
   }
   refreshCachedDate();
   sweepIdleConnections();
-  _loop->poll(timeoutMs, [&](int fd, uint32_t ev) {
+  _loop->poll(timeout, [&](int fd, uint32_t ev) {
     if (fd == _listenFd) {
       acceptNewConnections();
     } else {

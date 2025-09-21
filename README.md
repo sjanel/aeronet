@@ -272,7 +272,6 @@ Rules:
 - If path exists but method not allowed -> 405 Method Not Allowed.
 - Allowed methods are supplied as a non-allocating `http::MethodSet` (small fixed-capacity container) containing `http::Method` values.
 - You can call `addPathHandler` repeatedly on the same path to extend the allowed method mask (handler is replaced, methods merged).
-- `clearPathHandlers()` removes all path handlers (only valid if no global handler is active).
 
 Example:
 

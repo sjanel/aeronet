@@ -10,6 +10,7 @@ option(AERONET_ENABLE_CLANG_TIDY "Enable clang-tidy analysis" OFF)
 option(AERONET_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 option(AERONET_BUILD_SHARED "Build Aeronet libraries as shared instead of static" OFF)
 option(AERONET_INSTALL "Enable install & package config generation" ON)
+option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" OFF)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -56,6 +57,20 @@ if(AERONET_BUILD_TESTS)
   endif()
 
   enable_testing()
+endif()
+
+if(AERONET_ENABLE_SPDLOG)
+    # spdlog - logging library
+    find_package(spdlog CONFIG)
+    if(NOT spdlog_FOUND)
+        FetchContent_Declare(
+            spdlog
+            URL https://github.com/gabime/spdlog/archive/refs/tags/v1.15.3.tar.gz
+            URL_HASH SHA256=15a04e69c222eb6c01094b5c7ff8a249b36bb22788d72519646fb85feb267e67
+        )
+
+        list(APPEND fetchContentPackagesToMakeAvailable spdlog)
+    endif()
 endif()
 
 # Make fetch content available

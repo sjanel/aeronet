@@ -44,11 +44,12 @@ inline constexpr std::string_view HTTP11_100_CONTINUE = "HTTP/1.1 100 Continue\r
 
 // Reason Phrases (only those we currently emit explicitly)
 inline constexpr std::string_view ReasonBadRequest = "Bad Request";                              // 400
-inline constexpr std::string_view ReasonNotImplemented = "Not Implemented";                      // 501
+inline constexpr std::string_view ReasonMethodNotAllowed = "Method Not Allowed";                 // 405
 inline constexpr std::string_view ReasonPayloadTooLarge = "Payload Too Large";                   // 413
 inline constexpr std::string_view ReasonHeadersTooLarge = "Request Header Fields Too Large";     // 431
-inline constexpr std::string_view ReasonHTTPVersionNotSupported = "HTTP Version Not Supported";  // 505
 inline constexpr std::string_view ReasonInternalServerError = "Internal Server Error";           // 500
+inline constexpr std::string_view ReasonNotImplemented = "Not Implemented";                      // 501
+inline constexpr std::string_view ReasonHTTPVersionNotSupported = "HTTP Version Not Supported";  // 505
 
 // Return the canonical reason phrase for a subset of status codes we care about.
 // If an unmapped status is provided, returns an empty string_view, letting callers
@@ -57,6 +58,8 @@ constexpr std::string_view reasonPhraseFor(int status) noexcept {
   switch (status) {
     case 400:
       return ReasonBadRequest;
+    case 405:
+      return ReasonMethodNotAllowed;
     case 413:
       return ReasonPayloadTooLarge;
     case 431:
@@ -68,7 +71,7 @@ constexpr std::string_view reasonPhraseFor(int status) noexcept {
     case 505:
       return ReasonHTTPVersionNotSupported;
     default:
-      return std::string_view{};
+      return ReasonNotImplemented;
   }
 }
 

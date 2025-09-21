@@ -3,6 +3,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 
 #include "invalid_argument_exception.hpp"
 
@@ -16,24 +17,16 @@ EventLoop::EventLoop(int epollFlags) {
   _events.resize(64);
 }
 
-EventLoop::~EventLoop() {
-  if (_epollFd != -1) {
-    ::close(_epollFd);
-  }
-}
+EventLoop::~EventLoop() { close(); }
 
-EventLoop::EventLoop(EventLoop&& other) noexcept : _epollFd(other._epollFd), _events(std::move(other._events)) {
-  other._epollFd = -1;
-}
+EventLoop::EventLoop(EventLoop&& other) noexcept
+    : _epollFd(std::exchange(other._epollFd, -1)), _events(std::move(other._events)) {}
 
 EventLoop& EventLoop::operator=(EventLoop&& other) noexcept {
   if (this != &other) {
-    if (_epollFd != -1) {
-      ::close(_epollFd);
-    }
-    _epollFd = other._epollFd;
+    close();
+    _epollFd = std::exchange(other._epollFd, -1);
     _events = std::move(other._events);
-    other._epollFd = -1;
   }
   return *this;
 }
@@ -51,8 +44,9 @@ bool EventLoop::mod(int fd, uint32_t events) const {
 }
 void EventLoop::del(int fd) const { epoll_ctl(_epollFd, EPOLL_CTL_DEL, fd, nullptr); }
 
-int EventLoop::poll(int timeoutMs, const std::function<void(int, uint32_t)>& cb) {
-  int nbReadyFds = epoll_wait(_epollFd, _events.data(), static_cast<int>(_events.size()), timeoutMs);
+int EventLoop::poll(Duration timeout, const std::function<void(int, uint32_t)>& cb) {
+  int nbReadyFds = epoll_wait(_epollFd, _events.data(), static_cast<int>(_events.size()),
+                              std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count());
   if (nbReadyFds < 0) {
     if (errno == EINTR) {
       return 0;
@@ -69,4 +63,12 @@ int EventLoop::poll(int timeoutMs, const std::function<void(int, uint32_t)>& cb)
   }
   return nbReadyFds;
 }
+
+void EventLoop::close() {
+  if (_epollFd != -1) {
+    ::close(_epollFd);
+    _epollFd = -1;
+  }
+}
+
 }  // namespace aeronet

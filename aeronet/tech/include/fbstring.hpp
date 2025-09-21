@@ -1396,15 +1396,15 @@ class basic_fbstring {
   }
 
   /// \sjanel - Add operator+= string_view
-  template <class SV, typename std::enable_if<std::is_convertible<const SV&, std::basic_string_view<E, T> >::value &&
+  template <class SV>
+  basic_fbstring& operator+=(const SV& sv) requires (std::is_convertible<const SV&, std::basic_string_view<E, T> >::value &&
                                              !std::is_convertible<const SV&, const E*>::value &&
-                                             !std::is_convertible<const SV*, const basic_fbstring*>::value, bool>::type = true>
-  basic_fbstring& operator+=(const SV& sv) { return append(sv); }
+                                             !std::is_convertible<const SV*, const basic_fbstring*>::value) { return append(sv); }
 
   basic_fbstring& append(const basic_fbstring& str);
 
   basic_fbstring& append(
-      const basic_fbstring& str, const size_type pos, size_type n);
+      const basic_fbstring& str, size_type pos, size_type n);
 
   basic_fbstring& append(const value_type* s, size_type n);
 
@@ -1425,12 +1425,20 @@ class basic_fbstring {
   }
 
   /// \sjanel - Add append string_view
-  template <class SV, typename std::enable_if<std::is_convertible<const SV&, std::basic_string_view<E, T> >::value &&
+  template <class SV>
+  basic_fbstring& append(const SV& svLike) requires (std::is_convertible<const SV&, std::basic_string_view<E, T> >::value &&
                                              !std::is_convertible<const SV&, const E*>::value &&
-                                             !std::is_convertible<const SV*, const basic_fbstring*>::value, bool>::type = true>
-  basic_fbstring& append(const SV& svLike) {
+                                             !std::is_convertible<const SV*, const basic_fbstring*>::value) {
     auto sv = static_cast<std::basic_string_view<E, T>>(svLike);
     return append(sv.begin(), sv.end());
+  }
+
+  template <class SV>
+  basic_fbstring& append(const SV& svLike, size_type pos, size_type n) requires (std::is_convertible<const SV&, std::basic_string_view<E, T> >::value &&
+                                             !std::is_convertible<const SV&, const E*>::value &&
+                                             !std::is_convertible<const SV*, const basic_fbstring*>::value) {
+    auto sv = static_cast<std::basic_string_view<E, T>>(svLike);
+    return append(sv.begin() + pos, std::min(sv.begin() + pos + n, sv.end()));
   }
 
   void push_back(const value_type c) { // primitive

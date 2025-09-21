@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 
+#include "timedef.hpp"
 #include "vector.hpp"
 
 namespace aeronet {
@@ -26,9 +27,11 @@ class EventLoop {
 
   void del(int fd) const;
 
-  int poll(int timeoutMs, const std::function<void(int fd, uint32_t ev)>& cb);
+  int poll(Duration timeout, const std::function<void(int fd, uint32_t ev)>& cb);
 
  private:
+  void close();
+
   int _epollFd{-1};
   vector<epoll_event> _events;
 };
