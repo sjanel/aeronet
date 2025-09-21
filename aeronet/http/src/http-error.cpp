@@ -1,14 +1,18 @@
 ﻿#include "http-error.hpp"
 
-#include <unistd.h>
+// NOTE: This file now only builds an error response string; actual socket I/O is handled
+// by HttpServer's buffered write layer. Direct write() usage removed to keep a single
+// outbound path.
 
 #include "http-constants.hpp"
+#include "http-error-build.hpp"
 #include "string.hpp"
 #include "stringconv.hpp"
 
 namespace aeronet {
 
-bool sendSimpleError(int fd, int status, std::string_view reason, std::string_view date, bool closeConn) {
+namespace {
+bool buildSimpleErrorImpl(string& out, int status, std::string_view reason, std::string_view date, bool closeConn) {
   // If caller passed empty reason, try to supply a canonical one.
   if (reason.empty()) {
     if (auto mapped = http::reasonPhraseFor(status); !mapped.empty()) {
@@ -45,8 +49,13 @@ bool sendSimpleError(int fd, int status, std::string_view reason, std::string_vi
   header.append(closeConn ? http::close : http::keepalive);
   header.append(kEnd);
 
-  ssize_t writtenBytes = ::write(fd, header.data(), header.size());
-  return writtenBytes == static_cast<ssize_t>(header.size());
+  out.assign(header.data(), header.size());
+  return true;
+}
+}  // namespace
+
+bool buildSimpleError(string& out, int status, std::string_view reason, std::string_view date, bool closeConn) {
+  return buildSimpleErrorImpl(out, status, reason, date, closeConn);
 }
 
 }  // namespace aeronet

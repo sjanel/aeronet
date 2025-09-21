@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <iterator>
+#include <type_traits>
 #include <utility>
 
 #ifdef _MSC_VER
@@ -65,27 +66,39 @@ struct KeyOrValueHasher : functor_storage<size_t, hasher> {
   size_t operator()(const std::pair<F, S> &value) const {
     return static_cast<const hasher_storage &>(*this)(value.first);
   }
+  template <typename U>
+    requires(!std::is_same_v<std::decay_t<U>, key_type> && !std::is_same_v<std::decay_t<U>, value_type> &&
+             !std::is_convertible_v<const U &, key_type>)
+  auto operator()(const U &other) const noexcept(noexcept(std::declval<const hasher_storage &>()(other)))
+      -> decltype(std::declval<const hasher_storage &>()(other)) {
+    return static_cast<const hasher_storage &>(*this)(other);
+  }
 };
-template <typename key_type, typename value_type, typename key_equal>
+template <typename value_type, typename key_equal>
 struct KeyOrValueEquality : functor_storage<bool, key_equal> {
   typedef functor_storage<bool, key_equal> equality_storage;
   KeyOrValueEquality() = default;
   KeyOrValueEquality(const key_equal &equality) : equality_storage(equality) {}
-  bool operator()(const key_type &lhs, const key_type &rhs) { return static_cast<equality_storage &>(*this)(lhs, rhs); }
+  template <typename key_type>
+  bool operator()(const key_type &lhs, const key_type &rhs) {
+    return static_cast<equality_storage &>(*this)(lhs, rhs);
+  }
+  template <typename key_type>
   bool operator()(const key_type &lhs, const value_type &rhs) {
     return static_cast<equality_storage &>(*this)(lhs, rhs.first);
   }
+  template <typename key_type>
   bool operator()(const value_type &lhs, const key_type &rhs) {
     return static_cast<equality_storage &>(*this)(lhs.first, rhs);
   }
   bool operator()(const value_type &lhs, const value_type &rhs) {
     return static_cast<equality_storage &>(*this)(lhs.first, rhs.first);
   }
-  template <typename F, typename S>
+  template <typename key_type, typename F, typename S>
   bool operator()(const key_type &lhs, const std::pair<F, S> &rhs) {
     return static_cast<equality_storage &>(*this)(lhs, rhs.first);
   }
-  template <typename F, typename S>
+  template <typename key_type, typename F, typename S>
   bool operator()(const std::pair<F, S> &lhs, const key_type &rhs) {
     return static_cast<equality_storage &>(*this)(lhs.first, rhs);
   }
@@ -369,7 +382,24 @@ class sherwood_v3_table : private EntryAlloc, private Hasher, private Equal {
     return end();
   }
   const_iterator find(const FindKey &key) const { return const_cast<sherwood_v3_table *>(this)->find(key); }
+  template <typename K>
+  iterator find(const K &key) {
+    size_t index = hash_policy.index_for_hash(hash_object(key), num_slots_minus_one);
+    EntryPointer it = entries + ptrdiff_t(index);
+    for (int8_t distance = 0; it->distance_from_desired >= distance; ++distance, ++it) {
+      if (compares_equal(key, it->value)) return {it};
+    }
+    return end();
+  }
+  template <typename K>
+  const_iterator find(const K &key) const {
+    return const_cast<sherwood_v3_table *>(this)->find(key);
+  }
   size_t count(const FindKey &key) const { return find(key) == end() ? 0 : 1; }
+  template <typename K>
+  size_t count(const K &key) const {
+    return find(key) == end() ? 0 : 1;
+  }
   std::pair<iterator, iterator> equal_range(const FindKey &key) {
     iterator found = find(key);
     if (found == end())
@@ -383,6 +413,18 @@ class sherwood_v3_table : private EntryAlloc, private Hasher, private Equal {
       return {found, found};
     else
       return {found, std::next(found)};
+  }
+  template <typename K>
+  std::pair<iterator, iterator> equal_range(const K &key) {
+    iterator found = find(key);
+    if (found == end()) return {found, found};
+    return {found, std::next(found)};
+  }
+  template <typename K>
+  std::pair<const_iterator, const_iterator> equal_range(const K &key) const {
+    const_iterator found = find(key);
+    if (found == end()) return {found, found};
+    return {found, std::next(found)};
   }
 
   template <typename Key, typename... Args>
@@ -1276,11 +1318,11 @@ template <typename K, typename V, typename H = std::hash<K>, typename E = std::e
 class flat_hash_map
     : public detailv3::sherwood_v3_table<
           std::pair<K, V>, K, H, detailv3::KeyOrValueHasher<K, std::pair<K, V>, H>, E,
-          detailv3::KeyOrValueEquality<K, std::pair<K, V>, E>, A,
+          detailv3::KeyOrValueEquality<std::pair<K, V>, E>, A,
           typename std::allocator_traits<A>::template rebind_alloc<detailv3::sherwood_v3_entry<std::pair<K, V>>>> {
   using Table = detailv3::sherwood_v3_table<
       std::pair<K, V>, K, H, detailv3::KeyOrValueHasher<K, std::pair<K, V>, H>, E,
-      detailv3::KeyOrValueEquality<K, std::pair<K, V>, E>, A,
+      detailv3::KeyOrValueEquality<std::pair<K, V>, E>, A,
       typename std::allocator_traits<A>::template rebind_alloc<detailv3::sherwood_v3_entry<std::pair<K, V>>>>;
 
  public:

@@ -26,7 +26,10 @@ include(FetchContent)
 set(fetchContentPackagesToMakeAvailable "")
 
 find_package(amc CONFIG)
-if(NOT amc_FOUND)
+if(amc_FOUND)
+  set(LINK_AMC FALSE)
+else()
+  set(LINK_AMC TRUE)
   FetchContent_Declare(
     amadeusamc
     URL https://github.com/AmadeusITGroup/amc/archive/refs/tags/v2.6.0.tar.gz

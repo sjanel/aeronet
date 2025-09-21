@@ -50,3 +50,13 @@ add_test(NAME http_malformed COMMAND test_http_malformed)
 add_project_executable(test_http_parser_errors http_parser_errors.cpp)
 target_link_libraries(test_http_parser_errors PRIVATE aeronet gtest_main)
 add_test(NAME http_parser_errors COMMAND test_http_parser_errors)
+
+# Stats exposure test
+add_project_executable(test_http_stats http_stats.cpp)
+target_link_libraries(test_http_stats PRIVATE aeronet gtest_main)
+add_test(NAME http_stats COMMAND test_http_stats)
+
+# Routing tests
+add_project_executable(test_http_routing http_routing.cpp)
+target_link_libraries(test_http_routing PRIVATE aeronet gtest_main)
+add_test(NAME http_routing COMMAND test_http_routing)

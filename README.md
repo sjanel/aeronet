@@ -2,14 +2,14 @@
 
 ![Aeronet Logo](resources/logo.png)
 
-Experimental HTTP server library (Linux / epoll) – work in progress.
+Experimental HTTP/1.1 server library (Linux / epoll) – work in progress.
 
 Features currently implemented:
 
 - Epoll based edge-triggered event loop (one thread per HttpServer)
 - Minimal zero-copy-ish HTTP/1.1 request parsing (request line + headers + Content-Length body)
 - Chunked Transfer-Encoding (requests) decoding (no trailers exposed yet)
-- Basic response builder
+- Basic response builder (status line + headers + body convenience)
 - Keep-Alive (with timeout + max requests per connection)
 - Pipelined sequential request handling on a single connection
 - Configurable limits: max header size, max body size
@@ -19,6 +19,9 @@ Features currently implemented:
 - Graceful shutdown via runUntil()
 - Move semantics for HttpServer (transfer listening socket + loop)
 - Multi-reactor horizontal scaling via SO_REUSEPORT
+- Optional per-path handler routing with method allow‑lists (exact path match)
+- Transparent heterogeneous lookup for path handlers (std::string / std::string_view / const char*)
+- Backpressure-aware outbound buffering with statistics for tuning
 - Tests for basics, move semantics, reuseport distribution, keep-alive, header/body limits, chunked, HEAD, Expect
 
 ## HTTP/1.1 Feature Matrix
@@ -34,7 +37,7 @@ Core parsing & connection handling
 - [x] HTTP/1.0 response version preserved (no silent upgrade)
 - [x] Connection: close handling
 - [x] Pipelined sequential requests (no parallel handler execution)
-- [ ] Backpressure / partial write buffering
+- [x] Backpressure / partial write buffering
 
 Request bodies
 
@@ -59,7 +62,7 @@ Status & error handling
 - [x] 505 HTTP Version Not Supported
 - [x] 400 on HTTP/1.0 requests carrying Transfer-Encoding
 - [ ] 415 Unsupported Media Type (content-type based) – not required yet
-- [ ] 405 Method Not Allowed (no method allow list presently)
+- [x] 405 Method Not Allowed (enforced when path exists but method not in allow set)
 
 Headers & protocol niceties
 
@@ -76,6 +79,7 @@ Performance / architecture
 - [x] Single-thread event loop (one server instance)
 - [x] Horizontal scaling via SO_REUSEPORT (multi-reactor)
 - [x] writev scatter-gather for response header + body
+- [x] Outbound write buffering with EPOLLOUT-driven backpressure
 - [ ] Benchmarks & profiling docs
 - [ ] Zero-copy sendfile() support for static files
 
@@ -90,7 +94,8 @@ Developer experience
 
 - [x] Builder style ServerConfig
 - [x] Simple lambda handler signature
-- [ ] Routing / middleware helpers
+- [x] Simple exact-match per-path routing (`addPathHandler`)
+- [ ] Middleware helpers
 - [ ] Pluggable logging interface
 
 Misc
@@ -146,6 +151,74 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
+## Quick Usage Examples
+
+### Minimal Global Handler
+
+```cpp
+#include <aeronet/server.hpp>
+#include <aeronet/server-config.hpp>
+using namespace aeronet;
+
+int main() {
+  ServerConfig cfg; cfg.withPort(8080).withReusePort(false);
+  HttpServer server(cfg);
+  server.setHandler([](const HttpRequest& req) {
+    HttpResponse r;
+    r.statusCode = 200; r.reason = "OK";
+    r.body = "Hello from Aeronet\n";
+    r.contentType = "text/plain";
+    return r;
+  });
+  server.runUntil([]{ return false; }); // press Ctrl+C to terminate process
+}
+```
+
+### Per-Path Routing & Method Masks
+
+```cpp
+HttpServer server(ServerConfig{}.withPort(8081));
+
+server.addPathHandler("/hello", http::MethodSet{http::Method::GET}, [](const HttpRequest&){
+  HttpResponse r; r.statusCode=200; r.reason="OK"; r.contentType="text/plain"; r.body="world"; return r; });
+
+// Add POST later (merges methods)
+server.addPathHandler("/hello", http::Method::POST, [](const HttpRequest& req){
+  HttpResponse r; r.statusCode=200; r.reason="OK"; r.contentType="text/plain"; r.body=req.body; return r; });
+
+// Unknown path -> 404, known path wrong method -> 405 automatically.
+
+server.runUntil([]{ return false; });
+```
+
+### Multi‑Reactor (SO_REUSEPORT) Launch Sketch
+
+```cpp
+std::vector<std::thread> threads;
+for (int i = 0; i < 4; ++i) {
+  threads.emplace_back([i]{
+    ServerConfig cfg; cfg.withPort(8080).withReusePort(true);
+    HttpServer s(cfg);
+    s.setHandler([](const HttpRequest&){ HttpResponse r{200, "OK"}; r.body="hi"; r.contentType="text/plain"; return r; });
+    s.runUntil([]{ return false; });
+  });
+}
+for (auto& t : threads) t.join();
+```
+
+### Accessing Backpressure / IO Stats
+
+```cpp
+auto st = server.stats();
+std::printf("queued=%llu imm=%llu flush=%llu defer=%llu cycles=%llu maxConnBuf=%zu\n",
+  (unsigned long long)st.totalBytesQueued,
+  (unsigned long long)st.totalBytesWrittenImmediate,
+  (unsigned long long)st.totalBytesWrittenFlush,
+  (unsigned long long)st.deferredWriteEvents,
+  (unsigned long long)st.flushCycles,
+  st.maxConnectionOutboundBuffer);
+```
+
 ## Run example
 
 ```bash
@@ -185,17 +258,63 @@ HttpServer server(cfg); // or HttpServer(8080) then server.setConfig(cfgWithoutP
 
 Keep-alive can be disabled globally by `cfg.withKeepAliveMode(false)`; per-request `Connection: close` or `Connection: keep-alive` headers are also honored (HTTP/1.1 default keep-alive, HTTP/1.0 requires explicit header).
 
+### Handler Registration / Routing (Detailed)
+
+Two mutually exclusive approaches:
+
+1. Global handler: `server.setHandler([](const HttpRequest&){ ... })` (receives every request).
+2. Per-path handlers: `server.addPathHandler("/hello", http::MethodsSet{http::Method::GET, http::Method::POST}, handler)` – exact path match.
+
+Rules:
+
+- Mixing the two modes (calling `addPathHandler` after `setHandler` or vice-versa) throws.
+- If a path is not registered -> 404 Not Found.
+- If path exists but method not allowed -> 405 Method Not Allowed.
+- Allowed methods are supplied as a non-allocating `http::MethodSet` (small fixed-capacity container) containing `http::Method` values.
+- You can call `addPathHandler` repeatedly on the same path to extend the allowed method mask (handler is replaced, methods merged).
+- `clearPathHandlers()` removes all path handlers (only valid if no global handler is active).
+
+Example:
+
+```cpp
+HttpServer server(cfg);
+server.addPathHandler("/hello", http::MethodsSet{http::Method::GET}, [](const HttpRequest&){
+  HttpResponse r; r.statusCode=200; r.reason="OK"; r.body="world"; r.contentType="text/plain"; return r; });
+server.addPathHandler("/echo", http::MethodsSet{http::Method::POST}, [](const HttpRequest& req){
+  HttpResponse r; r.statusCode=200; r.reason="OK"; r.body=req.body; r.contentType="text/plain"; return r; });
+// Add another method later (merges method mask, replaces handler)
+server.addPathHandler("/echo", http::Method::GET, [](const HttpRequest& req){
+  HttpResponse r; r.statusCode=200; r.reason="OK"; r.body = "Echo via GET"; r.contentType="text/plain"; return r; });
+```
+
+Internal bitmask order follows enum declaration in `http-method.hpp`.
+
+
 ### Limits
 
 - 431 is returned if the header section exceeds `maxHeaderBytes`.
 - 413 is returned if the declared `Content-Length` exceeds `maxBodyBytes`.
+- Connections exceeding `maxOutboundBufferBytes` (buffered pending write bytes) are marked to close after flush (default 4MB) to prevent unbounded memory growth if peers stop reading.
+
+### Performance / Metrics & Backpressure
+
+`HttpServer::stats()` exposes aggregated counters:
+
+- `totalBytesQueued` – bytes accepted into outbound buffering (including those sent immediately)
+- `totalBytesWrittenImmediate` – bytes written synchronously on first attempt (no buffering)
+- `totalBytesWrittenFlush` – bytes written during later flush cycles (EPOLLOUT)
+- `deferredWriteEvents` – number of times EPOLLOUT was registered due to pending data
+- `flushCycles` – number of flush attempts triggered by writable events
+- `maxConnectionOutboundBuffer` – high-water mark of any single connection's buffered bytes
+
+Use these to gauge backpressure behavior and tune `maxOutboundBufferBytes`. When a connection's pending buffer would exceed the configured maximum, it is marked for closure once existing data flushes, preventing unbounded memory growth under slow-reader scenarios.
 
 ### Roadmap additions
 
-- [ ] Connection write buffering / partial write handling
+- [x] Connection write buffering / partial write handling
 - [ ] Outgoing chunked responses & streaming interface
 - [ ] Trailing headers exposure for chunked requests
-- [ ] Simple routing helper
+- [ ] Richer routing (wildcards, parameter extraction)
 - [ ] TLS (OpenSSL) support
 - [ ] Benchmarks & perf tuning notes
  

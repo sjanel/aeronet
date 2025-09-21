@@ -13,7 +13,8 @@ struct ServerConfig {
 
   // Limits & lifecycle
   std::size_t maxHeaderBytes{8192};
-  std::size_t maxBodyBytes{1 << 20};  // 1MB
+  std::size_t maxBodyBytes{1 << 20};            // 1MB
+  std::size_t maxOutboundBufferBytes{4 << 20};  // 4MB cap per connection buffered pending writes
   uint32_t maxRequestsPerConnection{100};
   bool enableKeepAlive{true};
   std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
@@ -41,6 +42,11 @@ struct ServerConfig {
 
   ServerConfig& withMaxBodyBytes(std::size_t maxBodyBytes) {
     this->maxBodyBytes = maxBodyBytes;
+    return *this;
+  }
+
+  ServerConfig& withMaxOutboundBufferBytes(std::size_t maxOutbound) {
+    this->maxOutboundBufferBytes = maxOutbound;
     return *this;
   }
 

@@ -1,12 +1,17 @@
 #pragma once
 
+#include <sys/uio.h>  // iovec
+
 #include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string_view>
 
 #include "aeronet/server-config.hpp"
 #include "flat-hash-map.hpp"
+#include "http-method-set.hpp"
+#include "http-method.hpp"
 #include "http-request.hpp"
 #include "http-response.hpp"
 #include "string.hpp"
@@ -51,6 +56,15 @@ class HttpServer {
   ~HttpServer();
 
   void setHandler(RequestHandler handler);
+  // Register a handler for a specific absolute path and a set of allowed HTTP methods.
+  // Methods are supplied via http::MethodsSet (small fixed-capacity flat set, non-allocating).
+  // Mutually exclusive with setHandler: using both is invalid and will throw.
+  void addPathHandler(std::string_view path, const http::MethodSet& methods, RequestHandler handler);
+  // Convenience overload for a single method.
+  void addPathHandler(std::string_view path, http::Method method, RequestHandler handler);
+  // Clear all path handlers (developer convenience); only valid if setHandler not set.
+  void clearPathHandlers();
+  [[nodiscard]] bool hasPathHandlers() const { return !_pathHandlers.empty(); }
   void setParserErrorCallback(ParserErrorCallback cb) { _parserErrCb = std::move(cb); }
 
   void run();
@@ -65,12 +79,16 @@ class HttpServer {
   [[nodiscard]] bool isRunning() const { return _running; }
 
  private:
+  // (moved) method mask helpers now live in http-method-build.hpp as free functions under aeronet::http
+
   struct ConnStateInternal {
     string buffer;       // accumulated raw data
     string bodyStorage;  // decoded body lifetime
+    string outBuffer;    // pending outbound bytes not yet written
     std::chrono::steady_clock::time_point lastActivity{std::chrono::steady_clock::now()};
     uint32_t requestsServed{0};
-    bool shouldClose{false};
+    bool shouldClose{false};      // request to close once outBuffer drains
+    bool waitingWritable{false};  // EPOLLOUT registered
   };
   void setupListener();
   void eventLoop(int timeoutMs);
@@ -90,11 +108,52 @@ class HttpServer {
                          bool expectContinue, bool& closeConn, size_t& consumedBytes);
   void finalizeAndSendResponse(int fd, ConnStateInternal& state, HttpRequest& req, HttpResponse& resp,
                                size_t consumedBytes, bool& closeConn);
+  // Outbound write helpers
+  bool queueData(int fd, ConnStateInternal& state, const char* data, size_t len);
+  bool queueVec(int fd, ConnStateInternal& state, const struct iovec* iov, int iovcnt);
+  void flushOutbound(int fd, ConnStateInternal& state);
+  void handleWritableClient(int fd, uint32_t ev);
   void closeConnection(int fd);
+
+  struct StatsInternal {
+    uint64_t totalBytesQueued{0};
+    uint64_t totalBytesWrittenImmediate{0};
+    uint64_t totalBytesWrittenFlush{0};
+    uint64_t deferredWriteEvents{0};
+    uint64_t flushCycles{0};
+    size_t maxConnectionOutboundBuffer{0};
+  } _stats;
+
+ public:
+  struct StatsPublic {
+    uint64_t totalBytesQueued;
+    uint64_t totalBytesWrittenImmediate;
+    uint64_t totalBytesWrittenFlush;
+    uint64_t deferredWriteEvents;
+    uint64_t flushCycles;
+    size_t maxConnectionOutboundBuffer;
+  };
+
+  [[nodiscard]] StatsPublic stats() const {
+    return {_stats.totalBytesQueued,
+            _stats.totalBytesWrittenImmediate,
+            _stats.totalBytesWrittenFlush,
+            _stats.deferredWriteEvents,
+            _stats.flushCycles,
+            _stats.maxConnectionOutboundBuffer};
+  }
 
   int _listenFd{-1};
   bool _running{false};
   RequestHandler _handler;
+  struct PathHandlerEntry {
+    uint32_t methodMask{0};  // bitmask of allowed methods
+    RequestHandler handler;
+  };
+
+  flat_hash_map<string, PathHandlerEntry, std::hash<std::string_view>, std::equal_to<>> _pathHandlers;  // path -> entry
+  bool _usingPathHandlers{false};
+
   std::unique_ptr<EventLoop> _loop;
   ServerConfig _config{};                             // holds port & reusePort & limits
   flat_hash_map<int, ConnStateInternal> _connStates;  // per-server connection states

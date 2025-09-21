@@ -5,7 +5,7 @@
 #include <netinet/in.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
-#include <sys/uio.h>
+#include <sys/uio.h>  // for struct iovec
 #include <unistd.h>
 
 #include <algorithm>
@@ -21,7 +21,8 @@
 #include "exception.hpp"
 #include "flat-hash-map.hpp"
 #include "http-constants.hpp"
-#include "http-error.hpp"
+#include "http-error-build.hpp"
+#include "http-method-build.hpp"
 #include "string-equal-ignore-case.hpp"
 #include "timestring.hpp"
 
@@ -48,6 +49,8 @@ HttpServer::HttpServer(HttpServer&& other) noexcept
     : _listenFd(std::exchange(other._listenFd, -1)),
       _running(std::exchange(other._running, false)),
       _handler(std::move(other._handler)),
+      _pathHandlers(std::move(other._pathHandlers)),
+      _usingPathHandlers(std::exchange(other._usingPathHandlers, false)),
       _loop(std::move(other._loop)),
       _config(std::move(other._config)),
       _connStates(std::move(other._connStates)),
@@ -61,6 +64,8 @@ HttpServer& HttpServer::operator=(HttpServer&& other) noexcept {
     _listenFd = std::exchange(other._listenFd, -1);
     _running = std::exchange(other._running, false);
     _handler = std::move(other._handler);
+    _pathHandlers = std::move(other._pathHandlers);
+    _usingPathHandlers = std::exchange(other._usingPathHandlers, false);
     _loop = std::move(other._loop);
     _config = std::move(other._config);
     _connStates = std::move(other._connStates);
@@ -72,6 +77,45 @@ HttpServer& HttpServer::operator=(HttpServer&& other) noexcept {
 }
 
 void HttpServer::setHandler(RequestHandler handler) { _handler = std::move(handler); }
+
+void HttpServer::addPathHandler(std::string_view path, const http::MethodSet& methods, RequestHandler handler) {
+  if (_handler) {
+    throw exception("Cannot use addPathHandler after setHandler has been set");
+  }
+  _usingPathHandlers = true;
+  auto ins = _pathHandlers.find(path);
+  uint32_t mask = http::methodListToMask(methods);
+  if (ins == _pathHandlers.end()) {
+    _pathHandlers.emplace(std::make_pair(string(path), PathHandlerEntry{mask, std::move(handler)}));
+  } else {
+    // Merge methods; overwrite handler (common pattern)
+    ins->second.methodMask |= mask;
+    ins->second.handler = std::move(handler);
+  }
+}
+
+void HttpServer::addPathHandler(std::string_view path, http::Method method, RequestHandler handler) {
+  if (_handler) {
+    throw exception("Cannot use addPathHandler after setHandler has been set");
+  }
+  _usingPathHandlers = true;
+  auto ins = _pathHandlers.find(path);
+  uint32_t mask = http::singleMethodToMask(method);
+  if (ins == _pathHandlers.end()) {
+    _pathHandlers.emplace(std::make_pair(string(path), PathHandlerEntry{mask, std::move(handler)}));
+  } else {
+    ins->second.methodMask |= mask;
+    ins->second.handler = std::move(handler);
+  }
+}
+
+void HttpServer::clearPathHandlers() {
+  if (_handler) {
+    throw exception("Cannot clear path handlers when a global handler is set");
+  }
+  _pathHandlers.clear();
+  _usingPathHandlers = false;
+}
 
 void HttpServer::setupListener() {
   if (_listenFd != -1) {
@@ -96,6 +140,14 @@ void HttpServer::setupListener() {
   }
   if (listen(_listenFd, SOMAXCONN) < 0) {
     throw std::runtime_error("listen failed");
+  }
+  // If user requested ephemeral port (0) capture actual assigned port.
+  if (_config.port == 0) {
+    sockaddr_in actual{};
+    socklen_t alen = sizeof(actual);
+    if (::getsockname(_listenFd, reinterpret_cast<sockaddr*>(&actual), &alen) == 0) {
+      _config.port = ntohs(actual.sin_port);
+    }
   }
   if (setNonBlocking(_listenFd) < 0) {
     throw std::runtime_error("failed to set non-blocking");
@@ -216,14 +268,18 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
     if (std::string_view te = req.findHeader(http::TransferEncoding); !te.empty()) {
       hasTE = true;
       if (req.version == http::HTTP10) {
-        sendSimpleError(fd, 400, http::ReasonBadRequest, _cachedDate, true);
+        string err;
+        buildSimpleError(err, 400, http::ReasonBadRequest, _cachedDate, true);
+        queueData(fd, state, err.data(), err.size());
         closeCnx = true;
         break;
       }
       if (CaseInsensitiveEqual(te, http::chunked)) {
         isChunked = true;
       } else {
-        sendSimpleError(fd, 501, http::ReasonNotImplemented, _cachedDate, true);
+        string err;
+        buildSimpleError(err, 501, http::ReasonNotImplemented, _cachedDate, true);
+        queueData(fd, state, err.data(), err.size());
         closeCnx = true;
         break;
       }
@@ -234,7 +290,9 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
       hasCL = true;
     }
     if (hasCL && hasTE) {
-      sendSimpleError(fd, 400, http::ReasonBadRequest, _cachedDate, true);
+      string err;
+      buildSimpleError(err, 400, http::ReasonBadRequest, _cachedDate, true);
+      queueData(fd, state, err.data(), err.size());
       closeCnx = true;
       break;
     }
@@ -243,7 +301,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
       if (sent100) {
         return;
       }
-      ::write(fd, http::HTTP11_100_CONTINUE.data(), http::HTTP11_100_CONTINUE.size());
+      queueData(fd, state, http::HTTP11_100_CONTINUE.data(), http::HTTP11_100_CONTINUE.size());
       sent100 = true;
     };
     bool expectContinue = false;
@@ -259,7 +317,38 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
       break;  // need more bytes or error
     }
     HttpResponse resp;
-    if (_handler) {
+    if (_usingPathHandlers) {
+      auto it = _pathHandlers.find(std::string_view(req.target));
+      if (it == _pathHandlers.end()) {
+        resp.statusCode = 404;
+        resp.reason = "Not Found";
+        resp.body = "Not Found";
+        resp.contentType = "text/plain";
+      } else {
+        if (!http::methodAllowed(it->second.methodMask, http::toMethodEnum(req.method))) {
+          resp.statusCode = 405;
+          resp.reason = "Method Not Allowed";
+          resp.body = "Method Not Allowed";
+          resp.contentType = "text/plain";
+        } else {
+          try {
+            resp = it->second.handler(req);
+          } catch (const std::exception& ex) {
+            std::cerr << "Exception in path handler: " << ex.what() << '\n';
+            resp.statusCode = 500;
+            resp.reason = "Internal Server Error";
+            resp.body = "Internal Server Error";
+            resp.contentType = "text/plain";
+          } catch (...) {
+            std::cerr << "Unknown exception in path handler." << '\n';
+            resp.statusCode = 500;
+            resp.reason = "Internal Server Error";
+            resp.body = "Internal Server Error";
+            resp.contentType = "text/plain";
+          }
+        }
+      }
+    } else if (_handler) {
       try {
         resp = _handler(req);
       } catch (const std::exception& ex) {
@@ -291,7 +380,9 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, Ht
     return false;  // need more bytes
   }
   if (headerEnd > _config.maxHeaderBytes) {
-    sendSimpleError(fd, 431, "Request Header Fields Too Large", _cachedDate, true);
+    string err;
+    buildSimpleError(err, 431, "Request Header Fields Too Large", _cachedDate, true);
+    queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::HeadersTooLarge);
     }
@@ -302,7 +393,9 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, Ht
   const char* headers_end_ptr = begin + headerEnd;
   const char* raw_line_nl = static_cast<const char*>(std::memchr(begin, '\n', static_cast<size_t>(headerEnd)));
   if (raw_line_nl == nullptr) {
-    sendSimpleError(fd, 400, "Bad Request", _cachedDate, true);
+    string err;
+    buildSimpleError(err, 400, "Bad Request", _cachedDate, true);
+    queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::BadRequestLine);
     }
@@ -317,7 +410,9 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, Ht
   const char* sp1 =
       static_cast<const char*>(std::memchr(line_start, ' ', static_cast<size_t>(line_end_trim - line_start)));
   if (sp1 == nullptr) {
-    sendSimpleError(fd, 400, "Bad Request", _cachedDate, true);
+    string err;
+    buildSimpleError(err, 400, "Bad Request", _cachedDate, true);
+    queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::BadRequestLine);
     }
@@ -326,7 +421,9 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, Ht
   }
   const char* sp2 = static_cast<const char*>(std::memchr(sp1 + 1, ' ', static_cast<size_t>(line_end_trim - (sp1 + 1))));
   if (sp2 == nullptr) {
-    sendSimpleError(fd, 400, "Bad Request", _cachedDate, true);
+    string err;
+    buildSimpleError(err, 400, "Bad Request", _cachedDate, true);
+    queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::BadRequestLine);
     }
@@ -337,7 +434,9 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, Ht
   outReq.target = {sp1 + 1, static_cast<size_t>(sp2 - (sp1 + 1))};
   outReq.version = {sp2 + 1, static_cast<size_t>(line_end_trim - (sp2 + 1))};
   if (!(outReq.version == http::HTTP11 || outReq.version == http::HTTP10)) {
-    sendSimpleError(fd, 505, "HTTP Version Not Supported", _cachedDate, true);
+    string err;
+    buildSimpleError(err, 505, "HTTP Version Not Supported", _cachedDate, true);
+    queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::VersionUnsupported);
     }
@@ -403,12 +502,14 @@ bool HttpServer::decodeFixedLengthBody(int fd, ConnStateInternal& state, const H
     }
     contentLen = parsed;
     if (contentLen > _config.maxBodyBytes) {
-      sendSimpleError(fd, 413, http::ReasonPayloadTooLarge, _cachedDate, true);
+      string err;
+      buildSimpleError(err, 413, http::ReasonPayloadTooLarge, _cachedDate, true);
+      queueData(fd, state, err.data(), err.size());
       closeConn = true;
       return false;
     }
     if (expectContinue && contentLen > 0) {
-      ::write(fd, http::HTTP11_100_CONTINUE.data(), http::HTTP11_100_CONTINUE.size());
+      queueData(fd, state, http::HTTP11_100_CONTINUE.data(), http::HTTP11_100_CONTINUE.size());
     }
   }
   size_t totalNeeded = headerEnd + 4 + contentLen;
@@ -424,7 +525,7 @@ bool HttpServer::decodeFixedLengthBody(int fd, ConnStateInternal& state, const H
 bool HttpServer::decodeChunkedBody(int fd, ConnStateInternal& state, const HttpRequest& req, std::size_t headerEnd,
                                    bool expectContinue, bool& closeConn, size_t& consumedBytes) {
   if (expectContinue) {
-    ::write(fd, http::HTTP11_100_CONTINUE.data(), http::HTTP11_100_CONTINUE.size());
+    queueData(fd, state, http::HTTP11_100_CONTINUE.data(), http::HTTP11_100_CONTINUE.size());
   }
   size_t pos = headerEnd + 4;
   string decodedBody;
@@ -460,7 +561,9 @@ bool HttpServer::decodeChunkedBody(int fd, ConnStateInternal& state, const HttpR
     }
     pos = lineEnd + 2;
     if (chunkSize > _config.maxBodyBytes) {
-      sendSimpleError(fd, 413, http::ReasonPayloadTooLarge, _cachedDate, true);
+      string err;
+      buildSimpleError(err, 413, http::ReasonPayloadTooLarge, _cachedDate, true);
+      queueData(fd, state, err.data(), err.size());
       if (_parserErrCb) {
         _parserErrCb(ParserError::PayloadTooLarge);
       }
@@ -485,7 +588,9 @@ bool HttpServer::decodeChunkedBody(int fd, ConnStateInternal& state, const HttpR
     }
     decodedBody.append(state.buffer, pos, chunkSize);
     if (decodedBody.size() > _config.maxBodyBytes) {
-      sendSimpleError(fd, 413, http::ReasonPayloadTooLarge, _cachedDate, true);
+      string err;
+      buildSimpleError(err, 413, http::ReasonPayloadTooLarge, _cachedDate, true);
+      queueData(fd, state, err.data(), err.size());
       if (_parserErrCb) {
         _parserErrCb(ParserError::PayloadTooLarge);
       }
@@ -532,14 +637,14 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnStateInternal& state, HttpR
   std::string_view body = resp.body;
   auto header = resp.buildHead(req.version, _cachedDate, keepAlive, body.size());
   if (req.method == http::HEAD) {
-    ::write(fd, header.data(), header.size());
+    queueData(fd, state, header.data(), header.size());
   } else {
-    struct iovec iov[2];
+    ::iovec iov[2];
     iov[0].iov_base = const_cast<char*>(header.data());
     iov[0].iov_len = header.size();
     iov[1].iov_base = const_cast<char*>(body.data());
     iov[1].iov_len = body.size();
-    ::writev(fd, iov, 2);
+    queueVec(fd, state, iov, 2);
   }
   if (consumedBytes > 0) {
     state.buffer.erase(0, consumedBytes);
@@ -587,17 +692,172 @@ void HttpServer::handleReadableClient(int fd) {
   }
 }
 
+bool HttpServer::queueData(int fd, ConnStateInternal& state, const char* data, size_t len) {
+  if (len == 0) {
+    return true;
+  }
+  // If no pending data, try immediate write
+  if (state.outBuffer.empty()) {
+    ssize_t written = ::write(fd, data, len);
+    if (written == static_cast<ssize_t>(len)) {
+      // Count bytes as "queued" logically (attempted for send) even if fully written immediately.
+      _stats.totalBytesQueued += static_cast<uint64_t>(len);
+      _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
+      return true;  // fully sent
+    }
+    if (written >= 0) {
+      _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
+      state.outBuffer.append(data + written, data + len);
+    } else {
+      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+        state.outBuffer.append(data, data + len);
+      } else {
+        state.shouldClose = true;
+        return false;
+      }
+    }
+  } else {
+    state.outBuffer.append(data, data + len);
+  }
+  _stats.totalBytesQueued += static_cast<uint64_t>(len);
+  _stats.maxConnectionOutboundBuffer = std::max(_stats.maxConnectionOutboundBuffer, state.outBuffer.size());
+  // Register EPOLLOUT if not already
+  if (state.outBuffer.size() > _config.maxOutboundBufferBytes) {
+    state.shouldClose = true;  // exceed limit, will close after flush attempt
+  }
+  if (!state.waitingWritable && _loop) {
+    if (_loop->mod(fd, EPOLLIN | EPOLLOUT | EPOLLET)) {
+      state.waitingWritable = true;
+      _stats.deferredWriteEvents++;
+    }
+  }
+  return true;
+}
+
+bool HttpServer::queueVec(int fd, ConnStateInternal& state, const struct iovec* iov, int iovcnt) {
+  // Fast path: coalesce into single contiguous append attempt
+  size_t total = 0;
+  for (int i = 0; i < iovcnt; ++i) {
+    total += iov[i].iov_len;
+  }
+  if (total == 0) {
+    return true;
+  }
+  if (state.outBuffer.empty()) {
+    ssize_t written = ::writev(fd, iov, iovcnt);
+    if (written == static_cast<ssize_t>(total)) {
+      // Count bytes as logically queued (attempted) even if fully written immediately.
+      _stats.totalBytesQueued += static_cast<uint64_t>(total);
+      _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
+      return true;
+    }
+    if (written >= 0) {
+      _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
+      size_t remaining = static_cast<size_t>(written);
+      // append remainder pieces
+      for (int i = 0; i < iovcnt; ++i) {
+        const char* base = static_cast<const char*>(iov[i].iov_base);
+        size_t len = iov[i].iov_len;
+        if (remaining >= len) {
+          remaining -= len;
+          continue;
+        }
+        base += remaining;
+        len -= remaining;
+        state.outBuffer.append(base, base + len);
+        for (int j = i + 1; j < iovcnt; ++j) {
+          const char* b2 = static_cast<const char*>(iov[j].iov_base);
+          state.outBuffer.append(b2, b2 + iov[j].iov_len);
+        }
+        break;
+      }
+    } else {
+      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+        for (int i = 0; i < iovcnt; ++i) {
+          const char* base = static_cast<const char*>(iov[i].iov_base);
+          state.outBuffer.append(base, base + iov[i].iov_len);
+        }
+      } else {
+        state.shouldClose = true;
+        return false;
+      }
+    }
+  } else {
+    for (int i = 0; i < iovcnt; ++i) {
+      const char* base = static_cast<const char*>(iov[i].iov_base);
+      state.outBuffer.append(base, base + iov[i].iov_len);
+    }
+  }
+  _stats.totalBytesQueued += static_cast<uint64_t>(total);
+  _stats.maxConnectionOutboundBuffer = std::max(_stats.maxConnectionOutboundBuffer, state.outBuffer.size());
+  if (state.outBuffer.size() > _config.maxOutboundBufferBytes) {
+    state.shouldClose = true;
+  }
+  if (!state.waitingWritable && _loop) {
+    if (_loop->mod(fd, EPOLLIN | EPOLLOUT | EPOLLET)) {
+      state.waitingWritable = true;
+      _stats.deferredWriteEvents++;
+    }
+  }
+  return true;
+}
+
+void HttpServer::flushOutbound(int fd, ConnStateInternal& state) {
+  _stats.flushCycles++;
+  while (!state.outBuffer.empty()) {
+    ssize_t written = ::write(fd, state.outBuffer.data(), state.outBuffer.size());
+    if (written > 0) {
+      _stats.totalBytesWrittenFlush += static_cast<uint64_t>(written);
+      if (static_cast<size_t>(written) == state.outBuffer.size()) {
+        state.outBuffer.clear();
+        break;
+      }
+      state.outBuffer.erase(0, static_cast<size_t>(written));
+      continue;
+    }
+    if (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+      break;  // stop for now
+    }
+    // Hard error
+    state.shouldClose = true;
+    state.outBuffer.clear();
+    break;
+  }
+  if (state.outBuffer.empty() && state.waitingWritable && _loop) {
+    // remove EPOLLOUT interest
+    if (_loop->mod(fd, EPOLLIN | EPOLLET)) {
+      state.waitingWritable = false;
+      if (state.shouldClose) {
+        closeConnection(fd);
+      }
+    }
+  }
+}
+
+void HttpServer::handleWritableClient(int fd, uint32_t /*ev*/) {
+  auto it = _connStates.find(fd);
+  if (it == _connStates.end()) {
+    return;
+  }
+  flushOutbound(fd, it->second);
+}
+
 void HttpServer::eventLoop(int timeoutMs) {
   if (!_loop) {
     return;
   }
   refreshCachedDate();
   sweepIdleConnections();
-  _loop->poll(timeoutMs, [&](int fd, [[maybe_unused]] uint32_t ev) {
+  _loop->poll(timeoutMs, [&](int fd, uint32_t ev) {
     if (fd == _listenFd) {
       acceptNewConnections();
     } else {
-      handleReadableClient(fd);
+      if (ev & EPOLLOUT) {
+        handleWritableClient(fd, ev);
+      }
+      if (ev & EPOLLIN) {
+        handleReadableClient(fd);
+      }
     }
   });
 }

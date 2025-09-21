@@ -1,14 +1,5 @@
 # CMake for aeronet library nested structure
 
-include(FetchContent)
-
-FetchContent_Declare(
-    amadeusamc
-    GIT_REPOSITORY https://github.com/AmadeusITGroup/amc.git
-    GIT_TAG origin/main
-)
-FetchContent_MakeAvailable(amadeusamc)
-
 aux_source_directory(src TECH_SOURCES)
 
 add_project_library(aeronet_tech ${TECH_SOURCES})
@@ -19,8 +10,12 @@ target_include_directories(aeronet_tech
 )
 
 target_link_libraries(aeronet_tech
-    PUBLIC OpenSSL::SSL OpenSSL::Crypto amc::amc
+    PUBLIC OpenSSL::SSL OpenSSL::Crypto
 )
+
+if (LINK_AMC)
+  target_link_libraries(aeronet_tech PUBLIC amc::amc)
+endif()
 
 add_unit_test(
     exception_test
@@ -69,6 +64,13 @@ add_unit_test(
 add_unit_test(
     year-week_test
     test/year-week_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+add_unit_test(
+    flat-hash-map_test
+    test/flat-hash-map_test.cpp
     LIBRARIES
     aeronet_tech
 )
