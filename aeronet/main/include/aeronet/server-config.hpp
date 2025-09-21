@@ -8,7 +8,7 @@ namespace aeronet {
 
 struct ServerConfig {
   // Core socket / listener
-  uint16_t port{8080};
+  uint16_t port{};  // if not set, will be picked automatically
   bool reusePort{false};
 
   // Limits & lifecycle

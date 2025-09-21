@@ -8,7 +8,7 @@ using namespace aeronet;
 
 TEST(HttpStats, BasicCountersIncrement) {
   ServerConfig cfg;
-  cfg.withPort(0).withMaxRequestsPerConnection(5);
+  cfg.withMaxRequestsPerConnection(5);
   HttpServer server(cfg);
   server.setHandler([](const HttpRequest&) {
     HttpResponse r;

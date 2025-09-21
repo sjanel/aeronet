@@ -2,12 +2,13 @@
 
 #include <string_view>
 
+#include "http-status-code.hpp"
 #include "string.hpp"
 
 namespace aeronet {
 
 struct HttpResponse {
-  int statusCode{200};
+  http::StatusCode statusCode{200};
   string reason{"OK"};
   string body{"Hello from aeronet"};
   string contentType{"text/plain"};

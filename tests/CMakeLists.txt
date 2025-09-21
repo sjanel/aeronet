@@ -65,3 +65,12 @@ add_test(NAME http_routing COMMAND test_http_routing)
 add_project_executable(test_http_multi_wrapper http_multi_wrapper.cpp)
 target_link_libraries(test_http_multi_wrapper PRIVATE aeronet gtest_main)
 add_test(NAME http_multi_wrapper COMMAND test_http_multi_wrapper)
+
+# Streaming tests
+add_project_executable(test_http_streaming_keepalive http_streaming_keepalive.cpp)
+target_link_libraries(test_http_streaming_keepalive PRIVATE aeronet gtest_main)
+add_test(NAME http_streaming_keepalive COMMAND test_http_streaming_keepalive)
+
+add_project_executable(test_http_streaming_backpressure http_streaming_backpressure.cpp)
+target_link_libraries(test_http_streaming_backpressure PRIVATE aeronet gtest_main)
+add_test(NAME http_streaming_backpressure COMMAND test_http_streaming_backpressure)

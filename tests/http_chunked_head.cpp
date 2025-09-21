@@ -31,8 +31,8 @@ std::string sendAndRecv(int fd, const std::string& data) {
 }  // namespace
 
 TEST(HttpChunked, DecodeBasic) {
-  uint16_t port = 18410;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     // echo body size & content (limited) to verify decoding
@@ -60,10 +60,10 @@ TEST(HttpChunked, DecodeBasic) {
 }
 
 TEST(HttpChunked, RejectTooLarge) {
-  uint16_t port = 18411;
   aeronet::ServerConfig cfg;
-  cfg.withPort(port).withMaxBodyBytes(4);  // very small limit
+  cfg.withMaxBodyBytes(4);  // very small limit
   aeronet::HttpServer server(cfg);
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = std::string(req.body);
@@ -89,8 +89,8 @@ TEST(HttpChunked, RejectTooLarge) {
 }
 
 TEST(HttpHead, NoBodyReturned) {
-  uint16_t port = 18412;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = std::string("DATA-") + std::string(req.target);
@@ -120,8 +120,8 @@ TEST(HttpHead, NoBodyReturned) {
 }
 
 TEST(HttpExpect, ContinueFlow) {
-  uint16_t port = 18413;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body = std::string(req.body);

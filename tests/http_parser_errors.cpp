@@ -20,8 +20,8 @@ struct Capture {
 }  // namespace
 
 TEST(HttpParserErrors, InvalidVersion505) {
-  uint16_t port = 18630;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   Capture cap;
   server.setParserErrorCallback([&](aeronet::HttpServer::ParserError err) { cap.push(err); });
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
@@ -48,8 +48,8 @@ TEST(HttpParserErrors, InvalidVersion505) {
 }
 
 TEST(HttpParserErrors, Expect100OnlyWithBody) {
-  uint16_t port = 18631;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
   std::thread th([&] { server.runUntil([] { return false; }, 25ms); });
   std::this_thread::sleep_for(50ms);
@@ -76,8 +76,8 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
 
 // Fuzz-ish incremental chunk framing with random chunk sizes & boundaries.
 TEST(HttpParserErrors, ChunkIncrementalFuzz) {
-  uint16_t port = 18632;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body = std::string(req.body);

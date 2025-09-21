@@ -14,6 +14,7 @@
 #include "http-method-set.hpp"
 #include "http-method.hpp"
 #include "http-request.hpp"
+#include "http-response-writer.hpp"
 #include "http-response.hpp"
 #include "raw-chars.hpp"
 #include "string.hpp"
@@ -36,6 +37,7 @@ class EventLoop;  // forward declaration
 class HttpServer {
  public:
   using RequestHandler = std::function<HttpResponse(const HttpRequest&)>;
+  using StreamingHandler = std::function<void(const HttpRequest&, HttpResponseWriter&)>;
   enum class ParserError : std::uint8_t {
     BadRequestLine,
     VersionUnsupported,
@@ -46,8 +48,14 @@ class HttpServer {
   };
   using ParserErrorCallback = std::function<void(ParserError)>;
 
-  HttpServer() noexcept = default;
+  HttpServer() noexcept = default;  // Empty config; must be assigned then moved-from or destroyed (no listener)
 
+  // Construct a server bound and listening immediately according to cfg.
+  //  - Performs: ::socket, setsockopt (REUSEADDR always, REUSEPORT best-effort if enabled), ::bind, ::listen,
+  //    retrieves (and overwrites cfg.port with) the chosen ephemeral port if cfg.port == 0, sets O_NONBLOCK,
+  //    and registers the listening fd with the internal EventLoop.
+  //  - If any step fails it throws std::runtime_error (leaving no open fd).
+  //  - After construction port() returns the actual bound port (deterministic for tests using ephemeral ports).
   explicit HttpServer(const ServerConfig& cfg);
 
   HttpServer(const HttpServer&) = delete;
@@ -58,6 +66,7 @@ class HttpServer {
   ~HttpServer();
 
   void setHandler(RequestHandler handler);
+  void setStreamingHandler(StreamingHandler handler);  // mutually exclusive with setHandler / path handlers (phase 1)
   // Register a handler for a specific absolute path and a set of allowed HTTP methods.
   // Methods are supplied via http::MethodsSet (small fixed-capacity flat set, non-allocating).
   // Mutually exclusive with setHandler: using both is invalid and will throw.
@@ -87,7 +96,6 @@ class HttpServer {
     bool shouldClose{false};      // request to close once outBuffer drains
     bool waitingWritable{false};  // EPOLLOUT registered
   };
-  void setupListener();
   void eventLoop(Duration timeout);
   void refreshCachedDate();
   void sweepIdleConnections();
@@ -143,6 +151,7 @@ class HttpServer {
   int _listenFd{-1};
   bool _running{false};
   RequestHandler _handler;
+  StreamingHandler _streamingHandler;
   struct PathHandlerEntry {
     uint32_t methodMask{};
     std::array<RequestHandler, http::kNbMethods> handlers;
@@ -156,5 +165,6 @@ class HttpServer {
   string _cachedDate;
   TimePoint _cachedDateEpoch;  // last second-aligned timestamp used for Date header
   ParserErrorCallback _parserErrCb;
+  friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
 };
 }  // namespace aeronet

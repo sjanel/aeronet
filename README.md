@@ -21,7 +21,7 @@ Features currently implemented:
 - Multi-reactor horizontal scaling via SO_REUSEPORT
 - Optional per-path handler routing with method allow‑lists (exact path match)
 - Transparent heterogeneous lookup for path handlers (std::string / std::string_view / const char*)
-- Backpressure-aware outbound buffering with statistics for tuning
+- Backpressure-aware outbound buffering with statistics for tuning (shared by fixed and streaming responses)
 - Multi-instance orchestration wrapper (`MultiHttpServer`) for convenient horizontal scaling (ephemeral port resolution + aggregated stats)
 - Lightweight spdlog-style logging API with ISO 8601 UTC timestamps (fallback internally; pluggable interface planned)
 - Tests for basics, move semantics, reuseport distribution, keep-alive, header/body limits, chunked, HEAD, Expect, multi-server wrapper
@@ -52,7 +52,7 @@ Response generation
 
 - [x] Basic fixed body responses
 - [x] HEAD method (suppressed body, correct Content-Length)
-- [ ] Outgoing chunked / streaming responses
+- [x] Outgoing chunked / streaming responses (basic API: status/headers + incremental write + end, keep-alive capable)
 - [ ] Compression (gzip / br)
 
 Status & error handling
@@ -157,9 +157,29 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
+## Construction Model (RAII) & Ephemeral Ports
+
+`HttpServer` binds, sets socket options, enters listening state, and registers the listening fd with epoll inside its constructor (RAII). If you request an ephemeral port (`port = 0` in `ServerConfig`), the kernel-assigned port is immediately available via `server.port()` after construction (no separate `setupListener()` call required – that legacy function was removed during refactor).
+
+Why RAII?
+
+- Guarantees a fully initialized, listening server object or a thrown exception (no half-initialized state)
+- Simplifies lifecycle (no forgotten setup step)
+- Enables immediate test usage with ephemeral ports
+
+Ephemeral port pattern in tests / examples:
+
+```cpp
+ServerConfig cfg; // let kernel choose the port
+HttpServer server(cfg);
+uint16_t actual = server.port(); // resolved port
+```
+
+NOTE: A previous experimental non-throwing `tryCreate` factory was removed to reduce API surface; the throwing constructor is the only creation path for now.
+
 ## Quick Usage Examples
 
-### Minimal Global Handler
+### Minimal Global Handler (Ephemeral Port)
 
 ```cpp
 #include <aeronet/server.hpp>
@@ -167,8 +187,8 @@ cmake --build build -j
 using namespace aeronet;
 
 int main() {
-  ServerConfig cfg; cfg.withPort(8080).withReusePort(false);
-  HttpServer server(cfg);
+  HttpServer server(cfg.withPort(8080));
+  std::printf("Listening on %u\n", server.port());
   server.setHandler([](const HttpRequest& req) {
     HttpResponse r;
     r.statusCode = 200; r.reason = "OK";
@@ -183,7 +203,7 @@ int main() {
 ### Per-Path Routing & Method Masks
 
 ```cpp
-HttpServer server(ServerConfig{}.withPort(8081));
+HttpServer server(ServerConfig{}); // ephemeral port
 
 server.addPathHandler("/hello", http::MethodSet{http::Method::GET}, [](const HttpRequest&){
   HttpResponse r; r.statusCode=200; r.reason="OK"; r.contentType="text/plain"; r.body="world"; return r; });
@@ -203,7 +223,7 @@ server.runUntil([]{ return false; });
 std::vector<std::thread> threads;
 for (int i = 0; i < 4; ++i) {
   threads.emplace_back([i]{
-    ServerConfig cfg; cfg.withPort(8080).withReusePort(true);
+  ServerConfig cfg; cfg.withPort(8080).withReusePort(true); // or 0 for ephemeral resolved separately
     HttpServer s(cfg);
     s.setHandler([](const HttpRequest&){ HttpResponse r{200, "OK"}; r.body="hi"; r.contentType="text/plain"; return r; });
     s.runUntil([]{ return false; });
@@ -304,6 +324,53 @@ Logging uses `spdlog` if `AERONET_ENABLE_SPDLOG` is defined at build time; other
 
 Pluggable logging sinks / structured logging hooks are planned; current design keeps logging dependency-free by default.
 
+## Streaming Responses (Chunked / Incremental)
+
+The streaming API lets a handler produce a response body incrementally without a priori knowing its full size.
+Register a streaming handler instead of the fixed response/global or per-path handlers:
+
+```cpp
+HttpServer server(ServerConfig{}.withPort(8080));
+server.setStreamingHandler([](const HttpRequest& req, HttpResponseWriter& w) {
+  w.setStatus(200, "OK");
+  w.setHeader("Content-Type", "text/plain");
+  // Optionally set Content-Length first if known to disable chunked encoding:
+  // w.setContentLength(totalBytes);
+  for (int i = 0; i < 5; ++i) {
+    if (!w.write("chunk-" + std::to_string(i) + "\n")) {
+      // Backpressure or failure: in this phase writer returns false if connection marked to close.
+      break;
+    }
+  }
+  w.end();
+});
+```
+
+Key semantics:
+
+- By default responses are sent with `Transfer-Encoding: chunked` unless `setContentLength()` is called before any body bytes are written.
+- `write()` queues data into the server's outbound buffer (no direct syscalls in the writer) and returns `false` if the connection was marked for closure (e.g., max outbound buffer exceeded or hard error). In future phases it may return `false` transiently to signal backpressure without connection closure.
+- `end()` finalizes the response. For chunked mode it appends the terminating `0\r\n\r\n` chunk.
+- HEAD requests automatically suppress body bytes; you can still call `write()` for symmetric code paths.
+- Keep-Alive is supported for streaming responses when: server keep-alive is enabled, HTTP/1.1 is used, max-requests-per-connection not exceeded, and the connection wasn't marked for closure due to buffer overflow or error. Set an explicit `Connection: keep-alive` header inside your streaming handler if you want to guarantee the header presence; otherwise the server may add it according to policy (future enhancement).
+- If you provide your own `Connection: close` header, the server will honor it, preventing reuse.
+
+Backpressure & buffering:
+
+- Streaming writes reuse the same outbound buffering subsystem as fixed responses (`queueData`). Immediate socket writes are attempted when the buffer is empty; partial or blocked writes append to the per-connection buffer and register EPOLLOUT interest. This unification reduced code paths and eliminated a previous duplication in streaming flush logic.
+- If the per-connection buffered bytes exceed `maxOutboundBufferBytes`, the connection is marked to close after flush, and subsequent `write()` calls return `false`.
+
+Limitations / roadmap (streaming phase 1):
+
+- No trailer support yet.
+- Backpressure signaling currently binary (accept / fatal) – future versions may expose a tri-state (ok / should-pause / failed).
+- Compression not yet integrated with streaming.
+
+Testing:
+
+- See `tests/http_streaming.cpp` (basic chunk framing & HEAD) and `tests/http_streaming_keepalive.cpp` (keep-alive reuse) for examples.
+
+
 ## Configuration API (builder style)
 
 `ServerConfig` lives in `aeronet/server-config.hpp` and exposes fluent setters (withX naming):
@@ -375,7 +442,7 @@ Use these to gauge backpressure behavior and tune `maxOutboundBufferBytes`. When
 ### Roadmap additions
 
 - [x] Connection write buffering / partial write handling
-- [ ] Outgoing chunked responses & streaming interface
+- [x] Outgoing chunked responses & streaming interface (phase 1)
 - [ ] Trailing headers exposure for chunked requests
 - [ ] Richer routing (wildcards, parameter extraction)
 - [ ] TLS (OpenSSL) support

@@ -8,10 +8,10 @@
 using namespace std::chrono_literals;
 
 TEST(HttpHead, MaxRequestsApplied) {
-  uint16_t port = 18610;
   aeronet::ServerConfig cfg;
-  cfg.withPort(port).withMaxRequestsPerConnection(3);
+  cfg.withMaxRequestsPerConnection(3);
   aeronet::HttpServer server(cfg);
+  uint16_t port = server.port();
   server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = "IGNORED";

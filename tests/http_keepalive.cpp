@@ -32,8 +32,8 @@ std::string sendRaw(int fd, const std::string& data) {
 }  // namespace
 
 TEST(HttpKeepAlive, MultipleSequentialRequests) {
-  uint16_t port = 18321;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = std::string("ECHO") + std::string(req.target);
@@ -46,7 +46,7 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
   ASSERT_GE(fd, 0);
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
-  addr.sin_port = htons(18321);
+  addr.sin_port = htons(port);
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   ASSERT_EQ(0, ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)));
 
@@ -68,8 +68,9 @@ TEST(HttpLimits, RejectHugeHeaders) {
   aeronet::ServerConfig cfg;
   cfg.maxHeaderBytes = 128;
   cfg.enableKeepAlive = false;
-  cfg.port = 18322;
+  cfg.port = 0;
   aeronet::HttpServer server(cfg);
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body = "OK";
@@ -82,7 +83,7 @@ TEST(HttpLimits, RejectHugeHeaders) {
   ASSERT_GE(fd, 0);
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
-  addr.sin_port = htons(18322);
+  addr.sin_port = htons(port);
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   ASSERT_EQ(0, ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)));
 
