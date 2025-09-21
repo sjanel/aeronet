@@ -15,7 +15,7 @@ Legend:
 | Status | Feature | Summary | Key Design Points | Dependencies |
 |--------|---------|---------|-------------------|--------------|
 | ✅ | Partial Write Buffering & Backpressure | Handle partial socket writes safely | Implemented: per-connection outBuffer + EPOLLOUT re-arm + high-water tracking | None |
-| ⏳ | Streaming / Outgoing Chunked Responses | Send dynamic data without pre-buffering | HttpResponseWriter API, auto chunked if no length | Write buffering |
+| ✅ | Streaming / Outgoing Chunked Responses | Send dynamic data without pre-buffering | HttpResponseWriter API, auto chunked if no length; unified outbound buffer reuse | Write buffering |
 | ⏳ | Header Read Timeout (Slowloris) | Abort very slow header arrivals | Track header start time + last progress, 408/close | Timing sweep |
 | ⏳ | Request Metrics Hook | Expose per-request stats | Struct with method, status, durations, bytes | None |
 | ⏳ | Zero-Copy sendfile() Support | Efficient static file responses | Fallback to buffered if partials, track offset | Write buffering |
@@ -45,29 +45,31 @@ Legend:
 | Feature | Notes |
 |---------|-------|
 | Partial Write Buffering & Backpressure | Outbound queue + EPOLLOUT driven flushing + stats |
+| Streaming / Outgoing Chunked Responses | HttpResponseWriter + unified buffer path; keep-alive capable |
 | MultiHttpServer Wrapper | Horizontal scaling orchestration, ephemeral port resolution, aggregated stats |
 | Lightweight Logging Fallback | spdlog-style API, ISO8601 timestamps, formatting fallback |
 | Parser Error Enum & Callback | `ParserError` with granular reasons + hook |
 | RFC7231 Date Tests & Caching Validation | Format stability + boundary refresh tests |
 | Request Processing Refactor | Split monolithic loop into cohesive helpers |
+| Modular Decomposition (parser/response/connection) | Extracted from monolithic `server.cpp` into focused TUs |
+| RAII Listening Constructor | Constructor performs bind/listen/epoll add; removed `setupListener()` |
 | Chunked Decoding Fuzz (Deterministic) | Random chunk framing test with seed |
 | HEAD Max Requests Test | Ensures keep-alive request cap applies to HEAD |
 | Malformed & Limit Tests | 400 / 431 / 413 / 505 coverage |
 
 ## Proposed Ordering (Next Pass)
 
-1. Streaming Response API (foundation for compression & large bodies)
-2. Header Read Timeout (Slowloris mitigation)
-3. Metrics Hook (per-request instrumentation)
-4. Compression (gzip) negotiation + basic gzip compressor
-5. Trailer Parsing (incoming chunked trailers)
-6. Draining Mode (graceful connection wind-down)
-7. Zero-copy sendfile() support (static files)
-8. Enhanced Parser Diagnostics (byte offset)
-9. Structured Logging Interface (pluggable sinks / structured fields)
-10. brotli compression (if demand) and streaming compression integration
-11. TLS termination (OpenSSL minimal)
-12. Fuzz Harness (extended corpus / sanitizer CI)
+1. Header Read Timeout (Slowloris mitigation)
+2. Metrics Hook (per-request instrumentation)
+3. Compression (gzip) negotiation + basic gzip compressor
+4. Trailer Parsing (incoming chunked trailers)
+5. Draining Mode (graceful connection wind-down)
+6. Zero-copy sendfile() support (static files)
+7. Enhanced Parser Diagnostics (byte offset)
+8. Structured Logging Interface (pluggable sinks / structured fields)
+9. brotli compression (if demand) and streaming compression integration
+10. TLS termination (OpenSSL minimal)
+11. Fuzz Harness (extended corpus / sanitizer CI)
 
 ## Design Sketches
 
@@ -76,7 +78,7 @@ Legend:
 ```cpp
 class HttpResponseWriter {
 public:
-  void setStatus(int code, std::string_view reason = {});
+  void setStatus(http::StatusCode code, std::string_view reason = {});
   void addHeader(std::string_view name, std::string_view value);
   void setContentLength(std::size_t bytes); // optional explicit length
   void beginChunked();                       // switch to chunked transfer

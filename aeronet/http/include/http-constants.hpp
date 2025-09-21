@@ -2,6 +2,8 @@
 
 #include <string_view>
 
+#include "http-status-code.hpp"
+
 namespace aeronet::http {
 
 // NOTE ON CASE SENSITIVITY
@@ -51,10 +53,12 @@ inline constexpr std::string_view ReasonInternalServerError = "Internal Server E
 inline constexpr std::string_view ReasonNotImplemented = "Not Implemented";                      // 501
 inline constexpr std::string_view ReasonHTTPVersionNotSupported = "HTTP Version Not Supported";  // 505
 
+inline constexpr std::string_view CRLF = "\r\n";
+
 // Return the canonical reason phrase for a subset of status codes we care about.
 // If an unmapped status is provided, returns an empty string_view, letting callers
 // decide whether to supply a custom phrase.
-constexpr std::string_view reasonPhraseFor(int status) noexcept {
+constexpr std::string_view reasonPhraseFor(http::StatusCode status) noexcept {
   switch (status) {
     case 400:
       return ReasonBadRequest;

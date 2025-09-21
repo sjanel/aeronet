@@ -9,7 +9,7 @@ using namespace aeronet;
 
 TEST(HttpRouting, BasicPathDispatch) {
   ServerConfig cfg;
-  cfg.withPort(0).withMaxRequestsPerConnection(10);
+  cfg.withMaxRequestsPerConnection(10);
   HttpServer server(cfg);
   http::MethodSet helloMethods{http::Method::GET};
   server.addPathHandler("/hello", helloMethods, [](const HttpRequest&) {
@@ -92,7 +92,6 @@ TEST(HttpRouting, BasicPathDispatch) {
 
 TEST(HttpRouting, ExclusivityWithGlobalHandler) {
   ServerConfig cfg;
-  cfg.withPort(0);
   HttpServer server(cfg);
   server.setHandler([](const HttpRequest&) {
     HttpResponse resp;

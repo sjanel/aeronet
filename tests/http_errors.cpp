@@ -25,8 +25,8 @@ std::string sendAndCollect(uint16_t port, const std::string& raw) {
 }  // namespace
 
 TEST(HttpErrors, BadRequestMalformedRequestLine) {
-  uint16_t port = 18500;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
   std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(80ms);
@@ -37,8 +37,8 @@ TEST(HttpErrors, BadRequestMalformedRequestLine) {
 }
 
 TEST(HttpErrors, VersionNotSupported505) {
-  uint16_t port = 18501;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
   std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(80ms);
@@ -50,8 +50,8 @@ TEST(HttpErrors, VersionNotSupported505) {
 }
 
 TEST(HttpErrors, UnsupportedTransferEncoding501) {
-  uint16_t port = 18502;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
   std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(80ms);
@@ -64,8 +64,8 @@ TEST(HttpErrors, UnsupportedTransferEncoding501) {
 }
 
 TEST(HttpErrors, ContentLengthAndTEConflict400) {
-  uint16_t port = 18503;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
   std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(80ms);
@@ -79,8 +79,8 @@ TEST(HttpErrors, ContentLengthAndTEConflict400) {
 }
 
 TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
-  uint16_t port = 18504;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse response;
     response.body = "ok";
@@ -112,8 +112,8 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
 }
 
 TEST(HttpKeepAlive10, OptInWithHeader) {
-  uint16_t port = 18505;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse response;
     response.body = "ok";

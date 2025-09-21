@@ -21,8 +21,8 @@ std::string sendRaw(uint16_t port, const std::string& raw) {
 }  // anonymous namespace
 
 TEST(HttpMalformed, MissingSpacesInRequestLine) {
-  uint16_t port = 18620;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
   std::thread th([&] { server.runUntil([] { return false; }, 25ms); });
   std::this_thread::sleep_for(50ms);
@@ -33,10 +33,10 @@ TEST(HttpMalformed, MissingSpacesInRequestLine) {
 }
 
 TEST(HttpMalformed, OversizedHeaders) {
-  uint16_t port = 18621;
   aeronet::ServerConfig cfg;
-  cfg.withPort(port).withMaxHeaderBytes(64);
+  cfg.withMaxHeaderBytes(64);
   aeronet::HttpServer server(cfg);
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
   std::thread th([&] { server.runUntil([] { return false; }, 25ms); });
   std::this_thread::sleep_for(50ms);
@@ -49,8 +49,8 @@ TEST(HttpMalformed, OversizedHeaders) {
 }
 
 TEST(HttpMalformed, BadChunkExtensionHex) {
-  uint16_t port = 18622;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
   std::thread th([&] { server.runUntil([] { return false; }, 25ms); });
   std::this_thread::sleep_for(50ms);

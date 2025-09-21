@@ -14,8 +14,8 @@ using namespace std::chrono_literals;
 // large Content-Length
 
 TEST(HttpPipeline, TwoRequestsBackToBack) {
-  uint16_t port = 18600;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body = std::string("E:") + std::string(req.target);
@@ -37,8 +37,8 @@ TEST(HttpPipeline, TwoRequestsBackToBack) {
 }
 
 TEST(HttpExpect, ZeroLengthNo100) {
-  uint16_t port = 18601;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest& /*req*/) {
     aeronet::HttpResponse respObj;
     respObj.body = "Z";
@@ -63,10 +63,10 @@ TEST(HttpExpect, ZeroLengthNo100) {
 }
 
 TEST(HttpMaxRequests, CloseAfterLimit) {
-  uint16_t port = 18602;
   aeronet::ServerConfig cfg;
-  cfg.withPort(port).withMaxRequestsPerConnection(2);  // after 2 responses close
+  cfg.withMaxRequestsPerConnection(2);  // after 2 responses close
   aeronet::HttpServer server(cfg);
+  uint16_t port = server.port();
   // Use a distinctive body character unlikely to appear in headers (avoid 'M' which can appear in Date: Mon)
   server.setHandler([](const aeronet::HttpRequest& /*req*/) {
     aeronet::HttpResponse respObj;
@@ -103,8 +103,8 @@ TEST(HttpMaxRequests, CloseAfterLimit) {
 }
 
 TEST(HttpPipeline, SecondMalformedAfterSuccess) {
-  uint16_t port = 18603;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest& /*req*/) {
     aeronet::HttpResponse respObj;
     respObj.body = "OK";
@@ -124,10 +124,10 @@ TEST(HttpPipeline, SecondMalformedAfterSuccess) {
 }
 
 TEST(HttpContentLength, ExplicitTooLarge413) {
-  uint16_t port = 18604;
   aeronet::ServerConfig cfg;
-  cfg.withPort(port).withMaxBodyBytes(10);
+  cfg.withMaxBodyBytes(10);
   aeronet::HttpServer server(cfg);
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest& /*req*/) {
     aeronet::HttpResponse respObj;
     respObj.body = "R";

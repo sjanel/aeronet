@@ -57,8 +57,8 @@ std::string headerValue(const std::string& resp, const std::string& name) {
 
 TEST(HttpDate, PresentAndFormat) {
   std::atomic_bool stop{false};
-  uint16_t port = 18090;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
   std::thread th([&] { server.runUntil([&] { return stop.load(); }, 50ms); });
   std::this_thread::sleep_for(100ms);
@@ -74,8 +74,8 @@ TEST(HttpDate, PresentAndFormat) {
 
 TEST(HttpDate, StableWithinSameSecond) {
   std::atomic_bool stop{false};
-  uint16_t port = 18091;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
   std::thread th([&] { server.runUntil([&] { return stop.load(); }, 10ms); });
   std::this_thread::sleep_for(50ms);
@@ -94,8 +94,8 @@ TEST(HttpDate, StableWithinSameSecond) {
 
 TEST(HttpDate, ChangesAcrossSecondBoundary) {
   std::atomic_bool stop{false};
-  uint16_t port = 18092;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
   std::thread th([&] { server.runUntil([&] { return stop.load(); }, 5ms); });
   std::this_thread::sleep_for(50ms);

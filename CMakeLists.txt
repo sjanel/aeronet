@@ -2,15 +2,29 @@ cmake_minimum_required(VERSION 3.28)
 
 project(aeronet VERSION 0.1.0 LANGUAGES CXX)
 
-# Options
-option(AERONET_BUILD_EXAMPLES "Build example programs" ON)
-option(AERONET_BUILD_TESTS "Build tests" ON)
+#
+# MAIN_PROJECT CHECK
+# determine if coincenter is built as a sub-project or if it is the main project
+#
+set(MAIN_PROJECT OFF)
+
+if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+  set(MAIN_PROJECT ON)
+endif()
+
+# Build options
+option(AERONET_BUILD_EXAMPLES "Build example programs" ${MAIN_PROJECT})
+option(AERONET_BUILD_TESTS "Build tests" ${MAIN_PROJECT})
+option(AERONET_BUILD_SHARED "Build Aeronet libraries as shared instead of static" OFF)
+option(AERONET_INSTALL "Enable install & package config generation" ${MAIN_PROJECT})
+
+# Optional dependencies (aeronet is able to compile without the feature if not enabled)
+option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" OFF)
+
+# Linting
 option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" OFF)
 option(AERONET_ENABLE_CLANG_TIDY "Enable clang-tidy analysis" OFF)
 option(AERONET_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
-option(AERONET_BUILD_SHARED "Build Aeronet libraries as shared instead of static" OFF)
-option(AERONET_INSTALL "Enable install & package config generation" ON)
-option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" OFF)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

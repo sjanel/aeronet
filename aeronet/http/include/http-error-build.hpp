@@ -5,10 +5,11 @@
 
 #include <string_view>
 
+#include "http-constants.hpp"
 #include "string.hpp"
 
 namespace aeronet {
 
-bool buildSimpleError(string& out, int status, std::string_view reason, std::string_view date, bool closeConn);
+string buildSimpleError(http::StatusCode status, std::string_view reason, std::string_view date, bool closeConn);
 
 }  // namespace aeronet

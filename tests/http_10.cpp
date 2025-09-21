@@ -21,8 +21,8 @@ std::string collectSimple(uint16_t port, const std::string& req) {
 }  // namespace
 
 TEST(Http10, BasicVersionEcho) {
-  uint16_t port = 18610;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body = "A";
@@ -38,8 +38,7 @@ TEST(Http10, BasicVersionEcho) {
 }
 
 TEST(Http10, No100ContinueEvenIfHeaderPresent) {
-  uint16_t port = 18611;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body = "B";
@@ -53,7 +52,7 @@ TEST(Http10, No100ContinueEvenIfHeaderPresent) {
                                                                                                                 // be
                                                                                                                 // ignored
                                                                                                                 // for 1.0
-  std::string resp = collectSimple(port, req);
+  std::string resp = collectSimple(server.port(), req);
   server.stop();
   th.join();
   ASSERT_EQ(std::string::npos, resp.find("100 Continue"));
@@ -61,8 +60,8 @@ TEST(Http10, No100ContinueEvenIfHeaderPresent) {
 }
 
 TEST(Http10, RejectTransferEncoding) {
-  uint16_t port = 18612;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body = "C";
@@ -79,8 +78,8 @@ TEST(Http10, RejectTransferEncoding) {
 }
 
 TEST(Http10, KeepAliveOptInStillWorks) {
-  uint16_t port = 18613;
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::ServerConfig{});
+  uint16_t port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body = "D";
