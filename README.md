@@ -2,7 +2,7 @@
 
 ![Aeronet Logo](resources/logo.png)
 
-Experimental HTTP/1.1 server library (Linux / epoll) – work in progress.
+HTTP/1.1 server library for Linux only – work in progress.
 
 Features currently implemented:
 
@@ -384,4 +384,4 @@ Use these to gauge backpressure behavior and tune `maxOutboundBufferBytes`. When
  
 ## License
 
-TBD (will add an open-source license later).
+Licensed under the MIT License. See [LICENSE](LICENSE).
