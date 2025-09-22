@@ -10,6 +10,7 @@
 #include <iterator>
 #include <limits>
 #include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -17,7 +18,6 @@
 
 #include "cctype.hpp"
 #include "flat-key-value-string-iterator.hpp"
-#include "string.hpp"
 #include "type_traits.hpp"
 #include "url-encode.hpp"
 
@@ -32,7 +32,7 @@ class FlatKeyValueString {
  public:
   using iterator = FlatKeyValueStringIterator<KeyValuePairSep, AssignmentChar>;
   using const_iterator = iterator;
-  using size_type = string::size_type;
+  using size_type = std::string::size_type;
 
   struct KeyValuePair {
     using IntegralType = int64_t;
@@ -167,7 +167,7 @@ class FlatKeyValueString {
   /// Finds the position of the given key, or string::npos if key is not present
   [[nodiscard]] size_type find(std::string_view key) const noexcept { return Find(_data, key); }
 
-  [[nodiscard]] bool contains(std::string_view key) const noexcept { return find(key) != string::npos; }
+  [[nodiscard]] bool contains(std::string_view key) const noexcept { return find(key) != std::string::npos; }
 
   /// Get the value associated to given key, or an empty string if no value is found for this key.
   [[nodiscard]] std::string_view get(std::string_view key) const { return Get(_data, key); }
@@ -188,20 +188,20 @@ class FlatKeyValueString {
   /// Values ending with a ',' will be considered as arrays.
   /// In this case, sub array values are comma separated values.
   /// Limitation: all json values will be decoded as strings.
-  [[nodiscard]] string toJsonStr() const;
+  [[nodiscard]] std::string toJsonStr() const;
 
   /// Returns a new FlatKeyValueString URL encoded except delimiters.
   FlatKeyValueString urlEncodeExceptDelimiters() const;
 
   auto operator<=>(const FlatKeyValueString &) const noexcept = default;
 
-  using trivially_relocatable = is_trivially_relocatable<string>::type;
+  using trivially_relocatable = is_trivially_relocatable<std::string>::type;
 
  private:
-  explicit FlatKeyValueString(string &&data) noexcept(std::is_nothrow_move_constructible_v<string>)
+  explicit FlatKeyValueString(std::string &&data) noexcept(std::is_nothrow_move_constructible_v<std::string>)
       : _data(std::move(data)) {}
 
-  string _data;
+  std::string _data;
 };
 
 template <char KeyValuePairSep, char AssignmentChar>
@@ -294,12 +294,12 @@ void FlatKeyValueString<KeyValuePairSep, AssignmentChar>::set(std::string_view k
   assert(value.find(KeyValuePairSep) == std::string_view::npos);
 
   const std::size_t pos = find(key);
-  if (pos == string::npos) {
+  if (pos == std::string::npos) {
     emplace_back(key, value);
   } else {
-    string::const_iterator first = _data.begin() + pos + key.size() + 1;
-    string::const_iterator last = first + 1;
-    string::const_iterator end = _data.end();
+    std::string::const_iterator first = _data.begin() + pos + key.size() + 1;
+    std::string::const_iterator last = first + 1;
+    std::string::const_iterator end = _data.end();
     while (last != end && *last != KeyValuePairSep) {
       ++last;
     }
@@ -323,7 +323,7 @@ void FlatKeyValueString<KeyValuePairSep, AssignmentChar>::set_back(std::string_v
 template <char KeyValuePairSep, char AssignmentChar>
 void FlatKeyValueString<KeyValuePairSep, AssignmentChar>::erase(std::string_view key) {
   std::size_t first = find(key);
-  if (first != string::npos) {
+  if (first != std::string::npos) {
     if (first != 0) {
       --first;  // Remove separator char as well
     }
@@ -356,12 +356,12 @@ std::size_t FlatKeyValueString<KeyValuePairSep, AssignmentChar>::Find(std::strin
   const std::size_t ds = data.size();
   // Ideally, we would like to search for key + AssignmentChar, but we don't want to make a new string
   std::size_t pos = data.find(key);
-  while (pos != string::npos && pos + ks < ds && data[pos + ks] != AssignmentChar) {
+  while (pos != std::string::npos && pos + ks < ds && data[pos + ks] != AssignmentChar) {
     pos = data.find(key, pos + ks + 1);
   }
-  if (pos != string::npos && (pos + ks == ds || data[pos + ks] == KeyValuePairSep)) {
+  if (pos != std::string::npos && (pos + ks == ds || data[pos + ks] == KeyValuePairSep)) {
     // we found a value, not a key
-    pos = string::npos;
+    pos = std::string::npos;
   }
   return pos;
 }
@@ -371,13 +371,13 @@ std::string_view FlatKeyValueString<KeyValuePairSep, AssignmentChar>::Get(std::s
   std::size_t pos = Find(data, key);
   std::string_view::const_iterator first;
   std::string_view::const_iterator last;
-  if (pos == string::npos) {
+  if (pos == std::string::npos) {
     first = data.end();
     last = data.end();
   } else {
     first = data.begin() + pos + key.size() + 1;
     std::size_t endPos = data.find(KeyValuePairSep, pos + key.size() + 1);
-    if (endPos == string::npos) {
+    if (endPos == std::string::npos) {
       last = data.end();
     } else {
       last = data.begin() + endPos;
@@ -387,8 +387,8 @@ std::string_view FlatKeyValueString<KeyValuePairSep, AssignmentChar>::Get(std::s
 }
 
 template <char KeyValuePairSep, char AssignmentChar>
-string FlatKeyValueString<KeyValuePairSep, AssignmentChar>::toJsonStr() const {
-  string ret;
+std::string FlatKeyValueString<KeyValuePairSep, AssignmentChar>::toJsonStr() const {
+  std::string ret;
   ret.reserve(2 * (_data.size() + 1U));
   ret.push_back('{');
 

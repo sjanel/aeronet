@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 #include <string_view>
 
 #include "aeronet/server-config.hpp"
@@ -17,7 +18,6 @@
 #include "http-response-writer.hpp"
 #include "http-response.hpp"
 #include "raw-chars.hpp"
-#include "string.hpp"
 #include "timedef.hpp"
 
 namespace aeronet {
@@ -33,7 +33,6 @@ class EventLoop;  // forward declaration
 //    ServerConfig::withReusePort(true) on the same port) and run each in its own thread.
 //  - Writes currently assume exclusive ownership of the connection fd within this single
 //    thread, enabling simple sequential ::write / ::writev without partial-write state tracking.
-//    A production multi-threaded / async-write version would need buffered output handling.
 class HttpServer {
  public:
   using RequestHandler = std::function<HttpResponse(const HttpRequest&)>;
@@ -70,9 +69,9 @@ class HttpServer {
   // Register a handler for a specific absolute path and a set of allowed HTTP methods.
   // Methods are supplied via http::MethodsSet (small fixed-capacity flat set, non-allocating).
   // Mutually exclusive with setHandler: using both is invalid and will throw.
-  void addPathHandler(std::string_view path, const http::MethodSet& methods, const RequestHandler& handler);
+  void addPathHandler(std::string path, const http::MethodSet& methods, const RequestHandler& handler);
   // Convenience overload for a single method.
-  void addPathHandler(std::string_view path, http::Method method, const RequestHandler& handler);
+  void addPathHandler(std::string path, http::Method method, const RequestHandler& handler);
 
   void setParserErrorCallback(ParserErrorCallback cb) { _parserErrCb = std::move(cb); }
 
@@ -87,6 +86,8 @@ class HttpServer {
   [[nodiscard]] bool isRunning() const { return _running; }
 
  private:
+  friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
+
   struct ConnStateInternal {
     RawChars buffer;       // accumulated raw data
     RawChars bodyStorage;  // decoded body lifetime
@@ -153,18 +154,20 @@ class HttpServer {
   RequestHandler _handler;
   StreamingHandler _streamingHandler;
   struct PathHandlerEntry {
-    uint32_t methodMask{};
+    uint32_t methodMask;
     std::array<RequestHandler, http::kNbMethods> handlers;
   };
 
-  flat_hash_map<string, PathHandlerEntry, std::hash<std::string_view>, std::equal_to<>> _pathHandlers;  // path -> entry
+  flat_hash_map<std::string, PathHandlerEntry, std::hash<std::string_view>, std::equal_to<>> _pathHandlers;
 
   std::unique_ptr<EventLoop> _loop;
   ServerConfig _config;
   flat_hash_map<int, ConnStateInternal> _connStates;  // per-server connection states
-  string _cachedDate;
+
+  using RFC7231DateStr = std::array<char, 29>;
+
+  RFC7231DateStr _cachedDate{};
   TimePoint _cachedDateEpoch;  // last second-aligned timestamp used for Date header
   ParserErrorCallback _parserErrCb;
-  friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
 };
 }  // namespace aeronet

@@ -51,9 +51,9 @@ TEST(UnitsParser, BytesToBufferNominalCase) {
 }
 
 TEST(UnitsParser, BytesToStr) {
-  EXPECT_EQ(BytesToStr(-262144), "-256Ki");
-  EXPECT_EQ(BytesToStr(3145728), "3Mi");
-  EXPECT_EQ(BytesToStr(1060858233000), "988Gi1Mi256Ki168");
+  EXPECT_EQ(std::string_view(BytesToStr(-262144)), "-256Ki");
+  EXPECT_EQ(std::string_view(BytesToStr(3145728)), "3Mi");
+  EXPECT_EQ(std::string_view(BytesToStr(1060858233000)), "988Gi1Mi256Ki168");
 }
 
 TEST(UnitsParser, BytesToStrLen) {

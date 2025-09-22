@@ -7,50 +7,40 @@
 #include <charconv>
 #include <cstddef>
 #include <cstring>
+#include <string>
 #include <string_view>
 
 #include "aeronet/server.hpp"
 #include "http-constants.hpp"
+#include "http-status-build.hpp"
 #include "log.hpp"
-#include "string.hpp"
-#include "stringconv.hpp"
+#include "raw-chars.hpp"
 
 namespace aeronet {
+
 namespace {
-string buildStatusLine(http::StatusCode code, std::string_view reason) {
-  string ret;
-
-  ret.reserve(http::HTTP11.size() + 1 + nchars(code) + 1 + reason.size() + http::CRLF.size());
-
-  ret += http::HTTP11;
-  ret.push_back(' ');
-  AppendIntegralToString(ret, code);
-  ret.push_back(' ');
-  ret += reason;
-  ret += http::CRLF;
-
-  return ret;
-}
+constexpr std::string kContentLength = "Content-Length";
+constexpr std::string kContentType = "Content-Type";
 }  // namespace
 
 HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, bool headRequest)
     : _server(&srv), _fd(fd), _head(headRequest) {}
 
-void HttpResponseWriter::setStatus(http::StatusCode code, std::string_view reason) {
+void HttpResponseWriter::setStatus(http::StatusCode code, std::string reason) {
   if (_headersSent || _failed) {
     return;
   }
   _statusCode = code;
   if (!reason.empty()) {
-    _reason = string(reason);
+    _reason = std::move(reason);
   }
 }
 
-void HttpResponseWriter::setHeader(std::string_view name, std::string_view value) {
+void HttpResponseWriter::setHeader(std::string name, std::string value) {
   if (_headersSent || _failed) {
     return;
   }
-  _headers[string(name)] = string(value);
+  _headers[std::move(name)] = std::move(value);
 }
 
 void HttpResponseWriter::setContentLength(std::size_t len) {
@@ -59,7 +49,7 @@ void HttpResponseWriter::setContentLength(std::size_t len) {
   }
   _chunked = false;
   _declaredLength = len;
-  _headers["Content-Length"] = IntegralToString(len);
+  _headers[kContentLength] = std::to_string(len);
 }
 
 void HttpResponseWriter::ensureHeadersSent() {
@@ -71,17 +61,17 @@ void HttpResponseWriter::ensureHeadersSent() {
     _chunked = false;
   }
   if (!_chunked) {
-    if (_headers.find("Content-Length") == _headers.end()) {
-      _headers["Content-Length"] = "0";
+    if (_headers.find(kContentLength) == _headers.end()) {
+      _headers[kContentLength] = "0";
     }
   } else {
     _headers["Transfer-Encoding"] = "chunked";
   }
   // Connection header decided by server keep-alive policy; do not force here.
-  if (_headers.find("Content-Type") == _headers.end()) {
-    _headers["Content-Type"] = "text/plain";
+  if (_headers.find(kContentType) == _headers.end()) {
+    _headers[kContentType] = "text/plain";
   }
-  string head = buildStatusLine(_statusCode, _reason);
+  auto head = http::buildStatusLine(_statusCode, _reason);
   for (auto& kv : _headers) {
     head.append(kv.first);
     head.append(": ");
@@ -115,8 +105,7 @@ void HttpResponseWriter::emitChunk(std::string_view data) {
   *res.ptr++ = '\r';
   *res.ptr++ = '\n';
   size_t sizeHeaderLen = static_cast<size_t>(res.ptr - sizeLine);
-  string chunk;
-  chunk.reserve(sizeHeaderLen + data.size() + 2);
+  RawChars chunk(sizeHeaderLen + data.size() + 2);
   chunk.append(sizeLine, sizeHeaderLen);
   chunk.append(data.data(), data.size());
   chunk.append("\r\n", 2);
@@ -170,8 +159,8 @@ void HttpResponseWriter::end() {
   log::debug("Streaming: end fd={} bytesWritten={} chunked={}", _fd, _bytesWritten, _chunked);
 }
 
-bool HttpResponseWriter::enqueue(const char* data, std::size_t len) {
-  if (len == 0) {
+bool HttpResponseWriter::enqueue(std::string_view data) {
+  if (data.empty()) {
     return true;
   }
   if (_server == nullptr) {
@@ -183,7 +172,7 @@ bool HttpResponseWriter::enqueue(const char* data, std::size_t len) {
     return false;
   }
   auto& st = it->second;
-  bool ok = _server->queueData(_fd, st, data, len);
+  bool ok = _server->queueData(_fd, st, data.data(), data.size());
   return ok && !st.shouldClose;
 }
 

@@ -41,6 +41,11 @@ class RawBytes {
     }
   }
 
+  explicit RawBytes(ViewType data) : RawBytes(data.size()) {
+    std::memcpy(_buf, data.data(), _capacity);
+    _size = _capacity;
+  }
+
   RawBytes(const_pointer first, const_pointer last) : RawBytes(last - first) {
     std::memcpy(_buf, first, _capacity);
     _size = _capacity;
@@ -78,13 +83,22 @@ class RawBytes {
 
   void append(const_pointer newData, size_type newDataSize) { return append(newData, newData + newDataSize); }
 
-  void assign(const_pointer first, const_pointer last) {
-    reserveExponential(last - first);
-    _size = last - first;
-    std::memcpy(_buf, first, _size);
+  void append(ViewType data) { return append(data.data(), data.data() + data.size()); }
+
+  void append(value_type byte) {
+    ensureAvailableCapacity(1);
+    _buf[_size++] = byte;
   }
 
-  void assign(const_pointer first, size_type size) { assign(first, first + size); }
+  void assign(const_pointer first, size_type size) {
+    reserveExponential(size);
+    std::memcpy(_buf, first, size);
+    _size = size;
+  }
+
+  void assign(ViewType data) { assign(data.data(), data.size()); }
+
+  void assign(const_pointer first, const_pointer last) { assign(first, last - first); }
 
   void assign(std::istream &in) {
     // Read until EOF in one or more large chunks

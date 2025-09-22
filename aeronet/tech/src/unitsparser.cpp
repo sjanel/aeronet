@@ -9,7 +9,7 @@
 #include <utility>
 
 #include "exception.hpp"
-#include "string.hpp"
+#include "raw-chars.hpp"
 #include "stringconv.hpp"
 
 namespace aeronet {
@@ -127,9 +127,11 @@ int64_t BytesToStrLen(int64_t numberOfBytes, int nbSignificantUnits) {
   return len;
 }
 
-string BytesToStr(int64_t numberOfBytes, int nbSignificantUnits) {
-  string ret(static_cast<string::size_type>(BytesToStrLen(numberOfBytes, nbSignificantUnits)), '\0');
-  BytesToBuffer(numberOfBytes, ret, nbSignificantUnits);
+RawChars BytesToStr(int64_t numberOfBytes, int nbSignificantUnits) {
+  const auto sz = static_cast<RawChars::size_type>(BytesToStrLen(numberOfBytes, nbSignificantUnits));
+  RawChars ret(sz);
+  BytesToBuffer(numberOfBytes, std::span<char>(ret.data(), sz), nbSignificantUnits);
+  ret.setSize(sz);
   return ret;
 }
 

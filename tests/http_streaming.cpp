@@ -13,7 +13,9 @@ using namespace std::chrono_literals;
 namespace {
 std::string rawHttp(uint16_t port, const std::string& verb, const std::string& target) {
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) return {};
+  if (fd < 0) {
+    return {};
+  }
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
@@ -38,12 +40,12 @@ std::string rawHttp(uint16_t port, const std::string& verb, const std::string& t
 TEST(HttpStreaming, ChunkedSimple) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
   uint16_t port = server.port();
-  server.setStreamingHandler([](const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& w) {
-    w.setStatus(200, "OK");
-    w.setContentType("text/plain");
-    w.write("hello ");
-    w.write("world");
-    w.end();
+  server.setStreamingHandler([]([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
+    writer.setStatus(200, "OK");
+    writer.setContentType("text/plain");
+    writer.write("hello ");
+    writer.write("world");
+    writer.end();
   });
   std::thread th([&] { server.runUntil([] { return false; }, 50ms); });
   std::this_thread::sleep_for(100ms);
@@ -60,11 +62,11 @@ TEST(HttpStreaming, ChunkedSimple) {
 TEST(HttpStreaming, HeadSuppressedBody) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
   uint16_t port = server.port();
-  server.setStreamingHandler([](const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& w) {
-    w.setStatus(200, "OK");
-    w.setContentType("text/plain");
-    w.write("ignored body");  // should not be emitted for HEAD
-    w.end();
+  server.setStreamingHandler([]([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
+    writer.setStatus(200, "OK");
+    writer.setContentType("text/plain");
+    writer.write("ignored body");  // should not be emitted for HEAD
+    writer.end();
   });
   std::thread th([&] { server.runUntil([] { return false; }, 50ms); });
   std::this_thread::sleep_for(100ms);

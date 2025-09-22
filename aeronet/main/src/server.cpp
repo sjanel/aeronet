@@ -128,7 +128,7 @@ HttpServer::HttpServer(HttpServer&& other) noexcept
       _loop(std::move(other._loop)),
       _config(std::move(other._config)),
       _connStates(std::move(other._connStates)),
-      _cachedDate(std::move(other._cachedDate)),
+      _cachedDate(std::exchange(other._cachedDate, {})),
       _cachedDateEpoch(std::exchange(other._cachedDateEpoch, TimePoint{})),
       _parserErrCb(std::move(other._parserErrCb)) {}
 
@@ -142,7 +142,7 @@ HttpServer& HttpServer::operator=(HttpServer&& other) noexcept {
     _loop = std::move(other._loop);
     _config = std::move(other._config);
     _connStates = std::move(other._connStates);
-    _cachedDate = std::move(other._cachedDate);
+    _cachedDate = std::exchange(other._cachedDate, {});
     _cachedDateEpoch = std::exchange(other._cachedDateEpoch, TimePoint{});
     _parserErrCb = std::move(other._parserErrCb);
   }
@@ -161,14 +161,14 @@ void HttpServer::setStreamingHandler(StreamingHandler handler) {
   _streamingHandler = std::move(handler);
 }
 
-void HttpServer::addPathHandler(std::string_view path, const http::MethodSet& methods, const RequestHandler& handler) {
+void HttpServer::addPathHandler(std::string path, const http::MethodSet& methods, const RequestHandler& handler) {
   if (_handler) {
     throw exception("Cannot use addPathHandler after setHandler has been set");
   }
   auto it = _pathHandlers.find(path);
   PathHandlerEntry* pPathHandlerEntry;
   if (it == _pathHandlers.end()) {
-    pPathHandlerEntry = &_pathHandlers[string(path)];
+    pPathHandlerEntry = &_pathHandlers[std::move(path)];
   } else {
     pPathHandlerEntry = &it->second;
   }
@@ -178,14 +178,14 @@ void HttpServer::addPathHandler(std::string_view path, const http::MethodSet& me
   }
 }
 
-void HttpServer::addPathHandler(std::string_view path, http::Method method, const RequestHandler& handler) {
+void HttpServer::addPathHandler(std::string path, http::Method method, const RequestHandler& handler) {
   if (_handler) {
     throw exception("Cannot use addPathHandler after setHandler has been set");
   }
   auto it = _pathHandlers.find(path);
   PathHandlerEntry* pPathHandlerEntry;
   if (it == _pathHandlers.end()) {
-    pPathHandlerEntry = &_pathHandlers[string(path)];
+    pPathHandlerEntry = &_pathHandlers[std::move(path)];
   } else {
     pPathHandlerEntry = &it->second;
   }
@@ -231,10 +231,8 @@ void HttpServer::refreshCachedDate() {
   auto nowSec = time_point_cast<seconds>(nowTp);
   if (time_point_cast<seconds>(_cachedDateEpoch) != nowSec) {
     _cachedDateEpoch = nowSec;
-    char buf[29];
-    char* end = TimeToStringRFC7231(nowSec, buf);
-    assert(end <= buf + sizeof(buf));
-    _cachedDate.assign(buf, static_cast<size_t>(end - buf));
+    [[maybe_unused]] char* end = TimeToStringRFC7231(nowSec, _cachedDate.data());
+    assert(end <= _cachedDate.data() + _cachedDate.size());
   }
 }
 
@@ -252,7 +250,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
     if (std::string_view te = req.findHeader(http::TransferEncoding); !te.empty()) {
       hasTE = true;
       if (req.version == http::HTTP10) {
-        string err = buildSimpleError(400, http::ReasonBadRequest, _cachedDate, true);
+        auto err = buildSimpleError(400, http::ReasonBadRequest, std::string_view(_cachedDate), true);
         queueData(fd, state, err.data(), err.size());
         closeCnx = true;
         break;
@@ -260,7 +258,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
       if (CaseInsensitiveEqual(te, http::chunked)) {
         isChunked = true;
       } else {
-        string err = buildSimpleError(501, http::ReasonNotImplemented, _cachedDate, true);
+        auto err = buildSimpleError(501, http::ReasonNotImplemented, std::string_view(_cachedDate), true);
         queueData(fd, state, err.data(), err.size());
         closeCnx = true;
         break;
@@ -272,7 +270,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
       hasCL = true;
     }
     if (hasCL && hasTE) {
-      string err = buildSimpleError(400, http::ReasonBadRequest, _cachedDate, true);
+      auto err = buildSimpleError(400, http::ReasonBadRequest, std::string_view(_cachedDate), true);
       queueData(fd, state, err.data(), err.size());
       closeCnx = true;
       break;
@@ -330,7 +328,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
 
     HttpResponse resp;
     if (!_pathHandlers.empty()) {
-      auto it = _pathHandlers.find(std::string_view(req.target));
+      auto it = _pathHandlers.find(req.target);
       if (it == _pathHandlers.end()) {
         resp.statusCode = 404;
         resp.reason = "Not Found";
@@ -340,7 +338,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
         auto method = http::toMethodEnum(req.method);
         if (!http::methodAllowed(it->second.methodMask, method)) {
           resp.statusCode = 405;
-          resp.reason = string(http::ReasonMethodNotAllowed);
+          resp.reason = std::string(http::ReasonMethodNotAllowed);
           resp.body = resp.reason;
           resp.contentType = "text/plain";
         } else {
@@ -349,13 +347,13 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
           } catch (const std::exception& ex) {
             std::cerr << "Exception in path handler: " << ex.what() << '\n';
             resp.statusCode = 500;
-            resp.reason = string(http::ReasonInternalServerError);
+            resp.reason = std::string(http::ReasonInternalServerError);
             resp.body = resp.reason;
             resp.contentType = "text/plain";
           } catch (...) {
             std::cerr << "Unknown exception in path handler." << '\n';
             resp.statusCode = 500;
-            resp.reason = string(http::ReasonInternalServerError);
+            resp.reason = std::string(http::ReasonInternalServerError);
             resp.body = resp.reason;
             resp.contentType = "text/plain";
           }
@@ -367,13 +365,13 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
       } catch (const std::exception& ex) {
         std::cerr << "Exception in request handler: " << ex.what() << '\n';
         resp.statusCode = 500;
-        resp.reason = string(http::ReasonInternalServerError);
+        resp.reason = std::string(http::ReasonInternalServerError);
         resp.body = resp.reason;
         resp.contentType = "text/plain";
       } catch (...) {
         std::cerr << "Unknown exception in request handler." << '\n';
         resp.statusCode = 500;
-        resp.reason = string(http::ReasonInternalServerError);
+        resp.reason = std::string(http::ReasonInternalServerError);
         resp.body = resp.reason;
         resp.contentType = "text/plain";
       }
