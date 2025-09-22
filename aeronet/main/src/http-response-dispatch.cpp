@@ -6,16 +6,17 @@
 #include <algorithm>
 #include <cerrno>
 
-#include "aeronet/event-loop.hpp"  // for EventLoop methods
 #include "aeronet/server.hpp"
+#include "event-loop.hpp"  // for EventLoop methods
 #include "http-constants.hpp"
 #include "http-response-build.hpp"
+#include "log.hpp"
 #include "string-equal-ignore-case.hpp"  // for CaseInsensitiveEqual used indirectly in finalize logic
 
 namespace aeronet {
 
 void HttpServer::finalizeAndSendResponse(int fd, ConnStateInternal& state, HttpRequest& req, HttpResponse& resp,
-                                         size_t consumedBytes, bool& closeConn) {
+                                         std::size_t consumedBytes, bool& closeConn) {
   ++state.requestsServed;
   bool keepAlive = false;
   if (_config.enableKeepAlive) {
@@ -55,7 +56,7 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnStateInternal& state, HttpR
   }
 }
 
-bool HttpServer::queueData(int fd, ConnStateInternal& state, const char* data, size_t len) {
+bool HttpServer::queueData(int fd, ConnStateInternal& state, const char* data, std::size_t len) {
   if (state.outBuffer.empty()) {
     ssize_t written = ::send(fd, data, len, MSG_NOSIGNAL);
     if (written == static_cast<ssize_t>(len)) {
@@ -86,13 +87,17 @@ bool HttpServer::queueData(int fd, ConnStateInternal& state, const char* data, s
     if (_loop->mod(fd, EPOLLIN | EPOLLOUT | EPOLLET)) {
       state.waitingWritable = true;
       _stats.deferredWriteEvents++;
+    } else {
+      int savedErr = errno;
+      log::error("epoll_ctl MOD (enable writable) failed fd={} errno={} msg={}", fd, savedErr, std::strerror(savedErr));
+      state.shouldClose = true;  // can't monitor for writability reliably
     }
   }
   return true;
 }
 
 bool HttpServer::queueVec(int fd, ConnStateInternal& state, const struct iovec* iov, int iovcnt) {
-  size_t total = 0;
+  std::size_t total = 0;
   for (int i = 0; i < iovcnt; ++i) {
     total += iov[i].iov_len;
   }
@@ -102,7 +107,7 @@ bool HttpServer::queueVec(int fd, ConnStateInternal& state, const struct iovec* 
   if (state.outBuffer.empty()) {
     struct msghdr msg{};
     msg.msg_iov = const_cast<struct iovec*>(iov);
-    msg.msg_iovlen = iovcnt;
+    msg.msg_iovlen = static_cast<std::size_t>(iovcnt);
     ssize_t written = ::sendmsg(fd, &msg, MSG_NOSIGNAL);
     if (written == static_cast<ssize_t>(total)) {
       _stats.totalBytesQueued += static_cast<uint64_t>(total);
@@ -111,10 +116,10 @@ bool HttpServer::queueVec(int fd, ConnStateInternal& state, const struct iovec* 
     }
     if (written >= 0) {
       _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
-      size_t remaining = static_cast<size_t>(written);
+      std::size_t remaining = static_cast<std::size_t>(written);
       for (int i = 0; i < iovcnt; ++i) {
         const char* base = static_cast<const char*>(iov[i].iov_base);
-        size_t len = iov[i].iov_len;
+        std::size_t len = iov[i].iov_len;
         if (remaining >= len) {
           remaining -= len;
           continue;
@@ -175,6 +180,8 @@ void HttpServer::flushOutbound(int fd, ConnStateInternal& state) {
     if (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
       break;
     }
+    int savedErr = errno;
+    log::error("send failed fd={} errno={} msg={}", fd, savedErr, std::strerror(savedErr));
     state.shouldClose = true;
     state.outBuffer.clear();
     break;
@@ -185,6 +192,11 @@ void HttpServer::flushOutbound(int fd, ConnStateInternal& state) {
       if (state.shouldClose) {
         closeConnection(fd);
       }
+    } else {
+      int savedErr = errno;
+      log::error("epoll_ctl MOD (disable writable) failed fd={} errno={} msg={}", fd, savedErr,
+                 std::strerror(savedErr));
+      state.shouldClose = true;
     }
   }
 }

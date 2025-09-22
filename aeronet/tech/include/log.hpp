@@ -2,19 +2,23 @@
 
 // Logging abstraction: spdlog when available; otherwise a lightweight fallback.
 #ifdef AERONET_ENABLE_SPDLOG
+// Ensure header-only usage is forced locally without exporting SPDLOG_HEADER_ONLY
+// as a public compile definition (avoids redefinition warnings if consumers also
+// decide to force header-only or use the compiled lib variant).
+#ifndef SPDLOG_HEADER_ONLY
+#define SPDLOG_HEADER_ONLY
+#endif
 #include <spdlog/common.h>  // IWYU pragma: export
 #include <spdlog/spdlog.h>  // IWYU pragma: export
 #else
-#include <array>
 #include <format>
 #include <iostream>
 #include <mutex>
 #include <ostream>
-#include <sstream>
 #include <string>
 #include <string_view>
 
-#include "timestring.hpp"
+#include "time-format.hpp"  // for TimePointISO8601UTC formatter
 #endif
 
 namespace aeronet {
@@ -48,42 +52,27 @@ inline std::mutex &logger_mutex() {
   return loggerMutex;
 }
 
-inline std::array<char, 24> timestamp() {
-  // Use ISO 8601 UTC with millisecond precision: YYYY-MM-DDTHH:MM:SS.sssZ
-  std::array<char, 24> buf;
-  TimeToStringISO8601UTCWithMs(Clock::now(), buf.data());
-  return buf;
+inline std::string build_timestamp() {
+  // Millisecond precision ISO 8601 UTC using the standardized formatter we already expose.
+  auto now = TimePointISO8601UTC{Clock::now()};
+  return std::format("{:ms}", now);
 }
 
 template <typename... Args>
 std::string run_format(std::string_view fmt, Args &&...args) {
-#if defined(__cpp_lib_format)
-  try {
-    if constexpr (sizeof...(Args) == 0) {
-      return std::string(fmt);
-    } else {
-      return std::vformat(fmt, std::make_format_args(args...));
-    }
-  } catch (...) {
-    // Formatting failed; set a dummy volatile flag to acknowledge handling and allow fallback.
-    static volatile int ignored = 0;
-    (void)ignored;
+  if constexpr (sizeof...(Args) == 0) {
+    return std::string(fmt);
+  } else {
+    return std::vformat(fmt, std::make_format_args(args...));
   }
-#endif
-  // Fallback: raw fmt + argument list appended (best effort)
-  std::ostringstream oss;
-  oss << fmt;
-  if constexpr (sizeof...(Args) > 0) {
-    oss << " | args:";
-    ((oss << ' ' << args), ...);
-  }
-  return oss.str();
 }
 
 inline void emit_line(const char *lvlTag, bool isErr, std::string_view msg) {
   std::lock_guard<std::mutex> lock(logger_mutex());
   auto &os = isErr ? std::cerr : std::cout;
-  os << std::string_view(timestamp()) << ' ' << lvlTag << ' ' << msg << '\n';
+  // Note: Allocates a small string each call; acceptable for fallback path. If needed, optimize with
+  // std::format_to into a fixed-size stack buffer or a thread_local reusable string.
+  os << build_timestamp() << ' ' << lvlTag << ' ' << msg << '\n';
 }
 }  // namespace detail
 
@@ -106,14 +95,14 @@ inline void info(std::string_view fmt, Args &&...args) {
   if (get_level() > level::info) {
     return;
   }
-  detail::emit_line("[info ]", false, detail::run_format(fmt, std::forward<Args>(args)...));
+  detail::emit_line("[info]", false, detail::run_format(fmt, std::forward<Args>(args)...));
 }
 template <typename... Args>
 inline void warn(std::string_view fmt, Args &&...args) {
   if (get_level() > level::warn) {
     return;
   }
-  detail::emit_line("[warn ]", false, detail::run_format(fmt, std::forward<Args>(args)...));
+  detail::emit_line("[warn]", false, detail::run_format(fmt, std::forward<Args>(args)...));
 }
 template <typename... Args>
 inline void error(std::string_view fmt, Args &&...args) {
@@ -127,7 +116,7 @@ inline void critical(std::string_view fmt, Args &&...args) {
   if (get_level() > level::critical) {
     return;
   }
-  detail::emit_line("[crit ]", true, detail::run_format(fmt, std::forward<Args>(args)...));
+  detail::emit_line("[critical]", true, detail::run_format(fmt, std::forward<Args>(args)...));
 }
 
 }  // namespace log

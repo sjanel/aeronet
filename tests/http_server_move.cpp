@@ -1,11 +1,18 @@
-#include <arpa/inet.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <cstdint>
+#include <string>
 #include <thread>
+#include <utility>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 
 using namespace std::chrono_literals;
@@ -43,7 +50,7 @@ std::string simpleGet(uint16_t port, const std::string& target) {
 TEST(HttpServerMove, MoveConstructAndServe) {
   std::atomic_bool stop{false};
   aeronet::HttpServer original(aeronet::ServerConfig{});
-  uint16_t port = original.port();
+  auto port = original.port();
   original.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = std::string("ORIG:") + std::string(req.target);
@@ -53,7 +60,7 @@ TEST(HttpServerMove, MoveConstructAndServe) {
   // Move construct server before running
   aeronet::HttpServer moved(std::move(original));
 
-  std::thread th([&] { moved.runUntil([&] { return stop.load(); }, 50ms); });
+  std::jthread th([&] { moved.runUntil([&] { return stop.load(); }, 50ms); });
   std::this_thread::sleep_for(100ms);
   std::string resp = simpleGet(port, "/mv");
   stop.store(true);
@@ -63,10 +70,13 @@ TEST(HttpServerMove, MoveConstructAndServe) {
 }
 
 TEST(HttpServerMove, MoveAssignWhileStopped) {
-  aeronet::HttpServer s1(aeronet::ServerConfig{});
-  aeronet::HttpServer s2(aeronet::ServerConfig{});
-  uint16_t port1 = s1.port();
-  uint16_t port2 = s2.port();
+  aeronet::HttpServer s1(aeronet::ServerConfig{}.withReusePort(false));
+  aeronet::HttpServer s2(aeronet::ServerConfig{}.withReusePort(false));
+  auto port1 = s1.port();
+  auto port2 = s2.port();
+
+  EXPECT_NE(port1, port2);
+
   s1.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = "S1";
@@ -83,7 +93,7 @@ TEST(HttpServerMove, MoveAssignWhileStopped) {
   EXPECT_EQ(s1.port(), port2);
 
   std::atomic_bool stop{false};
-  std::thread th([&] { s1.runUntil([&] { return stop.load(); }, 50ms); });
+  std::jthread th([&] { s1.runUntil([&] { return stop.load(); }, 50ms); });
   std::this_thread::sleep_for(120ms);
   std::string resp = simpleGet(port2, "/x");
   stop.store(true);

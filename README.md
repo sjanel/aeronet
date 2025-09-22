@@ -11,6 +11,7 @@ Features currently implemented:
 - Chunked Transfer-Encoding (requests) decoding (no trailers exposed yet)
 - Basic response builder (status line + headers + body convenience)
 - Keep-Alive (with timeout + max requests per connection)
+- Percent-decoding of request targets (path component) with UTF-8 support and strict validation (invalid sequences -> 400)
 - Pipelined sequential request handling on a single connection
 - Configurable limits: max header size, max body size
 - Date header caching (1 update / second) to reduce formatting cost
@@ -73,6 +74,7 @@ Headers & protocol niceties
 - [x] Content-Type (user supplied only)
 - [x] Expect: 100-continue handling
 - [x] Expect header ignored for HTTP/1.0 (no interim 100 sent)
+- [x] Percent-decoding of request target path (UTF-8 allowed, '+' not treated as space, invalid % -> 400)
 - [ ] Server header (intentionally omitted to keep minimal)
 - [ ] Access-Control-* (CORS) helpers
 
@@ -137,6 +139,7 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 | Date | Same-second caching invariance | ✅ | `http_date.cpp` (StableWithinSameSecond) |
 | Date | Second-boundary refresh | ✅ | `http_date.cpp` (ChangesAcrossSecondBoundary) |
 | Errors | 400 Bad Request (malformed line) | ✅ | `http_malformed.cpp` |
+| Parsing | Percent-decoding of path | ✅ | `http_url_decoding.cpp` (spaces, UTF-8, '+', invalid percent -> 400) |
 | Errors | 431, 413, 505, 501 | ✅ | Various tests (`http_malformed.cpp`, `http_additional.cpp`, version & TE tests) |
 | Errors | PayloadTooLarge in chunk decoding | ⚠ | Path exercised via guard; add dedicated oversize chunk test future |
 | Concurrency | SO_REUSEPORT distribution | ✅ | `http_multi_reuseport.cpp` |
@@ -220,7 +223,7 @@ server.runUntil([]{ return false; });
 ### Multi‑Reactor (SO_REUSEPORT) Launch Sketch
 
 ```cpp
-std::vector<std::thread> threads;
+std::vector<std::jthread> threads;
 for (int i = 0; i < 4; ++i) {
   threads.emplace_back([i]{
   ServerConfig cfg; cfg.withPort(8080).withReusePort(true); // or 0 for ephemeral resolved separately
@@ -229,7 +232,6 @@ for (int i = 0; i < 4; ++i) {
     s.runUntil([]{ return false; });
   });
 }
-for (auto& t : threads) t.join();
 ```
 
 ### Accessing Backpressure / IO Stats
@@ -275,6 +277,11 @@ Instead of manually creating N threads and N `HttpServer` instances, you can use
 - Exposes `stats()` returning both per-instance and aggregated totals (sums; `maxConnectionOutboundBuffer` is a max)
 - Manages lifecycle with internal `std::jthread`s; `stop()` requests shutdown of every instance
 - Provides the resolved listening `port()` after start (even for ephemeral port 0 requests)
+
+Implementation note: The test suite and examples uniformly use `std::jthread` (C++20) instead of `std::thread` to
+eliminate forgotten `join()` calls and make lifetime exception-safe. Where cooperative cancellation becomes useful
+later we can plumb the `stop_token` into the server loop. For now, `stop()` triggers shutdown and the `jthread`
+destructor performs the implicit `join()`.
 
 Minimal example:
 

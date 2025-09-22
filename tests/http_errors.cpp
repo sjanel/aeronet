@@ -1,11 +1,17 @@
-#include <arpa/inet.h>
 #include <gtest/gtest.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <chrono>
+#include <cstdint>
 #include <string>
 #include <thread>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 #include "test_util.hpp"
 
@@ -26,9 +32,9 @@ std::string sendAndCollect(uint16_t port, const std::string& raw) {
 
 TEST(HttpErrors, BadRequestMalformedRequestLine) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(80ms);
   std::string resp = sendAndCollect(port, "GETONLY\r\n\r\n");
   server.stop();
@@ -38,9 +44,9 @@ TEST(HttpErrors, BadRequestMalformedRequestLine) {
 
 TEST(HttpErrors, VersionNotSupported505) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(80ms);
   std::string req = "GET /test HTTP/2.0\r\nHost: x\r\n\r\n";  // HTTP/2.0 not supported
   std::string resp = sendAndCollect(port, req);
@@ -51,9 +57,9 @@ TEST(HttpErrors, VersionNotSupported505) {
 
 TEST(HttpErrors, UnsupportedTransferEncoding501) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(80ms);
   std::string req =
       "POST /u HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\nConnection: close\r\n\r\n";  // unsupported TE
@@ -65,9 +71,9 @@ TEST(HttpErrors, UnsupportedTransferEncoding501) {
 
 TEST(HttpErrors, ContentLengthAndTEConflict400) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(80ms);
   std::string req =
       "POST /c HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\nConnection: "
@@ -80,13 +86,13 @@ TEST(HttpErrors, ContentLengthAndTEConflict400) {
 
 TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse response;
     response.body = "ok";
     return response;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(80ms);
   // HTTP/1.0 without Connection: keep-alive should close
   int fd = tu_connect(port);
@@ -113,13 +119,13 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
 
 TEST(HttpKeepAlive10, OptInWithHeader) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse response;
     response.body = "ok";
     return response;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(80ms);
   int fd = tu_connect(port);
   ASSERT_GE(fd, 0);

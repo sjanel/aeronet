@@ -5,23 +5,23 @@
 namespace aeronet {
 
 constexpr auto write2(auto buf, std::integral auto value) {
-  *buf = '0' + (value / 10);
-  *++buf = '0' + (value % 10);
+  *buf = static_cast<char>('0' + (value / 10));
+  *++buf = static_cast<char>('0' + (value % 10));
   return ++buf;
 }
 
 constexpr auto write3(auto buf, std::integral auto value) {
-  *buf = '0' + (value / 100);
-  *++buf = '0' + ((value / 10) % 10);
-  *++buf = '0' + (value % 10);
+  *buf = static_cast<char>('0' + (value / 100));
+  *++buf = static_cast<char>('0' + ((value / 10) % 10));
+  *++buf = static_cast<char>('0' + (value % 10));
   return ++buf;
 }
 
 constexpr auto write4(auto buf, std::integral auto value) {
-  *buf = '0' + (value / 1000);
-  *++buf = '0' + ((value / 100) % 10);
-  *++buf = '0' + ((value / 10) % 10);
-  *++buf = '0' + (value % 10);
+  *buf = static_cast<char>('0' + (value / 1000));
+  *++buf = static_cast<char>('0' + ((value / 100) % 10));
+  *++buf = static_cast<char>('0' + ((value / 10) % 10));
+  *++buf = static_cast<char>('0' + (value % 10));
   return ++buf;
 }
 

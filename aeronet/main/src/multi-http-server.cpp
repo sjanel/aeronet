@@ -1,21 +1,42 @@
 #include "aeronet/multi-http-server.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
 #include <stdexcept>
+#include <string>
+#include <thread>
 #include <utility>
 
+#include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
+#include "http-method-set.hpp"
+#include "http-method.hpp"
 #include "invalid_argument_exception.hpp"
 #include "log.hpp"
 
 namespace aeronet {
 
-MultiHttpServer::MultiHttpServer(ServerConfig cfg, std::size_t threadCount)
+MultiHttpServer::MultiHttpServer(ServerConfig cfg, uint32_t threadCount)
     : _baseConfig(std::move(cfg)), _threadCount(threadCount) {
-  if (threadCount == 0) {
+  if (_threadCount == 0) {
     throw invalid_argument("MultiHttpServer: threadCount must be >= 1");
   }
 }
+
+MultiHttpServer::MultiHttpServer(ServerConfig cfg)
+    : MultiHttpServer(
+          ServerConfig(std::move(cfg)),  // make a copy for base storage
+          []() {
+            auto hc = std::thread::hardware_concurrency();
+            if (hc == 0) {
+              hc = 1;
+              log::warn("Unable to detect the number of available processors for MultiHttpServer - defaults to {}", hc);
+            }
+            return static_cast<uint32_t>(hc);
+          }()) {}
 
 MultiHttpServer::MultiHttpServer(MultiHttpServer&& other) noexcept
     : _baseConfig(std::move(other._baseConfig)),
@@ -82,16 +103,16 @@ void MultiHttpServer::start() {
     throw std::logic_error("MultiHttpServer already started");
   }
 
-  log::info("MultiHttpServer starting with {} thread(s); requested port={} reusePort={}", _threadCount,
-            _baseConfig.port, _baseConfig.reusePort);
+  log::info("MultiHttpServer starting with {} thread(s); requested port={} reusePort={} (auto-detected={})",
+            _threadCount, _baseConfig.port, _baseConfig.reusePort, (_baseConfig.port == 0 ? "yes" : "no"));
   // Prepare base config: if multiple threads, enforce reusePort.
   if (_threadCount > 1 && !_baseConfig.reusePort) {
     log::debug("Enabling SO_REUSEPORT automatically for multi-instance configuration");
     _baseConfig.reusePort = true;  // override silently (documented behavior)
   }
 
-  _servers.reserve(_threadCount);
-  _threads.reserve(_threadCount);
+  _servers.reserve(static_cast<decltype(_servers)::size_type>(_threadCount));
+  _threads.reserve(static_cast<decltype(_threads)::size_type>(_threadCount));
 
   // Strategy for port resolution:
   //  - If user requested port 0, launch the first server, capture its assigned port, then
@@ -120,9 +141,9 @@ void MultiHttpServer::start() {
   }
 
   // Launch threads and wait for first to resolve port if ephemeral.
-  for (std::size_t threadPos = 0; threadPos < _servers.size(); ++threadPos) {
+  for (decltype(_servers)::size_type threadPos = 0; threadPos < _servers.size(); ++threadPos) {
     HttpServer& srvPtr = _servers[threadPos];
-    _threads.emplace_back([this, &srvPtr, threadPos]() {
+    _threads.emplace_back([&srvPtr, threadPos]() {
       log::debug("Server thread {} entering run()", threadPos);
       try {
         srvPtr.run();
@@ -147,11 +168,11 @@ void MultiHttpServer::start() {
       } else {
         _resolvedPort = _baseConfig.port;
       }
-      log::info("Resolved listening port: {}", _resolvedPort);
+      log::info("Resolved listening port :{}", _resolvedPort);
     }
   }
   _running = true;
-  log::info("MultiHttpServer started successfully on port {}", _resolvedPort);
+  log::info("MultiHttpServer started successfully on port :{}", _resolvedPort);
 }
 
 void MultiHttpServer::stop() {
@@ -162,9 +183,15 @@ void MultiHttpServer::stop() {
   for (auto& srvPtr : _servers) {
     srvPtr.stop();
   }
-  // Unlock while joining to avoid potential deadlocks if join path queries server state.
-  auto threads = std::move(_threads);
-  auto servers = std::move(_servers);
+  // IMPORTANT LIFETIME NOTE:
+  // Each server thread captures a reference to its corresponding HttpServer element stored in _servers.
+  // We must therefore ensure that the HttpServer objects remain alive until after the jthreads have joined.
+  // std::jthread joins in its destructor, so we arrange destruction order such that:
+  //   1. Local 'threads' (moved from _threads) is destroyed FIRST (joins threads) while servers are still alive.
+  //   2. Local 'servers' (moved from _servers) is destroyed AFTER 'threads', releasing HttpServer objects safely.
+  // Destruction order is reverse of declaration order, so declare 'servers' BEFORE 'threads'.
+  auto servers = std::move(_servers);  // keeps server instances alive until end of function
+  auto threads = std::move(_threads);  // jthreads will join on destruction (after this scope ends)
   _running = false;
   log::info("MultiHttpServer stopped");
   // mutex unlocked at end of scope prior to join

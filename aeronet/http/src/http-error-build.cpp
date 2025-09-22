@@ -1,11 +1,10 @@
-﻿#include "http-error.hpp"
+﻿#include "http-error-build.hpp"
 
-// NOTE: This file now only builds an error response string; actual socket I/O is handled
-// by HttpServer's buffered write layer. Direct write() usage removed to keep a single
-// outbound path.
+#include <string_view>
 
 #include "http-constants.hpp"
-#include "http-error-build.hpp"
+#include "http-status-code.hpp"
+#include "raw-chars.hpp"
 #include "stringconv.hpp"
 
 namespace aeronet {

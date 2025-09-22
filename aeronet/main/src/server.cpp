@@ -1,33 +1,37 @@
 #include "aeronet/server.hpp"
 
-#include <arpa/inet.h>
-#include <fcntl.h>
+#include <asm-generic/socket.h>
 #include <netinet/in.h>
-#include <sys/epoll.h>
 #include <sys/socket.h>
-#include <sys/uio.h>  // for struct iovec
 #include <unistd.h>
 
 #include <cassert>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
-#include <ctime>
-#include <iostream>
+#include <exception>
+#include <memory>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
 
-#include "aeronet/event-loop.hpp"
+#include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
+#include "duration-format.hpp"
+#include "event-loop.hpp"
 #include "exception.hpp"
 #include "flat-hash-map.hpp"
 #include "http-constants.hpp"
 #include "http-error-build.hpp"
 #include "http-method-build.hpp"
+#include "http-method-set.hpp"
 #include "http-method.hpp"
+#include "log.hpp"
 #include "string-equal-ignore-case.hpp"
 #include "sys-utils.hpp"
+#include "timedef.hpp"
 #include "timestring.hpp"
 
 namespace aeronet {
@@ -70,7 +74,6 @@ namespace aeronet {
 //   - In a nominal environment using an ephemeral port (cfg.port == 0), the probability of an exception is ~0 unless
 //     the process hits fd limits or severe memory pressure. Fixed ports may legitimately throw due to EADDRINUSE.
 //   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
-
 HttpServer::HttpServer(const ServerConfig& cfg) : _listenFd(::socket(AF_INET, SOCK_STREAM, 0)), _config(cfg) {
   if (_listenFd < 0) {
     throw std::runtime_error("socket failed");
@@ -82,7 +85,7 @@ HttpServer::HttpServer(const ServerConfig& cfg) : _listenFd(::socket(AF_INET, SO
   }
   if (_config.reusePort) {
     if (::setsockopt(_listenFd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) < 0) {
-      std::perror("setsockopt(SO_REUSEPORT) warning");
+      log::error("setsockopt(SO_REUSEPORT) error: {}", std::strerror(errno));
     }
   }
   sockaddr_in addr{};
@@ -193,17 +196,18 @@ void HttpServer::addPathHandler(std::string path, http::Method method, const Req
   pPathHandlerEntry->handlers[static_cast<std::underlying_type_t<http::Method>>(method)] = handler;
 }
 
-void HttpServer::run() {
+void HttpServer::run(Duration checkPeriod) {
   if (_running) {
     throw exception("Server is already running");
   }
-  _running = true;
-  while (_running) {
-    eventLoop(std::chrono::milliseconds{500});
+  log::info("Server running until SIGINT or SIGTERM (check period of {})", checkPeriod);
+  for (_running = true; _running;) {
+    eventLoop(checkPeriod);
   }
 }
 
 void HttpServer::stop() {
+  log::info("Stopping server");
   _running = false;
   if (_listenFd != -1) {
     safeClose(_listenFd, "listenFd(stop)");
@@ -214,15 +218,13 @@ void HttpServer::stop() {
 
 void HttpServer::runUntil(const std::function<bool()>& predicate, Duration checkPeriod) {
   if (_running) {
-    return;
+    throw exception("Server is already running");
   }
-  _running = true;
-  while (_running) {
+  log::info("Server running until predicate, SIGINT or SIGTERM (check period of {})", PrettyDuration{checkPeriod});
+  for (_running = true; _running && !predicate();) {
     eventLoop(checkPeriod);
-    if (predicate && predicate()) {
-      stop();
-    }
   }
+  stop();
 }
 
 void HttpServer::refreshCachedDate() {
@@ -245,7 +247,6 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
       break;  // need more data or connection closed
     }
     bool isChunked = false;
-    size_t contentLen = 0;
     bool hasTE = false;
     if (std::string_view te = req.findHeader(http::TransferEncoding); !te.empty()) {
       hasTE = true;
@@ -275,14 +276,6 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
       closeCnx = true;
       break;
     }
-    bool sent100 = false;
-    auto send100 = [&]() {
-      if (sent100) {
-        return;
-      }
-      queueData(fd, state, http::HTTP11_100_CONTINUE.data(), http::HTTP11_100_CONTINUE.size());
-      sent100 = true;
-    };
     bool expectContinue = false;
     if (req.version == http::HTTP11) {
       if (std::string_view expectVal = req.findHeader(http::Expect); !expectVal.empty()) {
@@ -291,7 +284,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
         }
       }
     }
-    size_t consumedBytes = 0;
+    std::size_t consumedBytes = 0;
     if (!decodeBodyIfReady(fd, state, req, headerEnd, isChunked, expectContinue, closeCnx, consumedBytes)) {
       break;  // need more bytes or error
     }
@@ -302,9 +295,9 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
       try {
         _streamingHandler(req, writer);
       } catch (const std::exception& ex) {
-        std::cerr << "Exception in streaming handler: " << ex.what() << '\n';
+        log::error("Exception in streaming handler: {}", ex.what());
       } catch (...) {
-        std::cerr << "Unknown exception in streaming handler." << '\n';
+        log::error("Unknown exception in streaming handler.");
       }
       if (!writer.finished()) {
         writer.end();
@@ -321,8 +314,6 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
         state.shouldClose = true;
         closeCnx = true;  // will close after outbound buffer drains
       }
-      // Force an immediate flush attempt so tests reading right after handler see bytes sooner.
-      flushOutbound(fd, state);
       break;  // done with this request (streaming is synchronous for now)
     }
 
@@ -338,22 +329,22 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
         auto method = http::toMethodEnum(req.method);
         if (!http::methodAllowed(it->second.methodMask, method)) {
           resp.statusCode = 405;
-          resp.reason = std::string(http::ReasonMethodNotAllowed);
+          resp.reason.assign(http::ReasonMethodNotAllowed);
           resp.body = resp.reason;
           resp.contentType = "text/plain";
         } else {
           try {
             resp = it->second.handlers[static_cast<std::underlying_type_t<http::Method>>(method)](req);
           } catch (const std::exception& ex) {
-            std::cerr << "Exception in path handler: " << ex.what() << '\n';
+            log::error("Exception in path handler: {}", ex.what());
             resp.statusCode = 500;
-            resp.reason = std::string(http::ReasonInternalServerError);
+            resp.reason.assign(http::ReasonInternalServerError);
             resp.body = resp.reason;
             resp.contentType = "text/plain";
           } catch (...) {
-            std::cerr << "Unknown exception in path handler." << '\n';
+            log::error("Unknown exception in path handler.");
             resp.statusCode = 500;
-            resp.reason = std::string(http::ReasonInternalServerError);
+            resp.reason.assign(http::ReasonInternalServerError);
             resp.body = resp.reason;
             resp.contentType = "text/plain";
           }
@@ -363,15 +354,15 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
       try {
         resp = _handler(req);
       } catch (const std::exception& ex) {
-        std::cerr << "Exception in request handler: " << ex.what() << '\n';
+        log::error("Exception in request handler: {}", ex.what());
         resp.statusCode = 500;
-        resp.reason = std::string(http::ReasonInternalServerError);
+        resp.reason.assign(http::ReasonInternalServerError);
         resp.body = resp.reason;
         resp.contentType = "text/plain";
       } catch (...) {
-        std::cerr << "Unknown exception in request handler." << '\n';
+        log::error("Unknown exception in request handler.");
         resp.statusCode = 500;
-        resp.reason = std::string(http::ReasonInternalServerError);
+        resp.reason.assign(http::ReasonInternalServerError);
         resp.body = resp.reason;
         resp.contentType = "text/plain";
       }
@@ -390,18 +381,26 @@ void HttpServer::eventLoop(Duration timeout) {
   }
   refreshCachedDate();
   sweepIdleConnections();
-  _loop->poll(timeout, [&](int fd, uint32_t ev) {
+  int ready = _loop->poll(timeout, [&](int fd, uint32_t ev) {
     if (fd == _listenFd) {
       acceptNewConnections();
     } else {
       if (ev & EPOLLOUT) {
-        handleWritableClient(fd, ev);
+        handleWritableClient(fd);
       }
       if (ev & EPOLLIN) {
         handleReadableClient(fd);
       }
     }
   });
+  // If epoll_wait failed with a non-EINTR error (EINTR is mapped to 0 in EventLoop::poll), ready will be -1.
+  // Not handling this would cause a tight loop spinning on the failing epoll fd (e.g., after EBADF or EINVAL),
+  // burning CPU while doing no useful work. Treat it as fatal: log and stop the server.
+  if (ready < 0) {
+    log::error("epoll_wait (eventLoop) failed: {}", std::strerror(errno));
+    // Mark server as no longer running so outer loops terminate gracefully.
+    _running = false;
+  }
 }
 
 }  // namespace aeronet

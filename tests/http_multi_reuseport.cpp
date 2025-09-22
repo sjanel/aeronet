@@ -1,11 +1,19 @@
 #include <arpa/inet.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
+#include <chrono>
+#include <cstddef>  // for std::size_t casts
+#include <cstdint>
 #include <future>
+#include <string>
 #include <thread>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/server.hpp"
 
 // This test only validates that two servers can bind the same port with SO_REUSEPORT enabled
@@ -31,7 +39,7 @@ std::string simpleGet(const char* host, uint16_t port, const char* path) {
   buf.resize(4096);
   ssize_t received = ::recv(fd, buf.data(), buf.size(), 0);
   if (received > 0) {
-    buf.resize(static_cast<size_t>(received));
+    buf.resize(static_cast<std::size_t>(received));
   } else {
     buf.clear();
   }
@@ -59,12 +67,12 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
   std::promise<void> startedA;
   std::promise<void> startedB;
 
-  std::thread tA([&] {
+  std::jthread tA([&] {
     startedA.set_value();
     serverA.run();
   });
   startedA.get_future().wait();
-  std::thread tB([&] {
+  std::jthread tB([&] {
     startedB.set_value();
     serverB.run();
   });
