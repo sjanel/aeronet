@@ -16,12 +16,29 @@
 namespace aeronet {
 
 void HttpServer::sweepIdleConnections() {
-  if (!_config.enableKeepAlive) {
-    return;
-  }
+  // Periodic maintenance of live connections: applies keep-alive timeout (if enabled) and
+  // header read timeout (always, regardless of keep-alive enablement). The header read timeout
+  // needs a periodic check because a client might send a partial request line then stall; no
+  // further EPOLLIN events will arrive to trigger enforcement in handleReadableClient().
   auto now = std::chrono::steady_clock::now();
   for (auto it = _connStates.begin(); it != _connStates.end();) {
-    if (it->second.shouldClose || (now - it->second.lastActivity) > _config.keepAliveTimeout) {
+    bool closeThis = false;
+    ConnStateInternal& st = it->second;
+    // Keep-alive inactivity enforcement only if enabled.
+    if (_config.enableKeepAlive) {
+      if (st.shouldClose || (now - st.lastActivity) > _config.keepAliveTimeout) {
+        closeThis = true;
+      }
+    } else if (st.shouldClose) {
+      closeThis = true;
+    }
+    // Header read timeout: active if headerStart set and duration exceeded and no full request parsed yet.
+    if (!closeThis && _config.headerReadTimeout.count() > 0 && st.headerStart.time_since_epoch().count() != 0) {
+      if (now - st.headerStart > _config.headerReadTimeout) {
+        closeThis = true;
+      }
+    }
+    if (closeThis) {
       int connFd = it->first;
       ++it;
       closeConnection(connFd);
@@ -62,6 +79,9 @@ void HttpServer::acceptNewConnections() {
       pst->buffer.ensureAvailableCapacity(4096);
       ssize_t bytesRead = ::read(client_fd, pst->buffer.data() + pst->buffer.size(), 4096);
       if (bytesRead > 0) {
+        if (pst->headerStart.time_since_epoch().count() == 0) {
+          pst->headerStart = std::chrono::steady_clock::now();
+        }
         pst->buffer.resize_down(pst->buffer.size() + static_cast<std::size_t>(bytesRead));
         if (bytesRead < 4096) {
           break;
@@ -123,6 +143,9 @@ void HttpServer::handleReadableClient(int fd) {
       break;
     }
     state.buffer.resize_down(state.buffer.size() + static_cast<std::size_t>(count));
+    if (count > 0 && state.headerStart.time_since_epoch().count() == 0) {
+      state.headerStart = std::chrono::steady_clock::now();
+    }
     if (state.buffer.size() > _config.maxHeaderBytes + _config.maxBodyBytes) {
       closeCnx = true;
       break;
@@ -130,6 +153,17 @@ void HttpServer::handleReadableClient(int fd) {
     if (processRequestsOnConnection(fd, state)) {
       closeCnx = true;
       break;
+    }
+    // Header read timeout enforcement: if headers of current pending request are not complete yet
+    // (heuristic: no full request parsed and buffer not empty) and duration exceeded -> close.
+    if (_config.headerReadTimeout.count() > 0) {
+      if (state.headerStart.time_since_epoch().count() != 0) {
+        auto now = std::chrono::steady_clock::now();
+        if (now - state.headerStart > _config.headerReadTimeout) {
+          closeCnx = true;
+          break;
+        }
+      }
     }
   }
   if (closeCnx) {

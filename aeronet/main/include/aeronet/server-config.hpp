@@ -50,6 +50,15 @@ struct ServerConfig {
   // sent). Once exceeded the server proactively closes the connection. Default: 5000 ms.
   std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
 
+  // ===========================================
+  // Slowloris / header read timeout mitigation
+  // ===========================================
+  // Maximum duration allowed to fully receive the HTTP request headers (request line + headers + CRLFCRLF)
+  // from the moment the first byte of the request is read on a connection. If exceeded before the header
+  // terminator is observed the server closes the connection (optionally could emit 408 in future). A value
+  // of 0 disables this protective timeout. Default: disabled.
+  std::chrono::milliseconds headerReadTimeout{std::chrono::milliseconds{0}};
+
   // Fluent builder style setters
   ServerConfig& withPort(uint16_t port) {  // Set explicit listening port (0 = ephemeral)
     this->port = port;
@@ -88,6 +97,11 @@ struct ServerConfig {
 
   ServerConfig& withKeepAliveTimeout(std::chrono::milliseconds timeout) {  // Adjust idle keep-alive timeout
     this->keepAliveTimeout = timeout;
+    return *this;
+  }
+
+  ServerConfig& withHeaderReadTimeout(std::chrono::milliseconds timeout) {  // Set slow header read timeout (0=off)
+    this->headerReadTimeout = timeout;
     return *this;
   }
 };

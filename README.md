@@ -4,28 +4,94 @@
 
 HTTP/1.1 server library for Linux only – work in progress.
 
-Features currently implemented:
+## Core HTTP & Protocol Features (Implemented)
 
-- Epoll based edge-triggered event loop (one thread per HttpServer)
-- Minimal zero-copy-ish HTTP/1.1 request parsing (request line + headers + Content-Length body)
-- Chunked Transfer-Encoding (requests) decoding (no trailers exposed yet)
-- Basic response builder (status line + headers + body convenience)
-- Keep-Alive (with timeout + max requests per connection)
-- Percent-decoding of request targets (path component) with UTF-8 support and strict validation (invalid sequences -> 400)
-- Pipelined sequential request handling on a single connection
-- Configurable limits: max header size, max body size
-- Date header caching (1 update / second) to reduce formatting cost
-- HEAD method support (suppresses body, preserves Content-Length)
-- Expect: 100-continue handling
-- Graceful shutdown via runUntil()
-- Move semantics for HttpServer (transfer listening socket + loop)
-- Multi-reactor horizontal scaling via SO_REUSEPORT
-- Optional per-path handler routing with method allow‑lists (exact path match)
-- Transparent heterogeneous lookup for path handlers (std::string / std::string_view / const char*)
-- Backpressure-aware outbound buffering with statistics for tuning (shared by fixed and streaming responses)
-- Multi-instance orchestration wrapper (`MultiHttpServer`) for convenient horizontal scaling (ephemeral port resolution + aggregated stats)
-- Lightweight spdlog-style logging API with ISO 8601 UTC timestamps (fallback internally; pluggable interface planned)
-- Tests for basics, move semantics, reuseport distribution, keep-alive, header/body limits, chunked, HEAD, Expect, multi-server wrapper
+| Feature | Notes |
+|---------|-------|
+| HTTP/1.1 request parsing | Request line + headers + `Content-Length` bodies (minimal allocations) |
+| Chunked request decoding | `Transfer-Encoding: chunked` (trailers parsed but not exposed yet) |
+| Response building | Convenience struct & helpers (status + headers + body) |
+| Keep-Alive | Timeout + max-requests per connection; HTTP/1.0 opt-in |
+| Percent-decoding | UTF-8 path decoding, invalid sequences -> 400, '+' preserved |
+| Pipelining | Sequential (no parallel handler execution) |
+| Configurable limits | Max header bytes, max body bytes, max outbound buffer bytes |
+| Date header caching | 1 update / second (RFC7231 format) |
+| HEAD method | Suppresses body while preserving `Content-Length` |
+| Expect: 100-continue | Sent only when request has a (non-zero) body |
+| Per-path routing | Exact path match with method allow‑lists |
+| Mixed-mode dispatch | Deterministic precedence: path streaming > path normal > global streaming > global normal |
+| Streaming responses | Chunked by default; switch to fixed length with `setContentLength()` |
+| Slowloris mitigation | Header read timeout (configurable; disabled by default) |
+| 404 / 405 handling | Automatic 404 (unknown path) & 405 (known path, method not allowed) |
+| Graceful shutdown | `runUntil()` predicate loop |
+| Backpressure buffering | Unified buffering for fixed + streaming responses |
+
+## Developer / Operational Features
+
+| Feature | Notes |
+|---------|-------|
+| Epoll edge-triggered loop | One thread per `HttpServer`; writev used for header+body scatter-gather |
+| SO_REUSEPORT scaling | Horizontal multi-reactor capability |
+| Multi-instance wrapper | `MultiHttpServer` orchestrates N reactors, aggregates stats |
+| Move semantics | Transfer listening socket & loop state safely |
+| Heterogeneous lookups | Path handler map accepts `std::string`, `std::string_view`, `const char*` |
+| Outbound stats | Bytes queued, immediate vs flush writes, high-water marks |
+| Lightweight logging | Pluggable design (spdlog optional); ISO 8601 UTC timestamps |
+| Builder-style config | Fluent `ServerConfig` setters (`withPort()`, etc.) |
+| Metrics callback (alpha) | Per-request timing & size scaffold hook |
+| RAII construction | Fully listening after constructor (ephemeral port resolved immediately) |
+| Comprehensive tests | Parsing, limits, streaming, mixed precedence, reuseport, move semantics, keep-alive |
+| Mixed handlers example | Normal + streaming coexistence on same path (e.g. GET streaming, POST fixed) |
+
+The sections below provide a more granular feature matrix and usage examples.
+
+## Quick Start (Minimal Server)
+
+Spin up a basic HTTP/1.1 server that responds on `/hello` in just a few lines. If you pass `0` as the port (or omit it), the kernel picks an ephemeral port which you can query immediately.
+
+```cpp
+#include <aeronet/server.hpp>
+#include <aeronet/server-config.hpp>
+#include <aeronet/http-response.hpp>
+using namespace aeronet;
+
+int main() {
+  HttpServer server(ServerConfig{}.withPort(0)); // 0 => ephemeral port
+  server.addPathHandler("/hello", http::MethodSet{http::Method::GETrequest_or_throw}, [](const HttpRequest&) {
+    HttpResponse r{200, "OK"};
+    r.contentType = "text/plain";
+    r.body = "hello from aeronet\n";
+    return r;
+  });
+  std::printf("Listening on %u\n", server.port());
+  server.run(); // Blocking call, send Ctrl+C to stop
+}
+```
+
+Build & run (example):
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+./build/examples/aeronet-minimal 8080   # or omit 8080 for ephemeral
+```
+
+Test with curl:
+
+```bash
+curl -i http://localhost:8080/hello
+```
+
+Example output:
+
+```text
+HTTP/1.1 200 OK
+Content-Type: text/plain
+Content-Length: 18
+Connection: keep-alive
+
+hello from aeronet
+```
 
 ## HTTP/1.1 Feature Matrix
 
@@ -54,6 +120,7 @@ Response generation
 - [x] Basic fixed body responses
 - [x] HEAD method (suppressed body, correct Content-Length)
 - [x] Outgoing chunked / streaming responses (basic API: status/headers + incremental write + end, keep-alive capable)
+- [x] Mixed-mode dispatch (simultaneous registration of streaming and fixed handlers with precedence)
 - [ ] Compression (gzip / br)
 
 Status & error handling
@@ -85,6 +152,7 @@ Performance / architecture
 - [x] Multi-instance orchestration wrapper (`MultiHttpServer`) (auto reuseport, aggregated stats)
 - [x] writev scatter-gather for response header + body
 - [x] Outbound write buffering with EPOLLOUT-driven backpressure
+- [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
 - [ ] Benchmarks & profiling docs
 - [ ] Zero-copy sendfile() support for static files
 
@@ -278,11 +346,6 @@ Instead of manually creating N threads and N `HttpServer` instances, you can use
 - Manages lifecycle with internal `std::jthread`s; `stop()` requests shutdown of every instance
 - Provides the resolved listening `port()` after start (even for ephemeral port 0 requests)
 
-Implementation note: The test suite and examples uniformly use `std::jthread` (C++20) instead of `std::thread` to
-eliminate forgotten `join()` calls and make lifetime exception-safe. Where cooperative cancellation becomes useful
-later we can plumb the `stop_token` into the server loop. For now, `stop()` triggers shutdown and the `jthread`
-destructor performs the implicit `join()`.
-
 Minimal example:
 
 ```cpp
@@ -376,6 +439,54 @@ Limitations / roadmap (streaming phase 1):
 Testing:
 
 - See `tests/http_streaming.cpp` (basic chunk framing & HEAD) and `tests/http_streaming_keepalive.cpp` (keep-alive reuse) for examples.
+- Mixed / precedence / conflict / HEAD suppression / keep-alive mixing: `tests/http_streaming_mixed.cpp`
+
+### Mixed Mode & Dispatch Precedence
+
+You can register both fixed (normal) and streaming handlers simultaneously at different granularity levels. The server applies the following precedence when selecting which handler to invoke for a request method + path:
+
+1. Path-specific streaming handler (highest)
+2. Path-specific normal handler
+3. Global streaming handler
+4. Global normal handler (lowest)
+
+If no handler matches the path: 404. If a path exists but the method is not in its allow-set: 405 (Method Not Allowed). Method allow sets for streaming and normal handlers are independently validated to prevent duplicate conflicting registration (conflicts throw early at registration time).
+
+HEAD requests participate in the same precedence logic using an implicit fallback to GET when a HEAD-specific registration is absent (common ergonomic shortcut). Body data generated by streaming handlers is automatically suppressed for HEAD while preserving `Content-Length` if it was explicitly set.
+
+Conflict rules:
+
+- Registering a streaming handler for (path, method) that already has a normal handler (or vice-versa) throws.
+- Distinct method sets on the same path can split between streaming and normal handlers (e.g., GET streaming, POST normal) enabling flexible composition.
+
+Example (mixed per-path + global fallback):
+
+```cpp
+HttpServer server(ServerConfig{});
+// Global normal fallback
+server.setHandler([](const HttpRequest&){ HttpResponse r{200, "OK"}; r.contentType="text/plain"; r.body="GLOBAL"; return r; });
+// Global streaming fallback (higher than global normal)
+server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
+  w.setStatus(200, "OK"); w.setHeader("Content-Type", "text/plain"); w.write("STREAMFALLBACK"); w.end();
+});
+// Path-specific streaming (highest precedence for GET)
+http::MethodSet getOnly; getOnly.insert(http::Method::GET);
+server.addPathStreamingHandler("/stream", getOnly, [](const HttpRequest&, HttpResponseWriter& w){
+  w.setStatus(200, "OK"); w.setHeader("Content-Type", "text/plain"); w.write("PS"); w.end();
+});
+// Path-specific normal (takes precedence over global fallbacks for POST)
+http::MethodSet postOnly; postOnly.insert(http::Method::POST);
+server.addPathHandler("/stream", postOnly, [](const HttpRequest&){ return HttpResponse{201, "Created", "text/plain", "NORMAL"}; });
+```
+
+Behavior summary for above:
+
+- `GET /stream` -> path streaming handler (body "PS")
+- `POST /stream` -> path normal handler (body "NORMAL")
+- `GET /other` -> global streaming fallback (body "STREAMFALLBACK")
+- If global streaming handler were absent: `GET /other` would use global normal fallback (body "GLOBAL")
+
+See `tests/http_streaming_mixed.cpp` for exhaustive precedence, conflict, HEAD-suppression, keep-alive mixed sequencing, and 405 validations.
 
 
 ## Configuration API (builder style)
@@ -432,6 +543,7 @@ Internal bitmask order follows enum declaration in `http-method.hpp`.
 - 431 is returned if the header section exceeds `maxHeaderBytes`.
 - 413 is returned if the declared `Content-Length` exceeds `maxBodyBytes`.
 - Connections exceeding `maxOutboundBufferBytes` (buffered pending write bytes) are marked to close after flush (default 4MB) to prevent unbounded memory growth if peers stop reading.
+- Slowloris protection: configure `withHeaderReadTimeout(ms)` to bound how long a client may take to send an entire request head (request line + headers). 0 disables.
 
 ### Performance / Metrics & Backpressure
 
@@ -445,6 +557,35 @@ Internal bitmask order follows enum declaration in `http-method.hpp`.
 - `maxConnectionOutboundBuffer` – high-water mark of any single connection's buffered bytes
 
 Use these to gauge backpressure behavior and tune `maxOutboundBufferBytes`. When a connection's pending buffer would exceed the configured maximum, it is marked for closure once existing data flushes, preventing unbounded memory growth under slow-reader scenarios.
+
+### Metrics Callback (Scaffold)
+
+You can install a lightweight per-request metrics callback capturing basic timing and size information:
+
+```cpp
+server.setMetricsCallback([](const HttpServer::RequestMetrics& m){
+  // Export to stats sink / log
+  // m.method, m.target, m.status, m.bytesIn, m.bytesOut (currently 0 for fixed responses), m.duration, m.reusedConnection
+});
+```
+
+Current fields (alpha – subject to change before 1.0):
+
+| Field | Description |
+|-------|-------------|
+| method | Original request method string |
+| target | Request target (decoded path) |
+| status | Response status code (best-effort 200 for streaming if not overridden) |
+| bytesIn | Request body size (after chunk decode) |
+| bytesOut | Placeholder (0 for now, future: capture flushed bytes per response) |
+| duration | Wall time from parse completion to response dispatch end (best effort) |
+| reusedConnection | True if this connection previously served other request(s) |
+
+The callback runs in the event loop thread – keep it non-blocking.
+
+### Test HTTP Client Helper
+
+The test suite uses a unified helper for simple GETs, streaming incremental reads, and multi-request keep-alive batches. See `docs/test-client-helper.md` for guidance when adding new tests.
 
 ### Roadmap additions
 
