@@ -27,12 +27,17 @@ std::string simpleGet(uint16_t port, const std::string& target) {
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+  int cRet = ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+  if (cRet < 0) {
     ::close(fd);
     return {};
   }
   std::string req = "GET " + target + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-  ::send(fd, req.data(), req.size(), 0);
+  ssize_t sent = ::send(fd, req.data(), req.size(), 0);
+  if (sent != static_cast<ssize_t>(req.size())) {
+    ::close(fd);
+    return {};
+  }
   char buf[4096];
   std::string out;
   while (true) {
@@ -64,7 +69,6 @@ TEST(HttpServerMove, MoveConstructAndServe) {
   std::this_thread::sleep_for(100ms);
   std::string resp = simpleGet(port, "/mv");
   stop.store(true);
-  th.join();
 
   ASSERT_NE(std::string::npos, resp.find("ORIG:/mv"));
 }
@@ -97,6 +101,5 @@ TEST(HttpServerMove, MoveAssignWhileStopped) {
   std::this_thread::sleep_for(120ms);
   std::string resp = simpleGet(port2, "/x");
   stop.store(true);
-  th.join();
   ASSERT_NE(std::string::npos, resp.find("S2"));
 }

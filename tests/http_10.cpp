@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
-#include <chrono>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -18,7 +17,7 @@ namespace {
 std::string collectSimple(uint16_t port, const std::string& req) {
   int fd = tu_connect(port);
   EXPECT_GE(fd, 0);
-  tu_sendAll(fd, req);
+  EXPECT_TRUE(tu_sendAll(fd, req));
   std::string resp = tu_recvUntilClosed(fd);
   return resp;
 }
@@ -94,12 +93,12 @@ TEST(Http10, KeepAliveOptInStillWorks) {
   int fd = tu_connect(port);
   ASSERT_GE(fd, 0);
   std::string req1 = "GET /k1 HTTP/1.0\r\nHost: h\r\nConnection: keep-alive\r\n\r\n";
-  tu_sendAll(fd, req1);
+  ASSERT_TRUE(tu_sendAll(fd, req1));
   std::string first = tu_recvWithTimeout(fd, 300ms);
   ASSERT_NE(std::string::npos, first.find("HTTP/1.0 200"));
   ASSERT_NE(std::string::npos, first.find("Connection: keep-alive"));
   std::string req2 = "GET /k2 HTTP/1.0\r\nHost: h\r\nConnection: keep-alive\r\n\r\n";
-  tu_sendAll(fd, req2);
+  ASSERT_TRUE(tu_sendAll(fd, req2));
   std::string second = tu_recvWithTimeout(fd, 300ms);
   ASSERT_NE(std::string::npos, second.find("HTTP/1.0 200"));
   ::close(fd);

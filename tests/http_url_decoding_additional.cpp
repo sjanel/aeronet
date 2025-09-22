@@ -2,7 +2,6 @@
 #include <unistd.h>
 
 #include <atomic>
-#include <cstdint>
 #include <string>
 #include <thread>
 
@@ -12,25 +11,11 @@
 #include "aeronet/server.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
-#include "test_util.hpp"
+#include "test_http_client.hpp"
 
 using namespace aeronet;
 
-namespace {
-std::string raw(uint16_t port, const std::string& req) {
-  int fd = tu_connect(port);
-  if (fd < 0) {
-    return {};
-  }
-  if (!tu_sendAll(fd, req)) {
-    ::close(fd);
-    return {};
-  }
-  auto resp = tu_recvUntilClosed(fd);
-  ::close(fd);
-  return resp;
-}
-}  // namespace
+// (Removed raw() helper; using shared test_http_client::request)
 
 TEST(HttpUrlDecodingExtra, IncompletePercentSequence400) {
   ServerConfig cfg;
@@ -41,7 +26,12 @@ TEST(HttpUrlDecodingExtra, IncompletePercentSequence400) {
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  auto resp = raw(server.port(), "GET /bad% HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  test_http_client::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/bad%";
+  auto respOpt = test_http_client::request(server.port(), opt);
+  ASSERT_TRUE(respOpt.has_value());
+  const std::string &resp = *respOpt;
   EXPECT_NE(resp.find("400 Bad Request"), std::string::npos);
   done = true;  // jthread auto-joins on destruction
 }
@@ -51,7 +41,7 @@ TEST(HttpUrlDecodingExtra, MixedSegmentsDecoding) {
   cfg.withMaxRequestsPerConnection(2);
   HttpServer server(cfg);
   http::MethodSet ms{http::Method::GET};
-  server.addPathHandler("/seg one/part%/two", ms, [](const HttpRequest& req) {
+  server.addPathHandler("/seg one/part%/two", ms, [](const HttpRequest &req) {
     HttpResponse resp;
     resp.statusCode = 200;
     resp.reason = "OK";
@@ -65,7 +55,12 @@ TEST(HttpUrlDecodingExtra, MixedSegmentsDecoding) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   // encodes space in first segment only
-  auto resp = raw(server.port(), "GET /seg%20one/part%25/two HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  test_http_client::RequestOptions opt2;
+  opt2.method = "GET";
+  opt2.target = "/seg%20one/part%25/two";
+  auto respOpt = test_http_client::request(server.port(), opt2);
+  ASSERT_TRUE(respOpt.has_value());
+  const std::string &resp = *respOpt;
   EXPECT_NE(resp.find("200 OK"), std::string::npos);
   EXPECT_NE(resp.find("/seg one/part%/two"), std::string::npos);
   done = true;  // jthread auto-joins on destruction

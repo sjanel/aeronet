@@ -48,7 +48,11 @@ TEST(StreamingBackpressure, LargeBodyQueues) {
   // just read some bytes to allow flush cycles
   char buf[4096];
   for (int i = 0; i < 10; i++) {
-    ::recv(fd, buf, sizeof(buf), 0);
+    ssize_t rcv = ::recv(fd, buf, sizeof(buf), 0);
+    if (rcv <= 0) {
+      // Connection might close early; break to avoid ASSERT on expected close after full send.
+      break;
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   ::close(fd);

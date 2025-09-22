@@ -1,8 +1,4 @@
 #include <gtest/gtest.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 #include <atomic>
 #include <thread>
@@ -11,9 +7,9 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
-#include "exception.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
+#include "test_http_client.hpp"
 
 using namespace aeronet;
 
@@ -46,60 +42,43 @@ TEST(HttpRouting, BasicPathDispatch) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 
-  // Helper lambda to perform a raw HTTP request and return response string
-  auto doReq = [&](const std::string& raw) -> std::string {
-    int sock = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-      return {};
-    }
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = htons(server.port());
-    bool connected = false;
-    for (int attempt = 0; attempt < 50; ++attempt) {
-      if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
-        connected = true;
-        break;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    if (!connected) {
-      ::close(sock);
-      return std::string{};
-    }
-    if (::send(sock, raw.data(), raw.size(), 0) != static_cast<ssize_t>(raw.size())) {
-      ::close(sock);
-      return std::string{};
-    }
-    char buf[1024];
-    ssize_t recvCount = ::recv(sock, buf, sizeof(buf), 0);
-    std::string resp;
-    if (recvCount > 0) {
-      resp.assign(buf, buf + recvCount);
-    }
-    ::close(sock);
-    return resp;
-  };
-
-  std::string resp1 = doReq("GET /hello HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  test_http_client::RequestOptions getHello;
+  getHello.method = "GET";
+  getHello.target = "/hello";
+  auto resp1Opt = test_http_client::request(server.port(), getHello);
+  ASSERT_TRUE(resp1Opt.has_value());
+  const std::string& resp1 = *resp1Opt;
   EXPECT_NE(resp1.find("200 OK"), std::string::npos);
   EXPECT_NE(resp1.find("world"), std::string::npos);
-
-  std::string resp2 = doReq("POST /hello HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+  test_http_client::RequestOptions postHello;
+  postHello.method = "POST";
+  postHello.target = "/hello";
+  postHello.headers.push_back({"Content-Length", "0"});
+  auto resp2Opt = test_http_client::request(server.port(), postHello);
+  ASSERT_TRUE(resp2Opt.has_value());
+  const std::string& resp2 = *resp2Opt;
   EXPECT_NE(resp2.find("405 Method Not Allowed"), std::string::npos);
-
-  std::string resp3 = doReq("GET /missing HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  test_http_client::RequestOptions getMissing;
+  getMissing.method = "GET";
+  getMissing.target = "/missing";
+  auto resp3Opt = test_http_client::request(server.port(), getMissing);
+  ASSERT_TRUE(resp3Opt.has_value());
+  const std::string& resp3 = *resp3Opt;
   EXPECT_NE(resp3.find("404 Not Found"), std::string::npos);
-
-  std::string resp4 = doReq("POST /multi HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+  test_http_client::RequestOptions postMulti;
+  postMulti.method = "POST";
+  postMulti.target = "/multi";
+  postMulti.headers.push_back({"Content-Length", "0"});
+  auto resp4Opt = test_http_client::request(server.port(), postMulti);
+  ASSERT_TRUE(resp4Opt.has_value());
+  const std::string& resp4 = *resp4Opt;
   EXPECT_NE(resp4.find("200 OK"), std::string::npos);
   EXPECT_NE(resp4.find("POST!"), std::string::npos);
 
   done.store(true);
 }
 
-TEST(HttpRouting, ExclusivityWithGlobalHandler) {
+TEST(HttpRouting, GlobalFallbackWithPathHandlers) {
   ServerConfig cfg;
   HttpServer server(cfg);
   server.setHandler([](const HttpRequest&) {
@@ -108,8 +87,7 @@ TEST(HttpRouting, ExclusivityWithGlobalHandler) {
     resp.reason = "OK";
     return resp;
   });
-  // Adding path handler after global handler should throw
+  // Adding path handler after global handler is now allowed (Phase 2 mixing model)
   http::MethodSet xMethods{http::Method::GET};
-  EXPECT_THROW(server.addPathHandler("/x", xMethods, [](const HttpRequest&) { return HttpResponse{}; }),
-               aeronet::exception);
+  EXPECT_NO_THROW(server.addPathHandler("/x", xMethods, [](const HttpRequest&) { return HttpResponse{}; }));
 }

@@ -23,7 +23,7 @@ struct Capture {
   std::mutex m;
   std::vector<aeronet::HttpServer::ParserError> errors;
   void push(aeronet::HttpServer::ParserError err) {
-    std::lock_guard<std::mutex> lk(m);
+    std::scoped_lock lk(m);
     errors.push_back(err);
   }
 };
@@ -47,7 +47,7 @@ TEST(HttpParserErrors, InvalidVersion505) {
   ASSERT_NE(std::string::npos, resp.find("505")) << resp;
   bool seen = false;
   {
-    std::lock_guard<std::mutex> lk(cap.m);
+    std::scoped_lock lk(cap.m);
     for (auto err : cap.errors) {
       if (err == aeronet::HttpServer::ParserError::VersionUnsupported) {
         seen = true;
