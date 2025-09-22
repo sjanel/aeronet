@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -17,7 +18,12 @@ using namespace std::chrono_literals;
 
 namespace {
 std::string sendAndRecv(int fd, const std::string& data) {
-  ::send(fd, data.data(), data.size(), 0);
+  if (!data.empty()) {
+    ssize_t sent = ::send(fd, data.data(), data.size(), 0);
+    if (std::cmp_not_equal(sent, data.size())) {
+      return {};
+    }
+  }
   std::string out;
   char buf[4096];
   for (int i = 0; i < 50; ++i) {
@@ -140,14 +146,16 @@ TEST(HttpExpect, ContinueFlow) {
   ASSERT_EQ(0, ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)));
   std::string headers =
       "POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
-  ::send(fd, headers.data(), headers.size(), 0);
+  ssize_t hs = ::send(fd, headers.data(), headers.size(), 0);
+  ASSERT_EQ(hs, static_cast<ssize_t>(headers.size()));
   // read interim 100
   char buf[128];
   ssize_t firstRead = ::recv(fd, buf, sizeof(buf), 0);
   std::string interim(buf, buf + (firstRead > 0 ? firstRead : 0));
   ASSERT_NE(std::string::npos, interim.find("100 Continue"));
   std::string body = "hello";
-  ::send(fd, body.data(), body.size(), 0);
+  ssize_t bs = ::send(fd, body.data(), body.size(), 0);
+  ASSERT_EQ(bs, static_cast<ssize_t>(body.size()));
   std::string full = interim + sendAndRecv(fd, "");
   ::close(fd);
   server.stop();

@@ -8,8 +8,10 @@
 #include <cassert>
 #include <cerrno>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -19,6 +21,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/server-config.hpp"
 #include "duration-format.hpp"
 #include "event-loop.hpp"
 #include "exception.hpp"
@@ -154,46 +158,75 @@ HttpServer& HttpServer::operator=(HttpServer&& other) noexcept {
 
 void HttpServer::setHandler(RequestHandler handler) { _handler = std::move(handler); }
 
-void HttpServer::setStreamingHandler(StreamingHandler handler) {
-  if (_handler) {
-    throw exception("Cannot set streaming handler when global handler already set");
-  }
-  if (!_pathHandlers.empty()) {
-    throw exception("Cannot set streaming handler when path handlers are registered");
-  }
-  _streamingHandler = std::move(handler);
-}
+void HttpServer::setStreamingHandler(StreamingHandler handler) { _streamingHandler = std::move(handler); }
 
 void HttpServer::addPathHandler(std::string path, const http::MethodSet& methods, const RequestHandler& handler) {
-  if (_handler) {
-    throw exception("Cannot use addPathHandler after setHandler has been set");
-  }
   auto it = _pathHandlers.find(path);
-  PathHandlerEntry* pPathHandlerEntry;
+  PathHandlerEntry* entry;
   if (it == _pathHandlers.end()) {
-    pPathHandlerEntry = &_pathHandlers[std::move(path)];
+    entry = &_pathHandlers[std::move(path)];
   } else {
-    pPathHandlerEntry = &it->second;
+    entry = &it->second;
   }
-  pPathHandlerEntry->methodMask = http::methodListToMask(methods);
   for (http::Method method : methods) {
-    pPathHandlerEntry->handlers[static_cast<std::underlying_type_t<http::Method>>(method)] = handler;
+    auto idx = static_cast<std::underlying_type_t<http::Method>>(method);
+    if (entry->streamingHandlers[idx]) {
+      throw exception("Cannot register normal handler: streaming handler already present for path+method");
+    }
+    entry->normalHandlers[idx] = handler;
+    entry->normalMethodMask |= http::singleMethodToMask(method);
   }
 }
 
 void HttpServer::addPathHandler(std::string path, http::Method method, const RequestHandler& handler) {
-  if (_handler) {
-    throw exception("Cannot use addPathHandler after setHandler has been set");
-  }
   auto it = _pathHandlers.find(path);
-  PathHandlerEntry* pPathHandlerEntry;
+  PathHandlerEntry* entry;
   if (it == _pathHandlers.end()) {
-    pPathHandlerEntry = &_pathHandlers[std::move(path)];
+    entry = &_pathHandlers[std::move(path)];
   } else {
-    pPathHandlerEntry = &it->second;
+    entry = &it->second;
   }
-  pPathHandlerEntry->methodMask = http::singleMethodToMask(method);
-  pPathHandlerEntry->handlers[static_cast<std::underlying_type_t<http::Method>>(method)] = handler;
+  auto idx = static_cast<std::underlying_type_t<http::Method>>(method);
+  if (entry->streamingHandlers[idx]) {
+    throw exception("Cannot register normal handler: streaming handler already present for path+method");
+  }
+  entry->normalHandlers[idx] = handler;
+  entry->normalMethodMask |= http::singleMethodToMask(method);
+}
+
+void HttpServer::addPathStreamingHandler(std::string path, const http::MethodSet& methods,
+                                         const StreamingHandler& handler) {
+  auto it = _pathHandlers.find(path);
+  PathHandlerEntry* entry;
+  if (it == _pathHandlers.end()) {
+    entry = &_pathHandlers[std::move(path)];
+  } else {
+    entry = &it->second;
+  }
+  for (http::Method method : methods) {
+    auto idx = static_cast<std::underlying_type_t<http::Method>>(method);
+    if (entry->normalHandlers[idx]) {
+      throw exception("Cannot register streaming handler: normal handler already present for path+method");
+    }
+    entry->streamingHandlers[idx] = handler;
+    entry->streamingMethodMask |= http::singleMethodToMask(method);
+  }
+}
+
+void HttpServer::addPathStreamingHandler(std::string path, http::Method method, const StreamingHandler& handler) {
+  auto it = _pathHandlers.find(path);
+  PathHandlerEntry* entry;
+  if (it == _pathHandlers.end()) {
+    entry = &_pathHandlers[std::move(path)];
+  } else {
+    entry = &it->second;
+  }
+  auto idx = static_cast<std::underlying_type_t<http::Method>>(method);
+  if (entry->normalHandlers[idx]) {
+    throw exception("Cannot register streaming handler: normal handler already present for path+method");
+  }
+  entry->streamingHandlers[idx] = handler;
+  entry->streamingMethodMask |= http::singleMethodToMask(method);
 }
 
 void HttpServer::run(Duration checkPeriod) {
@@ -243,9 +276,13 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
   while (true) {
     std::size_t headerEnd = 0;
     HttpRequest req{};
+    auto reqStart = std::chrono::steady_clock::now();
     if (!parseNextRequestFromBuffer(fd, state, req, headerEnd, closeCnx)) {
       break;  // need more data or connection closed
     }
+    // A full request head (and body, if present) will now be processed; reset headerStart to signal
+    // that the header timeout should track the next pending request only.
+    state.headerStart = {};
     bool isChunked = false;
     bool hasTE = false;
     if (std::string_view te = req.findHeader(http::TransferEncoding); !te.empty()) {
@@ -288,86 +325,214 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
     if (!decodeBodyIfReady(fd, state, req, headerEnd, isChunked, expectContinue, closeCnx, consumedBytes)) {
       break;  // need more bytes or error
     }
-    // Streaming handler path (exclusive of global/path handlers)
-    if (_streamingHandler && _pathHandlers.empty() && !_handler) {
-      bool isHead = (req.method == http::HEAD);
-      HttpResponseWriter writer(*this, fd, isHead);
-      try {
-        _streamingHandler(req, writer);
-      } catch (const std::exception& ex) {
-        log::error("Exception in streaming handler: {}", ex.what());
-      } catch (...) {
-        log::error("Unknown exception in streaming handler.");
-      }
-      if (!writer.finished()) {
-        writer.end();
-      }
-      // Decide keep-alive: only if server config allows, HTTP/1.1, not exceeding maxRequestsPerConnection, writer not
-      // failed.
-      bool allowKeepAlive = _config.enableKeepAlive && req.version == http::HTTP11 &&
-                            state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.shouldClose;
-      ++state.requestsServed;  // count this streaming request
-      if (consumedBytes > 0) {
-        state.buffer.erase_front(consumedBytes);
-      }
-      if (!allowKeepAlive) {
-        state.shouldClose = true;
-        closeCnx = true;  // will close after outbound buffer drains
-      }
-      break;  // done with this request (streaming is synchronous for now)
-    }
-
-    HttpResponse resp;
+    // Determine dispatch: path streaming > path normal > global streaming > global normal > 404/405
+    auto methodEnum = http::toMethodEnum(req.method);
+    // Provide implicit HEAD->GET fallback (RFC7231: HEAD is identical to GET without body) when
+    // a HEAD handler is not explicitly registered but a GET handler exists for the same path.
+    auto effectiveMethodEnum = methodEnum;
+    bool isHead = (req.method == http::HEAD);
+    bool handledStreaming = false;
+    bool pathFound = false;
     if (!_pathHandlers.empty()) {
-      auto it = _pathHandlers.find(req.target);
-      if (it == _pathHandlers.end()) {
-        resp.statusCode = 404;
-        resp.reason = "Not Found";
-        resp.body = resp.reason;
-        resp.contentType = "text/plain";
-      } else {
-        auto method = http::toMethodEnum(req.method);
-        if (!http::methodAllowed(it->second.methodMask, method)) {
+      auto pit = _pathHandlers.find(req.target);
+      if (pit != _pathHandlers.end()) {
+        pathFound = true;
+        auto& entry = pit->second;
+        // If HEAD and no explicit HEAD handler, but GET handler exists, reuse GET handler index.
+        auto idxOriginal = static_cast<std::underlying_type_t<http::Method>>(methodEnum);
+        auto idx = idxOriginal;
+        if (isHead) {
+          auto headIdx = static_cast<std::underlying_type_t<http::Method>>(http::Method::HEAD);
+          auto getIdx = static_cast<std::underlying_type_t<http::Method>>(http::Method::GET);
+          if (!entry.streamingHandlers[headIdx] && !entry.normalHandlers[headIdx]) {
+            if (entry.streamingHandlers[getIdx] || entry.normalHandlers[getIdx]) {
+              effectiveMethodEnum = http::Method::GET;
+              idx = getIdx;
+            }
+          }
+        }
+        if (entry.streamingHandlers[idx]) {
+          bool isHeadReq = (req.method == http::HEAD);
+          HttpResponseWriter writer(*this, fd, isHeadReq);
+          try {
+            entry.streamingHandlers[idx](req, writer);
+          } catch (const std::exception& ex) {
+            log::error("Exception in path streaming handler: {}", ex.what());
+          } catch (...) {
+            log::error("Unknown exception in path streaming handler.");
+          }
+          if (!writer.finished()) {
+            writer.end();
+          }
+          bool allowKeepAlive = _config.enableKeepAlive && req.version == http::HTTP11 &&
+                                state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.shouldClose;
+          ++state.requestsServed;
+          if (consumedBytes > 0) {
+            state.buffer.erase_front(consumedBytes);
+          }
+          if (!allowKeepAlive) {
+            state.shouldClose = true;
+            closeCnx = true;
+          }
+          if (_metricsCb) {
+            RequestMetrics metrics;
+            metrics.method = req.method;
+            metrics.target = req.target;
+            metrics.status = 200;  // best effort
+            metrics.bytesIn = req.body.size();
+            metrics.reusedConnection = state.requestsServed > 1;
+            metrics.duration = std::chrono::steady_clock::now() - reqStart;
+            _metricsCb(metrics);
+          }
+          handledStreaming = true;
+        } else if (entry.normalHandlers[idx]) {
+          HttpResponse resp;
+          if (!http::methodAllowed(entry.normalMethodMask | entry.streamingMethodMask, effectiveMethodEnum)) {
+            resp.statusCode = 405;
+            resp.reason.assign(http::ReasonMethodNotAllowed);
+            resp.body = resp.reason;
+            resp.contentType = "text/plain";
+          } else {
+            try {
+              resp = entry.normalHandlers[idx](req);
+            } catch (const std::exception& ex) {
+              log::error("Exception in path handler: {}", ex.what());
+              resp.statusCode = 500;
+              resp.reason.assign(http::ReasonInternalServerError);
+              resp.body = resp.reason;
+              resp.contentType = "text/plain";
+            } catch (...) {
+              log::error("Unknown exception in path handler.");
+              resp.statusCode = 500;
+              resp.reason.assign(http::ReasonInternalServerError);
+              resp.body = resp.reason;
+              resp.contentType = "text/plain";
+            }
+          }
+          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, closeCnx);
+          if (_metricsCb) {
+            RequestMetrics metrics;
+            metrics.method = req.method;
+            metrics.target = req.target;
+            metrics.status = resp.statusCode;
+            metrics.bytesIn = req.body.size();
+            metrics.reusedConnection = state.requestsServed > 0;
+            metrics.duration = std::chrono::steady_clock::now() - reqStart;
+            _metricsCb(metrics);
+          }
+        } else {
+          // path found but method not registered -> 405
+          HttpResponse resp;
           resp.statusCode = 405;
           resp.reason.assign(http::ReasonMethodNotAllowed);
           resp.body = resp.reason;
           resp.contentType = "text/plain";
-        } else {
-          try {
-            resp = it->second.handlers[static_cast<std::underlying_type_t<http::Method>>(method)](req);
-          } catch (const std::exception& ex) {
-            log::error("Exception in path handler: {}", ex.what());
-            resp.statusCode = 500;
-            resp.reason.assign(http::ReasonInternalServerError);
-            resp.body = resp.reason;
-            resp.contentType = "text/plain";
-          } catch (...) {
-            log::error("Unknown exception in path handler.");
-            resp.statusCode = 500;
-            resp.reason.assign(http::ReasonInternalServerError);
-            resp.body = resp.reason;
-            resp.contentType = "text/plain";
+          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, closeCnx);
+          if (_metricsCb) {
+            RequestMetrics metrics;
+            metrics.method = req.method;
+            metrics.target = req.target;
+            metrics.status = resp.statusCode;
+            metrics.bytesIn = req.body.size();
+            metrics.reusedConnection = state.requestsServed > 0;
+            metrics.duration = std::chrono::steady_clock::now() - reqStart;
+            _metricsCb(metrics);
           }
         }
       }
-    } else if (_handler) {
-      try {
-        resp = _handler(req);
-      } catch (const std::exception& ex) {
-        log::error("Exception in request handler: {}", ex.what());
-        resp.statusCode = 500;
-        resp.reason.assign(http::ReasonInternalServerError);
+    }
+    if (handledStreaming) {
+      if (closeCnx) {
+        break;
+      }
+      continue;  // proceed next request in buffer
+    }
+    if (!pathFound) {
+      if (_streamingHandler) {
+        bool isHead = (req.method == http::HEAD);
+        HttpResponseWriter writer(*this, fd, isHead);
+        try {
+          _streamingHandler(req, writer);
+        } catch (const std::exception& ex) {
+          log::error("Exception in global streaming handler: {}", ex.what());
+        } catch (...) {
+          log::error("Unknown exception in global streaming handler.");
+        }
+        if (!writer.finished()) {
+          writer.end();
+        }
+        bool allowKeepAlive = _config.enableKeepAlive && req.version == http::HTTP11 &&
+                              state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.shouldClose;
+        ++state.requestsServed;
+        if (consumedBytes > 0) {
+          state.buffer.erase_front(consumedBytes);
+        }
+        if (!allowKeepAlive) {
+          state.shouldClose = true;
+          closeCnx = true;
+        }
+        if (_metricsCb) {
+          RequestMetrics metrics;
+          metrics.method = req.method;
+          metrics.target = req.target;
+          metrics.status = 200;
+          metrics.bytesIn = req.body.size();
+          metrics.reusedConnection = state.requestsServed > 1;
+          metrics.duration = std::chrono::steady_clock::now() - reqStart;
+          _metricsCb(metrics);
+        }
+        if (closeCnx) {
+          break;
+        }
+        continue;
+      }
+      if (_handler) {
+        HttpResponse resp;
+        try {
+          resp = _handler(req);
+        } catch (const std::exception& ex) {
+          log::error("Exception in request handler: {}", ex.what());
+          resp.statusCode = 500;
+          resp.reason.assign(http::ReasonInternalServerError);
+          resp.body = resp.reason;
+          resp.contentType = "text/plain";
+        } catch (...) {
+          log::error("Unknown exception in request handler.");
+          resp.statusCode = 500;
+          resp.reason.assign(http::ReasonInternalServerError);
+          resp.body = resp.reason;
+          resp.contentType = "text/plain";
+        }
+        finalizeAndSendResponse(fd, state, req, resp, consumedBytes, closeCnx);
+        if (_metricsCb) {
+          RequestMetrics metrics;
+          metrics.method = req.method;
+          metrics.target = req.target;
+          metrics.status = resp.statusCode;
+          metrics.bytesIn = req.body.size();
+          metrics.reusedConnection = state.requestsServed > 0;
+          metrics.duration = std::chrono::steady_clock::now() - reqStart;
+          _metricsCb(metrics);
+        }
+      } else {  // 404
+        HttpResponse resp;
+        resp.statusCode = 404;
+        resp.reason = "Not Found";
         resp.body = resp.reason;
         resp.contentType = "text/plain";
-      } catch (...) {
-        log::error("Unknown exception in request handler.");
-        resp.statusCode = 500;
-        resp.reason.assign(http::ReasonInternalServerError);
-        resp.body = resp.reason;
-        resp.contentType = "text/plain";
+        finalizeAndSendResponse(fd, state, req, resp, consumedBytes, closeCnx);
+        if (_metricsCb) {
+          RequestMetrics metrics;
+          metrics.method = req.method;
+          metrics.target = req.target;
+          metrics.status = resp.statusCode;
+          metrics.bytesIn = req.body.size();
+          metrics.reusedConnection = state.requestsServed > 0;
+          metrics.duration = std::chrono::steady_clock::now() - reqStart;
+          _metricsCb(metrics);
+        }
       }
     }
-    finalizeAndSendResponse(fd, state, req, resp, consumedBytes, closeCnx);
     if (closeCnx) {
       break;
     }

@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <utility>
 
@@ -53,7 +54,7 @@ void EventLoop::del(int fd) const { epoll_ctl(_epollFd, EPOLL_CTL_DEL, fd, nullp
 int EventLoop::poll(Duration timeout, const std::function<void(int, uint32_t)>& cb) {
   const auto timeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
   int timeoutEpollWait;
-  if (timeoutMs > static_cast<std::remove_const_t<decltype(timeoutMs)>>(std::numeric_limits<int>::max())) {
+  if (std::cmp_less(std::numeric_limits<int>::max(), timeoutMs)) {
     log::warn("Timeout value is too large, clamping to max int");
     timeoutEpollWait = std::numeric_limits<int>::max();
   } else {
@@ -71,7 +72,7 @@ int EventLoop::poll(Duration timeout, const std::function<void(int, uint32_t)>& 
 
     cb(event.data.fd, event.events);
   }
-  if (nbReadyFds == static_cast<int>(_events.size())) {
+  if (std::cmp_equal(nbReadyFds, _events.size())) {
     _events.resize(_events.size() * 2);
   }
   return nbReadyFds;

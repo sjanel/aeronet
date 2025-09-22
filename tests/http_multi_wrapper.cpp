@@ -1,13 +1,6 @@
-#include <arpa/inet.h>
 #include <gtest/gtest.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
 
-#include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <string>
 #include <thread>
 
@@ -15,35 +8,9 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/multi-http-server.hpp"
 #include "aeronet/server-config.hpp"
+#include "test_raw_get.hpp"
 
-namespace {
-std::string simpleGet(uint16_t port, const char* path) {
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return {};
-  }
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    ::close(fd);
-    return {};
-  }
-  std::string req = std::string("GET ") + path + " HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
-  ::send(fd, req.data(), req.size(), 0);
-  std::string buf;
-  buf.resize(4096);
-  ssize_t received = ::recv(fd, buf.data(), buf.size(), 0);
-  if (received > 0) {
-    buf.resize(static_cast<std::size_t>(received));
-  } else {
-    buf.clear();
-  }
-  ::close(fd);
-  return buf;
-}
-}  // namespace
+namespace {}  // namespace
 
 TEST(MultiHttpServer, BasicStartAndServe) {
   const int threads = 3;
@@ -62,8 +29,10 @@ TEST(MultiHttpServer, BasicStartAndServe) {
   // allow sockets to be fully listening
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-  auto r1 = simpleGet(port, "/one");
-  auto r2 = simpleGet(port, "/two");
+  std::string r1;
+  std::string r2;
+  test_helpers::rawGet(port, "/one", r1);
+  test_helpers::rawGet(port, "/two", r2);
   EXPECT_NE(std::string::npos, r1.find("Hello"));
   EXPECT_NE(std::string::npos, r2.find("Hello"));
 

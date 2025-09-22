@@ -48,6 +48,16 @@ class HttpServer {
     GenericBadRequest
   };
   using ParserErrorCallback = std::function<void(ParserError)>;
+  struct RequestMetrics {
+    std::string_view method;
+    std::string_view target;
+    int status{0};
+    uint64_t bytesIn{0};
+    uint64_t bytesOut{0};
+    std::chrono::nanoseconds duration{0};
+    bool reusedConnection{false};
+  };
+  using MetricsCallback = std::function<void(const RequestMetrics&)>;
 
   // Construct a HttpServer that does nothing.
   // Useful only to make it default constructible for temporary purposes (for instance to move assign to it later on),
@@ -70,15 +80,21 @@ class HttpServer {
   ~HttpServer();
 
   // Registers a single request handler that will be invoked for every successfully parsed
-  // HTTP request. The handler receives a fully populated immutable HttpRequest reference and
-  // must return an HttpResponse by value (moved out). The returned response is serialized and
-  // queued for write immediately after the handler returns (unless a streaming handler is in
-  // effect).
+  // HTTP request not matched by a path‑specific handler (normal or streaming). The handler
+  // receives a fully populated immutable HttpRequest reference and must return an HttpResponse
+  // by value (moved out). The returned response is serialized and queued for write immediately
+  // after the handler returns.
   //
-  // Exclusivity / precedence:
-  //   - Mutually exclusive with setStreamingHandler (only one request processing mode).
-  //   - Mutually exclusive with addPathHandler / path based dispatch. Attempting to mix will
-  //     throw std::logic_error. Choose either a global handler or per‑path handlers.
+  // Precedence (Phase 2 mixing model):
+  //   1. Path streaming handler (if registered for path+method)
+  //   2. Path normal handler (if registered for path+method)
+  //   3. Global streaming handler (if set)
+  //   4. Global normal handler (this)
+  //   5. 404 / 405 fallback
+  //
+  // Mixing:
+  //   - Global normal and streaming handlers may both be set; per‑path handlers override them.
+  //   - Replacing a global handler is allowed at any time (not thread‑safe; caller must ensure exclusive access).
   //
   // Timing & threading:
   //   - The handler executes synchronously inside the server's single event loop thread; do
@@ -107,9 +123,9 @@ class HttpServer {
   // data, on‑the‑fly generation) or when you wish to start sending bytes before the complete
   // body is available.
   //
-  // Exclusivity:
-  //   - Mutually exclusive with setHandler and with any path handlers (addPathHandler). If a
-  //     global or path handler is already registered this call throws.
+  // Mixing (Phase 2):
+  //   - May coexist with a global normal handler and with per‑path (normal or streaming) handlers.
+  //   - Acts only as a fallback when no path‑specific handler matches.
   //
   // Invocation semantics:
   //   - The streaming handler runs synchronously inside the event loop thread after a request
@@ -141,14 +157,28 @@ class HttpServer {
   //   - Exceptions thrown by the handler are caught and logged; the server attempts to end the
   //     response gracefully (typically as already started chunked stream). Subsequent writes are
   //     ignored once a failure state is reached.
-  void setStreamingHandler(StreamingHandler handler);  // mutually exclusive with setHandler / path handlers (phase 1)
+  void setStreamingHandler(StreamingHandler handler);
   // Register a handler for a specific absolute path and a set of allowed HTTP methods.
   // Methods are supplied via http::MethodsSet (small fixed-capacity flat set, non-allocating).
-  // Mutually exclusive with setHandler: using both is invalid and will throw.
+  // May coexist with global handlers and with per-path streaming handlers (but a specific
+  // (path, method) pair cannot have both a normal and streaming handler simultaneously).
   void addPathHandler(std::string path, const http::MethodSet& methods, const RequestHandler& handler);
 
   // Convenience overload of 'addPathHandler' for a single method.
   void addPathHandler(std::string path, http::Method method, const RequestHandler& handler);
+
+  // addPathStreamingHandler (multi-method):
+  //   Registers streaming handlers per path+method combination. Mirrors addPathHandler semantics
+  //   but installs a StreamingHandler which receives an HttpResponseWriter.
+  // Constraints:
+  //   - For each (path, method) only one of normal vs streaming may be present; registering the
+  //     other kind afterwards is a logic error.
+  // Overwrite semantics:
+  //   - Re-registering the same kind (streaming over streaming) replaces the previous handler.
+  void addPathStreamingHandler(std::string path, const http::MethodSet& methods, const StreamingHandler& handler);
+
+  // addPathStreamingHandler (single method convenience):
+  void addPathStreamingHandler(std::string path, http::Method method, const StreamingHandler& handler);
 
   // Install a callback invoked whenever the request parser encounters a non‑recoverable
   // protocol error for a connection. Typical causes correspond to the ParserError enum:
@@ -174,6 +204,7 @@ class HttpServer {
   // Exceptions:
   // - Exceptions escaping the callback are caught and ignored to preserve server stability.
   void setParserErrorCallback(ParserErrorCallback cb) { _parserErrCb = std::move(cb); }
+  void setMetricsCallback(MetricsCallback cb) { _metricsCb = std::move(cb); }
 
   // Run the server event loop until stop() is called (e.g. from another thread) or the process receives SIGINT/SIGTERM.
   // checkPeriod:
@@ -247,6 +278,9 @@ class HttpServer {
     RawChars outBuffer;      // pending outbound bytes not yet written
     RawChars decodedTarget;  // storage for percent-decoded request target (per-connection reuse)
     std::chrono::steady_clock::time_point lastActivity{std::chrono::steady_clock::now()};
+    // Timestamp of first byte of the current pending request headers (buffer not yet containing full CRLFCRLF).
+    // Reset when a complete request head is parsed. If std::chrono::steady_clock::time_point{} (epoch) -> inactive.
+    std::chrono::steady_clock::time_point headerStart;  // default epoch value means no header timing active
     uint32_t requestsServed{0};
     bool shouldClose{false};      // request to close once outBuffer drains
     bool waitingWritable{false};  // EPOLLOUT registered
@@ -308,8 +342,10 @@ class HttpServer {
   RequestHandler _handler;
   StreamingHandler _streamingHandler;
   struct PathHandlerEntry {
-    uint32_t methodMask;
-    std::array<RequestHandler, http::kNbMethods> handlers;
+    uint32_t normalMethodMask{0};
+    uint32_t streamingMethodMask{0};
+    std::array<RequestHandler, http::kNbMethods> normalHandlers{};
+    std::array<StreamingHandler, http::kNbMethods> streamingHandlers{};
   };
 
   flat_hash_map<std::string, PathHandlerEntry, std::hash<std::string_view>, std::equal_to<>> _pathHandlers;
@@ -323,5 +359,6 @@ class HttpServer {
   RFC7231DateStr _cachedDate{};
   TimePoint _cachedDateEpoch;  // last second-aligned timestamp used for Date header
   ParserErrorCallback _parserErrCb;
+  MetricsCallback _metricsCb;
 };
 }  // namespace aeronet

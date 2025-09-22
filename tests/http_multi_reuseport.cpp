@@ -1,12 +1,6 @@
-#include <arpa/inet.h>
 #include <gtest/gtest.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 #include <chrono>
-#include <cstddef>  // for std::size_t casts
 #include <cstdint>
 #include <future>
 #include <string>
@@ -15,38 +9,10 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/server.hpp"
+#include "test_raw_get.hpp"
 
 // This test only validates that two servers can bind the same port with SO_REUSEPORT enabled
 // and accept at least one connection each. It does not attempt to assert load distribution.
-
-namespace {
-std::string simpleGet(const char* host, uint16_t port, const char* path) {
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return {};
-  }
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  ::inet_pton(AF_INET, host, &addr.sin_addr);
-  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    ::close(fd);
-    return {};
-  }
-  std::string req = std::string("GET ") + path + " HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
-  ::send(fd, req.data(), req.size(), 0);
-  std::string buf;
-  buf.resize(4096);
-  ssize_t received = ::recv(fd, buf.data(), buf.size(), 0);
-  if (received > 0) {
-    buf.resize(static_cast<std::size_t>(received));
-  } else {
-    buf.clear();
-  }
-  ::close(fd);
-  return buf;
-}
-}  // namespace
 
 TEST(HttpMultiReusePort, TwoServersBindSamePort) {
   uint16_t port = 18234;  // random high port
@@ -81,14 +47,18 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
   // Give kernel a moment to establish both listening sockets
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  std::string resp1 = simpleGet("127.0.0.1", port, "/one");
-  std::string resp2 = simpleGet("127.0.0.1", port, "/two");
+  std::string resp1;
+  std::string resp2;
+  test_helpers::rawGet(port, "/one", resp1);
+  test_helpers::rawGet(port, "/two", resp2);
   bool hasA = resp1.find('A') != std::string::npos || resp2.find('A') != std::string::npos;
   bool hasB = resp1.find('B') != std::string::npos || resp2.find('B') != std::string::npos;
   if (!(hasA && hasB)) {
-    // try a few more connects
-    for (int i = 0; i < 5 && !(hasA && hasB); ++i) {
-      auto retryResp = simpleGet("127.0.0.1", port, "/retry");
+    // try additional connects with small delays to give scheduler chance to pick different acceptors
+    for (int i = 0; i < 15 && !(hasA && hasB); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      std::string retryResp;
+      test_helpers::rawGet(port, "/retry", retryResp);
       if (retryResp.find('A') != std::string::npos) {
         hasA = true;
       }

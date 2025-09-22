@@ -24,6 +24,9 @@ aeronet_http_test(http_head_maxrequests http_head_maxrequests.cpp)
 
 aeronet_http_test(http_keepalive http_keepalive.cpp)
 
+# Header read timeout test
+aeronet_http_test(http_header_timeout http_header_timeout.cpp)
+
 # Malformed / fuzz-ish header and chunked parsing tests
 aeronet_http_test(http_malformed http_malformed.cpp)
 
@@ -52,6 +55,9 @@ aeronet_http_test(http_streaming http_streaming.cpp)
 aeronet_http_test(http_streaming_head_content_length http_streaming_head_content_length.cpp)
 aeronet_http_test(http_streaming_set_header http_streaming_set_header.cpp)
 
+# Mixed streaming + normal handler tests (Phase 2)
+aeronet_http_test(http_streaming_mixed http_streaming_mixed.cpp)
+
 aeronet_http_test(http_url_decoding_additional http_url_decoding_additional.cpp)
 
 aeronet_http_test(http_url_decoding http_url_decoding.cpp)
@@ -72,6 +78,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_errors.cpp
 	http_head_maxrequests.cpp
 	http_keepalive.cpp
+	http_header_timeout.cpp
 	http_malformed.cpp
 	http_multi_reuseport.cpp
 	http_multi_wrapper.cpp
@@ -84,6 +91,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_streaming.cpp
 		http_streaming_head_content_length.cpp
 	http_streaming_set_header.cpp
+	http_streaming_mixed.cpp
 	http_url_decoding_additional.cpp
 	http_url_decoding.cpp
 	multi_http_server_convenience_constructors.cpp

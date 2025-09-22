@@ -16,8 +16,9 @@ Legend:
 |--------|---------|---------|-------------------|--------------|
 | ✅ | Partial Write Buffering & Backpressure | Handle partial socket writes safely | Implemented: per-connection outBuffer + EPOLLOUT re-arm + high-water tracking | None |
 | ✅ | Streaming / Outgoing Chunked Responses | Send dynamic data without pre-buffering | HttpResponseWriter API, auto chunked if no length; unified outbound buffer reuse | Write buffering |
-| ⏳ | Header Read Timeout (Slowloris) | Abort very slow header arrivals | Track header start time + last progress, 408/close | Timing sweep |
-| ⏳ | Request Metrics Hook | Expose per-request stats | Struct with method, status, durations, bytes | None |
+| ✅ | Mixed-Mode Streaming + Normal Precedence | Coexist path/global streaming & normal handlers with deterministic priority | Precedence: path streaming > path normal > global streaming > global normal; implicit HEAD->GET; conflict detection | Streaming base |
+| ✅ | Header Read Timeout (Slowloris) | Abort very slow header arrivals | Implemented: per-connection headerStart timestamp + enforced close if exceeded (no 408 yet) | None |
+| 🛠 | Request Metrics Hook | Expose per-request stats | Initial scaffold: RequestMetrics callback (method, target, status, bytesIn, duration, reused) | None |
 | ⏳ | Zero-Copy sendfile() Support | Efficient static file responses | Fallback to buffered if partials, track offset | Write buffering |
 
 ## Medium Priority (Features & Developer Experience)
@@ -46,6 +47,8 @@ Legend:
 |---------|-------|
 | Partial Write Buffering & Backpressure | Outbound queue + EPOLLOUT driven flushing + stats |
 | Streaming / Outgoing Chunked Responses | HttpResponseWriter + unified buffer path; keep-alive capable |
+| Mixed-Mode Streaming Dispatch & HEAD Fallback | Deterministic precedence, conflict prevention, implicit HEAD->GET, tests in `http_streaming_mixed.cpp` |
+| Header Read Timeout | Slowloris mitigation via configurable `headerReadTimeout`, connection closed on exceed |
 | MultiHttpServer Wrapper | Horizontal scaling orchestration, ephemeral port resolution, aggregated stats |
 | Lightweight Logging Fallback | spdlog-style API, ISO8601 timestamps, formatting fallback |
 | Parser Error Enum & Callback | `ParserError` with granular reasons + hook |
