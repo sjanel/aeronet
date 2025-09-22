@@ -39,4 +39,18 @@ constexpr char *to_upper_hex(signed_or_unsigned_char auto ch, char *buf) {
   return buf + 2;
 }
 
+/// Decode a single hexadecimal digit. Returns -1 if invalid.
+constexpr int from_hex_digit(char ch) {
+  if (ch >= '0' && ch <= '9') {
+    return ch - '0';
+  }
+  if (ch >= 'A' && ch <= 'F') {
+    return 10 + (ch - 'A');
+  }
+  if (ch >= 'a' && ch <= 'f') {
+    return 10 + (ch - 'a');
+  }
+  return -1;
+}
+
 }  // namespace aeronet

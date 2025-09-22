@@ -56,6 +56,7 @@ Legend:
 | Chunked Decoding Fuzz (Deterministic) | Random chunk framing test with seed |
 | HEAD Max Requests Test | Ensures keep-alive request cap applies to HEAD |
 | Malformed & Limit Tests | 400 / 431 / 413 / 505 coverage |
+| Percent-Decoding of Request Target | UTF-8 path decoding, '+' preserved, invalid sequences -> 400, tests in `http_url_decoding.cpp` |
 
 ## Proposed Ordering (Next Pass)
 

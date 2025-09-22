@@ -1,24 +1,28 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cstddef>
 #include <string>
 #include <thread>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 #include "test_util.hpp"
-using namespace std::chrono_literals;
 
 TEST(HttpHead, MaxRequestsApplied) {
   aeronet::ServerConfig cfg;
   cfg.withMaxRequestsPerConnection(3);
   aeronet::HttpServer server(cfg);
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = "IGNORED";
     return resp;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
-  std::this_thread::sleep_for(60ms);
+  std::jthread th([&] { server.run(std::chrono::milliseconds(30)); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
   int fd = tu_connect(port);
   ASSERT_GE(fd, 0);
   // 4 HEAD requests pipelined; only 3 responses expected then close
@@ -31,7 +35,7 @@ TEST(HttpHead, MaxRequestsApplied) {
   server.stop();
   th.join();
   int statusCount = 0;
-  size_t pos = 0;
+  std::size_t pos = 0;
   while ((pos = resp.find("HTTP/1.1 200", pos)) != std::string::npos) {
     ++statusCount;
     pos += 11;

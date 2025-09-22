@@ -9,13 +9,10 @@ target_include_directories(aeronet_tech
         $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(aeronet_tech
-    PUBLIC OpenSSL::SSL OpenSSL::Crypto
+add_unit_test(
+    duration-format_test
+    test/duration-format_test.cpp
 )
-
-if (LINK_AMC)
-  target_link_libraries(aeronet_tech PUBLIC amc::amc)
-endif()
 
 add_unit_test(
     exception_test
@@ -33,6 +30,13 @@ add_unit_test(
 )
 
 add_unit_test(
+    raw-bytes_test
+    test/raw-bytes_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+add_unit_test(
     static-string-view-helpers_test
     test/static-string-view-helpers_test.cpp
 )
@@ -40,6 +44,13 @@ add_unit_test(
 add_unit_test(
     stringconv_test
     test/stringconv_test.cpp
+)
+
+add_unit_test(
+    time-format_test
+    test/time-format_test.cpp
+    LIBRARIES
+    aeronet_tech
 )
 
 add_unit_test(
@@ -62,15 +73,29 @@ add_unit_test(
 )
 
 add_unit_test(
-    year-week_test
-    test/year-week_test.cpp
+    flat-hash-map_test
+    test/flat-hash-map_test.cpp
     LIBRARIES
     aeronet_tech
 )
 
 add_unit_test(
-    flat-hash-map_test
-    test/flat-hash-map_test.cpp
+    simple-charconv_test
+    test/simple-charconv_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+add_unit_test(
+    url-encode-decode_test
+    test/url-encode-decode_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+add_unit_test(
+    year-week_test
+    test/year-week_test.cpp
     LIBRARIES
     aeronet_tech
 )

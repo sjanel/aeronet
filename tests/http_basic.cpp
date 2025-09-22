@@ -1,12 +1,18 @@
-#include <arpa/inet.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <string>
 #include <thread>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 
 using namespace std::chrono_literals;
@@ -45,7 +51,7 @@ std::string httpGet(uint16_t port, const std::string& target, const std::string&
 TEST(HttpBasic, SimpleGet) {
   std::atomic_bool stop{false};
   aeronet::HttpServer server(aeronet::ServerConfig{});  // ephemeral
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     auto testHeaderIt = req.headers.find("X-Test");
@@ -56,7 +62,7 @@ TEST(HttpBasic, SimpleGet) {
     }
     return resp;
   });
-  std::thread th([&] { server.runUntil([&] { return stop.load(); }, 50ms); });
+  std::jthread th([&] { server.runUntil([&] { return stop.load(); }, 50ms); });
   // Give server time to start
   std::this_thread::sleep_for(100ms);
   std::string resp = httpGet(port, "/abc");

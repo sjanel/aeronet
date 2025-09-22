@@ -18,7 +18,7 @@
 namespace aeronet {
 
 constexpr std::string IntegralToString(std::integral auto val) {
-  std::string str(nchars(val), '0');
+  std::string str(static_cast<std::string::size_type>(nchars(val)), '0');
 
   std::to_chars(str.data(), str.data() + str.size(), val);
 

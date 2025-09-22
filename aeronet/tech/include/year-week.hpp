@@ -19,7 +19,7 @@ struct iso_week_date {
 };
 
 constexpr iso_week_date::iso_week_date(std::uint16_t year, unsigned wn, std::chrono::weekday wd) noexcept
-    : year{year}, weeknum(wn), dow{wd} {}
+    : year{year}, weeknum(static_cast<std::uint8_t>(wn)), dow{wd} {}
 
 constexpr iso_week_date::iso_week_date(std::chrono::sys_days tp) noexcept
     : iso_week_date{0, 0, std::chrono::weekday{}} {
@@ -41,8 +41,8 @@ constexpr iso_week_date::iso_week_date(std::chrono::sys_days tp) noexcept
 
   auto ymdYear = year_month_day{closest_thursday(tp)}.year();
   auto start = sys_days{ymdYear / 1 / Thursday[1]} - (Thursday - Monday);
-  year = int{ymdYear};
-  weeknum = floor<weeks>(tp - start) / weeks{1} + 1;
+  year = static_cast<std::uint16_t>(int{ymdYear});
+  weeknum = static_cast<std::uint8_t>(floor<weeks>(tp - start) / weeks{1} + 1);
 }
 
 constexpr iso_week_date::operator std::chrono::sys_days() const noexcept {

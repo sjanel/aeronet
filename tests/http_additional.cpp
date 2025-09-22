@@ -1,10 +1,13 @@
 #include <gtest/gtest.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
+#include <chrono>
+#include <cstddef>
 #include <string>
 #include <thread>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 #include "test_util.hpp"
 
@@ -15,13 +18,13 @@ using namespace std::chrono_literals;
 
 TEST(HttpPipeline, TwoRequestsBackToBack) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body = std::string("E:") + std::string(req.target);
     return respObj;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(60ms);
   int fd = tu_connect(port);
   ASSERT_GE(fd, 0);
@@ -38,13 +41,13 @@ TEST(HttpPipeline, TwoRequestsBackToBack) {
 
 TEST(HttpExpect, ZeroLengthNo100) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest& /*req*/) {
     aeronet::HttpResponse respObj;
     respObj.body = "Z";
     return respObj;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(60ms);
   int fd = tu_connect(port);
   ASSERT_GE(fd, 0);
@@ -66,14 +69,14 @@ TEST(HttpMaxRequests, CloseAfterLimit) {
   aeronet::ServerConfig cfg;
   cfg.withMaxRequestsPerConnection(2);  // after 2 responses close
   aeronet::HttpServer server(cfg);
-  uint16_t port = server.port();
+  auto port = server.port();
   // Use a distinctive body character unlikely to appear in headers (avoid 'M' which can appear in Date: Mon)
   server.setHandler([](const aeronet::HttpRequest& /*req*/) {
     aeronet::HttpResponse respObj;
     respObj.body = "Q";
     return respObj;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(60ms);
   int fd = tu_connect(port);
   ASSERT_GE(fd, 0);
@@ -86,7 +89,7 @@ TEST(HttpMaxRequests, CloseAfterLimit) {
   th.join();
   // Count complete HTTP response status lines to ensure only two responses emitted
   int statusCount = 0;
-  size_t pos = 0;
+  std::size_t pos = 0;
   while ((pos = resp.find("HTTP/1.1 200", pos)) != std::string::npos) {
     ++statusCount;
     pos += 11;
@@ -104,13 +107,13 @@ TEST(HttpMaxRequests, CloseAfterLimit) {
 
 TEST(HttpPipeline, SecondMalformedAfterSuccess) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest& /*req*/) {
     aeronet::HttpResponse respObj;
     respObj.body = "OK";
     return respObj;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(60ms);
   int fd = tu_connect(port);
   ASSERT_GE(fd, 0);
@@ -127,13 +130,13 @@ TEST(HttpContentLength, ExplicitTooLarge413) {
   aeronet::ServerConfig cfg;
   cfg.withMaxBodyBytes(10);
   aeronet::HttpServer server(cfg);
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest& /*req*/) {
     aeronet::HttpResponse respObj;
     respObj.body = "R";
     return respObj;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(60ms);
   int fd = tu_connect(port);
   ASSERT_GE(fd, 0);

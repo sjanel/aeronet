@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "flat-hash-map.hpp"
 #include "http-status-code.hpp"
@@ -16,9 +17,12 @@ class HttpResponseWriter {
  public:
   HttpResponseWriter(HttpServer& srv, int fd, bool headRequest);
 
-  void setStatus(http::StatusCode code, std::string = {});
+  void setStatus(http::StatusCode code, std::string reason = {});
+
   void setHeader(std::string name, std::string value);
-  void setContentType(std::string ct) { setHeader("Content-Type", ct); }
+
+  void setContentType(std::string ct) { setHeader("Content-Type", std::move(ct)); }
+
   void setContentLength(std::size_t len);
 
   // Backpressure-aware write. Returns true if accepted (queued or immediately written). Returns

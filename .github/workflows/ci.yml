@@ -13,38 +13,69 @@ jobs:
       fail-fast: false
       matrix:
         compiler: [gcc-13, clang-20]
+        spdlog: [OFF, ON]
+        build: [Debug, Release]
     runs-on: ubuntu-latest
 
     env:
-      CMAKE_BUILD_TYPE: Release
-      CC: ${{ matrix.compiler == 'gcc-13' && 'gcc-13' || 'clang-20' }}
-      CXX: ${{ matrix.compiler == 'gcc-13' && 'g++-13' || 'clang++-20' }}
+      CMAKE_BUILD_TYPE: ${{ matrix.build }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Install toolchains
+      - name: Update apt cache
+        run: sudo apt-get update -y
+
+      - name: Install GCC toolchain
+        if: ${{ startsWith(matrix.compiler, 'gcc') }}
+        run: sudo apt-get install -y ${{ matrix.compiler }}
+
+      - name: Install Clang/LLVM toolchain
+        if: ${{ startsWith(matrix.compiler, 'clang') }}
         run: |
-          sudo apt-get update -y
-          if [[ "${{ matrix.compiler }}" == gcc-13 ]]; then
-            sudo apt-get install -y g++-13
-          else
-            # Clang 20 (from llvm apt repo)
-            wget https://apt.llvm.org/llvm.sh
+            wget --retry-connrefused --waitretry=5 --tries=5 https://apt.llvm.org/llvm.sh
             chmod +x llvm.sh
-            sudo ./llvm.sh 20
-            sudo apt-get install -y clang-tidy-20 lld-20
+            compiler="${{ matrix.compiler }}"
+            version="${compiler##*-}"
+            echo "Detected clang version: $version"
+            sudo ./llvm.sh "$version"
+            sudo apt-get install -y "clang-tidy-$version" "lld-$version"
+
+      - name: Derive CC/CXX environment
+        run: |
+          compiler="${{ matrix.compiler }}"
+          echo "CC=$compiler" >> $GITHUB_ENV
+          ver="${compiler##*-}"
+          if [[ "$compiler" == gcc-* ]]; then
+            echo "CXX=g++-$ver" >> $GITHUB_ENV
+          else
+            echo "CXX=clang++-$ver" >> $GITHUB_ENV
           fi
-          sudo apt-get install -y ninja-build python3
+          echo "Derived compilers: CC=$compiler CXX set for version $ver"
 
       - name: Show compiler version
         run: |
           $CXX --version
 
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            build
+            ~/.cache/ccache
+          key: ${{ runner.os }}-${{ matrix.compiler }}-${{ hashFiles('**/CMakeLists.txt','**/*.cmake') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.compiler }}-
+
       - name: Configure (CMake)
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE -DAERONET_BUILD_TESTS=ON -DAERONET_BUILD_EXAMPLES=OFF
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+            -DAERONET_BUILD_TESTS=ON \
+            -DAERONET_BUILD_EXAMPLES=ON \
+            -DAERONET_ENABLE_ASAN=ON \
+            ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
+            -DAERONET_ENABLE_SPDLOG=${{ matrix.spdlog }}
 
       - name: Build
         run: |
@@ -52,7 +83,16 @@ jobs:
 
       - name: Run unit tests
         run: |
-          ctest --test-dir build --output-on-failure
+          ctest --test-dir build --output-on-failure --timeout 300 -j $(nproc)
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "Compiler: $CXX" >> $GITHUB_STEP_SUMMARY
+          echo "SPDLOG: ${{ matrix.spdlog }}" >> $GITHUB_STEP_SUMMARY
+          echo "Commit: $GITHUB_SHA" >> $GITHUB_STEP_SUMMARY
+          echo "Tests executed:" >> $GITHUB_STEP_SUMMARY
+          ctest --test-dir build -N | sed 's/^/  /' >> $GITHUB_STEP_SUMMARY
 
       - name: Install artifact (optional)
         if: always()
@@ -63,20 +103,13 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: aeronet-${{ matrix.compiler }}
+          # NOTE: Artifact names must be globally unique within a single workflow run.
+          # The previous name omitted the build type, so Debug and Release matrix legs
+          # attempted to create the same artifact name, yielding HTTP 409 Conflict.
+          # Adding the build axis (and keeping compiler + spdlog toggle) makes each
+          # matrix combination distinct. If you ever re-run a failed job (run_attempt > 1)
+          # and want full uniqueness across attempts, you could append `-ra${{ github.run_attempt }}`.
+          name: aeronet-${{ matrix.compiler }}-spdlog-${{ matrix.spdlog }}-build-${{ matrix.build }}
           path: install
           if-no-files-found: ignore
-
-  # Optional: static analysis job (can be enabled later)
-  clang-tidy:
-    if: false  # flip to true to enable
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install clang-tidy
-        run: |
-          sudo apt-get update -y && sudo apt-get install -y clang-tidy
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-      - name: Run clang-tidy (example)
-        run: clang-tidy --version
+          retention-days: 7

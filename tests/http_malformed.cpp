@@ -1,10 +1,16 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cstdint>
 #include <string>
 #include <thread>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 #include "test_util.hpp"
+
 using namespace std::chrono_literals;
 
 namespace {
@@ -22,9 +28,9 @@ std::string sendRaw(uint16_t port, const std::string& raw) {
 
 TEST(HttpMalformed, MissingSpacesInRequestLine) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
-  std::thread th([&] { server.runUntil([] { return false; }, 25ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 25ms); });
   std::this_thread::sleep_for(50ms);
   std::string resp = sendRaw(port, "GET/abcHTTP/1.1\r\nHost: x\r\n\r\n");
   server.stop();
@@ -36,9 +42,9 @@ TEST(HttpMalformed, OversizedHeaders) {
   aeronet::ServerConfig cfg;
   cfg.withMaxHeaderBytes(64);
   aeronet::HttpServer server(cfg);
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
-  std::thread th([&] { server.runUntil([] { return false; }, 25ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 25ms); });
   std::this_thread::sleep_for(50ms);
   std::string big(200, 'A');
   std::string raw = "GET / HTTP/1.1\r\nHost: x\r\nX-Big: " + big + "\r\n\r\n";
@@ -50,9 +56,9 @@ TEST(HttpMalformed, OversizedHeaders) {
 
 TEST(HttpMalformed, BadChunkExtensionHex) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
-  std::thread th([&] { server.runUntil([] { return false; }, 25ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 25ms); });
   std::this_thread::sleep_for(50ms);
   // Transfer-Encoding with invalid hex char 'Z'
   std::string raw = "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nZ\r\n";  // incomplete + invalid

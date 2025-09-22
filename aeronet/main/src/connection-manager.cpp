@@ -1,14 +1,16 @@
 #include <netinet/in.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 
-#include "aeronet/event-loop.hpp"
 #include "aeronet/server.hpp"
+#include "event-loop.hpp"
 #include "sys-utils.hpp"  // setNonBlocking, safeClose
 
 namespace aeronet {
@@ -35,15 +37,22 @@ void HttpServer::acceptNewConnections() {
     socklen_t in_len = sizeof(in_addr);
     int client_fd = ::accept(_listenFd, reinterpret_cast<sockaddr*>(&in_addr), &in_len);
     if (client_fd < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      int savedErr = errno;  // capture errno before any other call
+      if (savedErr == EAGAIN || savedErr == EWOULDBLOCK) {
         break;
       }
-      std::perror("accept");
+      log::error("accept failed: {}", std::strerror(savedErr));
       break;
     }
-    setNonBlocking(client_fd);
+    if (setNonBlocking(client_fd) < 0) {
+      int savedErr = errno;
+      log::error("setNonBlocking failed fd={} err={}: {}", client_fd, savedErr, std::strerror(savedErr));
+      ::close(client_fd);
+      continue;
+    }
     if (!_loop->add(client_fd, EPOLLIN | EPOLLET)) {
-      std::perror("EventLoop add client");
+      int savedErr = errno;
+      log::error("EventLoop add client failed fd={} err={}: {}", client_fd, savedErr, std::strerror(savedErr));
       ::close(client_fd);
       continue;
     }
@@ -53,7 +62,7 @@ void HttpServer::acceptNewConnections() {
       pst->buffer.ensureAvailableCapacity(4096);
       ssize_t bytesRead = ::read(client_fd, pst->buffer.data() + pst->buffer.size(), 4096);
       if (bytesRead > 0) {
-        pst->buffer.setSize(pst->buffer.size() + bytesRead);
+        pst->buffer.resize_down(pst->buffer.size() + static_cast<std::size_t>(bytesRead));
         if (bytesRead < 4096) {
           break;
         }
@@ -105,7 +114,7 @@ void HttpServer::handleReadableClient(int fd) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         break;
       }
-      std::perror("read");
+      log::error("read failed: {}", std::strerror(errno));
       closeCnx = true;
       break;
     }
@@ -113,7 +122,7 @@ void HttpServer::handleReadableClient(int fd) {
       closeCnx = true;
       break;
     }
-    state.buffer.setSize(state.buffer.size() + count);
+    state.buffer.resize_down(state.buffer.size() + static_cast<std::size_t>(count));
     if (state.buffer.size() > _config.maxHeaderBytes + _config.maxBodyBytes) {
       closeCnx = true;
       break;
@@ -128,7 +137,7 @@ void HttpServer::handleReadableClient(int fd) {
   }
 }
 
-void HttpServer::handleWritableClient(int fd, uint32_t /*ev*/) {
+void HttpServer::handleWritableClient(int fd) {
   auto it = _connStates.find(fd);
   if (it == _connStates.end()) {
     return;

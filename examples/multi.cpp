@@ -1,9 +1,17 @@
 #include <atomic>
+#include <chrono>
 #include <csignal>
+#include <cstddef>
+#include <cstdint>
 #include <iostream>
+#include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 
 namespace {
@@ -22,7 +30,7 @@ int main(int argc, char** argv) {
   }
 
   std::vector<aeronet::HttpServer> servers;
-  servers.reserve(static_cast<size_t>(threads));
+  servers.reserve(static_cast<std::size_t>(threads));
   for (int i = 0; i < threads; ++i) {
     aeronet::HttpServer srv(aeronet::ServerConfig{}.withPort(port).withReusePort());
     srv.setHandler([](const aeronet::HttpRequest& req) {
@@ -33,10 +41,10 @@ int main(int argc, char** argv) {
     servers.emplace_back(std::move(srv));
   }
 
-  std::vector<std::thread> workers;
-  workers.reserve(static_cast<size_t>(threads));
+  std::vector<std::jthread> workers;
+  workers.reserve(static_cast<std::size_t>(threads));
   for (int i = 0; i < threads; ++i) {
-    workers.emplace_back([&servers, i] { servers[static_cast<size_t>(i)].run(); });
+    workers.emplace_back([&servers, i] { servers[static_cast<std::size_t>(i)].run(); });
   }
 
   std::signal(SIGINT, handleSigint);
@@ -46,8 +54,5 @@ int main(int argc, char** argv) {
   }
   for (auto& server : servers) {
     server.stop();
-  }
-  for (auto& worker : workers) {
-    worker.join();
   }
 }

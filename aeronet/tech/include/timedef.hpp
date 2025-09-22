@@ -11,6 +11,4 @@ using Clock = std::chrono::system_clock;
 using TimePoint = Clock::time_point;
 using Duration = Clock::duration;
 
-inline constexpr auto kUndefinedDuration = Duration::min();
-
 }  // namespace aeronet
