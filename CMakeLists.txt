@@ -12,6 +12,11 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   set(MAIN_PROJECT ON)
 endif()
 
+set(ASAN_DEFAULT OFF)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(ASAN_DEFAULT ON)
+endif()
+
 # Build options
 option(AERONET_BUILD_EXAMPLES "Build example programs" ${MAIN_PROJECT})
 option(AERONET_BUILD_TESTS "Build tests" ${MAIN_PROJECT})
@@ -20,9 +25,10 @@ option(AERONET_INSTALL "Enable install & package config generation" ${MAIN_PROJE
 
 # Optional dependencies (aeronet is able to compile without the feature if not enabled)
 option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" OFF)
+option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" OFF)
 
 # Linting
-option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" OFF)
+option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" ${ASAN_DEFAULT})
 option(AERONET_ENABLE_CLANG_TIDY "Enable clang-tidy analysis" OFF)
 option(AERONET_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
@@ -30,7 +36,26 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(OpenSSL REQUIRED)
+if(AERONET_ENABLE_OPENSSL)
+  find_package(OpenSSL REQUIRED)
+endif()
+
+# Clang-Tidy integration
+if(AERONET_ENABLE_CLANG_TIDY)
+  find_program(CLANG_TIDY "clang-tidy")
+  if(CLANG_TIDY)
+    message(STATUS "Activate clang-tidy")
+  else()
+    message(FATAL_ERROR "clang-tidy executable cannot be found")
+  endif()
+endif()
+
+if(AERONET_ENABLE_ASAN)
+  if (NOT AERONET_ASAN_OPTIONS)
+    set(AERONET_ASAN_OPTIONS -fsanitize=address -fsanitize=undefined -fsanitize=float-divide-by-zero -fno-sanitize-recover)
+  endif()
+  message(STATUS "Activate asan with options ${AERONET_ASAN_OPTIONS}")
+endif()
 
 include(cmake/CommonSettings.cmake)
 include(cmake/AddUnitTest.cmake)
@@ -47,8 +72,8 @@ else()
   set(LINK_AMC TRUE)
   FetchContent_Declare(
     amadeusamc
-    URL https://github.com/AmadeusITGroup/amc/archive/refs/tags/v2.6.0.tar.gz
-    URL_HASH SHA256=381cda7834c73cd81f51693739eb3132cfb822a41499972d98621d914924de5f
+    URL https://github.com/AmadeusITGroup/amc/archive/refs/tags/v2.6.1.tar.gz
+    URL_HASH SHA256=a1cbb695f31c96b90699ef1d2db14dcd89984cf1135c29b48af70a007c44a02d
   )
 
   list(APPEND fetchContentPackagesToMakeAvailable amadeusamc)
@@ -82,6 +107,8 @@ if(AERONET_ENABLE_SPDLOG)
             URL https://github.com/gabime/spdlog/archive/refs/tags/v1.15.3.tar.gz
             URL_HASH SHA256=15a04e69c222eb6c01094b5c7ff8a249b36bb22788d72519646fb85feb267e67
         )
+
+        set(SPDLOG_USE_STD_FORMAT ON CACHE BOOL "" FORCE)
 
         list(APPEND fetchContentPackagesToMakeAvailable spdlog)
     endif()

@@ -1,10 +1,14 @@
 #include <gtest/gtest.h>
-#include <sys/socket.h>
 #include <unistd.h>
 
+#include <chrono>
+#include <cstdint>
 #include <string>
 #include <thread>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 #include "test_util.hpp"
 
@@ -22,13 +26,13 @@ std::string collectSimple(uint16_t port, const std::string& req) {
 
 TEST(Http10, BasicVersionEcho) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body = "A";
     return respObj;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(60ms);
   std::string req = "GET /x HTTP/1.0\r\nHost: h\r\n\r\n";
   std::string resp = collectSimple(port, req);
@@ -44,7 +48,7 @@ TEST(Http10, No100ContinueEvenIfHeaderPresent) {
     respObj.body = "B";
     return respObj;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(60ms);
   std::string req =
       "POST /p HTTP/1.0\r\nHost: h\r\nContent-Length: 0\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";  // Expect
@@ -61,13 +65,13 @@ TEST(Http10, No100ContinueEvenIfHeaderPresent) {
 
 TEST(Http10, RejectTransferEncoding) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body = "C";
     return respObj;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(60ms);
   std::string req = "GET /te HTTP/1.0\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n";
   std::string resp = collectSimple(port, req);
@@ -79,13 +83,13 @@ TEST(Http10, RejectTransferEncoding) {
 
 TEST(Http10, KeepAliveOptInStillWorks) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body = "D";
     return respObj;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 30ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 30ms); });
   std::this_thread::sleep_for(60ms);
   int fd = tu_connect(port);
   ASSERT_GE(fd, 0);

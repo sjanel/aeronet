@@ -2,11 +2,16 @@
 #include <gtest/gtest.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
+#include <chrono>
+#include <cstddef>
 #include <string>
 #include <thread>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response-writer.hpp"
 #include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 
@@ -15,21 +20,21 @@ using namespace aeronet;
 TEST(StreamingBackpressure, LargeBodyQueues) {
   ServerConfig cfg;
   cfg.port = 0;
-  cfg.enableKeepAlive = false;             // simplicity
-  cfg.maxOutboundBufferBytes = 64 * 1024;  // assume default maybe larger
+  cfg.enableKeepAlive = false;                                       // simplicity
+  cfg.maxOutboundBufferBytes = static_cast<std::size_t>(64 * 1024);  // assume default maybe larger
   HttpServer server(cfg);
-  size_t total = 512 * 1024;  // 512 KB
-  server.setStreamingHandler([&](const HttpRequest& req, HttpResponseWriter& w) {
-    w.setStatus(200, "OK");
+  std::size_t total = static_cast<std::size_t>(512 * 1024);  // 512 KB
+  server.setStreamingHandler([&]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+    writer.setStatus(200, "OK");
     std::string chunk(8192, 'x');
-    size_t sent = 0;
+    std::size_t sent = 0;
     while (sent < total) {
-      w.write(chunk);
+      writer.write(chunk);
       sent += chunk.size();
     }
-    w.end();
+    writer.end();
   });
-  std::thread th([&] { server.runUntil([&] { return server.port() != 0; }); });
+  std::jthread th([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   ASSERT_GE(fd, 0);
@@ -48,5 +53,4 @@ TEST(StreamingBackpressure, LargeBodyQueues) {
   }
   ::close(fd);
   server.stop();
-  th.join();
 }

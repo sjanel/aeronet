@@ -1,9 +1,19 @@
 #include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
 
+#include <atomic>
+#include <thread>
+
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 #include "exception.hpp"
-#include "test_util.hpp"
+#include "http-method-set.hpp"
+#include "http-method.hpp"
 
 using namespace aeronet;
 
@@ -31,7 +41,7 @@ TEST(HttpRouting, BasicPathDispatch) {
   });
 
   std::atomic<bool> done{false};
-  std::thread th([&]() { server.runUntil([&]() { return done.load(); }, std::chrono::milliseconds{50}); });
+  std::jthread th([&]() { server.runUntil([&]() { return done.load(); }, std::chrono::milliseconds{50}); });
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
@@ -87,7 +97,6 @@ TEST(HttpRouting, BasicPathDispatch) {
   EXPECT_NE(resp4.find("POST!"), std::string::npos);
 
   done.store(true);
-  th.join();
 }
 
 TEST(HttpRouting, ExclusivityWithGlobalHandler) {

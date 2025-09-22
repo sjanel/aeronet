@@ -15,7 +15,7 @@ target_include_directories(aeronet
 )
 
 target_link_libraries(aeronet
-    PUBLIC OpenSSL::SSL OpenSSL::Crypto aeronet_tech
+    PUBLIC aeronet_tech
 )
 
 target_link_libraries(aeronet

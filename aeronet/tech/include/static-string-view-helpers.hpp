@@ -103,7 +103,7 @@ template <int64_t intVal>
 class IntToStringView {
  private:
   static constexpr auto impl() noexcept {
-    std::array<char, nchars(intVal)> charsArray;
+    std::array<char, static_cast<std::size_t>(nchars(intVal))> charsArray;
     if constexpr (intVal == 0) {
       charsArray[0] = '0';
       return charsArray;
@@ -115,7 +115,7 @@ class IntToStringView {
       val = -val;
     }
     do {
-      *--endIt = (val % 10) + '0';
+      *--endIt = '0' + static_cast<char>(val % 10);
       val /= 10;
     } while (val != 0);
     return charsArray;

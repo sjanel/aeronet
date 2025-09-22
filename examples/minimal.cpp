@@ -1,9 +1,11 @@
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
-#include <iostream>
 #include <string>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 
 namespace {
@@ -13,7 +15,7 @@ void handleSigint([[maybe_unused]] int signum) { gStop.store(true); }
 }  // namespace
 
 int main(int argc, char **argv) {
-  uint16_t port = 8080;
+  uint16_t port = 0;
   if (argc > 1) {
     port = static_cast<uint16_t>(std::stoi(argv[1]));
   }
@@ -32,8 +34,6 @@ int main(int argc, char **argv) {
   });
 
   std::signal(SIGINT, handleSigint);
-
-  std::cout << "Server running on port " << port << ", press Ctrl-C to stop\n";
 
   server.runUntil([]() { return gStop.load(); });
 }
