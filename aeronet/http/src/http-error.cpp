@@ -6,12 +6,11 @@
 
 #include "http-constants.hpp"
 #include "http-error-build.hpp"
-#include "string.hpp"
 #include "stringconv.hpp"
 
 namespace aeronet {
 
-string buildSimpleError(http::StatusCode status, std::string_view reason, std::string_view date, bool closeConn) {
+RawChars buildSimpleError(http::StatusCode status, std::string_view reason, std::string_view date, bool closeConn) {
   // If caller passed empty reason, try to supply a canonical one.
   if (reason.empty()) {
     if (auto mapped = http::reasonPhraseFor(status); !mapped.empty()) {
@@ -21,17 +20,16 @@ string buildSimpleError(http::StatusCode status, std::string_view reason, std::s
   static constexpr std::string_view kSep = ": ";
   static constexpr std::string_view kEnd = "\r\n\r\n";
 
-  // Pre-compute approximate size.
-  string header;
-  header.reserve(http::HTTP11.size() + 1 + 3 + 1 + reason.size() + http::CRLF.size() + http::Date.size() + kSep.size() +
-                 date.size() + http::CRLF.size() + http::ContentLength.size() + kSep.size() + 1 +  // zero length "0"
-                 http::CRLF.size() + http::Connection.size() + kSep.size() +
-                 (closeConn ? http::close.size() : http::keepalive.size()) + kEnd.size());
+  RawChars header(http::HTTP11.size() + 1 + 3 + 1 + reason.size() + http::CRLF.size() + http::Date.size() +
+                  kSep.size() + date.size() + http::CRLF.size() + http::ContentLength.size() + kSep.size() +
+                  1 +  // zero length "0"
+                  http::CRLF.size() + http::Connection.size() + kSep.size() +
+                  (closeConn ? http::close.size() : http::keepalive.size()) + kEnd.size());
 
   header.append(http::HTTP11);
-  header.push_back(' ');
-  AppendIntegralToString(header, status);
-  header.push_back(' ');
+  header.append(' ');
+  header.append(std::string_view(IntegralToCharVector(status)));
+  header.append(' ');
   header.append(reason);
   header.append(http::CRLF);
   header.append(http::Date);
@@ -40,7 +38,7 @@ string buildSimpleError(http::StatusCode status, std::string_view reason, std::s
   header.append(http::CRLF);
   header.append(http::ContentLength);
   header.append(kSep);
-  header.push_back('0');
+  header.append('0');
   header.append(http::CRLF);
   header.append(http::Connection);
   header.append(kSep);

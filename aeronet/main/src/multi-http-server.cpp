@@ -58,19 +58,18 @@ void MultiHttpServer::setHandler(RequestHandler handler) {
   _globalHandler = std::move(handler);
 }
 
-void MultiHttpServer::addPathHandler(std::string_view path, const http::MethodSet& methods,
-                                     const RequestHandler& handler) {
+void MultiHttpServer::addPathHandler(std::string path, const http::MethodSet& methods, const RequestHandler& handler) {
   ensureNotStarted();
   if (_globalHandler) {
     throw std::logic_error("Cannot add path handlers after setting global handler");
   }
-  _pathHandlersEmplace.emplace_back(string(path), methods, handler);
+  _pathHandlersEmplace.emplace_back(std::move(path), methods, handler);
 }
 
-void MultiHttpServer::addPathHandler(std::string_view path, http::Method method, const RequestHandler& handler) {
+void MultiHttpServer::addPathHandler(std::string path, http::Method method, const RequestHandler& handler) {
   http::MethodSet ms;
   ms.insert(method);
-  addPathHandler(path, ms, handler);
+  addPathHandler(std::move(path), ms, handler);
 }
 
 void MultiHttpServer::setParserErrorCallback(ParserErrorCallback cb) {

@@ -4,6 +4,7 @@
 #include "aeronet/server.hpp"
 #include "http-constants.hpp"
 #include "http-error-build.hpp"
+#include "raw-chars.hpp"
 
 namespace aeronet {
 
@@ -16,7 +17,7 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, Ht
   }
   headerEnd = rng.begin() - state.buffer.data();
   if (headerEnd > _config.maxHeaderBytes) {
-    string err = buildSimpleError(431, http::ReasonHeadersTooLarge, _cachedDate, true);
+    auto err = buildSimpleError(431, http::ReasonHeadersTooLarge, std::string_view(_cachedDate), true);
     queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::HeadersTooLarge);
@@ -28,7 +29,7 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, Ht
   const char* headers_end_ptr = begin + headerEnd;
   const char* raw_line_nl = static_cast<const char*>(std::memchr(begin, '\n', static_cast<size_t>(headerEnd)));
   if (raw_line_nl == nullptr) {
-    string err = buildSimpleError(400, http::ReasonBadRequest, _cachedDate, true);
+    auto err = buildSimpleError(400, http::ReasonBadRequest, std::string_view(_cachedDate), true);
     queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::BadRequestLine);
@@ -44,7 +45,7 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, Ht
   const char* sp1 =
       static_cast<const char*>(std::memchr(line_start, ' ', static_cast<size_t>(line_end_trim - line_start)));
   if (sp1 == nullptr) {
-    string err = buildSimpleError(400, http::ReasonBadRequest, _cachedDate, true);
+    auto err = buildSimpleError(400, http::ReasonBadRequest, std::string_view(_cachedDate), true);
     queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::BadRequestLine);
@@ -54,7 +55,7 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, Ht
   }
   const char* sp2 = static_cast<const char*>(std::memchr(sp1 + 1, ' ', static_cast<size_t>(line_end_trim - (sp1 + 1))));
   if (sp2 == nullptr) {
-    string err = buildSimpleError(400, http::ReasonBadRequest, _cachedDate, true);
+    auto err = buildSimpleError(400, http::ReasonBadRequest, std::string_view(_cachedDate), true);
     queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::BadRequestLine);
@@ -66,7 +67,7 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnStateInternal& state, Ht
   outReq.target = {sp1 + 1, static_cast<size_t>(sp2 - (sp1 + 1))};
   outReq.version = {sp2 + 1, static_cast<size_t>(line_end_trim - (sp2 + 1))};
   if (!(outReq.version == http::HTTP11 || outReq.version == http::HTTP10)) {
-    string err = buildSimpleError(505, http::ReasonHTTPVersionNotSupported, _cachedDate, true);
+    auto err = buildSimpleError(505, http::ReasonHTTPVersionNotSupported, std::string_view(_cachedDate), true);
     queueData(fd, state, err.data(), err.size());
     if (_parserErrCb) {
       _parserErrCb(ParserError::VersionUnsupported);
@@ -142,7 +143,7 @@ bool HttpServer::decodeFixedLengthBody(int fd, ConnStateInternal& state, const H
     }
     contentLen = parsed;
     if (contentLen > _config.maxBodyBytes) {
-      string err = buildSimpleError(413, http::ReasonPayloadTooLarge, _cachedDate, true);
+      auto err = buildSimpleError(413, http::ReasonPayloadTooLarge, std::string_view(_cachedDate), true);
       queueData(fd, state, err.data(), err.size());
       closeConn = true;
       return false;
@@ -167,8 +168,7 @@ bool HttpServer::decodeChunkedBody(int fd, ConnStateInternal& state, const HttpR
     queueData(fd, state, http::HTTP11_100_CONTINUE.data(), http::HTTP11_100_CONTINUE.size());
   }
   size_t pos = headerEnd + 4;
-  string decodedBody;
-  decodedBody.reserve(1024);
+  RawChars decodedBody(1024);
   bool needMore = false;
   while (true) {
     auto lineEndIt = std::search(state.buffer.begin() + pos, state.buffer.end(), http::CRLF.begin(), http::CRLF.end());
@@ -200,7 +200,7 @@ bool HttpServer::decodeChunkedBody(int fd, ConnStateInternal& state, const HttpR
     }
     pos = (lineEndIt - state.buffer.data()) + 2;
     if (chunkSize > _config.maxBodyBytes) {
-      string err = buildSimpleError(413, http::ReasonPayloadTooLarge, _cachedDate, true);
+      auto err = buildSimpleError(413, http::ReasonPayloadTooLarge, std::string_view(_cachedDate), true);
       queueData(fd, state, err.data(), err.size());
       if (_parserErrCb) {
         _parserErrCb(ParserError::PayloadTooLarge);
@@ -224,9 +224,9 @@ bool HttpServer::decodeChunkedBody(int fd, ConnStateInternal& state, const HttpR
       pos += 2;
       break;
     }
-    decodedBody.append(state.buffer, pos, chunkSize);
+    decodedBody.append(state.buffer.data() + pos, std::min(chunkSize, state.buffer.size() - pos));
     if (decodedBody.size() > _config.maxBodyBytes) {
-      string err = buildSimpleError(413, http::ReasonPayloadTooLarge, _cachedDate, true);
+      auto err = buildSimpleError(413, http::ReasonPayloadTooLarge, std::string_view(_cachedDate), true);
       queueData(fd, state, err.data(), err.size());
       if (_parserErrCb) {
         _parserErrCb(ParserError::PayloadTooLarge);

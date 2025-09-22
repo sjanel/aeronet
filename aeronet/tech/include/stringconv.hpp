@@ -5,6 +5,7 @@
 #include <concepts>
 #include <limits>
 #include <span>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <type_traits>
@@ -13,16 +14,13 @@
 #include "fixedcapacityvector.hpp"
 #include "invalid_argument_exception.hpp"
 #include "nchars.hpp"
-#include "string.hpp"
 
 namespace aeronet {
 
-inline string IntegralToString(std::integral auto val) {
-  const auto nbDigitsInt = nchars(val);
+constexpr std::string IntegralToString(std::integral auto val) {
+  std::string str(nchars(val), '0');
 
-  string str(nbDigitsInt, '0');
-
-  std::to_chars(str.data(), str.data() + nbDigitsInt, val);
+  std::to_chars(str.data(), str.data() + str.size(), val);
 
   return str;
 }
@@ -37,13 +35,7 @@ inline auto IntegralToCharVector(std::integral auto val) {
 
   CharVector ret(static_cast<CharVector::size_type>(nchars(val)));
 
-  char *begPtr = ret.data();
-  char *endPtr = begPtr + ret.size();
-
-  const auto [ptr, errc] = std::to_chars(begPtr, endPtr, val);
-  if (errc != std::errc() || ptr != endPtr) {
-    throw exception("Unable to decode integral {} into string", val);
-  }
+  std::to_chars(ret.data(), ret.data() + ret.size(), val);
 
   return ret;
 }
@@ -78,10 +70,10 @@ Integral StringToIntegral(std::string_view str) {
   return StringToIntegral<Integral>(str.data(), str.size());
 }
 
-inline void AppendIntegralToString(string &str, std::integral auto val) {
+constexpr void AppendIntegralToString(auto &str, std::integral auto val) {
   const auto nbDigitsInt = nchars(val);
 
-  str.append(static_cast<string::size_type>(nbDigitsInt), '0');
+  str.append(static_cast<std::size_t>(nbDigitsInt), '0');
 
   char *ptr = str.data() + static_cast<decltype(nbDigitsInt)>(str.size());
   std::to_chars(ptr - nbDigitsInt, ptr, val);

@@ -25,7 +25,7 @@ TEST(HttpRouting, BasicPathDispatch) {
     HttpResponse resp;
     resp.statusCode = 200;
     resp.reason = "OK";
-    resp.body = string(req.method) + "!";
+    resp.body = std::string(req.method) + "!";
     resp.contentType = "text/plain";
     return resp;
   });
@@ -40,7 +40,7 @@ TEST(HttpRouting, BasicPathDispatch) {
   auto doReq = [&](const std::string& raw) -> std::string {
     int sock = ::socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
-      return std::string{};
+      return {};
     }
     sockaddr_in addr{};
     addr.sin_family = AF_INET;

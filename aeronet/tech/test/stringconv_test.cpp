@@ -4,21 +4,21 @@
 
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <string_view>
 
 #include "exception.hpp"
-#include "string.hpp"
 
 namespace aeronet {
 TEST(ToChar, Zero) {
-  string str;
+  std::string str;
   AppendIntegralToString(str, 0);
   EXPECT_EQ(str, "0");
   EXPECT_EQ(IntegralToString(0), "0");
 }
 
 TEST(ToChar, PositiveValue) {
-  string str("I am a string ");
+  std::string str("I am a string ");
   AppendIntegralToString(str, 42);
   EXPECT_EQ(str, "I am a string 42");
   AppendIntegralToString(str, 9);
@@ -27,7 +27,7 @@ TEST(ToChar, PositiveValue) {
 }
 
 TEST(ToChar, NegativeValue) {
-  string str("I will hold some negative value ");
+  std::string str("I will hold some negative value ");
   AppendIntegralToString(str, -293486);
   EXPECT_EQ(str, "I will hold some negative value -293486");
   AppendIntegralToString(str, -9830346445);
@@ -36,7 +36,7 @@ TEST(ToChar, NegativeValue) {
 }
 
 TEST(ToChar, UnsignedValue) {
-  string str("I am a string ");
+  std::string str("I am a string ");
   AppendIntegralToString(str, 738U);
   EXPECT_EQ(str, "I am a string 738");
   AppendIntegralToString(str, std::numeric_limits<uint64_t>::max());

@@ -5,7 +5,7 @@
 #include <span>
 #include <string_view>
 
-#include "string.hpp"
+#include "raw-chars.hpp"
 
 namespace aeronet {
 
@@ -26,7 +26,7 @@ std::span<char> BytesToBuffer(int64_t numberOfBytes, std::span<char> buf,
 // Returns the length of the string representation of the number of bytes.
 int64_t BytesToStrLen(int64_t numberOfBytes, int nbSignificantUnits = std::numeric_limits<int>::max());
 
-// Same than BytesToBuffer, but returns a string instead.
-string BytesToStr(int64_t numberOfBytes, int nbSignificantUnits = std::numeric_limits<int>::max());
+// Same than BytesToBuffer, but returns a RawChars instead.
+RawChars BytesToStr(int64_t numberOfBytes, int nbSignificantUnits = std::numeric_limits<int>::max());
 
 }  // namespace aeronet

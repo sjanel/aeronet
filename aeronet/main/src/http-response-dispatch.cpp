@@ -9,6 +9,7 @@
 #include "aeronet/event-loop.hpp"  // for EventLoop methods
 #include "aeronet/server.hpp"
 #include "http-constants.hpp"
+#include "http-response-build.hpp"
 #include "string-equal-ignore-case.hpp"  // for CaseInsensitiveEqual used indirectly in finalize logic
 
 namespace aeronet {
@@ -35,7 +36,7 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnStateInternal& state, HttpR
     keepAlive = false;
   }
   std::string_view body = resp.body;
-  auto header = resp.buildHead(req.version, _cachedDate, keepAlive, body.size());
+  auto header = http::buildHead(resp, req.version, std::string_view(_cachedDate), keepAlive, body.size());
   if (req.method == http::HEAD) {
     queueData(fd, state, header.data(), header.size());
   } else {
@@ -55,9 +56,6 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnStateInternal& state, HttpR
 }
 
 bool HttpServer::queueData(int fd, ConnStateInternal& state, const char* data, size_t len) {
-  if (len == 0) {
-    return true;
-  }
   if (state.outBuffer.empty()) {
     ssize_t written = ::send(fd, data, len, MSG_NOSIGNAL);
     if (written == static_cast<ssize_t>(len)) {

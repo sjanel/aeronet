@@ -3,13 +3,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <thread>
 
 #include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
-#include "string.hpp"
 #include "vector.hpp"
 
 namespace aeronet {
@@ -45,10 +45,10 @@ class MultiHttpServer {
   void setHandler(RequestHandler handler);
 
   // Register a handler for a specific absolute path and a set of allowed HTTP methods.
-  void addPathHandler(std::string_view path, const http::MethodSet& methods, const RequestHandler& handler);
+  void addPathHandler(std::string path, const http::MethodSet& methods, const RequestHandler& handler);
 
   // Register a handler for a specific absolute path and a single allowed HTTP method.
-  void addPathHandler(std::string_view path, http::Method method, const RequestHandler& handler);
+  void addPathHandler(std::string path, http::Method method, const RequestHandler& handler);
 
   // Set a callback to be invoked on HTTP parsing errors.
   void setParserErrorCallback(ParserErrorCallback cb);
@@ -71,7 +71,7 @@ class MultiHttpServer {
   void ensureNotStarted() const;
 
   struct PathRegistration {
-    string path;
+    std::string path;
     http::MethodSet methods;
     RequestHandler handler;
   };
