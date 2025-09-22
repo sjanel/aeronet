@@ -1,11 +1,21 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cstddef>
+#include <cstdio>
+#include <mutex>
 #include <random>
+#include <string>
 #include <thread>
 #include <vector>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 #include "test_util.hpp"
+
 using namespace std::chrono_literals;
 
 namespace {
@@ -21,11 +31,11 @@ struct Capture {
 
 TEST(HttpParserErrors, InvalidVersion505) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   Capture cap;
   server.setParserErrorCallback([&](aeronet::HttpServer::ParserError err) { cap.push(err); });
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
-  std::thread th([&] { server.runUntil([] { return false; }, 25ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 25ms); });
   std::this_thread::sleep_for(50ms);
   int fd = tu_connect(port);
   ASSERT_GE(fd, 0);
@@ -49,9 +59,9 @@ TEST(HttpParserErrors, InvalidVersion505) {
 
 TEST(HttpParserErrors, Expect100OnlyWithBody) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
-  std::thread th([&] { server.runUntil([] { return false; }, 25ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 25ms); });
   std::this_thread::sleep_for(50ms);
   int fd = tu_connect(port);
   ASSERT_GE(fd, 0);
@@ -77,13 +87,13 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
 // Fuzz-ish incremental chunk framing with random chunk sizes & boundaries.
 TEST(HttpParserErrors, ChunkIncrementalFuzz) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body = std::string(req.body);
     return respObj;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 25ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 25ms); });
   std::this_thread::sleep_for(50ms);
   std::mt19937 rng(12345);
   std::uniform_int_distribution<int> sizeDist(1, 15);
@@ -95,15 +105,15 @@ TEST(HttpParserErrors, ChunkIncrementalFuzz) {
   // send 5 random chunks
   for (int i = 0; i < 5; ++i) {
     int sz = sizeDist(rng);
-    std::string chunk(sz, static_cast<char>('a' + (i % 26)));
+    std::string chunk(static_cast<std::size_t>(sz), static_cast<char>('a' + (i % 26)));
     original += chunk;
     char hex[16];
     std::snprintf(hex, sizeof(hex), "%x", sz);
     std::string frame = std::string(hex) + "\r\n" + chunk + "\r\n";
-    size_t pos = 0;
+    std::size_t pos = 0;
     while (pos < frame.size()) {
-      size_t rem = frame.size() - pos;
-      size_t slice = std::min<size_t>(1 + (rng() % 3), rem);
+      std::size_t rem = frame.size() - pos;
+      std::size_t slice = std::min<std::size_t>(1 + (rng() % 3), rem);
       tu_sendAll(fd, frame.substr(pos, slice));
       pos += slice;
       std::this_thread::sleep_for(1ms);

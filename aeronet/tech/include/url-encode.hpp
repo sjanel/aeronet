@@ -13,8 +13,8 @@ namespace aeronet {
 /// (%NN where NN is a two-digit hexadecimal number).
 template <class IsNotEncodedFunc>
 std::string URLEncode(std::span<const char> data, IsNotEncodedFunc isNotEncodedFunc) {
-  const auto nbNotEncodedChars = std::ranges::count_if(data, isNotEncodedFunc);
-  const auto nbEncodedChars = data.size() - nbNotEncodedChars;
+  const std::size_t nbNotEncodedChars = static_cast<std::size_t>(std::ranges::count_if(data, isNotEncodedFunc));
+  const std::size_t nbEncodedChars = data.size() - nbNotEncodedChars;
 
   std::string ret(nbNotEncodedChars + (3U * nbEncodedChars), '\0');
 

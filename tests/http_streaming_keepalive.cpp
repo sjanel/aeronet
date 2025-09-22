@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <cstring>
@@ -9,6 +10,8 @@
 #include <string_view>
 #include <thread>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response-writer.hpp"
 #include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 
@@ -44,12 +47,10 @@ TEST(StreamingKeepAlive, TwoSequentialRequests) {
     writer.write(",world");
     writer.end();
   });
-  std::thread th([&] { server.run(); });
-  while (server.port() == 0) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  int port = server.port();
+  std::jthread th([&] { server.run(); });
+  auto port = server.port();
   ASSERT_GT(port, 0);
+  ASSERT_LE(port, 65535);
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   ASSERT_GE(fd, 0);
   sockaddr_in addr{};
@@ -82,11 +83,8 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
     writer.write("ignored-body");
     writer.end();
   });
-  std::thread th([&] { server.run(); });
-  while (server.port() == 0) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  int port = server.port();
+  std::jthread th([&] { server.run(); });
+  auto port = server.port();
   ASSERT_GT(port, 0);
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   ASSERT_GE(fd, 0);

@@ -13,7 +13,7 @@ struct HttpRequest {
   std::string_view target;
   std::string_view version;
   HttpHeaders headers;
-  std::string_view body;  // not owned
+  std::string_view body;
 
   [[nodiscard]] std::string_view findHeader(std::string_view key) const;
 };

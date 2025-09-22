@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
-#include <istream>
 #include <new>
 #include <span>
 #include <type_traits>
@@ -19,7 +18,7 @@ namespace aeronet {
  * require a simple, low-level buffer interface, do not use it for general-purpose data storage (prefer vector in that
  * case).
  */
-template <class T = std::byte, class ViewType = std::span<const std::byte>>
+template <class T = std::byte, class ViewType = std::span<const T>>
 class RawBytes {
  public:
   using value_type = T;
@@ -46,7 +45,8 @@ class RawBytes {
     _size = _capacity;
   }
 
-  RawBytes(const_pointer first, const_pointer last) : RawBytes(last - first) {
+  RawBytes(const_pointer first, const_pointer last) : RawBytes(static_cast<std::size_t>(last - first)) {
+    assert(first <= last);
     std::memcpy(_buf, first, _capacity);
     _size = _capacity;
   }
@@ -72,12 +72,13 @@ class RawBytes {
 
   ~RawBytes() { std::free(_buf); }
 
-  void append(const_pointer newDataBeg, const_pointer newDataEnd) {
-    if (newDataBeg != newDataEnd) {
-      const auto newDataSize = newDataEnd - newDataBeg;
-      ensureAvailableCapacity(newDataSize);
-      std::memcpy(_buf + _size, newDataBeg, newDataSize);
-      _size += newDataSize;
+  void append(const_pointer first, const_pointer last) {
+    if (first != last) {
+      assert(first < last);
+      const std::size_t sz = static_cast<std::size_t>(last - first);
+      ensureAvailableCapacity(sz);
+      std::memcpy(_buf + _size, first, sz);
+      _size += sz;
     }
   }
 
@@ -100,22 +101,6 @@ class RawBytes {
 
   void assign(const_pointer first, const_pointer last) { assign(first, last - first); }
 
-  void assign(std::istream &in) {
-    // Read until EOF in one or more large chunks
-    for (_size = 0;;) {
-      if (_size == _capacity) {
-        reallocUp((_capacity * 2U) + 1U);
-      }
-      const auto nbBytesAvailableInBuf = static_cast<std::streamsize>(_capacity - _size);
-      in.read(reinterpret_cast<char *>(std::to_address(_buf + _size)), nbBytesAvailableInBuf);
-      const auto nbBytesRead = in.gcount();
-      _size += nbBytesRead;
-      if (nbBytesRead < nbBytesAvailableInBuf) {  // EOF reached
-        break;
-      }
-    }
-  }
-
   void clear() noexcept { _size = 0; }
 
   void erase_front(size_type n) {
@@ -124,7 +109,7 @@ class RawBytes {
     _size -= n;
   }
 
-  void setSize(size_type newSize) {
+  void resize_down(size_type newSize) {
     assert(newSize <= _capacity);
     _size = newSize;
   }
@@ -157,6 +142,9 @@ class RawBytes {
     swap(_size, rhs._size);
     swap(_capacity, rhs._capacity);
   }
+
+  value_type &operator[](size_type pos) { return _buf[pos]; }
+  value_type operator[](size_type pos) const { return _buf[pos]; }
 
   operator ViewType() const noexcept { return {_buf, _size}; }
 

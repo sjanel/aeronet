@@ -1,7 +1,5 @@
 #include "aeronet/http-response-writer.hpp"
 
-#include <unistd.h>
-
 #include <cassert>
 #include <cerrno>
 #include <charconv>
@@ -9,10 +7,13 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <utility>
 
 #include "aeronet/server.hpp"
 #include "http-constants.hpp"
 #include "http-status-build.hpp"
+#include "http-status-code.hpp"
 #include "log.hpp"
 #include "raw-chars.hpp"
 
@@ -31,16 +32,14 @@ void HttpResponseWriter::setStatus(http::StatusCode code, std::string reason) {
     return;
   }
   _statusCode = code;
-  if (!reason.empty()) {
-    _reason = std::move(reason);
-  }
+  _reason = std::move(reason);
 }
 
 void HttpResponseWriter::setHeader(std::string name, std::string value) {
   if (_headersSent || _failed) {
     return;
   }
-  _headers[std::move(name)] = std::move(value);
+  _headers.insert_or_assign(std::move(name), std::move(value));
 }
 
 void HttpResponseWriter::setContentLength(std::size_t len) {
@@ -98,10 +97,7 @@ void HttpResponseWriter::emitChunk(std::string_view data) {
   char* begin = sizeLine;
   char* end = sizeLine + sizeof(sizeLine) - 2;  // leave space for CRLF
   auto res = std::to_chars(begin, end, static_cast<unsigned long long>(data.size()), 16);
-  if (res.ec != std::errc()) {
-    sizeLine[0] = '0';
-    res.ptr = sizeLine + 1;
-  }
+  assert(res.ec == std::errc());
   *res.ptr++ = '\r';
   *res.ptr++ = '\n';
   size_t sizeHeaderLen = static_cast<size_t>(res.ptr - sizeLine);

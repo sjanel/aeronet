@@ -1,11 +1,16 @@
-﻿#include <arpa/inet.h>
-#include <gtest/gtest.h>
+﻿#include <gtest/gtest.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <string>
 #include <thread>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 
 using namespace std::chrono_literals;
@@ -32,14 +37,14 @@ std::string sendAndRecv(int fd, const std::string& data) {
 
 TEST(HttpChunked, DecodeBasic) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     // echo body size & content (limited) to verify decoding
     resp.body = std::string("LEN=") + std::to_string(req.body.size()) + ":" + std::string(req.body);
     return resp;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 20ms); });
+  std::jthread th([&] { server.run(20ms); });
   std::this_thread::sleep_for(80ms);
 
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -55,7 +60,6 @@ TEST(HttpChunked, DecodeBasic) {
   std::string resp = sendAndRecv(fd, req);
   ::close(fd);
   server.stop();
-  th.join();
   ASSERT_NE(std::string::npos, resp.find("LEN=9:Wikipedia"));
 }
 
@@ -63,13 +67,13 @@ TEST(HttpChunked, RejectTooLarge) {
   aeronet::ServerConfig cfg;
   cfg.withMaxBodyBytes(4);  // very small limit
   aeronet::HttpServer server(cfg);
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = std::string(req.body);
     return resp;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 20ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 20ms); });
   std::this_thread::sleep_for(80ms);
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   ASSERT_GE(fd, 0);
@@ -84,19 +88,18 @@ TEST(HttpChunked, RejectTooLarge) {
   std::string resp = sendAndRecv(fd, req);
   ::close(fd);
   server.stop();
-  th.join();
   ASSERT_NE(std::string::npos, resp.find("413"));
 }
 
 TEST(HttpHead, NoBodyReturned) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = std::string("DATA-") + std::string(req.target);
     return resp;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 20ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 20ms); });
   std::this_thread::sleep_for(80ms);
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   ASSERT_GE(fd, 0);
@@ -109,7 +112,6 @@ TEST(HttpHead, NoBodyReturned) {
   std::string resp = sendAndRecv(fd, req);
   ::close(fd);
   server.stop();
-  th.join();
   // Should have Content-Length header referencing length of would-be body (which is 10: DATA-/head)
   ASSERT_NE(std::string::npos, resp.find("Content-Length: 10"));
   // And not actually contain DATA-/head bytes after header terminator
@@ -121,13 +123,13 @@ TEST(HttpHead, NoBodyReturned) {
 
 TEST(HttpExpect, ContinueFlow) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body = std::string(req.body);
     return respObj;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 20ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 20ms); });
   std::this_thread::sleep_for(60ms);
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   ASSERT_GE(fd, 0);
@@ -149,6 +151,5 @@ TEST(HttpExpect, ContinueFlow) {
   std::string full = interim + sendAndRecv(fd, "");
   ::close(fd);
   server.stop();
-  th.join();
   ASSERT_NE(std::string::npos, full.find("hello"));
 }

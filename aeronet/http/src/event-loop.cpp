@@ -1,11 +1,17 @@
-#include "aeronet/event-loop.hpp"
+#include "event-loop.hpp"
 
+#include <sys/epoll.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <chrono>
+#include <cstdint>
+#include <limits>
+#include <utility>
 
 #include "invalid_argument_exception.hpp"
+#include "log.hpp"
+#include "timedef.hpp"
 
 namespace aeronet {
 
@@ -45,8 +51,15 @@ bool EventLoop::mod(int fd, uint32_t events) const {
 void EventLoop::del(int fd) const { epoll_ctl(_epollFd, EPOLL_CTL_DEL, fd, nullptr); }
 
 int EventLoop::poll(Duration timeout, const std::function<void(int, uint32_t)>& cb) {
-  int nbReadyFds = epoll_wait(_epollFd, _events.data(), static_cast<int>(_events.size()),
-                              std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count());
+  const auto timeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
+  int timeoutEpollWait;
+  if (timeoutMs > static_cast<std::remove_const_t<decltype(timeoutMs)>>(std::numeric_limits<int>::max())) {
+    log::warn("Timeout value is too large, clamping to max int");
+    timeoutEpollWait = std::numeric_limits<int>::max();
+  } else {
+    timeoutEpollWait = static_cast<int>(timeoutMs);
+  }
+  int nbReadyFds = epoll_wait(_epollFd, _events.data(), static_cast<int>(_events.size()), timeoutEpollWait);
   if (nbReadyFds < 0) {
     if (errno == EINTR) {
       return 0;

@@ -1,11 +1,17 @@
-#include <arpa/inet.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <chrono>
 #include <string>
 #include <thread>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 
 using namespace std::chrono_literals;
@@ -33,13 +39,13 @@ std::string sendRaw(int fd, const std::string& data) {
 
 TEST(HttpKeepAlive, MultipleSequentialRequests) {
   aeronet::HttpServer server(aeronet::ServerConfig{});
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = std::string("ECHO") + std::string(req.target);
     return resp;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 50ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 50ms); });
   std::this_thread::sleep_for(100ms);
 
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -70,13 +76,13 @@ TEST(HttpLimits, RejectHugeHeaders) {
   cfg.enableKeepAlive = false;
   cfg.port = 0;
   aeronet::HttpServer server(cfg);
-  uint16_t port = server.port();
+  auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body = "OK";
     return resp;
   });
-  std::thread th([&] { server.runUntil([] { return false; }, 50ms); });
+  std::jthread th([&] { server.runUntil([] { return false; }, 50ms); });
   std::this_thread::sleep_for(100ms);
 
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);

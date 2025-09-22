@@ -1,19 +1,27 @@
 #include <arpa/inet.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <thread>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/multi-http-server.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/server-config.hpp"
 
 namespace {
 std::string simpleGet(uint16_t port, const char* path) {
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) return {};
+  if (fd < 0) {
+    return {};
+  }
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
@@ -27,10 +35,11 @@ std::string simpleGet(uint16_t port, const char* path) {
   std::string buf;
   buf.resize(4096);
   ssize_t received = ::recv(fd, buf.data(), buf.size(), 0);
-  if (received > 0)
-    buf.resize(static_cast<size_t>(received));
-  else
+  if (received > 0) {
+    buf.resize(static_cast<std::size_t>(received));
+  } else {
     buf.clear();
+  }
   ::close(fd);
   return buf;
 }
@@ -48,7 +57,7 @@ TEST(MultiHttpServer, BasicStartAndServe) {
     return resp;
   });
   multi.start();
-  uint16_t port = multi.port();
+  auto port = multi.port();
   ASSERT_GT(port, 0);
   // allow sockets to be fully listening
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -59,7 +68,7 @@ TEST(MultiHttpServer, BasicStartAndServe) {
   EXPECT_NE(std::string::npos, r2.find("Hello"));
 
   auto stats = multi.stats();
-  EXPECT_EQ(stats.per.size(), static_cast<size_t>(threads));
+  EXPECT_EQ(stats.per.size(), static_cast<std::size_t>(threads));
 
   multi.stop();
 }

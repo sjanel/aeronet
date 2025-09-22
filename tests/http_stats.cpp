@@ -1,8 +1,16 @@
 #include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
 
+#include <atomic>
+#include <thread>
+
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
-#include "test_util.hpp"
 
 using namespace aeronet;
 
@@ -10,18 +18,18 @@ TEST(HttpStats, BasicCountersIncrement) {
   ServerConfig cfg;
   cfg.withMaxRequestsPerConnection(5);
   HttpServer server(cfg);
-  server.setHandler([](const HttpRequest&) {
-    HttpResponse r;
-    r.statusCode = 200;
-    r.reason = "OK";
-    r.body = "hello";
-    r.contentType = "text/plain";
-    return r;
+  server.setHandler([]([[maybe_unused]] const HttpRequest& req) {
+    HttpResponse resp;
+    resp.statusCode = 200;
+    resp.reason = "OK";
+    resp.body = "hello";
+    resp.contentType = "text/plain";
+    return resp;
   });
 
   // Run server in a thread
   std::atomic<bool> done{false};
-  std::thread th([&]() { server.runUntil([&]() { return done.load(); }, std::chrono::milliseconds{50}); });
+  std::jthread th([&]() { server.runUntil([&]() { return done.load(); }, std::chrono::milliseconds{50}); });
   // Wait until the server run loop has actually entered (isRunning) and port captured.
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -45,7 +53,7 @@ TEST(HttpStats, BasicCountersIncrement) {
   }
   ASSERT_TRUE(connected) << "Failed to connect to ephemeral port " << server.port();
   std::string req = "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
-  ASSERT_EQ(::send(sock, req.data(), req.size(), 0), (ssize_t)req.size());
+  ASSERT_EQ(::send(sock, req.data(), req.size(), 0), static_cast<ssize_t>(req.size()));
   char buf[1024];
   ssize_t receivedBytes = ::recv(sock, buf, sizeof(buf), 0);
   ASSERT_GT(receivedBytes, 0);
