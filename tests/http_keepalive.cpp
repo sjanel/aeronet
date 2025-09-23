@@ -18,7 +18,10 @@ using namespace std::chrono_literals;
 
 namespace {
 std::string sendRaw(int fd, const std::string& data) {
-  ::send(fd, data.data(), data.size(), 0);
+  ssize_t sent = ::send(fd, data.data(), data.size(), 0);
+  if (sent != static_cast<ssize_t>(data.size())) {
+    return {};
+  }
   char buf[4096];
   std::string out;
   // simple read with small timeout loop

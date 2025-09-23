@@ -6,6 +6,8 @@
 #include <format>
 #include <string>
 
+#include "timestring.hpp"
+
 namespace aeronet {
 using namespace std::chrono;
 

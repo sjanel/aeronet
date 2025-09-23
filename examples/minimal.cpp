@@ -1,5 +1,6 @@
 #include <atomic>
 #include <csignal>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 

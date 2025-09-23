@@ -1,8 +1,4 @@
 #include <gtest/gtest.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 #include <atomic>
 #include <thread>
@@ -11,6 +7,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
+#include "test_http_client.hpp"
 
 using namespace aeronet;
 
@@ -35,29 +32,9 @@ TEST(HttpStats, BasicCountersIncrement) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 
-  // Single request
-  int sock = ::socket(AF_INET, SOCK_STREAM, 0);
-  ASSERT_GE(sock, 0);
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  addr.sin_port = htons(server.port());
-  // Retry connect for a short window in case we raced right after isRunning() flipped.
-  bool connected = false;
-  for (int attempt = 0; attempt < 50; ++attempt) {
-    if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
-      connected = true;
-      break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  ASSERT_TRUE(connected) << "Failed to connect to ephemeral port " << server.port();
-  std::string req = "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
-  ASSERT_EQ(::send(sock, req.data(), req.size(), 0), static_cast<ssize_t>(req.size()));
-  char buf[1024];
-  ssize_t receivedBytes = ::recv(sock, buf, sizeof(buf), 0);
-  ASSERT_GT(receivedBytes, 0);
-  ::close(sock);
+  // Single request via throwing helper (adds timeout & size cap safety)
+  auto resp = test_http_client::request_or_throw(server.port());
+  ASSERT_NE(resp.find("200 OK"), std::string::npos);
 
   done.store(true);
   th.join();
