@@ -2,6 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <functional>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <utility>

@@ -1,10 +1,7 @@
 #include <gtest/gtest.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
 
-#include <cstdint>
 #include <string>
 #include <thread>
 
@@ -16,29 +13,28 @@
 using namespace std::chrono_literals;
 
 namespace {
-std::string doRequest(uint16_t port, const std::string& verb, const std::string& target) {
+void doRequest(uint16_t port, const std::string& verb, const std::string& target, std::string& out) {
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return {};
-  }
+  ASSERT_GE(fd, 0) << "socket failed";
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    ::close(fd);
-    return {};
-  }
+  int cRet = connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+  ASSERT_EQ(cRet, 0) << "connect failed";
   std::string req = verb + " " + target + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-  ::send(fd, req.data(), req.size(), 0);
+  ssize_t sent = ::send(fd, req.data(), req.size(), 0);
+  ASSERT_EQ(sent, static_cast<ssize_t>(req.size())) << "send partial";
   char buf[8192];
-  std::string out;
-  ssize_t bytesRead;
-  while ((bytesRead = ::recv(fd, buf, sizeof(buf), 0)) > 0) {
+  out.clear();
+  while (true) {
+    ssize_t bytesRead = ::recv(fd, buf, sizeof(buf), 0);
+    if (bytesRead <= 0) {
+      break;
+    }
     out.append(buf, buf + bytesRead);
   }
   ::close(fd);
-  return out;
 }
 }  // namespace
 
@@ -70,8 +66,10 @@ TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
   });
   std::jthread th([&] { server.run(40ms); });
   std::this_thread::sleep_for(80ms);
-  std::string getResp = doRequest(port, "GET", "/hdr");
-  std::string headResp = doRequest(port, "HEAD", "/hdr");
+  std::string getResp;
+  std::string headResp;
+  doRequest(port, "GET", "/hdr", getResp);
+  doRequest(port, "HEAD", "/hdr", headResp);
   server.stop();
   th.join();
   // Basic status line check

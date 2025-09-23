@@ -1,17 +1,21 @@
-#include <sys/epoll.h>  // EPOLL* constants
 #include <sys/socket.h>
-#include <sys/uio.h>
-#include <unistd.h>
+#include <sys/types.h>
 
 #include <algorithm>
 #include <cerrno>
+#include <cstddef>
+#include <cstdint>
+#include <string_view>
+#include <utility>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/server.hpp"
-#include "event-loop.hpp"  // for EventLoop methods
+#include "event-loop.hpp"
 #include "http-constants.hpp"
 #include "http-response-build.hpp"
 #include "log.hpp"
-#include "string-equal-ignore-case.hpp"  // for CaseInsensitiveEqual used indirectly in finalize logic
+#include "string-equal-ignore-case.hpp"
 
 namespace aeronet {
 
@@ -59,7 +63,7 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnStateInternal& state, HttpR
 bool HttpServer::queueData(int fd, ConnStateInternal& state, const char* data, std::size_t len) {
   if (state.outBuffer.empty()) {
     ssize_t written = ::send(fd, data, len, MSG_NOSIGNAL);
-    if (written == static_cast<ssize_t>(len)) {
+    if (std::cmp_equal(written, len)) {
       _stats.totalBytesQueued += static_cast<uint64_t>(len);
       _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
       return true;
@@ -170,7 +174,7 @@ void HttpServer::flushOutbound(int fd, ConnStateInternal& state) {
     ssize_t written = ::send(fd, state.outBuffer.data(), state.outBuffer.size(), MSG_NOSIGNAL);
     if (written > 0) {
       _stats.totalBytesWrittenFlush += static_cast<uint64_t>(written);
-      if (static_cast<size_t>(written) == state.outBuffer.size()) {
+      if (std::cmp_equal(written, state.outBuffer.size())) {
         state.outBuffer.clear();
         break;
       }

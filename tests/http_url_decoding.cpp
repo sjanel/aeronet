@@ -1,10 +1,9 @@
-// Tests for server-side percent-decoding of request target in parser.
 #include <gtest/gtest.h>
-#include <unistd.h>
 
 #include <atomic>
-#include <cstdint>
+#include <chrono>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "aeronet/http-request.hpp"
@@ -13,25 +12,11 @@
 #include "aeronet/server.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
-#include "test_util.hpp"
+#include "test_http_client.hpp"
 
 using namespace aeronet;
 
-namespace {
-std::string doRaw(uint16_t port, const std::string &raw) {
-  int fd = tu_connect(port);
-  if (fd < 0) {
-    return {};
-  }
-  if (!tu_sendAll(fd, raw)) {
-    ::close(fd);
-    return {};
-  }
-  auto resp = tu_recvUntilClosed(fd);
-  ::close(fd);
-  return resp;
-}
-}  // namespace
+// (Removed old raw helper; switched to shared test_http_client::request for all requests)
 
 TEST(HttpUrlDecoding, SpaceDecoding) {
   ServerConfig cfg;
@@ -51,11 +36,14 @@ TEST(HttpUrlDecoding, SpaceDecoding) {
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  auto resp = doRaw(server.port(), "GET /hello%20world HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
-  EXPECT_NE(resp.find("200 OK"), std::string::npos);
-  EXPECT_NE(resp.find("hello world"), std::string::npos);
+  test_http_client::RequestOptions optHello;
+  optHello.method = "GET";
+  optHello.target = "/hello%20world";
+  auto respOwned = test_http_client::request_or_throw(server.port(), optHello);
+  std::string_view resp = respOwned;
+  EXPECT_NE(resp.find("200 OK"), std::string_view::npos);
+  EXPECT_NE(resp.find("hello world"), std::string_view::npos);
   done.store(true);
-  th.join();
 }
 
 TEST(HttpUrlDecoding, Utf8Decoded) {
@@ -79,11 +67,14 @@ TEST(HttpUrlDecoding, Utf8Decoded) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   // Percent-encoded UTF-8 for snowman (E2 98 83) plus %20 and 'x'
-  auto resp = doRaw(server.port(), "GET /%E2%98%83%20x HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
-  EXPECT_NE(resp.find("200 OK"), std::string::npos);
-  EXPECT_NE(resp.find("utf8"), std::string::npos);
+  test_http_client::RequestOptions optUtf8;
+  optUtf8.method = "GET";
+  optUtf8.target = "/%E2%98%83%20x";
+  auto respOwned = test_http_client::request_or_throw(server.port(), optUtf8);
+  std::string_view resp = respOwned;
+  EXPECT_NE(resp.find("200 OK"), std::string_view::npos);
+  EXPECT_NE(resp.find("utf8"), std::string_view::npos);
   done.store(true);
-  th.join();
 }
 
 TEST(HttpUrlDecoding, PlusIsNotSpace) {
@@ -104,11 +95,14 @@ TEST(HttpUrlDecoding, PlusIsNotSpace) {
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  auto resp = doRaw(server.port(), "GET /a+b HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
-  EXPECT_NE(resp.find("200 OK"), std::string::npos);
-  EXPECT_NE(resp.find("plus"), std::string::npos);
+  test_http_client::RequestOptions optPlus;
+  optPlus.method = "GET";
+  optPlus.target = "/a+b";
+  auto respOwned = test_http_client::request_or_throw(server.port(), optPlus);
+  std::string_view resp = respOwned;
+  EXPECT_NE(resp.find("200 OK"), std::string_view::npos);
+  EXPECT_NE(resp.find("plus"), std::string_view::npos);
   done.store(true);
-  th.join();
 }
 
 TEST(HttpUrlDecoding, InvalidPercentSequence400) {
@@ -120,8 +114,11 @@ TEST(HttpUrlDecoding, InvalidPercentSequence400) {
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  auto resp = doRaw(server.port(), "GET /bad%G1 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
-  EXPECT_NE(resp.find("400 Bad Request"), std::string::npos);
+  test_http_client::RequestOptions optBad;
+  optBad.method = "GET";
+  optBad.target = "/bad%G1";
+  auto respOwned = test_http_client::request_or_throw(server.port(), optBad);
+  std::string_view resp = respOwned;
+  EXPECT_NE(resp.find("400 Bad Request"), std::string_view::npos);
   done.store(true);
-  th.join();
 }

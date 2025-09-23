@@ -4,7 +4,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <chrono>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -13,33 +12,21 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
+#include "test_http_client.hpp"
 
 using namespace std::chrono_literals;
 
 namespace {
-std::string rawHttp(uint16_t port, const std::string& verb, const std::string& target) {
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
+std::string blockingFetch(uint16_t port, const std::string& verb, const std::string& target) {
+  test_http_client::RequestOptions opt;
+  opt.method = verb;
+  opt.target = target;
+  opt.connection = "close";  // one-shot
+  auto resp = test_http_client::request(port, opt);
+  if (!resp) {
     return {};
   }
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    ::close(fd);
-    return {};
-  }
-  std::string req = verb + " " + target + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-  ::send(fd, req.data(), req.size(), 0);
-  char buf[4096];
-  std::string out;
-  ssize_t bytes;
-  while ((bytes = ::recv(fd, buf, sizeof(buf), 0)) > 0) {
-    out.append(buf, buf + bytes);
-  }
-  ::close(fd);
-  return out;
+  return *resp;
 }
 }  // namespace
 
@@ -55,7 +42,7 @@ TEST(HttpStreaming, ChunkedSimple) {
   });
   std::jthread th([&] { server.runUntil([] { return false; }, 50ms); });
   std::this_thread::sleep_for(100ms);
-  std::string resp = rawHttp(port, "GET", "/stream");
+  std::string resp = blockingFetch(port, "GET", "/stream");
   server.stop();
   th.join();
   ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));
@@ -76,7 +63,7 @@ TEST(HttpStreaming, HeadSuppressedBody) {
   });
   std::jthread th([&] { server.runUntil([] { return false; }, 50ms); });
   std::this_thread::sleep_for(100ms);
-  std::string resp = rawHttp(port, "HEAD", "/head");
+  std::string resp = blockingFetch(port, "HEAD", "/head");
   server.stop();
   th.join();
   ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));
