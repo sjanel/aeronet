@@ -1,0 +1,29 @@
+vcpkg_from_github(
+    OUT_SOURCE_PATH SOURCE_PATH
+    REPO AmadeusITGroup/amc
+    REF v2.6.1
+    SHA512 6a944e8234420afebe5fb07c49aa07225c111f7d11426a279011d2aa29a36cd171cd999ee0dd3ebba544e1ef31918be69ecb8b8bc63072dda4fbcfc5b8c38d0e
+)
+
+# Install headers (best effort)
+if(EXISTS "${SOURCE_PATH}/include")
+    file(INSTALL "${SOURCE_PATH}/include" DESTINATION "${CURRENT_PACKAGES_DIR}")
+else()
+    message(FATAL_ERROR "[amc] Expected include directory not found in fetched sources: ${SOURCE_PATH}")
+endif()
+
+# Attempt to install license file
+foreach(LIC IN ITEMS LICENSE LICENSE.txt LICENSE.md COPYING)
+    if(EXISTS "${SOURCE_PATH}/${LIC}")
+        file(INSTALL "${SOURCE_PATH}/${LIC}" DESTINATION "${CURRENT_PACKAGES_DIR}/share/amc" RENAME copyright)
+        set(AMC_LICENSE_DONE TRUE)
+        break()
+    endif()
+endforeach()
+if(NOT AMC_LICENSE_DONE)
+    file(WRITE "${CURRENT_PACKAGES_DIR}/share/amc/copyright" "See upstream repository for license.")
+endif()
+
+# Generate a lightweight CMake config with interface target
+file(MAKE_DIRECTORY "${CURRENT_PACKAGES_DIR}/share/amc")
+file(WRITE "${CURRENT_PACKAGES_DIR}/share/amc/amcConfig.cmake" "\nif(NOT TARGET amc::amc)\n  add_library(amc::amc INTERFACE IMPORTED)\n  set_target_properties(amc::amc PROPERTIES INTERFACE_INCLUDE_DIRECTORIES \"${CURRENT_PACKAGES_DIR}/include\")\nendif()\n")

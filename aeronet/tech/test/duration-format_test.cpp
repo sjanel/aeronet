@@ -4,7 +4,6 @@
 
 #include <chrono>
 #include <format>
-#include <string>
 
 #include "timedef.hpp"
 
@@ -12,7 +11,7 @@ namespace aeronet::tech {
 
 namespace {
 // Helper to format and return std::string
-std::string FormatDuration(Duration duration) { return std::format("{}", PrettyDuration{duration}); }
+auto FormatDuration(Duration duration) { return std::format("{}", PrettyDuration{duration}); }
 }  // namespace
 
 TEST(DurationFormatTest, ZeroDurationPrintsNothing) {
@@ -113,8 +112,7 @@ TEST(DurationFormatTest, InvalidSpecs) {
     EXPECT_THROW(
         {
           // Force runtime parsing via vformat to bypass compile-time format string validation.
-          auto tmp = std::vformat(fmt, std::make_format_args(pd));
-          (void)tmp;
+          [[maybe_unused]] auto tmp = std::vformat(fmt, std::make_format_args(pd));
         },
         std::format_error);
   };

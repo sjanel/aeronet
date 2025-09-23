@@ -1,28 +1,25 @@
-#include <algorithm>
-#include <atomic>
+// Multi-reactor example using MultiHttpServer convenience wrapper.
 #include <chrono>
 #include <csignal>
-#include <cstddef>
 #include <cstdint>
-#include <iostream>
+#include <cstdio>
 #include <string>
 #include <thread>
-#include <utility>
-#include <vector>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/multi-http-server.hpp"
 #include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "log.hpp"
 
 namespace {
-std::atomic_bool gStop{false};
-void handleSigint(int /*signum*/) { gStop.store(true); }
+volatile std::sig_atomic_t gStop = 0;
+void handleSigint(int /*signum*/) { gStop = 1; }
 }  // namespace
 
 int main(int argc, char** argv) {
   uint16_t port = 8080;
-  int threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()) / 2);
+  int threads = 4;  // default
   if (argc > 1) {
     port = static_cast<uint16_t>(std::stoi(argv[1]));
   }
@@ -30,30 +27,26 @@ int main(int argc, char** argv) {
     threads = std::stoi(argv[2]);
   }
 
-  std::vector<aeronet::HttpServer> servers;
-  servers.reserve(static_cast<std::size_t>(threads));
-  for (int i = 0; i < threads; ++i) {
-    aeronet::HttpServer srv(aeronet::ServerConfig{}.withPort(port).withReusePort());
-    srv.setHandler([](const aeronet::HttpRequest& req) {
-      aeronet::HttpResponse resp;
-      resp.body = "Threaded multi server response for " + std::string(req.target);
-      return resp;
-    });
-    servers.emplace_back(std::move(srv));
-  }
-
-  std::vector<std::jthread> workers;
-  workers.reserve(static_cast<std::size_t>(threads));
-  for (int i = 0; i < threads; ++i) {
-    workers.emplace_back([&servers, i] { servers[static_cast<std::size_t>(i)].run(); });
-  }
-
+  aeronet::ServerConfig cfg;
+  cfg.withPort(port).withReusePort(true);
+  aeronet::MultiHttpServer multi(cfg, static_cast<uint32_t>(threads));
+  multi.setHandler([](const aeronet::HttpRequest& req) {
+    aeronet::HttpResponse resp;
+    resp.statusCode = 200;
+    resp.reason = "OK";
+    resp.contentType = "text/plain";
+    resp.body = std::string("multi reactor response ") + std::string(req.target);
+    return resp;
+  });
+  multi.start();
+  aeronet::log::info("Listening on {} with {} reactors (SO_REUSEPORT). Press Ctrl+C to stop.", multi.port(), threads);
   std::signal(SIGINT, handleSigint);
-  std::cout << "Started " << threads << " servers on port " << port << " (SO_REUSEPORT). Press Ctrl-C to stop.\n";
-  while (!gStop.load()) {
+  while (gStop == 0) {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
-  for (auto& server : servers) {
-    server.stop();
-  }
+  auto stats = multi.stats();
+  aeronet::log::info("Shutting down. reactors={} totalQueued={}", static_cast<size_t>(stats.per.size()),
+                     static_cast<unsigned long long>(stats.total.totalBytesQueued));
+  multi.stop();
+  return 0;
 }

@@ -53,6 +53,7 @@ Spin up a basic HTTP/1.1 server that responds on `/hello` in just a few lines. I
 #include <aeronet/server.hpp>
 #include <aeronet/server-config.hpp>
 #include <aeronet/http-response.hpp>
+#include <print>
 using namespace aeronet;
 
 int main() {
@@ -63,7 +64,7 @@ int main() {
     r.body = "hello from aeronet\n";
     return r;
   });
-  std::printf("Listening on %u\n", server.port());
+  std::print("Listening on {}\n", server.port());
   server.run(); // Blocking call, send Ctrl+C to stop
 }
 ```
@@ -160,8 +161,8 @@ Safety / robustness
 
 - [x] Configurable header/body limits
 - [x] Graceful shutdown loop (runUntil)
-- [ ] Slowloris style header timeout mitigation (per-connection read deadline)
-- [ ] TLS termination (OpenSSL) – currently only linked, not enabled
+- [x] Slowloris style header timeout mitigation (implemented as header read timeout)
+- [x] TLS termination (OpenSSL) with ALPN, mTLS, version bounds, handshake timeout & per-server metrics
 
 Developer experience
 
@@ -179,6 +180,84 @@ Misc
 - [ ] Compression (gzip / br) (planned)
 - [ ] Public API stability guarantee (pre-1.0)
 - [ ] License file
+
+## TLS Features (Current)
+
+TLS support is optional (`AERONET_ENABLE_OPENSSL`). When configured via `ServerConfig::TLSConfig`, the following capabilities are available:
+
+| Capability | Status | Notes |
+|------------|--------|-------|
+| TLS termination | ✅ | File or in‑memory PEM cert/key |
+| mTLS (request) | ✅ | `withTlsRequestClientCert()` (non-fatal absence) |
+| mTLS (require) | ✅ | `withTlsRequireClientCert()` (fatal if absent / invalid) |
+| ALPN negotiation | ✅ | Ordered list via `withTlsAlpnProtocols()` |
+| Strict ALPN enforcement | ✅ | `withTlsAlpnMustMatch(true)` -> fatal if no overlap |
+| Negotiated ALPN in request | ✅ | `HttpRequest::alpnProtocol` |
+| Negotiated cipher & version | ✅ | `HttpRequest::{tlsCipher,tlsVersion}` |
+| Handshake logging | ✅ | `withTlsHandshakeLogging()` (cipher, version, ALPN, peer subject) |
+| Min / Max protocol version | ✅ | `withTlsMinVersion("TLS1.2")`, `withTlsMaxVersion("TLS1.3")` |
+| Handshake timeout | ✅ | `withTlsHandshakeTimeout(ms)` closes stalled handshakes |
+| Graceful TLS shutdown | ✅ | Best‑effort `SSL_shutdown` before close |
+| ALPN strict mismatch counter | ✅ | Per‑server stats |
+| Handshake success counter | ✅ | Per‑server stats |
+| Client cert presence counter | ✅ | Per‑server stats |
+| ALPN distribution | ✅ | Vector (protocol,count) in stats |
+| TLS version distribution | ✅ | Stats field |
+| Cipher distribution | ✅ | Stats field |
+| Handshake duration metrics | ✅ | Count / total ns / max ns |
+| JSON stats export | ✅ | `serverStatsToJson()` includes TLS metrics |
+| No process‑global mutable TLS state | ✅ | All metrics per server instance |
+| Session resumption | ⏳ | Planned |
+| SNI multi-cert routing | ⏳ | Planned |
+| Hot cert/key reload | ⏳ | Planned |
+| OCSP / revocation | ⏳ | Planned |
+
+### TLS Configuration Example
+
+```cpp
+ServerConfig cfg;
+cfg.withPort(8443)
+   .withTlsCertKeyMemory(certPem, keyPem)
+   .withTlsAlpnProtocols({"http/1.1"})
+   .withTlsAlpnMustMatch(true)
+   .withTlsMinVersion("TLS1.2")
+   .withTlsMaxVersion("TLS1.3")
+   .withTlsHandshakeTimeout(std::chrono::milliseconds(750))
+   .withTlsHandshakeLogging();
+
+HttpServer server(cfg);
+server.setHandler([](const HttpRequest& req){
+  HttpResponse r{200, "OK"};
+  r.contentType = "text/plain";
+  r.body = std::string("cipher=") + std::string(req.tlsCipher)
+         + " version=" + std::string(req.tlsVersion)
+         + " alpn=" + std::string(req.alpnProtocol);
+  return r;
+});
+server.run();
+```
+
+### Accessing TLS Metrics
+
+```cpp
+#include <print>
+auto st = server.stats();
+std::print("handshakes={} clientCerts={} alpnStrictMismatches={}\n",
+           st.tlsHandshakesSucceeded,
+           st.tlsClientCertPresent,
+           st.tlsAlpnStrictMismatches);
+for (auto& [proto,count] : st.tlsAlpnDistribution) {
+  std::print("ALPN {} -> {}\n", proto, count);
+}
+for (auto& [ver,count] : st.tlsVersionCounts) {
+  std::print("Version {} -> {}\n", ver, count);
+}
+double avgNs = st.tlsHandshakeDurationCount ?
+               double(st.tlsHandshakeDurationTotalNs) / st.tlsHandshakeDurationCount : 0.0;
+std::print("avgHandshakeNs={}\n", avgNs);
+```
+
+---
 
 ## Test Coverage Matrix
 
@@ -221,12 +300,18 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 
 Planned test additions (nice-to-have): oversize single chunk explicit test, keep-alive idle timeout explicit assertion, payload-too-large callback capture for chunk paths, writev behavior inspection (mock / interception).
 
-## Build
+## Build & Installation
+
+Full, continually updated build, install, and package manager instructions live in [`docs/INSTALL.md`](docs/INSTALL.md).
+
+Quick start (release build of examples):
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
+
+For TLS toggles, sanitizers, Conan/vcpkg usage and `find_package` examples, see the INSTALL guide.
 
 ## Construction Model (RAII) & Ephemeral Ports
 
@@ -255,11 +340,12 @@ NOTE: A previous experimental non-throwing `tryCreate` factory was removed to re
 ```cpp
 #include <aeronet/server.hpp>
 #include <aeronet/server-config.hpp>
+#include <print>
 using namespace aeronet;
 
 int main() {
   HttpServer server(cfg.withPort(8080));
-  std::printf("Listening on %u\n", server.port());
+  std::print("Listening on {}\n", server.port());
   server.setHandler([](const HttpRequest& req) {
     HttpResponse r;
     r.statusCode = 200; r.reason = "OK";
@@ -267,7 +353,7 @@ int main() {
     r.contentType = "text/plain";
     return r;
   });
-  server.runUntil([]{ return false; }); // press Ctrl+C to terminate process
+  server.run(); // press Ctrl+C to terminate process
 }
 ```
 
@@ -285,7 +371,7 @@ server.addPathHandler("/hello", http::Method::POST, [](const HttpRequest& req){
 
 // Unknown path -> 404, known path wrong method -> 405 automatically.
 
-server.runUntil([]{ return false; });
+server.run();
 ```
 
 ### Multi‑Reactor (SO_REUSEPORT) Launch Sketch
@@ -297,7 +383,7 @@ for (int i = 0; i < 4; ++i) {
   ServerConfig cfg; cfg.withPort(8080).withReusePort(true); // or 0 for ephemeral resolved separately
     HttpServer s(cfg);
     s.setHandler([](const HttpRequest&){ HttpResponse r{200, "OK"}; r.body="hi"; r.contentType="text/plain"; return r; });
-    s.runUntil([]{ return false; });
+    s.run();
   });
 }
 ```
@@ -306,12 +392,12 @@ for (int i = 0; i < 4; ++i) {
 
 ```cpp
 auto st = server.stats();
-std::printf("queued=%llu imm=%llu flush=%llu defer=%llu cycles=%llu maxConnBuf=%zu\n",
-  (unsigned long long)st.totalBytesQueued,
-  (unsigned long long)st.totalBytesWrittenImmediate,
-  (unsigned long long)st.totalBytesWrittenFlush,
-  (unsigned long long)st.deferredWriteEvents,
-  (unsigned long long)st.flushCycles,
+std::print("queued={} imm={} flush={} defer={} cycles={} maxConnBuf={}\n",
+  st.totalBytesQueued,
+  st.totalBytesWrittenImmediate,
+  st.totalBytesWrittenFlush,
+  st.deferredWriteEvents,
+  st.flushCycles,
   st.maxConnectionOutboundBuffer);
 ```
 
@@ -358,11 +444,11 @@ int main() {
   multi.setHandler([](const HttpRequest& req){
     HttpResponse r; r.statusCode=200; r.reason="OK"; r.body="hello\n"; r.contentType="text/plain"; return r; });
   multi.start();
-  std::printf("Listening on %u\n", multi.port());
+  std::print("Listening on {}\n", multi.port());
   // ... run until external signal ...
   std::this_thread::sleep_for(std::chrono::seconds(30));
   auto agg = multi.stats();
-  std::printf("instances=%zu queued=%llu\n", agg.per.size(), (unsigned long long)agg.total.totalBytesQueued);
+  std::print("instances={} queued={}\n", agg.per.size(), agg.total.totalBytesQueued);
   multi.stop();
 }
 ```
@@ -381,10 +467,10 @@ Stats aggregation example:
 auto st = multi.stats();
 for (size_t i = 0; i < st.per.size(); ++i) {
   const auto& s = st.per[i];
-  std::printf("[srv%zu] queued=%llu imm=%llu flush=%llu\n", i,
-    (unsigned long long)s.totalBytesQueued,
-    (unsigned long long)s.totalBytesWrittenImmediate,
-    (unsigned long long)s.totalBytesWrittenFlush);
+  std::print("[srv{}] queued={} imm={} flush={}\n", i,
+             s.totalBytesQueued,
+             s.totalBytesWrittenImmediate,
+             s.totalBytesWrittenFlush);
 }
 ```
 
@@ -487,7 +573,6 @@ Behavior summary for above:
 - If global streaming handler were absent: `GET /other` would use global normal fallback (body "GLOBAL")
 
 See `tests/http_streaming_mixed.cpp` for exhaustive precedence, conflict, HEAD-suppression, keep-alive mixed sequencing, and 405 validations.
-
 
 ## Configuration API (builder style)
 
@@ -593,8 +678,64 @@ The test suite uses a unified helper for simple GETs, streaming incremental read
 - [x] Outgoing chunked responses & streaming interface (phase 1)
 - [ ] Trailing headers exposure for chunked requests
 - [ ] Richer routing (wildcards, parameter extraction)
-- [ ] TLS (OpenSSL) support
+- [x] TLS (OpenSSL) support (basic HTTPS termination)
 - [ ] Benchmarks & perf tuning notes
+
+### TLS (HTTPS) Support
+
+TLS termination is optional and enabled at build time with the CMake option `AERONET_ENABLE_OPENSSL=ON` (default ON in main project builds). When enabled, a dedicated `aeronet_tls` module is compiled and linked; the core library avoids including OpenSSL headers directly (boundary kept inside the TLS module).
+
+Enable at configure time:
+
+```bash
+cmake -S . -B build -DAERONET_ENABLE_OPENSSL=ON
+cmake --build build -j
+```
+
+Configure a server with certificate + key (filesystem paths):
+
+```cpp
+using namespace aeronet;
+ServerConfig cfg;
+cfg.withPort(0) // ephemeral
+  .withTlsCertKey("/path/to/server.crt", "/path/to/server.key");
+HttpServer server(cfg);
+server.setHandler([](const HttpRequest&){ HttpResponse r{200, "OK"}; r.body="secure"; r.contentType="text/plain"; return r; });
+server.run();
+```
+
+Client example:
+
+```bash
+curl -k https://localhost:<port>/
+```
+
+In-memory (no temp files) certificate + key provisioning (e.g. when you already hold PEM material in memory):
+
+```cpp
+using namespace aeronet;
+// Suppose certPem and keyPem are std::string containing PEM blocks
+ServerConfig cfg;
+cfg.withPort(0)
+  .withTlsCertKeyMemory(certPem, keyPem);
+HttpServer server(cfg);
+```
+
+If you need to dynamically generate a self-signed cert at runtime (tests, ephemeral dev), create it with OpenSSL APIs
+then pass the resulting PEM strings via `withTlsCertKeyMemory` (the test helper `tests/test_tls_helper.hpp` shows a reference implementation).
+
+Notes:
+
+- If you supply TLS configuration (`withTlsCertKey` or `withTlsCertKeyMemory`) but the library was built without OpenSSL, the constructor throws.
+- Optional: `withTlsCipherList("HIGH:!aNULL:!MD5")` to tune ciphers; empty string => OpenSSL default.
+- `withTlsRequestClientCert(true)` sets the server to *request* (but not fail without) a client certificate.
+- `withTlsRequireClientCert(true)` enables strict mTLS: handshake aborts if the client does not present a cert or it fails verification.
+- `withTlsAddTrustedClientCert(pem)` lets you append in-memory PEM certs to the trust store (useful for tests / pinning self-signed client roots). Call multiple times to add several.
+- ALPN: `withTlsAlpnProtocols({"http/1.1"})` advertises server preference list; first overlap with client wins. Selected protocol is exposed per request via `HttpRequest::alpnProtocol`.
+- Strict ALPN: `withTlsAlpnMustMatch(true)` now aborts the TLS handshake immediately (fatal alert) if no protocol overlap exists. Without strict mode the handshake proceeds without ALPN acknowledgment. A global counter of such strict mismatches is exposed via `tlsAlpnStrictMismatchCount()`.
+- Roadmap (future): HTTP/2 evaluation once h2 protocol is added to ALPN list; optional OCSP stapling, richer cipher policy helpers.
+- Tests use only in-memory ephemeral certs now (no checked‑in key material) for better hygiene.
+- The internal event loop integrates TLS handshakes via a transport abstraction; epoll edge-triggered mechanics remain unchanged.
 
 ## License
 

@@ -65,6 +65,23 @@ MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
   return *this;
 }
 
+[[nodiscard]] std::string MultiHttpServer::AggregatedStats::json_str() const {
+  std::string out;
+  out.reserve(128UL * per.size());
+  out.push_back('[');
+  bool first = true;
+  for (const auto& st : per) {
+    if (!first) {
+      out.push_back(',');
+    } else {
+      first = false;
+    }
+    out.append(st.json_str());
+  }
+  out.push_back(']');
+  return out;
+}
+
 void MultiHttpServer::ensureNotStarted() const {
   if (_running) {
     throw std::logic_error("Cannot mutate configuration after start()");
@@ -209,9 +226,58 @@ MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
     agg.total.totalBytesWrittenFlush += st.totalBytesWrittenFlush;
     agg.total.deferredWriteEvents += st.deferredWriteEvents;
     agg.total.flushCycles += st.flushCycles;
+    agg.total.epollModFailures += st.epollModFailures;
     agg.total.maxConnectionOutboundBuffer =
         std::max(agg.total.maxConnectionOutboundBuffer, st.maxConnectionOutboundBuffer);
-    agg.per.push_back(st);
+#ifdef AERONET_ENABLE_OPENSSL
+    agg.total.tlsHandshakesSucceeded += st.tlsHandshakesSucceeded;
+    agg.total.tlsClientCertPresent += st.tlsClientCertPresent;
+    agg.total.tlsAlpnStrictMismatches += st.tlsAlpnStrictMismatches;
+    // Merge distributions (simple sum; not deduplicating keys separately here for perf simplicity)
+    for (const auto& kv : st.tlsAlpnDistribution) {
+      bool found = false;
+      for (auto& existing : agg.total.tlsAlpnDistribution) {
+        if (existing.first == kv.first) {
+          existing.second += kv.second;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        agg.total.tlsAlpnDistribution.push_back(kv);
+      }
+    }
+    for (const auto& kv : st.tlsVersionCounts) {
+      bool found = false;
+      for (auto& existing : agg.total.tlsVersionCounts) {
+        if (existing.first == kv.first) {
+          existing.second += kv.second;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        agg.total.tlsVersionCounts.push_back(kv);
+      }
+    }
+    for (const auto& kv : st.tlsCipherCounts) {
+      bool found = false;
+      for (auto& existing : agg.total.tlsCipherCounts) {
+        if (existing.first == kv.first) {
+          existing.second += kv.second;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        agg.total.tlsCipherCounts.push_back(kv);
+      }
+    }
+    agg.total.tlsHandshakeDurationCount += st.tlsHandshakeDurationCount;
+    agg.total.tlsHandshakeDurationTotalNs += st.tlsHandshakeDurationTotalNs;
+    agg.total.tlsHandshakeDurationMaxNs = std::max(agg.total.tlsHandshakeDurationMaxNs, st.tlsHandshakeDurationMaxNs);
+#endif
+    agg.per.push_back(std::move(st));
   }
   log::trace("Aggregated stats across {} server instance(s)", agg.per.size());
   return agg;

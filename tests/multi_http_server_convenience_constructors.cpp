@@ -2,7 +2,6 @@
 #include <gtest/gtest.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <unistd.h>
 
 #include <chrono>
 #include <cstddef>
@@ -16,10 +15,12 @@
 #include "aeronet/multi-http-server.hpp"
 #include "aeronet/server-config.hpp"
 #include "invalid_argument_exception.hpp"
+#include "socket.hpp"
 
 namespace {
 std::string simpleGet(uint16_t port, const char* path = "/") {
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
+  int fd = sock.fd();
   if (fd < 0) {
     return {};
   }
@@ -28,18 +29,20 @@ std::string simpleGet(uint16_t port, const char* path = "/") {
   addr.sin_port = htons(port);
   ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
   if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    ::close(fd);
     return {};
   }
   std::string req = std::string("GET ") + path + " HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
   ::send(fd, req.data(), req.size(), 0);
-  char buf[1024];
-  ssize_t bytesRead = ::recv(fd, buf, sizeof(buf), 0);
   std::string out;
-  if (bytesRead > 0) {
-    out.assign(buf, static_cast<std::size_t>(bytesRead));
+  char buf[2048];
+  while (true) {
+    auto bytesRead = ::recv(fd, buf, sizeof(buf), 0);
+    if (bytesRead > 0) {
+      out.append(buf, buf + bytesRead);
+      continue;
+    }
+    break;  // bytesRead == 0 (EOF) or error -> stop
   }
-  ::close(fd);
   return out;
 }
 }  // namespace
@@ -72,7 +75,7 @@ TEST(MultiHttpServer, ExplicitThreadCountConstructor) {
   cfg.reusePort = true;  // explicit reusePort
   const uint32_t threads = 2;
   aeronet::MultiHttpServer multi(cfg, threads);
-  multi.setHandler([](const aeronet::HttpRequest&) {
+  multi.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = "Explicit";
     return resp;

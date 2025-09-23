@@ -3,6 +3,7 @@
 #include <asm-generic/socket.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <cassert>
@@ -33,10 +34,14 @@
 #include "http-method-set.hpp"
 #include "http-method.hpp"
 #include "log.hpp"
+#include "socket.hpp"
 #include "string-equal-ignore-case.hpp"
 #include "sys-utils.hpp"
 #include "timedef.hpp"
 #include "timestring.hpp"
+#ifdef AERONET_ENABLE_OPENSSL
+#include "tls-context.hpp"
+#endif
 
 namespace aeronet {
 
@@ -78,17 +83,33 @@ namespace aeronet {
 //   - In a nominal environment using an ephemeral port (cfg.port == 0), the probability of an exception is ~0 unless
 //     the process hits fd limits or severe memory pressure. Fixed ports may legitimately throw due to EADDRINUSE.
 //   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
-HttpServer::HttpServer(const ServerConfig& cfg) : _listenFd(::socket(AF_INET, SOCK_STREAM, 0)), _config(cfg) {
-  if (_listenFd < 0) {
-    throw std::runtime_error("socket failed");
+HttpServer::HttpServer(ServerConfig cfg) : _config(std::move(cfg)) {
+  _listenSocket = Socket(Socket::Type::STREAM);
+  int listenFdLocal = _listenSocket.fd();
+  // Initialize TLS context if requested (OpenSSL build).
+#ifdef AERONET_ENABLE_OPENSSL
+  if (_config.tls) {
+    // Direct creation via TlsContext RAII helper.
+    // Reset external metrics container (fresh server instance)
+    _tlsMetricsExternal.alpnStrictMismatches = 0;
+    TlsContext ctxVal(*_config.tls, &_tlsMetricsExternal);
+    if (!ctxVal.valid()) {
+      throw std::runtime_error("Failed to create TLS context");
+    }
+    _tlsCtxHolder.emplace(std::move(ctxVal));
+    _tlsCtx = _tlsCtxHolder->raw();
   }
+#else
+  if (_config.tls.has_value()) {
+    throw std::runtime_error("aeronet built without OpenSSL support but TLS configuration provided");
+  }
+#endif
   static constexpr int enable = 1;
-  if (::setsockopt(_listenFd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
-    safeClose(_listenFd, "listenFd(SO_REUSEADDR) after socket");
+  if (::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
     throw std::runtime_error("setsockopt(SO_REUSEADDR) failed");
   }
   if (_config.reusePort) {
-    if (::setsockopt(_listenFd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) < 0) {
+    if (::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) < 0) {
       log::error("setsockopt(SO_REUSEPORT) error: {}", std::strerror(errno));
     }
   }
@@ -96,30 +117,26 @@ HttpServer::HttpServer(const ServerConfig& cfg) : _listenFd(::socket(AF_INET, SO
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
   addr.sin_port = htons(_config.port);
-  if (bind(_listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    safeClose(_listenFd, "listenFd(bind)");
+  if (bind(listenFdLocal, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
     throw std::runtime_error("bind failed");
   }
-  if (listen(_listenFd, SOMAXCONN) < 0) {
-    safeClose(_listenFd, "listenFd(listen)");
+  if (listen(listenFdLocal, SOMAXCONN) < 0) {
     throw std::runtime_error("listen failed");
   }
   if (_config.port == 0) {
     sockaddr_in actual{};
     socklen_t alen = sizeof(actual);
-    if (::getsockname(_listenFd, reinterpret_cast<sockaddr*>(&actual), &alen) == 0) {
+    if (::getsockname(listenFdLocal, reinterpret_cast<sockaddr*>(&actual), &alen) == 0) {
       _config.port = ntohs(actual.sin_port);
     }
   }
-  if (setNonBlocking(_listenFd) < 0) {
-    safeClose(_listenFd, "listenFd(setNonBlocking)");
+  if (setNonBlocking(listenFdLocal) < 0) {
     throw std::runtime_error("failed to set non-blocking");
   }
   if (_loop == nullptr) {
     _loop = std::make_unique<EventLoop>();
   }
-  if (!_loop->add(_listenFd, EPOLLIN)) {
-    safeClose(_listenFd, "listenFd(epoll add)");
+  if (!_loop->add(listenFdLocal, EPOLLIN)) {
     throw std::runtime_error("EventLoop add listen socket failed");
   }
   log::info("Server created on port :{}", _config.port);
@@ -128,7 +145,7 @@ HttpServer::HttpServer(const ServerConfig& cfg) : _listenFd(::socket(AF_INET, SO
 HttpServer::~HttpServer() { stop(); }
 
 HttpServer::HttpServer(HttpServer&& other) noexcept
-    : _listenFd(std::exchange(other._listenFd, -1)),
+    : _listenSocket(std::move(other._listenSocket)),
       _running(std::exchange(other._running, false)),
       _handler(std::move(other._handler)),
       _pathHandlers(std::move(other._pathHandlers)),
@@ -142,7 +159,7 @@ HttpServer::HttpServer(HttpServer&& other) noexcept
 HttpServer& HttpServer::operator=(HttpServer&& other) noexcept {
   if (this != &other) {
     stop();
-    _listenFd = std::exchange(other._listenFd, -1);
+    _listenSocket = std::move(other._listenSocket);
     _running = std::exchange(other._running, false);
     _handler = std::move(other._handler);
     _pathHandlers = std::move(other._pathHandlers);
@@ -162,71 +179,47 @@ void HttpServer::setStreamingHandler(StreamingHandler handler) { _streamingHandl
 
 void HttpServer::addPathHandler(std::string path, const http::MethodSet& methods, const RequestHandler& handler) {
   auto it = _pathHandlers.find(path);
-  PathHandlerEntry* entry;
+  PathHandlerEntry* pEntry;
   if (it == _pathHandlers.end()) {
-    entry = &_pathHandlers[std::move(path)];
+    pEntry = &_pathHandlers[std::move(path)];
   } else {
-    entry = &it->second;
+    pEntry = &it->second;
   }
   for (http::Method method : methods) {
     auto idx = static_cast<std::underlying_type_t<http::Method>>(method);
-    if (entry->streamingHandlers[idx]) {
+    if (pEntry->streamingHandlers[idx]) {
       throw exception("Cannot register normal handler: streaming handler already present for path+method");
     }
-    entry->normalHandlers[idx] = handler;
-    entry->normalMethodMask |= http::singleMethodToMask(method);
+    pEntry->normalHandlers[idx] = handler;
+    pEntry->normalMethodMask |= http::singleMethodToMask(method);
   }
 }
 
 void HttpServer::addPathHandler(std::string path, http::Method method, const RequestHandler& handler) {
-  auto it = _pathHandlers.find(path);
-  PathHandlerEntry* entry;
-  if (it == _pathHandlers.end()) {
-    entry = &_pathHandlers[std::move(path)];
-  } else {
-    entry = &it->second;
-  }
-  auto idx = static_cast<std::underlying_type_t<http::Method>>(method);
-  if (entry->streamingHandlers[idx]) {
-    throw exception("Cannot register normal handler: streaming handler already present for path+method");
-  }
-  entry->normalHandlers[idx] = handler;
-  entry->normalMethodMask |= http::singleMethodToMask(method);
+  addPathHandler(std::move(path), http::MethodSet{method}, handler);
 }
 
 void HttpServer::addPathStreamingHandler(std::string path, const http::MethodSet& methods,
                                          const StreamingHandler& handler) {
   auto it = _pathHandlers.find(path);
-  PathHandlerEntry* entry;
+  PathHandlerEntry* pEntry;
   if (it == _pathHandlers.end()) {
-    entry = &_pathHandlers[std::move(path)];
+    pEntry = &_pathHandlers[std::move(path)];
   } else {
-    entry = &it->second;
+    pEntry = &it->second;
   }
   for (http::Method method : methods) {
     auto idx = static_cast<std::underlying_type_t<http::Method>>(method);
-    if (entry->normalHandlers[idx]) {
+    if (pEntry->normalHandlers[idx]) {
       throw exception("Cannot register streaming handler: normal handler already present for path+method");
     }
-    entry->streamingHandlers[idx] = handler;
-    entry->streamingMethodMask |= http::singleMethodToMask(method);
+    pEntry->streamingHandlers[idx] = handler;
+    pEntry->streamingMethodMask |= http::singleMethodToMask(method);
   }
 }
 
 void HttpServer::addPathStreamingHandler(std::string path, http::Method method, const StreamingHandler& handler) {
-  auto it = _pathHandlers.find(path);
-  PathHandlerEntry* entry;
-  if (it == _pathHandlers.end()) {
-    entry = &_pathHandlers[std::move(path)];
-  } else {
-    entry = &it->second;
-  }
-  auto idx = static_cast<std::underlying_type_t<http::Method>>(method);
-  if (entry->normalHandlers[idx]) {
-    throw exception("Cannot register streaming handler: normal handler already present for path+method");
-  }
-  entry->streamingHandlers[idx] = handler;
-  entry->streamingMethodMask |= http::singleMethodToMask(method);
+  addPathStreamingHandler(std::move(path), http::MethodSet{method}, handler);
 }
 
 void HttpServer::run(Duration checkPeriod) {
@@ -242,9 +235,9 @@ void HttpServer::run(Duration checkPeriod) {
 void HttpServer::stop() {
   log::info("Stopping server");
   _running = false;
-  if (_listenFd != -1) {
-    safeClose(_listenFd, "listenFd(stop)");
-    _listenFd = -1;
+  // Attempt close only if descriptor still open.
+  if (_listenSocket.fd() != -1) {
+    _listenSocket.close();
     log::info("Server stopped");
   }
 }
@@ -271,11 +264,61 @@ void HttpServer::refreshCachedDate() {
   }
 }
 
+ssize_t HttpServer::transportRead(int fd, ConnStateInternal& state, char* buf, std::size_t len, bool& wantRead,
+                                  bool& wantWrite) {
+  if (state.transport) {
+    return state.transport->read(buf, len, wantRead, wantWrite);
+  }
+  wantRead = wantWrite = false;
+  return ::read(fd, buf, len);
+}
+
+bool HttpServer::modWithCloseOnFailure(EventLoop* loop, int fd, uint32_t events, ConnStateInternal& st, const char* ctx,
+                                       StatsInternal& stats) {
+  if (loop == nullptr) {
+    return false;
+  }
+  if (loop->mod(fd, events)) {
+    return true;
+  }
+  auto errCode = errno;
+  ++stats.epollModFailures;
+  // EBADF or ENOENT can occur during races where a connection is concurrently closed; downgrade severity.
+  if (errCode == EBADF || errCode == ENOENT) {
+    log::warn("epoll_ctl MOD benign failure (ctx={}, fd={}, events=0x{:x}, errno={}, msg={})", ctx, fd, events, errCode,
+              std::strerror(errCode));
+  } else {
+    log::error("epoll_ctl MOD failed (ctx={}, fd={}, events=0x{:x}, errno={}, msg={})", ctx, fd, events, errCode,
+               std::strerror(errCode));
+  }
+  st.shouldClose = true;
+  return false;
+}
+
+ssize_t HttpServer::transportWrite(int fd, ConnStateInternal& state, const char* buf, std::size_t len, bool& wantRead,
+                                   bool& wantWrite) {
+  if (state.transport) {
+    return state.transport->write(buf, len, wantRead, wantWrite);
+  }
+  wantRead = wantWrite = false;
+  return ::send(fd, buf, len, MSG_NOSIGNAL);
+}
+
 bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateInternal& state) {
   bool closeCnx = false;
   while (true) {
     std::size_t headerEnd = 0;
     HttpRequest req{};
+    // Propagate negotiated ALPN (if any) from connection state into per-request object.
+    if (!state.selectedAlpn.empty()) {
+      req.alpnProtocol = state.selectedAlpn;
+    }
+    if (!state.negotiatedCipher.empty()) {
+      req.tlsCipher = state.negotiatedCipher;
+    }
+    if (!state.negotiatedVersion.empty()) {
+      req.tlsVersion = state.negotiatedVersion;
+    }
     auto reqStart = std::chrono::steady_clock::now();
     if (!parseNextRequestFromBuffer(fd, state, req, headerEnd, closeCnx)) {
       break;  // need more data or connection closed
@@ -547,7 +590,7 @@ void HttpServer::eventLoop(Duration timeout) {
   refreshCachedDate();
   sweepIdleConnections();
   int ready = _loop->poll(timeout, [&](int fd, uint32_t ev) {
-    if (fd == _listenFd) {
+    if (fd == _listenSocket.fd()) {
       acceptNewConnections();
     } else {
       if (ev & EPOLLOUT) {

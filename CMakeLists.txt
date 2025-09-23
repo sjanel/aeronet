@@ -1,6 +1,20 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.22)
 
-project(aeronet VERSION 0.1.0 LANGUAGES CXX)
+# Silence FetchContent CMP0135 warnings about archive timestamps by opting in
+# to the NEW behavior when supported (policy introduced in newer CMake).
+if(POLICY CMP0135)
+  cmake_policy(SET CMP0135 NEW)
+endif()
+
+# Centralize version: read from VERSION file at repo root (fallback to 0.0.0 if missing)
+set(AERONET_PROJECT_VERSION "0.0.0")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" AERONET_VERSION_FILE)
+  string(STRIP "${AERONET_VERSION_FILE}" AERONET_PROJECT_VERSION)
+endif()
+project(aeronet VERSION ${AERONET_PROJECT_VERSION} LANGUAGES CXX)
+
+message(STATUS "[${CMAKE_PROJECT_NAME}] version: ${AERONET_PROJECT_VERSION}")
 
 #
 # MAIN_PROJECT CHECK
@@ -18,11 +32,20 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 # Build options
-option(AERONET_BUILD_EXAMPLES "Build example programs" ${MAIN_PROJECT})
-option(AERONET_BUILD_TESTS "Build tests" ${MAIN_PROJECT})
-option(AERONET_BUILD_SHARED "Build Aeronet libraries as shared instead of static" OFF)
 option(AERONET_INSTALL "Enable install & package config generation" ${MAIN_PROJECT})
+# When consumed as a package (not the main project) we never want to build tests or examples.
+# Some package managers (vcpkg/Conan) may still pass defaults or reuse a cached build tree;
+# enforce OFF deterministically here to avoid leaking test targets into consumer builds.
+set(AERONET_BUILD_TESTS_EXAMPLES_DEFAULT ${MAIN_PROJECT})
+if(AERONET_INSTALL AND NOT MAIN_PROJECT)
+  set(AERONET_BUILD_TESTS_EXAMPLES_DEFAULT OFF CACHE BOOL "Build tests and examples" FORCE)
+endif()
 
+option(AERONET_BUILD_EXAMPLES "Build example programs" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
+option(AERONET_BUILD_TESTS "Build tests" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
+option(AERONET_BUILD_SHARED "Build Aeronet libraries as shared instead of static" OFF)
+
+# Features
 # Optional dependencies (aeronet is able to compile without the feature if not enabled)
 option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" OFF)
 option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" OFF)
@@ -35,10 +58,6 @@ option(AERONET_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
-if(AERONET_ENABLE_OPENSSL)
-  find_package(OpenSSL REQUIRED)
-endif()
 
 # Clang-Tidy integration
 if(AERONET_ENABLE_CLANG_TIDY)
@@ -65,17 +84,20 @@ include(FetchContent)
 
 set(fetchContentPackagesToMakeAvailable "")
 
+set(LINK_AMC FALSE)
 find_package(amc CONFIG)
 if(amc_FOUND)
-  set(LINK_AMC FALSE)
+  # amc provided by toolchain / package manager
+  set(LINK_AMC TRUE)
 else()
+  # Fallback: attempt to fetch the dependency (unless disconnected prevents it)
   set(LINK_AMC TRUE)
   FetchContent_Declare(
     amadeusamc
     URL https://github.com/AmadeusITGroup/amc/archive/refs/tags/v2.6.1.tar.gz
     URL_HASH SHA256=a1cbb695f31c96b90699ef1d2db14dcd89984cf1135c29b48af70a007c44a02d
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
-
   list(APPEND fetchContentPackagesToMakeAvailable amadeusamc)
 endif()
 
@@ -87,6 +109,7 @@ if(AERONET_BUILD_TESTS)
       googletest
       URL https://github.com/google/googletest/archive/refs/tags/v1.17.0.tar.gz
       URL_HASH SHA256=65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
 
     # Use modern position independent etc.
@@ -106,6 +129,7 @@ if(AERONET_ENABLE_SPDLOG)
             spdlog
             URL https://github.com/gabime/spdlog/archive/refs/tags/v1.15.3.tar.gz
             URL_HASH SHA256=15a04e69c222eb6c01094b5c7ff8a249b36bb22788d72519646fb85feb267e67
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         )
 
         set(SPDLOG_USE_STD_FORMAT ON CACHE BOOL "" FORCE)
@@ -117,8 +141,22 @@ endif()
 # Make fetch content available
 if(fetchContentPackagesToMakeAvailable)
   message(STATUS "Configuring packages ${fetchContentPackagesToMakeAvailable}")
-
+  # In vcpkg builds, FETCHCONTENT_FULLY_DISCONNECTED is forced ON, so
+  # population of new content that is not already present will fail.
+  # We let FetchContent attempt population; if it fails to create the
+  # expected targets we degrade gracefully by disabling AMC linkage.
   FetchContent_MakeAvailable("${fetchContentPackagesToMakeAvailable}")
+endif()
+
+# AMC dependency handling
+# If we intend to link AMC but no target materialized, decide whether we can degrade.
+if(LINK_AMC AND NOT TARGET amc::amc)
+  if(FETCHCONTENT_FULLY_DISCONNECTED)
+    message(WARNING "[aeronet] amc dependency unavailable under disconnected mode; disabling AMC integration for this build")
+    set(LINK_AMC FALSE)
+  else()
+    message(FATAL_ERROR "[aeronet] Required dependency 'amc' not found and not in disconnected mode. Please provide amc via find_package(amc CONFIG) or allow FetchContent to download it.")
+  endif()
 endif()
 
 if(AERONET_BUILD_TESTS)
@@ -127,6 +165,11 @@ if(AERONET_BUILD_TESTS)
 endif()
 
 add_subdirectory(aeronet)
+
+# Optional TLS module kept separate to minimize #ifdef sprawl.
+if(AERONET_ENABLE_OPENSSL)  
+  add_subdirectory(aeronet/tls)
+endif()
 
 if(AERONET_BUILD_EXAMPLES)
     add_subdirectory(examples)
@@ -149,18 +192,33 @@ if(AERONET_INSTALL)
         @ONLY
     )
 
-    install(TARGETS aeronet aeronet_http aeronet_tech
-        EXPORT aeronetTargets
-        ARCHIVE DESTINATION lib
-        LIBRARY DESTINATION lib
-        RUNTIME DESTINATION bin
-        INCLUDES DESTINATION include
+  install(TARGETS aeronet aeronet_http aeronet_tech aeronet_objects aeronet_sys
+    EXPORT aeronetTargets
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
+    RUNTIME DESTINATION bin
+    INCLUDES DESTINATION include
+  )
+  if(AERONET_ENABLE_OPENSSL)
+    install(TARGETS aeronet_tls
+      EXPORT aeronetTargets
+      ARCHIVE DESTINATION lib
+      LIBRARY DESTINATION lib
+      RUNTIME DESTINATION bin
+      INCLUDES DESTINATION include
     )
+  endif()
 
     # Headers: install each public include tree
     install(DIRECTORY aeronet/main/include/ DESTINATION include)
     install(DIRECTORY aeronet/http/include/ DESTINATION include)
     install(DIRECTORY aeronet/tech/include/ DESTINATION include)
+    install(DIRECTORY aeronet/sys/include/ DESTINATION include)
+  # objects include contains server-config.hpp and other config-related headers needed by server.hpp
+  install(DIRECTORY aeronet/objects/include/ DESTINATION include)
+    if(AERONET_ENABLE_OPENSSL)
+      install(DIRECTORY aeronet/tls/include/ DESTINATION include)
+    endif()
 
     install(EXPORT aeronetTargets
         NAMESPACE aeronet::

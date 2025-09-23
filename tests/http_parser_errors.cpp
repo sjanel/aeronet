@@ -14,6 +14,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
+#include "test_server_fixture.hpp"
 #include "test_util.hpp"
 
 using namespace std::chrono_literals;
@@ -30,20 +31,18 @@ struct Capture {
 }  // namespace
 
 TEST(HttpParserErrors, InvalidVersion505) {
-  aeronet::HttpServer server(aeronet::ServerConfig{});
-  auto port = server.port();
+  TestServer ts(aeronet::ServerConfig{});
+  auto port = ts.port();
   Capture cap;
-  server.setParserErrorCallback([&](aeronet::HttpServer::ParserError err) { cap.push(err); });
-  server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
-  std::jthread th([&] { server.runUntil([] { return false; }, 25ms); });
-  std::this_thread::sleep_for(50ms);
-  int fd = tu_connect(port);
+  ts.server.setParserErrorCallback([&](aeronet::HttpServer::ParserError err) { cap.push(err); });
+  ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
+  ClientConnection clientConnection(port);
+  int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string bad = "GET / HTTP/9.9\r\nHost: x\r\nConnection: close\r\n\r\n";  // unsupported version
   tu_sendAll(fd, bad);
   std::string resp = tu_recvUntilClosed(fd);
-  server.stop();
-  th.join();
+  ts.stop();
   ASSERT_NE(std::string::npos, resp.find("505")) << resp;
   bool seen = false;
   {
@@ -58,12 +57,11 @@ TEST(HttpParserErrors, InvalidVersion505) {
 }
 
 TEST(HttpParserErrors, Expect100OnlyWithBody) {
-  aeronet::HttpServer server(aeronet::ServerConfig{});
-  auto port = server.port();
-  server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
-  std::jthread th([&] { server.runUntil([] { return false; }, 25ms); });
-  std::this_thread::sleep_for(50ms);
-  int fd = tu_connect(port);
+  TestServer ts(aeronet::ServerConfig{});
+  auto port = ts.port();
+  ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
+  ClientConnection clientConnection(port);
+  int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   // zero length with Expect should NOT produce 100 Continue
   std::string zero =
@@ -72,33 +70,33 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
   std::string respZero = tu_recvUntilClosed(fd);
   ASSERT_EQ(std::string::npos, respZero.find("100 Continue"));
   // non-zero length with Expect should produce interim 100 then 200
-  int fd2 = tu_connect(port);
+  ClientConnection clientConnection2(port);
+  int fd2 = clientConnection2.fd();
   ASSERT_GE(fd2, 0);
   std::string post =
       "POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\nHELLO";
   tu_sendAll(fd2, post);
   std::string resp = tu_recvUntilClosed(fd2);
-  server.stop();
-  th.join();
+  ts.stop();
   ASSERT_NE(std::string::npos, resp.find("100 Continue"));
   ASSERT_NE(std::string::npos, resp.find("200"));
 }
 
 // Fuzz-ish incremental chunk framing with random chunk sizes & boundaries.
 TEST(HttpParserErrors, ChunkIncrementalFuzz) {
-  aeronet::HttpServer server(aeronet::ServerConfig{});
-  auto port = server.port();
-  server.setHandler([](const aeronet::HttpRequest& req) {
+  TestServer ts(aeronet::ServerConfig{});
+  auto port = ts.port();
+  ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body = std::string(req.body);
     return respObj;
   });
-  std::jthread th([&] { server.runUntil([] { return false; }, 25ms); });
-  std::this_thread::sleep_for(50ms);
+
   std::mt19937 rng(12345);
   std::uniform_int_distribution<int> sizeDist(1, 15);
   std::string original;
-  int fd = tu_connect(port);
+  ClientConnection clientConnection(port);
+  int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string head = "POST /f HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
   tu_sendAll(fd, head);
@@ -122,8 +120,7 @@ TEST(HttpParserErrors, ChunkIncrementalFuzz) {
   // terminating chunk
   tu_sendAll(fd, "0\r\n\r\n");
   std::string resp = tu_recvUntilClosed(fd);
-  server.stop();
-  th.join();
+  ts.stop();
   ASSERT_NE(std::string::npos, resp.find("200"));
   ASSERT_NE(std::string::npos, resp.find(original.substr(0, 3))) << resp;  // sanity partial check
 }

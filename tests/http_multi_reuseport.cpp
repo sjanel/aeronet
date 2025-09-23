@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
-#include <cstdint>
 #include <future>
 #include <string>
 #include <thread>
@@ -15,13 +14,14 @@
 // and accept at least one connection each. It does not attempt to assert load distribution.
 
 TEST(HttpMultiReusePort, TwoServersBindSamePort) {
-  uint16_t port = 18234;  // random high port
-  aeronet::HttpServer serverA(aeronet::ServerConfig{}.withPort(port).withReusePort());
+  aeronet::HttpServer serverA(aeronet::ServerConfig{}.withReusePort());
   serverA.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body = "A";
     return resp;
   });
+
+  auto port = serverA.port();
 
   aeronet::HttpServer serverB(aeronet::ServerConfig{}.withPort(port).withReusePort());
   serverB.setHandler([](const aeronet::HttpRequest&) {
@@ -70,8 +70,6 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
 
   serverA.stop();
   serverB.stop();
-  tA.join();
-  tB.join();
 
   // At least one of the responses should contain body A and one body B
   // Because of hashing, both could come from same server but with two sequential connects

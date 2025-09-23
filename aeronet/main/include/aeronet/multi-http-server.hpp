@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "aeronet/server-config.hpp"
+#include "aeronet/server-stats.hpp"
 #include "aeronet/server.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
@@ -27,12 +28,12 @@ class MultiHttpServer {
   using ParserErrorCallback = HttpServer::ParserErrorCallback;
 
   struct AggregatedStats {
-    // total: Aggregated view across all underlying servers.
-    //   * All byte / counter fields are summed.
-    //   * maxConnectionOutboundBuffer is the maximum observed among instances.
-    HttpServer::StatsPublic total{};
-    // per: One entry per underlying HttpServer in thread index order (0..threadCount-1).
-    vector<HttpServer::StatsPublic> per;
+    // Aggregated view across all underlying servers.
+    ServerStats total{};
+    // Per-instance snapshots
+    vector<ServerStats> per;
+    // JSON array of per-instance objects
+    [[nodiscard]] std::string json_str() const;
   };
 
   // Construct a MultiHttpServer that does nothing.
