@@ -3,7 +3,10 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 
+#include <chrono>
+#include <cstddef>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "aeronet/http-request.hpp"
@@ -14,11 +17,13 @@
 #include "exception.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
+#include "socket.hpp"
 
 namespace {
-void httpRequest(uint16_t port, const std::string& method, const std::string& path, std::string& out,
+void httpRequest(auto port, std::string_view method, std::string_view path, std::string& out,
                  const std::string& body = {}) {
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
+  int fd = sock.fd();
   ASSERT_GE(fd, 0) << "socket failed";
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -26,24 +31,23 @@ void httpRequest(uint16_t port, const std::string& method, const std::string& pa
   ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
   int cRet = ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
   ASSERT_EQ(cRet, 0) << "connect failed";
-  std::string req = method + " " + path + " HTTP/1.1\r\nHost: test\r\nConnection: close\r\n";
+  std::string req = std::string(method) + " " + std::string(path) + " HTTP/1.1\r\nHost: test\r\nConnection: close\r\n";
   if (!body.empty()) {
     req += "Content-Length: " + std::to_string(body.size()) + "\r\n";
   }
   req += "\r\n";
   req += body;
-  ssize_t sent = ::send(fd, req.data(), req.size(), 0);
-  ASSERT_EQ(sent, static_cast<ssize_t>(req.size())) << "send partial";
+  auto sent = ::send(fd, req.data(), req.size(), 0);
+  ASSERT_EQ(sent, static_cast<decltype(sent)>(req.size())) << "send partial";
   out.clear();
   char buf[4096];
   while (true) {
-    ssize_t bytesRead = ::recv(fd, buf, sizeof(buf), 0);
+    auto bytesRead = ::recv(fd, buf, sizeof(buf), 0);
     if (bytesRead <= 0) {
       break;
     }
     out.append(buf, static_cast<std::size_t>(bytesRead));
   }
-  ::close(fd);
 }
 
 // Very small chunked decoder for tests (single pass, no trailers). Expects full HTTP response.
@@ -267,8 +271,9 @@ TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
 namespace {
 // Helper that performs two sequential HTTP/1.1 requests over a single keep-alive connection and returns the raw
 // concatenated responses. Each request must include Connection: keep-alive and server must support it.
-void twoRequestsKeepAlive(uint16_t port, const std::string& r1, const std::string& r2, std::string& out) {
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+void twoRequestsKeepAlive(auto port, const std::string& r1, const std::string& r2, std::string& out) {
+  aeronet::Socket sock2(aeronet::Socket::Type::STREAM);
+  int fd = sock2.fd();
   ASSERT_GE(fd, 0) << "socket failed";
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -277,18 +282,17 @@ void twoRequestsKeepAlive(uint16_t port, const std::string& r1, const std::strin
   int cRet = ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
   ASSERT_EQ(cRet, 0) << "connect failed";
   std::string reqs = r1 + r2;
-  ssize_t sentAll = ::send(fd, reqs.data(), reqs.size(), 0);
-  ASSERT_EQ(sentAll, static_cast<ssize_t>(reqs.size())) << "send partial";
+  auto sentAll = ::send(fd, reqs.data(), reqs.size(), 0);
+  ASSERT_EQ(sentAll, static_cast<decltype(sentAll)>(reqs.size())) << "send partial";
   out.clear();
   char buf[8192];
   while (true) {
-    ssize_t bytesRead = ::recv(fd, buf, sizeof(buf), 0);
+    auto bytesRead = ::recv(fd, buf, sizeof(buf), 0);
     if (bytesRead <= 0) {
       break;
     }
     out.append(buf, static_cast<std::size_t>(bytesRead));
   }
-  ::close(fd);
 }
 }  // namespace
 

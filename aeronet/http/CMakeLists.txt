@@ -5,7 +5,7 @@ add_project_library(aeronet_http
 )
 
 target_link_libraries(aeronet_http
-    PUBLIC aeronet_tech
+    PUBLIC aeronet_tech aeronet_objects aeronet_sys
 )
 
 target_include_directories(aeronet_http

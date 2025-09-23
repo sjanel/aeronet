@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <string>
 #include <thread>
@@ -10,15 +11,10 @@
 #include "aeronet/server-config.hpp"
 #include "test_raw_get.hpp"
 
-namespace {}  // namespace
-
 TEST(MultiHttpServer, BasicStartAndServe) {
   const int threads = 3;
-  aeronet::ServerConfig cfg;
-  cfg.port = 0;
-  cfg.reusePort = true;  // let kernel pick
-  aeronet::MultiHttpServer multi(cfg, threads);
-  multi.setHandler([](const aeronet::HttpRequest&) {
+  aeronet::MultiHttpServer multi(aeronet::ServerConfig{}.withReusePort(), threads);
+  multi.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = std::string("Hello "); /* path not exposed directly */
     return resp;

@@ -23,6 +23,8 @@
 
 namespace test_http_client {
 
+#include "socket.hpp"
+
 struct RequestOptions {
   std::string method{"GET"};
   std::string target{"/"};
@@ -159,7 +161,8 @@ inline std::string buildRequest(const RequestOptions &opt) {
 }
 
 inline std::optional<std::string> request(uint16_t port, const RequestOptions &opt = {}) {
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
+  int fd = sock.fd();
   if (fd < 0) {
     return std::nullopt;
   }
@@ -169,13 +172,11 @@ inline std::optional<std::string> request(uint16_t port, const RequestOptions &o
   addr.sin_port = htons(port);
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
-    ::close(fd);
     return std::nullopt;
   }
   auto reqStr = buildRequest(opt);
   ssize_t sent = ::send(fd, reqStr.data(), reqStr.size(), 0);
   if (sent != static_cast<ssize_t>(reqStr.size())) {
-    ::close(fd);
     return std::nullopt;
   }
   std::string out;
@@ -191,7 +192,6 @@ inline std::optional<std::string> request(uint16_t port, const RequestOptions &o
       break;  // safety cap
     }
   }
-  ::close(fd);
   return out;
 }
 
@@ -213,7 +213,8 @@ inline std::vector<std::string> sequentialRequests(uint16_t port, const std::vec
   if (reqs.empty()) {
     return results;
   }
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
+  int fd = sock.fd();
   if (fd < 0) {
     return results;
   }
@@ -223,7 +224,6 @@ inline std::vector<std::string> sequentialRequests(uint16_t port, const std::vec
   addr.sin_port = htons(port);
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
-    ::close(fd);
     return results;
   }
   char buf[4096];
@@ -326,13 +326,12 @@ inline std::vector<std::string> sequentialRequests(uint16_t port, const std::vec
       break;
     }
   }
-  ::close(fd);
   return results;
 }
 
 // Incremental streaming helpers: open, send one request, then allow caller to pull available bytes.
 struct StreamingHandle {
-  int fd{-1};
+  aeronet::Socket sock;  // move-only RAII; connection kept open while handle alive
 };
 
 inline std::optional<StreamingHandle> openStreaming(uint16_t port, const RequestOptions &opt) {
@@ -340,7 +339,8 @@ inline std::optional<StreamingHandle> openStreaming(uint16_t port, const Request
   if (ro.connection == "close") {
     ro.connection = "keep-alive";  // keep open for streaming
   }
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
+  int fd = sock.fd();
   if (fd < 0) {
     return std::nullopt;
   }
@@ -350,22 +350,21 @@ inline std::optional<StreamingHandle> openStreaming(uint16_t port, const Request
   addr.sin_port = htons(port);
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
-    ::close(fd);
     return std::nullopt;
   }
   std::string req = buildRequest(ro);
   if (::send(fd, req.data(), req.size(), 0) != static_cast<ssize_t>(req.size())) {
-    ::close(fd);
     return std::nullopt;
   }
-  return StreamingHandle{fd};
+  StreamingHandle handle{std::move(sock)};
+  return handle;
 }
 
 inline std::string readAvailable(const StreamingHandle &handle) {
   std::string out;
   char buf[4096];
   for (;;) {
-    ssize_t received = ::recv(handle.fd, buf, sizeof(buf), MSG_DONTWAIT);
+    ssize_t received = ::recv(handle.sock.fd(), buf, sizeof(buf), MSG_DONTWAIT);
     if (received > 0) {
       out.append(buf, buf + received);
       continue;
@@ -379,10 +378,7 @@ inline std::string readAvailable(const StreamingHandle &handle) {
 }
 
 inline void closeStreaming(StreamingHandle &handle) {
-  if (handle.fd >= 0) {
-    ::close(handle.fd);
-    handle.fd = -1;
-  }
+  handle.sock.close();  // idempotent
 }
 
 }  // namespace test_http_client

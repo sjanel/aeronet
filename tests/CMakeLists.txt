@@ -45,6 +45,7 @@ aeronet_http_test(http_server_move http_server_move.cpp)
 
 # Stats exposure test
 aeronet_http_test(http_stats http_stats.cpp)
+aeronet_http_test(server_stats_json server_stats_json.cpp)
 
 # Streaming tests
 aeronet_http_test(http_streaming_backpressure http_streaming_backpressure.cpp)
@@ -61,6 +62,23 @@ aeronet_http_test(http_streaming_mixed http_streaming_mixed.cpp)
 aeronet_http_test(http_url_decoding_additional http_url_decoding_additional.cpp)
 
 aeronet_http_test(http_url_decoding http_url_decoding.cpp)
+
+aeronet_http_test(test_version test_version.cpp)
+
+# TLS tests only compiled when OpenSSL support is enabled in the library build.
+if (AERONET_ENABLE_OPENSSL)
+	aeronet_http_test(http_tls_basic http_tls_basic.cpp)
+	aeronet_http_test(http_tls_negative http_tls_negative.cpp)
+	aeronet_http_test(http_tls_mtls_alpn http_tls_mtls_alpn.cpp)
+	aeronet_http_test(http_tls_alpn_mismatch http_tls_alpn_mismatch.cpp)
+	aeronet_http_test(http_tls_cipher_version http_tls_cipher_version.cpp)
+	aeronet_http_test(http_tls_mtls_metrics http_tls_mtls_metrics.cpp)
+	aeronet_http_test(http_tls_file_certkey http_tls_file_certkey.cpp)
+	aeronet_http_test(http_tls_request_client_cert_optional http_tls_request_client_cert_optional.cpp)
+	aeronet_http_test(http_tls_alpn_non_strict http_tls_alpn_non_strict.cpp)
+	aeronet_http_test(http_tls_version_bounds http_tls_version_bounds.cpp)
+	aeronet_http_test(http_tls_cipher_list_invalid http_tls_cipher_list_invalid.cpp)
+endif()
 
 # Auto thread-count constructor coverage
 # MultiHttpServer convenience constructors (auto, explicit, move, invalid)
@@ -86,24 +104,55 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_routing.cpp
 	http_server_move.cpp
 	http_stats.cpp
+	server_stats_json.cpp
 	http_streaming_backpressure.cpp
 	http_streaming_keepalive.cpp
 	http_streaming.cpp
-		http_streaming_head_content_length.cpp
+	http_streaming_head_content_length.cpp
 	http_streaming_set_header.cpp
 	http_streaming_mixed.cpp
 	http_url_decoding_additional.cpp
 	http_url_decoding.cpp
 	multi_http_server_convenience_constructors.cpp
 	multi_http_server_auto.cpp
+	test_version.cpp
+	# TLS tests are intentionally omitted from the always-present list because they are
+	# guarded by AERONET_ENABLE_OPENSSL. If OpenSSL is enabled but these files are removed
+	# or renamed, add them inside the conditional block above.
 )
+if (AERONET_ENABLE_OPENSSL)
+  list(APPEND REGISTERED_TEST_SOURCES_REL
+    http_tls_basic.cpp
+		http_tls_negative.cpp
+		http_tls_mtls_alpn.cpp
+		http_tls_alpn_mismatch.cpp)
+	  list(APPEND REGISTERED_TEST_SOURCES_REL http_tls_cipher_version.cpp)
+		list(APPEND REGISTERED_TEST_SOURCES_REL http_tls_mtls_metrics.cpp)
+		list(APPEND REGISTERED_TEST_SOURCES_REL http_tls_file_certkey.cpp)
+    list(APPEND REGISTERED_TEST_SOURCES_REL http_tls_request_client_cert_optional.cpp)
+    list(APPEND REGISTERED_TEST_SOURCES_REL http_tls_alpn_non_strict.cpp)
+    list(APPEND REGISTERED_TEST_SOURCES_REL http_tls_version_bounds.cpp)
+    list(APPEND REGISTERED_TEST_SOURCES_REL http_tls_cipher_list_invalid.cpp)
+endif()
+
 set(UNREGISTERED_FILES "")
+
 foreach(abs ${TEST_SOURCES_ABS})
-	get_filename_component(fname ${abs} NAME)
-	list(FIND REGISTERED_TEST_SOURCES_REL ${fname} idx)
-	if(idx EQUAL -1)
-		list(APPEND UNREGISTERED_FILES ${fname})
-	endif()
+  get_filename_component(fname ${abs} NAME)
+  # All TLS tests follow http_tls_*.cpp naming; when OpenSSL is disabled skip them entirely.
+  if (fname MATCHES "^http_tls_.*\\.cpp$")
+    if (AERONET_ENABLE_OPENSSL)
+      list(FIND REGISTERED_TEST_SOURCES_REL ${fname} idx)
+      if (idx EQUAL -1)
+        list(APPEND UNREGISTERED_FILES ${fname})
+      endif()
+    endif()
+  else()
+    list(FIND REGISTERED_TEST_SOURCES_REL ${fname} idx)
+    if(idx EQUAL -1)
+      list(APPEND UNREGISTERED_FILES ${fname})
+    endif()
+  endif()
 endforeach()
 if(UNREGISTERED_FILES)
 	message(FATAL_ERROR "Unregistered test source files detected: ${UNREGISTERED_FILES}. Add aeronet_http_test(...) entries.")

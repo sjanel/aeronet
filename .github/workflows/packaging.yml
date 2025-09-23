@@ -1,0 +1,91 @@
+name: Packaging
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  conan:
+    name: Conan Package Build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        shared: [OFF, ON]
+        tls: [ON, OFF]
+    # Ensure Conan uses the same home for profile detection and package creation.
+    # Previously only the create step set CONAN_HOME, causing the default profile path mismatch.
+    # No static CONAN_HOME here; will be set per-matrix in a dedicated step.
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build prereqs
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y python3-pip ninja-build gcc g++ cmake pkg-config libssl-dev
+          pipx install conan
+          conan --version
+
+      - name: Conan profile detect
+        run: |
+          conan profile detect --force
+
+      - name: Create package
+        run: |
+          VERSION=$(cat VERSION)
+          conan create . --name aeronet --version "$VERSION" \
+            -o aeronet/*:shared=${{ matrix.shared == 'ON' && 'True' || 'False' }} \
+            -o aeronet/*:with_openssl=${{ matrix.tls == 'ON' && 'True' || 'False' }} \
+            -o aeronet/*:with_spdlog=False \
+            -s build_type=Release \
+            -s compiler.cppstd=23 \
+            --build=missing
+
+  vcpkg:
+    name: vcpkg Overlay Build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        tls: [ON, OFF]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential ninja-build cmake pkg-config curl zip unzip tar git libssl-dev
+
+      - name: Bootstrap vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: vcpkg install aeronet
+        env:
+          VCPKG_FEATURE_FLAGS: dependencygraph
+        run: |
+          if [ "${{ matrix.tls }}" = "OFF" ]; then
+            ./vcpkg/vcpkg install aeronet --overlay-ports=./ports --triplet x64-linux
+          else
+            ./vcpkg/vcpkg install aeronet[tls] --overlay-ports=./ports --triplet x64-linux
+          fi
+
+      - name: Build simple consumer
+        run: |
+          cmake -S examples/consumer-cmake -B consumer-test/build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build consumer-test/build -j
+          ls -l consumer-test/build || true
+
+      - name: Archive consumer binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: consumer-${{ matrix.tls }}
+          path: consumer-test/build/consumer-example
+          if-no-files-found: error
+          retention-days: 7

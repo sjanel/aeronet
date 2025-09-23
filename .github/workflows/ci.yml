@@ -10,22 +10,24 @@ on:
 jobs:
   build-test:
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
-        compiler: [gcc-13, clang-20]
-        spdlog: [OFF, ON]
+        compiler: [gcc-13, clang-21]
+        features: [OFF, ON]
         build: [Debug, Release]
     runs-on: ubuntu-latest
 
     env:
       CMAKE_BUILD_TYPE: ${{ matrix.build }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
       - name: Update apt cache
         run: sudo apt-get update -y
+
+      - name: Install OpenSSL development headers (for TLS ON)
+        run: sudo apt-get install -y libssl-dev || true
 
       - name: Install GCC toolchain
         if: ${{ startsWith(matrix.compiler, 'gcc') }}
@@ -75,7 +77,8 @@ jobs:
             -DAERONET_BUILD_EXAMPLES=ON \
             -DAERONET_ENABLE_ASAN=ON \
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
-            -DAERONET_ENABLE_SPDLOG=${{ matrix.spdlog }}
+            -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
+            -DAERONET_ENABLE_OPENSSL=${{ matrix.features }}
 
       - name: Build
         run: |
@@ -89,7 +92,8 @@ jobs:
         if: always()
         run: |
           echo "Compiler: $CXX" >> $GITHUB_STEP_SUMMARY
-          echo "SPDLOG: ${{ matrix.spdlog }}" >> $GITHUB_STEP_SUMMARY
+          echo "SPDLOG: ${{ matrix.features }}" >> $GITHUB_STEP_SUMMARY
+          echo "OPENSSL: ${{ matrix.features }}" >> $GITHUB_STEP_SUMMARY
           echo "Commit: $GITHUB_SHA" >> $GITHUB_STEP_SUMMARY
           echo "Tests executed:" >> $GITHUB_STEP_SUMMARY
           ctest --test-dir build -N | sed 's/^/  /' >> $GITHUB_STEP_SUMMARY
@@ -106,10 +110,10 @@ jobs:
           # NOTE: Artifact names must be globally unique within a single workflow run.
           # The previous name omitted the build type, so Debug and Release matrix legs
           # attempted to create the same artifact name, yielding HTTP 409 Conflict.
-          # Adding the build axis (and keeping compiler + spdlog toggle) makes each
+          # Adding the build axis (and keeping compiler + features toggle) makes each
           # matrix combination distinct. If you ever re-run a failed job (run_attempt > 1)
           # and want full uniqueness across attempts, you could append `-ra${{ github.run_attempt }}`.
-          name: aeronet-${{ matrix.compiler }}-spdlog-${{ matrix.spdlog }}-build-${{ matrix.build }}
+          name: aeronet-${{ matrix.compiler }}-features-${{ matrix.features }}-build-${{ matrix.build }}
           path: install
           if-no-files-found: ignore
           retention-days: 7

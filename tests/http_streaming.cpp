@@ -1,18 +1,14 @@
 #include <gtest/gtest.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 #include <cstdint>
 #include <string>
-#include <thread>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 #include "test_http_client.hpp"
+#include "test_server_fixture.hpp"
 
 using namespace std::chrono_literals;
 
@@ -31,20 +27,18 @@ std::string blockingFetch(uint16_t port, const std::string& verb, const std::str
 }  // namespace
 
 TEST(HttpStreaming, ChunkedSimple) {
-  aeronet::HttpServer server(aeronet::ServerConfig{});
-  auto port = server.port();
-  server.setStreamingHandler([]([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
-    writer.setStatus(200, "OK");
-    writer.setContentType("text/plain");
-    writer.write("hello ");
-    writer.write("world");
-    writer.end();
-  });
-  std::jthread th([&] { server.runUntil([] { return false; }, 50ms); });
-  std::this_thread::sleep_for(100ms);
+  TestServer ts(aeronet::ServerConfig{});
+  auto port = ts.port();
+  ts.server.setStreamingHandler(
+      []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
+        writer.setStatus(200, "OK");
+        writer.setContentType("text/plain");
+        writer.write("hello ");
+        writer.write("world");
+        writer.end();
+      });
   std::string resp = blockingFetch(port, "GET", "/stream");
-  server.stop();
-  th.join();
+  ts.stop();
   ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));
   // Should contain chunk sizes in hex (6 and 5) and terminating 0 chunk.
   ASSERT_NE(std::string::npos, resp.find("6\r\nhello "));
@@ -53,19 +47,17 @@ TEST(HttpStreaming, ChunkedSimple) {
 }
 
 TEST(HttpStreaming, HeadSuppressedBody) {
-  aeronet::HttpServer server(aeronet::ServerConfig{});
-  auto port = server.port();
-  server.setStreamingHandler([]([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
-    writer.setStatus(200, "OK");
-    writer.setContentType("text/plain");
-    writer.write("ignored body");  // should not be emitted for HEAD
-    writer.end();
-  });
-  std::jthread th([&] { server.runUntil([] { return false; }, 50ms); });
-  std::this_thread::sleep_for(100ms);
+  TestServer ts(aeronet::ServerConfig{});
+  auto port = ts.port();
+  ts.server.setStreamingHandler(
+      []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
+        writer.setStatus(200, "OK");
+        writer.setContentType("text/plain");
+        writer.write("ignored body");  // should not be emitted for HEAD
+        writer.end();
+      });
   std::string resp = blockingFetch(port, "HEAD", "/head");
-  server.stop();
-  th.join();
+  ts.stop();
   ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));
   // For HEAD we expect no chunked framing. "0\r\n" alone would falsely match the Content-Length header line
   // ("Content-Length: 0\r\n"). What we really want to assert is that there is no terminating chunk sequence.

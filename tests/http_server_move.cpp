@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <string>
 #include <thread>
 #include <utility>
@@ -10,10 +11,6 @@
 #include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 #include "test_raw_get.hpp"
-
-// Explicit std::chrono usage avoids needing chrono literal operators.
-
-namespace {}  // namespace
 
 TEST(HttpServerMove, MoveConstructAndServe) {
   std::atomic_bool stop{false};
