@@ -3,27 +3,49 @@
 #include <sys/uio.h>  // iovec
 
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/server-config.hpp"
+#include "connection.hpp"
+#include "event-loop.hpp"
+#ifdef AERONET_ENABLE_OPENSSL
+#include <openssl/ssl.h>  // ensure real ::SSL is visible (avoid shadowing forward decl)
+
+#include "tls-context.hpp"  // brings TlsContext & TlsMetricsExternal
+#include "tls-metrics.hpp"
+#endif
+#include "aeronet/server-stats.hpp"
 #include "flat-hash-map.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
 #include "http-response-writer.hpp"
 #include "raw-chars.hpp"
+#include "socket.hpp"
 #include "timedef.hpp"
+#include "transport.hpp"
 
 namespace aeronet {
 
-class EventLoop;  // forward declaration
+class ITransport;  // forward declaration for TLS/plain transport abstraction
+#ifdef AERONET_ENABLE_OPENSSL
+class TlsContext;  // forward declaration still okay
+// NOTE: We intentionally do NOT forward declare SSL here because doing so inside the aeronet namespace would create
+// a different type aeronet::SSL, shadowing the real ::SSL from OpenSSL and breaking overload resolution for
+// SSL_* functions. Instead we include <openssl/ssl.h> above under the same feature flag, which provides the
+// correct ::SSL definition while keeping this header lightweight when TLS support is disabled.
+#endif
 
 // HttpServer
 //  - Single-threaded event loop by design: one instance == one epoll/reactor running in the
@@ -70,7 +92,7 @@ class HttpServer {
   //    and registers the listening fd with the internal EventLoop.
   //  - If any step fails it throws std::runtime_error (leaving no open fd).
   //  - After construction port() returns the actual bound port (deterministic for tests using ephemeral ports).
-  explicit HttpServer(const ServerConfig& cfg);
+  explicit HttpServer(ServerConfig cfg);
 
   HttpServer(const HttpServer&) = delete;
   HttpServer& operator=(const HttpServer&) = delete;
@@ -273,17 +295,25 @@ class HttpServer {
   friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
 
   struct ConnStateInternal {
-    RawChars buffer;         // accumulated raw data
-    RawChars bodyStorage;    // decoded body lifetime
-    RawChars outBuffer;      // pending outbound bytes not yet written
-    RawChars decodedTarget;  // storage for percent-decoded request target (per-connection reuse)
+    RawChars buffer;                        // accumulated raw data
+    RawChars bodyStorage;                   // decoded body lifetime
+    RawChars outBuffer;                     // pending outbound bytes not yet written
+    RawChars decodedTarget;                 // storage for percent-decoded request target (per-connection reuse)
+    std::unique_ptr<ITransport> transport;  // set after accept (plain or TLS)
     std::chrono::steady_clock::time_point lastActivity{std::chrono::steady_clock::now()};
     // Timestamp of first byte of the current pending request headers (buffer not yet containing full CRLFCRLF).
     // Reset when a complete request head is parsed. If std::chrono::steady_clock::time_point{} (epoch) -> inactive.
     std::chrono::steady_clock::time_point headerStart;  // default epoch value means no header timing active
     uint32_t requestsServed{0};
-    bool shouldClose{false};      // request to close once outBuffer drains
-    bool waitingWritable{false};  // EPOLLOUT registered
+    bool shouldClose{false};                               // request to close once outBuffer drains
+    bool waitingWritable{false};                           // EPOLLOUT registered
+    bool tlsEstablished{false};                            // true once TLS handshake completed (if TLS enabled)
+    bool tlsWantRead{false};                               // last transport op indicated WANT_READ
+    bool tlsWantWrite{false};                              // last transport op indicated WANT_WRITE
+    std::string selectedAlpn;                              // negotiated ALPN protocol (if any)
+    std::string negotiatedCipher;                          // negotiated TLS cipher suite (if TLS)
+    std::string negotiatedVersion;                         // negotiated TLS protocol version string
+    std::chrono::steady_clock::time_point handshakeStart;  // TLS handshake start time (steady clock)
   };
   void eventLoop(Duration timeout);
   void refreshCachedDate();
@@ -306,8 +336,20 @@ class HttpServer {
   bool queueData(int fd, ConnStateInternal& state, const char* data, std::size_t len);
   bool queueVec(int fd, ConnStateInternal& state, const struct iovec* iov, int iovcnt);
   void flushOutbound(int fd, ConnStateInternal& state);
+
   void handleWritableClient(int fd);
+
   void closeConnection(int fd);
+
+  // Transport-aware helpers (fall back to raw fd if transport null)
+  static ssize_t transportRead(int fd, ConnStateInternal& state, char* buf, std::size_t len, bool& wantRead,
+                               bool& wantWrite);
+  static ssize_t transportWrite(int fd, ConnStateInternal& state, const char* buf, std::size_t len, bool& wantRead,
+                                bool& wantWrite);
+
+#ifdef AERONET_ENABLE_OPENSSL
+  // (TLS handshake helper moved to free function in tls-handshake module.)
+#endif
 
   struct StatsInternal {
     uint64_t totalBytesQueued{0};
@@ -315,35 +357,56 @@ class HttpServer {
     uint64_t totalBytesWrittenFlush{0};
     uint64_t deferredWriteEvents{0};
     uint64_t flushCycles{0};
+    uint64_t epollModFailures{0};
     std::size_t maxConnectionOutboundBuffer{0};
   } _stats;
 
- public:
-  struct StatsPublic {
-    uint64_t totalBytesQueued;
-    uint64_t totalBytesWrittenImmediate;
-    uint64_t totalBytesWrittenFlush;
-    uint64_t deferredWriteEvents;
-    uint64_t flushCycles;
-    std::size_t maxConnectionOutboundBuffer;
-  };
+  // Attempt an epoll_ctl MOD on the given fd; on failure logs, marks connection for close and
+  // increments failure metric. Returns true on success, false on failure.
+  // EBADF / ENOENT (race where fd already closed / removed) are logged at WARN (not ERROR).
+  static bool modWithCloseOnFailure(EventLoop* loop, int fd, uint32_t events, ConnStateInternal& st, const char* ctx,
+                                    StatsInternal& stats);
 
-  [[nodiscard]] StatsPublic stats() const {
-    return {_stats.totalBytesQueued,
-            _stats.totalBytesWrittenImmediate,
-            _stats.totalBytesWrittenFlush,
-            _stats.deferredWriteEvents,
-            _stats.flushCycles,
-            _stats.maxConnectionOutboundBuffer};
+ public:
+  [[nodiscard]] ServerStats stats() const {
+    ServerStats statsOut;
+    statsOut.totalBytesQueued = _stats.totalBytesQueued;
+    statsOut.totalBytesWrittenImmediate = _stats.totalBytesWrittenImmediate;
+    statsOut.totalBytesWrittenFlush = _stats.totalBytesWrittenFlush;
+    statsOut.deferredWriteEvents = _stats.deferredWriteEvents;
+    statsOut.flushCycles = _stats.flushCycles;
+    statsOut.epollModFailures = _stats.epollModFailures;
+    statsOut.maxConnectionOutboundBuffer = _stats.maxConnectionOutboundBuffer;
+#ifdef AERONET_ENABLE_OPENSSL
+    statsOut.tlsHandshakesSucceeded = _tlsMetrics.handshakesSucceeded;
+    statsOut.tlsClientCertPresent = _tlsMetrics.clientCertPresent;
+    statsOut.tlsAlpnStrictMismatches = _tlsMetricsExternal.alpnStrictMismatches;
+    statsOut.tlsAlpnDistribution.reserve(_tlsMetrics.alpnDistribution.size());
+    for (const auto& kv : _tlsMetrics.alpnDistribution) {
+      statsOut.tlsAlpnDistribution.emplace_back(kv.first, kv.second);
+    }
+    statsOut.tlsVersionCounts.reserve(_tlsMetrics.versionCounts.size());
+    for (const auto& kv : _tlsMetrics.versionCounts) {
+      statsOut.tlsVersionCounts.emplace_back(kv.first, kv.second);
+    }
+    statsOut.tlsCipherCounts.reserve(_tlsMetrics.cipherCounts.size());
+    for (const auto& kv : _tlsMetrics.cipherCounts) {
+      statsOut.tlsCipherCounts.emplace_back(kv.first, kv.second);
+    }
+    statsOut.tlsHandshakeDurationCount = _tlsMetrics.handshakeDurationCount;
+    statsOut.tlsHandshakeDurationTotalNs = _tlsMetrics.handshakeDurationTotalNs;
+    statsOut.tlsHandshakeDurationMaxNs = _tlsMetrics.handshakeDurationMaxNs;
+#endif
+    return statsOut;
   }
 
-  int _listenFd{-1};
+  Socket _listenSocket;  // listening socket RAII
   bool _running{false};
   RequestHandler _handler;
   StreamingHandler _streamingHandler;
   struct PathHandlerEntry {
-    uint32_t normalMethodMask{0};
-    uint32_t streamingMethodMask{0};
+    uint32_t normalMethodMask{};
+    uint32_t streamingMethodMask{};
     std::array<RequestHandler, http::kNbMethods> normalHandlers{};
     std::array<StreamingHandler, http::kNbMethods> streamingHandlers{};
   };
@@ -352,7 +415,8 @@ class HttpServer {
 
   std::unique_ptr<EventLoop> _loop;
   ServerConfig _config;
-  flat_hash_map<int, ConnStateInternal> _connStates;  // per-server connection states
+
+  flat_hash_map<Connection, ConnStateInternal, std::hash<int>, std::equal_to<>> _connStates;
 
   using RFC7231DateStr = std::array<char, 29>;
 
@@ -360,5 +424,14 @@ class HttpServer {
   TimePoint _cachedDateEpoch;  // last second-aligned timestamp used for Date header
   ParserErrorCallback _parserErrCb;
   MetricsCallback _metricsCb;
+  // TLS context holder (opaque) present only when TLS enabled and configured. Stored as void* to avoid OpenSSL includes
+  // here.
+  void* _tlsCtx{nullptr};
+#ifdef AERONET_ENABLE_OPENSSL
+  std::optional<TlsContext> _tlsCtxHolder;  // owns TLS context when enabled
+  TlsMetricsInternal _tlsMetrics;           // defined in tls-metrics.hpp
+  // External metrics struct used by TLS context for ALPN mismatch increments only.
+  TlsMetricsExternal _tlsMetricsExternal;  // shares alpnStrictMismatches with _tlsMetrics (synced in stats retrieval)
+#endif
 };
 }  // namespace aeronet

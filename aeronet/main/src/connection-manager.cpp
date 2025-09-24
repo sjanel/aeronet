@@ -1,17 +1,28 @@
-#include <netinet/in.h>
-#include <sys/epoll.h>
-#include <sys/socket.h>
 #include <sys/types.h>
-#include <unistd.h>
 
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <utility>
 
 #include "aeronet/server.hpp"
+#include "connection.hpp"
+#include "raw-chars.hpp"
+#include "transport.hpp"
+#ifdef AERONET_ENABLE_OPENSSL
+#include <openssl/ssl.h>
+#include <openssl/types.h>
+#include <openssl/x509.h>
+
+#include "tls-context.hpp"
+#include "tls-handshake.hpp"
+#include "tls-transport.hpp"  // from tls module include directory
+#endif
 #include "event-loop.hpp"
-#include "sys-utils.hpp"  // setNonBlocking, safeClose
+#include "log.hpp"
+#include "sys-utils.hpp"
 
 namespace aeronet {
 
@@ -38,8 +49,17 @@ void HttpServer::sweepIdleConnections() {
         closeThis = true;
       }
     }
+    // TLS handshake timeout (if enabled). Applies only while handshake pending.
+#ifdef AERONET_ENABLE_OPENSSL
+    if (!closeThis && _config.tlsHandshakeTimeout.count() > 0 && _config.tls && st.transport &&
+        st.handshakeStart.time_since_epoch().count() != 0 && !st.tlsEstablished && st.transport->handshakePending()) {
+      if (now - st.handshakeStart > _config.tlsHandshakeTimeout) {
+        closeThis = true;
+      }
+    }
+#endif
     if (closeThis) {
-      int connFd = it->first;
+      int connFd = it->first.fd();
       ++it;
       closeConnection(connFd);
       continue;
@@ -50,34 +70,57 @@ void HttpServer::sweepIdleConnections() {
 
 void HttpServer::acceptNewConnections() {
   while (true) {
-    sockaddr_in in_addr{};
-    socklen_t in_len = sizeof(in_addr);
-    int client_fd = ::accept(_listenFd, reinterpret_cast<sockaddr*>(&in_addr), &in_len);
-    if (client_fd < 0) {
-      int savedErr = errno;  // capture errno before any other call
-      if (savedErr == EAGAIN || savedErr == EWOULDBLOCK) {
-        break;
-      }
-      log::error("accept failed: {}", std::strerror(savedErr));
+    Connection cnx(_listenSocket);
+    if (!cnx.isOpened()) {
       break;
     }
-    if (setNonBlocking(client_fd) < 0) {
+    if (setNonBlocking(cnx.fd()) < 0) {
       int savedErr = errno;
-      log::error("setNonBlocking failed fd={} err={}: {}", client_fd, savedErr, std::strerror(savedErr));
-      ::close(client_fd);
+      log::error("setNonBlocking failed fd={} err={}: {}", cnx.fd(), savedErr, std::strerror(savedErr));
       continue;
     }
-    if (!_loop->add(client_fd, EPOLLIN | EPOLLET)) {
+    if (!_loop->add(cnx.fd(), EPOLLIN | EPOLLET)) {
       int savedErr = errno;
-      log::error("EventLoop add client failed fd={} err={}: {}", client_fd, savedErr, std::strerror(savedErr));
-      ::close(client_fd);
+      log::error("EventLoop add client failed fd={} err={}: {}", cnx.fd(), savedErr, std::strerror(savedErr));
       continue;
     }
-    auto [itState, inserted] = _connStates.emplace(client_fd, ConnStateInternal{});
+    int cnxFd = cnx.fd();
+    auto [itState, inserted] = _connStates.emplace(std::move(cnx), ConnStateInternal{});
+    ConnStateInternal& stRef = itState->second;
+#ifdef AERONET_ENABLE_OPENSSL
+    if (_tlsCtx != nullptr && _config.tls) {
+      SSL_CTX* ctx = reinterpret_cast<SSL_CTX*>(_tlsCtx);
+      SSL* ssl = SSL_new(ctx);
+      if (ssl == nullptr) {
+        continue;
+      }
+      SSL_set_fd(ssl, cnxFd);  // associate
+      SSL_set_accept_state(ssl);
+      stRef.transport = std::make_unique<TlsTransport>(ssl);
+      stRef.handshakeStart = std::chrono::steady_clock::now();
+    } else {
+      stRef.transport = std::make_unique<PlainTransport>(cnxFd);
+    }
+#else
+    stRef.transport = std::make_unique<PlainTransport>(cnxFd);
+#endif
     ConnStateInternal* pst = &itState->second;
     while (true) {
       pst->buffer.ensureAvailableCapacity(4096);
-      ssize_t bytesRead = ::read(client_fd, pst->buffer.data() + pst->buffer.size(), 4096);
+      bool wantR = false;
+      bool wantW = false;
+      ssize_t bytesRead = transportRead(cnxFd, *pst, pst->buffer.data() + pst->buffer.size(), 4096, wantR, wantW);
+      // Check for handshake completion
+      if (!pst->tlsEstablished && pst->transport && !pst->transport->handshakePending()) {
+#ifdef AERONET_ENABLE_OPENSSL
+        if (_config.tls && dynamic_cast<TlsTransport*>(pst->transport.get()) != nullptr) {
+          auto* tlsTr = static_cast<TlsTransport*>(pst->transport.get());
+          finalizeTlsHandshake(tlsTr->rawSsl(), cnxFd, _config.tls->logHandshake, pst->handshakeStart,
+                               pst->selectedAlpn, pst->negotiatedCipher, pst->negotiatedVersion, _tlsMetrics);
+        }
+#endif
+        pst->tlsEstablished = true;
+      }
       if (bytesRead > 0) {
         if (pst->headerStart.time_since_epoch().count() == 0) {
           pst->headerStart = std::chrono::steady_clock::now();
@@ -89,23 +132,31 @@ void HttpServer::acceptNewConnections() {
         continue;
       }
       if (bytesRead == 0) {
-        closeConnection(client_fd);
+        closeConnection(cnxFd);
         pst = nullptr;
         break;
       }
       if (bytesRead == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+        // Adjust epoll interest if TLS handshake needs write readiness
+        pst->tlsWantRead = wantR;
+        pst->tlsWantWrite = wantW;
+        if (wantW && !pst->waitingWritable && _loop) {
+          if (_loop->mod(cnxFd, EPOLLIN | EPOLLOUT | EPOLLET)) {
+            pst->waitingWritable = true;
+          }
+        }
         break;
       }
-      closeConnection(client_fd);
+      closeConnection(cnxFd);
       pst = nullptr;
       break;
     }
     if (pst == nullptr) {
       continue;
     }
-    bool closeNow = processRequestsOnConnection(client_fd, *pst);
+    bool closeNow = processRequestsOnConnection(cnxFd, *pst);
     if (closeNow && pst->outBuffer.empty()) {
-      closeConnection(client_fd);
+      closeConnection(cnxFd);
       pst = nullptr;
     }
   }
@@ -115,8 +166,21 @@ void HttpServer::closeConnection(int cfd) {
   if (_loop) {
     _loop->del(cfd);
   }
-  safeClose(cfd, "connFd(closeConnection)");
-  _connStates.erase(cfd);
+  auto it = _connStates.find(cfd);
+  if (it != _connStates.end()) {
+    // Best-effort graceful TLS shutdown
+#ifdef AERONET_ENABLE_OPENSSL
+    if (_config.tls) {
+      if (auto* tlsTr = dynamic_cast<TlsTransport*>(it->second.transport.get())) {
+        tlsTr->shutdown();
+      }
+      // Propagate ALPN mismatch counter from external struct
+      _tlsMetrics.alpnStrictMismatches = _tlsMetricsExternal.alpnStrictMismatches;  // capture latest
+    }
+#endif
+    it->second.transport.reset();
+    _connStates.erase(it);
+  }
 }
 
 void HttpServer::handleReadableClient(int fd) {
@@ -129,9 +193,28 @@ void HttpServer::handleReadableClient(int fd) {
   bool closeCnx = false;
   while (true) {
     state.buffer.ensureAvailableCapacity(4096);
-    ssize_t count = ::read(fd, state.buffer.data() + state.buffer.size(), 4096);
+    bool wantR = false;
+    bool wantW = false;
+    ssize_t count = transportRead(fd, state, state.buffer.data() + state.buffer.size(), 4096, wantR, wantW);
+    if (!state.tlsEstablished && state.transport && !state.transport->handshakePending()) {
+#ifdef AERONET_ENABLE_OPENSSL
+      if (_config.tls && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
+        auto* tlsTr = static_cast<TlsTransport*>(state.transport.get());
+        finalizeTlsHandshake(tlsTr->rawSsl(), fd, _config.tls->logHandshake, state.handshakeStart, state.selectedAlpn,
+                             state.negotiatedCipher, state.negotiatedVersion, _tlsMetrics);
+      }
+#endif
+      state.tlsEstablished = true;
+    }
     if (count < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        state.tlsWantRead = wantR;
+        state.tlsWantWrite = wantW;
+        if (wantW && !state.waitingWritable && _loop) {
+          if (_loop->mod(fd, EPOLLIN | EPOLLOUT | EPOLLET)) {
+            state.waitingWritable = true;
+          }
+        }
         break;
       }
       log::error("read failed: {}", std::strerror(errno));

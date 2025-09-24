@@ -41,6 +41,12 @@ function(set_project_properties name)
       endif()
     endif()
   endif()
+  if(AERONET_ENABLE_OPENSSL)
+    # Expose compile definition so core can gate TLS logic, but do not link OpenSSL here.
+    # Only the dedicated aeronet_tls module should link against OpenSSL to contain dependency surface.
+    target_compile_definitions(${name} PUBLIC AERONET_ENABLE_OPENSSL)
+  endif()
+  target_compile_definitions(${name} PUBLIC AERONET_PROJECT_VERSION="${AERONET_PROJECT_VERSION}")
 endfunction()
 
 function(add_project_executable name)

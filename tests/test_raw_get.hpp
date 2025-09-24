@@ -9,13 +9,16 @@
 #include <string>
 #include <string_view>
 
+#include "socket.hpp"
+
 // Tiny shared raw GET helper for tests that still use ad-hoc sockets.
 // Provides ASSERT-based hard failures instead of returning empty strings on errors.
 // For richer scenarios (timeouts, multi-request, streaming) prefer test_http_client.hpp utilities.
 namespace test_helpers {
 
 inline void rawGet(uint16_t port, std::string_view path, std::string& out, std::string_view host = "127.0.0.1") {
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  aeronet::Socket socket(aeronet::Socket::Type::STREAM);
+  int fd = socket.fd();
   ASSERT_GE(fd, 0) << "socket() failed: " << errno;
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -38,7 +41,6 @@ inline void rawGet(uint16_t port, std::string_view path, std::string& out, std::
       break;
     }
   }
-  ::close(fd);
 }
 
 }  // namespace test_helpers
