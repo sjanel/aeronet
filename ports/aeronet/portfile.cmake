@@ -17,12 +17,21 @@ else()
         message(WARNING "[aeronet] Tag ${AERONET_VCPKG_TAG} not found upstream; falling back to local source tree.")
         set(SOURCE_PATH "${CMAKE_CURRENT_LIST_DIR}/../..")
     else()
-        vcpkg_from_git(
-            OUT_SOURCE_PATH SOURCE_PATH
-            URL https://github.com/sjanel/aeronet.git
-            REF ${AERONET_VCPKG_TAG}
-            FETCH_REF ${AERONET_VCPKG_TAG}
-        )
+        # git ls-remote may return one or two lines (annotated tag adds a ^{} deref line). Take the last line and extract the commit SHA.
+        string(REPLACE "\n" ";" AERONET_TAG_LINES "${AERONET_TAG_QUERY}")
+        list(GET AERONET_TAG_LINES -1 AERONET_TAG_LAST)
+        string(REGEX MATCH "^[0-9a-fA-F]+" AERONET_TAG_COMMIT "${AERONET_TAG_LAST}")
+        if(NOT AERONET_TAG_COMMIT)
+            message(WARNING "[aeronet] Could not parse commit for tag ${AERONET_VCPKG_TAG}; falling back to local source tree.")
+            set(SOURCE_PATH "${CMAKE_CURRENT_LIST_DIR}/../..")
+        else()
+            message(STATUS "[aeronet] Using commit ${AERONET_TAG_COMMIT} for tag ${AERONET_VCPKG_TAG}")
+            vcpkg_from_git(
+                OUT_SOURCE_PATH SOURCE_PATH
+                URL https://github.com/sjanel/aeronet.git
+                REF ${AERONET_TAG_COMMIT}
+            )
+        endif()
     endif()
 endif()
 
