@@ -15,13 +15,10 @@ target_include_directories(aeronet
 )
 
 target_link_libraries(aeronet
-    PUBLIC aeronet_tech
+    PUBLIC aeronet_tech aeronet_sys aeronet_http
 )
 
-target_link_libraries(aeronet
-    PUBLIC aeronet_http
-)
+if(AERONET_ENABLE_OPENSSL)
+    target_link_libraries(aeronet PUBLIC aeronet_tls)
+endif()
 
-target_compile_definitions(aeronet
-    PUBLIC AERONET_VERSION="${PROJECT_VERSION}"
-)

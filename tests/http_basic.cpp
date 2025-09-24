@@ -1,16 +1,14 @@
 #include <gtest/gtest.h>
 
-#include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <string>
-#include <thread>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
 #include "test_http_client.hpp"
+#include "test_server_fixture.hpp"
 
 using namespace std::chrono_literals;
 
@@ -27,10 +25,8 @@ std::string httpGet(uint16_t port, const std::string& target) {
 }  // namespace
 
 TEST(HttpBasic, SimpleGet) {
-  std::atomic_bool stop{false};
-  aeronet::HttpServer server(aeronet::ServerConfig{});  // ephemeral
-  auto port = server.port();
-  server.setHandler([](const aeronet::HttpRequest& req) {
+  TestServer ts(aeronet::ServerConfig{});
+  ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     auto testHeaderIt = req.headers.find("X-Test");
     resp.body = std::string("You requested: ") + std::string(req.target);
@@ -40,11 +36,8 @@ TEST(HttpBasic, SimpleGet) {
     }
     return resp;
   });
-  std::jthread th([&] { server.runUntil([&] { return stop.load(); }, 50ms); });
-  // Give server time to start
-  std::this_thread::sleep_for(100ms);
-  std::string resp = httpGet(port, "/abc");
-  stop.store(true);
+  std::string resp = httpGet(ts.port(), "/abc");
+  ts.stop();
   ASSERT_FALSE(resp.empty());
   ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));
   ASSERT_NE(std::string::npos, resp.find("You requested: /abc"));

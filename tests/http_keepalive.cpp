@@ -1,32 +1,32 @@
 #include <gtest/gtest.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 #include <cerrno>
-#include <chrono>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
+#include "socket.hpp"
+#include "test_server_fixture.hpp"
 
 using namespace std::chrono_literals;
 
 namespace {
 std::string sendRaw(int fd, const std::string& data) {
-  ssize_t sent = ::send(fd, data.data(), data.size(), 0);
-  if (sent != static_cast<ssize_t>(data.size())) {
+  auto sent = ::send(fd, data.data(), data.size(), 0);
+  if (std::cmp_not_equal(sent, data.size())) {
     return {};
   }
   char buf[4096];
   std::string out;
   // simple read with small timeout loop
   for (int i = 0; i < 50; ++i) {
-    ssize_t bytes = ::recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
+    auto bytes = ::recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
     if (bytes > 0) {
       out.append(buf, buf + bytes);
     } else if (bytes == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
@@ -41,18 +41,16 @@ std::string sendRaw(int fd, const std::string& data) {
 }  // namespace
 
 TEST(HttpKeepAlive, MultipleSequentialRequests) {
-  aeronet::HttpServer server(aeronet::ServerConfig{});
-  auto port = server.port();
-  server.setHandler([](const aeronet::HttpRequest& req) {
+  TestServer ts(aeronet::ServerConfig{});
+  auto port = ts.port();
+  ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = std::string("ECHO") + std::string(req.target);
     return resp;
   });
-  std::jthread th([&] { server.runUntil([] { return false; }, 50ms); });
-  std::this_thread::sleep_for(100ms);
 
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  ASSERT_GE(fd, 0);
+  aeronet::Socket fdSock(aeronet::Socket::Type::STREAM);
+  int fd = fdSock.fd();
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
@@ -68,9 +66,8 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
   std::string resp2 = sendRaw(fd, req2);
   EXPECT_NE(std::string::npos, resp2.find("ECHO/two"));
 
-  ::close(fd);
-  server.stop();
-  th.join();
+  fdSock.close();
+  ts.stop();
 }
 
 TEST(HttpLimits, RejectHugeHeaders) {
@@ -78,18 +75,16 @@ TEST(HttpLimits, RejectHugeHeaders) {
   cfg.maxHeaderBytes = 128;
   cfg.enableKeepAlive = false;
   cfg.port = 0;
-  aeronet::HttpServer server(cfg);
-  auto port = server.port();
-  server.setHandler([](const aeronet::HttpRequest&) {
+  TestServer ts(cfg);
+  auto port = ts.port();
+  ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body = "OK";
     return resp;
   });
-  std::jthread th([&] { server.runUntil([] { return false; }, 50ms); });
-  std::this_thread::sleep_for(100ms);
 
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  ASSERT_GE(fd, 0);
+  aeronet::Socket fdSock2(aeronet::Socket::Type::STREAM);
+  int fd = fdSock2.fd();
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
@@ -100,7 +95,6 @@ TEST(HttpLimits, RejectHugeHeaders) {
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nX-Big: " + bigHeader + "\r\n\r\n";
   std::string resp = sendRaw(fd, req);
   EXPECT_NE(std::string::npos, resp.find("431"));
-  ::close(fd);
-  server.stop();
-  th.join();
+  fdSock2.close();
+  ts.stop();
 }

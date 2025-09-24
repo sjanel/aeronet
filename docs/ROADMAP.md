@@ -36,7 +36,9 @@ Legend:
 
 | Status | Feature | Summary | Notes |
 |--------|---------|---------|-------|
-| ⏳ | TLS Termination (OpenSSL) | Basic TLS handshake + read/write | Increases complexity significantly |
+| ✅ | TLS Termination (OpenSSL) - Phase 1 | Optional build, basic handshake + GET test | Isolated module, transport abstraction in place |
+| ✅ | TLS Metrics & Observability (Phase 1.5) | Cipher/version, ALPN selection, mismatch counter, handshake logging | Per-server metrics (no globals) |
+| ✅ | TLS Handshake Enhancements | Min/max version, handshake timeout, graceful shutdown | New config builders + duration metrics |
 | ⏳ | Fuzz Harness Integration | libFuzzer target for parser | Build optional, sanitizer flags |
 | ⏳ | Outgoing Streaming Compression | Combine streaming + compression | Requires chunked writer |
 | ⏳ | Routing / Middleware Layer | Lightweight dispatch helpers | Optional layer atop core |
@@ -149,6 +151,94 @@ Phased approach:
 | Trailers | Map contains trailers, limit enforcement |
 | Metrics | Accumulate counts across keep-alive reuse |
 | TLS | Handshake + basic GET with self-signed cert |
+
+## TLS Roadmap (Detailed)
+
+Status Legend Recap: ✅ done, 🛠 in progress, ⏳ planned, ❄ deferred
+
+### Phase 1 (Implemented ✅)
+
+- Optional build flag `AERONET_ENABLE_OPENSSL`; core headers free of OpenSSL types.
+- Transport abstraction (`ITransport`, `PlainTransport`, `TlsTransport`).
+- Basic server-side handshake using OpenSSL with lazy negotiation on first IO.
+- Self-signed ephemeral cert integration test (`http_tls_basic`).
+- Clean teardown ordering (no ASAN leaks) and graceful SSL_shutdown best-effort.
+
+### Phase 2 (Robustness & Event Loop Integration)
+
+1. Correct EPOLL re-registration on TLS WANT_* events (partially handled; needs audit for write side fairness)
+2. TLS partial write & unified buffering (currently plain path stronger; align semantics)
+3. Refined backpressure for TLS WANT_WRITE (throttle earlier vs large queue growth)
+4. Failure categorization metrics (alert vs timeout vs EOF)
+
+### Phase 3 (Security Hardening)
+
+- Enforce secure defaults (now configurable min/max present; default policy tightening TBD)
+- Curate cipher suites: AES-GCM + CHACHA20-POLY1305; remove legacy / CBC by default (current: user-provided)
+- Explicit TLS 1.3 cipher suites optional field (future) + validation
+- Enforce strong key sizes; reject RSA < 2048.
+- Disable compression (defense vs CRIME) explicitly via options (should be off by default).
+- Add structured error reporting mapping OpenSSL error codes / alerts -> internal enums.
+
+### Phase 4 (Feature Expansion)
+
+- Client Certificate Authentication (mTLS):
+  - Config: CA file/dir, verify depth, optional enforcement flag.
+  - Expose verification result to handler (e.g., peer subject) or set 4xx on failure.
+- ALPN Support: (DONE) foundation laid for future HTTP/2
+- Session Resumption:
+  - Enable session tickets; rotating ticket key (time-based) or disable by default.
+  - Metrics: resumed vs full handshakes.
+- Hot Certificate Reload:
+  - Atomic swap of `SSL_CTX` created off-thread; reference counting with shared_ptr.
+
+### Phase 5 (Advanced Capabilities / Nice-to-Have ❄)
+
+- OCSP Stapling (configurable staple file / refresh strategy).
+- 0-RTT (TLS 1.3 early data) – only after idempotency safeguards.
+- Key logging hook (for debugging) behind explicit insecure flag.
+- Curve preference and explicit group selection.
+- Session cache statistics & custom callbacks.
+
+### Phase 6 (Observability & Tooling)
+
+- Metrics: (PARTIAL) success, client cert presence, ALPN mismatch, distributions, durations implemented; remaining: failures by category, active TLS counts, resume stats.
+- Logging: (PARTIAL) handshake success line implemented; add failure reason path.
+- Tracing hooks: optional compile-time enable for per-handshake spans.
+
+### Testing Matrix Additions
+
+| Category | Test Cases |
+|----------|------------|
+| Negative Handshakes | Invalid cert path, mismatched key, expired cert, unsupported protocol version |
+| mTLS | Required client cert missing, invalid CA, successful mutual auth |
+| ALPN | Client offers [h2, http/1.1]; server selects http/1.1 |
+| Session Resumption | Full then resumed handshake (check `SSL_session_reused`) |
+| Backpressure | Force small SO_SNDBUF; verify no busy loop with WANT_WRITE |
+| Stress | N concurrent TLS clients, large payload streaming & rapid connect/disconnect |
+| Hot Reload | Swap cert mid-run; new connections use new chain, existing unaffected |
+
+### Open Implementation Tasks (Updated Snapshot)
+
+- [ ] WANT_{READ,WRITE} epoll path audit (optimize removal of EPOLLOUT after TLS flush)
+- [ ] TLS partial write alignment with plain transport buffering
+- [ ] Failure metrics (timeouts vs alerts vs peer close)
+- [ ] Cipher suite policy helper (secure default set if user omits list)
+- [ ] TLS 1.3 cipher suites explicit config (optional)
+- [ ] Session tickets (enable/disable + resumed handshake metrics)
+- [ ] SNI multi-cert / context switching
+- [ ] Hot cert/key reload (atomic swap)
+- [ ] Active TLS connection gauge
+- [ ] Handshake p50/p95 latency snapshot (histogram or rolling window)
+- [ ] HTTP/2 prototype (leveraging existing ALPN & transport abstraction)
+- [ ] Revocation / OCSP stapling support
+
+### Notes
+
+- Keep OpenSSL usage fully isolated inside `tls/` to maintain optional dependency nature.
+- Avoid scattering `#ifdef AERONET_ENABLE_OPENSSL` outside TLS boundary except for narrow integration points.
+- Future HTTP/2 work will depend on ALPN; design ALPN config with extensibility in mind.
+
 
 ## Open Questions
 

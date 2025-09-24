@@ -2,8 +2,6 @@
 #include <gtest/gtest.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 #include <chrono>
 #include <cstddef>
@@ -14,6 +12,8 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/server-config.hpp"
 #include "aeronet/server.hpp"
+#include "socket.hpp"
+#include "test_server_fixture.hpp"
 
 using namespace aeronet;
 
@@ -22,9 +22,9 @@ TEST(StreamingBackpressure, LargeBodyQueues) {
   cfg.port = 0;
   cfg.enableKeepAlive = false;                                       // simplicity
   cfg.maxOutboundBufferBytes = static_cast<std::size_t>(64 * 1024);  // assume default maybe larger
-  HttpServer server(cfg);
+  TestServer ts(cfg);
   std::size_t total = static_cast<std::size_t>(512 * 1024);  // 512 KB
-  server.setStreamingHandler([&]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+  ts.server.setStreamingHandler([&]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
     writer.setStatus(200, "OK");
     std::string chunk(8192, 'x');
     std::size_t sent = 0;
@@ -34,27 +34,26 @@ TEST(StreamingBackpressure, LargeBodyQueues) {
     }
     writer.end();
   });
-  std::jthread th([&] { server.run(); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  auto port = ts.port();
+  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
+  int fd = sock.fd();
   ASSERT_GE(fd, 0);
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
-  addr.sin_port = htons(server.port());
+  addr.sin_port = htons(port);
   inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
   ASSERT_EQ(::connect(fd, (sockaddr*)&addr, sizeof(addr)), 0);
   std::string req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
-  ASSERT_EQ(::send(fd, req.data(), req.size(), 0), (ssize_t)req.size());
+  ASSERT_EQ(::send(fd, req.data(), req.size(), 0), req.size());
   // just read some bytes to allow flush cycles
   char buf[4096];
   for (int i = 0; i < 10; i++) {
-    ssize_t rcv = ::recv(fd, buf, sizeof(buf), 0);
+    auto rcv = ::recv(fd, buf, sizeof(buf), 0);
     if (rcv <= 0) {
       // Connection might close early; break to avoid ASSERT on expected close after full send.
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
-  ::close(fd);
-  server.stop();
+  ts.stop();
 }

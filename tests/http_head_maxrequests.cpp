@@ -23,7 +23,8 @@ TEST(HttpHead, MaxRequestsApplied) {
   });
   std::jthread th([&] { server.run(std::chrono::milliseconds(30)); });
   std::this_thread::sleep_for(std::chrono::milliseconds(60));
-  int fd = tu_connect(port);
+  ClientConnection clientConnection(port);
+  int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   // 4 HEAD requests pipelined; only 3 responses expected then close
   std::string reqs;
@@ -33,7 +34,6 @@ TEST(HttpHead, MaxRequestsApplied) {
   tu_sendAll(fd, reqs);
   std::string resp = tu_recvUntilClosed(fd);
   server.stop();
-  th.join();
   int statusCount = 0;
   std::size_t pos = 0;
   while ((pos = resp.find("HTTP/1.1 200", pos)) != std::string::npos) {

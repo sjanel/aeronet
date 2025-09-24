@@ -1,3 +1,5 @@
 add_subdirectory(tech)
+add_subdirectory(sys)
+add_subdirectory(objects)
 add_subdirectory(http)
 add_subdirectory(main)

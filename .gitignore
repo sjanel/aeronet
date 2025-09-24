@@ -15,6 +15,7 @@ cmake-install.cmake
 Makefile
 Testing/
 CTestTestfile.cmake
+CMakeUserPresets.json
 
 # IDE / editor
 .idea/
@@ -29,3 +30,5 @@ CTestTestfile.cmake
 # Logs / misc
 *.log
 
+vcpkg
+.venv
