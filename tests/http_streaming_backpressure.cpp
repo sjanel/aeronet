@@ -10,15 +10,15 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "socket.hpp"
 #include "test_server_fixture.hpp"
 
 using namespace aeronet;
 
 TEST(StreamingBackpressure, LargeBodyQueues) {
-  ServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.port = 0;
   cfg.enableKeepAlive = false;                                       // simplicity
   cfg.maxOutboundBufferBytes = static_cast<std::size_t>(64 * 1024);  // assume default maybe larger

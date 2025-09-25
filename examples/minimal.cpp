@@ -6,8 +6,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 
 namespace {
 std::atomic_bool gStop{false};
@@ -21,7 +21,7 @@ int main(int argc, char **argv) {
     port = static_cast<uint16_t>(std::stoi(argv[1]));
   }
 
-  aeronet::HttpServer server(aeronet::ServerConfig{}.withPort(port));
+  aeronet::HttpServer server(aeronet::HttpServerConfig{}.withPort(port));
   server.setHandler([](const aeronet::HttpRequest &req) {
     aeronet::HttpResponse resp;
     resp.body = std::string("Hello from aeronet minimal server! You requested ") + std::string(req.target) + '\n';

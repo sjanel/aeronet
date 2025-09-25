@@ -5,7 +5,7 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "test_server_fixture.hpp"  // reuse generic TestServer with manual config
 #include "test_temp_file.hpp"
 #include "test_tls_client.hpp"
@@ -21,7 +21,7 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
   ASSERT_TRUE(certFile.valid());
   ASSERT_TRUE(keyFile.valid());
 
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.withTlsCertKey(certFile.path(), keyFile.path());  // file-based path (not memory)
   cfg.withTlsAlpnProtocols({"http/1.1"});
   // Use plain TestServer since we manually set config

@@ -10,6 +10,6 @@
 
 namespace aeronet {
 
-RawChars buildSimpleError(http::StatusCode status, std::string_view reason, std::string_view date, bool closeConn);
+RawChars BuildSimpleError(http::StatusCode status, std::string_view reason, std::string_view date, bool closeConn);
 
 }  // namespace aeronet

@@ -6,6 +6,6 @@
 
 namespace aeronet {
 
-using RawChars = RawBytes<char, std::string_view>;
+using RawChars = RawBytesImpl<char, std::string_view>;
 
 }

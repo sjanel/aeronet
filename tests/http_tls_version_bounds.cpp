@@ -5,7 +5,7 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
 
@@ -13,8 +13,9 @@ TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
   std::string capturedVersion;
   aeronet::ServerStats statsAfter{};
   {
-    TlsTestServer ts({"http/1.1"},
-                     [](aeronet::ServerConfig& cfg) { cfg.withTlsMinVersion("TLS1.2").withTlsMaxVersion("TLS1.2"); });
+    TlsTestServer ts({"http/1.1"}, [](aeronet::HttpServerConfig& cfg) {
+      cfg.withTlsMinVersion("TLS1.2").withTlsMaxVersion("TLS1.2");
+    });
     auto port = ts.port();
     ts.setHandler([&](const aeronet::HttpRequest& req) {
       if (!req.tlsVersion.empty()) {
@@ -52,6 +53,6 @@ TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
 TEST(HttpTlsVersionBounds, InvalidMinVersionThrows) {
   // Provide invalid version string -> expect construction failure.
   EXPECT_THROW(
-      { TlsTestServer ts({}, [](aeronet::ServerConfig& cfg) { cfg.withTlsMinVersion("TLS1.1"); }); },
+      { TlsTestServer ts({}, [](aeronet::HttpServerConfig& cfg) { cfg.withTlsMinVersion("TLS1.1"); }); },
       std::runtime_error);
 }

@@ -1,9 +1,9 @@
 #pragma once
 
 #include <memory>
-#include <string>
 
 #include "aeronet/tls-config.hpp"
+#include "raw-bytes.hpp"
 
 // Forward declare OpenSSL context struct (avoid pulling heavy headers into public interface).
 struct ssl_ctx_st;  // SSL_CTX
@@ -17,7 +17,7 @@ struct TlsMetricsExternal {
 
 // Forward declare the OpenSSL free function (signature matches OpenSSL); avoids including heavy headers here.
 
-// RAII wrapper around SSL_CTX with minimal configuration derived from ServerConfig::TLSConfig.
+// RAII wrapper around SSL_CTX with minimal configuration derived from HttpServerConfig::TLSConfig.
 class TlsContext {
  public:
   // Creates a new TLSContext
@@ -32,12 +32,11 @@ class TlsContext {
 
   ~TlsContext();
 
-  [[nodiscard]] bool valid() const noexcept { return _ctx != nullptr; }
   [[nodiscard]] void* raw() const noexcept { return reinterpret_cast<void*>(_ctx.get()); }
 
  private:
-  struct AlpnData {  // private implementation detail
-    std::string wire;
+  struct AlpnData {  // private implementation detail (binary length-prefixed ALPN protocol list per RFC 7301)
+    RawBytes wire;   // [len][bytes]...[len][bytes]
     bool mustMatch{false};
     TlsMetricsExternal* metrics{nullptr};
   };
@@ -45,9 +44,11 @@ class TlsContext {
     void operator()(ssl_ctx_st* ctxPtr) const noexcept;
   };
   using CtxPtr = std::unique_ptr<ssl_ctx_st, CtxDel>;
-  explicit TlsContext(CtxPtr ctx, std::unique_ptr<AlpnData> alpn);
-  CtxPtr _ctx;                          // empty by default
-  std::unique_ptr<AlpnData> _alpnData;  // nullptr if ALPN disabled
+
+  CtxPtr _ctx;
+  // alpnData is a unique_ptr because the pointer value should stay valid as passed to SSL_CTX_set_alpn_select_cb
+  // callback. If TlsContext is moved around, not having a unique_ptr would invalid the pointer passed to the callback
+  std::unique_ptr<AlpnData> _alpnData;
 };
 
 }  // namespace aeronet

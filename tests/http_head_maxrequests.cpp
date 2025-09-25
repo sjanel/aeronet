@@ -7,12 +7,12 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "test_util.hpp"
 
 TEST(HttpHead, MaxRequestsApplied) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(3);
   aeronet::HttpServer server(cfg);
   auto port = server.port();
@@ -21,7 +21,7 @@ TEST(HttpHead, MaxRequestsApplied) {
     resp.body = "IGNORED";
     return resp;
   });
-  std::jthread th([&] { server.run(std::chrono::milliseconds(30)); });
+  std::jthread th([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(60));
   ClientConnection clientConnection(port);
   int fd = clientConnection.fd();

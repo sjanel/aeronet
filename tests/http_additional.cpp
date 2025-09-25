@@ -4,8 +4,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "test_util.hpp"
 
 using namespace std::chrono_literals;  // retained for potential future literal use
@@ -17,7 +17,7 @@ using namespace std::chrono_literals;  // retained for potential future literal 
 #include "test_server_fixture.hpp"
 
 TEST(HttpPipeline, TwoRequestsBackToBack) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body = std::string("E:") + std::string(req.target);
@@ -36,7 +36,7 @@ TEST(HttpPipeline, TwoRequestsBackToBack) {
 }
 
 TEST(HttpExpect, ZeroLengthNo100) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body = "Z";
@@ -53,7 +53,7 @@ TEST(HttpExpect, ZeroLengthNo100) {
 }
 
 TEST(HttpMaxRequests, CloseAfterLimit) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(2);
   TestServer ts(cfg);
   ts.server.setHandler([](const aeronet::HttpRequest&) {
@@ -73,7 +73,7 @@ TEST(HttpMaxRequests, CloseAfterLimit) {
 }
 
 TEST(HttpPipeline, SecondMalformedAfterSuccess) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body = "OK";
@@ -89,7 +89,7 @@ TEST(HttpPipeline, SecondMalformedAfterSuccess) {
 }
 
 TEST(HttpContentLength, ExplicitTooLarge413) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.withMaxBodyBytes(10);
   TestServer ts(cfg);
   ts.server.setHandler([](const aeronet::HttpRequest&) {

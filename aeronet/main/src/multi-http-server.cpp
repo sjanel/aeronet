@@ -10,8 +10,8 @@
 #include <thread>
 #include <utility>
 
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
 #include "invalid_argument_exception.hpp"
@@ -19,16 +19,16 @@
 
 namespace aeronet {
 
-MultiHttpServer::MultiHttpServer(ServerConfig cfg, uint32_t threadCount)
+MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, uint32_t threadCount)
     : _baseConfig(std::move(cfg)), _threadCount(threadCount) {
   if (_threadCount == 0) {
     throw invalid_argument("MultiHttpServer: threadCount must be >= 1");
   }
 }
 
-MultiHttpServer::MultiHttpServer(ServerConfig cfg)
+MultiHttpServer::MultiHttpServer(HttpServerConfig cfg)
     : MultiHttpServer(
-          ServerConfig(std::move(cfg)),  // make a copy for base storage
+          HttpServerConfig(std::move(cfg)),  // make a copy for base storage
           []() {
             auto hc = std::thread::hardware_concurrency();
             if (hc == 0) {
@@ -133,20 +133,18 @@ void MultiHttpServer::start() {
 
   // Strategy for port resolution:
   //  - If user requested port 0, launch the first server, capture its assigned port, then
-  //    propagate that concrete port to subsequent ServerConfig objects.
+  //    propagate that concrete port to subsequent HttpServerConfig objects.
   //  - Otherwise use the user-specified port directly.
   uint16_t desiredPort = _baseConfig.port;
 
   for (std::size_t threadPos = 0; threadPos < _threadCount; ++threadPos) {
-    ServerConfig cfg = _baseConfig;  // copy
+    HttpServerConfig cfg = _baseConfig;  // copy
     if (threadPos > 0) {
       // For subsequent servers, ensure we reuse the resolved port.
       cfg.port = _resolvedPort == 0 ? desiredPort : _resolvedPort;
     }
     HttpServer& srv = _servers.emplace_back(cfg);
-    if (_parserErrCb) {
-      srv.setParserErrorCallback(_parserErrCb);
-    }
+    srv.setParserErrorCallback(_parserErrCb);
     if (_globalHandler) {
       srv.setHandler(*_globalHandler);
     } else {

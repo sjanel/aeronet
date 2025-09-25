@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <cstddef>
+#include <string_view>
 
 namespace aeronet {
 
@@ -16,7 +17,7 @@ class ITransport {
   virtual ssize_t read(char* buf, std::size_t len, bool& wantRead, bool& wantWrite) = 0;
 
   // Non-blocking write. Returns bytes written (>0), 0 no progress (treat like EAGAIN), -1 fatal error.
-  virtual ssize_t write(const char* buf, std::size_t len, bool& wantRead, bool& wantWrite) = 0;
+  virtual ssize_t write(std::string_view data, bool& wantRead, bool& wantWrite) = 0;
 
   [[nodiscard]] virtual bool handshakePending() const noexcept { return false; }
 };
@@ -31,9 +32,9 @@ class PlainTransport : public ITransport {
     return ::read(_fd, buf, len);
   }
 
-  ssize_t write(const char* buf, std::size_t len, bool& wantRead, bool& wantWrite) override {
+  ssize_t write(std::string_view data, bool& wantRead, bool& wantWrite) override {
     wantRead = wantWrite = false;
-    return ::write(_fd, buf, len);
+    return ::write(_fd, data.data(), data.size());
   }
 
  private:

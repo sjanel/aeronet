@@ -27,9 +27,8 @@ int BaseFd::close() noexcept {
     // already closed
     return _fd;
   }
-  int rc;
   while (true) {
-    rc = ::close(_fd);
+    auto rc = ::close(_fd);
     if (rc == 0) {
       // success
       return _fd = -1;

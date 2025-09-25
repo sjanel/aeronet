@@ -6,8 +6,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "test_server_fixture.hpp"
 #include "test_util.hpp"
 
@@ -33,7 +33,7 @@ void raw(auto port, const std::string& verb, std::string& out) {
 }  // namespace
 
 TEST(HttpStreamingHeadContentLength, HeadSuppressesBodyKeepsCL) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(2);
   TestServer ts(cfg);
   ts.server.setStreamingHandler(

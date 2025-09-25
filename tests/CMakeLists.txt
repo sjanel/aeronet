@@ -59,6 +59,9 @@ aeronet_http_test(http_streaming_set_header http_streaming_set_header.cpp)
 # Mixed streaming + normal handler tests (Phase 2)
 aeronet_http_test(http_streaming_mixed http_streaming_mixed.cpp)
 
+# Async wrapper test
+aeronet_http_test(async_http_server async_http_server.cpp)
+
 aeronet_http_test(http_url_decoding_additional http_url_decoding_additional.cpp)
 
 aeronet_http_test(http_url_decoding http_url_decoding.cpp)
@@ -71,6 +74,7 @@ if (AERONET_ENABLE_OPENSSL)
 	aeronet_http_test(http_tls_negative http_tls_negative.cpp)
 	aeronet_http_test(http_tls_mtls_alpn http_tls_mtls_alpn.cpp)
 	aeronet_http_test(http_tls_alpn_mismatch http_tls_alpn_mismatch.cpp)
+	aeronet_http_test(http_tls_move_alpn http_tls_move_alpn.cpp)
 	aeronet_http_test(http_tls_cipher_version http_tls_cipher_version.cpp)
 	aeronet_http_test(http_tls_mtls_metrics http_tls_mtls_metrics.cpp)
 	aeronet_http_test(http_tls_file_certkey http_tls_file_certkey.cpp)
@@ -111,6 +115,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_streaming_head_content_length.cpp
 	http_streaming_set_header.cpp
 	http_streaming_mixed.cpp
+	async_http_server.cpp
 	http_url_decoding_additional.cpp
 	http_url_decoding.cpp
 	multi_http_server_convenience_constructors.cpp
@@ -127,6 +132,7 @@ if (AERONET_ENABLE_OPENSSL)
 		http_tls_mtls_alpn.cpp
 		http_tls_alpn_mismatch.cpp)
 	  list(APPEND REGISTERED_TEST_SOURCES_REL http_tls_cipher_version.cpp)
+		list(APPEND REGISTERED_TEST_SOURCES_REL http_tls_move_alpn.cpp)
 		list(APPEND REGISTERED_TEST_SOURCES_REL http_tls_mtls_metrics.cpp)
 		list(APPEND REGISTERED_TEST_SOURCES_REL http_tls_file_certkey.cpp)
     list(APPEND REGISTERED_TEST_SOURCES_REL http_tls_request_client_cert_optional.cpp)

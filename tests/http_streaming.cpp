@@ -5,8 +5,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "test_http_client.hpp"
 #include "test_server_fixture.hpp"
 
@@ -27,7 +27,7 @@ std::string blockingFetch(uint16_t port, const std::string& verb, const std::str
 }  // namespace
 
 TEST(HttpStreaming, ChunkedSimple) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setStreamingHandler(
       []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
@@ -47,7 +47,7 @@ TEST(HttpStreaming, ChunkedSimple) {
 }
 
 TEST(HttpStreaming, HeadSuppressedBody) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setStreamingHandler(
       []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {

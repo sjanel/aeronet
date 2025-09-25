@@ -4,7 +4,7 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
 #include "test_tls_helper.hpp"
@@ -15,7 +15,7 @@ TEST(HttpTlsMtlsMetrics, ClientCertPresenceIncrementsMetric) {
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
   {
-    TlsTestServer ts({"http/1.1"}, [&](aeronet::ServerConfig& cfg) {
+    TlsTestServer ts({"http/1.1"}, [&](aeronet::HttpServerConfig& cfg) {
       cfg.withTlsRequireClientCert(true).withTlsAddTrustedClientCert(certKey.first);
     });
     auto port = ts.port();
