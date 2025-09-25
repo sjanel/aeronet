@@ -10,7 +10,7 @@
 #include <system_error>
 #include <utility>
 
-#include "aeronet/server.hpp"
+#include "aeronet/http-server.hpp"
 #include "http-constants.hpp"
 #include "http-status-build.hpp"
 #include "http-status-code.hpp"
@@ -102,9 +102,9 @@ void HttpResponseWriter::emitChunk(std::string_view data) {
   *res.ptr++ = '\n';
   size_t sizeHeaderLen = static_cast<size_t>(res.ptr - sizeLine);
   RawChars chunk(sizeHeaderLen + data.size() + 2);
-  chunk.append(sizeLine, sizeHeaderLen);
-  chunk.append(data.data(), data.size());
-  chunk.append("\r\n", 2);
+  chunk.unchecked_append(sizeLine, sizeHeaderLen);
+  chunk.unchecked_append(data);
+  chunk.unchecked_append("\r\n", 2);
   if (!enqueue(chunk)) {
     _failed = true;
     _ended = true;
@@ -168,7 +168,7 @@ bool HttpResponseWriter::enqueue(std::string_view data) {
     return false;
   }
   auto& st = it->second;
-  bool ok = _server->queueData(_fd, st, data.data(), data.size());
+  bool ok = _server->queueData(_fd, st, data);
   return ok && !st.shouldClose;
 }
 

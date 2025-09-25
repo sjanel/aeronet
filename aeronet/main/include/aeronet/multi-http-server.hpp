@@ -5,9 +5,9 @@
 #include <string>
 #include <thread>
 
-#include "aeronet/server-config.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "aeronet/server-stats.hpp"
-#include "aeronet/server.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
 #include "vector.hpp"
@@ -43,7 +43,7 @@ class MultiHttpServer {
 
   // Construct a MultiHttpServer wrapper.
   // Parameters:
-  //   cfg          - Base ServerConfig applied to each underlying HttpServer. If cfg.port == 0 an
+  //   cfg          - Base HttpServerConfig applied to each underlying HttpServer. If cfg.port == 0 an
   //                  ephemeral port is chosen by the first server; that resolved port is then
   //                  propagated to all subsequent servers so the entire group listens on the same
   //                  concrete port.
@@ -57,12 +57,12 @@ class MultiHttpServer {
   // Performance rationale:
   //   - Avoids locks by treating start()/stop()/handler registration as single-threaded control
   //     operations; the hot path remains inside individual HttpServer event loops.
-  MultiHttpServer(ServerConfig cfg, uint32_t threadCount);
+  MultiHttpServer(HttpServerConfig cfg, uint32_t threadCount);
 
   // Construct a MultiHttpServer wrapper, with the number of available processors as number of threads (if detection is
   // possible). You can verify how many threads were chosen after construction of this instance thanks to nbThreads()
   // method.
-  explicit MultiHttpServer(ServerConfig cfg);
+  explicit MultiHttpServer(HttpServerConfig cfg);
 
   MultiHttpServer(const MultiHttpServer&) = delete;
   MultiHttpServer(MultiHttpServer&& other) noexcept;
@@ -163,7 +163,7 @@ class MultiHttpServer {
     RequestHandler handler;
   };
 
-  ServerConfig _baseConfig;
+  HttpServerConfig _baseConfig;
   uint32_t _threadCount{};
   bool _running{false};
   uint16_t _resolvedPort{};

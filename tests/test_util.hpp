@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "base-fd.hpp"
+#include "socket.hpp"
 
 using namespace std::chrono_literals;
 
@@ -61,30 +62,26 @@ inline std::string tu_recvUntilClosed(int fd) {
   return out;
 }
 
-inline int tu_connect(auto port) {
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
-    throw std::runtime_error("Unable to open a new socket");
-  }
+inline void tu_connect(int fd, auto port, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000}) {
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  int err = ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-  if (err != 0) {
-    throw std::runtime_error("Unable to call ::connect");
+  for (const auto deadline = std::chrono::steady_clock::now() + timeout; std::chrono::steady_clock::now() < deadline;
+       std::this_thread::sleep_for(std::chrono::milliseconds{10})) {
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+      break;
+    }
   }
-  return fd;
 }
 
-class ClientConnection : public aeronet::BaseFd {
+class ClientConnection : public aeronet::Socket {
  public:
   ClientConnection() noexcept = default;
 
-  explicit ClientConnection(auto port) : BaseFd(tu_connect(port)) {
-    if (!isOpened()) {
-      throw std::runtime_error("Unable to open FD");
-    }
+  ClientConnection(auto port, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000})
+      : Socket(aeronet::Socket::Type::STREAM) {
+    tu_connect(fd(), port, timeout);
   }
 };
 

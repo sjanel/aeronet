@@ -5,7 +5,7 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
 #include "test_tls_helper.hpp"
@@ -17,7 +17,7 @@ TEST(HttpTlsRequestClientCert, OptionalNoClientCertAccepted) {
   std::string body;
   aeronet::ServerStats statsAfter{};
   {
-    TlsTestServer ts({}, [](aeronet::ServerConfig& cfg) { cfg.withTlsRequestClientCert(true); });
+    TlsTestServer ts({}, [](aeronet::HttpServerConfig& cfg) { cfg.withTlsRequestClientCert(true); });
     auto port = ts.port();
     ts.setHandler([&](const aeronet::HttpRequest& req) {
       aeronet::HttpResponse resp;
@@ -49,7 +49,7 @@ TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
   aeronet::ServerStats statsAfter{};
   {
     // Trust the self-signed client cert for verification if sent; but handshake must still succeed w/out require flag.
-    TlsTestServer ts({}, [&](aeronet::ServerConfig& cfg) {
+    TlsTestServer ts({}, [&](aeronet::HttpServerConfig& cfg) {
       cfg.withTlsRequestClientCert(true).withTlsAddTrustedClientCert(clientPair.first);
     });
     auto port = ts.port();

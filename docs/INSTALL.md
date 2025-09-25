@@ -214,12 +214,12 @@ The port maps `VCPKG_LIBRARY_LINKAGE=dynamic` to `-DAERONET_BUILD_SHARED=ON` aut
 ## Minimal Example
 
 ```cpp
-#include <aeronet/server.hpp>
-#include <aeronet/server-config.hpp>
+#include <aeronet/http-server.hpp>
+#include <aeronet/http-server-config.hpp>
 #include <aeronet/http-response.hpp>
 using namespace aeronet;
 int main(){
-  HttpServer server(ServerConfig{}.withPort(8080));
+  HttpServer server(HttpServerConfig{}.withPort(8080));
   server.setHandler([](const HttpRequest&){
     HttpResponse r{200, "OK"};
     r.contentType = "text/plain"; r.body = "hello\n"; return r; });
@@ -229,7 +229,7 @@ int main(){
 
 ## License
 
-MIT – see `LICENSE`.
+MIT – see [LICENSE](../LICENSE).
 
 ---
 

@@ -12,8 +12,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/multi-http-server.hpp"
-#include "aeronet/server-config.hpp"
 #include "invalid_argument_exception.hpp"
 #include "socket.hpp"
 
@@ -49,7 +49,7 @@ std::string simpleGet(uint16_t port, const char* path = "/") {
 
 // 1. Auto thread-count constructor
 TEST(MultiHttpServer, AutoThreadCountConstructor) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   aeronet::MultiHttpServer multi(cfg);
   multi.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
@@ -70,7 +70,7 @@ TEST(MultiHttpServer, AutoThreadCountConstructor) {
 
 // 2. Explicit thread-count constructor
 TEST(MultiHttpServer, ExplicitThreadCountConstructor) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.port = 0;
   cfg.reusePort = true;  // explicit reusePort
   const uint32_t threads = 2;
@@ -92,7 +92,7 @@ TEST(MultiHttpServer, ExplicitThreadCountConstructor) {
 
 // 3. Move construction (move underlying servers ownership)
 TEST(MultiHttpServer, MoveConstruction) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.port = 0;
   aeronet::MultiHttpServer original(cfg);  // auto threads
   original.setHandler([](const aeronet::HttpRequest&) {
@@ -116,7 +116,7 @@ TEST(MultiHttpServer, MoveConstruction) {
 
 // 4. Invalid thread-count explicit constructor (compile-time / runtime guard)
 TEST(MultiHttpServer, InvalidExplicitThreadCountThrows) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.port = 0;
   EXPECT_THROW(aeronet::MultiHttpServer(cfg, 0), aeronet::invalid_argument);  // 0 illegal here
 }
@@ -127,7 +127,7 @@ TEST(MultiHttpServer, InvalidExplicitThreadCountThrows) {
 // source in a safe, inert state.
 TEST(MultiHttpServer, DefaultConstructorAndMoveAssignment) {
   // Prepare a running instance (rhs of move assignment)
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.port = 0;                           // ephemeral
   aeronet::MultiHttpServer running(cfg);  // auto thread count
   running.setHandler([](const aeronet::HttpRequest&) {

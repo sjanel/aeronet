@@ -19,34 +19,34 @@ RawChars buildHead(const HttpResponse &resp, std::string_view httpVersion, std::
   std::string_view keepAliveStr = keepAlive ? http::keepalive : http::close;
 
   RawChars header(httpVersion.size() + 2U + static_cast<std::size_t>(nchars(resp.statusCode)) + resp.reason.size() +
-                  http::CRLF.size() + http::Date.size() + kSep.size() + date.size() + http::CRLF.size() +
-                  http::ContentType.size() + kSep.size() + resp.contentType.size() + http::CRLF.size() +
-                  http::ContentLength.size() + kSep.size() + static_cast<std::size_t>(nchars(bodySize)) +
-                  http::CRLF.size() + http::Connection.size() + kSep.size() + keepAliveStr.size() + kEnd.size());
+                  (4U * http::CRLF.size()) + http::Date.size() + (4U * kSep.size()) + date.size() +
+                  http::ContentType.size() + resp.contentType.size() + http::ContentLength.size() +
+                  static_cast<std::size_t>(nchars(bodySize)) + http::Connection.size() + keepAliveStr.size() +
+                  kEnd.size());
 
   // Trust caller to validate version (only HTTP/1.0 or HTTP/1.1 allowed upstream)
-  header.append(httpVersion);
-  header.append(' ');
-  header.append(std::string_view(IntegralToCharVector(resp.statusCode)));
-  header.append(' ');
-  header.append(resp.reason);
-  header.append(http::CRLF);
-  header.append(http::Date);
-  header.append(kSep);
-  header.append(date);
-  header.append(http::CRLF);
-  header.append(http::ContentType);
-  header.append(kSep);
-  header.append(resp.contentType);
-  header.append(http::CRLF);
-  header.append(http::ContentLength);
-  header.append(kSep);
-  header.append(std::string_view(IntegralToCharVector(bodySize)));
-  header.append(http::CRLF);
-  header.append(http::Connection);
-  header.append(kSep);
-  header.append(keepAliveStr);
-  header.append(kEnd);
+  header.unchecked_append(httpVersion);
+  header.unchecked_push_back(' ');
+  header.unchecked_append(std::string_view(IntegralToCharVector(resp.statusCode)));
+  header.unchecked_push_back(' ');
+  header.unchecked_append(resp.reason);
+  header.unchecked_append(http::CRLF);
+  header.unchecked_append(http::Date);
+  header.unchecked_append(kSep);
+  header.unchecked_append(date);
+  header.unchecked_append(http::CRLF);
+  header.unchecked_append(http::ContentType);
+  header.unchecked_append(kSep);
+  header.unchecked_append(resp.contentType);
+  header.unchecked_append(http::CRLF);
+  header.unchecked_append(http::ContentLength);
+  header.unchecked_append(kSep);
+  header.unchecked_append(std::string_view(IntegralToCharVector(bodySize)));
+  header.unchecked_append(http::CRLF);
+  header.unchecked_append(http::Connection);
+  header.unchecked_append(kSep);
+  header.unchecked_append(keepAliveStr);
+  header.unchecked_append(kEnd);
   return header;
 }
 

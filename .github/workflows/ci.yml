@@ -75,6 +75,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
             -DAERONET_BUILD_TESTS=ON \
             -DAERONET_BUILD_EXAMPLES=ON \
+            -DAERONET_BUILD_BENCHMARKS=ON \
             -DAERONET_ENABLE_ASAN=ON \
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
             -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \

@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <string_view>
 
 #include "transport.hpp"
 
@@ -14,11 +15,11 @@ class TlsTransport : public ITransport {
  public:
   using SslPtr = std::unique_ptr<SSL, void (*)(SSL*)>;
 
-  explicit TlsTransport(SSL* ssl) : _ssl(ssl, SSL_free) {}
+  explicit TlsTransport(SslPtr sslPtr) : _ssl(std::move(sslPtr)) {}
 
   ssize_t read(char* buf, std::size_t len, bool& wantRead, bool& wantWrite) override;
 
-  ssize_t write(const char* buf, std::size_t len, bool& wantRead, bool& wantWrite) override;
+  ssize_t write(std::string_view data, bool& wantRead, bool& wantWrite) override;
 
   [[nodiscard]] bool handshakePending() const noexcept override;
 
@@ -28,7 +29,7 @@ class TlsTransport : public ITransport {
   [[nodiscard]] SSL* rawSsl() const noexcept { return _ssl.get(); }
 
  private:
-  SslPtr _ssl{nullptr, SSL_free};
+  SslPtr _ssl;
   bool _handshakeDone{false};
 };
 

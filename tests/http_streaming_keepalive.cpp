@@ -12,8 +12,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "socket.hpp"
 
 using namespace aeronet;
@@ -36,7 +36,7 @@ std::string recvAll(int fd, int timeoutMs = 2000) {
 }  // namespace
 
 TEST(StreamingKeepAlive, TwoSequentialRequests) {
-  ServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.port = 0;  // ephemeral
   cfg.reusePort = false;
   cfg.enableKeepAlive = true;
@@ -73,7 +73,7 @@ TEST(StreamingKeepAlive, TwoSequentialRequests) {
 }
 
 TEST(StreamingKeepAlive, HeadRequestReuse) {
-  ServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.port = 0;
   cfg.enableKeepAlive = true;
   HttpServer server(cfg);

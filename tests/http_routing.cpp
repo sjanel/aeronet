@@ -5,8 +5,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
 #include "test_http_client.hpp"
@@ -14,7 +14,7 @@
 using namespace aeronet;
 
 TEST(HttpRouting, BasicPathDispatch) {
-  ServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(10);
   HttpServer server(cfg);
   http::MethodSet helloMethods{http::Method::GET};
@@ -37,7 +37,7 @@ TEST(HttpRouting, BasicPathDispatch) {
   });
 
   std::atomic<bool> done{false};
-  std::jthread th([&]() { server.runUntil([&]() { return done.load(); }, std::chrono::milliseconds{50}); });
+  std::jthread th([&]() { server.runUntil([&]() { return done.load(); }); });
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
@@ -71,7 +71,7 @@ TEST(HttpRouting, BasicPathDispatch) {
 }
 
 TEST(HttpRouting, GlobalFallbackWithPathHandlers) {
-  ServerConfig cfg;
+  HttpServerConfig cfg;
   HttpServer server(cfg);
   server.setHandler([](const HttpRequest&) {
     HttpResponse resp;

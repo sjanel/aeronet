@@ -44,7 +44,7 @@ ssize_t TlsTransport::read(char* buf, std::size_t len, bool& wantRead, bool& wan
   return -1;  // fatal
 }
 
-ssize_t TlsTransport::write(const char* buf, std::size_t len, bool& wantRead, bool& wantWrite) {
+ssize_t TlsTransport::write(std::string_view data, bool& wantRead, bool& wantWrite) {
   wantRead = wantWrite = false;
   if (!_handshakeDone) {
     const auto hr = SSL_do_handshake(_ssl.get());
@@ -60,7 +60,7 @@ ssize_t TlsTransport::write(const char* buf, std::size_t len, bool& wantRead, bo
       return -1;  // fatal
     }
   }
-  const auto bytesWritten = SSL_write(_ssl.get(), buf, static_cast<int>(len));
+  const auto bytesWritten = SSL_write(_ssl.get(), data.data(), static_cast<int>(data.size()));
   if (bytesWritten > 0) {
     return bytesWritten;
   }
