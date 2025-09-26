@@ -9,8 +9,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "socket.hpp"
 #include "test_server_fixture.hpp"
 
@@ -41,7 +41,7 @@ std::string sendRaw(int fd, const std::string& data) {
 }  // namespace
 
 TEST(HttpKeepAlive, MultipleSequentialRequests) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
@@ -71,7 +71,7 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
 }
 
 TEST(HttpLimits, RejectHugeHeaders) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.maxHeaderBytes = 128;
   cfg.enableKeepAlive = false;
   cfg.port = 0;

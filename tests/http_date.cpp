@@ -10,8 +10,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "test_http_client.hpp"
 
 using namespace std::chrono_literals;
@@ -42,14 +42,13 @@ std::string headerValue(const std::string& resp, const std::string& name) {
 
 TEST(HttpDate, PresentAndFormat) {
   std::atomic_bool stop{false};
-  aeronet::HttpServer server(aeronet::ServerConfig{});
+  aeronet::HttpServer server(aeronet::HttpServerConfig{});
   auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
-  std::jthread th([&] { server.runUntil([&] { return stop.load(); }, 50ms); });
+  std::jthread th([&] { server.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(100ms);
   auto resp = rawGet(port);
   stop.store(true);
-  th.join();
   ASSERT_FALSE(resp.empty());
   auto date = headerValue(resp, "Date");
   ASSERT_EQ(29U, date.size()) << date;
@@ -59,10 +58,10 @@ TEST(HttpDate, PresentAndFormat) {
 
 TEST(HttpDate, StableWithinSameSecond) {
   std::atomic_bool stop{false};
-  aeronet::HttpServer server(aeronet::ServerConfig{});
+  aeronet::HttpServer server(aeronet::HttpServerConfig{});
   auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
-  std::jthread th([&] { server.runUntil([&] { return stop.load(); }, 10ms); });
+  std::jthread th([&] { server.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(30ms);
 
   // To avoid flakiness near a second rollover on slower / contended CI hosts:
@@ -92,28 +91,32 @@ TEST(HttpDate, StableWithinSameSecond) {
   }
   ASSERT_FALSE(anchorDate.empty());
 
-  // Now perform rapid sequence; allow at most one rollover among the three (rare) but require
-  // at least two to match the anchor to stay resilient on very slow environments.
+  // Take two additional samples and ensure at least two out of the three share the same second.
+  // (If we landed exactly on a boundary the anchor may differ, but then the other two should match.)
   auto s2 = headerValue(rawGet(port), "Date");
   auto s3 = headerValue(rawGet(port), "Date");
   std::string h1 = extractHMS(anchorDate);
   std::string h2 = extractHMS(s2);
   std::string h3 = extractHMS(s3);
 
-  int sameAsAnchor = static_cast<int>(h1 == h2) + static_cast<int>(h1 == h3);
-  // We expect at least two out of the three samples to share the same second if sampling mid-second.
-  ASSERT_GE(sameAsAnchor, 1) << "Too much drift across second boundaries: '" << anchorDate << "' '" << s2 << "' '" << s3
-                             << "'";
+  int pairs = 0;
+  pairs += (h1 == h2) ? 1 : 0;
+  pairs += (h1 == h3) ? 1 : 0;
+  pairs += (h2 == h3) ? 1 : 0;
+  // IMPORTANT: Stop server before the assertion so a failure does not leave the thread running.
+  // (ASSERT_* aborts the test function; previously this caused a 300s timeout in CI because the
+  // predicate-controlled loop never observed stop=true.)
   stop.store(true);
-  th.join();
+  ASSERT_GE(pairs, 1) << "Too much drift across second boundaries: '" << anchorDate << "' '" << s2 << "' '" << s3
+                      << "'";
 }
 
 TEST(HttpDate, ChangesAcrossSecondBoundary) {
   std::atomic_bool stop{false};
-  aeronet::HttpServer server(aeronet::ServerConfig{});
+  aeronet::HttpServer server(aeronet::HttpServerConfig{});
   auto port = server.port();
   server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
-  std::jthread th([&] { server.runUntil([&] { return stop.load(); }, 5ms); });
+  std::jthread th([&] { server.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(50ms);
   auto first = rawGet(port);
   auto d1 = headerValue(first, "Date");
@@ -128,6 +131,5 @@ TEST(HttpDate, ChangesAcrossSecondBoundary) {
     }
   }
   stop.store(true);
-  th.join();
   ASSERT_NE(d1, d2) << "Date header did not change across boundary after waiting";
 }

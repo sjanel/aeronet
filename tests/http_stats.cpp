@@ -2,15 +2,15 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "test_http_client.hpp"
 #include "test_server_fixture.hpp"
 
 using namespace aeronet;
 
 TEST(HttpStats, BasicCountersIncrement) {
-  ServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(5);
   TestServer ts(cfg);
   ts.server.setHandler([]([[maybe_unused]] const HttpRequest& req) {

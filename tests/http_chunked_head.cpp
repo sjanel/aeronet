@@ -10,8 +10,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "socket.hpp"
 #include "test_server_fixture.hpp"
 #include "test_util.hpp"
@@ -44,7 +44,7 @@ std::string sendAndRecv(int fd, const std::string& data) {
 }  // namespace
 
 TEST(HttpChunked, DecodeBasic) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
@@ -66,7 +66,7 @@ TEST(HttpChunked, DecodeBasic) {
 }
 
 TEST(HttpChunked, RejectTooLarge) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.withMaxBodyBytes(4);  // very small limit
   TestServer ts(cfg);
   auto port = ts.port();
@@ -92,7 +92,7 @@ TEST(HttpChunked, RejectTooLarge) {
 }
 
 TEST(HttpHead, NoBodyReturned) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
@@ -120,7 +120,7 @@ TEST(HttpHead, NoBodyReturned) {
 }
 
 TEST(HttpExpect, ContinueFlow) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;

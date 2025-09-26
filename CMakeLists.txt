@@ -44,11 +44,12 @@ endif()
 option(AERONET_BUILD_EXAMPLES "Build example programs" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
 option(AERONET_BUILD_TESTS "Build tests" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
 option(AERONET_BUILD_SHARED "Build Aeronet libraries as shared instead of static" OFF)
+option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
 
 # Features
 # Optional dependencies (aeronet is able to compile without the feature if not enabled)
-option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" OFF)
-option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" OFF)
+option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" ${MAIN_PROJECT})
+option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" ${MAIN_PROJECT})
 
 # Linting
 option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" ${ASAN_DEFAULT})
@@ -175,6 +176,10 @@ if(AERONET_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
+if(AERONET_BUILD_BENCHMARKS)
+  include(cmake/Benchmarks.cmake)
+endif()
+
 # Installation & Packaging
 if(AERONET_INSTALL)
     include(CMakePackageConfigHelpers)
@@ -214,8 +219,8 @@ if(AERONET_INSTALL)
     install(DIRECTORY aeronet/http/include/ DESTINATION include)
     install(DIRECTORY aeronet/tech/include/ DESTINATION include)
     install(DIRECTORY aeronet/sys/include/ DESTINATION include)
-  # objects include contains server-config.hpp and other config-related headers needed by server.hpp
-  install(DIRECTORY aeronet/objects/include/ DESTINATION include)
+
+    install(DIRECTORY aeronet/objects/include/ DESTINATION include)
     if(AERONET_ENABLE_OPENSSL)
       install(DIRECTORY aeronet/tls/include/ DESTINATION include)
     endif()

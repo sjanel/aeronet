@@ -10,14 +10,12 @@
 #include <cstring>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "connection.hpp"
 #include "event-loop.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
@@ -26,6 +24,7 @@
 #include "tls-context.hpp"  // brings TlsContext & TlsMetricsExternal
 #include "tls-metrics.hpp"
 #endif
+
 #include "aeronet/server-stats.hpp"
 #include "flat-hash-map.hpp"
 #include "http-method-set.hpp"
@@ -53,8 +52,8 @@ class TlsContext;  // forward declaration still okay
 //  - Not internally synchronized; do not access a given instance concurrently from multiple
 //    threads (except destroying after stop()).
 //  - To utilize multiple CPU cores, create several HttpServer instances (possibly with
-//    ServerConfig::withReusePort(true) on the same port) and run each in its own thread. Or better, use the provided
-//    MultiHttpServer class made for this purpose.
+//    HttpServerConfig::withReusePort(true) on the same port) and run each in its own thread. Or better, use the
+//    provided MultiHttpServer class made for this purpose.
 //  - Writes currently assume exclusive ownership of the connection fd within this single
 //    thread, enabling simple sequential ::write / ::writev without partial-write state tracking.
 class HttpServer {
@@ -69,7 +68,9 @@ class HttpServer {
     MalformedChunk,
     GenericBadRequest
   };
+
   using ParserErrorCallback = std::function<void(ParserError)>;
+
   struct RequestMetrics {
     std::string_view method;
     std::string_view target;
@@ -79,6 +80,7 @@ class HttpServer {
     std::chrono::nanoseconds duration{0};
     bool reusedConnection{false};
   };
+
   using MetricsCallback = std::function<void(const RequestMetrics&)>;
 
   // Construct a HttpServer that does nothing.
@@ -92,8 +94,34 @@ class HttpServer {
   //    and registers the listening fd with the internal EventLoop.
   //  - If any step fails it throws std::runtime_error (leaving no open fd).
   //  - After construction port() returns the actual bound port (deterministic for tests using ephemeral ports).
-  explicit HttpServer(ServerConfig cfg);
+  explicit HttpServer(HttpServerConfig cfg);
 
+  // Move semantics & constraints:
+  // -----------------------------
+  // HttpServer is movable only while it is NOT running (i.e. before the first call to run()/runUntil(), or
+  // after those calls have returned). Moving a running server would transfer internal epoll state, connection
+  // maps and the TLS context out from under the active event‑loop thread causing immediate undefined behavior
+  // (use‑after‑move on the old object's members). This is inherently unsafe and therefore disallowed.
+  //
+  // Enforced policy:
+  //  * If a move (construction or assignment) observes other._running == true we log an error and fire an assert
+  //    to indicate the client that it is invoking undefined behavior.
+  //
+  // Rationale for allowing (stopped) moves:
+  //  * Tests and higher‑level wrappers occasionally want to construct into a temporary then store into a container
+  //    or aggregate without an extra heap indirection; supporting move in the quiescent state keeps this ergonomic.
+  //
+  // Safe usage pattern:
+  //    HttpServer tmp(cfg);
+  //    tmp.setHandler(...);
+  //    tmp.setXXXX(...);
+  //    HttpServer server(std::move(tmp)); // OK (tmp not running)
+  //    std::jthread t([&]{ server.runUntil(stopFlag); });
+  //
+  // Unsafe pattern:
+  //    HttpServer s(cfg);
+  //    std::jthread t([&]{ s.run(); });
+  //    HttpServer moved(std::move(s)); // FATAL: moving while running.
   HttpServer(const HttpServer&) = delete;
   HttpServer& operator=(const HttpServer&) = delete;
   HttpServer(HttpServer&& other) noexcept;
@@ -245,14 +273,19 @@ class HttpServer {
   //   - General purpose / balanced default:     50–250 ms
   //   - Extremely low churn / power sensitive:  250–1000 ms (at the cost of slower shutdown & timeout precision)
   // Default (500 ms) favors low idle CPU over sub‑100 ms shutdown responsiveness.
-  void run(Duration checkPeriod = std::chrono::milliseconds{500});
+  // Run the server event loop until stop() is called (from another thread) or SIGINT/SIGTERM.
+  // The maximum blocking interval of a single poll cycle is controlled by HttpServerConfig::pollInterval.
+  // This method is blocking for the caller thread.
+  void run();
 
   // Run the server until the user-supplied predicate returns true (checked once per loop iteration) or stop() is
   // invoked / signal received. Semantics of checkPeriod are identical to run(): it is the upper bound on how long we
   // may block waiting for new events when idle. The predicate is evaluated after processing any ready events and
   // before the next epoll_wait call. A very small checkPeriod will evaluate the predicate more frequently, but at the
   // cost of additional wake‑ups when idle.
-  void runUntil(const std::function<bool()>& predicate, Duration checkPeriod = std::chrono::milliseconds{500});
+  // Like run() but exits when the user-supplied predicate returns true (checked once per loop iteration) or stop()
+  // is invoked / signal received. Poll sleep upper bound is HttpServerConfig::pollInterval.
+  void runUntil(const std::function<bool()>& predicate);
 
   // Requests cooperative termination of the event loop. Safe to invoke from a different thread
   // (best‑effort); the next loop iteration observes _running == false and exits. The maximum
@@ -264,19 +297,14 @@ class HttpServer {
   // Idempotency:
   //   - Repeated calls are harmless. Calling after the server already stopped has no effect.
   //
-  // Threading considerations:
-  //   - _running is a plain bool; cross‑thread visibility relies on typical compiler & platform
-  //     behavior for simple flag polling. For rigorous cross‑thread memory ordering a future
-  //     revision may make it std::atomic<bool>, but in practice the short checkPeriod bounds
-  //     any delay.
-  //
   // Typical usage:
   //   - From a signal handler wrapper (set a flag then call stop() in a safe context).
   //   - From a controller thread coordinating multiple HttpServer instances.
   void stop();
 
   // The config given to the server, with the actual allocated port if 0 was given.
-  [[nodiscard]] const ServerConfig& config() const { return _config; }
+  // The config is immutable after creation of the Server.
+  [[nodiscard]] const HttpServerConfig& config() const { return _config; }
 
   // Get the actual port of this server.
   // If the configuration port was 0, the port has been automatically allocated by the system.
@@ -294,7 +322,7 @@ class HttpServer {
  private:
   friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
 
-  struct ConnStateInternal {
+  struct ConnectionState {
     RawChars buffer;                        // accumulated raw data
     RawChars bodyStorage;                   // decoded body lifetime
     RawChars outBuffer;                     // pending outbound bytes not yet written
@@ -315,41 +343,40 @@ class HttpServer {
     std::string negotiatedVersion;                         // negotiated TLS protocol version string
     std::chrono::steady_clock::time_point handshakeStart;  // TLS handshake start time (steady clock)
   };
+
   void eventLoop(Duration timeout);
   void refreshCachedDate();
   void sweepIdleConnections();
   void acceptNewConnections();
   void handleReadableClient(int fd);
-  bool processRequestsOnConnection(int fd, ConnStateInternal& state);
+  bool processRequestsOnConnection(int fd, ConnectionState& state);
   // Split helpers
-  bool parseNextRequestFromBuffer(int fd, ConnStateInternal& state, HttpRequest& outReq, std::size_t& headerEnd,
+  bool parseNextRequestFromBuffer(int fd, ConnectionState& state, HttpRequest& outReq, std::size_t& headerEnd,
                                   bool& closeConn);
-  bool decodeBodyIfReady(int fd, ConnStateInternal& state, const HttpRequest& req, std::size_t headerEnd,
-                         bool isChunked, bool expectContinue, bool& closeConn, std::size_t& consumedBytes);
-  bool decodeFixedLengthBody(int fd, ConnStateInternal& state, const HttpRequest& req, std::size_t headerEnd,
-                             bool expectContinue, bool& closeConn, std::size_t& consumedBytes);
-  bool decodeChunkedBody(int fd, ConnStateInternal& state, const HttpRequest& req, std::size_t headerEnd,
+  bool decodeBodyIfReady(int fd, ConnectionState& state, const HttpRequest& req, std::size_t headerEnd, bool isChunked,
                          bool expectContinue, bool& closeConn, std::size_t& consumedBytes);
-  void finalizeAndSendResponse(int fd, ConnStateInternal& state, HttpRequest& req, HttpResponse& resp,
+  bool decodeFixedLengthBody(int fd, ConnectionState& state, const HttpRequest& req, std::size_t headerEnd,
+                             bool expectContinue, bool& closeConn, std::size_t& consumedBytes);
+  bool decodeChunkedBody(int fd, ConnectionState& state, const HttpRequest& req, std::size_t headerEnd,
+                         bool expectContinue, bool& closeConn, std::size_t& consumedBytes);
+  void finalizeAndSendResponse(int fd, ConnectionState& state, HttpRequest& req, HttpResponse& resp,
                                std::size_t consumedBytes, bool& closeConn);
+  // Helper to build & queue a simple error response, invoke parser error callback (if any),
+  // mark connection for closure and return false for convenient tail calls in parsing paths.
+  bool emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, std::string_view reason, ParserError perr,
+                       bool& closeConn);
   // Outbound write helpers
-  bool queueData(int fd, ConnStateInternal& state, const char* data, std::size_t len);
-  bool queueVec(int fd, ConnStateInternal& state, const struct iovec* iov, int iovcnt);
-  void flushOutbound(int fd, ConnStateInternal& state);
+  bool queueData(int fd, ConnectionState& state, std::string_view data);
+  bool queueVec(int fd, ConnectionState& state, const struct iovec* iov, int iovcnt);
+  void flushOutbound(int fd, ConnectionState& state);
 
   void handleWritableClient(int fd);
 
   void closeConnection(int fd);
 
   // Transport-aware helpers (fall back to raw fd if transport null)
-  static ssize_t transportRead(int fd, ConnStateInternal& state, char* buf, std::size_t len, bool& wantRead,
-                               bool& wantWrite);
-  static ssize_t transportWrite(int fd, ConnStateInternal& state, const char* buf, std::size_t len, bool& wantRead,
-                                bool& wantWrite);
-
-#ifdef AERONET_ENABLE_OPENSSL
-  // (TLS handshake helper moved to free function in tls-handshake module.)
-#endif
+  static ssize_t transportRead(int fd, ConnectionState& state, std::size_t chunkSize, bool& wantRead, bool& wantWrite);
+  static ssize_t transportWrite(int fd, ConnectionState& state, std::string_view data, bool& wantRead, bool& wantWrite);
 
   struct StatsInternal {
     uint64_t totalBytesQueued{0};
@@ -364,41 +391,11 @@ class HttpServer {
   // Attempt an epoll_ctl MOD on the given fd; on failure logs, marks connection for close and
   // increments failure metric. Returns true on success, false on failure.
   // EBADF / ENOENT (race where fd already closed / removed) are logged at WARN (not ERROR).
-  static bool modWithCloseOnFailure(EventLoop* loop, int fd, uint32_t events, ConnStateInternal& st, const char* ctx,
+  static bool ModWithCloseOnFailure(EventLoop& loop, int fd, uint32_t events, ConnectionState& st, const char* ctx,
                                     StatsInternal& stats);
 
  public:
-  [[nodiscard]] ServerStats stats() const {
-    ServerStats statsOut;
-    statsOut.totalBytesQueued = _stats.totalBytesQueued;
-    statsOut.totalBytesWrittenImmediate = _stats.totalBytesWrittenImmediate;
-    statsOut.totalBytesWrittenFlush = _stats.totalBytesWrittenFlush;
-    statsOut.deferredWriteEvents = _stats.deferredWriteEvents;
-    statsOut.flushCycles = _stats.flushCycles;
-    statsOut.epollModFailures = _stats.epollModFailures;
-    statsOut.maxConnectionOutboundBuffer = _stats.maxConnectionOutboundBuffer;
-#ifdef AERONET_ENABLE_OPENSSL
-    statsOut.tlsHandshakesSucceeded = _tlsMetrics.handshakesSucceeded;
-    statsOut.tlsClientCertPresent = _tlsMetrics.clientCertPresent;
-    statsOut.tlsAlpnStrictMismatches = _tlsMetricsExternal.alpnStrictMismatches;
-    statsOut.tlsAlpnDistribution.reserve(_tlsMetrics.alpnDistribution.size());
-    for (const auto& kv : _tlsMetrics.alpnDistribution) {
-      statsOut.tlsAlpnDistribution.emplace_back(kv.first, kv.second);
-    }
-    statsOut.tlsVersionCounts.reserve(_tlsMetrics.versionCounts.size());
-    for (const auto& kv : _tlsMetrics.versionCounts) {
-      statsOut.tlsVersionCounts.emplace_back(kv.first, kv.second);
-    }
-    statsOut.tlsCipherCounts.reserve(_tlsMetrics.cipherCounts.size());
-    for (const auto& kv : _tlsMetrics.cipherCounts) {
-      statsOut.tlsCipherCounts.emplace_back(kv.first, kv.second);
-    }
-    statsOut.tlsHandshakeDurationCount = _tlsMetrics.handshakeDurationCount;
-    statsOut.tlsHandshakeDurationTotalNs = _tlsMetrics.handshakeDurationTotalNs;
-    statsOut.tlsHandshakeDurationMaxNs = _tlsMetrics.handshakeDurationMaxNs;
-#endif
-    return statsOut;
-  }
+  [[nodiscard]] ServerStats stats() const;
 
   Socket _listenSocket;  // listening socket RAII
   bool _running{false};
@@ -413,23 +410,36 @@ class HttpServer {
 
   flat_hash_map<std::string, PathHandlerEntry, std::hash<std::string_view>, std::equal_to<>> _pathHandlers;
 
-  std::unique_ptr<EventLoop> _loop;
-  ServerConfig _config;
+  EventLoop _loop;
+  HttpServerConfig _config;
 
-  flat_hash_map<Connection, ConnStateInternal, std::hash<int>, std::equal_to<>> _connStates;
+  flat_hash_map<Connection, ConnectionState, std::hash<int>, std::equal_to<>> _connStates;
 
   using RFC7231DateStr = std::array<char, 29>;
 
   RFC7231DateStr _cachedDate{};
   TimePoint _cachedDateEpoch;  // last second-aligned timestamp used for Date header
-  ParserErrorCallback _parserErrCb;
+  ParserErrorCallback _parserErrCb = []([[maybe_unused]] ParserError) {};
   MetricsCallback _metricsCb;
-  // TLS context holder (opaque) present only when TLS enabled and configured. Stored as void* to avoid OpenSSL includes
-  // here.
-  void* _tlsCtx{nullptr};
 #ifdef AERONET_ENABLE_OPENSSL
-  std::optional<TlsContext> _tlsCtxHolder;  // owns TLS context when enabled
-  TlsMetricsInternal _tlsMetrics;           // defined in tls-metrics.hpp
+  // TlsContext lifetime & pointer stability:
+  // ----------------------------------------
+  // OpenSSL's SSL_CTX_set_alpn_select_cb stores the opaque `void* arg` pointer and later invokes the
+  // callback during each TLS handshake. We pass a pointer to our TlsContext so the callback can access
+  // ALPN configuration / metrics.
+  //
+  // If we placed TlsContext directly as a value member (or inside std::optional) and later moved the
+  // encompassing HttpServer, the TlsContext object would be moved / reconstructed at a new address while
+  // OpenSSL still retains the original pointer, leading to a dangling pointer and potential UAF during
+  // future handshakes (we previously observed this as an ASan stack-use-after-return when a temporary was
+  // moved into an optional after registration).
+  //
+  // Storing TlsContext behind a std::unique_ptr guarantees a stable object address for the entire
+  // HttpServer lifetime irrespective of HttpServer moves; only the owning smart pointer value changes.
+  // This is the least invasive way to provide pointer stability without prohibiting HttpServer move
+  // semantics or introducing a heavier PImpl layer.
+  std::unique_ptr<TlsContext> _tlsCtxHolder;  // stable address for OpenSSL callbacks
+  TlsMetricsInternal _tlsMetrics;             // defined in tls-metrics.hpp
   // External metrics struct used by TLS context for ALPN mismatch increments only.
   TlsMetricsExternal _tlsMetricsExternal;  // shares alpnStrictMismatches with _tlsMetrics (synced in stats retrieval)
 #endif

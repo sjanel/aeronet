@@ -1,10 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <vector>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/server-stats.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
@@ -13,7 +14,7 @@ TEST(HttpTlsAlpnMismatch, HandshakeFailsWhenNoCommonProtocolAndMustMatch) {
   bool failed = false;
   aeronet::ServerStats statsAfter{};
   {
-    TlsTestServer ts({"http/1.1", "h2"}, [](aeronet::ServerConfig& cfg) { cfg.withTlsAlpnMustMatch(true); });
+    TlsTestServer ts({"http/1.1", "h2"}, [](aeronet::HttpServerConfig& cfg) { cfg.withTlsAlpnMustMatch(true); });
     auto port = ts.port();
     ts.setHandler([](const aeronet::HttpRequest& req) {
       aeronet::HttpResponse resp;

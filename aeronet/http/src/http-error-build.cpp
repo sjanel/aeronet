@@ -9,7 +9,7 @@
 
 namespace aeronet {
 
-RawChars buildSimpleError(http::StatusCode status, std::string_view reason, std::string_view date, bool closeConn) {
+RawChars BuildSimpleError(http::StatusCode status, std::string_view reason, std::string_view date, bool closeConn) {
   // If caller passed empty reason, try to supply a canonical one.
   if (reason.empty()) {
     if (auto mapped = http::reasonPhraseFor(status); !mapped.empty()) {
@@ -19,30 +19,28 @@ RawChars buildSimpleError(http::StatusCode status, std::string_view reason, std:
   static constexpr std::string_view kSep = ": ";
   static constexpr std::string_view kEnd = "\r\n\r\n";
 
-  RawChars header(http::HTTP11.size() + 1 + 3 + 1 + reason.size() + http::CRLF.size() + http::Date.size() +
-                  kSep.size() + date.size() + http::CRLF.size() + http::ContentLength.size() + kSep.size() +
-                  1 +  // zero length "0"
-                  http::CRLF.size() + http::Connection.size() + kSep.size() +
-                  (closeConn ? http::close.size() : http::keepalive.size()) + kEnd.size());
+  RawChars header(http::HTTP11.size() + 1UL + 3UL + 1UL + reason.size() + (3UL * http::CRLF.size()) +
+                  http::Date.size() + (3UL * kSep.size()) + date.size() + http::ContentLength.size() + 1 +
+                  http::Connection.size() + (closeConn ? http::close.size() : http::keepalive.size()) + kEnd.size());
 
-  header.append(http::HTTP11);
-  header.append(' ');
-  header.append(std::string_view(IntegralToCharVector(status)));
-  header.append(' ');
-  header.append(reason);
-  header.append(http::CRLF);
-  header.append(http::Date);
-  header.append(kSep);
-  header.append(date);
-  header.append(http::CRLF);
-  header.append(http::ContentLength);
-  header.append(kSep);
-  header.append('0');
-  header.append(http::CRLF);
-  header.append(http::Connection);
-  header.append(kSep);
-  header.append(closeConn ? http::close : http::keepalive);
-  header.append(kEnd);
+  header.unchecked_append(http::HTTP11);
+  header.unchecked_push_back(' ');
+  header.unchecked_append(std::string_view(IntegralToCharVector(status)));
+  header.unchecked_push_back(' ');
+  header.unchecked_append(reason);
+  header.unchecked_append(http::CRLF);
+  header.unchecked_append(http::Date);
+  header.unchecked_append(kSep);
+  header.unchecked_append(date);
+  header.unchecked_append(http::CRLF);
+  header.unchecked_append(http::ContentLength);
+  header.unchecked_append(kSep);
+  header.unchecked_push_back('0');
+  header.unchecked_append(http::CRLF);
+  header.unchecked_append(http::Connection);
+  header.unchecked_append(kSep);
+  header.unchecked_append(closeConn ? http::close : http::keepalive);
+  header.unchecked_append(kEnd);
 
   return header;
 }

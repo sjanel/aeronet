@@ -9,8 +9,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "test_server_fixture.hpp"
 #include "test_util.hpp"
 
@@ -36,7 +36,7 @@ struct ErrorCase {
 class HttpErrorParamTest : public ::testing::TestWithParam<ErrorCase> {};
 
 TEST_P(HttpErrorParamTest, EmitsExpectedStatus) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
   const auto& param = GetParam();
   std::string resp = sendAndCollect(ts.port(), param.request);
@@ -56,7 +56,7 @@ INSTANTIATE_TEST_SUITE_P(
                                 "400"}));
 
 TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse response;
@@ -86,7 +86,7 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
 }
 
 TEST(HttpKeepAlive10, OptInWithHeader) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse response;

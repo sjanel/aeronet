@@ -23,7 +23,7 @@ HTTP/1.1 server library for Linux only – work in progress.
 | Streaming responses | Chunked by default; switch to fixed length with `setContentLength()` |
 | Slowloris mitigation | Header read timeout (configurable; disabled by default) |
 | 404 / 405 handling | Automatic 404 (unknown path) & 405 (known path, method not allowed) |
-| Graceful shutdown | `runUntil()` predicate loop |
+| Graceful shutdown | `runUntil()` predicate loop (poll interval via `HttpServerConfig::withPollInterval()`) |
 | Backpressure buffering | Unified buffering for fixed + streaming responses |
 
 ## Developer / Operational Features
@@ -33,11 +33,12 @@ HTTP/1.1 server library for Linux only – work in progress.
 | Epoll edge-triggered loop | One thread per `HttpServer`; writev used for header+body scatter-gather |
 | SO_REUSEPORT scaling | Horizontal multi-reactor capability |
 | Multi-instance wrapper | `MultiHttpServer` orchestrates N reactors, aggregates stats |
+| Async single-server wrapper | `AsyncHttpServer` runs one server in a background thread |
 | Move semantics | Transfer listening socket & loop state safely |
 | Heterogeneous lookups | Path handler map accepts `std::string`, `std::string_view`, `const char*` |
 | Outbound stats | Bytes queued, immediate vs flush writes, high-water marks |
 | Lightweight logging | Pluggable design (spdlog optional); ISO 8601 UTC timestamps |
-| Builder-style config | Fluent `ServerConfig` setters (`withPort()`, etc.) |
+| Builder-style config | Fluent `HttpServerConfig` setters (`withPort()`, etc.) |
 | Metrics callback (alpha) | Per-request timing & size scaffold hook |
 | RAII construction | Fully listening after constructor (ephemeral port resolved immediately) |
 | Comprehensive tests | Parsing, limits, streaming, mixed precedence, reuseport, move semantics, keep-alive |
@@ -50,14 +51,14 @@ The sections below provide a more granular feature matrix and usage examples.
 Spin up a basic HTTP/1.1 server that responds on `/hello` in just a few lines. If you pass `0` as the port (or omit it), the kernel picks an ephemeral port which you can query immediately.
 
 ```cpp
-#include <aeronet/server.hpp>
-#include <aeronet/server-config.hpp>
+#include <aeronet/http-server.hpp>
+#include <aeronet/http-server-config.hpp>
 #include <aeronet/http-response.hpp>
 #include <print>
 using namespace aeronet;
 
 int main() {
-  HttpServer server(ServerConfig{}.withPort(0)); // 0 => ephemeral port
+  HttpServer server(HttpServerConfig{}.withPort(0)); // 0 => ephemeral port
   server.addPathHandler("/hello", http::MethodSet{http::Method::GETrequest_or_throw}, [](const HttpRequest&) {
     HttpResponse r{200, "OK"};
     r.contentType = "text/plain";
@@ -65,6 +66,8 @@ int main() {
     return r;
   });
   std::print("Listening on {}\n", server.port());
+  // Adjust event loop poll interval (max idle epoll wait) if desired (default 500ms)
+  // HttpServerConfig{}.withPollInterval(50ms) for more responsive stop/predicate checks.
   server.run(); // Blocking call, send Ctrl+C to stop
 }
 ```
@@ -166,7 +169,7 @@ Safety / robustness
 
 Developer experience
 
-- [x] Builder style ServerConfig
+- [x] Builder style HttpServerConfig
 - [x] Simple lambda handler signature
 - [x] Simple exact-match per-path routing (`addPathHandler`)
 - [x] Lightweight built-in logging (spdlog optional integration) – pluggable interface TBD
@@ -183,7 +186,7 @@ Misc
 
 ## TLS Features (Current)
 
-TLS support is optional (`AERONET_ENABLE_OPENSSL`). When configured via `ServerConfig::TLSConfig`, the following capabilities are available:
+TLS support is optional (`AERONET_ENABLE_OPENSSL`). When configured via `HttpServerConfig::TLSConfig`, the following capabilities are available:
 
 | Capability | Status | Notes |
 |------------|--------|-------|
@@ -215,7 +218,7 @@ TLS support is optional (`AERONET_ENABLE_OPENSSL`). When configured via `ServerC
 ### TLS Configuration Example
 
 ```cpp
-ServerConfig cfg;
+HttpServerConfig cfg;
 cfg.withPort(8443)
    .withTlsCertKeyMemory(certPem, keyPem)
    .withTlsAlpnProtocols({"http/1.1"})
@@ -315,7 +318,7 @@ For TLS toggles, sanitizers, Conan/vcpkg usage and `find_package` examples, see 
 
 ## Construction Model (RAII) & Ephemeral Ports
 
-`HttpServer` binds, sets socket options, enters listening state, and registers the listening fd with epoll inside its constructor (RAII). If you request an ephemeral port (`port = 0` in `ServerConfig`), the kernel-assigned port is immediately available via `server.port()` after construction (no separate `setupListener()` call required – that legacy function was removed during refactor).
+`HttpServer` binds, sets socket options, enters listening state, and registers the listening fd with epoll inside its constructor (RAII). If you request an ephemeral port (`port = 0` in `HttpServerConfig`), the kernel-assigned port is immediately available via `server.port()` after construction (no separate `setupListener()` call required – that legacy function was removed during refactor).
 
 Why RAII?
 
@@ -326,7 +329,7 @@ Why RAII?
 Ephemeral port pattern in tests / examples:
 
 ```cpp
-ServerConfig cfg; // let kernel choose the port
+HttpServerConfig cfg; // let kernel choose the port
 HttpServer server(cfg);
 uint16_t actual = server.port(); // resolved port
 ```
@@ -338,8 +341,8 @@ NOTE: A previous experimental non-throwing `tryCreate` factory was removed to re
 ### Minimal Global Handler (Ephemeral Port)
 
 ```cpp
-#include <aeronet/server.hpp>
-#include <aeronet/server-config.hpp>
+#include <aeronet/http-server.hpp>
+#include <aeronet/http-server-config.hpp>
 #include <print>
 using namespace aeronet;
 
@@ -360,7 +363,7 @@ int main() {
 ### Per-Path Routing & Method Masks
 
 ```cpp
-HttpServer server(ServerConfig{}); // ephemeral port
+HttpServer server(HttpServerConfig{}); // ephemeral port
 
 server.addPathHandler("/hello", http::MethodSet{http::Method::GET}, [](const HttpRequest&){
   HttpResponse r; r.statusCode=200; r.reason="OK"; r.contentType="text/plain"; r.body="world"; return r; });
@@ -380,10 +383,10 @@ server.run();
 std::vector<std::jthread> threads;
 for (int i = 0; i < 4; ++i) {
   threads.emplace_back([i]{
-  ServerConfig cfg; cfg.withPort(8080).withReusePort(true); // or 0 for ephemeral resolved separately
+  HttpServerConfig cfg; cfg.withPort(8080).withReusePort(true); // or 0 for ephemeral resolved separately
     HttpServer s(cfg);
     s.setHandler([](const HttpRequest&){ HttpResponse r{200, "OK"}; r.body="hi"; r.contentType="text/plain"; return r; });
-    s.run();
+  s.run();
   });
 }
 ```
@@ -425,7 +428,7 @@ This is the simplest horizontal scaling strategy before introducing a worker poo
 
 Instead of manually creating N threads and N `HttpServer` instances, you can use `MultiHttpServer` to spin up a "farm" of identical servers on the same port. It:
 
-- Accepts a base `ServerConfig` (set `port=0` for ephemeral bind; the chosen port is propagated to all instances)
+- Accepts a base `HttpServerConfig` (set `port=0` for ephemeral bind; the chosen port is propagated to all instances)
 - Forces `reusePort=true` automatically when thread count > 1
 - Replicates either a global handler or all registered path handlers across each underlying server
 - Exposes `stats()` returning both per-instance and aggregated totals (sums; `maxConnectionOutboundBuffer` is a max)
@@ -439,7 +442,7 @@ Minimal example:
 using namespace aeronet;
 
 int main() {
-  ServerConfig cfg; cfg.port = 0; cfg.reusePort = true; // ephemeral, auto-propagated
+  HttpServerConfig cfg; cfg.port = 0; cfg.reusePort = true; // ephemeral, auto-propagated
   MultiHttpServer multi(cfg, 4); // 4 underlying event loops
   multi.setHandler([](const HttpRequest& req){
     HttpResponse r; r.statusCode=200; r.reason="OK"; r.body="hello\n"; r.contentType="text/plain"; return r; });
@@ -452,6 +455,66 @@ int main() {
   multi.stop();
 }
 ```
+
+### Choosing Between HttpServer, AsyncHttpServer, and MultiHttpServer
+
+| Variant | Header | Launch API | Blocking? | Threads Created Internally | Scaling Model | Typical Use Case | Notes |
+|---------|--------|-----------|-----------|-----------------------------|---------------|------------------|-------|
+| `HttpServer` | `aeronet/http-server.hpp` | `run()` / `runUntil(pred)` | Yes (caller thread blocks) | 0 | Single reactor | Dedicated thread you manage or simple main-thread server | Minimal overhead |
+| `AsyncHttpServer` | `aeronet/async-http-server.hpp` | `start()`, `startUntil(pred)`, `requestStop()`, `stopAndJoin()` | No | 1 `std::jthread` | Single reactor (owned) | Need non-blocking single server with safe lifetime | Owns server; access via `async.server()` |
+| `MultiHttpServer` | `aeronet/multi-http-server.hpp` | `start()`, `stop()` | No | N (`threadCount`) | Horizontal SO_REUSEPORT multi-reactor | Scale across cores quickly | Replicates handlers pre-start |
+
+Decision heuristics:
+
+- Use `HttpServer` when you already own a thread (or can just block main) and want minimal abstraction.
+- Use `AsyncHttpServer` when you want a single server but need the calling thread free (e.g. integrating into a service hosting multiple subsystems, or writing higher-level control logic while serving traffic).
+- Use `MultiHttpServer` when you need multi-core throughput with separate event loops per core; simplest horizontal scale path before more advanced worker models.
+
+Blocking semantics summary:
+
+- `HttpServer::run()` / `runUntil()` – fully blocking; returns only on stop/predicate.
+- `AsyncHttpServer::start()` – non-blocking; lifecycle controlled via stop token + `server.stop()`.
+- `MultiHttpServer::start()` – non-blocking; returns after all reactors launched.
+
+### AsyncHttpServer (Single-Reactor Background Wrapper)
+
+```cpp
+#include <aeronet/http-server.hpp>
+#include <aeronet/http-server-config.hpp>
+#include <aeronet/async-http-server.hpp>
+using namespace aeronet;
+
+int main() {
+  HttpServerConfig cfg; cfg.withPort(0); // ephemeral
+  HttpServer server(cfg);
+  server.setHandler([](const HttpRequest&){ HttpResponse r{200, "OK"}; r.contentType="text/plain"; r.body="hi"; return r; });
+
+  AsyncHttpServer async(std::move(server));
+  async.start();
+  // main thread free to do orchestration / other work
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  async.requestStop();
+  async.stopAndJoin();
+  async.rethrowIfError();
+}
+```
+
+Predicate form (stop when external flag flips):
+
+```cpp
+std::atomic<bool> done{false};
+AsyncHttpServer async(std::move(server));
+async.startUntil([&]{ return done.load(); });
+// later
+done = true; // loop exits soon (bounded by poll interval)
+async.stopAndJoin();
+```
+
+Notes:
+
+- Do not call `run()` directly on the underlying `HttpServer` while an `AsyncHttpServer` is active.
+- Register handlers before `start()` unless you provide external synchronization for modifications.
+- `stopAndJoin()` is idempotent; destructor performs it automatically as a safety net.
 
 Handler rules mirror `HttpServer`:
 
@@ -486,7 +549,7 @@ The streaming API lets a handler produce a response body incrementally without a
 Register a streaming handler instead of the fixed response/global or per-path handlers:
 
 ```cpp
-HttpServer server(ServerConfig{}.withPort(8080));
+HttpServer server(HttpServerConfig{}.withPort(8080));
 server.setStreamingHandler([](const HttpRequest& req, HttpResponseWriter& w) {
   w.setStatus(200, "OK");
   w.setHeader("Content-Type", "text/plain");
@@ -548,7 +611,7 @@ Conflict rules:
 Example (mixed per-path + global fallback):
 
 ```cpp
-HttpServer server(ServerConfig{});
+HttpServer server(HttpServerConfig{});
 // Global normal fallback
 server.setHandler([](const HttpRequest&){ HttpResponse r{200, "OK"}; r.contentType="text/plain"; r.body="GLOBAL"; return r; });
 // Global streaming fallback (higher than global normal)
@@ -576,10 +639,10 @@ See `tests/http_streaming_mixed.cpp` for exhaustive precedence, conflict, HEAD-s
 
 ## Configuration API (builder style)
 
-`ServerConfig` lives in `aeronet/server-config.hpp` and exposes fluent setters (withX naming):
+`HttpServerConfig` lives in `aeronet/http-server-config.hpp` and exposes fluent setters (withX naming):
 
 ```cpp
-ServerConfig cfg;
+HttpServerConfig cfg;
 cfg.withPort(8080)
   .withReusePort(true)
   .withMaxHeaderBytes(16 * 1024)
@@ -696,7 +759,7 @@ Configure a server with certificate + key (filesystem paths):
 
 ```cpp
 using namespace aeronet;
-ServerConfig cfg;
+HttpServerConfig cfg;
 cfg.withPort(0) // ephemeral
   .withTlsCertKey("/path/to/server.crt", "/path/to/server.key");
 HttpServer server(cfg);
@@ -715,7 +778,7 @@ In-memory (no temp files) certificate + key provisioning (e.g. when you already 
 ```cpp
 using namespace aeronet;
 // Suppose certPem and keyPem are std::string containing PEM blocks
-ServerConfig cfg;
+HttpServerConfig cfg;
 cfg.withPort(0)
   .withTlsCertKeyMemory(certPem, keyPem);
 HttpServer server(cfg);

@@ -12,8 +12,8 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "exception.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
@@ -90,7 +90,7 @@ std::string extractBody(const std::string& resp) {
 }  // namespace
 
 TEST(HttpServerMixed, MixedPerPathHandlers) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.port = 0;
   cfg.enableKeepAlive = false;
   aeronet::HttpServer srv(cfg);
@@ -115,7 +115,7 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
     resp.body = "NORMAL";
     return resp;
   });
-  std::jthread th([&] { srv.runUntil([] { return false; }, std::chrono::milliseconds(5)); });
+  std::jthread th([&] { srv.runUntil([] { return false; }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   std::string getResp;
   httpRequest(srv.port(), "GET", "/mix", getResp);
@@ -128,7 +128,7 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
 }
 
 TEST(HttpServerMixed, ConflictRegistrationNormalThenStreaming) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.port = 0;
   aeronet::HttpServer srv(cfg);
   srv.addPathHandler("/c", aeronet::http::Method::GET,
@@ -139,7 +139,7 @@ TEST(HttpServerMixed, ConflictRegistrationNormalThenStreaming) {
 }
 
 TEST(HttpServerMixed, ConflictRegistrationStreamingThenNormal) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.port = 0;
   aeronet::HttpServer srv(cfg);
   srv.addPathStreamingHandler("/c2", aeronet::http::Method::GET,
@@ -154,7 +154,7 @@ TEST(HttpServerMixed, ConflictRegistrationStreamingThenNormal) {
 }
 
 TEST(HttpServerMixed, GlobalFallbackPrecedence) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.port = 0;
   cfg.enableKeepAlive = false;
   aeronet::HttpServer srv(cfg);
@@ -182,7 +182,7 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
   // path-specific normal overrides global fallbacks
   srv.addPathHandler("/n", aeronet::http::Method::GET,
                      [](const aeronet::HttpRequest&) { return aeronet::HttpResponse{200, "OK", "text/plain", "PN"}; });
-  std::jthread th([&] { srv.runUntil([] { return false; }, std::chrono::milliseconds(5)); });
+  std::jthread th([&] { srv.runUntil([] { return false; }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   std::string pathStreamResp;
   httpRequest(srv.port(), "GET", "/s", pathStreamResp);
@@ -198,12 +198,12 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
 }
 
 TEST(HttpServerMixed, GlobalNormalOnlyWhenNoStreaming) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.port = 0;
   cfg.enableKeepAlive = false;
   aeronet::HttpServer srv(cfg);
   srv.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{200, "OK", "text/plain", "GN"}; });
-  std::jthread th([&] { srv.runUntil([] { return false; }, std::chrono::milliseconds(5)); });
+  std::jthread th([&] { srv.runUntil([] { return false; }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   std::string result;
   httpRequest(srv.port(), "GET", "/x", result);
@@ -212,7 +212,7 @@ TEST(HttpServerMixed, GlobalNormalOnlyWhenNoStreaming) {
 }
 
 TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.port = 0;
   cfg.enableKeepAlive = false;
   aeronet::HttpServer srv(cfg);
@@ -226,7 +226,7 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
                                 writer.write("SHOULD_NOT_APPEAR");  // for HEAD this must be suppressed by writer
                                 writer.end();
                               });
-  std::jthread th([&] { srv.runUntil([] { return false; }, std::chrono::milliseconds(5)); });
+  std::jthread th([&] { srv.runUntil([] { return false; }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   std::string headResp;
   httpRequest(srv.port(), "HEAD", "/head", headResp);
@@ -242,7 +242,7 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
 }
 
 TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.port = 0;
   cfg.enableKeepAlive = false;
   aeronet::HttpServer srv(cfg);
@@ -253,7 +253,7 @@ TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
                                 writer.write("OKGET");
                                 writer.end();
                               });
-  std::jthread th([&] { srv.runUntil([] { return false; }, std::chrono::milliseconds(5)); });
+  std::jthread th([&] { srv.runUntil([] { return false; }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   std::string postResp;
   httpRequest(srv.port(), "POST", "/m405", postResp, "data");
@@ -297,7 +297,7 @@ void twoRequestsKeepAlive(auto port, const std::string& r1, const std::string& r
 }  // namespace
 
 TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.port = 0;
   cfg.enableKeepAlive = true;
   cfg.maxRequestsPerConnection = 3;  // allow at least two
@@ -317,7 +317,7 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
   srv.addPathHandler("/ka", postSet, [](const aeronet::HttpRequest&) {
     return aeronet::HttpResponse{201, "Created", "text/plain", "NORMAL"};
   });
-  std::jthread th([&] { srv.runUntil([] { return false; }, std::chrono::milliseconds(5)); });
+  std::jthread th([&] { srv.runUntil([] { return false; }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   // Build raw requests (each must include Host and Connection: keep-alive)
   std::string r1 = "GET /ka HTTP/1.1\r\nHost: test\r\nConnection: keep-alive\r\n\r\n";  // streaming

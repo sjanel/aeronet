@@ -5,8 +5,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "test_http_client.hpp"
 #include "test_server_fixture.hpp"
 
@@ -25,7 +25,7 @@ std::string httpGet(uint16_t port, const std::string& target) {
 }  // namespace
 
 TEST(HttpBasic, SimpleGet) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     auto testHeaderIt = req.headers.find("X-Test");

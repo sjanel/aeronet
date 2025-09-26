@@ -11,8 +11,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "socket.hpp"
 #include "test_server_fixture.hpp"
 
@@ -35,7 +35,7 @@ Socket connectLoopback(uint16_t port) {
 }  // anonymous namespace
 
 TEST(HttpHeaderTimeout, SlowHeadersConnectionClosed) {
-  ServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withPort(0).withHeaderReadTimeout(std::chrono::milliseconds(50));
   TestServer ts(cfg);
   ts.server.setHandler([](const HttpRequest&) {

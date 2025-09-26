@@ -7,7 +7,7 @@
 #include <memory>
 #include <utility>
 
-#include "aeronet/server.hpp"
+#include "aeronet/http-server.hpp"
 #include "connection.hpp"
 #include "raw-chars.hpp"
 #include "transport.hpp"
@@ -18,6 +18,7 @@
 
 #include "tls-context.hpp"
 #include "tls-handshake.hpp"
+#include "tls-raii.hpp"
 #include "tls-transport.hpp"  // from tls module include directory
 #endif
 #include "event-loop.hpp"
@@ -25,6 +26,10 @@
 #include "sys-utils.hpp"
 
 namespace aeronet {
+
+namespace {
+inline constexpr std::size_t kChunkSize = 4096;
+}
 
 void HttpServer::sweepIdleConnections() {
   // Periodic maintenance of live connections: applies keep-alive timeout (if enabled) and
@@ -34,7 +39,7 @@ void HttpServer::sweepIdleConnections() {
   auto now = std::chrono::steady_clock::now();
   for (auto it = _connStates.begin(); it != _connStates.end();) {
     bool closeThis = false;
-    ConnStateInternal& st = it->second;
+    ConnectionState& st = it->second;
     // Keep-alive inactivity enforcement only if enabled.
     if (_config.enableKeepAlive) {
       if (st.shouldClose || (now - st.lastActivity) > _config.keepAliveTimeout) {
@@ -75,28 +80,32 @@ void HttpServer::acceptNewConnections() {
       break;
     }
     if (setNonBlocking(cnx.fd()) < 0) {
-      int savedErr = errno;
+      auto savedErr = errno;
       log::error("setNonBlocking failed fd={} err={}: {}", cnx.fd(), savedErr, std::strerror(savedErr));
       continue;
     }
-    if (!_loop->add(cnx.fd(), EPOLLIN | EPOLLET)) {
-      int savedErr = errno;
+    if (!_loop.add(cnx.fd(), EPOLLIN | EPOLLET)) {
+      auto savedErr = errno;
       log::error("EventLoop add client failed fd={} err={}: {}", cnx.fd(), savedErr, std::strerror(savedErr));
       continue;
     }
-    int cnxFd = cnx.fd();
-    auto [itState, inserted] = _connStates.emplace(std::move(cnx), ConnStateInternal{});
-    ConnStateInternal& stRef = itState->second;
+    auto cnxFd = cnx.fd();
+    auto [itState, inserted] = _connStates.emplace(std::move(cnx), ConnectionState{});
+    ConnectionState& stRef = itState->second;
 #ifdef AERONET_ENABLE_OPENSSL
-    if (_tlsCtx != nullptr && _config.tls) {
-      SSL_CTX* ctx = reinterpret_cast<SSL_CTX*>(_tlsCtx);
-      SSL* ssl = SSL_new(ctx);
-      if (ssl == nullptr) {
+    if (_config.tls && _tlsCtxHolder) {
+      SSL_CTX* ctx = reinterpret_cast<SSL_CTX*>(_tlsCtxHolder->raw());
+      SslPtr sslPtr(SSL_new(ctx), SSL_free);
+      if (sslPtr.get() == nullptr) {
         continue;
       }
-      SSL_set_fd(ssl, cnxFd);  // associate
-      SSL_set_accept_state(ssl);
-      stRef.transport = std::make_unique<TlsTransport>(ssl);
+
+      if (SSL_set_fd(sslPtr.get(), cnxFd) != 1) {  // associate
+        log::error("SSL_set_fd failed for fd={}", cnxFd);
+        continue;
+      }
+      SSL_set_accept_state(sslPtr.get());
+      stRef.transport = std::make_unique<TlsTransport>(std::move(sslPtr));
       stRef.handshakeStart = std::chrono::steady_clock::now();
     } else {
       stRef.transport = std::make_unique<PlainTransport>(cnxFd);
@@ -104,12 +113,11 @@ void HttpServer::acceptNewConnections() {
 #else
     stRef.transport = std::make_unique<PlainTransport>(cnxFd);
 #endif
-    ConnStateInternal* pst = &itState->second;
+    ConnectionState* pst = &itState->second;
     while (true) {
-      pst->buffer.ensureAvailableCapacity(4096);
       bool wantR = false;
       bool wantW = false;
-      ssize_t bytesRead = transportRead(cnxFd, *pst, pst->buffer.data() + pst->buffer.size(), 4096, wantR, wantW);
+      ssize_t bytesRead = transportRead(cnxFd, *pst, kChunkSize, wantR, wantW);
       // Check for handshake completion
       if (!pst->tlsEstablished && pst->transport && !pst->transport->handshakePending()) {
 #ifdef AERONET_ENABLE_OPENSSL
@@ -125,8 +133,7 @@ void HttpServer::acceptNewConnections() {
         if (pst->headerStart.time_since_epoch().count() == 0) {
           pst->headerStart = std::chrono::steady_clock::now();
         }
-        pst->buffer.resize_down(pst->buffer.size() + static_cast<std::size_t>(bytesRead));
-        if (bytesRead < 4096) {
+        if (std::cmp_less(bytesRead, kChunkSize)) {
           break;
         }
         continue;
@@ -140,8 +147,8 @@ void HttpServer::acceptNewConnections() {
         // Adjust epoll interest if TLS handshake needs write readiness
         pst->tlsWantRead = wantR;
         pst->tlsWantWrite = wantW;
-        if (wantW && !pst->waitingWritable && _loop) {
-          if (_loop->mod(cnxFd, EPOLLIN | EPOLLOUT | EPOLLET)) {
+        if (wantW && !pst->waitingWritable) {
+          if (_loop.mod(cnxFd, EPOLLIN | EPOLLOUT | EPOLLET)) {
             pst->waitingWritable = true;
           }
         }
@@ -163,9 +170,8 @@ void HttpServer::acceptNewConnections() {
 }
 
 void HttpServer::closeConnection(int cfd) {
-  if (_loop) {
-    _loop->del(cfd);
-  }
+  _loop.del(cfd);
+
   auto it = _connStates.find(cfd);
   if (it != _connStates.end()) {
     // Best-effort graceful TLS shutdown
@@ -188,14 +194,13 @@ void HttpServer::handleReadableClient(int fd) {
   if (itState == _connStates.end()) {
     return;
   }
-  ConnStateInternal& state = itState->second;
+  ConnectionState& state = itState->second;
   state.lastActivity = std::chrono::steady_clock::now();
   bool closeCnx = false;
   while (true) {
-    state.buffer.ensureAvailableCapacity(4096);
     bool wantR = false;
     bool wantW = false;
-    ssize_t count = transportRead(fd, state, state.buffer.data() + state.buffer.size(), 4096, wantR, wantW);
+    ssize_t count = transportRead(fd, state, kChunkSize, wantR, wantW);
     if (!state.tlsEstablished && state.transport && !state.transport->handshakePending()) {
 #ifdef AERONET_ENABLE_OPENSSL
       if (_config.tls && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
@@ -211,7 +216,7 @@ void HttpServer::handleReadableClient(int fd) {
         state.tlsWantRead = wantR;
         state.tlsWantWrite = wantW;
         if (wantW && !state.waitingWritable && _loop) {
-          if (_loop->mod(fd, EPOLLIN | EPOLLOUT | EPOLLET)) {
+          if (_loop.mod(fd, EPOLLIN | EPOLLOUT | EPOLLET)) {
             state.waitingWritable = true;
           }
         }
@@ -225,7 +230,6 @@ void HttpServer::handleReadableClient(int fd) {
       closeCnx = true;
       break;
     }
-    state.buffer.resize_down(state.buffer.size() + static_cast<std::size_t>(count));
     if (count > 0 && state.headerStart.time_since_epoch().count() == 0) {
       state.headerStart = std::chrono::steady_clock::now();
     }
