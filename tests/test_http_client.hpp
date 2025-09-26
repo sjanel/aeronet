@@ -10,9 +10,12 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "socket.hpp"
 
 // Lightweight HTTP/1.1 test client helpers with timeouts and safety caps.
 // Goals:
@@ -22,8 +25,6 @@
 // Not intended to be a fully compliant client. Only covers scenarios needed by tests.
 
 namespace test_http_client {
-
-#include "socket.hpp"
 
 struct RequestOptions {
   std::string method{"GET"};
@@ -208,7 +209,7 @@ inline std::string request_or_throw(uint16_t port, const RequestOptions &opt = {
 
 // Send multiple requests over a single keep-alive connection and return raw responses individually.
 // Limitations: assumes server responds fully before next request is parsed (sufficient for simple tests).
-inline std::vector<std::string> sequentialRequests(uint16_t port, const std::vector<RequestOptions> &reqs) {
+inline std::vector<std::string> sequentialRequests(uint16_t port, std::span<const RequestOptions> reqs) {
   std::vector<std::string> results;
   if (reqs.empty()) {
     return results;

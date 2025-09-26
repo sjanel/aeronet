@@ -3,20 +3,22 @@
 #include "http-constants.hpp"
 #include "http-status-build.hpp"
 #include "http-status-code.hpp"
+#include "nchars.hpp"
 #include "raw-chars.hpp"
 #include "stringconv.hpp"
 
 namespace aeronet::http {
 
 RawChars buildStatusLine(http::StatusCode code, std::string_view reason) {
-  RawChars ret(96);
+  RawChars ret(std::max<std::size_t>(
+      96UL, HTTP11.size() + 2UL + static_cast<std::size_t>(nchars(code)) + reason.size() + CRLF.size()));
 
-  ret.append(http::HTTP11);
-  ret.append(' ');
-  ret.append(std::string_view(IntegralToCharVector(code)));
-  ret.append(' ');
-  ret.append(reason);
-  ret.append(http::CRLF);
+  ret.unchecked_append(HTTP11);
+  ret.unchecked_push_back(' ');
+  ret.unchecked_append(std::string_view(IntegralToCharVector(code)));
+  ret.unchecked_push_back(' ');
+  ret.unchecked_append(reason);
+  ret.unchecked_append(CRLF);
 
   return ret;
 }

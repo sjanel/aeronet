@@ -4,7 +4,7 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
 #include "test_tls_helper.hpp"
@@ -18,7 +18,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertHandshakeFailsWithout) {
   std::string resp;
   std::string alpn;
   {
-    TlsTestServer ts({"http/1.1"}, [&](aeronet::ServerConfig& cfg) {
+    TlsTestServer ts({"http/1.1"}, [&](aeronet::HttpServerConfig& cfg) {
       cfg.withTlsRequireClientCert(true).withTlsAddTrustedClientCert(serverCert.first);
     });
     auto port = ts.port();
@@ -52,7 +52,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertSuccessWithAlpn) {
   std::string resp;
   std::string alpn;
   {
-    TlsTestServer ts({"http/1.1"}, [&](aeronet::ServerConfig& cfg) {
+    TlsTestServer ts({"http/1.1"}, [&](aeronet::HttpServerConfig& cfg) {
       cfg.withTlsRequireClientCert(true).withTlsAddTrustedClientCert(clientCert.first);
     });
     auto port = ts.port();

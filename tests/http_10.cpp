@@ -6,8 +6,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "test_util.hpp"
 
 using namespace std::chrono_literals;
@@ -27,7 +27,7 @@ std::string collectSimple(uint16_t port, const std::string& req) {
 #include "test_server_fixture.hpp"
 
 TEST(Http10, BasicVersionEcho) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body = "A";
@@ -39,7 +39,7 @@ TEST(Http10, BasicVersionEcho) {
 }
 
 TEST(Http10, No100ContinueEvenIfHeaderPresent) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body = "B";
@@ -54,7 +54,7 @@ TEST(Http10, No100ContinueEvenIfHeaderPresent) {
 }
 
 TEST(Http10, RejectTransferEncoding) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body = "C";
@@ -67,7 +67,7 @@ TEST(Http10, RejectTransferEncoding) {
 }
 
 TEST(Http10, KeepAliveOptInStillWorks) {
-  TestServer ts(aeronet::ServerConfig{});
+  TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body = "D";

@@ -10,14 +10,14 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server.hpp"
 #include "http-constants.hpp"
 #include "http-response-build.hpp"
 #include "log.hpp"
 #include "string-equal-ignore-case.hpp"
 
 namespace aeronet {
-void HttpServer::finalizeAndSendResponse(int fd, ConnStateInternal& state, HttpRequest& req, HttpResponse& resp,
+void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpRequest& req, HttpResponse& resp,
                                          std::size_t consumedBytes, bool& closeConn) {
   ++state.requestsServed;
   bool keepAlive = false;
@@ -41,7 +41,7 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnStateInternal& state, HttpR
   std::string_view body = resp.body;
   auto header = http::buildHead(resp, req.version, std::string_view(_cachedDate), keepAlive, body.size());
   if (req.method == http::HEAD) {
-    queueData(fd, state, header.data(), header.size());
+    queueData(fd, state, header);
   } else {
     ::iovec iov[2];  // included by <sys/uio.h> NOLINT(misc-include-cleaner)
     iov[0].iov_base = const_cast<char*>(header.data());
@@ -58,60 +58,60 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnStateInternal& state, HttpR
   }
 }
 
-bool HttpServer::queueData(int fd, ConnStateInternal& state, const char* data, std::size_t len) {
+bool HttpServer::queueData(int fd, ConnectionState& state, std::string_view data) {
   if (state.outBuffer.empty()) {
     bool wantR = false;
     bool wantW = false;
-    auto written = transportWrite(fd, state, data, len, wantR, wantW);
+    auto written = transportWrite(fd, state, data, wantR, wantW);
     state.tlsWantRead = wantR;
     state.tlsWantWrite = wantW;
     if (!state.tlsEstablished && state.transport && !state.transport->handshakePending()) {
       state.tlsEstablished = true;
     }
     if (written > 0) {
-      if (std::cmp_equal(written, len)) {
-        _stats.totalBytesQueued += static_cast<uint64_t>(len);
+      if (std::cmp_equal(written, data.size())) {
+        _stats.totalBytesQueued += static_cast<uint64_t>(data.size());
         _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
         // If TLS wants more write (handshake) and no buffered data, ensure EPOLLOUT
-        if (wantW && !state.waitingWritable && _loop) {
-          if (!HttpServer::modWithCloseOnFailure(_loop.get(), fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
+        if (wantW && !state.waitingWritable) {
+          if (!HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
                                                  "enable writable immediate write path", _stats)) {
             return false;
           }
           state.waitingWritable = true;
-          _stats.deferredWriteEvents++;
+          ++_stats.deferredWriteEvents;
         }
         return true;
       }
       // partial write
       _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
-      state.outBuffer.append(data + written, data + len);
+      state.outBuffer.append(data.data() + written, data.data() + data.size());
     } else if (written == 0 || (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))) {
       // no progress but non fatal
-      state.outBuffer.append(data, data + len);
+      state.outBuffer.append(data);
     } else {  // fatal
       state.shouldClose = true;
       return false;
     }
   } else {
-    state.outBuffer.append(data, data + len);
+    state.outBuffer.append(data);
   }
-  _stats.totalBytesQueued += static_cast<uint64_t>(len);
+  _stats.totalBytesQueued += static_cast<uint64_t>(data.size());
   _stats.maxConnectionOutboundBuffer = std::max(_stats.maxConnectionOutboundBuffer, state.outBuffer.size());
   if (state.outBuffer.size() > _config.maxOutboundBufferBytes) {
     state.shouldClose = true;
   }
-  if (!state.waitingWritable && _loop) {
-    if (HttpServer::modWithCloseOnFailure(_loop.get(), fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
+  if (!state.waitingWritable) {
+    if (HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
                                           "enable writable buffered path", _stats)) {
       state.waitingWritable = true;
-      _stats.deferredWriteEvents++;
+      ++_stats.deferredWriteEvents;
     }
   }
   return true;
 }
 
-bool HttpServer::queueVec(int fd, ConnStateInternal& state, const struct iovec* iov, int iovcnt) {
+bool HttpServer::queueVec(int fd, ConnectionState& state, const struct iovec* iov, int iovcnt) {
   std::size_t total = 0;
   for (int i = 0; i < iovcnt; ++i) {
     total += iov[i].iov_len;
@@ -123,12 +123,11 @@ bool HttpServer::queueVec(int fd, ConnStateInternal& state, const struct iovec* 
     // Attempt to write iov chunks sequentially via transportWrite.
     std::size_t advanced = 0;
     for (int iovPos1 = 0; iovPos1 < iovcnt; ++iovPos1) {
-      const char* base = static_cast<const char*>(iov[iovPos1].iov_base);
-      auto len = iov[iovPos1].iov_len;
-      while (len > 0) {
+      std::string_view baseView(static_cast<const char*>(iov[iovPos1].iov_base), iov[iovPos1].iov_len);
+      while (!baseView.empty()) {
         bool wantR = false;
         bool wantW = false;
-        auto bytesWritten = transportWrite(fd, state, base, len, wantR, wantW);
+        auto bytesWritten = transportWrite(fd, state, baseView, wantR, wantW);
         state.tlsWantRead = wantR;
         state.tlsWantWrite = wantW;
         if (!state.tlsEstablished && state.transport && !state.transport->handshakePending()) {
@@ -137,26 +136,24 @@ bool HttpServer::queueVec(int fd, ConnStateInternal& state, const struct iovec* 
         if (bytesWritten > 0) {
           _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(bytesWritten);
           advanced += static_cast<std::size_t>(bytesWritten);
-          base += static_cast<std::ptrdiff_t>(bytesWritten);
-          len -= static_cast<std::size_t>(bytesWritten);
-          if (wantW && !state.waitingWritable && _loop) {
-            if (!HttpServer::modWithCloseOnFailure(_loop.get(), fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
+          baseView.remove_prefix(static_cast<std::string_view::size_type>(bytesWritten));
+          if (wantW && !state.waitingWritable) {
+            if (!HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
                                                    "enable writable queueVec handshake path", _stats)) {
               return false;
             }
             state.waitingWritable = true;
-            _stats.deferredWriteEvents++;
+            ++_stats.deferredWriteEvents;
           }
           continue;
         }
         if (bytesWritten == 0 || (bytesWritten == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))) {
           // buffer remaining of this iov and rest
-          state.outBuffer.append(base, base + len);
+          state.outBuffer.append(baseView);
           for (int iovPos2 = iovPos1 + 1; iovPos2 < iovcnt; ++iovPos2) {
             const char* b2 = static_cast<const char*>(iov[iovPos2].iov_base);
             state.outBuffer.append(b2, b2 + iov[iovPos2].iov_len);
           }
-          len = 0;  // exit inner loop
           break;
         }
         // fatal
@@ -183,8 +180,8 @@ bool HttpServer::queueVec(int fd, ConnStateInternal& state, const struct iovec* 
   if (state.outBuffer.size() > _config.maxOutboundBufferBytes) {
     state.shouldClose = true;
   }
-  if (!state.waitingWritable && _loop) {
-    if (!HttpServer::modWithCloseOnFailure(_loop.get(), fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
+  if (!state.waitingWritable) {
+    if (!HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
                                            "enable writable queueVec buffered path", _stats)) {
       return false;
     }
@@ -194,13 +191,13 @@ bool HttpServer::queueVec(int fd, ConnStateInternal& state, const struct iovec* 
   return true;
 }
 
-void HttpServer::flushOutbound(int fd, ConnStateInternal& state) {
-  _stats.flushCycles++;
+void HttpServer::flushOutbound(int fd, ConnectionState& state) {
+  ++_stats.flushCycles;
   bool lastWantWrite = false;
   while (!state.outBuffer.empty()) {
     bool wantR = false;
     bool wantW = false;
-    auto written = transportWrite(fd, state, state.outBuffer.data(), state.outBuffer.size(), wantR, wantW);
+    auto written = transportWrite(fd, state, state.outBuffer, wantR, wantW);
     lastWantWrite = wantW;
     state.tlsWantRead = wantR;
     state.tlsWantWrite = wantW;
@@ -227,13 +224,13 @@ void HttpServer::flushOutbound(int fd, ConnStateInternal& state) {
     break;
   }
   // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
-  if (state.outBuffer.empty() && state.waitingWritable && _loop) {
+  if (state.outBuffer.empty() && state.waitingWritable) {
     bool keepWritable = false;
     if (!state.tlsEstablished && state.transport && state.transport->handshakePending()) {
       keepWritable = true;
     }
     if (!keepWritable) {
-      if (HttpServer::modWithCloseOnFailure(_loop.get(), fd, EPOLLIN | EPOLLET, state,
+      if (HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLET, state,
                                             "disable writable flushOutbound drop EPOLLOUT", _stats)) {
         state.waitingWritable = false;
         if (state.shouldClose) {
@@ -247,8 +244,8 @@ void HttpServer::flushOutbound(int fd, ConnStateInternal& state) {
   if (state.outBuffer.empty()) {
     bool transportNeedsWrite = (!state.tlsEstablished && (state.tlsWantWrite || lastWantWrite));
     if (transportNeedsWrite) {
-      if (!state.waitingWritable && _loop) {
-        if (!HttpServer::modWithCloseOnFailure(_loop.get(), fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
+      if (!state.waitingWritable) {
+        if (!HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
                                                "enable writable flushOutbound transportNeedsWrite", _stats)) {
           return;  // failure logged
         }
@@ -257,7 +254,7 @@ void HttpServer::flushOutbound(int fd, ConnStateInternal& state) {
     } else if (state.waitingWritable) {
       state.waitingWritable = false;
       if (_loop) {
-        HttpServer::modWithCloseOnFailure(_loop.get(), fd, EPOLLIN | EPOLLET, state,
+        HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLET, state,
                                           "disable writable flushOutbound transport no longer needs", _stats);
       }
     }

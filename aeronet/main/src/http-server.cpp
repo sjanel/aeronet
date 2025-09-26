@@ -1,4 +1,4 @@
-#include "aeronet/server.hpp"
+#include "aeronet/http-server.hpp"
 
 #include <asm-generic/socket.h>
 #include <netinet/in.h>
@@ -23,7 +23,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "duration-format.hpp"
 #include "event-loop.hpp"
 #include "exception.hpp"
@@ -83,21 +83,17 @@ namespace aeronet {
 //   - In a nominal environment using an ephemeral port (cfg.port == 0), the probability of an exception is ~0 unless
 //     the process hits fd limits or severe memory pressure. Fixed ports may legitimately throw due to EADDRINUSE.
 //   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
-HttpServer::HttpServer(ServerConfig cfg) : _config(std::move(cfg)) {
+HttpServer::HttpServer(HttpServerConfig cfg) : _config(std::move(cfg)) {
   _listenSocket = Socket(Socket::Type::STREAM);
   int listenFdLocal = _listenSocket.fd();
   // Initialize TLS context if requested (OpenSSL build).
 #ifdef AERONET_ENABLE_OPENSSL
   if (_config.tls) {
-    // Direct creation via TlsContext RAII helper.
     // Reset external metrics container (fresh server instance)
     _tlsMetricsExternal.alpnStrictMismatches = 0;
-    TlsContext ctxVal(*_config.tls, &_tlsMetricsExternal);
-    if (!ctxVal.valid()) {
-      throw std::runtime_error("Failed to create TLS context");
-    }
-    _tlsCtxHolder.emplace(std::move(ctxVal));
-    _tlsCtx = _tlsCtxHolder->raw();
+    // Allocate TlsContext on the heap so its address remains stable even if HttpServer is moved.
+    // (See detailed rationale in header next to _tlsCtxHolder.)
+    _tlsCtxHolder = std::make_unique<TlsContext>(*_config.tls, &_tlsMetricsExternal);
   }
 #else
   if (_config.tls.has_value()) {
@@ -133,10 +129,7 @@ HttpServer::HttpServer(ServerConfig cfg) : _config(std::move(cfg)) {
   if (setNonBlocking(listenFdLocal) < 0) {
     throw std::runtime_error("failed to set non-blocking");
   }
-  if (_loop == nullptr) {
-    _loop = std::make_unique<EventLoop>();
-  }
-  if (!_loop->add(listenFdLocal, EPOLLIN)) {
+  if (!_loop.add(listenFdLocal, EPOLLIN)) {
     throw std::runtime_error("EventLoop add listen socket failed");
   }
   log::info("Server created on port :{}", _config.port);
@@ -145,23 +138,47 @@ HttpServer::HttpServer(ServerConfig cfg) : _config(std::move(cfg)) {
 HttpServer::~HttpServer() { stop(); }
 
 HttpServer::HttpServer(HttpServer&& other) noexcept
-    : _listenSocket(std::move(other._listenSocket)),
+    : _stats(std::exchange(other._stats, {})),
+      _listenSocket(std::move(other._listenSocket)),
       _running(std::exchange(other._running, false)),
       _handler(std::move(other._handler)),
+      _streamingHandler(std::move(other._streamingHandler)),
       _pathHandlers(std::move(other._pathHandlers)),
       _loop(std::move(other._loop)),
       _config(std::move(other._config)),
       _connStates(std::move(other._connStates)),
       _cachedDate(std::exchange(other._cachedDate, {})),
       _cachedDateEpoch(std::exchange(other._cachedDateEpoch, TimePoint{})),
-      _parserErrCb(std::move(other._parserErrCb)) {}
+      _parserErrCb(std::move(other._parserErrCb)),
+      _metricsCb(std::move(other._metricsCb))
+#ifdef AERONET_ENABLE_OPENSSL
+      ,
+      _tlsCtxHolder(std::move(other._tlsCtxHolder)),
+      _tlsMetrics(std::move(other._tlsMetrics)),
+      _tlsMetricsExternal(std::exchange(other._tlsMetricsExternal, {}))
+#endif
+
+{
+  if (_running) {  // note: _running holds original state via std::exchange above
+    log::error("Attempt to move-construct a running HttpServer (port={}) — unsupported", _config.port);
+    assert(false && "Moving a running HttpServer is unsupported");
+    _running = false;  // force destination to a stopped state to reduce further surprises
+  }
+}
 
 HttpServer& HttpServer::operator=(HttpServer&& other) noexcept {
   if (this != &other) {
     stop();
+    if (other._running) {  // captured pre-move state from other
+      log::error("Attempt to move-assign from a running HttpServer (port={}) — unsupported", _config.port);
+      assert(false && "Moving from a running HttpServer is unsupported");
+      other._running = false;
+    }
+    _stats = std::exchange(other._stats, {});
     _listenSocket = std::move(other._listenSocket);
     _running = std::exchange(other._running, false);
     _handler = std::move(other._handler);
+    _streamingHandler = std::move(other._streamingHandler);
     _pathHandlers = std::move(other._pathHandlers);
     _loop = std::move(other._loop);
     _config = std::move(other._config);
@@ -169,6 +186,12 @@ HttpServer& HttpServer::operator=(HttpServer&& other) noexcept {
     _cachedDate = std::exchange(other._cachedDate, {});
     _cachedDateEpoch = std::exchange(other._cachedDateEpoch, TimePoint{});
     _parserErrCb = std::move(other._parserErrCb);
+    _metricsCb = std::move(other._metricsCb);
+#ifdef AERONET_ENABLE_OPENSSL
+    _tlsCtxHolder = std::move(other._tlsCtxHolder);
+    _tlsMetrics = std::move(other._tlsMetrics);
+    _tlsMetricsExternal = std::exchange(other._tlsMetricsExternal, {});
+#endif
   }
   return *this;
 }
@@ -222,13 +245,14 @@ void HttpServer::addPathStreamingHandler(std::string path, http::Method method, 
   addPathStreamingHandler(std::move(path), http::MethodSet{method}, handler);
 }
 
-void HttpServer::run(Duration checkPeriod) {
+void HttpServer::run() {
   if (_running) {
     throw exception("Server is already running");
   }
-  log::info("Server running until SIGINT or SIGTERM (check period of {})", checkPeriod);
+  auto interval = _config.pollInterval;
+  log::info("Server running until SIGINT or SIGTERM (poll interval={})", PrettyDuration{interval});
   for (_running = true; _running;) {
-    eventLoop(checkPeriod);
+    eventLoop(interval);
   }
 }
 
@@ -242,13 +266,14 @@ void HttpServer::stop() {
   }
 }
 
-void HttpServer::runUntil(const std::function<bool()>& predicate, Duration checkPeriod) {
+void HttpServer::runUntil(const std::function<bool()>& predicate) {
   if (_running) {
     throw exception("Server is already running");
   }
-  log::info("Server running until predicate, SIGINT or SIGTERM (check period of {})", PrettyDuration{checkPeriod});
+  auto interval = _config.pollInterval;
+  log::info("Server running until predicate, SIGINT or SIGTERM (poll interval={})", PrettyDuration{interval});
   for (_running = true; _running && !predicate();) {
-    eventLoop(checkPeriod);
+    eventLoop(interval);
   }
   stop();
 }
@@ -264,21 +289,29 @@ void HttpServer::refreshCachedDate() {
   }
 }
 
-ssize_t HttpServer::transportRead(int fd, ConnStateInternal& state, char* buf, std::size_t len, bool& wantRead,
+ssize_t HttpServer::transportRead(int fd, ConnectionState& state, std::size_t chunkSize, bool& wantRead,
                                   bool& wantWrite) {
-  if (state.transport) {
-    return state.transport->read(buf, len, wantRead, wantWrite);
-  }
-  wantRead = wantWrite = false;
-  return ::read(fd, buf, len);
+  std::size_t oldSize = state.buffer.size();
+  ssize_t bytesRead = 0;
+  state.buffer.resize_and_overwrite(oldSize + chunkSize, [&](char* base, std::size_t /*n*/) {
+    char* writePtr = base + oldSize;  // base points to beginning of existing buffer
+    if (state.transport) {
+      bytesRead = state.transport->read(writePtr, chunkSize, wantRead, wantWrite);
+    } else {
+      wantRead = wantWrite = false;
+      bytesRead = ::read(fd, writePtr, chunkSize);
+    }
+    if (bytesRead > 0) {
+      return oldSize + static_cast<std::size_t>(bytesRead);  // grew by bytesRead
+    }
+    return oldSize;  // retain previous logical size on EOF / EAGAIN / error
+  });
+  return bytesRead;
 }
 
-bool HttpServer::modWithCloseOnFailure(EventLoop* loop, int fd, uint32_t events, ConnStateInternal& st, const char* ctx,
+bool HttpServer::ModWithCloseOnFailure(EventLoop& loop, int fd, uint32_t events, ConnectionState& st, const char* ctx,
                                        StatsInternal& stats) {
-  if (loop == nullptr) {
-    return false;
-  }
-  if (loop->mod(fd, events)) {
+  if (loop.mod(fd, events)) {
     return true;
   }
   auto errCode = errno;
@@ -295,30 +328,24 @@ bool HttpServer::modWithCloseOnFailure(EventLoop* loop, int fd, uint32_t events,
   return false;
 }
 
-ssize_t HttpServer::transportWrite(int fd, ConnStateInternal& state, const char* buf, std::size_t len, bool& wantRead,
+ssize_t HttpServer::transportWrite(int fd, ConnectionState& state, std::string_view data, bool& wantRead,
                                    bool& wantWrite) {
   if (state.transport) {
-    return state.transport->write(buf, len, wantRead, wantWrite);
+    return state.transport->write(data, wantRead, wantWrite);
   }
   wantRead = wantWrite = false;
-  return ::send(fd, buf, len, MSG_NOSIGNAL);
+  return ::send(fd, data.data(), data.size(), MSG_NOSIGNAL);
 }
 
-bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateInternal& state) {
+bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState& state) {
   bool closeCnx = false;
   while (true) {
     std::size_t headerEnd = 0;
-    HttpRequest req{};
+    HttpRequest req;
     // Propagate negotiated ALPN (if any) from connection state into per-request object.
-    if (!state.selectedAlpn.empty()) {
-      req.alpnProtocol = state.selectedAlpn;
-    }
-    if (!state.negotiatedCipher.empty()) {
-      req.tlsCipher = state.negotiatedCipher;
-    }
-    if (!state.negotiatedVersion.empty()) {
-      req.tlsVersion = state.negotiatedVersion;
-    }
+    req.alpnProtocol = state.selectedAlpn;
+    req.tlsCipher = state.negotiatedCipher;
+    req.tlsVersion = state.negotiatedVersion;
     auto reqStart = std::chrono::steady_clock::now();
     if (!parseNextRequestFromBuffer(fd, state, req, headerEnd, closeCnx)) {
       break;  // need more data or connection closed
@@ -331,17 +358,13 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
     if (std::string_view te = req.findHeader(http::TransferEncoding); !te.empty()) {
       hasTE = true;
       if (req.version == http::HTTP10) {
-        auto err = buildSimpleError(400, http::ReasonBadRequest, std::string_view(_cachedDate), true);
-        queueData(fd, state, err.data(), err.size());
-        closeCnx = true;
+        emitSimpleError(fd, state, 400, http::ReasonBadRequest, ParserError::BadRequestLine, closeCnx);
         break;
       }
       if (CaseInsensitiveEqual(te, http::chunked)) {
         isChunked = true;
       } else {
-        auto err = buildSimpleError(501, http::ReasonNotImplemented, std::string_view(_cachedDate), true);
-        queueData(fd, state, err.data(), err.size());
-        closeCnx = true;
+        emitSimpleError(fd, state, 501, http::ReasonNotImplemented, ParserError::GenericBadRequest, closeCnx);
         break;
       }
     }
@@ -351,9 +374,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
       hasCL = true;
     }
     if (hasCL && hasTE) {
-      auto err = buildSimpleError(400, http::ReasonBadRequest, std::string_view(_cachedDate), true);
-      queueData(fd, state, err.data(), err.size());
-      closeCnx = true;
+      emitSimpleError(fd, state, 400, http::ReasonBadRequest, ParserError::BadRequestLine, closeCnx);
       break;
     }
     bool expectContinue = false;
@@ -584,12 +605,9 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnStateIntern
 }
 
 void HttpServer::eventLoop(Duration timeout) {
-  if (!_loop) {
-    return;
-  }
   refreshCachedDate();
   sweepIdleConnections();
-  int ready = _loop->poll(timeout, [&](int fd, uint32_t ev) {
+  int ready = _loop.poll(timeout, [&](int fd, uint32_t ev) {
     if (fd == _listenSocket.fd()) {
       acceptNewConnections();
     } else {
@@ -609,6 +627,52 @@ void HttpServer::eventLoop(Duration timeout) {
     // Mark server as no longer running so outer loops terminate gracefully.
     _running = false;
   }
+}
+
+ServerStats HttpServer::stats() const {
+  ServerStats statsOut;
+  statsOut.totalBytesQueued = _stats.totalBytesQueued;
+  statsOut.totalBytesWrittenImmediate = _stats.totalBytesWrittenImmediate;
+  statsOut.totalBytesWrittenFlush = _stats.totalBytesWrittenFlush;
+  statsOut.deferredWriteEvents = _stats.deferredWriteEvents;
+  statsOut.flushCycles = _stats.flushCycles;
+  statsOut.epollModFailures = _stats.epollModFailures;
+  statsOut.maxConnectionOutboundBuffer = _stats.maxConnectionOutboundBuffer;
+#ifdef AERONET_ENABLE_OPENSSL
+  statsOut.tlsHandshakesSucceeded = _tlsMetrics.handshakesSucceeded;
+  statsOut.tlsClientCertPresent = _tlsMetrics.clientCertPresent;
+  statsOut.tlsAlpnStrictMismatches = _tlsMetricsExternal.alpnStrictMismatches;
+  statsOut.tlsAlpnDistribution.reserve(_tlsMetrics.alpnDistribution.size());
+  for (const auto& kv : _tlsMetrics.alpnDistribution) {
+    statsOut.tlsAlpnDistribution.emplace_back(kv.first, kv.second);
+  }
+  statsOut.tlsVersionCounts.reserve(_tlsMetrics.versionCounts.size());
+  for (const auto& kv : _tlsMetrics.versionCounts) {
+    statsOut.tlsVersionCounts.emplace_back(kv.first, kv.second);
+  }
+  statsOut.tlsCipherCounts.reserve(_tlsMetrics.cipherCounts.size());
+  for (const auto& kv : _tlsMetrics.cipherCounts) {
+    statsOut.tlsCipherCounts.emplace_back(kv.first, kv.second);
+  }
+  statsOut.tlsHandshakeDurationCount = _tlsMetrics.handshakeDurationCount;
+  statsOut.tlsHandshakeDurationTotalNs = _tlsMetrics.handshakeDurationTotalNs;
+  statsOut.tlsHandshakeDurationMaxNs = _tlsMetrics.handshakeDurationMaxNs;
+#endif
+  return statsOut;
+}
+
+bool HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, std::string_view reason,
+                                 ParserError perr, bool& closeConn) {
+  const auto err = BuildSimpleError(code, reason, std::string_view(_cachedDate), true);
+  queueData(fd, state, err);
+  try {
+    _parserErrCb(perr);
+  } catch (const std::exception& ex) {
+    // Swallow exceptions from user callback to avoid destabilizing the server
+    log::error("Exception raised in user callback: {}", ex.what());
+  }
+  closeConn = true;
+  return false;
 }
 
 }  // namespace aeronet

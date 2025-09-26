@@ -8,8 +8,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
 #include "test_http_client.hpp"
@@ -19,7 +19,7 @@ using namespace aeronet;
 // (Removed old raw helper; switched to shared test_http_client::request for all requests)
 
 TEST(HttpUrlDecoding, SpaceDecoding) {
-  ServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(4);
   HttpServer server(cfg);
   http::MethodSet ms{http::Method::GET};
@@ -32,7 +32,7 @@ TEST(HttpUrlDecoding, SpaceDecoding) {
     return resp;
   });
   std::atomic<bool> done{false};
-  std::jthread th([&] { server.runUntil([&] { return done.load(); }, std::chrono::milliseconds{50}); });
+  std::jthread th([&] { server.runUntil([&] { return done.load(); }); });
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
@@ -47,7 +47,7 @@ TEST(HttpUrlDecoding, SpaceDecoding) {
 }
 
 TEST(HttpUrlDecoding, Utf8Decoded) {
-  ServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(4);
   HttpServer server(cfg);
   http::MethodSet ms{http::Method::GET};
@@ -62,7 +62,7 @@ TEST(HttpUrlDecoding, Utf8Decoded) {
     return resp;
   });
   std::atomic<bool> done{false};
-  std::jthread th([&] { server.runUntil([&] { return done.load(); }, std::chrono::milliseconds{50}); });
+  std::jthread th([&] { server.runUntil([&] { return done.load(); }); });
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
@@ -78,7 +78,7 @@ TEST(HttpUrlDecoding, Utf8Decoded) {
 }
 
 TEST(HttpUrlDecoding, PlusIsNotSpace) {
-  ServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(4);
   HttpServer server(cfg);
   http::MethodSet ms{http::Method::GET};
@@ -91,7 +91,7 @@ TEST(HttpUrlDecoding, PlusIsNotSpace) {
     return resp;
   });
   std::atomic<bool> done{false};
-  std::jthread th([&] { server.runUntil([&] { return done.load(); }, std::chrono::milliseconds{50}); });
+  std::jthread th([&] { server.runUntil([&] { return done.load(); }); });
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
@@ -106,11 +106,11 @@ TEST(HttpUrlDecoding, PlusIsNotSpace) {
 }
 
 TEST(HttpUrlDecoding, InvalidPercentSequence400) {
-  ServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(2);
   HttpServer server(cfg);
   std::atomic<bool> done{false};
-  std::jthread th([&] { server.runUntil([&] { return done.load(); }, std::chrono::milliseconds{50}); });
+  std::jthread th([&] { server.runUntil([&] { return done.load(); }); });
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }

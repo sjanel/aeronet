@@ -7,13 +7,13 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/multi-http-server.hpp"
-#include "aeronet/server-config.hpp"
 #include "test_raw_get.hpp"
 
 TEST(MultiHttpServer, BasicStartAndServe) {
   const int threads = 3;
-  aeronet::MultiHttpServer multi(aeronet::ServerConfig{}.withReusePort(), threads);
+  aeronet::MultiHttpServer multi(aeronet::HttpServerConfig{}.withReusePort(), threads);
   multi.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body = std::string("Hello "); /* path not exposed directly */

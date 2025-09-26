@@ -7,14 +7,14 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server.hpp"
 #include "test_raw_get.hpp"
 
 // This test only validates that two servers can bind the same port with SO_REUSEPORT enabled
 // and accept at least one connection each. It does not attempt to assert load distribution.
 
 TEST(HttpMultiReusePort, TwoServersBindSamePort) {
-  aeronet::HttpServer serverA(aeronet::ServerConfig{}.withReusePort());
+  aeronet::HttpServer serverA(aeronet::HttpServerConfig{}.withReusePort());
   serverA.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body = "A";
@@ -23,7 +23,7 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
 
   auto port = serverA.port();
 
-  aeronet::HttpServer serverB(aeronet::ServerConfig{}.withPort(port).withReusePort());
+  aeronet::HttpServer serverB(aeronet::HttpServerConfig{}.withPort(port).withReusePort());
   serverB.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body = "B";

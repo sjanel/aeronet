@@ -7,8 +7,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/server-config.hpp"
-#include "aeronet/server.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
 #include "test_http_client.hpp"
@@ -18,11 +18,11 @@ using namespace aeronet;
 // (Removed raw() helper; using shared test_http_client::request)
 
 TEST(HttpUrlDecodingExtra, IncompletePercentSequence400) {
-  ServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(1);
   HttpServer server(cfg);
   std::atomic<bool> done = false;
-  std::jthread th([&] { server.runUntil([&] { return done.load(); }, std::chrono::milliseconds{50}); });
+  std::jthread th([&] { server.runUntil([&] { return done.load(); }); });
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
@@ -35,7 +35,7 @@ TEST(HttpUrlDecodingExtra, IncompletePercentSequence400) {
 }
 
 TEST(HttpUrlDecodingExtra, MixedSegmentsDecoding) {
-  ServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(2);
   HttpServer server(cfg);
   http::MethodSet ms{http::Method::GET};
@@ -48,7 +48,7 @@ TEST(HttpUrlDecodingExtra, MixedSegmentsDecoding) {
     return resp;
   });
   std::atomic<bool> done = false;
-  std::jthread th([&] { server.runUntil([&] { return done.load(); }, std::chrono::milliseconds{50}); });
+  std::jthread th([&] { server.runUntil([&] { return done.load(); }); });
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }

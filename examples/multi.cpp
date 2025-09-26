@@ -8,8 +8,8 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/multi-http-server.hpp"
-#include "aeronet/server-config.hpp"
 #include "log.hpp"
 
 namespace {
@@ -27,7 +27,7 @@ int main(int argc, char** argv) {
     threads = std::stoi(argv[2]);
   }
 
-  aeronet::ServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.withPort(port).withReusePort(true);
   aeronet::MultiHttpServer multi(cfg, static_cast<uint32_t>(threads));
   multi.setHandler([](const aeronet::HttpRequest& req) {

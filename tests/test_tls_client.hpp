@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -18,6 +19,7 @@
 
 #include "raw-bytes.hpp"
 #include "test_util.hpp"
+#include "tls-raii.hpp"
 
 // Lightweight RAII TLS client used in tests to reduce duplication.
 // Features:
@@ -128,14 +130,11 @@ class TlsClient {
   using SSLUniquePtr = std::unique_ptr<SSL, void (*)(SSL*)>;
   using SSL_CTXUniquePtr = std::unique_ptr<SSL_CTX, void (*)(SSL_CTX*)>;
 
-  static aeronet::RawBytes<unsigned char> buildAlpnWire(std::span<const std::string> protos) {
-    aeronet::RawBytes<unsigned char> wire;
+  static aeronet::RawBytes buildAlpnWire(std::span<const std::string> protos) {
+    aeronet::RawBytes wire;
     for (const auto& protoStr : protos) {
-      if (protoStr.size() > 255) {
-        continue;  // skip invalid
-      }
-      wire.append(static_cast<unsigned char>(protoStr.size()));
-      wire.append(reinterpret_cast<const unsigned char*>(protoStr.data()), protoStr.size());
+      wire.push_back(static_cast<std::byte>(protoStr.size()));
+      wire.append(reinterpret_cast<const std::byte*>(protoStr.data()), protoStr.size());
     }
     return wire;
   }
@@ -156,7 +155,8 @@ class TlsClient {
     if (!_opts.alpn.empty()) {
       auto wire = buildAlpnWire(_opts.alpn);
       if (!wire.empty()) {
-        ::SSL_CTX_set_alpn_protos(localCtx.get(), wire.data(), static_cast<unsigned int>(wire.size()));
+        ::SSL_CTX_set_alpn_protos(localCtx.get(), reinterpret_cast<const unsigned char*>(wire.data()),
+                                  static_cast<unsigned int>(wire.size()));
       }
     }
     _cnx = ClientConnection(_port);
@@ -185,31 +185,19 @@ class TlsClient {
   }
 
   void loadClientCertKey(SSL_CTX* ctx) {
-    BIO* certBio = BIO_new_mem_buf(_opts.clientCertPem.data(), static_cast<int>(_opts.clientCertPem.size()));
-    BIO* keyBio = BIO_new_mem_buf(_opts.clientKeyPem.data(), static_cast<int>(_opts.clientKeyPem.size()));
-    if (certBio == nullptr || keyBio == nullptr) {
-      if (certBio != nullptr) {
-        BIO_free(certBio);
-      }
-      if (keyBio != nullptr) {
-        BIO_free(keyBio);
-      }
-      return;
+    aeronet::BioPtr certBio(BIO_new_mem_buf(_opts.clientCertPem.data(), static_cast<int>(_opts.clientCertPem.size())),
+                            ::BIO_free);
+    aeronet::BioPtr keyBio(BIO_new_mem_buf(_opts.clientKeyPem.data(), static_cast<int>(_opts.clientKeyPem.size())),
+                           ::BIO_free);
+    if (!certBio || !keyBio) {
+      return;  // allocation failure
     }
-    X509* cert = PEM_read_bio_X509(certBio, nullptr, nullptr, nullptr);
-    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(keyBio, nullptr, nullptr, nullptr);
+    aeronet::X509Ptr cert(PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr), ::X509_free);
+    aeronet::PKeyPtr pkey(PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr), ::EVP_PKEY_free);
     if (cert != nullptr && pkey != nullptr) {
-      ::SSL_CTX_use_certificate(ctx, cert);
-      ::SSL_CTX_use_PrivateKey(ctx, pkey);
+      ::SSL_CTX_use_certificate(ctx, cert.get());
+      ::SSL_CTX_use_PrivateKey(ctx, pkey.get());
     }
-    if (cert != nullptr) {
-      X509_free(cert);
-    }
-    if (pkey != nullptr) {
-      EVP_PKEY_free(pkey);
-    }
-    BIO_free(certBio);
-    BIO_free(keyBio);
   }
 
   uint16_t _port;

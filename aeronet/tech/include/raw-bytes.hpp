@@ -18,8 +18,8 @@ namespace aeronet {
  * require a simple, low-level buffer interface, do not use it for general-purpose data storage (prefer vector in that
  * case).
  */
-template <class T = std::byte, class ViewType = std::span<const T>>
-class RawBytes {
+template <class T, class ViewType = std::span<const T>>
+class RawBytesImpl {
  public:
   using value_type = T;
   using size_type = std::size_t;
@@ -32,33 +32,34 @@ class RawBytes {
 
   static_assert(std::is_trivially_copyable_v<T> && sizeof(T) == 1);
 
-  RawBytes() noexcept = default;
+  RawBytesImpl() noexcept = default;
 
-  explicit RawBytes(size_type capacity) : _buf(static_cast<value_type *>(std::malloc(capacity))), _capacity(capacity) {
+  explicit RawBytesImpl(size_type capacity)
+      : _buf(static_cast<value_type *>(std::malloc(capacity))), _capacity(capacity) {
     if (capacity != 0 && _buf == nullptr) {
       throw std::bad_alloc();
     }
   }
 
-  explicit RawBytes(ViewType data) : RawBytes(data.size()) {
+  explicit RawBytesImpl(ViewType data) : RawBytesImpl(data.size()) {
     std::memcpy(_buf, data.data(), _capacity);
     _size = _capacity;
   }
 
-  RawBytes(const_pointer first, const_pointer last) : RawBytes(static_cast<std::size_t>(last - first)) {
+  RawBytesImpl(const_pointer first, const_pointer last) : RawBytesImpl(static_cast<std::size_t>(last - first)) {
     assert(first <= last);
     std::memcpy(_buf, first, _capacity);
     _size = _capacity;
   }
 
-  RawBytes(const RawBytes &) = delete;
+  RawBytesImpl(const RawBytesImpl &) = delete;
 
-  RawBytes(RawBytes &&rhs) noexcept
+  RawBytesImpl(RawBytesImpl &&rhs) noexcept
       : _buf(std::exchange(rhs._buf, nullptr)),
         _size(std::exchange(rhs._size, 0)),
         _capacity(std::exchange(rhs._capacity, 0)) {}
 
-  RawBytes &operator=(RawBytes &&rhs) noexcept {
+  RawBytesImpl &operator=(RawBytesImpl &&rhs) noexcept {
     if (this != &rhs) {
       std::free(_buf);
       _buf = std::exchange(rhs._buf, nullptr);
@@ -68,27 +69,37 @@ class RawBytes {
     return *this;
   }
 
-  RawBytes &operator=(const RawBytes &) = delete;
+  RawBytesImpl &operator=(const RawBytesImpl &) = delete;
 
-  ~RawBytes() { std::free(_buf); }
+  ~RawBytesImpl() { std::free(_buf); }
+
+  void unchecked_append(const_pointer first, const_pointer last) {
+    const std::size_t sz = static_cast<std::size_t>(last - first);
+    std::memcpy(_buf + _size, first, sz);
+    _size += sz;
+  }
+
+  void unchecked_append(const_pointer newData, size_type newDataSize) {
+    return unchecked_append(newData, newData + newDataSize);
+  }
+
+  void unchecked_append(ViewType data) { return unchecked_append(data.data(), data.data() + data.size()); }
 
   void append(const_pointer first, const_pointer last) {
-    if (first != last) {
-      assert(first < last);
-      const std::size_t sz = static_cast<std::size_t>(last - first);
-      ensureAvailableCapacity(sz);
-      std::memcpy(_buf + _size, first, sz);
-      _size += sz;
-    }
+    assert(first <= last);
+    ensureAvailableCapacity(static_cast<std::size_t>(last - first));
+    unchecked_append(first, last);
   }
 
   void append(const_pointer newData, size_type newDataSize) { return append(newData, newData + newDataSize); }
 
   void append(ViewType data) { return append(data.data(), data.data() + data.size()); }
 
-  void append(value_type byte) {
+  void unchecked_push_back(value_type byte) { _buf[_size++] = byte; }
+
+  void push_back(value_type byte) {
     ensureAvailableCapacity(1);
-    _buf[_size++] = byte;
+    unchecked_push_back(byte);
   }
 
   void assign(const_pointer first, size_type size) {
@@ -136,7 +147,7 @@ class RawBytes {
 
   [[nodiscard]] bool empty() const noexcept { return _size == 0; }
 
-  void swap(RawBytes &rhs) noexcept {
+  void swap(RawBytesImpl &rhs) noexcept {
     using std::swap;
     swap(_buf, rhs._buf);
     swap(_size, rhs._size);
@@ -147,6 +158,19 @@ class RawBytes {
   value_type operator[](size_type pos) const { return _buf[pos]; }
 
   operator ViewType() const noexcept { return {_buf, _size}; }
+
+  /**
+   * resize_and_overwrite (op MUST NOT THROW – undefined behavior otherwise; mirrors std::basic_string) .
+   * Ensures capacity for `n`, invokes op(data, n) and sets size() to the returned value (<= n).
+   * Common patterns: append (grow then partially fill) or truncate (pass lambda returning n).
+   */
+  template <class Operation>
+  void resize_and_overwrite(size_type n, Operation &&op) {
+    reserveExponential(n);
+    size_type newSize = static_cast<size_type>(std::forward<Operation>(op)(_buf, n));
+    assert(newSize <= n && "resize_and_overwrite: operation returned size larger than requested n");
+    _size = newSize;
+  }
 
   using trivially_relocatable = std::true_type;
 
@@ -164,5 +188,7 @@ class RawBytes {
   size_type _size = 0;
   size_type _capacity = 0;
 };
+
+using RawBytes = RawBytesImpl<std::byte, std::span<const std::byte>>;
 
 }  // namespace aeronet

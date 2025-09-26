@@ -11,12 +11,14 @@
 
 #include <cstring>
 #include <memory>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/tls-config.hpp"
+#include "raw-bytes.hpp"
 #include "tls-raii.hpp"
 
 namespace aeronet {
@@ -41,17 +43,14 @@ void TlsContext::CtxDel::operator()(ssl_ctx_st* ctxPtr) const noexcept {
   }
 }
 
-TlsContext::TlsContext(CtxPtr ctx, std::unique_ptr<AlpnData> alpn) : _ctx(std::move(ctx)), _alpnData(std::move(alpn)) {}
-
 TlsContext::~TlsContext() = default;
 
-TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics) {
-  SSL_CTX* raw = SSL_CTX_new(TLS_server_method());
-  if (raw == nullptr) {
+TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics) : _ctx(SSL_CTX_new(TLS_server_method())) {
+  if (!_ctx) {
     throw std::runtime_error("SSL_CTX_new failed");
   }
-  CtxPtr ctx(raw);
-  auto rollback = [&]() { ctx.reset(); };
+  auto* raw = reinterpret_cast<SSL_CTX*>(_ctx.get());
+  auto rollback = [&]() { _ctx.reset(); };
   if (!cfg.cipherList.empty()) {
     if (SSL_CTX_set_cipher_list(raw, cfg.cipherList.c_str()) != 1) {
       rollback();
@@ -141,57 +140,49 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics) {
       }
     }
   }
-  std::unique_ptr<AlpnData> alpnData;
-  if (!cfg.alpnProtocols.empty()) {
-    // Build wire-format list: length-prefixed protocols concatenated.
-    std::string wire;
-    wire.reserve(32);
+
+  std::size_t wireLen = std::accumulate(cfg.alpnProtocols.begin(), cfg.alpnProtocols.end(), std::size_t{0},
+                                        [](std::size_t sum, const auto& proto) { return sum + 1UL + proto.size(); });
+  if (wireLen != 0) {
+    _alpnData = std::make_unique<AlpnData>(RawBytes{wireLen}, cfg.alpnMustMatch, metrics);
     for (const auto& proto : cfg.alpnProtocols) {
-      if (proto.empty() || proto.size() > 255) {
-        continue;  // skip invalid length
-      }
-      wire.push_back(static_cast<char>(proto.size()));
-      wire.append(proto);
+      _alpnData->wire.unchecked_push_back(static_cast<std::byte>(proto.size()));
+      _alpnData->wire.unchecked_append(reinterpret_cast<const std::byte*>(proto.data()), proto.size());
     }
-    if (!wire.empty()) {
-      alpnData = std::make_unique<AlpnData>(AlpnData{std::move(wire), cfg.alpnMustMatch, metrics});
-      SSL_CTX_set_alpn_select_cb(
-          raw,
-          [](SSL* /*ssl*/, const unsigned char** out, unsigned char* outlen, const unsigned char* in,
-             unsigned int inlen, void* arg) -> int {
-            auto* data = reinterpret_cast<AlpnData*>(arg);
-            const unsigned char* ptr = reinterpret_cast<const unsigned char*>(data->wire.data());
-            unsigned int prefLen = static_cast<unsigned int>(data->wire.size());
-            unsigned int prefIndex = 0;
-            while (prefIndex < prefLen) {
-              unsigned int len = static_cast<unsigned char>(ptr[prefIndex]);
-              const unsigned char* val = ptr + prefIndex + 1;
-              unsigned int clientIndex = 0;
-              while (clientIndex < inlen) {
-                unsigned int clen = in[clientIndex];
-                const unsigned char* cval = in + clientIndex + 1;
-                if (clen == len && std::memcmp(val, cval, len) == 0) {
-                  *out = val;
-                  *outlen = static_cast<unsigned char>(len);
-                  return SSL_TLSEXT_ERR_OK;
-                }
-                clientIndex += 1 + clen;
+    SSL_CTX_set_alpn_select_cb(
+        raw,
+        []([[maybe_unused]] SSL* ssl, const unsigned char** out, unsigned char* outlen, const unsigned char* in,
+           unsigned int inlen, void* arg) -> int {
+          auto* data = reinterpret_cast<AlpnData*>(arg);
+          const unsigned char* ptr = reinterpret_cast<const unsigned char*>(data->wire.data());
+          unsigned int prefLen = static_cast<unsigned int>(data->wire.size());
+          unsigned int prefIndex = 0;
+          while (prefIndex < prefLen) {
+            unsigned int len = ptr[prefIndex];
+            const unsigned char* val = ptr + prefIndex + 1;
+            unsigned int clientIndex = 0;
+            while (clientIndex < inlen) {
+              unsigned int clen = in[clientIndex];
+              const unsigned char* cval = in + clientIndex + 1;
+              if (clen == len && std::memcmp(val, cval, len) == 0) {
+                *out = val;
+                *outlen = static_cast<unsigned char>(len);
+                return SSL_TLSEXT_ERR_OK;
               }
-              prefIndex += 1 + len;
+              clientIndex += 1 + clen;
             }
-            if (data->mustMatch) {
-              if (data->metrics) {
-                data->metrics->alpnStrictMismatches++;
-              }
-              return SSL_TLSEXT_ERR_ALERT_FATAL;
+            prefIndex += 1 + len;
+          }
+          if (data->mustMatch) {
+            if (data->metrics) {
+              ++data->metrics->alpnStrictMismatches;
             }
-            return SSL_TLSEXT_ERR_NOACK;
-          },
-          alpnData.get());
-    }
+            return SSL_TLSEXT_ERR_ALERT_FATAL;
+          }
+          return SSL_TLSEXT_ERR_NOACK;
+        },
+        _alpnData.get());
   }
-  _ctx = std::move(ctx);
-  _alpnData = std::move(alpnData);
 }
 
 }  // namespace aeronet
