@@ -17,7 +17,7 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
   aeronet::HttpServer serverA(aeronet::HttpServerConfig{}.withReusePort());
   serverA.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.body = "A";
+    resp.body("A");
     return resp;
   });
 
@@ -26,7 +26,7 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
   aeronet::HttpServer serverB(aeronet::HttpServerConfig{}.withPort(port).withReusePort());
   serverB.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.body = "B";
+    resp.body("B");
     return resp;
   });
 

@@ -21,6 +21,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "http-constants.hpp"
 #include "test_tls_client.hpp"
 #include "test_tls_helper.hpp"
 
@@ -35,12 +36,10 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
 
   aeronet::HttpServer original(cfg);
   original.setHandler([](const aeronet::HttpRequest& req) {
-    aeronet::HttpResponse resp;
-    resp.statusCode = 200;
-    resp.reason = "OK";
-    resp.contentType = "text/plain";
-    resp.body = std::string("MOVEALPN:") + (req.alpnProtocol.empty() ? "-" : std::string(req.alpnProtocol));
-    return resp;
+    return aeronet::HttpResponse(200)
+        .reason("OK")
+        .contentType(aeronet::http::ContentTypeTextPlain)
+        .body(std::string("MOVEALPN:") + (req.alpnProtocol.empty() ? "-" : std::string(req.alpnProtocol)));
   });
 
   auto port = original.port();

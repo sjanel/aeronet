@@ -53,7 +53,7 @@ TEST(MultiHttpServer, AutoThreadCountConstructor) {
   aeronet::MultiHttpServer multi(cfg);
   multi.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.body = "Auto";
+    resp.body("Auto");
     return resp;
   });
   multi.start();
@@ -77,7 +77,7 @@ TEST(MultiHttpServer, ExplicitThreadCountConstructor) {
   aeronet::MultiHttpServer multi(cfg, threads);
   multi.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
-    resp.body = "Explicit";
+    resp.body("Explicit");
     return resp;
   });
   multi.start();
@@ -97,7 +97,7 @@ TEST(MultiHttpServer, MoveConstruction) {
   aeronet::MultiHttpServer original(cfg);  // auto threads
   original.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.body = "Move";
+    resp.body("Move");
     return resp;
   });
   original.start();
@@ -132,7 +132,7 @@ TEST(MultiHttpServer, DefaultConstructorAndMoveAssignment) {
   aeronet::MultiHttpServer running(cfg);  // auto thread count
   running.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.body = "MoveAssign";
+    resp.body("MoveAssign");
     return resp;
   });
   running.start();

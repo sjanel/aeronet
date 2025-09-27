@@ -7,6 +7,7 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "http-constants.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
 
@@ -24,12 +25,8 @@ TEST(HttpTlsCipherVersion, CipherAndVersionExposedAndMetricsIncrement) {
       capturedCipher = std::string(req.tlsCipher);
       capturedVersion = std::string(req.tlsVersion);
       capturedAlpn = std::string(req.alpnProtocol);
-      aeronet::HttpResponse respOut;
-      respOut.statusCode = 200;
-      respOut.reason = "OK";
-      respOut.contentType = "text/plain";
-      respOut.body = "ok";
-      return respOut;
+
+      return aeronet::HttpResponse(200).reason("OK").contentType(aeronet::http::ContentTypeTextPlain).body("ok");
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(80));  // allow handshake path if needed
     TlsClient::Options opts;

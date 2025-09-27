@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstddef>
 #include <string_view>
 
 #include "aeronet/http-response.hpp"
@@ -12,7 +11,6 @@ namespace aeronet::http {
 // bodySize allows specifying the length that would be sent (e.g. for HEAD requests
 // where the body itself is not transmitted). The date must be a preformatted RFC 7231
 // timestamp string. keepAlive controls the Connection header value.
-RawChars buildHead(const HttpResponse &resp, std::string_view httpVersion, std::string_view date, bool keepAlive,
-                   std::size_t bodySize);
+RawChars buildHead(HttpResponse &resp, std::string_view httpVersion, std::string_view date, bool keepAlive);
 
 }  // namespace aeronet::http

@@ -7,6 +7,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "http-constants.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
 #include "test_http_client.hpp"
@@ -19,21 +20,14 @@ TEST(HttpRouting, BasicPathDispatch) {
   HttpServer server(cfg);
   http::MethodSet helloMethods{http::Method::GET};
   server.addPathHandler("/hello", helloMethods, [](const HttpRequest&) {
-    HttpResponse resp;
-    resp.statusCode = 200;
-    resp.reason = "OK";
-    resp.body = "world";
-    resp.contentType = "text/plain";
-    return resp;
+    return HttpResponse(200).reason("OK").body("world").contentType(aeronet::http::ContentTypeTextPlain);
   });
   http::MethodSet multiMethods{http::Method::GET, http::Method::POST};
   server.addPathHandler("/multi", multiMethods, [](const HttpRequest& req) {
-    HttpResponse resp;
-    resp.statusCode = 200;
-    resp.reason = "OK";
-    resp.body = std::string(req.method) + "!";
-    resp.contentType = "text/plain";
-    return resp;
+    return HttpResponse(200)
+        .reason("OK")
+        .body(std::string(req.method) + "!")
+        .contentType(aeronet::http::ContentTypeTextPlain);
   });
 
   std::atomic<bool> done{false};
@@ -73,13 +67,8 @@ TEST(HttpRouting, BasicPathDispatch) {
 TEST(HttpRouting, GlobalFallbackWithPathHandlers) {
   HttpServerConfig cfg;
   HttpServer server(cfg);
-  server.setHandler([](const HttpRequest&) {
-    HttpResponse resp;
-    resp.statusCode = 200;
-    resp.reason = "OK";
-    return resp;
-  });
+  server.setHandler([](const HttpRequest&) { return HttpResponse(200).reason("OK"); });
   // Adding path handler after global handler is now allowed (Phase 2 mixing model)
   http::MethodSet xMethods{http::Method::GET};
-  EXPECT_NO_THROW(server.addPathHandler("/x", xMethods, [](const HttpRequest&) { return HttpResponse{}; }));
+  EXPECT_NO_THROW(server.addPathHandler("/x", xMethods, [](const HttpRequest&) { return HttpResponse(200); }));
 }

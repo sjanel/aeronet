@@ -24,10 +24,10 @@ constexpr std::string kContentLength = "Content-Length";
 constexpr std::string kContentType = "Content-Type";
 }  // namespace
 
-HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, bool headRequest)
-    : _server(&srv), _fd(fd), _head(headRequest) {}
+HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, bool headRequest, bool requestConnClose)
+    : _server(&srv), _fd(fd), _head(headRequest), _requestConnClose(requestConnClose) {}
 
-void HttpResponseWriter::setStatus(http::StatusCode code, std::string reason) {
+void HttpResponseWriter::statusCode(http::StatusCode code, std::string reason) {
   if (_headersSent || _failed) {
     return;
   }
@@ -35,14 +35,19 @@ void HttpResponseWriter::setStatus(http::StatusCode code, std::string reason) {
   _reason = std::move(reason);
 }
 
-void HttpResponseWriter::setHeader(std::string name, std::string value) {
+void HttpResponseWriter::header(std::string name, std::string value) {
   if (_headersSent || _failed) {
     return;
+  }
+  // Reuse HttpResponse reservation policy for symmetry; allow user to set Content-Length only via setContentLength.
+  if (HttpResponse::IsReservedHeader(name)) {
+    assert(false && "Attempt to set reserved or managed header in streaming response");
+    return;  // ignore in release builds
   }
   _headers.insert_or_assign(std::move(name), std::move(value));
 }
 
-void HttpResponseWriter::setContentLength(std::size_t len) {
+void HttpResponseWriter::contentLength(std::size_t len) {
   if (_headersSent || _bytesWritten > 0 || _failed) {
     return;
   }
@@ -64,11 +69,14 @@ void HttpResponseWriter::ensureHeadersSent() {
       _headers[kContentLength] = "0";
     }
   } else {
-    _headers["Transfer-Encoding"] = "chunked";
+    _headers[std::string(http::TransferEncoding)] = "chunked";
   }
-  // Connection header decided by server keep-alive policy; do not force here.
+  // Connection header: if client asked to close, force it (can't be overridden by user since reserved).
+  if (_requestConnClose) {
+    _headers[std::string(http::Connection)] = std::string(http::close);
+  }
   if (_headers.find(kContentType) == _headers.end()) {
-    _headers[kContentType] = "text/plain";
+    _headers[kContentType] = std::string(http::ContentTypeTextPlain);
   }
   auto head = http::buildStatusLine(_statusCode, _reason);
   for (auto& kv : _headers) {

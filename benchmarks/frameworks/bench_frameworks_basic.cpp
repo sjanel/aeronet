@@ -73,7 +73,7 @@ struct AeronetServerRunner {
     async.server().setHandler([](const aeronet::HttpRequest &req) {
       aeronet::HttpResponse resp;
       auto sizeOpt = parseSizeParam(req.target);
-      resp.body = makeIota(sizeOpt.value_or(0));
+      resp.body(makeIota(sizeOpt.value_or(0)));
       return resp;
     });
     async.start();

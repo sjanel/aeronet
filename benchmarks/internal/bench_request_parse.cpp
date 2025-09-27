@@ -22,7 +22,7 @@ class MinimalServerFixture : public benchmark::Fixture {
     server = std::make_unique<aeronet::HttpServer>(aeronet::HttpServerConfig{}.withPort(0));
     server->setHandler([](const aeronet::HttpRequest&) {
       aeronet::HttpResponse resp;
-      resp.body = "OK";
+      resp.body("OK");
       return resp;
     });
     loopThread =
@@ -42,6 +42,7 @@ class MinimalServerFixture : public benchmark::Fixture {
 };
 
 bool sendGet(uint16_t port) {
+  // TODO: use ClientConnection from test_util.hpp
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) {
     return false;

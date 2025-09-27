@@ -6,6 +6,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "http-constants.hpp"
 #include "test_server_fixture.hpp"  // reuse generic TestServer with manual config
 #include "test_temp_file.hpp"
 #include "test_tls_client.hpp"
@@ -27,12 +28,10 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
   // Use plain TestServer since we manually set config
   TestServer server(cfg, std::chrono::milliseconds{50});
   server.server.setHandler([](const aeronet::HttpRequest& req) {
-    aeronet::HttpResponse resp;
-    resp.statusCode = 200;
-    resp.reason = "OK";
-    resp.contentType = "text/plain";
-    resp.body = std::string("FILETLS-") + std::string(req.alpnProtocol.empty() ? "-" : req.alpnProtocol);
-    return resp;
+    return aeronet::HttpResponse(200)
+        .reason("OK")
+        .contentType(aeronet::http::ContentTypeTextPlain)
+        .body(std::string("FILETLS-") + std::string(req.alpnProtocol.empty() ? "-" : req.alpnProtocol));
   });
   uint16_t port = server.port();
 

@@ -10,6 +10,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -59,7 +60,9 @@ class TlsContext;  // forward declaration still okay
 class HttpServer {
  public:
   using RequestHandler = std::function<HttpResponse(const HttpRequest&)>;
+
   using StreamingHandler = std::function<void(const HttpRequest&, HttpResponseWriter&)>;
+
   enum class ParserError : std::uint8_t {
     BadRequestLine,
     VersionUnsupported,
@@ -360,14 +363,14 @@ class HttpServer {
   bool decodeChunkedBody(int fd, ConnectionState& state, const HttpRequest& req, std::size_t headerEnd,
                          bool expectContinue, bool& closeConn, std::size_t& consumedBytes);
   void finalizeAndSendResponse(int fd, ConnectionState& state, HttpRequest& req, HttpResponse& resp,
-                               std::size_t consumedBytes, bool& closeConn);
+                               std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart,
+                               bool& closeConn);
   // Helper to build & queue a simple error response, invoke parser error callback (if any),
   // mark connection for closure and return false for convenient tail calls in parsing paths.
-  bool emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, std::string_view reason, ParserError perr,
-                       bool& closeConn);
+  bool emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, ParserError perr, bool& closeConn);
   // Outbound write helpers
   bool queueData(int fd, ConnectionState& state, std::string_view data);
-  bool queueVec(int fd, ConnectionState& state, const struct iovec* iov, int iovcnt);
+  bool queueVec(int fd, ConnectionState& state, std::span<const std::string_view> dataStrs);
   void flushOutbound(int fd, ConnectionState& state);
 
   void handleWritableClient(int fd);

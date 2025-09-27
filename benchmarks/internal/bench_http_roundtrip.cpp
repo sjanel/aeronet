@@ -7,15 +7,15 @@
 namespace {
 class BasicRoundTrip : public benchmark::Fixture {
  protected:
-  void SetUp(const benchmark::State&) override {
+  void SetUp([[maybe_unused]] const benchmark::State& state) override {
     server_ = std::make_unique<aeronet::HttpServer>(aeronet::HttpServerConfig{}.withPort(0));
     server_->setHandler([](const aeronet::HttpRequest&) {
-      aeronet::HttpResponse r;
-      r.body = "OK";
-      return r;
+      aeronet::HttpResponse resp;
+      resp.body("OK");
+      return resp;
     });
   }
-  void TearDown(const benchmark::State&) override { server_.reset(); }
+  void TearDown([[maybe_unused]] const benchmark::State& state) override { server_.reset(); }
   std::unique_ptr<aeronet::HttpServer> server_;
 };
 

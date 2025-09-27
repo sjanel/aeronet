@@ -18,7 +18,7 @@ TEST(HttpServerMove, MoveConstructAndServe) {
   auto port = original.port();
   original.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
-    resp.body = std::string("ORIG:") + std::string(req.target);
+    resp.body(std::string("ORIG:") + std::string(req.target));
     return resp;
   });
 
@@ -44,12 +44,12 @@ TEST(HttpServerMove, MoveAssignWhileStopped) {
 
   s1.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
-    resp.body = "S1";
+    resp.body("S1");
     return resp;
   });
   s2.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
-    resp.body = "S2";
+    resp.body("S2");
     return resp;
   });
 

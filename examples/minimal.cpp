@@ -24,13 +24,16 @@ int main(int argc, char **argv) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{}.withPort(port));
   server.setHandler([](const aeronet::HttpRequest &req) {
     aeronet::HttpResponse resp;
-    resp.body = std::string("Hello from aeronet minimal server! You requested ") + std::string(req.target) + '\n';
-    resp.body += "Method: " + std::string(req.method) + "\n";
-    resp.body += "Version: " + std::string(req.version) + "\n";
-    resp.body += "Headers:\n";
+    std::string body("Hello from aeronet minimal server! You requested ");
+    body += req.target;
+    body.push_back('\n');
+    body += "Method: " + std::string(req.method) + "\n";
+    body += "Version: " + std::string(req.version) + "\n";
+    body += "Headers:\n";
     for (const auto &[headerKey, headerValue] : req.headers) {
-      resp.body += std::string(headerKey) + ": " + std::string(headerValue) + "\n";
+      body += std::string(headerKey) + ": " + std::string(headerValue) + "\n";
     }
+    resp.body(std::move(body));
     return resp;
   });
 

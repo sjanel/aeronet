@@ -15,6 +15,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "exception.hpp"
+#include "http-constants.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
 #include "socket.hpp"
@@ -101,19 +102,14 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
   postSet.insert(aeronet::http::Method::POST);
   srv.addPathStreamingHandler("/mix", getSet,
                               [](const aeronet::HttpRequest& /*unused*/, aeronet::HttpResponseWriter& writer) {
-                                writer.setStatus(200, "OK");
-                                writer.setHeader("Content-Type", "text/plain");
+                                writer.statusCode(200, "OK");
+                                writer.header("Content-Type", "text/plain");
                                 writer.write("S");
                                 writer.write("TREAM");
                                 writer.end();
                               });
   srv.addPathHandler("/mix", postSet, [](const aeronet::HttpRequest& /*unused*/) {
-    aeronet::HttpResponse resp;
-    resp.statusCode = 201;
-    resp.reason = "Created";
-    resp.contentType = "text/plain";
-    resp.body = "NORMAL";
-    return resp;
+    return aeronet::HttpResponse(201).reason("Created").contentType(aeronet::http::ContentTypeTextPlain).body("NORMAL");
   });
   std::jthread th([&] { srv.runUntil([] { return false; }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
@@ -131,8 +127,9 @@ TEST(HttpServerMixed, ConflictRegistrationNormalThenStreaming) {
   aeronet::HttpServerConfig cfg;
   cfg.port = 0;
   aeronet::HttpServer srv(cfg);
-  srv.addPathHandler("/c", aeronet::http::Method::GET,
-                     [](const aeronet::HttpRequest&) { return aeronet::HttpResponse{200, "OK", "text/plain", "X"}; });
+  srv.addPathHandler("/c", aeronet::http::Method::GET, [](const aeronet::HttpRequest&) {
+    return aeronet::HttpResponse(200).reason("OK").body("X").contentType("text/plain");
+  });
   EXPECT_THROW(srv.addPathStreamingHandler("/c", aeronet::http::Method::GET,
                                            [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter&) {}),
                aeronet::exception);
@@ -144,12 +141,13 @@ TEST(HttpServerMixed, ConflictRegistrationStreamingThenNormal) {
   aeronet::HttpServer srv(cfg);
   srv.addPathStreamingHandler("/c2", aeronet::http::Method::GET,
                               [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-                                writer.setStatus(200, "OK");
+                                writer.statusCode(200, "OK");
                                 writer.end();
                               });
-  EXPECT_THROW(srv.addPathHandler(
-                   "/c2", aeronet::http::Method::GET,
-                   [](const aeronet::HttpRequest&) { return aeronet::HttpResponse{200, "OK", "text/plain", "Y"}; }),
+  EXPECT_THROW(srv.addPathHandler("/c2", aeronet::http::Method::GET,
+                                  [](const aeronet::HttpRequest&) {
+                                    return aeronet::HttpResponse(200).reason("OK").body("Y").contentType("text/plain");
+                                  }),
                aeronet::exception);
 }
 
@@ -159,29 +157,25 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
   cfg.enableKeepAlive = false;
   aeronet::HttpServer srv(cfg);
   srv.setHandler([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse resp;
-    resp.statusCode = 200;
-    resp.reason = "OK";
-    resp.contentType = "text/plain";
-    resp.body = "GLOBAL";
-    return resp;
+    return aeronet::HttpResponse(200).reason("OK").contentType(aeronet::http::ContentTypeTextPlain).body("GLOBAL");
   });
   srv.setStreamingHandler([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.setStatus(200, "OK");
-    writer.setHeader("Content-Type", "text/plain");
+    writer.statusCode(200, "OK");
+    writer.header("Content-Type", "text/plain");
     writer.write("STREAMFALLBACK");
     writer.end();
   });
   // path-specific streaming overrides both
   srv.addPathStreamingHandler("/s", aeronet::http::Method::GET,
                               [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-                                writer.setStatus(200, "OK");
+                                writer.statusCode(200, "OK");
                                 writer.write("PS");
                                 writer.end();
                               });
   // path-specific normal overrides global fallbacks
-  srv.addPathHandler("/n", aeronet::http::Method::GET,
-                     [](const aeronet::HttpRequest&) { return aeronet::HttpResponse{200, "OK", "text/plain", "PN"}; });
+  srv.addPathHandler("/n", aeronet::http::Method::GET, [](const aeronet::HttpRequest&) {
+    return aeronet::HttpResponse(200).reason("OK").body("PN").contentType("text/plain");
+  });
   std::jthread th([&] { srv.runUntil([] { return false; }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   std::string pathStreamResp;
@@ -202,7 +196,9 @@ TEST(HttpServerMixed, GlobalNormalOnlyWhenNoStreaming) {
   cfg.port = 0;
   cfg.enableKeepAlive = false;
   aeronet::HttpServer srv(cfg);
-  srv.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{200, "OK", "text/plain", "GN"}; });
+  srv.setHandler([](const aeronet::HttpRequest&) {
+    return aeronet::HttpResponse(200).reason("OK").body("GN").contentType("text/plain");
+  });
   std::jthread th([&] { srv.runUntil([] { return false; }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   std::string result;
@@ -221,8 +217,8 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
   // Register streaming handler for GET; it will attempt to write a body.
   srv.addPathStreamingHandler("/head", getSet,
                               [](const aeronet::HttpRequest& /*unused*/, aeronet::HttpResponseWriter& writer) {
-                                writer.setStatus(200, "OK");
-                                writer.setHeader("Content-Type", "text/plain");
+                                writer.statusCode(200, "OK");
+                                writer.header("Content-Type", "text/plain");
                                 writer.write("SHOULD_NOT_APPEAR");  // for HEAD this must be suppressed by writer
                                 writer.end();
                               });
@@ -249,7 +245,7 @@ TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
   // Register only GET streaming handler
   srv.addPathStreamingHandler("/m405", aeronet::http::Method::GET,
                               [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-                                writer.setStatus(200, "OK");
+                                writer.statusCode(200, "OK");
                                 writer.write("OKGET");
                                 writer.end();
                               });
@@ -308,14 +304,14 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
   aeronet::http::MethodSet postSet;
   postSet.insert(aeronet::http::Method::POST);
   srv.addPathStreamingHandler("/ka", getSet, [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.setStatus(200, "OK");
-    writer.setHeader("Content-Type", "text/plain");
+    writer.statusCode(200, "OK");
+    writer.header("Content-Type", "text/plain");
     writer.write("A");
     writer.write("B");
     writer.end();
   });
   srv.addPathHandler("/ka", postSet, [](const aeronet::HttpRequest&) {
-    return aeronet::HttpResponse{201, "Created", "text/plain", "NORMAL"};
+    return aeronet::HttpResponse(201).reason("Created").body("NORMAL").contentType("text/plain");
   });
   std::jthread th([&] { srv.runUntil([] { return false; }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(50));

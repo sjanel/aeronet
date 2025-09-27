@@ -9,13 +9,9 @@
 
 namespace aeronet {
 
-RawChars BuildSimpleError(http::StatusCode status, std::string_view reason, std::string_view date, bool closeConn) {
-  // If caller passed empty reason, try to supply a canonical one.
-  if (reason.empty()) {
-    if (auto mapped = http::reasonPhraseFor(status); !mapped.empty()) {
-      reason = mapped;
-    }
-  }
+RawChars BuildSimpleError(http::StatusCode status, std::string_view date, bool closeConn) {
+  std::string_view reason = http::reasonPhraseFor(status);
+
   static constexpr std::string_view kSep = ": ";
   static constexpr std::string_view kEnd = "\r\n\r\n";
 

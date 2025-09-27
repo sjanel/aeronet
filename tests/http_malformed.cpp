@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -28,7 +27,7 @@ std::string sendRaw(uint16_t port, std::string_view raw) {
 TEST(HttpMalformed, MissingSpacesInRequestLine) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
   auto port = server.port();
-  server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
+  server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   std::jthread th([&] { server.runUntil([] { return false; }); });
   std::this_thread::sleep_for(50ms);
   std::string resp = sendRaw(port, "GET/abcHTTP/1.1\r\nHost: x\r\n\r\n");
@@ -41,7 +40,7 @@ TEST(HttpMalformed, OversizedHeaders) {
   cfg.withMaxHeaderBytes(64);
   aeronet::HttpServer server(cfg);
   auto port = server.port();
-  server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
+  server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   std::jthread th([&] { server.runUntil([] { return false; }); });
   std::this_thread::sleep_for(50ms);
   std::string big(200, 'A');
@@ -54,7 +53,7 @@ TEST(HttpMalformed, OversizedHeaders) {
 TEST(HttpMalformed, BadChunkExtensionHex) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
   auto port = server.port();
-  server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
+  server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   std::jthread th([&] { server.runUntil([] { return false; }); });
   std::this_thread::sleep_for(50ms);
   // Transfer-Encoding with invalid hex char 'Z'

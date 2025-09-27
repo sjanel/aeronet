@@ -18,7 +18,7 @@ TEST(HttpHead, MaxRequestsApplied) {
   auto port = server.port();
   server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
-    resp.body = "IGNORED";
+    resp.body("IGNORED");
     return resp;
   });
   std::jthread th([&] { server.run(); });
