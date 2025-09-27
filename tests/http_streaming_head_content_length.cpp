@@ -38,10 +38,10 @@ TEST(HttpStreamingHeadContentLength, HeadSuppressesBodyKeepsCL) {
   TestServer ts(cfg);
   ts.server.setStreamingHandler(
       []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
-        writer.setStatus(200, "OK");
+        writer.statusCode(200, "OK");
         // We set Content-Length even though we write body pieces; for HEAD the body must be suppressed but CL retained.
         static constexpr std::string_view body = "abcdef";  // length 6
-        writer.setContentLength(body.size());
+        writer.contentLength(body.size());
         writer.write(body.substr(0, 3));
         writer.write(body.substr(3));
         writer.end();

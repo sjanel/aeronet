@@ -5,6 +5,7 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "http-constants.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
 
@@ -21,12 +22,7 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
       } else {
         capturedAlpn.clear();
       }
-      aeronet::HttpResponse resp;
-      resp.statusCode = 200;
-      resp.reason = "OK";
-      resp.contentType = "text/plain";
-      resp.body = "NS";
-      return resp;
+      return aeronet::HttpResponse(200).reason("OK").contentType(aeronet::http::ContentTypeTextPlain).body("NS");
     });
     TlsClient::Options opts;
     opts.alpn = {"foo"};  // no overlap

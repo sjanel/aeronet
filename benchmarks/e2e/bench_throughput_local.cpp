@@ -11,7 +11,7 @@ void BenchThroughputSkeleton(benchmark::State& state) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{}.withPort(0));
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.body = "OK";
+    resp.body("OK");
     return resp;
   });
   for (auto it : state) {

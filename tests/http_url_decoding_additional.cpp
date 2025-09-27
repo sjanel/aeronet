@@ -9,6 +9,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "http-constants.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
 #include "test_http_client.hpp"
@@ -40,12 +41,7 @@ TEST(HttpUrlDecodingExtra, MixedSegmentsDecoding) {
   HttpServer server(cfg);
   http::MethodSet ms{http::Method::GET};
   server.addPathHandler("/seg one/part%/two", ms, [](const HttpRequest &req) {
-    HttpResponse resp;
-    resp.statusCode = 200;
-    resp.reason = "OK";
-    resp.body = std::string(req.target);
-    resp.contentType = "text/plain";
-    return resp;
+    return aeronet::HttpResponse(200).reason("OK").body(req.target).contentType(aeronet::http::ContentTypeTextPlain);
   });
   std::atomic<bool> done = false;
   std::jthread th([&] { server.runUntil([&] { return done.load(); }); });

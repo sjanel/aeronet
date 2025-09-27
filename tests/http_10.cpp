@@ -30,7 +30,7 @@ TEST(Http10, BasicVersionEcho) {
   TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
-    respObj.body = "A";
+    respObj.body("A");
     return respObj;
   });
   std::string req = "GET /x HTTP/1.0\r\nHost: h\r\n\r\n";
@@ -42,7 +42,7 @@ TEST(Http10, No100ContinueEvenIfHeaderPresent) {
   TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
-    respObj.body = "B";
+    respObj.body("B");
     return respObj;
   });
   // Expect ignored in HTTP/1.0
@@ -57,7 +57,7 @@ TEST(Http10, RejectTransferEncoding) {
   TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
-    respObj.body = "C";
+    respObj.body("C");
     return respObj;
   });
   std::string req = "GET /te HTTP/1.0\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n";
@@ -70,7 +70,7 @@ TEST(Http10, KeepAliveOptInStillWorks) {
   TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
-    respObj.body = "D";
+    respObj.body("D");
     return respObj;
   });
   ClientConnection clientConnection(ts.port());

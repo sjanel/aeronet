@@ -5,6 +5,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "http-constants.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
 #include "test_tls_helper.hpp"
@@ -20,12 +21,7 @@ TEST(HttpTlsMtlsMetrics, ClientCertPresenceIncrementsMetric) {
     });
     auto port = ts.port();
     ts.setHandler([](const aeronet::HttpRequest&) {
-      aeronet::HttpResponse respOut;
-      respOut.statusCode = 200;
-      respOut.reason = "OK";
-      respOut.contentType = "text/plain";
-      respOut.body = "m";
-      return respOut;
+      return aeronet::HttpResponse(200).reason("OK").contentType(aeronet::http::ContentTypeTextPlain).body("m");
     });
     [[maybe_unused]] auto before = ts.stats();
     TlsClient::Options opts;

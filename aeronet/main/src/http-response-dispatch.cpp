@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <numeric>
+#include <span>
 #include <string_view>
 #include <utility>
 
@@ -18,7 +20,8 @@
 
 namespace aeronet {
 void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpRequest& req, HttpResponse& resp,
-                                         std::size_t consumedBytes, bool& closeConn) {
+                                         std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart,
+                                         bool& closeConn) {
   ++state.requestsServed;
   bool keepAlive = false;
   if (_config.enableKeepAlive) {
@@ -38,23 +41,29 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
   if (state.requestsServed >= _config.maxRequestsPerConnection) {
     keepAlive = false;
   }
-  std::string_view body = resp.body;
-  auto header = http::buildHead(resp, req.version, std::string_view(_cachedDate), keepAlive, body.size());
+  // TODO: make it zero copy (without headers RawChars)
+  auto header = http::buildHead(resp, req.version, std::string_view(_cachedDate), keepAlive);
   if (req.method == http::HEAD) {
+    // For HEAD we only send headers (no body). Any pending bytes in outBuffer belong to prior responses and will
+    // naturally flush before these headers on the wire (HTTP pipelining semantics). No special handling needed.
     queueData(fd, state, header);
   } else {
-    ::iovec iov[2];  // included by <sys/uio.h> NOLINT(misc-include-cleaner)
-    iov[0].iov_base = const_cast<char*>(header.data());
-    iov[0].iov_len = header.size();
-    iov[1].iov_base = const_cast<char*>(body.data());
-    iov[1].iov_len = body.size();
-    queueVec(fd, state, iov, 2);
+    std::string_view dataStrs[2]{header, resp.body()};
+    queueVec(fd, state, dataStrs);
   }
-  if (consumedBytes > 0) {
-    state.buffer.erase_front(consumedBytes);
-  }
+  state.buffer.erase_front(consumedBytes);
   if (!keepAlive) {
     closeConn = true;
+  }
+  if (_metricsCb) {
+    RequestMetrics metrics;
+    metrics.method = req.method;
+    metrics.target = req.target;
+    metrics.status = resp.statusCode();
+    metrics.bytesIn = req.body.size();
+    metrics.reusedConnection = state.requestsServed > 0;
+    metrics.duration = std::chrono::steady_clock::now() - reqStart;
+    _metricsCb(metrics);
   }
 }
 
@@ -111,19 +120,14 @@ bool HttpServer::queueData(int fd, ConnectionState& state, std::string_view data
   return true;
 }
 
-bool HttpServer::queueVec(int fd, ConnectionState& state, const struct iovec* iov, int iovcnt) {
-  std::size_t total = 0;
-  for (int i = 0; i < iovcnt; ++i) {
-    total += iov[i].iov_len;
-  }
-  if (total == 0) {
-    return true;
-  }
+bool HttpServer::queueVec(int fd, ConnectionState& state, std::span<const std::string_view> dataStrs) {
+  std::size_t total = std::accumulate(dataStrs.begin(), dataStrs.end(), static_cast<std::size_t>(0),
+                                      [](std::size_t sum, const std::string_view& sv) { return sum + sv.size(); });
   if (state.outBuffer.empty()) {
     // Attempt to write iov chunks sequentially via transportWrite.
     std::size_t advanced = 0;
-    for (int iovPos1 = 0; iovPos1 < iovcnt; ++iovPos1) {
-      std::string_view baseView(static_cast<const char*>(iov[iovPos1].iov_base), iov[iovPos1].iov_len);
+    for (std::size_t dataPos1 = 0; dataPos1 < dataStrs.size(); ++dataPos1) {
+      std::string_view baseView = dataStrs[dataPos1];
       while (!baseView.empty()) {
         bool wantR = false;
         bool wantW = false;
@@ -150,9 +154,8 @@ bool HttpServer::queueVec(int fd, ConnectionState& state, const struct iovec* io
         if (bytesWritten == 0 || (bytesWritten == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))) {
           // buffer remaining of this iov and rest
           state.outBuffer.append(baseView);
-          for (int iovPos2 = iovPos1 + 1; iovPos2 < iovcnt; ++iovPos2) {
-            const char* b2 = static_cast<const char*>(iov[iovPos2].iov_base);
-            state.outBuffer.append(b2, b2 + iov[iovPos2].iov_len);
+          for (std::size_t dataPos2 = dataPos1 + 1; dataPos2 < dataStrs.size(); ++dataPos2) {
+            state.outBuffer.append(dataStrs[dataPos2]);
           }
           break;
         }
@@ -169,9 +172,8 @@ bool HttpServer::queueVec(int fd, ConnectionState& state, const struct iovec* io
       return true;
     }
   } else {
-    for (int i = 0; i < iovcnt; ++i) {
-      const char* base = static_cast<const char*>(iov[i].iov_base);
-      state.outBuffer.append(base, base + iov[i].iov_len);
+    for (auto data : dataStrs) {
+      state.outBuffer.append(data);
     }
   }
   _stats.totalBytesQueued += static_cast<uint64_t>(total);
@@ -253,10 +255,8 @@ void HttpServer::flushOutbound(int fd, ConnectionState& state) {
       }
     } else if (state.waitingWritable) {
       state.waitingWritable = false;
-      if (_loop) {
-        HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLET, state,
-                                          "disable writable flushOutbound transport no longer needs", _stats);
-      }
+      HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLET, state,
+                                        "disable writable flushOutbound transport no longer needs", _stats);
     }
   }
 }

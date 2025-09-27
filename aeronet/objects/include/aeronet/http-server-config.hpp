@@ -19,14 +19,18 @@
 namespace aeronet {
 
 struct HttpServerConfig {
+  enum class TrailingSlashPolicy : std::int8_t { Strict, Normalize, Redirect };
+
   // RFC 7301 (ALPN) protocol identifier length is encoded in a single octet => maximum 255 bytes.
   // OpenSSL lacks a stable public constant for this; we define it here to avoid magic numbers.
   static constexpr std::size_t kMaxAlpnProtocolLength = 255;
+
   // ============================
   // Listener / socket parameters
   // ============================
   // TCP port to bind. 0 (default) lets the OS pick an ephemeral free port. After construction
   // you can retrieve the effective port via HttpServer::port().
+
   uint16_t port{0};
   // If true, enables SO_REUSEPORT allowing multiple independent HttpServer instances (usually one per thread)
   // to bind the same (non-ephemeral) port for load distribution by the kernel. Harmless if the platform
@@ -39,6 +43,7 @@ struct HttpServerConfig {
   // Maximum allowed size (in bytes) of the aggregate HTTP request head (request line + all headers + CRLFCRLF).
   // If exceeded while parsing, the server replies 431/400 and closes the connection. Default: 8 KiB.
   std::size_t maxHeaderBytes{8192};
+
   // Maximum allowed size (in bytes) of a request body (after decoding any chunked framing). Requests exceeding
   // this limit result in a 413 (Payload Too Large) style error (currently 400/413 depending on path) and closure.
   // Default: 1 MiB.
@@ -58,9 +63,11 @@ struct HttpServerConfig {
   // Maximum number of HTTP requests to serve over a single persistent connection before forcing close.
   // Helps cap memory use for long-lived clients and provides fairness. Default: 100.
   uint32_t maxRequestsPerConnection{100};
+
   // Whether HTTP/1.1 persistent connections (keep-alive) are enabled. When false, server always closes after
   // each response regardless of client headers. Default: true.
   bool enableKeepAlive{true};
+
   // Idle timeout for keep-alive connections (duration to wait for next request after previous response is fully
   // sent). Once exceeded the server proactively closes the connection. Default: 5000 ms.
   std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
@@ -92,6 +99,10 @@ struct HttpServerConfig {
 
   // Protective timeout for TLS handshakes (time from accept to handshake completion). 0 => disabled.
   std::chrono::milliseconds tlsHandshakeTimeout{std::chrono::milliseconds{0}};
+
+  // Behavior for resolving paths that differ only by a trailing slash.
+  // Default: Normalize
+  TrailingSlashPolicy trailingSlashPolicy{TrailingSlashPolicy::Normalize};
 
  private:
   TLSConfig& ensureTls() {
@@ -264,6 +275,31 @@ struct HttpServerConfig {
 
   HttpServerConfig& withoutTls() {
     tls.reset();
+    return *this;
+  }
+
+  // Policy for handling a trailing slash difference between registered path handlers and incoming requests.
+  // Resolution algorithm (independent of policy):
+  //   1. ALWAYS attempt an exact match on the incoming target string first. If found, dispatch that handler.
+  //      (This means if both "/p" and "/p/" are registered, each is honored exactly as requested; no policy logic
+  //      runs.)
+  //   2. If no exact match:
+  //        a) If the request ends with one trailing slash (not root) and the canonical form without the slash exists:
+  //             - Strict   : treat as not found (404).
+  //             - Normalize: internally treat it as the canonical path (strip slash, no redirect).
+  //             - Redirect : emit a 301 with Location header pointing to the canonical (no trailing slash) path.
+  //        b) Else if the request does NOT end with a slash, policy is Normalize, and ONLY the slashed variant exists
+  //             (e.g. "/x/" registered, "/x" not): treat the slashed variant as equivalent and dispatch to it.
+  //        c) Otherwise: 404 (no transformation / redirect performed).
+  //   3. Root path "/" is never redirected or normalized.
+  //
+  // Summary:
+  //   Strict   : exact-only matching; variants differ; no implicit mapping.
+  //   Normalize: provide symmetric acceptance (one missing variant maps to the existing one) without redirects.
+  //   Redirect : like Strict unless the ONLY difference is an added trailing slash for a canonical registered path;
+  //              then a 301 to the canonical form is sent (never the inverse).
+  HttpServerConfig& withTrailingSlashPolicy(TrailingSlashPolicy policy) {
+    trailingSlashPolicy = policy;
     return *this;
   }
 };

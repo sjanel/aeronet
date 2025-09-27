@@ -10,6 +10,7 @@ using HttpHeaders = flat_hash_map<std::string_view, std::string_view>;
 
 struct HttpRequest {
   [[nodiscard]] std::string_view findHeader(std::string_view key) const;
+  [[nodiscard]] bool wantClose() const;
 
   std::string_view method;
   std::string_view target;

@@ -1,4 +1,5 @@
 #include <aeronet/async-http-server.hpp>
+#include <aeronet/http-response.hpp>
 #include <aeronet/http-server-config.hpp>
 #include <aeronet/http-server.hpp>
 #include <chrono>
@@ -12,10 +13,7 @@ int main() {
   cfg.withPort(0);
   HttpServer server(cfg);
   server.setHandler([](const HttpRequest&) {
-    HttpResponse resp{200, "OK"};
-    resp.contentType = "text/plain";
-    resp.body = "hello from async server\n";
-    return resp;
+    return HttpResponse(200).reason("OK").contentType(http::ContentTypeTextPlain).body("hello from async server\n");
   });
 
   AsyncHttpServer async(std::move(server));

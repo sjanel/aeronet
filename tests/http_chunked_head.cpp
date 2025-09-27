@@ -3,7 +3,6 @@
 #include <sys/socket.h>
 
 #include <cerrno>
-#include <chrono>
 #include <string>
 #include <thread>
 #include <utility>
@@ -47,10 +46,8 @@ TEST(HttpChunked, DecodeBasic) {
   TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
-    aeronet::HttpResponse resp;
-    // echo body size & content (limited) to verify decoding
-    resp.body = std::string("LEN=") + std::to_string(req.body.size()) + ":" + std::string(req.body);
-    return resp;
+    return aeronet::HttpResponse(200).body(std::string("LEN=") + std::to_string(req.body.size()) + ":" +
+                                           std::string(req.body));
   });
 
   ClientConnection sock(port);
@@ -70,11 +67,7 @@ TEST(HttpChunked, RejectTooLarge) {
   cfg.withMaxBodyBytes(4);  // very small limit
   TestServer ts(cfg);
   auto port = ts.port();
-  ts.server.setHandler([](const aeronet::HttpRequest& req) {
-    aeronet::HttpResponse resp;
-    resp.body = std::string(req.body);
-    return resp;
-  });
+  ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body); });
   aeronet::Socket sock(aeronet::Socket::Type::STREAM);
   int fd = sock.fd();
   sockaddr_in addr{};
@@ -95,9 +88,7 @@ TEST(HttpHead, NoBodyReturned) {
   TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
-    aeronet::HttpResponse resp;
-    resp.body = std::string("DATA-") + std::string(req.target);
-    return resp;
+    return aeronet::HttpResponse(200).body(std::string("DATA-") + std::string(req.target));
   });
   aeronet::Socket sock(aeronet::Socket::Type::STREAM);
   int fd = sock.fd();
@@ -116,17 +107,16 @@ TEST(HttpHead, NoBodyReturned) {
   auto hdrEnd = resp.find("\r\n\r\n");
   ASSERT_NE(std::string::npos, hdrEnd);
   std::string after = resp.substr(hdrEnd + 4);
+  if (!after.empty()) {
+    std::cerr << "[DEBUG HEAD] Unexpected body bytes: '" << after << "' size=" << after.size() << "\n";
+  }
   ASSERT_TRUE(after.empty());
 }
 
 TEST(HttpExpect, ContinueFlow) {
   TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.setHandler([](const aeronet::HttpRequest& req) {
-    aeronet::HttpResponse respObj;
-    respObj.body = std::string(req.body);
-    return respObj;
-  });
+  ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body); });
   aeronet::Socket sock(aeronet::Socket::Type::STREAM);
   int fd = sock.fd();
   sockaddr_in addr{};
