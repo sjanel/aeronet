@@ -33,7 +33,7 @@ bool URLDecodeInPlace(RawChars &str, bool plusAsSpace) {
       str[writePos++] = ch;
     }
   }
-  str.resize_down(writePos);
+  str.setSize(writePos);
   return true;
 }
 

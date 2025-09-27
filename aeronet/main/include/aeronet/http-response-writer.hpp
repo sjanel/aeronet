@@ -2,27 +2,26 @@
 #pragma once
 
 #include <cstddef>
-#include <string>
 #include <string_view>
-#include <utility>
 
-#include "flat-hash-map.hpp"
+#include "aeronet/http-response.hpp"
 #include "http-constants.hpp"
 #include "http-status-code.hpp"
+#include "raw-chars.hpp"
 
 namespace aeronet {
 
-class HttpServer;  // fwd
+class HttpServer;
 
 class HttpResponseWriter {
  public:
   HttpResponseWriter(HttpServer& srv, int fd, bool headRequest, bool requestConnClose);
 
-  void statusCode(http::StatusCode code, std::string reason = {});
+  void statusCode(http::StatusCode code, std::string_view reason = {});
 
-  void header(std::string name, std::string value);
+  void header(std::string_view name, std::string_view value);
 
-  void contentType(std::string ct) { header(std::string(http::ContentType), std::move(ct)); }
+  void contentType(std::string_view ct) { header(http::ContentType, ct); }
 
   void contentLength(std::size_t len);
 
@@ -47,11 +46,13 @@ class HttpResponseWriter {
   bool _ended{false};
   bool _failed{false};
   bool _requestConnClose{false};
-  http::StatusCode _statusCode{200};
-  std::string _reason{"OK"};
-  flat_hash_map<std::string, std::string, std::hash<std::string_view>, std::equal_to<>> _headers;
+  bool _userSetContentType{false};
+  // Internal fixed HttpResponse used solely for header accumulation and status/reason/body placeholder.
+  // We never finalize until ensureHeadersSent(); body remains empty (streaming chunks / writes follow separately).
+  HttpResponse _fixedResponse{200, "OK"};
   std::size_t _declaredLength{0};
   std::size_t _bytesWritten{0};
+  RawChars _chunkBuf;  // reusable buffer for coalesced small/medium chunks
 };
 
 }  // namespace aeronet

@@ -59,6 +59,7 @@ aeronet_http_test(http_streaming_keepalive http_streaming_keepalive.cpp)
 aeronet_http_test(http_streaming http_streaming.cpp)
 aeronet_http_test(http_streaming_head_content_length http_streaming_head_content_length.cpp)
 aeronet_http_test(http_streaming_set_header http_streaming_set_header.cpp)
+aeronet_http_test(http_streaming_adaptive http_streaming_adaptive.cpp)
 
 # Mixed streaming + normal handler tests (Phase 2)
 aeronet_http_test(http_streaming_mixed http_streaming_mixed.cpp)
@@ -118,6 +119,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_streaming.cpp
 	http_streaming_head_content_length.cpp
 	http_streaming_set_header.cpp
+	http_streaming_adaptive.cpp
 	http_streaming_mixed.cpp
 	async_http_server.cpp
 	http_url_decoding_additional.cpp

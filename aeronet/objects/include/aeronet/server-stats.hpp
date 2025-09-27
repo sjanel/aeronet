@@ -18,6 +18,8 @@ struct ServerStats {
     fun("deferredWriteEvents", deferredWriteEvents);
     fun("flushCycles", flushCycles);
     fun("epollModFailures", epollModFailures);
+    fun("streamingChunkCoalesced", streamingChunkCoalesced);
+    fun("streamingChunkLarge", streamingChunkLarge);
     fun("maxConnectionOutboundBuffer", static_cast<uint64_t>(maxConnectionOutboundBuffer));
 #ifdef AERONET_ENABLE_OPENSSL
     fun("tlsHandshakesSucceeded", tlsHandshakesSucceeded);
@@ -35,6 +37,8 @@ struct ServerStats {
   uint64_t deferredWriteEvents{};
   uint64_t flushCycles{};
   uint64_t epollModFailures{};
+  uint64_t streamingChunkCoalesced{};  // number of chunked streaming emits that used coalesced buffer path
+  uint64_t streamingChunkLarge{};      // number of chunked streaming emits that used large multi-enqueue path
   std::size_t maxConnectionOutboundBuffer{};
 #ifdef AERONET_ENABLE_OPENSSL
   uint64_t tlsHandshakesSucceeded{};

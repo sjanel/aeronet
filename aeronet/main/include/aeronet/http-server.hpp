@@ -370,7 +370,6 @@ class HttpServer {
   bool emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, ParserError perr, bool& closeConn);
   // Outbound write helpers
   bool queueData(int fd, ConnectionState& state, std::string_view data);
-  bool queueVec(int fd, ConnectionState& state, std::span<const std::string_view> dataStrs);
   void flushOutbound(int fd, ConnectionState& state);
 
   void handleWritableClient(int fd);
@@ -389,6 +388,8 @@ class HttpServer {
     uint64_t flushCycles{0};
     uint64_t epollModFailures{0};
     std::size_t maxConnectionOutboundBuffer{0};
+    uint64_t streamingChunkCoalesced{0};
+    uint64_t streamingChunkLarge{0};
   } _stats;
 
   // Attempt an epoll_ctl MOD on the given fd; on failure logs, marks connection for close and

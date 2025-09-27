@@ -52,7 +52,12 @@ class RawBytesImpl {
     _size = _capacity;
   }
 
-  RawBytesImpl(const RawBytesImpl &) = delete;
+  RawBytesImpl(const RawBytesImpl &rhs) : RawBytesImpl(rhs.capacity()) {
+    _size = rhs.size();
+    if (!empty()) {
+      std::memcpy(_buf, rhs.data(), _size);
+    }
+  }
 
   RawBytesImpl(RawBytesImpl &&rhs) noexcept
       : _buf(std::exchange(rhs._buf, nullptr)),
@@ -69,7 +74,18 @@ class RawBytesImpl {
     return *this;
   }
 
-  RawBytesImpl &operator=(const RawBytesImpl &) = delete;
+  RawBytesImpl &operator=(const RawBytesImpl &rhs) {
+    if (this != &rhs) {
+      if (rhs.capacity() > capacity()) {
+        ensureAvailableCapacity(static_cast<std::size_t>(rhs.capacity() - capacity()));
+      }
+      _size = rhs.size();
+      if (!empty()) {
+        std::memcpy(_buf, rhs.data(), _size);
+      }
+    }
+    return *this;
+  }
 
   ~RawBytesImpl() { std::free(_buf); }
 
@@ -120,7 +136,7 @@ class RawBytesImpl {
     _size -= n;
   }
 
-  void resize_down(size_type newSize) {
+  void setSize(size_type newSize) {
     assert(newSize <= _capacity);
     _size = newSize;
   }
