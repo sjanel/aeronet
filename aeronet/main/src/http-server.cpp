@@ -682,7 +682,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
         }
       } else {  // 404
         resp.statusCode(404);
-        resp.reason("Not Found").body(resp.reason()).contentType(http::ContentTypeTextPlain);
+        resp.reason(http::NotFound).body(resp.reason()).contentType(http::ContentTypeTextPlain);
       }
       finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeCnx);
     }
@@ -727,6 +727,8 @@ ServerStats HttpServer::stats() const {
   statsOut.flushCycles = _stats.flushCycles;
   statsOut.epollModFailures = _stats.epollModFailures;
   statsOut.maxConnectionOutboundBuffer = _stats.maxConnectionOutboundBuffer;
+  statsOut.streamingChunkCoalesced = _stats.streamingChunkCoalesced;
+  statsOut.streamingChunkLarge = _stats.streamingChunkLarge;
 #ifdef AERONET_ENABLE_OPENSSL
   statsOut.tlsHandshakesSucceeded = _tlsMetrics.handshakesSucceeded;
   statsOut.tlsClientCertPresent = _tlsMetrics.clientCertPresent;

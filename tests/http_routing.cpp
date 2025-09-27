@@ -20,14 +20,11 @@ TEST(HttpRouting, BasicPathDispatch) {
   HttpServer server(cfg);
   http::MethodSet helloMethods{http::Method::GET};
   server.addPathHandler("/hello", helloMethods, [](const HttpRequest&) {
-    return HttpResponse(200).reason("OK").body("world").contentType(aeronet::http::ContentTypeTextPlain);
+    return HttpResponse(200, "OK").body("world").contentType(aeronet::http::ContentTypeTextPlain);
   });
   http::MethodSet multiMethods{http::Method::GET, http::Method::POST};
   server.addPathHandler("/multi", multiMethods, [](const HttpRequest& req) {
-    return HttpResponse(200)
-        .reason("OK")
-        .body(std::string(req.method) + "!")
-        .contentType(aeronet::http::ContentTypeTextPlain);
+    return HttpResponse(200, "OK").body(std::string(req.method) + "!").contentType(aeronet::http::ContentTypeTextPlain);
   });
 
   std::atomic<bool> done{false};
