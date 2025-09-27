@@ -19,6 +19,7 @@ HTTP/1.1 server library for Linux only – work in progress.
 | HEAD method | Suppresses body while preserving `Content-Length` |
 | Expect: 100-continue | Sent only when request has a (non-zero) body |
 | Per-path routing | Exact path match with method allow‑lists |
+| Trailing slash policy | Strict (default) / Normalize / Redirect |
 | Mixed-mode dispatch | Deterministic precedence: path streaming > path normal > global streaming > global normal |
 | Streaming responses | Chunked by default; switch to fixed length with `setContentLength()` |
 | Slowloris mitigation | Header read timeout (configurable; disabled by default) |
@@ -149,6 +150,32 @@ Headers & protocol niceties
 - [ ] Server header (intentionally omitted to keep minimal)
 - [ ] Access-Control-* (CORS) helpers
 
+### Reserved Headers
+
+The library intentionally reserves a small set of response headers that user code cannot set directly on
+`HttpResponse` (fixed responses) or via `HttpResponseWriter` (streaming) because Aeronet itself manages them or
+their semantics would be invalid / ambiguous without deeper protocol features:
+
+Reserved now (assert if attempted in debug; ignored in release for streaming):
+
+- `Date` – generated once per second and injected automatically.
+- `Content-Length` – computed from the body (fixed) or set through `setContentLength()` (streaming). Prevents
+  inconsistencies between declared and actual size.
+- `Connection` – determined by keep-alive policy (HTTP version, server config, request count, errors). User code
+  supplying conflicting values could desynchronize connection reuse logic.
+- `Transfer-Encoding` – controlled by streaming writer (`chunked`) or omitted when `Content-Length` is known. Allowing
+  arbitrary values risks illegal CL + TE combinations or unsupported encodings.
+- `Trailer`, `TE`, `Upgrade` – not yet supported by Aeronet; reserving them now avoids future backward-incompatible
+  behavior changes when trailer / upgrade features are introduced.
+
+Allowed convenience helpers:
+
+- `Content-Type` via `contentType()` or `setHeader("Content-Type", ...)` in streaming.
+- `Location` via `location()` for redirects.
+
+All other headers (custom application / caching / CORS / etc.) may be freely set; they are forwarded verbatim.
+This central rule lives in a single helper (`HttpResponse::IsReservedHeader`).
+
 Performance / architecture
 
 - [x] Single-thread event loop (one server instance)
@@ -172,6 +199,7 @@ Developer experience
 - [x] Builder style HttpServerConfig
 - [x] Simple lambda handler signature
 - [x] Simple exact-match per-path routing (`addPathHandler`)
+- [x] Configurable trailing slash handling (Strict / Normalize / Redirect)
 - [x] Lightweight built-in logging (spdlog optional integration) – pluggable interface TBD
 - [ ] Middleware helpers
 - [ ] Pluggable logging interface (abstract sink / formatting hooks)
@@ -315,6 +343,42 @@ cmake --build build -j
 ```
 
 For TLS toggles, sanitizers, Conan/vcpkg usage and `find_package` examples, see the INSTALL guide.
+
+## Trailing Slash Policy
+
+`HttpServerConfig::TrailingSlashPolicy` controls how paths that differ only by a single trailing `/` are treated.
+
+Resolution algorithm (applies to all policies):
+
+1. Always attempt an exact match first. If the incoming target exactly equals a registered path, that handler is used and the policy does not intervene. (So if both `/foo` and `/foo/` are registered you get whichever you requested, under every policy.)
+2. If no exact match:
+   - If the request ends with a single trailing slash (excluding root `/`) and the canonical form without that slash exists:
+     - Strict   – 404 (variants are distinct; no mapping)
+     - Normalize – treat as the canonical path (strip the slash internally, no redirect)
+     - Redirect – emit `301 Moved Permanently` with `Location: /foo`
+   - Else if the request does not end with a slash, policy is Normalize, and only the slashed variant exists (e.g. only `/foo/` registered): dispatch to that variant (symmetry in the opposite direction)
+   - Otherwise: 404
+3. The root path `/` is never redirected or normalized.
+
+Behavior summary:
+
+| Policy    | `/foo` registered only | `/foo/` registered only | Both registered      |
+|-----------|------------------------|--------------------------|----------------------|
+| Strict    | `/foo/` -> 404         | `/foo` -> 404            | Each exact served    |
+| Normalize | `/foo/` -> serve `/foo`| `/foo` -> serve `/foo/`  | Each exact served    |
+| Redirect  | `/foo/` -> 301 `/foo`  | `/foo` -> 404            | Each exact served (no redirect) |
+
+Usage:
+
+```cpp
+HttpServerConfig cfg;
+cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Redirect);
+HttpServer server(cfg);
+server.addPathHandler("/foo", http::Method::GET, [](const HttpRequest&){
+  HttpResponse r{200, "OK"}; r.body="foo"; r.contentType="text/plain"; return r; });
+```
+
+Tests covering this matrix live in `tests/http_trailing_slash.cpp`.
 
 ## Construction Model (RAII) & Ephemeral Ports
 

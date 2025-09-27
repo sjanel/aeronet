@@ -6,6 +6,7 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "http-constants.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
 #include "test_util.hpp"
@@ -51,12 +52,10 @@ TEST(HttpTlsNegative, LargeResponseFragmentation) {
     TlsTestServer ts;  // basic TLS
     auto port = ts.port();
     ts.setHandler([](const aeronet::HttpRequest&) {
-      aeronet::HttpResponse resp;
-      resp.statusCode = 200;
-      resp.reason = "OK";
-      resp.contentType = "text/plain";
-      resp.body.assign(300000, 'A');
-      return resp;
+      return aeronet::HttpResponse(200)
+          .reason("OK")
+          .contentType(aeronet::http::ContentTypeTextPlain)
+          .body(std::string(300000, 'A'));
     });
     resp = tlsGetLarge(port);
     ts.stop();

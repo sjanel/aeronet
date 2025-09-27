@@ -20,7 +20,7 @@ TEST(HttpPipeline, TwoRequestsBackToBack) {
   TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
-    respObj.body = std::string("E:") + std::string(req.target);
+    respObj.body(std::string("E:") + std::string(req.target));
     return respObj;
   });
   ClientConnection clientConnection(ts.port());
@@ -39,7 +39,7 @@ TEST(HttpExpect, ZeroLengthNo100) {
   TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
-    respObj.body = "Z";
+    respObj.body("Z");
     return respObj;
   });
   ClientConnection clientConnection(ts.port());
@@ -58,7 +58,7 @@ TEST(HttpMaxRequests, CloseAfterLimit) {
   TestServer ts(cfg);
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
-    respObj.body = "Q";
+    respObj.body("Q");
     return respObj;
   });
   ClientConnection clientConnection(ts.port());
@@ -76,7 +76,7 @@ TEST(HttpPipeline, SecondMalformedAfterSuccess) {
   TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
-    respObj.body = "OK";
+    respObj.body("OK");
     return respObj;
   });
   ClientConnection clientConnection(ts.port());
@@ -94,7 +94,7 @@ TEST(HttpContentLength, ExplicitTooLarge413) {
   TestServer ts(cfg);
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
-    respObj.body = "R";
+    respObj.body("R");
     return respObj;
   });
   ClientConnection clientConnection(ts.port());

@@ -250,7 +250,7 @@ void HttpServer::run() {
     throw exception("Server is already running");
   }
   auto interval = _config.pollInterval;
-  log::info("Server running until SIGINT or SIGTERM (poll interval={})", PrettyDuration{interval});
+  log::info("Server running (poll interval={})", PrettyDuration{interval});
   for (_running = true; _running;) {
     eventLoop(interval);
   }
@@ -271,7 +271,7 @@ void HttpServer::runUntil(const std::function<bool()>& predicate) {
     throw exception("Server is already running");
   }
   auto interval = _config.pollInterval;
-  log::info("Server running until predicate, SIGINT or SIGTERM (poll interval={})", PrettyDuration{interval});
+  log::info("Server running until predicate (poll interval={})", PrettyDuration{interval});
   for (_running = true; _running && !predicate();) {
     eventLoop(interval);
   }
@@ -358,13 +358,13 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
     if (std::string_view te = req.findHeader(http::TransferEncoding); !te.empty()) {
       hasTE = true;
       if (req.version == http::HTTP10) {
-        emitSimpleError(fd, state, 400, http::ReasonBadRequest, ParserError::BadRequestLine, closeCnx);
+        emitSimpleError(fd, state, 400, ParserError::BadRequestLine, closeCnx);
         break;
       }
       if (CaseInsensitiveEqual(te, http::chunked)) {
         isChunked = true;
       } else {
-        emitSimpleError(fd, state, 501, http::ReasonNotImplemented, ParserError::GenericBadRequest, closeCnx);
+        emitSimpleError(fd, state, 501, ParserError::GenericBadRequest, closeCnx);
         break;
       }
     }
@@ -374,7 +374,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
       hasCL = true;
     }
     if (hasCL && hasTE) {
-      emitSimpleError(fd, state, 400, http::ReasonBadRequest, ParserError::BadRequestLine, closeCnx);
+      emitSimpleError(fd, state, 400, ParserError::BadRequestLine, closeCnx);
       break;
     }
     bool expectContinue = false;
@@ -398,7 +398,58 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
     bool handledStreaming = false;
     bool pathFound = false;
     if (!_pathHandlers.empty()) {
+      // 1. Always attempt exact match first, independent of policy.
       auto pit = _pathHandlers.find(req.target);
+      std::string normalizedStorage;  // potential temporary storage for Normalize
+      bool endsWithSlash = req.target.size() > 1 && req.target.back() == '/';
+      if (pit == _pathHandlers.end()) {
+        // 2. No exact match: apply policy decision (excluding root "/").
+        if (endsWithSlash && req.target.size() > 1) {
+          // Candidate canonical form (strip single trailing slash)
+          std::string_view canonical(req.target.data(), req.target.size() - 1);
+          auto canonicalIt = _pathHandlers.find(canonical);
+          if (canonicalIt != _pathHandlers.end()) {
+            switch (_config.trailingSlashPolicy) {
+              case HttpServerConfig::TrailingSlashPolicy::Normalize:
+                // Treat as if request was canonical (no redirect) by mutating req.target temporarily.
+                normalizedStorage.assign(canonical.data(), canonical.size());
+                req.target = normalizedStorage;
+                pit = canonicalIt;
+                break;
+              case HttpServerConfig::TrailingSlashPolicy::Redirect: {
+                // Emit 301 redirect to canonical form.
+                HttpResponse resp(301);
+                resp.reason(http::MovedPermanently)
+                    .location(canonical)
+                    .contentType(http::ContentTypeTextPlain)
+                    .body("Redirecting");
+                finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeCnx);
+                if (closeCnx) {
+                  return closeCnx;  // connection closing, stop loop
+                }
+                consumedBytes = 0;  // already advanced
+                continue;           // process next request (keep-alive)
+              }
+              case HttpServerConfig::TrailingSlashPolicy::Strict:
+                break;  // 404 later
+              default:
+                std::unreachable();
+            }
+          }
+        } else if (!endsWithSlash && _config.trailingSlashPolicy == HttpServerConfig::TrailingSlashPolicy::Normalize &&
+                   req.target.size() > 1) {
+          // Request lacks slash; check if ONLY slashed variant exists.
+          std::string augmented(req.target.size() + 1U, '/');
+          std::memcpy(augmented.data(), req.target.data(), req.target.size());
+          auto altIt = _pathHandlers.find(augmented);
+          if (altIt != _pathHandlers.end()) {
+            // Normalize treats them the same: dispatch to the registered variant.
+            pit = altIt;
+            normalizedStorage = augmented;  // keep explicit variant for metrics consistency
+            req.target = normalizedStorage;
+          }
+        }
+      }
       if (pit != _pathHandlers.end()) {
         pathFound = true;
         auto& entry = pit->second;
@@ -417,7 +468,8 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
         }
         if (entry.streamingHandlers[idx]) {
           bool isHeadReq = (req.method == http::HEAD);
-          HttpResponseWriter writer(*this, fd, isHeadReq);
+          bool clientAskedClose = req.wantClose();
+          HttpResponseWriter writer(*this, fd, isHeadReq, clientAskedClose);
           try {
             entry.streamingHandlers[idx](req, writer);
           } catch (const std::exception& ex) {
@@ -428,12 +480,13 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
           if (!writer.finished()) {
             writer.end();
           }
-          bool allowKeepAlive = _config.enableKeepAlive && req.version == http::HTTP11 &&
+          if (clientAskedClose) {
+            state.shouldClose = true;  // honor client directive for streaming path
+          }
+          bool allowKeepAlive = _config.enableKeepAlive && req.version == http::HTTP11 && !clientAskedClose &&
                                 state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.shouldClose;
           ++state.requestsServed;
-          if (consumedBytes > 0) {
-            state.buffer.erase_front(consumedBytes);
-          }
+          state.buffer.erase_front(consumedBytes);
           if (!allowKeepAlive) {
             state.shouldClose = true;
             closeCnx = true;
@@ -450,58 +503,122 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
           }
           handledStreaming = true;
         } else if (entry.normalHandlers[idx]) {
-          HttpResponse resp;
-          if (!http::methodAllowed(entry.normalMethodMask | entry.streamingMethodMask, effectiveMethodEnum)) {
-            resp.statusCode = 405;
-            resp.reason.assign(http::ReasonMethodNotAllowed);
-            resp.body = resp.reason;
-            resp.contentType = "text/plain";
-          } else {
+          HttpResponse resp(405);
+          if (http::methodAllowed(entry.normalMethodMask | entry.streamingMethodMask, effectiveMethodEnum)) {
+            // TODO: factorize this try catch code
             try {
               resp = entry.normalHandlers[idx](req);
             } catch (const std::exception& ex) {
               log::error("Exception in path handler: {}", ex.what());
-              resp.statusCode = 500;
-              resp.reason.assign(http::ReasonInternalServerError);
-              resp.body = resp.reason;
-              resp.contentType = "text/plain";
+              resp.statusCode(500)
+                  .reason(http::ReasonInternalServerError)
+                  .body(ex.what())
+                  .contentType(http::ContentTypeTextPlain);
             } catch (...) {
               log::error("Unknown exception in path handler.");
-              resp.statusCode = 500;
-              resp.reason.assign(http::ReasonInternalServerError);
-              resp.body = resp.reason;
-              resp.contentType = "text/plain";
+              resp.statusCode(500)
+                  .reason(http::ReasonInternalServerError)
+                  .body("Unknown error")
+                  .contentType(http::ContentTypeTextPlain);
             }
+          } else {
+            resp.reason(http::ReasonMethodNotAllowed).body(resp.reason()).contentType(http::ContentTypeTextPlain);
           }
-          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, closeCnx);
-          if (_metricsCb) {
-            RequestMetrics metrics;
-            metrics.method = req.method;
-            metrics.target = req.target;
-            metrics.status = resp.statusCode;
-            metrics.bytesIn = req.body.size();
-            metrics.reusedConnection = state.requestsServed > 0;
-            metrics.duration = std::chrono::steady_clock::now() - reqStart;
-            _metricsCb(metrics);
-          }
+          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeCnx);
         } else {
           // path found but method not registered -> 405
-          HttpResponse resp;
-          resp.statusCode = 405;
-          resp.reason.assign(http::ReasonMethodNotAllowed);
-          resp.body = resp.reason;
-          resp.contentType = "text/plain";
-          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, closeCnx);
-          if (_metricsCb) {
-            RequestMetrics metrics;
-            metrics.method = req.method;
-            metrics.target = req.target;
-            metrics.status = resp.statusCode;
-            metrics.bytesIn = req.body.size();
-            metrics.reusedConnection = state.requestsServed > 0;
-            metrics.duration = std::chrono::steady_clock::now() - reqStart;
-            _metricsCb(metrics);
+          HttpResponse resp(405);
+          resp.reason(http::ReasonMethodNotAllowed).body(resp.reason()).contentType(http::ContentTypeTextPlain);
+          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeCnx);
+        }
+      } else if (!endsWithSlash && _config.trailingSlashPolicy == HttpServerConfig::TrailingSlashPolicy::Normalize &&
+                 req.target.size() > 1) {
+        // If we didn't find the unslashed variant, try adding a slash if such a path exists; treat as same handler.
+        std::string augmented(req.target);
+        augmented.push_back('/');
+        auto altIt = _pathHandlers.find(augmented);
+        if (altIt != _pathHandlers.end()) {
+          pathFound = true;
+          // Reuse logic by setting req.target temporarily to registered variant.
+          req.target = augmented;  // dispatch using canonical stored path with slash
+          auto& entry = altIt->second;
+          auto idxOriginal = static_cast<std::underlying_type_t<http::Method>>(methodEnum);
+          auto idx = idxOriginal;
+          if (isHead) {
+            auto headIdx = static_cast<std::underlying_type_t<http::Method>>(http::Method::HEAD);
+            auto getIdx = static_cast<std::underlying_type_t<http::Method>>(http::Method::GET);
+            if (!entry.streamingHandlers[headIdx] && !entry.normalHandlers[headIdx]) {
+              if (entry.streamingHandlers[getIdx] || entry.normalHandlers[getIdx]) {
+                effectiveMethodEnum = http::Method::GET;
+                idx = getIdx;
+              }
+            }
           }
+          if (entry.streamingHandlers[idx]) {
+            bool isHeadReq = (req.method == http::HEAD);
+            bool wantClose = req.wantClose();
+            HttpResponseWriter writer(*this, fd, isHeadReq, wantClose);
+            try {
+              entry.streamingHandlers[idx](req, writer);
+            } catch (const std::exception& ex) {
+              log::error("Exception in path streaming handler: {}", ex.what());
+            } catch (...) {
+              log::error("Unknown exception in path streaming handler.");
+            }
+            if (!writer.finished()) {
+              writer.end();
+            }
+            if (wantClose) {
+              state.shouldClose = true;
+            }
+            bool allowKeepAlive = _config.enableKeepAlive && req.version == http::HTTP11 && !wantClose &&
+                                  state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.shouldClose;
+            ++state.requestsServed;
+            state.buffer.erase_front(consumedBytes);
+            if (!allowKeepAlive) {
+              state.shouldClose = true;
+              closeCnx = true;
+            }
+            if (_metricsCb) {
+              RequestMetrics metrics;
+              metrics.method = req.method;
+              metrics.target = req.target;
+              metrics.status = 200;  // best effort
+              metrics.bytesIn = req.body.size();
+              metrics.reusedConnection = state.requestsServed > 1;
+              metrics.duration = std::chrono::steady_clock::now() - reqStart;
+              _metricsCb(metrics);
+            }
+            handledStreaming = true;
+          } else if (entry.normalHandlers[idx]) {
+            HttpResponse resp(405);
+            if (http::methodAllowed(entry.normalMethodMask | entry.streamingMethodMask, effectiveMethodEnum)) {
+              try {
+                resp = entry.normalHandlers[idx](req);
+              } catch (const std::exception& ex) {
+                log::error("Exception in path handler: {}", ex.what());
+                resp.statusCode(500)
+                    .reason(http::ReasonInternalServerError)
+                    .body(ex.what())
+                    .contentType(http::ContentTypeTextPlain);
+              } catch (...) {
+                log::error("Unknown exception in path handler.");
+                resp.statusCode(500)
+                    .reason(http::ReasonInternalServerError)
+                    .body("Unknown error")
+                    .contentType(http::ContentTypeTextPlain);
+              }
+            } else {
+              resp.reason(http::ReasonMethodNotAllowed).body(resp.reason()).contentType(http::ContentTypeTextPlain);
+            }
+            finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeCnx);
+          } else {
+            HttpResponse resp(405);
+            resp.reason(http::ReasonMethodNotAllowed).body(resp.reason()).contentType(http::ContentTypeTextPlain);
+
+            finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeCnx);
+          }
+          // restore original target for metric consistency? We keep canonical (augmented) for now.
         }
       }
     }
@@ -514,7 +631,8 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
     if (!pathFound) {
       if (_streamingHandler) {
         bool isHead = (req.method == http::HEAD);
-        HttpResponseWriter writer(*this, fd, isHead);
+        bool wantClose = req.wantClose();
+        HttpResponseWriter writer(*this, fd, isHead, wantClose);
         try {
           _streamingHandler(req, writer);
         } catch (const std::exception& ex) {
@@ -525,12 +643,13 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
         if (!writer.finished()) {
           writer.end();
         }
-        bool allowKeepAlive = _config.enableKeepAlive && req.version == http::HTTP11 &&
+        if (wantClose) {
+          state.shouldClose = true;
+        }
+        bool allowKeepAlive = _config.enableKeepAlive && req.version == http::HTTP11 && !wantClose &&
                               state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.shouldClose;
         ++state.requestsServed;
-        if (consumedBytes > 0) {
-          state.buffer.erase_front(consumedBytes);
-        }
+        state.buffer.erase_front(consumedBytes);
         if (!allowKeepAlive) {
           state.shouldClose = true;
           closeCnx = true;
@@ -550,52 +669,22 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
         }
         continue;
       }
+      HttpResponse resp(500);
       if (_handler) {
-        HttpResponse resp;
         try {
           resp = _handler(req);
         } catch (const std::exception& ex) {
           log::error("Exception in request handler: {}", ex.what());
-          resp.statusCode = 500;
-          resp.reason.assign(http::ReasonInternalServerError);
-          resp.body = resp.reason;
-          resp.contentType = "text/plain";
+          resp.reason(http::ReasonInternalServerError).body(ex.what()).contentType(http::ContentTypeTextPlain);
         } catch (...) {
-          log::error("Unknown exception in request handler.");
-          resp.statusCode = 500;
-          resp.reason.assign(http::ReasonInternalServerError);
-          resp.body = resp.reason;
-          resp.contentType = "text/plain";
-        }
-        finalizeAndSendResponse(fd, state, req, resp, consumedBytes, closeCnx);
-        if (_metricsCb) {
-          RequestMetrics metrics;
-          metrics.method = req.method;
-          metrics.target = req.target;
-          metrics.status = resp.statusCode;
-          metrics.bytesIn = req.body.size();
-          metrics.reusedConnection = state.requestsServed > 0;
-          metrics.duration = std::chrono::steady_clock::now() - reqStart;
-          _metricsCb(metrics);
+          log::error("Unknown exception in request handler");
+          resp.reason(http::ReasonInternalServerError).body("Unknown error").contentType(http::ContentTypeTextPlain);
         }
       } else {  // 404
-        HttpResponse resp;
-        resp.statusCode = 404;
-        resp.reason = "Not Found";
-        resp.body = resp.reason;
-        resp.contentType = "text/plain";
-        finalizeAndSendResponse(fd, state, req, resp, consumedBytes, closeCnx);
-        if (_metricsCb) {
-          RequestMetrics metrics;
-          metrics.method = req.method;
-          metrics.target = req.target;
-          metrics.status = resp.statusCode;
-          metrics.bytesIn = req.body.size();
-          metrics.reusedConnection = state.requestsServed > 0;
-          metrics.duration = std::chrono::steady_clock::now() - reqStart;
-          _metricsCb(metrics);
-        }
+        resp.statusCode(404);
+        resp.reason("Not Found").body(resp.reason()).contentType(http::ContentTypeTextPlain);
       }
+      finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeCnx);
     }
     if (closeCnx) {
       break;
@@ -661,9 +750,9 @@ ServerStats HttpServer::stats() const {
   return statsOut;
 }
 
-bool HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, std::string_view reason,
-                                 ParserError perr, bool& closeConn) {
-  const auto err = BuildSimpleError(code, reason, std::string_view(_cachedDate), true);
+bool HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, ParserError perr,
+                                 bool& closeConn) {
+  const auto err = BuildSimpleError(code, std::string_view(_cachedDate), true);
   queueData(fd, state, err);
   try {
     _parserErrCb(perr);

@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <mutex>
@@ -35,7 +34,7 @@ TEST(HttpParserErrors, InvalidVersion505) {
   auto port = ts.port();
   Capture cap;
   ts.server.setParserErrorCallback([&](aeronet::HttpServer::ParserError err) { cap.push(err); });
-  ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
+  ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -59,7 +58,7 @@ TEST(HttpParserErrors, InvalidVersion505) {
 TEST(HttpParserErrors, Expect100OnlyWithBody) {
   TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse{}; });
+  ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -86,11 +85,7 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
 TEST(HttpParserErrors, ChunkIncrementalFuzz) {
   TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.setHandler([](const aeronet::HttpRequest& req) {
-    aeronet::HttpResponse respObj;
-    respObj.body = std::string(req.body);
-    return respObj;
-  });
+  ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body); });
 
   std::mt19937 rng(12345);
   std::uniform_int_distribution<int> sizeDist(1, 15);

@@ -13,6 +13,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "http-constants.hpp"
 #include "socket.hpp"
 #include "test_server_fixture.hpp"
 
@@ -39,10 +40,7 @@ TEST(HttpHeaderTimeout, SlowHeadersConnectionClosed) {
   cfg.withPort(0).withHeaderReadTimeout(std::chrono::milliseconds(50));
   TestServer ts(cfg);
   ts.server.setHandler([](const HttpRequest&) {
-    HttpResponse resp{200, "OK"};
-    resp.body = "hi";
-    resp.contentType = "text/plain";
-    return resp;
+    return aeronet::HttpResponse(200).reason("OK").body("hi").contentType(aeronet::http::ContentTypeTextPlain);
   });
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   Socket sock = connectLoopback(ts.port());

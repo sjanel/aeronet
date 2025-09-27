@@ -5,6 +5,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "http-constants.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
 #include "test_tls_helper.hpp"
@@ -23,12 +24,10 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertHandshakeFailsWithout) {
     });
     auto port = ts.port();
     ts.setHandler([](const aeronet::HttpRequest& req) {
-      aeronet::HttpResponse resp;
-      resp.statusCode = 200;
-      resp.reason = "OK";
-      resp.contentType = "text/plain";
-      resp.body = std::string("SECURE") + std::string(req.target);
-      return resp;
+      return aeronet::HttpResponse(200)
+          .reason("OK")
+          .contentType(aeronet::http::ContentTypeTextPlain)
+          .body(std::string("SECURE") + std::string(req.target));
     });
     TlsClient::Options opts;
     opts.alpn = {"http/1.1"};
@@ -57,12 +56,10 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertSuccessWithAlpn) {
     });
     auto port = ts.port();
     ts.setHandler([](const aeronet::HttpRequest& req) {
-      aeronet::HttpResponse resp;
-      resp.statusCode = 200;
-      resp.reason = "OK";
-      resp.contentType = "text/plain";
-      resp.body = std::string("SECURE") + std::string(req.target);
-      return resp;
+      return aeronet::HttpResponse(200)
+          .reason("OK")
+          .contentType(aeronet::http::ContentTypeTextPlain)
+          .body(std::string("SECURE") + std::string(req.target));
     });
     TlsClient::Options opts;
     opts.alpn = {"http/1.1"};

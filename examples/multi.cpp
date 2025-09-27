@@ -10,6 +10,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/multi-http-server.hpp"
+#include "http-constants.hpp"
 #include "log.hpp"
 
 namespace {
@@ -31,12 +32,10 @@ int main(int argc, char** argv) {
   cfg.withPort(port).withReusePort(true);
   aeronet::MultiHttpServer multi(cfg, static_cast<uint32_t>(threads));
   multi.setHandler([](const aeronet::HttpRequest& req) {
-    aeronet::HttpResponse resp;
-    resp.statusCode = 200;
-    resp.reason = "OK";
-    resp.contentType = "text/plain";
-    resp.body = std::string("multi reactor response ") + std::string(req.target);
-    return resp;
+    return aeronet::HttpResponse(200)
+        .reason("OK")
+        .contentType(aeronet::http::ContentTypeTextPlain)
+        .body(std::string("multi reactor response ") + std::string(req.target));
   });
   multi.start();
   aeronet::log::info("Listening on {} with {} reactors (SO_REUSEPORT). Press Ctrl+C to stop.", multi.port(), threads);

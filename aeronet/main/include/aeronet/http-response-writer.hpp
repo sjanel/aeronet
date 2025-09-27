@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "flat-hash-map.hpp"
+#include "http-constants.hpp"
 #include "http-status-code.hpp"
 
 namespace aeronet {
@@ -15,15 +16,15 @@ class HttpServer;  // fwd
 
 class HttpResponseWriter {
  public:
-  HttpResponseWriter(HttpServer& srv, int fd, bool headRequest);
+  HttpResponseWriter(HttpServer& srv, int fd, bool headRequest, bool requestConnClose);
 
-  void setStatus(http::StatusCode code, std::string reason = {});
+  void statusCode(http::StatusCode code, std::string reason = {});
 
-  void setHeader(std::string name, std::string value);
+  void header(std::string name, std::string value);
 
-  void setContentType(std::string ct) { setHeader("Content-Type", std::move(ct)); }
+  void contentType(std::string ct) { header(std::string(http::ContentType), std::move(ct)); }
 
-  void setContentLength(std::size_t len);
+  void contentLength(std::size_t len);
 
   // Backpressure-aware write. Returns true if accepted (queued or immediately written). Returns
   // false if a fatal error occurred or the server marked the connection for closure / overflow.
@@ -45,6 +46,7 @@ class HttpResponseWriter {
   bool _chunked{true};
   bool _ended{false};
   bool _failed{false};
+  bool _requestConnClose{false};
   http::StatusCode _statusCode{200};
   std::string _reason{"OK"};
   flat_hash_map<std::string, std::string, std::hash<std::string_view>, std::equal_to<>> _headers;

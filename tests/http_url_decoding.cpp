@@ -10,6 +10,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "http-constants.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
 #include "test_http_client.hpp"
@@ -24,12 +25,10 @@ TEST(HttpUrlDecoding, SpaceDecoding) {
   HttpServer server(cfg);
   http::MethodSet ms{http::Method::GET};
   server.addPathHandler("/hello world", ms, [](const HttpRequest &req) {
-    HttpResponse resp;
-    resp.statusCode = 200;
-    resp.reason = "OK";
-    resp.body = std::string(req.target);
-    resp.contentType = "text/plain";
-    return resp;
+    return aeronet::HttpResponse(200)
+        .reason("OK")
+        .body(std::string(req.target))
+        .contentType(http::ContentTypeTextPlain);
   });
   std::atomic<bool> done{false};
   std::jthread th([&] { server.runUntil([&] { return done.load(); }); });
@@ -54,12 +53,7 @@ TEST(HttpUrlDecoding, Utf8Decoded) {
   // Path contains snowman + space + 'x'
   std::string decodedPath = "/\xE2\x98\x83 x";  // /☃ x
   server.addPathHandler(decodedPath, ms, [](const HttpRequest &) {
-    HttpResponse resp;
-    resp.statusCode = 200;
-    resp.reason = "OK";
-    resp.body = "utf8";
-    resp.contentType = "text/plain";
-    return resp;
+    return aeronet::HttpResponse(200).reason("OK").body("utf8").contentType(http::ContentTypeTextPlain);
   });
   std::atomic<bool> done{false};
   std::jthread th([&] { server.runUntil([&] { return done.load(); }); });
@@ -83,12 +77,7 @@ TEST(HttpUrlDecoding, PlusIsNotSpace) {
   HttpServer server(cfg);
   http::MethodSet ms{http::Method::GET};
   server.addPathHandler("/a+b", ms, [](const HttpRequest &) {
-    HttpResponse resp;
-    resp.statusCode = 200;
-    resp.reason = "OK";
-    resp.body = "plus";
-    resp.contentType = "text/plain";
-    return resp;
+    return aeronet::HttpResponse(200).reason("OK").body("plus").contentType(http::ContentTypeTextPlain);
   });
   std::atomic<bool> done{false};
   std::jthread th([&] { server.runUntil([&] { return done.load(); }); });
