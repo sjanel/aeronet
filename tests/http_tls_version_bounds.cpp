@@ -6,6 +6,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "http-constants.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
 
@@ -21,12 +22,8 @@ TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
       if (!req.tlsVersion.empty()) {
         capturedVersion = std::string(req.tlsVersion);
       }
-      aeronet::HttpResponse resp;
-      resp.statusCode = 200;
-      resp.reason = "OK";
-      resp.contentType = "text/plain";
-      resp.body = "V";
-      return resp;
+
+      return aeronet::HttpResponse(200).reason("OK").contentType(aeronet::http::ContentTypeTextPlain).body("V");
     });
     TlsClient::Options opts;
     opts.alpn = {"http/1.1"};

@@ -6,6 +6,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "http-constants.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
 #include "test_tls_helper.hpp"
@@ -20,14 +21,13 @@ TEST(HttpTlsRequestClientCert, OptionalNoClientCertAccepted) {
     TlsTestServer ts({}, [](aeronet::HttpServerConfig& cfg) { cfg.withTlsRequestClientCert(true); });
     auto port = ts.port();
     ts.setHandler([&](const aeronet::HttpRequest& req) {
-      aeronet::HttpResponse resp;
-      resp.statusCode = 200;
-      resp.reason = "OK";
-      resp.contentType = "text/plain";
+      aeronet::HttpResponse resp(200);
+      resp.reason("OK");
+      resp.contentType(aeronet::http::ContentTypeTextPlain);
       if (!req.tlsCipher.empty()) {
-        resp.body = std::string("REQ-") + std::string(req.tlsCipher);
+        resp.body(std::string("REQ-") + std::string(req.tlsCipher));
       } else {
-        resp.body = "REQ-";
+        resp.body("REQ-");
       }
       return resp;
     });
@@ -54,12 +54,11 @@ TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
     });
     auto port = ts.port();
     ts.setHandler([](const aeronet::HttpRequest&) {
-      aeronet::HttpResponse resp;
-      resp.statusCode = 200;
-      resp.reason = "OK";
-      resp.contentType = "text/plain";
-      resp.body = "C";
-      return resp;
+      return aeronet::HttpResponse()
+          .statusCode(200)
+          .reason("OK")
+          .contentType(aeronet::http::ContentTypeTextPlain)
+          .body("C");
     });
     TlsClient::Options opts;
     opts.clientCertPem = clientPair.first;

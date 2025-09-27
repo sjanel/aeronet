@@ -4,6 +4,7 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "http-constants.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
 
@@ -13,12 +14,10 @@ TEST(HttpTlsBasic, HandshakeAndSimpleGet) {
   {
     TlsTestServer ts;  // ephemeral TLS server
     ts.setHandler([](const aeronet::HttpRequest& req) {
-      aeronet::HttpResponse resp;
-      resp.statusCode = 200;
-      resp.reason = "OK";
-      resp.contentType = "text/plain";
-      resp.body = std::string("TLS OK ") + std::string(req.target);
-      return resp;
+      return aeronet::HttpResponse(200)
+          .reason("OK")
+          .contentType(aeronet::http::ContentTypeTextPlain)
+          .body(std::string("TLS OK ") + std::string(req.target));
     });
     TlsClient client(ts.port());
     raw = client.get("/hello", {{"X-Test", "tls"}});

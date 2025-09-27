@@ -42,8 +42,7 @@ TEST(StreamingKeepAlive, TwoSequentialRequests) {
   cfg.enableKeepAlive = true;
   HttpServer server(cfg);
   server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.setStatus(200, "OK");
-    writer.setHeader("Connection", "keep-alive");
+    writer.statusCode(200, "OK");
     writer.write("hello");
     writer.write(",world");
     writer.end();
@@ -78,8 +77,7 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
   cfg.enableKeepAlive = true;
   HttpServer server(cfg);
   server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.setStatus(200, "OK");
-    writer.setHeader("Connection", "keep-alive");
+    writer.statusCode(200, "OK");
     writer.write("ignored-body");
     writer.end();
   });

@@ -22,13 +22,13 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnectionState& state, Http
   }
   headerEnd = static_cast<std::size_t>(rng.begin() - state.buffer.data());
   if (headerEnd > _config.maxHeaderBytes) {
-    return emitSimpleError(fd, state, 431, http::ReasonHeadersTooLarge, ParserError::HeadersTooLarge, closeConn);
+    return emitSimpleError(fd, state, 431, ParserError::HeadersTooLarge, closeConn);
   }
   const char* begin = state.buffer.data();
   const char* headersEndPtr = begin + headerEnd;
   const char* rawLineNl = static_cast<const char*>(std::memchr(begin, '\n', headerEnd));
   if (rawLineNl == nullptr) {
-    return emitSimpleError(fd, state, 400, http::ReasonBadRequest, ParserError::BadRequestLine, closeConn);
+    return emitSimpleError(fd, state, 400, ParserError::BadRequestLine, closeConn);
   }
   const char* lineStart = begin;
   const char* lineEndTrim = rawLineNl;
@@ -38,12 +38,12 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnectionState& state, Http
   const char* sp1 =
       static_cast<const char*>(std::memchr(lineStart, ' ', static_cast<std::size_t>(lineEndTrim - lineStart)));
   if (sp1 == nullptr) {
-    return emitSimpleError(fd, state, 400, http::ReasonBadRequest, ParserError::BadRequestLine, closeConn);
+    return emitSimpleError(fd, state, 400, ParserError::BadRequestLine, closeConn);
   }
   const char* sp2 =
       static_cast<const char*>(std::memchr(sp1 + 1, ' ', static_cast<std::size_t>(lineEndTrim - (sp1 + 1))));
   if (sp2 == nullptr) {
-    return emitSimpleError(fd, state, 400, http::ReasonBadRequest, ParserError::BadRequestLine, closeConn);
+    return emitSimpleError(fd, state, 400, ParserError::BadRequestLine, closeConn);
   }
   outReq.method = {lineStart, static_cast<std::size_t>(sp1 - lineStart)};
   outReq.target = {sp1 + 1, static_cast<std::size_t>(sp2 - (sp1 + 1))};
@@ -52,14 +52,13 @@ bool HttpServer::parseNextRequestFromBuffer(int fd, ConnectionState& state, Http
   if (std::memchr(outReq.target.data(), '%', outReq.target.size()) != nullptr) {
     state.decodedTarget.assign(outReq.target.data(), outReq.target.size());
     if (!URLDecodeInPlace(state.decodedTarget, false)) {
-      return emitSimpleError(fd, state, 400, http::ReasonBadRequest, ParserError::BadRequestLine, closeConn);
+      return emitSimpleError(fd, state, 400, ParserError::BadRequestLine, closeConn);
     }
     outReq.target = state.decodedTarget;
   }
   outReq.version = {sp2 + 1, static_cast<std::size_t>(lineEndTrim - (sp2 + 1))};
   if (!(outReq.version == http::HTTP11 || outReq.version == http::HTTP10)) {
-    return emitSimpleError(fd, state, 505, http::ReasonHTTPVersionNotSupported, ParserError::VersionUnsupported,
-                           closeConn);
+    return emitSimpleError(fd, state, 505, ParserError::VersionUnsupported, closeConn);
   }
   const char* cursor = (rawLineNl < headersEndPtr) ? (rawLineNl + 1) : headersEndPtr;
   while (cursor < headersEndPtr) {
@@ -129,7 +128,7 @@ bool HttpServer::decodeFixedLengthBody(int fd, ConnectionState& state, const Htt
     }
     contentLen = parsed;
     if (contentLen > _config.maxBodyBytes) {
-      return emitSimpleError(fd, state, 413, http::ReasonPayloadTooLarge, ParserError::PayloadTooLarge, closeConn);
+      return emitSimpleError(fd, state, 413, ParserError::PayloadTooLarge, closeConn);
     }
     if (expectContinue && contentLen > 0) {
       queueData(fd, state, http::HTTP11_100_CONTINUE);
@@ -177,7 +176,7 @@ bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, const HttpReq
     }
     pos = static_cast<std::size_t>(lineEndIt - state.buffer.data()) + 2;
     if (chunkSize > _config.maxBodyBytes) {
-      return emitSimpleError(fd, state, 413, http::ReasonPayloadTooLarge, ParserError::PayloadTooLarge, closeConn);
+      return emitSimpleError(fd, state, 413, ParserError::PayloadTooLarge, closeConn);
     }
     if (state.buffer.size() < pos + chunkSize + 2) {
       needMore = true;
@@ -197,7 +196,7 @@ bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, const HttpReq
     }
     decodedBody.append(state.buffer.data() + pos, std::min(chunkSize, state.buffer.size() - pos));
     if (decodedBody.size() > _config.maxBodyBytes) {
-      return emitSimpleError(fd, state, 413, http::ReasonPayloadTooLarge, ParserError::PayloadTooLarge, closeConn);
+      return emitSimpleError(fd, state, 413, ParserError::PayloadTooLarge, closeConn);
     }
     pos += chunkSize;
     if (std::memcmp(state.buffer.data() + pos, http::CRLF.data(), http::CRLF.size()) != 0) {

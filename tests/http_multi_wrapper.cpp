@@ -16,7 +16,7 @@ TEST(MultiHttpServer, BasicStartAndServe) {
   aeronet::MultiHttpServer multi(aeronet::HttpServerConfig{}.withReusePort(), threads);
   multi.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
-    resp.body = std::string("Hello "); /* path not exposed directly */
+    resp.body(std::string("Hello ")); /* path not exposed directly */
     return resp;
   });
   multi.start();

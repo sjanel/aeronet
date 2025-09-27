@@ -4,6 +4,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "http-constants.hpp"
 #include "test_http_client.hpp"
 #include "test_server_fixture.hpp"
 
@@ -14,12 +15,7 @@ TEST(HttpStats, BasicCountersIncrement) {
   cfg.withMaxRequestsPerConnection(5);
   TestServer ts(cfg);
   ts.server.setHandler([]([[maybe_unused]] const HttpRequest& req) {
-    HttpResponse resp;
-    resp.statusCode = 200;
-    resp.reason = "OK";
-    resp.body = "hello";
-    resp.contentType = "text/plain";
-    return resp;
+    return aeronet::HttpResponse(200).reason("OK").body("hello").contentType(aeronet::http::ContentTypeTextPlain);
   });
   // Single request via throwing helper
   auto resp = test_http_client::request_or_throw(ts.port());

@@ -30,10 +30,16 @@ inline constexpr std::string_view DELETE = "DELETE";
 inline constexpr std::string_view Connection = "Connection";
 inline constexpr std::string_view ContentLength = "Content-Length";
 inline constexpr std::string_view TransferEncoding = "Transfer-Encoding";
+inline constexpr std::string_view TE = "TE";
+inline constexpr std::string_view Trailer = "Trailer";
+inline constexpr std::string_view Upgrade = "Upgrade";
 inline constexpr std::string_view Expect = "Expect";
 inline constexpr std::string_view Host = "Host";
 inline constexpr std::string_view Date = "Date";  // only used for writing (server side)
 inline constexpr std::string_view ContentType = "Content-Type";
+inline constexpr std::string_view Location = "Location";
+
+inline constexpr std::string_view HeaderSep = ": ";
 
 // Common Header Values (lowercase tokens where case-insensitive comparison used)
 inline constexpr std::string_view keepalive = "keep-alive";
@@ -45,6 +51,7 @@ inline constexpr std::string_view h100_continue = "100-continue";  // value of E
 inline constexpr std::string_view HTTP11_100_CONTINUE = "HTTP/1.1 100 Continue\r\n\r\n";
 
 // Reason Phrases (only those we currently emit explicitly)
+inline constexpr std::string_view MovedPermanently = "Moved Permanently";                        // 301
 inline constexpr std::string_view ReasonBadRequest = "Bad Request";                              // 400
 inline constexpr std::string_view ReasonMethodNotAllowed = "Method Not Allowed";                 // 405
 inline constexpr std::string_view ReasonPayloadTooLarge = "Payload Too Large";                   // 413
@@ -53,13 +60,19 @@ inline constexpr std::string_view ReasonInternalServerError = "Internal Server E
 inline constexpr std::string_view ReasonNotImplemented = "Not Implemented";                      // 501
 inline constexpr std::string_view ReasonHTTPVersionNotSupported = "HTTP Version Not Supported";  // 505
 
+// Content type
+inline constexpr std::string_view ContentTypeTextPlain = "text/plain";
+
 inline constexpr std::string_view CRLF = "\r\n";
+inline constexpr std::string_view DoubleCRLF = "\r\n\r\n";
 
 // Return the canonical reason phrase for a subset of status codes we care about.
 // If an unmapped status is provided, returns an empty string_view, letting callers
 // decide whether to supply a custom phrase.
 constexpr std::string_view reasonPhraseFor(http::StatusCode status) noexcept {
   switch (status) {
+    case 301:
+      return MovedPermanently;
     case 400:
       return ReasonBadRequest;
     case 405:

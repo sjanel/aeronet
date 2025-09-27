@@ -29,11 +29,13 @@ TEST(HttpBasic, SimpleGet) {
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     auto testHeaderIt = req.headers.find("X-Test");
-    resp.body = std::string("You requested: ") + std::string(req.target);
+    std::string body("You requested: ");
+    body += req.target;
     if (testHeaderIt != req.headers.end() && !testHeaderIt->second.empty()) {
-      resp.body += ", X-Test=";
-      resp.body.append(testHeaderIt->second);
+      body += ", X-Test=";
+      body.append(testHeaderIt->second);
     }
+    resp.body(std::move(body));
     return resp;
   });
   std::string resp = httpGet(ts.port(), "/abc");

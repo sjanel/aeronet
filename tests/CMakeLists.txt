@@ -43,6 +43,10 @@ aeronet_http_test(http_routing http_routing.cpp)
 
 aeronet_http_test(http_server_move http_server_move.cpp)
 
+# Trailing slash policy tests
+aeronet_http_test(http_trailing_slash http_trailing_slash.cpp)
+aeronet_http_test(http_headers_custom http_headers_custom.cpp)
+
 # Stats exposure test
 aeronet_http_test(http_stats http_stats.cpp)
 aeronet_http_test(server_stats_json server_stats_json.cpp)
@@ -120,6 +124,8 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_url_decoding.cpp
 	multi_http_server_convenience_constructors.cpp
 	multi_http_server_auto.cpp
+	http_trailing_slash.cpp
+	http_headers_custom.cpp
 	test_version.cpp
 	# TLS tests are intentionally omitted from the always-present list because they are
 	# guarded by AERONET_ENABLE_OPENSSL. If OpenSSL is enabled but these files are removed
