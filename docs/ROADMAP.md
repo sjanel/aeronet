@@ -28,7 +28,9 @@ Legend:
 | ⏳ | Trailer Header Parsing (Incoming) | Parse and expose chunked trailers | Size limit + map storage |
 | ⏳ | Structured Logging Interface | Pluggable logger levels / sinks | Fallback logger implemented; need abstraction layer |
 | ⏳ | Enhanced Logging (trace IDs) | Optional request correlation id injection | Depends on structured logging |
-| ⏳ | Compression (gzip/br) | On-the-fly body compression | Threshold + content-type allowlist; gzip first, br later |
+| ✅ | Compression (gzip & deflate phase 1) | Negotiation (q-values), threshold, streaming + buffered, opt-out | zlib optional build flag |
+| ⏳ | Compression (brotli) | Higher-ratio alternative | Quality & window tuning, optional lib |
+| ⏳ | Compression (zstd) | Balanced speed/ratio | Dictionary support future |
 | ⏳ | Graceful Draining Mode | Stop accepting new connections; finish in-flight | server.beginDrain() + state flag |
 | ⏳ | Enhanced Parser Diagnostics (offset) | Provide error location info | Extend callback signature |
 
@@ -40,7 +42,7 @@ Legend:
 | ✅ | TLS Metrics & Observability (Phase 1.5) | Cipher/version, ALPN selection, mismatch counter, handshake logging | Per-server metrics (no globals) |
 | ✅ | TLS Handshake Enhancements | Min/max version, handshake timeout, graceful shutdown | New config builders + duration metrics |
 | ⏳ | Fuzz Harness Integration | libFuzzer target for parser | Build optional, sanitizer flags |
-| ⏳ | Outgoing Streaming Compression | Combine streaming + compression | Requires chunked writer |
+| ✅ | Outgoing Streaming Compression | Integrated delayed header emission, threshold activation | Depends on encoder abstraction |
 | ⏳ | Routing / Middleware Layer | Lightweight dispatch helpers | Optional layer atop core |
 
 ## Completed Recently
@@ -67,7 +69,7 @@ Legend:
 
 1. Header Read Timeout (Slowloris mitigation)
 2. Metrics Hook (per-request instrumentation)
-3. Compression (gzip) negotiation + basic gzip compressor
+3. Compression (gzip & deflate) negotiation + streaming integration (DONE)
 4. Trailer Parsing (incoming chunked trailers)
 5. Draining Mode (graceful connection wind-down)
 6. Zero-copy sendfile() support (static files)
@@ -127,15 +129,28 @@ server.setMetricsCallback([](const RequestMetrics& m){ /* export */ });
 - While pending output exists, do not read/parse new requests (fairness + ordering).
 - Configurable cap: `withMaxWriteBufferBytes(size_t)`; exceed -> connection marked to close after flush (current behavior) or future configurable strategy (e.g., 503).
 
-### Compression Design Notes (Planned)
+### Compression Design Notes (Implemented Phase 1 & Planned Extensions)
 
 Phased approach:
 
-1. Negotiation: Parse `Accept-Encoding` (simple token scan) – support `identity` and `gzip` initially.
-2. Threshold & Eligibility: Only compress for bodies over configurable N bytes and for explicit content-types (e.g., text/*, application/json). Allow user-supplied predicate.
-3. Implementation: Use zlib / miniz (header-only) optional dependency guarded by CMake option; fallback to identity if library absent.
-4. Streaming Integration: When streaming API active and no Content-Length known, wrap writes through compressor producing chunked output automatically.
-5. Buffering Strategy: Small sliding window 8–32KB; flush on end() or when output buffer would exceed high-water mark.
+Phase 1 implemented:
+
+1. Negotiation: `Accept-Encoding` with q-values; gzip & deflate (zlib) supported; highest q chosen (server preference breaks ties); identity fallback.
+2. Threshold & Eligibility: `CompressionConfig::minBytes` gate; streaming buffers until threshold then activates; fixed responses decide immediately.
+3. Implementation: Unified `ZlibEncoder` (gzip/deflate windowBits variant) with streaming context & one-shot paths; optional via build flag.
+4. Streaming Integration: Delayed header emission until activation decision ensures accurate `Content-Encoding`.
+5. Buffering Strategy: Pre-threshold staging buffer limited by `minBytes`; encoder output chunks forwarded through existing chunked writer.
+6. Opt-out: Per-response disable via `disableAutoCompression()` for both fixed and streaming APIs.
+7. Vary header: Automatic `Vary: Accept-Encoding` insertion (config flag) when compression applied.
+8. Q-value precedence tests (buffered & streaming) validating negotiation correctness.
+
+Planned extensions:
+
+1. Content-Type allowlist default population & enforcement.
+2. Additional codecs (brotli, zstd) with capability negotiation.
+3. Compression ratio & bytes-saved metrics integration into RequestMetrics.
+4. Pooling / reuse of zlib streams to reduce init cost.
+5. Memory cap adaptive strategy for extremely large responses.
 6. Stats: Track compressed vs original bytes (ratio) per request metrics structure.
 7. Future: Add brotli (static dictionary optional) once gzip path stable.
 
@@ -238,7 +253,6 @@ Status Legend Recap: ✅ done, 🛠 in progress, ⏳ planned, ❄ deferred
 - Keep OpenSSL usage fully isolated inside `tls/` to maintain optional dependency nature.
 - Avoid scattering `#ifdef AERONET_ENABLE_OPENSSL` outside TLS boundary except for narrow integration points.
 - Future HTTP/2 work will depend on ALPN; design ALPN config with extensibility in mind.
-
 
 ## Open Questions
 

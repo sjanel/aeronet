@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "compression-config.hpp"
 #include "invalid_argument_exception.hpp"
 #include "tls-config.hpp"
 
@@ -30,8 +31,8 @@ struct HttpServerConfig {
   // ============================
   // TCP port to bind. 0 (default) lets the OS pick an ephemeral free port. After construction
   // you can retrieve the effective port via HttpServer::port().
-
   uint16_t port{0};
+
   // If true, enables SO_REUSEPORT allowing multiple independent HttpServer instances (usually one per thread)
   // to bind the same (non-ephemeral) port for load distribution by the kernel. Harmless if the platform
   // or kernel does not support it (failure is logged, not fatal). Disabled by default.
@@ -103,6 +104,18 @@ struct HttpServerConfig {
   // Behavior for resolving paths that differ only by a trailing slash.
   // Default: Normalize
   TrailingSlashPolicy trailingSlashPolicy{TrailingSlashPolicy::Normalize};
+
+  // ===========================================
+  // Optional response compression configuration
+  // ===========================================
+  // Attempt negotiation according to configured formats / thresholds.
+  // Actual encoder availability also depends on build flags
+  // (e.g. AERONET_ENABLE_ZLIB). Future: brotli, zstd guarded likewise.
+  CompressionConfig compression;
+
+  // Validates config. Throws invalid_argument if it is not valid.
+  // TODO
+  void validate() const {}
 
  private:
   TLSConfig& ensureTls() {
@@ -300,6 +313,12 @@ struct HttpServerConfig {
   //              then a 301 to the canonical form is sent (never the inverse).
   HttpServerConfig& withTrailingSlashPolicy(TrailingSlashPolicy policy) {
     trailingSlashPolicy = policy;
+    return *this;
+  }
+
+  // Enable / configure response compression. Passing by value allows caller to move.
+  HttpServerConfig& withCompression(CompressionConfig cfg) {
+    compression = std::move(cfg);
     return *this;
   }
 };

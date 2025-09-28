@@ -4,6 +4,11 @@ function(aeronet_http_test NAME SOURCE)
 	set(TGT ${NAME}_test)
 	add_project_executable(${TGT} ${SOURCE})
 	target_link_libraries(${TGT} PRIVATE aeronet gtest_main)
+	# Root CMakeLists locates zlib AFTER adding tests; ensure the compile definition is still
+	# visible to test translation units so that compression-related tests are compiled.
+	if(AERONET_ENABLE_ZLIB)
+	  target_compile_definitions(${TGT} PUBLIC AERONET_ENABLE_ZLIB)
+	endif()
 	add_test(NAME ${NAME} COMMAND ${TGT})
 endfunction()
 
@@ -50,6 +55,14 @@ aeronet_http_test(http_headers_custom http_headers_custom.cpp)
 # Stats exposure test
 aeronet_http_test(http_stats http_stats.cpp)
 aeronet_http_test(server_stats_json server_stats_json.cpp)
+
+# Compression tests (only meaningful when zlib enabled, but harmless otherwise due to internal guards)
+aeronet_http_test(http_compression_buffered http_compression_buffered.cpp)
+message(STATUS "[tests] Registered http_compression_buffered test")
+if(AERONET_ENABLE_ZLIB)
+	aeronet_http_test(http_compression_streaming http_compression_streaming.cpp)
+	message(STATUS "[tests] Registered http_compression_streaming test")
+endif()
 
 # Streaming tests
 aeronet_http_test(http_streaming_backpressure http_streaming_backpressure.cpp)
@@ -129,6 +142,8 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_trailing_slash.cpp
 	http_headers_custom.cpp
 	test_version.cpp
+	http_compression_buffered.cpp
+	http_compression_streaming.cpp
 	# TLS tests are intentionally omitted from the always-present list because they are
 	# guarded by AERONET_ENABLE_OPENSSL. If OpenSSL is enabled but these files are removed
 	# or renamed, add them inside the conditional block above.

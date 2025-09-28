@@ -212,6 +212,13 @@ class HttpResponse {
     return std::move(*this);
   }
 
+  // Per-response opt-out for automatic compression (if globally configured).
+  HttpResponse& disableAutoCompression() noexcept {
+    _disableAutoCompression = true;
+    return *this;
+  }
+  [[nodiscard]] bool autoCompressionDisabled() const noexcept { return _disableAutoCompression; }
+
   // Centralized rule for headers the user may not set directly (normal or streaming path).
   // These are either automatically emitted (Date, Content-Length, Connection, Transfer-Encoding) or
   // would create ambiguous / unsupported semantics if user-supplied before dedicated feature support
@@ -263,8 +270,9 @@ class HttpResponse {
                                                   bool isHeadMethod);
 
   RawChars _data;
-  uint32_t _headersStartPos{};  // position just after the CRLF that starts the first header line
-  uint32_t _bodyStartPos{};     // position of first body byte (after CRLF CRLF)
+  uint16_t _headersStartPos{};  // position just after the CRLF that starts the first header line
+  bool _disableAutoCompression{false};
+  uint32_t _bodyStartPos{};  // position of first body byte (after CRLF CRLF)
 };
 
 }  // namespace aeronet

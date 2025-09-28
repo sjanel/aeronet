@@ -9,7 +9,10 @@
 #include <system_error>
 #include <utility>
 
+#include "aeronet/compression-config.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/http-server.hpp"
+#include "encoder.hpp"
 #include "http-constants.hpp"
 #include "http-status-code.hpp"
 #include "log.hpp"
@@ -17,8 +20,14 @@
 
 namespace aeronet {
 
-HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, bool headRequest, bool requestConnClose)
-    : _server(&srv), _fd(fd), _head(headRequest), _requestConnClose(requestConnClose) {}
+HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, bool headRequest, bool requestConnClose,
+                                       Encoding compressionFormat)
+    : _server(&srv),
+      _fd(fd),
+      _head(headRequest),
+      _requestConnClose(requestConnClose),
+      _compressionFormat(compressionFormat),
+      _activeEncoderCtx(std::make_unique<IdentityEncoderContext>()) {}
 
 void HttpResponseWriter::statusCode(http::StatusCode code, std::string_view reason) {
   if (_headersSent || _failed) {
@@ -86,8 +95,16 @@ void HttpResponseWriter::ensureHeadersSent() {
   if (!_userSetContentType) {
     _fixedResponse.setHeader(http::ContentType, http::ContentTypeTextPlain);
   }
-  // NOTE: Do not attempt to add Connection/Date here; finalize handles them (adds Date, Connection based on keepAlive
-  // flag).
+  // If compression already activated (delayed strategy) but header not sent yet, add Content-Encoding now.
+  if (_compressionActivated && _compressionFormat != Encoding::none) {
+    _fixedResponse.setHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
+    if (_server->_config.compression.addVaryHeader) {
+      _fixedResponse.setHeader(http::Vary, http::AcceptEncoding);
+    }
+  }
+  // Do NOT add Content-Encoding at header emission time; we wait until we actually activate
+  // compression (threshold reached) to avoid mislabeling identity bodies when size < threshold.
+  // Do not attempt to add Connection/Date here; finalize handles them (adds Date, Connection based on keepAlive flag).
   auto dateStr =
       std::string_view(reinterpret_cast<const char*>(_server->_cachedDate.data()), _server->_cachedDate.size());
   auto finalized = _fixedResponse.finalizeAndGetFullTextResponse(http::HTTP11, dateStr, !_requestConnClose, _head);
@@ -124,7 +141,7 @@ void HttpResponseWriter::emitChunk(std::string_view data) {
     _chunkBuf.unchecked_append(sizeLine, sizeHeaderLen);
     _chunkBuf.unchecked_append(data);
     _chunkBuf.unchecked_append(http::CRLF);
-    if (!enqueue(std::string_view(reinterpret_cast<const char*>(_chunkBuf.data()), _chunkBuf.size()))) {
+    if (!enqueue(_chunkBuf)) {
       _failed = true;
       _ended = true;
       log::error("Streaming: failed enqueuing coalesced chunk fd={} errno={} msg={}", _fd, errno, std::strerror(errno));
@@ -176,9 +193,73 @@ bool HttpResponseWriter::write(std::string_view data) {
                _failed ? "writer-failed" : "already-ended");
     return false;
   }
+  // Threshold-based lazy activation using generic Encoder abstraction.
+  // We purposefully delay header emission until we either (a) activate compression and have compressed bytes
+  // to send or (b) decide to emit identity data (on end()). This allows us to include the Content-Encoding header
+  // reliably when compression triggers mid-stream.
+  if (_compressionFormat != Encoding::none && !_disableAutoCompression && !_compressionActivated) {
+    const auto& compressionConfig = _server->_config.compression;
+    // Accumulate data into the pre-compression buffer up to minBytes. Always buffer the entire incoming data until
+    // we cross the threshold (or end() is called).
+    if (_preCompressBuffer.size() < compressionConfig.minBytes) {
+      _preCompressBuffer.append(data.begin(), data.end());
+      if (_preCompressBuffer.size() < compressionConfig.minBytes) {
+        // Still below threshold; do not emit headers/body yet.
+        return !_failed;
+      }
+      // Threshold reached exactly or exceeded: activate encoder.
+      auto& proto = _server->_encoders[static_cast<std::size_t>(_compressionFormat)];
+      if (proto) {
+        _activeEncoderCtx = proto->makeContext();
+        _compressionActivated = true;
+      } else {
+        // Fallback silently to identity.
+        _compressionFormat = Encoding::none;
+      }
+      if (_compressionActivated) {
+        // Set Content-Encoding prior to emitting headers.
+        if (!_headersSent) {
+          _fixedResponse.setHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
+          if (_server->_config.compression.addVaryHeader) {
+            _fixedResponse.setHeader(http::Vary, http::AcceptEncoding);
+          }
+        }
+        ensureHeadersSent();
+        // Compress buffered bytes.
+        auto firstOut = _activeEncoderCtx->encodeChunk(
+            std::string_view{_preCompressBuffer.data(), _preCompressBuffer.size()}, false);
+        if (!firstOut.empty()) {
+          if (_chunked) {
+            emitChunk(firstOut);
+          } else {
+            enqueue(firstOut);
+          }
+        }
+        _preCompressBuffer.clear();
+        return !_failed;
+      }
+      // If we fell back to identity compressionFormat::none we continue below emitting identity data.
+    }
+  }
+
+  // Compression already active OR disabled: emit data (compressed) immediately.
+  if (_compressionActivated) {
+    ensureHeadersSent();
+    auto out = _activeEncoderCtx->encodeChunk(data, false);
+    if (!out.empty()) {
+      if (_chunked) {
+        emitChunk(out);
+      } else {
+        enqueue(out);
+      }
+    }
+    return !_failed;
+  }
+
+  // Identity path (either compression disabled or not yet activated and we choose to stream directly):
   ensureHeadersSent();
   if (_chunked) {
-    emitChunk(data);
+    emitChunk(_activeEncoderCtx->encodeChunk(data, false));
   } else if (!_head && !data.empty()) {
     if (!enqueue(data)) {
       _failed = true;
@@ -192,12 +273,37 @@ bool HttpResponseWriter::write(std::string_view data) {
   return !_failed;  // backpressure signaled via server.shouldClose flag, failure sets _failed
 }
 
+// TODO: make this method private, we will call it instead of the client.
 void HttpResponseWriter::end() {
   if (_ended || _failed) {
     log::debug("Streaming: end ignored fd={} reason={}", _fd, _failed ? "writer-failed" : "already-ended");
     return;
   }
-  ensureHeadersSent();
+  // If compression was delayed and threshold reached earlier, write() already emitted headers and compressed data.
+  // Otherwise we may still have buffered identity bytes (below threshold case) — emit headers now then flush.
+  if (_compressionActivated) {
+    ensureHeadersSent();
+    auto last = _activeEncoderCtx->encodeChunk({}, true);
+    if (!last.empty()) {
+      if (_chunked) {
+        emitChunk(last);
+      } else if (!_head) {
+        enqueue(last);
+      }
+    }
+  } else {
+    // Identity path; emit headers now (they may not have been sent yet due to delayed strategy) then flush buffered.
+    ensureHeadersSent();
+    if (_preCompressBuffer.size() > 0) {
+      if (_chunked) {
+        emitChunk(std::string_view{_preCompressBuffer.data(), _preCompressBuffer.size()});
+      } else if (!_head) {
+        enqueue(std::string_view{_preCompressBuffer.data(), _preCompressBuffer.size()});
+      }
+      _preCompressBuffer.clear();
+    }
+  }
+
   emitLastChunk();
   _ended = true;
   log::debug("Streaming: end fd={} bytesWritten={} chunked={}", _fd, _bytesWritten, _chunked);
