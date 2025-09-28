@@ -13,3 +13,10 @@ target_include_directories(aeronet_http
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
+
+add_unit_test(
+    http-response_test
+    test/http-response_test.cpp
+    LIBRARIES
+    aeronet_http
+)

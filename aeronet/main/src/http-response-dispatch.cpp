@@ -14,7 +14,6 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server.hpp"
 #include "http-constants.hpp"
-#include "http-response-build.hpp"
 #include "log.hpp"
 #include "string-equal-ignore-case.hpp"
 
@@ -23,14 +22,13 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
                                          std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart,
                                          bool& closeConn) {
   ++state.requestsServed;
-  bool keepAlive = false;
-  if (_config.enableKeepAlive) {
-    if (req.version == http::HTTP11) {
-      keepAlive = true;
-    } else if (req.version == http::HTTP10) {
-      keepAlive = false;
-    }
-    if (std::string_view connVal = req.findHeader(http::Connection); !connVal.empty()) {
+  bool keepAlive = _config.enableKeepAlive && state.requestsServed < _config.maxRequestsPerConnection;
+  if (keepAlive) {
+    std::string_view connVal = req.findHeader(http::Connection);
+    if (connVal.empty()) {
+      // Default is keep-alive for HTTP/1.1, close for HTTP/1.0
+      keepAlive = req.version == http::HTTP11;
+    } else {
       if (CaseInsensitiveEqual(connVal, http::close)) {
         keepAlive = false;
       } else if (CaseInsensitiveEqual(connVal, http::keepalive)) {
@@ -38,19 +36,12 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
       }
     }
   }
-  if (state.requestsServed >= _config.maxRequestsPerConnection) {
-    keepAlive = false;
-  }
-  // TODO: make it zero copy (without headers RawChars)
-  auto header = http::buildHead(resp, req.version, std::string_view(_cachedDate), keepAlive);
-  if (req.method == http::HEAD) {
-    // For HEAD we only send headers (no body). Any pending bytes in outBuffer belong to prior responses and will
-    // naturally flush before these headers on the wire (HTTP pipelining semantics). No special handling needed.
-    queueData(fd, state, header);
-  } else {
-    std::string_view dataStrs[2]{header, resp.body()};
-    queueVec(fd, state, dataStrs);
-  }
+
+  auto data = resp.finalizeAndGetFullTextResponse(req.version, std::string_view(_cachedDate), keepAlive,
+                                                  req.method == http::HEAD);
+
+  queueData(fd, state, data);
+
   state.buffer.erase_front(consumedBytes);
   if (!keepAlive) {
     closeConn = true;
@@ -116,79 +107,6 @@ bool HttpServer::queueData(int fd, ConnectionState& state, std::string_view data
       state.waitingWritable = true;
       ++_stats.deferredWriteEvents;
     }
-  }
-  return true;
-}
-
-bool HttpServer::queueVec(int fd, ConnectionState& state, std::span<const std::string_view> dataStrs) {
-  std::size_t total = std::accumulate(dataStrs.begin(), dataStrs.end(), static_cast<std::size_t>(0),
-                                      [](std::size_t sum, const std::string_view& sv) { return sum + sv.size(); });
-  if (state.outBuffer.empty()) {
-    // Attempt to write iov chunks sequentially via transportWrite.
-    std::size_t advanced = 0;
-    for (std::size_t dataPos1 = 0; dataPos1 < dataStrs.size(); ++dataPos1) {
-      std::string_view baseView = dataStrs[dataPos1];
-      while (!baseView.empty()) {
-        bool wantR = false;
-        bool wantW = false;
-        auto bytesWritten = transportWrite(fd, state, baseView, wantR, wantW);
-        state.tlsWantRead = wantR;
-        state.tlsWantWrite = wantW;
-        if (!state.tlsEstablished && state.transport && !state.transport->handshakePending()) {
-          state.tlsEstablished = true;
-        }
-        if (bytesWritten > 0) {
-          _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(bytesWritten);
-          advanced += static_cast<std::size_t>(bytesWritten);
-          baseView.remove_prefix(static_cast<std::string_view::size_type>(bytesWritten));
-          if (wantW && !state.waitingWritable) {
-            if (!HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
-                                                   "enable writable queueVec handshake path", _stats)) {
-              return false;
-            }
-            state.waitingWritable = true;
-            ++_stats.deferredWriteEvents;
-          }
-          continue;
-        }
-        if (bytesWritten == 0 || (bytesWritten == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))) {
-          // buffer remaining of this iov and rest
-          state.outBuffer.append(baseView);
-          for (std::size_t dataPos2 = dataPos1 + 1; dataPos2 < dataStrs.size(); ++dataPos2) {
-            state.outBuffer.append(dataStrs[dataPos2]);
-          }
-          break;
-        }
-        // fatal
-        state.shouldClose = true;
-        return false;
-      }
-      if (!state.outBuffer.empty()) {
-        break;  // rest already buffered
-      }
-    }
-    if (advanced == total && state.outBuffer.empty()) {
-      _stats.totalBytesQueued += static_cast<uint64_t>(total);
-      return true;
-    }
-  } else {
-    for (auto data : dataStrs) {
-      state.outBuffer.append(data);
-    }
-  }
-  _stats.totalBytesQueued += static_cast<uint64_t>(total);
-  _stats.maxConnectionOutboundBuffer = std::max<decltype(_stats.maxConnectionOutboundBuffer)>(
-      _stats.maxConnectionOutboundBuffer, state.outBuffer.size());
-  if (state.outBuffer.size() > _config.maxOutboundBufferBytes) {
-    state.shouldClose = true;
-  }
-  if (!state.waitingWritable) {
-    if (!HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
-                                           "enable writable queueVec buffered path", _stats)) {
-      return false;
-    }
-    state.waitingWritable = true;
-    ++_stats.deferredWriteEvents;
   }
   return true;
 }

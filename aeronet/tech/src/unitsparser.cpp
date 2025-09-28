@@ -131,7 +131,7 @@ RawChars BytesToStr(int64_t numberOfBytes, int nbSignificantUnits) {
   const auto sz = static_cast<RawChars::size_type>(BytesToStrLen(numberOfBytes, nbSignificantUnits));
   RawChars ret(sz);
   BytesToBuffer(numberOfBytes, std::span<char>(ret.data(), sz), nbSignificantUnits);
-  ret.resize_down(sz);
+  ret.setSize(sz);
   return ret;
 }
 

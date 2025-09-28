@@ -53,6 +53,7 @@ inline constexpr std::string_view HTTP11_100_CONTINUE = "HTTP/1.1 100 Continue\r
 // Reason Phrases (only those we currently emit explicitly)
 inline constexpr std::string_view MovedPermanently = "Moved Permanently";                        // 301
 inline constexpr std::string_view ReasonBadRequest = "Bad Request";                              // 400
+inline constexpr std::string_view NotFound = "Not Found";                                        // 404
 inline constexpr std::string_view ReasonMethodNotAllowed = "Method Not Allowed";                 // 405
 inline constexpr std::string_view ReasonPayloadTooLarge = "Payload Too Large";                   // 413
 inline constexpr std::string_view ReasonHeadersTooLarge = "Request Header Fields Too Large";     // 431
@@ -75,6 +76,8 @@ constexpr std::string_view reasonPhraseFor(http::StatusCode status) noexcept {
       return MovedPermanently;
     case 400:
       return ReasonBadRequest;
+    case 404:
+      return NotFound;
     case 405:
       return ReasonMethodNotAllowed;
     case 413:
