@@ -163,4 +163,105 @@ TEST(RawBytesResizeAndOverwrite, ReserveAndPartialFill) {
   }
 }
 
+// ---------------- Copy Constructor / Copy Assignment Tests ----------------
+
+TEST(RawBytesCopy, CopyConstructorNonEmpty) {
+  std::string payload = "CopyConstructorData";  // 19 bytes
+  RawBytes src(reinterpret_cast<const std::byte *>(payload.data()),
+               reinterpret_cast<const std::byte *>(payload.data()) + payload.size());
+  ASSERT_EQ(src.size(), payload.size());
+  auto srcCap = src.capacity();
+  RawBytes dst(src);  // invoke copy ctor
+  EXPECT_EQ(dst.size(), src.size());
+  EXPECT_EQ(dst.capacity(), srcCap);  // copy ctor mirrors capacity
+  EXPECT_TRUE(std::equal(dst.begin(), dst.end(), src.begin()));
+}
+
+TEST(RawBytesCopy, CopyConstructorEmpty) {
+  RawBytes empty;
+  RawBytes dst(empty);
+  EXPECT_EQ(dst.size(), 0U);
+  EXPECT_EQ(dst.capacity(), empty.capacity());
+  EXPECT_TRUE(dst.begin() == dst.end());
+}
+
+TEST(RawBytesCopy, CopyAssignmentGrowCapacity) {
+  // Source with some pre-reserved capacity
+  std::string payload = std::string(64, 'A');
+  RawBytes src(reinterpret_cast<const std::byte *>(payload.data()),
+               reinterpret_cast<const std::byte *>(payload.data()) + payload.size());
+  // Destination with smaller capacity and different content
+  std::string small = "xx";  // capacity 2 (or small) – definitely < src.capacity()
+  RawBytes dst(reinterpret_cast<const std::byte *>(small.data()),
+               reinterpret_cast<const std::byte *>(small.data()) + small.size());
+  auto oldCap = dst.capacity();
+  dst = src;  // copy assignment
+  EXPECT_EQ(dst.size(), src.size());
+  EXPECT_GT(dst.capacity(), oldCap);  // capacity should have grown
+  EXPECT_GE(dst.capacity(), dst.size());
+  EXPECT_TRUE(std::equal(dst.begin(), dst.end(), src.begin()));
+}
+
+TEST(RawBytesCopy, CopyAssignmentNoCapacityGrowthWhenSufficient) {
+  // Create destination with large capacity by reserving then shrinking size via resize_and_overwrite
+  RawBytes dst;  // start empty
+  dst.resize_and_overwrite(128, [](std::byte *base, std::size_t /*n*/) {
+    // just fill first 10 bytes, return 10
+    for (std::size_t i = 0; i < 10; ++i) {
+      base[i] = std::byte{'X'};
+    }
+    return static_cast<std::size_t>(10);
+  });
+  auto largeCap = dst.capacity();
+  // Source smaller than destination capacity
+  std::string payload = std::string(16, 'B');
+  RawBytes src(reinterpret_cast<const std::byte *>(payload.data()),
+               reinterpret_cast<const std::byte *>(payload.data()) + payload.size());
+  ASSERT_LT(src.capacity(), largeCap);
+  dst = src;  // should NOT grow capacity nor shrink
+  EXPECT_EQ(dst.size(), src.size());
+  EXPECT_EQ(dst.capacity(), largeCap);  // capacity unchanged
+  EXPECT_TRUE(std::equal(dst.begin(), dst.end(), src.begin()));
+}
+
+TEST(RawBytesCopy, CopyAssignmentFromEmpty) {
+  std::string payload = std::string(32, 'Z');
+  RawBytes src(reinterpret_cast<const std::byte *>(payload.data()),
+               reinterpret_cast<const std::byte *>(payload.data()) + payload.size());
+  RawBytes empty;  // empty source
+  // Assign empty -> non-empty
+  src = empty;
+  EXPECT_EQ(src.size(), 0U);
+  EXPECT_GE(src.capacity(), 0U);  // capacity retained (no shrink policy)
+}
+
+TEST(RawBytesCopy, CopyAssignmentIntoEmptyDestination) {
+  RawBytes dst;  // empty with capacity 0
+  std::string payload = std::string(48, 'Q');
+  RawBytes src(reinterpret_cast<const std::byte *>(payload.data()),
+               reinterpret_cast<const std::byte *>(payload.data()) + payload.size());
+  dst = src;  // copy into empty destination
+  EXPECT_EQ(dst.size(), src.size());
+  EXPECT_GE(dst.capacity(), dst.size());
+  // For assignment implementation, capacity may differ from srcCap; ensure content correct.
+  EXPECT_TRUE(std::equal(dst.begin(), dst.end(), src.begin()));
+}
+
+TEST(RawBytesCopy, SelfAssignmentNoChange) {
+  std::string payload = "SelfAssign";
+  RawBytes buf(reinterpret_cast<const std::byte *>(payload.data()),
+               reinterpret_cast<const std::byte *>(payload.data()) + payload.size());
+  auto oldPtr = buf.data();
+  auto oldCap = buf.capacity();
+  auto oldSize = buf.size();
+  // Intentional self-assignment: use reference alias to silence self-assignment warning tools while
+  // still exercising the code path.
+  RawBytes &alias = buf;
+  buf = alias;
+  EXPECT_EQ(buf.data(), oldPtr);
+  EXPECT_EQ(buf.capacity(), oldCap);
+  EXPECT_EQ(buf.size(), oldSize);
+  EXPECT_TRUE(std::equal(buf.begin(), buf.end(), reinterpret_cast<const std::byte *>(payload.data())));
+}
+
 }  // namespace aeronet

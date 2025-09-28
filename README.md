@@ -19,7 +19,7 @@ HTTP/1.1 server library for Linux only – work in progress.
 | HEAD method | Suppresses body while preserving `Content-Length` |
 | Expect: 100-continue | Sent only when request has a (non-zero) body |
 | Per-path routing | Exact path match with method allow‑lists |
-| Trailing slash policy | Strict (default) / Normalize / Redirect |
+| Trailing slash policy | Strict / Normalize (default) / Redirect |
 | Mixed-mode dispatch | Deterministic precedence: path streaming > path normal > global streaming > global normal |
 | Streaming responses | Chunked by default; switch to fixed length with `setContentLength()` |
 | Slowloris mitigation | Header read timeout (configurable; disabled by default) |
@@ -71,7 +71,7 @@ int main() {
   // HttpServerConfig{}.withPollInterval(50ms) for more responsive stop/predicate checks.
   server.run(); // Blocking call, send Ctrl+C to stop
 }
-```
+```text
 
 Build & run (example):
 
@@ -79,7 +79,7 @@ Build & run (example):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ./build/examples/aeronet-minimal 8080   # or omit 8080 for ephemeral
-```
+```text
 
 Test with curl:
 
@@ -175,6 +175,85 @@ Allowed convenience helpers:
 
 All other headers (custom application / caching / CORS / etc.) may be freely set; they are forwarded verbatim.
 This central rule lives in a single helper (`HttpResponse::IsReservedHeader`).
+
+### HttpResponse Design & Performance
+
+`HttpResponse` (fixed / non‑streaming responses) builds the entire status line, headers and body inside a **single
+contiguous dynamically grown buffer**. This minimizes allocations, maximizes cache locality, and keeps syscall layer
+simple (a single `writev` pairs the header block with the body when streaming is not used).
+
+Memory layout (before any user header is appended):
+
+```
+[HTTP/1.1 SP status-code [SP reason] CRLF][CRLF][CRLF]
+                            ^        ^   ^
+                            |        |   +-- DoubleCRLF sentinel (always present)
+                            |        +------ End of status / optional reason line
+                            +--------------- First reason character (if any)
+```
+
+After headers (each user header prepends a CRLF and shifts only the tail once):
+
+```
+Status/Reason CRLF (CRLF Name ": " Value)* CRLF CRLF [Body]
+```
+
+Key properties:
+
+- **Single allocation growth** – headers and body share one buffer (no per‑header node allocations).
+- **Append fast path** – `appendHeader()` does not scan; it inserts `CRLF + key + ": " + value` before the trailing
+  DoubleCRLF, shifting only the (DoubleCRLF + body) tail (O(bodyLen)). Duplicate headers are allowed intentionally.
+- **Uniqueness path** – `header()` performs a linear scan to find an existing key at CRLF‑delimited line starts; if
+  found it replaces the value in place (one `memmove` for size delta). If not found it falls back to `appendHeader()`.
+- **Reason phrase mutation** – `reason()` can grow, shrink, add or remove the reason phrase. It performs at most one
+  tail shift and updates internal offsets for headers/body.
+- **Body mutation safety** – `body()` overwrites in place and grows capacity exponentially. If the source string_view
+  points inside the internal buffer (e.g. using part of the reason or an earlier body) the implementation preserves
+  safety across potential reallocation.
+- **Value‑category preserving fluent API** – All mutators (`statusCode`, `reason`, `body`, `appendHeader`, `header`,
+   `contentType`, `location`) have both `&` and `&&` ref‑qualified overloads so chains on temporaries don’t force an
+   intermediate named variable:
+
+```cpp
+return HttpResponse(404)
+    .reason("Not Found")
+    .contentType("text/plain")
+    .body("missing\n");
+```
+
+- **Post‑finalize immutability** – `finalizeAndGetFullTextResponse()` injects reserved headers (`Date`, `Connection`,
+  and `Content-Length` if body non‑empty). After it returns further mutation is undefined behavior (would duplicate
+  reserved headers or corrupt layout). Call it exactly once per response.
+- **Reserved header enforcement** – Centralized in `HttpResponse::IsReservedHeader` (same rule used by streaming
+  writer). Attempting to set one triggers an assertion in debug builds.
+
+Complexity summary (amortized):
+
+| Operation          | Complexity | Notes |
+|--------------------|------------|-------|
+| `statusCode()`     | O(1)       | Overwrites 3 digits |
+| `reason()`         | O(trailing) | One tail `memmove` if size delta |
+| `appendHeader()`   | O(bodyLen) | Shift tail once; no scan |
+| `header()`         | O(headers + bodyLen) | Linear scan + maybe one shift |
+| `body()`           | O(delta) + realloc | Exponential growth strategy |
+| `finalize*()`      | O(reserved count) | Appends small, bounded set |
+
+Testing highlights:
+
+- Header replacement: larger, smaller, same length, with and without body.
+- Reason growth/shrink with headers present & absent (including removal to empty and re‑addition).
+- Fuzz test generating random sequences of operations (status, reason, body, header additions & replacements).
+- Safety test where `body()` receives a view referencing internal buffer memory (reallocation correctness).
+
+Usage guidelines:
+
+- Use `appendHeader()` when duplicates are acceptable (cheapest path).
+- Use `header()` only when you must guarantee uniqueness.
+- Chain on temporaries for concise construction; the rvalue-qualified overloads keep the object movable.
+- Finalize exactly once right before sending.
+
+Future possible extensions (not yet implemented): transparent compression insertion, zero‑copy file send mapping,
+and an alternate layout for extremely large header counts.
 
 Performance / architecture
 
