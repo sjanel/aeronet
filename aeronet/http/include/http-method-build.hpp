@@ -2,14 +2,14 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 
-#include "http-method-set.hpp"
 #include "http-method.hpp"
 
 namespace aeronet::http {
 
 // Build a bitmask from a MethodSet (bit position == enum ordinal order).
-inline uint32_t methodListToMask(const MethodSet& methods) {
+constexpr uint32_t methodListToMask(std::span<const Method> methods) {
   uint32_t mask = 0;
   for (auto methodVal : methods) {
     mask |= (1U << static_cast<uint8_t>(methodVal));

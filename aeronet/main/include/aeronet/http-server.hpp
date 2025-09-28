@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 
+#include "accept-encoding-negotiation.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -27,6 +28,7 @@
 #endif
 
 #include "aeronet/server-stats.hpp"
+#include "encoder.hpp"
 #include "flat-hash-map.hpp"
 #include "http-method-set.hpp"
 #include "http-method.hpp"
@@ -322,6 +324,8 @@ class HttpServer {
   // thread that called run()/runUntil().
   [[nodiscard]] bool isRunning() const { return _running; }
 
+  [[nodiscard]] ServerStats stats() const;
+
  private:
   friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
 
@@ -376,6 +380,10 @@ class HttpServer {
 
   void closeConnection(int fd);
 
+  bool callStreamingHandler(const StreamingHandler& streamingHandler, const HttpRequest& req, int fd,
+                            ConnectionState& state, std::size_t consumedBytes,
+                            std::chrono::steady_clock::time_point reqStart);
+
   // Transport-aware helpers (fall back to raw fd if transport null)
   static ssize_t transportRead(int fd, ConnectionState& state, std::size_t chunkSize, bool& wantRead, bool& wantWrite);
   static ssize_t transportWrite(int fd, ConnectionState& state, std::string_view data, bool& wantRead, bool& wantWrite);
@@ -398,9 +406,6 @@ class HttpServer {
   static bool ModWithCloseOnFailure(EventLoop& loop, int fd, uint32_t events, ConnectionState& st, const char* ctx,
                                     StatsInternal& stats);
 
- public:
-  [[nodiscard]] ServerStats stats() const;
-
   Socket _listenSocket;  // listening socket RAII
   bool _running{false};
   RequestHandler _handler;
@@ -418,6 +423,11 @@ class HttpServer {
   HttpServerConfig _config;
 
   flat_hash_map<Connection, ConnectionState, std::hash<int>, std::equal_to<>> _connStates;
+
+  // Pre-allocated encoders (one per supported format) constructed once at server creation.
+  // Index corresponds to static_cast<size_t>(Encoding).
+  std::array<std::unique_ptr<Encoder>, 3> _encoders;  // none, gzip, deflate (future)
+  EncodingSelector _encodingSelector;
 
   using RFC7231DateStr = std::array<char, 29>;
 

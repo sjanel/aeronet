@@ -243,13 +243,11 @@ void HttpServer::handleReadableClient(int fd) {
     }
     // Header read timeout enforcement: if headers of current pending request are not complete yet
     // (heuristic: no full request parsed and buffer not empty) and duration exceeded -> close.
-    if (_config.headerReadTimeout.count() > 0) {
-      if (state.headerStart.time_since_epoch().count() != 0) {
-        auto now = std::chrono::steady_clock::now();
-        if (now - state.headerStart > _config.headerReadTimeout) {
-          closeCnx = true;
-          break;
-        }
+    if (_config.headerReadTimeout.count() > 0 && state.headerStart.time_since_epoch().count() != 0) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - state.headerStart > _config.headerReadTimeout) {
+        closeCnx = true;
+        break;
       }
     }
   }

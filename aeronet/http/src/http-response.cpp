@@ -10,6 +10,8 @@
 
 #include "http-constants.hpp"
 #include "http-status-code.hpp"
+#include "invalid_argument_exception.hpp"
+#include "log.hpp"
 #include "stringconv.hpp"
 
 namespace aeronet {
@@ -26,6 +28,13 @@ HttpResponse::HttpResponse(http::StatusCode code, std::string_view reason)
 }
 
 void HttpResponse::setReason(std::string_view newReason) {
+  static constexpr std::size_t kMaxReasonLength = 1024;
+  if (newReason.size() > kMaxReasonLength) {
+    log::error("Provided reason is too long ({} bytes), truncating it to {} bytes", newReason.length(),
+               kMaxReasonLength);
+    newReason.remove_suffix(newReason.size() - kMaxReasonLength);
+  }
+
   const auto oldReasonSz = reasonLen();
   int32_t diff = static_cast<int32_t>(newReason.size()) - static_cast<int32_t>(oldReasonSz);
   if (diff > 0) {
@@ -45,7 +54,7 @@ void HttpResponse::setReason(std::string_view newReason) {
                _data.size() - kStatusCodeBeg - 3U - oldReason.size() - static_cast<uint32_t>(!oldReason.empty()));
   _bodyStartPos = static_cast<uint32_t>(static_cast<int64_t>(_bodyStartPos) + diff);
   if (_headersStartPos != 0) {
-    _headersStartPos = static_cast<uint32_t>(static_cast<int64_t>(_headersStartPos) + diff);
+    _headersStartPos = static_cast<decltype(_headersStartPos)>(static_cast<int64_t>(_headersStartPos) + diff);
   }
   std::memcpy(_data.data() + kReasonBeg, newReason.data(), newReason.size());
   _data.setSize(static_cast<std::size_t>(static_cast<int64_t>(_data.size()) + diff));
@@ -147,7 +156,7 @@ void HttpResponse::appendHeaderUnchecked(std::string_view key, std::string_view 
 
   if (_headersStartPos == 0) {
     // First header key begins after inserted leading CRLF.
-    _headersStartPos = static_cast<uint32_t>((_bodyStartPos - http::DoubleCRLF.size()) + http::CRLF.size());
+    _headersStartPos = static_cast<decltype(_headersStartPos)>(_bodyStartPos - http::CRLF.size());
   }
   _data.setSize(_data.size() + headerLineSize);
   _bodyStartPos += static_cast<uint32_t>(headerLineSize);
