@@ -128,6 +128,7 @@ void MultiHttpServer::start() {
     _baseConfig.reusePort = true;  // override silently (documented behavior)
   }
 
+  // Note: reserve is important here to guarantee pointer stability
   _servers.reserve(static_cast<decltype(_servers)::size_type>(_threadCount));
   _threads.reserve(static_cast<decltype(_threads)::size_type>(_threadCount));
 
@@ -157,11 +158,14 @@ void MultiHttpServer::start() {
 
   // Launch threads and wait for first to resolve port if ephemeral.
   for (decltype(_servers)::size_type threadPos = 0; threadPos < _servers.size(); ++threadPos) {
-    HttpServer& srvPtr = _servers[threadPos];
-    _threads.emplace_back([&srvPtr, threadPos]() {
+    // IMPORTANT: Use a pointer captured by value. Capturing a reference to the loop-local reference variable
+    // (e.g. HttpServer& srvRef = _servers[threadPos]; then [&srvRef]) would leave the lambda holding a dangling
+    // reference once the loop iteration ends (undefined behavior observed as intermittent freezes).
+    HttpServer* srvPtr = &_servers[threadPos];
+    _threads.emplace_back([srvPtr, threadPos]() {
       log::debug("Server thread {} entering run()", threadPos);
       try {
-        srvPtr.run();
+        srvPtr->run();
       } catch (const std::exception& ex) {
         log::error("Server thread {} terminated with exception: {}", threadPos, ex.what());
       } catch (...) {
@@ -173,7 +177,7 @@ void MultiHttpServer::start() {
       // Busy-wait (short sleeps) until port resolved or timeout.
       if (_baseConfig.port == 0) {
         for (int attempt = 0; attempt < 200; ++attempt) {  // up to ~200ms
-          _resolvedPort = srvPtr.port();
+          _resolvedPort = srvPtr->port();
           if (_resolvedPort != 0) {
             _baseConfig.port = _resolvedPort;  // propagate
             break;
@@ -199,8 +203,8 @@ void MultiHttpServer::stop() {
     srvPtr.stop();
   }
   // IMPORTANT LIFETIME NOTE:
-  // Each server thread captures a reference to its corresponding HttpServer element stored in _servers.
-  // We must therefore ensure that the HttpServer objects remain alive until after the jthreads have joined.
+  // Each server thread captures a raw pointer to its corresponding HttpServer element stored in _servers.
+  // We must therefore ensure that the pointed-to HttpServer objects remain alive until after the jthreads join.
   // std::jthread joins in its destructor, so we arrange destruction order such that:
   //   1. Local 'threads' (moved from _threads) is destroyed FIRST (joins threads) while servers are still alive.
   //   2. Local 'servers' (moved from _servers) is destroyed AFTER 'threads', releasing HttpServer objects safely.
