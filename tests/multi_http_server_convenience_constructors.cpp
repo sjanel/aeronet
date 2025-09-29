@@ -50,7 +50,11 @@ std::string simpleGet(uint16_t port, const char* path = "/") {
 // 1. Auto thread-count constructor
 TEST(MultiHttpServer, AutoThreadCountConstructor) {
   aeronet::HttpServerConfig cfg;
+  cfg.withReusePort();  // auto thread count may be >1 -> must explicitly enable reusePort
   aeronet::MultiHttpServer multi(cfg);
+  // Port should be resolved immediately at construction time.
+  EXPECT_GT(multi.port(), 0);
+
   multi.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("Auto");
@@ -75,6 +79,8 @@ TEST(MultiHttpServer, ExplicitThreadCountConstructor) {
   cfg.reusePort = true;  // explicit reusePort
   const uint32_t threads = 2;
   aeronet::MultiHttpServer multi(cfg, threads);
+  EXPECT_GT(multi.port(), 0);  // resolved during construction
+  EXPECT_EQ(multi.nbThreads(), threads);
   multi.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body("Explicit");
@@ -94,17 +100,19 @@ TEST(MultiHttpServer, ExplicitThreadCountConstructor) {
 TEST(MultiHttpServer, MoveConstruction) {
   aeronet::HttpServerConfig cfg;
   cfg.port = 0;
+  cfg.withReusePort();                     // auto thread count may be >1; explicit reusePort required
   aeronet::MultiHttpServer original(cfg);  // auto threads
+  EXPECT_GT(original.port(), 0);           // resolved at construction
   original.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("Move");
     return resp;
   });
-  original.start();
   auto port = original.port();
   ASSERT_GT(port, 0);
   // Move into new instance
   aeronet::MultiHttpServer moved(std::move(original));
+  moved.start();
   // Original should no longer be running (state moved)
   EXPECT_FALSE(moved.port() == 0);
   // Basic request still works after move
@@ -121,46 +129,39 @@ TEST(MultiHttpServer, InvalidExplicitThreadCountThrows) {
   EXPECT_THROW(aeronet::MultiHttpServer(cfg, 0), aeronet::invalid_argument);  // 0 illegal here
 }
 
-// 5. Default constructor + move assignment
-// Verifies that a default constructed MultiHttpServer is inert (no threads/servers, not running, port=0)
-// and that move-assigning an active instance into it transfers ownership correctly while leaving the
-// source in a safe, inert state.
+// 5. Default constructor + move assignment BEFORE start (moving a running server now asserts)
 TEST(MultiHttpServer, DefaultConstructorAndMoveAssignment) {
-  // Prepare a running instance (rhs of move assignment)
   aeronet::HttpServerConfig cfg;
-  cfg.port = 0;                           // ephemeral
-  aeronet::MultiHttpServer running(cfg);  // auto thread count
-  running.setHandler([](const aeronet::HttpRequest&) {
+  cfg.port = 0;                          // ephemeral
+  cfg.withReusePort();                   // explicit reusePort (auto thread count may exceed 1)
+  aeronet::MultiHttpServer source(cfg);  // not started yet
+  EXPECT_GT(source.port(), 0);
+  source.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("MoveAssign");
     return resp;
   });
-  running.start();
-  ASSERT_TRUE(running.isRunning());
-  ASSERT_GT(running.port(), 0);
-  const auto originalPort = running.port();
-  const auto originalThreads = running.nbThreads();
+  const auto originalPort = source.port();
+  const auto originalThreads = source.nbThreads();
   ASSERT_GE(originalThreads, 1U);
 
-  // Default constructed target (lhs of move assignment)
-  aeronet::MultiHttpServer target;  // default ctor (inert)
+  aeronet::MultiHttpServer target;  // default constructed inert target
   EXPECT_FALSE(target.isRunning());
   EXPECT_EQ(target.port(), 0);
   EXPECT_EQ(target.nbThreads(), 0U);
 
-  // Move assign
-  target = std::move(running);
-
-  // After move assignment: target has adopted state
-  EXPECT_TRUE(target.isRunning());
+  // Move BEFORE start
+  target = std::move(source);
   EXPECT_EQ(target.port(), originalPort);
   EXPECT_EQ(target.nbThreads(), originalThreads);
+  EXPECT_FALSE(target.isRunning());
 
-  // Basic request still works via the moved-to target
+  // Start after move
+  target.start();
+  ASSERT_TRUE(target.isRunning());
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   auto resp = simpleGet(target.port(), "/ma");
   EXPECT_NE(std::string::npos, resp.find("MoveAssign"));
-
   target.stop();
   EXPECT_FALSE(target.isRunning());
 }

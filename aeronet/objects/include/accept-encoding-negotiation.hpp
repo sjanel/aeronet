@@ -15,6 +15,15 @@ class EncodingSelector {
 
   explicit EncodingSelector(const CompressionConfig &compressionConfig);
 
+  struct NegotiatedResult {
+    Encoding encoding{Encoding::none};
+
+    // Returns true when the
+    // client explicitly disallowed identity (identity;q=0) and no other acceptable encodings were present.
+    // Call immediately after negotiateAcceptEncoding(); only then is the value meaningful for that request.
+    bool reject{false};
+  };
+
   // Parse an Accept-Encoding header per RFC 9110 section 12.5.3 and select the
   // best supported encoding among supported ones.
   // Rules implemented:
@@ -25,10 +34,14 @@ class EncodingSelector {
   //  - Prefer highest q; tie -> server preference (based on ordered values 'preferredFormats')
   //  - Wildcard '*' is supported: applies its q to any supported encoding not explicitly listed (unless that encoding
   //  appeared with q=0).
-  //  - If nothing acceptable remains, fall back to identity.
-  //  - identity explicitly disallowed (identity;q=0 and all others q=0) -> still returns identity for now (could be 406
-  //  later).
-  [[nodiscard]] Encoding negotiateAcceptEncoding(std::string_view acceptEncoding) const;
+  //  - If nothing acceptable remains, fall back to identity (Encoding::none) UNLESS client explicitly disallows
+  //    identity via identity;q=0 and no other encodings are acceptable (all q=0). In that case we conceptually
+  //    signal "no acceptable encoding"; the caller may translate this to 406 Not Acceptable. We surface this by
+  //    returning Encoding::invalid (value outside supported range) which callers must check.
+  //    (Current implementation: Encoding enum has only valid encodings; we piggy-back by returning none when allowed
+  //    and triggering a separate flag for 406 in the parsing logic.)
+  // Returns a NegotiatedResult object
+  [[nodiscard]] NegotiatedResult negotiateAcceptEncoding(std::string_view acceptEncoding) const;
 
  private:
   FixedCapacityVector<Encoding, kNbContentEncodings> _preferenceOrdered;  // final ordered list

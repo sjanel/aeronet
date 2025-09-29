@@ -64,6 +64,7 @@ inline constexpr std::string_view MovedPermanently = "Moved Permanently";       
 inline constexpr std::string_view ReasonBadRequest = "Bad Request";                              // 400
 inline constexpr std::string_view NotFound = "Not Found";                                        // 404
 inline constexpr std::string_view ReasonMethodNotAllowed = "Method Not Allowed";                 // 405
+inline constexpr std::string_view ReasonNotAcceptable = "Not Acceptable";                        // 406
 inline constexpr std::string_view ReasonPayloadTooLarge = "Payload Too Large";                   // 413
 inline constexpr std::string_view ReasonHeadersTooLarge = "Request Header Fields Too Large";     // 431
 inline constexpr std::string_view ReasonInternalServerError = "Internal Server Error";           // 500
@@ -91,6 +92,8 @@ constexpr std::string_view reasonPhraseFor(http::StatusCode status) noexcept {
       return NotFound;
     case 405:
       return ReasonMethodNotAllowed;
+    case 406:
+      return ReasonNotAcceptable;
     case 413:
       return ReasonPayloadTooLarge;
     case 431:
