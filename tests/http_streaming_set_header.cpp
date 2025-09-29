@@ -42,15 +42,15 @@ TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
   auto port = ts.port();
   ts.server.setStreamingHandler([](const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
     bool isHead = req.method == "HEAD";
-    writer.statusCode(200, "OK");
-    writer.header("X-Custom-A", "alpha");
-    writer.header("X-Custom-B", "beta");
-    writer.header("Content-Type", "application/json");  // override default
+    writer.statusCode(200);
+    writer.customHeader("X-Custom-A", "alpha");
+    writer.customHeader("X-Custom-B", "beta");
+    writer.customHeader("Content-Type", "application/json");  // override default
     // First write sends headers implicitly.
     writer.write("{\"k\":1}");
     // These should be ignored because headers already sent.
-    writer.header("X-Ignored", "zzz");
-    writer.header("Content-Type", "text/plain");
+    writer.customHeader("X-Ignored", "zzz");
+    writer.customHeader("Content-Type", "text/plain");
     writer.end();
     if (isHead) {
       // Nothing extra; body suppressed automatically.

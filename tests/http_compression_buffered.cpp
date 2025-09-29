@@ -107,7 +107,7 @@ TEST(HttpCompressionBuffered, GzipAppliedWhenEligible) {
   std::string largePayload(200, 'A');
   ts.server.setHandler([largePayload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.customHeader("Content-Type", "text/plain");
     resp.body(largePayload);
     return resp;
   });
@@ -126,7 +126,7 @@ TEST(HttpCompressionBuffered, GzipAppliedWhenEligible) {
   EXPECT_LT(resp.body.size(), largePayload.size());
 }
 
-TEST(HttpCompressionBuffered, OptOutDisablesCompression) {
+TEST(HttpCompressionBuffered, UserContentEncodingIdentityDisablesCompression) {
   CompressionConfig cfg;
   cfg.minBytes = 1;
   cfg.preferredFormats.push_back(Encoding::gzip);
@@ -136,14 +136,17 @@ TEST(HttpCompressionBuffered, OptOutDisablesCompression) {
   std::string payload(128, 'B');
   ts.server.setHandler([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.disableAutoCompression();
-    resp.header("Content-Type", "text/plain");
+    resp.customHeader("Content-Type", "text/plain");
+    resp.customHeader("Content-Encoding", "identity");  // explicit suppression
     resp.body(payload);
     return resp;
   });
   auto resp = doGet(ts.port(), "/o", {{"Accept-Encoding", "gzip"}});
   EXPECT_EQ(resp.statusCode, 200);
-  EXPECT_EQ(resp.headers.find("Content-Encoding"), resp.headers.end());
+  // Should remain uncompressed and server must not alter user-provided identity
+  auto itCE = resp.headers.find("Content-Encoding");
+  ASSERT_NE(itCE, resp.headers.end());
+  EXPECT_EQ(itCE->second, "identity");
   EXPECT_EQ(resp.body.size(), payload.size());
 }
 
@@ -157,7 +160,7 @@ TEST(HttpCompressionBuffered, BelowThresholdNotCompressed) {
   std::string smallPayload(32, 'C');
   ts.server.setHandler([smallPayload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.customHeader("Content-Type", "text/plain");
     resp.body(smallPayload);
     return resp;
   });
@@ -177,7 +180,7 @@ TEST(HttpCompressionBuffered, NoAcceptEncodingHeaderStillCompressesDefault) {
   std::string payload(128, 'D');
   ts.server.setHandler([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.customHeader("Content-Type", "text/plain");
     resp.body(payload);
     return resp;
   });
@@ -200,7 +203,7 @@ TEST(HttpCompressionBuffered, UnsupportedEncodingDoesNotApplyGzip) {
   std::string payload(200, 'E');
   ts.server.setHandler([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.customHeader("Content-Type", "text/plain");
     resp.body(payload);
     return resp;
   });
@@ -220,7 +223,7 @@ TEST(HttpCompressionBuffered, DeflateAppliedWhenPreferredAndAccepted) {
   std::string largePayload(300, 'F');
   ts.server.setHandler([largePayload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.customHeader("Content-Type", "text/plain");
     resp.body(largePayload);
     return resp;
   });
@@ -244,7 +247,7 @@ TEST(HttpCompressionBuffered, GzipChosenWhenHigherPreference) {
   std::string payload(256, 'G');
   ts.server.setHandler([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.customHeader("Content-Type", "text/plain");
     resp.body(payload);
     return resp;
   });
@@ -267,7 +270,7 @@ TEST(HttpCompressionBuffered, QValuesAffectSelection) {
   std::string payload(180, 'H');
   ts.server.setHandler([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.customHeader("Content-Type", "text/plain");
     resp.body(payload);
     return resp;
   });
@@ -288,7 +291,7 @@ TEST(HttpCompressionBuffered, IdentityFallbackIfDeflateNotRequested) {
   std::string payload(256, 'I');
   ts.server.setHandler([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.customHeader("Content-Type", "text/plain");
     resp.body(payload);
     return resp;
   });

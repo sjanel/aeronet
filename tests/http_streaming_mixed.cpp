@@ -102,8 +102,8 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
   postSet.insert(aeronet::http::Method::POST);
   srv.addPathStreamingHandler("/mix", getSet,
                               [](const aeronet::HttpRequest& /*unused*/, aeronet::HttpResponseWriter& writer) {
-                                writer.statusCode(200, "OK");
-                                writer.header("Content-Type", "text/plain");
+                                writer.statusCode(200);
+                                writer.customHeader("Content-Type", "text/plain");
                                 writer.write("S");
                                 writer.write("TREAM");
                                 writer.end();
@@ -141,7 +141,7 @@ TEST(HttpServerMixed, ConflictRegistrationStreamingThenNormal) {
   aeronet::HttpServer srv(cfg);
   srv.addPathStreamingHandler("/c2", aeronet::http::Method::GET,
                               [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-                                writer.statusCode(200, "OK");
+                                writer.statusCode(200);
                                 writer.end();
                               });
   EXPECT_THROW(srv.addPathHandler("/c2", aeronet::http::Method::GET,
@@ -160,15 +160,15 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
     return aeronet::HttpResponse(200).reason("OK").contentType(aeronet::http::ContentTypeTextPlain).body("GLOBAL");
   });
   srv.setStreamingHandler([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.statusCode(200, "OK");
-    writer.header("Content-Type", "text/plain");
+    writer.statusCode(200);
+    writer.customHeader("Content-Type", "text/plain");
     writer.write("STREAMFALLBACK");
     writer.end();
   });
   // path-specific streaming overrides both
   srv.addPathStreamingHandler("/s", aeronet::http::Method::GET,
                               [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-                                writer.statusCode(200, "OK");
+                                writer.statusCode(200);
                                 writer.write("PS");
                                 writer.end();
                               });
@@ -217,8 +217,8 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
   // Register streaming handler for GET; it will attempt to write a body.
   srv.addPathStreamingHandler("/head", getSet,
                               [](const aeronet::HttpRequest& /*unused*/, aeronet::HttpResponseWriter& writer) {
-                                writer.statusCode(200, "OK");
-                                writer.header("Content-Type", "text/plain");
+                                writer.statusCode(200);
+                                writer.customHeader("Content-Type", "text/plain");
                                 writer.write("SHOULD_NOT_APPEAR");  // for HEAD this must be suppressed by writer
                                 writer.end();
                               });
@@ -245,7 +245,7 @@ TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
   // Register only GET streaming handler
   srv.addPathStreamingHandler("/m405", aeronet::http::Method::GET,
                               [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-                                writer.statusCode(200, "OK");
+                                writer.statusCode(200);
                                 writer.write("OKGET");
                                 writer.end();
                               });
@@ -304,8 +304,8 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
   aeronet::http::MethodSet postSet;
   postSet.insert(aeronet::http::Method::POST);
   srv.addPathStreamingHandler("/ka", getSet, [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.statusCode(200, "OK");
-    writer.header("Content-Type", "text/plain");
+    writer.statusCode(200);
+    writer.customHeader("Content-Type", "text/plain");
     writer.write("A");
     writer.write("B");
     writer.end();
