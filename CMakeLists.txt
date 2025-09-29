@@ -50,6 +50,7 @@ option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_TE
 # Optional dependencies (aeronet is able to compile without the feature if not enabled)
 option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" ${MAIN_PROJECT})
 option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" ${MAIN_PROJECT})
+option(AERONET_ENABLE_ZLIB "Enable usage of zlib for HTTP response compression" ${MAIN_PROJECT})
 
 # Linting
 option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" ${ASAN_DEFAULT})
@@ -163,6 +164,18 @@ endif()
 if(AERONET_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# Compression libraries (optional, isolated like TLS). Detect BEFORE building core targets so
+# compile definitions propagate correctly to aeronet library sources.
+if(AERONET_ENABLE_ZLIB)
+  find_package(ZLIB)
+  if(NOT ZLIB_FOUND)
+    message(WARNING "[aeronet] AERONET_ENABLE_ZLIB=ON but zlib not found; compression will be disabled.")
+    set(AERONET_ENABLE_ZLIB OFF CACHE BOOL "Enable usage of zlib for HTTP response compression" FORCE)
+  else()
+    message(STATUS "[aeronet] zlib found: version=${ZLIB_VERSION}")
+  endif()
 endif()
 
 add_subdirectory(aeronet)

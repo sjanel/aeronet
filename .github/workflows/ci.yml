@@ -79,7 +79,8 @@ jobs:
             -DAERONET_ENABLE_ASAN=ON \
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
             -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
-            -DAERONET_ENABLE_OPENSSL=${{ matrix.features }}
+            -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
+            -DAERONET_ENABLE_ZLIB=${{ matrix.features }}
 
       - name: Build
         run: |
