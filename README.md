@@ -34,7 +34,7 @@ HTTP/1.1 server library for Linux only – work in progress.
 |---------|-------|
 | Epoll edge-triggered loop | One thread per `HttpServer`; writev used for header+body scatter-gather |
 | SO_REUSEPORT scaling | Horizontal multi-reactor capability |
-| Multi-instance wrapper | `MultiHttpServer` orchestrates N reactors, aggregates stats |
+| Multi-instance wrapper | `MultiHttpServer` orchestrates N reactors, aggregates stats (explicit `reusePort=true` required for >1 threads; port resolved at construction) |
 | Async single-server wrapper | `AsyncHttpServer` runs one server in a background thread |
 | Move semantics | Transfer listening socket & loop state safely |
 | Heterogeneous lookups | Path handler map accepts `std::string`, `std::string_view`, `const char*` |
@@ -164,6 +164,13 @@ Implemented capabilities:
 - Vary header: Adds `Vary: Accept-Encoding` when compression applied (configurable via `addVaryHeader`).
 - Identity safety: If threshold not met, buffered bytes are flushed uncompressed and no misleading `Content-Encoding` is added.
 - Q-value precedence: Correctly honors client preference (e.g. `gzip;q=0.1, deflate;q=0.9` selects deflate even if server lists gzip first).
+- Explicit identity rejection: If a client sends an `Accept-Encoding` header that (a) explicitly forbids the
+  identity coding via `identity;q=0` and (b) does not list any supported compression coding with a positive `q`
+  (and wildcard `*` does not introduce one), Aeronet now responds with **`406 Not Acceptable`** and a short plain
+  text body `"No acceptable content-coding available"`. This follows RFC 9110 §12.5.3 guidance that a server MAY
+  reject a request when none of the client's acceptable codings are available. Typical scenario:
+  `Accept-Encoding: identity;q=0, br;q=0` (when brotli is unsupported) → 406. If any supported coding is acceptable
+  (e.g. `identity;q=0, gzip`), normal negotiation proceeds and that coding is used.
 
 Planned / future:
 
@@ -237,7 +244,7 @@ simple (a single `writev` pairs the header block with the body when streaming is
 
 Memory layout (before any user header is appended):
 
-```
+```text
 [HTTP/1.1 SP status-code [SP reason] CRLF][CRLF][CRLF]
                             ^        ^   ^
                             |        |   +-- DoubleCRLF sentinel (always present)
@@ -247,7 +254,7 @@ Memory layout (before any user header is appended):
 
 After headers (each user header prepends a CRLF and shifts only the tail once):
 
-```
+```text
 Status/Reason CRLF (CRLF Name ": " Value)* CRLF CRLF [Body]
 ```
 
@@ -316,7 +323,7 @@ Performance / architecture
 
 - [x] Single-thread event loop (one server instance)
 - [x] Horizontal scaling via SO_REUSEPORT (multi-reactor)
-- [x] Multi-instance orchestration wrapper (`MultiHttpServer`) (auto reuseport, aggregated stats)
+- [x] Multi-instance orchestration wrapper (`MultiHttpServer`) (explicit `reusePort=true` for >1 threads; aggregated stats; resolved port immediately after construction)
 - [x] writev scatter-gather for response header + body
 - [x] Outbound write buffering with EPOLLOUT-driven backpressure
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
@@ -347,6 +354,32 @@ Misc
 - [x] Compression (gzip & deflate phase 1)
 - [ ] Public API stability guarantee (pre-1.0)
 - [ ] License file
+
+### MultiHttpServer Lifecycle & reusePort Requirement
+
+`MultiHttpServer` constructs all underlying `HttpServer` instances immediately. If `cfg.port == 0` (ephemeral) the
+first underlying server binds and resolves the concrete port during construction, so `multi.port()` is valid right
+after the constructor returns. `start()` only launches the event loop threads – no busy-wait for port discovery.
+
+Explicit `reusePort` policy:
+
+- For `threadCount > 1` you MUST set `cfg.reusePort = true` beforehand (otherwise the constructor throws `invalid_argument`).
+- For a single thread (`threadCount == 1`) `reusePort` is optional.
+
+Move semantics: moving a `MultiHttpServer` after `start()` is forbidden (debug assert) because worker threads capture
+raw pointers to the internal `HttpServer` objects.
+
+Example:
+
+```cpp
+HttpServerConfig cfg;
+cfg.port = 0;          // ephemeral
+cfg.reusePort = true;  // required for >1 threads
+MultiHttpServer multi(cfg, 4); // port resolved here
+std::cout << multi.port() << "\n"; // valid now
+multi.setHandler(...);
+multi.start();
+```
 
 ## TLS Features (Current)
 
@@ -770,6 +803,13 @@ Key semantics:
 - By default responses are sent with `Transfer-Encoding: chunked` unless `setContentLength()` is called before any body bytes are written.
 - `write()` queues data into the server's outbound buffer (no direct syscalls in the writer) and returns `false` if the connection was marked for closure (e.g., max outbound buffer exceeded or hard error). In future phases it may return `false` transiently to signal backpressure without connection closure.
 - `end()` finalizes the response. For chunked mode it appends the terminating `0\r\n\r\n` chunk.
+  Additional guarantees (see in-code docs for `HttpResponseWriter::end()`):
+  - Idempotent: repeated calls are ignored after the first.
+  - Ensures headers are emitted (lazy strategy) and flushes any buffered pre-compression bytes.
+  - Flushes final compressor bytes if compression activated, then emits last chunk when chunked.
+  - For fixed `Content-Length` responses (when declared), does not pad or truncate; debug builds assert the exact
+    body byte count (identity or user-encoded) matches the declared length.
+  - For HEAD requests: still sends headers (with synthesized `Content-Length` if none provided) but suppresses body.
 - HEAD requests automatically suppress body bytes; you can still call `write()` for symmetric code paths.
 - Keep-Alive is supported for streaming responses when: server keep-alive is enabled, HTTP/1.1 is used, max-requests-per-connection not exceeded, and the connection wasn't marked for closure due to buffer overflow or error. Set an explicit `Connection: keep-alive` header inside your streaming handler if you want to guarantee the header presence; otherwise the server may add it according to policy (future enhancement).
 - If you provide your own `Connection: close` header, the server will honor it, preventing reuse.

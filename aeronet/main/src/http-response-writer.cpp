@@ -313,6 +313,19 @@ void HttpResponseWriter::end() {
 
   emitLastChunk();
   _ended = true;
+#ifndef NDEBUG
+  // Debug-only protocol correctness check: if a fixed Content-Length was declared, assert body byte count match.
+  if (!_chunked && !_head) {
+    // _declaredLength may be zero either because user explicitly set it or because we synthesized 0 for HEAD;
+    // for HEAD we suppress body so skip. For identity path we track bytesWritten; for compression path we cannot
+    // validate because encoder output size may differ from raw input; in that case we only asserted the user should
+    // not declare a length unless they know the final encoded size. We still assert if compression was never
+    // activated (identity or user-supplied encoding) that counts match.
+    if (!_compressionActivated || _compressionFormat == Encoding::none || _userProvidedContentEncoding) {
+      assert(_bytesWritten == _declaredLength && "Declared Content-Length does not match bytes written");
+    }
+  }
+#endif
   log::debug("Streaming: end fd={} bytesWritten={} chunked={}", _fd, _bytesWritten, _chunked);
 }
 
