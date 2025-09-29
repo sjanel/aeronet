@@ -10,6 +10,7 @@
 #include "http-status-code.hpp"
 #include "raw-chars.hpp"
 #include "simple-charconv.hpp"
+#include "string-equal-ignore-case.hpp"
 
 namespace aeronet {
 
@@ -144,80 +145,92 @@ class HttpResponse {
 
   // Inserts or replaces the Content-Type header.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse& contentType(std::string_view src) & { return header(http::ContentType, src); }
+  HttpResponse& contentType(std::string_view src) & { return customHeader(http::ContentType, src); }
 
   // Inserts or replaces the Content-Type header.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse&& contentType(std::string_view src) && {
-    header(http::ContentType, src);
+    customHeader(http::ContentType, src);
     return std::move(*this);
   }
 
   // Inserts or replaces the Location header.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse& location(std::string_view src) & { return header(http::Location, src); }
+  HttpResponse& location(std::string_view src) & { return customHeader(http::Location, src); }
 
   // Inserts or replaces the Location header.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse&& location(std::string_view src) && {
-    header(http::Location, src);
+    customHeader(http::Location, src);
     return std::move(*this);
   }
 
-  // appendHeader: Append a header line (duplicates allowed, fastest path).
-  // No scan over existing headers; simply shifts DoubleCRLF/body tail and
-  // copies the new header fragment. Prefer this when duplicates are OK or
+  // Inserts or replaces the Content-Encoding header.
+  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  HttpResponse& contentEncoding(std::string_view src) & { return customHeader(http::ContentEncoding, src); }
+
+  // Inserts or replaces the Content-Encoding header.
+  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  HttpResponse&& contentEncoding(std::string_view src) && {
+    customHeader(http::ContentEncoding, src);
+    return std::move(*this);
+  }
+
+  // Append a header line (duplicates allowed, fastest path).
+  // No scan over existing headers. Prefer this when duplicates are OK or
   // when constructing headers once.
   // Do not insert any reserved header (for which IsReservedHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse& appendHeader(std::string_view key, std::string_view value) & {
+  HttpResponse& addCustomHeader(std::string_view key, std::string_view value) & {
     assert(!IsReservedHeader(key));
     appendHeaderUnchecked(key, value);
     return *this;
   }
 
-  // appendHeader: Append a header line (duplicates allowed, fastest path).
-  // No scan over existing headers; simply shifts DoubleCRLF/body tail and
-  // copies the new header fragment. Prefer this when duplicates are OK or
+  // Append a header line (duplicates allowed, fastest path).
+  // No scan over existing headers. Prefer this when duplicates are OK or
   // when constructing headers once.
   // Do not insert any reserved header (for which IsReservedHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse&& appendHeader(std::string_view key, std::string_view value) && {
+  HttpResponse&& addCustomHeader(std::string_view key, std::string_view value) && {
     assert(!IsReservedHeader(key));
     appendHeaderUnchecked(key, value);
     return std::move(*this);
   }
 
-  // header: Set or replace a header value ensuring at most one instance.
-  // This performs a linear scan to find an existing key (slower than appendHeader()).
-  // If not found, it falls back to appendHeader().
-  // Use only when you must guarantee uniqueness; otherwise prefer appendHeader().
+  // Set or replace a header value ensuring at most one instance.
+  // Performs a linear scan (slower than appendHeader()) using case-insensitive comparison of header names per
+  // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
+  // If not found, falls back to appendHeader(). Use only when you must guarantee uniqueness; otherwise prefer
+  // appendHeader().
   // Do not insert any reserved header (for which IsReservedHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse& header(std::string_view key, std::string_view value) & {
+  HttpResponse& customHeader(std::string_view key, std::string_view value) & {
     assert(!IsReservedHeader(key));
     setHeader(key, value);
     return *this;
   }
 
-  // header: Set or replace a header value ensuring at most one instance.
-  // This performs a linear scan to find an existing key (slower than appendHeader()).
-  // If not found, it falls back to appendHeader().
-  // Use only when you must guarantee uniqueness; otherwise prefer appendHeader().
+  // Set or replace a header value ensuring at most one instance.
+  // Performs a linear scan (slower than appendHeader()) using case-insensitive comparison of header names per
+  // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
+  // If not found, falls back to appendHeader(). Use only when you must guarantee uniqueness; otherwise prefer
+  // appendHeader().
   // Do not insert any reserved header (for which IsReservedHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse&& header(std::string_view key, std::string_view value) && {
+  HttpResponse&& customHeader(std::string_view key, std::string_view value) && {
     assert(!IsReservedHeader(key));
     setHeader(key, value);
     return std::move(*this);
   }
 
-  // Per-response opt-out for automatic compression (if globally configured).
-  HttpResponse& disableAutoCompression() noexcept {
-    _disableAutoCompression = true;
-    return *this;
-  }
-  [[nodiscard]] bool autoCompressionDisabled() const noexcept { return _disableAutoCompression; }
+  // Whether user explicitly provided a Content-Encoding header (any value). When present
+  // Aeronet will NOT perform automatic compression for this response (the user fully
+  // controls encoding and must ensure body matches the declared encoding). Users can
+  // force identity / disable compression by setting either:
+  //   Content-Encoding: identity
+  // or an empty value ("\r\nContent-Encoding: \r\n") though the former is preferred.
+  [[nodiscard]] bool userProvidedContentEncoding() const noexcept { return _userProvidedContentEncoding; }
 
   // Centralized rule for headers the user may not set directly (normal or streaming path).
   // These are either automatically emitted (Date, Content-Length, Connection, Transfer-Encoding) or
@@ -232,8 +245,9 @@ class HttpResponse {
   //     static_assert(!aeronet::HttpResponse::IsReservedHeader("Content-Length")); // Not OK
   [[nodiscard]] static constexpr bool IsReservedHeader(std::string_view name) noexcept {
     using namespace http;
-    return name == Connection || name == Date || name == ContentLength || name == TransferEncoding || name == Trailer ||
-           name == Upgrade || name == TE;
+    return CaseInsensitiveEqual(name, Connection) || CaseInsensitiveEqual(name, Date) ||
+           CaseInsensitiveEqual(name, ContentLength) || CaseInsensitiveEqual(name, TransferEncoding) ||
+           CaseInsensitiveEqual(name, Trailer) || CaseInsensitiveEqual(name, Upgrade) || CaseInsensitiveEqual(name, TE);
   }
 
  private:
@@ -246,7 +260,7 @@ class HttpResponse {
       return 0UL;
     }
     if (_headersStartPos != 0) {
-      return _headersStartPos - http::CRLF.size() - kReasonBeg;
+      return _headersStartPos - kReasonBeg;
     }
     return _bodyStartPos - kReasonBeg - http::DoubleCRLF.size();
   }
@@ -270,8 +284,8 @@ class HttpResponse {
                                                   bool isHeadMethod);
 
   RawChars _data;
-  uint16_t _headersStartPos{};  // position just after the CRLF that starts the first header line
-  bool _disableAutoCompression{false};
+  uint16_t _headersStartPos{};  // position just at the CRLF that starts the first header line
+  bool _userProvidedContentEncoding{false};
   uint32_t _bodyStartPos{};  // position of first body byte (after CRLF CRLF)
 };
 

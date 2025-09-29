@@ -11,6 +11,8 @@ namespace aeronet {
 
 class EncodingSelector {
  public:
+  EncodingSelector() noexcept;
+
   explicit EncodingSelector(const CompressionConfig &compressionConfig);
 
   // Parse an Accept-Encoding header per RFC 9110 section 12.5.3 and select the

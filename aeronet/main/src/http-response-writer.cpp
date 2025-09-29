@@ -17,6 +17,7 @@
 #include "http-status-code.hpp"
 #include "log.hpp"
 #include "static-string-view-helpers.hpp"
+#include "string-equal-ignore-case.hpp"
 
 namespace aeronet {
 
@@ -38,7 +39,9 @@ void HttpResponseWriter::statusCode(http::StatusCode code, std::string_view reas
   _fixedResponse.statusCode(code).reason(reason);
 }
 
-void HttpResponseWriter::header(std::string_view name, std::string_view value) {
+void HttpResponseWriter::statusCode(http::StatusCode code) { statusCode(code, http::ReasonOK); }
+
+void HttpResponseWriter::customHeader(std::string_view name, std::string_view value) {
   if (_headersSent || _failed) {
     log::debug("Streaming: header ignored fd={} name={} reason={}", _fd, name,
                _failed ? "writer-failed" : "headers-already-sent");
@@ -48,12 +51,16 @@ void HttpResponseWriter::header(std::string_view name, std::string_view value) {
     log::error("Attempt to set reserved or managed header '{}' in streaming response", name);
     return;
   }
-  if (name == http::ContentType) {
+  if (CaseInsensitiveEqual(name, http::ContentType)) {
     // Track explicit user override of default content type.
     _userSetContentType = true;
   }
+  if (CaseInsensitiveEqual(name, http::ContentEncoding)) {
+    _userProvidedContentEncoding = true;  // suppress automatic compression
+    // If user sets identity we still treat it as suppression; we do not validate value here.
+  }
   // Use 'header' to enforce uniqueness semantics for streaming path.
-  _fixedResponse.header(name, value);
+  _fixedResponse.customHeader(name, value);
 }
 
 void HttpResponseWriter::contentLength(std::size_t len) {
@@ -197,7 +204,7 @@ bool HttpResponseWriter::write(std::string_view data) {
   // We purposefully delay header emission until we either (a) activate compression and have compressed bytes
   // to send or (b) decide to emit identity data (on end()). This allows us to include the Content-Encoding header
   // reliably when compression triggers mid-stream.
-  if (_compressionFormat != Encoding::none && !_disableAutoCompression && !_compressionActivated) {
+  if (_compressionFormat != Encoding::none && !_userProvidedContentEncoding && !_compressionActivated) {
     const auto& compressionConfig = _server->_config.compression;
     // Accumulate data into the pre-compression buffer up to minBytes. Always buffer the entire incoming data until
     // we cross the threshold (or end() is called).

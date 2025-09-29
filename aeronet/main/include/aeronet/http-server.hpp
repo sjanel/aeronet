@@ -10,9 +10,9 @@
 #include <cstring>
 #include <functional>
 #include <memory>
-#include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 #include "accept-encoding-negotiation.hpp"
 #include "aeronet/http-request.hpp"
@@ -458,4 +458,7 @@ class HttpServer {
   TlsMetricsExternal _tlsMetricsExternal;  // shares alpnStrictMismatches with _tlsMetrics (synced in stats retrieval)
 #endif
 };
+
+static_assert(std::is_nothrow_default_constructible_v<HttpServer>);
+
 }  // namespace aeronet

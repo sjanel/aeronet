@@ -31,7 +31,7 @@ TEST(HttpStreaming, ChunkedSimple) {
   auto port = ts.port();
   ts.server.setStreamingHandler(
       []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
-        writer.statusCode(200, "OK");
+        writer.statusCode(200);
         writer.contentType("text/plain");
         writer.write("hello ");
         writer.write("world");
@@ -51,7 +51,7 @@ TEST(HttpStreaming, HeadSuppressedBody) {
   auto port = ts.port();
   ts.server.setStreamingHandler(
       []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
-        writer.statusCode(200, "OK");
+        writer.statusCode(200);
         writer.contentType("text/plain");
         writer.write("ignored body");  // should not be emitted for HEAD
         writer.end();

@@ -66,6 +66,11 @@ add_unit_test(
 )
 
 add_unit_test(
+    tchars_test
+    test/tchars_test.cpp
+)
+
+add_unit_test(
     unitsparser_test
     test/unitsparser_test.cpp
     LIBRARIES

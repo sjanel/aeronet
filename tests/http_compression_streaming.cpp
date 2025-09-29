@@ -91,7 +91,7 @@ TEST(HttpCompressionStreaming, GzipActivatedOverThreshold) {
   std::string part1(40, 'a');
   std::string part2(80, 'b');
   ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
-    writer.statusCode(200, "OK");
+    writer.statusCode(200);
     writer.contentType("text/plain");
     writer.write(part1);  // below threshold so far
     writer.write(part2);  // crosses threshold -> compression should activate
@@ -118,7 +118,7 @@ TEST(HttpCompressionStreaming, DeflateActivatedOverThreshold) {
   TestServer ts(std::move(scfg));
   std::string payload(128, 'X');
   ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
-    writer.statusCode(200, "OK");
+    writer.statusCode(200);
     writer.contentType("text/plain");
     writer.write(payload.substr(0, 40));
     writer.write(payload.substr(40));
@@ -142,7 +142,7 @@ TEST(HttpCompressionStreaming, BelowThresholdIdentity) {
   TestServer ts(std::move(scfg));
   std::string small(40, 'y');
   ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
-    writer.statusCode(200, "OK");
+    writer.statusCode(200);
     writer.contentType("text/plain");
     writer.write(small);  // never crosses threshold
     writer.end();
@@ -152,7 +152,7 @@ TEST(HttpCompressionStreaming, BelowThresholdIdentity) {
   EXPECT_NE(std::string::npos, resp.body.find('y'));
 }
 
-TEST(HttpCompressionStreaming, OptOutPreventsActivation) {
+TEST(HttpCompressionStreaming, UserProvidedContentEncodingIdentityPreventsActivation) {
   CompressionConfig cfg;
   cfg.minBytes = 16;
   cfg.preferredFormats.push_back(Encoding::gzip);
@@ -161,15 +161,17 @@ TEST(HttpCompressionStreaming, OptOutPreventsActivation) {
   TestServer ts(std::move(scfg));
   std::string big(200, 'Z');
   ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
-    writer.disableAutoCompression();
-    writer.statusCode(200, "OK");
+    writer.statusCode(200);
     writer.contentType("text/plain");
+    writer.customHeader("Content-Encoding", "identity");  // explicit suppression
     writer.write(big.substr(0, 50));
     writer.write(big.substr(50));
     writer.end();
   });
   auto resp = simpleGet(ts.port(), "/soff", {{"Accept-Encoding", "gzip"}});
-  EXPECT_EQ(resp.headers.find("Content-Encoding"), resp.headers.end());
+  auto it = resp.headers.find("Content-Encoding");
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, "identity");
   // Body should contain literal 'Z' sequences (chunked framing around them)
   EXPECT_NE(std::string::npos, resp.body.find('Z'));
 }
@@ -184,7 +186,7 @@ TEST(HttpCompressionStreaming, QValuesInfluenceStreamingSelection) {
   TestServer ts(std::move(scfg));
   std::string payload(180, 'Q');
   ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
-    writer.statusCode(200, "OK");
+    writer.statusCode(200);
     writer.contentType("text/plain");
     writer.write(payload.substr(0, 60));
     writer.write(payload.substr(60));
