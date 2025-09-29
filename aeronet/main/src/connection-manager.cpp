@@ -93,7 +93,7 @@ void HttpServer::acceptNewConnections() {
     auto [itState, inserted] = _connStates.emplace(std::move(cnx), ConnectionState{});
     ConnectionState& stRef = itState->second;
 #ifdef AERONET_ENABLE_OPENSSL
-    if (_config.tls && _tlsCtxHolder) {
+    if (_tlsCtxHolder) {
       SSL_CTX* ctx = reinterpret_cast<SSL_CTX*>(_tlsCtxHolder->raw());
       SslPtr sslPtr(SSL_new(ctx), SSL_free);
       if (sslPtr.get() == nullptr) {
