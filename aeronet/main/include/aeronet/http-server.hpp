@@ -1,6 +1,7 @@
 #pragma once
 
-#include <sys/uio.h>  // iovec
+#include <sys/eventfd.h>  // eventfd wakeups
+#include <sys/uio.h>      // iovec
 
 #include <array>
 #include <cerrno>
@@ -19,6 +20,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "connection.hpp"
+#include "event-fd.hpp"
 #include "event-loop.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/ssl.h>  // ensure real ::SSL is visible (avoid shadowing forward decl)
@@ -380,9 +382,12 @@ class HttpServer {
 
   void closeConnection(int fd);
 
-  bool callStreamingHandler(const StreamingHandler& streamingHandler, const HttpRequest& req, int fd,
-                            ConnectionState& state, std::size_t consumedBytes,
-                            std::chrono::steady_clock::time_point reqStart);
+  // Invoke a registered streaming handler. Returns true if the connection should be closed after handling
+  // the request (either because the client requested it or keep-alive limits reached). The HttpRequest is
+  // non-const because we may reuse shared response finalization paths (e.g. emitting a 406 early) that expect
+  // to mutate transient fields (target normalization already complete at this point).
+  bool callStreamingHandler(const StreamingHandler& streamingHandler, HttpRequest& req, int fd, ConnectionState& state,
+                            std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
 
   // Transport-aware helpers (fall back to raw fd if transport null)
   static ssize_t transportRead(int fd, ConnectionState& state, std::size_t chunkSize, bool& wantRead, bool& wantWrite);
@@ -407,6 +412,8 @@ class HttpServer {
                                     StatsInternal& stats);
 
   Socket _listenSocket;  // listening socket RAII
+  // Wakeup fd (eventfd) used to interrupt epoll_wait promptly when stop() is invoked from another thread.
+  EventFd _wakeupFd;
   bool _running{false};
   RequestHandler _handler;
   StreamingHandler _streamingHandler;

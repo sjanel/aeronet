@@ -193,6 +193,48 @@ TEST(HttpCompressionBuffered, NoAcceptEncodingHeaderStillCompressesDefault) {
   }
 }
 
+TEST(HttpCompressionBuffered, IdentityForbiddenNoAlternativesReturns406) {
+  CompressionConfig cfg;
+  cfg.minBytes = 1;  // ensure compression considered
+  cfg.preferredFormats.push_back(Encoding::gzip);
+  HttpServerConfig scfg{};
+  scfg.withCompression(cfg);
+  TestServer ts(std::move(scfg));
+  std::string payload(64, 'Q');
+  ts.server.setHandler([payload](const aeronet::HttpRequest&) {
+    aeronet::HttpResponse resp;
+    resp.customHeader("Content-Type", "text/plain");
+    resp.body(payload);
+    return resp;
+  });
+  // Client forbids identity and offers only unsupported encodings (br here is unsupported in current build).
+  auto resp = doGet(ts.port(), "/bad", {{"Accept-Encoding", "identity;q=0, br;q=0"}});
+  EXPECT_EQ(resp.statusCode, 406) << "Expected 406 when identity forbidden and no acceptable encoding";
+  EXPECT_EQ(resp.body, "No acceptable content-coding available");
+}
+
+TEST(HttpCompressionBuffered, IdentityForbiddenButGzipAvailableUsesGzip) {
+  CompressionConfig cfg;
+  cfg.minBytes = 1;
+  cfg.preferredFormats.push_back(Encoding::gzip);
+  HttpServerConfig scfg{};
+  scfg.withCompression(cfg);
+  TestServer ts(std::move(scfg));
+  std::string payload(128, 'Z');
+  ts.server.setHandler([payload](const aeronet::HttpRequest&) {
+    aeronet::HttpResponse resp;
+    resp.customHeader("Content-Type", "text/plain");
+    resp.body(payload);
+    return resp;
+  });
+  auto resp = doGet(ts.port(), "/ok", {{"Accept-Encoding", "identity;q=0, gzip"}});
+  EXPECT_EQ(resp.statusCode, 200);
+  auto it = resp.headers.find("Content-Encoding");
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, "gzip");
+  EXPECT_TRUE(HasGzipMagic(resp.body));
+}
+
 TEST(HttpCompressionBuffered, UnsupportedEncodingDoesNotApplyGzip) {
   CompressionConfig cfg;
   cfg.minBytes = 1;

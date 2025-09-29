@@ -53,7 +53,7 @@ class MultiHttpServer {
   // Behavior:
   //   - Does NOT start the servers; call start() explicitly after registering handlers.
   //   - Validates threadCount and throws invalid_argument if < 1.
-  //   - The object is NOT thread-safe; expect single-threaded orchestration.
+  //   - The object itself is NOT thread-safe; expect single-threaded orchestration.
   // Performance rationale:
   //   - Avoids locks by treating start()/stop()/handler registration as single-threaded control
   //     operations; the hot path remains inside individual HttpServer event loops.
@@ -64,6 +64,14 @@ class MultiHttpServer {
   // method.
   explicit MultiHttpServer(HttpServerConfig cfg);
 
+  // Move semantics & lifecycle constraints:
+  // ---------------------------------------
+  // MultiHttpServer may be moved ONLY while it has not been started yet (i.e. before start()).
+  // Once start() is invoked, each underlying HttpServer instance address is captured by its
+  // dedicated std::jthread via a raw pointer. Moving the enclosing container would relocate
+  // the vector storage and invalidate those pointers, leading to immediate undefined behavior.
+  // For safety we assert+log if a move (construction or assignment) is attempted on a running
+  // instance. This mirrors the HttpServer move policy.
   MultiHttpServer(const MultiHttpServer&) = delete;
   MultiHttpServer(MultiHttpServer&& other) noexcept;
   MultiHttpServer& operator=(const MultiHttpServer&) = delete;
@@ -140,12 +148,11 @@ class MultiHttpServer {
   [[nodiscard]] bool isRunning() const { return _running; }
 
   // port(): The resolved listening port shared by all underlying servers. If an ephemeral port
-  //   was requested (cfg.port==0) this becomes available shortly after start() (once the first
-  //   server binds). Safe to query post-start; pre-start it is 0 for ephemeral configuration.
-  [[nodiscard]] uint16_t port() const { return _resolvedPort; }
+  //   was requested (cfg.port==0) this becomes available directly after construction.
+  [[nodiscard]] uint16_t port() const { return _baseConfig.port; }
 
   // nbThreads(): Number of underlying HttpServer instances (and threads) configured.
-  [[nodiscard]] uint32_t nbThreads() const { return _threadCount; }
+  [[nodiscard]] uint32_t nbThreads() const { return _servers.size(); }
 
   // stats():
   //   Collects statistics from each underlying HttpServer and returns both per-instance and
@@ -164,14 +171,19 @@ class MultiHttpServer {
   };
 
   HttpServerConfig _baseConfig;
-  uint32_t _threadCount{};
   bool _running{false};
-  uint16_t _resolvedPort{};
 
   std::optional<RequestHandler> _globalHandler;
   vector<PathRegistration> _pathHandlersEmplace;  // store until start()
   ParserErrorCallback _parserErrCb;
 
+  // IMPORTANT LIFETIME NOTE:
+  // Each server thread captures a raw pointer to its corresponding HttpServer element stored in _servers.
+  // We must therefore ensure that the pointed-to HttpServer objects remain alive until after the jthreads join.
+  // std::jthread joins in its destructor, so we arrange destruction order such that:
+  //   1. Local 'threads' (moved from _threads) is destroyed FIRST (joins threads) while servers are still alive.
+  //   2. Local 'servers' (moved from _servers) is destroyed AFTER 'threads', releasing HttpServer objects safely.
+  // Destruction order is reverse of declaration order, so declare 'servers' BEFORE 'threads'.
   vector<HttpServer> _servers;    // created on start()
   vector<std::jthread> _threads;  // run server.run()
 };

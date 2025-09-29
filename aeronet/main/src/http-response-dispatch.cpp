@@ -42,9 +42,17 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
   if (!isHead && !resp.userProvidedContentEncoding()) {
     const CompressionConfig& compressionConfig = _config.compression;
     auto encHeader = req.findHeader(http::AcceptEncoding);
-    Encoding encoding = _encodingSelector.negotiateAcceptEncoding(encHeader);
+    auto [encoding, reject] = _encodingSelector.negotiateAcceptEncoding(encHeader);
+    // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
+    // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
+    if (reject) {
+      resp.statusCode(406)
+          .reason(http::ReasonNotAcceptable)
+          .body("No acceptable content-coding available")
+          .contentType(http::ContentTypeTextPlain);
+    }
     // Apply size threshold for non-streaming (buffered) responses: if body below minBytes skip compression.
-    if (encoding != Encoding::none && resp.body().size() < compressionConfig.minBytes) {
+    else if (encoding != Encoding::none && resp.body().size() < compressionConfig.minBytes) {
       encoding = Encoding::none;
     }
     // Approximate allowlist check (default text/plain assumption until header getter exists)

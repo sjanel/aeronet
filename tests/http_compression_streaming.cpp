@@ -53,6 +53,7 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
     return line;
   };
   (void)nextLine(cursor);  // status line consumed
+  // status code can still be asserted using headersRaw prefix; we keep parsed headers only.
   while (cursor < out.headersRaw.size()) {
     auto line = nextLine(cursor);
     if (line.empty()) {
@@ -196,6 +197,25 @@ TEST(HttpCompressionStreaming, QValuesInfluenceStreamingSelection) {
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "deflate");
+}
+
+TEST(HttpCompressionStreaming, IdentityForbiddenNoAlternativesReturns406) {
+  CompressionConfig cfg;
+  cfg.minBytes = 1;  // ensure compression considered
+  cfg.preferredFormats.push_back(Encoding::gzip);
+  HttpServerConfig scfg{};
+  scfg.withCompression(cfg);
+  TestServer ts(std::move(scfg));
+  std::string payload(64, 'Q');
+  ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
+    writer.statusCode(200);  // will be overridden to 406 before handler invoked if negotiation rejects
+    writer.contentType("text/plain");
+    writer.write(payload);
+    writer.end();
+  });
+  auto resp = simpleGet(ts.port(), "/sbad", {{"Accept-Encoding", "identity;q=0, br;q=0"}});
+  EXPECT_TRUE(resp.headersRaw.rfind("HTTP/1.1 406", 0) == 0) << resp.headersRaw;
+  EXPECT_EQ(resp.body, "No acceptable content-coding available");
 }
 
 #endif  // AERONET_ENABLE_ZLIB

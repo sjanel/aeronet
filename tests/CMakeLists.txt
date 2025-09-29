@@ -105,6 +105,7 @@ endif()
 # Auto thread-count constructor coverage
 # MultiHttpServer convenience constructors (auto, explicit, move, invalid)
 aeronet_http_test(multi_http_server_convenience_constructors multi_http_server_convenience_constructors.cpp)
+aeronet_http_test(multi_http_server_stress multi_http_server_stress.cpp)
 
 # Maintenance safeguard: warn if any *.cpp test file in this directory is not explicitly added above.
 # This helps avoid forgotten tests (e.g., newly created source not registered -> silently untested).
@@ -138,6 +139,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_url_decoding_additional.cpp
 	http_url_decoding.cpp
 	multi_http_server_convenience_constructors.cpp
+	multi_http_server_stress.cpp
 	multi_http_server_auto.cpp
 	http_trailing_slash.cpp
 	http_headers_custom.cpp

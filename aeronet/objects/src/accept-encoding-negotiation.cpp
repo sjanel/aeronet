@@ -121,14 +121,15 @@ EncodingSelector::EncodingSelector(const CompressionConfig &compressionConfig) {
   }
 }
 
-Encoding EncodingSelector::negotiateAcceptEncoding(std::string_view acceptEncoding) const {
+EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std::string_view acceptEncoding) const {
+  NegotiatedResult ret;
   // Fast path: empty or all whitespace -> identity (Encoding::none maps to identity header)
   if (acceptEncoding.empty()) {
-    return Encoding::none;
+    return ret;
   }
   acceptEncoding = trim(acceptEncoding);
   if (acceptEncoding.empty()) {
-    return Encoding::none;
+    return ret;
   }
 
   static constexpr auto kSupportedEncodings = makeSupported(std::make_index_sequence<kNbContentEncodings>{});
@@ -148,6 +149,8 @@ Encoding EncodingSelector::negotiateAcceptEncoding(std::string_view acceptEncodi
 
   SeenBmp seenMask = 0;  // bit i set => supported[i] already stored
 
+  bool identityExplicit = false;
+  double identityQ = 0.0;
   for (auto part : acceptEncoding | std::views::split(',')) {
     std::string_view raw{&*part.begin(), static_cast<std::size_t>(std::ranges::distance(part))};
     raw = trim(raw);
@@ -171,6 +174,10 @@ Encoding EncodingSelector::negotiateAcceptEncoding(std::string_view acceptEncodi
         seenMask |= static_cast<uint8_t>(1U << i);
         break;
       }
+    }
+    if (CaseInsensitiveEqual(name, "identity")) {
+      identityExplicit = true;
+      identityQ = quality;  // capture last; earliest identity suffices but we update for clarity
     }
   }
 
@@ -217,8 +224,16 @@ Encoding EncodingSelector::negotiateAcceptEncoding(std::string_view acceptEncodi
     }
   }
 
-  // If nothing acceptable found (bestQ still < 0), identity stays.
-  return chosen;
+  if (bestQ < 0.0) {
+    // No acceptable compression encodings selected.
+    ret.encoding = Encoding::none;
+    if (identityExplicit && identityQ <= 0.0) {
+      // Client explicitly forbids identity and offered no acceptable alternative.
+      ret.reject = true;
+    }
+  }
+  ret.encoding = chosen;
+  return ret;
 }
 
 }  // namespace aeronet

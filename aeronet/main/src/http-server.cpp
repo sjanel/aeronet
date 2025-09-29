@@ -20,7 +20,7 @@
 #include <type_traits>
 #include <utility>
 
-#include "aeronet/compression-config.hpp"
+#include "aeronet/compression-config.hpp"  // IWYU pragma: keep (indirectly used via encoding selector)
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
@@ -87,23 +87,21 @@ namespace aeronet {
 //   - In a nominal environment using an ephemeral port (cfg.port == 0), the probability of an exception is ~0 unless
 //     the process hits fd limits or severe memory pressure. Fixed ports may legitimately throw due to EADDRINUSE.
 //   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
-HttpServer::HttpServer(HttpServerConfig cfg) : _config(std::move(cfg)), _encodingSelector(_config.compression) {
-  _listenSocket = Socket(Socket::Type::STREAM);
+HttpServer::HttpServer(HttpServerConfig cfg)
+    : _listenSocket(Socket::Type::STREAM), _config(std::move(cfg)), _encodingSelector(_config.compression) {
   int listenFdLocal = _listenSocket.fd();
   // Initialize TLS context if requested (OpenSSL build).
-#ifdef AERONET_ENABLE_OPENSSL
   if (_config.tls) {
+#ifdef AERONET_ENABLE_OPENSSL
     // Reset external metrics container (fresh server instance)
     _tlsMetricsExternal.alpnStrictMismatches = 0;
     // Allocate TlsContext on the heap so its address remains stable even if HttpServer is moved.
     // (See detailed rationale in header next to _tlsCtxHolder.)
     _tlsCtxHolder = std::make_unique<TlsContext>(*_config.tls, &_tlsMetricsExternal);
-  }
 #else
-  if (_config.tls.has_value()) {
     throw std::runtime_error("aeronet built without OpenSSL support but TLS configuration provided");
-  }
 #endif
+  }
   static constexpr int enable = 1;
   if (::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
     throw std::runtime_error("setsockopt(SO_REUSEADDR) failed");
@@ -136,7 +134,11 @@ HttpServer::HttpServer(HttpServerConfig cfg) : _config(std::move(cfg)), _encodin
   if (!_loop.add(listenFdLocal, EPOLLIN)) {
     throw std::runtime_error("EventLoop add listen socket failed");
   }
-  // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
+  // Register wakeup fd
+  if (!_loop.add(_wakeupFd, EPOLLIN)) {
+    throw std::runtime_error("EventLoop add wakeup fd failed");
+  }
+// Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
 #ifdef AERONET_ENABLE_ZLIB
   _encoders[static_cast<std::size_t>(Encoding::gzip)] =
       std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::gzip, _config.compression);
@@ -155,6 +157,7 @@ HttpServer::~HttpServer() { stop(); }
 HttpServer::HttpServer(HttpServer&& other) noexcept
     : _stats(std::exchange(other._stats, {})),
       _listenSocket(std::move(other._listenSocket)),
+      _wakeupFd(std::move(other._wakeupFd)),
       _running(std::exchange(other._running, false)),
       _handler(std::move(other._handler)),
       _streamingHandler(std::move(other._streamingHandler)),
@@ -192,6 +195,7 @@ HttpServer& HttpServer::operator=(HttpServer&& other) noexcept {
       other._running = false;
     }
     _stats = std::exchange(other._stats, {});
+    _wakeupFd = std::move(other._wakeupFd);
     _listenSocket = std::move(other._listenSocket);
     _running = std::exchange(other._running, false);
     _handler = std::move(other._handler);
@@ -276,8 +280,13 @@ void HttpServer::run() {
 }
 
 void HttpServer::stop() {
-  log::info("Stopping server");
+  if (!_running) {
+    return;
+  }
+  log::debug("Stopping server");
   _running = false;
+  // Trigger wakeup to break any blocking epoll_wait quickly.
+  _wakeupFd.send();
   // Attempt close only if descriptor still open.
   if (_listenSocket.fd() != -1) {
     _listenSocket.close();
@@ -613,15 +622,24 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
   return closeCnx;
 }
 
-bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, const HttpRequest& req, int fd,
+bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, HttpRequest& req, int fd,
                                       ConnectionState& state, std::size_t consumedBytes,
                                       std::chrono::steady_clock::time_point reqStart) {
   bool wantClose = req.wantClose();
-  Encoding compressionFormat = Encoding::none;
   bool isHead = req.method == http::HEAD;
+  Encoding compressionFormat = Encoding::none;
   if (!isHead) {
     auto encHeader = req.findHeader(http::AcceptEncoding);
-    compressionFormat = _encodingSelector.negotiateAcceptEncoding(encHeader);
+    auto negotiated = _encodingSelector.negotiateAcceptEncoding(encHeader);
+    if (negotiated.reject) {
+      // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
+      HttpResponse resp(406, http::ReasonNotAcceptable);
+      resp.body("No acceptable content-coding available").contentType(http::ContentTypeTextPlain);
+      bool closeConn = false;  // will be set inside finalizeAndSendResponse if keep-alive not allowed
+      finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConn);
+      return closeConn;
+    }
+    compressionFormat = negotiated.encoding;
   }
   HttpResponseWriter writer(*this, fd, isHead, wantClose, compressionFormat);
   try {
@@ -646,7 +664,7 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
     RequestMetrics metrics;
     metrics.method = req.method;
     metrics.target = req.target;
-    metrics.status = 200;  // best effort
+    metrics.status = 200;  // best effort (streaming handler controls status directly)
     metrics.bytesIn = req.body.size();
     metrics.reusedConnection = state.requestsServed > 1;
     metrics.duration = std::chrono::steady_clock::now() - reqStart;
@@ -665,6 +683,9 @@ void HttpServer::eventLoop(Duration timeout) {
   int ready = _loop.poll(timeout, [&](int fd, uint32_t ev) {
     if (fd == _listenSocket.fd()) {
       acceptNewConnections();
+    } else if (fd == _wakeupFd) {
+      // Drain wakeup counter.
+      _wakeupFd.read();
     } else {
       if (ev & EPOLLOUT) {
         handleWritableClient(fd);
@@ -682,6 +703,7 @@ void HttpServer::eventLoop(Duration timeout) {
     // Mark server as no longer running so outer loops terminate gracefully.
     _running = false;
   }
+  // If stop() requested, loop condition will exit promptly after this iteration; we already wrote to wakeup fd.
 }
 
 ServerStats HttpServer::stats() const {
