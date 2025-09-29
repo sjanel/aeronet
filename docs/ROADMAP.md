@@ -140,7 +140,7 @@ Phase 1 implemented:
 3. Implementation: Unified `ZlibEncoder` (gzip/deflate windowBits variant) with streaming context & one-shot paths; optional via build flag.
 4. Streaming Integration: Delayed header emission until activation decision ensures accurate `Content-Encoding`.
 5. Buffering Strategy: Pre-threshold staging buffer limited by `minBytes`; encoder output chunks forwarded through existing chunked writer.
-6. Opt-out: Per-response disable via `disableAutoCompression()` for both fixed and streaming APIs.
+6. Opt-out: Per-response suppression by providing a `Content-Encoding` header (e.g. `identity`). Automatic compression is skipped when present.
 7. Vary header: Automatic `Vary: Accept-Encoding` insertion (config flag) when compression applied.
 8. Q-value precedence tests (buffered & streaming) validating negotiation correctness.
 

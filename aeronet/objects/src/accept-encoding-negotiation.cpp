@@ -88,6 +88,14 @@ consteval auto makeSupported(std::index_sequence<I...> /*unused*/) {
 
 }  // namespace
 
+EncodingSelector::EncodingSelector() noexcept {
+  std::ranges::fill(_serverPrefIndex, -1);
+  for (int8_t i = 0; i < kNbContentEncodings; ++i) {
+    _serverPrefIndex[i] = i;
+    _preferenceOrdered.push_back(static_cast<Encoding>(i));
+  }
+}
+
 EncodingSelector::EncodingSelector(const CompressionConfig &compressionConfig) {
   std::ranges::fill(_serverPrefIndex, -1);
   if (!compressionConfig.preferredFormats.empty()) {

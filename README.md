@@ -160,7 +160,7 @@ Implemented capabilities:
 - Server preference: Order in `CompressionConfig::preferredFormats` only breaks ties among encodings with equal effective q-values; it does NOT restrict the server from selecting another supported encoding with a strictly higher q that is not listed. (If you leave the vector empty, the built‑in default order `gzip, deflate` is used for tie-breaks.)
 - Threshold: `minBytes` delays compression until uncompressed size reaches threshold (streaming buffers until then; fixed responses decide immediately).
 - Streaming integration: Headers are withheld until compression activation decision so `Content-Encoding` is always accurate once emitted.
-- Per-response opt-out: `HttpResponse::disableAutoCompression()` or `HttpResponseWriter::disableAutoCompression()` skips compression for that response only.
+- Per-response opt-out: supply your own `Content-Encoding` header (e.g. `identity` to disable, or a custom value you fully manage). If present, Aeronet never applies automatic compression and does not modify your header/body.
 - Vary header: Adds `Vary: Accept-Encoding` when compression applied (configurable via `addVaryHeader`).
 - Identity safety: If threshold not met, buffered bytes are flushed uncompressed and no misleading `Content-Encoding` is added.
 - Q-value precedence: Correctly honors client preference (e.g. `gzip;q=0.1, deflate;q=0.9` selects deflate even if server lists gzip first).
@@ -256,8 +256,11 @@ Key properties:
 - **Single allocation growth** – headers and body share one buffer (no per‑header node allocations).
 - **Append fast path** – `appendHeader()` does not scan; it inserts `CRLF + key + ": " + value` before the trailing
   DoubleCRLF, shifting only the (DoubleCRLF + body) tail (O(bodyLen)). Duplicate headers are allowed intentionally.
-- **Uniqueness path** – `header()` performs a linear scan to find an existing key at CRLF‑delimited line starts; if
-  found it replaces the value in place (one `memmove` for size delta). If not found it falls back to `appendHeader()`.
+- **Uniqueness path** – `header()` performs a linear scan to find an existing key at CRLF‑delimited line starts **using
+  case‑insensitive comparison of the header name (RFC 7230 token rules)**; if found it replaces the value in place (one
+  `memmove` for size delta). If not found it falls back to `appendHeader()`. The original casing of the first
+  occurrence is preserved (subsequent replacements do not alter its characters) so you can freely call `header()` with
+  any casing (`"Content-Type"`, `"content-type"`, `"CONTENT-TYPE"`).
 - **Reason phrase mutation** – `reason()` can grow, shrink, add or remove the reason phrase. It performs at most one
   tail shift and updates internal offsets for headers/body.
 - **Body mutation safety** – `body()` overwrites in place and grows capacity exponentially. If the source string_view
@@ -301,7 +304,8 @@ Testing highlights:
 Usage guidelines:
 
 - Use `appendHeader()` when duplicates are acceptable (cheapest path).
-- Use `header()` only when you must guarantee uniqueness.
+- Use `header()` only when you must guarantee uniqueness. Matching is case‑insensitive; prefer a canonical style (e.g.
+  `Content-Type`) for readability, but behavior is the same regardless of input casing.
 - Chain on temporaries for concise construction; the rvalue-qualified overloads keep the object movable.
 - Finalize exactly once right before sending.
 

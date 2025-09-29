@@ -42,7 +42,7 @@ TEST(StreamingKeepAlive, TwoSequentialRequests) {
   cfg.enableKeepAlive = true;
   HttpServer server(cfg);
   server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.statusCode(200, "OK");
+    writer.statusCode(200);
     writer.write("hello");
     writer.write(",world");
     writer.end();
@@ -77,7 +77,7 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
   cfg.enableKeepAlive = true;
   HttpServer server(cfg);
   server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.statusCode(200, "OK");
+    writer.statusCode(200);
     writer.write("ignored-body");
     writer.end();
   });
