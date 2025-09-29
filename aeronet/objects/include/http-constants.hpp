@@ -38,8 +38,16 @@ inline constexpr std::string_view Host = "Host";
 inline constexpr std::string_view Date = "Date";  // only used for writing (server side)
 inline constexpr std::string_view ContentType = "Content-Type";
 inline constexpr std::string_view Location = "Location";
+inline constexpr std::string_view ContentEncoding = "Content-Encoding";
+inline constexpr std::string_view Vary = "Vary";
+inline constexpr std::string_view AcceptEncoding = "Accept-Encoding";
 
 inline constexpr std::string_view HeaderSep = ": ";
+
+// Compression
+inline constexpr std::string_view identity = "identity";
+inline constexpr std::string_view gzip = "gzip";
+inline constexpr std::string_view deflate = "deflate";
 
 // Common Header Values (lowercase tokens where case-insensitive comparison used)
 inline constexpr std::string_view keepalive = "keep-alive";
@@ -51,6 +59,7 @@ inline constexpr std::string_view h100_continue = "100-continue";  // value of E
 inline constexpr std::string_view HTTP11_100_CONTINUE = "HTTP/1.1 100 Continue\r\n\r\n";
 
 // Reason Phrases (only those we currently emit explicitly)
+inline constexpr std::string_view ReasonOK = "OK";                                               // 200
 inline constexpr std::string_view MovedPermanently = "Moved Permanently";                        // 301
 inline constexpr std::string_view ReasonBadRequest = "Bad Request";                              // 400
 inline constexpr std::string_view NotFound = "Not Found";                                        // 404
@@ -72,6 +81,8 @@ inline constexpr std::string_view DoubleCRLF = "\r\n\r\n";
 // decide whether to supply a custom phrase.
 constexpr std::string_view reasonPhraseFor(http::StatusCode status) noexcept {
   switch (status) {
+    case 200:
+      return ReasonOK;
     case 301:
       return MovedPermanently;
     case 400:

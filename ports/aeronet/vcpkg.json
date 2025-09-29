@@ -1,6 +1,6 @@
 {
   "name": "aeronet",
-  "version-string": "0.1.0",
+  "version-string": "0.3.0",
   "description": "C++ HTTP/1.1 server library (Linux, TLS optional)",
   "homepage": "https://github.com/sjanel/aeronet",
   "license": "MIT",
@@ -18,6 +18,10 @@
     "spdlog": {
       "description": "Enable spdlog logging integration",
       "dependencies": ["spdlog"]
+    },
+    "zlib": {
+      "description": "Enable zlib compression support",
+      "dependencies": ["zlib"]
     }
   }
 }

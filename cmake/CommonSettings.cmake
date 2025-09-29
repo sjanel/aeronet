@@ -46,6 +46,17 @@ function(set_project_properties name)
     # Only the dedicated aeronet_tls module should link against OpenSSL to contain dependency surface.
     target_compile_definitions(${name} PUBLIC AERONET_ENABLE_OPENSSL)
   endif()
+  if(AERONET_ENABLE_ZLIB AND ZLIB_FOUND)
+    target_compile_definitions(${name} PUBLIC AERONET_ENABLE_ZLIB)
+    # We do not link zlib to every target now; a future dedicated compression TU / adapter will
+    # link privately to ZLIB::ZLIB (or zlib) where needed. Expose includes if the imported target provides them.
+    if(TARGET ZLIB::ZLIB)
+      get_target_property(_zlib_includes ZLIB::ZLIB INTERFACE_INCLUDE_DIRECTORIES)
+      if(_zlib_includes)
+        target_include_directories(${name} PRIVATE ${_zlib_includes})
+      endif()
+    endif()
+  endif()
   target_compile_definitions(${name} PUBLIC AERONET_PROJECT_VERSION="${AERONET_PROJECT_VERSION}")
 endfunction()
 

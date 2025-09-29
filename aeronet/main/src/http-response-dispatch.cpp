@@ -1,20 +1,21 @@
-#include <sys/uio.h>  // for ::iovec NOLINT(misc-include-cleaner)
-
 #include <algorithm>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <numeric>
-#include <span>
 #include <string_view>
 #include <utility>
 
+#include "accept-encoding-negotiation.hpp"
+#include "aeronet/compression-config.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server.hpp"
+#include "encoder.hpp"
 #include "http-constants.hpp"
 #include "log.hpp"
+#include "raw-chars.hpp"
 #include "string-equal-ignore-case.hpp"
 
 namespace aeronet {
@@ -37,8 +38,42 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
     }
   }
 
-  auto data = resp.finalizeAndGetFullTextResponse(req.version, std::string_view(_cachedDate), keepAlive,
-                                                  req.method == http::HEAD);
+  bool isHead = (req.method == http::HEAD);
+  if (!isHead && !resp.autoCompressionDisabled()) {
+    const CompressionConfig& compressionConfig = _config.compression;
+    auto encHeader = req.findHeader(http::AcceptEncoding);
+    Encoding encoding = _encodingSelector.negotiateAcceptEncoding(encHeader);
+    // Apply size threshold for non-streaming (buffered) responses: if body below minBytes skip compression.
+    if (encoding != Encoding::none && resp.body().size() < compressionConfig.minBytes) {
+      encoding = Encoding::none;
+    }
+    // Approximate allowlist check (default text/plain assumption until header getter exists)
+    if (!compressionConfig.contentTypeAllowlist.empty()) {
+      std::string_view assumed = "text/plain";
+      bool ok = false;
+      for (const auto& prefix : compressionConfig.contentTypeAllowlist) {
+        if (assumed.starts_with(prefix)) {
+          ok = true;
+          break;
+        }
+      }
+      if (!ok) {
+        encoding = Encoding::none;
+      }
+    }
+    if (encoding != Encoding::none) {
+      auto& encoder = _encoders[static_cast<size_t>(encoding)];
+      if (encoder) {
+        auto out = encoder->encodeFull(resp.body());
+        resp.header(http::ContentEncoding, GetEncodingStr(encoding));
+        if (compressionConfig.addVaryHeader) {
+          resp.header(http::Vary, http::AcceptEncoding);
+        }
+        resp.body(out);
+      }
+    }
+  }
+  auto data = resp.finalizeAndGetFullTextResponse(req.version, std::string_view(_cachedDate), keepAlive, isHead);
 
   queueData(fd, state, data);
 

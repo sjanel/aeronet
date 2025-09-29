@@ -23,13 +23,15 @@ class AeronetConan(ConanFile):
         "shared": [True, False],
         "fPIC": [True, False],
         "with_openssl": [True, False],
-        "with_spdlog": [True, False]
+        "with_spdlog": [True, False],
+        "with_zlib": [True, False],
     }
     default_options = {
         "shared": False,
         "fPIC": True,
         "with_openssl": False,
-        "with_spdlog": False
+        "with_spdlog": False,
+        "with_zlib": False,
     }
     exports_sources = "CMakeLists.txt", "cmake/*", "aeronet/*", "examples/*", "LICENSE", "README.md", "VERSION"
     package_type = "library"
@@ -42,6 +44,7 @@ class AeronetConan(ConanFile):
         tc = CMakeToolchain(self)
         tc.variables["AERONET_ENABLE_OPENSSL"] = "ON" if self.options.with_openssl else "OFF"
         tc.variables["AERONET_ENABLE_SPDLOG"] = "ON" if self.options.with_spdlog else "OFF"
+        tc.variables["AERONET_ENABLE_ZLIB"] = "ON" if self.options.with_zlib else "OFF"
         # Force OFF for tests/examples in package context
         tc.variables["AERONET_BUILD_TESTS"] = "OFF"
         tc.variables["AERONET_BUILD_EXAMPLES"] = "OFF"
@@ -65,6 +68,8 @@ class AeronetConan(ConanFile):
             self.requires("openssl/3.3.1")
         if self.options.with_spdlog:
             self.requires("spdlog/1.15.3")
+        if self.options.with_zlib:
+            self.requires("zlib/1.3.1")
 
     def package(self):
         cm = CMake(self)
@@ -85,3 +90,5 @@ class AeronetConan(ConanFile):
             self.cpp_info.requires.append("openssl::openssl")
         if self.options.with_spdlog:
             self.cpp_info.requires.append("spdlog::spdlog")
+        if self.options.with_zlib:
+            self.cpp_info.requires.append("zlib::zlib")

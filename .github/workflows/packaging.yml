@@ -59,6 +59,15 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y build-essential ninja-build cmake pkg-config curl zip unzip tar git libssl-dev
 
+      - name: Verify vcpkg port version matches VERSION
+        run: |
+          VER=$(tr -d ' \n\r' < VERSION)
+          PORT_VER=$(jq -r '.["version-string"] // .version // .["version-semver"]' ports/aeronet/vcpkg.json)
+          if [ "$VER" != "$PORT_VER" ]; then
+            echo "::error ::Version mismatch: VERSION file=$VER vcpkg.json=$PORT_VER"
+            exit 1
+          fi
+
       - name: Bootstrap vcpkg
         run: |
           git clone https://github.com/microsoft/vcpkg.git

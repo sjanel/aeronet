@@ -20,6 +20,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "aeronet/compression-config.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
@@ -28,6 +29,9 @@
 #include "event-loop.hpp"
 #include "exception.hpp"
 #include "flat-hash-map.hpp"
+#ifdef AERONET_ENABLE_ZLIB
+#include "zlib-encoder.hpp"
+#endif
 #include "http-constants.hpp"
 #include "http-error-build.hpp"
 #include "http-method-build.hpp"
@@ -83,7 +87,7 @@ namespace aeronet {
 //   - In a nominal environment using an ephemeral port (cfg.port == 0), the probability of an exception is ~0 unless
 //     the process hits fd limits or severe memory pressure. Fixed ports may legitimately throw due to EADDRINUSE.
 //   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
-HttpServer::HttpServer(HttpServerConfig cfg) : _config(std::move(cfg)) {
+HttpServer::HttpServer(HttpServerConfig cfg) : _config(std::move(cfg)), _encodingSelector(_config.compression) {
   _listenSocket = Socket(Socket::Type::STREAM);
   int listenFdLocal = _listenSocket.fd();
   // Initialize TLS context if requested (OpenSSL build).
@@ -132,10 +136,21 @@ HttpServer::HttpServer(HttpServerConfig cfg) : _config(std::move(cfg)) {
   if (!_loop.add(listenFdLocal, EPOLLIN)) {
     throw std::runtime_error("EventLoop add listen socket failed");
   }
+  // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
+#ifdef AERONET_ENABLE_ZLIB
+  _encoders[static_cast<std::size_t>(Encoding::gzip)] =
+      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::gzip, _config.compression);
+  _encoders[static_cast<std::size_t>(Encoding::deflate)] =
+      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::deflate, _config.compression);
+#endif
+  // Identity encoder always available for Format::none index 0 (optional, can remain null to signal identity).
   log::info("Server created on port :{}", _config.port);
 }
 
 HttpServer::~HttpServer() { stop(); }
+
+// NOTE: Move ctor / assignment definitions provided elsewhere earlier (not duplicated). Encoder array moved with
+// object.
 
 HttpServer::HttpServer(HttpServer&& other) noexcept
     : _stats(std::exchange(other._stats, {})),
@@ -147,6 +162,8 @@ HttpServer::HttpServer(HttpServer&& other) noexcept
       _loop(std::move(other._loop)),
       _config(std::move(other._config)),
       _connStates(std::move(other._connStates)),
+      _encoders(std::move(other._encoders)),
+      _encodingSelector(std::move(other._encodingSelector)),
       _cachedDate(std::exchange(other._cachedDate, {})),
       _cachedDateEpoch(std::exchange(other._cachedDateEpoch, TimePoint{})),
       _parserErrCb(std::move(other._parserErrCb)),
@@ -183,6 +200,8 @@ HttpServer& HttpServer::operator=(HttpServer&& other) noexcept {
     _loop = std::move(other._loop);
     _config = std::move(other._config);
     _connStates = std::move(other._connStates);
+    _encoders = std::move(other._encoders);
+    _encodingSelector = std::move(other._encodingSelector);
     _cachedDate = std::exchange(other._cachedDate, {});
     _cachedDateEpoch = std::exchange(other._cachedDateEpoch, TimePoint{});
     _parserErrCb = std::move(other._parserErrCb);
@@ -337,7 +356,7 @@ ssize_t HttpServer::transportWrite(int fd, ConnectionState& state, std::string_v
   return ::send(fd, data.data(), data.size(), MSG_NOSIGNAL);
 }
 
-bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState& state) {
+bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
   bool closeCnx = false;
   while (true) {
     std::size_t headerEnd = 0;
@@ -394,7 +413,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
     // Provide implicit HEAD->GET fallback (RFC7231: HEAD is identical to GET without body) when
     // a HEAD handler is not explicitly registered but a GET handler exists for the same path.
     auto effectiveMethodEnum = methodEnum;
-    bool isHead = (req.method == http::HEAD);
+    bool isHead = req.method == http::HEAD;
     bool handledStreaming = false;
     bool pathFound = false;
     if (!_pathHandlers.empty()) {
@@ -467,40 +486,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
           }
         }
         if (entry.streamingHandlers[idx]) {
-          bool isHeadReq = (req.method == http::HEAD);
-          bool clientAskedClose = req.wantClose();
-          HttpResponseWriter writer(*this, fd, isHeadReq, clientAskedClose);
-          try {
-            entry.streamingHandlers[idx](req, writer);
-          } catch (const std::exception& ex) {
-            log::error("Exception in path streaming handler: {}", ex.what());
-          } catch (...) {
-            log::error("Unknown exception in path streaming handler.");
-          }
-          if (!writer.finished()) {
-            writer.end();
-          }
-          if (clientAskedClose) {
-            state.shouldClose = true;  // honor client directive for streaming path
-          }
-          bool allowKeepAlive = _config.enableKeepAlive && req.version == http::HTTP11 && !clientAskedClose &&
-                                state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.shouldClose;
-          ++state.requestsServed;
-          state.buffer.erase_front(consumedBytes);
-          if (!allowKeepAlive) {
-            state.shouldClose = true;
-            closeCnx = true;
-          }
-          if (_metricsCb) {
-            RequestMetrics metrics;
-            metrics.method = req.method;
-            metrics.target = req.target;
-            metrics.status = 200;  // best effort
-            metrics.bytesIn = req.body.size();
-            metrics.reusedConnection = state.requestsServed > 1;
-            metrics.duration = std::chrono::steady_clock::now() - reqStart;
-            _metricsCb(metrics);
-          }
+          closeCnx = callStreamingHandler(entry.streamingHandlers[idx], req, fd, state, consumedBytes, reqStart);
           handledStreaming = true;
         } else if (entry.normalHandlers[idx]) {
           HttpResponse resp(405);
@@ -555,40 +541,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
             }
           }
           if (entry.streamingHandlers[idx]) {
-            bool isHeadReq = (req.method == http::HEAD);
-            bool wantClose = req.wantClose();
-            HttpResponseWriter writer(*this, fd, isHeadReq, wantClose);
-            try {
-              entry.streamingHandlers[idx](req, writer);
-            } catch (const std::exception& ex) {
-              log::error("Exception in path streaming handler: {}", ex.what());
-            } catch (...) {
-              log::error("Unknown exception in path streaming handler.");
-            }
-            if (!writer.finished()) {
-              writer.end();
-            }
-            if (wantClose) {
-              state.shouldClose = true;
-            }
-            bool allowKeepAlive = _config.enableKeepAlive && req.version == http::HTTP11 && !wantClose &&
-                                  state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.shouldClose;
-            ++state.requestsServed;
-            state.buffer.erase_front(consumedBytes);
-            if (!allowKeepAlive) {
-              state.shouldClose = true;
-              closeCnx = true;
-            }
-            if (_metricsCb) {
-              RequestMetrics metrics;
-              metrics.method = req.method;
-              metrics.target = req.target;
-              metrics.status = 200;  // best effort
-              metrics.bytesIn = req.body.size();
-              metrics.reusedConnection = state.requestsServed > 1;
-              metrics.duration = std::chrono::steady_clock::now() - reqStart;
-              _metricsCb(metrics);
-            }
+            closeCnx = callStreamingHandler(entry.streamingHandlers[idx], req, fd, state, consumedBytes, reqStart);
             handledStreaming = true;
           } else if (entry.normalHandlers[idx]) {
             HttpResponse resp(405);
@@ -630,40 +583,7 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
     }
     if (!pathFound) {
       if (_streamingHandler) {
-        bool isHead = (req.method == http::HEAD);
-        bool wantClose = req.wantClose();
-        HttpResponseWriter writer(*this, fd, isHead, wantClose);
-        try {
-          _streamingHandler(req, writer);
-        } catch (const std::exception& ex) {
-          log::error("Exception in global streaming handler: {}", ex.what());
-        } catch (...) {
-          log::error("Unknown exception in global streaming handler.");
-        }
-        if (!writer.finished()) {
-          writer.end();
-        }
-        if (wantClose) {
-          state.shouldClose = true;
-        }
-        bool allowKeepAlive = _config.enableKeepAlive && req.version == http::HTTP11 && !wantClose &&
-                              state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.shouldClose;
-        ++state.requestsServed;
-        state.buffer.erase_front(consumedBytes);
-        if (!allowKeepAlive) {
-          state.shouldClose = true;
-          closeCnx = true;
-        }
-        if (_metricsCb) {
-          RequestMetrics metrics;
-          metrics.method = req.method;
-          metrics.target = req.target;
-          metrics.status = 200;
-          metrics.bytesIn = req.body.size();
-          metrics.reusedConnection = state.requestsServed > 1;
-          metrics.duration = std::chrono::steady_clock::now() - reqStart;
-          _metricsCb(metrics);
-        }
+        closeCnx = callStreamingHandler(_streamingHandler, req, fd, state, consumedBytes, reqStart);
         if (closeCnx) {
           break;
         }
@@ -691,6 +611,52 @@ bool HttpServer::processRequestsOnConnection(int fd, HttpServer::ConnectionState
     }
   }
   return closeCnx;
+}
+
+bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, const HttpRequest& req, int fd,
+                                      ConnectionState& state, std::size_t consumedBytes,
+                                      std::chrono::steady_clock::time_point reqStart) {
+  bool wantClose = req.wantClose();
+  Encoding compressionFormat = Encoding::none;
+  bool isHead = req.method == http::HEAD;
+  if (!isHead) {
+    auto encHeader = req.findHeader(http::AcceptEncoding);
+    compressionFormat = _encodingSelector.negotiateAcceptEncoding(encHeader);
+  }
+  HttpResponseWriter writer(*this, fd, isHead, wantClose, compressionFormat);
+  try {
+    streamingHandler(req, writer);
+  } catch (const std::exception& ex) {
+    log::error("Exception in streaming handler: {}", ex.what());
+  } catch (...) {
+    log::error("Unknown exception in streaming handler");
+  }
+  if (!writer.finished()) {
+    writer.end();
+  }
+  if (wantClose) {
+    state.shouldClose = true;  // honor client directive for streaming path
+  }
+  bool allowKeepAlive = _config.enableKeepAlive && req.version == http::HTTP11 && !wantClose &&
+                        state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.shouldClose;
+  ++state.requestsServed;
+  state.buffer.erase_front(consumedBytes);
+
+  if (_metricsCb) {
+    RequestMetrics metrics;
+    metrics.method = req.method;
+    metrics.target = req.target;
+    metrics.status = 200;  // best effort
+    metrics.bytesIn = req.body.size();
+    metrics.reusedConnection = state.requestsServed > 1;
+    metrics.duration = std::chrono::steady_clock::now() - reqStart;
+    _metricsCb(metrics);
+  }
+  if (!allowKeepAlive) {
+    state.shouldClose = true;
+    return true;
+  }
+  return false;
 }
 
 void HttpServer::eventLoop(Duration timeout) {

@@ -26,6 +26,7 @@ HTTP/1.1 server library for Linux only – work in progress.
 | 404 / 405 handling | Automatic 404 (unknown path) & 405 (known path, method not allowed) |
 | Graceful shutdown | `runUntil()` predicate loop (poll interval via `HttpServerConfig::withPollInterval()`) |
 | Backpressure buffering | Unified buffering for fixed + streaming responses |
+| Response compression (gzip & deflate) | Optional (AERONET_ENABLE_ZLIB). Accept-Encoding negotiation with q-values, server preference ordering, threshold-based activation, streaming + buffered, per-response opt-out, Vary header injection |
 
 ## Developer / Operational Features
 
@@ -126,7 +127,7 @@ Response generation
 - [x] HEAD method (suppressed body, correct Content-Length)
 - [x] Outgoing chunked / streaming responses (basic API: status/headers + incremental write + end, keep-alive capable)
 - [x] Mixed-mode dispatch (simultaneous registration of streaming and fixed handlers with precedence)
-- [ ] Compression (gzip / br)
+- [x] Compression (gzip & deflate) (phase 1: zlib) – streaming + buffered with threshold & q-values
 
 Status & error handling
 
@@ -149,6 +150,58 @@ Headers & protocol niceties
 - [x] Percent-decoding of request target path (UTF-8 allowed, '+' not treated as space, invalid % -> 400)
 - [ ] Server header (intentionally omitted to keep minimal)
 - [ ] Access-Control-* (CORS) helpers
+
+### Compression (Phase 1 — gzip & deflate via zlib)
+
+Implemented capabilities:
+
+- Formats: gzip & deflate (raw deflate wrapped by zlib) behind `AERONET_ENABLE_ZLIB` build flag.
+- Negotiation: Parses `Accept-Encoding` with q-values; chooses format with highest q (server preference breaks ties). Falls back to identity if none acceptable.
+- Server preference: Order in `CompressionConfig::preferredFormats` only breaks ties among encodings with equal effective q-values; it does NOT restrict the server from selecting another supported encoding with a strictly higher q that is not listed. (If you leave the vector empty, the built‑in default order `gzip, deflate` is used for tie-breaks.)
+- Threshold: `minBytes` delays compression until uncompressed size reaches threshold (streaming buffers until then; fixed responses decide immediately).
+- Streaming integration: Headers are withheld until compression activation decision so `Content-Encoding` is always accurate once emitted.
+- Per-response opt-out: `HttpResponse::disableAutoCompression()` or `HttpResponseWriter::disableAutoCompression()` skips compression for that response only.
+- Vary header: Adds `Vary: Accept-Encoding` when compression applied (configurable via `addVaryHeader`).
+- Identity safety: If threshold not met, buffered bytes are flushed uncompressed and no misleading `Content-Encoding` is added.
+- Q-value precedence: Correctly honors client preference (e.g. `gzip;q=0.1, deflate;q=0.9` selects deflate even if server lists gzip first).
+
+Planned / future:
+
+- Additional formats (brotli, zstd) behind separate feature flags.
+- Content-Type allowlist enforcement (framework in config; default list to be finalized).
+- Compression ratio metrics in `RequestMetrics`.
+- Adaptive buffer sizing & memory pooling for encoder contexts.
+
+Minimal usage example:
+
+```cpp
+CompressionConfig c;
+c.minBytes = 64;
+c.preferredFormats.push_back(Encoding::gzip);
+c.preferredFormats.push_back(Encoding::deflate);
+HttpServerConfig cfg;
+cfg.withCompression(c);
+HttpServer server(cfg);
+server.setHandler([](const HttpRequest&) {
+  HttpResponse r{200, "OK"};
+  r.contentType = "text/plain";
+  r.body = std::string(400, 'A'); // large enough to trigger compression (minBytes=64)
+  return r;
+});
+```
+
+For streaming:
+
+```cpp
+server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
+  w.statusCode(200, "OK");
+  w.contentType("text/plain");
+  for (int i=0;i<10;++i) {
+    w.write(std::string(50,'x')); // accumulates until threshold then switches to compressed chunks
+  }
+  w.end();
+});
+```
 
 ### Reserved Headers
 
@@ -287,7 +340,7 @@ Misc
 
 - [x] Move semantics for HttpServer
 - [x] MultiHttpServer convenience wrapper
-- [ ] Compression (gzip / br) (planned)
+- [x] Compression (gzip & deflate phase 1)
 - [ ] Public API stability guarantee (pre-1.0)
 - [ ] License file
 

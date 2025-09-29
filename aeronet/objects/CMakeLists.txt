@@ -13,3 +13,10 @@ target_include_directories(aeronet_objects
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
+
+add_unit_test(
+    accept-encoding-negotiation_test
+    test/accept-encoding-negotiation_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
