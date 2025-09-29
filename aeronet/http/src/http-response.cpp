@@ -10,9 +10,10 @@
 
 #include "http-constants.hpp"
 #include "http-status-code.hpp"
-#include "invalid_argument_exception.hpp"
 #include "log.hpp"
+#include "string-equal-ignore-case.hpp"
 #include "stringconv.hpp"
+#include "tchars.hpp"
 
 namespace aeronet {
 
@@ -61,49 +62,60 @@ void HttpResponse::setReason(std::string_view newReason) {
 }
 
 void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue) {
-  assert(!newKey.empty());
+  assert(!newKey.empty() && std::ranges::all_of(newKey, [](char ch) { return is_tchar(ch); }));
+  if (CaseInsensitiveEqual(newKey, http::ContentEncoding)) {
+    _userProvidedContentEncoding = true;
+  }
   if (_headersStartPos == 0) {
     appendHeaderUnchecked(newKey, newValue);
     return;
   }
-  auto first = _data.data() + _headersStartPos;
-  const auto last = _data.data() + _bodyStartPos;
-  while (first < last) {
-    first = std::search(first, last, newKey.data(), newKey.data() + newKey.size());
-    if (first == last) {
-      break;
+  auto haystack = std::ranges::subrange(_data.data() + _headersStartPos + http::CRLF.size(),
+                                        _data.data() + _bodyStartPos - http::CRLF.size());
+
+  while (!haystack.empty()) {
+    // At this point haystack is pointing to the beginning of a header, immediately after a CRLF. For instance:
+    // 'Content-Encoding: gzip\r\n'
+    // Per design, we enforce the header separator to be exactly http::HeaderSep
+    auto nextHeaderSepRg = std::ranges::search(haystack, http::HeaderSep);
+    if (nextHeaderSepRg.empty()) {
+      throw std::runtime_error("Unable to locate the header separator");
     }
-    if (std::memcmp(first - http::CRLF.size(), http::CRLF.data(), http::CRLF.size()) != 0) {
-      ++first;
-      continue;
-    }
-    first += newKey.size();
-    if (first + http::HeaderSep.size() >= last) {
-      break;
-    }
-    if (std::memcmp(first, http::HeaderSep.data(), http::HeaderSep.size()) != 0) {
-      continue;
-    }
-    first += http::HeaderSep.size();
-    const std::string_view newValueView(newValue);
-    auto endOldValueIt = std::search(first, last, http::CRLF.data(), http::CRLF.data() + http::CRLF.size());
-    if (endOldValueIt == last) {
+    std::string_view oldHeaderKey(haystack.begin(), nextHeaderSepRg.begin());
+
+    // move haystack to beginning of old header value
+    haystack = std::ranges::subrange(nextHeaderSepRg.end(), haystack.end());
+
+    auto nextCRLFRg = std::ranges::search(haystack, http::CRLF);
+    if (nextCRLFRg.empty()) {
       throw std::runtime_error("Invalid header value");
     }
-    const std::string_view oldValueView(first, endOldValueIt);
-    const int64_t diff = static_cast<int64_t>(newValueView.size()) - static_cast<int64_t>(oldValueView.size());
+
+    // move haystack to next header
+    haystack = std::ranges::subrange(nextCRLFRg.end(), haystack.end());
+
+    if (!CaseInsensitiveEqual(oldHeaderKey, newKey)) {
+      continue;
+    }
+
+    // Same header
+
+    char* valueFirst = nextHeaderSepRg.begin() + http::HeaderSep.size();
+    const std::size_t oldHeaderValueSz = static_cast<std::size_t>(nextCRLFRg.begin() - valueFirst);
+
+    const auto diff = static_cast<int64_t>(newValue.size()) - static_cast<int64_t>(oldHeaderValueSz);
     if (diff == 0) {
-      std::memcpy(first, newValueView.data(), newValueView.size());
+      std::memcpy(valueFirst, newValue.data(), newValue.size());
       return;
     }
-    const auto firstPos = static_cast<std::size_t>(first - _data.data());
+    const auto valuePos = static_cast<std::size_t>(valueFirst - _data.data());
     if (diff > 0) {
       _data.ensureAvailableCapacity(static_cast<std::size_t>(diff));
-      first = _data.data() + firstPos;
+      valueFirst = _data.data() + valuePos;
     }
-    std::memmove(first + newValueView.size(), first + oldValueView.size(),
-                 _data.size() - firstPos - oldValueView.size());
-    std::memcpy(first, newValueView.data(), newValueView.size());
+    std::memmove(valueFirst + newValue.size(), valueFirst + oldHeaderValueSz,
+                 _data.size() - valuePos - oldHeaderValueSz);
+    std::memcpy(valueFirst, newValue.data(), newValue.size());
     _data.setSize(static_cast<std::size_t>(static_cast<int64_t>(_data.size()) + diff));
     _bodyStartPos = static_cast<uint32_t>(static_cast<int64_t>(_bodyStartPos) + diff);
     return;
@@ -134,7 +146,10 @@ void HttpResponse::setBody(std::string_view newBody) {
 }
 
 void HttpResponse::appendHeaderUnchecked(std::string_view key, std::string_view value) {
-  assert(!key.empty());
+  assert(!key.empty() && std::ranges::all_of(key, [](char ch) { return is_tchar(ch); }));
+  if (CaseInsensitiveEqual(key, http::ContentEncoding)) {
+    _userProvidedContentEncoding = true;
+  }
   // We model header insertion as: CRLF + key + ": " + value (NO trailing CRLF here).
   // The trailing CRLF for a header line is provided by the leading CRLF of the next header
   // OR by the first CRLF inside the final DoubleCRLF sentinel. This allows append-only
@@ -156,7 +171,7 @@ void HttpResponse::appendHeaderUnchecked(std::string_view key, std::string_view 
 
   if (_headersStartPos == 0) {
     // First header key begins after inserted leading CRLF.
-    _headersStartPos = static_cast<decltype(_headersStartPos)>(_bodyStartPos - http::CRLF.size());
+    _headersStartPos = static_cast<decltype(_headersStartPos)>(_bodyStartPos - http::DoubleCRLF.size());
   }
   _data.setSize(_data.size() + headerLineSize);
   _bodyStartPos += static_cast<uint32_t>(headerLineSize);

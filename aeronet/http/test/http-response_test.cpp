@@ -36,7 +36,7 @@ TEST_F(HttpResponseTest, StatusOnly) {
 
 TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
   HttpResponse resp(200, "OK");
-  resp.appendHeader("Content-Type", "text/plain").appendHeader("X-A", "B").body("Hello");
+  resp.addCustomHeader("Content-Type", "text/plain").addCustomHeader("X-A", "B").body("Hello");
   auto full = finalize(resp);
   ASSERT_GE(full.size(), 16U);
   std::string_view prefix = full.substr(0, 15);
@@ -73,7 +73,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithHeaders) {
   HttpResponse resp(200, "OK");
-  resp.appendHeader("X-Header", "Value");
+  resp.addCustomHeader("X-Header", "Value");
   resp.statusCode(404).reason("Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = finalize(resp);
@@ -83,8 +83,8 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithHeaders) {
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
   HttpResponse resp(404, "Not Found");
-  resp.appendHeader("X-Header-1", "Value1");
-  resp.appendHeader("X-Header-2", "Value2");
+  resp.addCustomHeader("X-Header-1", "Value1");
+  resp.addCustomHeader("X-Header-2", "Value2");
   resp.statusCode(200).reason("OK");
   EXPECT_EQ(resp.reason(), "OK");
   auto full = finalize(resp);
@@ -95,7 +95,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyAddReasonWithHeaders) {
   HttpResponse resp(200, "");
-  resp.appendHeader("X-Header", "Value");
+  resp.addCustomHeader("X-Header", "Value");
   resp.statusCode(404).reason("Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = finalize(resp);
@@ -105,8 +105,8 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyAddReasonWithHeaders) {
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyRemoveReasonWithHeaders) {
   HttpResponse resp(404, "Not Found");
-  resp.appendHeader("X-Header-1", "Value1");
-  resp.appendHeader("X-Header-2", "Value2");
+  resp.addCustomHeader("X-Header-1", "Value1");
+  resp.addCustomHeader("X-Header-2", "Value2");
   resp.statusCode(200).reason("");
   EXPECT_EQ(resp.reason(), "");
   auto full = finalize(resp);
@@ -137,7 +137,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
 
 TEST_F(HttpResponseTest, AllowsDuplicates) {
   HttpResponse resp(204, "No Content");
-  resp.appendHeader("X-Dup", "1").appendHeader("X-Dup", "2").body("");
+  resp.addCustomHeader("X-Dup", "1").addCustomHeader("X-Dup", "2").body("");
   auto full = finalize(resp);
   auto first = full.find("X-Dup: 1\r\n");
   auto second = full.find("X-Dup: 2\r\n");
@@ -155,7 +155,7 @@ TEST_F(HttpResponseTest, ProperTermination) {
 
 TEST_F(HttpResponseTest, SingleTerminatingCRLF) {
   HttpResponse resp(200, "OK");
-  resp.appendHeader("X-Header", "v1");
+  resp.addCustomHeader("X-Header", "v1");
   auto full = finalize(resp);
   ASSERT_TRUE(full.size() >= 4);
   EXPECT_EQ(full.substr(full.size() - 4), "\r\n\r\n");
@@ -164,7 +164,7 @@ TEST_F(HttpResponseTest, SingleTerminatingCRLF) {
 
 TEST_F(HttpResponseTest, ReplaceDifferentSizes) {
   HttpResponse resp(200, "OK");
-  resp.appendHeader("X-A", "1").body("Hello");
+  resp.addCustomHeader("X-A", "1").body("Hello");
   auto firstFull = finalize(resp);
   auto firstLen = firstFull.size();
   resp.body("WorldWide");
@@ -203,16 +203,16 @@ TEST_F(HttpResponseTest, BodyAssignFromInternalReasonTriggersReallocSafe) {
 
 TEST_F(HttpResponseTest, HeaderNewViaSetter) {
   HttpResponse resp(200, "OK");
-  resp.header("X-First", "One");
+  resp.customHeader("X-First", "One");
   auto full = finalize(resp);
   EXPECT_EQ(full, "HTTP/1.1 200 OK\r\nX-First: One\r\nDate: date\r\nConnection: close\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceLargerValue) {
   HttpResponse resp(200, "OK");
-  resp.header("X-Replace", "AA");
+  resp.customHeader("X-Replace", "AA");
   // Replace with larger value
-  resp.header("X-Replace", "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+  resp.customHeader("X-Replace", "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
   auto full = finalize(resp);
   EXPECT_EQ(full,
             "HTTP/1.1 200 OK\r\nX-Replace: ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\nDate: date\r\nConnection: close\r\n\r\n");
@@ -220,17 +220,17 @@ TEST_F(HttpResponseTest, HeaderReplaceLargerValue) {
 
 TEST_F(HttpResponseTest, HeaderReplaceSmallerValue) {
   HttpResponse resp(200, "OK");
-  resp.header("X-Replace", "LONG-LONG-VALUE");
+  resp.customHeader("X-Replace", "LONG-LONG-VALUE");
   // Replace with smaller
-  resp.header("X-Replace", "S");
+  resp.customHeader("X-Replace", "S");
   auto full = finalize(resp);
   EXPECT_EQ(full, "HTTP/1.1 200 OK\r\nX-Replace: S\r\nDate: date\r\nConnection: close\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceSameLengthValue) {
   HttpResponse resp(200, "OK");
-  resp.header("X-Replace", "LEN10VALUE");  // length 10
-  resp.header("X-Replace", "0123456789");  // also length 10
+  resp.customHeader("X-Replace", "LEN10VALUE");  // length 10
+  resp.customHeader("X-Replace", "0123456789");  // also length 10
   auto full = finalize(resp);
   EXPECT_EQ(full, "HTTP/1.1 200 OK\r\nX-Replace: 0123456789\r\nDate: date\r\nConnection: close\r\n\r\n");
 }
@@ -238,17 +238,17 @@ TEST_F(HttpResponseTest, HeaderReplaceSameLengthValue) {
 // Ensure replacement logic does not mistake key pattern inside a value as a header start.
 TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternLarger) {
   HttpResponse resp(200, "OK");
-  resp.header("X-Key", "before X-Key: should-not-trigger");
+  resp.customHeader("X-Key", "before X-Key: should-not-trigger");
   // Replace header; algorithm must not treat the embedded "X-Key: " in the value as another header start
-  resp.header("X-Key", "REPLACED-VALUE");
+  resp.customHeader("X-Key", "REPLACED-VALUE");
   auto full = finalize(resp);
   EXPECT_EQ(full, "HTTP/1.1 200 OK\r\nX-Key: REPLACED-VALUE\r\nDate: date\r\nConnection: close\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
   HttpResponse resp(200, "OK");
-  resp.header("X-Key", "AAAA X-Key: B BBBBBB");
-  resp.header("X-Key", "SMALL");
+  resp.customHeader("X-Key", "AAAA X-Key: B BBBBBB");
+  resp.customHeader("X-Key", "SMALL");
   auto full = finalize(resp);
   EXPECT_EQ(full, "HTTP/1.1 200 OK\r\nX-Key: SMALL\r\nDate: date\r\nConnection: close\r\n\r\n");
 }
@@ -257,9 +257,9 @@ TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
   HttpResponse resp(200, "OK");
-  resp.header("X-Val", "AA");
-  resp.body("Hello");                  // body length 5
-  resp.header("X-Val", "ABCDEFGHIJ");  // grow header value
+  resp.customHeader("X-Val", "AA");
+  resp.body("Hello");                        // body length 5
+  resp.customHeader("X-Val", "ABCDEFGHIJ");  // grow header value
   auto full = finalize(resp);
   EXPECT_EQ(
       full,
@@ -268,9 +268,9 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
   HttpResponse resp(200, "OK");
-  resp.header("X-Val", "SOME-LONG-VALUE");
-  resp.body("WorldWide");     // length 9
-  resp.header("X-Val", "S");  // shrink header value
+  resp.customHeader("X-Val", "SOME-LONG-VALUE");
+  resp.body("WorldWide");           // length 9
+  resp.customHeader("X-Val", "S");  // shrink header value
   auto full = finalize(resp);
   EXPECT_EQ(full,
             "HTTP/1.1 200 OK\r\nX-Val: S\r\nContent-Length: 9\r\nDate: date\r\nConnection: close\r\n\r\nWorldWide");
@@ -278,9 +278,19 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
   HttpResponse resp(200, "OK");
-  resp.header("X-Val", "LEN10VALUE");  // length 10
-  resp.body("Data");                   // length 4
-  resp.header("X-Val", "0123456789");  // same length replacement
+  resp.customHeader("X-Val", "LEN10VALUE");  // length 10
+  resp.body("Data");                         // length 4
+  resp.customHeader("X-Val", "0123456789");  // same length replacement
+  auto full = finalize(resp);
+  EXPECT_EQ(full,
+            "HTTP/1.1 200 OK\r\nX-Val: 0123456789\r\nContent-Length: 4\r\nDate: date\r\nConnection: close\r\n\r\nData");
+}
+
+TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
+  HttpResponse resp(200, "OK");
+  resp.customHeader("X-Val", "LEN10VALUE");  // length 10
+  resp.body("Data");                         // length 4
+  resp.customHeader("x-val", "0123456789");  // same length replacement
   auto full = finalize(resp);
   EXPECT_EQ(full,
             "HTTP/1.1 200 OK\r\nX-Val: 0123456789\r\nContent-Length: 4\r\nDate: date\r\nConnection: close\r\n\r\nData");
@@ -296,12 +306,12 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
 // 7. Finalize and assert exact layout
 TEST_F(HttpResponseTest, InterleavedReasonAndHeaderMutations) {
   HttpResponse resp(200, "");
-  resp.appendHeader("X-A", "1");
-  resp.appendHeader("X-B", "2");
+  resp.addCustomHeader("X-A", "1");
+  resp.addCustomHeader("X-B", "2");
   resp.reason("LONGER-REASON");
-  resp.header("X-A", "LARGER-VALUE-123");
+  resp.customHeader("X-a", "LARGER-VALUE-123");
   resp.reason("");
-  resp.header("X-A", "S");
+  resp.customHeader("x-A", "S");
   auto full = finalize(resp);
   EXPECT_EQ(full, "HTTP/1.1 200\r\nX-A: S\r\nX-B: 2\r\nDate: date\r\nConnection: close\r\n\r\n");
 }
@@ -310,26 +320,26 @@ TEST_F(HttpResponseTest, InterleavedReasonAndHeaderMutations) {
 
 TEST_F(HttpResponseTest, RepeatedGrowShrinkCycles) {
   HttpResponse resp(200, "");
-  resp.appendHeader("X-Static", "STATIC");
-  resp.header("X-Cycle", "A");
+  resp.addCustomHeader("X-Static", "STATIC");
+  resp.customHeader("X-Cycle", "A");
   resp.reason("R1");
-  resp.header("X-Cycle", "ABCDEFGHIJ");
+  resp.customHeader("X-Cycle", "ABCDEFGHIJ");
   resp.body("one");
   resp.reason("");
-  resp.header("X-Cycle", "B");
+  resp.customHeader("X-Cycle", "B");
   resp.body("two-two");
   resp.reason("LONGER-REASON");
-  resp.header("X-Cycle", "ABCDEFGHIJKLMNOP");
+  resp.customHeader("X-Cycle", "ABCDEFGHIJKLMNOP");
   resp.body("short");
   resp.reason("");
-  resp.header("X-Cycle", "C");
+  resp.customHeader("X-Cycle", "C");
   resp.body("0123456789ABCDEFGHIJ");
-  resp.header("X-Cycle", "LONGVALUE-1234567890");
+  resp.customHeader("X-Cycle", "LONGVALUE-1234567890");
   resp.reason("MID");
-  resp.header("X-Cycle", "X");
+  resp.customHeader("X-Cycle", "X");
   resp.body("XYZ");
   resp.reason("");
-  resp.header("X-Cycle", "Z");
+  resp.customHeader("X-Cycle", "Z");
   resp.body("END");
   auto full = finalize(resp);
   std::string expected =
@@ -342,7 +352,7 @@ TEST_F(HttpResponseTest, LargeHeaderCountStress) {
   constexpr int kCount = 600;
   HttpResponse resp(200, "OK");
   for (int i = 0; i < kCount; ++i) {
-    resp.appendHeader("X-" + std::to_string(i), std::to_string(i));
+    resp.addCustomHeader("X-" + std::to_string(i), std::to_string(i));
   }
   auto full = finalize(resp);
   ASSERT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
@@ -458,13 +468,13 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
         case 0: {
           lastHeaderKey = "X-" + std::to_string(step);
           lastHeaderValue = makeValue(smallLen(rng));
-          resp.appendHeader(lastHeaderKey, lastHeaderValue);
+          resp.addCustomHeader(lastHeaderKey, lastHeaderValue);
           break;
         }
         case 1: {
           lastHeaderKey = "U-" + std::to_string(step % 5);
           lastHeaderValue = makeValue(midLen(rng));
-          resp.header(lastHeaderKey, lastHeaderValue);
+          resp.customHeader(lastHeaderKey, lastHeaderValue);
           break;
         }
         case 2: {

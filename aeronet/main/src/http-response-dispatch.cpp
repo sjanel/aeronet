@@ -39,7 +39,7 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
   }
 
   bool isHead = (req.method == http::HEAD);
-  if (!isHead && !resp.autoCompressionDisabled()) {
+  if (!isHead && !resp.userProvidedContentEncoding()) {
     const CompressionConfig& compressionConfig = _config.compression;
     auto encHeader = req.findHeader(http::AcceptEncoding);
     Encoding encoding = _encodingSelector.negotiateAcceptEncoding(encHeader);
@@ -65,9 +65,9 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
       auto& encoder = _encoders[static_cast<size_t>(encoding)];
       if (encoder) {
         auto out = encoder->encodeFull(resp.body());
-        resp.header(http::ContentEncoding, GetEncodingStr(encoding));
+        resp.customHeader(http::ContentEncoding, GetEncodingStr(encoding));
         if (compressionConfig.addVaryHeader) {
-          resp.header(http::Vary, http::AcceptEncoding);
+          resp.customHeader(http::Vary, http::AcceptEncoding);
         }
         resp.body(out);
       }
