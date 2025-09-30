@@ -8,6 +8,7 @@
 
 #include "http-constants.hpp"
 #include "http-status-code.hpp"
+#include "http-version.hpp"
 #include "raw-chars.hpp"
 #include "simple-charconv.hpp"
 #include "string-equal-ignore-case.hpp"
@@ -74,9 +75,10 @@ namespace aeronet {
 // -----------------------------------------------------------------------------
 class HttpResponse {
  private:
-  static constexpr std::size_t kHttp1VersionLen = http::HTTP10.size();  // "HTTP/x.y"
-  static constexpr std::size_t kStatusCodeBeg = kHttp1VersionLen + 1;   // index of first status code digit
-  static constexpr std::size_t kReasonBeg = kStatusCodeBeg + 3 + 1;     // index of first reason phrase character
+  // "HTTP/x.y". Should be changed if version major / minor exceed 1 digit
+  static constexpr std::size_t kHttp1VersionLen = http::HTTP10Sv.size();
+  static constexpr std::size_t kStatusCodeBeg = kHttp1VersionLen + 1;  // index of first status code digit
+  static constexpr std::size_t kReasonBeg = kStatusCodeBeg + 3 + 1;    // index of first reason phrase character
 
  public:
   explicit HttpResponse(http::StatusCode code = 200, std::string_view reason = {});
@@ -123,8 +125,8 @@ class HttpResponse {
   // Empty body is allowed.
   // Body referencing internal memory of this HttpResponse is allowed as well.
   // Example:
-  //   HttpResponse resp(404);
-  //   resp.reason("Not Found").body(resp.reason()); // OK
+  //   HttpResponse resp(404, "Not Found");
+  //   resp.body(resp.reason()); // OK
   HttpResponse& body(std::string_view body) & {
     setBody(body);
     return *this;
@@ -134,8 +136,8 @@ class HttpResponse {
   // Empty body is allowed.
   // Body referencing internal memory of this HttpResponse is allowed as well.
   // Example:
-  //   HttpResponse resp(404);
-  //   resp.reason("Not Found").body(resp.reason()); // OK
+  //   HttpResponse resp(404, "Not Found");
+  //   resp.body(resp.reason()); // OK
   HttpResponse&& body(std::string_view body) && {
     setBody(body);
     return std::move(*this);
@@ -280,7 +282,7 @@ class HttpResponse {
   // appendHeader, header) is undefined behavior and may corrupt the buffer or
   // duplicate reserved headers. Higher-level server code is expected to call
   // this exactly once right before write.
-  std::string_view finalizeAndGetFullTextResponse(std::string_view version, std::string_view date, bool keepAlive,
+  std::string_view finalizeAndGetFullTextResponse(http::Version version, std::string_view date, bool keepAlive,
                                                   bool isHeadMethod);
 
   RawChars _data;

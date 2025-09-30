@@ -84,6 +84,11 @@ aeronet_http_test(http_url_decoding_additional http_url_decoding_additional.cpp)
 
 aeronet_http_test(http_url_decoding http_url_decoding.cpp)
 
+# Query parsing tests
+aeronet_http_test(http_query_parsing http_query_parsing.cpp)
+aeronet_http_test(http_query_parsing_edge http_query_parsing_edge.cpp)
+aeronet_http_test(http_query_structured_bindings http_query_structured_bindings.cpp)
+
 aeronet_http_test(test_version test_version.cpp)
 
 # TLS tests only compiled when OpenSSL support is enabled in the library build.
@@ -142,6 +147,9 @@ set(REGISTERED_TEST_SOURCES_REL
 	multi_http_server_stress.cpp
 	multi_http_server_auto.cpp
 	http_trailing_slash.cpp
+	http_query_parsing.cpp
+	http_query_parsing_edge.cpp
+	http_query_structured_bindings.cpp
 	http_headers_custom.cpp
 	test_version.cpp
 	http_compression_buffered.cpp

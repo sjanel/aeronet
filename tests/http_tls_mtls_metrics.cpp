@@ -21,7 +21,7 @@ TEST(HttpTlsMtlsMetrics, ClientCertPresenceIncrementsMetric) {
     });
     auto port = ts.port();
     ts.setHandler([](const aeronet::HttpRequest&) {
-      return aeronet::HttpResponse(200).reason("OK").contentType(aeronet::http::ContentTypeTextPlain).body("m");
+      return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body("m");
     });
     [[maybe_unused]] auto before = ts.stats();
     TlsClient::Options opts;

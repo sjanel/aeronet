@@ -45,7 +45,7 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
-    resp.body(std::string("ECHO") + std::string(req.target));
+    resp.body(std::string("ECHO") + std::string(req.path()));
     return resp;
   });
 

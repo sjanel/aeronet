@@ -4,9 +4,11 @@
 #include <openssl/buffer.h>
 #include <openssl/x509.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <utility>
 
 #include "log.hpp"
 #include "tls-metrics.hpp"

@@ -2,7 +2,7 @@
 
 ![Aeronet Logo](resources/logo.png)
 
-HTTP/1.1 server library for Linux only – work in progress.
+HTTP/1.1 C++ server library for Linux only – work in progress.
 
 ## Core HTTP & Protocol Features (Implemented)
 
@@ -12,7 +12,7 @@ HTTP/1.1 server library for Linux only – work in progress.
 | Chunked request decoding | `Transfer-Encoding: chunked` (trailers parsed but not exposed yet) |
 | Response building | Convenience struct & helpers (status + headers + body) |
 | Keep-Alive | Timeout + max-requests per connection; HTTP/1.0 opt-in |
-| Percent-decoding | UTF-8 path decoding, invalid sequences -> 400, '+' preserved |
+| Percent-decoding | UTF-8 path decoding, invalid sequences -> 400 |
 | Pipelining | Sequential (no parallel handler execution) |
 | Configurable limits | Max header bytes, max body bytes, max outbound buffer bytes |
 | Date header caching | 1 update / second (RFC7231 format) |
@@ -61,18 +61,15 @@ using namespace aeronet;
 
 int main() {
   HttpServer server(HttpServerConfig{}.withPort(0)); // 0 => ephemeral port
-  server.addPathHandler("/hello", http::MethodSet{http::Method::GETrequest_or_throw}, [](const HttpRequest&) {
-    HttpResponse r{200, "OK"};
-    r.contentType = "text/plain";
-    r.body = "hello from aeronet\n";
-    return r;
+  server.addPathHandler("/hello", http::MethodSet{http::Method::GET}, [](const HttpRequest&) {
+    return HttpResponse(200, "OK").contentType("text/plain").body("hello from aeronet"\n);
   });
   std::print("Listening on {}\n", server.port());
   // Adjust event loop poll interval (max idle epoll wait) if desired (default 500ms)
   // HttpServerConfig{}.withPollInterval(50ms) for more responsive stop/predicate checks.
   server.run(); // Blocking call, send Ctrl+C to stop
 }
-```text
+```
 
 Build & run (example):
 
@@ -80,7 +77,7 @@ Build & run (example):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ./build/examples/aeronet-minimal 8080   # or omit 8080 for ephemeral
-```text
+```
 
 Test with curl:
 
@@ -151,6 +148,42 @@ Headers & protocol niceties
 - [ ] Server header (intentionally omitted to keep minimal)
 - [ ] Access-Control-* (CORS) helpers
 
+## Performance / architecture
+
+- [x] Single-thread event loop (one server instance)
+- [x] Horizontal scaling via SO_REUSEPORT (multi-reactor)
+- [x] Multi-instance orchestration wrapper (`MultiHttpServer`) (explicit `reusePort=true` for >1 threads; aggregated stats; resolved port immediately after construction)
+- [x] writev scatter-gather for response header + body
+- [x] Outbound write buffering with EPOLLOUT-driven backpressure
+- [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
+- [ ] Benchmarks & profiling docs
+- [ ] Zero-copy sendfile() support for static files
+
+Safety / robustness
+
+- [x] Configurable header/body limits
+- [x] Graceful shutdown loop (runUntil)
+- [x] Slowloris style header timeout mitigation (implemented as header read timeout)
+- [x] TLS termination (OpenSSL) with ALPN, mTLS, version bounds, handshake timeout & per-server metrics
+
+Developer experience
+
+- [x] Builder style HttpServerConfig
+- [x] Simple lambda handler signature
+- [x] Simple exact-match per-path routing (`addPathHandler`)
+- [x] Configurable trailing slash handling (Strict / Normalize / Redirect)
+- [x] Lightweight built-in logging (spdlog optional integration) – pluggable interface TBD
+- [ ] Middleware helpers
+- [ ] Pluggable logging interface (abstract sink / formatting hooks)
+
+Misc
+
+- [x] Move semantics for HttpServer
+- [x] MultiHttpServer convenience wrapper
+- [x] Compression (gzip & deflate phase 1)
+- [ ] Public API stability guarantee (pre-1.0)
+- [ ] License file
+
 ### Compression (Phase 1 — gzip & deflate via zlib)
 
 Implemented capabilities:
@@ -190,10 +223,7 @@ HttpServerConfig cfg;
 cfg.withCompression(c);
 HttpServer server(cfg);
 server.setHandler([](const HttpRequest&) {
-  HttpResponse r{200, "OK"};
-  r.contentType = "text/plain";
-  r.body = std::string(400, 'A'); // large enough to trigger compression (minBytes=64)
-  return r;
+  return HttpResponse(200, "OK").contentType("text/plain").body(std::string(1024, 'A'));
 });
 ```
 
@@ -318,42 +348,6 @@ Usage guidelines:
 
 Future possible extensions (not yet implemented): transparent compression insertion, zero‑copy file send mapping,
 and an alternate layout for extremely large header counts.
-
-Performance / architecture
-
-- [x] Single-thread event loop (one server instance)
-- [x] Horizontal scaling via SO_REUSEPORT (multi-reactor)
-- [x] Multi-instance orchestration wrapper (`MultiHttpServer`) (explicit `reusePort=true` for >1 threads; aggregated stats; resolved port immediately after construction)
-- [x] writev scatter-gather for response header + body
-- [x] Outbound write buffering with EPOLLOUT-driven backpressure
-- [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
-- [ ] Benchmarks & profiling docs
-- [ ] Zero-copy sendfile() support for static files
-
-Safety / robustness
-
-- [x] Configurable header/body limits
-- [x] Graceful shutdown loop (runUntil)
-- [x] Slowloris style header timeout mitigation (implemented as header read timeout)
-- [x] TLS termination (OpenSSL) with ALPN, mTLS, version bounds, handshake timeout & per-server metrics
-
-Developer experience
-
-- [x] Builder style HttpServerConfig
-- [x] Simple lambda handler signature
-- [x] Simple exact-match per-path routing (`addPathHandler`)
-- [x] Configurable trailing slash handling (Strict / Normalize / Redirect)
-- [x] Lightweight built-in logging (spdlog optional integration) – pluggable interface TBD
-- [ ] Middleware helpers
-- [ ] Pluggable logging interface (abstract sink / formatting hooks)
-
-Misc
-
-- [x] Move semantics for HttpServer
-- [x] MultiHttpServer convenience wrapper
-- [x] Compression (gzip & deflate phase 1)
-- [ ] Public API stability guarantee (pre-1.0)
-- [ ] License file
 
 ### MultiHttpServer Lifecycle & reusePort Requirement
 
@@ -659,6 +653,58 @@ This is the simplest horizontal scaling strategy before introducing a worker poo
 
 ### MultiHttpServer Convenience Wrapper
 
+### Accessing the Query String & Parameters
+
+Each `HttpRequest` exposes:
+
+- `path()`        : URL-decoded path (RFC 3986 percent-decoded in a single pass; invalid escape -> 400)
+- `method()`      : HTTP request method
+- `query()`       : raw query substring (no leading `?`), NOT percent-decoded wholesale
+- `version()`     : HTTP version (typed)
+- `queryParams()` : lightweight forward range over decoded `(key,value)` pairs
+
+Decoding strategy:
+
+1. The request target is split once on the first `?`.
+2. The path segment is percent-decoded in-place (one pass). Any invalid escape produces a 400 error.
+3. The raw query segment is left untouched (so delimiters `&` and `=` remain unambiguous even if later a malformed escape exists).
+4. Iteration via `queryParams()` performs component-wise decoding:
+   - Split on `&` into tokens.
+   - For each token split at the first `=` (missing `=` ⇒ empty value).
+   - Percent-decode key and value separately; invalid / incomplete escapes are left verbatim (no rejection).
+   - Convert `+` to space in both key and value (application/x-www-form-urlencoded semantics).
+   - Yield `std::string_view` pairs referencing either original buffer slices (no escapes) or small internal decode storage (escapes present). Copy if you need persistence.
+
+Semantics & edge cases:
+
+- Order preserved; duplicates preserved (`a=1&a=2`).
+- `a` ⇒ `(a, "")`; `a=` ⇒ `(a, "")`; `=v` ⇒ `( "", v )`.
+- Empty query (`/p` or `/p?`) ⇒ empty range.
+- Malformed escapes in query components (`%A`, solitary `%`, `%ZZ`) are surfaced literally.
+- `'+'` is translated to space only for query parameter keys/values (path keeps literal `+`).
+
+Example:
+
+```cpp
+void handler(const aeronet::HttpRequest& req) {
+  for (auto [k,v] : req.queryParams()) {
+    std::print("{} => {}\n", k, v);
+  }
+}
+```
+
+Characteristics summary:
+
+| Aspect              | Path                                | Query param keys/values                      |
+|---------------------|-------------------------------------|----------------------------------------------|
+| Decode granularity  | Whole path once                     | Per key and per value                        |
+| Invalid escapes     | 400 Bad Request                     | Left verbatim                                |
+| '+' handling        | Preserved as '+'                    | Decoded to space                             |
+| Duplicates          | N/A                                 | Preserved in order                           |
+| Missing '='         | N/A                                 | Value = ""                                   |
+| Empty key           | N/A                                 | Allowed (`=v`)                               |
+| Malformed escapes   | Rejected                            | Surfaced literally                           |
+
 Instead of manually creating N threads and N `HttpServer` instances, you can use `MultiHttpServer` to spin up a "farm" of identical servers on the same port. It:
 
 - Accepts a base `HttpServerConfig` (set `port=0` for ephemeral bind; the chosen port is propagated to all instances)
@@ -923,8 +969,6 @@ server.addPathHandler("/echo", http::MethodsSet{http::Method::POST}, [](const Ht
 server.addPathHandler("/echo", http::Method::GET, [](const HttpRequest& req){
   HttpResponse r; r.statusCode=200; r.reason="OK"; r.body = "Echo via GET"; r.contentType="text/plain"; return r; });
 ```
-
-Internal bitmask order follows enum declaration in `http-method.hpp`.
 
 ### Limits
 

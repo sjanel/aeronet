@@ -6,6 +6,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "test_server_fixture.hpp"
 #include "test_util.hpp"
 
 using namespace std::chrono_literals;  // retained for potential future literal use
@@ -13,14 +14,11 @@ using namespace std::chrono_literals;  // retained for potential future literal 
 // New tests: pipelining, zero-length Expect (no 100), maxRequestsPerConnection, pipeline error after success, 413 via
 // large Content-Length
 
-// Introduce TestServer fixture for reducing boilerplate (applied to first test as template for others).
-#include "test_server_fixture.hpp"
-
 TEST(HttpPipeline, TwoRequestsBackToBack) {
   TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
-    respObj.body(std::string("E:") + std::string(req.target));
+    respObj.body(std::string("E:") + std::string(req.path()));
     return respObj;
   });
   ClientConnection clientConnection(ts.port());

@@ -24,7 +24,9 @@ TEST(HttpRouting, BasicPathDispatch) {
   });
   http::MethodSet multiMethods{http::Method::GET, http::Method::POST};
   server.addPathHandler("/multi", multiMethods, [](const HttpRequest& req) {
-    return HttpResponse(200, "OK").body(std::string(req.method) + "!").contentType(aeronet::http::ContentTypeTextPlain);
+    return HttpResponse(200, "OK")
+        .body(std::string(http::toMethodStr(req.method())) + "!")
+        .contentType(aeronet::http::ContentTypeTextPlain);
   });
 
   std::atomic<bool> done{false};
@@ -64,7 +66,7 @@ TEST(HttpRouting, BasicPathDispatch) {
 TEST(HttpRouting, GlobalFallbackWithPathHandlers) {
   HttpServerConfig cfg;
   HttpServer server(cfg);
-  server.setHandler([](const HttpRequest&) { return HttpResponse(200).reason("OK"); });
+  server.setHandler([](const HttpRequest&) { return HttpResponse(200, "OK"); });
   // Adding path handler after global handler is now allowed (Phase 2 mixing model)
   http::MethodSet xMethods{http::Method::GET};
   EXPECT_NO_THROW(server.addPathHandler("/x", xMethods, [](const HttpRequest&) { return HttpResponse(200); }));

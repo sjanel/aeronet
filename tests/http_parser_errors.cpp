@@ -13,6 +13,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "http-status-code.hpp"
 #include "test_server_fixture.hpp"
 #include "test_util.hpp"
 
@@ -21,8 +22,8 @@ using namespace std::chrono_literals;
 namespace {
 struct Capture {
   std::mutex m;
-  std::vector<aeronet::HttpServer::ParserError> errors;
-  void push(aeronet::HttpServer::ParserError err) {
+  std::vector<aeronet::http::StatusCode> errors;
+  void push(aeronet::http::StatusCode err) {
     std::scoped_lock lk(m);
     errors.push_back(err);
   }
@@ -33,7 +34,7 @@ TEST(HttpParserErrors, InvalidVersion505) {
   TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   Capture cap;
-  ts.server.setParserErrorCallback([&](aeronet::HttpServer::ParserError err) { cap.push(err); });
+  ts.server.setParserErrorCallback([&](aeronet::http::StatusCode err) { cap.push(err); });
   ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
@@ -47,7 +48,7 @@ TEST(HttpParserErrors, InvalidVersion505) {
   {
     std::scoped_lock lk(cap.m);
     for (auto err : cap.errors) {
-      if (err == aeronet::HttpServer::ParserError::VersionUnsupported) {
+      if (err == aeronet::http::StatusCodeHTTPVersionNotSupported) {
         seen = true;
       }
     }
@@ -85,7 +86,7 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
 TEST(HttpParserErrors, ChunkIncrementalFuzz) {
   TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body); });
+  ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body()); });
 
   std::mt19937 rng(12345);
   std::uniform_int_distribution<int> sizeDist(1, 15);

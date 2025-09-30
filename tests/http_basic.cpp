@@ -28,10 +28,10 @@ TEST(HttpBasic, SimpleGet) {
   TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
-    auto testHeaderIt = req.headers.find("X-Test");
+    auto testHeaderIt = req.headers().find("X-Test");
     std::string body("You requested: ");
-    body += req.target;
-    if (testHeaderIt != req.headers.end() && !testHeaderIt->second.empty()) {
+    body += req.path();
+    if (testHeaderIt != req.headers().end() && !testHeaderIt->second.empty()) {
       body += ", X-Test=";
       body.append(testHeaderIt->second);
     }

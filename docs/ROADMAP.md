@@ -55,7 +55,6 @@ Legend:
 | Header Read Timeout | Slowloris mitigation via configurable `headerReadTimeout`, connection closed on exceed |
 | MultiHttpServer Wrapper | Horizontal scaling orchestration, ephemeral port resolution, aggregated stats |
 | Lightweight Logging Fallback | spdlog-style API, ISO8601 timestamps, formatting fallback |
-| Parser Error Enum & Callback | `ParserError` with granular reasons + hook |
 | RFC7231 Date Tests & Caching Validation | Format stability + boundary refresh tests |
 | Request Processing Refactor | Split monolithic loop into cohesive helpers |
 | Modular Decomposition (parser/response/connection) | Extracted from monolithic `server.cpp` into focused TUs |

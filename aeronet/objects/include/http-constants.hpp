@@ -16,15 +16,20 @@ namespace aeronet::http {
 // (single pass tolower by caller or direct CaseInsensitiveEqual).
 
 // Version
-inline constexpr std::string_view HTTP10 = "HTTP/1.0";
-inline constexpr std::string_view HTTP11 = "HTTP/1.1";
+inline constexpr std::string_view HTTP10Sv = "HTTP/1.0";
+inline constexpr std::string_view HTTP11Sv = "HTTP/1.1";
 
-// Methods
-inline constexpr std::string_view HEAD = "HEAD";
+// Methods GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH
+
 inline constexpr std::string_view GET = "GET";
+inline constexpr std::string_view HEAD = "HEAD";
 inline constexpr std::string_view POST = "POST";
 inline constexpr std::string_view PUT = "PUT";
 inline constexpr std::string_view DELETE = "DELETE";
+inline constexpr std::string_view CONNECT = "CONNECT";
+inline constexpr std::string_view OPTIONS = "OPTIONS";
+inline constexpr std::string_view TRACE = "TRACE";
+inline constexpr std::string_view PATCH = "PATCH";
 
 // Standard Header Field Names (as they typically appear in canonical form)
 inline constexpr std::string_view Connection = "Connection";
@@ -82,27 +87,27 @@ inline constexpr std::string_view DoubleCRLF = "\r\n\r\n";
 // decide whether to supply a custom phrase.
 constexpr std::string_view reasonPhraseFor(http::StatusCode status) noexcept {
   switch (status) {
-    case 200:
+    case StatusCodeOK:
       return ReasonOK;
-    case 301:
+    case StatusCodeMovedPermanently:
       return MovedPermanently;
-    case 400:
+    case StatusCodeBadRequest:
       return ReasonBadRequest;
-    case 404:
+    case StatusCodeNotFound:
       return NotFound;
-    case 405:
+    case StatusCodeMethodNotAllowed:
       return ReasonMethodNotAllowed;
-    case 406:
+    case StatusCodeNotAcceptable:
       return ReasonNotAcceptable;
-    case 413:
+    case StatusCodePayloadTooLarge:
       return ReasonPayloadTooLarge;
-    case 431:
+    case StatusCodeRequestHeaderFieldsTooLarge:
       return ReasonHeadersTooLarge;
-    case 500:
+    case StatusCodeInternalServerError:
       return ReasonInternalServerError;
-    case 501:
+    case StatusCodeNotImplemented:
       return ReasonNotImplemented;
-    case 505:
+    case StatusCodeHTTPVersionNotSupported:
       return ReasonHTTPVersionNotSupported;
     default:
       return ReasonNotImplemented;

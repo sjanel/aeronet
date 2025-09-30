@@ -41,8 +41,8 @@ TEST(UrlEncodeDecode, RoundTripSimple) {
   auto encoded = URLEncode(std::span<const char>(original.data(), original.size()), IsUnreserved{});
   EXPECT_EQ(encoded, original);  // no change
   RawChars copy(encoded);
-  bool okDecode = URLDecodeInPlace(copy, false);
-  EXPECT_TRUE(okDecode);
+  char *last = url::DecodeInPlace(copy.begin(), copy.end());
+  EXPECT_NE(last, nullptr);
   EXPECT_EQ(std::string_view(copy), original);
 }
 
@@ -51,46 +51,46 @@ TEST(UrlEncodeDecode, RoundTripWithSpaces) {
   auto encoded = URLEncode(std::span<const char>(original.data(), original.size()), IsUnreserved{});
   EXPECT_EQ(encoded, "Hello%20World");
   RawChars copy(encoded);
-  bool okDecode = URLDecodeInPlace(copy, false);
-  EXPECT_TRUE(okDecode);
-  EXPECT_EQ(std::string_view(copy), original);
+  char *last = url::DecodeInPlace(copy.begin(), copy.end());
+  EXPECT_NE(last, nullptr);
+  EXPECT_EQ(std::string_view(copy.data(), last), original);
 }
 
 TEST(UrlEncodeDecode, PlusAsSpaceDecode) {
   std::string form = "Hello+World";
   RawChars formChars(form);
-  bool okDecode = URLDecodeInPlace(formChars, true);
-  EXPECT_TRUE(okDecode);
-  EXPECT_EQ(std::string_view(formChars), "Hello World");
+  char *last = url::DecodeInPlace(formChars.begin(), formChars.end(), ' ');
+  EXPECT_NE(last, nullptr);
+  EXPECT_EQ(std::string_view(formChars.data(), last), "Hello World");
 }
 
 TEST(UrlEncodeDecode, PercentLowerCaseHex) {
   // Lowercase hex should still decode
   RawChars lower("abc%2fdef");
-  bool okDecode = URLDecodeInPlace(lower, false);
-  EXPECT_TRUE(okDecode);
-  EXPECT_EQ(std::string_view(lower), "abc/def");
+  char *last = url::DecodeInPlace(lower.begin(), lower.end());
+  EXPECT_NE(last, nullptr);
+  EXPECT_EQ(std::string_view(lower.data(), last), "abc/def");
 }
 
 TEST(UrlEncodeDecode, InvalidPercentTooShort) {
   std::string bad = "abc%";  // truncated
   RawChars badChars(bad);
-  bool ok = URLDecodeInPlace(badChars, false);
-  EXPECT_FALSE(ok);
+  char *last = url::DecodeInPlace(badChars.begin(), badChars.end());
+  EXPECT_EQ(last, nullptr);
 }
 
 TEST(UrlEncodeDecode, InvalidPercentOneDigit) {
   std::string bad = "abc%2";  // only one hex digit
   RawChars badChars(bad);
-  bool ok = URLDecodeInPlace(badChars, false);
-  EXPECT_FALSE(ok);
+  char *last = url::DecodeInPlace(badChars.begin(), badChars.end());
+  EXPECT_EQ(last, nullptr);
 }
 
 TEST(UrlEncodeDecode, InvalidPercentNonHex) {
   std::string bad = "abc%2X";  // X not hex
   RawChars badChars(bad);
-  bool ok = URLDecodeInPlace(badChars, false);
-  EXPECT_FALSE(ok);
+  char *last = url::DecodeInPlace(badChars.begin(), badChars.end());
+  EXPECT_EQ(last, nullptr);
 }
 
 TEST(UrlEncodeDecode, UTF8RoundTrip) {
@@ -98,41 +98,41 @@ TEST(UrlEncodeDecode, UTF8RoundTrip) {
   std::string original = "\xE2\x98\x83 snow";  // ☃ snow
   auto encoded = URLEncode(std::span<const char>(original.data(), original.size()), IsUnreserved{});
   RawChars copy2(encoded);
-  bool okDecode2 = URLDecodeInPlace(copy2, false);
-  EXPECT_TRUE(okDecode2);
-  EXPECT_EQ(std::string_view(copy2), original);
+  char *last = url::DecodeInPlace(copy2.begin(), copy2.end());
+  EXPECT_NE(last, nullptr);
+  EXPECT_EQ(std::string_view(copy2.data(), last), original);
 }
 
 TEST(UrlEncodeDecode, MixedPlusAndPercent) {
   std::string input = "%2B+";  // %2B is '+'; plus should become space only if plusAsSpace
   RawChars decodedNoPlusSpaceChars(input);
-  bool okA = URLDecodeInPlace(decodedNoPlusSpaceChars, false);
-  EXPECT_TRUE(okA);
-  EXPECT_EQ(std::string_view(decodedNoPlusSpaceChars), "++");
+  char *lastA = url::DecodeInPlace(decodedNoPlusSpaceChars.begin(), decodedNoPlusSpaceChars.end());
+  EXPECT_NE(lastA, nullptr);
+  EXPECT_EQ(std::string_view(decodedNoPlusSpaceChars.data(), lastA), "++");
   RawChars decodedPlusSpaceChars(input);
-  bool okB = URLDecodeInPlace(decodedPlusSpaceChars, true);
-  EXPECT_TRUE(okB);
-  EXPECT_EQ(std::string_view(decodedPlusSpaceChars), "+ ");
+  char *lastB = url::DecodeInPlace(decodedPlusSpaceChars.begin(), decodedPlusSpaceChars.end(), ' ');
+  EXPECT_NE(lastB, nullptr);
+  EXPECT_EQ(std::string_view(decodedPlusSpaceChars.data(), lastB), "+ ");
 }
 
 TEST(UrlEncodeDecode, InPlaceDecodeBasic) {
   RawChars inputStr("Hello%20World");
-  bool ok = URLDecodeInPlace(inputStr, false);
-  EXPECT_TRUE(ok);
-  EXPECT_EQ(std::string_view(inputStr), "Hello World");
+  char *last = url::DecodeInPlace(inputStr.begin(), inputStr.end());
+  EXPECT_NE(last, nullptr);
+  EXPECT_EQ(std::string_view(inputStr.data(), last), "Hello World");
 }
 
 TEST(UrlEncodeDecode, InPlacePlusAsSpace) {
   RawChars inputStr("A+Plus+Sign");
-  bool ok = URLDecodeInPlace(inputStr, true);
-  EXPECT_TRUE(ok);
-  EXPECT_EQ(std::string_view(inputStr), "A Plus Sign");
+  char *last = url::DecodeInPlace(inputStr.begin(), inputStr.end(), ' ');
+  EXPECT_NE(last, nullptr);
+  EXPECT_EQ(std::string_view(inputStr.data(), last), "A Plus Sign");
 }
 
 TEST(UrlEncodeDecode, InPlaceInvalid) {
   RawChars inputStr("Bad%G1");  // G invalid hex
-  bool ok = URLDecodeInPlace(inputStr, false);
-  EXPECT_FALSE(ok);
+  char *last = url::DecodeInPlace(inputStr.begin(), inputStr.end());
+  EXPECT_EQ(last, nullptr);
 }
 
 TEST(UrlEncodeDecode, InPlaceUTF8) {
@@ -146,9 +146,9 @@ TEST(UrlEncodeDecode, InPlaceUTF8) {
   };
   auto encoded = URLEncode(std::span<const char>(original.data(), original.size()), IsUnreservedLocal{});
   RawChars copy(encoded);
-  bool ok = URLDecodeInPlace(copy, false);
-  EXPECT_TRUE(ok);
-  EXPECT_EQ(std::string_view(copy), std::string_view(original));
+  char *last = url::DecodeInPlace(copy.begin(), copy.end());
+  EXPECT_NE(last, nullptr);
+  EXPECT_EQ(std::string_view(copy.data(), last), std::string_view(original));
 }
 
 }  // namespace aeronet
