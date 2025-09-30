@@ -1,40 +1,112 @@
 #include "url-decode.hpp"
 
+#include <cstddef>
+#include <cstring>
+
 #include "char-hexadecimal-converter.hpp"
 #include "raw-chars.hpp"
 
-namespace aeronet {
+namespace aeronet::url {
 
-bool URLDecodeInPlace(RawChars &str, bool plusAsSpace) {
-  RawChars::size_type readPos = 0;
-  RawChars::size_type writePos = 0;
-  const auto length = str.size();
-  while (readPos < length) {
-    char ch = str[readPos++];
-    if (ch == '+') {
-      if (plusAsSpace) {
-        str[writePos++] = ' ';
-      } else {
-        str[writePos++] = '+';
+char* DecodeInPlace(char* first, char* last, char plusAs, bool strictInvalid) {
+  char* out = first;
+  for (; first < last; ++first) {
+    char ch = *first;
+    switch (ch) {
+      case '+':
+        *out++ = plusAs;
+        break;
+      case '%': {
+        if (first + 2 >= last) {
+          if (strictInvalid) {
+            return nullptr;
+          }
+          *out++ = '%';
+          break;  // keep '%' literal and exit (drop trailing)? Best effort: just literal '%'
+        }
+        char c1 = *++first;
+        char c2 = *++first;
+        int v1 = from_hex_digit(c1);
+        int v2 = from_hex_digit(c2);
+        if (v1 < 0 || v2 < 0) {
+          if (strictInvalid) {
+            return nullptr;
+          }
+          *out++ = '%';
+          *out++ = c1;
+          *out++ = c2;
+          break;
+        }
+        *out++ = static_cast<char>((v1 << 4) | v2);
+        break;
       }
-    } else if (ch == '%') {
-      if (readPos + 1 >= length) {
-        return false;  // truncated
-      }
-      char h1 = str[readPos++];
-      char h2 = str[readPos++];
-      int v1 = from_hex_digit(h1);
-      int v2 = from_hex_digit(h2);
-      if (v1 < 0 || v2 < 0) {
-        return false;  // invalid
-      }
-      str[writePos++] = static_cast<char>((v1 << 4) | v2);
-    } else {
-      str[writePos++] = ch;
+      default:
+        *out++ = ch;
+        break;
     }
   }
-  str.setSize(writePos);
-  return true;
+  return out;
 }
 
-}  // namespace aeronet
+char* DecodeQueryParamsInPlace(char* first, char* last) {
+  while (first < last) {
+    // Find '=' and '&' within [first, last)
+    char* keyEnd = static_cast<char*>(std::memchr(first, '=', static_cast<std::size_t>(last - first)));
+    char* pairEnd = static_cast<char*>(std::memchr(first, '&', static_cast<std::size_t>(last - first)));
+
+    if (pairEnd == nullptr) {
+      pairEnd = last;  // last pair
+    } else {
+      *pairEnd = kNewPairSep;
+    }
+
+    if (keyEnd == nullptr || keyEnd > pairEnd) {
+      // no '=' in this pair → key only
+      keyEnd = pairEnd;
+    } else {
+      *keyEnd = kNewKeyValueSep;
+    }
+
+    char* keyBegin = first;
+    char* valueBegin = (keyEnd < pairEnd) ? keyEnd + 1 : pairEnd;
+    char* valueEnd = pairEnd;
+
+    // --- Decode key ---
+    {
+      char* newEnd = url::DecodeInPlace(keyBegin, keyEnd, '+', /*strictInvalid*/ false);
+      auto decodedLen = static_cast<std::size_t>(newEnd - keyBegin);
+      auto origLen = static_cast<std::size_t>(keyEnd - keyBegin);
+      if (decodedLen < origLen) {
+        auto shift = origLen - decodedLen;
+        std::memmove(newEnd, keyEnd, static_cast<std::size_t>(last - keyEnd));
+        last -= shift;
+        // adjust valueBegin/valueEnd/pairEnd
+        valueBegin -= shift;
+        valueEnd -= shift;
+        pairEnd -= shift;
+      }
+      keyEnd = newEnd;
+    }
+
+    // --- Decode value (if any) ---
+    if (valueBegin < valueEnd) {
+      char* newEnd = url::DecodeInPlace(valueBegin, valueEnd, /*plusAs*/ ' ', /*strictInvalid*/ false);
+      auto decodedLen = static_cast<std::size_t>(newEnd - valueBegin);
+      auto origLen = static_cast<std::size_t>(valueEnd - valueBegin);
+      if (decodedLen < origLen) {
+        auto shift = origLen - decodedLen;
+        std::memmove(newEnd, valueEnd, static_cast<std::size_t>(last - valueEnd));
+        last -= shift;
+        pairEnd -= shift;
+      }
+      valueEnd = newEnd;
+    }
+
+    // Advance to next pair
+    first = (pairEnd < last) ? pairEnd + 1 : last;
+  }
+
+  return last;
+}
+
+}  // namespace aeronet::url

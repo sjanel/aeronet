@@ -76,8 +76,8 @@ TEST(HttpHeadersCustom, SettingReservedHeaderTriggersAssert) {
 TEST(HttpHeadersCustom, LocationHeaderAllowed) {
   TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse resp;
-    resp.statusCode(302).reason("Found").location("/new").body("");
+    aeronet::HttpResponse resp(302, "Found");
+    resp.location("/new").body("");
     return resp;
   });
   ClientConnection cc(ts.port());

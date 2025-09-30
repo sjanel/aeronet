@@ -66,7 +66,7 @@ void HttpServer::sweepIdleConnections() {
     if (closeThis) {
       int connFd = it->first.fd();
       ++it;
-      closeConnection(connFd);
+      closeConnectionFd(connFd);
       continue;
     }
     ++it;
@@ -139,7 +139,7 @@ void HttpServer::acceptNewConnections() {
         continue;
       }
       if (bytesRead == 0) {
-        closeConnection(cnxFd);
+        closeConnectionFd(cnxFd);
         pst = nullptr;
         break;
       }
@@ -154,7 +154,7 @@ void HttpServer::acceptNewConnections() {
         }
         break;
       }
-      closeConnection(cnxFd);
+      closeConnectionFd(cnxFd);
       pst = nullptr;
       break;
     }
@@ -163,13 +163,13 @@ void HttpServer::acceptNewConnections() {
     }
     bool closeNow = processRequestsOnConnection(cnxFd, *pst);
     if (closeNow && pst->outBuffer.empty()) {
-      closeConnection(cnxFd);
+      closeConnectionFd(cnxFd);
       pst = nullptr;
     }
   }
 }
 
-void HttpServer::closeConnection(int cfd) {
+void HttpServer::closeConnectionFd(int cfd) {
   _loop.del(cfd);
 
   auto it = _connStates.find(cfd);
@@ -196,7 +196,7 @@ void HttpServer::handleReadableClient(int fd) {
   }
   ConnectionState& state = itState->second;
   state.lastActivity = std::chrono::steady_clock::now();
-  bool closeCnx = false;
+  bool closeConnection = false;
   while (true) {
     bool wantR = false;
     bool wantW = false;
@@ -215,7 +215,7 @@ void HttpServer::handleReadableClient(int fd) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         state.tlsWantRead = wantR;
         state.tlsWantWrite = wantW;
-        if (wantW && !state.waitingWritable && _loop) {
+        if (wantW && !state.waitingWritable) {
           if (_loop.mod(fd, EPOLLIN | EPOLLOUT | EPOLLET)) {
             state.waitingWritable = true;
           }
@@ -223,22 +223,22 @@ void HttpServer::handleReadableClient(int fd) {
         break;
       }
       log::error("read failed: {}", std::strerror(errno));
-      closeCnx = true;
+      closeConnection = true;
       break;
     }
     if (count == 0) {
-      closeCnx = true;
+      closeConnection = true;
       break;
     }
     if (count > 0 && state.headerStart.time_since_epoch().count() == 0) {
       state.headerStart = std::chrono::steady_clock::now();
     }
     if (state.buffer.size() > _config.maxHeaderBytes + _config.maxBodyBytes) {
-      closeCnx = true;
+      closeConnection = true;
       break;
     }
     if (processRequestsOnConnection(fd, state)) {
-      closeCnx = true;
+      closeConnection = true;
       break;
     }
     // Header read timeout enforcement: if headers of current pending request are not complete yet
@@ -246,13 +246,13 @@ void HttpServer::handleReadableClient(int fd) {
     if (_config.headerReadTimeout.count() > 0 && state.headerStart.time_since_epoch().count() != 0) {
       const auto now = std::chrono::steady_clock::now();
       if (now - state.headerStart > _config.headerReadTimeout) {
-        closeCnx = true;
+        closeConnection = true;
         break;
       }
     }
   }
-  if (closeCnx) {
-    closeConnection(fd);
+  if (closeConnection) {
+    closeConnectionFd(fd);
   }
 }
 

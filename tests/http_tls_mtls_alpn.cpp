@@ -27,7 +27,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertHandshakeFailsWithout) {
       return aeronet::HttpResponse(200)
           .reason("OK")
           .contentType(aeronet::http::ContentTypeTextPlain)
-          .body(std::string("SECURE") + std::string(req.target));
+          .body(std::string("SECURE") + std::string(req.path()));
     });
     TlsClient::Options opts;
     opts.alpn = {"http/1.1"};
@@ -59,7 +59,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertSuccessWithAlpn) {
       return aeronet::HttpResponse(200)
           .reason("OK")
           .contentType(aeronet::http::ContentTypeTextPlain)
-          .body(std::string("SECURE") + std::string(req.target));
+          .body(std::string("SECURE") + std::string(req.path()));
     });
     TlsClient::Options opts;
     opts.alpn = {"http/1.1"};

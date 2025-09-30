@@ -19,7 +19,7 @@ class HttpResponseTest : public ::testing::Test {
   static constexpr bool isHeadMethod = false;
 
   static std::string_view finalize(HttpResponse &resp) {
-    return resp.finalizeAndGetFullTextResponse(http::HTTP11, date, keepAlive, isHeadMethod);
+    return resp.finalizeAndGetFullTextResponse(http::HTTP_1_1, date, keepAlive, isHeadMethod);
   }
 };
 

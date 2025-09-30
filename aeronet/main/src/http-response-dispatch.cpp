@@ -12,8 +12,8 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server.hpp"
-#include "encoder.hpp"
 #include "http-constants.hpp"
+#include "http-method.hpp"
 #include "log.hpp"
 #include "raw-chars.hpp"
 #include "string-equal-ignore-case.hpp"
@@ -21,14 +21,14 @@
 namespace aeronet {
 void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpRequest& req, HttpResponse& resp,
                                          std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart,
-                                         bool& closeConn) {
+                                         bool& closeConnection) {
   ++state.requestsServed;
   bool keepAlive = _config.enableKeepAlive && state.requestsServed < _config.maxRequestsPerConnection;
   if (keepAlive) {
-    std::string_view connVal = req.findHeader(http::Connection);
+    std::string_view connVal = req.header(http::Connection);
     if (connVal.empty()) {
       // Default is keep-alive for HTTP/1.1, close for HTTP/1.0
-      keepAlive = req.version == http::HTTP11;
+      keepAlive = req.version() == http::HTTP_1_1;
     } else {
       if (CaseInsensitiveEqual(connVal, http::close)) {
         keepAlive = false;
@@ -38,10 +38,10 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
     }
   }
 
-  bool isHead = (req.method == http::HEAD);
+  bool isHead = (req.method() == http::Method::HEAD);
   if (!isHead && !resp.userProvidedContentEncoding()) {
     const CompressionConfig& compressionConfig = _config.compression;
-    auto encHeader = req.findHeader(http::AcceptEncoding);
+    auto encHeader = req.header(http::AcceptEncoding);
     auto [encoding, reject] = _encodingSelector.negotiateAcceptEncoding(encHeader);
     // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
     // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
@@ -81,20 +81,20 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
       }
     }
   }
-  auto data = resp.finalizeAndGetFullTextResponse(req.version, std::string_view(_cachedDate), keepAlive, isHead);
+  auto data = resp.finalizeAndGetFullTextResponse(req.version(), std::string_view(_cachedDate), keepAlive, isHead);
 
   queueData(fd, state, data);
 
   state.buffer.erase_front(consumedBytes);
   if (!keepAlive) {
-    closeConn = true;
+    closeConnection = true;
   }
   if (_metricsCb) {
     RequestMetrics metrics;
-    metrics.method = req.method;
-    metrics.target = req.target;
+    metrics.method = req.method();
+    metrics.path = req.path();
     metrics.status = resp.statusCode();
-    metrics.bytesIn = req.body.size();
+    metrics.bytesIn = req.body().size();
     metrics.reusedConnection = state.requestsServed > 0;
     metrics.duration = std::chrono::steady_clock::now() - reqStart;
     _metricsCb(metrics);
@@ -197,7 +197,7 @@ void HttpServer::flushOutbound(int fd, ConnectionState& state) {
                                             "disable writable flushOutbound drop EPOLLOUT", _stats)) {
         state.waitingWritable = false;
         if (state.shouldClose) {
-          closeConnection(fd);
+          closeConnectionFd(fd);
         }
       }
     }

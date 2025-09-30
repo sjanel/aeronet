@@ -41,7 +41,7 @@ TEST(AsyncHttpServer, PredicateStop) {
   std::atomic<bool> done{false};
   aeronet::AsyncHttpServer async = aeronet::AsyncHttpServer::makeFromConfig(aeronet::HttpServerConfig{});
   async.server().setHandler(
-      [](const aeronet::HttpRequest &req) { return aeronet::HttpResponse(200).body(req.target); });
+      [](const aeronet::HttpRequest &req) { return aeronet::HttpResponse(200).body(req.path()); });
   async.startUntil([&] { return done.load(); });
   std::this_thread::sleep_for(15ms);  // let it spin
   auto port = async.server().port();

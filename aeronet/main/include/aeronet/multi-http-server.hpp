@@ -24,7 +24,6 @@ namespace aeronet {
 class MultiHttpServer {
  public:
   using RequestHandler = HttpServer::RequestHandler;
-  using ParserError = HttpServer::ParserError;
   using ParserErrorCallback = HttpServer::ParserErrorCallback;
 
   struct AggregatedStats {

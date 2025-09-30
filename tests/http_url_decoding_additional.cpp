@@ -41,12 +41,12 @@ TEST(HttpUrlDecodingExtra, MixedSegmentsDecoding) {
   HttpServer server(cfg);
   http::MethodSet ms{http::Method::GET};
   server.addPathHandler("/seg one/part%/two", ms, [](const HttpRequest &req) {
-    return aeronet::HttpResponse(200).reason("OK").body(req.target).contentType(aeronet::http::ContentTypeTextPlain);
+    return aeronet::HttpResponse(200, "OK").body(req.path()).contentType(aeronet::http::ContentTypeTextPlain);
   });
   std::atomic<bool> done = false;
   std::jthread th([&] { server.runUntil([&] { return done.load(); }); });
-  for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  for (int i = 0; i < 200 && (!server.isRunning()); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   // encodes space in first segment only
   test_http_client::RequestOptions opt2;

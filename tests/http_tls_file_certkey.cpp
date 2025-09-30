@@ -31,7 +31,7 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
     return aeronet::HttpResponse(200)
         .reason("OK")
         .contentType(aeronet::http::ContentTypeTextPlain)
-        .body(std::string("FILETLS-") + std::string(req.alpnProtocol.empty() ? "-" : req.alpnProtocol));
+        .body(std::string("FILETLS-") + std::string(req.alpnProtocol().empty() ? "-" : req.alpnProtocol()));
   });
   uint16_t port = server.port();
 

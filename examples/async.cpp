@@ -13,7 +13,7 @@ int main() {
   cfg.withPort(0);
   HttpServer server(cfg);
   server.setHandler([](const HttpRequest&) {
-    return HttpResponse(200).reason("OK").contentType(http::ContentTypeTextPlain).body("hello from async server\n");
+    return HttpResponse(200, "OK").contentType(http::ContentTypeTextPlain).body("hello from async server\n");
   });
 
   AsyncHttpServer async(std::move(server));

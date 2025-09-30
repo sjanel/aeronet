@@ -72,7 +72,7 @@ struct AeronetServerRunner {
     aeronet::log::set_level(aeronet::log::level::off);
     async.server().setHandler([](const aeronet::HttpRequest &req) {
       aeronet::HttpResponse resp;
-      auto sizeOpt = parseSizeParam(req.target);
+      auto sizeOpt = parseSizeParam(req.path());
       resp.body(makeIota(sizeOpt.value_or(0)));
       return resp;
     });
