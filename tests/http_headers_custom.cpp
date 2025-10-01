@@ -1,16 +1,22 @@
 // Tests for custom header forwarding and reserved header protection
 #include <gtest/gtest.h>
 
-#include <string>
+// IWYU: direct includes for used symbols
+#include <chrono>   // chrono literals (IWYU chrono warnings intentionally ignored)
+#include <string>   // std::string
+#include <utility>  // std::move
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_util.hpp"
 #include "test_server_fixture.hpp"
-#include "test_util.hpp"
 
 using namespace std::chrono_literals;
+
+#include "aeronet/compression-config.hpp"  // aeronet::CompressionConfig
+#include "aeronet/encoding.hpp"            // aeronet::Encoding
 
 TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
   TestServer ts(aeronet::HttpServerConfig{});
@@ -23,11 +29,11 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
     resp.body("B");
     return resp;
   });
-  ClientConnection cc(ts.port());
+  aeronet::test::ClientConnection cc(ts.port());
   int fd = cc.fd();
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  tu_sendAll(fd, req);
-  std::string resp = tu_recvUntilClosed(fd);
+  aeronet::test::sendAll(fd, req);
+  std::string resp = aeronet::test::recvUntilClosed(fd);
   ASSERT_NE(std::string::npos, resp.find("201 Created"));
   ASSERT_NE(std::string::npos, resp.find("X-One: 1"));
   ASSERT_NE(std::string::npos, resp.find("X-Two: two"));
@@ -80,11 +86,11 @@ TEST(HttpHeadersCustom, LocationHeaderAllowed) {
     resp.location("/new").body("");
     return resp;
   });
-  ClientConnection cc(ts.port());
+  aeronet::test::ClientConnection cc(ts.port());
   int fd = cc.fd();
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  tu_sendAll(fd, req);
-  std::string resp = tu_recvUntilClosed(fd);
+  aeronet::test::sendAll(fd, req);
+  std::string resp = aeronet::test::recvUntilClosed(fd);
   ASSERT_NE(std::string::npos, resp.find("302 Found"));
   ASSERT_NE(std::string::npos, resp.find("Location: /new"));
 }
@@ -101,11 +107,11 @@ TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
     resp.body("b");
     return resp;
   });
-  ClientConnection cc(ts.port());
+  aeronet::test::ClientConnection cc(ts.port());
   int fd = cc.fd();
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  tu_sendAll(fd, req);
-  std::string responseText = tu_recvUntilClosed(fd);
+  aeronet::test::sendAll(fd, req);
+  std::string responseText = aeronet::test::recvUntilClosed(fd);
   // Expect only one occurrence with original first casing and final value 'three'.
   ASSERT_NE(responseText.find("x-cAsE: three"), std::string::npos) << responseText;
   EXPECT_EQ(responseText.find("X-Case:"), std::string::npos) << responseText;
@@ -130,12 +136,12 @@ TEST(HttpHeadersCustom, StreamingCaseInsensitiveContentTypeAndEncodingSuppressio
     writer.write(payload.substr(40));
     writer.end();
   });
-  ClientConnection cc(ts.port());
+  aeronet::test::ClientConnection cc(ts.port());
   int fd = cc.fd();
   std::string req =
       "GET /h HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  tu_sendAll(fd, req);
-  std::string resp = tu_recvUntilClosed(fd);
+  aeronet::test::sendAll(fd, req);
+  std::string resp = aeronet::test::recvUntilClosed(fd);
   // Ensure our original casing appears exactly and no differently cased duplicate exists.
   ASSERT_NE(resp.find("cOnTeNt-TyPe: text/plain"), std::string::npos) << resp;
   ASSERT_NE(resp.find("cOnTeNt-EnCoDiNg: identity"), std::string::npos) << resp;

@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
-#include <cstdint>
-#include <string>
+#include <chrono>   // chrono literals (leave even if IWYU flags chrono; requested to ignore chrono issues)
+#include <cstdint>  // uint16_t
+#include <string>   // std::string
+#include <utility>  // std::move
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"

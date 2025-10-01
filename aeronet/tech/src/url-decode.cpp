@@ -4,11 +4,10 @@
 #include <cstring>
 
 #include "char-hexadecimal-converter.hpp"
-#include "raw-chars.hpp"
 
 namespace aeronet::url {
 
-char* DecodeInPlace(char* first, char* last, char plusAs, bool strictInvalid) {
+char* DecodeInPlace(char* first, const char* last, char plusAs, bool strictInvalid) {
   char* out = first;
   for (; first < last; ++first) {
     char ch = *first;

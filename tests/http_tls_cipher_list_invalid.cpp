@@ -1,7 +1,7 @@
 // Test invalid cipher list configuration triggers construction failure.
 #include <gtest/gtest.h>
 
-#include <string>
+#include <stdexcept>
 
 #include "aeronet/http-server-config.hpp"
 #include "test_server_tls_fixture.hpp"

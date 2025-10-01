@@ -1,17 +1,22 @@
-#include <arpa/inet.h>
+// IWYU pass: ensure each used symbol's header is directly included.
+// POSIX / system headers are pulled indirectly by test utilities for sockets.
 #include <benchmark/benchmark.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
+
+using namespace std::chrono_literals;  // for 200ms literals (chrono warnings intentionally ignored)
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "bench_util.hpp"  // bench_util::ClientConnection / send helpers
 
 // Self-contained minimal roundtrip benchmark (loopback). Avoids depending on test utilities
 // so the benchmarks module can stay decoupled from test headers.
@@ -44,47 +49,13 @@ class MinimalServerFixture : public benchmark::Fixture {
 };
 
 bool sendGet(uint16_t port) {
-  // TODO: use ClientConnection from test_util.hpp
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
+  bench_util::ClientConnection client(port);
+  static constexpr std::string_view kReq = "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+  if (!bench_util::sendAll(client.fd(), kReq)) {
     return false;
   }
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    ::close(fd);
-    return false;
-  }
-  const char req[] = "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-  ssize_t sent = ::send(fd, req, sizeof(req) - 1, 0);
-  if (sent != static_cast<ssize_t>(sizeof(req) - 1)) {
-    ::close(fd);
-    return false;
-  }
-  char buf[512];
-  // Read until close
-  // Read with a short timeout loop instead of blocking indefinitely in case of server issues
-  auto start = std::chrono::steady_clock::now();
-  using namespace std::chrono_literals;
-  while (std::chrono::steady_clock::now() - start < 200ms) {
-    ssize_t bytes = ::recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
-    if (bytes > 0) {
-      // minimal validation: look for end of headers
-      if (std::string_view(buf, static_cast<size_t>(bytes)).find("\r\n\r\n") != std::string_view::npos) {
-        break;
-      }
-      continue;
-    }
-    if (bytes == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-      std::this_thread::sleep_for(2ms);
-      continue;
-    }
-    break;  // connection closed or error
-  }
-  ::close(fd);
-  return true;
+  auto raw = bench_util::recvWithTimeout(client.fd(), 200ms);
+  return raw.find("\r\n\r\n") != std::string::npos;
 }
 
 BENCHMARK_F(MinimalServerFixture, GET_RoundTrip)(benchmark::State& state) {

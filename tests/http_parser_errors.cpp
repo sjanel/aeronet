@@ -13,9 +13,9 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_util.hpp"
 #include "http-status-code.hpp"
 #include "test_server_fixture.hpp"
-#include "test_util.hpp"
 
 using namespace std::chrono_literals;
 
@@ -36,12 +36,12 @@ TEST(HttpParserErrors, InvalidVersion505) {
   Capture cap;
   ts.server.setParserErrorCallback([&](aeronet::http::StatusCode err) { cap.push(err); });
   ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
-  ClientConnection clientConnection(port);
+  aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string bad = "GET / HTTP/9.9\r\nHost: x\r\nConnection: close\r\n\r\n";  // unsupported version
-  tu_sendAll(fd, bad);
-  std::string resp = tu_recvUntilClosed(fd);
+  aeronet::test::sendAll(fd, bad);
+  std::string resp = aeronet::test::recvUntilClosed(fd);
   ts.stop();
   ASSERT_NE(std::string::npos, resp.find("505")) << resp;
   bool seen = false;
@@ -60,23 +60,23 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
   TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
-  ClientConnection clientConnection(port);
+  aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   // zero length with Expect should NOT produce 100 Continue
   std::string zero =
       "POST /z HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
-  tu_sendAll(fd, zero);
-  std::string respZero = tu_recvUntilClosed(fd);
+  aeronet::test::sendAll(fd, zero);
+  std::string respZero = aeronet::test::recvUntilClosed(fd);
   ASSERT_EQ(std::string::npos, respZero.find("100 Continue"));
   // non-zero length with Expect should produce interim 100 then 200
-  ClientConnection clientConnection2(port);
+  aeronet::test::ClientConnection clientConnection2(port);
   int fd2 = clientConnection2.fd();
   ASSERT_GE(fd2, 0);
   std::string post =
       "POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\nHELLO";
-  tu_sendAll(fd2, post);
-  std::string resp = tu_recvUntilClosed(fd2);
+  aeronet::test::sendAll(fd2, post);
+  std::string resp = aeronet::test::recvUntilClosed(fd2);
   ts.stop();
   ASSERT_NE(std::string::npos, resp.find("100 Continue"));
   ASSERT_NE(std::string::npos, resp.find("200"));
@@ -91,11 +91,11 @@ TEST(HttpParserErrors, ChunkIncrementalFuzz) {
   std::mt19937 rng(12345);
   std::uniform_int_distribution<int> sizeDist(1, 15);
   std::string original;
-  ClientConnection clientConnection(port);
+  aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string head = "POST /f HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
-  tu_sendAll(fd, head);
+  aeronet::test::sendAll(fd, head);
   // send 5 random chunks
   for (int i = 0; i < 5; ++i) {
     int sz = sizeDist(rng);
@@ -108,14 +108,14 @@ TEST(HttpParserErrors, ChunkIncrementalFuzz) {
     while (pos < frame.size()) {
       std::size_t rem = frame.size() - pos;
       std::size_t slice = std::min<std::size_t>(1 + (rng() % 3), rem);
-      tu_sendAll(fd, frame.substr(pos, slice));
+      aeronet::test::sendAll(fd, frame.substr(pos, slice));
       pos += slice;
       std::this_thread::sleep_for(1ms);
     }
   }
   // terminating chunk
-  tu_sendAll(fd, "0\r\n\r\n");
-  std::string resp = tu_recvUntilClosed(fd);
+  aeronet::test::sendAll(fd, "0\r\n\r\n");
+  std::string resp = aeronet::test::recvUntilClosed(fd);
   ts.stop();
   ASSERT_NE(std::string::npos, resp.find("200"));
   ASSERT_NE(std::string::npos, resp.find(original.substr(0, 3))) << resp;  // sanity partial check

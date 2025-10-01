@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <ranges>  // std::ranges::subrange/search
 #include <stdexcept>
 #include <string_view>
 

@@ -9,7 +9,8 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_util.hpp"
+#include "aeronet/test_util.hpp"
+#include "http-method.hpp"
 
 TEST(HttpQueryStructuredBindings, IterateKeyValues) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
@@ -46,10 +47,10 @@ TEST(HttpQueryStructuredBindings, IterateKeyValues) {
   std::jthread thr([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   // Build raw HTTP request using helpers
-  ClientConnection client(server.port());
+  aeronet::test::ClientConnection client(server.port());
   std::string req = "GET /sb?a=1&b=two%20words&empty=&novalue HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
-  ASSERT_TRUE(tu_sendAll(client.fd(), req));
-  auto resp = tu_recvUntilClosed(client.fd());
+  ASSERT_TRUE(aeronet::test::sendAll(client.fd(), req));
+  auto resp = aeronet::test::recvUntilClosed(client.fd());
   EXPECT_NE(resp.find("OK"), std::string::npos);
   server.stop();
 }

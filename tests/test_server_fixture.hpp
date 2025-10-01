@@ -11,7 +11,7 @@
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_util.hpp"
+#include "aeronet/test_util.hpp"
 
 // Lightweight RAII test server harness to reduce boilerplate in unit tests.
 // Responsibilities:
@@ -59,7 +59,7 @@ struct TestServer {
   void waitReady(std::chrono::milliseconds timeout) const {
     // The listening socket is active immediately after server construction; a successful connect
     // simply confirms the OS accepted it. We retry briefly to absorb transient startup latency.
-    ClientConnection cnx(port(), timeout);
+    aeronet::test::ClientConnection cnx(port(), timeout);
   }
 
   std::jthread loopThread;  // auto-join on destruction

@@ -5,13 +5,16 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <string>
-#include <thread>
+#include <chrono>   // std::chrono::milliseconds
+#include <cstdint>  // uint16_t
+#include <string>   // std::string
+#include <thread>   // std::jthread, sleep_for
 
-#include "aeronet/http-request.hpp"
-#include "aeronet/http-response.hpp"
-#include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
+#include "aeronet/http-request.hpp"        // aeronet::HttpRequest
+#include "aeronet/http-response.hpp"       // aeronet::HttpResponse
+#include "aeronet/http-server-config.hpp"  // aeronet::HttpServerConfig
+#include "aeronet/http-server.hpp"         // aeronet::HttpServer
+#include "http-method.hpp"                 // aeronet::http::Method
 
 // use explicit std::chrono::milliseconds below (no using directives)
 

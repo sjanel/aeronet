@@ -1,11 +1,15 @@
-#include <chrono>
-#include <string>
-#include <thread>
+// IWYU: add direct includes for symbols used in tests
+#include <gtest/gtest.h>
 
-#include "aeronet/http-request.hpp"
-#include "aeronet/http-response.hpp"
-#include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
+#include <chrono>  // chrono literals
+#include <string>  // std::string
+#include <thread>  // std::jthread, sleep_for
+
+#include "aeronet/http-request.hpp"        // aeronet::HttpRequest
+#include "aeronet/http-response.hpp"       // aeronet::HttpResponse
+#include "aeronet/http-server-config.hpp"  // aeronet::HttpServerConfig
+#include "aeronet/http-server.hpp"         // aeronet::HttpServer
+#include "http-method.hpp"                 // aeronet::http::Method
 #include "test_raw_get.hpp"
 
 using namespace std::chrono_literals;

@@ -17,8 +17,8 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/test_util.hpp"
 #include "raw-bytes.hpp"
-#include "test_util.hpp"
 #include "tls-raii.hpp"
 
 // Lightweight RAII TLS client used in tests to reduce duplication.
@@ -159,7 +159,7 @@ class TlsClient {
                                   static_cast<unsigned int>(wire.size()));
       }
     }
-    _cnx = ClientConnection(_port);
+    _cnx = aeronet::test::ClientConnection(_port);
 
     SSLUniquePtr localSsl(::SSL_new(localCtx.get()), ::SSL_free);
     if (!localSsl) {
@@ -204,7 +204,7 @@ class TlsClient {
   Options _opts;
   bool _handshakeOk{false};
   std::string _negotiatedAlpn;
-  ClientConnection _cnx;
+  aeronet::test::ClientConnection _cnx;
   // Initialize with valid deleter function pointers so default-constructed state is safe.
   SSL_CTXUniquePtr _ctx{nullptr, ::SSL_CTX_free};
   SSLUniquePtr _ssl{nullptr, ::SSL_free};

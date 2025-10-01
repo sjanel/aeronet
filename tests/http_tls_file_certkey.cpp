@@ -1,6 +1,7 @@
 // Test that the TLS context loads certificate/key from filesystem paths (not in-memory PEM).
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <string>
 
 #include "aeronet/http-request.hpp"

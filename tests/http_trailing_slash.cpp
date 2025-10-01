@@ -1,9 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <cstdint>  // uint16_t
 #include <string>
 
+#include "aeronet/http-request.hpp"   // aeronet::HttpRequest
+#include "aeronet/http-response.hpp"  // aeronet::HttpResponse
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "http-method.hpp"
 #include "test_http_client.hpp"
 #include "test_server_fixture.hpp"
 
@@ -29,9 +33,6 @@ TEST(HttpTrailingSlash, StrictPolicyDifferent) {
                            [](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("alpha"); });
   auto resp = rawRequest(ts.port(), "/alpha/");
   ts.stop();
-  if (resp.find("404") == std::string::npos) {
-    std::cerr << "[DEBUG StrictPolicyDifferent] Raw response (len=" << resp.size() << "):\n" << resp << '\n';
-  }
   ASSERT_NE(std::string::npos, resp.find("404"));
 }
 
@@ -71,10 +72,6 @@ TEST(HttpTrailingSlash, StrictPolicyRegisteredWithSlashDoesNotMatchWithout) {
   auto ok = rawRequest(ts.port(), "/sigma/");
   auto notFound = rawRequest(ts.port(), "/sigma");
   ts.stop();
-  if (ok.find("200") == std::string::npos) {
-    std::cerr << "[DEBUG StrictPolicyRegisteredWithSlashDoesNotMatchWithout] OK Raw (len=" << ok.size() << "):\n"
-              << ok << '\n';
-  }
   ASSERT_NE(std::string::npos, ok.find("200"));
   ASSERT_NE(std::string::npos, notFound.find("404"));
 }
@@ -88,11 +85,6 @@ TEST(HttpTrailingSlash, NormalizePolicyRegisteredWithSlashAcceptsWithout) {
   auto withSlash = rawRequest(ts.port(), "/norm/");
   auto withoutSlash = rawRequest(ts.port(), "/norm");
   ts.stop();
-  if (withSlash.find("200") == std::string::npos) {
-    std::cerr << "[DEBUG NormalizePolicyRegisteredWithSlashAcceptsWithout] withSlash Raw (len=" << withSlash.size()
-              << "):\n"
-              << withSlash << '\n';
-  }
   ASSERT_NE(std::string::npos, withSlash.find("200"));
   ASSERT_NE(std::string::npos, withoutSlash.find("200"));
   ASSERT_NE(std::string::npos, withoutSlash.find("norm"));

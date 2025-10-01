@@ -4,10 +4,14 @@
 #include <array>
 #include <charconv>
 #include <climits>
+#include <cstddef>  // std::size_t
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <ranges>
 #include <string_view>
+#include <system_error>  // std::errc
+#include <utility>       // std::index_sequence, make_index_sequence
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
@@ -89,10 +93,9 @@ consteval auto makeSupported(std::index_sequence<I...> /*unused*/) {
 }  // namespace
 
 EncodingSelector::EncodingSelector() noexcept {
-  std::ranges::fill(_serverPrefIndex, -1);
-  for (int8_t i = 0; i < kNbContentEncodings; ++i) {
-    _serverPrefIndex[i] = i;
-    _preferenceOrdered.push_back(static_cast<Encoding>(i));
+  std::ranges::iota(_serverPrefIndex, 0);
+  for (std::remove_const_t<decltype(kNbContentEncodings)> pos = 0; pos < kNbContentEncodings; ++pos) {
+    _preferenceOrdered.push_back(static_cast<Encoding>(pos));
   }
 }
 
@@ -114,9 +117,9 @@ EncodingSelector::EncodingSelector(const CompressionConfig &compressionConfig) {
     // Do NOT append remaining encodings: preferredFormats defines the full server-advertised order.
   } else {
     // Fall back to enumeration order
-    for (int8_t i = 0; i < kNbContentEncodings; ++i) {
-      _serverPrefIndex[i] = i;
-      _preferenceOrdered.push_back(static_cast<Encoding>(i));
+    std::ranges::iota(_serverPrefIndex, 0);
+    for (std::remove_const_t<decltype(kNbContentEncodings)> pos = 0; pos < kNbContentEncodings; ++pos) {
+      _preferenceOrdered.push_back(static_cast<Encoding>(pos));
     }
   }
 }
@@ -124,10 +127,6 @@ EncodingSelector::EncodingSelector(const CompressionConfig &compressionConfig) {
 EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std::string_view acceptEncoding) const {
   NegotiatedResult ret;
   // Fast path: empty or all whitespace -> identity (Encoding::none maps to identity header)
-  if (acceptEncoding.empty()) {
-    return ret;
-  }
-  acceptEncoding = trim(acceptEncoding);
   if (acceptEncoding.empty()) {
     return ret;
   }

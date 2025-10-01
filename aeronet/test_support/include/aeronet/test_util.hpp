@@ -1,22 +1,24 @@
 #pragma once
 
+// Shared test & benchmark utilities (client connection & simple socket helpers)
+// Moved from tests/test_util.hpp to a public-ish internal support include so
+// benchmarks can include "aeronet/test_util.hpp" without relative paths.
+
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <chrono>
-#include <cstdint>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 
-#include "base-fd.hpp"
 #include "socket.hpp"
 
+namespace aeronet::test {
 using namespace std::chrono_literals;
 
-inline bool tu_sendAll(int fd, std::string_view data) {
+inline bool sendAll(int fd, std::string_view data) {
   const char* cursor = data.data();
   std::size_t remaining = data.size();
   while (remaining > 0) {
@@ -30,7 +32,7 @@ inline bool tu_sendAll(int fd, std::string_view data) {
   return true;
 }
 
-inline std::string tu_recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout = 200ms) {
+inline std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout = 200ms) {
   std::string out;
   char buffer[4096];
   auto start = std::chrono::steady_clock::now();
@@ -49,7 +51,7 @@ inline std::string tu_recvWithTimeout(int fd, std::chrono::milliseconds totalTim
   return out;
 }
 
-inline std::string tu_recvUntilClosed(int fd) {
+inline std::string recvUntilClosed(int fd) {
   std::string out;
   char buffer[4096];
   for (;;) {
@@ -62,7 +64,7 @@ inline std::string tu_recvUntilClosed(int fd) {
   return out;
 }
 
-inline void tu_connect(int fd, auto port, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000}) {
+inline void connectLoop(int fd, auto port, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000}) {
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
@@ -75,18 +77,16 @@ inline void tu_connect(int fd, auto port, std::chrono::milliseconds timeout = st
   }
 }
 
-class ClientConnection : public aeronet::Socket {
+class ClientConnection : public ::aeronet::Socket {
  public:
   ClientConnection() noexcept = default;
-
   ClientConnection(auto port, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000})
-      : Socket(aeronet::Socket::Type::STREAM) {
-    tu_connect(fd(), port, timeout);
+      : ::aeronet::Socket(::aeronet::Socket::Type::STREAM) {
+    connectLoop(fd(), port, timeout);
   }
 };
 
-// Count non-overlapping occurrences of a needle inside a haystack.
-inline int tu_countOccurrences(std::string_view haystack, std::string_view needle) {
+inline int countOccurrences(std::string_view haystack, std::string_view needle) {
   if (needle.empty()) {
     return 0;
   }
@@ -99,11 +99,12 @@ inline int tu_countOccurrences(std::string_view haystack, std::string_view needl
   return count;
 }
 
-// Assert helper: verify no bytes after header terminator (used for HEAD behavior checks).
-inline bool tu_noBodyAfterHeaders(std::string_view raw) {
+inline bool noBodyAfterHeaders(std::string_view raw) {
   auto pivot = raw.find("\r\n\r\n");
   if (pivot == std::string_view::npos) {
     return false;
   }
   return raw.substr(pivot + 4).empty();
 }
+
+}  // namespace aeronet::test
