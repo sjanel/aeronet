@@ -280,7 +280,7 @@ bool HttpResponseWriter::write(std::string_view data) {
     _bytesWritten += data.size();
   }
   log::trace("Streaming: write fd={} size={} total={} chunked={}", _fd, data.size(), _bytesWritten, _chunked);
-  return !_failed;  // backpressure signaled via server.shouldClose flag, failure sets _failed
+  return !_failed;  // backpressure signaled via connection close flag, failure sets _failed
 }
 
 void HttpResponseWriter::end() {
@@ -343,7 +343,7 @@ bool HttpResponseWriter::enqueue(std::string_view data) {
   }
   auto& st = it->second;
   bool ok = _server->queueData(_fd, st, data);
-  return ok && !st.shouldClose;
+  return ok && !st.isAnyCloseRequested();
 }
 
 }  // namespace aeronet

@@ -31,7 +31,7 @@ TEST(HttpRouting, BasicPathDispatch) {
 
   std::atomic<bool> done{false};
   std::jthread th([&]() { server.runUntil([&]() { return done.load(); }); });
-  for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
+  for (int i = 0; i < 200 && !server.isRunning(); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 

@@ -358,7 +358,7 @@ bool HttpServer::ModWithCloseOnFailure(EventLoop& loop, int fd, uint32_t events,
     log::error("epoll_ctl MOD failed (ctx={}, fd={}, events=0x{:x}, errno={}, msg={})", ctx, fd, events, errCode,
                std::strerror(errCode));
   }
-  st.shouldClose = true;
+  st.requestDrainAndClose();
   return false;
 }
 
@@ -373,7 +373,6 @@ ssize_t HttpServer::transportWrite(int fd, ConnectionState& state, std::string_v
 }
 
 bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
-  bool closeConnection = false;
   while (true) {
     auto reqStart = std::chrono::steady_clock::now();
     // If we don't yet have a full request line (no '\n' observed) wait for more data instead of
@@ -384,9 +383,11 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
     HttpRequest req;
     auto statusCode = req.setHead(state, _config.maxHeaderBytes);
     if (statusCode != http::StatusCodeOK) {
-      emitSimpleError(fd, state, statusCode, closeConnection);
-      // Consume the currently parsed (or attempted) header bytes to avoid infinite loop on same data.
-      // If we failed early, closeConnection will be true; break either way.
+      emitSimpleError(fd, state, statusCode, true);
+      // EmitSimpleError was invoked with immediate=true, which requested an Immediate close
+      // (ConnectionState::CloseMode::Immediate). We break unconditionally; the connection
+      // will be torn down after any queued error bytes are flushed. No partial recovery is
+      // attempted for a malformed / protocol-violating start line or headers.
       break;
     }
 
@@ -395,40 +396,40 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
     state.headerStart = {};
     bool isChunked = false;
     bool hasTransferEncoding = false;
-    std::string_view transferEncoding = req.header(http::TransferEncoding);
+    std::string_view transferEncoding = req.headerValueOrEmpty(http::TransferEncoding);
     if (!transferEncoding.empty()) {
       hasTransferEncoding = true;
       if (req.version() == http::HTTP_1_0) {
-        emitSimpleError(fd, state, 400, closeConnection);
+        emitSimpleError(fd, state, 400, true);
         break;
       }
       if (CaseInsensitiveEqual(transferEncoding, http::chunked)) {
         isChunked = true;
       } else {
-        emitSimpleError(fd, state, 501, closeConnection);
+        emitSimpleError(fd, state, 501, true);
         break;
       }
     }
 
     bool hasContentLength = false;
-    std::string_view lenViewAll = req.header(http::ContentLength);
+    std::string_view lenViewAll = req.headerValueOrEmpty(http::ContentLength);
     if (!lenViewAll.empty()) {
       hasContentLength = true;
     }
     if (hasContentLength && hasTransferEncoding) {
-      emitSimpleError(fd, state, 400, closeConnection);
+      emitSimpleError(fd, state, 400, true);
       break;
     }
     bool expectContinue = false;
     if (req.version() == http::HTTP_1_1) {
-      if (std::string_view expectVal = req.header(http::Expect); !expectVal.empty()) {
+      if (std::string_view expectVal = req.headerValueOrEmpty(http::Expect); !expectVal.empty()) {
         if (CaseInsensitiveEqual(expectVal, http::h100_continue)) {
           expectContinue = true;
         }
       }
     }
     std::size_t consumedBytes = 0;
-    if (!decodeBodyIfReady(fd, state, req, isChunked, expectContinue, closeConnection, consumedBytes)) {
+    if (!decodeBodyIfReady(fd, state, req, isChunked, expectContinue, consumedBytes)) {
       break;  // need more bytes or error
     }
     // Determine dispatch: path streaming > path normal > global streaming > global normal > 404/405
@@ -462,9 +463,9 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
                 // Emit 301 redirect to canonical form.
                 HttpResponse resp(301, http::MovedPermanently);
                 resp.location(canonical).contentType(http::ContentTypeTextPlain).body("Redirecting");
-                finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConnection);
-                if (closeConnection) {
-                  return closeConnection;  // connection closing, stop loop
+                finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart);
+                if (state.isAnyCloseRequested()) {
+                  return true;  // connection closing, stop loop
                 }
                 consumedBytes = 0;  // already advanced
                 continue;           // process next request (keep-alive)
@@ -506,8 +507,12 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
           }
         }
         if (entry.streamingHandlers[idx]) {
-          closeConnection = callStreamingHandler(entry.streamingHandlers[idx], req, fd, state, consumedBytes, reqStart);
+          bool streamingClose =
+              callStreamingHandler(entry.streamingHandlers[idx], req, fd, state, consumedBytes, reqStart);
           handledStreaming = true;
+          if (streamingClose) {
+            // callStreamingHandler already set close mode if needed
+          }
         } else if (entry.normalHandlers[idx]) {
           HttpResponse resp(405);
           if (http::methodAllowed(entry.normalMethodMask | entry.streamingMethodMask, effectiveMethodEnum)) {
@@ -530,12 +535,12 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
           } else {
             resp.reason(http::ReasonMethodNotAllowed).body(resp.reason()).contentType(http::ContentTypeTextPlain);
           }
-          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConnection);
+          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart);
         } else {
           // path found but method not registered -> 405
           HttpResponse resp(405, http::ReasonMethodNotAllowed);
           resp.body(resp.reason()).contentType(http::ContentTypeTextPlain);
-          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConnection);
+          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart);
         }
       } else if (!endsWithSlash && _config.trailingSlashPolicy == HttpServerConfig::TrailingSlashPolicy::Normalize &&
                  req.path().size() > 1) {
@@ -561,9 +566,12 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
             }
           }
           if (entry.streamingHandlers[idx]) {
-            closeConnection =
+            bool streamingClose =
                 callStreamingHandler(entry.streamingHandlers[idx], req, fd, state, consumedBytes, reqStart);
             handledStreaming = true;
+            if (streamingClose) {
+              // close mode reflects decision
+            }
           } else if (entry.normalHandlers[idx]) {
             HttpResponse resp(405);
             if (http::methodAllowed(entry.normalMethodMask | entry.streamingMethodMask, effectiveMethodEnum)) {
@@ -585,27 +593,27 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
             } else {
               resp.reason(http::ReasonMethodNotAllowed).body(resp.reason()).contentType(http::ContentTypeTextPlain);
             }
-            finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConnection);
+            finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart);
           } else {
             HttpResponse resp(405, http::ReasonMethodNotAllowed);
             resp.body(resp.reason()).contentType(http::ContentTypeTextPlain);
 
-            finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConnection);
+            finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart);
           }
           // restore original target for metric consistency? We keep canonical (augmented) for now.
         }
       }
     }
     if (handledStreaming) {
-      if (closeConnection) {
+      if (state.isAnyCloseRequested()) {
         break;
       }
       continue;  // proceed next request in buffer
     }
     if (!pathFound) {
       if (_streamingHandler) {
-        closeConnection = callStreamingHandler(_streamingHandler, req, fd, state, consumedBytes, reqStart);
-        if (closeConnection) {
+        bool streamingClose = callStreamingHandler(_streamingHandler, req, fd, state, consumedBytes, reqStart);
+        if (streamingClose) {
           break;
         }
         continue;
@@ -625,13 +633,13 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
         resp.statusCode(404);
         resp.reason(http::NotFound).body(resp.reason()).contentType(http::ContentTypeTextPlain);
       }
-      finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConnection);
+      finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart);
     }
-    if (closeConnection) {
+    if (state.isAnyCloseRequested()) {
       break;
     }
   }
-  return closeConnection;
+  return state.isAnyCloseRequested();
 }
 
 bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, HttpRequest& req, int fd,
@@ -641,15 +649,14 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   bool isHead = req.method() == http::Method::HEAD;
   Encoding compressionFormat = Encoding::none;
   if (!isHead) {
-    auto encHeader = req.header(http::AcceptEncoding);
+    auto encHeader = req.headerValueOrEmpty(http::AcceptEncoding);
     auto negotiated = _encodingSelector.negotiateAcceptEncoding(encHeader);
     if (negotiated.reject) {
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
       HttpResponse resp(406, http::ReasonNotAcceptable);
       resp.body("No acceptable content-coding available").contentType(http::ContentTypeTextPlain);
-      bool closeConnection = false;  // will be set inside finalizeAndSendResponse if keep-alive not allowed
-      finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConnection);
-      return closeConnection;
+      finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart);
+      return state.isAnyCloseRequested();
     }
     compressionFormat = negotiated.encoding;
   }
@@ -665,10 +672,10 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
     writer.end();
   }
   if (wantClose) {
-    state.shouldClose = true;  // honor client directive for streaming path
+    state.requestDrainAndClose();  // honor client directive for streaming path
   }
   bool allowKeepAlive = _config.enableKeepAlive && req.version() == http::HTTP_1_1 && !wantClose &&
-                        state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.shouldClose;
+                        state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.isAnyCloseRequested();
   ++state.requestsServed;
   state.buffer.erase_front(consumedBytes);
 
@@ -683,7 +690,7 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
     _metricsCb(metrics);
   }
   if (!allowKeepAlive) {
-    state.shouldClose = true;
+    state.requestDrainAndClose();
     return true;
   }
   return false;
@@ -752,7 +759,7 @@ ServerStats HttpServer::stats() const {
   return statsOut;
 }
 
-void HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, bool& closeConnection) {
+void HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, bool immediate) {
   const auto err = BuildSimpleError(code, std::string_view(_cachedDate), true);
   queueData(fd, state, err);
   try {
@@ -761,7 +768,11 @@ void HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCod
     // Swallow exceptions from user callback to avoid destabilizing the server
     log::error("Exception raised in user callback: {}", ex.what());
   }
-  closeConnection = true;
+  if (immediate) {
+    state.requestImmediateClose();
+  } else {
+    state.requestDrainAndClose();
+  }
 }
 
 }  // namespace aeronet
