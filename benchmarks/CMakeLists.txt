@@ -54,9 +54,22 @@ set(AERONET_BENCH_INTERNAL_SOURCES
     internal/bench_request_parse.cpp
 )
 
+# A tiny interface library to share selected test utilities with benchmarks.
+add_library(aeronet_bench_util INTERFACE)
+target_include_directories(aeronet_bench_util INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/internal
+    ${CMAKE_SOURCE_DIR}/tests
+    ${PROJECT_SOURCE_DIR}/tests
+)
+add_library(aeronet::bench_util ALIAS aeronet_bench_util)
+if(TARGET aeronet)
+    target_link_libraries(aeronet_bench_util INTERFACE aeronet) # for socket/ns dependencies
+endif()
+
 add_executable(aeronet-bench-internal ${AERONET_BENCH_INTERNAL_SOURCES})
 if(TARGET aeronet)
-    target_link_libraries(aeronet-bench-internal PRIVATE aeronet benchmark::benchmark)
+    target_link_libraries(aeronet-bench-internal PRIVATE aeronet benchmark::benchmark aeronet_bench_util)
+    target_include_directories(aeronet-bench-internal PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 else()
     message(WARNING "[aeronet][bench] 'aeronet' target not found; internal microbench will be broken")
 endif()

@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <initializer_list>  // std::initializer_list
 #include <string_view>
 
 #include "aeronet/compression-config.hpp"

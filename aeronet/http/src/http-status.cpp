@@ -1,3 +1,5 @@
+#include <algorithm>  // std::max
+#include <cstddef>    // std::size_t
 #include <string_view>
 
 #include "http-constants.hpp"

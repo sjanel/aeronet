@@ -1,23 +1,24 @@
-#include <arpa/inet.h>
 #include <benchmark/benchmark.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
-#include <chrono>
-#include <cstddef>
-#include <cstdint>
-#include <cstring>
-#include <optional>
-#include <random>
-#include <string>
-#include <thread>
-#include <vector>
+#include <chrono>       // sleep_for
+#include <cstddef>      // size_t
+#include <cstdint>      // uint16_t
+#include <cstring>      // std::memcpy (path normalization in parseSizeParam potential future)
+#include <optional>     // std::optional return from parseSizeParam
+#include <random>       // std::mt19937_64, uniform_int_distribution
+#include <string>       // std::string
+#include <string_view>  // std::string_view (parseSizeParam)
+#include <thread>       // std::this_thread::sleep_for
+#include <vector>       // benchmark argument container / not strictly required but future‑proof
 
-#include "aeronet/async-http-server.hpp"
-#include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
-#include "bench_util.hpp"
-#include "log.hpp"
+#include "aeronet/async-http-server.hpp"   // AsyncHttpServer wrapper
+#include "aeronet/http-request.hpp"        // aeronet::HttpRequest
+#include "aeronet/http-response.hpp"       // aeronet::HttpResponse
+#include "aeronet/http-server-config.hpp"  // HttpServerConfig
+#include "aeronet/http-server.hpp"         // HttpServer
+#include "aeronet/test_util.hpp"
+#include "bench_util.hpp"  // benchutil::requestBodySize
+#include "log.hpp"         // aeronet::log for silencing
 
 #ifdef HAVE_BENCH_DROGON
 #include <drogon/drogon.h>
@@ -181,7 +182,7 @@ class PersistentClient {
   }
 
  private:
-  ClientConnection conn;  // from test_util.hpp
+  aeronet::test::ClientConnection conn;  // persistent connection for benchmark
 };
 
 void BenchAeronetRandom(benchmark::State &state) {

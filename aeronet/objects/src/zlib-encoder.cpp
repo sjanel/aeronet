@@ -1,6 +1,6 @@
 #include "zlib-encoder.hpp"
 
-#include <zlib.h>
+#include <zlib.h>  // IWYU pragma: keep (Bytef, uInt, Z_* APIs)
 
 #include <cstddef>
 #include <cstdint>

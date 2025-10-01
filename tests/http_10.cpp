@@ -8,18 +8,18 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_util.hpp"
 #include "test_server_fixture.hpp"
-#include "test_util.hpp"
 
 using namespace std::chrono_literals;
 
 namespace {
 std::string collectSimple(uint16_t port, const std::string& req) {
-  ClientConnection clientConnection(port);
+  aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   EXPECT_GE(fd, 0);
-  EXPECT_TRUE(tu_sendAll(fd, req));
-  std::string resp = tu_recvUntilClosed(fd);
+  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
+  std::string resp = aeronet::test::recvUntilClosed(fd);
   return resp;
 }
 }  // namespace
@@ -71,16 +71,16 @@ TEST(Http10, KeepAliveOptInStillWorks) {
     respObj.body("D");
     return respObj;
   });
-  ClientConnection clientConnection(ts.port());
+  aeronet::test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string req1 = "GET /k1 HTTP/1.0\r\nHost: h\r\nConnection: keep-alive\r\n\r\n";
-  ASSERT_TRUE(tu_sendAll(fd, req1));
-  std::string first = tu_recvWithTimeout(fd, 300ms);
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req1));
+  std::string first = aeronet::test::recvWithTimeout(fd, 300ms);
   ASSERT_NE(std::string::npos, first.find("HTTP/1.0 200"));
   ASSERT_NE(std::string::npos, first.find("Connection: keep-alive"));
   std::string req2 = "GET /k2 HTTP/1.0\r\nHost: h\r\nConnection: keep-alive\r\n\r\n";
-  ASSERT_TRUE(tu_sendAll(fd, req2));
-  std::string second = tu_recvWithTimeout(fd, 300ms);
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req2));
+  std::string second = aeronet::test::recvWithTimeout(fd, 300ms);
   ASSERT_NE(std::string::npos, second.find("HTTP/1.0 200"));
 }

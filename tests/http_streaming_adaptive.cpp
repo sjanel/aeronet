@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cstddef>  // std::size_t
+#include <cstdint>  // uint16_t in blockingFetch signature
 #include <string>
+#include <system_error>  // std::errc
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
@@ -53,6 +56,6 @@ TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
   // We only count 'x' in the large payload; small chunk contains none.
   ASSERT_EQ(kLargeSize, static_cast<size_t>(std::count(body.begin(), body.end(), 'x')));
   // Stats: exactly one coalesced ("small"), one large
-  ASSERT_EQ(1u, stats.streamingChunkCoalesced) << "Expected 1 coalesced chunk";
-  ASSERT_EQ(1u, stats.streamingChunkLarge) << "Expected 1 large chunk";
+  ASSERT_EQ(1U, stats.streamingChunkCoalesced) << "Expected 1 coalesced chunk";
+  ASSERT_EQ(1U, stats.streamingChunkLarge) << "Expected 1 large chunk";
 }
