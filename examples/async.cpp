@@ -1,6 +1,6 @@
 #include <aeronet/aeronet.hpp>
 #include <chrono>
-#include <cstdio>
+#include <iostream>
 #include <thread>
 
 using namespace aeronet;
@@ -15,12 +15,12 @@ int main() {
 
   AsyncHttpServer async(std::move(server));
   async.start();
-  std::printf("Async server listening on port %u\n", async.server().port());
-  std::puts("Sleeping for 2 seconds while serving...");
+  std::cout << "Async server listening on port " << async.server().port() << '\n';
+  std::cout << "Sleeping for 2 seconds while serving..." << '\n';
   std::this_thread::sleep_for(std::chrono::seconds(2));
 
   async.requestStop();
   async.stopAndJoin();
   async.rethrowIfError();
-  std::puts("Server stopped.");
+  std::cout << "Server stopped." << '\n';
 }

@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "aeronet/test_util.hpp"
 #include "socket.hpp"
 
 // Lightweight HTTP/1.1 test client helpers with timeouts and safety caps.
@@ -162,19 +163,9 @@ inline std::string buildRequest(const RequestOptions &opt) {
 }
 
 inline std::optional<std::string> request(uint16_t port, const RequestOptions &opt = {}) {
-  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
-  int fd = sock.fd();
-  if (fd < 0) {
-    return std::nullopt;
-  }
+  aeronet::test::ClientConnection cnx(port);
+  int fd = cnx.fd();
   setRecvTimeout(fd, opt.recvTimeoutSeconds);
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
-    return std::nullopt;
-  }
   auto reqStr = buildRequest(opt);
   ssize_t sent = ::send(fd, reqStr.data(), reqStr.size(), 0);
   if (sent != static_cast<ssize_t>(reqStr.size())) {

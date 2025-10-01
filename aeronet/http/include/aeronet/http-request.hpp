@@ -50,7 +50,7 @@ class HttpRequest {
   // Provides zero-allocation iteration over key/value pairs in the raw query string.
   // Decoding rules (application/x-www-form-urlencoded semantics for each component ONLY):
   //  - Percent escapes decoded independently for key & value; malformed/incomplete escapes left verbatim.
-  //  - '+' translated to space (' ') in keys and values.
+  //  - '+' translated to space (' ') in values.
   //  - Missing '=' => value = "". Empty key allowed ("=val" -> key="", value="val").
   //  - Duplicate keys preserved in order.
   struct QueryParam {
@@ -61,36 +61,29 @@ class HttpRequest {
    public:
     class iterator {
      public:
-      using value_type = QueryParam;
-      using difference_type = std::ptrdiff_t;
-      using reference = value_type;  // returned by value (small POD)
-      using pointer = void;          // not providing pointer semantics
+      iterator(const char* begKey, const char* endFullQuery) : _begKey(begKey), _endFullQuery(endFullQuery) {}
 
-      iterator() noexcept = default;
-
-      iterator(std::string_view full, std::size_t pos) : _full(full), _pos(pos) { advance(); }
-
-      value_type operator*() const { return _current; }
+      QueryParam operator*() const;
 
       iterator& operator++() {
         advance();
         return *this;
       }
 
-      bool operator==(const iterator& other) const { return _pos == other._pos && _full.data() == other._full.data(); }
+      bool operator==(const iterator& other) const { return _begKey == other._begKey; }
 
      private:
       void advance();
 
-      std::string_view _full;  // underlying full query
-      std::size_t _pos{std::string_view::npos};
-      QueryParam _current{};
-      bool _atEnd{false};
+      const char* _begKey;
+      const char* _endFullQuery;
     };
 
-    [[nodiscard]] iterator begin() const noexcept { return {_fullQuery, 0}; }
+    [[nodiscard]] iterator begin() const noexcept { return {_fullQuery.data(), _fullQuery.data() + _fullQuery.size()}; }
 
-    [[nodiscard]] iterator end() const noexcept { return {_fullQuery, std::string_view::npos}; }
+    [[nodiscard]] iterator end() const noexcept {
+      return {_fullQuery.data() + _fullQuery.size(), _fullQuery.data() + _fullQuery.size()};
+    }
 
    private:
     friend class HttpRequest;
