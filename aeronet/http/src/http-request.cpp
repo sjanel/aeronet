@@ -56,8 +56,16 @@ void HttpRequest::QueryParamRange::iterator::advance() {
   }
 }
 
-std::string_view HttpRequest::header(std::string_view key) const {
-  const auto it = headers().find(key);
+std::string_view HttpRequest::headerValueOrEmpty(std::string_view headerKey) const noexcept {
+  const auto it = headers().find(headerKey);
+  if (it != headers().end()) {
+    return it->second;
+  }
+  return {};
+}
+
+std::optional<std::string_view> HttpRequest::headerValue(std::string_view headerKey) const noexcept {
+  const auto it = headers().find(headerKey);
   if (it != headers().end()) {
     return it->second;
   }
@@ -65,7 +73,7 @@ std::string_view HttpRequest::header(std::string_view key) const {
 }
 
 [[nodiscard]] bool HttpRequest::wantClose() const {
-  std::string_view connVal = header(http::Connection);
+  std::string_view connVal = headerValueOrEmpty(http::Connection);
   if (connVal.size() == http::close.size()) {
     for (std::size_t iChar = 0; iChar < http::close.size(); ++iChar) {
       const char lhs = tolower(connVal[iChar]);

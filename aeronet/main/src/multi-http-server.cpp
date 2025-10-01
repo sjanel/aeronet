@@ -89,6 +89,8 @@ MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
   return *this;
 }
 
+MultiHttpServer::~MultiHttpServer() { stop(); }
+
 [[nodiscard]] std::string MultiHttpServer::AggregatedStats::json_str() const {
   std::string out;
   out.reserve(128UL * per.size());
@@ -186,15 +188,12 @@ void MultiHttpServer::stop() {
     return;
   }
   log::info("MultiHttpServer stopping (instances={})", _servers.size());
-  for (auto& srvPtr : _servers) {
-    srvPtr.stop();
-  }
+  std::ranges::for_each(_servers, [](auto& server) { server.stop(); });
+
+  _threads.clear();
 
   _running = false;
   log::info("MultiHttpServer stopped");
-  // mutex unlocked at end of scope prior to join
-  // join outside lock
-  // (scope exit lock unlock happens here)
 }
 
 MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {

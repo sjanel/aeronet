@@ -322,19 +322,18 @@ class HttpServer {
   void handleReadableClient(int fd);
   bool processRequestsOnConnection(int fd, ConnectionState& state);
   // Split helpers
-  std::size_t parseNextRequestFromBuffer(int fd, ConnectionState& state, HttpRequest& outReq, bool& closeConnection);
+  std::size_t parseNextRequestFromBuffer(int fd, ConnectionState& state, HttpRequest& outReq);
   bool decodeBodyIfReady(int fd, ConnectionState& state, const HttpRequest& req, bool isChunked, bool expectContinue,
-                         bool& closeConnection, std::size_t& consumedBytes);
+                         std::size_t& consumedBytes);
   bool decodeFixedLengthBody(int fd, ConnectionState& state, const HttpRequest& req, bool expectContinue,
-                             bool& closeConnection, std::size_t& consumedBytes);
+                             std::size_t& consumedBytes);
   bool decodeChunkedBody(int fd, ConnectionState& state, const HttpRequest& req, bool expectContinue,
-                         bool& closeConnection, std::size_t& consumedBytes);
+                         std::size_t& consumedBytes);
   void finalizeAndSendResponse(int fd, ConnectionState& state, HttpRequest& req, HttpResponse& resp,
-                               std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart,
-                               bool& closeConnection);
-  // Helper to build & queue a simple error response, invoke parser error callback (if any),
-  // mark connection for closure and return false for convenient tail calls in parsing paths.
-  void emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, bool& closeConnection);
+                               std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
+  // Helper to build & queue a simple error response, invoke parser error callback (if any).
+  // If immediate=true the connection will be closed without waiting for buffered writes to drain.
+  void emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, bool immediate = false);
   // Outbound write helpers
   bool queueData(int fd, ConnectionState& state, std::string_view data);
   void flushOutbound(int fd, ConnectionState& state);
