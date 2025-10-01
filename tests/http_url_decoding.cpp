@@ -27,7 +27,7 @@ TEST(HttpUrlDecoding, SpaceDecoding) {
   server.addPathHandler("/hello world", ms, [](const HttpRequest &req) {
     return aeronet::HttpResponse(200)
         .reason("OK")
-        .body(std::string(req.target))
+        .body(std::string(req.path()))
         .contentType(http::ContentTypeTextPlain);
   });
   std::atomic<bool> done{false};
@@ -53,7 +53,7 @@ TEST(HttpUrlDecoding, Utf8Decoded) {
   // Path contains snowman + space + 'x'
   std::string decodedPath = "/\xE2\x98\x83 x";  // /☃ x
   server.addPathHandler(decodedPath, ms, [](const HttpRequest &) {
-    return aeronet::HttpResponse(200).reason("OK").body("utf8").contentType(http::ContentTypeTextPlain);
+    return aeronet::HttpResponse(200, "OK").body("utf8").contentType(http::ContentTypeTextPlain);
   });
   std::atomic<bool> done{false};
   std::jthread th([&] { server.runUntil([&] { return done.load(); }); });
@@ -77,7 +77,7 @@ TEST(HttpUrlDecoding, PlusIsNotSpace) {
   HttpServer server(cfg);
   http::MethodSet ms{http::Method::GET};
   server.addPathHandler("/a+b", ms, [](const HttpRequest &) {
-    return aeronet::HttpResponse(200).reason("OK").body("plus").contentType(http::ContentTypeTextPlain);
+    return aeronet::HttpResponse(200, "OK").body("plus").contentType(http::ContentTypeTextPlain);
   });
   std::atomic<bool> done{false};
   std::jthread th([&] { server.runUntil([&] { return done.load(); }); });

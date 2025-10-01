@@ -24,8 +24,8 @@ TEST(HttpTlsRequestClientCert, OptionalNoClientCertAccepted) {
       aeronet::HttpResponse resp(200);
       resp.reason("OK");
       resp.contentType(aeronet::http::ContentTypeTextPlain);
-      if (!req.tlsCipher.empty()) {
-        resp.body(std::string("REQ-") + std::string(req.tlsCipher));
+      if (!req.tlsCipher().empty()) {
+        resp.body(std::string("REQ-") + std::string(req.tlsCipher()));
       } else {
         resp.body("REQ-");
       }

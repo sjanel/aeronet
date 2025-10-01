@@ -177,11 +177,11 @@ void HttpResponse::appendHeaderUnchecked(std::string_view key, std::string_view 
   _bodyStartPos += static_cast<uint32_t>(headerLineSize);
 }
 
-std::string_view HttpResponse::finalizeAndGetFullTextResponse(std::string_view version, std::string_view date,
+std::string_view HttpResponse::finalizeAndGetFullTextResponse(http::Version version, std::string_view date,
                                                               bool keepAlive, bool isHeadMethod) {
-  assert(version.size() == kHttp1VersionLen);  // "HTTP/x.y"
-  std::memcpy(_data.data(), version.data(), kHttp1VersionLen);
-  _data[kHttp1VersionLen] = ' ';
+  auto versionStr = version.str();
+  std::memcpy(_data.data(), versionStr.data(), versionStr.size());
+  _data[versionStr.size()] = ' ';
   // status code already set. Space before reason only if reason present.
   const auto rLen = reasonLen();
   if (rLen != 0) {

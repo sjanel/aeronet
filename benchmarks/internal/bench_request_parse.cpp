@@ -8,6 +8,8 @@
 #include <string>
 #include <thread>
 
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 

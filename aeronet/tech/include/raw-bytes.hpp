@@ -96,10 +96,10 @@ class RawBytesImpl {
   }
 
   void unchecked_append(const_pointer newData, size_type newDataSize) {
-    return unchecked_append(newData, newData + newDataSize);
+    unchecked_append(newData, newData + newDataSize);
   }
 
-  void unchecked_append(ViewType data) { return unchecked_append(data.data(), data.data() + data.size()); }
+  void unchecked_append(ViewType data) { unchecked_append(data.data(), data.data() + data.size()); }
 
   void append(const_pointer first, const_pointer last) {
     assert(first <= last);
@@ -107,9 +107,9 @@ class RawBytesImpl {
     unchecked_append(first, last);
   }
 
-  void append(const_pointer newData, size_type newDataSize) { return append(newData, newData + newDataSize); }
+  void append(const_pointer newData, size_type newDataSize) { append(newData, newData + newDataSize); }
 
-  void append(ViewType data) { return append(data.data(), data.data() + data.size()); }
+  void append(ViewType data) { append(data.data(), data.data() + data.size()); }
 
   void unchecked_push_back(value_type byte) { _buf[_size++] = byte; }
 
@@ -126,7 +126,7 @@ class RawBytesImpl {
 
   void assign(ViewType data) { assign(data.data(), data.size()); }
 
-  void assign(const_pointer first, const_pointer last) { assign(first, last - first); }
+  void assign(const_pointer first, const_pointer last) { assign(first, static_cast<size_type>(last - first)); }
 
   void clear() noexcept { _size = 0; }
 

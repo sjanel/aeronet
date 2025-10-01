@@ -19,11 +19,11 @@ TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
     });
     auto port = ts.port();
     ts.setHandler([&](const aeronet::HttpRequest& req) {
-      if (!req.tlsVersion.empty()) {
-        capturedVersion = std::string(req.tlsVersion);
+      if (!req.tlsVersion().empty()) {
+        capturedVersion = std::string(req.tlsVersion());
       }
 
-      return aeronet::HttpResponse(200).reason("OK").contentType(aeronet::http::ContentTypeTextPlain).body("V");
+      return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body("V");
     });
     TlsClient::Options opts;
     opts.alpn = {"http/1.1"};

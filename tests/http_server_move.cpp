@@ -18,7 +18,7 @@ TEST(HttpServerMove, MoveConstructAndServe) {
   auto port = original.port();
   original.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
-    resp.body(std::string("ORIG:") + std::string(req.target));
+    resp.body(std::string("ORIG:") + std::string(req.path()));
     return resp;
   });
 

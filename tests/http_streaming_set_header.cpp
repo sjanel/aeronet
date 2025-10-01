@@ -7,6 +7,7 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "http-method.hpp"
 #include "test_server_fixture.hpp"
 #include "test_util.hpp"
 
@@ -41,7 +42,7 @@ TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
   TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setStreamingHandler([](const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
-    bool isHead = req.method == "HEAD";
+    bool isHead = req.method() == aeronet::http::Method::HEAD;
     writer.statusCode(200);
     writer.customHeader("X-Custom-A", "alpha");
     writer.customHeader("X-Custom-B", "beta");

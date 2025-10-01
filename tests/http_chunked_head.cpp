@@ -46,8 +46,8 @@ TEST(HttpChunked, DecodeBasic) {
   TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
-    return aeronet::HttpResponse(200).body(std::string("LEN=") + std::to_string(req.body.size()) + ":" +
-                                           std::string(req.body));
+    return aeronet::HttpResponse(200).body(std::string("LEN=") + std::to_string(req.body().size()) + ":" +
+                                           std::string(req.body()));
   });
 
   ClientConnection sock(port);
@@ -67,7 +67,7 @@ TEST(HttpChunked, RejectTooLarge) {
   cfg.withMaxBodyBytes(4);  // very small limit
   TestServer ts(cfg);
   auto port = ts.port();
-  ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body); });
+  ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body()); });
   aeronet::Socket sock(aeronet::Socket::Type::STREAM);
   int fd = sock.fd();
   sockaddr_in addr{};
@@ -88,7 +88,7 @@ TEST(HttpHead, NoBodyReturned) {
   TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
-    return aeronet::HttpResponse(200).body(std::string("DATA-") + std::string(req.target));
+    return aeronet::HttpResponse(200).body(std::string("DATA-") + std::string(req.path()));
   });
   aeronet::Socket sock(aeronet::Socket::Type::STREAM);
   int fd = sock.fd();
@@ -107,36 +107,27 @@ TEST(HttpHead, NoBodyReturned) {
   auto hdrEnd = resp.find("\r\n\r\n");
   ASSERT_NE(std::string::npos, hdrEnd);
   std::string after = resp.substr(hdrEnd + 4);
-  if (!after.empty()) {
-    std::cerr << "[DEBUG HEAD] Unexpected body bytes: '" << after << "' size=" << after.size() << "\n";
-  }
   ASSERT_TRUE(after.empty());
 }
 
 TEST(HttpExpect, ContinueFlow) {
   TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body); });
-  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
-  int fd = sock.fd();
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  ASSERT_EQ(0, ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)));
+  ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body()); });
+  ClientConnection cnx(port);
   std::string headers =
       "POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
-  auto hs = ::send(fd, headers.data(), headers.size(), 0);
+  auto hs = ::send(cnx.fd(), headers.data(), headers.size(), 0);
   ASSERT_EQ(hs, static_cast<decltype(hs)>(headers.size()));
   // read interim 100
   char buf[128];
-  auto firstRead = ::recv(fd, buf, sizeof(buf), 0);
+  auto firstRead = ::recv(cnx.fd(), buf, sizeof(buf), 0);
   std::string interim(buf, buf + (firstRead > 0 ? firstRead : 0));
   ASSERT_NE(std::string::npos, interim.find("100 Continue"));
   std::string body = "hello";
-  auto bs = ::send(fd, body.data(), body.size(), 0);
+  auto bs = ::send(cnx.fd(), body.data(), body.size(), 0);
   ASSERT_EQ(bs, static_cast<decltype(hs)>(body.size()));
-  std::string full = interim + sendAndRecv(fd, "");
+  std::string full = interim + sendAndRecv(cnx.fd(), "");
   // automatic close via Socket dtor
   ts.stop();
   ASSERT_NE(std::string::npos, full.find("hello"));

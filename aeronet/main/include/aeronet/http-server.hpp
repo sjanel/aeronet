@@ -19,6 +19,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "connection-state.hpp"
 #include "connection.hpp"
 #include "event-fd.hpp"
 #include "event-loop.hpp"
@@ -35,10 +36,8 @@
 #include "http-method-set.hpp"
 #include "http-method.hpp"
 #include "http-response-writer.hpp"
-#include "raw-chars.hpp"
 #include "socket.hpp"
 #include "timedef.hpp"
-#include "transport.hpp"
 
 namespace aeronet {
 
@@ -67,20 +66,11 @@ class HttpServer {
 
   using StreamingHandler = std::function<void(const HttpRequest&, HttpResponseWriter&)>;
 
-  enum class ParserError : std::uint8_t {
-    BadRequestLine,
-    VersionUnsupported,
-    HeadersTooLarge,
-    PayloadTooLarge,
-    MalformedChunk,
-    GenericBadRequest
-  };
-
-  using ParserErrorCallback = std::function<void(ParserError)>;
+  using ParserErrorCallback = std::function<void(http::StatusCode)>;
 
   struct RequestMetrics {
-    std::string_view method;
-    std::string_view target;
+    http::Method method;
+    std::string_view path;
     int status{0};
     uint64_t bytesIn{0};
     uint64_t bytesOut{0};
@@ -238,13 +228,7 @@ class HttpServer {
   void addPathStreamingHandler(std::string path, http::Method method, const StreamingHandler& handler);
 
   // Install a callback invoked whenever the request parser encounters a non‑recoverable
-  // protocol error for a connection. Typical causes correspond to the ParserError enum:
-  //   * BadRequestLine        -> Malformed start line (method / target / version)
-  //   * VersionUnsupported    -> HTTP version not supported
-  //   * HeadersTooLarge       -> Cumulative header size exceeded configured limits
-  //   * PayloadTooLarge       -> Declared (Content-Length) body size exceeds limits
-  //   * MalformedChunk        -> Invalid chunk size line / trailer in chunked encoding
-  //   * GenericBadRequest     -> Fallback category for other parse failures
+  // protocol error for a connection. Typical causes correspond to the HTTP status codes.
   //
   // Semantics:
   //   - Callback is executed in the server's event loop thread just before the server
@@ -331,28 +315,6 @@ class HttpServer {
  private:
   friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
 
-  struct ConnectionState {
-    RawChars buffer;                        // accumulated raw data
-    RawChars bodyStorage;                   // decoded body lifetime
-    RawChars outBuffer;                     // pending outbound bytes not yet written
-    RawChars decodedTarget;                 // storage for percent-decoded request target (per-connection reuse)
-    std::unique_ptr<ITransport> transport;  // set after accept (plain or TLS)
-    std::chrono::steady_clock::time_point lastActivity{std::chrono::steady_clock::now()};
-    // Timestamp of first byte of the current pending request headers (buffer not yet containing full CRLFCRLF).
-    // Reset when a complete request head is parsed. If std::chrono::steady_clock::time_point{} (epoch) -> inactive.
-    std::chrono::steady_clock::time_point headerStart;  // default epoch value means no header timing active
-    uint32_t requestsServed{0};
-    bool shouldClose{false};                               // request to close once outBuffer drains
-    bool waitingWritable{false};                           // EPOLLOUT registered
-    bool tlsEstablished{false};                            // true once TLS handshake completed (if TLS enabled)
-    bool tlsWantRead{false};                               // last transport op indicated WANT_READ
-    bool tlsWantWrite{false};                              // last transport op indicated WANT_WRITE
-    std::string selectedAlpn;                              // negotiated ALPN protocol (if any)
-    std::string negotiatedCipher;                          // negotiated TLS cipher suite (if TLS)
-    std::string negotiatedVersion;                         // negotiated TLS protocol version string
-    std::chrono::steady_clock::time_point handshakeStart;  // TLS handshake start time (steady clock)
-  };
-
   void eventLoop(Duration timeout);
   void refreshCachedDate();
   void sweepIdleConnections();
@@ -360,27 +322,26 @@ class HttpServer {
   void handleReadableClient(int fd);
   bool processRequestsOnConnection(int fd, ConnectionState& state);
   // Split helpers
-  bool parseNextRequestFromBuffer(int fd, ConnectionState& state, HttpRequest& outReq, std::size_t& headerEnd,
-                                  bool& closeConn);
-  bool decodeBodyIfReady(int fd, ConnectionState& state, const HttpRequest& req, std::size_t headerEnd, bool isChunked,
-                         bool expectContinue, bool& closeConn, std::size_t& consumedBytes);
-  bool decodeFixedLengthBody(int fd, ConnectionState& state, const HttpRequest& req, std::size_t headerEnd,
-                             bool expectContinue, bool& closeConn, std::size_t& consumedBytes);
-  bool decodeChunkedBody(int fd, ConnectionState& state, const HttpRequest& req, std::size_t headerEnd,
-                         bool expectContinue, bool& closeConn, std::size_t& consumedBytes);
+  std::size_t parseNextRequestFromBuffer(int fd, ConnectionState& state, HttpRequest& outReq, bool& closeConnection);
+  bool decodeBodyIfReady(int fd, ConnectionState& state, const HttpRequest& req, bool isChunked, bool expectContinue,
+                         bool& closeConnection, std::size_t& consumedBytes);
+  bool decodeFixedLengthBody(int fd, ConnectionState& state, const HttpRequest& req, bool expectContinue,
+                             bool& closeConnection, std::size_t& consumedBytes);
+  bool decodeChunkedBody(int fd, ConnectionState& state, const HttpRequest& req, bool expectContinue,
+                         bool& closeConnection, std::size_t& consumedBytes);
   void finalizeAndSendResponse(int fd, ConnectionState& state, HttpRequest& req, HttpResponse& resp,
                                std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart,
-                               bool& closeConn);
+                               bool& closeConnection);
   // Helper to build & queue a simple error response, invoke parser error callback (if any),
   // mark connection for closure and return false for convenient tail calls in parsing paths.
-  bool emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, ParserError perr, bool& closeConn);
+  void emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, bool& closeConnection);
   // Outbound write helpers
   bool queueData(int fd, ConnectionState& state, std::string_view data);
   void flushOutbound(int fd, ConnectionState& state);
 
   void handleWritableClient(int fd);
 
-  void closeConnection(int fd);
+  void closeConnectionFd(int fd);
 
   // Invoke a registered streaming handler. Returns true if the connection should be closed after handling
   // the request (either because the client requested it or keep-alive limits reached). The HttpRequest is
@@ -440,7 +401,7 @@ class HttpServer {
 
   RFC7231DateStr _cachedDate{};
   TimePoint _cachedDateEpoch;  // last second-aligned timestamp used for Date header
-  ParserErrorCallback _parserErrCb = []([[maybe_unused]] ParserError) {};
+  ParserErrorCallback _parserErrCb = []([[maybe_unused]] http::StatusCode) {};
   MetricsCallback _metricsCb;
 #ifdef AERONET_ENABLE_OPENSSL
   // TlsContext lifetime & pointer stability:

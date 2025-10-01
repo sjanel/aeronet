@@ -32,10 +32,9 @@ int main(int argc, char** argv) {
   cfg.withPort(port).withReusePort(true);
   aeronet::MultiHttpServer multi(cfg, static_cast<uint32_t>(threads));
   multi.setHandler([](const aeronet::HttpRequest& req) {
-    return aeronet::HttpResponse(200)
-        .reason("OK")
+    return aeronet::HttpResponse(200, "OK")
         .contentType(aeronet::http::ContentTypeTextPlain)
-        .body(std::string("multi reactor response ") + std::string(req.target));
+        .body(std::string("multi reactor response ") + std::string(req.path()));
   });
   multi.start();
   aeronet::log::info("Listening on {} with {} reactors (SO_REUSEPORT). Press Ctrl+C to stop.", multi.port(), threads);

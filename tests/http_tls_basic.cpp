@@ -17,7 +17,7 @@ TEST(HttpTlsBasic, HandshakeAndSimpleGet) {
       return aeronet::HttpResponse(200)
           .reason("OK")
           .contentType(aeronet::http::ContentTypeTextPlain)
-          .body(std::string("TLS OK ") + std::string(req.target));
+          .body(std::string("TLS OK ") + std::string(req.path()));
     });
     TlsClient client(ts.port());
     raw = client.get("/hello", {{"X-Test", "tls"}});
