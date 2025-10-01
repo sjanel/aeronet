@@ -3,26 +3,32 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "connection-state.hpp"
+#include "http-method.hpp"
 #include "http-status-code.hpp"
+#include "http-version.hpp"
 #include "raw-chars.hpp"
 
 namespace aeronet {
 
+namespace {
 // Helper to build a raw HTTP request buffer we can feed into HttpRequest::setHead
-static std::string BuildRaw(std::string_view method, std::string_view target, std::string_view version = "HTTP/1.1",
-                            std::string_view extraHeaders = "") {
-  std::string s;
-  s.append(method).push_back(' ');
-  s.append(target).push_back(' ');
-  s.append(version).append("\r\n");
-  s.append("Host: h\r\n");
-  s.append(extraHeaders);
-  s.append("\r\n");
-  return s;
+std::string BuildRaw(std::string_view method, std::string_view target, std::string_view version = "HTTP/1.1",
+                     std::string_view extraHeaders = "") {
+  std::string str;
+  str.append(method).push_back(' ');
+  str.append(target).push_back(' ');
+  str.append(version).append("\r\n");
+  str.append("Host: h\r\n");
+  str.append(extraHeaders);
+  str.append("\r\n");
+  return str;
 }
+}  // namespace
 
 TEST(HttpRequestUnit, ParseBasicPathAndVersion) {
   HttpRequest req;
@@ -49,7 +55,7 @@ TEST(HttpRequestUnit, QueryParamsDecodingPlusAndPercent) {
   for (auto [k, v] : req.queryParams()) {
     seen.emplace_back(k, v);
   }
-  ASSERT_EQ(seen.size(), 3u);
+  ASSERT_EQ(seen.size(), 3U);
   EXPECT_EQ(seen[0].first, "a");
   EXPECT_EQ(seen[0].second, "1 2");  // '+' => space
   EXPECT_EQ(seen[1].first, "b");
@@ -87,9 +93,11 @@ TEST(HttpRequestUnit, DuplicateKeysPreservedOrder) {
   ASSERT_EQ(st, http::StatusCodeOK);
   std::vector<std::string_view> values;
   for (auto [k, v] : req.queryParams()) {
-    if (k == "x") values.push_back(v);
+    if (k == "x") {
+      values.push_back(v);
+    }
   }
-  ASSERT_EQ(values.size(), 3u);
+  ASSERT_EQ(values.size(), 3U);
   EXPECT_EQ(values[0], "1");
   EXPECT_EQ(values[1], "2");
   EXPECT_EQ(values[2], "3");

@@ -1,21 +1,23 @@
 #include <gtest/gtest.h>
 #include <sys/socket.h>
 
+#include <cstddef>  // std::size_t
 #include <string>
 #include <string_view>
 
+#include "aeronet/compression-config.hpp"  // aeronet::CompressionConfig (zlib test section)
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_util.hpp"
 #include "test_server_fixture.hpp"
-#include "test_util.hpp"
 
 using namespace std::chrono_literals;
 
 namespace {
 void raw(auto port, const std::string& verb, std::string& out) {
-  ClientConnection sock(port);
+  aeronet::test::ClientConnection sock(port);
   int fd = sock.fd();
   std::string req = verb + " /len HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
   auto sent = ::send(fd, req.data(), req.size(), 0);
@@ -32,7 +34,7 @@ void raw(auto port, const std::string& verb, std::string& out) {
 }
 
 void rawWith(auto port, const std::string& verb, std::string_view extraHeaders, std::string& out) {
-  ClientConnection sock(port);
+  aeronet::test::ClientConnection sock(port);
   int fd = sock.fd();
   std::string req = verb + " /len HTTP/1.1\r\nHost: x\r\n" + std::string(extraHeaders) + "Connection: close\r\n\r\n";
   auto sent = ::send(fd, req.data(), req.size(), 0);

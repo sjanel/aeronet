@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <random>
 #include <string>
 #include <string_view>
@@ -9,6 +10,8 @@
 
 #include "exception.hpp"
 #include "http-constants.hpp"
+#include "http-status-code.hpp"
+#include "http-version.hpp"
 
 namespace aeronet {
 
@@ -357,7 +360,7 @@ TEST_F(HttpResponseTest, LargeHeaderCountStress) {
   auto full = finalize(resp);
   ASSERT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
   // Count custom headers (exclude Date/Connection)
-  size_t pos = full.find("\r\n") + 2;  // after status line CRLF
+  auto pos = full.find("\r\n") + 2;  // after status line CRLF
   int userHeaders = 0;
   while (pos < full.size()) {
     auto lineEnd = full.find("\r\n", pos);
@@ -506,7 +509,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
     int dateCount = 0;
     int connCount = 0;
     int clCount = 0;
-    size_t clVal = 0;
+    std::size_t clVal = 0;
     for (auto &headerPair : pr.headers) {
       if (headerPair.first == http::Date) {
         ++dateCount;

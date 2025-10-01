@@ -11,18 +11,18 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_util.hpp"
 #include "test_server_fixture.hpp"
-#include "test_util.hpp"
 
 using namespace std::chrono_literals;
 
 namespace {
 std::string sendAndCollect(uint16_t port, const std::string& raw) {
-  ClientConnection clientConnection(port);
+  aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
 
-  tu_sendAll(fd, raw);
-  std::string out = tu_recvUntilClosed(fd);
+  aeronet::test::sendAll(fd, raw);
+  std::string out = aeronet::test::recvUntilClosed(fd);
   return out;
 }
 }  // namespace
@@ -60,7 +60,7 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("ok"); });
   // HTTP/1.0 without Connection: keep-alive should close
-  ClientConnection clientConnection(port);
+  aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string req = "GET /h HTTP/1.0\r\nHost: x\r\n\r\n";
@@ -85,7 +85,7 @@ TEST(HttpKeepAlive10, OptInWithHeader) {
   TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("ok"); });
-  ClientConnection clientConnection(port);
+  aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string req = "GET /h HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";

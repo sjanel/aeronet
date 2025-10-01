@@ -1,11 +1,13 @@
 // Tests TLS version bounds configuration (min/max) and invalid version handling.
 #include <gtest/gtest.h>
 
+#include <stdexcept>  // std::runtime_error
 #include <string>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/server-stats.hpp"  // aeronet::ServerStats
 #include "http-constants.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
@@ -38,12 +40,15 @@ TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
   // OpenSSL commonly returns "TLSv1.2"; accept any token containing 1.2
   ASSERT_NE(capturedVersion.find("1.2"), std::string::npos);
   bool found = false;
+  // Only iterate version counts if OpenSSL enabled (members present)
+#ifdef AERONET_ENABLE_OPENSSL
   for (const auto& kv : statsAfter.tlsVersionCounts) {
     if (kv.first == capturedVersion) {
       found = true;
       ASSERT_GE(kv.second, 1U);
     }
   }
+#endif
   ASSERT_TRUE(found);
 }
 

@@ -9,7 +9,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_util.hpp"
+#include "aeronet/test_util.hpp"
 
 TEST(HttpHead, MaxRequestsApplied) {
   aeronet::HttpServerConfig cfg;
@@ -23,7 +23,7 @@ TEST(HttpHead, MaxRequestsApplied) {
   });
   std::jthread th([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(60));
-  ClientConnection clientConnection(port);
+  aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   // 4 HEAD requests pipelined; only 3 responses expected then close
@@ -31,8 +31,8 @@ TEST(HttpHead, MaxRequestsApplied) {
   for (int i = 0; i < 4; ++i) {
     reqs += "HEAD /h" + std::to_string(i) + " HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";
   }
-  tu_sendAll(fd, reqs);
-  std::string resp = tu_recvUntilClosed(fd);
+  aeronet::test::sendAll(fd, reqs);
+  std::string resp = aeronet::test::recvUntilClosed(fd);
   server.stop();
   int statusCount = 0;
   std::size_t pos = 0;

@@ -16,11 +16,13 @@
 #include <chrono>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_util.hpp"
 #include "http-constants.hpp"
 #include "test_tls_client.hpp"
 #include "test_tls_helper.hpp"
@@ -51,7 +53,7 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
   // Actively wait until the listening socket accepts a plain TCP connection to avoid race.
   // This replicates TestServer readiness logic without duplicating its wrapper.
   {
-    ClientConnection probe(port, std::chrono::milliseconds{500});
+    aeronet::test::ClientConnection probe(port, std::chrono::milliseconds{500});
   }
 
   TlsClient::Options opts;

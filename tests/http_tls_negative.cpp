@@ -6,15 +6,15 @@
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/test_util.hpp"
 #include "http-constants.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
-#include "test_util.hpp"
 
 namespace {
 // Helper: perform a raw TCP connect and send cleartext HTTP to a TLS-only port -> should fail handshake quickly.
 bool attemptPlainHttp(auto port) {
-  ClientConnection cnx(port);
+  aeronet::test::ClientConnection cnx(port);
   int fd = cnx.fd();
 
   std::string bogus = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";  // not TLS handshake

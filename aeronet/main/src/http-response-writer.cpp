@@ -5,6 +5,8 @@
 #include <charconv>
 #include <cstddef>
 #include <cstring>
+#include <memory>  // std::make_unique
+#include <string>  // std::to_string
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -15,6 +17,7 @@
 #include "encoder.hpp"
 #include "http-constants.hpp"
 #include "http-status-code.hpp"
+#include "http-version.hpp"  // http::HTTP_1_1 version constant
 #include "log.hpp"
 #include "static-string-view-helpers.hpp"
 #include "string-equal-ignore-case.hpp"
@@ -280,7 +283,6 @@ bool HttpResponseWriter::write(std::string_view data) {
   return !_failed;  // backpressure signaled via server.shouldClose flag, failure sets _failed
 }
 
-// TODO: make this method private, we will call it instead of the client.
 void HttpResponseWriter::end() {
   if (_ended || _failed) {
     log::debug("Streaming: end ignored fd={} reason={}", _fd, _failed ? "writer-failed" : "already-ended");
@@ -301,7 +303,7 @@ void HttpResponseWriter::end() {
   } else {
     // Identity path; emit headers now (they may not have been sent yet due to delayed strategy) then flush buffered.
     ensureHeadersSent();
-    if (_preCompressBuffer.size() > 0) {
+    if (!_preCompressBuffer.empty()) {
       if (_chunked) {
         emitChunk(std::string_view{_preCompressBuffer.data(), _preCompressBuffer.size()});
       } else if (!_head) {

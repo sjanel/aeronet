@@ -1,8 +1,19 @@
+// IWYU: ensure direct headers for used symbols
 #include <gtest/gtest.h>
 
-#include <string>
+#include <chrono>       // chrono literals (ignore IWYU chrono warning by request)
+#include <cstdint>      // uint16_t
+#include <cstdlib>      // std::atoi
+#include <iostream>     // std::cerr
+#include <map>          // std::map
+#include <stdexcept>    // std::runtime_error
+#include <string>       // std::string
+#include <string_view>  // std::string_view
+#include <utility>      // std::move
+#include <vector>       // std::vector
 
-#include "aeronet/compression-config.hpp"
+#include "aeronet/compression-config.hpp"  // CompressionConfig
+#include "aeronet/encoding.hpp"            // Encoding
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -51,7 +62,7 @@ ParsedFullResponse doGet(uint16_t port, std::string_view target,
     throw std::runtime_error("parse failed");
   }
   std::string statusLine = rawResp.substr(0, lineEnd);
-  if (statusLine.rfind("HTTP/", 0) != 0) {
+  if (!statusLine.starts_with("HTTP/")) {
     std::cerr << "RAW RESPONSE (bad status)\n" << rawResp << "\n";
     throw std::runtime_error("parse failed");
   }

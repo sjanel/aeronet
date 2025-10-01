@@ -21,7 +21,6 @@ message(STATUS "[${CMAKE_PROJECT_NAME}] version: ${AERONET_PROJECT_VERSION}")
 # determine if coincenter is built as a sub-project or if it is the main project
 #
 set(MAIN_PROJECT OFF)
-
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   set(MAIN_PROJECT ON)
 endif()
@@ -30,6 +29,8 @@ set(ASAN_DEFAULT OFF)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(ASAN_DEFAULT ON)
 endif()
+
+option(AERONET_ENABLE_CCACHE "Compile with ccache for faster incremental compilation" ${MAIN_PROJECT})
 
 # Build options
 option(AERONET_INSTALL "Enable install & package config generation" ${MAIN_PROJECT})
@@ -56,6 +57,17 @@ option(AERONET_ENABLE_ZLIB "Enable usage of zlib for HTTP response compression" 
 option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" ${ASAN_DEFAULT})
 option(AERONET_ENABLE_CLANG_TIDY "Enable clang-tidy analysis" OFF)
 option(AERONET_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
+
+if(AERONET_ENABLE_CCACHE)
+  # Use ccache if available
+  find_program(CCACHE_PROGRAM ccache)
+
+  if(CCACHE_PROGRAM)
+    set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
+  else()
+    message(WARNING "ccache wanted but not found in PATH")
+  endif()
+endif()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

@@ -1,8 +1,9 @@
-#include <arpa/inet.h>
+#include <arpa/inet.h>  // IWYU pragma: keep
+#include <asm-generic/socket.h>
+#include <bits/types/struct_timeval.h>
 #include <gtest/gtest.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/time.h>
+#include <netinet/in.h>  // IWYU pragma: keep
+#include <sys/socket.h>  // IWYU pragma: keep (SOL_SOCKET, SO_RCVTIMEO)
 #include <sys/types.h>
 
 #include <cstring>

@@ -16,6 +16,7 @@ class HttpRequest {
   // Get the HTTP header corresponding to given key.
   // Search is case insensitive.
   // Return empty view if not present.
+  // The header value will be returned without trailing spaces.
   [[nodiscard]] std::string_view header(std::string_view key) const;
 
   // The method of the request (GET, PUT, ...)
@@ -31,6 +32,7 @@ class HttpRequest {
   [[nodiscard]] http::Version version() const { return _version; }
 
   // Get a reference to a map like object of the HTTP headers attached to this request.
+  // The header values will be returned without trailing spaces.
   [[nodiscard]] const auto& headers() const { return _headers; }
 
   // =============================

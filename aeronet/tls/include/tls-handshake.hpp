@@ -3,7 +3,7 @@
 // without depending on HttpServer private internals.
 #pragma once
 
-#include <openssl/ssl.h>
+#include <openssl/types.h>
 
 #include <chrono>
 #include <cstdint>
