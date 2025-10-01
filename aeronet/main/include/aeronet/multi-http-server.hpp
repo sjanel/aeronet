@@ -76,7 +76,7 @@ class MultiHttpServer {
   MultiHttpServer& operator=(const MultiHttpServer&) = delete;
   MultiHttpServer& operator=(MultiHttpServer&& other) noexcept;
 
-  ~MultiHttpServer() { stop(); }
+  ~MultiHttpServer();
 
   // setHandler:
   //   Registers a single global handler applied to all successfully parsed requests on every

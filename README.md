@@ -184,6 +184,30 @@ Misc
 - [ ] Public API stability guarantee (pre-1.0)
 - [ ] License file
 
+### Connection Close Semantics (CloseMode)
+
+Aeronet models per-connection shutdown intent with `ConnectionState::CloseMode`:
+
+| Mode | Meaning | Typical triggers |
+|------|---------|------------------|
+| `None` | Connection remains eligible for keep-alive / more requests | Normal operation |
+| `DrainThenClose` | Allow pending outbound data to flush, then close | Client sent `Connection: close`; server reached `maxRequestsPerConnection`; keep-alive disabled; handler explicitly requested close |
+| `Immediate` | Terminate as soon as practical (after queuing minimal error bytes) | Malformed request line / headers; mixed `Content-Length` + `Transfer-Encoding`; unsupported `Transfer-Encoding`; header/body size limits exceeded (413/431); HTTP/1.0 with TE; transport read/write failures; outbound buffer overflow; internal fatal errors |
+
+Public helper methods on `ConnectionState`:
+
+- `requestDrainAndClose()` – escalate from `None` to `DrainThenClose` (idempotent if already closing)
+- `requestImmediateClose()` – unconditionally mark connection as `Immediate`
+- `isDrainCloseRequested()` / `isImmediateCloseRequested()` / `isAnyCloseRequested()` – query helpers
+
+The server prefers preserving response bytes for graceful conditions (client directive, normal lifecycle
+limits) while using immediate teardown for hard protocol violations or transport integrity issues. Error
+paths that call `emitSimpleError(..., /*immediate=*/true)` will always mark the connection `Immediate`.
+
+User code normally does not manipulate `CloseMode` directly; returning a response with
+`Connection: close` (or exhausting keep-alive criteria) automatically maps to `DrainThenClose`.
+Only unrecoverable scenarios escalate to `Immediate` to avoid reusing a compromised protocol state.
+
 ### Compression (Phase 1 — gzip & deflate via zlib)
 
 Implemented capabilities:

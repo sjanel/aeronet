@@ -13,17 +13,17 @@
 namespace aeronet {
 
 bool HttpServer::decodeBodyIfReady(int fd, ConnectionState& state, const HttpRequest& req, bool isChunked,
-                                   bool expectContinue, bool& closeConnection, std::size_t& consumedBytes) {
+                                   bool expectContinue, std::size_t& consumedBytes) {
   consumedBytes = 0;
   if (!isChunked) {
-    return decodeFixedLengthBody(fd, state, req, expectContinue, closeConnection, consumedBytes);
+    return decodeFixedLengthBody(fd, state, req, expectContinue, consumedBytes);
   }
-  return decodeChunkedBody(fd, state, req, expectContinue, closeConnection, consumedBytes);
+  return decodeChunkedBody(fd, state, req, expectContinue, consumedBytes);
 }
 
 bool HttpServer::decodeFixedLengthBody(int fd, ConnectionState& state, const HttpRequest& req, bool expectContinue,
-                                       bool& closeConnection, std::size_t& consumedBytes) {
-  std::string_view lenViewAll = req.header(http::ContentLength);
+                                       std::size_t& consumedBytes) {
+  std::string_view lenViewAll = req.headerValueOrEmpty(http::ContentLength);
   bool hasCL = !lenViewAll.empty();
   std::size_t contentLen = 0;
   std::size_t headerEnd =
@@ -51,7 +51,7 @@ bool HttpServer::decodeFixedLengthBody(int fd, ConnectionState& state, const Htt
     }
     contentLen = parsed;
     if (contentLen > _config.maxBodyBytes) {
-      emitSimpleError(fd, state, 413, closeConnection);
+      emitSimpleError(fd, state, 413, true);
       return false;
     }
     if (expectContinue && contentLen > 0) {
@@ -69,7 +69,7 @@ bool HttpServer::decodeFixedLengthBody(int fd, ConnectionState& state, const Htt
 }
 
 bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, const HttpRequest& req, bool expectContinue,
-                                   bool& closeConnection, std::size_t& consumedBytes) {
+                                   std::size_t& consumedBytes) {
   if (expectContinue) {
     queueData(fd, state, http::HTTP11_100_CONTINUE);
   }
@@ -100,7 +100,7 @@ bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, const HttpReq
     }
     pos = static_cast<std::size_t>(lineEndIt - state.buffer.data()) + 2;
     if (chunkSize > _config.maxBodyBytes) {
-      emitSimpleError(fd, state, 413, closeConnection);
+      emitSimpleError(fd, state, 413, true);
       return false;
     }
     if (state.buffer.size() < pos + chunkSize + 2) {
@@ -121,7 +121,7 @@ bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, const HttpReq
     }
     decodedBody.append(state.buffer.data() + pos, std::min(chunkSize, state.buffer.size() - pos));
     if (decodedBody.size() > _config.maxBodyBytes) {
-      emitSimpleError(fd, state, 413, closeConnection);
+      emitSimpleError(fd, state, 413, true);
       return false;
     }
     pos += chunkSize;

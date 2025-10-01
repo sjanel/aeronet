@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string_view>
 
 #include "connection-state.hpp"
@@ -13,27 +14,35 @@ namespace aeronet {
 
 class HttpRequest {
  public:
-  // Get the HTTP header corresponding to given key.
-  // Search is case insensitive.
-  // Return empty view if not present.
-  // The header value will be returned without trailing spaces.
-  [[nodiscard]] std::string_view header(std::string_view key) const;
+  // Get the HTTP header value for the given key.
+  // - Lookup is case-insensitive (RFC 7230 token rules; simple lower/compare internally).
+  // - Returns empty string_view if the header is absent.
+  // - Leading and trailing whitespace (spaces / tabs) around the value are trimmed.
+  [[nodiscard]] std::string_view headerValueOrEmpty(std::string_view headerKey) const noexcept;
+
+  // Get the HTTP header value for the given key, if present.
+  // - Returns std::nullopt when the header is absent.
+  // - Returns an engaged optional containing an empty string_view when the header exists with an empty value.
+  // - Leading and trailing whitespace are trimmed; internal whitespace is preserved verbatim.
+  // This removes ambiguity between a missing header and a present header whose value is the empty string.
+  [[nodiscard]] std::optional<std::string_view> headerValue(std::string_view headerKey) const noexcept;
 
   // The method of the request (GET, PUT, ...)
-  [[nodiscard]] http::Method method() const { return _method; }
+  [[nodiscard]] http::Method method() const noexcept { return _method; }
 
   // The URL decoded path.
   // Example:
   //  GET /path         -> '/path'
   //  GET /path?key=val -> '/path'
-  [[nodiscard]] std::string_view path() const { return _path; }
+  [[nodiscard]] std::string_view path() const noexcept { return _path; }
 
   // Get the HTTP version of the request.
-  [[nodiscard]] http::Version version() const { return _version; }
+  [[nodiscard]] http::Version version() const noexcept { return _version; }
 
   // Get a reference to a map like object of the HTTP headers attached to this request.
   // The header values will be returned without trailing spaces.
-  [[nodiscard]] const auto& headers() const { return _headers; }
+  // Headers with empty values will be returned.
+  [[nodiscard]] const auto& headers() const noexcept { return _headers; }
 
   // =============================
   // Lazy query parameter iteration
@@ -79,14 +88,14 @@ class HttpRequest {
       bool _atEnd{false};
     };
 
-    [[nodiscard]] iterator begin() const { return {_fullQuery, 0}; }
+    [[nodiscard]] iterator begin() const noexcept { return {_fullQuery, 0}; }
 
-    [[nodiscard]] iterator end() const { return {_fullQuery, std::string_view::npos}; }
+    [[nodiscard]] iterator end() const noexcept { return {_fullQuery, std::string_view::npos}; }
 
    private:
     friend class HttpRequest;
 
-    explicit QueryParamRange(std::string_view fullQuery) : _fullQuery(fullQuery) {}
+    explicit QueryParamRange(std::string_view fullQuery) noexcept : _fullQuery(fullQuery) {}
 
     std::string_view _fullQuery;
   };
@@ -98,7 +107,7 @@ class HttpRequest {
   //    for (const auto &[queryParamKey, queryParamValue] : httpRequest.queryParams()) {
   //       // do something with queryParamKey and queryParamValue
   //    }
-  [[nodiscard]] QueryParamRange queryParams() const { return QueryParamRange(_decodedQueryParams); }
+  [[nodiscard]] QueryParamRange queryParams() const noexcept { return QueryParamRange(_decodedQueryParams); }
 
   // Get the (already received) body of the request.
   [[nodiscard]] std::string_view body() const noexcept { return _body; }
@@ -114,11 +123,7 @@ class HttpRequest {
 
  private:
   friend class HttpServer;
-  friend class HttpRequestUnit_ParseBasicPathAndVersion_Test;  // gtest generated
-  friend class HttpRequestUnit_QueryParamsDecodingPlusAndPercent_Test;
-  friend class HttpRequestUnit_EmptyAndMissingValues_Test;
-  friend class HttpRequestUnit_DuplicateKeysPreservedOrder_Test;
-  friend class HttpRequestUnit_InvalidPathEscapeCauses400_Test;
+  friend class HttpRequestTest;
 
   [[nodiscard]] bool wantClose() const;
 
