@@ -10,13 +10,13 @@
 #include "accept-encoding-negotiation.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server.hpp"
-#include "connection-state.hpp"  // ConnectionState
-#include "http-constants.hpp"
-#include "http-method.hpp"
-#include "http-version.hpp"  // http::HTTP_1_0 / HTTP_1_1
+#include "aeronet/http-version.hpp"  // http::HTTP_1_0 / HTTP_1_1
+#include "connection-state.hpp"      // ConnectionState
 #include "log.hpp"
 #include "raw-chars.hpp"
 #include "string-equal-ignore-case.hpp"

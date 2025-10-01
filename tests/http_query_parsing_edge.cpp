@@ -5,11 +5,11 @@
 #include <string>  // std::string
 #include <thread>  // std::jthread, sleep_for
 
+#include "aeronet/http-method.hpp"         // aeronet::http::Method
 #include "aeronet/http-request.hpp"        // aeronet::HttpRequest
 #include "aeronet/http-response.hpp"       // aeronet::HttpResponse
 #include "aeronet/http-server-config.hpp"  // aeronet::HttpServerConfig
 #include "aeronet/http-server.hpp"         // aeronet::HttpServer
-#include "http-method.hpp"                 // aeronet::http::Method
 #include "test_raw_get.hpp"
 
 using namespace std::chrono_literals;

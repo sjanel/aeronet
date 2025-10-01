@@ -3,11 +3,11 @@
 #include <cstdint>  // uint16_t
 #include <string>
 
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"   // aeronet::HttpRequest
 #include "aeronet/http-response.hpp"  // aeronet::HttpResponse
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "http-method.hpp"
 #include "test_http_client.hpp"
 #include "test_server_fixture.hpp"
 

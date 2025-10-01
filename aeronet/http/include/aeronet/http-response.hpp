@@ -6,9 +6,9 @@
 #include <string_view>
 #include <utility>
 
-#include "http-constants.hpp"
-#include "http-status-code.hpp"
-#include "http-version.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-status-code.hpp"
+#include "aeronet/http-version.hpp"
 #include "raw-chars.hpp"
 #include "simple-charconv.hpp"
 #include "string-equal-ignore-case.hpp"

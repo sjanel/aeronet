@@ -13,8 +13,8 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/test_util.hpp"
-#include "http-status-code.hpp"
 #include "test_server_fixture.hpp"
 
 using namespace std::chrono_literals;

@@ -26,23 +26,23 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/http-status-code.hpp"  // http::StatusCode / StatusCodeOK
+#include "aeronet/http-version.hpp"      // http::HTTP_1_0 / HTTP_1_1 constants
 #include "aeronet/server-stats.hpp"
 #include "duration-format.hpp"
 #include "event-loop.hpp"
 #include "exception.hpp"
 #include "flat-hash-map.hpp"
-#include "http-status-code.hpp"  // http::StatusCode / StatusCodeOK
-#include "http-version.hpp"      // http::HTTP_1_0 / HTTP_1_1 constants
 #ifdef AERONET_ENABLE_ZLIB
 #include "zlib-encoder.hpp"
 #endif
 #include "aeronet/encoding.hpp"  // Encoding enum for encoder indices
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-method-set.hpp"
+#include "aeronet/http-method.hpp"
 #include "connection-state.hpp"  // ConnectionState direct reference
-#include "http-constants.hpp"
 #include "http-error-build.hpp"
 #include "http-method-build.hpp"
-#include "http-method-set.hpp"
-#include "http-method.hpp"
 #include "log.hpp"
 #include "socket.hpp"
 #include "string-equal-ignore-case.hpp"
