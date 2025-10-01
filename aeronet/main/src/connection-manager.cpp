@@ -43,10 +43,10 @@ void HttpServer::sweepIdleConnections() {
     ConnectionState& st = it->second;
     // Keep-alive inactivity enforcement only if enabled.
     if (_config.enableKeepAlive) {
-      if (st.shouldClose || (now - st.lastActivity) > _config.keepAliveTimeout) {
+      if (st.isAnyCloseRequested() || (now - st.lastActivity) > _config.keepAliveTimeout) {
         closeThis = true;
       }
-    } else if (st.shouldClose) {
+    } else if (st.isAnyCloseRequested()) {
       closeThis = true;
     }
     // Header read timeout: active if headerStart set and duration exceeded and no full request parsed yet.
@@ -197,7 +197,6 @@ void HttpServer::handleReadableClient(int fd) {
   }
   ConnectionState& state = itState->second;
   state.lastActivity = std::chrono::steady_clock::now();
-  bool closeConnection = false;
   while (true) {
     bool wantR = false;
     bool wantW = false;
@@ -224,22 +223,21 @@ void HttpServer::handleReadableClient(int fd) {
         break;
       }
       log::error("read failed: {}", std::strerror(errno));
-      closeConnection = true;
+      state.requestImmediateClose();
       break;
     }
     if (count == 0) {
-      closeConnection = true;
+      state.requestImmediateClose();
       break;
     }
     if (count > 0 && state.headerStart.time_since_epoch().count() == 0) {
       state.headerStart = std::chrono::steady_clock::now();
     }
     if (state.buffer.size() > _config.maxHeaderBytes + _config.maxBodyBytes) {
-      closeConnection = true;
+      state.requestImmediateClose();
       break;
     }
     if (processRequestsOnConnection(fd, state)) {
-      closeConnection = true;
       break;
     }
     // Header read timeout enforcement: if headers of current pending request are not complete yet
@@ -247,12 +245,12 @@ void HttpServer::handleReadableClient(int fd) {
     if (_config.headerReadTimeout.count() > 0 && state.headerStart.time_since_epoch().count() != 0) {
       const auto now = std::chrono::steady_clock::now();
       if (now - state.headerStart > _config.headerReadTimeout) {
-        closeConnection = true;
+        state.requestImmediateClose();
         break;
       }
     }
   }
-  if (closeConnection) {
+  if (state.isAnyCloseRequested()) {
     closeConnectionFd(fd);
   }
 }

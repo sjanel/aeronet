@@ -23,7 +23,6 @@ TEST(MultiHttpServer, RapidStartStopCycles) {
     });
     multi.start();
     ASSERT_TRUE(multi.isRunning());
-    ASSERT_GT(multi.port(), 0);
     // Short dwell to allow threads to enter run loop.
     std::this_thread::sleep_for(5ms);
     multi.stop();

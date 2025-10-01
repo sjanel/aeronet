@@ -23,12 +23,11 @@
 
 namespace aeronet {
 void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpRequest& req, HttpResponse& resp,
-                                         std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart,
-                                         bool& closeConnection) {
+                                         std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart) {
   ++state.requestsServed;
   bool keepAlive = _config.enableKeepAlive && state.requestsServed < _config.maxRequestsPerConnection;
   if (keepAlive) {
-    std::string_view connVal = req.header(http::Connection);
+    std::string_view connVal = req.headerValueOrEmpty(http::Connection);
     if (connVal.empty()) {
       // Default is keep-alive for HTTP/1.1, close for HTTP/1.0
       keepAlive = req.version() == http::HTTP_1_1;
@@ -44,7 +43,7 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
   bool isHead = (req.method() == http::Method::HEAD);
   if (!isHead && !resp.userProvidedContentEncoding()) {
     const CompressionConfig& compressionConfig = _config.compression;
-    auto encHeader = req.header(http::AcceptEncoding);
+    auto encHeader = req.headerValueOrEmpty(http::AcceptEncoding);
     auto [encoding, reject] = _encodingSelector.negotiateAcceptEncoding(encHeader);
     // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
     // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
@@ -90,7 +89,7 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
 
   state.buffer.erase_front(consumedBytes);
   if (!keepAlive) {
-    closeConnection = true;
+    state.requestDrainAndClose();
   }
   if (_metricsCb) {
     RequestMetrics metrics;
@@ -135,8 +134,8 @@ bool HttpServer::queueData(int fd, ConnectionState& state, std::string_view data
     } else if (written == 0 || (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))) {
       // no progress but non fatal
       state.outBuffer.append(data);
-    } else {  // fatal
-      state.shouldClose = true;
+    } else {  // fatal transport write
+      state.requestImmediateClose();
       return false;
     }
   } else {
@@ -145,7 +144,7 @@ bool HttpServer::queueData(int fd, ConnectionState& state, std::string_view data
   _stats.totalBytesQueued += static_cast<uint64_t>(data.size());
   _stats.maxConnectionOutboundBuffer = std::max(_stats.maxConnectionOutboundBuffer, state.outBuffer.size());
   if (state.outBuffer.size() > _config.maxOutboundBufferBytes) {
-    state.shouldClose = true;
+    state.requestImmediateClose();
   }
   if (!state.waitingWritable) {
     if (HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
@@ -185,7 +184,7 @@ void HttpServer::flushOutbound(int fd, ConnectionState& state) {
     }
     int savedErr = errno;
     log::error("send/transportWrite failed fd={} errno={} msg={}", fd, savedErr, std::strerror(savedErr));
-    state.shouldClose = true;
+    state.requestImmediateClose();
     state.outBuffer.clear();
     break;
   }
@@ -199,7 +198,7 @@ void HttpServer::flushOutbound(int fd, ConnectionState& state) {
       if (HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLET, state,
                                             "disable writable flushOutbound drop EPOLLOUT", _stats)) {
         state.waitingWritable = false;
-        if (state.shouldClose) {
+        if (state.isAnyCloseRequested()) {
           closeConnectionFd(fd);
         }
       }
