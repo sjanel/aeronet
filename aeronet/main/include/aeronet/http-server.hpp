@@ -30,11 +30,11 @@
 #include "tls-metrics.hpp"
 #endif
 
+#include "aeronet/http-method-set.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/server-stats.hpp"
 #include "encoder.hpp"
 #include "flat-hash-map.hpp"
-#include "http-method-set.hpp"
-#include "http-method.hpp"
 #include "http-response-writer.hpp"
 #include "socket.hpp"
 #include "timedef.hpp"

@@ -7,11 +7,11 @@
 #include <string_view>  // std::string_view
 #include <utility>      // std::make_pair
 
-#include "connection-state.hpp"  // ConnectionState parameter
-#include "http-constants.hpp"
-#include "http-method.hpp"
-#include "http-status-code.hpp"  // http::StatusCode values
-#include "http-version.hpp"      // http::parseHttpVersion
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-method.hpp"
+#include "aeronet/http-status-code.hpp"  // http::StatusCode values
+#include "aeronet/http-version.hpp"      // http::parseHttpVersion
+#include "connection-state.hpp"          // ConnectionState parameter
 #include "toupperlower.hpp"
 #include "url-decode.hpp"
 

@@ -2,11 +2,11 @@
 
 #include <string>  // std::string
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "http-constants.hpp"
 #include "test_http_client.hpp"
 #include "test_server_fixture.hpp"
 

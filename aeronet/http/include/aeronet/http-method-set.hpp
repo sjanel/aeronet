@@ -3,9 +3,9 @@
 #include <amc/allocator.hpp>
 #include <functional>
 
+#include "aeronet/http-method.hpp"
 #include "fixedcapacityvector.hpp"
 #include "flatset.hpp"
-#include "http-method.hpp"
 
 namespace aeronet::http {
 

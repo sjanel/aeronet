@@ -6,10 +6,10 @@
 #include <string_view>
 
 #include "aeronet/encoding.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "encoder.hpp"
-#include "http-constants.hpp"
-#include "http-status-code.hpp"
 #include "raw-chars.hpp"
 
 namespace aeronet {

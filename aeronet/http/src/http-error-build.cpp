@@ -2,8 +2,8 @@
 
 #include <string_view>
 
-#include "http-constants.hpp"
-#include "http-status-code.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "raw-chars.hpp"
 #include "stringconv.hpp"
 
