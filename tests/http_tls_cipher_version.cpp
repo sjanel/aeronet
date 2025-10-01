@@ -22,11 +22,11 @@ TEST(HttpTlsCipherVersion, CipherAndVersionExposedAndMetricsIncrement) {
     TlsTestServer ts({"http/1.1"});
     auto port = ts.port();
     ts.setHandler([&](const aeronet::HttpRequest& req) {
-      capturedCipher = std::string(req.tlsCipher);
-      capturedVersion = std::string(req.tlsVersion);
-      capturedAlpn = std::string(req.alpnProtocol);
+      capturedCipher = std::string(req.tlsCipher());
+      capturedVersion = std::string(req.tlsVersion());
+      capturedAlpn = std::string(req.alpnProtocol());
 
-      return aeronet::HttpResponse(200).reason("OK").contentType(aeronet::http::ContentTypeTextPlain).body("ok");
+      return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body("ok");
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(80));  // allow handshake path if needed
     TlsClient::Options opts;

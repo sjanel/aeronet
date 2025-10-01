@@ -20,7 +20,7 @@ TEST(HttpTlsAlpnMismatch, HandshakeFailsWhenNoCommonProtocolAndMustMatch) {
       return aeronet::HttpResponse(200)
           .reason("OK")
           .contentType(aeronet::http::ContentTypeTextPlain)
-          .body(std::string("ALPN:") + std::string(req.alpnProtocol));
+          .body(std::string("ALPN:") + std::string(req.alpnProtocol()));
     });
     // Offer only a mismatching ALPN; since TlsClient uses options, construct with protoX.
     TlsClient::Options opts;

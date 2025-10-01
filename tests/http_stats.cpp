@@ -15,7 +15,7 @@ TEST(HttpStats, BasicCountersIncrement) {
   cfg.withMaxRequestsPerConnection(5);
   TestServer ts(cfg);
   ts.server.setHandler([]([[maybe_unused]] const HttpRequest& req) {
-    return aeronet::HttpResponse(200).reason("OK").body("hello").contentType(aeronet::http::ContentTypeTextPlain);
+    return aeronet::HttpResponse(200, "OK").body("hello").contentType(aeronet::http::ContentTypeTextPlain);
   });
   // Single request via throwing helper
   auto resp = test_http_client::request_or_throw(ts.port());

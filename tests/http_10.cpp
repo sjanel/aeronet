@@ -8,6 +8,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "test_server_fixture.hpp"
 #include "test_util.hpp"
 
 using namespace std::chrono_literals;
@@ -22,9 +23,6 @@ std::string collectSimple(uint16_t port, const std::string& req) {
   return resp;
 }
 }  // namespace
-
-// Refactored: use TestServer harness (removes manual thread + sleep)
-#include "test_server_fixture.hpp"
 
 TEST(Http10, BasicVersionEcho) {
   TestServer ts(aeronet::HttpServerConfig{});

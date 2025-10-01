@@ -128,7 +128,7 @@ TEST(HttpServerMixed, ConflictRegistrationNormalThenStreaming) {
   cfg.port = 0;
   aeronet::HttpServer srv(cfg);
   srv.addPathHandler("/c", aeronet::http::Method::GET, [](const aeronet::HttpRequest&) {
-    return aeronet::HttpResponse(200).reason("OK").body("X").contentType("text/plain");
+    return aeronet::HttpResponse(200, "OK").body("X").contentType("text/plain");
   });
   EXPECT_THROW(srv.addPathStreamingHandler("/c", aeronet::http::Method::GET,
                                            [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter&) {}),
@@ -146,7 +146,7 @@ TEST(HttpServerMixed, ConflictRegistrationStreamingThenNormal) {
                               });
   EXPECT_THROW(srv.addPathHandler("/c2", aeronet::http::Method::GET,
                                   [](const aeronet::HttpRequest&) {
-                                    return aeronet::HttpResponse(200).reason("OK").body("Y").contentType("text/plain");
+                                    return aeronet::HttpResponse(200, "OK").body("Y").contentType("text/plain");
                                   }),
                aeronet::exception);
 }
@@ -157,7 +157,7 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
   cfg.enableKeepAlive = false;
   aeronet::HttpServer srv(cfg);
   srv.setHandler([](const aeronet::HttpRequest&) {
-    return aeronet::HttpResponse(200).reason("OK").contentType(aeronet::http::ContentTypeTextPlain).body("GLOBAL");
+    return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body("GLOBAL");
   });
   srv.setStreamingHandler([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
     writer.statusCode(200);
@@ -174,7 +174,7 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
                               });
   // path-specific normal overrides global fallbacks
   srv.addPathHandler("/n", aeronet::http::Method::GET, [](const aeronet::HttpRequest&) {
-    return aeronet::HttpResponse(200).reason("OK").body("PN").contentType("text/plain");
+    return aeronet::HttpResponse(200, "OK").body("PN").contentType("text/plain");
   });
   std::jthread th([&] { srv.runUntil([] { return false; }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
@@ -197,7 +197,7 @@ TEST(HttpServerMixed, GlobalNormalOnlyWhenNoStreaming) {
   cfg.enableKeepAlive = false;
   aeronet::HttpServer srv(cfg);
   srv.setHandler([](const aeronet::HttpRequest&) {
-    return aeronet::HttpResponse(200).reason("OK").body("GN").contentType("text/plain");
+    return aeronet::HttpResponse(200, "OK").body("GN").contentType("text/plain");
   });
   std::jthread th([&] { srv.runUntil([] { return false; }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(30));

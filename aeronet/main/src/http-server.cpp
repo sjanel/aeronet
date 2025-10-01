@@ -25,6 +25,7 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/server-stats.hpp"
 #include "duration-format.hpp"
 #include "event-loop.hpp"
 #include "exception.hpp"
@@ -361,99 +362,104 @@ ssize_t HttpServer::transportWrite(int fd, ConnectionState& state, std::string_v
   if (state.transport) {
     return state.transport->write(data, wantRead, wantWrite);
   }
-  wantRead = wantWrite = false;
+  wantRead = false;
+  wantWrite = false;
   return ::send(fd, data.data(), data.size(), MSG_NOSIGNAL);
 }
 
 bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
-  bool closeCnx = false;
+  bool closeConnection = false;
   while (true) {
-    std::size_t headerEnd = 0;
-    HttpRequest req;
-    // Propagate negotiated ALPN (if any) from connection state into per-request object.
-    req.alpnProtocol = state.selectedAlpn;
-    req.tlsCipher = state.negotiatedCipher;
-    req.tlsVersion = state.negotiatedVersion;
     auto reqStart = std::chrono::steady_clock::now();
-    if (!parseNextRequestFromBuffer(fd, state, req, headerEnd, closeCnx)) {
-      break;  // need more data or connection closed
+    // If we don't yet have a full request line (no '\n' observed) wait for more data instead of
+    // attempting to parse and wrongly emitting a 400 which would close an otherwise healthy keep-alive.
+    if (state.buffer.empty() || std::find(state.buffer.begin(), state.buffer.end(), '\n') == state.buffer.end()) {
+      break;  // need more bytes for at least the request line
     }
+    HttpRequest req;
+    auto statusCode = req.setHead(state, _config.maxHeaderBytes);
+    if (statusCode != http::StatusCodeOK) {
+      emitSimpleError(fd, state, statusCode, closeConnection);
+      // Consume the currently parsed (or attempted) header bytes to avoid infinite loop on same data.
+      // If we failed early, closeConnection will be true; break either way.
+      break;
+    }
+
     // A full request head (and body, if present) will now be processed; reset headerStart to signal
     // that the header timeout should track the next pending request only.
     state.headerStart = {};
     bool isChunked = false;
-    bool hasTE = false;
-    if (std::string_view te = req.findHeader(http::TransferEncoding); !te.empty()) {
-      hasTE = true;
-      if (req.version == http::HTTP10) {
-        emitSimpleError(fd, state, 400, ParserError::BadRequestLine, closeCnx);
+    bool hasTransferEncoding = false;
+    std::string_view transferEncoding = req.header(http::TransferEncoding);
+    if (!transferEncoding.empty()) {
+      hasTransferEncoding = true;
+      if (req.version() == http::HTTP_1_0) {
+        emitSimpleError(fd, state, 400, closeConnection);
         break;
       }
-      if (CaseInsensitiveEqual(te, http::chunked)) {
+      if (CaseInsensitiveEqual(transferEncoding, http::chunked)) {
         isChunked = true;
       } else {
-        emitSimpleError(fd, state, 501, ParserError::GenericBadRequest, closeCnx);
+        emitSimpleError(fd, state, 501, closeConnection);
         break;
       }
     }
-    bool hasCL = false;
-    std::string_view lenViewAll = req.findHeader(http::ContentLength);
+
+    bool hasContentLength = false;
+    std::string_view lenViewAll = req.header(http::ContentLength);
     if (!lenViewAll.empty()) {
-      hasCL = true;
+      hasContentLength = true;
     }
-    if (hasCL && hasTE) {
-      emitSimpleError(fd, state, 400, ParserError::BadRequestLine, closeCnx);
+    if (hasContentLength && hasTransferEncoding) {
+      emitSimpleError(fd, state, 400, closeConnection);
       break;
     }
     bool expectContinue = false;
-    if (req.version == http::HTTP11) {
-      if (std::string_view expectVal = req.findHeader(http::Expect); !expectVal.empty()) {
+    if (req.version() == http::HTTP_1_1) {
+      if (std::string_view expectVal = req.header(http::Expect); !expectVal.empty()) {
         if (CaseInsensitiveEqual(expectVal, http::h100_continue)) {
           expectContinue = true;
         }
       }
     }
     std::size_t consumedBytes = 0;
-    if (!decodeBodyIfReady(fd, state, req, headerEnd, isChunked, expectContinue, closeCnx, consumedBytes)) {
+    if (!decodeBodyIfReady(fd, state, req, isChunked, expectContinue, closeConnection, consumedBytes)) {
       break;  // need more bytes or error
     }
     // Determine dispatch: path streaming > path normal > global streaming > global normal > 404/405
-    auto methodEnum = http::toMethodEnum(req.method);
+    auto methodEnum = req.method();
     // Provide implicit HEAD->GET fallback (RFC7231: HEAD is identical to GET without body) when
     // a HEAD handler is not explicitly registered but a GET handler exists for the same path.
     auto effectiveMethodEnum = methodEnum;
-    bool isHead = req.method == http::HEAD;
+    bool isHead = req.method() == http::Method::HEAD;
     bool handledStreaming = false;
     bool pathFound = false;
     if (!_pathHandlers.empty()) {
       // 1. Always attempt exact match first, independent of policy.
-      auto pit = _pathHandlers.find(req.target);
+      auto pit = _pathHandlers.find(req.path());
       std::string normalizedStorage;  // potential temporary storage for Normalize
-      bool endsWithSlash = req.target.size() > 1 && req.target.back() == '/';
+      bool endsWithSlash = req.path().size() > 1 && req.path().back() == '/';
       if (pit == _pathHandlers.end()) {
         // 2. No exact match: apply policy decision (excluding root "/").
-        if (endsWithSlash && req.target.size() > 1) {
+        if (endsWithSlash && req.path().size() > 1) {
           // Candidate canonical form (strip single trailing slash)
-          std::string_view canonical(req.target.data(), req.target.size() - 1);
+          std::string_view canonical(req.path().data(), req.path().size() - 1);
           auto canonicalIt = _pathHandlers.find(canonical);
           if (canonicalIt != _pathHandlers.end()) {
             switch (_config.trailingSlashPolicy) {
               case HttpServerConfig::TrailingSlashPolicy::Normalize:
-                // Treat as if request was canonical (no redirect) by mutating req.target temporarily.
+                // Treat as if request was canonical (no redirect) by mutating path temporarily.
                 normalizedStorage.assign(canonical.data(), canonical.size());
-                req.target = normalizedStorage;
+                req._path = normalizedStorage;
                 pit = canonicalIt;
                 break;
               case HttpServerConfig::TrailingSlashPolicy::Redirect: {
                 // Emit 301 redirect to canonical form.
-                HttpResponse resp(301);
-                resp.reason(http::MovedPermanently)
-                    .location(canonical)
-                    .contentType(http::ContentTypeTextPlain)
-                    .body("Redirecting");
-                finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeCnx);
-                if (closeCnx) {
-                  return closeCnx;  // connection closing, stop loop
+                HttpResponse resp(301, http::MovedPermanently);
+                resp.location(canonical).contentType(http::ContentTypeTextPlain).body("Redirecting");
+                finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConnection);
+                if (closeConnection) {
+                  return closeConnection;  // connection closing, stop loop
                 }
                 consumedBytes = 0;  // already advanced
                 continue;           // process next request (keep-alive)
@@ -465,16 +471,16 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
             }
           }
         } else if (!endsWithSlash && _config.trailingSlashPolicy == HttpServerConfig::TrailingSlashPolicy::Normalize &&
-                   req.target.size() > 1) {
+                   req.path().size() > 1) {
           // Request lacks slash; check if ONLY slashed variant exists.
-          std::string augmented(req.target.size() + 1U, '/');
-          std::memcpy(augmented.data(), req.target.data(), req.target.size());
+          std::string augmented(req.path().size() + 1U, '/');
+          std::memcpy(augmented.data(), req.path().data(), req.path().size());
           auto altIt = _pathHandlers.find(augmented);
           if (altIt != _pathHandlers.end()) {
             // Normalize treats them the same: dispatch to the registered variant.
             pit = altIt;
             normalizedStorage = augmented;  // keep explicit variant for metrics consistency
-            req.target = normalizedStorage;
+            req._path = normalizedStorage;
           }
         }
       }
@@ -495,7 +501,7 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
           }
         }
         if (entry.streamingHandlers[idx]) {
-          closeCnx = callStreamingHandler(entry.streamingHandlers[idx], req, fd, state, consumedBytes, reqStart);
+          closeConnection = callStreamingHandler(entry.streamingHandlers[idx], req, fd, state, consumedBytes, reqStart);
           handledStreaming = true;
         } else if (entry.normalHandlers[idx]) {
           HttpResponse resp(405);
@@ -519,23 +525,23 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
           } else {
             resp.reason(http::ReasonMethodNotAllowed).body(resp.reason()).contentType(http::ContentTypeTextPlain);
           }
-          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeCnx);
+          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConnection);
         } else {
           // path found but method not registered -> 405
-          HttpResponse resp(405);
-          resp.reason(http::ReasonMethodNotAllowed).body(resp.reason()).contentType(http::ContentTypeTextPlain);
-          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeCnx);
+          HttpResponse resp(405, http::ReasonMethodNotAllowed);
+          resp.body(resp.reason()).contentType(http::ContentTypeTextPlain);
+          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConnection);
         }
       } else if (!endsWithSlash && _config.trailingSlashPolicy == HttpServerConfig::TrailingSlashPolicy::Normalize &&
-                 req.target.size() > 1) {
+                 req.path().size() > 1) {
         // If we didn't find the unslashed variant, try adding a slash if such a path exists; treat as same handler.
-        std::string augmented(req.target);
+        std::string augmented(req.path());
         augmented.push_back('/');
         auto altIt = _pathHandlers.find(augmented);
         if (altIt != _pathHandlers.end()) {
           pathFound = true;
-          // Reuse logic by setting req.target temporarily to registered variant.
-          req.target = augmented;  // dispatch using canonical stored path with slash
+          // Reuse logic by setting path temporarily to registered variant.
+          req._path = augmented;  // dispatch using canonical stored path with slash
           auto& entry = altIt->second;
           auto idxOriginal = static_cast<std::underlying_type_t<http::Method>>(methodEnum);
           auto idx = idxOriginal;
@@ -550,7 +556,8 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
             }
           }
           if (entry.streamingHandlers[idx]) {
-            closeCnx = callStreamingHandler(entry.streamingHandlers[idx], req, fd, state, consumedBytes, reqStart);
+            closeConnection =
+                callStreamingHandler(entry.streamingHandlers[idx], req, fd, state, consumedBytes, reqStart);
             handledStreaming = true;
           } else if (entry.normalHandlers[idx]) {
             HttpResponse resp(405);
@@ -573,27 +580,27 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
             } else {
               resp.reason(http::ReasonMethodNotAllowed).body(resp.reason()).contentType(http::ContentTypeTextPlain);
             }
-            finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeCnx);
+            finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConnection);
           } else {
-            HttpResponse resp(405);
-            resp.reason(http::ReasonMethodNotAllowed).body(resp.reason()).contentType(http::ContentTypeTextPlain);
+            HttpResponse resp(405, http::ReasonMethodNotAllowed);
+            resp.body(resp.reason()).contentType(http::ContentTypeTextPlain);
 
-            finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeCnx);
+            finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConnection);
           }
           // restore original target for metric consistency? We keep canonical (augmented) for now.
         }
       }
     }
     if (handledStreaming) {
-      if (closeCnx) {
+      if (closeConnection) {
         break;
       }
       continue;  // proceed next request in buffer
     }
     if (!pathFound) {
       if (_streamingHandler) {
-        closeCnx = callStreamingHandler(_streamingHandler, req, fd, state, consumedBytes, reqStart);
-        if (closeCnx) {
+        closeConnection = callStreamingHandler(_streamingHandler, req, fd, state, consumedBytes, reqStart);
+        if (closeConnection) {
           break;
         }
         continue;
@@ -613,31 +620,31 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
         resp.statusCode(404);
         resp.reason(http::NotFound).body(resp.reason()).contentType(http::ContentTypeTextPlain);
       }
-      finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeCnx);
+      finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConnection);
     }
-    if (closeCnx) {
+    if (closeConnection) {
       break;
     }
   }
-  return closeCnx;
+  return closeConnection;
 }
 
 bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, HttpRequest& req, int fd,
                                       ConnectionState& state, std::size_t consumedBytes,
                                       std::chrono::steady_clock::time_point reqStart) {
   bool wantClose = req.wantClose();
-  bool isHead = req.method == http::HEAD;
+  bool isHead = req.method() == http::Method::HEAD;
   Encoding compressionFormat = Encoding::none;
   if (!isHead) {
-    auto encHeader = req.findHeader(http::AcceptEncoding);
+    auto encHeader = req.header(http::AcceptEncoding);
     auto negotiated = _encodingSelector.negotiateAcceptEncoding(encHeader);
     if (negotiated.reject) {
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
       HttpResponse resp(406, http::ReasonNotAcceptable);
       resp.body("No acceptable content-coding available").contentType(http::ContentTypeTextPlain);
-      bool closeConn = false;  // will be set inside finalizeAndSendResponse if keep-alive not allowed
-      finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConn);
-      return closeConn;
+      bool closeConnection = false;  // will be set inside finalizeAndSendResponse if keep-alive not allowed
+      finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart, closeConnection);
+      return closeConnection;
     }
     compressionFormat = negotiated.encoding;
   }
@@ -655,17 +662,17 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   if (wantClose) {
     state.shouldClose = true;  // honor client directive for streaming path
   }
-  bool allowKeepAlive = _config.enableKeepAlive && req.version == http::HTTP11 && !wantClose &&
+  bool allowKeepAlive = _config.enableKeepAlive && req.version() == http::HTTP_1_1 && !wantClose &&
                         state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.shouldClose;
   ++state.requestsServed;
   state.buffer.erase_front(consumedBytes);
 
   if (_metricsCb) {
     RequestMetrics metrics;
-    metrics.method = req.method;
-    metrics.target = req.target;
+    metrics.method = req.method();
+    metrics.path = req.path();
     metrics.status = 200;  // best effort (streaming handler controls status directly)
-    metrics.bytesIn = req.body.size();
+    metrics.bytesIn = req.body().size();
     metrics.reusedConnection = state.requestsServed > 1;
     metrics.duration = std::chrono::steady_clock::now() - reqStart;
     _metricsCb(metrics);
@@ -740,18 +747,16 @@ ServerStats HttpServer::stats() const {
   return statsOut;
 }
 
-bool HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, ParserError perr,
-                                 bool& closeConn) {
+void HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, bool& closeConnection) {
   const auto err = BuildSimpleError(code, std::string_view(_cachedDate), true);
   queueData(fd, state, err);
   try {
-    _parserErrCb(perr);
+    _parserErrCb(code);
   } catch (const std::exception& ex) {
     // Swallow exceptions from user callback to avoid destabilizing the server
     log::error("Exception raised in user callback: {}", ex.what());
   }
-  closeConn = true;
-  return false;
+  closeConnection = true;
 }
 
 }  // namespace aeronet

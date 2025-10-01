@@ -114,7 +114,7 @@ void HttpResponseWriter::ensureHeadersSent() {
   // Do not attempt to add Connection/Date here; finalize handles them (adds Date, Connection based on keepAlive flag).
   auto dateStr =
       std::string_view(reinterpret_cast<const char*>(_server->_cachedDate.data()), _server->_cachedDate.size());
-  auto finalized = _fixedResponse.finalizeAndGetFullTextResponse(http::HTTP11, dateStr, !_requestConnClose, _head);
+  auto finalized = _fixedResponse.finalizeAndGetFullTextResponse(http::HTTP_1_1, dateStr, !_requestConnClose, _head);
   log::debug("Streaming: headers fd={} code={} chunked={} headerBytes={} ", _fd, _fixedResponse.statusCode(), _chunked,
              finalized.size());
   if (!enqueue(finalized)) {

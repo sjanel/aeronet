@@ -29,7 +29,6 @@ constexpr std::string_view version() { return AERONET_PROJECT_VERSION; }
 constexpr std::string_view fullVersionStringView() {
   // Base fragments
   static constexpr std::string_view _sv_name = "aeronet ";
-  static constexpr std::string_view _sv_tls_prefix = "tls: ";
   static constexpr std::string_view _sv_logging_prefix = "logging: spdlog ";
   static constexpr std::string_view _sv_newline = "\n  ";
   static constexpr std::string_view _sv_version_macro = AERONET_PROJECT_VERSION;  // same as version()
@@ -37,6 +36,7 @@ constexpr std::string_view fullVersionStringView() {
 // TLS section fragment (either full OPENSSL_VERSION_TEXT or disabled)
 #ifdef AERONET_ENABLE_OPENSSL
   static constexpr std::string_view _sv_openssl_ver = OPENSSL_VERSION_TEXT;  // e.g. "OpenSSL 3.0.13 30 Jan 2024"
+  static constexpr std::string_view _sv_tls_prefix = "tls: ";
   // We choose to keep full OPENSSL_VERSION_TEXT (concise enough) – trimming can be added later if needed.
   using tls_join_t = JoinStringView<_sv_tls_prefix, _sv_openssl_ver>;
   static constexpr std::string_view _sv_tls_section = tls_join_t::value;

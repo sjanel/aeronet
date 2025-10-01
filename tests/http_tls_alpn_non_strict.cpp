@@ -17,12 +17,12 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
     TlsTestServer ts({"h2"});
     auto port = ts.port();
     ts.setHandler([&](const aeronet::HttpRequest& req) {
-      if (!req.alpnProtocol.empty()) {
-        capturedAlpn = std::string(req.alpnProtocol);
+      if (!req.alpnProtocol().empty()) {
+        capturedAlpn = std::string(req.alpnProtocol());
       } else {
         capturedAlpn.clear();
       }
-      return aeronet::HttpResponse(200).reason("OK").contentType(aeronet::http::ContentTypeTextPlain).body("NS");
+      return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body("NS");
     });
     TlsClient::Options opts;
     opts.alpn = {"foo"};  // no overlap

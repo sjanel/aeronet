@@ -15,7 +15,7 @@ target_include_directories(aeronet
 )
 
 target_link_libraries(aeronet
-    PUBLIC aeronet_tech aeronet_sys aeronet_http
+    PUBLIC aeronet_tech aeronet_sys aeronet_objects aeronet_http
 )
 
 if(AERONET_ENABLE_OPENSSL)

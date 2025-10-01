@@ -39,7 +39,7 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
     return aeronet::HttpResponse(200)
         .reason("OK")
         .contentType(aeronet::http::ContentTypeTextPlain)
-        .body(std::string("MOVEALPN:") + (req.alpnProtocol.empty() ? "-" : std::string(req.alpnProtocol)));
+        .body(std::string("MOVEALPN:") + (req.alpnProtocol().empty() ? "-" : std::string(req.alpnProtocol())));
   });
 
   auto port = original.port();

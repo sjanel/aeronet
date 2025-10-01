@@ -11,9 +11,9 @@ namespace aeronet::http {
 
 RawChars buildStatusLine(http::StatusCode code, std::string_view reason) {
   RawChars ret(std::max<std::size_t>(
-      96UL, HTTP11.size() + 2UL + static_cast<std::size_t>(nchars(code)) + reason.size() + CRLF.size()));
+      96UL, HTTP11Sv.size() + 2UL + static_cast<std::size_t>(nchars(code)) + reason.size() + CRLF.size()));
 
-  ret.unchecked_append(HTTP11);
+  ret.unchecked_append(HTTP11Sv);
   ret.unchecked_push_back(' ');
   ret.unchecked_append(std::string_view(IntegralToCharVector(code)));
   ret.unchecked_push_back(' ');

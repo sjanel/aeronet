@@ -20,3 +20,10 @@ add_unit_test(
     LIBRARIES
     aeronet_http
 )
+
+add_unit_test(
+    http-request_test
+    test/http-request_test.cpp
+    LIBRARIES
+    aeronet_http
+)
