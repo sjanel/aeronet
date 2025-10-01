@@ -1,7 +1,10 @@
 #include "http-version.hpp"
 
 #include <charconv>
+#include <cstddef>  // std::size_t
 #include <cstring>
+#include <system_error>  // std::errc
+#include <utility>
 
 #include "stringconv.hpp"
 
@@ -19,7 +22,7 @@ Version::VersionStr Version::str() const {
 // Parse a textual HTTP version token (e.g. "HTTP/1.1") into Version.
 // Returns true on success; false if format invalid.
 bool parseHttpVersion(const char *first, const char *last, Version &out) {
-  if (static_cast<std::size_t>(last - first) < HTTP_1_0.str().size() ||
+  if (std::cmp_less(last - first, HTTP_1_0.str().size()) ||
       std::memcmp(first, Version::kPrefix.data(), Version::kPrefix.size()) != 0) {  // minimal length "HTTP/x.y"
     return false;
   }

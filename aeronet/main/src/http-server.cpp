@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <algorithm>  // std::find
 #include <cassert>
 #include <cerrno>
 #include <chrono>
@@ -30,9 +31,13 @@
 #include "event-loop.hpp"
 #include "exception.hpp"
 #include "flat-hash-map.hpp"
+#include "http-status-code.hpp"  // http::StatusCode / StatusCodeOK
+#include "http-version.hpp"      // http::HTTP_1_0 / HTTP_1_1 constants
 #ifdef AERONET_ENABLE_ZLIB
 #include "zlib-encoder.hpp"
 #endif
+#include "aeronet/encoding.hpp"  // Encoding enum for encoder indices
+#include "connection-state.hpp"  // ConnectionState direct reference
 #include "http-constants.hpp"
 #include "http-error-build.hpp"
 #include "http-method-build.hpp"
@@ -373,7 +378,7 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
     auto reqStart = std::chrono::steady_clock::now();
     // If we don't yet have a full request line (no '\n' observed) wait for more data instead of
     // attempting to parse and wrongly emitting a 400 which would close an otherwise healthy keep-alive.
-    if (state.buffer.empty() || std::find(state.buffer.begin(), state.buffer.end(), '\n') == state.buffer.end()) {
+    if (state.buffer.empty() || std::ranges::find(state.buffer, '\n') == state.buffer.end()) {
       break;  // need more bytes for at least the request line
     }
     HttpRequest req;

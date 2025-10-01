@@ -9,16 +9,16 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_util.hpp"
+#include "aeronet/test_util.hpp"
 
 using namespace std::chrono_literals;
 
 namespace {
 std::string sendRaw(uint16_t port, std::string_view raw) {
-  ClientConnection clientConnection(port);
+  aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
-  tu_sendAll(fd, raw);
-  std::string resp = tu_recvWithTimeout(fd, 300ms);
+  aeronet::test::sendAll(fd, raw);
+  std::string resp = aeronet::test::recvWithTimeout(fd, 300ms);
   // server may close depending on error severity
   return resp;
 }

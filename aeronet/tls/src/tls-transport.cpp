@@ -5,6 +5,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <string_view>  // std::string_view for write()
 
 namespace aeronet {
 

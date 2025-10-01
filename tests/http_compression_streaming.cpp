@@ -1,9 +1,18 @@
 ﻿#include <gtest/gtest.h>
 
-#include <string>
-#include <vector>
+// IWYU: add direct includes for used STL types and utilities
+#include <chrono>       // chrono literals (if added later) / sleep durations
+#include <cstddef>      // size_t (header parsing cursor)
+#include <cstdint>      // uint16_t
+#include <map>          // std::map
+#include <stdexcept>    // std::runtime_error
+#include <string>       // std::string
+#include <string_view>  // std::string_view
+#include <utility>      // std::move
+#include <vector>       // std::vector
 
 #include "aeronet/compression-config.hpp"
+#include "aeronet/encoding.hpp"  // Encoding
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -12,6 +21,7 @@
 #include "test_server_fixture.hpp"
 
 using namespace aeronet;
+using namespace std::chrono_literals;  // enable potential ms literals in future modifications
 
 namespace {
 // (Intentionally kept minimal; if unused in a specific build configuration, tests referencing them will use them.)
@@ -42,7 +52,7 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
     throw std::runtime_error("bad response");
   }
   out.headersRaw = raw.substr(0, hEnd + 4);
-  size_t cursor = 0;
+  size_t cursor = 0;  // needs <cstddef> already indirectly; explicit include not added to avoid churn
   auto nextLine = [&](size_t &pos) {
     auto le = out.headersRaw.find("\r\n", pos);
     if (le == std::string::npos) {

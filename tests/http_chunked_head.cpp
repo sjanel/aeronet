@@ -11,9 +11,9 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_util.hpp"
 #include "socket.hpp"
 #include "test_server_fixture.hpp"
-#include "test_util.hpp"
 
 using namespace std::chrono_literals;
 
@@ -50,7 +50,7 @@ TEST(HttpChunked, DecodeBasic) {
                                            std::string(req.body()));
   });
 
-  ClientConnection sock(port);
+  aeronet::test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -114,7 +114,7 @@ TEST(HttpExpect, ContinueFlow) {
   TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body()); });
-  ClientConnection cnx(port);
+  aeronet::test::ClientConnection cnx(port);
   std::string headers =
       "POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
   auto hs = ::send(cnx.fd(), headers.data(), headers.size(), 0);

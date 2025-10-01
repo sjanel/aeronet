@@ -1,14 +1,17 @@
 #include "aeronet/http-request.hpp"
 
-#include <algorithm>
-#include <cctype>
-#include <string_view>
+#include <algorithm>    // std::find
+#include <cctype>       // std::tolower
+#include <cstddef>      // std::size_t
+#include <iterator>     // std::distance
+#include <string_view>  // std::string_view
+#include <utility>      // std::make_pair
 
+#include "connection-state.hpp"  // ConnectionState parameter
 #include "http-constants.hpp"
 #include "http-method.hpp"
-#include "http-status-code.hpp"
-#include "log.hpp"
-#include "string-equal-ignore-case.hpp"
+#include "http-status-code.hpp"  // http::StatusCode values
+#include "http-version.hpp"      // http::parseHttpVersion
 #include "toupperlower.hpp"
 #include "url-decode.hpp"
 

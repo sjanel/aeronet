@@ -158,8 +158,8 @@ TEST(RawBytesResizeAndOverwrite, ReserveAndPartialFill) {
     return produced;
   });
   ASSERT_EQ(buf.size(), 100U);
-  for (auto &i : buf) {
-    ASSERT_EQ(static_cast<unsigned>(i), 0x7FU);
+  for (auto &byte : buf) {
+    ASSERT_EQ(static_cast<unsigned>(byte), 0x7FU);
   }
 }
 

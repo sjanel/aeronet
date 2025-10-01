@@ -3,7 +3,9 @@
 
 #include <gtest/gtest.h>
 
+#include <ios>
 #include <string>
+#include <string_view>
 
 namespace aeronet {
 

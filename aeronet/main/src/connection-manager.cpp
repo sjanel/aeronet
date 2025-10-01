@@ -2,19 +2,20 @@
 
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <utility>
 
 #include "aeronet/http-server.hpp"
+#include "connection-state.hpp"
 #include "connection.hpp"
 #include "raw-chars.hpp"
 #include "transport.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/ssl.h>
 #include <openssl/types.h>
-#include <openssl/x509.h>
 
 #include "tls-context.hpp"
 #include "tls-handshake.hpp"

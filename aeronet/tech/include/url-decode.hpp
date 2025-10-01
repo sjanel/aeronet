@@ -8,7 +8,7 @@ namespace aeronet::url {
 // modified state (caller can decide to discard it).
 // Returns a pointer to the new logical end of the 'str' decoded sequence.
 // plusAsSpace should be used only for query string values, not for paths.
-char* DecodeInPlace(char* first, char* last, char plusAs = '+', bool strictInvalid = true);
+char* DecodeInPlace(char* first, const char* last, char plusAs = '+', bool strictInvalid = true);
 
 inline constexpr char kNewKeyValueSep = 0x1F;
 inline constexpr char kNewPairSep = '\0';

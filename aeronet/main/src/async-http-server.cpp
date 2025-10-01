@@ -3,7 +3,9 @@
 #include <exception>
 #include <functional>
 #include <stdexcept>
+#include <stop_token>  // std::stop_token
 #include <thread>
+#include <utility>  // std::move
 
 #include "aeronet/http-server.hpp"
 

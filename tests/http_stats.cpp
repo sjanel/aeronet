@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <string>  // std::string
+
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
