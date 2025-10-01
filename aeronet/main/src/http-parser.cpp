@@ -3,11 +3,11 @@
 #include <cstring>
 #include <string_view>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-server.hpp"
 #include "char-hexadecimal-converter.hpp"
 #include "connection-state.hpp"  // aeronet::ConnectionState
-#include "http-constants.hpp"
 #include "raw-chars.hpp"
 
 namespace aeronet {

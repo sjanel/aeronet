@@ -3,7 +3,7 @@
 #include <memory>
 #include <string_view>
 
-#include "http-constants.hpp"
+#include "aeronet/http-constants.hpp"
 
 // =============================================================================
 // Aeronet Encoding Abstraction

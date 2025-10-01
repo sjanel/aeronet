@@ -53,9 +53,7 @@ The sections below provide a more granular feature matrix and usage examples.
 Spin up a basic HTTP/1.1 server that responds on `/hello` in just a few lines. If you pass `0` as the port (or omit it), the kernel picks an ephemeral port which you can query immediately.
 
 ```cpp
-#include <aeronet/http-server.hpp>
-#include <aeronet/http-server-config.hpp>
-#include <aeronet/http-response.hpp>
+#include <aeronet/aeronet.hpp>
 #include <print>
 using namespace aeronet;
 
@@ -592,8 +590,7 @@ NOTE: A previous experimental non-throwing `tryCreate` factory was removed to re
 ### Minimal Global Handler (Ephemeral Port)
 
 ```cpp
-#include <aeronet/http-server.hpp>
-#include <aeronet/http-server-config.hpp>
+#include <aeronet/aeronet.hpp>
 #include <print>
 using namespace aeronet;
 
@@ -741,7 +738,7 @@ Instead of manually creating N threads and N `HttpServer` instances, you can use
 Minimal example:
 
 ```cpp
-#include <aeronet/multi-http-server.hpp>
+#include <aeronet/aeronet.hpp>
 using namespace aeronet;
 
 int main() {
@@ -782,9 +779,7 @@ Blocking semantics summary:
 ### AsyncHttpServer (Single-Reactor Background Wrapper)
 
 ```cpp
-#include <aeronet/http-server.hpp>
-#include <aeronet/http-server-config.hpp>
-#include <aeronet/async-http-server.hpp>
+#include <aeronet/aeronet.hpp>
 using namespace aeronet;
 
 int main() {

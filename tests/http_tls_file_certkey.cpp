@@ -4,10 +4,10 @@
 #include <cstdint>
 #include <string>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "http-constants.hpp"
 #include "test_server_fixture.hpp"  // reuse generic TestServer with manual config
 #include "test_temp_file.hpp"
 #include "test_tls_client.hpp"

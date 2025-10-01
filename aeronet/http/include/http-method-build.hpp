@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <span>
 
-#include "http-method.hpp"
+#include "aeronet/http-method.hpp"
 
 namespace aeronet::http {
 

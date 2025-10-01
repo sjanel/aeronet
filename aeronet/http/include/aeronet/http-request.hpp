@@ -4,11 +4,11 @@
 #include <optional>
 #include <string_view>
 
+#include "aeronet/http-method.hpp"
+#include "aeronet/http-status-code.hpp"
+#include "aeronet/http-version.hpp"
 #include "connection-state.hpp"
 #include "headers-view-map.hpp"
-#include "http-method.hpp"
-#include "http-status-code.hpp"
-#include "http-version.hpp"
 
 namespace aeronet {
 

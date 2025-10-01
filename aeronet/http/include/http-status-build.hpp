@@ -2,7 +2,7 @@
 
 #include <string_view>
 
-#include "http-status-code.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "raw-chars.hpp"
 
 namespace aeronet::http {

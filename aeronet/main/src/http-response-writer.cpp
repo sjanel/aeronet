@@ -13,11 +13,11 @@
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/http-status-code.hpp"
+#include "aeronet/http-version.hpp"  // http::HTTP_1_1 version constant
 #include "encoder.hpp"
-#include "http-constants.hpp"
-#include "http-status-code.hpp"
-#include "http-version.hpp"  // http::HTTP_1_1 version constant
 #include "log.hpp"
 #include "static-string-view-helpers.hpp"
 #include "string-equal-ignore-case.hpp"

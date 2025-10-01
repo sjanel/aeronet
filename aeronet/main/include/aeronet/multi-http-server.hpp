@@ -5,11 +5,11 @@
 #include <string>
 #include <thread>
 
+#include "aeronet/http-method-set.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/server-stats.hpp"
-#include "http-method-set.hpp"
-#include "http-method.hpp"
 #include "vector.hpp"
 
 namespace aeronet {

@@ -3,12 +3,12 @@
 
 #include <string>
 
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/test_util.hpp"
-#include "http-method.hpp"
 #include "test_server_fixture.hpp"
 
 namespace {

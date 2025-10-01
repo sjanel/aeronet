@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <utility>
 
-#include "http-constants.hpp"
+#include "aeronet/http-constants.hpp"
 
 namespace aeronet {
 
