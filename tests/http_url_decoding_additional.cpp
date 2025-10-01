@@ -5,13 +5,13 @@
 #include <string>
 #include <thread>
 
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-method-set.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "http-constants.hpp"
-#include "http-method-set.hpp"
-#include "http-method.hpp"
 #include "test_http_client.hpp"
 
 using namespace aeronet;

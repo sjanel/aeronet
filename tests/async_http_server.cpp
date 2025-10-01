@@ -7,10 +7,10 @@
 #include <utility>
 
 #include "aeronet/async-http-server.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "http-constants.hpp"
 #include "test_http_client.hpp"
 
 using namespace std::chrono_literals;

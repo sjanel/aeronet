@@ -9,8 +9,8 @@
 #include <stdexcept>
 #include <string_view>
 
-#include "http-constants.hpp"
-#include "http-status-code.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "log.hpp"
 #include "string-equal-ignore-case.hpp"
 #include "stringconv.hpp"

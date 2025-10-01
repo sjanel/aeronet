@@ -2,9 +2,9 @@
 #include <cstddef>    // std::size_t
 #include <string_view>
 
-#include "http-constants.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "http-status-build.hpp"
-#include "http-status-code.hpp"
 #include "nchars.hpp"
 #include "raw-chars.hpp"
 #include "stringconv.hpp"

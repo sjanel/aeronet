@@ -2,10 +2,10 @@
 
 #include <string>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "http-constants.hpp"
 #include "test_server_tls_fixture.hpp"
 #include "test_tls_client.hpp"
 #include "test_tls_helper.hpp"

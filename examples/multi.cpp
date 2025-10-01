@@ -1,4 +1,5 @@
 // Multi-reactor example using MultiHttpServer convenience wrapper.
+#include <aeronet/aeronet.hpp>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -6,11 +7,7 @@
 #include <string>
 #include <thread>
 
-#include "aeronet/http-request.hpp"
-#include "aeronet/http-response.hpp"
-#include "aeronet/http-server-config.hpp"
-#include "aeronet/multi-http-server.hpp"
-#include "http-constants.hpp"
+#include "aeronet/http-constants.hpp"
 #include "log.hpp"
 
 namespace {

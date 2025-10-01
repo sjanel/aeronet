@@ -1,7 +1,4 @@
-#include <aeronet/async-http-server.hpp>
-#include <aeronet/http-response.hpp>
-#include <aeronet/http-server-config.hpp>
-#include <aeronet/http-server.hpp>
+#include <aeronet/aeronet.hpp>
 #include <chrono>
 #include <cstdio>
 #include <thread>

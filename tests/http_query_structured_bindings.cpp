@@ -5,12 +5,12 @@
 #include <string>
 #include <thread>
 
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/test_util.hpp"
-#include "http-method.hpp"
 
 TEST(HttpQueryStructuredBindings, IterateKeyValues) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});

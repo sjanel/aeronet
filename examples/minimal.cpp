@@ -1,13 +1,9 @@
+#include <aeronet/aeronet.hpp>
 #include <atomic>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
-
-#include "aeronet/http-request.hpp"
-#include "aeronet/http-response.hpp"
-#include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
 
 namespace {
 std::atomic_bool gStop{false};

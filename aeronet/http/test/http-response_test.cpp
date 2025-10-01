@@ -8,10 +8,10 @@
 #include <string_view>
 #include <vector>
 
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-status-code.hpp"
+#include "aeronet/http-version.hpp"
 #include "exception.hpp"
-#include "http-constants.hpp"
-#include "http-status-code.hpp"
-#include "http-version.hpp"
 
 namespace aeronet {
 
