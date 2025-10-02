@@ -288,6 +288,81 @@ Allowed convenience helpers:
 All other headers (custom application / caching / CORS / etc.) may be freely set; they are forwarded verbatim.
 This central rule lives in a single helper (`HttpResponse::IsReservedHeader`).
 
+### Request Header Duplicate Handling
+
+Incoming request headers are parsed into a flat buffer and exposed through case‑insensitive lookups on
+`HttpRequest`. Aeronet applies a deterministic, allocation‑free in‑place policy when a duplicate request
+header field name is encountered while parsing. The policy is driven by a constexpr classification table that maps well‑known header names (case‑insensitive) to one of the following behaviors:
+
+| Policy Code | Meaning | Examples |
+|-------------|---------|----------|
+| `,` | List merge: append a comma and the new non‑empty value | `Accept`, `Accept-Encoding`, `Via`, `Warning`, `TE` |
+| `;` | Cookie merge: append a semicolon (no extra space) | `Cookie` |
+| (space) | Space join: append a single space and the new non‑empty value | `User-Agent` |
+| `O` | Override: keep ONLY the last occurrence (replace existing value, no concatenation) | `Authorization`, `Range`, `From`, conditional time headers |
+| `\0` | Disallowed duplicate: second occurrence triggers `400 Bad Request` | `Content-Length`, `Host` |
+
+Fallback for unknown (unclassified) headers currently assumes list semantics (`,`). This is configurable
+internally (a server config flag exists for future tightening) and is chosen to preserve extension /
+experimental headers that follow conventional `1#token` or `1#element` ABNF patterns.
+
+Merging rules are value‑aware:
+
+- If the existing stored value is empty and a later non‑empty value arrives, the new value replaces it
+  (no leading separator is inserted).
+- If the new value is empty and the existing value is non‑empty, no change is made (we avoid trailing
+  separators that would manufacture an empty list member).
+- Only when both values are non‑empty is the separator inserted (`,` / `;` / space) followed by the new
+  bytes.
+- Override (`O`) headers always adopt the last (even if empty → empty replaces previous non‑empty).
+
+Implementation details:
+
+1. The first occurrence of each header stores `name` and `value` as `std::string_view` slices into the
+   connection read buffer (no copy).
+2. On a mergeable duplicate, the new value bytes are temporarily copied into a scratch buffer, the tail
+   of the original buffer is shifted right with a single `memmove`, and the separator plus new value are
+   written into the gap. All subsequent header string_views are pointer‑adjusted (stable hashing / equality
+   are preserved because key characters do not change, only their addresses move uniformly).
+3. Override simply rebinds the existing `value` view to point at the newest occurrence (no buffer mutation).
+4. Disallowed duplicates short‑circuit parsing and return `400 Bad Request` immediately.
+
+Security / robustness notes:
+
+- Disallowing duplicate `Content-Length` and `Host` prevents common request smuggling vectors that rely on
+  conflicting or ambiguous canonicalization rules across intermediaries.
+- A future stricter mode may treat unknown header duplicates as disallowed instead of comma‑merging; the
+  hook for that decision exists in the classification fallback.
+- The implementation never allocates proportional to header count on a merge path; each merge performs at
+  most one temporary copy (size of the new value) plus one tail shift.
+
+Examples:
+
+```text
+Accept: text/plain
+Accept: text/html
+→ Accept: text/plain,text/html
+
+Authorization: Bearer token1
+Authorization: Bearer token2
+→ Authorization: Bearer token2
+
+Cookie: a=1
+Cookie: b=2
+→ Cookie: a=1;b=2
+
+User-Agent: Foo
+User-Agent: Bar
+→ User-Agent: Foo Bar
+
+Host: example.com
+Host: other
+→ 400 Bad Request (duplicate forbidden)
+```
+
+Tests covering all policy branches (list, cookie, space, override, disallowed, empty edge cases, case
+insensitivity) live in the lightweight `http-request_test.cpp` suite to keep feedback tight.
+
 ### HttpResponse Design & Performance
 
 `HttpResponse` (fixed / non‑streaming responses) builds the entire status line, headers and body inside a **single

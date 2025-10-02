@@ -113,6 +113,15 @@ struct HttpServerConfig {
   // (e.g. AERONET_ENABLE_ZLIB). Future: brotli, zstd guarded likewise.
   CompressionConfig compression;
 
+  // ===========================================
+  // Header merge behavior tuning
+  // ===========================================
+  // When merging repeated unknown (i.e. not in the curated table) request headers, the default policy (true)
+  // assumes list semantics and joins with a comma. If set to false, unknown headers are treated as non-mergeable
+  // (duplicates will be handled according to parser singleton logic or rejected). This allows stricter deployments
+  // to avoid accidentally merging custom singleton semantics.
+  bool mergeUnknownRequestHeaders{true};
+
   // Validates config. Throws invalid_argument if it is not valid.
   // TODO
   void validate() const {}
@@ -319,6 +328,11 @@ struct HttpServerConfig {
   // Enable / configure response compression. Passing by value allows caller to move.
   HttpServerConfig& withCompression(CompressionConfig cfg) {
     compression = std::move(cfg);
+    return *this;
+  }
+
+  HttpServerConfig& withMergeUnknownRequestHeaders(bool on = true) {
+    mergeUnknownRequestHeaders = on;
     return *this;
   }
 };

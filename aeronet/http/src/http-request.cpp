@@ -1,18 +1,20 @@
 #include "aeronet/http-request.hpp"
 
-#include <algorithm>    // std::find
-#include <cctype>       // std::tolower
-#include <cstddef>      // std::size_t
-#include <iterator>     // std::distance
-#include <optional>     // std::optional
-#include <string_view>  // std::string_view
-#include <utility>      // std::make_pair
+#include <algorithm>
+#include <cctype>
+#include <cstddef>
+#include <cstring>
+#include <iterator>
+#include <optional>
+#include <string_view>
+#include <utility>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"  // http::StatusCode values
 #include "aeronet/http-version.hpp"      // http::parseHttpVersion
 #include "connection-state.hpp"          // ConnectionState parameter
+#include "mergeable-headers.hpp"
 #include "toupperlower.hpp"
 #include "url-decode.hpp"
 
@@ -54,10 +56,10 @@ std::optional<std::string_view> HttpRequest::headerValue(std::string_view header
 }
 
 [[nodiscard]] bool HttpRequest::wantClose() const {
-  std::string_view connVal = headerValueOrEmpty(http::Connection);
-  if (connVal.size() == http::close.size()) {
+  std::string_view connectionValue = headerValueOrEmpty(http::Connection);
+  if (connectionValue.size() == http::close.size()) {
     for (std::size_t iChar = 0; iChar < http::close.size(); ++iChar) {
-      const char lhs = tolower(connVal[iChar]);
+      const char lhs = tolower(connectionValue[iChar]);
       const char rhs = static_cast<char>(http::close[iChar]);
       if (lhs != rhs) {
         return false;
@@ -68,7 +70,8 @@ std::optional<std::string_view> HttpRequest::headerValue(std::string_view header
   return false;
 }
 
-http::StatusCode HttpRequest::setHead(ConnectionState& state, std::size_t maxHeadersBytes) {
+http::StatusCode HttpRequest::setHead(ConnectionState& state, std::size_t maxHeadersBytes,
+                                      bool mergeAllowedForUnknownRequestHeaders) {
   auto* first = state.buffer.data();
   auto* last = first + state.buffer.size();
 
@@ -158,9 +161,66 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, std::size_t maxHea
     }
 
     // Store header as "Key\037Value\0" in _headers string for later parsing.
-    // TODO: support duplicate header keys
-    _headers.emplace(std::make_pair(std::string_view(first, nextSep), std::string_view(valueFirst, valueLast)));
+    auto [it, inserted] =
+        _headers.emplace(std::make_pair(std::string_view(first, nextSep), std::string_view(valueFirst, valueLast)));
+    if (!inserted) {
+      // We have a duplicated header. We will append the duplicated value encountered now to the first key value pair
+      // inplace in memory. Plan: use the bodyBuffer (currently unused) to copy duplicate value there. In the examples
+      // below, \r\n have been replaced by [] for readability (and they keep their true size). * marks 'garbage' memory
+      // (moved from).
+      //
+      // Step 1 - copy v2 to bodyBuffer
+      // Step 2 - move size(v2) + 1 to the right and update all pointers of _headers after v1
+      // Step 3 - copy size(v2) to firstValueLast + 1, and set ',' to firstValueLast
+      //
+      // Host: example.com[]H: v1[]User-Agent: FooBar[]H: v2[]Other: v1[][]
+      // Host: example.com[]H: v1***[]User-Agent: FooBar[]v2[]Other: v1[][]
+      // Host: example.com[]H: v1,v2[]User-Agent: FooBar[]v2[]Other: v1[][]
 
+      const auto mergeSep = http::ReqHeaderValueSeparator(it->first, mergeAllowedForUnknownRequestHeaders);
+
+      if (mergeSep == '\0') {
+        // Merge is forbidden, reject 400 Bad Request
+        return http::StatusCodeBadRequest;
+      }
+
+      if (it->second.empty() || mergeSep == 'O') {
+        // we keep the last value in the map (either second value is empty, or mergeSep is 'O' for override)
+        it->second = std::string_view(valueFirst, valueLast);
+      } else if (valueFirst == valueLast) {
+        // second value is empty - we do nothing and just move on to the next headers, the first value is sufficient.
+      } else {
+        // Both non empty - we actually do the merge
+
+        // We add a separator only if both of the values are non empty
+        static constexpr std::size_t szSep = sizeof(mergeSep);
+        std::size_t szToMove = static_cast<std::size_t>(valueLast - valueFirst) + szSep;
+
+        // Step 1
+        state.bodyBuffer.assign(valueFirst, szToMove - szSep);
+
+        // Step 2
+        auto* firstValueFirst = state.buffer.data() + (it->second.data() - state.buffer.data());
+        auto* firstValueLast = firstValueFirst + it->second.size();
+
+        std::memmove(firstValueLast + szToMove, firstValueLast, static_cast<std::size_t>(first - firstValueLast));
+        for (auto& _header : _headers) {
+          if (_header.first.data() > firstValueLast) {
+            // we need to shift std::string_view pointers 'szToMove' bytes to the right
+            // We change the key value, but the hash and the equality comparison remain stable
+            _header.first = std::string_view(_header.first.begin() + szToMove, _header.first.end() + szToMove);
+            _header.second = std::string_view(_header.second.begin() + szToMove, _header.second.end() + szToMove);
+          }
+        }
+
+        // Step 3
+        std::memcpy(firstValueLast + szSep, state.bodyBuffer.data(), szToMove - szSep);
+        state.bodyBuffer.clear();
+        *firstValueLast = mergeSep;
+
+        it->second = std::string_view(firstValueFirst, firstValueLast + szToMove);
+      }
+    }
     first = lineLast + 1;
   }
 
