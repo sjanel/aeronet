@@ -381,7 +381,7 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
       break;  // need more bytes for at least the request line
     }
     HttpRequest req;
-    auto statusCode = req.setHead(state, _config.maxHeaderBytes);
+    auto statusCode = req.setHead(state, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders);
     if (statusCode != http::StatusCodeOK) {
       emitSimpleError(fd, state, statusCode, true);
       // EmitSimpleError was invoked with immediate=true, which requested an Immediate close

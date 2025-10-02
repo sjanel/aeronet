@@ -12,7 +12,7 @@
 
 namespace aeronet {
 
-bool HttpServer::decodeBodyIfReady(int fd, ConnectionState& state, const HttpRequest& req, bool isChunked,
+bool HttpServer::decodeBodyIfReady(int fd, ConnectionState& state, HttpRequest& req, bool isChunked,
                                    bool expectContinue, std::size_t& consumedBytes) {
   consumedBytes = 0;
   if (!isChunked) {
@@ -68,7 +68,7 @@ bool HttpServer::decodeFixedLengthBody(int fd, ConnectionState& state, const Htt
   return true;
 }
 
-bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, const HttpRequest& req, bool expectContinue,
+bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, HttpRequest& req, bool expectContinue,
                                    std::size_t& consumedBytes) {
   if (expectContinue) {
     queueData(fd, state, http::HTTP11_100_CONTINUE);
@@ -134,8 +134,8 @@ bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, const HttpReq
   if (needMore) {
     return false;
   }
-  state.bodyStorage.assign(decodedBody.data(), decodedBody.size());
-  const_cast<HttpRequest&>(req)._body = std::string_view(state.bodyStorage);
+  state.bodyBuffer.assign(decodedBody.data(), decodedBody.size());
+  req._body = std::string_view(state.bodyBuffer);
   consumedBytes = pos;
   return true;
 }
