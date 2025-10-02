@@ -4,14 +4,15 @@
 #include <array>
 #include <charconv>
 #include <climits>
-#include <cstddef>  // std::size_t
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <numeric>
 #include <ranges>
 #include <string_view>
-#include <system_error>  // std::errc
-#include <utility>       // std::index_sequence, make_index_sequence
+#include <system_error>
+#include <type_traits>
+#include <utility>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
@@ -94,7 +95,7 @@ consteval auto makeSupported(std::index_sequence<I...> /*unused*/) {
 
 EncodingSelector::EncodingSelector() noexcept {
   std::ranges::iota(_serverPrefIndex, 0);
-  for (std::remove_const_t<decltype(kNbContentEncodings)> pos = 0; pos < kNbContentEncodings; ++pos) {
+  for (int pos = 0; std::cmp_less(pos, kNbContentEncodings); ++pos) {
     _preferenceOrdered.push_back(static_cast<Encoding>(pos));
   }
 }
@@ -105,7 +106,7 @@ EncodingSelector::EncodingSelector(const CompressionConfig &compressionConfig) {
     int8_t next = 0;
     for (Encoding enc : compressionConfig.preferredFormats) {
       auto idx = static_cast<int>(enc);
-      if (idx < 0 || idx >= kNbContentEncodings) {
+      if (idx < 0 || std::cmp_greater_equal(idx, kNbContentEncodings)) {
         continue;  // ignore invalid enum values defensively
       }
       if (_serverPrefIndex[idx] == -1) {  // dedupe
@@ -118,7 +119,7 @@ EncodingSelector::EncodingSelector(const CompressionConfig &compressionConfig) {
   } else {
     // Fall back to enumeration order
     std::ranges::iota(_serverPrefIndex, 0);
-    for (std::remove_const_t<decltype(kNbContentEncodings)> pos = 0; pos < kNbContentEncodings; ++pos) {
+    for (int pos = 0; std::cmp_less(pos, kNbContentEncodings); ++pos) {
       _preferenceOrdered.push_back(static_cast<Encoding>(pos));
     }
   }

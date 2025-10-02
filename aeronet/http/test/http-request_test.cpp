@@ -77,7 +77,7 @@ TEST_F(HttpRequestTest, EmptyAndMissingValues) {
   for (auto [k, v] : req.queryParams()) {
     seen.emplace_back(k, v);
   }
-  ASSERT_EQ(seen.size(), 3u);
+  ASSERT_EQ(seen.size(), 3U);
   EXPECT_EQ(seen[0].first, "k1");
   EXPECT_EQ(seen[0].second, "");
   EXPECT_EQ(seen[1].first, "k2");
@@ -129,9 +129,7 @@ TEST_F(HttpRequestTest, HeaderAccessorsBasicAndEmptyVsMissing) {
 
   // Existing normal header
   EXPECT_EQ(req.headerValueOrEmpty("X-Test"), "Value");
-  auto optVal = req.headerValue("X-Test");
-  ASSERT_TRUE(optVal.has_value());
-  EXPECT_EQ(*optVal, "Value");
+  EXPECT_EQ(req.headerValue("X-Test").value_or(""), "Value");
 
   // Case-insensitive lookup
   EXPECT_EQ(req.headerValueOrEmpty("x-test"), "Value");
@@ -139,18 +137,14 @@ TEST_F(HttpRequestTest, HeaderAccessorsBasicAndEmptyVsMissing) {
 
   // Empty header value vs missing header
   EXPECT_EQ(req.headerValueOrEmpty("X-Empty"), "");
-  auto optEmpty = req.headerValue("X-Empty");
-  ASSERT_TRUE(optEmpty.has_value());
-  EXPECT_EQ(*optEmpty, "");
+  EXPECT_TRUE(req.headerValue("X-Empty").has_value());
 
   // Trimming behavior (trailing)
   EXPECT_EQ(req.headerValueOrEmpty("X-Trim"), "value");
   EXPECT_EQ(req.headerValueOrEmpty("x-trim"), "value");
   // Trimming behavior (leading & trailing)
   EXPECT_EQ(req.headerValueOrEmpty("X-Spaces"), "abc");
-  auto optSpaces = req.headerValue("X-Spaces");
-  ASSERT_TRUE(optSpaces.has_value());
-  EXPECT_EQ(*optSpaces, "abc");
+  EXPECT_EQ(req.headerValue("X-Spaces").value_or(""), "abc");
 
   EXPECT_EQ(req.headerValueOrEmpty("No-Such"), std::string_view());
   EXPECT_FALSE(req.headerValue("No-Such").has_value());
