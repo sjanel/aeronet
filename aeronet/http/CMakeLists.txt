@@ -27,3 +27,10 @@ add_unit_test(
     LIBRARIES
     aeronet_http
 )
+
+add_unit_test(
+    mergeable-headers_test
+    test/mergeable-headers_test.cpp
+    LIBRARIES
+    aeronet_http
+)

@@ -323,11 +323,11 @@ class HttpServer {
   bool processRequestsOnConnection(int fd, ConnectionState& state);
   // Split helpers
   std::size_t parseNextRequestFromBuffer(int fd, ConnectionState& state, HttpRequest& outReq);
-  bool decodeBodyIfReady(int fd, ConnectionState& state, const HttpRequest& req, bool isChunked, bool expectContinue,
+  bool decodeBodyIfReady(int fd, ConnectionState& state, HttpRequest& req, bool isChunked, bool expectContinue,
                          std::size_t& consumedBytes);
   bool decodeFixedLengthBody(int fd, ConnectionState& state, const HttpRequest& req, bool expectContinue,
                              std::size_t& consumedBytes);
-  bool decodeChunkedBody(int fd, ConnectionState& state, const HttpRequest& req, bool expectContinue,
+  bool decodeChunkedBody(int fd, ConnectionState& state, HttpRequest& req, bool expectContinue,
                          std::size_t& consumedBytes);
   void finalizeAndSendResponse(int fd, ConnectionState& state, HttpRequest& req, HttpResponse& resp,
                                std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
