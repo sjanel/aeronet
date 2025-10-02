@@ -26,7 +26,7 @@ struct ConnectionState {
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }
 
   RawChars buffer;                        // accumulated raw data
-  RawChars bodyStorage;                   // decoded body lifetime
+  RawChars bodyBuffer;                    // decoded body lifetime
   RawChars outBuffer;                     // pending outbound bytes not yet written
   std::unique_ptr<ITransport> transport;  // set after accept (plain or TLS)
   std::chrono::steady_clock::time_point lastActivity{std::chrono::steady_clock::now()};
