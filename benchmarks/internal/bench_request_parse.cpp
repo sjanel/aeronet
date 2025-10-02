@@ -10,7 +10,8 @@
 #include <string_view>
 #include <thread>
 
-using namespace std::chrono_literals;  // for 200ms literals (chrono warnings intentionally ignored)
+// Directly include <chrono> already; retain literal operator usage.
+using namespace std::chrono_literals;  // NOLINT(misc-unused-using-decls)
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"

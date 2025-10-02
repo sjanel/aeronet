@@ -4,6 +4,7 @@
 #include <cctype>       // std::tolower
 #include <cstddef>      // std::size_t
 #include <iterator>     // std::distance
+#include <optional>     // std::optional
 #include <string_view>  // std::string_view
 #include <utility>      // std::make_pair
 
@@ -18,42 +19,22 @@
 namespace aeronet {
 
 void HttpRequest::QueryParamRange::iterator::advance() {
-  if (_full.data() == nullptr) {  // end iterator default
-    _pos = std::string_view::npos;
-    return;
+  _begKey = std::find(_begKey + 1, _endFullQuery, url::kNewPairSep);
+  if (_begKey != _endFullQuery) {
+    ++_begKey;
   }
-  if (_pos == std::string_view::npos) {  // already true end
-    return;
-  }
-  if (_atEnd) {  // transition to true end on next advance
-    _pos = std::string_view::npos;
-    return;
-  }
-  if (_pos >= _full.size()) {
-    _pos = std::string_view::npos;
-    return;
-  }
-  // find next url::kNewPairSep
-  std::size_t amp = _full.find(url::kNewPairSep, _pos);
-  std::size_t segmentEnd = (amp == std::string_view::npos) ? _full.size() : amp;
-  // split on url::kNewKeyValueSep (first occurrence)
-  std::size_t eq = _full.find(url::kNewKeyValueSep, _pos);
-  std::string_view keyView;
-  std::string_view valView;
-  if (eq != std::string_view::npos && eq < segmentEnd) {
-    keyView = std::string_view(_full.data() + _pos, eq - _pos);
-    valView = std::string_view(_full.data() + eq + 1, segmentEnd - (eq + 1));
-  } else {
-    keyView = std::string_view(_full.data() + _pos, segmentEnd - _pos);
-    valView = std::string_view();
-  }
+}
 
-  _current = QueryParam{keyView, valView};
-  if (amp == std::string_view::npos) {
-    _atEnd = true;  // keep _pos at current start so iterator != end until incremented
-  } else {
-    _pos = amp + 1;
+HttpRequest::QueryParam HttpRequest::QueryParamRange::iterator::operator*() const {
+  const char* commaPtr = std::find(_begKey + 1, _endFullQuery, url::kNewPairSep);
+  const char* equalPtr = std::find(_begKey, commaPtr, url::kNewKeyValueSep);
+  const char* keyEnd = (equalPtr == commaPtr) ? commaPtr : equalPtr;
+
+  QueryParam ret(std::string_view{_begKey, keyEnd}, {});
+  if (equalPtr != commaPtr) {
+    ret.value = std::string_view(equalPtr + 1, commaPtr);
   }
+  return ret;
 }
 
 std::string_view HttpRequest::headerValueOrEmpty(std::string_view headerKey) const noexcept {
