@@ -56,6 +56,7 @@
 #include "aeronet/http-response.hpp"         // IWYU pragma: export
 
 // HTTP protocol enums & helpers
+#include "aeronet/http-constants.hpp"    // IWYU pragma: export
 #include "aeronet/http-method-set.hpp"   // IWYU pragma: export
 #include "aeronet/http-method.hpp"       // IWYU pragma: export
 #include "aeronet/http-status-code.hpp"  // IWYU pragma: export

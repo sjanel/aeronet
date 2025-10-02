@@ -6,12 +6,12 @@
 #include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <numeric>
 #include <ranges>
 #include <string_view>
 #include <system_error>
-#include <type_traits>
 #include <utility>
 
 #include "aeronet/compression-config.hpp"
@@ -143,7 +143,7 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
   bool sawWildcard = false;
   double wildcardQ = 0.0;
 
-  using SeenBmp = uint8_t;
+  using SeenBmp = uint16_t;  // accommodate additional encodings (gzip, deflate, zstd, none)
 
   static_assert(sizeof(SeenBmp) * CHAR_BIT >= kNbContentEncodings);
 
@@ -166,12 +166,12 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
       continue;
     }
     for (std::size_t i = 0; i < kSupportedEncodings.size(); ++i) {
-      if ((seenMask & (1U << i)) != 0) {
+      if ((seenMask & (static_cast<SeenBmp>(1) << i)) != 0) {
         continue;  // already captured earliest occurrence
       }
       if (CaseInsensitiveEqual(name, kSupportedEncodings[i].name)) {
         knownEncodings.emplace_back(kSupportedEncodings[i].name, quality);
-        seenMask |= static_cast<uint8_t>(1U << i);
+        seenMask |= static_cast<SeenBmp>(static_cast<SeenBmp>(1) << i);
         break;
       }
     }

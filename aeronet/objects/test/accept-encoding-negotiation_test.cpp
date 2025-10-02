@@ -36,9 +36,17 @@ TEST(AcceptEncodingNegotiationTest, EmptyOrWhitespace) {
 }
 
 TEST(AcceptEncodingNegotiationTest, SimpleExactMatches) {
-  auto sel = makeSelector({Encoding::gzip, Encoding::deflate});
+  auto sel = makeSelector({Encoding::gzip, Encoding::deflate
+#ifdef AERONET_ENABLE_ZSTD
+                           ,
+                           Encoding::zstd
+#endif
+  });
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip").encoding, Encoding::gzip);
   EXPECT_EQ(sel.negotiateAcceptEncoding("deflate").encoding, Encoding::deflate);
+#ifdef AERONET_ENABLE_ZSTD
+  EXPECT_EQ(sel.negotiateAcceptEncoding("zstd").encoding, Encoding::zstd);
+#endif
 }
 
 TEST(AcceptEncodingNegotiationTest, CaseInsensitive) {
@@ -48,10 +56,19 @@ TEST(AcceptEncodingNegotiationTest, CaseInsensitive) {
 
 TEST(AcceptEncodingNegotiationTest, WithParametersOrderAndQ) {
   // Prefer higher q even if later
-  auto sel = makeSelector({Encoding::gzip, Encoding::deflate});
+  auto sel = makeSelector({Encoding::gzip, Encoding::deflate
+#ifdef AERONET_ENABLE_ZSTD
+                           ,
+                           Encoding::zstd
+#endif
+  });
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.5, deflate;q=0.9").encoding, Encoding::deflate);
   // Tie in q -> server preference order (gzip preferred over deflate when equal q with current prefs)
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.8, deflate;q=0.8").encoding, Encoding::gzip);
+#ifdef AERONET_ENABLE_ZSTD
+  // Higher q for zstd should select it
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.8, deflate;q=0.8, zstd;q=0.95").encoding, Encoding::zstd);
+#endif
 }
 
 TEST(AcceptEncodingNegotiationTest, IdentityFallback) {
@@ -211,5 +228,29 @@ TEST(AcceptEncodingNegotiationTest, IdentityExplicitlyForbiddenAndNoAlternatives
   EXPECT_EQ(resultReject.encoding, Encoding::none);
   EXPECT_TRUE(resultReject.reject);
 }
+
+#ifdef AERONET_ENABLE_ZSTD
+TEST(AcceptEncodingNegotiationTest, ZstdPreferredWhenHighestQ) {
+  auto sel = makeSelector({Encoding::gzip, Encoding::deflate, Encoding::zstd});
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.7, zstd;q=0.9, deflate;q=0.8").encoding, Encoding::zstd);
+}
+
+TEST(AcceptEncodingNegotiationTest, ZstdViaWildcard) {
+  auto sel = makeSelector({Encoding::zstd, Encoding::gzip});
+  // zstd not explicitly listed -> wildcard applies; chosen because first preference
+  EXPECT_EQ(sel.negotiateAcceptEncoding("*;q=0.5, gzip;q=0.5").encoding, Encoding::zstd);
+}
+
+TEST(AcceptEncodingNegotiationTest, WildcardMultiTierZstdDeflateTieBreak) {
+  // Server prefers gzip > zstd > deflate (enum order mirrored by explicit list missing gzip)
+  auto sel = makeSelector({Encoding::zstd, Encoding::deflate});
+  // Client: wildcard gives q=0.8 to both unlisted (zstd, deflate); explicit deflate at same q as wildcard.
+  // Result should pick zstd (higher server preference among tied q encodings that are candidates via wildcard or
+  // explicit).
+  EXPECT_EQ(sel.negotiateAcceptEncoding("deflate;q=0.8, *;q=0.8").encoding, Encoding::zstd);
+  // Now raise deflate q so it wins.
+  EXPECT_EQ(sel.negotiateAcceptEncoding("deflate;q=0.9, *;q=0.8").encoding, Encoding::deflate);
+}
+#endif
 
 }  // namespace aeronet

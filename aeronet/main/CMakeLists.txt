@@ -22,7 +22,3 @@ target_link_libraries(aeronet
 if(AERONET_ENABLE_OPENSSL)
     target_link_libraries(aeronet PUBLIC aeronet_tls)
 endif()
-
-if(AERONET_ENABLE_ZLIB AND ZLIB_FOUND)
-    target_link_libraries(aeronet PRIVATE ZLIB::ZLIB)
-endif()

@@ -2,11 +2,9 @@
 
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
-#include <openssl/buffer.h>
 #include <openssl/ssl.h>
 #include <openssl/types.h>
 #include <openssl/x509.h>
-#include <openssl/x509v3.h>
 
 // Project headers (public API then internal RAII helpers)
 #include <algorithm>
@@ -16,6 +14,7 @@
 #include <utility>
 
 #include "log.hpp"
+#include "tls-metrics.hpp"
 #include "tls-raii.hpp"
 
 namespace aeronet {

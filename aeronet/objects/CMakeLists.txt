@@ -1,4 +1,12 @@
-aux_source_directory(src/ AERONET_OBJECTS_SRC)
+aux_source_directory(src AERONET_OBJECTS_SRC)
+
+if(NOT AERONET_ENABLE_ZLIB)
+  list(REMOVE_ITEM AERONET_OBJECTS_SRC src/zlib-encoder.cpp)
+endif()
+
+if(NOT AERONET_ENABLE_ZSTD)
+  list(REMOVE_ITEM AERONET_OBJECTS_SRC src/zstd-encoder.cpp)
+endif()
 
 add_project_library(aeronet_objects
     ${AERONET_OBJECTS_SRC}

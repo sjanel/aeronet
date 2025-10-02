@@ -206,11 +206,14 @@ User code normally does not manipulate `CloseMode` directly; returning a respons
 `Connection: close` (or exhausting keep-alive criteria) automatically maps to `DrainThenClose`.
 Only unrecoverable scenarios escalate to `Immediate` to avoid reusing a compromised protocol state.
 
-### Compression (Phase 1 — gzip & deflate via zlib)
+### Compression (gzip, deflate, optional zstd)
 
 Implemented capabilities:
 
 - Formats: gzip & deflate (raw deflate wrapped by zlib) behind `AERONET_ENABLE_ZLIB` build flag.
+- Optional: **zstd** behind `AERONET_ENABLE_ZSTD` (independent of zlib). If both enabled the negotiation pool becomes
+  `gzip, zstd, deflate` by default (enum order); you can override with `CompressionConfig::preferredFormats`.
+  (Earlier versions placed deflate before zstd; ordering changed to prefer zstd's modern ratio/latency profile.)
 - Negotiation: Parses `Accept-Encoding` with q-values; chooses format with highest q (server preference breaks ties). Falls back to identity if none acceptable.
 - Server preference: Order in `CompressionConfig::preferredFormats` only breaks ties among encodings with equal effective q-values; it does NOT restrict the server from selecting another supported encoding with a strictly higher q that is not listed. (If you leave the vector empty, the built‑in default order `gzip, deflate` is used for tie-breaks.)
 - Threshold: `minBytes` delays compression until uncompressed size reaches threshold (streaming buffers until then; fixed responses decide immediately).
@@ -227,9 +230,29 @@ Implemented capabilities:
   `Accept-Encoding: identity;q=0, br;q=0` (when brotli is unsupported) → 406. If any supported coding is acceptable
   (e.g. `identity;q=0, gzip`), normal negotiation proceeds and that coding is used.
 
+Zstd tuning (when enabled):
+
+```cpp
+CompressionConfig cfg;
+cfg.zstd.compressionLevel = 5;   // default ~3
+cfg.zstd.windowLog = 0;          // 0 => library default; set >0 (e.g. 23) to force max window
+```
+
+`compressionLevel` maps to the standard zstd levels (higher = more CPU, usually better ratio). `windowLog` controls
+the maximum back‑reference window; leave at 0 unless you need deterministic memory limits.
+
+Sample multi-line version string fragment (with TLS, logging, and both compression libs enabled):
+
+```text
+aeronet 0.1.0
+  tls: OpenSSL 3.0.13 30 Jan 2024
+  logging: spdlog 1.15.3
+  compression: zlib 1.2.13, zstd 1.5.6
+```
+
 Planned / future:
 
-- Additional formats (brotli, zstd) behind separate feature flags.
+- Additional formats (brotli) behind separate feature flags.
 - Content-Type allowlist enforcement (framework in config; default list to be finalized).
 - Compression ratio metrics in `RequestMetrics`.
 - Adaptive buffer sizing & memory pooling for encoder contexts.
@@ -673,11 +696,7 @@ int main() {
   HttpServer server(cfg.withPort(8080));
   std::print("Listening on {}\n", server.port());
   server.setHandler([](const HttpRequest& req) {
-    HttpResponse r;
-    r.statusCode = 200; r.reason = "OK";
-    r.body = "Hello from Aeronet\n";
-    r.contentType = "text/plain";
-    return r;
+    return HttpResponse(200, "OK").body("Hello from Aeronet\n").contentType("text/plain");
   });
   server.run(); // press Ctrl+C to terminate process
 }
@@ -820,7 +839,8 @@ int main() {
   HttpServerConfig cfg; cfg.port = 0; cfg.reusePort = true; // ephemeral, auto-propagated
   MultiHttpServer multi(cfg, 4); // 4 underlying event loops
   multi.setHandler([](const HttpRequest& req){
-    HttpResponse r; r.statusCode=200; r.reason="OK"; r.body="hello\n"; r.contentType="text/plain"; return r; });
+    return HttpResponse(200, "OK").body("hello\n").contentType("text/plain");
+  });
   multi.start();
   std::print("Listening on {}\n", multi.port());
   // ... run until external signal ...
@@ -860,7 +880,7 @@ using namespace aeronet;
 int main() {
   HttpServerConfig cfg; cfg.withPort(0); // ephemeral
   HttpServer server(cfg);
-  server.setHandler([](const HttpRequest&){ HttpResponse r{200, "OK"}; r.contentType="text/plain"; r.body="hi"; return r; });
+  server.setHandler([](const HttpRequest&){ return HttpResponse(200, "OK").body("hi").contentType("text/plain"); });
 
   AsyncHttpServer async(std::move(server));
   async.start();

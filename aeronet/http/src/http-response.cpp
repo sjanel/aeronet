@@ -11,6 +11,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/http-version.hpp"
 #include "log.hpp"
 #include "string-equal-ignore-case.hpp"
 #include "stringconv.hpp"
