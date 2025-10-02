@@ -1,7 +1,5 @@
-// IWYU: ensure direct headers for used symbols
 #include <gtest/gtest.h>
 
-#include <chrono>       // chrono literals (ignore IWYU chrono warning by request)
 #include <cstdint>      // uint16_t
 #include <cstdlib>      // std::atoi
 #include <iostream>     // std::cerr
@@ -32,11 +30,7 @@ bool LooksLikeZlib(std::string_view body) {
   // CMF lower 4 bits must be 8 (deflate), i.e. 0x78 is common for default window (0x78 0x9C etc).
   return body.size() >= 2 && static_cast<unsigned char>(body[0]) == 0x78;  // ignore second byte variability
 }
-}  // namespace
 
-#if AERONET_ENABLE_ZLIB
-
-namespace {
 // Issue a request and parse response using test_http_client utilities.
 struct ParsedFullResponse {
   int statusCode{};
@@ -356,4 +350,3 @@ TEST(HttpCompressionBuffered, IdentityFallbackIfDeflateNotRequested) {
   EXPECT_TRUE(HasGzipMagic(resp.body));
   EXPECT_LT(resp.body.size(), payload.size());
 }
-#endif  // AERONET_ENABLE_ZLIB

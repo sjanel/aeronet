@@ -1,7 +1,5 @@
 ﻿#include <gtest/gtest.h>
 
-// IWYU: add direct includes for used STL types and utilities
-#include <chrono>       // chrono literals (if added later) / sleep durations
 #include <cstddef>      // size_t (header parsing cursor)
 #include <cstdint>      // uint16_t
 #include <map>          // std::map
@@ -21,7 +19,6 @@
 #include "test_server_fixture.hpp"
 
 using namespace aeronet;
-using namespace std::chrono_literals;  // enable potential ms literals in future modifications
 
 namespace {
 // (Intentionally kept minimal; if unused in a specific build configuration, tests referencing them will use them.)
@@ -85,8 +82,6 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
   return out;
 }
 }  // namespace
-
-#if AERONET_ENABLE_ZLIB
 
 // NOTE: These streaming tests validate that compression is applied (or not) and that negotiation picks
 // the expected format. They do not currently attempt mid-stream header observation since the handler
@@ -227,5 +222,3 @@ TEST(HttpCompressionStreaming, IdentityForbiddenNoAlternativesReturns406) {
   EXPECT_TRUE(resp.headersRaw.rfind("HTTP/1.1 406", 0) == 0) << resp.headersRaw;
   EXPECT_EQ(resp.body, "No acceptable content-coding available");
 }
-
-#endif  // AERONET_ENABLE_ZLIB

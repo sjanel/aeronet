@@ -11,7 +11,7 @@
     "amc"
   ],
   "features": {
-    "tls": {
+    "openssl": {
       "description": "Enable OpenSSL/TLS support",
       "dependencies": ["openssl"]
     },
@@ -22,6 +22,10 @@
     "zlib": {
       "description": "Enable zlib compression support",
       "dependencies": ["zlib"]
+    },
+    "zstd": {
+      "description": "Enable zstd compression support",
+      "dependencies": ["zstd"]
     }
   }
 }

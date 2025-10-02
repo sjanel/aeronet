@@ -20,7 +20,7 @@ namespace aeronet {
 struct CompressionConfig {
   // Preferred order of formats to negotiate (first supported & accepted wins). If empty, defaults
   // to enumeration order of Encoding.
-  FixedCapacityVector<Encoding, 2> preferredFormats;
+  FixedCapacityVector<Encoding, 3> preferredFormats;  // gzip, deflate, zstd (if enabled)
 
   struct Zlib {
 #ifdef AERONET_ENABLE_ZLIB
@@ -29,6 +29,16 @@ struct CompressionConfig {
     int8_t level = 0;
 #endif
   } zlib;
+
+  struct Zstd {
+#ifdef AERONET_ENABLE_ZSTD
+    int compressionLevel = 3;  // reasonable default
+    int windowLog = 0;         // 0 -> library default
+#else
+    int compressionLevel = 0;
+    int windowLog = 0;
+#endif
+  } zstd;
 
   // Only responses whose (uncompressed) size is >= this threshold are considered for compression.
   // For streaming responses (unknown size), compression begins once cumulative bytes reach threshold.

@@ -53,6 +53,7 @@ inline constexpr std::string_view HeaderSep = ": ";
 inline constexpr std::string_view identity = "identity";
 inline constexpr std::string_view gzip = "gzip";
 inline constexpr std::string_view deflate = "deflate";
+inline constexpr std::string_view zstd = "zstd";  // RFC 8878
 
 // Common Header Values (lowercase tokens where case-insensitive comparison used)
 inline constexpr std::string_view keepalive = "keep-alive";
