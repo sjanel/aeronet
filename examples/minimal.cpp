@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <string>
+#include <string_view>
+#include <utility>
 
 namespace {
 std::atomic_bool gStop{false};

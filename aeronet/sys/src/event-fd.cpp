@@ -1,7 +1,6 @@
 #include "event-fd.hpp"
 
 #include <sys/eventfd.h>
-#include <sys/socket.h>
 
 #include <cerrno>
 #include <cstring>

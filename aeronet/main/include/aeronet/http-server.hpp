@@ -393,7 +393,7 @@ class HttpServer {
 
   // Pre-allocated encoders (one per supported format) constructed once at server creation.
   // Index corresponds to static_cast<size_t>(Encoding).
-  std::array<std::unique_ptr<Encoder>, 3> _encoders;  // none, gzip, deflate (future)
+  std::array<std::unique_ptr<Encoder>, kNbContentEncodings> _encoders;
   EncodingSelector _encodingSelector;
 
   using RFC7231DateStr = std::array<char, 29>;
