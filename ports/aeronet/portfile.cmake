@@ -36,7 +36,7 @@ else()
 endif()
 
 set(AERONET_ENABLE_OPENSSL OFF)
-if("tls" IN_LIST FEATURES)
+if("openssl" IN_LIST FEATURES)
     set(AERONET_ENABLE_OPENSSL ON)
 endif()
 
@@ -50,6 +50,11 @@ if("zlib" IN_LIST FEATURES)
     set(AERONET_ENABLE_ZLIB ON)
 endif()
 
+set(AERONET_ENABLE_ZSTD OFF)
+if("zstd" IN_LIST FEATURES)
+    set(AERONET_ENABLE_ZSTD ON)
+endif()
+
 # Map vcpkg linkage to project shared/static toggle
 if(VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")
     set(AERONET_BUILD_SHARED ON)
@@ -57,7 +62,11 @@ else()
     set(AERONET_BUILD_SHARED OFF)
 endif()
 
-message(STATUS "[aeronet] Config: OPENSSL=${AERONET_ENABLE_OPENSSL} SPDLOG=${AERONET_ENABLE_SPDLOG} SHARED=${AERONET_BUILD_SHARED}")
+message(STATUS "[aeronet] Config: OPENSSL=${AERONET_ENABLE_OPENSSL}")
+message(STATUS "[aeronet] Config: SPDLOG=${AERONET_ENABLE_SPDLOG}")
+message(STATUS "[aeronet] Config: ZLIB=${AERONET_ENABLE_ZLIB}")
+message(STATUS "[aeronet] Config: ZSTD=${AERONET_ENABLE_ZSTD}")
+message(STATUS "[aeronet] Config: SHARED=${AERONET_BUILD_SHARED}")
 
 vcpkg_cmake_configure(
     SOURCE_PATH ${SOURCE_PATH}
@@ -69,6 +78,7 @@ vcpkg_cmake_configure(
         -DAERONET_ENABLE_OPENSSL=${AERONET_ENABLE_OPENSSL}
         -DAERONET_ENABLE_SPDLOG=${AERONET_ENABLE_SPDLOG}
         -DAERONET_ENABLE_ZLIB=${AERONET_ENABLE_ZLIB}
+        -DAERONET_ENABLE_ZSTD=${AERONET_ENABLE_ZSTD}
         -DCMAKE_CXX_STANDARD=23
         -DAERONET_BUILD_SHARED=${AERONET_BUILD_SHARED}
 )

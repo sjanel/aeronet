@@ -15,10 +15,7 @@ jobs:
       fail-fast: true
       matrix:
         shared: [OFF, ON]
-        tls: [ON, OFF]
-    # Ensure Conan uses the same home for profile detection and package creation.
-    # Previously only the create step set CONAN_HOME, causing the default profile path mismatch.
-    # No static CONAN_HOME here; will be set per-matrix in a dedicated step.
+        features: [ON, OFF]
     steps:
       - uses: actions/checkout@v5
 
@@ -38,8 +35,10 @@ jobs:
           VERSION=$(cat VERSION)
           conan create . --name aeronet --version "$VERSION" \
             -o aeronet/*:shared=${{ matrix.shared == 'ON' && 'True' || 'False' }} \
-            -o aeronet/*:with_openssl=${{ matrix.tls == 'ON' && 'True' || 'False' }} \
-            -o aeronet/*:with_spdlog=False \
+            -o aeronet/*:with_openssl=${{ matrix.features == 'ON' && 'True' || 'False' }} \
+            -o aeronet/*:with_spdlog=${{ matrix.features == 'ON' && 'True' || 'False' }} \
+            -o aeronet/*:with_zlib=${{ matrix.features == 'ON' && 'True' || 'False' }} \
+            -o aeronet/*:with_zstd=${{ matrix.features == 'ON' && 'True' || 'False' }} \
             -s build_type=Release \
             -s compiler.cppstd=23 \
             --build=missing
@@ -50,14 +49,14 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        tls: [ON, OFF]
+        features: [ON, OFF]
     steps:
       - uses: actions/checkout@v5
 
       - name: Install prerequisites
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential ninja-build cmake pkg-config curl zip unzip tar git libssl-dev
+          sudo apt-get install -y build-essential ninja-build cmake pkg-config git libssl-dev
 
       - name: Verify vcpkg port version matches VERSION
         run: |
@@ -77,10 +76,10 @@ jobs:
         env:
           VCPKG_FEATURE_FLAGS: dependencygraph
         run: |
-          if [ "${{ matrix.tls }}" = "OFF" ]; then
+          if [ "${{ matrix.features }}" = "OFF" ]; then
             ./vcpkg/vcpkg install aeronet --overlay-ports=./ports --triplet x64-linux
           else
-            ./vcpkg/vcpkg install aeronet[tls] --overlay-ports=./ports --triplet x64-linux
+            ./vcpkg/vcpkg install aeronet[openssl,spdlog,zlib,zstd] --overlay-ports=./ports --triplet x64-linux
           fi
 
       - name: Build simple consumer
@@ -94,7 +93,7 @@ jobs:
       - name: Archive consumer binary
         uses: actions/upload-artifact@v4
         with:
-          name: consumer-${{ matrix.tls }}
+          name: consumer-${{ matrix.features }}
           path: consumer-test/build/consumer-example
           if-no-files-found: error
           retention-days: 7

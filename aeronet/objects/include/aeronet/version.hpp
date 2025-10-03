@@ -7,6 +7,12 @@
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/opensslv.h>
 #endif
+#ifdef AERONET_ENABLE_ZLIB
+#include <zlib.h>
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+#include <zstd.h>
+#endif
 #ifdef AERONET_ENABLE_SPDLOG
 #include <spdlog/version.h>
 #endif
@@ -29,7 +35,6 @@ constexpr std::string_view version() { return AERONET_PROJECT_VERSION; }
 constexpr std::string_view fullVersionStringView() {
   // Base fragments
   static constexpr std::string_view _sv_name = "aeronet ";
-  static constexpr std::string_view _sv_logging_prefix = "logging: spdlog ";
   static constexpr std::string_view _sv_newline = "\n  ";
   static constexpr std::string_view _sv_version_macro = AERONET_PROJECT_VERSION;  // same as version()
 
@@ -47,7 +52,7 @@ constexpr std::string_view fullVersionStringView() {
 
 // Logging section fragment
 #ifdef AERONET_ENABLE_SPDLOG
-  // Convert version numbers at compile time
+  static constexpr std::string_view _sv_logging_prefix = "logging: spdlog ";
   static constexpr auto _sv_spdlog_major = IntToStringView<SPDLOG_VER_MAJOR>::value;
   static constexpr auto _sv_spdlog_minor = IntToStringView<SPDLOG_VER_MINOR>::value;
   static constexpr auto _sv_spdlog_patch = IntToStringView<SPDLOG_VER_PATCH>::value;
@@ -60,9 +65,41 @@ constexpr std::string_view fullVersionStringView() {
   static constexpr std::string_view _sv_logging_section = _sv_logging_disabled;
 #endif
 
+  // Compression section fragment
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+  static constexpr std::string_view _sv_compression_prefix = "compression: ";
+#ifdef AERONET_ENABLE_ZLIB
+  static constexpr std::string_view _sv_zlib = "zlib ";
+  static constexpr std::string_view _sv_zlib_ver = ZLIB_VERSION;  // e.g. "1.2.11"
+  using zlib_join_t = JoinStringView<_sv_zlib, _sv_zlib_ver>;
+  static constexpr std::string_view _sv_zlib_full = zlib_join_t::value;
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+  static constexpr std::string_view _sv_zstd = "zstd ";
+  static constexpr std::string_view _sv_zstd_ver = ZSTD_VERSION_STRING;  // e.g. "1.5.6"
+  using zstd_join_t = JoinStringView<_sv_zstd, _sv_zstd_ver>;
+  static constexpr std::string_view _sv_zstd_full = zstd_join_t::value;
+#endif
+
+  // Build a combined list with comma when both present
+#if defined(AERONET_ENABLE_ZLIB) && defined(AERONET_ENABLE_ZSTD)
+  static constexpr std::string_view _sv_comma_space = ", ";
+  using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zlib_full, _sv_comma_space, _sv_zstd_full>;
+  static constexpr std::string_view _sv_compression_section = compression_join_t::value;
+#elif defined(AERONET_ENABLE_ZLIB)
+  using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zlib_full>;
+  static constexpr std::string_view _sv_compression_section = compression_join_t::value;
+#elif defined(AERONET_ENABLE_ZSTD)
+  using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zstd_full>;
+  static constexpr std::string_view _sv_compression_section = compression_join_t::value;
+#endif
+#else
+  static constexpr std::string_view _sv_compression_section = "compression: disabled";
+#endif
+
   // Assemble multiline string (no trailing newline):
-  using full_version_join_t =
-      JoinStringView<_sv_name, _sv_version_macro, _sv_newline, _sv_tls_section, _sv_newline, _sv_logging_section>;
+  using full_version_join_t = JoinStringView<_sv_name, _sv_version_macro, _sv_newline, _sv_tls_section, _sv_newline,
+                                             _sv_logging_section, _sv_newline, _sv_compression_section>;
   return full_version_join_t::value;
 }
 

@@ -36,6 +36,9 @@
 #ifdef AERONET_ENABLE_ZLIB
 #include "zlib-encoder.hpp"
 #endif
+#ifdef AERONET_ENABLE_ZSTD
+#include "zstd-encoder.hpp"
+#endif
 #include "aeronet/encoding.hpp"  // Encoding enum for encoder indices
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method-set.hpp"
@@ -150,6 +153,9 @@ HttpServer::HttpServer(HttpServerConfig cfg)
       std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::gzip, _config.compression);
   _encoders[static_cast<std::size_t>(Encoding::deflate)] =
       std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::deflate, _config.compression);
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+  _encoders[static_cast<std::size_t>(Encoding::zstd)] = std::make_unique<ZstdEncoder>(_config.compression);
 #endif
   // Identity encoder always available for Format::none index 0 (optional, can remain null to signal identity).
   log::info("Server created on port :{}", _config.port);

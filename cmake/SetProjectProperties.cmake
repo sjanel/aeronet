@@ -32,9 +32,15 @@ function(set_project_properties name)
     # force exporting/packaging spdlog. Consumers can supply their own spdlog
     # if they also define AERONET_ENABLE_SPDLOG, otherwise they build without it.
     target_compile_definitions(${name} PUBLIC AERONET_ENABLE_SPDLOG SPDLOG_USE_STD_FORMAT)
-    if(TARGET spdlog)
-      # Propagate spdlog's include directories without linking the target so
-      # that install(EXPORT ...) does not require exporting spdlog.
+    # Do NOT link the spdlog target (even privately) or the install(EXPORT ...) step
+    # will complain that the exported aeronet targets require a target not in any
+    # export set. Instead, harvest its include directories (header-only) so builds succeed.
+    if(TARGET spdlog::spdlog)
+      get_target_property(_spdlog_includes spdlog::spdlog INTERFACE_INCLUDE_DIRECTORIES)
+      if(_spdlog_includes)
+        target_include_directories(${name} PRIVATE ${_spdlog_includes})
+      endif()
+    elseif(TARGET spdlog)
       get_target_property(_spdlog_includes spdlog INTERFACE_INCLUDE_DIRECTORIES)
       if(_spdlog_includes)
         target_include_directories(${name} PRIVATE ${_spdlog_includes})
@@ -46,14 +52,39 @@ function(set_project_properties name)
     # Only the dedicated aeronet_tls module should link against OpenSSL to contain dependency surface.
     target_compile_definitions(${name} PUBLIC AERONET_ENABLE_OPENSSL)
   endif()
-  if(AERONET_ENABLE_ZLIB AND ZLIB_FOUND)
+  if(AERONET_ENABLE_ZLIB)
     target_compile_definitions(${name} PUBLIC AERONET_ENABLE_ZLIB)
     # We do not link zlib to every target now; a future dedicated compression TU / adapter will
     # link privately to ZLIB::ZLIB (or zlib) where needed. Expose includes if the imported target provides them.
     if(TARGET ZLIB::ZLIB)
+      target_link_libraries(${name} PRIVATE ZLIB::ZLIB)
       get_target_property(_zlib_includes ZLIB::ZLIB INTERFACE_INCLUDE_DIRECTORIES)
       if(_zlib_includes)
         target_include_directories(${name} PRIVATE ${_zlib_includes})
+      endif()
+    endif()
+  endif()
+  if(AERONET_ENABLE_ZSTD)
+    target_compile_definitions(${name} PUBLIC AERONET_ENABLE_ZSTD)
+    # Detect whichever zstd target name is available in this build context.
+    set(_AERONET_ZSTD_TARGET "")
+    if(TARGET libzstd_static)
+      set(_AERONET_ZSTD_TARGET libzstd_static)
+    elseif(TARGET zstd::libzstd)
+      set(_AERONET_ZSTD_TARGET zstd::libzstd)
+    elseif(TARGET zstd::zstd)
+      set(_AERONET_ZSTD_TARGET zstd::zstd)
+    elseif(TARGET ZSTD::ZSTD)
+      set(_AERONET_ZSTD_TARGET ZSTD::ZSTD)
+    endif()
+    if(_AERONET_ZSTD_TARGET)
+      # Keep PRIVATE to signal implementation detail; for static libs some CMake versions may still
+      # surface it transitively when exporting. If stricter encapsulation is desired we would need
+      # to vendor or wrap symbols.
+      target_link_libraries(${name} PRIVATE ${_AERONET_ZSTD_TARGET})
+      get_target_property(_zstd_includes ${_AERONET_ZSTD_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
+      if(_zstd_includes)
+        target_include_directories(${name} PRIVATE ${_zstd_includes})
       endif()
     endif()
   endif()

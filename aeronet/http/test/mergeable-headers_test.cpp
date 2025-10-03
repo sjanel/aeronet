@@ -3,7 +3,9 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <initializer_list>
 #include <string_view>
+#include <utility>
 
 using aeronet::http::ReqHeaderValueSeparator;
 
