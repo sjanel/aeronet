@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <type_traits>
 #include <utility>
 
 #include "aeronet/http-constants.hpp"
@@ -15,7 +16,7 @@ enum class Encoding : std::uint8_t {
   none,
 };
 
-inline constexpr std::uint8_t kNbContentEncodings = 4;
+inline constexpr std::underlying_type_t<Encoding> kNbContentEncodings = 4;
 
 constexpr std::string_view GetEncodingStr(Encoding compressionFormat) {
   switch (compressionFormat) {

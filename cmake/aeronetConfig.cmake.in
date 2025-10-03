@@ -6,6 +6,35 @@ if(NOT TARGET OpenSSL::SSL)
 	find_dependency(OpenSSL REQUIRED)
 endif()
 
+# Conditionally locate compression dependencies based on build-time options so that
+# exported targets referencing their imported targets do not break consumer configure.
+set(AERONET_WITH_ZLIB "@AERONET_ENABLE_ZLIB@")
+set(AERONET_WITH_ZSTD "@AERONET_ENABLE_ZSTD@")
+
+if(AERONET_WITH_ZLIB)
+	if(NOT TARGET ZLIB::ZLIB)
+		find_dependency(ZLIB REQUIRED)
+	endif()
+endif()
+
+if(AERONET_WITH_ZSTD)
+	# Try to locate zstd only if none of the usual targets already exist.
+	if(NOT (TARGET libzstd_static OR TARGET zstd::libzstd OR TARGET ZSTD::ZSTD))
+		# Upstream (and vcpkg) typically installs a config named "zstd" that defines target zstd::libzstd.
+		find_dependency(zstd CONFIG)
+	endif()
+	# Normalize: ensure libzstd_static alias exists so internally built code that referred to it stays valid.
+	if(NOT TARGET libzstd_static)
+		if(TARGET zstd::libzstd)
+			add_library(libzstd_static INTERFACE IMPORTED)
+			target_link_libraries(libzstd_static INTERFACE zstd::libzstd)
+		elseif(TARGET ZSTD::ZSTD)
+			add_library(libzstd_static INTERFACE IMPORTED)
+			target_link_libraries(libzstd_static INTERFACE ZSTD::ZSTD)
+		endif()
+	endif()
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/aeronetTargets.cmake")
 
 # Provide version variable

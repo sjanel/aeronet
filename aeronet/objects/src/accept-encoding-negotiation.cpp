@@ -12,6 +12,7 @@
 #include <ranges>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 
 #include "aeronet/compression-config.hpp"
@@ -93,22 +94,23 @@ consteval auto makeSupported(std::index_sequence<I...> /*unused*/) {
 
 }  // namespace
 
-EncodingSelector::EncodingSelector() noexcept {
+EncodingSelector::EncodingSelector() noexcept { initDefault(); }
+
+void EncodingSelector::initDefault() noexcept {
   std::ranges::iota(_serverPrefIndex, 0);
-  for (int pos = 0; std::cmp_less(pos, kNbContentEncodings); ++pos) {
+  for (std::underlying_type_t<Encoding> pos = 0; pos < kNbContentEncodings; ++pos) {
     _preferenceOrdered.push_back(static_cast<Encoding>(pos));
   }
 }
 
 EncodingSelector::EncodingSelector(const CompressionConfig &compressionConfig) {
-  std::ranges::fill(_serverPrefIndex, -1);
-  if (!compressionConfig.preferredFormats.empty()) {
+  if (compressionConfig.preferredFormats.empty()) {
+    initDefault();
+  } else {
+    std::ranges::fill(_serverPrefIndex, -1);
     int8_t next = 0;
     for (Encoding enc : compressionConfig.preferredFormats) {
-      auto idx = static_cast<int>(enc);
-      if (idx < 0 || std::cmp_greater_equal(idx, kNbContentEncodings)) {
-        continue;  // ignore invalid enum values defensively
-      }
+      auto idx = static_cast<std::underlying_type_t<Encoding>>(enc);
       if (_serverPrefIndex[idx] == -1) {  // dedupe
         _serverPrefIndex[idx] = next;
         ++next;
@@ -116,12 +118,6 @@ EncodingSelector::EncodingSelector(const CompressionConfig &compressionConfig) {
       }
     }
     // Do NOT append remaining encodings: preferredFormats defines the full server-advertised order.
-  } else {
-    // Fall back to enumeration order
-    std::ranges::iota(_serverPrefIndex, 0);
-    for (int pos = 0; std::cmp_less(pos, kNbContentEncodings); ++pos) {
-      _preferenceOrdered.push_back(static_cast<Encoding>(pos));
-    }
   }
 }
 
@@ -143,7 +139,7 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
   bool sawWildcard = false;
   double wildcardQ = 0.0;
 
-  using SeenBmp = uint16_t;  // accommodate additional encodings (gzip, deflate, zstd, none)
+  using SeenBmp = uint8_t;  // accommodate additional encodings (gzip, deflate, zstd, none)
 
   static_assert(sizeof(SeenBmp) * CHAR_BIT >= kNbContentEncodings);
 
@@ -165,17 +161,17 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
       wildcardQ = quality;
       continue;
     }
-    for (std::size_t i = 0; i < kSupportedEncodings.size(); ++i) {
-      if ((seenMask & (static_cast<SeenBmp>(1) << i)) != 0) {
+    for (std::size_t pos = 0; pos < kSupportedEncodings.size(); ++pos) {
+      if ((seenMask & (1 << pos)) != 0) {
         continue;  // already captured earliest occurrence
       }
-      if (CaseInsensitiveEqual(name, kSupportedEncodings[i].name)) {
-        knownEncodings.emplace_back(kSupportedEncodings[i].name, quality);
-        seenMask |= static_cast<SeenBmp>(static_cast<SeenBmp>(1) << i);
+      if (CaseInsensitiveEqual(name, kSupportedEncodings[pos].name)) {
+        knownEncodings.emplace_back(kSupportedEncodings[pos].name, quality);
+        seenMask |= static_cast<SeenBmp>(1 << pos);
         break;
       }
     }
-    if (CaseInsensitiveEqual(name, "identity")) {
+    if (CaseInsensitiveEqual(name, http::identity)) {
       identityExplicit = true;
       identityQ = quality;  // capture last; earliest identity suffices but we update for clarity
     }

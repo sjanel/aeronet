@@ -40,16 +40,18 @@ if(AERONET_BUILD_TESTS)
 endif()
 
 if(AERONET_ENABLE_SPDLOG)
-  FetchContent_Declare(
-    spdlog
-    URL https://github.com/gabime/spdlog/archive/refs/tags/v1.15.3.tar.gz
-    URL_HASH SHA256=15a04e69c222eb6c01094b5c7ff8a249b36bb22788d72519646fb85feb267e67
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-  )
-
+  # Prefer an existing package manager supplied spdlog (vcpkg/conan/system) before fetching.
+  find_package(spdlog CONFIG)
+  if(NOT spdlog_FOUND)
+    FetchContent_Declare(
+      spdlog
+      URL https://github.com/gabime/spdlog/archive/refs/tags/v1.15.3.tar.gz
+      URL_HASH SHA256=15a04e69c222eb6c01094b5c7ff8a249b36bb22788d72519646fb85feb267e67
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    list(APPEND fetchContentPackagesToMakeAvailable spdlog)
+  endif()
   set(SPDLOG_USE_STD_FORMAT ON CACHE BOOL "" FORCE)
-
-  list(APPEND fetchContentPackagesToMakeAvailable spdlog)
 endif()
 
 # Compression libraries (optional, isolated like TLS). Detect BEFORE building core targets so
@@ -59,25 +61,27 @@ if(AERONET_ENABLE_ZLIB)
 endif()
 
 if(AERONET_ENABLE_ZSTD)
-  # zstd - compression library
-  set(ZSTD_BUILD_STATIC ON CACHE INTERNAL "Only build static lib")
-  set(ZSTD_BUILD_SHARED OFF CACHE INTERNAL "Do not build shared lib")
-  set(ZSTD_LEGACY_SUPPORT OFF CACHE INTERNAL "No legacy support")
-  set(ZSTD_BUILD_PROGRAMS OFF CACHE INTERNAL "Do not build programs")
-  set(ZSTD_BUILD_TESTS OFF CACHE INTERNAL "Do not build tests")
+  # Try to locate an existing zstd installation (vcpkg, system) first.
+  find_package(zstd CONFIG QUIET)
+  if(NOT (TARGET zstd::libzstd OR TARGET zstd::zstd OR TARGET ZSTD::ZSTD OR TARGET libzstd_static))
+    # Fallback: build from source via FetchContent.
+    set(ZSTD_BUILD_STATIC ON CACHE INTERNAL "Only build static lib")
+    set(ZSTD_BUILD_SHARED OFF CACHE INTERNAL "Do not build shared lib")
+    set(ZSTD_LEGACY_SUPPORT OFF CACHE INTERNAL "No legacy support")
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE INTERNAL "Do not build programs")
+    set(ZSTD_BUILD_TESTS OFF CACHE INTERNAL "Do not build tests")
 
-  set(zstd_URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz)
-  set(zstd_URL_HASH SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3)
+    set(zstd_URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz)
+    set(zstd_URL_HASH SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3)
 
-  FetchContent_Declare(
-    zstd
-    URL "${zstd_URL}"
-    URL_HASH "${zstd_URL_HASH}"
-    SOURCE_SUBDIR build/cmake
-    OVERRIDE_FIND_PACKAGE
-  )
-
-  list(APPEND fetchContentPackagesToMakeAvailable zstd)
+    FetchContent_Declare(
+      zstd
+      URL "${zstd_URL}"
+      URL_HASH "${zstd_URL_HASH}"
+      SOURCE_SUBDIR build/cmake
+    )
+    list(APPEND fetchContentPackagesToMakeAvailable zstd)
+  endif()
 endif()
 
 # Make fetch content available

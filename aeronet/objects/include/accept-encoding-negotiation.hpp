@@ -44,6 +44,8 @@ class EncodingSelector {
   [[nodiscard]] NegotiatedResult negotiateAcceptEncoding(std::string_view acceptEncoding) const;
 
  private:
+  void initDefault() noexcept;
+
   // final ordered list
   FixedCapacityVector<Encoding, kNbContentEncodings, amc::vec::UncheckedGrowingPolicy> _preferenceOrdered;
   // Build server preference ordering: if preferredFormats provided (non-empty) we use that
