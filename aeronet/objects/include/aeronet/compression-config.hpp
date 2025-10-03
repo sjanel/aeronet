@@ -20,7 +20,7 @@ namespace aeronet {
 struct CompressionConfig {
   // Preferred order of formats to negotiate (first supported & accepted wins). If empty, defaults
   // to enumeration order of Encoding.
-  FixedCapacityVector<Encoding, 3> preferredFormats;  // gzip, deflate, zstd (if enabled)
+  FixedCapacityVector<Encoding, kNbContentEncodings> preferredFormats;
 
   struct Zlib {
 #ifdef AERONET_ENABLE_ZLIB

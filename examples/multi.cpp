@@ -1,4 +1,3 @@
-// Multi-reactor example using MultiHttpServer convenience wrapper.
 #include <aeronet/aeronet.hpp>
 #include <chrono>
 #include <csignal>
@@ -12,7 +11,7 @@
 
 namespace {
 volatile std::sig_atomic_t gStop = 0;
-void handleSigint(int /*signum*/) { gStop = 1; }
+void handleSigint([[maybe_unused]] int signum) { gStop = 1; }
 }  // namespace
 
 int main(int argc, char** argv) {
