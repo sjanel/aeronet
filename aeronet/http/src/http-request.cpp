@@ -196,7 +196,7 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, std::size_t maxHea
         static constexpr std::size_t szSep = sizeof(mergeSep);
         std::size_t szToMove = static_cast<std::size_t>(valueLast - valueFirst) + szSep;
 
-        // Step 1
+        // Step 1 - use bodyBuffer as temp data to keep value 2
         state.bodyBuffer.assign(valueFirst, szToMove - szSep);
 
         // Step 2

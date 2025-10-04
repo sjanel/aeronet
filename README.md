@@ -4,6 +4,39 @@
 
 HTTP/1.1 C++ server library for Linux only – work in progress.
 
+It is designed to be:
+
+- **Fully configurable** – opt into only the features / dependencies you need via build flags (`AERONET_ENABLE_ZLIB`, `AERONET_ENABLE_ZSTD`, `AERONET_ENABLE_OPENSSL`, `AERONET_ENABLE_SPDLOG`). Core stays dependency‑minimal.
+- **Fast** – minimal dynamic allocations, contiguous response assembly, zero‑copy header/value slicing, edge‑triggered epoll loop.
+- **Modern & focused** – small, purpose‑built and easy to use classes (`HttpServer`, `AsyncHttpServer`, `MultiHttpServer`) instead of a monolith; fluent configuration; explicit policies (trailing slash, compression negotiation, duplicate headers), no hidden heuristics.
+
+## Why Aeronet? (Key Strengths)
+
+| Area | Strength |
+|------|----------|
+| Memory efficiency | Headers parsed in place; duplicates merged / overridden without per-field heap churn; responses built in one buffer; decompression ping‑pongs between two reusable buffers (no per‑layer allocations). |
+| Deterministic performance | No worker handoff by default; multi-reactor scaling via `SO_REUSEPORT` keeps cache locality; predictable epoll cycle with bounded work per iteration. |
+| Robust & safe parsing | Duplicate header classification blocks smuggling vectors; strict invalid percent‑escapes -> 400; empty / malformed `Content-Encoding` tokens rejected early. |
+| Multi-layer compression/decompression | Symmetric flags enable outbound compression & inbound decoding; reverse-order decoding with per‑stage expansion ratio + absolute size guards; streaming path delays header emission until decision safe. |
+| Security hardening | Header/body size caps, slowloris header timeout, TLS handshake timeout & ALPN strict mode, compression ratio guard, unknown encoding fast‑fail (415) when enabled. |
+| Ergonomics | RAII server binds immediately (ephemeral port known instantly); clear dispatch precedence (path streaming > path fixed > global streaming > global fixed); fluent setters; minimal moving parts. |
+| Extensibility | Separate config objects (compression, decompression, TLS) isolate knobs; reserved header rule future‑proofs trailers & upgrades. |
+| Observability | Lightweight per‑request metrics callback (method, path, status, bytes, duration) with planned enrichment (compression layers, ratio). |
+| No global mutable state | TLS, compression, stats isolated per server instance for easy multi‑tenant embedding. |
+| Comprehensive tests | Wide coverage: parsing errors, keep‑alive limits, routing precedence, streaming, multi-layer decompression (valid + corruption), negotiation edge cases, duplicate header behavior. |
+| Principle of least surprise | Disabled request decompression = pure pass‑through (no silent 415); user‑supplied `Content-Encoding` prevents auto compression. |
+| Transparent roadmap | Public README sections enumerate planned features (brotli, trailers, streaming inbound decode, richer metrics, middleware) pre‑1.0. |
+
+## Design Tenets
+
+1. **Correctness first** – Fail fast; never silently reinterpret ambiguous wire data.
+2. **Predictable resource usage** – Bounded scratch buffers over unbounded growth; avoid hidden background concurrency.
+3. **Opt‑in complexity** – Advanced features only compiled when explicitly enabled.
+4. **Mechanical sympathy** – Cache‑friendly contiguous structures, minimized syscalls, edge‑triggered event loop.
+5. **Ergonomic minimalism** – Learn the surface in minutes; compose advanced behavior via config not inheritance webs.
+
+> Status: Pre‑1.0. Some APIs may adjust as upcoming features (trailers, middleware, metrics enrichment, streaming inbound decompression) land. Stability will tighten approaching 0.9+.
+
 ## Core HTTP & Protocol Features (Implemented)
 
 | Feature | Notes |
@@ -26,7 +59,8 @@ HTTP/1.1 C++ server library for Linux only – work in progress.
 | 404 / 405 handling | Automatic 404 (unknown path) & 405 (known path, method not allowed) |
 | Graceful shutdown | `runUntil()` predicate loop (poll interval via `HttpServerConfig::withPollInterval()`) |
 | Backpressure buffering | Unified buffering for fixed + streaming responses |
-| Response compression (gzip & deflate) | Optional (AERONET_ENABLE_ZLIB). Accept-Encoding negotiation with q-values, server preference ordering, threshold-based activation, streaming + buffered, per-response opt-out, Vary header injection |
+| gzip & deflate encoding | Optional (`AERONET_ENABLE_ZLIB`). Enables BOTH outbound response compression and inbound request body decompression for `gzip` / `deflate`. Accept-Encoding negotiation with q-values, server preference ordering, threshold-based activation, streaming + buffered, per-response opt-out, Vary header injection |
+| Request body decompression (gzip / deflate / zstd) | Optional (`AERONET_ENABLE_ZLIB` / `AERONET_ENABLE_ZSTD`). Same flags as outbound: enabling them also activates inbound decoding. Multi-layer `Content-Encoding` chains, allocation‑free reverse parsing, per-stage expansion & absolute size guards |
 
 ## Developer / Operational Features
 
@@ -113,6 +147,7 @@ Request bodies
 
 - [x] Content-Length bodies with size limit
 - [x] Chunked Transfer-Encoding decoding (request) (ignores trailers)
+- [x] Content-Encoding request body decompression (gzip, deflate, zstd, multi-layer, identity skip, safety limits)
 - [ ] Trailer header exposure
 - [ ] Multipart/form-data convenience utilities
 
@@ -210,8 +245,8 @@ Only unrecoverable scenarios escalate to `Immediate` to avoid reusing a compromi
 
 Implemented capabilities:
 
-- Formats: gzip & deflate (raw deflate wrapped by zlib) behind `AERONET_ENABLE_ZLIB` build flag.
-- Optional: **zstd** behind `AERONET_ENABLE_ZSTD` (independent of zlib). If both enabled the negotiation pool becomes
+- Formats: gzip & deflate (raw deflate wrapped by zlib) behind `AERONET_ENABLE_ZLIB` build flag (flag activates BOTH response compression and request decompression for these formats).
+- Optional: **zstd** behind `AERONET_ENABLE_ZSTD` (independent of zlib). Flag activates BOTH outbound response compression (when negotiated) and inbound request body decompression for `zstd`. If both enabled the negotiation pool becomes
   `gzip, zstd, deflate` by default (enum order); you can override with `CompressionConfig::preferredFormats`.
   (Earlier versions placed deflate before zstd; ordering changed to prefer zstd's modern ratio/latency profile.)
 - Negotiation: Parses `Accept-Encoding` with q-values; chooses format with highest q (server preference breaks ties). Falls back to identity if none acceptable.
@@ -273,6 +308,72 @@ server.setHandler([](const HttpRequest&) {
 ```
 
 For streaming:
+
+### Inbound Request Body Decompression (Content-Encoding) (Details)
+
+Implemented capabilities (independent from outbound compression):
+
+| Aspect | Details |
+|--------|---------|
+| Supported codings | `gzip`, `deflate` (zlib wrapper) when `AERONET_ENABLE_ZLIB` defined (same flag that also enables response compression); `zstd` when `AERONET_ENABLE_ZSTD` defined (also enables response compression); `identity` is always recognized (no-op) |
+| Multi-layer chains | Fully supported (e.g. `Content-Encoding: deflate, gzip, zstd`). Layers are decoded in **reverse order** of appearance (last listed = outermost applied, decoded first). |
+| Parsing | Allocation-free reverse splitting; trims spaces / tabs around tokens; rejects empty tokens (e.g. `gzip,,deflate`) with **400** |
+| Unknown coding | Immediate **415 Unsupported Media Type** (feature is opt-in via `RequestDecompressionConfig::enable`) |
+| Disabled feature | If `enable=false`, encodings are ignored (body left compressed; no auto 415) |
+| Safety limits | `maxCompressedBytes`, `maxDecompressedBytes`, and `maxExpansionRatio` (per-stage) guard against bombs; exceeding ratio or byte limits returns **413** |
+| Error mapping | Malformed or undecodable compressed data -> **400**; unknown coding -> **415**; ratio/size violation -> **413** |
+| Identity in chains | Gracefully skipped (`deflate, identity, gzip` works) |
+| Buffering model | Request body is first fully aggregated (respecting existing body size limits) before decompression; decoding ping‑pongs between two internal buffers without reallocating vectors per layer |
+
+Configuration (`RequestDecompressionConfig`):
+
+```cpp
+RequestDecompressionConfig cfg;
+cfg.enable = true;                 // default true when provided
+cfg.maxCompressedBytes = 0;        // 0 => unlimited (still bounded by global body limit)
+cfg.maxDecompressedBytes = 0;      // 0 => unlimited absolute post-decode size
+cfg.maxExpansionRatio = 0.0;       // 0 => disabled; otherwise (decompressed / originalCompressed) <= ratio
+HttpServerConfig serverCfg;
+serverCfg.withRequestDecompression(cfg);
+```
+
+Security / robustness notes:
+
+- Multi-layer decoding performs an expansion ratio check **after each stage** relative to the original compressed size to prevent a sequence of individually benign layers from compounding into an excessive blow‑up.
+- A per-stage absolute size cap (`maxDecompressedBytes`) halts decoding early to bound memory usage even if the ratio guard is disabled.
+- Empty or whitespace-only tokens are rejected (400) to avoid silent acceptance of malformed chains that some intermediaries might normalize differently.
+- Unknown codings are not skipped; failing fast with 415 prevents ambiguous partial decoding states.
+- Disabling the feature (`enable=false`) leaves bodies compressed (pass-through) with no automatic 415.
+
+Examples:
+
+```text
+Content-Encoding: gzip                -> decode gzip
+Content-Encoding: gzip, zstd          -> decode zstd then gzip
+Content-Encoding: deflate, identity, gzip -> decode gzip then deflate (identity skipped)
+Content-Encoding: gzip,,deflate       -> 400 (empty token)
+Content-Encoding: br                  -> 415 (unsupported)
+```
+
+Typical handler setup:
+
+```cpp
+HttpServerConfig scfg{};
+scfg.withRequestDecompression(RequestDecompressionConfig{ /* defaults */ });
+HttpServer server(scfg);
+server.setHandler([](const HttpRequest& req){
+  // If the client sent a compressed body, req.body() is now the decoded bytes or the request was rejected earlier.
+  return HttpResponse(200, "OK").body(std::string(req.body()));
+});
+```
+
+Tests cover: single-layer (each coding), multi-layer permutations & spacing, identity skipping, malformed empty token, disabled feature, unknown coding, expansion ratio violation, and corruption (truncated gzip trailer, zstd bad magic) producing appropriate status codes.
+
+Planned / future:
+
+- Optional allow‑list of acceptable inbound codings (beyond simple enable/disable).
+- Metrics: number of layers decoded, compressed vs decompressed size counters in `RequestMetrics`.
+- Streaming (incremental) inbound decompression (current model requires full body aggregation before decode).
 
 ```cpp
 server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
@@ -365,83 +466,91 @@ Examples:
 Accept: text/plain
 Accept: text/html
 → Accept: text/plain,text/html
-
-Authorization: Bearer token1
-Authorization: Bearer token2
-→ Authorization: Bearer token2
-
-Cookie: a=1
-Cookie: b=2
-→ Cookie: a=1;b=2
-
-User-Agent: Foo
-User-Agent: Bar
-→ User-Agent: Foo Bar
-
-Host: example.com
-Host: other
-→ 400 Bad Request (duplicate forbidden)
+```cpp
+// Streaming compression example (automatic activation once threshold reached)
+HttpServer server(HttpServerConfig{}.withPort(8080)
+  .withCompression(CompressionConfig{}
+    .withMinBytes(64) // buffer until >=64 bytes before deciding to compress
+  ));
+server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
+  w.setStatus(200, "OK");
+  w.setHeader("Content-Type", "text/plain");
+  // Write several chunks; they are buffered internally until threshold, then
+  // compression is decided and subsequent output is emitted with Content-Encoding.
+  for (int i = 0; i < 10; ++i) {
+    if (!w.write(std::string(50, 'x'))) {
+      break; // connection closing / backpressure fatal path
+    }
+  }
+  w.end();
+});
 ```
 
-Tests covering all policy branches (list, cookie, space, override, disallowed, empty edge cases, case
-insensitivity) live in the lightweight `http-request_test.cpp` suite to keep feedback tight.
+### Inbound Request Body Decompression (Content-Encoding)
 
-### HttpResponse Design & Performance
+Implemented capabilities (independent from outbound compression):
 
-`HttpResponse` (fixed / non‑streaming responses) builds the entire status line, headers and body inside a **single
-contiguous dynamically grown buffer**. This minimizes allocations, maximizes cache locality, and keeps syscall layer
-simple (a single `writev` pairs the header block with the body when streaming is not used).
+| Aspect | Details |
+|--------|---------|
+| Supported codings | `gzip`, `deflate` (zlib wrapper) when `AERONET_ENABLE_ZLIB` defined (flag covers both request & response); `zstd` when `AERONET_ENABLE_ZSTD` defined (flag covers both directions); `identity` is always recognized (no-op) |
+| Multi-layer chains | Fully supported (e.g. `Content-Encoding: deflate, gzip, zstd`). Layers are decoded in **reverse order** of appearance (last listed = outermost applied, decoded first). |
+| Parsing | Allocation-free reverse splitting; trims spaces / tabs around tokens; rejects empty tokens (e.g. `gzip,,deflate`) with **400** |
+| Unknown coding | Immediate **415 Unsupported Media Type** (feature is opt-in via `RequestDecompressionConfig::enable`) |
+| Disabled feature | If `enable=false`, encodings are ignored (body left compressed; no auto 415) |
+| Safety limits | `maxCompressedBytes`, `maxDecompressedBytes`, and `maxExpansionRatio` (per-stage) guard against bombs; exceeding ratio or byte limits returns **413** |
+| Error mapping | Malformed or undecodable compressed data -> **400**; unknown coding -> **415**; ratio/size violation -> **413** |
+| Identity in chains | Gracefully skipped (`deflate, identity, gzip` works) |
+| Buffering model | Request body is first fully aggregated (respecting existing body size limits) before decompression; decoding ping‑pongs between two internal buffers without reallocating vectors per layer |
 
-Memory layout (before any user header is appended):
-
-```text
-[HTTP/1.1 SP status-code [SP reason] CRLF][CRLF][CRLF]
-                            ^        ^   ^
-                            |        |   +-- DoubleCRLF sentinel (always present)
-                            |        +------ End of status / optional reason line
-                            +--------------- First reason character (if any)
-```
-
-After headers (each user header prepends a CRLF and shifts only the tail once):
-
-```text
-Status/Reason CRLF (CRLF Name ": " Value)* CRLF CRLF [Body]
-```
-
-Key properties:
-
-- **Single allocation growth** – headers and body share one buffer (no per‑header node allocations).
-- **Append fast path** – `appendHeader()` does not scan; it inserts `CRLF + key + ": " + value` before the trailing
-  DoubleCRLF, shifting only the (DoubleCRLF + body) tail (O(bodyLen)). Duplicate headers are allowed intentionally.
-- **Uniqueness path** – `header()` performs a linear scan to find an existing key at CRLF‑delimited line starts **using
-  case‑insensitive comparison of the header name (RFC 7230 token rules)**; if found it replaces the value in place (one
-  `memmove` for size delta). If not found it falls back to `appendHeader()`. The original casing of the first
-  occurrence is preserved (subsequent replacements do not alter its characters) so you can freely call `header()` with
-  any casing (`"Content-Type"`, `"content-type"`, `"CONTENT-TYPE"`).
-- **Reason phrase mutation** – `reason()` can grow, shrink, add or remove the reason phrase. It performs at most one
-  tail shift and updates internal offsets for headers/body.
-- **Body mutation safety** – `body()` overwrites in place and grows capacity exponentially. If the source string_view
-  points inside the internal buffer (e.g. using part of the reason or an earlier body) the implementation preserves
-  safety across potential reallocation.
-- **Value‑category preserving fluent API** – All mutators (`statusCode`, `reason`, `body`, `appendHeader`, `header`,
-   `contentType`, `location`) have both `&` and `&&` ref‑qualified overloads so chains on temporaries don’t force an
-   intermediate named variable:
+Configuration (`RequestDecompressionConfig`):
 
 ```cpp
-return HttpResponse(404)
-    .reason("Not Found")
-    .contentType("text/plain")
-    .body("missing\n");
+RequestDecompressionConfig cfg;
+cfg.enable = true;                 // default true when provided
+cfg.maxCompressedBytes = 0;        // 0 => unlimited (still bounded by global body limit)
+cfg.maxDecompressedBytes = 0;      // 0 => unlimited absolute post-decode size
+cfg.maxExpansionRatio = 0.0;       // 0 => disabled; otherwise (decompressed / originalCompressed) <= ratio
+HttpServerConfig serverCfg;
+serverCfg.withRequestDecompression(cfg);
 ```
 
-- **Post‑finalize immutability** – `finalizeAndGetFullTextResponse()` injects reserved headers (`Date`, `Connection`,
-  and `Content-Length` if body non‑empty). After it returns further mutation is undefined behavior (would duplicate
-  reserved headers or corrupt layout). Call it exactly once per response.
-- **Reserved header enforcement** – Centralized in `HttpResponse::IsReservedHeader` (same rule used by streaming
-  writer). Attempting to set one triggers an assertion in debug builds.
+Security / robustness notes:
 
-Complexity summary (amortized):
+- Multi-layer decoding performs an expansion ratio check **after each stage** relative to the original compressed size to prevent a sequence of individually benign layers from compounding into an excessive blow‑up.
+- A per-stage absolute size cap (`maxDecompressedBytes`) halts decoding early to bound memory usage even if the ratio guard is disabled.
+- Empty or whitespace-only tokens are rejected (400) to avoid silent acceptance of malformed chains that some intermediaries might normalize differently.
+- Unknown codings are not skipped; failing fast with 415 prevents ambiguous partial decoding states.
+- Disabling the feature (`enable=false`) leaves bodies compressed (pass-through) with no automatic 415.
 
+Examples:
+
+```text
+Content-Encoding: gzip                -> decode gzip
+Content-Encoding: gzip, zstd          -> decode zstd then gzip
+Content-Encoding: deflate, identity, gzip -> decode gzip then deflate (identity skipped)
+Content-Encoding: gzip,,deflate       -> 400 (empty token)
+Content-Encoding: br                  -> 415 (unsupported)
+```
+
+Typical handler setup:
+
+```cpp
+HttpServerConfig scfg{};
+scfg.withRequestDecompression(RequestDecompressionConfig{ /* defaults */ });
+HttpServer server(scfg);
+server.setHandler([](const HttpRequest& req){
+  // If the client sent a compressed body, req.body() is now the decoded bytes or the request was rejected earlier.
+  return HttpResponse(200, "OK").body(std::string(req.body()));
+});
+```
+
+Tests cover: single-layer (each coding), multi-layer permutations & spacing, identity skipping, malformed empty token, disabled feature, unknown coding, expansion ratio violation, and corruption (truncated gzip trailer, zstd bad magic) producing appropriate status codes.
+
+Planned / future:
+
+- Optional allow‑list of acceptable inbound codings (beyond simple enable/disable).
+- Metrics: number of layers decoded, compressed vs decompressed size counters in `RequestMetrics`.
+- Streaming (incremental) inbound decompression (current model requires full body aggregation before decode).
 | Operation          | Complexity | Notes |
 |--------------------|------------|-------|
 | `statusCode()`     | O(1)       | Overwrites 3 digits |

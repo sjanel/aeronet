@@ -325,10 +325,11 @@ class HttpServer {
   std::size_t parseNextRequestFromBuffer(int fd, ConnectionState& state, HttpRequest& outReq);
   bool decodeBodyIfReady(int fd, ConnectionState& state, HttpRequest& req, bool isChunked, bool expectContinue,
                          std::size_t& consumedBytes);
-  bool decodeFixedLengthBody(int fd, ConnectionState& state, const HttpRequest& req, bool expectContinue,
+  bool decodeFixedLengthBody(int fd, ConnectionState& state, HttpRequest& req, bool expectContinue,
                              std::size_t& consumedBytes);
   bool decodeChunkedBody(int fd, ConnectionState& state, HttpRequest& req, bool expectContinue,
                          std::size_t& consumedBytes);
+  bool maybeDecompressRequestBody(int fd, ConnectionState& state, HttpRequest& req);
   void finalizeAndSendResponse(int fd, ConnectionState& state, HttpRequest& req, HttpResponse& resp,
                                std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
   // Helper to build & queue a simple error response, invoke parser error callback (if any).

@@ -205,6 +205,11 @@ class RawBytesImpl {
   size_type _capacity = 0;
 };
 
+template <class T, class ViewType>
+void swap(RawBytesImpl<T, ViewType> &lhs, RawBytesImpl<T, ViewType> &rhs) noexcept {
+  lhs.swap(rhs);
+}
+
 using RawBytes = RawBytesImpl<std::byte, std::span<const std::byte>>;
 
 }  // namespace aeronet
