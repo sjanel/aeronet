@@ -172,7 +172,6 @@ Status & error handling
 
 Headers & protocol niceties
 
-- [x] Date header (cached once per second)
 - [x] Connection keep-alive / close
 - [x] Content-Type (user supplied only)
 - [x] Expect: 100-continue handling

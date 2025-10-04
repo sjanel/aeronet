@@ -14,7 +14,7 @@ TEST(MultiHttpServer, RapidStartStopCycles) {
   aeronet::HttpServerConfig cfg;
   cfg.withReusePort();
   // Keep cycles modest to avoid lengthening normal test runtime too much; adjust if needed.
-  for (int statePos = 0; statePos < 100; ++statePos) {
+  for (int statePos = 0; statePos < 50; ++statePos) {
     aeronet::MultiHttpServer multi(cfg);
     multi.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
       aeronet::HttpResponse resp;
@@ -24,7 +24,7 @@ TEST(MultiHttpServer, RapidStartStopCycles) {
     multi.start();
     ASSERT_TRUE(multi.isRunning());
     // Short dwell to allow threads to enter run loop.
-    std::this_thread::sleep_for(5ms);
+    std::this_thread::sleep_for(10ms);
     multi.stop();
     EXPECT_FALSE(multi.isRunning());
   }

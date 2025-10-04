@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <ranges>  // std::ranges::subrange/search
+#include <ranges>
 #include <stdexcept>
 #include <string_view>
 
@@ -16,8 +16,12 @@
 #include "string-equal-ignore-case.hpp"
 #include "stringconv.hpp"
 #include "tchars.hpp"
+#include "timedef.hpp"
+#include "timestring.hpp"
 
 namespace aeronet {
+
+// (Helper removed: generic header insertion logic lives in HttpResponse::appendHeaderGeneric now.)
 
 HttpResponse::HttpResponse(http::StatusCode code, std::string_view reason)
     : _data(kHttp1VersionLen + 1U + 3U + (reason.empty() ? 0UL : reason.size() + 1UL) + http::DoubleCRLF.size()),
@@ -149,38 +153,16 @@ void HttpResponse::setBody(std::string_view newBody) {
 
 void HttpResponse::appendHeaderUnchecked(std::string_view key, std::string_view value) {
   assert(!key.empty() && std::ranges::all_of(key, [](char ch) { return is_tchar(ch); }));
-  if (CaseInsensitiveEqual(key, http::ContentEncoding)) {
-    _userProvidedContentEncoding = true;
-  }
-  // We model header insertion as: CRLF + key + ": " + value (NO trailing CRLF here).
-  // The trailing CRLF for a header line is provided by the leading CRLF of the next header
-  // OR by the first CRLF inside the final DoubleCRLF sentinel. This allows append-only
-  // behavior without rewriting the tail for each header.
-  const std::size_t headerLineSize = http::CRLF.size() + key.size() + http::HeaderSep.size() + value.size();
-  _data.ensureAvailableCapacity(headerLineSize);
-
-  auto insertPos = _data.data() + _bodyStartPos - http::DoubleCRLF.size();
-  std::memmove(insertPos + headerLineSize, insertPos, http::DoubleCRLF.size() + bodyLen());
-
-  // Leading CRLF terminates previous line (status line or previous header).
-  std::memcpy(insertPos, http::CRLF.data(), http::CRLF.size());
-  insertPos += http::CRLF.size();
-  std::memcpy(insertPos, key.data(), key.size());
-  insertPos += key.size();
-  std::memcpy(insertPos, http::HeaderSep.data(), http::HeaderSep.size());
-  insertPos += http::HeaderSep.size();
-  std::memcpy(insertPos, value.data(), value.size());
-
-  if (_headersStartPos == 0) {
-    // First header key begins after inserted leading CRLF.
-    _headersStartPos = static_cast<decltype(_headersStartPos)>(_bodyStartPos - http::DoubleCRLF.size());
-  }
-  _data.setSize(_data.size() + headerLineSize);
-  _bodyStartPos += static_cast<uint32_t>(headerLineSize);
+  const bool markCE = CaseInsensitiveEqual(key, http::ContentEncoding);
+  appendHeaderGeneric(key, value.size(), [&](char* dst) { std::memcpy(dst, value.data(), value.size()); }, markCE);
 }
 
-std::string_view HttpResponse::finalizeAndGetFullTextResponse(http::Version version, std::string_view date,
-                                                              bool keepAlive, bool isHeadMethod) {
+void HttpResponse::appendDateUnchecked(TimePoint tp) {
+  appendHeaderGeneric(http::Date, kRFC7231DateStrLen, [&](char* dst) { TimeToStringRFC7231(tp, dst); }, false);
+}
+
+std::string_view HttpResponse::finalizeAndGetFullTextResponse(http::Version version, TimePoint tp, bool keepAlive,
+                                                              bool isHeadMethod) {
   auto versionStr = version.str();
   std::memcpy(_data.data(), versionStr.data(), versionStr.size());
   _data[versionStr.size()] = ' ';
@@ -199,8 +181,8 @@ std::string_view HttpResponse::finalizeAndGetFullTextResponse(http::Version vers
     body(std::string_view());
   }
 
-  appendHeaderUnchecked(http::Date, date);
   appendHeaderUnchecked(http::Connection, keepAlive ? http::keepalive : http::close);
+  appendDateUnchecked(tp);
 
   return _data;
 }

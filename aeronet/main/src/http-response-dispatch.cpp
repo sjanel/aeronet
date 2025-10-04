@@ -83,7 +83,7 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
       }
     }
   }
-  auto data = resp.finalizeAndGetFullTextResponse(req.version(), std::string_view(_cachedDate), keepAlive, isHead);
+  auto data = resp.finalizeAndGetFullTextResponse(req.version(), _cachedDateEpoch, keepAlive, isHead);
 
   queueData(fd, state, data);
 
