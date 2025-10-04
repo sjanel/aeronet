@@ -66,6 +66,12 @@ if(AERONET_ENABLE_ZSTD)
 	aeronet_http_test(http_compression_zstd_streaming http_compression_zstd_streaming.cpp)
 endif()
 
+# Brotli compression tests (guarded independently)
+if(AERONET_ENABLE_BROTLI)
+	aeronet_http_test(http_compression_br_buffered http_compression_br_buffered.cpp)
+	aeronet_http_test(http_compression_br_streaming http_compression_br_streaming.cpp)
+endif()
+
 # Streaming tests
 aeronet_http_test(http_streaming_backpressure http_streaming_backpressure.cpp)
 
@@ -159,6 +165,8 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_compression_zlib_streaming.cpp
 	http_compression_zstd_buffered.cpp
 	http_compression_zstd_streaming.cpp
+	http_compression_br_buffered.cpp
+	http_compression_br_streaming.cpp
 	# TLS tests are intentionally omitted from the always-present list because they are
 	# guarded by AERONET_ENABLE_OPENSSL. If OpenSSL is enabled but these files are removed
 	# or renamed, add them inside the conditional block above.

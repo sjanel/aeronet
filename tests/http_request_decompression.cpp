@@ -1,13 +1,15 @@
 #include <gtest/gtest.h>
-#include <zlib.h>
 
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+#include "aeronet/compression-config.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -24,40 +26,43 @@
 #ifdef AERONET_ENABLE_ZSTD
 #include "zstd-encoder.hpp"
 #endif
+#ifdef AERONET_ENABLE_BROTLI
+#include "brotli-encoder.hpp"
+#endif
 
 using namespace aeronet;
 
 namespace {
 
-std::string gzipCompress([[maybe_unused]] std::string_view input) {
 #ifdef AERONET_ENABLE_ZLIB
+std::string gzipCompress([[maybe_unused]] std::string_view input) {
   CompressionConfig cc;  // defaults; level taken from cfg.zlib.level
   ZlibEncoder encoder(details::ZStreamRAII::Variant::gzip, cc);
   return std::string(encoder.encodeFull(input));
-#else
-  throw std::runtime_error("zlib not enabled");
-#endif
 }
 
 std::string deflateCompress([[maybe_unused]] std::string_view input) {
-#ifdef AERONET_ENABLE_ZLIB
   CompressionConfig cc;
   ZlibEncoder encoder(details::ZStreamRAII::Variant::deflate, cc);
   return std::string(encoder.encodeFull(input));
-#else
-  throw std::runtime_error("zlib not enabled");
-#endif
 }
+#endif
 
-std::string zstdCompress([[maybe_unused]] std::string_view input) {
 #ifdef AERONET_ENABLE_ZSTD
+std::string zstdCompress([[maybe_unused]] std::string_view input) {
   CompressionConfig cc;  // zstd tuning from default config
   ZstdEncoder zencoder(cc);
   return std::string(zencoder.encodeFull(input));
-#else
-  throw std::runtime_error("zstd not enabled");
-#endif
 }
+#endif
+
+#ifdef AERONET_ENABLE_BROTLI
+std::string brotliCompress([[maybe_unused]] std::string_view input) {
+  CompressionConfig cc;  // defaults; quality/window from cfg.brotli
+  BrotliEncoder encoder(cc);
+  return std::string(encoder.encodeFull(input));
+}
+#endif
 
 struct ClientRawResponse {
   int status{};
@@ -144,6 +149,24 @@ TEST(HttpRequestDecompression, SingleZstd) {
 #endif
 }
 
+TEST(HttpRequestDecompression, SingleBrotli) {
+#ifdef AERONET_ENABLE_BROTLI
+  HttpServerConfig cfg{};
+  cfg.withRequestDecompression(RequestDecompressionConfig{});
+  TestServer ts(cfg);
+  std::string plain = std::string(180, 'B');
+  ts.server.setHandler([plain](const HttpRequest& req) {
+    EXPECT_EQ(req.body(), plain);
+    HttpResponse resp;
+    resp.body("BR");
+    return resp;
+  });
+  auto comp = brotliCompress(plain);
+  auto resp = rawPost(ts.port(), "/br_single", {{"Content-Encoding", "br"}}, comp);
+  EXPECT_EQ(resp.status, 200) << resp.headersRaw;
+#endif
+}
+
 TEST(HttpRequestDecompression, MultiGzipDeflateNoSpaces) {
 #ifdef AERONET_ENABLE_ZLIB
   HttpServerConfig cfg{};
@@ -182,6 +205,44 @@ TEST(HttpRequestDecompression, MultiZstdGzipWithSpaces) {
 #endif
 }
 
+TEST(HttpRequestDecompression, MultiGzipBrotli) {
+#if defined(AERONET_ENABLE_ZLIB) && defined(AERONET_ENABLE_BROTLI)
+  HttpServerConfig cfg{};
+  cfg.withRequestDecompression(RequestDecompressionConfig{});
+  TestServer ts(cfg);
+  std::string plain = std::string(96, 'R');
+  ts.server.setHandler([plain](const HttpRequest& req) {
+    EXPECT_EQ(req.body(), plain);
+    HttpResponse resp;
+    resp.body("GB");
+    return resp;
+  });
+  auto gz = gzipCompress(plain);  // first stage
+  auto br = brotliCompress(gz);   // second (header lists first-applied first)
+  auto resp = rawPost(ts.port(), "/gb", {{"Content-Encoding", "gzip, br"}}, br);
+  EXPECT_EQ(resp.status, 200);
+#endif
+}
+
+TEST(HttpRequestDecompression, MultiZstdBrotli) {
+#if defined(AERONET_ENABLE_ZSTD) && defined(AERONET_ENABLE_BROTLI)
+  HttpServerConfig cfg{};
+  cfg.withRequestDecompression(RequestDecompressionConfig{});
+  TestServer ts(cfg);
+  std::string plain = std::string(72, 'Z');
+  ts.server.setHandler([plain](const HttpRequest& req) {
+    EXPECT_EQ(req.body(), plain);
+    HttpResponse resp;
+    resp.body("ZB");
+    return resp;
+  });
+  auto zs = zstdCompress(plain);  // first stage (zstd)
+  auto br = brotliCompress(zs);   // second
+  auto resp = rawPost(ts.port(), "/zb", {{"Content-Encoding", "zstd, br"}}, br);
+  EXPECT_EQ(resp.status, 200);
+#endif
+}
+
 TEST(HttpRequestDecompression, IdentitySkippedInChain) {
 #ifdef AERONET_ENABLE_ZLIB
   HttpServerConfig cfg{};
@@ -205,8 +266,13 @@ TEST(HttpRequestDecompression, UnknownCodingRejected) {
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(RequestDecompressionConfig{});
   TestServer ts(cfg);
+  ts.server.setHandler([]([[maybe_unused]] const HttpRequest& req) {
+    HttpResponse resp;
+    resp.body("U");
+    return resp;
+  });
   std::string body = "abc";  // not used
-  auto resp = rawPost(ts.port(), "/u", {{"Content-Encoding", "br"}}, body);
+  auto resp = rawPost(ts.port(), "/u", {{"Content-Encoding", "snappy"}}, body);
   EXPECT_EQ(resp.status, http::StatusCodeUnsupportedMediaType);
 }
 
@@ -215,8 +281,8 @@ TEST(HttpRequestDecompression, EmptyTokenRejected) {
   cfg.withRequestDecompression(RequestDecompressionConfig{});
   TestServer ts(cfg);
   std::string body = "xyz";
-  auto resp = rawPost(ts.port(), "/e", {{"Content-Encoding", "gzip,,deflate"}}, body);
-  // gzip compression not actually applied; server will see empty token -> 400
+  auto resp = rawPost(ts.port(), "/e", {{"Content-Encoding", "identity,,identity"}}, body);
+  // empty token forbidden
   EXPECT_EQ(resp.status, 400);
 }
 
@@ -367,16 +433,18 @@ TEST(HttpRequestDecompression, UnknownCodingWithSpacesRejected) {
   cfg.withRequestDecompression(RequestDecompressionConfig{});
   TestServer ts(cfg);
   std::string plain = "UnknownSpace";
-  // Apply first encoding (gzip) so that unknown (br) would have been last.
+  // Apply first encoding so that unknown token appears last.
 #ifdef AERONET_ENABLE_ZLIB
   auto gz = gzipCompress(plain);
-  auto resp = rawPost(ts.port(), "/ubr", {{"Content-Encoding", "gzip,  br"}}, gz);
-  EXPECT_EQ(resp.status, http::StatusCodeUnsupportedMediaType);
 #else
-  auto resp = rawPost(ts.port(), "/ubr", {{"Content-Encoding", "gzip,  br"}}, plain);
-  // If zlib disabled, gzip not supported anyway -> still 415 acceptable.
-  EXPECT_EQ(resp.status, http::StatusCodeUnsupportedMediaType);
+  auto gz = plain;  // unused transformation
 #endif
+#ifdef AERONET_ENABLE_BROTLI
+  auto resp = rawPost(ts.port(), "/ubr", {{"Content-Encoding", "gzip,  snappy"}}, gz);
+#else
+  auto resp = rawPost(ts.port(), "/ubr", {{"Content-Encoding", "gzip,  br"}}, gz);
+#endif
+  EXPECT_EQ(resp.status, http::StatusCodeUnsupportedMediaType);
 }
 
 TEST(HttpRequestDecompression, EmptyTokenWithSpacesRejected) {
@@ -384,7 +452,7 @@ TEST(HttpRequestDecompression, EmptyTokenWithSpacesRejected) {
   cfg.withRequestDecompression(RequestDecompressionConfig{});
   TestServer ts(cfg);
   std::string body = "abc123";  // intentionally not compressed
-  auto resp = rawPost(ts.port(), "/emptsp", {{"Content-Encoding", "gzip,  ,deflate"}}, body);
+  auto resp = rawPost(ts.port(), "/emptsp", {{"Content-Encoding", "identity,  ,identity"}}, body);
   EXPECT_EQ(resp.status, 400);
 }
 
@@ -433,5 +501,25 @@ TEST(HttpRequestDecompression, CorruptedZstdBadMagic) {
   }
   auto resp = rawPost(ts.port(), "/czstd", {{"Content-Encoding", "zstd"}}, corrupted);
   EXPECT_EQ(resp.status, 400) << "Expected 400 for corrupted zstd (bad magic)";
+#endif
+}
+
+TEST(HttpRequestDecompression, CorruptedBrotliTruncated) {
+#ifdef AERONET_ENABLE_BROTLI
+  HttpServerConfig cfg{};
+  cfg.withRequestDecompression(RequestDecompressionConfig{});
+  TestServer ts(cfg);
+  std::string plain = std::string(300, 'B');
+  ts.server.setHandler([plain](const HttpRequest& req) {
+    EXPECT_EQ(req.body(), plain);  // Not reached for corrupted case
+    HttpResponse resp;
+    resp.body("OK");
+    return resp;
+  });
+  auto full = brotliCompress(plain);
+  ASSERT_GT(full.size(), 8U);
+  auto truncated = full.substr(0, full.size() - 4);
+  auto resp = rawPost(ts.port(), "/cbr", {{"Content-Encoding", "br"}}, truncated);
+  EXPECT_EQ(resp.status, 400) << "Expected 400 for truncated brotli stream";
 #endif
 }

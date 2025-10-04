@@ -1,6 +1,7 @@
 #include "zlib-encoder.hpp"
 
-#include <zlib.h>  // IWYU pragma: keep (Bytef, uInt, Z_* APIs)
+#include <zconf.h>
+#include <zlib.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -85,12 +86,11 @@ std::string_view ZlibEncoder::compressAll(std::string_view in) {
   zs._stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in.data()));
   zs._stream.avail_in = static_cast<uInt>(in.size());
   static constexpr std::size_t kChunkSize = 32UL * 1024UL;
-  int rc;
   do {
     _buf.ensureAvailableCapacity(kChunkSize);
     zs._stream.next_out = reinterpret_cast<unsigned char*>(_buf.data() + _buf.size());
     zs._stream.avail_out = kChunkSize;
-    rc = deflate(&zs._stream, Z_FINISH);
+    auto rc = deflate(&zs._stream, Z_FINISH);
     if (rc == Z_STREAM_ERROR) {
       throw exception("Zlib error during one-shot compression");
     }

@@ -1,9 +1,9 @@
 #include "aeronet/http-version.hpp"
 
 #include <charconv>
-#include <cstddef>  // std::size_t
+#include <cstddef>
 #include <cstring>
-#include <system_error>  // std::errc
+#include <system_error>
 #include <utility>
 
 #include "stringconv.hpp"
@@ -28,7 +28,7 @@ bool parseHttpVersion(const char *first, const char *last, Version &out) {
   }
   first += Version::kPrefix.size();
 
-  auto dot = static_cast<const char *>(std::memchr(first, '.', static_cast<std::size_t>(last - first)));
+  const auto dot = static_cast<const char *>(std::memchr(first, '.', static_cast<std::size_t>(last - first)));
   if (dot == nullptr) {
     return false;
   }

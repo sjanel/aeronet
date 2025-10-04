@@ -13,10 +13,11 @@ enum class Encoding : std::uint8_t {
   zstd,
   gzip,
   deflate,
+  br,
   none,
 };
 
-inline constexpr std::underlying_type_t<Encoding> kNbContentEncodings = 4;
+inline constexpr std::underlying_type_t<Encoding> kNbContentEncodings = 5;
 
 constexpr std::string_view GetEncodingStr(Encoding compressionFormat) {
   switch (compressionFormat) {
@@ -26,6 +27,8 @@ constexpr std::string_view GetEncodingStr(Encoding compressionFormat) {
       return http::gzip;
     case Encoding::deflate:
       return http::deflate;
+    case Encoding::br:
+      return http::br;
     case Encoding::zstd:
       return http::zstd;
     default:

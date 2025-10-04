@@ -1,5 +1,6 @@
 #include "aeronet/zlib-decoder.hpp"
 
+#include <zconf.h>
 #include <zlib.h>
 
 #include <cstddef>
@@ -39,7 +40,7 @@ bool ZlibDecoder::Decompress(std::string_view input, RawChars &out, bool isGzip,
 
   // We don’t know decompressed size beforehand → grow dynamically
   // TODO: make this chunk size configurable
-  static constexpr size_t kChunkSize = 1 << 14;
+  static constexpr std::size_t kChunkSize = 1 << 14;
 
   strm._strm.avail_out = static_cast<uInt>(kChunkSize);
 
