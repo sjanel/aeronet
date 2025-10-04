@@ -103,22 +103,23 @@ constexpr auto TimeToStringRFC7231(TimePoint tp, auto out) {
   const weekday wd{day_point};
   const hh_mm_ss hms{secTp - day_point};
   out = copy3(out, WEEKDAYS[wd.c_encoding()]);
-  *out++ = ',';
-  *out++ = ' ';
-  out = write2(out, static_cast<unsigned>(ymd.day()));
-  *out++ = ' ';
-  out = copy3(out, MONTHS[static_cast<unsigned>(ymd.month()) - 1]);
-  *out++ = ' ';
-  out = write4(out, static_cast<int>(ymd.year()));
-  *out++ = ' ';
-  out = write2(out, hms.hours().count());
-  *out++ = ':';
-  out = write2(out, hms.minutes().count());
-  *out++ = ':';
-  out = write2(out, hms.seconds().count());
-  *out++ = ' ';
-  out = copy3(out, "GMT");
-  return out;
+  *out = ',';
+  *++out = ' ';
+  out = write2(++out, static_cast<unsigned>(ymd.day()));
+  *out = ' ';
+  out = copy3(++out, MONTHS[static_cast<unsigned>(ymd.month()) - 1]);
+  *out = ' ';
+  out = write4(++out, static_cast<int>(ymd.year()));
+  *out = ' ';
+  out = write2(++out, hms.hours().count());
+  *out = ':';
+  out = write2(++out, hms.minutes().count());
+  *out = ':';
+  out = write2(++out, hms.seconds().count());
+  *out = ' ';
+  return copy3(++out, "GMT");
 }
+
+inline constexpr std::size_t kRFC7231DateStrLen = 29;
 
 }  // namespace aeronet

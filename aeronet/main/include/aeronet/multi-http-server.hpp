@@ -63,18 +63,23 @@ class MultiHttpServer {
   // method.
   explicit MultiHttpServer(HttpServerConfig cfg);
 
-  // Move semantics & lifecycle constraints:
-  // ---------------------------------------
-  // MultiHttpServer may be moved ONLY while it has not been started yet (i.e. before start()).
-  // Once start() is invoked, each underlying HttpServer instance address is captured by its
-  // dedicated std::jthread via a raw pointer. Moving the enclosing container would relocate
-  // the vector storage and invalidate those pointers, leading to immediate undefined behavior.
-  // For safety we assert+log if a move (construction or assignment) is attempted on a running
-  // instance. This mirrors the HttpServer move policy.
+  // Move semantics:
+  // ---------------
+  // We now ALLOW moving a running MultiHttpServer. Rationale:
+  //   - Threads capture ONLY raw pointers to stable HttpServer elements stored inside the
+  //     _servers std::vector. A move of std::vector transfers ownership of the underlying buffer
+  //     without relocating elements (no per-element move), so the addresses remain valid.
+  //   - The std::jthread objects are likewise moved; their destructor (join) will occur when the
+  //     destination MultiHttpServer is destroyed or stop() is called there.
+  //   - The moved-from instance becomes empty (no threads, no servers) and its destructor does
+  //     nothing.
+  // Constraints:
+  //   - Still non-copyable.
+  //   - Move assignment will stop() an already-running target before adopting new threads.
   MultiHttpServer(const MultiHttpServer&) = delete;
-  MultiHttpServer(MultiHttpServer&& other) noexcept;
+  MultiHttpServer(MultiHttpServer&& other) noexcept;  // NOLINT(modernize-use-noexcept)
   MultiHttpServer& operator=(const MultiHttpServer&) = delete;
-  MultiHttpServer& operator=(MultiHttpServer&& other) noexcept;
+  MultiHttpServer& operator=(MultiHttpServer&& other) noexcept;  // NOLINT(modernize-use-noexcept)
 
   ~MultiHttpServer();
 
@@ -144,7 +149,7 @@ class MultiHttpServer {
   //   Reflects the high-level lifecycle, not the liveness of each individual thread (a thread
   //   may have terminated due to an exception while isRunning() is still true). Use stats() or
   //   external health checks for deeper diagnostics.
-  [[nodiscard]] bool isRunning() const { return _running; }
+  [[nodiscard]] bool isRunning() const { return !_threads.empty(); }
 
   // port(): The resolved listening port shared by all underlying servers. If an ephemeral port
   //   was requested (cfg.port==0) this becomes available directly after construction.
@@ -170,10 +175,9 @@ class MultiHttpServer {
   };
 
   HttpServerConfig _baseConfig;
-  bool _running{false};
 
   std::optional<RequestHandler> _globalHandler;
-  vector<PathRegistration> _pathHandlersEmplace;  // store until start()
+  vector<PathRegistration> _pathHandlersEmplace;
   ParserErrorCallback _parserErrCb;
 
   // IMPORTANT LIFETIME NOTE:

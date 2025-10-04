@@ -6,7 +6,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <algorithm>  // std::find
+#include <algorithm>
 #include <cassert>
 #include <cerrno>
 #include <chrono>
@@ -21,13 +21,12 @@
 #include <type_traits>
 #include <utility>
 
-#include "aeronet/compression-config.hpp"  // IWYU pragma: keep (indirectly used via encoding selector)
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-status-code.hpp"  // http::StatusCode / StatusCodeOK
-#include "aeronet/http-version.hpp"      // http::HTTP_1_0 / HTTP_1_1 constants
+#include "aeronet/http-status-code.hpp"
+#include "aeronet/http-version.hpp"
 #include "aeronet/server-stats.hpp"
 #ifdef AERONET_ENABLE_BROTLI
 #include "aeronet/brotli-decoder.hpp"
@@ -45,11 +44,11 @@
 #include "aeronet/zstd-decoder.hpp"
 #include "zstd-encoder.hpp"
 #endif
-#include "aeronet/encoding.hpp"  // Encoding enum for encoder indices
+#include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method-set.hpp"
 #include "aeronet/http-method.hpp"
-#include "connection-state.hpp"  // ConnectionState direct reference
+#include "connection-state.hpp"
 #include "http-error-build.hpp"
 #include "http-method-build.hpp"
 #include "log.hpp"
@@ -166,8 +165,6 @@ HttpServer::HttpServer(HttpServerConfig cfg)
 #ifdef AERONET_ENABLE_BROTLI
   _encoders[static_cast<std::size_t>(Encoding::br)] = std::make_unique<BrotliEncoder>(_config.compression);
 #endif
-  // Identity encoder always available for Format::none index 0 (optional, can remain null to signal identity).
-  log::info("Server created on port :{}", _config.port);
 }
 
 HttpServer::~HttpServer() { stop(); }
@@ -175,7 +172,8 @@ HttpServer::~HttpServer() { stop(); }
 // NOTE: Move ctor / assignment definitions provided elsewhere earlier (not duplicated). Encoder array moved with
 // object.
 
-HttpServer::HttpServer(HttpServer&& other) noexcept
+// NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
+HttpServer::HttpServer(HttpServer&& other)
     : _stats(std::exchange(other._stats, {})),
       _listenSocket(std::move(other._listenSocket)),
       _wakeupFd(std::move(other._wakeupFd)),
@@ -188,7 +186,6 @@ HttpServer::HttpServer(HttpServer&& other) noexcept
       _connStates(std::move(other._connStates)),
       _encoders(std::move(other._encoders)),
       _encodingSelector(std::move(other._encodingSelector)),
-      _cachedDate(std::exchange(other._cachedDate, {})),
       _cachedDateEpoch(std::exchange(other._cachedDateEpoch, TimePoint{})),
       _parserErrCb(std::move(other._parserErrCb)),
       _metricsCb(std::move(other._metricsCb))
@@ -200,20 +197,18 @@ HttpServer::HttpServer(HttpServer&& other) noexcept
 #endif
 
 {
-  if (_running) {  // note: _running holds original state via std::exchange above
-    log::error("Attempt to move-construct a running HttpServer (port={}) — unsupported", _config.port);
-    assert(false && "Moving a running HttpServer is unsupported");
-    _running = false;  // force destination to a stopped state to reduce further surprises
+  if (_running) {  // original state captured before exchange
+    // Restore source invariants not needed (members already moved) then throw.
+    throw std::runtime_error("Cannot move-construct a running HttpServer");
   }
 }
 
-HttpServer& HttpServer::operator=(HttpServer&& other) noexcept {
+// NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
+HttpServer& HttpServer::operator=(HttpServer&& other) {
   if (this != &other) {
-    stop();
-    if (other._running) {  // captured pre-move state from other
-      log::error("Attempt to move-assign from a running HttpServer (port={}) — unsupported", _config.port);
-      assert(false && "Moving from a running HttpServer is unsupported");
-      other._running = false;
+    stop();  // ensure *this is quiescent
+    if (other._running) {
+      throw std::runtime_error("Cannot move-assign from a running HttpServer");
     }
     _stats = std::exchange(other._stats, {});
     _wakeupFd = std::move(other._wakeupFd);
@@ -227,7 +222,6 @@ HttpServer& HttpServer::operator=(HttpServer&& other) noexcept {
     _connStates = std::move(other._connStates);
     _encoders = std::move(other._encoders);
     _encodingSelector = std::move(other._encodingSelector);
-    _cachedDate = std::exchange(other._cachedDate, {});
     _cachedDateEpoch = std::exchange(other._cachedDateEpoch, TimePoint{});
     _parserErrCb = std::move(other._parserErrCb);
     _metricsCb = std::move(other._metricsCb);
@@ -333,8 +327,6 @@ void HttpServer::refreshCachedDate() {
   auto nowSec = time_point_cast<seconds>(nowTp);
   if (time_point_cast<seconds>(_cachedDateEpoch) != nowSec) {
     _cachedDateEpoch = nowSec;
-    [[maybe_unused]] char* end = TimeToStringRFC7231(nowSec, _cachedDate.data());
-    assert(end <= _cachedDate.data() + _cachedDate.size());
   }
 }
 
@@ -679,9 +671,9 @@ bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, Http
     return false;
   }
 
-  // We'll alternate between bodyBuffer (source) and decompressedBuffer (target) each stage.
+  // We'll alternate between bodyBuffer (source) and tmpBuffer (target) each stage.
   std::string_view src = req.body();
-  RawChars* dst = &state.decompressedBuffer;
+  RawChars* dst = &state.tmpBuffer;
 
   // Decode in reverse order.
   const char* first = encHeader.data();
@@ -749,9 +741,15 @@ bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, Http
     }
 
     src = *dst;
-    dst = dst == &state.bodyBuffer ? &state.decompressedBuffer : &state.bodyBuffer;
+    dst = dst == &state.bodyBuffer ? &state.tmpBuffer : &state.bodyBuffer;
 
     last = comma;
+  }
+
+  if (src.data() == state.tmpBuffer.data()) {
+    // make sure we use bodyBuffer to "free" usage of tmpBuffer for other things
+    state.tmpBuffer.swap(state.bodyBuffer);
+    src = state.bodyBuffer;
   }
 
   // Final decompressed data now resides in *src after last swap.
@@ -883,8 +881,8 @@ ServerStats HttpServer::stats() const {
 }
 
 void HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, bool immediate) {
-  const auto err = BuildSimpleError(code, std::string_view(_cachedDate), true);
-  queueData(fd, state, err);
+  BuildSimpleError(code, _cachedDateEpoch, state.tmpBuffer);
+  queueData(fd, state, state.tmpBuffer);
   try {
     _parserErrCb(code);
   } catch (const std::exception& ex) {

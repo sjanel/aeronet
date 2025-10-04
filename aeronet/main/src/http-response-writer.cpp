@@ -115,9 +115,8 @@ void HttpResponseWriter::ensureHeadersSent() {
   // Do NOT add Content-Encoding at header emission time; we wait until we actually activate
   // compression (threshold reached) to avoid mislabeling identity bodies when size < threshold.
   // Do not attempt to add Connection/Date here; finalize handles them (adds Date, Connection based on keepAlive flag).
-  auto dateStr =
-      std::string_view(reinterpret_cast<const char*>(_server->_cachedDate.data()), _server->_cachedDate.size());
-  auto finalized = _fixedResponse.finalizeAndGetFullTextResponse(http::HTTP_1_1, dateStr, !_requestConnClose, _head);
+  auto finalized = _fixedResponse.finalizeAndGetFullTextResponse(http::HTTP_1_1, _server->_cachedDateEpoch,
+                                                                 !_requestConnClose, _head);
   log::debug("Streaming: headers fd={} code={} chunked={} headerBytes={} ", _fd, _fixedResponse.statusCode(), _chunked,
              finalized.size());
   if (!enqueue(finalized)) {

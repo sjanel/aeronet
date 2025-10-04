@@ -95,34 +95,32 @@ class HttpServer {
 
   // Move semantics & constraints:
   // -----------------------------
-  // HttpServer is movable only while it is NOT running (i.e. before the first call to run()/runUntil(), or
-  // after those calls have returned). Moving a running server would transfer internal epoll state, connection
-  // maps and the TLS context out from under the active event‑loop thread causing immediate undefined behavior
-  // (use‑after‑move on the old object's members). This is inherently unsafe and therefore disallowed.
+  // A HttpServer can be moved ONLY when it is not running. Attempting to move (construct or assign from) a
+  // running server is a logic error: the event loop thread would continue executing against the old "this"
+  // while ownership of its internal epoll fd, listening socket, wakeup fd, connection maps, handlers and TLS
+  // context had been transferred, leading to immediate undefined behaviour. To make this failure mode explicit
+  // and prevent silent partial moves, the move constructor and move assignment operator now THROW
+  // std::runtime_error if the source object is running.
   //
-  // Enforced policy:
-  //  * If a move (construction or assignment) observes other._running == true we log an error and fire an assert
-  //    to indicate the client that it is invoking undefined behavior.
-  //
-  // Rationale for allowing (stopped) moves:
-  //  * Tests and higher‑level wrappers occasionally want to construct into a temporary then store into a container
-  //    or aggregate without an extra heap indirection; supporting move in the quiescent state keeps this ergonomic.
+  // Design choice:
+  //  * We intentionally drop noexcept on move operations to surface misuse instead of asserting and then
+  //    forcing a partially moved/stopped state.
+  //  * This keeps normal (non‑running) moves available for ergonomic construction & storage patterns.
   //
   // Safe usage pattern:
   //    HttpServer tmp(cfg);
   //    tmp.setHandler(...);
-  //    tmp.setXXXX(...);
   //    HttpServer server(std::move(tmp)); // OK (tmp not running)
-  //    std::jthread t([&]{ server.runUntil(stopFlag); });
+  //    std::jthread t([&]{ server.run(); });
   //
-  // Unsafe pattern:
+  // Invalid usage (throws std::runtime_error):
   //    HttpServer s(cfg);
   //    std::jthread t([&]{ s.run(); });
-  //    HttpServer moved(std::move(s)); // FATAL: moving while running.
+  //    HttpServer moved(std::move(s)); // throws
   HttpServer(const HttpServer&) = delete;
   HttpServer& operator=(const HttpServer&) = delete;
-  HttpServer(HttpServer&& other) noexcept;
-  HttpServer& operator=(HttpServer&& other) noexcept;
+  HttpServer(HttpServer&& other);             // NOLINT(performance-noexcept-move-constructor)
+  HttpServer& operator=(HttpServer&& other);  // NOLINT(performance-noexcept-move-constructor)
 
   ~HttpServer();
 
@@ -252,7 +250,7 @@ class HttpServer {
   // Acts as the maximum sleep / blocking interval in the internal poll loop (passed as the timeout to epoll_wait).
   // Lower values:
   //   + Faster responsiveness to external stop() calls.
-  //   + Finer granularity for periodic housekeeping (idle connection sweeping, cached Date header refresh).
+  //   + Finer granularity for periodic housekeeping (idle connection sweeping).
   //   - More wake‑ups -> higher baseline CPU usage.
   // Higher values:
   //   + Fewer wake‑ups (reduced idle CPU) when the server is mostly idle.
@@ -397,9 +395,6 @@ class HttpServer {
   std::array<std::unique_ptr<Encoder>, kNbContentEncodings> _encoders;
   EncodingSelector _encodingSelector;
 
-  using RFC7231DateStr = std::array<char, 29>;
-
-  RFC7231DateStr _cachedDate{};
   TimePoint _cachedDateEpoch;  // last second-aligned timestamp used for Date header
   ParserErrorCallback _parserErrCb = []([[maybe_unused]] http::StatusCode) {};
   MetricsCallback _metricsCb;
