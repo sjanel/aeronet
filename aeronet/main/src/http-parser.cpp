@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstring>
 #include <string_view>
+#include <system_error>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"

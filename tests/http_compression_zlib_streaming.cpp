@@ -1,21 +1,18 @@
 ﻿#include <gtest/gtest.h>
 
-#include <cstddef>      // size_t (header parsing cursor)
-#include <cstdint>      // uint16_t
-#include <map>          // std::map
-#include <stdexcept>    // std::runtime_error
-#include <string>       // std::string
-#include <string_view>  // std::string_view
-#include <utility>      // std::move
-#include <vector>       // std::vector
+#include <map>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 #include "aeronet/compression-config.hpp"
-#include "aeronet/encoding.hpp"  // Encoding
+#include "aeronet/encoding.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_http_client.hpp"
+#include "test_response_parsing.hpp"
 #include "test_server_fixture.hpp"
 
 using namespace aeronet;
@@ -25,62 +22,8 @@ namespace {
 bool HasGzipMagic(std::string_view body) {
   return body.size() >= 2 && static_cast<unsigned char>(body[0]) == 0x1f && static_cast<unsigned char>(body[1]) == 0x8b;
 }
-// Removed previous LooksLikeZlib helper (no longer needed after header-based verification)
 
-struct ParsedResponse {
-  std::string headersRaw;
-  std::map<std::string, std::string> headers;
-  std::string body;
-};
-
-ParsedResponse simpleGet(uint16_t port, std::string_view target,
-                         std::vector<std::pair<std::string, std::string>> extraHeaders) {
-  test_http_client::RequestOptions opt;
-  opt.target = std::string(target);
-  opt.headers = std::move(extraHeaders);
-  auto rawOpt = test_http_client::request(port, opt);
-  if (!rawOpt) {
-    throw std::runtime_error("request failed");
-  }
-  ParsedResponse out;
-  const std::string &raw = *rawOpt;
-  auto hEnd = raw.find("\r\n\r\n");
-  if (hEnd == std::string::npos) {
-    throw std::runtime_error("bad response");
-  }
-  out.headersRaw = raw.substr(0, hEnd + 4);
-  size_t cursor = 0;  // needs <cstddef> already indirectly; explicit include not added to avoid churn
-  auto nextLine = [&](size_t &pos) {
-    auto le = out.headersRaw.find("\r\n", pos);
-    if (le == std::string::npos) {
-      return std::string_view{};
-    }
-    std::string_view line(out.headersRaw.data() + pos, le - pos);
-    pos = le + 2;
-    return line;
-  };
-  (void)nextLine(cursor);  // status line consumed
-  // status code can still be asserted using headersRaw prefix; we keep parsed headers only.
-  while (cursor < out.headersRaw.size()) {
-    auto line = nextLine(cursor);
-    if (line.empty()) {
-      break;
-    }
-    auto colon = line.find(':');
-    if (colon == std::string::npos) {
-      continue;
-    }
-    std::string key(line.substr(0, colon));
-    size_t vs = colon + 1;
-    while (vs < line.size() && line[vs] == ' ') {
-      ++vs;
-    }
-    std::string val(line.substr(vs));
-    out.headers.emplace(std::move(key), std::move(val));
-  }
-  out.body = raw.substr(hEnd + 4);
-  return out;
-}
+using testutil::simpleGet;
 }  // namespace
 
 // NOTE: These streaming tests validate that compression is applied (or not) and that negotiation picks

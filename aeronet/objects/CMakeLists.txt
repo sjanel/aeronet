@@ -10,6 +10,11 @@ if(NOT AERONET_ENABLE_ZSTD)
   list(REMOVE_ITEM AERONET_OBJECTS_SRC src/zstd-decoder.cpp)
 endif()
 
+if(NOT AERONET_ENABLE_BROTLI)
+  list(REMOVE_ITEM AERONET_OBJECTS_SRC src/brotli-encoder.cpp)
+  list(REMOVE_ITEM AERONET_OBJECTS_SRC src/brotli-decoder.cpp)
+endif()
+
 add_project_library(aeronet_objects
     ${AERONET_OBJECTS_SRC}
 )

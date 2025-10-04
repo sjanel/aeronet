@@ -1,22 +1,16 @@
 #include <gtest/gtest.h>
 
-#include <cstdint>      // uint16_t
-#include <cstdlib>      // std::atoi
-#include <iostream>     // std::cerr
-#include <map>          // std::map
-#include <stdexcept>    // std::runtime_error
-#include <string>       // std::string
-#include <string_view>  // std::string_view
-#include <utility>      // std::move
-#include <vector>       // std::vector
+#include <iostream>
+#include <string>
+#include <string_view>
+#include <utility>
 
-#include "aeronet/compression-config.hpp"  // CompressionConfig
-#include "aeronet/encoding.hpp"            // Encoding
+#include "aeronet/compression-config.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_http_client.hpp"
 #include "test_server_fixture.hpp"
 
 using namespace aeronet;
@@ -31,75 +25,8 @@ bool LooksLikeZlib(std::string_view body) {
   return body.size() >= 2 && static_cast<unsigned char>(body[0]) == 0x78;  // ignore second byte variability
 }
 
-// Issue a request and parse response using test_http_client utilities.
-struct ParsedFullResponse {
-  int statusCode{};
-  std::map<std::string, std::string> headers;
-  std::string body;  // raw (possibly gzip compressed) body
-};
-
-ParsedFullResponse doGet(uint16_t port, std::string_view target,
-                         std::vector<std::pair<std::string, std::string>> extraHeaders) {
-  test_http_client::RequestOptions opt;
-  opt.target = std::string(target);
-  opt.headers = std::move(extraHeaders);
-  auto raw = test_http_client::request(port, opt);
-  if (!raw) {
-    throw std::runtime_error("request failed");
-  }
-  // Tolerant minimal parse (accept missing reason phrase).
-  ParsedFullResponse out;
-  const std::string& rawResp = *raw;
-  auto lineEnd = rawResp.find("\r\n");
-  if (lineEnd == std::string::npos) {
-    std::cerr << "RAW RESPONSE (no status line CRLF)\n" << rawResp << "\n";
-    throw std::runtime_error("parse failed");
-  }
-  std::string statusLine = rawResp.substr(0, lineEnd);
-  if (!statusLine.starts_with("HTTP/")) {
-    std::cerr << "RAW RESPONSE (bad status)\n" << rawResp << "\n";
-    throw std::runtime_error("parse failed");
-  }
-  // Split
-  auto firstSpace = statusLine.find(' ');
-  if (firstSpace == std::string::npos) {
-    throw std::runtime_error("parse failed");
-  }
-  auto secondSpace = statusLine.find(' ', firstSpace + 1);
-  std::string codeStr = secondSpace == std::string::npos
-                            ? statusLine.substr(firstSpace + 1)
-                            : statusLine.substr(firstSpace + 1, secondSpace - firstSpace - 1);
-  out.statusCode = std::atoi(codeStr.c_str());
-  auto headersEnd = rawResp.find("\r\n\r\n", lineEnd + 2);
-  if (headersEnd == std::string::npos) {
-    throw std::runtime_error("parse failed");
-  }
-  size_t cursor = lineEnd + 2;
-  while (cursor < headersEnd) {
-    auto le = rawResp.find("\r\n", cursor);
-    if (le == std::string::npos || le > headersEnd) {
-      break;
-    }
-    std::string line = rawResp.substr(cursor, le - cursor);
-    cursor = le + 2;
-    if (line.empty()) {
-      break;
-    }
-    auto colon = line.find(':');
-    if (colon == std::string::npos) {
-      continue;
-    }
-    std::string key = line.substr(0, colon);
-    size_t vs = colon + 1;
-    if (vs < line.size() && line[vs] == ' ') {
-      ++vs;
-    }
-    std::string val = line.substr(vs);
-    out.headers[key] = val;
-  }
-  out.body = rawResp.substr(headersEnd + 4);
-  return out;
-}
+#include "test_response_parsing.hpp"
+using testutil::doGet;
 }  // namespace
 
 TEST(HttpCompressionBuffered, GzipAppliedWhenEligible) {
@@ -254,7 +181,13 @@ TEST(HttpCompressionBuffered, UnsupportedEncodingDoesNotApplyGzip) {
     resp.body(payload);
     return resp;
   });
+  // If brotli support is compiled in, 'br' is actually supported and would trigger compression.
+  // Use an obviously unsupported token (snappy) in that case.
+#ifdef AERONET_ENABLE_BROTLI
+  auto resp = doGet(ts.port(), "/br", {{"Accept-Encoding", "snappy"}});
+#else
   auto resp = doGet(ts.port(), "/br", {{"Accept-Encoding", "br"}});
+#endif
   EXPECT_EQ(resp.statusCode, 200);
   EXPECT_EQ(resp.headers.find("Content-Encoding"), resp.headers.end());
 }
