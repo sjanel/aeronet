@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <charconv>
 #include <cstddef>
 #include <cstring>
 #include <string_view>
@@ -7,7 +8,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-server.hpp"
 #include "char-hexadecimal-converter.hpp"
-#include "connection-state.hpp"  // aeronet::ConnectionState
+#include "connection-state.hpp"
 #include "raw-chars.hpp"
 
 namespace aeronet {
@@ -15,55 +16,45 @@ namespace aeronet {
 bool HttpServer::decodeBodyIfReady(int fd, ConnectionState& state, HttpRequest& req, bool isChunked,
                                    bool expectContinue, std::size_t& consumedBytes) {
   consumedBytes = 0;
-  if (!isChunked) {
-    return decodeFixedLengthBody(fd, state, req, expectContinue, consumedBytes);
+  if (isChunked) {
+    return decodeChunkedBody(fd, state, req, expectContinue, consumedBytes);
   }
-  return decodeChunkedBody(fd, state, req, expectContinue, consumedBytes);
+  return decodeFixedLengthBody(fd, state, req, expectContinue, consumedBytes);
 }
 
-bool HttpServer::decodeFixedLengthBody(int fd, ConnectionState& state, const HttpRequest& req, bool expectContinue,
+bool HttpServer::decodeFixedLengthBody(int fd, ConnectionState& state, HttpRequest& req, bool expectContinue,
                                        std::size_t& consumedBytes) {
   std::string_view lenViewAll = req.headerValueOrEmpty(http::ContentLength);
   bool hasCL = !lenViewAll.empty();
-  std::size_t contentLen = 0;
   std::size_t headerEnd =
       static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.buffer.data());
   if (!hasCL) {
     // No Content-Length and not chunked: treat as no body (common for GET/HEAD). Ready immediately.
     if (state.buffer.size() >= headerEnd) {
-      const_cast<HttpRequest&>(req)._body = std::string_view{};
+      req._body = std::string_view{};
       consumedBytes = headerEnd;
       return true;
     }
     return false;
   }
-  if (hasCL) {
-    std::size_t parsed = 0;
-    for (char ch : lenViewAll) {
-      if (ch < '0' || ch > '9') {
-        parsed = _config.maxBodyBytes + 1;
-        break;
-      }
-      parsed = (parsed * 10U) + static_cast<std::size_t>(ch - '0');
-      if (parsed > _config.maxBodyBytes) {
-        break;
-      }
-    }
-    contentLen = parsed;
-    if (contentLen > _config.maxBodyBytes) {
-      emitSimpleError(fd, state, 413, true);
-      return false;
-    }
-    if (expectContinue && contentLen > 0) {
-      queueData(fd, state, http::HTTP11_100_CONTINUE);
-    }
+  std::size_t parsed = 0;
+  auto [ptr, err] = std::from_chars(lenViewAll.data(), lenViewAll.data() + lenViewAll.size(), parsed);
+  if (err != std::errc() || ptr != lenViewAll.data() + lenViewAll.size() || parsed > _config.maxBodyBytes) {
+    parsed = _config.maxBodyBytes + 1;  // trigger error path (invalid or too large)
+  }
+  std::size_t contentLen = parsed;
+  if (contentLen > _config.maxBodyBytes) {
+    emitSimpleError(fd, state, 413, true);
+    return false;
+  }
+  if (expectContinue && contentLen > 0) {
+    queueData(fd, state, http::HTTP11_100_CONTINUE);
   }
   std::size_t totalNeeded = headerEnd + contentLen;
   if (state.buffer.size() < totalNeeded) {
     return false;  // need more bytes
   }
-  const char* bodyStart = state.buffer.data() + headerEnd;
-  const_cast<HttpRequest&>(req)._body = {bodyStart, contentLen};
+  req._body = {state.buffer.data() + headerEnd, contentLen};
   consumedBytes = totalNeeded;
   return true;
 }
@@ -74,7 +65,8 @@ bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, HttpRequest& 
     queueData(fd, state, http::HTTP11_100_CONTINUE);
   }
   std::size_t pos = static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.buffer.data());
-  RawChars decodedBody(1024);
+  RawChars& decodedBody = state.bodyBuffer;
+  decodedBody.clear();
   bool needMore = false;
   while (true) {
     auto lineEndIt = std::search(state.buffer.begin() + pos, state.buffer.end(), http::CRLF.begin(), http::CRLF.end());
@@ -134,8 +126,7 @@ bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, HttpRequest& 
   if (needMore) {
     return false;
   }
-  state.bodyBuffer.assign(decodedBody.data(), decodedBody.size());
-  req._body = std::string_view(state.bodyBuffer);
+  req._body = std::string_view(decodedBody);
   consumedBytes = pos;
   return true;
 }
