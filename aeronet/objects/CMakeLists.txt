@@ -2,10 +2,12 @@ aux_source_directory(src AERONET_OBJECTS_SRC)
 
 if(NOT AERONET_ENABLE_ZLIB)
   list(REMOVE_ITEM AERONET_OBJECTS_SRC src/zlib-encoder.cpp)
+  list(REMOVE_ITEM AERONET_OBJECTS_SRC src/zlib-decoder.cpp)
 endif()
 
 if(NOT AERONET_ENABLE_ZSTD)
   list(REMOVE_ITEM AERONET_OBJECTS_SRC src/zstd-encoder.cpp)
+  list(REMOVE_ITEM AERONET_OBJECTS_SRC src/zstd-decoder.cpp)
 endif()
 
 add_project_library(aeronet_objects
