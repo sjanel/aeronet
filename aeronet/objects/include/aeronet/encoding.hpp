@@ -11,9 +11,9 @@ namespace aeronet {
 // Ordered for aeronet preferred to least preferred as a default if no config preference is set.
 enum class Encoding : std::uint8_t {
   zstd,
+  br,
   gzip,
   deflate,
-  br,
   none,
 };
 

@@ -25,10 +25,10 @@ struct ConnectionState {
   [[nodiscard]] bool isDrainCloseRequested() const noexcept { return closeMode == CloseMode::DrainThenClose; }
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }
 
-  RawChars buffer;      // accumulated raw data
-  RawChars bodyBuffer;  // decoded body lifetime
-  RawChars outBuffer;   // pending outbound bytes not yet written
-  RawChars decompressedBuffer;
+  RawChars buffer;                        // accumulated raw data
+  RawChars bodyBuffer;                    // decoded body lifetime
+  RawChars outBuffer;                     // pending outbound bytes not yet written
+  RawChars tmpBuffer;                     // can be used for any kind of temporary buffer
   std::unique_ptr<ITransport> transport;  // set after accept (plain or TLS)
   std::chrono::steady_clock::time_point lastActivity{std::chrono::steady_clock::now()};
   // Timestamp of first byte of the current pending request headers (buffer not yet containing full CRLFCRLF).

@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string_view>
 #include <utility>
 
@@ -12,6 +13,7 @@
 #include "raw-chars.hpp"
 #include "simple-charconv.hpp"
 #include "string-equal-ignore-case.hpp"
+#include "timedef.hpp"
 
 namespace aeronet {
 
@@ -277,12 +279,38 @@ class HttpResponse {
 
   void appendHeaderUnchecked(std::string_view key, std::string_view value);
 
+  void appendDateUnchecked(TimePoint tp);
+
+  template <class ValueWriter>
+  void appendHeaderGeneric(std::string_view key, std::size_t valueSize, ValueWriter&& writeValue,
+                           bool markContentEncoding) {
+    const std::size_t headerLineSize = http::CRLF.size() + key.size() + http::HeaderSep.size() + valueSize;
+    _data.ensureAvailableCapacity(headerLineSize);
+    char* insertPos = _data.data() + _bodyStartPos - http::DoubleCRLF.size();
+    std::memmove(insertPos + headerLineSize, insertPos, http::DoubleCRLF.size() + bodyLen());
+    std::memcpy(insertPos, http::CRLF.data(), http::CRLF.size());
+    insertPos += http::CRLF.size();
+    std::memcpy(insertPos, key.data(), key.size());
+    insertPos += key.size();
+    std::memcpy(insertPos, http::HeaderSep.data(), http::HeaderSep.size());
+    insertPos += http::HeaderSep.size();
+    writeValue(insertPos);  // must write exactly valueSize bytes
+    if (markContentEncoding) {
+      _userProvidedContentEncoding = true;
+    }
+    if (_headersStartPos == 0) {
+      _headersStartPos = static_cast<decltype(_headersStartPos)>(_bodyStartPos - http::DoubleCRLF.size());
+    }
+    _data.setSize(_data.size() + headerLineSize);
+    _bodyStartPos += static_cast<uint32_t>(headerLineSize);
+  }
+
   // IMPORTANT: This method finalizes the response by appending reserved headers.
   // After it returns, calling any mutating method (statusCode, reason, body,
   // appendHeader, header) is undefined behavior and may corrupt the buffer or
   // duplicate reserved headers. Higher-level server code is expected to call
   // this exactly once right before write.
-  std::string_view finalizeAndGetFullTextResponse(http::Version version, std::string_view date, bool keepAlive,
+  std::string_view finalizeAndGetFullTextResponse(http::Version version, TimePoint tp, bool keepAlive,
                                                   bool isHeadMethod);
 
   RawChars _data;

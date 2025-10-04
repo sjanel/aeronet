@@ -59,27 +59,17 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg)
 
 MultiHttpServer::MultiHttpServer(MultiHttpServer&& other) noexcept
     : _baseConfig(std::move(other._baseConfig)),
-      _running(std::exchange(other._running, false)),
       _globalHandler(std::move(other._globalHandler)),
       _pathHandlersEmplace(std::move(other._pathHandlersEmplace)),
       _parserErrCb(std::move(other._parserErrCb)),
       _servers(std::move(other._servers)),
-      _threads(std::move(other._threads)) {
-  if (_running) {
-    log::error("Attempted to move a running MultiHttpServer (undefined behavior)");
-    assert(false && "Moving a running MultiHttpServer is forbidden");
-  }
-}
+      _threads(std::move(other._threads)) {}
 
 MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
   if (this != &other) {
+    // Ensure we are not leaking running threads; stop existing group first.
     stop();
-    if (other._running) {
-      log::error("Attempted to move-assign a running MultiHttpServer (undefined behavior)");
-      assert(false && "Moving a running MultiHttpServer is forbidden");
-    }
     _baseConfig = std::move(other._baseConfig);
-    _running = std::exchange(other._running, false);
     _globalHandler = std::move(other._globalHandler);
     _pathHandlersEmplace = std::move(other._pathHandlersEmplace);
     _parserErrCb = std::move(other._parserErrCb);
@@ -109,7 +99,7 @@ MultiHttpServer::~MultiHttpServer() { stop(); }
 }
 
 void MultiHttpServer::ensureNotStarted() const {
-  if (_running) {
+  if (!_threads.empty()) {
     throw std::logic_error("Cannot mutate configuration after start()");
   }
 }
@@ -142,7 +132,7 @@ void MultiHttpServer::setParserErrorCallback(ParserErrorCallback cb) {
 }
 
 void MultiHttpServer::start() {
-  if (_running) {
+  if (!_threads.empty()) {
     throw std::logic_error("MultiHttpServer already started");
   }
 
@@ -177,12 +167,11 @@ void MultiHttpServer::start() {
       }
     });
   }
-  _running = true;
   log::info("MultiHttpServer started successfully on port :{}", port());
 }
 
 void MultiHttpServer::stop() {
-  if (!_running) {
+  if (_threads.empty()) {
     return;
   }
   log::info("MultiHttpServer stopping (instances={})", _servers.size());
@@ -190,7 +179,6 @@ void MultiHttpServer::stop() {
 
   _threads.clear();
 
-  _running = false;
   log::info("MultiHttpServer stopped");
 }
 
