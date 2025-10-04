@@ -3,13 +3,12 @@
 // currently).
 #pragma once
 
-#include <string_view>
-
 #include "aeronet/http-status-code.hpp"
 #include "raw-chars.hpp"
+#include "timedef.hpp"
 
 namespace aeronet {
 
-RawChars BuildSimpleError(http::StatusCode status, std::string_view date, bool closeConnection);
+void BuildSimpleError(http::StatusCode status, TimePoint tp, RawChars &out);
 
 }  // namespace aeronet

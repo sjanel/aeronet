@@ -42,6 +42,7 @@ aeronet_http_test(http_parser_errors http_parser_errors.cpp)
 aeronet_http_test(http_routing http_routing.cpp)
 
 aeronet_http_test(http_server_move http_server_move.cpp)
+aeronet_http_test(http_server_move_invalid http_server_move_invalid.cpp)
 
 # Trailing slash policy tests
 aeronet_http_test(http_trailing_slash http_trailing_slash.cpp)
@@ -119,6 +120,7 @@ endif()
 # MultiHttpServer convenience constructors (auto, explicit, move, invalid)
 aeronet_http_test(multi_http_server_convenience_constructors multi_http_server_convenience_constructors.cpp)
 aeronet_http_test(multi_http_server_stress multi_http_server_stress.cpp)
+aeronet_http_test(multi_http_server_move_running multi_http_server_move_running.cpp)
 
 # Maintenance safeguard: warn if any *.cpp test file in this directory is not explicitly added above.
 # This helps avoid forgotten tests (e.g., newly created source not registered -> silently untested).
@@ -139,6 +141,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_parser_errors.cpp
 	http_routing.cpp
 	http_server_move.cpp
+	http_server_move_invalid.cpp
 	http_stats.cpp
 	server_stats_json.cpp
 	http_streaming_backpressure.cpp
@@ -154,6 +157,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_url_decoding.cpp
 	multi_http_server_convenience_constructors.cpp
 	multi_http_server_stress.cpp
+	multi_http_server_move_running.cpp
 	multi_http_server_auto.cpp
 	http_trailing_slash.cpp
 	http_query_parsing.cpp

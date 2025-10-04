@@ -13,17 +13,18 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "exception.hpp"
+#include "timedef.hpp"
 
 namespace aeronet {
 
 class HttpResponseTest : public ::testing::Test {
  protected:
-  static constexpr std::string_view date{"date"};
+  static constexpr TimePoint tp{};
   static constexpr bool keepAlive = false;
   static constexpr bool isHeadMethod = false;
 
   static std::string_view finalize(HttpResponse &resp) {
-    return resp.finalizeAndGetFullTextResponse(http::HTTP_1_1, date, keepAlive, isHeadMethod);
+    return resp.finalizeAndGetFullTextResponse(http::HTTP_1_1, tp, keepAlive, isHeadMethod);
   }
 };
 
@@ -35,7 +36,7 @@ TEST_F(HttpResponseTest, StatusOnly) {
 
   auto full = finalize(resp);
 
-  EXPECT_EQ(full, "HTTP/1.1 404\r\nDate: date\r\nConnection: close\r\n\r\n");
+  EXPECT_EQ(full, "HTTP/1.1 404\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
@@ -62,7 +63,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithoutHeaders) {
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = finalize(resp);
 
-  EXPECT_EQ(full, "HTTP/1.1 404 Not Found\r\nDate: date\r\nConnection: close\r\n\r\n");
+  EXPECT_EQ(full, "HTTP/1.1 404 Not Found\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
@@ -72,7 +73,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
   EXPECT_EQ(resp.reason(), "OK");
   auto full = finalize(resp);
 
-  EXPECT_EQ(full, "HTTP/1.1 200 OK\r\nDate: date\r\nConnection: close\r\n\r\n");
+  EXPECT_EQ(full, "HTTP/1.1 200 OK\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithHeaders) {
@@ -82,7 +83,9 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithHeaders) {
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = finalize(resp);
 
-  EXPECT_EQ(full, "HTTP/1.1 404 Not Found\r\nX-Header: Value\r\nDate: date\r\nConnection: close\r\n\r\n");
+  EXPECT_EQ(
+      full,
+      "HTTP/1.1 404 Not Found\r\nX-Header: Value\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
@@ -94,7 +97,8 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
   auto full = finalize(resp);
 
   EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Header-1: Value1\r\nX-Header-2: Value2\r\nDate: date\r\nConnection: close\r\n\r\n");
+            "HTTP/1.1 200 OK\r\nX-Header-1: Value1\r\nX-Header-2: Value2\r\nConnection: close\r\nDate: Thu, 01 Jan "
+            "1970 00:00:00 GMT\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyAddReasonWithHeaders) {
@@ -104,7 +108,9 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyAddReasonWithHeaders) {
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = finalize(resp);
 
-  EXPECT_EQ(full, "HTTP/1.1 404 Not Found\r\nX-Header: Value\r\nDate: date\r\nConnection: close\r\n\r\n");
+  EXPECT_EQ(
+      full,
+      "HTTP/1.1 404 Not Found\r\nX-Header: Value\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyRemoveReasonWithHeaders) {
@@ -116,7 +122,8 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyRemoveReasonWithHeaders) {
   auto full = finalize(resp);
 
   EXPECT_EQ(full,
-            "HTTP/1.1 200\r\nX-Header-1: Value1\r\nX-Header-2: Value2\r\nDate: date\r\nConnection: close\r\n\r\n");
+            "HTTP/1.1 200\r\nX-Header-1: Value1\r\nX-Header-2: Value2\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
+            "00:00:00 GMT\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithBody) {
@@ -126,7 +133,9 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithBody) {
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = finalize(resp);
 
-  EXPECT_EQ(full, "HTTP/1.1 404 Not Found\r\nContent-Length: 5\r\nDate: date\r\nConnection: close\r\n\r\nHello");
+  EXPECT_EQ(full,
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 5\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 "
+            "GMT\r\n\r\nHello");
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
@@ -136,7 +145,9 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
   EXPECT_EQ(resp.reason(), "OK");
   auto full = finalize(resp);
 
-  EXPECT_EQ(full, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nDate: date\r\nConnection: close\r\n\r\nHello");
+  EXPECT_EQ(
+      full,
+      "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\nHello");
 }
 
 TEST_F(HttpResponseTest, AllowsDuplicates) {
@@ -209,7 +220,8 @@ TEST_F(HttpResponseTest, HeaderNewViaSetter) {
   HttpResponse resp(200, "OK");
   resp.customHeader("X-First", "One");
   auto full = finalize(resp);
-  EXPECT_EQ(full, "HTTP/1.1 200 OK\r\nX-First: One\r\nDate: date\r\nConnection: close\r\n\r\n");
+  EXPECT_EQ(full,
+            "HTTP/1.1 200 OK\r\nX-First: One\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceLargerValue) {
@@ -219,7 +231,8 @@ TEST_F(HttpResponseTest, HeaderReplaceLargerValue) {
   resp.customHeader("X-Replace", "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
   auto full = finalize(resp);
   EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Replace: ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\nDate: date\r\nConnection: close\r\n\r\n");
+            "HTTP/1.1 200 OK\r\nX-Replace: ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
+            "00:00:00 GMT\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceSmallerValue) {
@@ -228,7 +241,8 @@ TEST_F(HttpResponseTest, HeaderReplaceSmallerValue) {
   // Replace with smaller
   resp.customHeader("X-Replace", "S");
   auto full = finalize(resp);
-  EXPECT_EQ(full, "HTTP/1.1 200 OK\r\nX-Replace: S\r\nDate: date\r\nConnection: close\r\n\r\n");
+  EXPECT_EQ(full,
+            "HTTP/1.1 200 OK\r\nX-Replace: S\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceSameLengthValue) {
@@ -236,7 +250,9 @@ TEST_F(HttpResponseTest, HeaderReplaceSameLengthValue) {
   resp.customHeader("X-Replace", "LEN10VALUE");  // length 10
   resp.customHeader("X-Replace", "0123456789");  // also length 10
   auto full = finalize(resp);
-  EXPECT_EQ(full, "HTTP/1.1 200 OK\r\nX-Replace: 0123456789\r\nDate: date\r\nConnection: close\r\n\r\n");
+  EXPECT_EQ(
+      full,
+      "HTTP/1.1 200 OK\r\nX-Replace: 0123456789\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
 // Ensure replacement logic does not mistake key pattern inside a value as a header start.
@@ -246,7 +262,9 @@ TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternLarger) {
   // Replace header; algorithm must not treat the embedded "X-Key: " in the value as another header start
   resp.customHeader("X-Key", "REPLACED-VALUE");
   auto full = finalize(resp);
-  EXPECT_EQ(full, "HTTP/1.1 200 OK\r\nX-Key: REPLACED-VALUE\r\nDate: date\r\nConnection: close\r\n\r\n");
+  EXPECT_EQ(
+      full,
+      "HTTP/1.1 200 OK\r\nX-Key: REPLACED-VALUE\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
@@ -254,7 +272,8 @@ TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
   resp.customHeader("X-Key", "AAAA X-Key: B BBBBBB");
   resp.customHeader("X-Key", "SMALL");
   auto full = finalize(resp);
-  EXPECT_EQ(full, "HTTP/1.1 200 OK\r\nX-Key: SMALL\r\nDate: date\r\nConnection: close\r\n\r\n");
+  EXPECT_EQ(full,
+            "HTTP/1.1 200 OK\r\nX-Key: SMALL\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
 // --- New tests: header replacement while a body is present ---
@@ -265,9 +284,9 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
   resp.body("Hello");                        // body length 5
   resp.customHeader("X-Val", "ABCDEFGHIJ");  // grow header value
   auto full = finalize(resp);
-  EXPECT_EQ(
-      full,
-      "HTTP/1.1 200 OK\r\nX-Val: ABCDEFGHIJ\r\nContent-Length: 5\r\nDate: date\r\nConnection: close\r\n\r\nHello");
+  EXPECT_EQ(full,
+            "HTTP/1.1 200 OK\r\nX-Val: ABCDEFGHIJ\r\nContent-Length: 5\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
+            "00:00:00 GMT\r\n\r\nHello");
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
@@ -277,7 +296,8 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
   resp.customHeader("X-Val", "S");  // shrink header value
   auto full = finalize(resp);
   EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Val: S\r\nContent-Length: 9\r\nDate: date\r\nConnection: close\r\n\r\nWorldWide");
+            "HTTP/1.1 200 OK\r\nX-Val: S\r\nContent-Length: 9\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 "
+            "GMT\r\n\r\nWorldWide");
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
@@ -287,7 +307,8 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
   resp.customHeader("X-Val", "0123456789");  // same length replacement
   auto full = finalize(resp);
   EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Val: 0123456789\r\nContent-Length: 4\r\nDate: date\r\nConnection: close\r\n\r\nData");
+            "HTTP/1.1 200 OK\r\nX-Val: 0123456789\r\nContent-Length: 4\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
+            "00:00:00 GMT\r\n\r\nData");
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
@@ -297,7 +318,8 @@ TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
   resp.customHeader("x-val", "0123456789");  // same length replacement
   auto full = finalize(resp);
   EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Val: 0123456789\r\nContent-Length: 4\r\nDate: date\r\nConnection: close\r\n\r\nData");
+            "HTTP/1.1 200 OK\r\nX-Val: 0123456789\r\nContent-Length: 4\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
+            "00:00:00 GMT\r\n\r\nData");
 }
 
 // Interleaved reason/header mutations stress test:
@@ -317,7 +339,8 @@ TEST_F(HttpResponseTest, InterleavedReasonAndHeaderMutations) {
   resp.reason("");
   resp.customHeader("x-A", "S");
   auto full = finalize(resp);
-  EXPECT_EQ(full, "HTTP/1.1 200\r\nX-A: S\r\nX-B: 2\r\nDate: date\r\nConnection: close\r\n\r\n");
+  EXPECT_EQ(full,
+            "HTTP/1.1 200\r\nX-A: S\r\nX-B: 2\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
 // ---------------- Additional Stress / Fuzz Tests ----------------
@@ -347,8 +370,8 @@ TEST_F(HttpResponseTest, RepeatedGrowShrinkCycles) {
   resp.body("END");
   auto full = finalize(resp);
   std::string expected =
-      "HTTP/1.1 200\r\nX-Static: STATIC\r\nX-Cycle: Z\r\nContent-Length: 3\r\nDate: date\r\nConnection: "
-      "close\r\n\r\nEND";
+      "HTTP/1.1 200\r\nX-Static: STATIC\r\nX-Cycle: Z\r\nContent-Length: 3\r\nConnection: close\r\nDate: "
+      "Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\nEND";
   EXPECT_EQ(full, expected);
 }
 
@@ -377,7 +400,7 @@ TEST_F(HttpResponseTest, LargeHeaderCountStress) {
     pos = lineEnd + 2;
   }
   EXPECT_EQ(userHeaders, kCount);
-  EXPECT_NE(full.find("Date: date\r\nConnection: close\r\n\r\n"), std::string_view::npos);
+  EXPECT_NE(full.find("Connection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n"), std::string_view::npos);
 }
 
 namespace {  // local helpers for fuzz test
@@ -530,8 +553,8 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
       EXPECT_EQ(clCount, 0);
     }
     ASSERT_GE(pr.headers.size(), 2U);
-    EXPECT_EQ(pr.headers[pr.headers.size() - 2].first, http::Date);
-    EXPECT_EQ(pr.headers.back().first, http::Connection);
+    EXPECT_EQ(pr.headers[pr.headers.size() - 2].first, http::Connection);
+    EXPECT_EQ(pr.headers[pr.headers.size() - 1].first, http::Date);
 
     if (!lastHeaderKey.empty()) {
       std::string needle = lastHeaderKey;
