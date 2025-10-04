@@ -17,6 +17,7 @@
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/http-constants.hpp"
 #include "fixedcapacityvector.hpp"
 #include "string-equal-ignore-case.hpp"
 
@@ -24,6 +25,33 @@ namespace aeronet {
 namespace {
 
 constexpr std::string_view kWhitespace = " \t";
+
+constexpr bool encodingEnabled(Encoding enc) {
+  switch (enc) {
+    case Encoding::br:
+#ifdef AERONET_ENABLE_BROTLI
+      return true;
+#else
+      return false;
+#endif
+    case Encoding::zstd:
+#ifdef AERONET_ENABLE_ZSTD
+      return true;
+#else
+      return false;
+#endif
+    case Encoding::gzip:
+    case Encoding::deflate:
+#ifdef AERONET_ENABLE_ZLIB
+      return true;
+#else
+      return false;
+#endif
+    case Encoding::none:
+      return true;
+  }
+  return false;
+}
 
 constexpr std::string_view trim(std::string_view sv) {
   while (!sv.empty() && kWhitespace.find(sv.front()) != std::string_view::npos) {
@@ -99,7 +127,10 @@ EncodingSelector::EncodingSelector() noexcept { initDefault(); }
 void EncodingSelector::initDefault() noexcept {
   std::ranges::iota(_serverPrefIndex, 0);
   for (std::underlying_type_t<Encoding> pos = 0; pos < kNbContentEncodings; ++pos) {
-    _preferenceOrdered.push_back(static_cast<Encoding>(pos));
+    auto enc = static_cast<Encoding>(pos);
+    if (encodingEnabled(enc)) {
+      _preferenceOrdered.push_back(enc);
+    }
   }
 }
 
@@ -110,6 +141,9 @@ EncodingSelector::EncodingSelector(const CompressionConfig &compressionConfig) {
     std::ranges::fill(_serverPrefIndex, -1);
     int8_t next = 0;
     for (Encoding enc : compressionConfig.preferredFormats) {
+      if (!encodingEnabled(enc)) {
+        continue;
+      }
       auto idx = static_cast<std::underlying_type_t<Encoding>>(enc);
       if (_serverPrefIndex[idx] == -1) {  // dedupe
         _serverPrefIndex[idx] = next;
@@ -165,7 +199,7 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
       if ((seenMask & (1 << pos)) != 0) {
         continue;  // already captured earliest occurrence
       }
-      if (CaseInsensitiveEqual(name, kSupportedEncodings[pos].name)) {
+      if (CaseInsensitiveEqual(name, kSupportedEncodings[pos].name) && encodingEnabled(kSupportedEncodings[pos].enc)) {
         knownEncodings.emplace_back(kSupportedEncodings[pos].name, quality);
         seenMask |= static_cast<SeenBmp>(1 << pos);
         break;
@@ -196,7 +230,7 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
   // and pick highest q; ties resolved by lower preference index instead of client header order.
   for (const auto &pt : knownEncodings) {
     for (const auto &kSupportedEncoding : kSupportedEncodings) {
-      if (CaseInsensitiveEqual(pt.name, kSupportedEncoding.name)) {
+      if (CaseInsensitiveEqual(pt.name, kSupportedEncoding.name) && encodingEnabled(kSupportedEncoding.enc)) {
         auto idx = static_cast<int>(kSupportedEncoding.enc);
         consider(kSupportedEncoding.enc, pt.quality, _serverPrefIndex[idx]);
         break;

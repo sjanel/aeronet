@@ -6,7 +6,7 @@ HTTP/1.1 C++ server library for Linux only – work in progress.
 
 It is designed to be:
 
-- **Fully configurable** – opt into only the features / dependencies you need via build flags (`AERONET_ENABLE_ZLIB`, `AERONET_ENABLE_ZSTD`, `AERONET_ENABLE_OPENSSL`, `AERONET_ENABLE_SPDLOG`). Core stays dependency‑minimal.
+- **Fully configurable** – opt into only the features / dependencies you need via build flags (`AERONET_ENABLE_ZLIB`, `AERONET_ENABLE_ZSTD`, `AERONET_ENABLE_BROTLI`, `AERONET_ENABLE_OPENSSL`, `AERONET_ENABLE_SPDLOG`). Core stays dependency‑minimal.
 - **Fast** – minimal dynamic allocations, contiguous response assembly, zero‑copy header/value slicing, edge‑triggered epoll loop.
 - **Modern & focused** – small, purpose‑built and easy to use classes (`HttpServer`, `AsyncHttpServer`, `MultiHttpServer`) instead of a monolith; fluent configuration; explicit policies (trailing slash, compression negotiation, duplicate headers), no hidden heuristics.
 
@@ -25,7 +25,7 @@ It is designed to be:
 | No global mutable state | TLS, compression, stats isolated per server instance for easy multi‑tenant embedding. |
 | Comprehensive tests | Wide coverage: parsing errors, keep‑alive limits, routing precedence, streaming, multi-layer decompression (valid + corruption), negotiation edge cases, duplicate header behavior. |
 | Principle of least surprise | Disabled request decompression = pure pass‑through (no silent 415); user‑supplied `Content-Encoding` prevents auto compression. |
-| Transparent roadmap | Public README sections enumerate planned features (brotli, trailers, streaming inbound decode, richer metrics, middleware) pre‑1.0. |
+| Transparent roadmap | Public README sections enumerate planned features (trailers, streaming inbound decode, richer metrics, middleware) pre‑1.0; recently delivered: brotli, zstd compression & multi-layer auto decompression. |
 
 ## Design Tenets
 
@@ -59,8 +59,8 @@ It is designed to be:
 | 404 / 405 handling | Automatic 404 (unknown path) & 405 (known path, method not allowed) |
 | Graceful shutdown | `runUntil()` predicate loop (poll interval via `HttpServerConfig::withPollInterval()`) |
 | Backpressure buffering | Unified buffering for fixed + streaming responses |
-| gzip & deflate encoding | Optional (`AERONET_ENABLE_ZLIB`). Enables BOTH outbound response compression and inbound request body decompression for `gzip` / `deflate`. Accept-Encoding negotiation with q-values, server preference ordering, threshold-based activation, streaming + buffered, per-response opt-out, Vary header injection |
-| Request body decompression (gzip / deflate / zstd) | Optional (`AERONET_ENABLE_ZLIB` / `AERONET_ENABLE_ZSTD`). Same flags as outbound: enabling them also activates inbound decoding. Multi-layer `Content-Encoding` chains, allocation‑free reverse parsing, per-stage expansion & absolute size guards |
+| gzip / deflate / zstd / brotli encoding | Optional via build flags (`AERONET_ENABLE_ZLIB`, `AERONET_ENABLE_ZSTD`, `AERONET_ENABLE_BROTLI`). Each flag enables BOTH outbound response compression and inbound request body decompression for its formats. Accept-Encoding negotiation with q-values, server preference ordering, threshold-based activation, streaming + buffered, per-response opt-out (user `Content-Encoding`), `Vary: Accept-Encoding` injection. |
+| Request body decompression (gzip / deflate / zstd / br) | Optional (`AERONET_ENABLE_ZLIB` / `AERONET_ENABLE_ZSTD` / `AERONET_ENABLE_BROTLI`). Same flags as outbound: enabling them also activates inbound decoding. Multi-layer `Content-Encoding` chains, allocation‑free reverse parsing, per-stage expansion & absolute size guards |
 
 ## Developer / Operational Features
 
@@ -241,17 +241,16 @@ User code normally does not manipulate `CloseMode` directly; returning a respons
 `Connection: close` (or exhausting keep-alive criteria) automatically maps to `DrainThenClose`.
 Only unrecoverable scenarios escalate to `Immediate` to avoid reusing a compromised protocol state.
 
-### Compression (gzip, deflate, optional zstd)
+### Compression (gzip, deflate, zstd, brotli)
 
 Implemented capabilities:
 
-- Formats: gzip & deflate (raw deflate wrapped by zlib) behind `AERONET_ENABLE_ZLIB` build flag (flag activates BOTH response compression and request decompression for these formats).
-- Optional: **zstd** behind `AERONET_ENABLE_ZSTD` (independent of zlib). Flag activates BOTH outbound response compression (when negotiated) and inbound request body decompression for `zstd`. If both enabled the negotiation pool becomes
-  `gzip, zstd, deflate` by default (enum order); you can override with `CompressionConfig::preferredFormats`.
-  (Earlier versions placed deflate before zstd; ordering changed to prefer zstd's modern ratio/latency profile.)
+- Formats: `gzip` & `deflate` (zlib), `zstd`, `br` (brotli) – each behind its own feature flag: `AERONET_ENABLE_ZLIB`, `AERONET_ENABLE_ZSTD`, `AERONET_ENABLE_BROTLI`.
+- Enabling a format flag activates BOTH outbound response compression and inbound request body decompression for that format (symmetry keeps configuration minimal).
+- Default server preference order (tie-break among equal effective q-values) when nothing specified in `CompressionConfig::preferredFormats` is: `gzip, deflate` if only zlib enabled; `zstd, gzip, deflate` if zstd also enabled; `br, zstd, gzip, deflate` if brotli enabled (brotli first due to highest typical ratio at similar or modest CPU for many payload sizes; adjust via `preferredFormats`).
 - Negotiation: Parses `Accept-Encoding` with q-values; chooses format with highest q (server preference breaks ties). Falls back to identity if none acceptable.
-- Server preference: Order in `CompressionConfig::preferredFormats` only breaks ties among encodings with equal effective q-values; it does NOT restrict the server from selecting another supported encoding with a strictly higher q that is not listed. (If you leave the vector empty, the built‑in default order `gzip, deflate` is used for tie-breaks.)
-- Threshold: `minBytes` delays compression until uncompressed size reaches threshold (streaming buffers until then; fixed responses decide immediately).
+- Server preference: Order in `CompressionConfig::preferredFormats` only breaks ties among encodings with equal effective q-values; it does NOT allow picking encodings absent from that vector with lower q – but encodings with strictly higher client q still win even if not listed (if you supply a non-empty subset). Supplying all enabled encodings gives you an explicit deterministic ordering.
+- Threshold: `minBytes` delays compression until uncompressed size reaches threshold (streaming buffers until then; fixed responses decide immediately). Applies uniformly to all formats.
 - Streaming integration: Headers are withheld until compression activation decision so `Content-Encoding` is always accurate once emitted.
 - Per-response opt-out: supply your own `Content-Encoding` header (e.g. `identity` to disable, or a custom value you fully manage). If present, Aeronet never applies automatic compression and does not modify your header/body.
 - Vary header: Adds `Vary: Accept-Encoding` when compression applied (configurable via `addVaryHeader`).
@@ -262,7 +261,7 @@ Implemented capabilities:
   (and wildcard `*` does not introduce one), Aeronet now responds with **`406 Not Acceptable`** and a short plain
   text body `"No acceptable content-coding available"`. This follows RFC 9110 §12.5.3 guidance that a server MAY
   reject a request when none of the client's acceptable codings are available. Typical scenario:
-  `Accept-Encoding: identity;q=0, br;q=0` (when brotli is unsupported) → 406. If any supported coding is acceptable
+  `Accept-Encoding: identity;q=0, snappy;q=0` (all unsupported) → 406. If any supported coding is acceptable
   (e.g. `identity;q=0, gzip`), normal negotiation proceeds and that coding is used.
 
 Zstd tuning (when enabled):
@@ -276,21 +275,21 @@ cfg.zstd.windowLog = 0;          // 0 => library default; set >0 (e.g. 23) to fo
 `compressionLevel` maps to the standard zstd levels (higher = more CPU, usually better ratio). `windowLog` controls
 the maximum back‑reference window; leave at 0 unless you need deterministic memory limits.
 
-Sample multi-line version string fragment (with TLS, logging, and both compression libs enabled):
+Sample multi-line version string fragment (with TLS, logging, and multiple compression libs enabled):
 
 ```text
 aeronet 0.1.0
   tls: OpenSSL 3.0.13 30 Jan 2024
   logging: spdlog 1.15.3
-  compression: zlib 1.2.13, zstd 1.5.6
+  compression: zlib 1.2.13, zstd 1.5.6, brotli 1.1.0
 ```
 
-Planned / future:
+Planned / future (compression):
 
-- Additional formats (brotli) behind separate feature flags.
 - Content-Type allowlist enforcement (framework in config; default list to be finalized).
-- Compression ratio metrics in `RequestMetrics`.
-- Adaptive buffer sizing & memory pooling for encoder contexts.
+- Compression ratio metrics in `RequestMetrics` (+ per-layer ratios for multi-layer inbound decode).
+- Adaptive buffer sizing & memory pooling for encoder contexts; encoder context reuse pools.
+- Optional dynamic quality selection (choose format or level based on size/time budget).
 
 Minimal usage example:
 
@@ -315,7 +314,7 @@ Implemented capabilities (independent from outbound compression):
 
 | Aspect | Details |
 |--------|---------|
-| Supported codings | `gzip`, `deflate` (zlib wrapper) when `AERONET_ENABLE_ZLIB` defined (same flag that also enables response compression); `zstd` when `AERONET_ENABLE_ZSTD` defined (also enables response compression); `identity` is always recognized (no-op) |
+| Supported codings | `gzip`, `deflate` (zlib) when `AERONET_ENABLE_ZLIB`; `zstd` when `AERONET_ENABLE_ZSTD`; `br` when `AERONET_ENABLE_BROTLI`; `identity` always recognized (no-op) |
 | Multi-layer chains | Fully supported (e.g. `Content-Encoding: deflate, gzip, zstd`). Layers are decoded in **reverse order** of appearance (last listed = outermost applied, decoded first). |
 | Parsing | Allocation-free reverse splitting; trims spaces / tabs around tokens; rejects empty tokens (e.g. `gzip,,deflate`) with **400** |
 | Unknown coding | Immediate **415 Unsupported Media Type** (feature is opt-in via `RequestDecompressionConfig::enable`) |
@@ -324,6 +323,7 @@ Implemented capabilities (independent from outbound compression):
 | Error mapping | Malformed or undecodable compressed data -> **400**; unknown coding -> **415**; ratio/size violation -> **413** |
 | Identity in chains | Gracefully skipped (`deflate, identity, gzip` works) |
 | Buffering model | Request body is first fully aggregated (respecting existing body size limits) before decompression; decoding ping‑pongs between two internal buffers without reallocating vectors per layer |
+| Header normalization | When automatic decompression succeeds the `Content-Encoding` request header is **removed** before user handlers run (body is already decoded). This avoids accidental double-decode attempts and keeps handler view canonical. |
 
 Configuration (`RequestDecompressionConfig`):
 
@@ -492,7 +492,7 @@ Implemented capabilities (independent from outbound compression):
 
 | Aspect | Details |
 |--------|---------|
-| Supported codings | `gzip`, `deflate` (zlib wrapper) when `AERONET_ENABLE_ZLIB` defined (flag covers both request & response); `zstd` when `AERONET_ENABLE_ZSTD` defined (flag covers both directions); `identity` is always recognized (no-op) |
+| Supported codings | `gzip`, `deflate` when `AERONET_ENABLE_ZLIB`; `zstd` when `AERONET_ENABLE_ZSTD`; `br` when `AERONET_ENABLE_BROTLI`; `identity` always recognized (no-op) |
 | Multi-layer chains | Fully supported (e.g. `Content-Encoding: deflate, gzip, zstd`). Layers are decoded in **reverse order** of appearance (last listed = outermost applied, decoded first). |
 | Parsing | Allocation-free reverse splitting; trims spaces / tabs around tokens; rejects empty tokens (e.g. `gzip,,deflate`) with **400** |
 | Unknown coding | Immediate **415 Unsupported Media Type** (feature is opt-in via `RequestDecompressionConfig::enable`) |

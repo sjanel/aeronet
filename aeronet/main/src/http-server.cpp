@@ -29,6 +29,10 @@
 #include "aeronet/http-status-code.hpp"  // http::StatusCode / StatusCodeOK
 #include "aeronet/http-version.hpp"      // http::HTTP_1_0 / HTTP_1_1 constants
 #include "aeronet/server-stats.hpp"
+#ifdef AERONET_ENABLE_BROTLI
+#include "aeronet/brotli-decoder.hpp"
+#include "brotli-encoder.hpp"
+#endif
 #include "duration-format.hpp"
 #include "event-loop.hpp"
 #include "exception.hpp"
@@ -158,6 +162,9 @@ HttpServer::HttpServer(HttpServerConfig cfg)
 #endif
 #ifdef AERONET_ENABLE_ZSTD
   _encoders[static_cast<std::size_t>(Encoding::zstd)] = std::make_unique<ZstdEncoder>(_config.compression);
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+  _encoders[static_cast<std::size_t>(Encoding::br)] = std::make_unique<BrotliEncoder>(_config.compression);
 #endif
   // Identity encoder always available for Format::none index 0 (optional, can remain null to signal identity).
   log::info("Server created on port :{}", _config.port);
@@ -704,25 +711,25 @@ bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, Http
     }
 
     std::string_view encoding(encodingFirst, encodingLast);
-
+    dst->clear();
+    bool stageOk;
     if (CaseInsensitiveEqual(encoding, http::identity)) {
       last = comma;
       continue;  // no-op layer
-    }
-
-    dst->clear();
-    bool stageOk = false;
-    if (CaseInsensitiveEqual(encoding, http::gzip)) {
 #ifdef AERONET_ENABLE_ZLIB
+      // NOLINTNEXTLINE(readability-else-after-return)
+    } else if (CaseInsensitiveEqual(encoding, http::gzip)) {
       stageOk = ZlibDecoder::Decompress(src, *dst, true, cfg.maxDecompressedBytes);
-#endif
     } else if (CaseInsensitiveEqual(encoding, http::deflate)) {
-#ifdef AERONET_ENABLE_ZLIB
       stageOk = ZlibDecoder::Decompress(src, *dst, false, cfg.maxDecompressedBytes);
 #endif
-    } else if (CaseInsensitiveEqual(encoding, http::zstd)) {
 #ifdef AERONET_ENABLE_ZSTD
+    } else if (CaseInsensitiveEqual(encoding, http::zstd)) {
       stageOk = ZstdDecoder::Decompress(src, *dst, cfg.maxDecompressedBytes);
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+    } else if (CaseInsensitiveEqual(encoding, http::br)) {
+      stageOk = BrotliDecoder::Decompress(src, *dst, cfg.maxDecompressedBytes);
 #endif
     } else {
       emitSimpleError(fd, state, http::StatusCodeUnsupportedMediaType, true);
@@ -749,6 +756,12 @@ bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, Http
 
   // Final decompressed data now resides in *src after last swap.
   req._body = src;
+  // Strip Content-Encoding header so user handlers observe a canonical, already-decoded body.
+  // Rationale: After automatic request decompression the original header no longer reflects
+  // the semantics of req.body() (which now holds the decoded representation). Exposing the stale
+  // header risks double-decoding attempts or confusion about body length. The original compressed
+  // size can be reintroduced later via RequestMetrics enrichment.
+  req._headers.erase(http::ContentEncoding);
   return true;
 }
 

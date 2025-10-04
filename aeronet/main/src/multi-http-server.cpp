@@ -168,7 +168,6 @@ void MultiHttpServer::start() {
   for (std::size_t threadPos = 0; threadPos < _servers.size(); ++threadPos) {
     HttpServer* srvPtr = &_servers[static_cast<vector<HttpServer>::size_type>(threadPos)];
     _threads.emplace_back([srvPtr, threadPos]() {
-      log::debug("Server thread {} entering run()", threadPos);
       try {
         srvPtr->run();
       } catch (const std::exception& ex) {
@@ -176,7 +175,6 @@ void MultiHttpServer::start() {
       } catch (...) {
         log::error("Server thread {} terminated with unknown exception", threadPos);
       }
-      log::debug("Server thread {} exiting run()", threadPos);
     });
   }
   _running = true;

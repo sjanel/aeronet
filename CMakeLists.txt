@@ -51,8 +51,9 @@ option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_TE
 # Optional dependencies (aeronet is able to compile without the feature if not enabled)
 option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" ${MAIN_PROJECT})
 option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" ${MAIN_PROJECT})
-option(AERONET_ENABLE_ZLIB "Enable usage of zlib for HTTP response compression" ${MAIN_PROJECT})
-option(AERONET_ENABLE_ZSTD "Enable usage of Zstandard for HTTP response compression" ${MAIN_PROJECT})
+option(AERONET_ENABLE_ZLIB "Enable usage of zlib for deflate and gzip codec support" ${MAIN_PROJECT})
+option(AERONET_ENABLE_ZSTD "Enable usage of Zstandard for zstd codec support" ${MAIN_PROJECT})
+option(AERONET_ENABLE_BROTLI "Enable usage of Brotli for br codec support" ${MAIN_PROJECT})
 
 # Linting
 option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" ${ASAN_DEFAULT})
@@ -159,6 +160,19 @@ if(AERONET_INSTALL)
   install(DIRECTORY aeronet/objects/include/ DESTINATION include)
   if(AERONET_ENABLE_OPENSSL)
     install(DIRECTORY aeronet/tls/include/ DESTINATION include)
+  endif()
+
+  # Export brotli third-party static libs when enabled so exported aeronet targets have resolvable deps.
+  if(AERONET_ENABLE_BROTLI)
+    if(TARGET brotlicommon)
+      install(TARGETS brotlicommon EXPORT aeronetTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib)
+    endif()
+    if(TARGET brotlidec)
+      install(TARGETS brotlidec EXPORT aeronetTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib)
+    endif()
+    if(TARGET brotlienc)
+      install(TARGETS brotlienc EXPORT aeronetTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib)
+    endif()
   endif()
 
   install(EXPORT aeronetTargets

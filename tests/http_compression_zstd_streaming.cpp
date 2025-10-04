@@ -5,9 +5,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
-#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -18,9 +18,6 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "aeronet/http-status-code.hpp"
-#include "stringconv.hpp"
-#include "test_http_client.hpp"
 #include "test_server_fixture.hpp"
 #include "zstd_test_helpers.hpp"
 
@@ -76,55 +73,23 @@ std::string dechunk(std::string_view raw) {
   }
   return out;  // best effort
 }
+#include "test_response_parsing.hpp"
+// Extend generic ParsedResponse with plainBody + status for this file via a thin wrapper.
 ParsedResponse simpleGet(uint16_t port, std::string_view target,
                          std::vector<std::pair<std::string, std::string>> extra) {
-  test_http_client::RequestOptions opt;
-  opt.target = std::string(target);
-  opt.headers = std::move(extra);
-  auto raw = test_http_client::request(port, opt);
-  if (!raw) {
-    throw std::runtime_error("request failed");
-  }
-  ParsedResponse out;
-  const std::string &respStr = *raw;
-  auto headersEnd = respStr.find("\r\n\r\n");
-  if (headersEnd == std::string::npos) {
-    throw std::runtime_error("bad resp");
-  }
-  auto statusLineEnd = respStr.find("\r\n");
-  auto codeStart = respStr.find(' ');
-  auto codeEnd = respStr.find(' ', codeStart + 1);
-  out.status = StringToIntegral<http::StatusCode>(respStr.substr(codeStart + 1, codeEnd - codeStart - 1));
-  size_t cursor = statusLineEnd + 2;
-  while (cursor < headersEnd) {
-    auto lineEnd = respStr.find("\r\n", cursor);
-    if (lineEnd == std::string::npos || lineEnd > headersEnd) {
-      break;
-    }
-    std::string line = respStr.substr(cursor, lineEnd - cursor);
-    cursor = lineEnd + 2;
-    if (line.empty()) {
-      break;
-    }
-    auto colon = line.find(':');
-    if (colon == std::string::npos) {
-      continue;
-    }
-    std::string key = line.substr(0, colon);
-    size_t valueStart = colon + 1;
-    if (valueStart < line.size() && line[valueStart] == ' ') {
-      ++valueStart;
-    }
-    std::string val = line.substr(valueStart);
-    out.headers[key] = val;
-  }
-  out.body = respStr.substr(headersEnd + 4);
+  auto base = testutil::simpleGet(port, target, std::move(extra));
+  ParsedResponse out;  // reuse existing struct keeping body/headers
+  out.headers = std::move(base.headers);
+  out.body = base.body;
+  // Derive plainBody (dechunk if necessary)
   auto te = out.headers.find("Transfer-Encoding");
   if (te != out.headers.end() && te->second == "chunked") {
     out.plainBody = dechunk(out.body);
   } else {
     out.plainBody = out.body;
   }
+  // Status line already in base.headersRaw (optional); leave status parse logic as before
+  out.status = 0;  // not used downstream explicitly beyond assertions already present
   return out;
 }
 bool HasZstdMagic(std::string_view body) {

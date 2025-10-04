@@ -71,6 +71,13 @@ if(AERONET_ENABLE_ZSTD)
     set(ZSTD_BUILD_PROGRAMS OFF CACHE INTERNAL "Do not build programs")
     set(ZSTD_BUILD_TESTS OFF CACHE INTERNAL "Do not build tests")
 
+    # Suppress upstream warning: ensure BUILD_SHARED_LIBS is OFF while configuring the zstd subproject.
+    if(DEFINED BUILD_SHARED_LIBS)
+      set(_AERONET_PREV_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+    endif()
+    # Force OFF for the duration of zstd population (static linking desired here).
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "(temporarily)" FORCE)
+
     set(zstd_URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz)
     set(zstd_URL_HASH SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3)
 
@@ -81,6 +88,24 @@ if(AERONET_ENABLE_ZSTD)
       SOURCE_SUBDIR build/cmake
     )
     list(APPEND fetchContentPackagesToMakeAvailable zstd)
+    # We'll restore BUILD_SHARED_LIBS after FetchContent_MakeAvailable below.
+  endif()
+endif()
+
+if(AERONET_ENABLE_BROTLI)
+  # Try to locate an existing brotli installation first.
+  find_package(PkgConfig QUIET)
+  if(NOT TARGET brotlicommon OR NOT TARGET brotlidec OR NOT TARGET brotlienc)
+    # Fallback FetchContent of google/brotli (static libs only)
+    set(BROTLI_DISABLE_TESTS ON CACHE INTERNAL "Disable brotli tests")
+    # Hash updated to match upstream v1.1.0 release archive.
+    FetchContent_Declare(
+      brotli
+      URL https://github.com/google/brotli/archive/refs/tags/v1.1.0.tar.gz
+      URL_HASH SHA256=e720a6ca29428b803f4ad165371771f5398faba397edf6778837a18599ea13ff
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    list(APPEND fetchContentPackagesToMakeAvailable brotli)
   endif()
 endif()
 
@@ -92,4 +117,26 @@ if(fetchContentPackagesToMakeAvailable)
   # We let FetchContent attempt population; if it fails to create the
   # expected targets we degrade gracefully by disabling AMC linkage.
   FetchContent_MakeAvailable("${fetchContentPackagesToMakeAvailable}")
+
+  # Restore BUILD_SHARED_LIBS if we overrode it for zstd.
+  if(DEFINED _AERONET_PREV_BUILD_SHARED_LIBS)
+    set(BUILD_SHARED_LIBS ${_AERONET_PREV_BUILD_SHARED_LIBS} CACHE BOOL "Restore previous value" FORCE)
+    unset(_AERONET_PREV_BUILD_SHARED_LIBS)
+  endif()
+
+  # Normalize brotli target names (create plain names if only *-static provided)
+  if(AERONET_ENABLE_BROTLI)
+    if(TARGET brotlicommon-static AND NOT TARGET brotlicommon)
+      add_library(brotlicommon INTERFACE IMPORTED)
+      target_link_libraries(brotlicommon INTERFACE brotlicommon-static)
+    endif()
+    if(TARGET brotlidec-static AND NOT TARGET brotlidec)
+      add_library(brotlidec INTERFACE IMPORTED)
+      target_link_libraries(brotlidec INTERFACE brotlidec-static)
+    endif()
+    if(TARGET brotlienc-static AND NOT TARGET brotlienc)
+      add_library(brotlienc INTERFACE IMPORTED)
+      target_link_libraries(brotlienc INTERFACE brotlienc-static)
+    endif()
+  endif()
 endif()
