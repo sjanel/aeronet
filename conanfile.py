@@ -24,6 +24,7 @@ class AeronetConan(ConanFile):
         "fPIC": [True, False],
         "with_openssl": [True, False],
         "with_spdlog": [True, False],
+        "with_br": [True, False],
         "with_zlib": [True, False],
         "with_zstd": [True, False],
     }
@@ -32,6 +33,7 @@ class AeronetConan(ConanFile):
         "fPIC": True,
         "with_openssl": False,
         "with_spdlog": False,
+        "with_br": False,
         "with_zlib": False,
         "with_zstd": False,
     }
@@ -46,6 +48,7 @@ class AeronetConan(ConanFile):
         tc = CMakeToolchain(self)
         tc.variables["AERONET_ENABLE_OPENSSL"] = "ON" if self.options.with_openssl else "OFF"
         tc.variables["AERONET_ENABLE_SPDLOG"] = "ON" if self.options.with_spdlog else "OFF"
+        tc.variables["AERONET_ENABLE_BROTLI"] - "ON" if self.options.with_br else "OFF"
         tc.variables["AERONET_ENABLE_ZLIB"] = "ON" if self.options.with_zlib else "OFF"
         tc.variables["AERONET_ENABLE_ZSTD"] = "ON" if self.options.with_zstd else "OFF"
         # Force OFF for tests/examples in package context
@@ -71,6 +74,8 @@ class AeronetConan(ConanFile):
             self.requires("openssl/3.3.1")
         if self.options.with_spdlog:
             self.requires("spdlog/1.15.3")
+        if self.options.with_br:
+            self.requires("brotli/1.1.0")
         if self.options.with_zlib:
             self.requires("zlib/1.3.1")
         if self.options.with_zstd:

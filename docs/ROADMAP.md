@@ -29,8 +29,8 @@ Legend:
 | ⏳ | Structured Logging Interface | Pluggable logger levels / sinks | Fallback logger implemented; need abstraction layer |
 | ⏳ | Enhanced Logging (trace IDs) | Optional request correlation id injection | Depends on structured logging |
 | ✅ | Compression (gzip & deflate phase 1) | Negotiation (q-values), threshold, streaming + buffered, opt-out | zlib optional build flag |
-| ⏳ | Compression (brotli) | Higher-ratio alternative | Quality & window tuning, optional lib |
-| ⏳ | Compression (zstd) | Balanced speed/ratio | Dictionary support future |
+| ✅ | Compression (brotli) | Higher-ratio alternative (buffered + streaming; negotiation, multi-layer inbound) | Feature flag `AERONET_ENABLE_BROTLI`; context reuse planned |
+| ✅ | Compression (zstd) | Balanced speed/ratio (buffered + streaming; negotiation, multi-layer inbound) | Flag `AERONET_ENABLE_ZSTD`; future: dict support |
 | ⏳ | Graceful Draining Mode | Stop accepting new connections; finish in-flight | server.beginDrain() + state flag |
 | ⏳ | Enhanced Parser Diagnostics (offset) | Provide error location info | Extend callback signature |
 
@@ -74,7 +74,7 @@ Legend:
 6. Zero-copy sendfile() support (static files)
 7. Enhanced Parser Diagnostics (byte offset)
 8. Structured Logging Interface (pluggable sinks / structured fields)
-9. brotli compression (if demand) and streaming compression integration
+9. (Delivered) brotli compression + streaming integration
 10. TLS termination (OpenSSL minimal)
 11. Fuzz Harness (extended corpus / sanitizer CI)
 
@@ -146,12 +146,12 @@ Phase 1 implemented:
 Planned extensions:
 
 1. Content-Type allowlist default population & enforcement.
-2. Additional codecs (brotli, zstd) with capability negotiation.
+2. Additional codecs: (Delivered: brotli, zstd). Future consideration: dictionary-based zstd, static brotli dictionary selection.
 3. Compression ratio & bytes-saved metrics integration into RequestMetrics.
 4. Pooling / reuse of zlib streams to reduce init cost.
 5. Memory cap adaptive strategy for extremely large responses.
 6. Stats: Track compressed vs original bytes (ratio) per request metrics structure.
-7. Future: Add brotli (static dictionary optional) once gzip path stable.
+7. (Delivered) Brotli path integrated; future: static dictionary / custom encoder params.
 
 ## Testing Roadmap Highlights
 

@@ -16,7 +16,7 @@ namespace aeronet {
 
 // NOTE: Compression is optional at build time. When AERONET_ENABLE_ZLIB is not defined, only the
 // Format::None mode is honored; attempts to select gzip/deflate should be ignored or cause a
-// graceful fallback. Additional formats (brotli, zstd) will be added behind their own build flags.
+// graceful fallback. Additional formats (brotli, zstd) are added behind their own build flags.
 struct CompressionConfig {
   // Preferred order of formats to negotiate (first supported & accepted wins). If empty, defaults
   // to enumeration order of Encoding.
@@ -39,6 +39,16 @@ struct CompressionConfig {
     int windowLog = 0;
 #endif
   } zstd;
+
+  struct Brotli {
+#ifdef AERONET_ENABLE_BROTLI
+    int quality = 5;  // 0-11 (11 slowest/best). Choose balanced default.
+    int window = 0;   // 0 -> library default (implies 22 usually)
+#else
+    int quality = 0;
+    int window = 0;
+#endif
+  } brotli;
 
   // Only responses whose (uncompressed) size is >= this threshold are considered for compression.
   // For streaming responses (unknown size), compression begins once cumulative bytes reach threshold.
