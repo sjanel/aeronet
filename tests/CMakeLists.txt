@@ -51,6 +51,9 @@ aeronet_http_test(http_headers_custom http_headers_custom.cpp)
 aeronet_http_test(http_stats http_stats.cpp)
 aeronet_http_test(server_stats_json server_stats_json.cpp)
 
+# Inbound request decompression tests (independent of compression feature flags; internal guards handle codecs)
+aeronet_http_test(http_request_decompression http_request_decompression.cpp)
+
 # Compression tests (only meaningful when zlib enabled, but harmless otherwise due to internal guards)
 if(AERONET_ENABLE_ZLIB)
 	aeronet_http_test(http_compression_zlib_buffered http_compression_zlib_buffered.cpp)
@@ -139,6 +142,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_streaming_set_header.cpp
 	http_streaming_adaptive.cpp
 	http_streaming_mixed.cpp
+	http_request_decompression.cpp
 	async_http_server.cpp
 	http_url_decoding_additional.cpp
 	http_url_decoding.cpp

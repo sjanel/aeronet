@@ -15,6 +15,7 @@
 
 #include "compression-config.hpp"
 #include "invalid_argument_exception.hpp"
+#include "request-decompression-config.hpp"
 #include "tls-config.hpp"
 
 namespace aeronet {
@@ -106,12 +107,17 @@ struct HttpServerConfig {
   TrailingSlashPolicy trailingSlashPolicy{TrailingSlashPolicy::Normalize};
 
   // ===========================================
-  // Optional response compression configuration
+  // Response compression configuration
   // ===========================================
   // Attempt negotiation according to configured formats / thresholds.
   // Actual encoder availability also depends on build flags
   // (e.g. AERONET_ENABLE_ZLIB). Future: brotli, zstd guarded likewise.
   CompressionConfig compression;
+
+  // ===========================================
+  // Request body decompression configuration
+  // ===========================================
+  RequestDecompressionConfig requestDecompression;
 
   // ===========================================
   // Header merge behavior tuning
@@ -328,6 +334,11 @@ struct HttpServerConfig {
   // Enable / configure response compression. Passing by value allows caller to move.
   HttpServerConfig& withCompression(CompressionConfig cfg) {
     compression = std::move(cfg);
+    return *this;
+  }
+
+  HttpServerConfig& withRequestDecompression(RequestDecompressionConfig cfg) {
+    requestDecompression = std::move(cfg);
     return *this;
   }
 

@@ -34,9 +34,11 @@
 #include "exception.hpp"
 #include "flat-hash-map.hpp"
 #ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/zlib-decoder.hpp"
 #include "zlib-encoder.hpp"
 #endif
 #ifdef AERONET_ENABLE_ZSTD
+#include "aeronet/zstd-decoder.hpp"
 #include "zstd-encoder.hpp"
 #endif
 #include "aeronet/encoding.hpp"  // Encoding enum for encoder indices
@@ -438,6 +440,10 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
     if (!decodeBodyIfReady(fd, state, req, isChunked, expectContinue, consumedBytes)) {
       break;  // need more bytes or error
     }
+    // Inbound request decompression (Content-Encoding). Performed after body aggregation but before dispatch.
+    if (!req.body().empty() && !maybeDecompressRequestBody(fd, state, req)) {
+      break;  // error already emitted; close or wait handled inside
+    }
     // Determine dispatch: path streaming > path normal > global streaming > global normal > 404/405
     auto methodEnum = req.method();
     // Provide implicit HEAD->GET fallback (RFC7231: HEAD is identical to GET without body) when
@@ -646,6 +652,104 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
     }
   }
   return state.isAnyCloseRequested();
+}
+
+bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, HttpRequest& req) {
+  auto& cfg = _config.requestDecompression;
+  std::string_view encHeader = req.headerValueOrEmpty(http::ContentEncoding);
+  if (encHeader.empty() || CaseInsensitiveEqual(encHeader, http::identity)) {
+    return true;  // nothing to do
+  }
+  if (!cfg.enable) {
+    // Pass-through mode: leave compressed body & header intact; user code must decode manually
+    // if it cares. We intentionally skip size / ratio guards in this mode to avoid surprising
+    // rejections when opting out. Global body size limits have already been enforced.
+    return true;
+  }
+  const std::size_t originalCompressedSize = req.body().size();
+  if (cfg.maxCompressedBytes != 0 && originalCompressedSize > cfg.maxCompressedBytes) {
+    emitSimpleError(fd, state, http::StatusCodePayloadTooLarge, true);
+    return false;
+  }
+
+  // We'll alternate between bodyBuffer (source) and decompressedBuffer (target) each stage.
+  std::string_view src = req.body();
+  RawChars* dst = &state.decompressedBuffer;
+
+  // Decode in reverse order.
+  const char* first = encHeader.data();
+  const char* last = first + encHeader.size();
+  while (first < last) {
+    const char* encodingLast = last;
+    while (encodingLast != first && (*encodingLast == ' ' || *encodingLast == '\t')) {
+      --encodingLast;
+    }
+    if (encodingLast == first) {
+      break;
+    }
+    const char* comma = encodingLast - 1;
+    while (comma != first && *comma != ',') {
+      --comma;
+    }
+    if (comma == first) {
+      --comma;
+    }
+    const char* encodingFirst = comma + 1;
+    while (encodingFirst != encodingLast && (*encodingFirst == ' ' || *encodingFirst == '\t')) {
+      ++encodingFirst;
+    }
+    if (encodingFirst == encodingLast) {  // empty token => malformed list
+      emitSimpleError(fd, state, http::StatusCodeBadRequest, true);
+      return false;
+    }
+
+    std::string_view encoding(encodingFirst, encodingLast);
+
+    if (CaseInsensitiveEqual(encoding, http::identity)) {
+      last = comma;
+      continue;  // no-op layer
+    }
+
+    dst->clear();
+    bool stageOk = false;
+    if (CaseInsensitiveEqual(encoding, http::gzip)) {
+#ifdef AERONET_ENABLE_ZLIB
+      stageOk = ZlibDecoder::Decompress(src, *dst, true, cfg.maxDecompressedBytes);
+#endif
+    } else if (CaseInsensitiveEqual(encoding, http::deflate)) {
+#ifdef AERONET_ENABLE_ZLIB
+      stageOk = ZlibDecoder::Decompress(src, *dst, false, cfg.maxDecompressedBytes);
+#endif
+    } else if (CaseInsensitiveEqual(encoding, http::zstd)) {
+#ifdef AERONET_ENABLE_ZSTD
+      stageOk = ZstdDecoder::Decompress(src, *dst, cfg.maxDecompressedBytes);
+#endif
+    } else {
+      emitSimpleError(fd, state, http::StatusCodeUnsupportedMediaType, true);
+      return false;
+    }
+    if (!stageOk) {
+      emitSimpleError(fd, state, http::StatusCodeBadRequest, true);
+      return false;
+    }
+    // Expansion guard after each stage (defensive against nested bombs).
+    if (cfg.maxExpansionRatio > 0.0 && originalCompressedSize > 0) {
+      double ratio = static_cast<double>(dst->size()) / static_cast<double>(originalCompressedSize);
+      if (ratio > cfg.maxExpansionRatio) {
+        emitSimpleError(fd, state, http::StatusCodePayloadTooLarge, true);
+        return false;
+      }
+    }
+
+    src = *dst;
+    dst = dst == &state.bodyBuffer ? &state.decompressedBuffer : &state.bodyBuffer;
+
+    last = comma;
+  }
+
+  // Final decompressed data now resides in *src after last swap.
+  req._body = src;
+  return true;
 }
 
 bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, HttpRequest& req, int fd,
