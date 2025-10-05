@@ -1,4 +1,4 @@
-// Streaming response writer for Aeronet HTTP/1.1 (phase 1 skeleton)
+// Streaming response writer for aeronet HTTP/1.1 (phase 1 skeleton)
 #pragma once
 
 #include <cstddef>
@@ -53,10 +53,10 @@ class HttpResponseWriter {
   //   non-HEAD requests (allowing indefinite / unknown-length streaming) and will synthesize a correct
   //   Content-Length: 0 for HEAD responses.
   // - Call only if you know the exact number of body bytes that will be sent (the on-the-wire size). This means:
-  //     * If you rely on Aeronet's automatic compression (no user provided Content-Encoding and compression
+  //     * If you rely on aeronet's automatic compression (no user provided Content-Encoding and compression
   //       is enabled), you SHOULD NOT call contentLength() because the final compressed size is not known
   //       ahead of time. Use chunked mode instead. (If you do call it, you must supply the compressed size
-  //       you will ultimately produce; Aeronet does not recalculate or adjust it.)
+  //       you will ultimately produce; aeronet does not recalculate or adjust it.)
   //     * If you supply your own Content-Encoding (manual compression or identity) you may set the length
   //       of that encoded payload exactly.
   // - Precondition (only if you decide to use it): call before any body data is written (i.e. before the first

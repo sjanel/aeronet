@@ -150,10 +150,8 @@ void MultiHttpServer::start() {
 
   _stopRequested->store(false, std::memory_order_relaxed);
 
-  log::info("MultiHttpServer starting with {} thread(s); requested/base port={} reusePort={} (auto-detected={})",
-            _servers.size(), _baseConfig.port, _baseConfig.reusePort, (_baseConfig.port == 0 ? "yes" : "no"));
-  log::debug("MultiHttpServer start(): nbServers={} baseConfig.reusePort={} restartFlag={}", _servers.size(),
-             _baseConfig.reusePort, _stopRequested->load(std::memory_order_relaxed));
+  log::info("MultiHttpServer starting with {} thread(s); requested/base port={} reusePort={}", _servers.size(),
+            _baseConfig.port, _baseConfig.reusePort);
 
   // Note: reserve is important here to guarantee pointer stability
   _threads.reserve(static_cast<decltype(_threads)::size_type>(_servers.size()));

@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
   multi.setHandler([](const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(200, "OK")
         .contentType(aeronet::http::ContentTypeTextPlain)
-        .body(std::string("multi reactor response ") + std::string(req.path()));
+        .body(std::string("multi reactor response ") + std::string(req.path()) + '\n');
   });
   multi.start();
   aeronet::log::info("Listening on {} with {} reactors (SO_REUSEPORT). Press Ctrl+C to stop.", multi.port(), threads);

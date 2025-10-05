@@ -287,7 +287,7 @@ void HttpServer::run() {
     throw exception("Server is already running");
   }
   auto interval = _config.pollInterval;
-  log::info("Server running (poll interval={})", PrettyDuration{interval});
+  log::info("Server running on port :{}", port());
   for (_running = true; _running;) {
     eventLoop(interval);
   }
@@ -313,7 +313,7 @@ void HttpServer::runUntil(const std::function<bool()>& predicate) {
     throw exception("Server is already running");
   }
   auto interval = _config.pollInterval;
-  log::info("Server running until predicate (poll interval={})", PrettyDuration{interval});
+  log::info("Server running on port :{}", port());
   for (_running = true; _running && !predicate();) {
     eventLoop(interval);
   }
