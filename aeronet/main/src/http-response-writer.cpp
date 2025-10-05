@@ -206,8 +206,8 @@ bool HttpResponseWriter::write(std::string_view data) {
   // We purposefully delay header emission until we either (a) activate compression and have compressed bytes
   // to send or (b) decide to emit identity data (on end()). This allows us to include the Content-Encoding header
   // reliably when compression triggers mid-stream.
+  const auto& compressionConfig = _server->_config.compression;
   if (_compressionFormat != Encoding::none && !_userProvidedContentEncoding && !_compressionActivated) {
-    const auto& compressionConfig = _server->_config.compression;
     // Accumulate data into the pre-compression buffer up to minBytes. Always buffer the entire incoming data until
     // we cross the threshold (or end() is called).
     if (_preCompressBuffer.size() < compressionConfig.minBytes) {
@@ -235,8 +235,7 @@ bool HttpResponseWriter::write(std::string_view data) {
         }
         ensureHeadersSent();
         // Compress buffered bytes.
-        auto firstOut = _activeEncoderCtx->encodeChunk(
-            std::string_view{_preCompressBuffer.data(), _preCompressBuffer.size()}, false);
+        auto firstOut = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, _preCompressBuffer, false);
         if (!firstOut.empty()) {
           if (_chunked) {
             emitChunk(firstOut);
@@ -254,7 +253,7 @@ bool HttpResponseWriter::write(std::string_view data) {
   // Compression already active OR disabled: emit data (compressed) immediately.
   if (_compressionActivated) {
     ensureHeadersSent();
-    auto out = _activeEncoderCtx->encodeChunk(data, false);
+    auto out = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, data, false);
     if (!out.empty()) {
       if (_chunked) {
         emitChunk(out);
@@ -268,7 +267,7 @@ bool HttpResponseWriter::write(std::string_view data) {
   // Identity path (either compression disabled or not yet activated and we choose to stream directly):
   ensureHeadersSent();
   if (_chunked) {
-    emitChunk(_activeEncoderCtx->encodeChunk(data, false));
+    emitChunk(_activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, data, false));
   } else if (!_head && !data.empty()) {
     if (!enqueue(data)) {
       _failed = true;
@@ -290,8 +289,9 @@ void HttpResponseWriter::end() {
   // If compression was delayed and threshold reached earlier, write() already emitted headers and compressed data.
   // Otherwise we may still have buffered identity bytes (below threshold case) — emit headers now then flush.
   if (_compressionActivated) {
+    const auto& compressionConfig = _server->_config.compression;
     ensureHeadersSent();
-    auto last = _activeEncoderCtx->encodeChunk({}, true);
+    auto last = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, {}, true);
     if (!last.empty()) {
       if (_chunked) {
         emitChunk(last);
@@ -304,9 +304,9 @@ void HttpResponseWriter::end() {
     ensureHeadersSent();
     if (!_preCompressBuffer.empty()) {
       if (_chunked) {
-        emitChunk(std::string_view{_preCompressBuffer.data(), _preCompressBuffer.size()});
+        emitChunk(_preCompressBuffer);
       } else if (!_head) {
-        enqueue(std::string_view{_preCompressBuffer.data(), _preCompressBuffer.size()});
+        enqueue(_preCompressBuffer);
       }
       _preCompressBuffer.clear();
     }

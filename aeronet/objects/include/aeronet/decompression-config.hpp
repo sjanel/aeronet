@@ -10,7 +10,7 @@ namespace aeronet {
 // Separate from outbound CompressionConfig to avoid bloating the public surface for users only
 // interested in response compression and to make future hardening settings (ratio limits, allowlists)
 // easier to evolve without breaking existing code.
-struct RequestDecompressionConfig {
+struct DecompressionConfig {
   // Master enable flag. When false the server performs NO automatic decompression. Bodies with
   // Content-Encoding remain compressed and are delivered verbatim to handlers (pass-through).
   // No 415 is generated solely due to compression; application code may inspect/decode manually.
@@ -24,14 +24,19 @@ struct RequestDecompressionConfig {
   std::size_t maxCompressedBytes{0};
 
   // Absolute cap on the decompressed size (in bytes). If exceeded during inflation, decompression
-  // aborts and the request is rejected (413). Default: 8 MiB.
-  std::size_t maxDecompressedBytes{static_cast<std::size_t>(8U) * 1024U * 1024U};
+  // aborts and the request is rejected (413). Default: 1 GiB.
+  std::size_t maxDecompressedBytes{1024UL * 1024UL * 1024UL};
+
+  // Chunk size of buffer growths during decompression.
+  // Prefer a large size if you expect big payloads in average, prefer a small size if you want to limit memory
+  // overhead.
+  std::size_t decoderChunkSize{32UL * 1024UL};
 
   // Ratio guard: if decompressed_size > compressed_size * maxExpansionRatio the request is
   // rejected (413) even if maxDecompressedBytes is not exceeded. This quickly rejects "compression
   // bombs" that expand massively but still under absolute byte cap if not configured tightly.
   // 0.0 => disabled.
-  double maxExpansionRatio{50.0};
+  double maxExpansionRatio{0.0};
 };
 
 }  // namespace aeronet
