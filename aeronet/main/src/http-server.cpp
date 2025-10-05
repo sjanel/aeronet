@@ -187,7 +187,8 @@ HttpServer::HttpServer(HttpServer&& other)
       _encodingSelector(std::move(other._encodingSelector)),
       _cachedDateEpoch(std::exchange(other._cachedDateEpoch, TimePoint{})),
       _parserErrCb(std::move(other._parserErrCb)),
-      _metricsCb(std::move(other._metricsCb))
+      _metricsCb(std::move(other._metricsCb)),
+      _tmpBuffer(std::move(other._tmpBuffer))
 #ifdef AERONET_ENABLE_OPENSSL
       ,
       _tlsCtxHolder(std::move(other._tlsCtxHolder)),
@@ -224,6 +225,7 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _cachedDateEpoch = std::exchange(other._cachedDateEpoch, TimePoint{});
     _parserErrCb = std::move(other._parserErrCb);
     _metricsCb = std::move(other._metricsCb);
+    _tmpBuffer = std::move(other._tmpBuffer);
 #ifdef AERONET_ENABLE_OPENSSL
     _tlsCtxHolder = std::move(other._tlsCtxHolder);
     _tlsMetrics = std::move(other._tlsMetrics);
@@ -238,13 +240,8 @@ void HttpServer::setHandler(RequestHandler handler) { _handler = std::move(handl
 void HttpServer::setStreamingHandler(StreamingHandler handler) { _streamingHandler = std::move(handler); }
 
 void HttpServer::addPathHandler(std::string path, const http::MethodSet& methods, const RequestHandler& handler) {
-  auto it = _pathHandlers.find(path);
-  PathHandlerEntry* pEntry;
-  if (it == _pathHandlers.end()) {
-    pEntry = &_pathHandlers[std::move(path)];
-  } else {
-    pEntry = &it->second;
-  }
+  auto it = _pathHandlers.emplace(std::move(path), PathHandlerEntry{}).first;
+  PathHandlerEntry* pEntry = &it->second;
   for (http::Method method : methods) {
     auto idx = static_cast<std::underlying_type_t<http::Method>>(method);
     if (pEntry->streamingHandlers[idx]) {
@@ -261,13 +258,8 @@ void HttpServer::addPathHandler(std::string path, http::Method method, const Req
 
 void HttpServer::addPathStreamingHandler(std::string path, const http::MethodSet& methods,
                                          const StreamingHandler& handler) {
-  auto it = _pathHandlers.find(path);
-  PathHandlerEntry* pEntry;
-  if (it == _pathHandlers.end()) {
-    pEntry = &_pathHandlers[std::move(path)];
-  } else {
-    pEntry = &it->second;
-  }
+  auto it = _pathHandlers.emplace(std::move(path), PathHandlerEntry{}).first;
+  PathHandlerEntry* pEntry = &it->second;
   for (http::Method method : methods) {
     auto idx = static_cast<std::underlying_type_t<http::Method>>(method);
     if (pEntry->normalHandlers[idx]) {
@@ -320,41 +312,12 @@ void HttpServer::runUntil(const std::function<bool()>& predicate) {
   stop();
 }
 
-void HttpServer::refreshCachedDate() {
-  using namespace std::chrono;
-  TimePoint nowTp = Clock::now();
-  auto nowSec = time_point_cast<seconds>(nowTp);
-  if (time_point_cast<seconds>(_cachedDateEpoch) != nowSec) {
-    _cachedDateEpoch = nowSec;
-  }
-}
-
-ssize_t HttpServer::transportRead(int fd, ConnectionState& state, std::size_t chunkSize, bool& wantRead,
-                                  bool& wantWrite) {
-  std::size_t oldSize = state.buffer.size();
-  ssize_t bytesRead = 0;
-  state.buffer.resize_and_overwrite(oldSize + chunkSize, [&](char* base, std::size_t /*n*/) {
-    char* writePtr = base + oldSize;  // base points to beginning of existing buffer
-    if (state.transport) {
-      bytesRead = state.transport->read(writePtr, chunkSize, wantRead, wantWrite);
-    } else {
-      wantRead = wantWrite = false;
-      bytesRead = ::read(fd, writePtr, chunkSize);
-    }
-    if (bytesRead > 0) {
-      return oldSize + static_cast<std::size_t>(bytesRead);  // grew by bytesRead
-    }
-    return oldSize;  // retain previous logical size on EOF / EAGAIN / error
-  });
-  return bytesRead;
-}
-
 bool HttpServer::ModWithCloseOnFailure(EventLoop& loop, int fd, uint32_t events, ConnectionState& st, const char* ctx,
                                        StatsInternal& stats) {
   if (loop.mod(fd, events)) {
     return true;
   }
-  auto errCode = errno;
+  const auto errCode = errno;
   ++stats.epollModFailures;
   // EBADF or ENOENT can occur during races where a connection is concurrently closed; downgrade severity.
   if (errCode == EBADF || errCode == ENOENT) {
@@ -368,26 +331,16 @@ bool HttpServer::ModWithCloseOnFailure(EventLoop& loop, int fd, uint32_t events,
   return false;
 }
 
-ssize_t HttpServer::transportWrite(int fd, ConnectionState& state, std::string_view data, bool& wantRead,
-                                   bool& wantWrite) {
-  if (state.transport) {
-    return state.transport->write(data, wantRead, wantWrite);
-  }
-  wantRead = false;
-  wantWrite = false;
-  return ::send(fd, data.data(), data.size(), MSG_NOSIGNAL);
-}
-
 bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
   while (true) {
-    auto reqStart = std::chrono::steady_clock::now();
+    const auto reqStart = std::chrono::steady_clock::now();
     // If we don't yet have a full request line (no '\n' observed) wait for more data instead of
     // attempting to parse and wrongly emitting a 400 which would close an otherwise healthy keep-alive.
     if (state.buffer.empty() || std::ranges::find(state.buffer, '\n') == state.buffer.end()) {
       break;  // need more bytes for at least the request line
     }
     HttpRequest req;
-    auto statusCode = req.setHead(state, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders);
+    const auto statusCode = req.setHead(state, _tmpBuffer, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders);
     if (statusCode != http::StatusCodeOK) {
       emitSimpleError(fd, state, statusCode, true);
       // EmitSimpleError was invoked with immediate=true, which requested an Immediate close
@@ -417,23 +370,12 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
       }
     }
 
-    bool hasContentLength = false;
-    std::string_view lenViewAll = req.headerValueOrEmpty(http::ContentLength);
-    if (!lenViewAll.empty()) {
-      hasContentLength = true;
-    }
+    bool hasContentLength = !req.headerValueOrEmpty(http::ContentLength).empty();
     if (hasContentLength && hasTransferEncoding) {
       emitSimpleError(fd, state, 400, true);
       break;
     }
-    bool expectContinue = false;
-    if (req.version() == http::HTTP_1_1) {
-      if (std::string_view expectVal = req.headerValueOrEmpty(http::Expect); !expectVal.empty()) {
-        if (CaseInsensitiveEqual(expectVal, http::h100_continue)) {
-          expectContinue = true;
-        }
-      }
-    }
+    bool expectContinue = req.hasExpectContinue();
     std::size_t consumedBytes = 0;
     if (!decodeBodyIfReady(fd, state, req, isChunked, expectContinue, consumedBytes)) {
       break;  // need more bytes or error
@@ -453,11 +395,10 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
     if (!_pathHandlers.empty()) {
       // 1. Always attempt exact match first, independent of policy.
       auto pit = _pathHandlers.find(req.path());
-      std::string normalizedStorage;  // potential temporary storage for Normalize
       bool endsWithSlash = req.path().size() > 1 && req.path().back() == '/';
       if (pit == _pathHandlers.end()) {
         // 2. No exact match: apply policy decision (excluding root "/").
-        if (endsWithSlash && req.path().size() > 1) {
+        if (endsWithSlash) {
           // Candidate canonical form (strip single trailing slash)
           std::string_view canonical(req.path().data(), req.path().size() - 1);
           auto canonicalIt = _pathHandlers.find(canonical);
@@ -465,8 +406,7 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
             switch (_config.trailingSlashPolicy) {
               case HttpServerConfig::TrailingSlashPolicy::Normalize:
                 // Treat as if request was canonical (no redirect) by mutating path temporarily.
-                normalizedStorage.assign(canonical.data(), canonical.size());
-                req._path = normalizedStorage;
+                req._path = canonical;
                 pit = canonicalIt;
                 break;
               case HttpServerConfig::TrailingSlashPolicy::Redirect: {
@@ -488,15 +428,13 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
           }
         } else if (!endsWithSlash && _config.trailingSlashPolicy == HttpServerConfig::TrailingSlashPolicy::Normalize &&
                    req.path().size() > 1) {
-          // Request lacks slash; check if ONLY slashed variant exists.
-          std::string augmented(req.path().size() + 1U, '/');
-          std::memcpy(augmented.data(), req.path().data(), req.path().size());
-          auto altIt = _pathHandlers.find(augmented);
+          // Request lacks slash; check if ONLY slashed variant exists using tmp buffer to add an extra slash.
+          auto altIt = _pathHandlers.find(addSlash(req.path()));
           if (altIt != _pathHandlers.end()) {
             // Normalize treats them the same: dispatch to the registered variant.
             pit = altIt;
-            normalizedStorage = augmented;  // keep explicit variant for metrics consistency
-            req._path = normalizedStorage;
+            // It's ok to point on an intem in _pathHandlers, as by design it's not modifiable after server starts.
+            req._path = altIt->first;
           }
         }
       }
@@ -555,13 +493,11 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
       } else if (!endsWithSlash && _config.trailingSlashPolicy == HttpServerConfig::TrailingSlashPolicy::Normalize &&
                  req.path().size() > 1) {
         // If we didn't find the unslashed variant, try adding a slash if such a path exists; treat as same handler.
-        std::string augmented(req.path());
-        augmented.push_back('/');
-        auto altIt = _pathHandlers.find(augmented);
+        auto altIt = _pathHandlers.find(addSlash(req.path()));
         if (altIt != _pathHandlers.end()) {
           pathFound = true;
           // Reuse logic by setting path temporarily to registered variant.
-          req._path = augmented;  // dispatch using canonical stored path with slash
+          req._path = altIt->first;
           auto& entry = altIt->second;
           auto idxOriginal = static_cast<std::underlying_type_t<http::Method>>(methodEnum);
           auto idx = idxOriginal;
@@ -670,9 +606,9 @@ bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, Http
     return false;
   }
 
-  // We'll alternate between bodyBuffer (source) and tmpBuffer (target) each stage.
+  // We'll alternate between bodyBuffer (source) and _tmpBuffer (target) each stage.
   std::string_view src = req.body();
-  RawChars* dst = &state.tmpBuffer;
+  RawChars* dst = &_tmpBuffer;
 
   // Decode in reverse order.
   const char* first = encHeader.data();
@@ -740,14 +676,14 @@ bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, Http
     }
 
     src = *dst;
-    dst = dst == &state.bodyBuffer ? &state.tmpBuffer : &state.bodyBuffer;
+    dst = dst == &state.bodyBuffer ? &_tmpBuffer : &state.bodyBuffer;
 
     last = comma;
   }
 
-  if (src.data() == state.tmpBuffer.data()) {
-    // make sure we use bodyBuffer to "free" usage of tmpBuffer for other things
-    state.tmpBuffer.swap(state.bodyBuffer);
+  if (src.data() == _tmpBuffer.data()) {
+    // make sure we use bodyBuffer to "free" usage of _tmpBuffer for other things
+    _tmpBuffer.swap(state.bodyBuffer);
     src = state.bodyBuffer;
   }
 
@@ -817,7 +753,7 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
 }
 
 void HttpServer::eventLoop(Duration timeout) {
-  refreshCachedDate();
+  _cachedDateEpoch = Clock::now();
   sweepIdleConnections();
   int ready = _loop.poll(timeout, [&](int fd, uint32_t ev) {
     if (fd == _listenSocket.fd()) {
@@ -880,8 +816,8 @@ ServerStats HttpServer::stats() const {
 }
 
 void HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, bool immediate) {
-  BuildSimpleError(code, _cachedDateEpoch, state.tmpBuffer);
-  queueData(fd, state, state.tmpBuffer);
+  BuildSimpleError(code, _cachedDateEpoch, _tmpBuffer);
+  queueData(fd, state, _tmpBuffer);
   try {
     _parserErrCb(code);
   } catch (const std::exception& ex) {
@@ -893,6 +829,17 @@ void HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCod
   } else {
     state.requestDrainAndClose();
   }
+}
+
+std::string_view HttpServer::addSlash(std::string_view path) {
+  RawChars& normalizedStorage = _tmpBuffer;
+  normalizedStorage.clear();
+
+  normalizedStorage.ensureAvailableCapacity(path.size() + 1U);
+  std::memcpy(normalizedStorage.data(), path.data(), path.size());
+  normalizedStorage[path.size()] = '/';
+  normalizedStorage.setSize(path.size() + 1U);
+  return normalizedStorage;
 }
 
 }  // namespace aeronet

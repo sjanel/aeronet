@@ -9,6 +9,7 @@
 #include "aeronet/http-version.hpp"
 #include "connection-state.hpp"
 #include "headers-view-map.hpp"
+#include "raw-chars.hpp"
 
 namespace aeronet {
 
@@ -134,6 +135,9 @@ class HttpRequest {
   // Negotiated TLS protocol version string (e.g. "TLSv1.3"); empty if not TLS.
   [[nodiscard]] std::string_view tlsVersion() const noexcept { return _tlsVersion; }
 
+  // Tells whether this request has a 'Expect: 100-continue' header.
+  [[nodiscard]] bool hasExpectContinue() const noexcept;
+
  private:
   friend class HttpServer;
   friend class HttpRequestTest;
@@ -143,7 +147,7 @@ class HttpRequest {
   // Attempts to set this HttpRequest (except body) from given ConnectionState.
   // Returns StatusCode OK if the request is good (it will be fully set)
   // Or an HTTP error status to forward.
-  http::StatusCode setHead(ConnectionState& state, std::size_t maxHeadersBytes,
+  http::StatusCode setHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
                            bool mergeAllowedForUnknownRequestHeaders);
 
   http::Version _version;

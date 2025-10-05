@@ -1,5 +1,6 @@
 #include <sys/types.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -27,10 +28,6 @@
 #include "sys-utils.hpp"
 
 namespace aeronet {
-
-namespace {
-inline constexpr std::size_t kTransportChunkSize = 4096;
-}
 
 void HttpServer::sweepIdleConnections() {
   // Periodic maintenance of live connections: applies keep-alive timeout (if enabled) and
@@ -115,10 +112,29 @@ void HttpServer::acceptNewConnections() {
     stRef.transport = std::make_unique<PlainTransport>(cnxFd);
 #endif
     ConnectionState* pst = &itState->second;
+    std::size_t bytesReadThisEvent = 0;
     while (true) {
       bool wantR = false;
       bool wantW = false;
-      ssize_t bytesRead = transportRead(cnxFd, *pst, kTransportChunkSize, wantR, wantW);
+      // Determine adaptive chunk size: if we have not yet parsed a full header for the current pending request
+      // (heuristic: headerStart set OR buffer missing CRLFCRLF), use initialReadChunkBytes; otherwise use
+      // bodyReadChunkBytes.
+      std::size_t chunkSize = _config.bodyReadChunkBytes;
+      if (pst->headerStart.time_since_epoch().count() != 0 ||
+          std::search(pst->buffer.begin(), pst->buffer.end(), http::DoubleCRLF.begin(), http::DoubleCRLF.end()) ==
+              pst->buffer.end()) {
+        chunkSize = _config.initialReadChunkBytes;
+      }
+      if (_config.maxPerEventReadBytes != 0) {
+        std::size_t remainingBudget = (_config.maxPerEventReadBytes > bytesReadThisEvent)
+                                          ? (_config.maxPerEventReadBytes - bytesReadThisEvent)
+                                          : 0;
+        if (remainingBudget == 0) {
+          break;  // fairness cap reached for this epoll cycle
+        }
+        chunkSize = std::min(chunkSize, remainingBudget);
+      }
+      ssize_t bytesRead = pst->transportRead(cnxFd, chunkSize, wantR, wantW);
       // Check for handshake completion
       if (!pst->tlsEstablished && pst->transport && !pst->transport->handshakePending()) {
 #ifdef AERONET_ENABLE_OPENSSL
@@ -134,8 +150,12 @@ void HttpServer::acceptNewConnections() {
         if (pst->headerStart.time_since_epoch().count() == 0) {
           pst->headerStart = std::chrono::steady_clock::now();
         }
-        if (std::cmp_less(bytesRead, kTransportChunkSize)) {
+        bytesReadThisEvent += static_cast<std::size_t>(bytesRead);
+        if (std::cmp_less(bytesRead, chunkSize)) {
           break;
+        }
+        if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
+          break;  // reached fairness cap
         }
         continue;
       }
@@ -197,10 +217,24 @@ void HttpServer::handleReadableClient(int fd) {
   }
   ConnectionState& state = itState->second;
   state.lastActivity = std::chrono::steady_clock::now();
+  std::size_t bytesReadThisEvent = 0;
   while (true) {
     bool wantR = false;
     bool wantW = false;
-    ssize_t count = transportRead(fd, state, kTransportChunkSize, wantR, wantW);
+    std::size_t chunkSize = _config.bodyReadChunkBytes;
+    if (state.headerStart.time_since_epoch().count() != 0 ||
+        std::ranges::search(state.buffer, http::DoubleCRLF).empty()) {
+      chunkSize = _config.initialReadChunkBytes;
+    }
+    if (_config.maxPerEventReadBytes != 0) {
+      std::size_t remainingBudget =
+          (_config.maxPerEventReadBytes > bytesReadThisEvent) ? (_config.maxPerEventReadBytes - bytesReadThisEvent) : 0;
+      if (remainingBudget == 0) {
+        break;  // fairness budget exhausted
+      }
+      chunkSize = std::min(chunkSize, remainingBudget);
+    }
+    auto count = state.transportRead(fd, chunkSize, wantR, wantW);
     if (!state.tlsEstablished && state.transport && !state.transport->handshakePending()) {
 #ifdef AERONET_ENABLE_OPENSSL
       if (_config.tls && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
@@ -232,6 +266,16 @@ void HttpServer::handleReadableClient(int fd) {
     }
     if (count > 0 && state.headerStart.time_since_epoch().count() == 0) {
       state.headerStart = std::chrono::steady_clock::now();
+    }
+    if (count > 0) {
+      bytesReadThisEvent += static_cast<std::size_t>(count);
+      if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
+        // Reached per-event fairness cap; parse what we have then yield.
+        if (processRequestsOnConnection(fd, state)) {
+          break;
+        }
+        break;
+      }
     }
     if (state.buffer.size() > _config.maxHeaderBytes + _config.maxBodyBytes) {
       state.requestImmediateClose();
