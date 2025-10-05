@@ -1,4 +1,4 @@
-// Aeronet Umbrella Header
+// aeronet Umbrella Header
 //
 // Include this single header to pull in the core public HTTP server API:
 //   - HttpServer / AsyncHttpServer / MultiHttpServer wrappers

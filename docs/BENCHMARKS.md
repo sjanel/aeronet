@@ -1,7 +1,7 @@
-# Aeronet Benchmarks
+# aeronet Benchmarks
 
 This document describes the purpose, scope, and usage of the optional benchmarking
-suite for Aeronet.
+suite for aeronet.
 
 ## Goals
 
@@ -18,7 +18,7 @@ suite for Aeronet.
 
 ## Build Activation
 
-By default benchmarks build only when Aeronet is the main project (top‑level) OR when you
+By default benchmarks build only when aeronet is the main project (top‑level) OR when you
 explicitly enable them:
 
 ```bash
@@ -41,7 +41,7 @@ In CI (environment variable `CI` defined) they are skipped unless you override:
 | `run-aeronet-bench` | Convenience target: runs internal benchmarks (aggregates only). |
 | `run-aeronet-bench-json` | Emits Google Benchmark JSON (`aeronet-benchmarks.json`). |
 | `run-aeronet-bench-throughput` | Runs the throughput skeleton. |
-| `aeronet-bench-frameworks` | Comparative simple GET size= handler (Aeronet + optional drogon/oatpp). |
+| `aeronet-bench-frameworks` | Comparative simple GET size= handler (aeronet + optional drogon/oatpp). |
 | `run-aeronet-bench-frameworks` | Runs comparative benchmark with default args. |
 
 ## JSON Output
@@ -59,7 +59,7 @@ Google Benchmark natively supports JSON; we simply redirect stdout.
 
 An initial comparative benchmark `aeronet-bench-frameworks` is available. It spins up:
 
-* Aeronet (always) – `/data?size=N` returning an iota-generated `std::string` of length N.
+* aeronet (always) – `/data?size=N` returning an iota-generated `std::string` of length N.
 * Drogon (if `-DAERONET_BENCH_ENABLE_DROGON=ON`) – identical endpoint.
 * Oatpp (if `-DAERONET_BENCH_ENABLE_OATPP=ON`) – identical endpoint.
 

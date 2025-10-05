@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-# Benchmark module for Aeronet
+# Benchmark module for aeronet
 # Only built when AERONET_BUILD_BENCHMARKS=ON (default only for main project).
 # Intentionally skipped in CI unless explicitly forced (benchmarks are for local perf work).
 
@@ -89,7 +89,7 @@ if(TARGET aeronet)
     add_custom_target(run-aeronet-bench-throughput
         COMMAND aeronet-bench-throughput
         DEPENDS aeronet-bench-throughput
-        COMMENT "Running Aeronet local throughput benchmark (skeleton)"
+        COMMENT "Running aeronet local throughput benchmark (skeleton)"
     )
 else()
     message(WARNING "[aeronet][bench] skipping throughput benchmark; 'aeronet' target not defined")

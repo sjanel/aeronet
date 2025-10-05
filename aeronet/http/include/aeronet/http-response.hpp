@@ -229,7 +229,7 @@ class HttpResponse {
   }
 
   // Whether user explicitly provided a Content-Encoding header (any value). When present
-  // Aeronet will NOT perform automatic compression for this response (the user fully
+  // aeronet will NOT perform automatic compression for this response (the user fully
   // controls encoding and must ensure body matches the declared encoding). Users can
   // force identity / disable compression by setting either:
   //   Content-Encoding: identity
