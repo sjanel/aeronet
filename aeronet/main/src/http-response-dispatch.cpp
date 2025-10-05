@@ -43,7 +43,7 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
   bool isHead = (req.method() == http::Method::HEAD);
   if (!isHead && !resp.userProvidedContentEncoding()) {
     const CompressionConfig& compressionConfig = _config.compression;
-    auto encHeader = req.headerValueOrEmpty(http::AcceptEncoding);
+    std::string_view encHeader = req.headerValueOrEmpty(http::AcceptEncoding);
     auto [encoding, reject] = _encodingSelector.negotiateAcceptEncoding(encHeader);
     // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
     // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
@@ -57,24 +57,18 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
     else if (encoding != Encoding::none && resp.body().size() < compressionConfig.minBytes) {
       encoding = Encoding::none;
     }
-    // Approximate allowlist check (default text/plain assumption until header getter exists)
-    if (!compressionConfig.contentTypeAllowlist.empty()) {
-      std::string_view assumed = "text/plain";
-      bool ok = false;
-      for (const auto& prefix : compressionConfig.contentTypeAllowlist) {
-        if (assumed.starts_with(prefix)) {
-          ok = true;
-          break;
-        }
-      }
-      if (!ok) {
+    // Approximate allowlist check
+    if (encoding != Encoding::none && !compressionConfig.contentTypeAllowlist.empty()) {
+      std::string_view contentType = req.headerValueOrEmpty(http::ContentType);
+      if (std::ranges::none_of(compressionConfig.contentTypeAllowlist,
+                               [contentType](std::string_view str) { return contentType.starts_with(str); })) {
         encoding = Encoding::none;
       }
     }
     if (encoding != Encoding::none) {
       auto& encoder = _encoders[static_cast<size_t>(encoding)];
       if (encoder) {
-        auto out = encoder->encodeFull(resp.body());
+        auto out = encoder->encodeFull(compressionConfig.encoderChunkSize, resp.body());
         resp.customHeader(http::ContentEncoding, GetEncodingStr(encoding));
         if (compressionConfig.addVaryHeader) {
           resp.customHeader(http::Vary, http::AcceptEncoding);

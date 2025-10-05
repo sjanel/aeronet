@@ -7,15 +7,14 @@
 #include <initializer_list>
 #include <optional>
 #include <ranges>
-#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "compression-config.hpp"
+#include "decompression-config.hpp"
 #include "invalid_argument_exception.hpp"
-#include "request-decompression-config.hpp"
 #include "tls-config.hpp"
 
 namespace aeronet {
@@ -117,7 +116,7 @@ struct HttpServerConfig {
   // ===========================================
   // Request body decompression configuration
   // ===========================================
-  RequestDecompressionConfig requestDecompression;
+  DecompressionConfig requestDecompression;
 
   // ===========================================
   // Header merge behavior tuning
@@ -129,117 +128,59 @@ struct HttpServerConfig {
   bool mergeUnknownRequestHeaders{true};
 
   // Validates config. Throws invalid_argument if it is not valid.
-  // TODO
-  void validate() const {}
+  void validate() const;
 
  private:
-  TLSConfig& ensureTls() {
-    if (!tls) {
-      tls.emplace();
-    }
-    return *tls;
-  }
+  TLSConfig& ensureTls();
 
  public:
-  // Fluent builder style setters
-  HttpServerConfig& withPort(uint16_t port) {  // Set explicit listening port (0 = ephemeral)
-    this->port = port;
-    return *this;
-  }
+  // Set explicit listening port (0 = ephemeral)
+  HttpServerConfig& withPort(uint16_t port);
 
-  HttpServerConfig& withReusePort(bool on = true) {  // Enable/disable SO_REUSEPORT
-    this->reusePort = on;
-    return *this;
-  }
+  // Enable/disable SO_REUSEPORT
+  HttpServerConfig& withReusePort(bool on = true);
 
-  HttpServerConfig& withKeepAliveMode(bool on = true) {  // Toggle persistent connections
-    this->enableKeepAlive = on;
-    return *this;
-  }
+  // Toggle persistent connections
+  HttpServerConfig& withKeepAliveMode(bool on = true);
 
-  HttpServerConfig& withMaxHeaderBytes(std::size_t maxHeaderBytes) {  // Adjust header size ceiling
-    this->maxHeaderBytes = maxHeaderBytes;
-    return *this;
-  }
+  // Adjust header size ceiling
+  HttpServerConfig& withMaxHeaderBytes(std::size_t maxHeaderBytes);
 
-  HttpServerConfig& withMaxBodyBytes(std::size_t maxBodyBytes) {  // Adjust body size limit
-    this->maxBodyBytes = maxBodyBytes;
-    return *this;
-  }
+  // Adjust body size limit
+  HttpServerConfig& withMaxBodyBytes(std::size_t maxBodyBytes);
 
-  HttpServerConfig& withMaxOutboundBufferBytes(std::size_t maxOutbound) {  // Adjust per-connection outbound queue cap
-    this->maxOutboundBufferBytes = maxOutbound;
-    return *this;
-  }
+  // Adjust per-connection outbound queue cap
+  HttpServerConfig& withMaxOutboundBufferBytes(std::size_t maxOutbound);
 
-  HttpServerConfig& withMaxRequestsPerConnection(uint32_t maxRequests) {  // Adjust request-per-connection cap
-    this->maxRequestsPerConnection = maxRequests;
-    return *this;
-  }
+  // Adjust request-per-connection cap
+  HttpServerConfig& withMaxRequestsPerConnection(uint32_t maxRequests);
 
-  HttpServerConfig& withKeepAliveTimeout(std::chrono::milliseconds timeout) {  // Adjust idle keep-alive timeout
-    this->keepAliveTimeout = timeout;
-    return *this;
-  }
+  // Adjust idle keep-alive timeout
+  HttpServerConfig& withKeepAliveTimeout(std::chrono::milliseconds timeout);
 
-  HttpServerConfig& withPollInterval(std::chrono::milliseconds interval) {  // Adjust event loop max idle wait
-    this->pollInterval = interval;
-    return *this;
-  }
+  // Adjust event loop max idle wait
+  HttpServerConfig& withPollInterval(std::chrono::milliseconds interval);
 
-  HttpServerConfig& withHeaderReadTimeout(std::chrono::milliseconds timeout) {  // Set slow header read timeout (0=off)
-    this->headerReadTimeout = timeout;
-    return *this;
-  }
+  // Set slow header read timeout (0=off)
+  HttpServerConfig& withHeaderReadTimeout(std::chrono::milliseconds timeout);
 
   // Accept any string-like source (const char*, std::string, std::string_view) for certificate & key file paths.
   // We intentionally copy here because configuration happens once at startup; micro-optimizing moves is unnecessary.
-  HttpServerConfig& withTlsCertKey(std::string_view certFile, std::string_view keyFile) {
-    auto& tlsCfg = ensureTls();
-    tlsCfg.certFile.assign(certFile);
-    tlsCfg.keyFile.assign(keyFile);
-    return *this;
-  }
+  HttpServerConfig& withTlsCertKey(std::string_view certFile, std::string_view keyFile);
 
-  HttpServerConfig& withTlsCipherList(std::string_view cipherList) {
-    ensureTls().cipherList.assign(cipherList);
-    return *this;
-  }
+  HttpServerConfig& withTlsCipherList(std::string_view cipherList);
 
-  HttpServerConfig& withTlsMinVersion(std::string_view ver) {
-    ensureTls().minVersion.assign(ver);
-    return *this;
-  }
+  HttpServerConfig& withTlsMinVersion(std::string_view ver);
 
-  HttpServerConfig& withTlsMaxVersion(std::string_view ver) {
-    ensureTls().maxVersion.assign(ver);
-    return *this;
-  }
+  HttpServerConfig& withTlsMaxVersion(std::string_view ver);
 
   // Provide in-memory PEM certificate & key instead of file paths. Overwrites any previously set file-based values.
-  HttpServerConfig& withTlsCertKeyMemory(std::string_view certPem, std::string_view keyPem) {
-    auto& tlsCfg = ensureTls();
-    tlsCfg.certFile.clear();
-    tlsCfg.keyFile.clear();
-    tlsCfg.certPem.assign(certPem);
-    tlsCfg.keyPem.assign(keyPem);
-    return *this;
-  }
+  HttpServerConfig& withTlsCertKeyMemory(std::string_view certPem, std::string_view keyPem);
 
-  HttpServerConfig& withTlsRequestClientCert(bool on = true) {
-    ensureTls().requestClientCert = on;
-    return *this;
-  }
+  HttpServerConfig& withTlsRequestClientCert(bool on = true);
 
   // Enforce mutual TLS: handshake fails if client does not present *and* validate a certificate.
-  HttpServerConfig& withTlsRequireClientCert(bool on = true) {
-    auto& tlsCfg = ensureTls();
-    tlsCfg.requireClientCert = on;
-    if (on) {
-      tlsCfg.requestClientCert = true;  // logical implication
-    }
-    return *this;
-  }
+  HttpServerConfig& withTlsRequireClientCert(bool on = true);
 
   // Set (overwrite) ALPN protocol preference list. Order matters; first matching protocol is selected.
   template <std::ranges::input_range R>
@@ -279,32 +220,17 @@ struct HttpServerConfig {
   }
 
   // Require ALPN negotiation success (handshake aborts if client and server share no protocol).
-  HttpServerConfig& withTlsAlpnMustMatch(bool on = true) {
-    ensureTls().alpnMustMatch = on;
-    return *this;
-  }
+  HttpServerConfig& withTlsAlpnMustMatch(bool on = true);
 
   // Enable/disable verbose one-line handshake logging (ALPN, cipher suite, TLS version, peer subject if present)
-  HttpServerConfig& withTlsHandshakeLogging(bool on = true) {
-    ensureTls().logHandshake = on;
-    return *this;
-  }
+  HttpServerConfig& withTlsHandshakeLogging(bool on = true);
 
-  HttpServerConfig& withTlsHandshakeTimeout(std::chrono::milliseconds timeout) {
-    tlsHandshakeTimeout = timeout;
-    return *this;
-  }
+  HttpServerConfig& withTlsHandshakeTimeout(std::chrono::milliseconds timeout);
 
   // Add a single trusted client certificate (PEM) to verification store (useful for tests / pinning). Multiple allowed.
-  HttpServerConfig& withTlsAddTrustedClientCert(std::string_view certPem) {
-    ensureTls().trustedClientCertsPem.emplace_back(certPem);
-    return *this;
-  }
+  HttpServerConfig& withTlsAddTrustedClientCert(std::string_view certPem);
 
-  HttpServerConfig& withoutTls() {
-    tls.reset();
-    return *this;
-  }
+  HttpServerConfig& withoutTls();
 
   // Policy for handling a trailing slash difference between registered path handlers and incoming requests.
   // Resolution algorithm (independent of policy):
@@ -326,26 +252,14 @@ struct HttpServerConfig {
   //   Normalize: provide symmetric acceptance (one missing variant maps to the existing one) without redirects.
   //   Redirect : like Strict unless the ONLY difference is an added trailing slash for a canonical registered path;
   //              then a 301 to the canonical form is sent (never the inverse).
-  HttpServerConfig& withTrailingSlashPolicy(TrailingSlashPolicy policy) {
-    trailingSlashPolicy = policy;
-    return *this;
-  }
+  HttpServerConfig& withTrailingSlashPolicy(TrailingSlashPolicy policy);
 
   // Enable / configure response compression. Passing by value allows caller to move.
-  HttpServerConfig& withCompression(CompressionConfig cfg) {
-    compression = std::move(cfg);
-    return *this;
-  }
+  HttpServerConfig& withCompression(CompressionConfig cfg);
 
-  HttpServerConfig& withRequestDecompression(RequestDecompressionConfig cfg) {
-    requestDecompression = std::move(cfg);
-    return *this;
-  }
+  HttpServerConfig& withRequestDecompression(DecompressionConfig cfg);
 
-  HttpServerConfig& withMergeUnknownRequestHeaders(bool on = true) {
-    mergeUnknownRequestHeaders = on;
-    return *this;
-  }
+  HttpServerConfig& withMergeUnknownRequestHeaders(bool on = true);
 };
 
 static_assert(std::is_aggregate_v<HttpServerConfig>,

@@ -50,24 +50,23 @@ ZStreamRAII::~ZStreamRAII() {
 ZlibEncoderContext::ZlibEncoderContext(details::ZStreamRAII::Variant variant, RawChars& sharedBuf, int8_t level)
     : _buf(sharedBuf), _zs(variant, level) {}
 
-std::string_view ZlibEncoderContext::encodeChunk(std::string_view chunk, bool finish) {
+std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk, bool finish) {
   if (_finished) {
     return std::string_view{};  // already finalized
   }
   _zs._stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(chunk.data()));
   _zs._stream.avail_in = static_cast<uInt>(chunk.size());
   _buf.clear();
-  int flush = finish ? Z_FINISH : Z_NO_FLUSH;
-  static constexpr std::size_t kChunkSize = 32UL * 1024UL;
+  auto flush = finish ? Z_FINISH : Z_NO_FLUSH;
   do {
-    _buf.ensureAvailableCapacity(kChunkSize);
+    _buf.ensureAvailableCapacity(encoderChunkSize);
     _zs._stream.next_out = reinterpret_cast<unsigned char*>(_buf.data() + _buf.size());
-    _zs._stream.avail_out = kChunkSize;
+    _zs._stream.avail_out = static_cast<decltype(_zs._stream.avail_out)>(encoderChunkSize);
     const auto ret = deflate(&_zs._stream, flush);
     if (ret == Z_STREAM_ERROR) {
       throw exception("Zlib streaming error {}", ret);
     }
-    _buf.setSize(_buf.size() + kChunkSize - _zs._stream.avail_out);
+    _buf.setSize(_buf.size() + encoderChunkSize - _zs._stream.avail_out);
     if (ret == Z_STREAM_END) {
       _finished = true;
       break;
@@ -79,22 +78,21 @@ std::string_view ZlibEncoderContext::encodeChunk(std::string_view chunk, bool fi
   return _buf;
 }
 
-std::string_view ZlibEncoder::compressAll(std::string_view in) {
+std::string_view ZlibEncoder::compressAll(std::size_t encoderChunkSize, std::string_view in) {
   details::ZStreamRAII zs(_variant, _level);
 
   _buf.clear();
   zs._stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in.data()));
   zs._stream.avail_in = static_cast<uInt>(in.size());
-  static constexpr std::size_t kChunkSize = 32UL * 1024UL;
   do {
-    _buf.ensureAvailableCapacity(kChunkSize);
+    _buf.ensureAvailableCapacity(encoderChunkSize);
     zs._stream.next_out = reinterpret_cast<unsigned char*>(_buf.data() + _buf.size());
-    zs._stream.avail_out = kChunkSize;
+    zs._stream.avail_out = static_cast<decltype(zs._stream.avail_out)>(encoderChunkSize);
     auto rc = deflate(&zs._stream, Z_FINISH);
     if (rc == Z_STREAM_ERROR) {
       throw exception("Zlib error during one-shot compression");
     }
-    _buf.setSize(_buf.size() + kChunkSize - zs._stream.avail_out);
+    _buf.setSize(_buf.size() + encoderChunkSize - zs._stream.avail_out);
     if (rc == Z_STREAM_END) {
       break;
     }
