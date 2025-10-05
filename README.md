@@ -1,66 +1,116 @@
-# Aeronet
+# aeronet
 
-![Aeronet Logo](resources/logo.png)
+![aeronet Logo](resources/logo.png)
 
-HTTP/1.1 C++ server library for Linux only – work in progress.
+[![CI](https://github.com/sjanel/aeronet/actions/workflows/ci.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/ci.yml)
+[![Packaging](https://github.com/sjanel/aeronet/actions/workflows/packaging.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/packaging.yml)
+[![clang-format](https://github.com/sjanel/aeronet/actions/workflows/clang-format-check.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/clang-format-check.yml)
 
-It is designed to be:
+**aeronet** is a modern, fast, modular and ergonomic HTTP/1.1 C++ server library for Linux focused on predictable performance, explicit control and minimal dependencies.
 
-- **Fully configurable** – opt into only the features / dependencies you need via build flags (`AERONET_ENABLE_ZLIB`, `AERONET_ENABLE_ZSTD`, `AERONET_ENABLE_BROTLI`, `AERONET_ENABLE_OPENSSL`, `AERONET_ENABLE_SPDLOG`). Core stays dependency‑minimal.
-- **Fast** – minimal dynamic allocations, contiguous response assembly, zero‑copy header/value slicing, edge‑triggered epoll loop.
-- **Modern & focused** – small, purpose‑built and easy to use classes (`HttpServer`, `AsyncHttpServer`, `MultiHttpServer`) instead of a monolith; fluent configuration; explicit policies (trailing slash, compression negotiation, duplicate headers), no hidden heuristics.
+## Key Benefits (5× high‑level)
 
-## Why Aeronet? (Key Strengths)
+- Fast & predictable: edge‑triggered epoll, zero/low‑allocation hot paths, horizontal scaling via SO_REUSEPORT.
+- Safe by default: strict parsing, size/time guards, optional TLS & compression with defensive limits.
+- Modular & opt‑in: enable only the features you need (zlib, zstd, brotli, TLS, logging) via build flags.
+- Ergonomic minimal surface: simple `HttpServer`, `AsyncHttpServer`, `MultiHttpServer` types; fluent configuration; RAII listener setup.
+- Extensible & observable: composable configs (compression, decompression, TLS) plus lightweight per‑request metrics hook.
 
-| Area | Strength |
-|------|----------|
-| Memory efficiency | Headers parsed in place; duplicates merged / overridden without per-field heap churn; responses built in one buffer; decompression ping‑pongs between two reusable buffers (no per‑layer allocations). |
-| Deterministic performance | No worker handoff by default; multi-reactor scaling via `SO_REUSEPORT` keeps cache locality; predictable epoll cycle with bounded work per iteration. |
-| Robust & safe parsing | Duplicate header classification blocks smuggling vectors; strict invalid percent‑escapes -> 400; empty / malformed `Content-Encoding` tokens rejected early. |
-| Multi-layer compression/decompression | Symmetric flags enable outbound compression & inbound decoding; reverse-order decoding with per‑stage expansion ratio + absolute size guards; streaming path delays header emission until decision safe. |
-| Security hardening | Header/body size caps, slowloris header timeout, TLS handshake timeout & ALPN strict mode, compression ratio guard, unknown encoding fast‑fail (415) when enabled. |
-| Ergonomics | RAII server binds immediately (ephemeral port known instantly); clear dispatch precedence (path streaming > path fixed > global streaming > global fixed); fluent setters; minimal moving parts. |
-| Extensibility | Separate config objects (compression, decompression, TLS) isolate knobs; reserved header rule future‑proofs trailers & upgrades. |
-| Observability | Lightweight per‑request metrics callback (method, path, status, bytes, duration) with planned enrichment (compression layers, ratio). |
-| No global mutable state | TLS, compression, stats isolated per server instance for easy multi‑tenant embedding. |
-| Comprehensive tests | Wide coverage: parsing errors, keep‑alive limits, routing precedence, streaming, multi-layer decompression (valid + corruption), negotiation edge cases, duplicate header behavior. |
-| Principle of least surprise | Disabled request decompression = pure pass‑through (no silent 415); user‑supplied `Content-Encoding` prevents auto compression. |
-| Transparent roadmap | Public README sections enumerate planned features (trailers, streaming inbound decode, richer metrics, middleware) pre‑1.0; recently delivered: brotli, zstd compression & multi-layer auto decompression. |
+## Minimal Example
 
-## Design Tenets
+Spin up a basic HTTP/1.1 server that responds on `/hello` in just a few lines. If you pass `0` as the port (or omit it), the kernel picks an ephemeral port which you can query immediately.
 
-1. **Correctness first** – Fail fast; never silently reinterpret ambiguous wire data.
-2. **Predictable resource usage** – Bounded scratch buffers over unbounded growth; avoid hidden background concurrency.
-3. **Opt‑in complexity** – Advanced features only compiled when explicitly enabled.
-4. **Mechanical sympathy** – Cache‑friendly contiguous structures, minimized syscalls, edge‑triggered event loop.
-5. **Ergonomic minimalism** – Learn the surface in minutes; compose advanced behavior via config not inheritance webs.
+```cpp
+#include <aeronet/aeronet.hpp>
 
-> Status: Pre‑1.0. Some APIs may adjust as upcoming features (trailers, middleware, metrics enrichment, streaming inbound decompression) land. Stability will tighten approaching 0.9+.
+using namespace aeronet;
+
+int main() {
+  HttpServer server(HttpServerConfig{}.withPort(0)); // 0 => ephemeral
+  server.addPathHandler("/hello", http::MethodSet{http::Method::GET}, [](const HttpRequest&) {
+    return HttpResponse(200, "OK").contentType("text/plain").body("hello from aeronet\n");
+  });
+  server.run(); // blocking
+}
+```
+
+## Quick Start with provided examples
+
+Minimal server examples are provided in [examples](examples) directory.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+./build/examples/aeronet-minimal 8080   # or omit 8080 for ephemeral
+```
+
+Test with curl:
+
+```bash
+curl -i http://localhost:8080/hello
+
+HTTP/1.1 200
+Content-Length: 151
+Connection: keep-alive
+Date: Sun, 05 Oct 2025 09:08:14 GMT
+
+Hello from aeronet minimal server! You requested /hello
+Method: GET
+Version: HTTP/1.1
+Headers:
+Accept: */*
+Host: localhost:8080
+User-Agent: curl/8.5.0
+```
+
+---
+
+## Detailed Documentation
+
+The following focused docs expand each area without cluttering the high‑level overview:
+
+- [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
+- [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
+- [Connection Close Semantics](docs/FEATURES.md#connection-close-semantics)
+- [Reserved & Managed Headers](docs/FEATURES.md#reserved--managed-response-headers)
+- [Query String & Parameter Decoding](docs/FEATURES.md#query-string--parameters)
+- [Trailing Slash Policy](docs/FEATURES.md#trailing-slash-policy)
+- [MultiHttpServer Lifecycle & Restart](docs/FEATURES.md#multihttpserver-lifecycle--restart)
+- [TLS Features](docs/FEATURES.md#tls-features)
+
+If you are evaluating the library, the feature highlights above plus the minimal example are usually sufficient. Dive into the docs only when you need specifics (e.g. multi‑layer decompression safety rules or ALPN strict mode behavior).
+
+---
+
+## Feature Matrix (Concise)
+
+| Category | Implemented (✔) | Notes |
+|----------|-----------------|-------|
+| Core HTTP/1.1 parsing | ✔ | Request line, headers, chunked bodies, pipelining |
+| Routing | ✔ | Exact path + method allow‑lists; streaming + fixed |
+| Keep‑Alive / Limits | ✔ | Header/body size, max requests per connection, idle timeout |
+| Compression (gzip/deflate/zstd/br) | ✔ | Flags opt‑in; q‑value negotiation; threshold; per‑response opt‑out |
+| Inbound body decompression | ✔ | Multi‑layer, safety guards, header removal |
+| TLS | ✔ (flag) | ALPN, mTLS (optional/required), timeouts, metrics |
+| Restartable multi‑reactor | ✔ | `MultiHttpServer` stop/start cycles reuse port |
+| Async wrapper | ✔ | Background thread convenience |
+| Metrics hook | ✔ (alpha) | Per‑request basic stats |
+| Logging | ✔ (flag) | spdlog optional |
+| Duplicate header policy | ✔ | Deterministic, security‑minded |
+| Trailers exposure | ✖ | Planned |
+| Middleware helpers | ✖ | Planned |
+| Streaming inbound decompression | ✖ | Planned |
+| sendfile / static file helper | ✖ | Planned |
+
+---
+
+## Acknowledgements
+
+Compression libraries (zlib, zstd, brotli), OpenSSL, and spdlog provide the optional feature foundation; thanks to their maintainers & contributors.
+
+---
 
 ## Core HTTP & Protocol Features (Implemented)
-
-| Feature | Notes |
-|---------|-------|
-| HTTP/1.1 request parsing | Request line + headers + `Content-Length` bodies (minimal allocations) |
-| Chunked request decoding | `Transfer-Encoding: chunked` (trailers parsed but not exposed yet) |
-| Response building | Convenience struct & helpers (status + headers + body) |
-| Keep-Alive | Timeout + max-requests per connection; HTTP/1.0 opt-in |
-| Percent-decoding | UTF-8 path decoding, invalid sequences -> 400 |
-| Pipelining | Sequential (no parallel handler execution) |
-| Configurable limits | Max header bytes, max body bytes, max outbound buffer bytes |
-| Date header caching | 1 update / second (RFC7231 format) |
-| HEAD method | Suppresses body while preserving `Content-Length` |
-| Expect: 100-continue | Sent only when request has a (non-zero) body |
-| Per-path routing | Exact path match with method allow‑lists |
-| Trailing slash policy | Strict / Normalize (default) / Redirect |
-| Mixed-mode dispatch | Deterministic precedence: path streaming > path normal > global streaming > global normal |
-| Streaming responses | Chunked by default; switch to fixed length with `setContentLength()` |
-| Slowloris mitigation | Header read timeout (configurable; disabled by default) |
-| 404 / 405 handling | Automatic 404 (unknown path) & 405 (known path, method not allowed) |
-| Graceful shutdown | `runUntil()` predicate loop (poll interval via `HttpServerConfig::withPollInterval()`) |
-| Backpressure buffering | Unified buffering for fixed + streaming responses |
-| gzip / deflate / zstd / brotli encoding | Optional via build flags (`AERONET_ENABLE_ZLIB`, `AERONET_ENABLE_ZSTD`, `AERONET_ENABLE_BROTLI`). Each flag enables BOTH outbound response compression and inbound request body decompression for its formats. Accept-Encoding negotiation with q-values, server preference ordering, threshold-based activation, streaming + buffered, per-response opt-out (user `Content-Encoding`), `Vary: Accept-Encoding` injection. |
-| Request body decompression (gzip / deflate / zstd / br) | Optional (`AERONET_ENABLE_ZLIB` / `AERONET_ENABLE_ZSTD` / `AERONET_ENABLE_BROTLI`). Same flags as outbound: enabling them also activates inbound decoding. Multi-layer `Content-Encoding` chains, allocation‑free reverse parsing, per-stage expansion & absolute size guards |
 
 ## Developer / Operational Features
 
@@ -82,297 +132,27 @@ It is designed to be:
 
 The sections below provide a more granular feature matrix and usage examples.
 
-## Quick Start (Minimal Server)
-
-Spin up a basic HTTP/1.1 server that responds on `/hello` in just a few lines. If you pass `0` as the port (or omit it), the kernel picks an ephemeral port which you can query immediately.
-
-```cpp
-#include <aeronet/aeronet.hpp>
-#include <print>
-using namespace aeronet;
-
-int main() {
-  HttpServer server(HttpServerConfig{}.withPort(0)); // 0 => ephemeral port
-  server.addPathHandler("/hello", http::MethodSet{http::Method::GET}, [](const HttpRequest&) {
-    return HttpResponse(200, "OK").contentType("text/plain").body("hello from aeronet"\n);
-  });
-  std::print("Listening on {}\n", server.port());
-  // Adjust event loop poll interval (max idle epoll wait) if desired (default 500ms)
-  // HttpServerConfig{}.withPollInterval(50ms) for more responsive stop/predicate checks.
-  server.run(); // Blocking call, send Ctrl+C to stop
-}
-```
-
-Build & run (example):
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-./build/examples/aeronet-minimal 8080   # or omit 8080 for ephemeral
-```
-
-Test with curl:
-
-```bash
-curl -i http://localhost:8080/hello
-```
-
-Example output:
-
-```text
-HTTP/1.1 200 OK
-Content-Type: text/plain
-Content-Length: 18
-Connection: keep-alive
-
-hello from aeronet
-```
-
 ## HTTP/1.1 Feature Matrix
 
-Legend: [x] implemented, [ ] planned / not yet.
+Moved out of the landing page to keep things concise. See the full, continually updated matrices in:
 
-Core parsing & connection handling
-
-- [x] Request line parsing (method, target, version)
-- [x] Header field parsing (no folding / continuations)
-- [x] Case-insensitive header lookup helper
-- [x] Persistent connections (HTTP/1.1 default, HTTP/1.0 opt-in)
-- [x] HTTP/1.0 response version preserved (no silent upgrade)
-- [x] Connection: close handling
-- [x] Pipelined sequential requests (no parallel handler execution)
-- [x] Backpressure / partial write buffering
-
-Request bodies
-
-- [x] Content-Length bodies with size limit
-- [x] Chunked Transfer-Encoding decoding (request) (ignores trailers)
-- [x] Content-Encoding request body decompression (gzip, deflate, zstd, multi-layer, identity skip, safety limits)
-- [ ] Trailer header exposure
-- [ ] Multipart/form-data convenience utilities
-
-Response generation
-
-- [x] Basic fixed body responses
-- [x] HEAD method (suppressed body, correct Content-Length)
-- [x] Outgoing chunked / streaming responses (basic API: status/headers + incremental write + end, keep-alive capable)
-- [x] Mixed-mode dispatch (simultaneous registration of streaming and fixed handlers with precedence)
-- [x] Compression (gzip & deflate) (phase 1: zlib) – streaming + buffered with threshold & q-values
-
-Status & error handling
-
-- [x] 400 Bad Request (parse errors, CL+TE conflict)
-- [x] 413 Payload Too Large (body limit)
-- [x] 431 Request Header Fields Too Large (header limit)
-- [x] 501 Not Implemented (unsupported Transfer-Encoding)
-- [x] 505 HTTP Version Not Supported
-- [x] 400 on HTTP/1.0 requests carrying Transfer-Encoding
-- [ ] 415 Unsupported Media Type (content-type based) – not required yet
-- [x] 405 Method Not Allowed (enforced when path exists but method not in allow set)
-
-Headers & protocol niceties
-
-- [x] Connection keep-alive / close
-- [x] Content-Type (user supplied only)
-- [x] Expect: 100-continue handling
-- [x] Expect header ignored for HTTP/1.0 (no interim 100 sent)
-- [x] Percent-decoding of request target path (UTF-8 allowed, '+' not treated as space, invalid % -> 400)
-- [ ] Server header (intentionally omitted to keep minimal)
-- [ ] Access-Control-* (CORS) helpers
-
-## Performance / architecture
-
-- [x] Single-thread event loop (one server instance)
-- [x] Horizontal scaling via SO_REUSEPORT (multi-reactor)
-- [x] Multi-instance orchestration wrapper (`MultiHttpServer`) (explicit `reusePort=true` for >1 threads; aggregated stats; resolved port immediately after construction)
-- [x] writev scatter-gather for response header + body
-- [x] Outbound write buffering with EPOLLOUT-driven backpressure
-- [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
-- [ ] Benchmarks & profiling docs
-- [ ] Zero-copy sendfile() support for static files
-
-Safety / robustness
-
-- [x] Configurable header/body limits
-- [x] Graceful shutdown loop (runUntil)
-- [x] Slowloris style header timeout mitigation (implemented as header read timeout)
-- [x] TLS termination (OpenSSL) with ALPN, mTLS, version bounds, handshake timeout & per-server metrics
-
-Developer experience
-
-- [x] Builder style HttpServerConfig
-- [x] Simple lambda handler signature
-- [x] Simple exact-match per-path routing (`addPathHandler`)
-- [x] Configurable trailing slash handling (Strict / Normalize / Redirect)
-- [x] Lightweight built-in logging (spdlog optional integration) – pluggable interface TBD
-- [ ] Middleware helpers
-- [ ] Pluggable logging interface (abstract sink / formatting hooks)
-
-Misc
-
-- [x] Move semantics for HttpServer
-- [x] MultiHttpServer convenience wrapper
-- [x] Compression (gzip & deflate phase 1)
-- [ ] Public API stability guarantee (pre-1.0)
-- [ ] License file
+- [HTTP/1.1 Feature Matrix](docs/FEATURES.md#http11-feature-matrix)
+- [Performance / architecture](docs/FEATURES.md#performance--architecture)
 
 ### Connection Close Semantics (CloseMode)
 
-Aeronet models per-connection shutdown intent with `ConnectionState::CloseMode`:
-
-| Mode | Meaning | Typical triggers |
-|------|---------|------------------|
-| `None` | Connection remains eligible for keep-alive / more requests | Normal operation |
-| `DrainThenClose` | Allow pending outbound data to flush, then close | Client sent `Connection: close`; server reached `maxRequestsPerConnection`; keep-alive disabled; handler explicitly requested close |
-| `Immediate` | Terminate as soon as practical (after queuing minimal error bytes) | Malformed request line / headers; mixed `Content-Length` + `Transfer-Encoding`; unsupported `Transfer-Encoding`; header/body size limits exceeded (413/431); HTTP/1.0 with TE; transport read/write failures; outbound buffer overflow; internal fatal errors |
-
-Public helper methods on `ConnectionState`:
-
-- `requestDrainAndClose()` – escalate from `None` to `DrainThenClose` (idempotent if already closing)
-- `requestImmediateClose()` – unconditionally mark connection as `Immediate`
-- `isDrainCloseRequested()` / `isImmediateCloseRequested()` / `isAnyCloseRequested()` – query helpers
-
-The server prefers preserving response bytes for graceful conditions (client directive, normal lifecycle
-limits) while using immediate teardown for hard protocol violations or transport integrity issues. Error
-paths that call `emitSimpleError(..., /*immediate=*/true)` will always mark the connection `Immediate`.
-
-User code normally does not manipulate `CloseMode` directly; returning a response with
-`Connection: close` (or exhausting keep-alive criteria) automatically maps to `DrainThenClose`.
-Only unrecoverable scenarios escalate to `Immediate` to avoid reusing a compromised protocol state.
+Full details (modes, triggers, helpers) have been moved out of the landing page:
+See: [Connection Close Semantics](docs/FEATURES.md#connection-close-semantics)
 
 ### Compression (gzip, deflate, zstd, brotli)
 
-Implemented capabilities:
+Detailed negotiation rules, thresholds, opt-outs, and tuning have moved:
+See: [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
 
-- Formats: `gzip` & `deflate` (zlib), `zstd`, `br` (brotli) – each behind its own feature flag: `AERONET_ENABLE_ZLIB`, `AERONET_ENABLE_ZSTD`, `AERONET_ENABLE_BROTLI`.
-- Enabling a format flag activates BOTH outbound response compression and inbound request body decompression for that format (symmetry keeps configuration minimal).
-- Default server preference order (tie-break among equal effective q-values) when nothing specified in `CompressionConfig::preferredFormats` is: `gzip, deflate` if only zlib enabled; `zstd, gzip, deflate` if zstd also enabled; `br, zstd, gzip, deflate` if brotli enabled (brotli first due to highest typical ratio at similar or modest CPU for many payload sizes; adjust via `preferredFormats`).
-- Negotiation: Parses `Accept-Encoding` with q-values; chooses format with highest q (server preference breaks ties). Falls back to identity if none acceptable.
-- Server preference: Order in `CompressionConfig::preferredFormats` only breaks ties among encodings with equal effective q-values; it does NOT allow picking encodings absent from that vector with lower q – but encodings with strictly higher client q still win even if not listed (if you supply a non-empty subset). Supplying all enabled encodings gives you an explicit deterministic ordering.
-- Threshold: `minBytes` delays compression until uncompressed size reaches threshold (streaming buffers until then; fixed responses decide immediately). Applies uniformly to all formats.
-- Streaming integration: Headers are withheld until compression activation decision so `Content-Encoding` is always accurate once emitted.
-- Per-response opt-out: supply your own `Content-Encoding` header (e.g. `identity` to disable, or a custom value you fully manage). If present, Aeronet never applies automatic compression and does not modify your header/body.
-- Vary header: Adds `Vary: Accept-Encoding` when compression applied (configurable via `addVaryHeader`).
-- Identity safety: If threshold not met, buffered bytes are flushed uncompressed and no misleading `Content-Encoding` is added.
-- Q-value precedence: Correctly honors client preference (e.g. `gzip;q=0.1, deflate;q=0.9` selects deflate even if server lists gzip first).
-- Explicit identity rejection: If a client sends an `Accept-Encoding` header that (a) explicitly forbids the
-  identity coding via `identity;q=0` and (b) does not list any supported compression coding with a positive `q`
-  (and wildcard `*` does not introduce one), Aeronet now responds with **`406 Not Acceptable`** and a short plain
-  text body `"No acceptable content-coding available"`. This follows RFC 9110 §12.5.3 guidance that a server MAY
-  reject a request when none of the client's acceptable codings are available. Typical scenario:
-  `Accept-Encoding: identity;q=0, snappy;q=0` (all unsupported) → 406. If any supported coding is acceptable
-  (e.g. `identity;q=0, gzip`), normal negotiation proceeds and that coding is used.
+### Inbound Request Body Decompression
 
-Zstd tuning (when enabled):
-
-```cpp
-CompressionConfig cfg;
-cfg.zstd.compressionLevel = 5;   // default ~3
-cfg.zstd.windowLog = 0;          // 0 => library default; set >0 (e.g. 23) to force max window
-```
-
-`compressionLevel` maps to the standard zstd levels (higher = more CPU, usually better ratio). `windowLog` controls
-the maximum back‑reference window; leave at 0 unless you need deterministic memory limits.
-
-Sample multi-line version string fragment (with TLS, logging, and multiple compression libs enabled):
-
-```text
-aeronet 0.1.0
-  tls: OpenSSL 3.0.13 30 Jan 2024
-  logging: spdlog 1.15.3
-  compression: zlib 1.2.13, zstd 1.5.6, brotli 1.1.0
-```
-
-Planned / future (compression):
-
-- Content-Type allowlist enforcement (framework in config; default list to be finalized).
-- Compression ratio metrics in `RequestMetrics` (+ per-layer ratios for multi-layer inbound decode).
-- Adaptive buffer sizing & memory pooling for encoder contexts; encoder context reuse pools.
-- Optional dynamic quality selection (choose format or level based on size/time budget).
-
-Minimal usage example:
-
-```cpp
-CompressionConfig c;
-c.minBytes = 64;
-c.preferredFormats.push_back(Encoding::gzip);
-c.preferredFormats.push_back(Encoding::deflate);
-HttpServerConfig cfg;
-cfg.withCompression(c);
-HttpServer server(cfg);
-server.setHandler([](const HttpRequest&) {
-  return HttpResponse(200, "OK").contentType("text/plain").body(std::string(1024, 'A'));
-});
-```
-
-For streaming:
-
-### Inbound Request Body Decompression (Content-Encoding) (Details)
-
-Implemented capabilities (independent from outbound compression):
-
-| Aspect | Details |
-|--------|---------|
-| Supported codings | `gzip`, `deflate` (zlib) when `AERONET_ENABLE_ZLIB`; `zstd` when `AERONET_ENABLE_ZSTD`; `br` when `AERONET_ENABLE_BROTLI`; `identity` always recognized (no-op) |
-| Multi-layer chains | Fully supported (e.g. `Content-Encoding: deflate, gzip, zstd`). Layers are decoded in **reverse order** of appearance (last listed = outermost applied, decoded first). |
-| Parsing | Allocation-free reverse splitting; trims spaces / tabs around tokens; rejects empty tokens (e.g. `gzip,,deflate`) with **400** |
-| Unknown coding | Immediate **415 Unsupported Media Type** (feature is opt-in via `RequestDecompressionConfig::enable`) |
-| Disabled feature | If `enable=false`, encodings are ignored (body left compressed; no auto 415) |
-| Safety limits | `maxCompressedBytes`, `maxDecompressedBytes`, and `maxExpansionRatio` (per-stage) guard against bombs; exceeding ratio or byte limits returns **413** |
-| Error mapping | Malformed or undecodable compressed data -> **400**; unknown coding -> **415**; ratio/size violation -> **413** |
-| Identity in chains | Gracefully skipped (`deflate, identity, gzip` works) |
-| Buffering model | Request body is first fully aggregated (respecting existing body size limits) before decompression; decoding ping‑pongs between two internal buffers without reallocating vectors per layer |
-| Header normalization | When automatic decompression succeeds the `Content-Encoding` request header is **removed** before user handlers run (body is already decoded). This avoids accidental double-decode attempts and keeps handler view canonical. |
-
-Configuration (`RequestDecompressionConfig`):
-
-```cpp
-RequestDecompressionConfig cfg;
-cfg.enable = true;                 // default true when provided
-cfg.maxCompressedBytes = 0;        // 0 => unlimited (still bounded by global body limit)
-cfg.maxDecompressedBytes = 0;      // 0 => unlimited absolute post-decode size
-cfg.maxExpansionRatio = 0.0;       // 0 => disabled; otherwise (decompressed / originalCompressed) <= ratio
-HttpServerConfig serverCfg;
-serverCfg.withRequestDecompression(cfg);
-```
-
-Security / robustness notes:
-
-- Multi-layer decoding performs an expansion ratio check **after each stage** relative to the original compressed size to prevent a sequence of individually benign layers from compounding into an excessive blow‑up.
-- A per-stage absolute size cap (`maxDecompressedBytes`) halts decoding early to bound memory usage even if the ratio guard is disabled.
-- Empty or whitespace-only tokens are rejected (400) to avoid silent acceptance of malformed chains that some intermediaries might normalize differently.
-- Unknown codings are not skipped; failing fast with 415 prevents ambiguous partial decoding states.
-- Disabling the feature (`enable=false`) leaves bodies compressed (pass-through) with no automatic 415.
-
-Examples:
-
-```text
-Content-Encoding: gzip                -> decode gzip
-Content-Encoding: gzip, zstd          -> decode zstd then gzip
-Content-Encoding: deflate, identity, gzip -> decode gzip then deflate (identity skipped)
-Content-Encoding: gzip,,deflate       -> 400 (empty token)
-Content-Encoding: br                  -> 415 (unsupported)
-```
-
-Typical handler setup:
-
-```cpp
-HttpServerConfig scfg{};
-scfg.withRequestDecompression(RequestDecompressionConfig{ /* defaults */ });
-HttpServer server(scfg);
-server.setHandler([](const HttpRequest& req){
-  // If the client sent a compressed body, req.body() is now the decoded bytes or the request was rejected earlier.
-  return HttpResponse(200, "OK").body(std::string(req.body()));
-});
-```
-
-Tests cover: single-layer (each coding), multi-layer permutations & spacing, identity skipping, malformed empty token, disabled feature, unknown coding, expansion ratio violation, and corruption (truncated gzip trailer, zstd bad magic) producing appropriate status codes.
-
-Planned / future:
-
-- Optional allow‑list of acceptable inbound codings (beyond simple enable/disable).
-- Metrics: number of layers decoded, compressed vs decompressed size counters in `RequestMetrics`.
-- Streaming (incremental) inbound decompression (current model requires full body aggregation before decode).
+Detailed multi-layer decoding behavior, safety limits, examples, and configuration moved here:
+See: [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
 
 ```cpp
 server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
@@ -388,7 +168,7 @@ server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
 ### Reserved Headers
 
 The library intentionally reserves a small set of response headers that user code cannot set directly on
-`HttpResponse` (fixed responses) or via `HttpResponseWriter` (streaming) because Aeronet itself manages them or
+`HttpResponse` (fixed responses) or via `HttpResponseWriter` (streaming) because aeronet itself manages them or
 their semantics would be invalid / ambiguous without deeper protocol features:
 
 Reserved now (assert if attempted in debug; ignored in release for streaming):
@@ -400,7 +180,7 @@ Reserved now (assert if attempted in debug; ignored in release for streaming):
   supplying conflicting values could desynchronize connection reuse logic.
 - `Transfer-Encoding` – controlled by streaming writer (`chunked`) or omitted when `Content-Length` is known. Allowing
   arbitrary values risks illegal CL + TE combinations or unsupported encodings.
-- `Trailer`, `TE`, `Upgrade` – not yet supported by Aeronet; reserving them now avoids future backward-incompatible
+- `Trailer`, `TE`, `Upgrade` – not yet supported by aeronet; reserving them now avoids future backward-incompatible
   behavior changes when trailer / upgrade features are introduced.
 
 Allowed convenience helpers:
@@ -413,143 +193,12 @@ This central rule lives in a single helper (`HttpResponse::IsReservedHeader`).
 
 ### Request Header Duplicate Handling
 
-Incoming request headers are parsed into a flat buffer and exposed through case‑insensitive lookups on
-`HttpRequest`. Aeronet applies a deterministic, allocation‑free in‑place policy when a duplicate request
-header field name is encountered while parsing. The policy is driven by a constexpr classification table that maps well‑known header names (case‑insensitive) to one of the following behaviors:
-
-| Policy Code | Meaning | Examples |
-|-------------|---------|----------|
-| `,` | List merge: append a comma and the new non‑empty value | `Accept`, `Accept-Encoding`, `Via`, `Warning`, `TE` |
-| `;` | Cookie merge: append a semicolon (no extra space) | `Cookie` |
-| (space) | Space join: append a single space and the new non‑empty value | `User-Agent` |
-| `O` | Override: keep ONLY the last occurrence (replace existing value, no concatenation) | `Authorization`, `Range`, `From`, conditional time headers |
-| `\0` | Disallowed duplicate: second occurrence triggers `400 Bad Request` | `Content-Length`, `Host` |
-
-Fallback for unknown (unclassified) headers currently assumes list semantics (`,`). This is configurable
-internally (a server config flag exists for future tightening) and is chosen to preserve extension /
-experimental headers that follow conventional `1#token` or `1#element` ABNF patterns.
-
-Merging rules are value‑aware:
-
-- If the existing stored value is empty and a later non‑empty value arrives, the new value replaces it
-  (no leading separator is inserted).
-- If the new value is empty and the existing value is non‑empty, no change is made (we avoid trailing
-  separators that would manufacture an empty list member).
-- Only when both values are non‑empty is the separator inserted (`,` / `;` / space) followed by the new
-  bytes.
-- Override (`O`) headers always adopt the last (even if empty → empty replaces previous non‑empty).
-
-Implementation details:
-
-1. The first occurrence of each header stores `name` and `value` as `std::string_view` slices into the
-   connection read buffer (no copy).
-2. On a mergeable duplicate, the new value bytes are temporarily copied into a scratch buffer, the tail
-   of the original buffer is shifted right with a single `memmove`, and the separator plus new value are
-   written into the gap. All subsequent header string_views are pointer‑adjusted (stable hashing / equality
-   are preserved because key characters do not change, only their addresses move uniformly).
-3. Override simply rebinds the existing `value` view to point at the newest occurrence (no buffer mutation).
-4. Disallowed duplicates short‑circuit parsing and return `400 Bad Request` immediately.
-
-Security / robustness notes:
-
-- Disallowing duplicate `Content-Length` and `Host` prevents common request smuggling vectors that rely on
-  conflicting or ambiguous canonicalization rules across intermediaries.
-- A future stricter mode may treat unknown header duplicates as disallowed instead of comma‑merging; the
-  hook for that decision exists in the classification fallback.
-- The implementation never allocates proportional to header count on a merge path; each merge performs at
-  most one temporary copy (size of the new value) plus one tail shift.
-
-Examples:
-
-```text
-Accept: text/plain
-Accept: text/html
-→ Accept: text/plain,text/html
-```cpp
-// Streaming compression example (automatic activation once threshold reached)
-HttpServer server(HttpServerConfig{}.withPort(8080)
-  .withCompression(CompressionConfig{}
-    .withMinBytes(64) // buffer until >=64 bytes before deciding to compress
-  ));
-server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
-  w.setStatus(200, "OK");
-  w.setHeader("Content-Type", "text/plain");
-  // Write several chunks; they are buffered internally until threshold, then
-  // compression is decided and subsequent output is emitted with Content-Encoding.
-  for (int i = 0; i < 10; ++i) {
-    if (!w.write(std::string(50, 'x'))) {
-      break; // connection closing / backpressure fatal path
-    }
-  }
-  w.end();
-});
-```
+Detailed policy & implementation moved to: [Request Header Duplicate Handling](docs/FEATURES.md#request-header-duplicate-handling-detailed)
 
 ### Inbound Request Body Decompression (Content-Encoding)
 
-Implemented capabilities (independent from outbound compression):
+Detailed behavior, limits & examples moved to: [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
 
-| Aspect | Details |
-|--------|---------|
-| Supported codings | `gzip`, `deflate` when `AERONET_ENABLE_ZLIB`; `zstd` when `AERONET_ENABLE_ZSTD`; `br` when `AERONET_ENABLE_BROTLI`; `identity` always recognized (no-op) |
-| Multi-layer chains | Fully supported (e.g. `Content-Encoding: deflate, gzip, zstd`). Layers are decoded in **reverse order** of appearance (last listed = outermost applied, decoded first). |
-| Parsing | Allocation-free reverse splitting; trims spaces / tabs around tokens; rejects empty tokens (e.g. `gzip,,deflate`) with **400** |
-| Unknown coding | Immediate **415 Unsupported Media Type** (feature is opt-in via `RequestDecompressionConfig::enable`) |
-| Disabled feature | If `enable=false`, encodings are ignored (body left compressed; no auto 415) |
-| Safety limits | `maxCompressedBytes`, `maxDecompressedBytes`, and `maxExpansionRatio` (per-stage) guard against bombs; exceeding ratio or byte limits returns **413** |
-| Error mapping | Malformed or undecodable compressed data -> **400**; unknown coding -> **415**; ratio/size violation -> **413** |
-| Identity in chains | Gracefully skipped (`deflate, identity, gzip` works) |
-| Buffering model | Request body is first fully aggregated (respecting existing body size limits) before decompression; decoding ping‑pongs between two internal buffers without reallocating vectors per layer |
-
-Configuration (`RequestDecompressionConfig`):
-
-```cpp
-RequestDecompressionConfig cfg;
-cfg.enable = true;                 // default true when provided
-cfg.maxCompressedBytes = 0;        // 0 => unlimited (still bounded by global body limit)
-cfg.maxDecompressedBytes = 0;      // 0 => unlimited absolute post-decode size
-cfg.maxExpansionRatio = 0.0;       // 0 => disabled; otherwise (decompressed / originalCompressed) <= ratio
-HttpServerConfig serverCfg;
-serverCfg.withRequestDecompression(cfg);
-```
-
-Security / robustness notes:
-
-- Multi-layer decoding performs an expansion ratio check **after each stage** relative to the original compressed size to prevent a sequence of individually benign layers from compounding into an excessive blow‑up.
-- A per-stage absolute size cap (`maxDecompressedBytes`) halts decoding early to bound memory usage even if the ratio guard is disabled.
-- Empty or whitespace-only tokens are rejected (400) to avoid silent acceptance of malformed chains that some intermediaries might normalize differently.
-- Unknown codings are not skipped; failing fast with 415 prevents ambiguous partial decoding states.
-- Disabling the feature (`enable=false`) leaves bodies compressed (pass-through) with no automatic 415.
-
-Examples:
-
-```text
-Content-Encoding: gzip                -> decode gzip
-Content-Encoding: gzip, zstd          -> decode zstd then gzip
-Content-Encoding: deflate, identity, gzip -> decode gzip then deflate (identity skipped)
-Content-Encoding: gzip,,deflate       -> 400 (empty token)
-Content-Encoding: br                  -> 415 (unsupported)
-```
-
-Typical handler setup:
-
-```cpp
-HttpServerConfig scfg{};
-scfg.withRequestDecompression(RequestDecompressionConfig{ /* defaults */ });
-HttpServer server(scfg);
-server.setHandler([](const HttpRequest& req){
-  // If the client sent a compressed body, req.body() is now the decoded bytes or the request was rejected earlier.
-  return HttpResponse(200, "OK").body(std::string(req.body()));
-});
-```
-
-Tests cover: single-layer (each coding), multi-layer permutations & spacing, identity skipping, malformed empty token, disabled feature, unknown coding, expansion ratio violation, and corruption (truncated gzip trailer, zstd bad magic) producing appropriate status codes.
-
-Planned / future:
-
-- Optional allow‑list of acceptable inbound codings (beyond simple enable/disable).
-- Metrics: number of layers decoded, compressed vs decompressed size counters in `RequestMetrics`.
-- Streaming (incremental) inbound decompression (current model requires full body aggregation before decode).
 | Operation          | Complexity | Notes |
 |--------------------|------------|-------|
 | `statusCode()`     | O(1)       | Overwrites 3 digits |
@@ -631,83 +280,14 @@ Notes:
 - You may modify or add path handlers (and/or replace the global handler) after `stop()` and before the next
   `start()`; attempting to do so while running throws.
 
-## TLS Features (Current)
+#### Example
 
-TLS support is optional (`AERONET_ENABLE_OPENSSL`). When configured via `HttpServerConfig::TLSConfig`, the following capabilities are available:
-
-| Capability | Status | Notes |
-|------------|--------|-------|
-| TLS termination | ✅ | File or in‑memory PEM cert/key |
-| mTLS (request) | ✅ | `withTlsRequestClientCert()` (non-fatal absence) |
-| mTLS (require) | ✅ | `withTlsRequireClientCert()` (fatal if absent / invalid) |
-| ALPN negotiation | ✅ | Ordered list via `withTlsAlpnProtocols()` |
-| Strict ALPN enforcement | ✅ | `withTlsAlpnMustMatch(true)` -> fatal if no overlap |
-| Negotiated ALPN in request | ✅ | `HttpRequest::alpnProtocol` |
-| Negotiated cipher & version | ✅ | `HttpRequest::{tlsCipher,tlsVersion}` |
-| Handshake logging | ✅ | `withTlsHandshakeLogging()` (cipher, version, ALPN, peer subject) |
-| Min / Max protocol version | ✅ | `withTlsMinVersion("TLS1.2")`, `withTlsMaxVersion("TLS1.3")` |
-| Handshake timeout | ✅ | `withTlsHandshakeTimeout(ms)` closes stalled handshakes |
-| Graceful TLS shutdown | ✅ | Best‑effort `SSL_shutdown` before close |
-| ALPN strict mismatch counter | ✅ | Per‑server stats |
-| Handshake success counter | ✅ | Per‑server stats |
-| Client cert presence counter | ✅ | Per‑server stats |
-| ALPN distribution | ✅ | Vector (protocol,count) in stats |
-| TLS version distribution | ✅ | Stats field |
-| Cipher distribution | ✅ | Stats field |
-| Handshake duration metrics | ✅ | Count / total ns / max ns |
-| JSON stats export | ✅ | `serverStatsToJson()` includes TLS metrics |
-| No process‑global mutable TLS state | ✅ | All metrics per server instance |
-| Session resumption | ⏳ | Planned |
-| SNI multi-cert routing | ⏳ | Planned |
-| Hot cert/key reload | ⏳ | Planned |
-| OCSP / revocation | ⏳ | Planned |
-
-### TLS Configuration Example
-
-```cpp
-HttpServerConfig cfg;
-cfg.withPort(8443)
-   .withTlsCertKeyMemory(certPem, keyPem)
-   .withTlsAlpnProtocols({"http/1.1"})
-   .withTlsAlpnMustMatch(true)
-   .withTlsMinVersion("TLS1.2")
-   .withTlsMaxVersion("TLS1.3")
-   .withTlsHandshakeTimeout(std::chrono::milliseconds(750))
-   .withTlsHandshakeLogging();
-
-HttpServer server(cfg);
-server.setHandler([](const HttpRequest& req){
-  HttpResponse r{200, "OK"};
-  r.contentType = "text/plain";
-  r.body = std::string("cipher=") + std::string(req.tlsCipher)
-         + " version=" + std::string(req.tlsVersion)
-         + " alpn=" + std::string(req.alpnProtocol);
-  return r;
-});
-server.run();
+```bash
+./build/examples/aeronet-multi 8080 4   # port 8080, 4 threads
 ```
 
-### Accessing TLS Metrics
-
-```cpp
-#include <print>
-auto st = server.stats();
-std::print("handshakes={} clientCerts={} alpnStrictMismatches={}\n",
-           st.tlsHandshakesSucceeded,
-           st.tlsClientCertPresent,
-           st.tlsAlpnStrictMismatches);
-for (auto& [proto,count] : st.tlsAlpnDistribution) {
-  std::print("ALPN {} -> {}\n", proto, count);
-}
-for (auto& [ver,count] : st.tlsVersionCounts) {
-  std::print("Version {} -> {}\n", ver, count);
-}
-double avgNs = st.tlsHandshakeDurationCount ?
-               double(st.tlsHandshakeDurationTotalNs) / st.tlsHandshakeDurationCount : 0.0;
-std::print("avgHandshakeNs={}\n", avgNs);
-```
-
----
+Each thread owns its own listening socket (SO_REUSEPORT) and epoll instance – no shared locks in the accept path.
+This is the simplest horizontal scaling strategy before introducing a worker pool.
 
 ## Test Coverage Matrix
 
@@ -765,196 +345,23 @@ For TLS toggles, sanitizers, Conan/vcpkg usage and `find_package` examples, see 
 
 ## Trailing Slash Policy
 
-`HttpServerConfig::TrailingSlashPolicy` controls how paths that differ only by a single trailing `/` are treated.
-
-Resolution algorithm (applies to all policies):
-
-1. Always attempt an exact match first. If the incoming target exactly equals a registered path, that handler is used and the policy does not intervene. (So if both `/foo` and `/foo/` are registered you get whichever you requested, under every policy.)
-2. If no exact match:
-   - If the request ends with a single trailing slash (excluding root `/`) and the canonical form without that slash exists:
-     - Strict   – 404 (variants are distinct; no mapping)
-     - Normalize – treat as the canonical path (strip the slash internally, no redirect)
-     - Redirect – emit `301 Moved Permanently` with `Location: /foo`
-   - Else if the request does not end with a slash, policy is Normalize, and only the slashed variant exists (e.g. only `/foo/` registered): dispatch to that variant (symmetry in the opposite direction)
-   - Otherwise: 404
-3. The root path `/` is never redirected or normalized.
-
-Behavior summary:
-
-| Policy    | `/foo` registered only | `/foo/` registered only | Both registered      |
-|-----------|------------------------|--------------------------|----------------------|
-| Strict    | `/foo/` -> 404         | `/foo` -> 404            | Each exact served    |
-| Normalize | `/foo/` -> serve `/foo`| `/foo` -> serve `/foo/`  | Each exact served    |
-| Redirect  | `/foo/` -> 301 `/foo`  | `/foo` -> 404            | Each exact served (no redirect) |
-
-Usage:
-
-```cpp
-HttpServerConfig cfg;
-cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Redirect);
-HttpServer server(cfg);
-server.addPathHandler("/foo", http::Method::GET, [](const HttpRequest&){
-  HttpResponse r{200, "OK"}; r.body="foo"; r.contentType="text/plain"; return r; });
-```
-
-Tests covering this matrix live in `tests/http_trailing_slash.cpp`.
+Full resolution algorithm and matrix moved to: [Trailing Slash Policy](docs/FEATURES.md#trailing-slash-policy)
 
 ## Construction Model (RAII) & Ephemeral Ports
 
-`HttpServer` binds, sets socket options, enters listening state, and registers the listening fd with epoll inside its constructor (RAII). If you request an ephemeral port (`port = 0` in `HttpServerConfig`), the kernel-assigned port is immediately available via `server.port()` after construction (no separate `setupListener()` call required – that legacy function was removed during refactor).
+Overview relocated to: [Construction Model (RAII & Ephemeral Ports)](docs/FEATURES.md#construction-model-raii--ephemeral-ports)
 
-Why RAII?
+## TLS Features (Current)
 
-- Guarantees a fully initialized, listening server object or a thrown exception (no half-initialized state)
-- Simplifies lifecycle (no forgotten setup step)
-- Enables immediate test usage with ephemeral ports
+See: [TLS Features](docs/FEATURES.md#tls-features)
 
-Ephemeral port pattern in tests / examples:
+### TLS Metrics Reference
 
-```cpp
-HttpServerConfig cfg; // let kernel choose the port
-HttpServer server(cfg);
-uint16_t actual = server.port(); // resolved port
-```
-
-NOTE: A previous experimental non-throwing `tryCreate` factory was removed to reduce API surface; the throwing constructor is the only creation path for now.
-
-## Quick Usage Examples
-
-### Minimal Global Handler (Ephemeral Port)
-
-```cpp
-#include <aeronet/aeronet.hpp>
-#include <print>
-using namespace aeronet;
-
-int main() {
-  HttpServer server(cfg.withPort(8080));
-  std::print("Listening on {}\n", server.port());
-  server.setHandler([](const HttpRequest& req) {
-    return HttpResponse(200, "OK").body("Hello from Aeronet\n").contentType("text/plain");
-  });
-  server.run(); // press Ctrl+C to terminate process
-}
-```
-
-### Per-Path Routing & Method Masks
-
-```cpp
-HttpServer server(HttpServerConfig{}); // ephemeral port
-
-server.addPathHandler("/hello", http::MethodSet{http::Method::GET}, [](const HttpRequest&){
-  HttpResponse r; r.statusCode=200; r.reason="OK"; r.contentType="text/plain"; r.body="world"; return r; });
-
-// Add POST later (merges methods)
-server.addPathHandler("/hello", http::Method::POST, [](const HttpRequest& req){
-  HttpResponse r; r.statusCode=200; r.reason="OK"; r.contentType="text/plain"; r.body=req.body; return r; });
-
-// Unknown path -> 404, known path wrong method -> 405 automatically.
-
-server.run();
-```
-
-### Multi‑Reactor (SO_REUSEPORT) Launch Sketch
-
-```cpp
-std::vector<std::jthread> threads;
-for (int i = 0; i < 4; ++i) {
-  threads.emplace_back([i]{
-  HttpServerConfig cfg; cfg.withPort(8080).withReusePort(true); // or 0 for ephemeral resolved separately
-    HttpServer s(cfg);
-    s.setHandler([](const HttpRequest&){ HttpResponse r{200, "OK"}; r.body="hi"; r.contentType="text/plain"; return r; });
-  s.run();
-  });
-}
-```
-
-### Accessing Backpressure / IO Stats
-
-```cpp
-auto st = server.stats();
-std::print("queued={} imm={} flush={} defer={} cycles={} maxConnBuf={}\n",
-  st.totalBytesQueued,
-  st.totalBytesWrittenImmediate,
-  st.totalBytesWrittenFlush,
-  st.deferredWriteEvents,
-  st.flushCycles,
-  st.maxConnectionOutboundBuffer);
-```
-
-## Run example
-
-```bash
-./build/examples/aeronet-minimal 8080
-```
-
-Then visit <http://localhost:8080/>
-
-### Multi-reactor (SO_REUSEPORT) example
-
-You can start several independent event loops on the same port (kernel load balances incoming connections) by using
-`enablePortReuse(true)` and running one `HttpServer` per thread:
-
-```bash
-./build/examples/aeronet-multi 8080 4   # port 8080, 4 threads
-```
-
-Each thread owns its own listening socket (SO_REUSEPORT) and epoll instance – no shared locks in the accept path.
-This is the simplest horizontal scaling strategy before introducing a worker pool.
-
-### MultiHttpServer Convenience Wrapper
+Metrics example: [TLS Features](docs/FEATURES.md#tls-features)
 
 ### Accessing the Query String & Parameters
 
-Each `HttpRequest` exposes:
-
-- `path()`        : URL-decoded path (RFC 3986 percent-decoded in a single pass; invalid escape -> 400)
-- `method()`      : HTTP request method
-- `query()`       : raw query substring (no leading `?`), NOT percent-decoded wholesale
-- `version()`     : HTTP version (typed)
-- `queryParams()` : lightweight forward range over decoded `(key,value)` pairs
-
-Decoding strategy:
-
-1. The request target is split once on the first `?`.
-2. The path segment is percent-decoded in-place (one pass). Any invalid escape produces a 400 error.
-3. The raw query segment is left untouched (so delimiters `&` and `=` remain unambiguous even if later a malformed escape exists).
-4. Iteration via `queryParams()` performs component-wise decoding:
-   - Split on `&` into tokens.
-   - For each token split at the first `=` (missing `=` ⇒ empty value).
-   - Percent-decode key and value separately; invalid / incomplete escapes are left verbatim (no rejection).
-   - Convert `+` to space in both key and value (application/x-www-form-urlencoded semantics).
-   - Yield `std::string_view` pairs referencing either original buffer slices (no escapes) or small internal decode storage (escapes present). Copy if you need persistence.
-
-Semantics & edge cases:
-
-- Order preserved; duplicates preserved (`a=1&a=2`).
-- `a` ⇒ `(a, "")`; `a=` ⇒ `(a, "")`; `=v` ⇒ `( "", v )`.
-- Empty query (`/p` or `/p?`) ⇒ empty range.
-- Malformed escapes in query components (`%A`, solitary `%`, `%ZZ`) are surfaced literally.
-- `'+'` is translated to space only for query parameter keys/values (path keeps literal `+`).
-
-Example:
-
-```cpp
-void handler(const aeronet::HttpRequest& req) {
-  for (auto [k,v] : req.queryParams()) {
-    std::print("{} => {}\n", k, v);
-  }
-}
-```
-
-Characteristics summary:
-
-| Aspect              | Path                                | Query param keys/values                      |
-|---------------------|-------------------------------------|----------------------------------------------|
-| Decode granularity  | Whole path once                     | Per key and per value                        |
-| Invalid escapes     | 400 Bad Request                     | Left verbatim                                |
-| '+' handling        | Preserved as '+'                    | Decoded to space                             |
-| Duplicates          | N/A                                 | Preserved in order                           |
-| Missing '='         | N/A                                 | Value = ""                                   |
-| Empty key           | N/A                                 | Allowed (`=v`)                               |
-| Malformed escapes   | Rejected                            | Surfaced literally                           |
+Moved to: [Query String & Parameters](docs/FEATURES.md#query-string--parameters)
 
 Instead of manually creating N threads and N `HttpServer` instances, you can use `MultiHttpServer` to spin up a "farm" of identical servers on the same port. It:
 
@@ -969,6 +376,7 @@ Minimal example:
 
 ```cpp
 #include <aeronet/aeronet.hpp>
+#include <print>
 using namespace aeronet;
 
 int main() {
@@ -978,7 +386,6 @@ int main() {
     return HttpResponse(200, "OK").body("hello\n").contentType("text/plain");
   });
   multi.start();
-  std::print("Listening on {}\n", multi.port());
   // ... run until external signal ...
   std::this_thread::sleep_for(std::chrono::seconds(30));
   auto agg = multi.stats();
@@ -1068,110 +475,15 @@ for (size_t i = 0; i < st.per.size(); ++i) {
 
 ### Logging
 
-Logging uses `spdlog` if `AERONET_ENABLE_SPDLOG` is defined at build time; otherwise a lightweight fallback provides the same call style (`log::info("message {}", value)`). The fallback uses `std::vformat` when available and degrades gracefully if formatting fails (appends arguments). Timestamps are ISO 8601 UTC with millisecond precision. Levels: trace, debug, info, warn, error, critical. You can adjust level in fallback with `aeronet::log::set_level(aeronet::log::level::debug);`.
-
-Pluggable logging sinks / structured logging hooks are planned; current design keeps logging dependency-free by default.
+Details moved to: [Logging](docs/FEATURES.md#logging)
 
 ## Streaming Responses (Chunked / Incremental)
 
-The streaming API lets a handler produce a response body incrementally without a priori knowing its full size.
-Register a streaming handler instead of the fixed response/global or per-path handlers:
-
-```cpp
-HttpServer server(HttpServerConfig{}.withPort(8080));
-server.setStreamingHandler([](const HttpRequest& req, HttpResponseWriter& w) {
-  w.setStatus(200, "OK");
-  w.setHeader("Content-Type", "text/plain");
-  // Optionally set Content-Length first if known to disable chunked encoding:
-  // w.setContentLength(totalBytes);
-  for (int i = 0; i < 5; ++i) {
-    if (!w.write("chunk-" + std::to_string(i) + "\n")) {
-      // Backpressure or failure: in this phase writer returns false if connection marked to close.
-      break;
-    }
-  }
-  w.end();
-});
-```
-
-Key semantics:
-
-- By default responses are sent with `Transfer-Encoding: chunked` unless `setContentLength()` is called before any body bytes are written.
-- `write()` queues data into the server's outbound buffer (no direct syscalls in the writer) and returns `false` if the connection was marked for closure (e.g., max outbound buffer exceeded or hard error). In future phases it may return `false` transiently to signal backpressure without connection closure.
-- `end()` finalizes the response. For chunked mode it appends the terminating `0\r\n\r\n` chunk.
-  Additional guarantees (see in-code docs for `HttpResponseWriter::end()`):
-  - Idempotent: repeated calls are ignored after the first.
-  - Ensures headers are emitted (lazy strategy) and flushes any buffered pre-compression bytes.
-  - Flushes final compressor bytes if compression activated, then emits last chunk when chunked.
-  - For fixed `Content-Length` responses (when declared), does not pad or truncate; debug builds assert the exact
-    body byte count (identity or user-encoded) matches the declared length.
-  - For HEAD requests: still sends headers (with synthesized `Content-Length` if none provided) but suppresses body.
-- HEAD requests automatically suppress body bytes; you can still call `write()` for symmetric code paths.
-- Keep-Alive is supported for streaming responses when: server keep-alive is enabled, HTTP/1.1 is used, max-requests-per-connection not exceeded, and the connection wasn't marked for closure due to buffer overflow or error. Set an explicit `Connection: keep-alive` header inside your streaming handler if you want to guarantee the header presence; otherwise the server may add it according to policy (future enhancement).
-- If you provide your own `Connection: close` header, the server will honor it, preventing reuse.
-
-Backpressure & buffering:
-
-- Streaming writes reuse the same outbound buffering subsystem as fixed responses (`queueData`). Immediate socket writes are attempted when the buffer is empty; partial or blocked writes append to the per-connection buffer and register EPOLLOUT interest. This unification reduced code paths and eliminated a previous duplication in streaming flush logic.
-- If the per-connection buffered bytes exceed `maxOutboundBufferBytes`, the connection is marked to close after flush, and subsequent `write()` calls return `false`.
-
-Limitations / roadmap (streaming phase 1):
-
-- No trailer support yet.
-- Backpressure signaling currently binary (accept / fatal) – future versions may expose a tri-state (ok / should-pause / failed).
-- Compression not yet integrated with streaming.
-
-Testing:
-
-- See `tests/http_streaming.cpp` (basic chunk framing & HEAD) and `tests/http_streaming_keepalive.cpp` (keep-alive reuse) for examples.
-- Mixed / precedence / conflict / HEAD suppression / keep-alive mixing: `tests/http_streaming_mixed.cpp`
+Moved to: [Streaming Responses](docs/FEATURES.md#streaming-responses-chunked--incremental)
 
 ### Mixed Mode & Dispatch Precedence
 
-You can register both fixed (normal) and streaming handlers simultaneously at different granularity levels. The server applies the following precedence when selecting which handler to invoke for a request method + path:
-
-1. Path-specific streaming handler (highest)
-2. Path-specific normal handler
-3. Global streaming handler
-4. Global normal handler (lowest)
-
-If no handler matches the path: 404. If a path exists but the method is not in its allow-set: 405 (Method Not Allowed). Method allow sets for streaming and normal handlers are independently validated to prevent duplicate conflicting registration (conflicts throw early at registration time).
-
-HEAD requests participate in the same precedence logic using an implicit fallback to GET when a HEAD-specific registration is absent (common ergonomic shortcut). Body data generated by streaming handlers is automatically suppressed for HEAD while preserving `Content-Length` if it was explicitly set.
-
-Conflict rules:
-
-- Registering a streaming handler for (path, method) that already has a normal handler (or vice-versa) throws.
-- Distinct method sets on the same path can split between streaming and normal handlers (e.g., GET streaming, POST normal) enabling flexible composition.
-
-Example (mixed per-path + global fallback):
-
-```cpp
-HttpServer server(HttpServerConfig{});
-// Global normal fallback
-server.setHandler([](const HttpRequest&){ HttpResponse r{200, "OK"}; r.contentType="text/plain"; r.body="GLOBAL"; return r; });
-// Global streaming fallback (higher than global normal)
-server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
-  w.setStatus(200, "OK"); w.setHeader("Content-Type", "text/plain"); w.write("STREAMFALLBACK"); w.end();
-});
-// Path-specific streaming (highest precedence for GET)
-http::MethodSet getOnly; getOnly.insert(http::Method::GET);
-server.addPathStreamingHandler("/stream", getOnly, [](const HttpRequest&, HttpResponseWriter& w){
-  w.setStatus(200, "OK"); w.setHeader("Content-Type", "text/plain"); w.write("PS"); w.end();
-});
-// Path-specific normal (takes precedence over global fallbacks for POST)
-http::MethodSet postOnly; postOnly.insert(http::Method::POST);
-server.addPathHandler("/stream", postOnly, [](const HttpRequest&){ return HttpResponse{201, "Created", "text/plain", "NORMAL"}; });
-```
-
-Behavior summary for above:
-
-- `GET /stream` -> path streaming handler (body "PS")
-- `POST /stream` -> path normal handler (body "NORMAL")
-- `GET /other` -> global streaming fallback (body "STREAMFALLBACK")
-- If global streaming handler were absent: `GET /other` would use global normal fallback (body "GLOBAL")
-
-See `tests/http_streaming_mixed.cpp` for exhaustive precedence, conflict, HEAD-suppression, keep-alive mixed sequencing, and 405 validations.
+Moved to: [Mixed Mode & Dispatch Precedence](docs/FEATURES.md#mixed-mode--dispatch-precedence)
 
 ## Configuration API (builder style)
 
@@ -1280,59 +592,7 @@ The test suite uses a unified helper for simple GETs, streaming incremental read
 
 ### TLS (HTTPS) Support
 
-TLS termination is optional and enabled at build time with the CMake option `AERONET_ENABLE_OPENSSL=ON` (default ON in main project builds). When enabled, a dedicated `aeronet_tls` module is compiled and linked; the core library avoids including OpenSSL headers directly (boundary kept inside the TLS module).
-
-Enable at configure time:
-
-```bash
-cmake -S . -B build -DAERONET_ENABLE_OPENSSL=ON
-cmake --build build -j
-```
-
-Configure a server with certificate + key (filesystem paths):
-
-```cpp
-using namespace aeronet;
-HttpServerConfig cfg;
-cfg.withPort(0) // ephemeral
-  .withTlsCertKey("/path/to/server.crt", "/path/to/server.key");
-HttpServer server(cfg);
-server.setHandler([](const HttpRequest&){ HttpResponse r{200, "OK"}; r.body="secure"; r.contentType="text/plain"; return r; });
-server.run();
-```
-
-Client example:
-
-```bash
-curl -k https://localhost:<port>/
-```
-
-In-memory (no temp files) certificate + key provisioning (e.g. when you already hold PEM material in memory):
-
-```cpp
-using namespace aeronet;
-// Suppose certPem and keyPem are std::string containing PEM blocks
-HttpServerConfig cfg;
-cfg.withPort(0)
-  .withTlsCertKeyMemory(certPem, keyPem);
-HttpServer server(cfg);
-```
-
-If you need to dynamically generate a self-signed cert at runtime (tests, ephemeral dev), create it with OpenSSL APIs
-then pass the resulting PEM strings via `withTlsCertKeyMemory` (the test helper `tests/test_tls_helper.hpp` shows a reference implementation).
-
-Notes:
-
-- If you supply TLS configuration (`withTlsCertKey` or `withTlsCertKeyMemory`) but the library was built without OpenSSL, the constructor throws.
-- Optional: `withTlsCipherList("HIGH:!aNULL:!MD5")` to tune ciphers; empty string => OpenSSL default.
-- `withTlsRequestClientCert(true)` sets the server to *request* (but not fail without) a client certificate.
-- `withTlsRequireClientCert(true)` enables strict mTLS: handshake aborts if the client does not present a cert or it fails verification.
-- `withTlsAddTrustedClientCert(pem)` lets you append in-memory PEM certs to the trust store (useful for tests / pinning self-signed client roots). Call multiple times to add several.
-- ALPN: `withTlsAlpnProtocols({"http/1.1"})` advertises server preference list; first overlap with client wins. Selected protocol is exposed per request via `HttpRequest::alpnProtocol`.
-- Strict ALPN: `withTlsAlpnMustMatch(true)` now aborts the TLS handshake immediately (fatal alert) if no protocol overlap exists. Without strict mode the handshake proceeds without ALPN acknowledgment. A global counter of such strict mismatches is exposed via `tlsAlpnStrictMismatchCount()`.
-- Roadmap (future): HTTP/2 evaluation once h2 protocol is added to ALPN list; optional OCSP stapling, richer cipher policy helpers.
-- Tests use only in-memory ephemeral certs now (no checked‑in key material) for better hygiene.
-- The internal event loop integrates TLS handshakes via a transport abstraction; epoll edge-triggered mechanics remain unchanged.
+Details merged into: [TLS Features](docs/FEATURES.md#tls-features)
 
 ## License
 

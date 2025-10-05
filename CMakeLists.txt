@@ -44,7 +44,7 @@ endif()
 
 option(AERONET_BUILD_EXAMPLES "Build example programs" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
 option(AERONET_BUILD_TESTS "Build tests" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
-option(AERONET_BUILD_SHARED "Build Aeronet libraries as shared instead of static" OFF)
+option(AERONET_BUILD_SHARED "Build aeronet libraries as shared instead of static" OFF)
 option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
 
 # Features

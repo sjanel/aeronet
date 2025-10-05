@@ -1,6 +1,6 @@
-# Aeronet Installation & Build Guide
+# aeronet Installation & Build Guide
 
-This document centralizes how to build, install, and consume **Aeronet**.
+This document centralizes how to build, install, and consume **aeronet**.
 
 > Linux‑only C++23 HTTP/1.1 server library (optional TLS). Tested with Clang 21 / GCC 13.
 
@@ -27,20 +27,27 @@ This document centralizes how to build, install, and consume **Aeronet**.
 | `AERONET_INSTALL` | ON* | Enable install + package config export |
 | `AERONET_ENABLE_SPDLOG` | OFF | Enable spdlog logging integration |
 | `AERONET_ENABLE_OPENSSL` | OFF | Enable TLS module (`aeronet_tls`) |
+| `AERONET_ENABLE_ZLIB` | ON* | Enable gzip/deflate (zlib) compression + decompression |
+| `AERONET_ENABLE_ZSTD` | OFF | Enable zstd compression + decompression |
+| `AERONET_ENABLE_BROTLI` | OFF | Enable brotli compression + decompression |
 | `AERONET_ENABLE_ASAN` | ON (Debug) | Address/UB sanitizers in debug builds |
 | `AERONET_ENABLE_CLANG_TIDY` | OFF | Run clang-tidy on targets |
 | `AERONET_WARNINGS_AS_ERRORS` | OFF | Treat warnings as errors |
 | `AERONET_ASAN_OPTIONS` | (preset) | Override sanitizer flags |
 
-*Defaults apply when Aeronet is the top-level project; they flip to OFF when added via `add_subdirectory`, except `AERONET_ENABLE_OPENSSL` which remains ON by default if OpenSSL is available.
+*Defaults apply when aeronet is the top-level project; they flip to OFF when added via `add_subdirectory` except:
+
+- `AERONET_ENABLE_ZLIB` stays ON (baseline gzip/deflate widely expected)
+- `AERONET_ENABLE_OPENSSL` remains ON if OpenSSL is discoverable
 
 ## Quick Builds
 
-Release (static, TLS ON, tests OFF):
+Release (static, TLS + zstd + brotli ON, tests OFF):
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-  -DAERONET_ENABLE_OPENSSL=ON -DAERONET_BUILD_TESTS=OFF
+  -DAERONET_ENABLE_OPENSSL=ON -DAERONET_ENABLE_ZSTD=ON -DAERONET_ENABLE_BROTLI=ON \
+  -DAERONET_BUILD_TESTS=OFF
 cmake --build build -j
 ```
 
@@ -53,14 +60,14 @@ cmake --build build-debug -j
 ctest --test-dir build-debug --output-on-failure
 ```
 
-Plain HTTP only (default):
+Plain HTTP only (no TLS / extra codecs):
 
 ```bash
 cmake -S . -B build-plain -DCMAKE_BUILD_TYPE=Release
 cmake --build build-plain -j
 ```
 
-Shared libraries:
+Shared libraries (HTTP only):
 
 ```bash
 cmake -S . -B build-shared -DCMAKE_BUILD_TYPE=Release -DAERONET_BUILD_SHARED=ON
@@ -106,8 +113,11 @@ FetchContent_Declare(
   GIT_TAG main
 )
 
-# Enable the features you want (spdlog, openssl, etc)
-set(AERONET_ENABLE_XXXX ON CACHE BOOL "" FORCE)
+# Enable the features you want before FetchContent_MakeAvailable
+set(AERONET_ENABLE_OPENSSL ON CACHE BOOL "" FORCE)
+set(AERONET_ENABLE_ZSTD ON CACHE BOOL "" FORCE)
+set(AERONET_ENABLE_BROTLI OFF CACHE BOOL "" FORCE) # toggle as needed
+set(AERONET_ENABLE_SPDLOG OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(aeronet)
 
@@ -152,6 +162,9 @@ Available Conan options map:
 | `shared` | Build shared libs | `AERONET_BUILD_SHARED` |
 | `with_openssl` | TLS support | `AERONET_ENABLE_OPENSSL` |
 | `with_spdlog` | Logging integration | `AERONET_ENABLE_SPDLOG` |
+| `with_zlib` | gzip/deflate support | `AERONET_ENABLE_ZLIB` |
+| `with_zstd` | zstd support | `AERONET_ENABLE_ZSTD` |
+| `with_brotli` | brotli support | `AERONET_ENABLE_BROTLI` |
 
 ### vcpkg (Overlay Port)
 
@@ -161,16 +174,21 @@ An experimental port lives in `ports/aeronet`. You can use it as an overlay unti
 vcpkg install aeronet --overlay-ports=./ports --triplet x64-linux
 ```
 
-Enable TLS explicitly (TLS is now opt-in):
+Enable TLS and specific compression features explicitly (all codecs opt-in except zlib default when top-level):
 
 ```bash
-vcpkg install aeronet[tls] --overlay-ports=./ports --triplet x64-linux
+vcpkg install aeronet[tls,zstd,brotli,spdlog] --overlay-ports=./ports --triplet x64-linux
 ```
 
-Enable spdlog feature:
+Feature switches (examples):
 
 ```bash
-vcpkg install aeronet[spdlog] --overlay-ports=./ports --triplet x64-linux
+# Minimal (zlib only)
+vcpkg install aeronet --overlay-ports=./ports --triplet x64-linux
+# Add TLS
+vcpkg install aeronet[tls] --overlay-ports=./ports --triplet x64-linux
+# Full (TLS + zstd + brotli + spdlog)
+vcpkg install aeronet[tls,zstd,brotli,spdlog] --overlay-ports=./ports --triplet x64-linux
 ```
 
 In your CMake project (after integrating vcpkg toolchain):
@@ -208,6 +226,7 @@ The port maps `VCPKG_LIBRARY_LINKAGE=dynamic` to `-DAERONET_BUILD_SHARED=ON` aut
 |---------|--------------------|
 | Missing `aeronet_tls` | Built with `AERONET_ENABLE_OPENSSL=OFF` or OpenSSL not found |
 | Link errors (spdlog) | Enable `AERONET_ENABLE_SPDLOG` in both producer & consumer or disable it everywhere |
+| Compression feature missing | Ensure corresponding `AERONET_ENABLE_ZLIB/ZSTD/BROTLI` flag ON in producer and consumer (or vcpkg feature enabled) |
 | Sanitizer libs missing | Install compiler runtime packages (e.g. `libasan`, `libubsan`) |
 | Tests not built | Built via root project only (Conan package omits tests/examples) |
 

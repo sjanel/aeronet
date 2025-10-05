@@ -1,4 +1,4 @@
-# Aeronet Roadmap & Feature TODOs
+# aeronet Roadmap & Feature TODOs
 
 This document tracks planned and recently implemented features, grouped by priority. It complements the README feature matrix and expands on design intent.
 
