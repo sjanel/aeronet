@@ -19,7 +19,8 @@
 
 namespace aeronet {
 
-MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, uint32_t threadCount) : _baseConfig(std::move(cfg)) {
+MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, uint32_t threadCount)
+    : _baseConfig(std::move(cfg)), _stopRequested(std::make_unique<std::atomic<bool>>(false)) {
   // Temporary diagnostic logging (can be removed once tests stabilize)
   log::debug("MultiHttpServer ctor entry: requested threadCount={} reusePort(incoming)={} ", threadCount,
              _baseConfig.reusePort);
@@ -33,15 +34,7 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, uint32_t threadCount) : _
 
   // Create the HttpServer (and ensure port resolution if given port is 0)
   _servers.reserve(static_cast<decltype(_servers)::size_type>(threadCount));
-
-  // Construct first server. If port was ephemeral (0), HttpServer constructor resolves it synchronously.
-  // We move the base config into the first server then copy back the resolved version (with concrete port).
-  _baseConfig = _servers.emplace_back(std::move(_baseConfig)).config();
-
-  // Create the remaining threadCount - 1 servers
-  while (--threadCount != 0) {
-    _servers.emplace_back(_baseConfig);
-  }
+  createServers(threadCount, true);
 }
 
 MultiHttpServer::MultiHttpServer(HttpServerConfig cfg)
@@ -62,6 +55,7 @@ MultiHttpServer::MultiHttpServer(MultiHttpServer&& other) noexcept
       _globalHandler(std::move(other._globalHandler)),
       _pathHandlersEmplace(std::move(other._pathHandlersEmplace)),
       _parserErrCb(std::move(other._parserErrCb)),
+      _stopRequested(std::move(other._stopRequested)),
       _servers(std::move(other._servers)),
       _threads(std::move(other._threads)) {}
 
@@ -73,6 +67,7 @@ MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
     _globalHandler = std::move(other._globalHandler);
     _pathHandlersEmplace = std::move(other._pathHandlersEmplace);
     _parserErrCb = std::move(other._parserErrCb);
+    _stopRequested = std::move(other._stopRequested);
     _servers = std::move(other._servers);
     _threads = std::move(other._threads);
   }
@@ -81,16 +76,16 @@ MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
 
 MultiHttpServer::~MultiHttpServer() { stop(); }
 
-[[nodiscard]] std::string MultiHttpServer::AggregatedStats::json_str() const {
+std::string MultiHttpServer::AggregatedStats::json_str() const {
   std::string out;
   out.reserve(128UL * per.size());
   out.push_back('[');
   bool first = true;
   for (const auto& st : per) {
-    if (!first) {
-      out.push_back(',');
-    } else {
+    if (first) {
       first = false;
+    } else {
+      out.push_back(',');
     }
     out.append(st.json_str());
   }
@@ -100,7 +95,24 @@ MultiHttpServer::~MultiHttpServer() { stop(); }
 
 void MultiHttpServer::ensureNotStarted() const {
   if (!_threads.empty()) {
-    throw std::logic_error("Cannot mutate configuration after start()");
+    // Only disallow mutations while the server farm is actively running. After stop() (threads cleared)
+    // handlers and callbacks may be adjusted prior to a restart.
+    throw std::logic_error("Cannot mutate configuration while running (stop() first)");
+  }
+}
+
+void MultiHttpServer::createServers(uint32_t nbServers, bool firstCall) {
+  if (firstCall) {
+    // Construct first server. If port was ephemeral (0), HttpServer constructor resolves it synchronously.
+    // We move the base config into the first server then copy back the resolved version (with concrete port).
+    _baseConfig = _servers.emplace_back(std::move(_baseConfig)).config();
+  } else {
+    ++nbServers;
+  }
+
+  // Create the remaining threadCount - 1 servers
+  while (--nbServers != 0) {
+    _servers.emplace_back(_baseConfig);
   }
 }
 
@@ -136,9 +148,12 @@ void MultiHttpServer::start() {
     throw std::logic_error("MultiHttpServer already started");
   }
 
-  log::info("MultiHttpServer starting with {} thread(s); requested port={} reusePort={} (auto-detected={})",
+  _stopRequested->store(false, std::memory_order_relaxed);
+
+  log::info("MultiHttpServer starting with {} thread(s); requested/base port={} reusePort={} (auto-detected={})",
             _servers.size(), _baseConfig.port, _baseConfig.reusePort, (_baseConfig.port == 0 ? "yes" : "no"));
-  log::debug("MultiHttpServer start(): nbServers={} baseConfig.reusePort={}", _servers.size(), _baseConfig.reusePort);
+  log::debug("MultiHttpServer start(): nbServers={} baseConfig.reusePort={} restartFlag={}", _servers.size(),
+             _baseConfig.reusePort, _stopRequested->load(std::memory_order_relaxed));
 
   // Note: reserve is important here to guarantee pointer stability
   _threads.reserve(static_cast<decltype(_threads)::size_type>(_servers.size()));
@@ -156,10 +171,14 @@ void MultiHttpServer::start() {
 
   // Launch threads (each captures a stable pointer to its HttpServer element).
   for (std::size_t threadPos = 0; threadPos < _servers.size(); ++threadPos) {
+    // srvPtr and stopRequested should remain constant through the whole run duration.
+    // If the MultiHttpServer has been moved, the unique_ptr and vector containers ensure that these pointers stay
+    // valid.
     HttpServer* srvPtr = &_servers[static_cast<vector<HttpServer>::size_type>(threadPos)];
-    _threads.emplace_back([srvPtr, threadPos]() {
+    std::atomic<bool>* stopRequested = _stopRequested.get();
+    _threads.emplace_back([stopRequested, srvPtr, threadPos]() {
       try {
-        srvPtr->run();
+        srvPtr->runUntil([stopRequested]() { return stopRequested->load(std::memory_order_relaxed); });
       } catch (const std::exception& ex) {
         log::error("Server thread {} terminated with exception: {}", threadPos, ex.what());
       } catch (...) {
@@ -174,10 +193,14 @@ void MultiHttpServer::stop() {
   if (_threads.empty()) {
     return;
   }
+  _stopRequested->store(true, std::memory_order_relaxed);
   log::info("MultiHttpServer stopping (instances={})", _servers.size());
   std::ranges::for_each(_servers, [](auto& server) { server.stop(); });
 
   _threads.clear();
+  auto nbServers = _servers.size();
+  _servers.clear();
+  createServers(nbServers, false);
 
   log::info("MultiHttpServer stopped");
 }

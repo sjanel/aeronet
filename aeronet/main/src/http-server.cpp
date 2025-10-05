@@ -56,7 +56,6 @@
 #include "string-equal-ignore-case.hpp"
 #include "sys-utils.hpp"
 #include "timedef.hpp"
-#include "timestring.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include "tls-context.hpp"
 #endif
