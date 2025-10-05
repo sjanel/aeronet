@@ -32,7 +32,6 @@
 #include "aeronet/brotli-decoder.hpp"
 #include "brotli-encoder.hpp"
 #endif
-#include "duration-format.hpp"
 #include "event-loop.hpp"
 #include "exception.hpp"
 #include "flat-hash-map.hpp"
@@ -102,6 +101,7 @@ namespace aeronet {
 //   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
 HttpServer::HttpServer(HttpServerConfig cfg)
     : _listenSocket(Socket::Type::STREAM), _config(std::move(cfg)), _encodingSelector(_config.compression) {
+  _config.validate();
   int listenFdLocal = _listenSocket.fd();
   // Initialize TLS context if requested (OpenSSL build).
   if (_config.tls) {
@@ -710,17 +710,17 @@ bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, Http
 #ifdef AERONET_ENABLE_ZLIB
       // NOLINTNEXTLINE(readability-else-after-return)
     } else if (CaseInsensitiveEqual(encoding, http::gzip)) {
-      stageOk = ZlibDecoder::Decompress(src, *dst, true, cfg.maxDecompressedBytes);
+      stageOk = ZlibDecoder::Decompress(src, true, cfg.maxDecompressedBytes, cfg.decoderChunkSize, *dst);
     } else if (CaseInsensitiveEqual(encoding, http::deflate)) {
-      stageOk = ZlibDecoder::Decompress(src, *dst, false, cfg.maxDecompressedBytes);
+      stageOk = ZlibDecoder::Decompress(src, false, cfg.maxDecompressedBytes, cfg.decoderChunkSize, *dst);
 #endif
 #ifdef AERONET_ENABLE_ZSTD
     } else if (CaseInsensitiveEqual(encoding, http::zstd)) {
-      stageOk = ZstdDecoder::Decompress(src, *dst, cfg.maxDecompressedBytes);
+      stageOk = ZstdDecoder::Decompress(src, cfg.maxDecompressedBytes, cfg.decoderChunkSize, *dst);
 #endif
 #ifdef AERONET_ENABLE_BROTLI
     } else if (CaseInsensitiveEqual(encoding, http::br)) {
-      stageOk = BrotliDecoder::Decompress(src, *dst, cfg.maxDecompressedBytes);
+      stageOk = BrotliDecoder::Decompress(src, cfg.maxDecompressedBytes, cfg.decoderChunkSize, *dst);
 #endif
     } else {
       emitSimpleError(fd, state, http::StatusCodeUnsupportedMediaType, true);

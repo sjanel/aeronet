@@ -29,7 +29,7 @@
 namespace aeronet {
 
 namespace {
-inline constexpr std::size_t kChunkSize = 4096;
+inline constexpr std::size_t kTransportChunkSize = 4096;
 }
 
 void HttpServer::sweepIdleConnections() {
@@ -118,7 +118,7 @@ void HttpServer::acceptNewConnections() {
     while (true) {
       bool wantR = false;
       bool wantW = false;
-      ssize_t bytesRead = transportRead(cnxFd, *pst, kChunkSize, wantR, wantW);
+      ssize_t bytesRead = transportRead(cnxFd, *pst, kTransportChunkSize, wantR, wantW);
       // Check for handshake completion
       if (!pst->tlsEstablished && pst->transport && !pst->transport->handshakePending()) {
 #ifdef AERONET_ENABLE_OPENSSL
@@ -134,7 +134,7 @@ void HttpServer::acceptNewConnections() {
         if (pst->headerStart.time_since_epoch().count() == 0) {
           pst->headerStart = std::chrono::steady_clock::now();
         }
-        if (std::cmp_less(bytesRead, kChunkSize)) {
+        if (std::cmp_less(bytesRead, kTransportChunkSize)) {
           break;
         }
         continue;
@@ -200,7 +200,7 @@ void HttpServer::handleReadableClient(int fd) {
   while (true) {
     bool wantR = false;
     bool wantW = false;
-    ssize_t count = transportRead(fd, state, kChunkSize, wantR, wantW);
+    ssize_t count = transportRead(fd, state, kTransportChunkSize, wantR, wantW);
     if (!state.tlsEstablished && state.transport && !state.transport->handshakePending()) {
 #ifdef AERONET_ENABLE_OPENSSL
       if (_config.tls && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {

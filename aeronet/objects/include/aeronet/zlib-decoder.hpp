@@ -13,7 +13,8 @@ class ZlibDecoder {
  public:
   // Returns true on success; false if inflate fails or limits exceeded. Output appended to out.
   // isGzip selects window bits to enable gzip wrapper decoding.
-  static bool Decompress(std::string_view input, RawChars& out, bool isGzip, std::size_t maxDecompressedBytes);
+  static bool Decompress(std::string_view input, bool isGzip, std::size_t maxDecompressedBytes,
+                         std::size_t decoderChunkSize, RawChars &out);
 };
 
 }  // namespace aeronet

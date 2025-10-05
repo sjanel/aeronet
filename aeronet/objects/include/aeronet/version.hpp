@@ -13,6 +13,9 @@
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
 #endif
+#ifdef AERONET_ENABLE_BROTLI
+#include <brotli/encode.h>
+#endif
 #ifdef AERONET_ENABLE_SPDLOG
 #include <spdlog/version.h>
 #endif
@@ -66,7 +69,7 @@ constexpr std::string_view fullVersionStringView() {
 #endif
 
   // Compression section fragment
-#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD) || defined(AERONET_ENABLE_BROTLI)
   static constexpr std::string_view _sv_compression_prefix = "compression: ";
 #ifdef AERONET_ENABLE_ZLIB
   static constexpr std::string_view _sv_zlib = "zlib ";
@@ -80,17 +83,46 @@ constexpr std::string_view fullVersionStringView() {
   using zstd_join_t = JoinStringView<_sv_zstd, _sv_zstd_ver>;
   static constexpr std::string_view _sv_zstd_full = zstd_join_t::value;
 #endif
+#ifdef AERONET_ENABLE_BROTLI
+#if defined(BROTLI_VERSION_MAJOR) && defined(BROTLI_VERSION_MINOR) && defined(BROTLI_VERSION_PATCH)
+  static constexpr auto _sv_brotli_major = IntToStringView<BROTLI_VERSION_MAJOR>::value;
+  static constexpr auto _sv_brotli_minor = IntToStringView<BROTLI_VERSION_MINOR>::value;
+  static constexpr auto _sv_brotli_patch = IntToStringView<BROTLI_VERSION_PATCH>::value;
+  static constexpr auto _sv_dot = CharToStringView_v<'.'>;  // reuse of '.' ok (already defined above for spdlog)
+  static constexpr std::string_view _sv_brotli_prefix = "brotli ";
+  using brotli_join_t =
+      JoinStringView<_sv_brotli_prefix, _sv_brotli_major, _sv_dot, _sv_brotli_minor, _sv_dot, _sv_brotli_patch>;
+  static constexpr std::string_view _sv_brotli_full = brotli_join_t::value;
+#else
+  static constexpr std::string_view _sv_brotli_full = "brotli (unknown)";
+#endif
+#endif
 
   // Build a combined list with comma when both present
-#if defined(AERONET_ENABLE_ZLIB) && defined(AERONET_ENABLE_ZSTD)
   static constexpr std::string_view _sv_comma_space = ", ";
+
+  // Enumerate all combinations (zlib, zstd, brotli) to keep compile-time join logic straightforward.
+#if defined(AERONET_ENABLE_ZLIB) && defined(AERONET_ENABLE_ZSTD) && defined(AERONET_ENABLE_BROTLI)
+  using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zlib_full, _sv_comma_space, _sv_zstd_full,
+                                            _sv_comma_space, _sv_brotli_full>;
+  static constexpr std::string_view _sv_compression_section = compression_join_t::value;
+#elif defined(AERONET_ENABLE_ZLIB) && defined(AERONET_ENABLE_ZSTD)
   using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zlib_full, _sv_comma_space, _sv_zstd_full>;
+  static constexpr std::string_view _sv_compression_section = compression_join_t::value;
+#elif defined(AERONET_ENABLE_ZLIB) && defined(AERONET_ENABLE_BROTLI)
+  using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zlib_full, _sv_comma_space, _sv_brotli_full>;
+  static constexpr std::string_view _sv_compression_section = compression_join_t::value;
+#elif defined(AERONET_ENABLE_ZSTD) && defined(AERONET_ENABLE_BROTLI)
+  using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zstd_full, _sv_comma_space, _sv_brotli_full>;
   static constexpr std::string_view _sv_compression_section = compression_join_t::value;
 #elif defined(AERONET_ENABLE_ZLIB)
   using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zlib_full>;
   static constexpr std::string_view _sv_compression_section = compression_join_t::value;
 #elif defined(AERONET_ENABLE_ZSTD)
   using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zstd_full>;
+  static constexpr std::string_view _sv_compression_section = compression_join_t::value;
+#elif defined(AERONET_ENABLE_BROTLI)
+  using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_brotli_full>;
   static constexpr std::string_view _sv_compression_section = compression_join_t::value;
 #endif
 #else
