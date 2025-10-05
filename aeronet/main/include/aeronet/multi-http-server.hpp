@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -21,18 +22,28 @@ namespace aeronet {
 // NOTE: This class is intentionally NOT thread-safe. It assumes a single controlling
 // thread performs construction, handler registration, start(), stats() calls and stop().
 // Dropping the mutex avoids unnecessary synchronization on the hot path of start/stop.
+//
+// Restart semantics:
+//  - MultiHttpServer can be restarted: after stop() you may call start() again. A restart constructs
+//    a fresh set of underlying HttpServer instances (HttpServer itself is currently single-shot; its
+//    stop() closes the listening socket). Handlers registered prior to the *first* start() are retained;
+//    you may also replace the global handler between stops. The same port is reused unless you set
+//    _baseConfig.port = 0 (via an external config mutation API in the future) before restarting, in which
+//    case a new ephemeral port will be chosen and propagated.
+//  - Stats from previous runs are not accumulated across restarts because the underlying servers are rebuilt.
 class MultiHttpServer {
  public:
   using RequestHandler = HttpServer::RequestHandler;
   using ParserErrorCallback = HttpServer::ParserErrorCallback;
 
   struct AggregatedStats {
+    // JSON array of per-instance objects
+    [[nodiscard]] std::string json_str() const;
+
     // Aggregated view across all underlying servers.
     ServerStats total{};
     // Per-instance snapshots
     vector<ServerStats> per;
-    // JSON array of per-instance objects
-    [[nodiscard]] std::string json_str() const;
   };
 
   // Construct a MultiHttpServer that does nothing.
@@ -63,9 +74,7 @@ class MultiHttpServer {
   // method.
   explicit MultiHttpServer(HttpServerConfig cfg);
 
-  // Move semantics:
-  // ---------------
-  // We now ALLOW moving a running MultiHttpServer. Rationale:
+  // MultiHttpServer is moveable. Rationale:
   //   - Threads capture ONLY raw pointers to stable HttpServer elements stored inside the
   //     _servers std::vector. A move of std::vector transfers ownership of the underlying buffer
   //     without relocating elements (no per-element move), so the addresses remain valid.
@@ -77,9 +86,9 @@ class MultiHttpServer {
   //   - Still non-copyable.
   //   - Move assignment will stop() an already-running target before adopting new threads.
   MultiHttpServer(const MultiHttpServer&) = delete;
-  MultiHttpServer(MultiHttpServer&& other) noexcept;  // NOLINT(modernize-use-noexcept)
+  MultiHttpServer(MultiHttpServer&& other) noexcept;
   MultiHttpServer& operator=(const MultiHttpServer&) = delete;
-  MultiHttpServer& operator=(MultiHttpServer&& other) noexcept;  // NOLINT(modernize-use-noexcept)
+  MultiHttpServer& operator=(MultiHttpServer&& other) noexcept;
 
   ~MultiHttpServer();
 
@@ -96,12 +105,16 @@ class MultiHttpServer {
   void setHandler(RequestHandler handler);
 
   // addPathHandler (multi-method):
-  //   Registers a handler for a given absolute path and a fixed set of allowed HTTP methods.
+  //   Registers or updates a handler for a given absolute path and a fixed set of allowed HTTP methods.
   // Behavior:
-  //   - Paths are matched exactly (no globbing / parameter extraction in current phase).
-  //   - The supplied MethodSet is converted to an internal method bitmask for dispatch speed.
+  //   - Paths are matched exactly (no globbing / parameter extraction at this stage).
+  //   - The supplied MethodSet is converted to an internal bitmask for fast dispatch.
+  // Lifecycle / mutability:
+  //   - May be called either (a) before the first start() or (b) after a stop() and before a subsequent restart.
+  //   - Disallowed only while the server farm is running (threads active). This mirrors HttpServer's non-thread-safe
+  //     nature; we avoid mutating handler tables concurrently with request processing.
+  //   - On restart, the full current set of path handlers is replicated into each freshly constructed HttpServer.
   // Constraints:
-  //   - Must be called before start().
   //   - Incompatible with a previously set global handler (logic_error if violated).
   // Multiple registrations:
   //   - Re-registering the same path overwrites the previous mapping for the specified methods.
@@ -109,7 +122,8 @@ class MultiHttpServer {
 
   // addPathHandler (single method convenience):
   //   Shorthand for registering exactly one allowed method for a path. Internally builds a
-  //   temporary MethodSet then delegates to the multi-method overload. Same constraints apply.
+  //   temporary MethodSet then delegates to the multi-method overload. Same lifecycle / constraints apply (allowed
+  //   pre-first start or between runs, but not while running).
   void addPathHandler(std::string path, http::Method method, const RequestHandler& handler);
 
   // setParserErrorCallback:
@@ -167,6 +181,7 @@ class MultiHttpServer {
 
  private:
   void ensureNotStarted() const;
+  void createServers(uint32_t nbServers, bool firstCall);
 
   struct PathRegistration {
     std::string path;
@@ -179,13 +194,12 @@ class MultiHttpServer {
   std::optional<RequestHandler> _globalHandler;
   vector<PathRegistration> _pathHandlersEmplace;
   ParserErrorCallback _parserErrCb;
+  // single-writer (controller thread), multi-reader (worker threads)
+  std::unique_ptr<std::atomic<bool>> _stopRequested;
 
   // IMPORTANT LIFETIME NOTE:
   // Each server thread captures a raw pointer to its corresponding HttpServer element stored in _servers.
   // We must therefore ensure that the pointed-to HttpServer objects remain alive until after the jthreads join.
-  // std::jthread joins in its destructor, so we arrange destruction order such that:
-  //   1. Local 'threads' (moved from _threads) is destroyed FIRST (joins threads) while servers are still alive.
-  //   2. Local 'servers' (moved from _servers) is destroyed AFTER 'threads', releasing HttpServer objects safely.
   // Destruction order is reverse of declaration order, so declare 'servers' BEFORE 'threads'.
   vector<HttpServer> _servers;    // created on start()
   vector<std::jthread> _threads;  // run server.run()

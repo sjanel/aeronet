@@ -121,6 +121,7 @@ endif()
 aeronet_http_test(multi_http_server_convenience_constructors multi_http_server_convenience_constructors.cpp)
 aeronet_http_test(multi_http_server_stress multi_http_server_stress.cpp)
 aeronet_http_test(multi_http_server_move_running multi_http_server_move_running.cpp)
+aeronet_http_test(multi_http_server_restart multi_http_server_restart.cpp)
 
 # Maintenance safeguard: warn if any *.cpp test file in this directory is not explicitly added above.
 # This helps avoid forgotten tests (e.g., newly created source not registered -> silently untested).
@@ -158,6 +159,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	multi_http_server_convenience_constructors.cpp
 	multi_http_server_stress.cpp
 	multi_http_server_move_running.cpp
+	multi_http_server_restart.cpp
 	multi_http_server_auto.cpp
 	http_trailing_slash.cpp
 	http_query_parsing.cpp
