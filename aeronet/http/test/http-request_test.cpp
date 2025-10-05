@@ -37,7 +37,8 @@ class HttpRequestTest : public ::testing::Test {
   http::StatusCode reqSet(std::string_view str, bool mergeAllowedForUnknownRequestHeaders = true,
                           std::size_t maxHeaderSize = 4096UL) {
     cs.buffer.assign(str.data(), str.size());
-    return req.setHead(cs, maxHeaderSize, mergeAllowedForUnknownRequestHeaders);
+    RawChars tmpBuffer;
+    return req.setHead(cs, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders);
   }
 
   void checkHeaders(std::initializer_list<std::pair<std::string_view, std::string_view>> headers) {

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdlib>
@@ -147,7 +146,12 @@ class RawBytesImpl {
 
   void reserveExponential(size_type newCapacity) {
     if (_capacity < newCapacity) {
-      reallocUp(std::max(newCapacity, (_capacity * 2U) + 1U));
+      const auto doubledCapacity = (_capacity * 2U) + 1U;
+      // NOLINTNEXTLINE(readability-use-std-min-max) to avoid include of <algorithm> which is a big include
+      if (newCapacity < doubledCapacity) {
+        newCapacity = doubledCapacity;
+      }
+      reallocUp(newCapacity);
     }
   }
 

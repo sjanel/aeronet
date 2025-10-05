@@ -1,9 +1,13 @@
 #pragma once
 
+#include <sys/types.h>
+
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "raw-chars.hpp"
 #include "transport.hpp"
@@ -25,10 +29,12 @@ struct ConnectionState {
   [[nodiscard]] bool isDrainCloseRequested() const noexcept { return closeMode == CloseMode::DrainThenClose; }
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }
 
+  ssize_t transportRead(int fd, std::size_t chunkSize, bool& wantRead, bool& wantWrite);
+  ssize_t transportWrite(int fd, std::string_view data, bool& wantRead, bool& wantWrite) const;
+
   RawChars buffer;                        // accumulated raw data
   RawChars bodyBuffer;                    // decoded body lifetime
   RawChars outBuffer;                     // pending outbound bytes not yet written
-  RawChars tmpBuffer;                     // can be used for any kind of temporary buffer
   std::unique_ptr<ITransport> transport;  // set after accept (plain or TLS)
   std::chrono::steady_clock::time_point lastActivity{std::chrono::steady_clock::now()};
   // Timestamp of first byte of the current pending request headers (buffer not yet containing full CRLFCRLF).
