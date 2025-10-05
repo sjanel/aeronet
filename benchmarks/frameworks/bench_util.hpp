@@ -1,4 +1,4 @@
-// bench_util.hpp - shared helper utilities for Aeronet benchmarks
+// bench_util.hpp - shared helper utilities for aeronet benchmarks
 #pragma once
 
 #include <chrono>

@@ -6,7 +6,7 @@
 #include "aeronet/http-constants.hpp"
 
 // =============================================================================
-// Aeronet Encoding Abstraction
+// aeronet Encoding Abstraction
 // =============================================================================
 // Rationale (Updated Streaming Design)
 // ------------------------------------

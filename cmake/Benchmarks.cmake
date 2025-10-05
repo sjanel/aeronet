@@ -1,4 +1,4 @@
-# Benchmarks.cmake - encapsulates all benchmark-related build logic for Aeronet.
+# Benchmarks.cmake - encapsulates all benchmark-related build logic for aeronet.
 # Included from top-level CMakeLists.txt when AERONET_BUILD_BENCHMARKS=ON.
 
 if(TARGET aeronet-bench-internal)
@@ -107,13 +107,13 @@ set_target_properties(aeronet-bench-frameworks PROPERTIES FOLDER "benchmarks")
 add_custom_target(run-aeronet-bench
   COMMAND aeronet-bench-internal --benchmark_report_aggregates_only=true
   DEPENDS aeronet-bench-internal
-  COMMENT "Running Aeronet internal microbenchmarks")
+  COMMENT "Running aeronet internal microbenchmarks")
 
 if(TARGET aeronet-bench-throughput)
   add_custom_target(run-aeronet-bench-throughput
     COMMAND aeronet-bench-throughput
     DEPENDS aeronet-bench-throughput
-    COMMENT "Running Aeronet throughput skeleton benchmark")
+    COMMENT "Running aeronet throughput skeleton benchmark")
 endif()
 
 ## (Removed) run-aeronet-bench-frameworks convenience target after converting to Google Benchmark.
@@ -122,4 +122,4 @@ endif()
 add_custom_target(run-aeronet-bench-json
   COMMAND aeronet-bench-internal --benchmark_format=json > aeronet-benchmarks.json
   DEPENDS aeronet-bench-internal
-  COMMENT "Running Aeronet benchmarks (JSON output -> aeronet-benchmarks.json)")
+  COMMENT "Running aeronet benchmarks (JSON output -> aeronet-benchmarks.json)")
