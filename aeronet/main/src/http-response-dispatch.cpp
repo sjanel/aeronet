@@ -1,6 +1,6 @@
 #include <algorithm>
 #include <cerrno>
-#include <chrono>  // steady_clock for metrics duration
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -15,8 +15,8 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server.hpp"
-#include "aeronet/http-version.hpp"  // http::HTTP_1_0 / HTTP_1_1
-#include "connection-state.hpp"      // ConnectionState
+#include "aeronet/http-version.hpp"
+#include "connection-state.hpp"
 #include "log.hpp"
 #include "raw-chars.hpp"
 #include "string-equal-ignore-case.hpp"
@@ -101,7 +101,7 @@ bool HttpServer::queueData(int fd, ConnectionState& state, std::string_view data
   if (state.outBuffer.empty()) {
     bool wantR = false;
     bool wantW = false;
-    auto written = transportWrite(fd, state, data, wantR, wantW);
+    auto written = state.transportWrite(fd, data, wantR, wantW);
     state.tlsWantRead = wantR;
     state.tlsWantWrite = wantW;
     if (!state.tlsEstablished && state.transport && !state.transport->handshakePending()) {
@@ -156,7 +156,7 @@ void HttpServer::flushOutbound(int fd, ConnectionState& state) {
   while (!state.outBuffer.empty()) {
     bool wantR = false;
     bool wantW = false;
-    auto written = transportWrite(fd, state, state.outBuffer, wantR, wantW);
+    auto written = state.transportWrite(fd, state.outBuffer, wantR, wantW);
     lastWantWrite = wantW;
     state.tlsWantRead = wantR;
     state.tlsWantWrite = wantW;
@@ -176,7 +176,7 @@ void HttpServer::flushOutbound(int fd, ConnectionState& state) {
       // Need to wait for socket writable again (TLS handshake or congestion)
       break;
     }
-    int savedErr = errno;
+    auto savedErr = errno;
     log::error("send/transportWrite failed fd={} errno={} msg={}", fd, savedErr, std::strerror(savedErr));
     state.requestImmediateClose();
     state.outBuffer.clear();

@@ -163,6 +163,23 @@ HttpServerConfig& HttpServerConfig::withMergeUnknownRequestHeaders(bool on) {
   return *this;
 }
 
-void HttpServerConfig::validate() const { compression.validate(); }
+void HttpServerConfig::validate() const {
+  compression.validate();
+  // Basic sanity: enforce reasonable bounds to avoid pathological configuration.
+  auto sane = [](std::size_t value) {
+    return value >= 512 && value <= (1U << 20);
+  };  // 512 .. 1 MiB per chunk upper guard
+  if (!sane(initialReadChunkBytes) || !sane(bodyReadChunkBytes)) {
+    throw invalid_argument("read chunk sizes must be in [512, 1048576]");
+  }
+  if (bodyReadChunkBytes < initialReadChunkBytes) {
+    // Allow but warn? For now accept – order is a tuning choice. No throw to avoid over-constraining.
+  }
+  if (maxPerEventReadBytes != 0 && maxPerEventReadBytes < initialReadChunkBytes) {
+    // Normalize: cap cannot be smaller than a single chunk; promote to chunk size.
+    // (Since config is const here we cannot mutate; just throw to surface mistake.)
+    throw invalid_argument("maxPerEventReadBytes must be 0 or >= initialReadChunkBytes");
+  }
+}
 
 }  // namespace aeronet

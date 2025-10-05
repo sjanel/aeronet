@@ -15,6 +15,7 @@
 #include "aeronet/http-version.hpp"      // http::parseHttpVersion
 #include "connection-state.hpp"          // ConnectionState parameter
 #include "mergeable-headers.hpp"
+#include "raw-chars.hpp"
 #include "toupperlower.hpp"
 #include "url-decode.hpp"
 
@@ -55,7 +56,7 @@ std::optional<std::string_view> HttpRequest::headerValue(std::string_view header
   return {};
 }
 
-[[nodiscard]] bool HttpRequest::wantClose() const {
+bool HttpRequest::wantClose() const {
   std::string_view connectionValue = headerValueOrEmpty(http::Connection);
   if (connectionValue.size() == http::close.size()) {
     for (std::size_t iChar = 0; iChar < http::close.size(); ++iChar) {
@@ -70,7 +71,11 @@ std::optional<std::string_view> HttpRequest::headerValue(std::string_view header
   return false;
 }
 
-http::StatusCode HttpRequest::setHead(ConnectionState& state, std::size_t maxHeadersBytes,
+bool HttpRequest::hasExpectContinue() const noexcept {
+  return version() == http::HTTP_1_1 && CaseInsensitiveEqual(headerValueOrEmpty(http::Expect), http::h100_continue);
+}
+
+http::StatusCode HttpRequest::setHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
                                       bool mergeAllowedForUnknownRequestHeaders) {
   auto* first = state.buffer.data();
   auto* last = first + state.buffer.size();
@@ -196,8 +201,8 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, std::size_t maxHea
         static constexpr std::size_t szSep = sizeof(mergeSep);
         std::size_t szToMove = static_cast<std::size_t>(valueLast - valueFirst) + szSep;
 
-        // Step 1 - use bodyBuffer as temp data to keep value 2
-        state.bodyBuffer.assign(valueFirst, szToMove - szSep);
+        // Step 1 - use tmpBuffer as temp data to keep value 2
+        tmpBuffer.assign(valueFirst, szToMove - szSep);
 
         // Step 2
         auto* firstValueFirst = state.buffer.data() + (it->second.data() - state.buffer.data());
@@ -214,8 +219,7 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, std::size_t maxHea
         }
 
         // Step 3
-        std::memcpy(firstValueLast + szSep, state.bodyBuffer.data(), szToMove - szSep);
-        state.bodyBuffer.clear();
+        std::memcpy(firstValueLast + szSep, tmpBuffer.data(), szToMove - szSep);
         *firstValueLast = mergeSep;
 
         it->second = std::string_view(firstValueFirst, firstValueLast + szToMove);

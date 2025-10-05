@@ -5,8 +5,8 @@
 #include <charconv>
 #include <cstddef>
 #include <cstring>
-#include <memory>  // std::make_unique
-#include <string>  // std::to_string
+#include <memory>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -16,7 +16,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/http-version.hpp"  // http::HTTP_1_1 version constant
+#include "aeronet/http-version.hpp"
 #include "encoder.hpp"
 #include "log.hpp"
 #include "static-string-view-helpers.hpp"

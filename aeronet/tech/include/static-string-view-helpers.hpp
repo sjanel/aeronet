@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -22,7 +21,13 @@ class JoinStringView {
     constexpr std::string_view::size_type len = (Strs.size() + ... + 0);
     std::array<char, len + 1U> charsArray;  // +1 for null terminated char
     if constexpr (len > 0) {
-      auto append = [it = charsArray.begin()](auto const& chars) mutable { it = std::ranges::copy(chars, it).out; };
+      auto append = [it = charsArray.begin()](auto const& chars) mutable {
+        // Voluntarily not using std::ranges::copy to avoid including <algorithm> in a header file
+        for (auto ch : chars) {
+          *it = ch;
+          ++it;
+        }
+      };
       (append(Strs), ...);
     }
     charsArray.back() = '\0';
@@ -50,17 +55,22 @@ class JoinStringViewWithSep {
  private:
   // Join all strings into a single std::array of chars
   static constexpr auto impl() noexcept {
-    constexpr std::string_view::size_type len = (Strs.size() + ... + 0);
-    constexpr auto nbSv = sizeof...(Strs);
-    std::array<char, std::max(len + 1U + ((nbSv == 0U ? 0U : (nbSv - 1U)) * Sep.size()),
-                              static_cast<std::string_view::size_type>(1))>
-        charsArray;
+    static constexpr std::string_view::size_type len = (Strs.size() + ... + 0);
+    static constexpr auto nbSv = sizeof...(Strs);
+    static constexpr std::size_t kCharsLen = len + 1U + ((nbSv == 0U ? 0U : (nbSv - 1U)) * Sep.size());
+    std::array<char, kCharsLen> charsArray;
     if constexpr (len > 0) {
       auto append = [it = charsArray.begin(), &charsArray](auto const& chars) mutable {
         if (it != charsArray.begin()) {
-          it = std::ranges::copy(Sep, it).out;
+          for (auto ch : Sep) {
+            *it = ch;
+            ++it;
+          }
         }
-        it = std::ranges::copy(chars, it).out;
+        for (auto ch : chars) {
+          *it = ch;
+          ++it;
+        }
       };
       (append(Strs), ...);
     }

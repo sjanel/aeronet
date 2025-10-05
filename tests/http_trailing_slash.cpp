@@ -48,6 +48,18 @@ TEST(HttpTrailingSlash, NormalizePolicyStrips) {
   ASSERT_NE(std::string::npos, resp.find("beta"));
 }
 
+TEST(HttpTrailingSlash, NormalizePolicyAddSlash) {
+  HttpServerConfig cfg{};
+  cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Normalize);
+  TestServer ts(cfg);
+  ts.server.addPathHandler("/beta/", aeronet::http::Method::GET,
+                           [](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("beta/"); });
+  auto resp = rawRequest(ts.port(), "/beta");
+  ts.stop();
+  ASSERT_NE(std::string::npos, resp.find("200"));
+  ASSERT_NE(std::string::npos, resp.find("beta"));
+}
+
 TEST(HttpTrailingSlash, RedirectPolicy) {
   HttpServerConfig cfg{};
   cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Redirect);
