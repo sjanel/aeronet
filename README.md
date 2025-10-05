@@ -577,19 +577,40 @@ Usage guidelines:
 Future possible extensions (not yet implemented): transparent compression insertion, zero‑copy file send mapping,
 and an alternate layout for extremely large header counts.
 
-### MultiHttpServer Lifecycle & reusePort Requirement
+### MultiHttpServer Lifecycle, Restart Semantics & reusePort Requirement
 
 `MultiHttpServer` constructs all underlying `HttpServer` instances immediately. If `cfg.port == 0` (ephemeral) the
 first underlying server binds and resolves the concrete port during construction, so `multi.port()` is valid right
 after the constructor returns. `start()` only launches the event loop threads – no busy-wait for port discovery.
+
+Restartability:
+
+- You may call `stop()` and then `start()` again on the same `MultiHttpServer` instance.
+- A restart creates a brand new set of underlying `HttpServer` objects because an `HttpServer` is currently single‑shot
+  (its `stop()` closes the listening socket; it does not rebind in place). This keeps the restart path simple and
+  avoids subtle epoll/listener reinitialization races.
+- Ephemeral port reuse: if the initial construction used `port=0`, the kernel-chosen port is stored in the resolved
+  config and that SAME port is reused for all subsequent restarts by default. Restarts do not request a new ephemeral
+  port automatically. (Design choice: stable port across cycles is usually what supervisors / load balancers expect.)
+  To obtain a new ephemeral port you must construct a new `MultiHttpServer` (or in a future API explicitly reset
+  the base configuration before a restart to `port=0`).
+- Handlers: global or path handlers registered before the first `start()` are re-applied to the fresh servers on each
+  restart. You may add/remove/replace path handlers and/or the global handler while the server is STOPPED (i.e. after
+  `stop()` and before the next `start()`). Modification while running is still forbidden.
+- Per‑run statistics are not accumulated across restarts; each run begins with fresh counters (servers rebuilt).
 
 Explicit `reusePort` policy:
 
 - For `threadCount > 1` you MUST set `cfg.reusePort = true` beforehand (otherwise the constructor throws `invalid_argument`).
 - For a single thread (`threadCount == 1`) `reusePort` is optional.
 
-Move semantics: moving a `MultiHttpServer` after `start()` is forbidden (debug assert) because worker threads capture
-raw pointers to the internal `HttpServer` objects.
+Move semantics: `MultiHttpServer` is movable even while running; threads capture stable addresses of `HttpServer`
+elements whose storage is transferred intact during the move (vector buffer move). Restart behavior is unchanged by moves.
+
+Single‑shot `HttpServer`: the underlying `HttpServer` type intentionally remains single‑shot for now. Supporting an in‑place
+restart would require re-binding sockets, purging existing connection state, and carefully updating the epoll set.
+If in‑place restart becomes a requirement a future refactor can introduce a `requestRestart()` / `rebind()` path. For most
+supervisor scenarios recreating a top‑level `MultiHttpServer` or using its built‑in restart suffices.
 
 Example:
 
@@ -602,6 +623,13 @@ std::cout << multi.port() << "\n"; // valid now
 multi.setHandler(...);
 multi.start();
 ```
+
+Notes:
+
+- If `cfg.port` was 0 the kernel-chosen ephemeral port printed above will remain stable across any later `stop()` /
+  `start()` cycles for this `MultiHttpServer` instance.
+- You may modify or add path handlers (and/or replace the global handler) after `stop()` and before the next
+  `start()`; attempting to do so while running throws.
 
 ## TLS Features (Current)
 
