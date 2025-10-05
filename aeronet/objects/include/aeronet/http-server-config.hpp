@@ -127,6 +127,24 @@ struct HttpServerConfig {
   // to avoid accidentally merging custom singleton semantics.
   bool mergeUnknownRequestHeaders{true};
 
+  // ===========================================
+  // Adaptive inbound read chunk sizing
+  // ===========================================
+  // The server initially used a fixed 4096 byte read() size for all inbound socket reads. To better balance
+  // header latency and bulk body throughput we expose a two‑tier strategy:
+  //   * initialReadChunkBytes : used while parsing the current request headers (request line + headers) until a full
+  //                             head is parsed. Smaller keeps per-connection latency fair under high concurrency.
+  //   * bodyReadChunkBytes    : used once headers are complete (while aggregating the body or after a full request); a
+  //                             larger value improves throughput for large uploads. Applies also between requests
+  //                             until the next header read begins (heuristic based on partial head detection).
+  //   * maxPerEventReadBytes  : optional fairness cap. 0 => unlimited (loop continues until EAGAIN / short read).
+  //                             When >0 the server stops reading from a connection once this many bytes were
+  //                             successfully read in the current epoll event, yielding back to the event loop.
+  // Defaults chosen to preserve prior behavior (4K) unless body phase tuning is explicitly desired.
+  std::size_t initialReadChunkBytes{4096};
+  std::size_t bodyReadChunkBytes{8192};
+  std::size_t maxPerEventReadBytes{0};
+
   // Validates config. Throws invalid_argument if it is not valid.
   void validate() const;
 
@@ -260,6 +278,19 @@ struct HttpServerConfig {
   HttpServerConfig& withRequestDecompression(DecompressionConfig cfg);
 
   HttpServerConfig& withMergeUnknownRequestHeaders(bool on = true);
+
+  // Configure adaptive read chunk sizing (two tier). Returns *this.
+  HttpServerConfig& withReadChunkStrategy(std::size_t initialBytes, std::size_t bodyBytes) {
+    initialReadChunkBytes = initialBytes;
+    bodyReadChunkBytes = bodyBytes;
+    return *this;
+  }
+
+  // Configure a per-event read fairness cap (0 => unlimited)
+  HttpServerConfig& withMaxPerEventReadBytes(std::size_t capBytes) {
+    maxPerEventReadBytes = capBytes;
+    return *this;
+  }
 };
 
 static_assert(std::is_aggregate_v<HttpServerConfig>,

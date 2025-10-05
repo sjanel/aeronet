@@ -314,7 +314,6 @@ class HttpServer {
   friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
 
   void eventLoop(Duration timeout);
-  void refreshCachedDate();
   void sweepIdleConnections();
   void acceptNewConnections();
   void handleReadableClient(int fd);
@@ -341,16 +340,14 @@ class HttpServer {
 
   void closeConnectionFd(int fd);
 
+  std::string_view addSlash(std::string_view path);
+
   // Invoke a registered streaming handler. Returns true if the connection should be closed after handling
   // the request (either because the client requested it or keep-alive limits reached). The HttpRequest is
   // non-const because we may reuse shared response finalization paths (e.g. emitting a 406 early) that expect
   // to mutate transient fields (target normalization already complete at this point).
   bool callStreamingHandler(const StreamingHandler& streamingHandler, HttpRequest& req, int fd, ConnectionState& state,
                             std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
-
-  // Transport-aware helpers (fall back to raw fd if transport null)
-  static ssize_t transportRead(int fd, ConnectionState& state, std::size_t chunkSize, bool& wantRead, bool& wantWrite);
-  static ssize_t transportWrite(int fd, ConnectionState& state, std::string_view data, bool& wantRead, bool& wantWrite);
 
   struct StatsInternal {
     uint64_t totalBytesQueued{0};
@@ -398,6 +395,8 @@ class HttpServer {
   TimePoint _cachedDateEpoch;  // last second-aligned timestamp used for Date header
   ParserErrorCallback _parserErrCb = []([[maybe_unused]] http::StatusCode) {};
   MetricsCallback _metricsCb;
+  RawChars _tmpBuffer;  // can be used for any kind of temporary buffer
+
 #ifdef AERONET_ENABLE_OPENSSL
   // TlsContext lifetime & pointer stability:
   // ----------------------------------------
