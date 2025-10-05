@@ -23,7 +23,7 @@ class BrotliEncoderContext : public EncoderContext {
 
   ~BrotliEncoderContext();
 
-  std::string_view encodeChunk(std::string_view chunk, bool finish) override;
+  std::string_view encodeChunk(std::size_t encoderChunkSize, std::string_view chunk, bool finish) override;
 
  private:
   BrotliEncoderState *_state{nullptr};
@@ -35,13 +35,15 @@ class BrotliEncoder : public Encoder {
  public:
   explicit BrotliEncoder(const CompressionConfig &cfg, std::size_t initialCapacity = 4096UL)
       : _buf(initialCapacity), _quality(cfg.brotli.quality), _window(cfg.brotli.window) {}
-  std::string_view encodeFull(std::string_view full) override;
+
+  std::string_view encodeFull(std::size_t encoderChunkSize, std::string_view full) override;
+
   std::unique_ptr<EncoderContext> makeContext() override {
     return std::make_unique<BrotliEncoderContext>(_buf, _quality, _window);
   }
 
  private:
-  std::string_view compressAll(std::string_view in);
+  std::string_view compressAll(std::size_t encoderChunkSize, std::string_view in);
   RawChars _buf;
   int _quality;
   int _window;

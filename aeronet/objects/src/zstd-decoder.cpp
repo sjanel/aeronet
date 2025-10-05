@@ -10,10 +10,11 @@
 
 namespace aeronet {
 
-bool ZstdDecoder::Decompress(std::string_view input, RawChars& out, std::size_t maxDecompressedBytes) {
+bool ZstdDecoder::Decompress(std::string_view input, std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
+                             RawChars& out) {
   const auto rSize = ZSTD_getFrameContentSize(input.data(), input.size());
   if (rSize == ZSTD_CONTENTSIZE_ERROR) {
-    log::error("ZstdDecoder::Decompress - getFrameContentSize failed with error {}", rSize);
+    log::error("ZstdDecoder::Decompress - getFrameContentSize returned ZSTD_CONTENTSIZE_ERROR");
     return false;
   }
   if (rSize != ZSTD_CONTENTSIZE_UNKNOWN) {
@@ -34,6 +35,7 @@ bool ZstdDecoder::Decompress(std::string_view input, RawChars& out, std::size_t 
     out.setSize(out.size() + rSize);
     return true;
   }
+
   // Unknown size: grow progressively
 
   struct ZStreamRAII {
@@ -58,12 +60,10 @@ bool ZstdDecoder::Decompress(std::string_view input, RawChars& out, std::size_t 
   }
 
   ZSTD_inBuffer inBuf{input.data(), input.size(), 0};
-  // TODO: make this chunk size configurable
-  static constexpr std::size_t kOutBufSz = 1 << 16;
 
   while (inBuf.pos < inBuf.size) {
-    out.ensureAvailableCapacity(kOutBufSz);
-    ZSTD_outBuffer output{out.data() + out.size(), kOutBufSz, 0};
+    out.ensureAvailableCapacity(decoderChunkSize);
+    ZSTD_outBuffer output{out.data() + out.size(), out.capacity() - out.size(), 0};
     const std::size_t ret = ZSTD_decompressStream(ss._stream, &output, &inBuf);
     if (ZSTD_isError(ret) != 0U) {
       log::error("ZstdDecoder::Decompress - ZSTD_decompressStream failed with error {}", ret);

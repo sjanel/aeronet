@@ -149,6 +149,9 @@ See: [Connection Close Semantics](docs/FEATURES.md#connection-close-semantics)
 Detailed negotiation rules, thresholds, opt-outs, and tuning have moved:
 See: [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
 
+Per-response manual override: setting any `Content-Encoding` (even `identity`) disables automatic compression for that
+response. Details & examples: [Manual Content-Encoding Override](docs/FEATURES.md#per-response-manual-content-encoding-automatic-compression-suppression)
+
 ### Inbound Request Body Decompression
 
 Detailed multi-layer decoding behavior, safety limits, examples, and configuration moved here:

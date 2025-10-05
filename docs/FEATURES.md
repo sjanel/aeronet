@@ -127,6 +127,60 @@ Supported (build‑flag gated): gzip, deflate (zlib), zstd, brotli.
 - Adds `Vary: Accept-Encoding` automatically (configurable) when compression applied.
 - Identity rejection: forbidding `identity` with no acceptable alternative ⇒ `406 Not Acceptable`.
 
+#### Per-Response Manual `Content-Encoding` (Automatic Compression Suppression)
+
+When you stream or build a response using `HttpResponseWriter`, aeronet will decide whether to apply
+automatic compression (based on `Accept-Encoding`, size threshold, configured preferences, and build flags).
+However, if you explicitly set a `Content-Encoding` header yourself (via `customHeader()` / `contentEncoding()` or on a
+fixed `HttpResponse`), aeronet treats this as a hard override and will NEVER engage its own encoder for that
+response. This applies even if the header value is `identity`.
+
+Practical implications:
+
+| Scenario | Result |
+|----------|-------|
+| You set `Content-Encoding: gzip` and write pre-compressed bytes | aeronet forwards bytes verbatim; no size threshold buffering; no double compression risk |
+| You set `Content-Encoding: identity` | Automatic compression fully disabled; body sent as-is |
+| You set multiple encodings (e.g. `gzip, br`) | Currently respected verbatim (aeronet does not multi-encode outbound); use only a single encoding value for clarity |
+| You set `Content-Length` + `Content-Encoding` | You MUST ensure the length matches the encoded payload size; aeronet does not recompute |
+| You set neither header | aeronet may choose an encoding and add `Content-Encoding` + `Vary` when activating |
+
+Detection logic (streaming path): first time a `Content-Encoding` header name is observed before headers flush, a
+`_userProvidedContentEncoding` flag is latched; subsequent internal compression activation checks this flag and abort.
+
+Edge cases & notes:
+
+- Threshold buffering still occurs until either (a) you set your own `Content-Encoding` or (b) aeronet activates its own.
+- If you mistakenly set an unsupported or misspelled value (e.g. `Content-Encoding: gziip`), aeronet will still skip auto compression and send it literally (client may misinterpret). Validation may be added later, so prefer correct tokens.
+- For fixed (non-streaming) responses created via `HttpResponse`, the same rule applies: presence of `Content-Encoding` means no automatic compression layer is injected.
+- `Vary: Accept-Encoding` is ONLY auto-added when aeronet itself performs outbound compression. Supplying your own `Content-Encoding` does not implicitly add `Vary` (you can add it manually if appropriate for caches).
+- Supplying `Content-Encoding` does not affect inbound request body decompression logic (that is driven by the request's headers, not the response).
+
+Minimal example (manual gzip):
+
+```cpp
+server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
+  w.statusCode(http::StatusOK);
+  w.contentType(http::ContentTypeTextPlain);
+  w.contentEncoding("gzip");            // suppress auto compression
+  w.write(preCompressedHelloGzipBytes);  // already gzip-compressed data
+  w.end();
+});
+```
+
+To “force identity” even if thresholds would normally trigger compression:
+
+```cpp
+server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
+  w.contentEncoding("identity"); // blocks auto compression
+  w.write(largePlainBuffer);
+  w.end();
+});
+```
+
+Introspecting the suppression in custom logic (advanced): `HttpResponseWriter::userProvidedContentEncoding()` exposes
+the latched flag (primarily for future middleware instrumentation / metrics).
+
 ### Inbound Request Body Decompression (Symmetric Flags)
 
 Codec flags enable BOTH outbound compression & inbound decoding. Multi-layer `Content-Encoding` chains decoded last→first with per-layer expansion & absolute size guards; successful decode removes the header before handler.
@@ -215,8 +269,6 @@ RequestDecompressionConfig dc; dc.enable = true; dc.maxDecompressedBytes = 8*102
 HttpServerConfig cfg; cfg.withRequestDecompression(dc);
 ```
 
-Future: streaming incremental decode; per-layer metrics; inbound allow list.
-
 ### Detailed Behavior (Inbound Decompression)
 
 Implemented capabilities (independent from outbound compression):
@@ -271,8 +323,6 @@ server.setHandler([](const HttpRequest& req){
   return HttpResponse(200, "OK").body(std::string(req.body()));
 });
 ```
-
-Planned / future: allow‑list of inbound codings; per-layer/ratio metrics; streaming incremental decode.
 
 ## Connection Close Semantics
 

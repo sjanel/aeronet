@@ -1,9 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <string_view>
-
-#include "aeronet/http-constants.hpp"
 
 // =============================================================================
 // aeronet Encoding Abstraction
@@ -55,14 +54,14 @@ class EncoderContext {
  public:
   virtual ~EncoderContext() = default;
 
-  virtual std::string_view encodeChunk(std::string_view data, bool finish) = 0;
+  virtual std::string_view encodeChunk(std::size_t encoderChunkSize, std::string_view data, bool finish) = 0;
 };
 
 class Encoder {
  public:
   virtual ~Encoder() = default;
   // One-shot full-buffer compression (no streaming state). Implementations may reuse an internal buffer.
-  virtual std::string_view encodeFull(std::string_view full) = 0;
+  virtual std::string_view encodeFull(std::size_t encoderChunkSize, std::string_view full) = 0;
 
   // Create a streaming context. Each context is independent.
   virtual std::unique_ptr<EncoderContext> makeContext() = 0;
@@ -72,12 +71,17 @@ class Encoder {
 // directly (except when finish && data.empty() -> returns empty view).
 class IdentityEncoderContext : public EncoderContext {
  public:
-  std::string_view encodeChunk(std::string_view data, [[maybe_unused]] bool finish) override { return data; }
+  std::string_view encodeChunk([[maybe_unused]] std::size_t encoderChunkSize, std::string_view data,
+                               [[maybe_unused]] bool finish) override {
+    return data;
+  }
 };
 
 class IdentityEncoder : public Encoder {
  public:
-  std::string_view encodeFull(std::string_view full) override { return full; }
+  std::string_view encodeFull([[maybe_unused]] std::size_t encoderChunkSize, std::string_view full) override {
+    return full;
+  }
 
   std::unique_ptr<EncoderContext> makeContext() override { return std::make_unique<IdentityEncoderContext>(); }
 };

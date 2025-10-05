@@ -24,7 +24,8 @@ struct ZstreamInflateRAII {
   z_stream _strm{};
 };
 
-bool ZlibDecoder::Decompress(std::string_view input, RawChars &out, bool isGzip, std::size_t maxDecompressedBytes) {
+bool ZlibDecoder::Decompress(std::string_view input, bool isGzip, std::size_t maxDecompressedBytes,
+                             std::size_t decoderChunkSize, RawChars &out) {
   ZstreamInflateRAII strm;
 
   // windowBits: 16 + MAX_WBITS enables gzip decoding; MAX_WBITS alone for zlib; -MAX_WBITS raw deflate.
@@ -38,14 +39,9 @@ bool ZlibDecoder::Decompress(std::string_view input, RawChars &out, bool isGzip,
   strm._strm.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(input.data()));
   strm._strm.avail_in = static_cast<uInt>(input.size());
 
-  // We don’t know decompressed size beforehand → grow dynamically
-  // TODO: make this chunk size configurable
-  static constexpr std::size_t kChunkSize = 1 << 14;
-
-  strm._strm.avail_out = static_cast<uInt>(kChunkSize);
-
   while (true) {
-    out.ensureAvailableCapacity(kChunkSize);
+    out.ensureAvailableCapacity(decoderChunkSize);
+    strm._strm.avail_out = static_cast<uInt>(out.capacity() - out.size());
     strm._strm.next_out = reinterpret_cast<unsigned char *>(out.data() + out.size());
 
     const auto ret = inflate(&strm._strm, 0);
@@ -53,7 +49,7 @@ bool ZlibDecoder::Decompress(std::string_view input, RawChars &out, bool isGzip,
       log::error("ZlibDecoder::Decompress - inflate failed with error {}", ret);
       return false;
     }
-    out.setSize(out.size() + kChunkSize - strm._strm.avail_out);
+    out.setSize(out.capacity() - strm._strm.avail_out);
     if (ret == Z_STREAM_END) {
       break;
     }
