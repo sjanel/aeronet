@@ -207,10 +207,10 @@ class HttpServer {
   // Methods are supplied via http::MethodsSet (small fixed-capacity flat set, non-allocating).
   // May coexist with global handlers and with per-path streaming handlers (but a specific
   // (path, method) pair cannot have both a normal and streaming handler simultaneously).
-  void addPathHandler(std::string path, const http::MethodSet& methods, const RequestHandler& handler);
+  void addPathHandler(std::string path, const http::MethodSet& methods, RequestHandler handler);
 
   // Convenience overload of 'addPathHandler' for a single method.
-  void addPathHandler(std::string path, http::Method method, const RequestHandler& handler);
+  void addPathHandler(std::string path, http::Method method, RequestHandler handler);
 
   // addPathStreamingHandler (multi-method):
   //   Registers streaming handlers per path+method combination. Mirrors addPathHandler semantics
@@ -220,10 +220,10 @@ class HttpServer {
   //     other kind afterwards is a logic error.
   // Overwrite semantics:
   //   - Re-registering the same kind (streaming over streaming) replaces the previous handler.
-  void addPathStreamingHandler(std::string path, const http::MethodSet& methods, const StreamingHandler& handler);
+  void addPathStreamingHandler(std::string path, const http::MethodSet& methods, StreamingHandler handler);
 
   // addPathStreamingHandler (single method convenience):
-  void addPathStreamingHandler(std::string path, http::Method method, const StreamingHandler& handler);
+  void addPathStreamingHandler(std::string path, http::Method method, StreamingHandler handler);
 
   // Install a callback invoked whenever the request parser encounters a non‑recoverable
   // protocol error for a connection. Typical causes correspond to the HTTP status codes.
