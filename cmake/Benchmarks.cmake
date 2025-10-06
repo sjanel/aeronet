@@ -1,13 +1,8 @@
 # Benchmarks.cmake - encapsulates all benchmark-related build logic for aeronet.
-# Included from top-level CMakeLists.txt when AERONET_BUILD_BENCHMARKS=ON.
-
-if(TARGET aeronet-bench-internal)
-  return() # Already configured
-endif()
-
 option(AERONET_BENCH_FORCE_CI "Force building benchmarks even when CI env var is set" OFF)
-option(AERONET_BENCH_ENABLE_OATPP "Fetch and build oatpp for comparative benchmarks" OFF)
-option(AERONET_BENCH_ENABLE_DROGON "Fetch and build drogon for comparative benchmarks" OFF)
+option(AERONET_BENCH_ENABLE_OATPP "Fetch and build oatpp for comparative benchmarks" ON)
+option(AERONET_BENCH_ENABLE_DROGON "Fetch and build drogon for comparative benchmarks" ON)
+option(AERONET_BENCH_ENABLE_HTTPLIB "Fetch and build cpp-httplib for comparative benchmarks" ON)
 
 if(DEFINED ENV{CI} AND NOT AERONET_BENCH_FORCE_CI)
   message(STATUS "[aeronet][bench] CI detected; skipping benchmarks (override with -DAERONET_BENCH_FORCE_CI=ON)")
@@ -32,10 +27,13 @@ endif()
 if(AERONET_BENCH_ENABLE_OATPP)
   FetchContent_Declare(
     oatpp
-    GIT_REPOSITORY https://github.com/oatpp/oatpp.git
-    GIT_TAG 1.3.0
+    URL https://github.com/oatpp/oatpp/archive/refs/tags/1.3.1.tar.gz
+    URL_HASH SHA256=9dd31f005ab0b3e8895a478d750d7dbce99e42750a147a3c42a9daecbddedd64
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
+  set(OATPP_INSTALL OFF CACHE BOOL "" FORCE)
   set(OATPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(OATPP_LINK_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
   set(OATPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(oatpp)
 endif()
@@ -45,10 +43,27 @@ if(AERONET_BENCH_ENABLE_DROGON)
     drogon
     GIT_REPOSITORY https://github.com/drogonframework/drogon.git
     GIT_TAG v1.9.11
+    GIT_SHALLOW TRUE
+    GIT_PROGRESS TRUE
+    # Ensure the 'trantor' submodule is fetched so add_subdirectory(trantor) succeeds
+    GIT_SUBMODULES "trantor"
+    GIT_SUBMODULES_RECURSE TRUE
   )
   set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
   set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(drogon)
+endif()
+
+if(AERONET_BENCH_ENABLE_HTTPLIB)
+  # Header-only; just fetch.
+  FetchContent_Declare(
+    cpp_httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+    GIT_TAG v0.26.0
+    GIT_SHALLOW TRUE
+    GIT_PROGRESS TRUE
+  )
+  FetchContent_MakeAvailable(cpp_httplib)
 endif()
 
 # Resolve benchmark root (directory containing benchmark sources)
@@ -88,19 +103,39 @@ set(AERONET_BENCH_FRAMEWORKS_SOURCES ${AERONET_BENCH_ROOT}/frameworks/bench_fram
 add_project_executable(aeronet-bench-frameworks ${AERONET_BENCH_FRAMEWORKS_SOURCES})
 target_link_libraries(aeronet-bench-frameworks PRIVATE aeronet benchmark::benchmark)
 target_include_directories(aeronet-bench-frameworks PRIVATE ${CMAKE_SOURCE_DIR}/tests)
-if(AERONET_BENCH_ENABLE_DROGON AND TARGET drogon)
-  target_link_libraries(aeronet-bench-frameworks PRIVATE drogon)
-  target_compile_definitions(aeronet-bench-frameworks PRIVATE HAVE_BENCH_DROGON)
+
+if(AERONET_BENCH_ENABLE_HTTPLIB AND DEFINED cpp_httplib_SOURCE_DIR)
+  target_include_directories(aeronet-bench-frameworks PRIVATE ${cpp_httplib_SOURCE_DIR})
+  target_compile_definitions(aeronet-bench-frameworks PRIVATE AERONET_BENCH_ENABLE_HTTPLIB)
 endif()
+
+if(AERONET_BENCH_ENABLE_DROGON AND TARGET drogon)
+  message(STATUS "[aeronet][bench] Including drogon in framework benchmarks")
+  target_link_libraries(aeronet-bench-frameworks PRIVATE drogon)
+  target_compile_definitions(aeronet-bench-frameworks PRIVATE AERONET_BENCH_ENABLE_DROGON)
+endif()
+
 if(AERONET_BENCH_ENABLE_OATPP)
-  # Oatpp defines multiple components; core + web + others are transitively linked by target oatpp::oatpp
+  # Support either plain 'oatpp' or namespace target 'oatpp::oatpp' depending on version.
+  set(_AERONET_OATPP_TARGET "")
   if(TARGET oatpp::oatpp)
-    target_link_libraries(aeronet-bench-frameworks PRIVATE oatpp::oatpp)
-    target_compile_definitions(aeronet-bench-frameworks PRIVATE HAVE_BENCH_OATPP)
+    set(_AERONET_OATPP_TARGET oatpp::oatpp)
+  elseif(TARGET oatpp)
+    set(_AERONET_OATPP_TARGET oatpp)
+  endif()
+  if(_AERONET_OATPP_TARGET)
+    message(STATUS "[aeronet][bench] Including oatpp in framework benchmarks using target '${_AERONET_OATPP_TARGET}'")
+    target_link_libraries(aeronet-bench-frameworks PRIVATE ${_AERONET_OATPP_TARGET})
+    target_compile_definitions(aeronet-bench-frameworks PRIVATE AERONET_BENCH_ENABLE_OATPP)
+    # Some releases may not export the 'src' directory as an include path; add it if available.
+    if(DEFINED oatpp_SOURCE_DIR AND EXISTS "${oatpp_SOURCE_DIR}/src/oatpp/web/server/HttpRouter.hpp")
+      target_include_directories(aeronet-bench-frameworks PRIVATE ${oatpp_SOURCE_DIR}/src)
+    endif()
   else()
-    message(WARNING "[aeronet][bench] Oatpp target not found after FetchContent")
+    message(WARNING "[aeronet][bench] Oatpp target not found after FetchContent; Oatpp benchmarks disabled")
   endif()
 endif()
+
 set_target_properties(aeronet-bench-frameworks PROPERTIES FOLDER "benchmarks")
 
 # Convenience run targets

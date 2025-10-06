@@ -38,7 +38,7 @@ TEST(HttpUrlDecoding, SpaceDecoding) {
   test_http_client::RequestOptions optHello;
   optHello.method = "GET";
   optHello.target = "/hello%20world";
-  auto respOwned = test_http_client::request_or_throw(server.port(), optHello);
+  auto respOwned = test_http_client::requestOrThrow(server.port(), optHello);
   std::string_view resp = respOwned;
   EXPECT_NE(resp.find("200 OK"), std::string_view::npos);
   EXPECT_NE(resp.find("hello world"), std::string_view::npos);
@@ -64,7 +64,7 @@ TEST(HttpUrlDecoding, Utf8Decoded) {
   test_http_client::RequestOptions optUtf8;
   optUtf8.method = "GET";
   optUtf8.target = "/%E2%98%83%20x";
-  auto respOwned = test_http_client::request_or_throw(server.port(), optUtf8);
+  auto respOwned = test_http_client::requestOrThrow(server.port(), optUtf8);
   std::string_view resp = respOwned;
   EXPECT_NE(resp.find("200 OK"), std::string_view::npos);
   EXPECT_NE(resp.find("utf8"), std::string_view::npos);
@@ -87,7 +87,7 @@ TEST(HttpUrlDecoding, PlusIsNotSpace) {
   test_http_client::RequestOptions optPlus;
   optPlus.method = "GET";
   optPlus.target = "/a+b";
-  auto respOwned = test_http_client::request_or_throw(server.port(), optPlus);
+  auto respOwned = test_http_client::requestOrThrow(server.port(), optPlus);
   std::string_view resp = respOwned;
   EXPECT_NE(resp.find("200 OK"), std::string_view::npos);
   EXPECT_NE(resp.find("plus"), std::string_view::npos);
@@ -106,7 +106,7 @@ TEST(HttpUrlDecoding, InvalidPercentSequence400) {
   test_http_client::RequestOptions optBad;
   optBad.method = "GET";
   optBad.target = "/bad%G1";
-  auto respOwned = test_http_client::request_or_throw(server.port(), optBad);
+  auto respOwned = test_http_client::requestOrThrow(server.port(), optBad);
   std::string_view resp = respOwned;
   EXPECT_NE(resp.find("400 Bad Request"), std::string_view::npos);
   done.store(true);

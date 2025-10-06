@@ -29,7 +29,7 @@ TEST(AsyncHttpServer, BasicStartStopAndRequest) {
   test_http_client::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/";
-  auto resp = test_http_client::request_or_throw(port, opt);
+  auto resp = test_http_client::requestOrThrow(port, opt);
   ASSERT_NE(resp.find("200"), std::string::npos);
   ASSERT_NE(resp.find("hello-async"), std::string::npos);
   async.requestStop();
@@ -47,7 +47,7 @@ TEST(AsyncHttpServer, PredicateStop) {
   test_http_client::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/xyz";
-  auto resp = test_http_client::request_or_throw(port, opt);
+  auto resp = test_http_client::requestOrThrow(port, opt);
   ASSERT_NE(resp.find("/xyz"), std::string::npos);
   done.store(true);
   // stopAndJoin should be idempotent after predicate triggers stop

@@ -190,10 +190,10 @@ inline std::optional<std::string> request(uint16_t port, const RequestOptions &o
 // Convenience wrapper that throws std::runtime_error on failure instead of returning std::nullopt.
 // This simplifies test code by eliminating explicit ASSERT checks for has_value(); gtest will treat
 // uncaught exceptions as test failures with the diagnostic message.
-inline std::string request_or_throw(uint16_t port, const RequestOptions &opt = {}) {
+inline std::string requestOrThrow(uint16_t port, const RequestOptions &opt = {}) {
   auto resp = request(port, opt);
   if (!resp.has_value()) {
-    throw std::runtime_error("test_http_client::request_or_throw: request failed (socket/connect/send/recv) ");
+    throw std::runtime_error("test_http_client::requestOrThrow: request failed (socket/connect/send/recv) ");
   }
   return std::move(*resp);
 }
@@ -205,19 +205,10 @@ inline std::vector<std::string> sequentialRequests(uint16_t port, std::span<cons
   if (reqs.empty()) {
     return results;
   }
-  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
-  int fd = sock.fd();
-  if (fd < 0) {
-    return results;
-  }
+  aeronet::test::ClientConnection cnx(port);
+  int fd = cnx.fd();
   setRecvTimeout(fd, reqs.front().recvTimeoutSeconds);
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
-    return results;
-  }
+
   char buf[4096];
   for (std::size_t i = 0; i < reqs.size(); ++i) {
     RequestOptions ro = reqs[i];
@@ -353,20 +344,9 @@ inline std::optional<StreamingHandle> openStreaming(uint16_t port, const Request
 }
 
 inline std::string readAvailable(const StreamingHandle &handle) {
-  std::string out;
-  char buf[4096];
-  for (;;) {
-    ssize_t received = ::recv(handle.sock.fd(), buf, sizeof(buf), MSG_DONTWAIT);
-    if (received > 0) {
-      out.append(buf, buf + received);
-      continue;
-    }
-    if (received == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-      break;
-    }
-    break;  // closed or error
-  }
-  return out;
+  // Use optimized helper: reads immediately available bytes and returns quickly.
+  // Small timeout (default 500ms in helper) is truncated early after first EAGAIN.
+  return aeronet::test::recvWithTimeout(handle.sock.fd(), std::chrono::milliseconds(50));
 }
 
 inline void closeStreaming(StreamingHandle &handle) {
