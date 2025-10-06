@@ -35,3 +35,10 @@ add_unit_test(
     LIBRARIES
     aeronet_objects
 )
+
+add_unit_test(
+    http-server-config_test
+    test/http-server-config_test.cpp
+    LIBRARIES
+    aeronet_objects
+)

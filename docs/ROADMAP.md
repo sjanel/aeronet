@@ -87,7 +87,7 @@ class HttpResponseWriter {
 public:
   void setStatus(http::StatusCode code, std::string_view reason = {});
   void addCustomHeader(std::string_view name, std::string_view value);
-  void setContentLength(std::size_t bytes); // optional explicit length
+  void contentLength(std::size_t bytes); // optional explicit length
   void beginChunked();                       // switch to chunked transfer
   bool write(std::string_view chunk);        // returns false if output buffer full
   void end();                                // finalize (send last-chunk if chunked)

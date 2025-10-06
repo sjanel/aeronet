@@ -1,5 +1,6 @@
 #include "aeronet/http-server-config.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +13,7 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/tls-config.hpp"
+#include "tchars.hpp"
 
 namespace aeronet {
 
@@ -179,6 +181,14 @@ void HttpServerConfig::validate() const {
     // Normalize: cap cannot be smaller than a single chunk; promote to chunk size.
     // (Since config is const here we cannot mutate; just throw to surface mistake.)
     throw invalid_argument("maxPerEventReadBytes must be 0 or >= initialReadChunkBytes");
+  }
+  for (const auto& [headerKey, headerValue] : globalHeaders) {
+    if (http::IsReservedResponseHeader(headerKey)) {
+      throw invalid_argument("'{}' is a reserved header", headerKey);
+    }
+    if (headerKey.empty() || std::ranges::any_of(headerKey, [](char ch) { return !is_tchar(ch); })) {
+      throw invalid_argument("header '{}' is invalid", headerKey);
+    }
   }
 }
 

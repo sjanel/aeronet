@@ -370,20 +370,22 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
     if (!transferEncoding.empty()) {
       hasTransferEncoding = true;
       if (req.version() == http::HTTP_1_0) {
-        emitSimpleError(fd, state, 400, true);
+        emitSimpleError(fd, state, http::StatusCodeBadRequest, true, "Transfer-Encoding not allowed in HTTP/1.0");
         break;
       }
       if (CaseInsensitiveEqual(transferEncoding, http::chunked)) {
         isChunked = true;
       } else {
-        emitSimpleError(fd, state, 501, true);
+        emitSimpleError(fd, state, http::StatusCodeNotImplemented, true, "Unsupported Transfer-Encoding");
         break;
       }
     }
 
-    bool hasContentLength = !req.headerValueOrEmpty(http::ContentLength).empty();
+    std::string_view contentLength = req.headerValueOrEmpty(http::ContentLength);
+    bool hasContentLength = !contentLength.empty();
     if (hasContentLength && hasTransferEncoding) {
-      emitSimpleError(fd, state, 400, true);
+      emitSimpleError(fd, state, http::StatusCodeBadRequest, true,
+                      "Content-Length and Transfer-Encoding cannot be used together");
       break;
     }
     bool expectContinue = req.hasExpectContinue();
@@ -644,7 +646,7 @@ bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, Http
       ++encodingFirst;
     }
     if (encodingFirst == encodingLast) {  // empty token => malformed list
-      emitSimpleError(fd, state, http::StatusCodeBadRequest, true);
+      emitSimpleError(fd, state, http::StatusCodeBadRequest, true, "Malformed Content-Encoding");
       return false;
     }
 
@@ -670,18 +672,18 @@ bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, Http
       stageOk = BrotliDecoder::Decompress(src, cfg.maxDecompressedBytes, cfg.decoderChunkSize, *dst);
 #endif
     } else {
-      emitSimpleError(fd, state, http::StatusCodeUnsupportedMediaType, true);
+      emitSimpleError(fd, state, http::StatusCodeUnsupportedMediaType, true, "Unsupported Content-Encoding");
       return false;
     }
     if (!stageOk) {
-      emitSimpleError(fd, state, http::StatusCodeBadRequest, true);
+      emitSimpleError(fd, state, http::StatusCodeBadRequest, true, "Decompression failed");
       return false;
     }
     // Expansion guard after each stage (defensive against nested bombs).
     if (cfg.maxExpansionRatio > 0.0 && originalCompressedSize > 0) {
       double ratio = static_cast<double>(dst->size()) / static_cast<double>(originalCompressedSize);
       if (ratio > cfg.maxExpansionRatio) {
-        emitSimpleError(fd, state, http::StatusCodePayloadTooLarge, true);
+        emitSimpleError(fd, state, http::StatusCodePayloadTooLarge, true, "Decompression expansion too large");
         return false;
       }
     }
@@ -826,8 +828,12 @@ ServerStats HttpServer::stats() const {
   return statsOut;
 }
 
-void HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, bool immediate) {
-  BuildSimpleError(code, _cachedDateEpoch, _tmpBuffer);
+void HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, bool immediate,
+                                 std::string_view reason) {
+  if (reason.empty()) {
+    reason = http::reasonPhraseFor(code);
+  }
+  BuildSimpleError(code, _cachedDateEpoch, _config.globalHeaders, reason, _tmpBuffer);
   queueData(fd, state, _tmpBuffer);
   try {
     _parserErrCb(code);
