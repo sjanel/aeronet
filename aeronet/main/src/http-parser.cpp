@@ -8,6 +8,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "char-hexadecimal-converter.hpp"
 #include "connection-state.hpp"
 #include "raw-chars.hpp"
@@ -38,24 +39,24 @@ bool HttpServer::decodeFixedLengthBody(int fd, ConnectionState& state, HttpReque
     }
     return false;
   }
-  std::size_t parsed = 0;
-  auto [ptr, err] = std::from_chars(lenViewAll.data(), lenViewAll.data() + lenViewAll.size(), parsed);
-  if (err != std::errc() || ptr != lenViewAll.data() + lenViewAll.size() || parsed > _config.maxBodyBytes) {
-    parsed = _config.maxBodyBytes + 1;  // trigger error path (invalid or too large)
-  }
-  std::size_t contentLen = parsed;
-  if (contentLen > _config.maxBodyBytes) {
-    emitSimpleError(fd, state, 413, true);
+  std::size_t declaredContentLen = 0;
+  auto [ptr, err] = std::from_chars(lenViewAll.data(), lenViewAll.data() + lenViewAll.size(), declaredContentLen);
+  if (err != std::errc() || ptr != lenViewAll.data() + lenViewAll.size()) {
+    emitSimpleError(fd, state, http::StatusCodeBadRequest, true, "Invalid Content-Length");
     return false;
   }
-  if (expectContinue && contentLen > 0) {
+  if (declaredContentLen > _config.maxBodyBytes) {
+    emitSimpleError(fd, state, http::StatusCodePayloadTooLarge, true);
+    return false;
+  }
+  if (expectContinue && declaredContentLen > 0) {
     queueData(fd, state, http::HTTP11_100_CONTINUE);
   }
-  std::size_t totalNeeded = headerEnd + contentLen;
+  std::size_t totalNeeded = headerEnd + declaredContentLen;
   if (state.buffer.size() < totalNeeded) {
     return false;  // need more bytes
   }
-  req._body = {state.buffer.data() + headerEnd, contentLen};
+  req._body = {state.buffer.data() + headerEnd, declaredContentLen};
   consumedBytes = totalNeeded;
   return true;
 }
@@ -91,17 +92,17 @@ bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, HttpRequest& 
         break;
       }
     }
-    pos = static_cast<std::size_t>(lineEndIt - state.buffer.data()) + 2;
+    pos = static_cast<std::size_t>(lineEndIt - state.buffer.data()) + http::CRLF.size();
     if (chunkSize > _config.maxBodyBytes) {
-      emitSimpleError(fd, state, 413, true);
+      emitSimpleError(fd, state, http::StatusCodePayloadTooLarge, true);
       return false;
     }
-    if (state.buffer.size() < pos + chunkSize + 2) {
+    if (state.buffer.size() < pos + chunkSize + http::CRLF.size()) {
       needMore = true;
       break;
     }
     if (chunkSize == 0) {
-      if (state.buffer.size() < pos + 2) {
+      if (state.buffer.size() < pos + http::CRLF.size()) {
         needMore = true;
         break;
       }
@@ -109,12 +110,12 @@ bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, HttpRequest& 
         needMore = true;
         break;
       }
-      pos += 2;
+      pos += http::CRLF.size();
       break;
     }
     decodedBody.append(state.buffer.data() + pos, std::min(chunkSize, state.buffer.size() - pos));
     if (decodedBody.size() > _config.maxBodyBytes) {
-      emitSimpleError(fd, state, 413, true);
+      emitSimpleError(fd, state, http::StatusCodePayloadTooLarge, true);
       return false;
     }
     pos += chunkSize;

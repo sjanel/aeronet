@@ -8,11 +8,11 @@
 #include <utility>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "raw-chars.hpp"
 #include "simple-charconv.hpp"
-#include "string-equal-ignore-case.hpp"
 #include "timedef.hpp"
 
 namespace aeronet {
@@ -42,19 +42,19 @@ namespace aeronet {
 //   at construction terminates the header block. This lets us append headers by
 //   shifting only the tail (DoubleCRLF + body) once per insertion.
 //
-//   appendHeader():
+//   addCustomHeader():
 //     - O(T) memmove of tail where T = size(DoubleCRLF + current body), no scan of
 //       existing headers (fast path). Allows duplicates intentionally.
 //
-//   header():
+//   customHeader():
 //     - Linear scan of current header region to find existing key at line starts
 //       (recognised by preceding CRLF). If found, value replaced in-place adjusting
 //       buffer via single memmove for size delta. If not found, falls back to append.
-//     - Because of the scan it is less efficient than appendHeader(). Prefer
-//       appendHeader() when duplicates are acceptable or order-only semantics matter.
+//     - Because of the scan it is less efficient than addCustomHeader(). Prefer
+//       addCustomHeader() when duplicates are acceptable or order-only semantics matter.
 //
 // Mutators & Finalization:
-//   statusCode(), reason(), body(), appendHeader(), header() may be called in any
+//   statusCode(), reason(), body(), addCustomHeader(), customHeader() may be called in any
 //   order prior to finalizeAndGetFullTextResponse(). finalize* injects reserved
 //   headers (Content-Length if body non-empty, Date, Connection) every time it is
 //   called; therefore call it exactly once. Post-finalization mutation is NOT
@@ -67,8 +67,8 @@ namespace aeronet {
 //   - statusCode(): O(1)
 //   - reason(): O(size of tail - adjusts headers/body offsets)
 //   - body(): O(delta) for copy; may reallocate
-//   - appendHeader(): O(bodyLen) for memmove of tail
-//   - header(): O(totalHeaderBytes) scan + O(bodyLen) memmove if size delta
+//   - addCustomHeader(): O(bodyLen) for memmove of tail
+//   - customHeader(): O(totalHeaderBytes) scan + O(bodyLen) memmove if size delta
 //
 // Safety & Assumptions:
 //   - Not thread-safe.
@@ -183,10 +183,10 @@ class HttpResponse {
   // Append a header line (duplicates allowed, fastest path).
   // No scan over existing headers. Prefer this when duplicates are OK or
   // when constructing headers once.
-  // Do not insert any reserved header (for which IsReservedHeader is true), doing so is undefined behavior.
+  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse& addCustomHeader(std::string_view key, std::string_view value) & {
-    assert(!IsReservedHeader(key));
+    assert(!http::IsReservedResponseHeader(key));
     appendHeaderUnchecked(key, value);
     return *this;
   }
@@ -194,37 +194,37 @@ class HttpResponse {
   // Append a header line (duplicates allowed, fastest path).
   // No scan over existing headers. Prefer this when duplicates are OK or
   // when constructing headers once.
-  // Do not insert any reserved header (for which IsReservedHeader is true), doing so is undefined behavior.
+  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse&& addCustomHeader(std::string_view key, std::string_view value) && {
-    assert(!IsReservedHeader(key));
+    assert(!http::IsReservedResponseHeader(key));
     appendHeaderUnchecked(key, value);
     return std::move(*this);
   }
 
   // Set or replace a header value ensuring at most one instance.
-  // Performs a linear scan (slower than appendHeader()) using case-insensitive comparison of header names per
+  // Performs a linear scan (slower than addCustomHeader()) using case-insensitive comparison of header names per
   // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
-  // If not found, falls back to appendHeader(). Use only when you must guarantee uniqueness; otherwise prefer
-  // appendHeader().
-  // Do not insert any reserved header (for which IsReservedHeader is true), doing so is undefined behavior.
+  // If not found, falls back to addCustomHeader(). Use only when you must guarantee uniqueness; otherwise prefer
+  // addCustomHeader().
+  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse& customHeader(std::string_view key, std::string_view value) & {
-    assert(!IsReservedHeader(key));
-    setHeader(key, value);
+    assert(!http::IsReservedResponseHeader(key));
+    setHeader(key, value, false);
     return *this;
   }
 
   // Set or replace a header value ensuring at most one instance.
-  // Performs a linear scan (slower than appendHeader()) using case-insensitive comparison of header names per
+  // Performs a linear scan (slower than addCustomHeader()) using case-insensitive comparison of header names per
   // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
-  // If not found, falls back to appendHeader(). Use only when you must guarantee uniqueness; otherwise prefer
-  // appendHeader().
-  // Do not insert any reserved header (for which IsReservedHeader is true), doing so is undefined behavior.
+  // If not found, falls back to addCustomHeader(). Use only when you must guarantee uniqueness; otherwise prefer
+  // addCustomHeader().
+  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse&& customHeader(std::string_view key, std::string_view value) && {
-    assert(!IsReservedHeader(key));
-    setHeader(key, value);
+    assert(!http::IsReservedResponseHeader(key));
+    setHeader(key, value, false);
     return std::move(*this);
   }
 
@@ -235,24 +235,6 @@ class HttpResponse {
   //   Content-Encoding: identity
   // or an empty value ("\r\nContent-Encoding: \r\n") though the former is preferred.
   [[nodiscard]] bool userProvidedContentEncoding() const noexcept { return _userProvidedContentEncoding; }
-
-  // Centralized rule for headers the user may not set directly (normal or streaming path).
-  // These are either automatically emitted (Date, Content-Length, Connection, Transfer-Encoding) or
-  // would create ambiguous / unsupported semantics if user-supplied before dedicated feature support
-  // (Trailer, Upgrade, TE). Keeping this here allows future optimization of storage layout without
-  // scattering the logic.
-  // You can use 'static_assert' to make sure at compilation time that the header you are about to insert is not
-  // reserved. The list of reserved headers is unlikely to change in the future, but they are mostly technical /
-  // framework headers that aeronet manages internally and probably not very interesting for the client.
-  // Example:
-  //     static_assert(!aeronet::HttpResponse::IsReservedHeader("X-My-Header")); // OK
-  //     static_assert(!aeronet::HttpResponse::IsReservedHeader("Content-Length")); // Not OK
-  [[nodiscard]] static constexpr bool IsReservedHeader(std::string_view name) noexcept {
-    using namespace http;
-    return CaseInsensitiveEqual(name, Connection) || CaseInsensitiveEqual(name, Date) ||
-           CaseInsensitiveEqual(name, ContentLength) || CaseInsensitiveEqual(name, TransferEncoding) ||
-           CaseInsensitiveEqual(name, Trailer) || CaseInsensitiveEqual(name, Upgrade) || CaseInsensitiveEqual(name, TE);
-  }
 
  private:
   friend class HttpServer;
@@ -275,7 +257,7 @@ class HttpResponse {
 
   void setBody(std::string_view newBody);
 
-  void setHeader(std::string_view key, std::string_view value);
+  void setHeader(std::string_view key, std::string_view value, bool onlyIfNew = false);
 
   void appendHeaderUnchecked(std::string_view key, std::string_view value);
 
@@ -307,11 +289,11 @@ class HttpResponse {
 
   // IMPORTANT: This method finalizes the response by appending reserved headers.
   // After it returns, calling any mutating method (statusCode, reason, body,
-  // appendHeader, header) is undefined behavior and may corrupt the buffer or
+  // addCustomHeader, customHeader) is undefined behavior and may corrupt the buffer or
   // duplicate reserved headers. Higher-level server code is expected to call
   // this exactly once right before write.
   std::string_view finalizeAndGetFullTextResponse(http::Version version, TimePoint tp, bool keepAlive,
-                                                  bool isHeadMethod);
+                                                  std::span<const http::Header> globalHeaders, bool isHeadMethod);
 
   RawChars _data;
   uint16_t _headersStartPos{};  // position just at the CRLF that starts the first header line

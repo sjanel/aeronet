@@ -331,7 +331,8 @@ class HttpServer {
                                std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // If immediate=true the connection will be closed without waiting for buffered writes to drain.
-  void emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, bool immediate = false);
+  void emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, bool immediate = false,
+                       std::string_view reason = {});
   // Outbound write helpers
   bool queueData(int fd, ConnectionState& state, std::string_view data);
   void flushOutbound(int fd, ConnectionState& state);

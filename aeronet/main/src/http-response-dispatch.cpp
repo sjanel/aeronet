@@ -77,7 +77,8 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
       }
     }
   }
-  auto data = resp.finalizeAndGetFullTextResponse(req.version(), _cachedDateEpoch, keepAlive, isHead);
+  auto data =
+      resp.finalizeAndGetFullTextResponse(req.version(), _cachedDateEpoch, keepAlive, _config.globalHeaders, isHead);
 
   queueData(fd, state, data);
 
