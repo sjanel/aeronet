@@ -239,39 +239,50 @@ void HttpServer::setHandler(RequestHandler handler) { _handler = std::move(handl
 
 void HttpServer::setStreamingHandler(StreamingHandler handler) { _streamingHandler = std::move(handler); }
 
-void HttpServer::addPathHandler(std::string path, const http::MethodSet& methods, const RequestHandler& handler) {
+void HttpServer::addPathHandler(std::string path, const http::MethodSet& methods, RequestHandler handler) {
   auto it = _pathHandlers.emplace(std::move(path), PathHandlerEntry{}).first;
   PathHandlerEntry* pEntry = &it->second;
+  RequestHandler* pHandler = nullptr;
   for (http::Method method : methods) {
     auto idx = static_cast<std::underlying_type_t<http::Method>>(method);
     if (pEntry->streamingHandlers[idx]) {
       throw exception("Cannot register normal handler: streaming handler already present for path+method");
     }
-    pEntry->normalHandlers[idx] = handler;
+    if (pHandler == nullptr) {
+      pEntry->normalHandlers[idx] = std::move(handler);
+      pHandler = &pEntry->normalHandlers[idx];
+    } else {
+      pEntry->normalHandlers[idx] = *pHandler;
+    }
     pEntry->normalMethodMask |= http::singleMethodToMask(method);
   }
 }
 
-void HttpServer::addPathHandler(std::string path, http::Method method, const RequestHandler& handler) {
-  addPathHandler(std::move(path), http::MethodSet{method}, handler);
+void HttpServer::addPathHandler(std::string path, http::Method method, RequestHandler handler) {
+  addPathHandler(std::move(path), http::MethodSet{method}, std::move(handler));
 }
 
-void HttpServer::addPathStreamingHandler(std::string path, const http::MethodSet& methods,
-                                         const StreamingHandler& handler) {
+void HttpServer::addPathStreamingHandler(std::string path, const http::MethodSet& methods, StreamingHandler handler) {
   auto it = _pathHandlers.emplace(std::move(path), PathHandlerEntry{}).first;
   PathHandlerEntry* pEntry = &it->second;
+  StreamingHandler* pHandler = nullptr;
   for (http::Method method : methods) {
     auto idx = static_cast<std::underlying_type_t<http::Method>>(method);
     if (pEntry->normalHandlers[idx]) {
       throw exception("Cannot register streaming handler: normal handler already present for path+method");
     }
-    pEntry->streamingHandlers[idx] = handler;
+    if (pHandler == nullptr) {
+      pEntry->streamingHandlers[idx] = std::move(handler);
+      pHandler = &pEntry->streamingHandlers[idx];
+    } else {
+      pEntry->streamingHandlers[idx] = *pHandler;
+    }
     pEntry->streamingMethodMask |= http::singleMethodToMask(method);
   }
 }
 
-void HttpServer::addPathStreamingHandler(std::string path, http::Method method, const StreamingHandler& handler) {
-  addPathStreamingHandler(std::move(path), http::MethodSet{method}, handler);
+void HttpServer::addPathStreamingHandler(std::string path, http::Method method, StreamingHandler handler) {
+  addPathStreamingHandler(std::move(path), http::MethodSet{method}, std::move(handler));
 }
 
 void HttpServer::run() {

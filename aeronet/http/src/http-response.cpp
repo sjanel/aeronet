@@ -154,7 +154,14 @@ void HttpResponse::setBody(std::string_view newBody) {
 void HttpResponse::appendHeaderUnchecked(std::string_view key, std::string_view value) {
   assert(!key.empty() && std::ranges::all_of(key, [](char ch) { return is_tchar(ch); }));
   const bool markCE = CaseInsensitiveEqual(key, http::ContentEncoding);
-  appendHeaderGeneric(key, value.size(), [&](char* dst) { std::memcpy(dst, value.data(), value.size()); }, markCE);
+  appendHeaderGeneric(
+      key, value.size(),
+      [value](char* dst) {
+        if (!value.empty()) {
+          std::memcpy(dst, value.data(), value.size());
+        }
+      },
+      markCE);
 }
 
 void HttpResponse::appendDateUnchecked(TimePoint tp) {

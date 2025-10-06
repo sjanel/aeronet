@@ -86,7 +86,7 @@ Legend:
 class HttpResponseWriter {
 public:
   void setStatus(http::StatusCode code, std::string_view reason = {});
-  void addHeader(std::string_view name, std::string_view value);
+  void addCustomHeader(std::string_view name, std::string_view value);
   void setContentLength(std::size_t bytes); // optional explicit length
   void beginChunked();                       // switch to chunked transfer
   bool write(std::string_view chunk);        // returns false if output buffer full
@@ -99,7 +99,7 @@ Handler variant:
 ```cpp
 server.setStreamingHandler([](const HttpRequest& req, HttpResponseWriter& w){
   w.setStatus(200, "OK");
-  w.addHeader("Content-Type", "text/plain");
+  w.addCustomHeader("Content-Type", "text/plain");
   w.beginChunked();
   for (auto piece : pieces) w.write(piece);
   w.end();
