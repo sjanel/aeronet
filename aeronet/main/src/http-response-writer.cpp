@@ -14,6 +14,7 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -44,13 +45,13 @@ void HttpResponseWriter::statusCode(http::StatusCode code, std::string_view reas
 
 void HttpResponseWriter::statusCode(http::StatusCode code) { statusCode(code, http::ReasonOK); }
 
-void HttpResponseWriter::customHeader(std::string_view name, std::string_view value) {
+void HttpResponseWriter::addCustomHeader(std::string_view name, std::string_view value) {
   if (_headersSent || _failed) {
     log::debug("Streaming: header ignored fd={} name={} reason={}", _fd, name,
                _failed ? "writer-failed" : "headers-already-sent");
     return;
   }
-  if (HttpResponse::IsReservedHeader(name)) {
+  if (http::IsReservedResponseHeader(name)) {
     log::error("Attempt to set reserved or managed header '{}' in streaming response", name);
     return;
   }
@@ -62,7 +63,27 @@ void HttpResponseWriter::customHeader(std::string_view name, std::string_view va
     _userProvidedContentEncoding = true;  // suppress automatic compression
     // If user sets identity we still treat it as suppression; we do not validate value here.
   }
-  // Use 'header' to enforce uniqueness semantics for streaming path.
+  _fixedResponse.addCustomHeader(name, value);
+}
+
+void HttpResponseWriter::customHeader(std::string_view name, std::string_view value) {
+  if (_headersSent || _failed) {
+    log::debug("Streaming: header ignored fd={} name={} reason={}", _fd, name,
+               _failed ? "writer-failed" : "headers-already-sent");
+    return;
+  }
+  if (http::IsReservedResponseHeader(name)) {
+    log::error("Attempt to set reserved or managed header '{}' in streaming response", name);
+    return;
+  }
+  if (CaseInsensitiveEqual(name, http::ContentType)) {
+    // Track explicit user override of default content type.
+    _userSetContentType = true;
+  }
+  if (CaseInsensitiveEqual(name, http::ContentEncoding)) {
+    _userProvidedContentEncoding = true;  // suppress automatic compression
+    // If user sets identity we still treat it as suppression; we do not validate value here.
+  }
   _fixedResponse.customHeader(name, value);
 }
 
@@ -115,8 +136,8 @@ void HttpResponseWriter::ensureHeadersSent() {
   // Do NOT add Content-Encoding at header emission time; we wait until we actually activate
   // compression (threshold reached) to avoid mislabeling identity bodies when size < threshold.
   // Do not attempt to add Connection/Date here; finalize handles them (adds Date, Connection based on keepAlive flag).
-  auto finalized = _fixedResponse.finalizeAndGetFullTextResponse(http::HTTP_1_1, _server->_cachedDateEpoch,
-                                                                 !_requestConnClose, _head);
+  auto finalized = _fixedResponse.finalizeAndGetFullTextResponse(
+      http::HTTP_1_1, _server->_cachedDateEpoch, !_requestConnClose, _server->_config.globalHeaders, _head);
   log::debug("Streaming: headers fd={} code={} chunked={} headerBytes={} ", _fd, _fixedResponse.statusCode(), _chunked,
              finalized.size());
   if (!enqueue(finalized)) {

@@ -11,16 +11,21 @@
 
 namespace aeronet {
 
-void BuildSimpleError(http::StatusCode status, TimePoint tp, RawChars &out) {
-  const std::string_view reason = http::reasonPhraseFor(status);
-
+void BuildSimpleError(http::StatusCode status, TimePoint tp, std::span<const http::Header> globalHeaders,
+                      std::string_view reason, RawChars& out) {
   const auto datePos = http::HTTP11Sv.size() + 1UL + 3UL + 1UL + reason.size() + http::CRLF.size() + http::Date.size() +
                        http::HeaderSep.size();
+
+  std::size_t globalHeadersSize = 0;
+  for (const auto& [headerKey, headerValue] : globalHeaders) {
+    globalHeadersSize += http::CRLF.size() + headerKey.size() + http::HeaderSep.size() + headerValue.size();
+  }
 
   out.clear();
   out.ensureAvailableCapacity(datePos + kRFC7231DateStrLen + http::CRLF.size() + http::ContentLength.size() +
                               http::HeaderSep.size() + 1U + http::CRLF.size() + http::Connection.size() +
-                              http::HeaderSep.size() + http::close.size() + http::DoubleCRLF.size());
+                              http::HeaderSep.size() + http::close.size() + http::DoubleCRLF.size() +
+                              globalHeadersSize);
 
   out.unchecked_append(http::HTTP11Sv);
   out.unchecked_push_back(' ');
@@ -40,6 +45,12 @@ void BuildSimpleError(http::StatusCode status, TimePoint tp, RawChars &out) {
   out.unchecked_append(http::Connection);
   out.unchecked_append(http::HeaderSep);
   out.unchecked_append(http::close);
+  for (const auto& [headerKey, headerValue] : globalHeaders) {
+    out.unchecked_append(http::CRLF);
+    out.unchecked_append(headerKey);
+    out.unchecked_append(http::HeaderSep);
+    out.unchecked_append(headerValue);
+  }
   out.unchecked_append(http::DoubleCRLF);
 }
 

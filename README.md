@@ -177,7 +177,7 @@ their semantics would be invalid / ambiguous without deeper protocol features:
 Reserved now (assert if attempted in debug; ignored in release for streaming):
 
 - `Date` – generated once per second and injected automatically.
-- `Content-Length` – computed from the body (fixed) or set through `setContentLength()` (streaming). Prevents
+- `Content-Length` – computed from the body (fixed) or set through `contentLength()` (streaming). Prevents
   inconsistencies between declared and actual size.
 - `Connection` – determined by keep-alive policy (HTTP version, server config, request count, errors). User code
   supplying conflicting values could desynchronize connection reuse logic.
@@ -192,7 +192,7 @@ Allowed convenience helpers:
 - `Location` via `location()` for redirects.
 
 All other headers (custom application / caching / CORS / etc.) may be freely set; they are forwarded verbatim.
-This central rule lives in a single helper (`HttpResponse::IsReservedHeader`).
+This central rule lives in a single helper (`http::IsReservedResponseHeader`).
 
 ### Request Header Duplicate Handling
 
@@ -206,10 +206,9 @@ Detailed behavior, limits & examples moved to: [Inbound Request Decompression](d
 |--------------------|------------|-------|
 | `statusCode()`     | O(1)       | Overwrites 3 digits |
 | `reason()`         | O(trailing) | One tail `memmove` if size delta |
-| `appendHeader()`   | O(bodyLen) | Shift tail once; no scan |
-| `header()`         | O(headers + bodyLen) | Linear scan + maybe one shift |
+| `addCustomHeader()`| O(bodyLen) | Shift tail once; no scan |
+| `customHeader()`   | O(headers + bodyLen) | Linear scan + maybe one shift |
 | `body()`           | O(delta) + realloc | Exponential growth strategy |
-| `finalize*()`      | O(reserved count) | Appends small, bounded set |
 
 Testing highlights:
 
@@ -220,8 +219,8 @@ Testing highlights:
 
 Usage guidelines:
 
-- Use `appendHeader()` when duplicates are acceptable (cheapest path).
-- Use `header()` only when you must guarantee uniqueness. Matching is case‑insensitive; prefer a canonical style (e.g.
+- Use `addCustomHeader()` when duplicates are acceptable or not possible from the client code (cheapest path).
+- Use `customHeader()` only when you must guarantee uniqueness. Matching is case‑insensitive; prefer a canonical style (e.g.
   `Content-Type`) for readability, but behavior is the same regardless of input casing.
 - Chain on temporaries for concise construction; the rvalue-qualified overloads keep the object movable.
 - Finalize exactly once right before sending.

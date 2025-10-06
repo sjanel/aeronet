@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/http-header.hpp"
 #include "compression-config.hpp"
 #include "decompression-config.hpp"
 #include "invalid_argument_exception.hpp"
@@ -144,6 +145,11 @@ struct HttpServerConfig {
   std::size_t initialReadChunkBytes{4096};
   std::size_t bodyReadChunkBytes{8192};
   std::size_t maxPerEventReadBytes{0};
+
+  // Will add all the headers defined here in all server responses, when not present.
+  // If the client sets a header present in this list, the client value will be kept.
+  // Defaults to a list of one entry "Server: aeronet"
+  std::vector<http::Header> globalHeaders{{"Server", "aeronet"}};
 
   // Validates config. Throws invalid_argument if it is not valid.
   void validate() const;

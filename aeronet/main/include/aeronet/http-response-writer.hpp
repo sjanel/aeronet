@@ -30,12 +30,19 @@ class HttpResponseWriter {
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   void reason(std::string_view reason);
 
+  // Append a header line (duplicates allowed, fastest path).
+  // No scan over existing headers. Prefer this when duplicates are OK or
+  // when constructing headers once.
+  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
+  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  void addCustomHeader(std::string_view name, std::string_view value);
+
   // Set or replace a header value ensuring at most one instance.
-  // Performs a linear scan (slower than appendHeader()) using case-insensitive comparison of header names per
+  // Performs a linear scan (slower than addCustomHeader()) using case-insensitive comparison of header names per
   // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
-  // If not found, falls back to appendHeader(). Use only when you must guarantee uniqueness; otherwise prefer
-  // appendHeader().
-  // Do not insert any reserved header (for which IsReservedHeader is true), doing so is undefined behavior.
+  // If not found, falls back to addCustomHeader(). Use only when you must guarantee uniqueness; otherwise prefer
+  // addCustomHeader().
+  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   void customHeader(std::string_view name, std::string_view value);
 
@@ -107,7 +114,7 @@ class HttpResponseWriter {
 
   [[nodiscard]] bool finished() const { return _ended; }
 
-  // Automatic compression suppression: if user supplies a Content-Encoding header via header(),
+  // Automatic compression suppression: if user supplies a Content-Encoding header,
   // we will not perform automatic compression (user fully controls encoding). Exposed via flag.
   [[nodiscard]] bool userProvidedContentEncoding() const { return _userProvidedContentEncoding; }
 

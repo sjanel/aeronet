@@ -24,7 +24,8 @@ class HttpResponseTest : public ::testing::Test {
   static constexpr bool isHeadMethod = false;
 
   static std::string_view finalize(HttpResponse &resp) {
-    return resp.finalizeAndGetFullTextResponse(http::HTTP_1_1, tp, keepAlive, isHeadMethod);
+    std::vector<http::Header> globalHeaders;
+    return resp.finalizeAndGetFullTextResponse(http::HTTP_1_1, tp, keepAlive, globalHeaders, isHeadMethod);
   }
 };
 
