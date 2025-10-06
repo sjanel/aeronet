@@ -5,10 +5,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <chrono>   // std::chrono::milliseconds
-#include <cstdint>  // uint16_t
-#include <string>   // std::string
-#include <thread>   // std::jthread, sleep_for
+#include <chrono>  // std::chrono::milliseconds
+#include <string>  // std::string
+#include <thread>  // std::jthread, sleep_for
 
 #include "aeronet/http-method.hpp"         // aeronet::http::Method
 #include "aeronet/http-request.hpp"        // aeronet::HttpRequest
@@ -18,36 +17,8 @@
 
 // use explicit std::chrono::milliseconds below (no using directives)
 
-namespace {
-std::string simpleGet(uint16_t port, const std::string& path) {
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return {};
-  }
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    ::close(fd);
-    return {};
-  }
-  std::string req = "GET " + path + " HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
-  ::send(fd, req.data(), req.size(), 0);
-  std::string out;
-  char buf[2048];
-  while (true) {
-    auto bytesRecv = ::recv(fd, buf, sizeof(buf), 0);
-    if (bytesRecv > 0) {
-      out.append(buf, buf + bytesRecv);
-    } else {
-      break;
-    }
-  }
-  ::close(fd);
-  return out;
-}
-}  // namespace
+// simpleGet now provided in aeronet::test_util
+#include "aeronet/test_util.hpp"
 
 TEST(HttpQueryParsing, NoQuery) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
@@ -60,7 +31,7 @@ TEST(HttpQueryParsing, NoQuery) {
   });
   std::jthread thr([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  auto resp = simpleGet(server.port(), "/plain");
+  auto resp = aeronet::test::simpleGet(server.port(), "/plain");
   EXPECT_NE(resp.find("NOQ"), std::string::npos);
   server.stop();
 }
@@ -86,7 +57,7 @@ TEST(HttpQueryParsing, SimpleQuery) {
   });
   std::jthread thr([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  auto resp = simpleGet(server.port(), "/p?a=1&b=2");
+  auto resp = aeronet::test::simpleGet(server.port(), "/p?a=1&b=2");
   EXPECT_NE(resp.find("a=1&b=2"), std::string::npos);
   server.stop();
 }
@@ -123,7 +94,7 @@ TEST(HttpQueryParsing, PercentDecodedQuery) {
   });
   std::jthread thr([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  auto resp = simpleGet(server.port(), "/d?x=one%20two&y=%2Fpath");
+  auto resp = aeronet::test::simpleGet(server.port(), "/d?x=one%20two&y=%2Fpath");
   // Body should contain decoded query string now.
   EXPECT_NE(resp.find("x=one two&y=/path"), std::string::npos);
   server.stop();
@@ -141,7 +112,7 @@ TEST(HttpQueryParsing, EmptyQueryAndTrailingQMark) {
   });
   std::jthread thr([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  auto resp = simpleGet(server.port(), "/t?");
+  auto resp = aeronet::test::simpleGet(server.port(), "/t?");
   EXPECT_NE(resp.find("EMPTY"), std::string::npos);
   server.stop();
 }

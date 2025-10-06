@@ -30,7 +30,7 @@ TEST(HttpUrlDecodingExtra, IncompletePercentSequence400) {
   test_http_client::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/bad%";
-  auto resp = test_http_client::request_or_throw(server.port(), opt);
+  auto resp = test_http_client::requestOrThrow(server.port(), opt);
   EXPECT_NE(resp.find("400 Bad Request"), std::string::npos);
   done = true;  // jthread auto-joins on destruction
 }
@@ -52,7 +52,7 @@ TEST(HttpUrlDecodingExtra, MixedSegmentsDecoding) {
   test_http_client::RequestOptions opt2;
   opt2.method = "GET";
   opt2.target = "/seg%20one/part%25/two";
-  auto resp = test_http_client::request_or_throw(server.port(), opt2);
+  auto resp = test_http_client::requestOrThrow(server.port(), opt2);
   EXPECT_NE(resp.find("200 OK"), std::string::npos);
   EXPECT_NE(resp.find("/seg one/part%/two"), std::string::npos);
   done = true;  // jthread auto-joins on destruction

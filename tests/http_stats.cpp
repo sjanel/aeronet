@@ -20,7 +20,7 @@ TEST(HttpStats, BasicCountersIncrement) {
     return aeronet::HttpResponse(200, "OK").body("hello").contentType(aeronet::http::ContentTypeTextPlain);
   });
   // Single request via throwing helper
-  auto resp = test_http_client::request_or_throw(ts.port());
+  auto resp = test_http_client::requestOrThrow(ts.port());
   ASSERT_NE(resp.find("200 OK"), std::string::npos);
   ts.stop();
   auto st = ts.server.stats();
