@@ -357,7 +357,7 @@ Lifecycle: parse request → build response → determine keep-alive eligibility
 
 Managed: `Date`, `Content-Length`, `Connection`, `Transfer-Encoding`, `Trailer`, `TE`, `Upgrade`.
 
-User attempts to override are ignored (release) / asserted (debug) except via sanctioned APIs (e.g. `setContentLength`).
+User attempts to override are ignored (release) / asserted (debug) except via sanctioned APIs (e.g. `contentLength`).
 
 ### Request Header Duplicate Handling (Detailed)
 
@@ -412,6 +412,14 @@ Summary table (quick reference):
 | disallow | 400 duplicate | Content-Length, Host |
 
 Unknown headers default to comma merge. Empty values skipped when merging. Disallowed duplicates short‑circuit to prevent smuggling.
+
+### Global headers
+
+You can define global headers applied to every response of a `HttpServer` via `HttpServerConfig.globalHeaders`. These are appended after any user-set headers in a handler, so you can override them per-response if needed. Useful for consistent security headers (CSP, HSTS, etc). They will not override any header of the same name already set in a response.
+
+Global headers are applied to every response including error responses generated internally by aeronet (400, 413, etc).
+
+By default, it contains a `Server: aeronet` header unless you explicitly clear it out.
 
 ## Query String & Parameters
 
@@ -606,7 +614,7 @@ Handlers can produce bodies incrementally using a streaming handler registration
 
 Key semantics:
 
-- Default transfer uses `Transfer-Encoding: chunked` unless `setContentLength()` was called before any body writes.
+- Default transfer uses `Transfer-Encoding: chunked` unless `contentLength()` was called before any body writes.
 - `write()` queues data; returns `false` only when the connection is marked to close (e.g. outbound buffer limit exceeded or fatal error). Future versions may introduce a "should-pause" state.
 - `end()` finalizes, emitting terminating `0\r\n\r\n` in chunked mode and flushing any compression trailers.
 - HEAD requests suppress body bytes automatically (still compute/send Content-Length when known).

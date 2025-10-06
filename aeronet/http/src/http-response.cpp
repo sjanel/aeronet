@@ -6,10 +6,12 @@
 #include <cstdint>
 #include <cstring>
 #include <ranges>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "log.hpp"
@@ -67,7 +69,7 @@ void HttpResponse::setReason(std::string_view newReason) {
   _data.setSize(static_cast<std::size_t>(static_cast<int64_t>(_data.size()) + diff));
 }
 
-void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue) {
+void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue, bool onlyIfNew) {
   assert(!newKey.empty() && std::ranges::all_of(newKey, [](char ch) { return is_tchar(ch); }));
   if (CaseInsensitiveEqual(newKey, http::ContentEncoding)) {
     _userProvidedContentEncoding = true;
@@ -105,6 +107,9 @@ void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue)
     }
 
     // Same header
+    if (onlyIfNew) {
+      return;
+    }
 
     char* valueFirst = nextHeaderSepRg.begin() + http::HeaderSep.size();
     const std::size_t oldHeaderValueSz = static_cast<std::size_t>(nextCRLFRg.begin() - valueFirst);
@@ -169,6 +174,7 @@ void HttpResponse::appendDateUnchecked(TimePoint tp) {
 }
 
 std::string_view HttpResponse::finalizeAndGetFullTextResponse(http::Version version, TimePoint tp, bool keepAlive,
+                                                              std::span<const http::Header> globalHeaders,
                                                               bool isHeadMethod) {
   auto versionStr = version.str();
   std::memcpy(_data.data(), versionStr.data(), versionStr.size());
@@ -190,6 +196,10 @@ std::string_view HttpResponse::finalizeAndGetFullTextResponse(http::Version vers
 
   appendHeaderUnchecked(http::Connection, keepAlive ? http::keepalive : http::close);
   appendDateUnchecked(tp);
+
+  for (const auto& [headerKey, headerValue] : globalHeaders) {
+    setHeader(headerKey, headerValue, true);
+  }
 
   return _data;
 }
