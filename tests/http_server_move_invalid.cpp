@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
+#include <stdexcept>
 #include <thread>
+#include <utility>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -14,16 +17,16 @@
 TEST(HttpServer, MoveConstructWhileRunningThrows) {
   aeronet::HttpServerConfig cfg;
   cfg.port = 0;  // ephemeral
-  aeronet::HttpServer s(cfg);
-  s.setHandler([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse r;
-    r.body("ok");
-    return r;
+  aeronet::HttpServer server(cfg);
+  server.setHandler([](const aeronet::HttpRequest&) {
+    aeronet::HttpResponse resp;
+    resp.body("ok");
+    return resp;
   });
   std::atomic<bool> go{false};
   std::jthread thr([&] {
     go = true;
-    s.run();
+    server.run();
   });
   // wait until thread entered run loop
   while (!go.load()) {
@@ -31,36 +34,32 @@ TEST(HttpServer, MoveConstructWhileRunningThrows) {
   }
   // Give a small slice for run() to set _running=true
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  EXPECT_THROW({ aeronet::HttpServer moved(std::move(s)); }, std::runtime_error);
-  s.stop();
+  EXPECT_THROW({ aeronet::HttpServer moved(std::move(server)); }, std::runtime_error);
 }
 
 TEST(HttpServer, MoveAssignWhileRunningThrows) {
-  aeronet::HttpServerConfig cfgA;
-  cfgA.port = 0;
-  aeronet::HttpServerConfig cfgB;
-  cfgB.port = 0;
-  aeronet::HttpServer a(cfgA);
-  aeronet::HttpServer b(cfgB);
-  a.setHandler([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse r;
-    r.body("a");
-    return r;
+  aeronet::HttpServerConfig cfg;
+  cfg.port = 0;
+  aeronet::HttpServer serverA(cfg);
+  aeronet::HttpServer serverB(cfg);
+  serverA.setHandler([](const aeronet::HttpRequest&) {
+    aeronet::HttpResponse resp;
+    resp.body("a");
+    return resp;
   });
-  b.setHandler([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse r;
-    r.body("b");
-    return r;
+  serverB.setHandler([](const aeronet::HttpRequest&) {
+    aeronet::HttpResponse resp;
+    resp.body("b");
+    return resp;
   });
   std::atomic<bool> go{false};
   std::jthread thr([&] {
     go = true;
-    a.run();
+    serverA.run();
   });
   while (!go.load()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  EXPECT_THROW({ b = std::move(a); }, std::runtime_error);
-  a.stop();
+  EXPECT_THROW({ serverB = std::move(serverA); }, std::runtime_error);
 }

@@ -3,7 +3,6 @@
 #include <asm-generic/socket.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/types.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -206,8 +205,9 @@ HttpServer::HttpServer(HttpServer&& other)
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
 HttpServer& HttpServer::operator=(HttpServer&& other) {
   if (this != &other) {
-    stop();  // ensure *this is quiescent
+    stop();
     if (other._running) {
+      other.stop();
       throw std::runtime_error("Cannot move-assign from a running HttpServer");
     }
     _stats = std::exchange(other._stats, {});
@@ -249,7 +249,7 @@ void HttpServer::addPathHandler(std::string path, const http::MethodSet& methods
       throw exception("Cannot register normal handler: streaming handler already present for path+method");
     }
     if (pHandler == nullptr) {
-      pEntry->normalHandlers[idx] = std::move(handler);
+      pEntry->normalHandlers[idx] = std::move(handler);  // NOLINT(bugprone-use-after-move)
       pHandler = &pEntry->normalHandlers[idx];
     } else {
       pEntry->normalHandlers[idx] = *pHandler;
@@ -272,7 +272,7 @@ void HttpServer::addPathStreamingHandler(std::string path, const http::MethodSet
       throw exception("Cannot register streaming handler: normal handler already present for path+method");
     }
     if (pHandler == nullptr) {
-      pEntry->streamingHandlers[idx] = std::move(handler);
+      pEntry->streamingHandlers[idx] = std::move(handler);  // NOLINT(bugprone-use-after-move)
       pHandler = &pEntry->streamingHandlers[idx];
     } else {
       pEntry->streamingHandlers[idx] = *pHandler;
@@ -296,7 +296,7 @@ void HttpServer::run() {
   }
 }
 
-void HttpServer::stop() {
+void HttpServer::stop() noexcept {
   if (!_running) {
     return;
   }

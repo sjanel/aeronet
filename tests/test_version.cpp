@@ -30,13 +30,13 @@ TEST(AeronetVersion, Version) {
   EXPECT_TRUE(line4.rfind("  compression:", 0) == 0);
   // Compression line should list enabled codecs separated by comma+space in deterministic order
   // Order enforced in version.hpp join logic: zlib, zstd, brotli (if present)
-#if defined(AERONET_ENABLE_ZLIB)
+#ifdef AERONET_ENABLE_ZLIB
   EXPECT_NE(line4.find("zlib"), std::string::npos);
 #endif
-#if defined(AERONET_ENABLE_ZSTD)
+#ifdef AERONET_ENABLE_ZSTD
   EXPECT_NE(line4.find("zstd"), std::string::npos);
 #endif
-#if defined(AERONET_ENABLE_BROTLI)
+#ifdef AERONET_ENABLE_BROTLI
   EXPECT_NE(line4.find("brotli"), std::string::npos);
 #endif
   // The runtime string should equal the constexpr view content.

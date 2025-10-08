@@ -50,6 +50,7 @@ option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_TE
 # Features
 # Optional dependencies (aeronet is able to compile without the feature if not enabled)
 option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" ${MAIN_PROJECT})
+option(AERONET_SPDLOG_USE_STD_FORMAT "Use std::format instead of fmt::format in spdlog" ON)
 option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" ${MAIN_PROJECT})
 option(AERONET_ENABLE_ZLIB "Enable usage of zlib for deflate and gzip codec support" ${MAIN_PROJECT})
 option(AERONET_ENABLE_ZSTD "Enable usage of Zstandard for zstd codec support" ${MAIN_PROJECT})

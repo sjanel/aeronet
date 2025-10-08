@@ -3,6 +3,7 @@
 #include <chrono>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -20,9 +21,9 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
   cfg.withReusePort();
   aeronet::MultiHttpServer multi(cfg, 2);
   multi.setHandler([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse r;
-    r.body("Phase1");
-    return r;
+    aeronet::HttpResponse resp;
+    resp.body("Phase1");
+    return resp;
   });
   multi.start();
   auto p1 = multi.port();
@@ -35,9 +36,9 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
 
   // Change handler before restart; old servers are discarded, so new handler should take effect.
   multi.setHandler([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse r;
-    r.body("Phase2");
-    return r;
+    aeronet::HttpResponse resp;
+    resp.body("Phase2");
+    return resp;
   });
   multi.start();
   auto p2 = multi.port();  // same port expected unless user reset cfg.port in between
@@ -56,9 +57,9 @@ TEST(MultiHttpServer, RestartWithNewEphemeralPort) {
   cfg.withReusePort();
   aeronet::MultiHttpServer multi(cfg, 1);
   multi.setHandler([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse r;
-    r.body("R1");
-    return r;
+    aeronet::HttpResponse resp;
+    resp.body("R1");
+    return resp;
   });
   multi.start();
   auto firstPort = multi.port();
@@ -74,9 +75,9 @@ TEST(MultiHttpServer, RestartWithNewEphemeralPort) {
   aeronet::MultiHttpServer moved(std::move(multi));
   // We can't directly change baseConfig; for this focused test we'll just check that keeping existing port works.
   moved.setHandler([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse r;
-    r.body("R2");
-    return r;
+    aeronet::HttpResponse resp;
+    resp.body("R2");
+    return resp;
   });
   moved.start();
   auto secondPort = moved.port();

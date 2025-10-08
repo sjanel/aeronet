@@ -51,7 +51,9 @@ if(AERONET_ENABLE_SPDLOG)
     )
     list(APPEND fetchContentPackagesToMakeAvailable spdlog)
   endif()
-  set(SPDLOG_USE_STD_FORMAT ON CACHE BOOL "" FORCE)
+  if (AERONET_SPDLOG_USE_STD_FORMAT)
+    set(SPDLOG_USE_STD_FORMAT ON CACHE BOOL "" FORCE)
+  endif()
 endif()
 
 # Compression libraries (optional, isolated like TLS). Detect BEFORE building core targets so

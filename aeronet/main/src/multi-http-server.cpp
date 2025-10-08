@@ -1,10 +1,12 @@
 #include "aeronet/multi-http-server.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -34,7 +36,10 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, uint32_t threadCount)
 
   // Create the HttpServer (and ensure port resolution if given port is 0)
   _servers.reserve(static_cast<decltype(_servers)::size_type>(threadCount));
-  createServers(threadCount, true);
+
+  // Construct first server. If port was ephemeral (0), HttpServer constructor resolves it synchronously.
+  // We move the base config into the first server then copy back the resolved version (with concrete port).
+  _baseConfig = _servers.emplace_back(std::move(_baseConfig)).config();
 }
 
 MultiHttpServer::MultiHttpServer(HttpServerConfig cfg)
@@ -101,21 +106,6 @@ void MultiHttpServer::ensureNotStarted() const {
   }
 }
 
-void MultiHttpServer::createServers(uint32_t nbServers, bool firstCall) {
-  if (firstCall) {
-    // Construct first server. If port was ephemeral (0), HttpServer constructor resolves it synchronously.
-    // We move the base config into the first server then copy back the resolved version (with concrete port).
-    _baseConfig = _servers.emplace_back(std::move(_baseConfig)).config();
-  } else {
-    ++nbServers;
-  }
-
-  // Create the remaining threadCount - 1 servers
-  while (--nbServers != 0) {
-    _servers.emplace_back(_baseConfig);
-  }
-}
-
 void MultiHttpServer::setHandler(RequestHandler handler) {
   ensureNotStarted();
   if (!_pathHandlersEmplace.empty()) {
@@ -146,6 +136,11 @@ void MultiHttpServer::setParserErrorCallback(ParserErrorCallback cb) {
 void MultiHttpServer::start() {
   if (!_threads.empty()) {
     throw std::logic_error("MultiHttpServer already started");
+  }
+
+  // Create the remaining servers
+  while (_servers.size() < _servers.capacity()) {
+    _servers.emplace_back(_baseConfig);
   }
 
   _stopRequested->store(false, std::memory_order_relaxed);
@@ -187,7 +182,7 @@ void MultiHttpServer::start() {
   log::info("MultiHttpServer started successfully on port :{}", port());
 }
 
-void MultiHttpServer::stop() {
+void MultiHttpServer::stop() noexcept {
   if (_threads.empty()) {
     return;
   }
@@ -196,9 +191,7 @@ void MultiHttpServer::stop() {
   std::ranges::for_each(_servers, [](auto& server) { server.stop(); });
 
   _threads.clear();
-  auto nbServers = _servers.size();
   _servers.clear();
-  createServers(nbServers, false);
 
   log::info("MultiHttpServer stopped");
 }

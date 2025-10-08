@@ -1,23 +1,14 @@
-// Tests for raw query string exposure and basic percent-decoding integration.
-#include <arpa/inet.h>
 #include <gtest/gtest.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
-#include <chrono>  // std::chrono::milliseconds
-#include <string>  // std::string
-#include <thread>  // std::jthread, sleep_for
+#include <chrono>
+#include <string>
+#include <thread>
 
-#include "aeronet/http-method.hpp"         // aeronet::http::Method
-#include "aeronet/http-request.hpp"        // aeronet::HttpRequest
-#include "aeronet/http-response.hpp"       // aeronet::HttpResponse
-#include "aeronet/http-server-config.hpp"  // aeronet::HttpServerConfig
-#include "aeronet/http-server.hpp"         // aeronet::HttpServer
-
-// use explicit std::chrono::milliseconds below (no using directives)
-
-// simpleGet now provided in aeronet::test_util
+#include "aeronet/http-method.hpp"
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "aeronet/test_util.hpp"
 
 TEST(HttpQueryParsing, NoQuery) {
