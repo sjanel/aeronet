@@ -52,7 +52,6 @@
 #include "log.hpp"
 #include "socket.hpp"
 #include "string-equal-ignore-case.hpp"
-#include "sys-utils.hpp"
 #include "timedef.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include "tls-context.hpp"
@@ -99,7 +98,10 @@ namespace aeronet {
 //     the process hits fd limits or severe memory pressure. Fixed ports may legitimately throw due to EADDRINUSE.
 //   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
 HttpServer::HttpServer(HttpServerConfig cfg)
-    : _listenSocket(Socket::Type::STREAM), _config(std::move(cfg)), _encodingSelector(_config.compression) {
+    : _config(std::move(cfg)),
+      _listenSocket(SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC),
+      _eventLoop(_config.pollInterval),
+      _encodingSelector(_config.compression) {
   _config.validate();
   int listenFdLocal = _listenSocket.fd();
   // Initialize TLS context if requested (OpenSSL build).
@@ -127,10 +129,10 @@ HttpServer::HttpServer(HttpServerConfig cfg)
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
   addr.sin_port = htons(_config.port);
-  if (bind(listenFdLocal, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+  if (::bind(listenFdLocal, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
     throw std::runtime_error("bind failed");
   }
-  if (listen(listenFdLocal, SOMAXCONN) < 0) {
+  if (::listen(listenFdLocal, SOMAXCONN) < 0) {
     throw std::runtime_error("listen failed");
   }
   if (_config.port == 0) {
@@ -140,14 +142,11 @@ HttpServer::HttpServer(HttpServerConfig cfg)
       _config.port = ntohs(actual.sin_port);
     }
   }
-  if (setNonBlocking(listenFdLocal) < 0) {
-    throw std::runtime_error("failed to set non-blocking");
-  }
-  if (!_loop.add(listenFdLocal, EPOLLIN)) {
+  if (!_eventLoop.add(listenFdLocal, EPOLLIN)) {
     throw std::runtime_error("EventLoop add listen socket failed");
   }
   // Register wakeup fd
-  if (!_loop.add(_wakeupFd, EPOLLIN)) {
+  if (!_eventLoop.add(_wakeupFd.fd(), EPOLLIN)) {
     throw std::runtime_error("EventLoop add wakeup fd failed");
   }
 // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
@@ -167,20 +166,17 @@ HttpServer::HttpServer(HttpServerConfig cfg)
 
 HttpServer::~HttpServer() { stop(); }
 
-// NOTE: Move ctor / assignment definitions provided elsewhere earlier (not duplicated). Encoder array moved with
-// object.
-
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
 HttpServer::HttpServer(HttpServer&& other)
     : _stats(std::exchange(other._stats, {})),
+      _config(std::move(other._config)),
       _listenSocket(std::move(other._listenSocket)),
+      _eventLoop(std::move(other._eventLoop)),
       _wakeupFd(std::move(other._wakeupFd)),
       _running(std::exchange(other._running, false)),
       _handler(std::move(other._handler)),
       _streamingHandler(std::move(other._streamingHandler)),
       _pathHandlers(std::move(other._pathHandlers)),
-      _loop(std::move(other._loop)),
-      _config(std::move(other._config)),
       _connStates(std::move(other._connStates)),
       _encoders(std::move(other._encoders)),
       _encodingSelector(std::move(other._encodingSelector)),
@@ -211,14 +207,14 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
       throw std::runtime_error("Cannot move-assign from a running HttpServer");
     }
     _stats = std::exchange(other._stats, {});
-    _wakeupFd = std::move(other._wakeupFd);
+    _config = std::move(other._config);
     _listenSocket = std::move(other._listenSocket);
+    _eventLoop = std::move(other._eventLoop);
+    _wakeupFd = std::move(other._wakeupFd);
     _running = std::exchange(other._running, false);
     _handler = std::move(other._handler);
     _streamingHandler = std::move(other._streamingHandler);
     _pathHandlers = std::move(other._pathHandlers);
-    _loop = std::move(other._loop);
-    _config = std::move(other._config);
     _connStates = std::move(other._connStates);
     _encoders = std::move(other._encoders);
     _encodingSelector = std::move(other._encodingSelector);
@@ -289,10 +285,9 @@ void HttpServer::run() {
   if (_running) {
     throw exception("Server is already running");
   }
-  auto interval = _config.pollInterval;
   log::info("Server running on port :{}", port());
   for (_running = true; _running;) {
-    eventLoop(interval);
+    eventLoop();
   }
 }
 
@@ -315,34 +310,34 @@ void HttpServer::runUntil(const std::function<bool()>& predicate) {
   if (_running) {
     throw exception("Server is already running");
   }
-  auto interval = _config.pollInterval;
   log::info("Server running on port :{}", port());
   for (_running = true; _running && !predicate();) {
-    eventLoop(interval);
+    eventLoop();
   }
   stop();
 }
 
-bool HttpServer::ModWithCloseOnFailure(EventLoop& loop, int fd, uint32_t events, ConnectionState& st, const char* ctx,
+bool HttpServer::ModWithCloseOnFailure(EventLoop& loop, ConnectionMapIt cnxIt, uint32_t events, const char* ctx,
                                        StatsInternal& stats) {
-  if (loop.mod(fd, events)) {
+  if (loop.mod(cnxIt->first.fd(), events)) {
     return true;
   }
   const auto errCode = errno;
   ++stats.epollModFailures;
   // EBADF or ENOENT can occur during races where a connection is concurrently closed; downgrade severity.
   if (errCode == EBADF || errCode == ENOENT) {
-    log::warn("epoll_ctl MOD benign failure (ctx={}, fd={}, events=0x{:x}, errno={}, msg={})", ctx, fd, events, errCode,
-              std::strerror(errCode));
+    log::warn("epoll_ctl MOD benign failure (ctx={}, fd={}, events=0x{:x}, errno={}, msg={})", ctx, cnxIt->first.fd(),
+              events, errCode, std::strerror(errCode));
   } else {
-    log::error("epoll_ctl MOD failed (ctx={}, fd={}, events=0x{:x}, errno={}, msg={})", ctx, fd, events, errCode,
-               std::strerror(errCode));
+    log::error("epoll_ctl MOD failed (ctx={}, fd={}, events=0x{:x}, errno={}, msg={})", ctx, cnxIt->first.fd(), events,
+               errCode, std::strerror(errCode));
   }
-  st.requestDrainAndClose();
+  cnxIt->second.requestDrainAndClose();
   return false;
 }
 
-bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
+bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
+  ConnectionState& state = cnxIt->second;
   while (true) {
     const auto reqStart = std::chrono::steady_clock::now();
     // If we don't yet have a full request line (no '\n' observed) wait for more data instead of
@@ -353,7 +348,7 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
     HttpRequest req;
     const auto statusCode = req.setHead(state, _tmpBuffer, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders);
     if (statusCode != http::StatusCodeOK) {
-      emitSimpleError(fd, state, statusCode, true);
+      emitSimpleError(cnxIt, statusCode, true);
       // EmitSimpleError was invoked with immediate=true, which requested an Immediate close
       // (ConnectionState::CloseMode::Immediate). We break unconditionally; the connection
       // will be torn down after any queued error bytes are flushed. No partial recovery is
@@ -370,13 +365,13 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
     if (!transferEncoding.empty()) {
       hasTransferEncoding = true;
       if (req.version() == http::HTTP_1_0) {
-        emitSimpleError(fd, state, http::StatusCodeBadRequest, true, "Transfer-Encoding not allowed in HTTP/1.0");
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Transfer-Encoding not allowed in HTTP/1.0");
         break;
       }
       if (CaseInsensitiveEqual(transferEncoding, http::chunked)) {
         isChunked = true;
       } else {
-        emitSimpleError(fd, state, http::StatusCodeNotImplemented, true, "Unsupported Transfer-Encoding");
+        emitSimpleError(cnxIt, http::StatusCodeNotImplemented, true, "Unsupported Transfer-Encoding");
         break;
       }
     }
@@ -384,17 +379,17 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
     std::string_view contentLength = req.headerValueOrEmpty(http::ContentLength);
     bool hasContentLength = !contentLength.empty();
     if (hasContentLength && hasTransferEncoding) {
-      emitSimpleError(fd, state, http::StatusCodeBadRequest, true,
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, true,
                       "Content-Length and Transfer-Encoding cannot be used together");
       break;
     }
     bool expectContinue = req.hasExpectContinue();
     std::size_t consumedBytes = 0;
-    if (!decodeBodyIfReady(fd, state, req, isChunked, expectContinue, consumedBytes)) {
+    if (!decodeBodyIfReady(cnxIt, req, isChunked, expectContinue, consumedBytes)) {
       break;  // need more bytes or error
     }
     // Inbound request decompression (Content-Encoding). Performed after body aggregation but before dispatch.
-    if (!req.body().empty() && !maybeDecompressRequestBody(fd, state, req)) {
+    if (!req.body().empty() && !maybeDecompressRequestBody(cnxIt, req)) {
       break;  // error already emitted; close or wait handled inside
     }
     // Determine dispatch: path streaming > path normal > global streaming > global normal > 404/405
@@ -426,7 +421,7 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
                 // Emit 301 redirect to canonical form.
                 HttpResponse resp(301, http::MovedPermanently);
                 resp.location(canonical).contentType(http::ContentTypeTextPlain).body("Redirecting");
-                finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart);
+                finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
                 if (state.isAnyCloseRequested()) {
                   return true;  // connection closing, stop loop
                 }
@@ -468,8 +463,7 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
           }
         }
         if (entry.streamingHandlers[idx]) {
-          bool streamingClose =
-              callStreamingHandler(entry.streamingHandlers[idx], req, fd, state, consumedBytes, reqStart);
+          bool streamingClose = callStreamingHandler(entry.streamingHandlers[idx], req, cnxIt, consumedBytes, reqStart);
           handledStreaming = true;
           if (streamingClose) {
             // callStreamingHandler already set close mode if needed
@@ -496,12 +490,12 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
           } else {
             resp.reason(http::ReasonMethodNotAllowed).body(resp.reason()).contentType(http::ContentTypeTextPlain);
           }
-          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart);
+          finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
         } else {
           // path found but method not registered -> 405
           HttpResponse resp(405, http::ReasonMethodNotAllowed);
           resp.body(resp.reason()).contentType(http::ContentTypeTextPlain);
-          finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart);
+          finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
         }
       } else if (!endsWithSlash && _config.trailingSlashPolicy == HttpServerConfig::TrailingSlashPolicy::Normalize &&
                  req.path().size() > 1) {
@@ -526,7 +520,7 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
           }
           if (entry.streamingHandlers[idx]) {
             bool streamingClose =
-                callStreamingHandler(entry.streamingHandlers[idx], req, fd, state, consumedBytes, reqStart);
+                callStreamingHandler(entry.streamingHandlers[idx], req, cnxIt, consumedBytes, reqStart);
             handledStreaming = true;
             if (streamingClose) {
               // close mode reflects decision
@@ -552,12 +546,12 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
             } else {
               resp.reason(http::ReasonMethodNotAllowed).body(resp.reason()).contentType(http::ContentTypeTextPlain);
             }
-            finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart);
+            finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
           } else {
             HttpResponse resp(405, http::ReasonMethodNotAllowed);
             resp.body(resp.reason()).contentType(http::ContentTypeTextPlain);
 
-            finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart);
+            finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
           }
           // restore original target for metric consistency? We keep canonical (augmented) for now.
         }
@@ -571,7 +565,7 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
     }
     if (!pathFound) {
       if (_streamingHandler) {
-        bool streamingClose = callStreamingHandler(_streamingHandler, req, fd, state, consumedBytes, reqStart);
+        bool streamingClose = callStreamingHandler(_streamingHandler, req, cnxIt, consumedBytes, reqStart);
         if (streamingClose) {
           break;
         }
@@ -592,7 +586,7 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
         resp.statusCode(404);
         resp.reason(http::NotFound).body(resp.reason()).contentType(http::ContentTypeTextPlain);
       }
-      finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart);
+      finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
     }
     if (state.isAnyCloseRequested()) {
       break;
@@ -601,8 +595,8 @@ bool HttpServer::processRequestsOnConnection(int fd, ConnectionState& state) {
   return state.isAnyCloseRequested();
 }
 
-bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, HttpRequest& req) {
-  auto& cfg = _config.requestDecompression;
+bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt, HttpRequest& req) {
+  const auto& cfg = _config.requestDecompression;
   std::string_view encHeader = req.headerValueOrEmpty(http::ContentEncoding);
   if (encHeader.empty() || CaseInsensitiveEqual(encHeader, http::identity)) {
     return true;  // nothing to do
@@ -615,13 +609,14 @@ bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, Http
   }
   const std::size_t originalCompressedSize = req.body().size();
   if (cfg.maxCompressedBytes != 0 && originalCompressedSize > cfg.maxCompressedBytes) {
-    emitSimpleError(fd, state, http::StatusCodePayloadTooLarge, true);
+    emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
     return false;
   }
 
   // We'll alternate between bodyBuffer (source) and _tmpBuffer (target) each stage.
   std::string_view src = req.body();
   RawChars* dst = &_tmpBuffer;
+  ConnectionState& state = cnxIt->second;
 
   // Decode in reverse order.
   const char* first = encHeader.data();
@@ -646,7 +641,7 @@ bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, Http
       ++encodingFirst;
     }
     if (encodingFirst == encodingLast) {  // empty token => malformed list
-      emitSimpleError(fd, state, http::StatusCodeBadRequest, true, "Malformed Content-Encoding");
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Malformed Content-Encoding");
       return false;
     }
 
@@ -672,18 +667,18 @@ bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, Http
       stageOk = BrotliDecoder::Decompress(src, cfg.maxDecompressedBytes, cfg.decoderChunkSize, *dst);
 #endif
     } else {
-      emitSimpleError(fd, state, http::StatusCodeUnsupportedMediaType, true, "Unsupported Content-Encoding");
+      emitSimpleError(cnxIt, http::StatusCodeUnsupportedMediaType, true, "Unsupported Content-Encoding");
       return false;
     }
     if (!stageOk) {
-      emitSimpleError(fd, state, http::StatusCodeBadRequest, true, "Decompression failed");
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Decompression failed");
       return false;
     }
     // Expansion guard after each stage (defensive against nested bombs).
     if (cfg.maxExpansionRatio > 0.0 && originalCompressedSize > 0) {
       double ratio = static_cast<double>(dst->size()) / static_cast<double>(originalCompressedSize);
       if (ratio > cfg.maxExpansionRatio) {
-        emitSimpleError(fd, state, http::StatusCodePayloadTooLarge, true, "Decompression expansion too large");
+        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true, "Decompression expansion too large");
         return false;
       }
     }
@@ -711,12 +706,12 @@ bool HttpServer::maybeDecompressRequestBody(int fd, ConnectionState& state, Http
   return true;
 }
 
-bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, HttpRequest& req, int fd,
-                                      ConnectionState& state, std::size_t consumedBytes,
-                                      std::chrono::steady_clock::time_point reqStart) {
+bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, HttpRequest& req, ConnectionMapIt cnxIt,
+                                      std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart) {
   bool wantClose = req.wantClose();
   bool isHead = req.method() == http::Method::HEAD;
   Encoding compressionFormat = Encoding::none;
+  ConnectionState& state = cnxIt->second;
   if (!isHead) {
     auto encHeader = req.headerValueOrEmpty(http::AcceptEncoding);
     auto negotiated = _encodingSelector.negotiateAcceptEncoding(encHeader);
@@ -724,12 +719,12 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
       HttpResponse resp(406, http::ReasonNotAcceptable);
       resp.body("No acceptable content-coding available").contentType(http::ContentTypeTextPlain);
-      finalizeAndSendResponse(fd, state, req, resp, consumedBytes, reqStart);
+      finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
       return state.isAnyCloseRequested();
     }
     compressionFormat = negotiated.encoding;
   }
-  HttpResponseWriter writer(*this, fd, isHead, wantClose, compressionFormat);
+  HttpResponseWriter writer(*this, cnxIt->first.fd(), isHead, wantClose, compressionFormat);
   try {
     streamingHandler(req, writer);
   } catch (const std::exception& ex) {
@@ -765,13 +760,13 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   return false;
 }
 
-void HttpServer::eventLoop(Duration timeout) {
+void HttpServer::eventLoop() {
   _cachedDateEpoch = Clock::now();
   sweepIdleConnections();
-  int ready = _loop.poll(timeout, [&](int fd, uint32_t ev) {
+  int ready = _eventLoop.poll([&](int fd, uint32_t ev) {
     if (fd == _listenSocket.fd()) {
       acceptNewConnections();
-    } else if (fd == _wakeupFd) {
+    } else if (fd == _wakeupFd.fd()) {
       // Drain wakeup counter.
       _wakeupFd.read();
     } else {
@@ -828,13 +823,13 @@ ServerStats HttpServer::stats() const {
   return statsOut;
 }
 
-void HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, bool immediate,
+void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, bool immediate,
                                  std::string_view reason) {
   if (reason.empty()) {
     reason = http::reasonPhraseFor(code);
   }
   BuildSimpleError(code, _cachedDateEpoch, _config.globalHeaders, reason, _tmpBuffer);
-  queueData(fd, state, _tmpBuffer);
+  queueData(cnxIt, _tmpBuffer);
   try {
     _parserErrCb(code);
   } catch (const std::exception& ex) {
@@ -842,9 +837,9 @@ void HttpServer::emitSimpleError(int fd, ConnectionState& state, http::StatusCod
     log::error("Exception raised in user callback: {}", ex.what());
   }
   if (immediate) {
-    state.requestImmediateClose();
+    cnxIt->second.requestImmediateClose();
   } else {
-    state.requestDrainAndClose();
+    cnxIt->second.requestDrainAndClose();
   }
 }
 

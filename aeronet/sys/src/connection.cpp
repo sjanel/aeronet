@@ -17,21 +17,24 @@ namespace {
 int ComputeConnectionFd(int socketFd) {
   sockaddr_in in_addr{};
   socklen_t in_len = sizeof(in_addr);
-  int fd = ::accept(socketFd, reinterpret_cast<sockaddr*>(&in_addr), &in_len);
+  auto fd = ::accept4(socketFd, reinterpret_cast<sockaddr*>(&in_addr), &in_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
   if (fd < 0) {
-    int savedErr = errno;  // capture errno before any other call
+    const auto savedErr = errno;  // capture errno before any other call
     if (savedErr == EAGAIN || savedErr == EWOULDBLOCK) {
-      log::debug("Connection accept would block: {}", std::strerror(savedErr));
+      log::trace("Connection accept would block: {} - this is expected if no pending connections",
+                 std::strerror(savedErr));
     } else {
-      log::error("Connection accept failed: {}", std::strerror(savedErr));
+      log::error("Connection accept failed for socket fd {}: {}", socketFd, std::strerror(savedErr));
     }
     fd = -1;
+  } else {
+    log::debug("Connection fd={} opened", fd);
   }
   return fd;
 }
 
 }  // namespace
 
-Connection::Connection(const Socket& socket) : BaseFd(ComputeConnectionFd(socket.fd())) {}
+Connection::Connection(const Socket& socket) : _baseFd(ComputeConnectionFd(socket.fd())) {}
 
 }  // namespace aeronet

@@ -68,7 +68,7 @@ TEST(HttpChunked, RejectTooLarge) {
   TestServer ts(cfg);
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body()); });
-  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
+  aeronet::Socket sock(SOCK_STREAM);
   int fd = sock.fd();
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -90,7 +90,7 @@ TEST(HttpHead, NoBodyReturned) {
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(200).body(std::string("DATA-") + std::string(req.path()));
   });
-  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
+  aeronet::Socket sock(SOCK_STREAM);
   int fd = sock.fd();
   sockaddr_in addr{};
   addr.sin_family = AF_INET;

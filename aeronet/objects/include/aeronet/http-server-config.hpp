@@ -111,7 +111,7 @@ struct HttpServerConfig {
   // ===========================================
   // Attempt negotiation according to configured formats / thresholds.
   // Actual encoder availability also depends on build flags
-  // (e.g. AERONET_ENABLE_ZLIB). Future: brotli, zstd guarded likewise.
+  // (e.g. AERONET_ENABLE_ZLIB).
   CompressionConfig compression;
 
   // ===========================================

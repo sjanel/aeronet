@@ -23,7 +23,7 @@
 namespace {
 void httpRequest(auto port, std::string_view method, std::string_view path, std::string& out,
                  const std::string& body = {}) {
-  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
+  aeronet::Socket sock(SOCK_STREAM);
   int fd = sock.fd();
   ASSERT_GE(fd, 0) << "socket failed";
   sockaddr_in addr{};
@@ -268,7 +268,7 @@ namespace {
 // Helper that performs two sequential HTTP/1.1 requests over a single keep-alive connection and returns the raw
 // concatenated responses. Each request must include Connection: keep-alive and server must support it.
 void twoRequestsKeepAlive(auto port, const std::string& r1, const std::string& r2, std::string& out) {
-  aeronet::Socket sock2(aeronet::Socket::Type::STREAM);
+  aeronet::Socket sock2(SOCK_STREAM);
   int fd = sock2.fd();
   ASSERT_GE(fd, 0) << "socket failed";
   sockaddr_in addr{};

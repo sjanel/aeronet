@@ -1,19 +1,22 @@
 #pragma once
 
-#include <cstdint>
-
 #include "base-fd.hpp"
 
 namespace aeronet {
 
-// Simple RAII class wrapping a socket file descriptor.
-class Socket : public BaseFd {
+// Simple RAII class wrapping a blocking socket file descriptor.
+class Socket {
  public:
-  enum class Type : int8_t { STREAM, DATAGRAM };
-
   Socket() noexcept = default;
 
-  explicit Socket(Type type, int protocol = 0);
+  Socket(int type, int protocol = 0);
+
+  [[nodiscard]] int fd() const noexcept { return _baseFd.fd(); }
+
+  void close() noexcept { _baseFd.close(); }
+
+ private:
+  BaseFd _baseFd;
 };
 
 }  // namespace aeronet

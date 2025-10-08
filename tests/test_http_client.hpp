@@ -322,7 +322,7 @@ inline std::optional<StreamingHandle> openStreaming(uint16_t port, const Request
   if (ro.connection == "close") {
     ro.connection = "keep-alive";  // keep open for streaming
   }
-  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
+  aeronet::Socket sock(SOCK_STREAM);
   int fd = sock.fd();
   if (fd < 0) {
     return std::nullopt;

@@ -35,7 +35,7 @@ TEST(StreamingBackpressure, LargeBodyQueues) {
     writer.end();
   });
   auto port = ts.port();
-  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
+  aeronet::Socket sock(SOCK_STREAM);
   int fd = sock.fd();
   ASSERT_GE(fd, 0);
   sockaddr_in addr{};

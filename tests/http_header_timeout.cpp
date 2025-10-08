@@ -4,7 +4,6 @@
 
 #include <cerrno>
 #include <chrono>
-#include <cstdint>
 #include <cstring>
 #include <string_view>
 #include <thread>
@@ -14,42 +13,27 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "socket.hpp"
+#include "aeronet/test_util.hpp"
 #include "test_server_fixture.hpp"
 
 using namespace aeronet;
 
-// Helper to connect to localhost:port returning fd or -1.
-namespace {
-Socket connectLoopback(uint16_t port) {
-  Socket sock(Socket::Type::STREAM);
-  int fd = sock.fd();
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    return {};  // return empty moved-from socket (fd becomes -1)
-  }
-  return sock;
-}
-}  // anonymous namespace
-
 TEST(HttpHeaderTimeout, SlowHeadersConnectionClosed) {
   HttpServerConfig cfg;
-  cfg.withPort(0).withHeaderReadTimeout(std::chrono::milliseconds(50));
+  std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
+  cfg.withPort(0).withHeaderReadTimeout(readTimeout);
   TestServer ts(cfg);
   ts.server.setHandler([](const HttpRequest&) {
     return aeronet::HttpResponse(200, "OK").body("hi").contentType(aeronet::http::ContentTypeTextPlain);
   });
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  Socket sock = connectLoopback(ts.port());
-  int fd = sock.fd();
+  test::ClientConnection cnx(ts.port());
+  int fd = cnx.fd();
   ASSERT_GE(fd, 0) << "connect failed";
   // Send only method token slowly
   const char* part1 = "GET /";  // incomplete, no version yet
   ASSERT_GT(::send(fd, part1, std::strlen(part1), 0), 0) << strerror(errno);
-  std::this_thread::sleep_for(std::chrono::milliseconds(120));  // exceed 50ms timeout
+  std::this_thread::sleep_for(readTimeout + std::chrono::milliseconds{5});
   // Attempt to finish request
   const char* rest = " HTTP/1.1\r\nHost: x\r\n\r\n";
   [[maybe_unused]] auto sent = ::send(fd, rest, std::strlen(rest), 0);

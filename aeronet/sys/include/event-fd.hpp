@@ -5,16 +5,21 @@
 namespace aeronet {
 
 // Simple RAII class wrapping a Event file descriptor
-class EventFd : public BaseFd {
+class EventFd {
  public:
   // Create eventfd for wakeups (non-blocking, close-on-exec)
   EventFd();
 
   // send an event
-  void send();
+  void send() const;
 
   // read an event
-  void read();
+  void read() const;
+
+  [[nodiscard]] int fd() const noexcept { return _baseFd.fd(); }
+
+ private:
+  BaseFd _baseFd;
 };
 
 }  // namespace aeronet

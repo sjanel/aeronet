@@ -42,6 +42,7 @@
 namespace {
 
 inline constexpr std::string_view kHeadersBody = "OK";
+inline constexpr int kMaxConnectionRetries = 5;
 
 // NOTE: aeronet::HttpRequest::path() returns the decoded path WITHOUT the query string.
 // The earlier implementation tried to parse "?size=..." off of path(), which always failed
@@ -62,12 +63,13 @@ struct AeronetServerRunner {
   std::mt19937_64 rng;
 
   AeronetServerRunner()
-      : async(aeronet::HttpServer([]() {
+      : async([]() {
           aeronet::HttpServerConfig cfg{};
           cfg.maxRequestsPerConnection = 1000000;  // allow plenty of persistent reuse for benchmarks
           return cfg;
-        }())) {
+        }()) {
     aeronet::log::set_level(aeronet::log::level::err);
+
     async.server().addPathHandler(benchutil::kBodyPath, aeronet::http::Method::GET,
                                   [this](const aeronet::HttpRequest &req) {
                                     aeronet::HttpResponse resp;
@@ -79,8 +81,7 @@ struct AeronetServerRunner {
     async.server().addPathHandler(benchutil::kHeaderPath, aeronet::http::Method::GET,
                                   [this](const aeronet::HttpRequest &req) {
                                     aeronet::HttpResponse resp;
-                                    auto sizeVal = extractSizeParam(req);
-                                    for (; sizeVal != 0; --sizeVal) {
+                                    for (auto sizeVal = extractSizeParam(req); sizeVal != 0; --sizeVal) {
                                       std::string key = benchutil::randomStr(sizeVal, rng);
                                       std::string value = benchutil::randomStr(sizeVal, rng);
                                       resp.customHeader(key, value);
@@ -93,10 +94,7 @@ struct AeronetServerRunner {
     // Small grace interval so first benchmark request doesn't race initial polling cycle.
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  ~AeronetServerRunner() {
-    async.requestStop();
-    async.stopAndJoin();
-  }
+
   [[nodiscard]] uint16_t port() const { return async.server().port(); }
 };
 
@@ -313,8 +311,8 @@ class PersistentClient {
 
  private:
   bool issueWithRetry(std::string_view path, std::size_t reqSize, bool expectExact, std::size_t expectVal) {
-    for (int attempt = 0; attempt < 2; ++attempt) {
-      auto len = benchutil::requestBodySize("GET", path, conn.fd(), reqSize);
+    for (int attempt = 0; attempt < kMaxConnectionRetries; ++attempt) {
+      auto len = benchutil::requestBodySize("GET", path, conn.fd(), reqSize, true);
       if (len && ((expectExact && *len == expectVal) || (!expectExact && *len > 0))) {
         if (attempt > 0) {
           // Count only successful retries (attempt 1 meaning second try)conn.fd()
@@ -462,9 +460,9 @@ void RandomNoReuse(benchmark::State &state, std::string_view name, Server &serve
   for ([[maybe_unused]] auto st : state) {
     std::size_t sz = dist(server.rng);
     bool success = false;
-    for (int attempt = 0; attempt < 2 && !success; ++attempt) {
+    for (int attempt = 0; attempt < kMaxConnectionRetries && !success; ++attempt) {
       aeronet::test::ClientConnection ep(server.port());
-      auto len = benchutil::requestBodySize("GET", benchutil::kBodyPath, ep.fd(), sz);
+      auto len = benchutil::requestBodySize("GET", benchutil::kBodyPath, ep.fd(), sz, false);
       if (len && *len == sz) {
         totalBytes += *len;
         if (attempt > 0) {

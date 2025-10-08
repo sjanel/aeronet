@@ -17,13 +17,15 @@
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-version.hpp"
 #include "connection-state.hpp"
+#include "connection.hpp"
 #include "log.hpp"
 #include "raw-chars.hpp"
 #include "string-equal-ignore-case.hpp"
 
 namespace aeronet {
-void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpRequest& req, HttpResponse& resp,
+void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRequest& req, HttpResponse& resp,
                                          std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart) {
+  ConnectionState& state = cnxIt->second;
   ++state.requestsServed;
   bool keepAlive = _config.enableKeepAlive && state.requestsServed < _config.maxRequestsPerConnection;
   if (keepAlive) {
@@ -80,7 +82,7 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
   auto data =
       resp.finalizeAndGetFullTextResponse(req.version(), _cachedDateEpoch, keepAlive, _config.globalHeaders, isHead);
 
-  queueData(fd, state, data);
+  queueData(cnxIt, data);
 
   state.buffer.erase_front(consumedBytes);
   if (!keepAlive) {
@@ -98,7 +100,9 @@ void HttpServer::finalizeAndSendResponse(int fd, ConnectionState& state, HttpReq
   }
 }
 
-bool HttpServer::queueData(int fd, ConnectionState& state, std::string_view data) {
+bool HttpServer::queueData(ConnectionMapIt cnxIt, std::string_view data) {
+  ConnectionState& state = cnxIt->second;
+  const int fd = cnxIt->first.fd();
   if (state.outBuffer.empty()) {
     bool wantR = false;
     bool wantW = false;
@@ -114,7 +118,7 @@ bool HttpServer::queueData(int fd, ConnectionState& state, std::string_view data
         _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
         // If TLS wants more write (handshake) and no buffered data, ensure EPOLLOUT
         if (wantW && !state.waitingWritable) {
-          if (!HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
+          if (!HttpServer::ModWithCloseOnFailure(_eventLoop, cnxIt, EPOLLIN | EPOLLOUT | EPOLLET,
                                                  "enable writable immediate write path", _stats)) {
             return false;
           }
@@ -142,7 +146,7 @@ bool HttpServer::queueData(int fd, ConnectionState& state, std::string_view data
     state.requestImmediateClose();
   }
   if (!state.waitingWritable) {
-    if (HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
+    if (HttpServer::ModWithCloseOnFailure(_eventLoop, cnxIt, EPOLLIN | EPOLLOUT | EPOLLET,
                                           "enable writable buffered path", _stats)) {
       state.waitingWritable = true;
       ++_stats.deferredWriteEvents;
@@ -151,9 +155,11 @@ bool HttpServer::queueData(int fd, ConnectionState& state, std::string_view data
   return true;
 }
 
-void HttpServer::flushOutbound(int fd, ConnectionState& state) {
+void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   ++_stats.flushCycles;
   bool lastWantWrite = false;
+  ConnectionState& state = cnxIt->second;
+  const int fd = cnxIt->first.fd();
   while (!state.outBuffer.empty()) {
     bool wantR = false;
     bool wantW = false;
@@ -184,19 +190,14 @@ void HttpServer::flushOutbound(int fd, ConnectionState& state) {
     break;
   }
   // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
-  if (state.outBuffer.empty() && state.waitingWritable) {
-    bool keepWritable = false;
-    if (!state.tlsEstablished && state.transport && state.transport->handshakePending()) {
-      keepWritable = true;
-    }
-    if (!keepWritable) {
-      if (HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLET, state,
-                                            "disable writable flushOutbound drop EPOLLOUT", _stats)) {
-        state.waitingWritable = false;
-        if (state.isAnyCloseRequested()) {
-          closeConnectionFd(fd);
-        }
-      }
+  if (state.outBuffer.empty() && state.waitingWritable &&
+      (state.tlsEstablished || !state.transport || !state.transport->handshakePending()) &&
+      HttpServer::ModWithCloseOnFailure(_eventLoop, cnxIt, EPOLLIN | EPOLLET,
+                                        "disable writable flushOutbound drop EPOLLOUT", _stats)) {
+    state.waitingWritable = false;
+    if (state.isAnyCloseRequested()) {
+      closeConnection(cnxIt);
+      return;
     }
   }
   // Clear writable interest if no buffered data and transport no longer needs write progress.
@@ -205,7 +206,7 @@ void HttpServer::flushOutbound(int fd, ConnectionState& state) {
     bool transportNeedsWrite = (!state.tlsEstablished && (state.tlsWantWrite || lastWantWrite));
     if (transportNeedsWrite) {
       if (!state.waitingWritable) {
-        if (!HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLOUT | EPOLLET, state,
+        if (!HttpServer::ModWithCloseOnFailure(_eventLoop, cnxIt, EPOLLIN | EPOLLOUT | EPOLLET,
                                                "enable writable flushOutbound transportNeedsWrite", _stats)) {
           return;  // failure logged
         }
@@ -213,7 +214,7 @@ void HttpServer::flushOutbound(int fd, ConnectionState& state) {
       }
     } else if (state.waitingWritable) {
       state.waitingWritable = false;
-      HttpServer::ModWithCloseOnFailure(_loop, fd, EPOLLIN | EPOLLET, state,
+      HttpServer::ModWithCloseOnFailure(_eventLoop, cnxIt, EPOLLIN | EPOLLET,
                                         "disable writable flushOutbound transport no longer needs", _stats);
     }
   }
