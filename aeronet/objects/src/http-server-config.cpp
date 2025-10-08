@@ -12,7 +12,9 @@
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/tls-config.hpp"
+#include "invalid_argument_exception.hpp"
 #include "tchars.hpp"
 
 namespace aeronet {

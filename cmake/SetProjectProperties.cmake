@@ -31,7 +31,10 @@ function(set_project_properties name)
     # Use header-only mode to avoid introducing a link dependency that would
     # force exporting/packaging spdlog. Consumers can supply their own spdlog
     # if they also define AERONET_ENABLE_SPDLOG, otherwise they build without it.
-    target_compile_definitions(${name} PUBLIC AERONET_ENABLE_SPDLOG SPDLOG_USE_STD_FORMAT)
+    target_compile_definitions(${name} PUBLIC AERONET_ENABLE_SPDLOG)
+    if(AERONET_SPDLOG_USE_STD_FORMAT)
+      target_compile_definitions(${name} PUBLIC SPDLOG_USE_STD_FORMAT)
+    endif()
     # Do NOT link the spdlog target (even privately) or the install(EXPORT ...) step
     # will complain that the exported aeronet targets require a target not in any
     # export set. Instead, harvest its include directories (header-only) so builds succeed.

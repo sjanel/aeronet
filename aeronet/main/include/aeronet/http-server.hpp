@@ -289,7 +289,7 @@ class HttpServer {
   // Typical usage:
   //   - From a signal handler wrapper (set a flag then call stop() in a safe context).
   //   - From a controller thread coordinating multiple HttpServer instances.
-  void stop();
+  void stop() noexcept;
 
   // The config given to the server, with the actual allocated port if 0 was given.
   // The config is immutable after creation of the Server.
