@@ -11,11 +11,12 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-status-code.hpp"  // http::StatusCode values
-#include "aeronet/http-version.hpp"      // http::parseHttpVersion
-#include "connection-state.hpp"          // ConnectionState parameter
+#include "aeronet/http-status-code.hpp"
+#include "aeronet/http-version.hpp"
+#include "connection-state.hpp"
 #include "mergeable-headers.hpp"
 #include "raw-chars.hpp"
+#include "string-equal-ignore-case.hpp"
 #include "toupperlower.hpp"
 #include "url-decode.hpp"
 

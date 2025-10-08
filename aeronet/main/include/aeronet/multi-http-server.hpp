@@ -157,7 +157,7 @@ class MultiHttpServer {
   //   on scope exit of internal moves). Safe to call multiple times; subsequent calls are no-ops.
   //   Blocks until all servers have exited their event loops. Ensures HttpServer objects outlive
   //   the joining of their threads (ordering guaranteed by move+scope pattern in implementation).
-  void stop();
+  void stop() noexcept;
 
   // isRunning(): true after successful start() and before stop() completion.
   //   Reflects the high-level lifecycle, not the liveness of each individual thread (a thread
@@ -170,7 +170,7 @@ class MultiHttpServer {
   [[nodiscard]] uint16_t port() const { return _baseConfig.port; }
 
   // nbThreads(): Number of underlying HttpServer instances (and threads) configured.
-  [[nodiscard]] uint32_t nbThreads() const { return _servers.size(); }
+  [[nodiscard]] uint32_t nbThreads() const { return _servers.capacity(); }
 
   // stats():
   //   Collects statistics from each underlying HttpServer and returns both per-instance and
@@ -181,7 +181,6 @@ class MultiHttpServer {
 
  private:
   void ensureNotStarted() const;
-  void createServers(uint32_t nbServers, bool firstCall);
 
   struct PathRegistration {
     std::string path;

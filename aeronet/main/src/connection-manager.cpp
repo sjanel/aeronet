@@ -9,6 +9,7 @@
 #include <memory>
 #include <utility>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-server.hpp"
 #include "connection-state.hpp"
 #include "connection.hpp"
@@ -121,8 +122,7 @@ void HttpServer::acceptNewConnections() {
       // bodyReadChunkBytes.
       std::size_t chunkSize = _config.bodyReadChunkBytes;
       if (pst->headerStart.time_since_epoch().count() != 0 ||
-          std::search(pst->buffer.begin(), pst->buffer.end(), http::DoubleCRLF.begin(), http::DoubleCRLF.end()) ==
-              pst->buffer.end()) {
+          std::ranges::search(pst->buffer, http::DoubleCRLF).empty()) {
         chunkSize = _config.initialReadChunkBytes;
       }
       if (_config.maxPerEventReadBytes != 0) {

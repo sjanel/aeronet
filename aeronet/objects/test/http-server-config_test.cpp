@@ -1,7 +1,6 @@
 #include "aeronet/http-server-config.hpp"
 
 #include <gtest/gtest.h>
-#include <zlib.h>
 
 #include "invalid_argument_exception.hpp"
 
