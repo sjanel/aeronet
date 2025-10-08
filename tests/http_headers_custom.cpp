@@ -1,10 +1,8 @@
-// Tests for custom header forwarding and reserved header protection
 #include <gtest/gtest.h>
 
-// IWYU: direct includes for used symbols
-#include <chrono>   // chrono literals (IWYU chrono warnings intentionally ignored)
-#include <string>   // std::string
-#include <utility>  // std::move
+#include <chrono>
+#include <string>
+#include <utility>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -15,8 +13,8 @@
 
 using namespace std::chrono_literals;
 
-#include "aeronet/compression-config.hpp"  // aeronet::CompressionConfig
-#include "aeronet/encoding.hpp"            // aeronet::Encoding
+#include "aeronet/compression-config.hpp"
+#include "aeronet/encoding.hpp"
 
 TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
   TestServer ts(aeronet::HttpServerConfig{});

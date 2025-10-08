@@ -1,8 +1,11 @@
 ﻿#include "http-error-build.hpp"
 
+#include <cstddef>
+#include <span>
 #include <string_view>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "raw-chars.hpp"
 #include "stringconv.hpp"

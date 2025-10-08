@@ -18,8 +18,16 @@ EventFd::EventFd() : BaseFd(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)) {
 }
 
 void EventFd::send() {
-  eventfd_t one = 1;
-  ::eventfd_write(this->fd(), one);  // ignore failure; best effort
+  static constexpr eventfd_t one = 1;
+  const auto ret = ::eventfd_write(this->fd(), one);
+  if (ret != 0) {
+    auto savedErr = errno;
+    if (savedErr != EAGAIN) {
+      log::error("Wakeup fd send failed err={}: {}", savedErr, std::strerror(savedErr));
+    }
+  } else {
+    log::trace("Wakeup fd send succeeded");
+  }
 }
 
 void EventFd::read() {

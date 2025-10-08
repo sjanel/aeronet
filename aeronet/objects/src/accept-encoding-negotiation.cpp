@@ -28,6 +28,7 @@ constexpr std::string_view kWhitespace = " \t";
 
 constexpr bool encodingEnabled(Encoding enc) {
   switch (enc) {
+    // NOLINTNEXTLINE(bugprone-branch-clone)
     case Encoding::br:
 #ifdef AERONET_ENABLE_BROTLI
       return true;
