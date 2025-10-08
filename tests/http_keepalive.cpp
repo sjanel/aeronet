@@ -49,7 +49,7 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
     return resp;
   });
 
-  aeronet::Socket fdSock(aeronet::Socket::Type::STREAM);
+  aeronet::Socket fdSock(SOCK_STREAM);
   int fd = fdSock.fd();
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -83,7 +83,7 @@ TEST(HttpLimits, RejectHugeHeaders) {
     return resp;
   });
 
-  aeronet::Socket fdSock2(aeronet::Socket::Type::STREAM);
+  aeronet::Socket fdSock2(SOCK_STREAM);
   int fd = fdSock2.fd();
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
