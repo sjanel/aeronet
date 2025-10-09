@@ -15,9 +15,7 @@
 // per the documented semantics (moves only allowed while stopped).
 
 TEST(HttpServer, MoveConstructWhileRunningThrows) {
-  aeronet::HttpServerConfig cfg;
-  cfg.port = 0;  // ephemeral
-  aeronet::HttpServer server(cfg);
+  aeronet::HttpServer server(aeronet::HttpServerConfig{});
   server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("ok");
@@ -39,7 +37,6 @@ TEST(HttpServer, MoveConstructWhileRunningThrows) {
 
 TEST(HttpServer, MoveAssignWhileRunningThrows) {
   aeronet::HttpServerConfig cfg;
-  cfg.port = 0;
   aeronet::HttpServer serverA(cfg);
   aeronet::HttpServer serverB(cfg);
   serverA.setHandler([](const aeronet::HttpRequest&) {

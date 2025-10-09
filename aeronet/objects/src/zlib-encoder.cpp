@@ -66,7 +66,7 @@ std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
     if (ret == Z_STREAM_ERROR) {
       throw exception("Zlib streaming error {}", ret);
     }
-    _buf.setSize(_buf.size() + encoderChunkSize - _zs._stream.avail_out);
+    _buf.addSize(encoderChunkSize - _zs._stream.avail_out);
     if (ret == Z_STREAM_END) {
       _finished = true;
       break;
@@ -92,7 +92,7 @@ std::string_view ZlibEncoder::compressAll(std::size_t encoderChunkSize, std::str
     if (rc == Z_STREAM_ERROR) {
       throw exception("Zlib error during one-shot compression");
     }
-    _buf.setSize(_buf.size() + encoderChunkSize - zs._stream.avail_out);
+    _buf.addSize(encoderChunkSize - zs._stream.avail_out);
     if (rc == Z_STREAM_END) {
       break;
     }

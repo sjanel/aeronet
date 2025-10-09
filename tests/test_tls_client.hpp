@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/test_util.hpp"
 #include "raw-bytes.hpp"
 #include "tls-raii.hpp"
@@ -88,17 +89,27 @@ class TlsClient {
     if (!_handshakeOk) {
       return out;
     }
-    char buf[4096];
+    static constexpr std::size_t kChunkSize = 4096;
+    out.reserve(kChunkSize);
     for (;;) {
-      int bytesRead = ::SSL_read(_ssl.get(), buf, sizeof(buf));
-      if (bytesRead > 0) {
-        out.append(buf, buf + bytesRead);
-        continue;
+      const auto oldSize = out.size();
+      if (out.capacity() < out.size() + kChunkSize) {
+        // ensure exponential growth
+        out.reserve(out.capacity() * 2UL);
       }
-      if (bytesRead == 0) {
-        break;  // clean close
+      out.resize_and_overwrite(out.size() + kChunkSize,
+                               [this, oldSize](char* data, [[maybe_unused]] std::size_t newCap) {
+                                 int bytesRead = ::SSL_read(_ssl.get(), data + oldSize, kChunkSize);
+                                 if (bytesRead > 0) {
+                                   return oldSize + static_cast<std::size_t>(bytesRead);
+                                 }
+                                 return oldSize;
+                               });
+      if (out.size() == oldSize) {
+        break;  // no new data read
       }
-      auto err = ::SSL_get_error(_ssl.get(), bytesRead);
+
+      auto err = ::SSL_get_error(_ssl.get(), static_cast<int>(out.size() - oldSize));
       if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
         continue;
       }
@@ -115,9 +126,9 @@ class TlsClient {
     }
     std::string request = "GET " + target + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n";
     for (const auto& header : extraHeaders) {
-      request += header.first + ": " + header.second + "\r\n";
+      request.append(header.first).append(aeronet::http::HeaderSep).append(header.second).append(aeronet::http::CRLF);
     }
-    request += "\r\n";
+    request += aeronet::http::CRLF;
     if (!writeAll(request)) {
       return {};
     }

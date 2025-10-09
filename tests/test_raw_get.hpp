@@ -26,16 +26,21 @@ inline void rawGet(uint16_t port, std::string_view path, std::string& out) {
   ASSERT_EQ(sent, static_cast<decltype(sent)>(req.size())) << "send() partial/failed";
 
   out.clear();
-  constexpr std::size_t kChunk = 4096;
-  constexpr std::size_t kCap = 1U << 20;  // 1MB safety cap
+  static constexpr std::size_t kChunkSize = 4096;
+  static constexpr std::size_t kCap = 1U << 20;  // 1MB safety cap
 
-  out.reserve(kChunk);
+  out.reserve(kChunkSize);
 
   while (out.size() < kCap) {
     std::size_t oldSize = out.size();
     std::size_t remaining = kCap - oldSize;
-    std::size_t grow = remaining < kChunk ? remaining : kChunk;
+    std::size_t grow = remaining < kChunkSize ? remaining : kChunkSize;
     bool reachedEnd = false;  // set when EOF or error encountered
+
+    if (out.capacity() < out.size() + kChunkSize) {
+      // ensure exponential growth
+      out.reserve(out.capacity() * 2UL);
+    }
 
     out.resize_and_overwrite(oldSize + grow,
                              [&](char* data, [[maybe_unused]] std::size_t newSize) noexcept -> std::size_t {
