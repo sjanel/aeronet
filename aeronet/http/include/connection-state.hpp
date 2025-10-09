@@ -47,8 +47,6 @@ struct ConnectionState {
   CloseMode closeMode{CloseMode::None};
   bool waitingWritable{false};                           // EPOLLOUT registered
   bool tlsEstablished{false};                            // true once TLS handshake completed (if TLS enabled)
-  bool tlsWantRead{false};                               // last transport op indicated WANT_READ
-  bool tlsWantWrite{false};                              // last transport op indicated WANT_WRITE
   std::string selectedAlpn;                              // negotiated ALPN protocol (if any)
   std::string negotiatedCipher;                          // negotiated TLS cipher suite (if TLS)
   std::string negotiatedVersion;                         // negotiated TLS protocol version string

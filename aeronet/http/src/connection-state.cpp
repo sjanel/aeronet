@@ -1,8 +1,6 @@
 #include "connection-state.hpp"
 
-#include <sys/socket.h>
 #include <sys/types.h>
-#include <unistd.h>
 
 #include <cstddef>
 #include <string_view>
