@@ -1,9 +1,9 @@
-#include <arpa/inet.h>  // IWYU pragma: keep
+#include <arpa/inet.h>
 #include <asm-generic/socket.h>
 #include <bits/types/struct_timeval.h>
 #include <gtest/gtest.h>
-#include <netinet/in.h>  // IWYU pragma: keep
-#include <sys/socket.h>  // IWYU pragma: keep (SOL_SOCKET, SO_RCVTIMEO)
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 
 #include <cstring>
@@ -52,7 +52,7 @@ TEST(StreamingKeepAlive, TwoSequentialRequests) {
   auto port = server.port();
   ASSERT_GT(port, 0);
   ASSERT_LE(port, 65535);
-  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
+  aeronet::Socket sock(SOCK_STREAM);
   int fd = sock.fd();
   ASSERT_GE(fd, 0);
   sockaddr_in addr{};
@@ -85,7 +85,7 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
   std::jthread th([&] { server.run(); });
   auto port = server.port();
   ASSERT_GT(port, 0);
-  aeronet::Socket sock2(aeronet::Socket::Type::STREAM);
+  aeronet::Socket sock2(SOCK_STREAM);
   int fd = sock2.fd();
   ASSERT_GE(fd, 0);
   sockaddr_in addr{};

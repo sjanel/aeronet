@@ -401,7 +401,7 @@ int main() {
 | Variant | Header | Launch API | Blocking? | Threads Created Internally | Scaling Model | Typical Use Case | Notes |
 |---------|--------|-----------|-----------|-----------------------------|---------------|------------------|-------|
 | `HttpServer` | `aeronet/http-server.hpp` | `run()` / `runUntil(pred)` | Yes (caller thread blocks) | 0 | Single reactor | Dedicated thread you manage or simple main-thread server | Minimal overhead |
-| `AsyncHttpServer` | `aeronet/async-http-server.hpp` | `start()`, `startUntil(pred)`, `requestStop()`, `stopAndJoin()` | No | 1 `std::jthread` | Single reactor (owned) | Need non-blocking single server with safe lifetime | Owns server; access via `async.server()` |
+| `AsyncHttpServer` | `aeronet/async-http-server.hpp` | `start()`, `startUntil(pred)`, `requestStop()`, `stop()` | No | 1 `std::jthread` | Single reactor (owned) | Need non-blocking single server with safe lifetime | Owns `HttpServer` internally |
 | `MultiHttpServer` | `aeronet/multi-http-server.hpp` | `start()`, `stop()` | No | N (`threadCount`) | Horizontal SO_REUSEPORT multi-reactor | Scale across cores quickly | Replicates handlers pre-start |
 
 Decision heuristics:
@@ -423,16 +423,12 @@ Blocking semantics summary:
 using namespace aeronet;
 
 int main() {
-  HttpServerConfig cfg; cfg.withPort(0); // ephemeral
-  HttpServer server(cfg);
-  server.setHandler([](const HttpRequest&){ return HttpResponse(200, "OK").body("hi").contentType("text/plain"); });
-
-  AsyncHttpServer async(std::move(server));
+  AsyncHttpServer async(HttpServerConfig{});
+  server.server().setHandler([](const HttpRequest&){ return HttpResponse(200, "OK").body("hi").contentType("text/plain"); });
   async.start();
   // main thread free to do orchestration / other work
   std::this_thread::sleep_for(std::chrono::seconds(2));
-  async.requestStop();
-  async.stopAndJoin();
+  async.stop();
   async.rethrowIfError();
 }
 ```
@@ -441,18 +437,18 @@ Predicate form (stop when external flag flips):
 
 ```cpp
 std::atomic<bool> done{false};
-AsyncHttpServer async(std::move(server));
+AsyncHttpServer async(HttpServerConfig{});
 async.startUntil([&]{ return done.load(); });
 // later
 done = true; // loop exits soon (bounded by poll interval)
-async.stopAndJoin();
+async.stop();
 ```
 
 Notes:
 
 - Do not call `run()` directly on the underlying `HttpServer` while an `AsyncHttpServer` is active.
 - Register handlers before `start()` unless you provide external synchronization for modifications.
-- `stopAndJoin()` is idempotent; destructor performs it automatically as a safety net.
+- `stop()` is idempotent; destructor performs it automatically as a safety net.
 
 Handler rules mirror `HttpServer`:
 

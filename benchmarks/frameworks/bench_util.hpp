@@ -24,18 +24,22 @@ inline constexpr std::string kHeaderPath = "/headers";
 // Simplified blocking implementation: issue request, block until headers, then read body per Content-Length.
 // This intentionally forgoes adaptive/non-blocking complexity to reduce flakiness.
 inline std::optional<std::size_t> requestBodySize(std::string_view method, std::string_view path, int fd,
-                                                  std::size_t requestedSize) {
+                                                  std::size_t requestedSize, bool keepAlive) {
   std::string req(method);
   req.push_back(' ');
   req.append(path);
   req.append("?size=");
   req.append(std::to_string(requestedSize));
-  req.append(" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n");
+  req.append(" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: ");
+  req.append(keepAlive ? aeronet::http::keepalive : aeronet::http::close);
+  req.append(aeronet::http::DoubleCRLF);
   if (!aeronet::test::sendAll(fd, req)) {
     aeronet::log::error("sendAll failed: {}", std::strerror(errno));
     return std::nullopt;
   }
 
+  // Extend deadline for benchmarks that request very large bodies over fresh TCP connections.
+  // Keep tests / CI responsive while avoiding spurious timeouts for multi-megabyte responses.
   constexpr auto kGlobalDeadline = std::chrono::seconds(15);
   const auto deadline = std::chrono::steady_clock::now() + kGlobalDeadline;
   aeronet::RawChars buffer;
@@ -121,7 +125,7 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
         }
       });
       if (bodyWritten == 0) {
-        aeronet::log::error("body truncated: wanted {}, have {}", contentLength, contentLength - remaining);
+        aeronet::log::debug("body truncated: wanted {}, have {}", contentLength, contentLength - remaining);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
       remaining -= bodyWritten;

@@ -1,19 +1,17 @@
 #pragma once
 
-// Shared test & benchmark utilities (client connection & simple socket helpers)
-// Moved from tests/test_util.hpp to a public-ish internal support include so
-// benchmarks can include "aeronet/test_util.hpp" without relative paths.
-
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <thread>
 
+#include "aeronet/http-constants.hpp"
 #include "log.hpp"
 #include "socket.hpp"
 
@@ -114,16 +112,23 @@ inline void connectLoop(int fd, auto port, std::chrono::milliseconds timeout = s
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
       break;
     }
+    log::debug("connect failed for fd={}: {}", fd, std::strerror(errno));
   }
 }
 
-class ClientConnection : public ::aeronet::Socket {
+class ClientConnection {
  public:
   ClientConnection() noexcept = default;
-  ClientConnection(auto port, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000})
-      : ::aeronet::Socket(::aeronet::Socket::Type::STREAM) {
-    connectLoop(fd(), port, timeout);
+
+  explicit ClientConnection(auto port, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000})
+      : _socket(SOCK_STREAM) {
+    connectLoop(_socket.fd(), port, timeout);
   }
+
+  [[nodiscard]] int fd() const noexcept { return _socket.fd(); }
+
+ private:
+  ::aeronet::Socket _socket;
 };
 
 inline int countOccurrences(std::string_view haystack, std::string_view needle) {
@@ -140,11 +145,11 @@ inline int countOccurrences(std::string_view haystack, std::string_view needle) 
 }
 
 inline bool noBodyAfterHeaders(std::string_view raw) {
-  auto pivot = raw.find("\r\n\r\n");
+  const auto pivot = raw.find(aeronet::http::DoubleCRLF);
   if (pivot == std::string_view::npos) {
     return false;
   }
-  return raw.substr(pivot + 4).empty();
+  return raw.substr(pivot + aeronet::http::DoubleCRLF.size()).empty();
 }
 
 // Very small blocking GET helper (Connection: close) used by tests that just need
@@ -156,7 +161,8 @@ inline std::string simpleGet(uint16_t port, std::string_view path) {
   }
   std::string req;
   req.reserve(64 + path.size());
-  req.append("GET ").append(path).append(" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+  req.append("GET ").append(path).append(" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close");
+  req.append(aeronet::http::DoubleCRLF);
   if (!sendAll(cnx.fd(), req)) {
     return {};
   }
