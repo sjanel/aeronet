@@ -15,7 +15,6 @@ using testutil::simpleGet;
 
 TEST(MultiHttpServer, MoveWhileRunning) {
   aeronet::HttpServerConfig cfg;
-  cfg.port = 0;
   cfg.withReusePort();
   aeronet::MultiHttpServer multi(cfg);
   multi.setHandler([](const aeronet::HttpRequest&) {

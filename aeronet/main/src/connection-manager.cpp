@@ -56,8 +56,8 @@ void HttpServer::sweepIdleConnections() {
     }
     // TLS handshake timeout (if enabled). Applies only while handshake pending.
 #ifdef AERONET_ENABLE_OPENSSL
-    if (_config.tlsHandshakeTimeout.count() > 0 && _config.tls && st.transport &&
-        st.handshakeStart.time_since_epoch().count() != 0 && !st.tlsEstablished && st.transport->handshakePending()) {
+    if (_config.tlsHandshakeTimeout.count() > 0 && _config.tls && st.handshakeStart.time_since_epoch().count() != 0 &&
+        !st.tlsEstablished && st.transport->handshakePending()) {
       if (now - st.handshakeStart > _config.tlsHandshakeTimeout) {
         cnxIt = closeConnection(cnxIt);
         continue;
@@ -132,9 +132,9 @@ void HttpServer::acceptNewConnections() {
         }
         chunkSize = std::min(chunkSize, remainingBudget);
       }
-      ssize_t bytesRead = pCnx->transportRead(cnxFd, chunkSize, wantR, wantW);
+      ssize_t bytesRead = pCnx->transportRead(chunkSize, wantR, wantW);
       // Check for handshake completion
-      if (!pCnx->tlsEstablished && pCnx->transport && !pCnx->transport->handshakePending()) {
+      if (!pCnx->tlsEstablished && !pCnx->transport->handshakePending()) {
 #ifdef AERONET_ENABLE_OPENSSL
         if (_config.tls && dynamic_cast<TlsTransport*>(pCnx->transport.get()) != nullptr) {
           auto* tlsTr = static_cast<TlsTransport*>(pCnx->transport.get());
@@ -228,8 +228,8 @@ void HttpServer::handleReadableClient(int fd) {
       }
       chunkSize = std::min(chunkSize, remainingBudget);
     }
-    auto count = state.transportRead(fd, chunkSize, wantR, wantW);
-    if (!state.tlsEstablished && state.transport && !state.transport->handshakePending()) {
+    auto count = state.transportRead(chunkSize, wantR, wantW);
+    if (!state.tlsEstablished && !state.transport->handshakePending()) {
 #ifdef AERONET_ENABLE_OPENSSL
       if (_config.tls && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
         auto* tlsTr = static_cast<TlsTransport*>(state.transport.get());

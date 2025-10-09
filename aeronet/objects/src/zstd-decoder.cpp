@@ -32,7 +32,7 @@ bool ZstdDecoder::Decompress(std::string_view input, std::size_t maxDecompressed
       return false;
     }
 
-    out.setSize(out.size() + rSize);
+    out.addSize(rSize);
     return true;
   }
 
@@ -69,7 +69,7 @@ bool ZstdDecoder::Decompress(std::string_view input, std::size_t maxDecompressed
       log::error("ZstdDecoder::Decompress - ZSTD_decompressStream failed with error {}", ret);
       return false;
     }
-    out.setSize(out.size() + output.pos);
+    out.addSize(output.pos);
   }
   return true;
 }

@@ -48,15 +48,18 @@ inline std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeou
   auto maxTs = start + totalTimeout;
   bool madeProgress = false;
   while (std::chrono::steady_clock::now() < maxTs) {
-    constexpr std::size_t kChunk = static_cast<std::size_t>(64) * 1024ULL;
+    static constexpr std::size_t kChunkSize = static_cast<std::size_t>(64) * 1024ULL;
     std::size_t oldSize = out.size();
-    // Use resize_and_overwrite; we only write up to kChunk bytes.
-    std::size_t written = 0;
-    out.resize_and_overwrite(oldSize + kChunk, [&](char* data, [[maybe_unused]] std::size_t newCap) {
-      ssize_t recvBytes = ::recv(fd, data + oldSize, kChunk, MSG_DONTWAIT);
+
+    if (out.capacity() < out.size() + kChunkSize) {
+      // ensure exponential growth
+      out.reserve(out.capacity() * 2UL);
+    }
+
+    out.resize_and_overwrite(oldSize + kChunkSize, [&](char* data, [[maybe_unused]] std::size_t newCap) {
+      ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, MSG_DONTWAIT);
       if (recvBytes > 0) {
-        written = static_cast<std::size_t>(recvBytes);
-        return oldSize + written;
+        return oldSize + static_cast<std::size_t>(recvBytes);
       }
       if (recvBytes == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
         // No data currently; shrink back.
@@ -79,18 +82,21 @@ inline std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeou
 }
 
 inline std::string recvUntilClosed(int fd) {
-  // Read until peer closes. Avoid temporary buffer by growing string directly.
   std::string out;
   for (;;) {
-    constexpr std::size_t kChunk = static_cast<std::size_t>(64) * 1024ULL;
+    static constexpr std::size_t kChunkSize = static_cast<std::size_t>(64) * 1024ULL;
     std::size_t oldSize = out.size();
-    std::size_t written = 0;
     bool closed = false;
-    out.resize_and_overwrite(oldSize + kChunk, [&](char* data, [[maybe_unused]] std::size_t newCap) {
-      ssize_t recvBytes = ::recv(fd, data + oldSize, kChunk, 0);
+
+    if (out.capacity() < out.size() + kChunkSize) {
+      // ensure exponential growth
+      out.reserve(out.capacity() * 2UL);
+    }
+
+    out.resize_and_overwrite(oldSize + kChunkSize, [&](char* data, [[maybe_unused]] std::size_t newCap) {
+      ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);
       if (recvBytes > 0) {
-        written = static_cast<std::size_t>(recvBytes);
-        return oldSize + written;
+        return oldSize + static_cast<std::size_t>(recvBytes);
       }
       closed = true;
       return oldSize;  // shrink back
