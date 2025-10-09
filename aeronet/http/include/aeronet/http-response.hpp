@@ -283,7 +283,7 @@ class HttpResponse {
     if (_headersStartPos == 0) {
       _headersStartPos = static_cast<decltype(_headersStartPos)>(_bodyStartPos - http::DoubleCRLF.size());
     }
-    _data.setSize(_data.size() + headerLineSize);
+    _data.addSize(headerLineSize);
     _bodyStartPos += static_cast<uint32_t>(headerLineSize);
   }
 

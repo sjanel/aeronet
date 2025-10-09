@@ -1,7 +1,4 @@
-#include <arpa/inet.h>
 #include <gtest/gtest.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
 
 #include <chrono>
 #include <cstddef>
@@ -17,47 +14,32 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_util.hpp"
 #include "exception.hpp"
-#include "socket.hpp"
 
 namespace {
-void httpRequest(auto port, std::string_view method, std::string_view path, std::string& out,
-                 const std::string& body = {}) {
-  aeronet::Socket sock(SOCK_STREAM);
-  int fd = sock.fd();
-  ASSERT_GE(fd, 0) << "socket failed";
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-  int cRet = ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-  ASSERT_EQ(cRet, 0) << "connect failed";
+std::string httpRequest(auto port, std::string_view method, std::string_view path, const std::string& body = {}) {
+  aeronet::test::ClientConnection cnx(port);
+  int fd = cnx.fd();
+
   std::string req = std::string(method) + " " + std::string(path) + " HTTP/1.1\r\nHost: test\r\nConnection: close\r\n";
   if (!body.empty()) {
     req += "Content-Length: " + std::to_string(body.size()) + "\r\n";
   }
   req += "\r\n";
   req += body;
-  auto sent = ::send(fd, req.data(), req.size(), 0);
-  ASSERT_EQ(sent, static_cast<decltype(sent)>(req.size())) << "send partial";
-  out.clear();
-  char buf[4096];
-  while (true) {
-    auto bytesRead = ::recv(fd, buf, sizeof(buf), 0);
-    if (bytesRead <= 0) {
-      break;
-    }
-    out.append(buf, static_cast<std::size_t>(bytesRead));
-  }
+
+  aeronet::test::sendAll(fd, req);
+  return aeronet::test::recvUntilClosed(fd);
 }
 
 // Very small chunked decoder for tests (single pass, no trailers). Expects full HTTP response.
 std::string extractBody(const std::string& resp) {
-  auto headerEnd = resp.find("\r\n\r\n");
+  auto headerEnd = resp.find(aeronet::http::DoubleCRLF);
   if (headerEnd == std::string::npos) {
     return {};
   }
-  std::string body = resp.substr(headerEnd + 4);
+  std::string body = resp.substr(headerEnd + aeronet::http::DoubleCRLF.size());
   // If not chunked just return remaining.
   if (body.find("\r\n0\r\n") == std::string::npos && body.find("0\r\n\r\n") == std::string::npos) {
     return body;
@@ -92,7 +74,6 @@ std::string extractBody(const std::string& resp) {
 
 TEST(HttpServerMixed, MixedPerPathHandlers) {
   aeronet::HttpServerConfig cfg;
-  cfg.port = 0;
   cfg.enableKeepAlive = false;
   aeronet::HttpServer srv(cfg);
   // path /mix : GET streaming, POST normal
@@ -111,21 +92,18 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
   srv.addPathHandler("/mix", postSet, [](const aeronet::HttpRequest& /*unused*/) {
     return aeronet::HttpResponse(201).reason("Created").contentType(aeronet::http::ContentTypeTextPlain).body("NORMAL");
   });
-  std::jthread th([&] { srv.runUntil([] { return false; }); });
+  std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
-  std::string getResp;
-  httpRequest(srv.port(), "GET", "/mix", getResp);
+  std::string getResp = httpRequest(srv.port(), "GET", "/mix");
   auto decoded = extractBody(getResp);
   EXPECT_EQ(decoded, "STREAM");
-  std::string postResp;
-  httpRequest(srv.port(), "POST", "/mix", postResp, "x");
+  std::string postResp = httpRequest(srv.port(), "POST", "/mix", "x");
   EXPECT_NE(std::string::npos, postResp.find("NORMAL"));
   srv.stop();
 }
 
 TEST(HttpServerMixed, ConflictRegistrationNormalThenStreaming) {
   aeronet::HttpServerConfig cfg;
-  cfg.port = 0;
   aeronet::HttpServer srv(cfg);
   srv.addPathHandler("/c", aeronet::http::Method::GET, [](const aeronet::HttpRequest&) {
     return aeronet::HttpResponse(200, "OK").body("X").contentType("text/plain");
@@ -137,7 +115,6 @@ TEST(HttpServerMixed, ConflictRegistrationNormalThenStreaming) {
 
 TEST(HttpServerMixed, ConflictRegistrationStreamingThenNormal) {
   aeronet::HttpServerConfig cfg;
-  cfg.port = 0;
   aeronet::HttpServer srv(cfg);
   srv.addPathStreamingHandler("/c2", aeronet::http::Method::GET,
                               [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
@@ -153,7 +130,6 @@ TEST(HttpServerMixed, ConflictRegistrationStreamingThenNormal) {
 
 TEST(HttpServerMixed, GlobalFallbackPrecedence) {
   aeronet::HttpServerConfig cfg;
-  cfg.port = 0;
   cfg.enableKeepAlive = false;
   aeronet::HttpServer srv(cfg);
   srv.setHandler([](const aeronet::HttpRequest&) {
@@ -176,16 +152,13 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
   srv.addPathHandler("/n", aeronet::http::Method::GET, [](const aeronet::HttpRequest&) {
     return aeronet::HttpResponse(200, "OK").body("PN").contentType("text/plain");
   });
-  std::jthread th([&] { srv.runUntil([] { return false; }); });
+  std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
-  std::string pathStreamResp;
-  httpRequest(srv.port(), "GET", "/s", pathStreamResp);
+  std::string pathStreamResp = httpRequest(srv.port(), "GET", "/s");
   EXPECT_NE(std::string::npos, pathStreamResp.find("PS"));
-  std::string pathNormalResp;
-  httpRequest(srv.port(), "GET", "/n", pathNormalResp);
+  std::string pathNormalResp = httpRequest(srv.port(), "GET", "/n");
   EXPECT_NE(std::string::npos, pathNormalResp.find("PN"));
-  std::string fallback;
-  httpRequest(srv.port(), "GET", "/other", fallback);
+  std::string fallback = httpRequest(srv.port(), "GET", "/other");
   // Should use global streaming first (higher precedence than global normal)
   EXPECT_NE(std::string::npos, fallback.find("STREAMFALLBACK"));
   srv.stop();
@@ -193,23 +166,20 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
 
 TEST(HttpServerMixed, GlobalNormalOnlyWhenNoStreaming) {
   aeronet::HttpServerConfig cfg;
-  cfg.port = 0;
   cfg.enableKeepAlive = false;
   aeronet::HttpServer srv(cfg);
   srv.setHandler([](const aeronet::HttpRequest&) {
     return aeronet::HttpResponse(200, "OK").body("GN").contentType("text/plain");
   });
-  std::jthread th([&] { srv.runUntil([] { return false; }); });
+  std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
-  std::string result;
-  httpRequest(srv.port(), "GET", "/x", result);
+  std::string result = httpRequest(srv.port(), "GET", "/x");
   EXPECT_NE(std::string::npos, result.find("GN"));
   srv.stop();
 }
 
 TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
   aeronet::HttpServerConfig cfg;
-  cfg.port = 0;
   cfg.enableKeepAlive = false;
   aeronet::HttpServer srv(cfg);
   aeronet::http::MethodSet getSet;
@@ -222,10 +192,9 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
                                 writer.write("SHOULD_NOT_APPEAR");  // for HEAD this must be suppressed by writer
                                 writer.end();
                               });
-  std::jthread th([&] { srv.runUntil([] { return false; }); });
+  std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
-  std::string headResp;
-  httpRequest(srv.port(), "HEAD", "/head", headResp);
+  std::string headResp = httpRequest(srv.port(), "HEAD", "/head");
   // Body should be empty; ensure word not present and Content-Length: 0 (or if chunked not used at all)
   auto headerEnd = headResp.find("\r\n\r\n");
   ASSERT_NE(std::string::npos, headerEnd);
@@ -239,7 +208,6 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
 
 TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
   aeronet::HttpServerConfig cfg;
-  cfg.port = 0;
   cfg.enableKeepAlive = false;
   aeronet::HttpServer srv(cfg);
   // Register only GET streaming handler
@@ -249,52 +217,21 @@ TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
                                 writer.write("OKGET");
                                 writer.end();
                               });
-  std::jthread th([&] { srv.runUntil([] { return false; }); });
+  std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
-  std::string postResp;
-  httpRequest(srv.port(), "POST", "/m405", postResp, "data");
+  std::string postResp = httpRequest(srv.port(), "POST", "/m405", "data");
   // Expect 405 Method Not Allowed
   EXPECT_NE(std::string::npos, postResp.find("405"));
   EXPECT_NE(std::string::npos, postResp.find("Method Not Allowed"));
   // Ensure GET still works and returns streaming body
-  std::string getResp2;
-  httpRequest(srv.port(), "GET", "/m405", getResp2);
+  std::string getResp2 = httpRequest(srv.port(), "GET", "/m405");
   auto decoded2 = extractBody(getResp2);
   EXPECT_EQ(decoded2, "OKGET");
   srv.stop();
 }
 
-namespace {
-// Helper that performs two sequential HTTP/1.1 requests over a single keep-alive connection and returns the raw
-// concatenated responses. Each request must include Connection: keep-alive and server must support it.
-void twoRequestsKeepAlive(auto port, const std::string& r1, const std::string& r2, std::string& out) {
-  aeronet::Socket sock2(SOCK_STREAM);
-  int fd = sock2.fd();
-  ASSERT_GE(fd, 0) << "socket failed";
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-  int cRet = ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-  ASSERT_EQ(cRet, 0) << "connect failed";
-  std::string reqs = r1 + r2;
-  auto sentAll = ::send(fd, reqs.data(), reqs.size(), 0);
-  ASSERT_EQ(sentAll, static_cast<decltype(sentAll)>(reqs.size())) << "send partial";
-  out.clear();
-  char buf[8192];
-  while (true) {
-    auto bytesRead = ::recv(fd, buf, sizeof(buf), 0);
-    if (bytesRead <= 0) {
-      break;
-    }
-    out.append(buf, static_cast<std::size_t>(bytesRead));
-  }
-}
-}  // namespace
-
 TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
   aeronet::HttpServerConfig cfg;
-  cfg.port = 0;
   cfg.enableKeepAlive = true;
   cfg.maxRequestsPerConnection = 3;  // allow at least two
   aeronet::HttpServer srv(cfg);
@@ -313,14 +250,19 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
   srv.addPathHandler("/ka", postSet, [](const aeronet::HttpRequest&) {
     return aeronet::HttpResponse(201).reason("Created").body("NORMAL").contentType("text/plain");
   });
-  std::jthread th([&] { srv.runUntil([] { return false; }); });
+  std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   // Build raw requests (each must include Host and Connection: keep-alive)
   std::string r1 = "GET /ka HTTP/1.1\r\nHost: test\r\nConnection: keep-alive\r\n\r\n";  // streaming
   std::string r2 =
       "POST /ka HTTP/1.1\r\nHost: test\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";  // normal, closes
-  std::string raw;
-  twoRequestsKeepAlive(srv.port(), r1, r2, raw);
+
+  aeronet::test::ClientConnection cnx(srv.port());
+
+  aeronet::test::sendAll(cnx.fd(), r1 + r2);
+
+  std::string raw = aeronet::test::recvUntilClosed(cnx.fd());
+
   // Should contain two HTTP/1.1 status lines, first 200 OK, second 201 Created
   auto firstPos = raw.find("200 OK");
   auto secondPos = raw.find("201 Created");

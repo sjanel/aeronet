@@ -11,11 +11,12 @@
 #include <string_view>
 #include <thread>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "socket.hpp"
+#include "aeronet/test_util.hpp"
 
 using namespace aeronet;
 
@@ -38,7 +39,6 @@ std::string recvAll(int fd, int timeoutMs = 2000) {
 
 TEST(StreamingKeepAlive, TwoSequentialRequests) {
   HttpServerConfig cfg;
-  cfg.port = 0;  // ephemeral
   cfg.reusePort = false;
   cfg.enableKeepAlive = true;
   HttpServer server(cfg);
@@ -52,14 +52,8 @@ TEST(StreamingKeepAlive, TwoSequentialRequests) {
   auto port = server.port();
   ASSERT_GT(port, 0);
   ASSERT_LE(port, 65535);
-  aeronet::Socket sock(SOCK_STREAM);
-  int fd = sock.fd();
-  ASSERT_GE(fd, 0);
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-  ASSERT_EQ(::connect(fd, (sockaddr*)&addr, sizeof(addr)), 0);
+  aeronet::test::ClientConnection cnx(port);
+  int fd = cnx.fd();
   std::string req1 = "GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
   ASSERT_EQ(::send(fd, req1.data(), req1.size(), 0), req1.size());
   auto r1 = recvAll(fd);
@@ -74,7 +68,6 @@ TEST(StreamingKeepAlive, TwoSequentialRequests) {
 
 TEST(StreamingKeepAlive, HeadRequestReuse) {
   HttpServerConfig cfg;
-  cfg.port = 0;
   cfg.enableKeepAlive = true;
   HttpServer server(cfg);
   server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& writer) {
@@ -85,21 +78,16 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
   std::jthread th([&] { server.run(); });
   auto port = server.port();
   ASSERT_GT(port, 0);
-  aeronet::Socket sock2(SOCK_STREAM);
-  int fd = sock2.fd();
-  ASSERT_GE(fd, 0);
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-  ASSERT_EQ(::connect(fd, (sockaddr*)&addr, sizeof(addr)), 0);
+  aeronet::test::ClientConnection cnx(port);
+  int fd = cnx.fd();
+
   std::string hreq = "HEAD / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
   ASSERT_EQ(::send(fd, hreq.data(), hreq.size(), 0), (ssize_t)hreq.size());
   auto hr = recvAll(fd);
   // Ensure no body appears after header terminator.
-  auto pos = hr.find("\r\n\r\n");
+  auto pos = hr.find(aeronet::http::DoubleCRLF);
   ASSERT_NE(pos, std::string::npos);
-  ASSERT_TRUE(hr.substr(pos + 4).empty());
+  ASSERT_TRUE(hr.substr(pos + aeronet::http::DoubleCRLF.size()).empty());
   // second GET
   std::string g2 = "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
   ASSERT_EQ(::send(fd, g2.data(), g2.size(), 0), (ssize_t)g2.size());

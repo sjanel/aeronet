@@ -39,7 +39,7 @@ void BuildSimpleError(http::StatusCode status, TimePoint tp, std::span<const htt
   out.unchecked_append(http::Date);
   out.unchecked_append(http::HeaderSep);
   TimeToStringRFC7231(tp, out.data() + datePos);
-  out.setSize(out.size() + kRFC7231DateStrLen);
+  out.addSize(kRFC7231DateStrLen);
   out.unchecked_append(http::CRLF);
   out.unchecked_append(http::ContentLength);
   out.unchecked_append(http::HeaderSep);

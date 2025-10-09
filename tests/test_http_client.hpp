@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <optional>
 #include <span>
@@ -15,8 +16,9 @@
 #include <string>
 #include <vector>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/test_util.hpp"
-#include "socket.hpp"
+#include "timedef.hpp"
 
 // Lightweight HTTP/1.1 test client helpers with timeouts and safety caps.
 // Goals:
@@ -57,7 +59,7 @@ inline std::string toLower(std::string input) {
 // Very small HTTP/1.1 response parser (not resilient to all malformed cases, just for test consumption)
 inline std::optional<ParsedResponse> parseResponse(const std::string &raw) {
   ParsedResponse pr;
-  std::size_t pos = raw.find("\r\n");
+  std::size_t pos = raw.find(aeronet::http::CRLF);
   if (pos == std::string::npos) {
     return std::nullopt;
   }
@@ -73,18 +75,18 @@ inline std::optional<ParsedResponse> parseResponse(const std::string &raw) {
   }
   pr.statusCode = std::atoi(statusLine.substr(firstSpace + 1, secondSpace - firstSpace - 1).c_str());
   pr.reason = statusLine.substr(secondSpace + 1);
-  std::size_t headerEnd = raw.find("\r\n\r\n", pos + 2);
+  std::size_t headerEnd = raw.find(aeronet::http::CRLF, pos + aeronet::http::CRLF.size());
   if (headerEnd == std::string::npos) {
     return std::nullopt;
   }
-  std::size_t cursor = pos + 2;
+  std::size_t cursor = pos + aeronet::http::CRLF.size();
   while (cursor < headerEnd) {
-    std::size_t lineEnd = raw.find("\r\n", cursor);
+    std::size_t lineEnd = raw.find(aeronet::http::CRLF, cursor);
     if (lineEnd == std::string::npos || lineEnd > headerEnd) {
       break;
     }
     std::string line = raw.substr(cursor, lineEnd - cursor);
-    cursor = lineEnd + 2;
+    cursor = lineEnd + aeronet::http::CRLF.size();
     if (line.empty()) {
       break;
     }
@@ -114,12 +116,12 @@ inline std::optional<ParsedResponse> parseResponse(const std::string &raw) {
   // De-chunk (simple algorithm; ignores trailers)
   std::size_t bpos = 0;
   while (bpos < bodyRaw.size()) {
-    std::size_t lineEnd = bodyRaw.find("\r\n", bpos);
+    std::size_t lineEnd = bodyRaw.find(aeronet::http::CRLF, bpos);
     if (lineEnd == std::string::npos) {
       break;
     }
     std::string lenHex = bodyRaw.substr(bpos, lineEnd - bpos);
-    bpos = lineEnd + 2;
+    bpos = lineEnd + aeronet::http::CRLF.size();
     std::size_t chunkLen = std::strtoul(lenHex.c_str(), nullptr, 16);
     if (chunkLen == 0) {
       break;
@@ -130,18 +132,19 @@ inline std::optional<ParsedResponse> parseResponse(const std::string &raw) {
     pr.body.append(bodyRaw.data() + bpos, chunkLen);
     bpos += chunkLen;
     // expect CRLF
-    if (bpos + 2 > bodyRaw.size()) {
+    if (bpos + aeronet::http::CRLF.size() > bodyRaw.size()) {
       break;
     }
-    bpos += 2;  // skip CRLF
+    bpos += aeronet::http::CRLF.size();  // skip CRLF
   }
   return pr;
 }
 
 // (Removed unused connectLoopback helper; direct socket creation occurs in request())
 
-inline bool setRecvTimeout(int fd, int seconds) {
-  timeval tv{seconds, 0};
+inline bool setRecvTimeout(int fd, aeronet::Duration timeout) {
+  const int timeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count());
+  struct timeval tv{timeoutMs / 1000, static_cast<long>((timeoutMs % 1000) * 1000)};
   return ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
 }
 
@@ -149,15 +152,15 @@ inline std::string buildRequest(const RequestOptions &opt) {
   std::string req;
   req.reserve(256 + opt.body.size());
   req.append(opt.method).append(" ").append(opt.target).append(" HTTP/1.1\r\n");
-  req.append("Host: ").append(opt.host).append("\r\n");
-  req.append("Connection: ").append(opt.connection).append("\r\n");
+  req.append("Host: ").append(opt.host).append(aeronet::http::CRLF);
+  req.append("Connection: ").append(opt.connection).append(aeronet::http::CRLF);
   for (auto &header : opt.headers) {
-    req.append(header.first).append(": ").append(header.second).append("\r\n");
+    req.append(header.first).append(aeronet::http::HeaderSep).append(header.second).append(aeronet::http::CRLF);
   }
   if (!opt.body.empty()) {
-    req.append("Content-Length: ").append(std::to_string(opt.body.size())).append("\r\n");
+    req.append("Content-Length: ").append(std::to_string(opt.body.size())).append(aeronet::http::CRLF);
   }
-  req.append("\r\n");
+  req.append(aeronet::http::CRLF);
   req.append(opt.body);
   return req;
 }
@@ -165,23 +168,35 @@ inline std::string buildRequest(const RequestOptions &opt) {
 inline std::optional<std::string> request(uint16_t port, const RequestOptions &opt = {}) {
   aeronet::test::ClientConnection cnx(port);
   int fd = cnx.fd();
-  setRecvTimeout(fd, opt.recvTimeoutSeconds);
+  setRecvTimeout(fd, std::chrono::seconds(opt.recvTimeoutSeconds));
   auto reqStr = buildRequest(opt);
   ssize_t sent = ::send(fd, reqStr.data(), reqStr.size(), 0);
   if (sent != static_cast<ssize_t>(reqStr.size())) {
     return std::nullopt;
   }
   std::string out;
-  out.reserve(1024);
-  char buf[4096];
+  static constexpr std::size_t kChunkSize = 4096;
+
   for (;;) {
-    ssize_t received = ::recv(fd, buf, sizeof(buf), 0);
-    if (received <= 0) {
-      break;  // timeout or close
+    std::size_t oldSize = out.size();
+
+    if (out.capacity() < out.size() + kChunkSize) {
+      // ensure exponential growth
+      out.reserve(out.capacity() * 2UL);
     }
-    out.append(buf, buf + received);
-    if (out.size() >= opt.maxResponseBytes) {
-      break;  // safety cap
+
+    out.resize_and_overwrite(out.size() + kChunkSize, [fd, oldSize](char *data, [[maybe_unused]] std::size_t newCap) {
+      ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);
+      if (recvBytes <= 0) {
+        aeronet::log::error("test_http_client::request: recv error or connection closed, errno={}",
+                            std::strerror(errno));
+        return oldSize;  // timeout or close
+      }
+
+      return oldSize + static_cast<std::size_t>(recvBytes);
+    });
+    if (out.size() == oldSize) {
+      break;  // no new data read
     }
   }
   return out;
@@ -207,9 +222,8 @@ inline std::vector<std::string> sequentialRequests(uint16_t port, std::span<cons
   }
   aeronet::test::ClientConnection cnx(port);
   int fd = cnx.fd();
-  setRecvTimeout(fd, reqs.front().recvTimeoutSeconds);
+  setRecvTimeout(fd, std::chrono::seconds(reqs.front().recvTimeoutSeconds));
 
-  char buf[4096];
   for (std::size_t i = 0; i < reqs.size(); ++i) {
     RequestOptions ro = reqs[i];
     // For all but last, force keep-alive unless caller explicitly set close.
@@ -220,28 +234,44 @@ inline std::vector<std::string> sequentialRequests(uint16_t port, std::span<cons
     if (::send(fd, rq.data(), rq.size(), 0) != static_cast<ssize_t>(rq.size())) {
       break;
     }
-    // Collect one response (headers + body); naive: read until either connection closes (last) or we have headers+body
-    // by heuristic.
-    std::string rawResp;
-    // We'll read until: if Connection: close seen in headers and header terminator reached & body length satisfied (if
-    // Content-Length), or until timeout.
+    // Collect one response (headers + body); naive: read until either connection closes (last) or we have
+    // headers+body by heuristic.
+    std::string out;
+    // We'll read until: if Connection: close seen in headers and header terminator reached & body length satisfied
+    // (if Content-Length), or until timeout.
     bool headersDone = false;
     std::size_t contentLen = 0;
     bool haveContentLen = false;
     bool chunked = false;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(ro.recvTimeoutSeconds);
+
+    static constexpr std::size_t kChunkSize = 4096;
+
     while (std::chrono::steady_clock::now() < deadline) {
-      ssize_t received = ::recv(fd, buf, sizeof(buf), 0);
-      if (received <= 0) {
-        break;
+      std::size_t oldSize = out.size();
+
+      if (out.capacity() < out.size() + kChunkSize) {
+        // ensure exponential growth
+        out.reserve(out.capacity() * 2UL);
       }
-      rawResp.append(buf, buf + received);
+
+      out.resize_and_overwrite(out.size() + kChunkSize, [fd, oldSize](char *data, [[maybe_unused]] std::size_t newCap) {
+        ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);
+        if (recvBytes <= 0) {
+          aeronet::log::error("test_http_client::request: recv error or connection closed, errno={}",
+                              std::strerror(errno));
+          return oldSize;  // timeout or close
+        }
+
+        return oldSize + static_cast<std::size_t>(recvBytes);
+      });
+
       if (!headersDone) {
-        auto hpos = rawResp.find("\r\n\r\n");
+        auto hpos = out.find(aeronet::http::DoubleCRLF);
         if (hpos != std::string::npos) {
           headersDone = true;
           // Parse minimal headers for length/chunked
-          std::string headerBlock = rawResp.substr(0, hpos + 4);
+          std::string headerBlock = out.substr(0, hpos + aeronet::http::DoubleCRLF.size());
           std::size_t lineStart = 0;
           while (lineStart < headerBlock.size()) {
             auto lineEnd = headerBlock.find("\r\n", lineStart);
@@ -273,11 +303,11 @@ inline std::vector<std::string> sequentialRequests(uint16_t port, std::span<cons
           }
           if (chunked) {
             // For simplicity, read until terminating 0 chunk appears.
-            if (rawResp.find("\r\n0\r\n\r\n", hpos + 4) != std::string::npos) {
+            if (out.find("\r\n0\r\n\r\n", hpos + aeronet::http::DoubleCRLF.size()) != std::string::npos) {
               break;
             }
           } else if (haveContentLen) {
-            std::size_t bodySoFar = rawResp.size() - (hpos + 4);
+            std::size_t bodySoFar = out.size() - (hpos + aeronet::http::DoubleCRLF.size());
             if (bodySoFar >= contentLen) {
               break;
             }
@@ -290,13 +320,13 @@ inline std::vector<std::string> sequentialRequests(uint16_t port, std::span<cons
         }
       } else {
         if (chunked) {
-          if (rawResp.find("\r\n0\r\n\r\n") != std::string::npos) {
+          if (out.find("\r\n0\r\n\r\n") != std::string::npos) {
             break;
           }
         } else if (haveContentLen) {
-          auto hpos = rawResp.find("\r\n\r\n");
+          auto hpos = out.find(aeronet::http::DoubleCRLF);
           if (hpos != std::string::npos) {
-            std::size_t bodySoFar = rawResp.size() - (hpos + 4);
+            std::size_t bodySoFar = out.size() - (hpos + aeronet::http::DoubleCRLF.size());
             if (bodySoFar >= contentLen) {
               break;
             }
@@ -304,7 +334,7 @@ inline std::vector<std::string> sequentialRequests(uint16_t port, std::span<cons
         }
       }
     }
-    results.push_back(std::move(rawResp));
+    results.push_back(std::move(out));
     if (ro.connection == "close") {
       break;
     }
@@ -314,7 +344,7 @@ inline std::vector<std::string> sequentialRequests(uint16_t port, std::span<cons
 
 // Incremental streaming helpers: open, send one request, then allow caller to pull available bytes.
 struct StreamingHandle {
-  aeronet::Socket sock;  // move-only RAII; connection kept open while handle alive
+  aeronet::test::ClientConnection cnx;
 };
 
 inline std::optional<StreamingHandle> openStreaming(uint16_t port, const RequestOptions &opt) {
@@ -322,35 +352,21 @@ inline std::optional<StreamingHandle> openStreaming(uint16_t port, const Request
   if (ro.connection == "close") {
     ro.connection = "keep-alive";  // keep open for streaming
   }
-  aeronet::Socket sock(SOCK_STREAM);
-  int fd = sock.fd();
-  if (fd < 0) {
-    return std::nullopt;
-  }
-  setRecvTimeout(fd, ro.recvTimeoutSeconds);
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
-    return std::nullopt;
-  }
+  aeronet::test::ClientConnection cnx(port);
+  int fd = cnx.fd();
+  setRecvTimeout(fd, std::chrono::seconds(ro.recvTimeoutSeconds));
   std::string req = buildRequest(ro);
   if (::send(fd, req.data(), req.size(), 0) != static_cast<ssize_t>(req.size())) {
     return std::nullopt;
   }
-  StreamingHandle handle{std::move(sock)};
+  StreamingHandle handle{std::move(cnx)};
   return handle;
 }
 
 inline std::string readAvailable(const StreamingHandle &handle) {
   // Use optimized helper: reads immediately available bytes and returns quickly.
   // Small timeout (default 500ms in helper) is truncated early after first EAGAIN.
-  return aeronet::test::recvWithTimeout(handle.sock.fd(), std::chrono::milliseconds(50));
-}
-
-inline void closeStreaming(StreamingHandle &handle) {
-  handle.sock.close();  // idempotent
+  return aeronet::test::recvWithTimeout(handle.cnx.fd(), std::chrono::milliseconds(50));
 }
 
 }  // namespace test_http_client

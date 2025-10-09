@@ -266,8 +266,7 @@ supervisor scenarios recreating a top‑level `MultiHttpServer` or using its bui
 Example:
 
 ```cpp
-HttpServerConfig cfg;
-cfg.port = 0;          // ephemeral
+HttpServerConfig cfg; // will use ephemeral port
 cfg.reusePort = true;  // required for >1 threads
 MultiHttpServer multi(cfg, 4); // port resolved here
 std::cout << multi.port() << "\n"; // valid now
@@ -382,7 +381,7 @@ Minimal example:
 using namespace aeronet;
 
 int main() {
-  HttpServerConfig cfg; cfg.port = 0; cfg.reusePort = true; // ephemeral, auto-propagated
+  HttpServerConfig cfg; cfg.reusePort = true; // ephemeral, auto-propagated
   MultiHttpServer multi(cfg, 4); // 4 underlying event loops
   multi.setHandler([](const HttpRequest& req){
     return HttpResponse(200, "OK").body("hello\n").contentType("text/plain");

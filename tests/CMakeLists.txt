@@ -12,7 +12,7 @@ aeronet_http_test(http_10 http_10.cpp)
 
 aeronet_http_test(http_additional http_additional.cpp)
 
-aeronet_http_test(http_basic http_basic.cpp)
+aeronet_http_test(http_body http_body.cpp)
 
 aeronet_http_test(http_chunked_head http_chunked_head.cpp)
 
@@ -129,7 +129,7 @@ file(GLOB TEST_SOURCES_ABS "${CMAKE_CURRENT_LIST_DIR}/*.cpp")
 set(REGISTERED_TEST_SOURCES_REL
 	http_10.cpp
 	http_additional.cpp
-	http_basic.cpp
+	http_body.cpp
 	http_chunked_head.cpp
 	http_date.cpp
 	http_errors.cpp

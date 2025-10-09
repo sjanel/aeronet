@@ -102,14 +102,13 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRequest& req
 
 bool HttpServer::queueData(ConnectionMapIt cnxIt, std::string_view data) {
   ConnectionState& state = cnxIt->second;
-  const int fd = cnxIt->first.fd();
   if (state.outBuffer.empty()) {
     bool wantR = false;
     bool wantW = false;
-    auto written = state.transportWrite(fd, data, wantR, wantW);
+    auto written = state.transportWrite(data, wantR, wantW);
     state.tlsWantRead = wantR;
     state.tlsWantWrite = wantW;
-    if (!state.tlsEstablished && state.transport && !state.transport->handshakePending()) {
+    if (!state.tlsEstablished && !state.transport->handshakePending()) {
       state.tlsEstablished = true;
     }
     if (written > 0) {
@@ -163,11 +162,11 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   while (!state.outBuffer.empty()) {
     bool wantR = false;
     bool wantW = false;
-    auto written = state.transportWrite(fd, state.outBuffer, wantR, wantW);
+    auto written = state.transportWrite(state.outBuffer, wantR, wantW);
     lastWantWrite = wantW;
     state.tlsWantRead = wantR;
     state.tlsWantWrite = wantW;
-    if (!state.tlsEstablished && state.transport && !state.transport->handshakePending()) {
+    if (!state.tlsEstablished && !state.transport->handshakePending()) {
       state.tlsEstablished = true;
     }
     if (written > 0) {
@@ -191,7 +190,7 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   }
   // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
   if (state.outBuffer.empty() && state.waitingWritable &&
-      (state.tlsEstablished || !state.transport || !state.transport->handshakePending()) &&
+      (state.tlsEstablished || !state.transport->handshakePending()) &&
       HttpServer::ModWithCloseOnFailure(_eventLoop, cnxIt, EPOLLIN | EPOLLET,
                                         "disable writable flushOutbound drop EPOLLOUT", _stats)) {
     state.waitingWritable = false;

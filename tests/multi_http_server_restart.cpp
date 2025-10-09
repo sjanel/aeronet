@@ -17,7 +17,6 @@ using testutil::simpleGet;
 // HttpServer itself remains single-shot; restart creates fresh HttpServer instances internally.
 TEST(MultiHttpServer, RestartBasicSamePort) {
   aeronet::HttpServerConfig cfg;
-  cfg.port = 0;
   cfg.withReusePort();
   aeronet::MultiHttpServer multi(cfg, 2);
   multi.setHandler([](const aeronet::HttpRequest&) {
@@ -53,7 +52,6 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
 // If the user wants a new ephemeral port on restart they can set baseConfig.port=0 before calling start again.
 TEST(MultiHttpServer, RestartWithNewEphemeralPort) {
   aeronet::HttpServerConfig cfg;
-  cfg.port = 0;
   cfg.withReusePort();
   aeronet::MultiHttpServer multi(cfg, 1);
   multi.setHandler([](const aeronet::HttpRequest&) {
