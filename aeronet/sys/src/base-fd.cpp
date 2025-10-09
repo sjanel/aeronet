@@ -10,39 +10,39 @@
 
 namespace aeronet {
 
-BaseFd::BaseFd(BaseFd&& other) noexcept : _fd(std::exchange(other._fd, -1)) {}
+BaseFd::BaseFd(BaseFd&& other) noexcept : _fd(std::exchange(other._fd, kClosedFd)) {}
 
 BaseFd& BaseFd::operator=(BaseFd&& other) noexcept {
   if (this != &other) {
     close();
-    _fd = std::exchange(other._fd, -1);
+    _fd = std::exchange(other._fd, kClosedFd);
   }
   return *this;
 }
 
 BaseFd::~BaseFd() { close(); }
 
-int BaseFd::close() noexcept {
-  if (_fd == -1) {
+void BaseFd::close() noexcept {
+  if (_fd == kClosedFd) {
     // already closed
-    return _fd;
+    return;
   }
   while (true) {
-    auto rc = ::close(_fd);
-    if (rc == 0) {
+    const auto errc = ::close(_fd);
+    if (errc == 0) {
       // success
-      return _fd = -1;
+      break;
     }
     if (errno == EINTR) {
       // Retry close if interrupted; POSIX allows either retry or treat as closed.
       continue;
     }
-    // Other errors: EBADF (logic bug), ENOSPC (should not happen here), etc.
-    log::error("Socket close(fd={}) failed: {}", _fd, std::strerror(errno));
+    // Other errors: EBADF (benign if race closed elsewhere), ENOSPC (should not happen here), etc.
+    log::error("close fd={} failed: {}", _fd, std::strerror(errno));
     break;
   }
-  _fd = -1;
-  return _fd;
+  log::debug("fd={} closed", _fd);
+  _fd = kClosedFd;
 }
 
 }  // namespace aeronet

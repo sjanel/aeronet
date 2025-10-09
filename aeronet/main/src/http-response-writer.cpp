@@ -357,13 +357,11 @@ bool HttpResponseWriter::enqueue(std::string_view data) {
   // instead of short‑circuiting earlier at the call site).
   assert(!data.empty());
   // Access the connection state to determine backpressure / closure.
-  auto it = _server->_connStates.find(_fd);
-  if (it == _server->_connStates.end()) {
+  auto cnxIt = _server->_connStates.find(_fd);
+  if (cnxIt == _server->_connStates.end()) {
     return false;
   }
-  auto& st = it->second;
-  bool ok = _server->queueData(_fd, st, data);
-  return ok && !st.isAnyCloseRequested();
+  return _server->queueData(cnxIt, data) && !cnxIt->second.isAnyCloseRequested();
 }
 
 }  // namespace aeronet

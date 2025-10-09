@@ -11,15 +11,16 @@
 
 namespace aeronet {
 
-EventFd::EventFd() : BaseFd(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)) {
-  if (this->fd() < 0) {
+EventFd::EventFd() : _baseFd(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)) {
+  if (_baseFd.fd() < 0) {
     throw exception("Unable to create a new eventfd, with error {}", std::strerror(errno));
   }
+  log::debug("EventFd fd={} opened", _baseFd.fd());
 }
 
-void EventFd::send() {
+void EventFd::send() const {
   static constexpr eventfd_t one = 1;
-  const auto ret = ::eventfd_write(this->fd(), one);
+  const auto ret = ::eventfd_write(_baseFd.fd(), one);
   if (ret != 0) {
     auto savedErr = errno;
     if (savedErr != EAGAIN) {
@@ -30,9 +31,9 @@ void EventFd::send() {
   }
 }
 
-void EventFd::read() {
+void EventFd::read() const {
   eventfd_t counterValue;
-  if (::eventfd_read(this->fd(), &counterValue) == 0) {
+  if (::eventfd_read(fd(), &counterValue) == 0) {
     log::trace("Wakeup fd drained (value={})", static_cast<unsigned long long>(counterValue));
   }
 }

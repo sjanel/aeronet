@@ -15,19 +15,20 @@
 
 namespace aeronet {
 
-bool HttpServer::decodeBodyIfReady(int fd, ConnectionState& state, HttpRequest& req, bool isChunked,
-                                   bool expectContinue, std::size_t& consumedBytes) {
+bool HttpServer::decodeBodyIfReady(ConnectionMapIt cnxIt, HttpRequest& req, bool isChunked, bool expectContinue,
+                                   std::size_t& consumedBytes) {
   consumedBytes = 0;
   if (isChunked) {
-    return decodeChunkedBody(fd, state, req, expectContinue, consumedBytes);
+    return decodeChunkedBody(cnxIt, req, expectContinue, consumedBytes);
   }
-  return decodeFixedLengthBody(fd, state, req, expectContinue, consumedBytes);
+  return decodeFixedLengthBody(cnxIt, req, expectContinue, consumedBytes);
 }
 
-bool HttpServer::decodeFixedLengthBody(int fd, ConnectionState& state, HttpRequest& req, bool expectContinue,
+bool HttpServer::decodeFixedLengthBody(ConnectionMapIt cnxIt, HttpRequest& req, bool expectContinue,
                                        std::size_t& consumedBytes) {
   std::string_view lenViewAll = req.headerValueOrEmpty(http::ContentLength);
   bool hasCL = !lenViewAll.empty();
+  ConnectionState& state = cnxIt->second;
   std::size_t headerEnd =
       static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.buffer.data());
   if (!hasCL) {
@@ -42,15 +43,15 @@ bool HttpServer::decodeFixedLengthBody(int fd, ConnectionState& state, HttpReque
   std::size_t declaredContentLen = 0;
   auto [ptr, err] = std::from_chars(lenViewAll.data(), lenViewAll.data() + lenViewAll.size(), declaredContentLen);
   if (err != std::errc() || ptr != lenViewAll.data() + lenViewAll.size()) {
-    emitSimpleError(fd, state, http::StatusCodeBadRequest, true, "Invalid Content-Length");
+    emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Invalid Content-Length");
     return false;
   }
   if (declaredContentLen > _config.maxBodyBytes) {
-    emitSimpleError(fd, state, http::StatusCodePayloadTooLarge, true);
+    emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
     return false;
   }
   if (expectContinue && declaredContentLen > 0) {
-    queueData(fd, state, http::HTTP11_100_CONTINUE);
+    queueData(cnxIt, http::HTTP11_100_CONTINUE);
   }
   std::size_t totalNeeded = headerEnd + declaredContentLen;
   if (state.buffer.size() < totalNeeded) {
@@ -61,10 +62,11 @@ bool HttpServer::decodeFixedLengthBody(int fd, ConnectionState& state, HttpReque
   return true;
 }
 
-bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, HttpRequest& req, bool expectContinue,
+bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, HttpRequest& req, bool expectContinue,
                                    std::size_t& consumedBytes) {
+  ConnectionState& state = cnxIt->second;
   if (expectContinue) {
-    queueData(fd, state, http::HTTP11_100_CONTINUE);
+    queueData(cnxIt, http::HTTP11_100_CONTINUE);
   }
   std::size_t pos = static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.buffer.data());
   RawChars& decodedBody = state.bodyBuffer;
@@ -94,7 +96,7 @@ bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, HttpRequest& 
     }
     pos = static_cast<std::size_t>(lineEndIt - state.buffer.data()) + http::CRLF.size();
     if (chunkSize > _config.maxBodyBytes) {
-      emitSimpleError(fd, state, http::StatusCodePayloadTooLarge, true);
+      emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
       return false;
     }
     if (state.buffer.size() < pos + chunkSize + http::CRLF.size()) {
@@ -115,7 +117,7 @@ bool HttpServer::decodeChunkedBody(int fd, ConnectionState& state, HttpRequest& 
     }
     decodedBody.append(state.buffer.data() + pos, std::min(chunkSize, state.buffer.size() - pos));
     if (decodedBody.size() > _config.maxBodyBytes) {
-      emitSimpleError(fd, state, http::StatusCodePayloadTooLarge, true);
+      emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
       return false;
     }
     pos += chunkSize;

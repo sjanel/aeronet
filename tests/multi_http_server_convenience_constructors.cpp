@@ -19,7 +19,7 @@
 
 namespace {
 std::string simpleGet(uint16_t port, const char* path = "/") {
-  aeronet::Socket sock(aeronet::Socket::Type::STREAM);
+  aeronet::Socket sock(SOCK_STREAM);
   int fd = sock.fd();
   if (fd < 0) {
     return {};

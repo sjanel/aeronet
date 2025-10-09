@@ -313,33 +313,34 @@ class HttpServer {
  private:
   friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
 
-  void eventLoop(Duration timeout);
+  using ConnectionMap = flat_hash_map<Connection, ConnectionState, std::hash<int>, std::equal_to<>>;
+
+  using ConnectionMapIt = ConnectionMap::iterator;
+
+  void eventLoop();
   void sweepIdleConnections();
   void acceptNewConnections();
   void handleReadableClient(int fd);
-  bool processRequestsOnConnection(int fd, ConnectionState& state);
+  bool processRequestsOnConnection(ConnectionMapIt cnxIt);
   // Split helpers
-  std::size_t parseNextRequestFromBuffer(int fd, ConnectionState& state, HttpRequest& outReq);
-  bool decodeBodyIfReady(int fd, ConnectionState& state, HttpRequest& req, bool isChunked, bool expectContinue,
+  bool decodeBodyIfReady(ConnectionMapIt cnxIt, HttpRequest& req, bool isChunked, bool expectContinue,
                          std::size_t& consumedBytes);
-  bool decodeFixedLengthBody(int fd, ConnectionState& state, HttpRequest& req, bool expectContinue,
-                             std::size_t& consumedBytes);
-  bool decodeChunkedBody(int fd, ConnectionState& state, HttpRequest& req, bool expectContinue,
-                         std::size_t& consumedBytes);
-  bool maybeDecompressRequestBody(int fd, ConnectionState& state, HttpRequest& req);
-  void finalizeAndSendResponse(int fd, ConnectionState& state, HttpRequest& req, HttpResponse& resp,
-                               std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
+  bool decodeFixedLengthBody(ConnectionMapIt cnxIt, HttpRequest& req, bool expectContinue, std::size_t& consumedBytes);
+  bool decodeChunkedBody(ConnectionMapIt cnxIt, HttpRequest& req, bool expectContinue, std::size_t& consumedBytes);
+  bool maybeDecompressRequestBody(ConnectionMapIt cnxIt, HttpRequest& req);
+  void finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRequest& req, HttpResponse& resp, std::size_t consumedBytes,
+                               std::chrono::steady_clock::time_point reqStart);
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // If immediate=true the connection will be closed without waiting for buffered writes to drain.
-  void emitSimpleError(int fd, ConnectionState& state, http::StatusCode code, bool immediate = false,
+  void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, bool immediate = false,
                        std::string_view reason = {});
   // Outbound write helpers
-  bool queueData(int fd, ConnectionState& state, std::string_view data);
-  void flushOutbound(int fd, ConnectionState& state);
+  bool queueData(ConnectionMapIt cnxIt, std::string_view data);
+  void flushOutbound(ConnectionMapIt cnxIt);
 
   void handleWritableClient(int fd);
 
-  void closeConnectionFd(int fd);
+  ConnectionMapIt closeConnection(ConnectionMapIt cnxIt);
 
   std::string_view addSlash(std::string_view path);
 
@@ -347,7 +348,7 @@ class HttpServer {
   // the request (either because the client requested it or keep-alive limits reached). The HttpRequest is
   // non-const because we may reuse shared response finalization paths (e.g. emitting a 406 early) that expect
   // to mutate transient fields (target normalization already complete at this point).
-  bool callStreamingHandler(const StreamingHandler& streamingHandler, HttpRequest& req, int fd, ConnectionState& state,
+  bool callStreamingHandler(const StreamingHandler& streamingHandler, HttpRequest& req, ConnectionMapIt cnxIt,
                             std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
 
   struct StatsInternal {
@@ -365,10 +366,14 @@ class HttpServer {
   // Attempt an epoll_ctl MOD on the given fd; on failure logs, marks connection for close and
   // increments failure metric. Returns true on success, false on failure.
   // EBADF / ENOENT (race where fd already closed / removed) are logged at WARN (not ERROR).
-  static bool ModWithCloseOnFailure(EventLoop& loop, int fd, uint32_t events, ConnectionState& st, const char* ctx,
+  static bool ModWithCloseOnFailure(EventLoop& loop, ConnectionMapIt cnxIt, uint32_t events, const char* ctx,
                                     StatsInternal& stats);
 
-  Socket _listenSocket;  // listening socket RAII
+  HttpServerConfig _config;
+
+  Socket _listenSocket;  // listening socket
+  EventLoop _eventLoop;  // epoll-based event loop
+
   // Wakeup fd (eventfd) used to interrupt epoll_wait promptly when stop() is invoked from another thread.
   EventFd _wakeupFd;
   bool _running{false};
@@ -383,10 +388,7 @@ class HttpServer {
 
   flat_hash_map<std::string, PathHandlerEntry, std::hash<std::string_view>, std::equal_to<>> _pathHandlers;
 
-  EventLoop _loop;
-  HttpServerConfig _config;
-
-  flat_hash_map<Connection, ConnectionState, std::hash<int>, std::equal_to<>> _connStates;
+  ConnectionMap _connStates;
 
   // Pre-allocated encoders (one per supported format) constructed once at server creation.
   // Index corresponds to static_cast<size_t>(Encoding).

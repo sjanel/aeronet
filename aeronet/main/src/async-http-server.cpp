@@ -3,22 +3,22 @@
 #include <exception>
 #include <functional>
 #include <stdexcept>
-#include <stop_token>  // std::stop_token
+#include <stop_token>
 #include <thread>
-#include <utility>  // std::move
+#include <utility>
 
 #include "aeronet/http-server.hpp"
 
 namespace aeronet {
 
-AsyncHttpServer::AsyncHttpServer(HttpServer server) noexcept : _server(std::move(server)) {}
+AsyncHttpServer::AsyncHttpServer(HttpServerConfig httpServerConfig) : _server(std::move(httpServerConfig)) {}
 
 AsyncHttpServer::AsyncHttpServer(AsyncHttpServer&& other) noexcept
     : _server(std::move(other._server)), _thread(std::move(other._thread)), _error(std::move(other._error)) {}
 
 AsyncHttpServer& AsyncHttpServer::operator=(AsyncHttpServer&& other) noexcept {
   if (this != &other) {
-    stopAndJoin();
+    stop();
     _server = std::move(other._server);
     _thread = std::move(other._thread);
     _error = std::move(other._error);
@@ -26,21 +26,26 @@ AsyncHttpServer& AsyncHttpServer::operator=(AsyncHttpServer&& other) noexcept {
   return *this;
 }
 
-AsyncHttpServer::~AsyncHttpServer() { stopAndJoin(); }
+AsyncHttpServer::~AsyncHttpServer() { stop(); }
 
 void AsyncHttpServer::start() {
   ensureStartable();
-  _thread = std::jthread([this](const std::stop_token& st) { runLoopNoPredicate(st); });
+  _thread = std::jthread([this](const std::stop_token& st) {
+    try {
+      _server.runUntil([&]() { return st.stop_requested(); });
+    } catch (...) {
+      _error = std::current_exception();
+    };
+  });
 }
 
 void AsyncHttpServer::requestStop() noexcept {
   if (_thread.joinable()) {
     _thread.request_stop();
-    _server.stop();
   }
 }
 
-void AsyncHttpServer::stopAndJoin() noexcept {
+void AsyncHttpServer::stop() noexcept {
   if (_thread.joinable()) {
     requestStop();
     _thread.join();
@@ -56,14 +61,6 @@ void AsyncHttpServer::rethrowIfError() {
 void AsyncHttpServer::ensureStartable() {
   if (_thread.joinable()) {
     throw std::logic_error("AsyncHttpServer already started");
-  }
-}
-
-void AsyncHttpServer::runLoopNoPredicate(const std::stop_token& st) noexcept {
-  try {
-    _server.runUntil([&]() { return st.stop_requested(); });
-  } catch (...) {
-    _error = std::current_exception();
   }
 }
 
