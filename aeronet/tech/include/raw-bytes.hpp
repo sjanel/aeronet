@@ -140,6 +140,11 @@ class RawBytesImpl {
     _size = newSize;
   }
 
+  void addSize(size_type delta) {
+    assert(_size + delta <= _capacity);
+    _size += delta;
+  }
+
   [[nodiscard]] size_type size() const noexcept { return _size; }
 
   [[nodiscard]] size_type capacity() const noexcept { return _capacity; }
@@ -183,6 +188,7 @@ class RawBytesImpl {
    * resize_and_overwrite (op MUST NOT THROW – undefined behavior otherwise; mirrors std::basic_string) .
    * Ensures capacity for `n`, invokes op(data, n) and sets size() to the returned value (<= n).
    * Common patterns: append (grow then partially fill) or truncate (pass lambda returning n).
+   * Unlike std::string, the grow strategy is exponential to avoid repeated reallocs on incremental growth.
    */
   template <class Operation>
   void resize_and_overwrite(size_type n, Operation &&op) {

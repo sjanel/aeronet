@@ -74,9 +74,7 @@ std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize,
       throw exception("BrotliEncoderCompressStream failed");
     }
 
-    // bytes produced = original free space - remaining availOut
-    std::size_t produced = (_buf->capacity() - _buf->size()) - availOut;
-    _buf->setSize(_buf->size() + produced);
+    _buf->setSize(_buf->capacity() - availOut);
 
     if (!finish) {
       // Non-finishing mode: stop once caller's input fully consumed OR output buffer filled (loop continues on fill)

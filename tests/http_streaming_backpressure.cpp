@@ -1,25 +1,19 @@
-#include <arpa/inet.h>
 #include <gtest/gtest.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
 
-#include <chrono>
 #include <cstddef>
 #include <string>
-#include <thread>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "socket.hpp"
+#include "aeronet/test_util.hpp"
 #include "test_server_fixture.hpp"
 
 using namespace aeronet;
 
 TEST(StreamingBackpressure, LargeBodyQueues) {
   HttpServerConfig cfg;
-  cfg.port = 0;
   cfg.enableKeepAlive = false;                                       // simplicity
   cfg.maxOutboundBufferBytes = static_cast<std::size_t>(64 * 1024);  // assume default maybe larger
   TestServer ts(cfg);
@@ -35,25 +29,11 @@ TEST(StreamingBackpressure, LargeBodyQueues) {
     writer.end();
   });
   auto port = ts.port();
-  aeronet::Socket sock(SOCK_STREAM);
-  int fd = sock.fd();
-  ASSERT_GE(fd, 0);
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-  ASSERT_EQ(::connect(fd, (sockaddr*)&addr, sizeof(addr)), 0);
+  aeronet::test::ClientConnection cnx(port);
+  int fd = cnx.fd();
   std::string req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
-  ASSERT_EQ(::send(fd, req.data(), req.size(), 0), req.size());
-  // just read some bytes to allow flush cycles
-  char buf[4096];
-  for (int i = 0; i < 10; i++) {
-    auto rcv = ::recv(fd, buf, sizeof(buf), 0);
-    if (rcv <= 0) {
-      // Connection might close early; break to avoid ASSERT on expected close after full send.
-      break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  ts.stop();
+  aeronet::test::sendAll(fd, req);
+
+  auto data = aeronet::test::recvUntilClosed(fd);
+  EXPECT_TRUE(data.starts_with("HTTP/1.1 200"));
 }

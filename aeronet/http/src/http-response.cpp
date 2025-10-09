@@ -66,7 +66,7 @@ void HttpResponse::setReason(std::string_view newReason) {
     _headersStartPos = static_cast<decltype(_headersStartPos)>(static_cast<int64_t>(_headersStartPos) + diff);
   }
   std::memcpy(_data.data() + kReasonBeg, newReason.data(), newReason.size());
-  _data.setSize(static_cast<std::size_t>(static_cast<int64_t>(_data.size()) + diff));
+  _data.addSize(static_cast<std::size_t>(diff));
 }
 
 void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue, bool onlyIfNew) {
@@ -127,7 +127,7 @@ void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
     std::memmove(valueFirst + newValue.size(), valueFirst + oldHeaderValueSz,
                  _data.size() - valuePos - oldHeaderValueSz);
     std::memcpy(valueFirst, newValue.data(), newValue.size());
-    _data.setSize(static_cast<std::size_t>(static_cast<int64_t>(_data.size()) + diff));
+    _data.addSize(static_cast<std::size_t>(diff));
     _bodyStartPos = static_cast<uint32_t>(static_cast<int64_t>(_bodyStartPos) + diff);
     return;
   }
@@ -153,7 +153,7 @@ void HttpResponse::setBody(std::string_view newBody) {
     std::memcpy(_data.data() + _bodyStartPos, newBody.data(), newBody.size());
   }
 
-  _data.setSize(static_cast<std::size_t>(static_cast<int64_t>(_data.size()) + diff));
+  _data.addSize(static_cast<std::size_t>(diff));
 }
 
 void HttpResponse::appendHeaderUnchecked(std::string_view key, std::string_view value) {

@@ -55,6 +55,8 @@
 #include "timedef.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include "tls-context.hpp"
+#else
+#include "invalid_argument_exception.hpp"
 #endif
 
 namespace aeronet {
@@ -113,27 +115,30 @@ HttpServer::HttpServer(HttpServerConfig cfg)
     // (See detailed rationale in header next to _tlsCtxHolder.)
     _tlsCtxHolder = std::make_unique<TlsContext>(*_config.tls, &_tlsMetricsExternal);
 #else
-    throw std::runtime_error("aeronet built without OpenSSL support but TLS configuration provided");
+    throw invalid_argument("aeronet built without OpenSSL support but TLS configuration provided");
 #endif
   }
   static constexpr int enable = 1;
-  if (::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
-    throw std::runtime_error("setsockopt(SO_REUSEADDR) failed");
+  auto errc = ::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
+  if (errc < 0) {
+    throw exception("setsockopt(SO_REUSEADDR) failed with error {}", std::strerror(errno));
   }
   if (_config.reusePort) {
-    if (::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) < 0) {
-      log::error("setsockopt(SO_REUSEPORT) error: {}", std::strerror(errno));
+    errc = ::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));
+    if (errc < 0) {
+      throw exception("setsockopt(SO_REUSEPORT) error: {}", std::strerror(errno));
     }
   }
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
   addr.sin_port = htons(_config.port);
-  if (::bind(listenFdLocal, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    throw std::runtime_error("bind failed");
+  errc = ::bind(listenFdLocal, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+  if (errc < 0) {
+    throw exception("bind failed with error {}", std::strerror(errno));
   }
   if (::listen(listenFdLocal, SOMAXCONN) < 0) {
-    throw std::runtime_error("listen failed");
+    throw exception("listen failed with error {}", std::strerror(errno));
   }
   if (_config.port == 0) {
     sockaddr_in actual{};
@@ -143,11 +148,11 @@ HttpServer::HttpServer(HttpServerConfig cfg)
     }
   }
   if (!_eventLoop.add(listenFdLocal, EPOLLIN)) {
-    throw std::runtime_error("EventLoop add listen socket failed");
+    throw exception("EventLoop add listen socket failed");
   }
   // Register wakeup fd
   if (!_eventLoop.add(_wakeupFd.fd(), EPOLLIN)) {
-    throw std::runtime_error("EventLoop add wakeup fd failed");
+    throw exception("EventLoop add wakeup fd failed");
   }
 // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
 #ifdef AERONET_ENABLE_ZLIB

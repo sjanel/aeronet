@@ -34,6 +34,15 @@ HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, bool headRequest
       _compressionFormat(compressionFormat),
       _activeEncoderCtx(std::make_unique<IdentityEncoderContext>()) {}
 
+void HttpResponseWriter::statusCode(http::StatusCode code) {
+  if (_headersSent || _failed) {
+    log::debug("Streaming: statusCode ignored fd={} reason={}", _fd,
+               _failed ? "writer-failed" : "headers-already-sent");
+    return;
+  }
+  _fixedResponse.statusCode(code);
+}
+
 void HttpResponseWriter::statusCode(http::StatusCode code, std::string_view reason) {
   if (_headersSent || _failed) {
     log::debug("Streaming: statusCode ignored fd={} reason={}", _fd,
@@ -42,8 +51,6 @@ void HttpResponseWriter::statusCode(http::StatusCode code, std::string_view reas
   }
   _fixedResponse.statusCode(code).reason(reason);
 }
-
-void HttpResponseWriter::statusCode(http::StatusCode code) { statusCode(code, http::ReasonOK); }
 
 void HttpResponseWriter::addCustomHeader(std::string_view name, std::string_view value) {
   if (_headersSent || _failed) {
