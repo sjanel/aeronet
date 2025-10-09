@@ -137,7 +137,7 @@ void HttpServer::acceptNewConnections() {
       if (!pCnx->tlsEstablished && !pCnx->transport->handshakePending()) {
 #ifdef AERONET_ENABLE_OPENSSL
         if (_config.tls && dynamic_cast<TlsTransport*>(pCnx->transport.get()) != nullptr) {
-          auto* tlsTr = static_cast<TlsTransport*>(pCnx->transport.get());
+          const auto* tlsTr = static_cast<const TlsTransport*>(pCnx->transport.get());
           finalizeTlsHandshake(tlsTr->rawSsl(), cnxFd, _config.tls->logHandshake, pCnx->handshakeStart,
                                pCnx->selectedAlpn, pCnx->negotiatedCipher, pCnx->negotiatedVersion, _tlsMetrics);
         }
@@ -164,8 +164,6 @@ void HttpServer::acceptNewConnections() {
       }
       if (bytesRead == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
         // Adjust epoll interest if TLS handshake needs write readiness
-        pCnx->tlsWantRead = wantR;
-        pCnx->tlsWantWrite = wantW;
         if (wantW && !pCnx->waitingWritable) {
           if (_eventLoop.mod(cnxFd, EPOLLIN | EPOLLOUT | EPOLLET)) {
             pCnx->waitingWritable = true;
@@ -232,7 +230,7 @@ void HttpServer::handleReadableClient(int fd) {
     if (!state.tlsEstablished && !state.transport->handshakePending()) {
 #ifdef AERONET_ENABLE_OPENSSL
       if (_config.tls && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
-        auto* tlsTr = static_cast<TlsTransport*>(state.transport.get());
+        const auto* tlsTr = static_cast<const TlsTransport*>(state.transport.get());
         finalizeTlsHandshake(tlsTr->rawSsl(), fd, _config.tls->logHandshake, state.handshakeStart, state.selectedAlpn,
                              state.negotiatedCipher, state.negotiatedVersion, _tlsMetrics);
       }
@@ -241,8 +239,6 @@ void HttpServer::handleReadableClient(int fd) {
     }
     if (count < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        state.tlsWantRead = wantR;
-        state.tlsWantWrite = wantW;
         if (wantW && !state.waitingWritable) {
           if (_eventLoop.mod(fd, EPOLLIN | EPOLLOUT | EPOLLET)) {
             state.waitingWritable = true;

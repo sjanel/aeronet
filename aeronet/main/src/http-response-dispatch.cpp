@@ -106,8 +106,6 @@ bool HttpServer::queueData(ConnectionMapIt cnxIt, std::string_view data) {
     bool wantR = false;
     bool wantW = false;
     auto written = state.transportWrite(data, wantR, wantW);
-    state.tlsWantRead = wantR;
-    state.tlsWantWrite = wantW;
     if (!state.tlsEstablished && !state.transport->handshakePending()) {
       state.tlsEstablished = true;
     }
@@ -164,8 +162,6 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
     bool wantW = false;
     auto written = state.transportWrite(state.outBuffer, wantR, wantW);
     lastWantWrite = wantW;
-    state.tlsWantRead = wantR;
-    state.tlsWantWrite = wantW;
     if (!state.tlsEstablished && !state.transport->handshakePending()) {
       state.tlsEstablished = true;
     }
@@ -202,7 +198,7 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   // Clear writable interest if no buffered data and transport no longer needs write progress.
   // (We do not call handshakePending() here because ConnStateInternal does not expose it; transport has that.)
   if (state.outBuffer.empty()) {
-    bool transportNeedsWrite = (!state.tlsEstablished && (state.tlsWantWrite || lastWantWrite));
+    bool transportNeedsWrite = (!state.tlsEstablished && lastWantWrite);
     if (transportNeedsWrite) {
       if (!state.waitingWritable) {
         if (!HttpServer::ModWithCloseOnFailure(_eventLoop, cnxIt, EPOLLIN | EPOLLOUT | EPOLLET,

@@ -4,13 +4,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <format>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "aeronet/async-http-server.hpp"
