@@ -14,6 +14,16 @@
 #include "aeronet/test_util.hpp"
 #include "invalid_argument_exception.hpp"
 
+TEST(MultiHttpServer, DefaultConstructor) {
+  aeronet::MultiHttpServer multi;
+  EXPECT_TRUE(multi.empty());
+  EXPECT_FALSE(multi.isRunning());
+  EXPECT_EQ(multi.port(), 0);
+
+  // Calling stop should be safe even on an empty server
+  EXPECT_NO_THROW(multi.stop());
+}
+
 // 1. Auto thread-count constructor
 TEST(MultiHttpServer, AutoThreadCountConstructor) {
   aeronet::HttpServerConfig cfg;
@@ -22,7 +32,7 @@ TEST(MultiHttpServer, AutoThreadCountConstructor) {
   // Port should be resolved immediately at construction time.
   EXPECT_GT(multi.port(), 0);
 
-  multi.setHandler([](const aeronet::HttpRequest&) {
+  multi.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("Auto");
     return resp;
@@ -47,7 +57,7 @@ TEST(MultiHttpServer, ExplicitThreadCountConstructor) {
   aeronet::MultiHttpServer multi(cfg, threads);
   EXPECT_GT(multi.port(), 0);  // resolved during construction
   EXPECT_EQ(multi.nbThreads(), threads);
-  multi.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
+  multi.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body("Explicit");
     return resp;
@@ -59,7 +69,6 @@ TEST(MultiHttpServer, ExplicitThreadCountConstructor) {
   EXPECT_NE(std::string::npos, resp.find("Explicit"));
   auto stats = multi.stats();
   EXPECT_EQ(stats.per.size(), static_cast<std::size_t>(threads));
-  multi.stop();
 }
 
 // 3. Move construction (move underlying servers ownership)
@@ -68,7 +77,7 @@ TEST(MultiHttpServer, MoveConstruction) {
   cfg.withReusePort();                     // auto thread count may be >1; explicit reusePort required
   aeronet::MultiHttpServer original(cfg);  // auto threads
   EXPECT_GT(original.port(), 0);           // resolved at construction
-  original.setHandler([](const aeronet::HttpRequest&) {
+  original.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("Move");
     return resp;
@@ -84,7 +93,6 @@ TEST(MultiHttpServer, MoveConstruction) {
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   auto resp = aeronet::test::simpleGet(moved.port(), "/mv");
   EXPECT_NE(std::string::npos, resp.find("Move"));
-  moved.stop();
 }
 
 // 4. Invalid thread-count explicit constructor (compile-time / runtime guard)
@@ -99,7 +107,7 @@ TEST(MultiHttpServer, DefaultConstructorAndMoveAssignment) {
   cfg.withReusePort();                   // explicit reusePort (auto thread count may exceed 1)
   aeronet::MultiHttpServer source(cfg);  // not started yet
   EXPECT_GT(source.port(), 0);
-  source.setHandler([](const aeronet::HttpRequest&) {
+  source.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("MoveAssign");
     return resp;

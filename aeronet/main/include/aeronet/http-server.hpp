@@ -11,7 +11,6 @@
 #include <cstring>
 #include <functional>
 #include <memory>
-#include <string>
 #include <string_view>
 #include <type_traits>
 
@@ -19,6 +18,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/router.hpp"
 #include "connection-state.hpp"
 #include "connection.hpp"
 #include "event-fd.hpp"
@@ -30,14 +30,12 @@
 #include "tls-metrics.hpp"
 #endif
 
-#include "aeronet/http-method-set.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/server-stats.hpp"
 #include "encoder.hpp"
 #include "flat-hash-map.hpp"
 #include "http-response-writer.hpp"
 #include "socket.hpp"
-#include "timedef.hpp"
 
 namespace aeronet {
 
@@ -69,13 +67,13 @@ class HttpServer {
   using ParserErrorCallback = std::function<void(http::StatusCode)>;
 
   struct RequestMetrics {
-    http::Method method;
-    std::string_view path;
     int status{0};
+    http::Method method;
+    bool reusedConnection{false};
+    std::string_view path;
     uint64_t bytesIn{0};
     uint64_t bytesOut{0};
     std::chrono::nanoseconds duration{0};
-    bool reusedConnection{false};
   };
 
   using MetricsCallback = std::function<void(const RequestMetrics&)>;
@@ -93,6 +91,11 @@ class HttpServer {
   //  - After construction port() returns the actual bound port (deterministic for tests using ephemeral ports).
   explicit HttpServer(HttpServerConfig cfg);
 
+  // Constructs a server bound and listening immediately according to given configuration,
+  // and using the provided Router for request routing (can be configured after construction before run).
+  // See HttpServer(HttpServerConfig) for details.
+  HttpServer(HttpServerConfig cfg, Router router);
+
   // Move semantics & constraints:
   // -----------------------------
   // A HttpServer can be moved ONLY when it is not running. Attempting to move (construct or assign from) a
@@ -109,7 +112,7 @@ class HttpServer {
   //
   // Safe usage pattern:
   //    HttpServer tmp(cfg);
-  //    tmp.setHandler(...);
+  //    tmp.router().setDefault(...);
   //    HttpServer server(std::move(tmp)); // OK (tmp not running)
   //    std::jthread t([&]{ server.run(); });
   //
@@ -124,106 +127,9 @@ class HttpServer {
 
   ~HttpServer();
 
-  // Registers a single request handler that will be invoked for every successfully parsed
-  // HTTP request not matched by a path‑specific handler (normal or streaming). The handler
-  // receives a fully populated immutable HttpRequest reference and must return an HttpResponse
-  // by value (moved out). The returned response is serialized and queued for write immediately
-  // after the handler returns.
-  //
-  // Precedence (Phase 2 mixing model):
-  //   1. Path streaming handler (if registered for path+method)
-  //   2. Path normal handler (if registered for path+method)
-  //   3. Global streaming handler (if set)
-  //   4. Global normal handler (this)
-  //   5. 404 / 405 fallback
-  //
-  // Mixing:
-  //   - Global normal and streaming handlers may both be set; per‑path handlers override them.
-  //   - Replacing a global handler is allowed at any time (not thread‑safe; caller must ensure exclusive access).
-  //
-  // Timing & threading:
-  //   - The handler executes synchronously inside the server's single event loop thread; do
-  //     not perform blocking operations of long duration inside it (offload to another thread
-  //     if needed and respond later via a queued response mechanism – future enhancement).
-  //   - Because only one event loop thread exists per server instance, no additional
-  //     synchronization is required for data local to the handler closure, but you must still
-  //     synchronize access to state shared across multiple server instances.
-  //
-  // Lifetime:
-  //   - You may call setHandler() before or after run()/runUntil(); replacing the handler
-  //     while the server is processing requests is safe (the new handler will be used for
-  //     subsequent requests) but avoid doing so concurrently from another thread.
-  //
-  // Error handling:
-  //   - Exceptions escaping the handler will be caught, converted to a 500 response, and the
-  //     connection may be closed depending on the internal policy (implementation detail).
-  //
-  // Performance notes:
-  //   - Returning large payloads benefits from move semantics; construct HttpResponse in place
-  //     and return; small-string optimizations usually avoid allocations for short headers.
-  void setHandler(RequestHandler handler);
-
-  // Enables incremental / chunked style responses using HttpResponseWriter instead of returning
-  // a fully materialized HttpResponse object. Intended for large / dynamic payloads (server‑sent
-  // data, on‑the‑fly generation) or when you wish to start sending bytes before the complete
-  // body is available.
-  //
-  // Mixing (Phase 2):
-  //   - May coexist with a global normal handler and with per‑path (normal or streaming) handlers.
-  //   - Acts only as a fallback when no path‑specific handler matches.
-  //
-  // Invocation semantics:
-  //   - The streaming handler runs synchronously inside the event loop thread after a request
-  //     has been fully parsed (headers + body by current design). Future evolution may allow
-  //     body streaming; today you receive the complete request body.
-  //   - For HEAD requests the writer is constructed in a mode that suppresses body emission; you
-  //     may still call write() but payload bytes are discarded while headers are sent.
-  //
-  // Writer contract:
-  //   - You may set status / headers up until the first write(). If you never explicitly set a
-  //     Content-Length the response is transferred using chunked encoding (unless HTTP/1.0).
-  //   - Call writer.end() to finalize the response. If you return without calling end(), the
-  //     server will automatically end() for you (sending last chunk / final CRLF) unless a fatal
-  //     error occurred.
-  //   - write() applies simple backpressure by queuing into the connection's outbound buffer; a
-  //     false return indicates a fatal condition (connection closing / overflow) – cease writing.
-  //
-  // Keep‑alive & connection reuse:
-  //   - After the handler returns the server evaluates standard keep‑alive rules (HTTP/1.1,
-  //     config.enableKeepAlive, request count < maxRequestsPerConnection, no close flag). If any
-  //     condition fails the connection is marked to close once buffered bytes flush.
-  //
-  // Performance & blocking guidance:
-  //   - Avoid long blocking operations; they stall the entire server instance. Offload heavy
-  //     work to a different thread and stream results back if necessary (future async hooks may
-  //     simplify this pattern).
-  //
-  // Exceptions:
-  //   - Exceptions thrown by the handler are caught and logged; the server attempts to end the
-  //     response gracefully (typically as already started chunked stream). Subsequent writes are
-  //     ignored once a failure state is reached.
-  void setStreamingHandler(StreamingHandler handler);
-  // Register a handler for a specific absolute path and a set of allowed HTTP methods.
-  // Methods are supplied via http::MethodsSet (small fixed-capacity flat set, non-allocating).
-  // May coexist with global handlers and with per-path streaming handlers (but a specific
-  // (path, method) pair cannot have both a normal and streaming handler simultaneously).
-  void addPathHandler(std::string path, const http::MethodSet& methods, RequestHandler handler);
-
-  // Convenience overload of 'addPathHandler' for a single method.
-  void addPathHandler(std::string path, http::Method method, RequestHandler handler);
-
-  // addPathStreamingHandler (multi-method):
-  //   Registers streaming handlers per path+method combination. Mirrors addPathHandler semantics
-  //   but installs a StreamingHandler which receives an HttpResponseWriter.
-  // Constraints:
-  //   - For each (path, method) only one of normal vs streaming may be present; registering the
-  //     other kind afterwards is a logic error.
-  // Overwrite semantics:
-  //   - Re-registering the same kind (streaming over streaming) replaces the previous handler.
-  void addPathStreamingHandler(std::string path, const http::MethodSet& methods, StreamingHandler handler);
-
-  // addPathStreamingHandler (single method convenience):
-  void addPathStreamingHandler(std::string path, http::Method method, StreamingHandler handler);
+  // Get the object managing per-path handlers.
+  // You may use it to modify path handlers after initial configuration.
+  Router& router() noexcept { return _router; }
 
   // Install a callback invoked whenever the request parser encounters a non‑recoverable
   // protocol error for a connection. Typical causes correspond to the HTTP status codes.
@@ -277,11 +183,12 @@ class HttpServer {
   void runUntil(const std::function<bool()>& predicate);
 
   // Requests cooperative termination of the event loop. Safe to invoke from a different thread
-  // (best‑effort); the next loop iteration observes _running == false and exits. The maximum
-  // observable latency before run()/runUntil() return is bounded by the checkPeriod supplied to
-  // those functions (epoll returns earlier if events arrive). New incoming connections are
-  // prevented by closing the listening socket immediately; existing established connections are
-  // not force‑closed – they simply stop being serviced once the loop exits.
+  // (best‑effort). The maximum observable latency before run()/runUntil() return is bounded by
+  // the checkPeriod supplied to those functions (epoll returns earlier if events arrive).
+  // New incoming connections are prevented by closing the listening socket immediately;
+  // existing established connections are not force‑closed – they simply stop being serviced once the loop exits.
+  // Usually called from a different thread than the one that started the server, this method is not blocking,
+  // so the server might not be immediately stopped once the method returns to the caller.
   //
   // Idempotency:
   //   - Repeated calls are harmless. Calling after the server already stopped has no effect.
@@ -289,6 +196,7 @@ class HttpServer {
   // Typical usage:
   //   - From a signal handler wrapper (set a flag then call stop() in a safe context).
   //   - From a controller thread coordinating multiple HttpServer instances.
+  // Note: it is possible to call 'run()' again on a stopped server.
   void stop() noexcept;
 
   // The config given to the server, with the actual allocated port if 0 was given.
@@ -317,6 +225,9 @@ class HttpServer {
 
   using ConnectionMapIt = ConnectionMap::iterator;
 
+  void init();
+  void prepareRun();
+
   void eventLoop();
   void sweepIdleConnections();
   void acceptNewConnections();
@@ -341,8 +252,6 @@ class HttpServer {
   void handleWritableClient(int fd);
 
   ConnectionMapIt closeConnection(ConnectionMapIt cnxIt);
-
-  std::string_view addSlash(std::string_view path);
 
   // Invoke a registered streaming handler. Returns true if the connection should be closed after handling
   // the request (either because the client requested it or keep-alive limits reached). The HttpRequest is
@@ -377,16 +286,8 @@ class HttpServer {
   // Wakeup fd (eventfd) used to interrupt epoll_wait promptly when stop() is invoked from another thread.
   EventFd _wakeupFd;
   bool _running{false};
-  RequestHandler _handler;
-  StreamingHandler _streamingHandler;
-  struct PathHandlerEntry {
-    uint32_t normalMethodMask{};
-    uint32_t streamingMethodMask{};
-    std::array<RequestHandler, http::kNbMethods> normalHandlers{};
-    std::array<StreamingHandler, http::kNbMethods> streamingHandlers{};
-  };
 
-  flat_hash_map<std::string, PathHandlerEntry, std::hash<std::string_view>, std::equal_to<>> _pathHandlers;
+  Router _router;
 
   ConnectionMap _connStates;
 
@@ -395,7 +296,6 @@ class HttpServer {
   std::array<std::unique_ptr<Encoder>, kNbContentEncodings> _encoders;
   EncodingSelector _encodingSelector;
 
-  TimePoint _cachedDateEpoch;  // last second-aligned timestamp used for Date header
   ParserErrorCallback _parserErrCb = []([[maybe_unused]] http::StatusCode) {};
   MetricsCallback _metricsCb;
   RawChars _tmpBuffer;  // can be used for any kind of temporary buffer

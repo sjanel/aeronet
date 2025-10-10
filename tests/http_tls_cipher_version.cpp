@@ -21,7 +21,7 @@ TEST(HttpTlsCipherVersion, CipherAndVersionExposedAndMetricsIncrement) {
   {
     aeronet::test::TlsTestServer ts({"http/1.1"});
     auto port = ts.port();
-    ts.setHandler([&](const aeronet::HttpRequest& req) {
+    ts.setDefault([&](const aeronet::HttpRequest& req) {
       capturedCipher = std::string(req.tlsCipher());
       capturedVersion = std::string(req.tlsVersion());
       capturedAlpn = std::string(req.alpnProtocol());

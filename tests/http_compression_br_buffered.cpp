@@ -23,7 +23,7 @@ TEST(HttpCompressionBrotliBuffered, BrAppliedWhenEligible) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(400, 'B');
-  ts.server.setHandler([payload](const HttpRequest &) {
+  ts.server.router().setDefault([payload](const HttpRequest &) {
     HttpResponse respObj;
     respObj.customHeader("Content-Type", "text/plain");
     respObj.body(payload);
@@ -45,7 +45,7 @@ TEST(HttpCompressionBrotliBuffered, UserContentEncodingIdentityDisablesCompressi
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(128, 'U');
-  ts.server.setHandler([payload](const HttpRequest &) {
+  ts.server.router().setDefault([payload](const HttpRequest &) {
     HttpResponse respObj;
     respObj.customHeader("Content-Type", "text/plain");
     respObj.customHeader("Content-Encoding", "identity");
@@ -68,7 +68,7 @@ TEST(HttpCompressionBrotliBuffered, BelowThresholdNotCompressed) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string small(64, 's');
-  ts.server.setHandler([small](const HttpRequest &) {
+  ts.server.router().setDefault([small](const HttpRequest &) {
     HttpResponse respObj;
     respObj.body(small);
     return respObj;
@@ -87,7 +87,7 @@ TEST(HttpCompressionBrotliBuffered, NoAcceptEncodingHeaderStillCompressesDefault
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(180, 'D');
-  ts.server.setHandler([payload](const HttpRequest &) {
+  ts.server.router().setDefault([payload](const HttpRequest &) {
     HttpResponse respObj;
     respObj.body(payload);
     return respObj;
@@ -108,7 +108,7 @@ TEST(HttpCompressionBrotliBuffered, IdentityForbiddenNoAlternativesReturns406) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(70, 'Q');
-  ts.server.setHandler([payload](const HttpRequest &) {
+  ts.server.router().setDefault([payload](const HttpRequest &) {
     HttpResponse respObj;
     respObj.body(payload);
     return respObj;

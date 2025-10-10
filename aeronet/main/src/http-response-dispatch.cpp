@@ -21,6 +21,7 @@
 #include "log.hpp"
 #include "raw-chars.hpp"
 #include "string-equal-ignore-case.hpp"
+#include "timedef.hpp"
 
 namespace aeronet {
 void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRequest& req, HttpResponse& resp,
@@ -80,7 +81,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRequest& req
     }
   }
   auto data =
-      resp.finalizeAndGetFullTextResponse(req.version(), _cachedDateEpoch, keepAlive, _config.globalHeaders, isHead);
+      resp.finalizeAndGetFullTextResponse(req.version(), Clock::now(), keepAlive, _config.globalHeaders, isHead);
 
   queueData(cnxIt, data);
 

@@ -2,12 +2,9 @@
 
 #include <atomic>
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <thread>
 
-#include "aeronet/http-method-set.hpp"
-#include "aeronet/http-method.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/server-stats.hpp"
@@ -92,39 +89,10 @@ class MultiHttpServer {
 
   ~MultiHttpServer();
 
-  // setHandler:
-  //   Registers a single global handler applied to all successfully parsed requests on every
-  //   underlying HttpServer instance. Mutually exclusive with addPathHandler registrations.
-  // Constraints:
-  //   - Must be invoked before start().
-  //   - Throws std::logic_error if path handlers have already been added.
-  // Threading:
-  //   - Not thread-safe; call from the controlling thread only.
-  // Replacement:
-  //   - May be called multiple times pre-start; the last handler wins.
-  void setHandler(RequestHandler handler);
-
-  // addPathHandler (multi-method):
-  //   Registers or updates a handler for a given absolute path and a fixed set of allowed HTTP methods.
-  // Behavior:
-  //   - Paths are matched exactly (no globbing / parameter extraction at this stage).
-  //   - The supplied MethodSet is converted to an internal bitmask for fast dispatch.
-  // Lifecycle / mutability:
-  //   - May be called either (a) before the first start() or (b) after a stop() and before a subsequent restart.
-  //   - Disallowed only while the server farm is running (threads active). This mirrors HttpServer's non-thread-safe
-  //     nature; we avoid mutating handler tables concurrently with request processing.
-  //   - On restart, the full current set of path handlers is replicated into each freshly constructed HttpServer.
-  // Constraints:
-  //   - Incompatible with a previously set global handler (logic_error if violated).
-  // Multiple registrations:
-  //   - Re-registering the same path overwrites the previous mapping for the specified methods.
-  void addPathHandler(std::string path, const http::MethodSet& methods, const RequestHandler& handler);
-
-  // addPathHandler (single method convenience):
-  //   Shorthand for registering exactly one allowed method for a path. Internally builds a
-  //   temporary MethodSet then delegates to the multi-method overload. Same lifecycle / constraints apply (allowed
-  //   pre-first start or between runs, but not while running).
-  void addPathHandler(std::string path, http::Method method, const RequestHandler& handler);
+  // Returns a reference to the router of this instance.
+  // You can modify it as long as the MultiHttpServer is not started.
+  // Prerequisites: 'empty()' should be 'false'
+  Router& router();
 
   // setParserErrorCallback:
   //   Installs a callback invoked by each underlying HttpServer when a parser error occurs
@@ -159,15 +127,18 @@ class MultiHttpServer {
   //   the joining of their threads (ordering guaranteed by move+scope pattern in implementation).
   void stop() noexcept;
 
+  // Checks if this instance is empty (ie: it contains no server instances and should not be configured).
+  [[nodiscard]] bool empty() const noexcept { return _servers.empty(); }
+
   // isRunning(): true after successful start() and before stop() completion.
   //   Reflects the high-level lifecycle, not the liveness of each individual thread (a thread
   //   may have terminated due to an exception while isRunning() is still true). Use stats() or
   //   external health checks for deeper diagnostics.
   [[nodiscard]] bool isRunning() const { return !_threads.empty(); }
 
-  // port(): The resolved listening port shared by all underlying servers. If an ephemeral port
-  //   was requested (cfg.port==0) this becomes available directly after construction.
-  [[nodiscard]] uint16_t port() const { return _baseConfig.port; }
+  // port(): The resolved listening port shared by all underlying servers.
+  // Returns 0 if the instance is empty (holding no servers)
+  [[nodiscard]] uint16_t port() const { return empty() ? 0 : _servers[0].port(); }
 
   // nbThreads(): Number of underlying HttpServer instances (and threads) configured.
   [[nodiscard]] uint32_t nbThreads() const { return _servers.capacity(); }
@@ -182,18 +153,9 @@ class MultiHttpServer {
  private:
   void ensureNotStarted() const;
 
-  struct PathRegistration {
-    std::string path;
-    http::MethodSet methods;
-    RequestHandler handler;
-  };
-
-  HttpServerConfig _baseConfig;
-
-  std::optional<RequestHandler> _globalHandler;
-  vector<PathRegistration> _pathHandlersEmplace;
   ParserErrorCallback _parserErrCb;
   // single-writer (controller thread), multi-reader (worker threads)
+  // It is useful to avoid freezes when stop() before the server thread has entered the main loop after start.
   std::unique_ptr<std::atomic<bool>> _stopRequested;
 
   // IMPORTANT LIFETIME NOTE:

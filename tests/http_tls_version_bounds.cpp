@@ -20,7 +20,7 @@ TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
       cfg.withTlsMinVersion("TLS1.2").withTlsMaxVersion("TLS1.2");
     });
     auto port = ts.port();
-    ts.setHandler([&](const aeronet::HttpRequest& req) {
+    ts.setDefault([&](const aeronet::HttpRequest& req) {
       if (!req.tlsVersion().empty()) {
         capturedVersion = std::string(req.tlsVersion());
       }

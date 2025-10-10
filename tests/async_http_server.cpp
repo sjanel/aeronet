@@ -17,7 +17,7 @@ using namespace std::chrono_literals;
 
 TEST(AsyncHttpServer, BasicStartStopAndRequest) {
   aeronet::AsyncHttpServer async(aeronet::HttpServerConfig{});
-  async.server().setHandler([]([[maybe_unused]] const aeronet::HttpRequest &req) {
+  async.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest &req) {
     return aeronet::HttpResponse(aeronet::http::StatusCodeOK)
         .contentType(aeronet::http::ContentTypeTextPlain)
         .body("hello-async");
@@ -25,7 +25,7 @@ TEST(AsyncHttpServer, BasicStartStopAndRequest) {
   async.start();
   // Allow a short grace period.
   std::this_thread::sleep_for(20ms);
-  auto port = async.server().port();
+  auto port = async.port();
   aeronet::test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/";
@@ -37,12 +37,12 @@ TEST(AsyncHttpServer, BasicStartStopAndRequest) {
 TEST(AsyncHttpServer, PredicateStop) {
   std::atomic<bool> done{false};
   aeronet::AsyncHttpServer async(aeronet::HttpServerConfig{});
-  async.server().setHandler([](const aeronet::HttpRequest &req) {
+  async.router().setDefault([](const aeronet::HttpRequest &req) {
     return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body(req.path());
   });
   async.startUntil([&] { return done.load(); });
   std::this_thread::sleep_for(15ms);  // let it spin
-  auto port = async.server().port();
+  auto port = async.port();
   aeronet::test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/xyz";
@@ -52,4 +52,39 @@ TEST(AsyncHttpServer, PredicateStop) {
   // stop should be idempotent after predicate triggers stop
   async.stop();
   async.stop();
+}
+
+TEST(AsyncHttpServer, Restart) {
+  aeronet::AsyncHttpServer async(aeronet::HttpServerConfig{});
+  auto port = async.port();
+  EXPECT_GT(port, 0);
+  async.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest &req) {
+    return aeronet::HttpResponse(aeronet::http::StatusCodeOK)
+        .contentType(aeronet::http::ContentTypeTextPlain)
+        .body("hello-async1");
+  });
+  async.start();
+  // Allow a short grace period.
+  std::this_thread::sleep_for(20ms);
+
+  aeronet::test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/";
+
+  auto resp = aeronet::test::requestOrThrow(port, opt);
+  ASSERT_NE(resp.find("200"), std::string::npos);
+  ASSERT_NE(resp.find("hello-async1"), std::string::npos);
+
+  async.stop();
+  // change router
+  async.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest &req) {
+    return aeronet::HttpResponse(aeronet::http::StatusCodeOK)
+        .contentType(aeronet::http::ContentTypeTextPlain)
+        .body("hello-async2");
+  });
+  async.start();
+
+  resp = aeronet::test::requestOrThrow(port, opt);
+  ASSERT_NE(resp.find("200"), std::string::npos);
+  ASSERT_NE(resp.find("hello-async2"), std::string::npos);
 }

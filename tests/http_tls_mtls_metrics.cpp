@@ -20,7 +20,7 @@ TEST(HttpTlsMtlsMetrics, ClientCertPresenceIncrementsMetric) {
       cfg.withTlsRequireClientCert(true).withTlsAddTrustedClientCert(certKey.first);
     });
     auto port = ts.port();
-    ts.setHandler([](const aeronet::HttpRequest&) {
+    ts.setDefault([](const aeronet::HttpRequest&) {
       return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body("m");
     });
     auto before = ts.stats();

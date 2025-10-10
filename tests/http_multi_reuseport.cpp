@@ -15,7 +15,7 @@
 
 TEST(HttpMultiReusePort, TwoServersBindSamePort) {
   aeronet::HttpServer serverA(aeronet::HttpServerConfig{}.withReusePort());
-  serverA.setHandler([](const aeronet::HttpRequest&) {
+  serverA.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("A");
     return resp;
@@ -24,7 +24,7 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
   auto port = serverA.port();
 
   aeronet::HttpServer serverB(aeronet::HttpServerConfig{}.withPort(port).withReusePort());
-  serverB.setHandler([](const aeronet::HttpRequest&) {
+  serverB.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("B");
     return resp;

@@ -21,7 +21,7 @@ TEST(HttpTlsRequestClientCert, OptionalNoClientCertAccepted) {
   {
     aeronet::test::TlsTestServer ts({}, [](aeronet::HttpServerConfig& cfg) { cfg.withTlsRequestClientCert(true); });
     auto port = ts.port();
-    ts.setHandler([&](const aeronet::HttpRequest& req) {
+    ts.setDefault([&](const aeronet::HttpRequest& req) {
       aeronet::HttpResponse resp(200);
       resp.reason("OK");
       resp.contentType(aeronet::http::ContentTypeTextPlain);
@@ -54,7 +54,7 @@ TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
       cfg.withTlsRequestClientCert(true).withTlsAddTrustedClientCert(clientPair.first);
     });
     auto port = ts.port();
-    ts.setHandler([](const aeronet::HttpRequest&) {
+    ts.setDefault([](const aeronet::HttpRequest&) {
       return aeronet::HttpResponse()
           .statusCode(200)
           .reason("OK")

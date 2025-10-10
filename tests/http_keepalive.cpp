@@ -15,7 +15,7 @@ using namespace std::chrono_literals;
 TEST(HttpKeepAlive, MultipleSequentialRequests) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.setHandler([](const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body(std::string("ECHO") + std::string(req.path()));
     return resp;
@@ -42,7 +42,7 @@ TEST(HttpLimits, RejectHugeHeaders) {
   cfg.enableKeepAlive = false;
   aeronet::test::TestServer ts(cfg);
   auto port = ts.port();
-  ts.server.setHandler([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("OK");
     return resp;

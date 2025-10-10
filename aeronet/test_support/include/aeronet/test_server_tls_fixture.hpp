@@ -3,9 +3,11 @@
 #include <chrono>
 #include <functional>
 #include <initializer_list>
+#include <string_view>
 #include <utility>
 
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_tls_helper.hpp"
 
@@ -19,7 +21,7 @@ namespace aeronet::test {
 //   TlsTestServer ts; // basic TLS (no ALPN)
 //   TlsTestServer ts({"http/1.1"}); // with ALPN preference list
 //   TlsTestServer ts({}, [](HttpServerConfig& cfg){ cfg.withMaxRequestsPerConnection(5); });
-//   ts.server.setHandler(...);
+//   ts.server.router().setDefault(...);
 //
 // Exposes the same interface expectations as TestServer (ts.server, ts.port(), ts.stop()).
 struct TlsTestServer {
@@ -48,14 +50,9 @@ struct TlsTestServer {
   void stop() { server.stop(); }
 
   // Forward selected HttpServer APIs for convenience to reduce nested server.server noise.
-  template <typename Handler>
-  void setHandler(Handler&& handler) {
-    server.server.setHandler(std::forward<Handler>(handler));
-  }
-  template <typename StreamHandler>
-  void setStreamingHandler(StreamHandler&& handler) {
-    server.server.setStreamingHandler(std::forward<StreamHandler>(handler));
-  }
+  void setDefault(Router::RequestHandler handler) { server.server.router().setDefault(std::move(handler)); }
+  void setDefault(Router::StreamingHandler handler) { server.server.router().setDefault(std::move(handler)); }
+
   template <typename ErrCb>
   void setParserErrorCallback(ErrCb&& cb) {
     server.server.setParserErrorCallback(std::forward<ErrCb>(cb));

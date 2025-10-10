@@ -16,7 +16,7 @@
 
 TEST(HttpServer, MoveConstructWhileRunningThrows) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
-  server.setHandler([](const aeronet::HttpRequest&) {
+  server.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("ok");
     return resp;
@@ -39,12 +39,12 @@ TEST(HttpServer, MoveAssignWhileRunningThrows) {
   aeronet::HttpServerConfig cfg;
   aeronet::HttpServer serverA(cfg);
   aeronet::HttpServer serverB(cfg);
-  serverA.setHandler([](const aeronet::HttpRequest&) {
+  serverA.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("a");
     return resp;
   });
-  serverB.setHandler([](const aeronet::HttpRequest&) {
+  serverB.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("b");
     return resp;

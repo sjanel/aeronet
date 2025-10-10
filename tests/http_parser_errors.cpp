@@ -35,7 +35,7 @@ TEST(HttpParserErrors, InvalidVersion505) {
   auto port = ts.port();
   Capture cap;
   ts.server.setParserErrorCallback([&](aeronet::http::StatusCode err) { cap.push(err); });
-  ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -59,7 +59,7 @@ TEST(HttpParserErrors, InvalidVersion505) {
 TEST(HttpParserErrors, Expect100OnlyWithBody) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -86,7 +86,8 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
 TEST(HttpParserErrors, ChunkIncrementalFuzz) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body()); });
+  ts.server.router().setDefault(
+      [](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body()); });
 
   std::mt19937 rng(12345);
   std::uniform_int_distribution<int> sizeDist(1, 15);

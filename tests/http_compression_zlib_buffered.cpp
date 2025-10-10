@@ -36,7 +36,7 @@ TEST(HttpCompressionBuffered, GzipAppliedWhenEligible) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string largePayload(200, 'A');
-  ts.server.setHandler([largePayload](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([largePayload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.customHeader("Content-Type", "text/plain");
     resp.body(largePayload);
@@ -65,7 +65,7 @@ TEST(HttpCompressionBuffered, UserContentEncodingIdentityDisablesCompression) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(128, 'B');
-  ts.server.setHandler([payload](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.customHeader("Content-Type", "text/plain");
     resp.customHeader("Content-Encoding", "identity");  // explicit suppression
@@ -89,7 +89,7 @@ TEST(HttpCompressionBuffered, BelowThresholdNotCompressed) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string smallPayload(32, 'C');
-  ts.server.setHandler([smallPayload](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([smallPayload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.customHeader("Content-Type", "text/plain");
     resp.body(smallPayload);
@@ -109,7 +109,7 @@ TEST(HttpCompressionBuffered, NoAcceptEncodingHeaderStillCompressesDefault) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(128, 'D');
-  ts.server.setHandler([payload](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.customHeader("Content-Type", "text/plain");
     resp.body(payload);
@@ -132,7 +132,7 @@ TEST(HttpCompressionBuffered, IdentityForbiddenNoAlternativesReturns406) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(64, 'Q');
-  ts.server.setHandler([payload](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.customHeader("Content-Type", "text/plain");
     resp.body(payload);
@@ -152,7 +152,7 @@ TEST(HttpCompressionBuffered, IdentityForbiddenButGzipAvailableUsesGzip) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(128, 'Z');
-  ts.server.setHandler([payload](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.customHeader("Content-Type", "text/plain");
     resp.body(payload);
@@ -174,7 +174,7 @@ TEST(HttpCompressionBuffered, UnsupportedEncodingDoesNotApplyGzip) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(200, 'E');
-  ts.server.setHandler([payload](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.customHeader("Content-Type", "text/plain");
     resp.body(payload);
@@ -200,7 +200,7 @@ TEST(HttpCompressionBuffered, DeflateAppliedWhenPreferredAndAccepted) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string largePayload(300, 'F');
-  ts.server.setHandler([largePayload](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([largePayload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.customHeader("Content-Type", "text/plain");
     resp.body(largePayload);
@@ -224,7 +224,7 @@ TEST(HttpCompressionBuffered, GzipChosenWhenHigherPreference) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(256, 'G');
-  ts.server.setHandler([payload](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.customHeader("Content-Type", "text/plain");
     resp.body(payload);
@@ -247,7 +247,7 @@ TEST(HttpCompressionBuffered, QValuesAffectSelection) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(180, 'H');
-  ts.server.setHandler([payload](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.customHeader("Content-Type", "text/plain");
     resp.body(payload);
@@ -268,7 +268,7 @@ TEST(HttpCompressionBuffered, IdentityFallbackIfDeflateNotRequested) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(256, 'I');
-  ts.server.setHandler([payload](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.customHeader("Content-Type", "text/plain");
     resp.body(payload);
