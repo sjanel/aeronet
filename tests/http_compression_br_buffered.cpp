@@ -10,11 +10,10 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_response_parsing.hpp"
-#include "test_server_fixture.hpp"
+#include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
 
 using namespace aeronet;
-using testutil::doGet;
 
 TEST(HttpCompressionBrotliBuffered, BrAppliedWhenEligible) {
   CompressionConfig cfg;
@@ -22,7 +21,7 @@ TEST(HttpCompressionBrotliBuffered, BrAppliedWhenEligible) {
   cfg.preferredFormats = {Encoding::br};
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(400, 'B');
   ts.server.setHandler([payload](const HttpRequest &) {
     HttpResponse respObj;
@@ -30,7 +29,7 @@ TEST(HttpCompressionBrotliBuffered, BrAppliedWhenEligible) {
     respObj.body(payload);
     return respObj;
   });
-  auto resp = doGet(ts.port(), "/br1", {{"Accept-Encoding", "br"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/br1", {{"Accept-Encoding", "br"}});
   EXPECT_EQ(resp.statusCode, 200);
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end());
@@ -44,7 +43,7 @@ TEST(HttpCompressionBrotliBuffered, UserContentEncodingIdentityDisablesCompressi
   cfg.preferredFormats = {Encoding::br};
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(128, 'U');
   ts.server.setHandler([payload](const HttpRequest &) {
     HttpResponse respObj;
@@ -53,7 +52,7 @@ TEST(HttpCompressionBrotliBuffered, UserContentEncodingIdentityDisablesCompressi
     respObj.body(payload);
     return respObj;
   });
-  auto resp = doGet(ts.port(), "/br2", {{"Accept-Encoding", "br"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/br2", {{"Accept-Encoding", "br"}});
   EXPECT_EQ(resp.statusCode, 200);
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end());
@@ -67,14 +66,14 @@ TEST(HttpCompressionBrotliBuffered, BelowThresholdNotCompressed) {
   cfg.preferredFormats = {Encoding::br};
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string small(64, 's');
   ts.server.setHandler([small](const HttpRequest &) {
     HttpResponse respObj;
     respObj.body(small);
     return respObj;
   });
-  auto resp = doGet(ts.port(), "/br3", {{"Accept-Encoding", "br"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/br3", {{"Accept-Encoding", "br"}});
   EXPECT_EQ(resp.statusCode, 200);
   EXPECT_EQ(resp.headers.find("Content-Encoding"), resp.headers.end());
   EXPECT_EQ(resp.body.size(), small.size());
@@ -86,14 +85,14 @@ TEST(HttpCompressionBrotliBuffered, NoAcceptEncodingHeaderStillCompressesDefault
   cfg.preferredFormats = {Encoding::br};
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(180, 'D');
   ts.server.setHandler([payload](const HttpRequest &) {
     HttpResponse respObj;
     respObj.body(payload);
     return respObj;
   });
-  auto resp = doGet(ts.port(), "/br4", {});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/br4", {});
   EXPECT_EQ(resp.statusCode, 200);
   auto it = resp.headers.find("Content-Encoding");
   if (it != resp.headers.end()) {
@@ -107,14 +106,14 @@ TEST(HttpCompressionBrotliBuffered, IdentityForbiddenNoAlternativesReturns406) {
   cfg.preferredFormats = {Encoding::br};
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(70, 'Q');
   ts.server.setHandler([payload](const HttpRequest &) {
     HttpResponse respObj;
     respObj.body(payload);
     return respObj;
   });
-  auto resp = doGet(ts.port(), "/br5", {{"Accept-Encoding", "identity;q=0, snappy;q=0"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/br5", {{"Accept-Encoding", "identity;q=0, snappy;q=0"}});
   EXPECT_EQ(resp.statusCode, 406);
   EXPECT_EQ(resp.body, "No acceptable content-coding available");
 }

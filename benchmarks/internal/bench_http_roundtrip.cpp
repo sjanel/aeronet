@@ -2,7 +2,7 @@
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "tests/test_http_client.hpp"
+#include "aeronet/test_util.hpp"
 
 namespace {
 class BasicRoundTrip : public benchmark::Fixture {
@@ -23,8 +23,8 @@ BENCHMARK_F(BasicRoundTrip, GET)(benchmark::State& state) {
   auto port = server_->port();
   for (auto iter : state) {
     (void)iter;
-    test_http_client::RequestOptions opt;  // default GET /
-    auto raw = test_http_client::request(port, opt);
+    aeronet::test::RequestOptions opt;  // default GET /
+    auto raw = aeronet::test::request(port, opt);
     if (!raw) {
       state.SkipWithError("request failed");
       break;

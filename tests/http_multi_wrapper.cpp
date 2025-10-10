@@ -9,7 +9,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/multi-http-server.hpp"
-#include "test_raw_get.hpp"
+#include "aeronet/test_util.hpp"
 
 TEST(MultiHttpServer, BasicStartAndServe) {
   const int threads = 3;
@@ -25,10 +25,8 @@ TEST(MultiHttpServer, BasicStartAndServe) {
   // allow sockets to be fully listening
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-  std::string r1;
-  std::string r2;
-  test_helpers::rawGet(port, "/one", r1);
-  test_helpers::rawGet(port, "/two", r2);
+  std::string r1 = aeronet::test::simpleGet(port, "/one");
+  std::string r2 = aeronet::test::simpleGet(port, "/two");
   EXPECT_NE(std::string::npos, r1.find("Hello"));
   EXPECT_NE(std::string::npos, r2.find("Hello"));
 

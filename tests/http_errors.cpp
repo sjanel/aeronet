@@ -1,31 +1,17 @@
 #include <gtest/gtest.h>
 #include <sys/socket.h>
-#include <sys/types.h>
 
 #include <cerrno>
-#include <cstdint>
 #include <string>
-#include <thread>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "test_server_fixture.hpp"
 
 using namespace std::chrono_literals;
-
-namespace {
-std::string sendAndCollect(uint16_t port, const std::string& raw) {
-  aeronet::test::ClientConnection clientConnection(port);
-  int fd = clientConnection.fd();
-
-  aeronet::test::sendAll(fd, raw);
-  std::string out = aeronet::test::recvUntilClosed(fd);
-  return out;
-}
-}  // namespace
 
 struct ErrorCase {
   const char* name;
@@ -36,10 +22,10 @@ struct ErrorCase {
 class HttpErrorParamTest : public ::testing::TestWithParam<ErrorCase> {};
 
 TEST_P(HttpErrorParamTest, EmitsExpectedStatus) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   const auto& param = GetParam();
-  std::string resp = sendAndCollect(ts.port(), param.request);
+  std::string resp = aeronet::test::sendAndCollect(ts.port(), param.request);
   ASSERT_NE(std::string::npos, resp.find(param.expectedStatus)) << "Case=" << param.name << "\nResp=" << resp;
 }
 
@@ -56,71 +42,40 @@ INSTANTIATE_TEST_SUITE_P(
                                 "400"}));
 
 TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("ok"); });
   // HTTP/1.0 without Connection: keep-alive should close
   aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
-  std::string req = "GET /h HTTP/1.0\r\nHost: x\r\n\r\n";
-  ::send(fd, req.data(), req.size(), 0);
-  char buf[512];
-  std::string resp;
-  ssize_t bytesRead;
-  while ((bytesRead = ::recv(fd, buf, sizeof(buf), 0)) > 0) {
-    resp.append(buf, buf + bytesRead);
-  }
+  std::string_view req = "GET /h HTTP/1.0\r\nHost: x\r\n\r\n";
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
+
+  std::string resp = aeronet::test::recvUntilClosed(fd);
+
   ASSERT_NE(std::string::npos, resp.find("Connection: close"));
   // Second request should not yield another response (connection closed). We attempt to read after sending.
-  std::string req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\n\r\n";
-  ::send(fd, req2.data(), req2.size(), 0);
+  std::string_view req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\n\r\n";
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req2));
   char buf2[256];
   auto n2 = ::recv(fd, buf2, sizeof(buf2), 0);
   EXPECT_LE(n2, 0);
-  ts.stop();
 }
 
 TEST(HttpKeepAlive10, OptInWithHeader) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("ok"); });
   aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
-  std::string req = "GET /h HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
-  ::send(fd, req.data(), req.size(), 0);
-  std::string first;
-  char buf[512];
-  for (int i = 0; i < 50; ++i) {
-    auto received = ::recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
-    if (received > 0) {
-      first.append(buf, buf + received);
-    } else if (received == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-      std::this_thread::sleep_for(5ms);
-      continue;
-    } else {
-      break;
-    }
-    if (first.find("\r\n\r\n") != std::string::npos) {
-      break;  // got headers
-    }
-  }
+  std::string_view req = "GET /h HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
+  std::string first = aeronet::test::recvWithTimeout(fd);
   ASSERT_NE(std::string::npos, first.find("Connection: keep-alive"));
-  std::string req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
-  ::send(fd, req2.data(), req2.size(), 0);
-  std::string second;
-  for (int i = 0; i < 50; ++i) {
-    auto received = ::recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
-    if (received > 0) {
-      second.append(buf, buf + received);
-    } else if (received == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-      std::this_thread::sleep_for(5ms);
-      continue;
-    } else {
-      break;
-    }
-  }
+  std::string_view req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req2));
+  std::string second = aeronet::test::recvWithTimeout(fd);
   ASSERT_NE(std::string::npos, second.find("Connection: keep-alive"));
-  ts.stop();
 }

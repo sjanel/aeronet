@@ -11,7 +11,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_http_client.hpp"
+#include "aeronet/test_util.hpp"
 
 using namespace aeronet;
 
@@ -36,28 +36,28 @@ TEST(HttpRouting, BasicPathDispatch) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 
-  test_http_client::RequestOptions getHello;
+  aeronet::test::RequestOptions getHello;
   getHello.method = "GET";
   getHello.target = "/hello";
-  auto resp1 = test_http_client::requestOrThrow(server.port(), getHello);
+  auto resp1 = aeronet::test::requestOrThrow(server.port(), getHello);
   EXPECT_NE(resp1.find("200 OK"), std::string::npos);
   EXPECT_NE(resp1.find("world"), std::string::npos);
-  test_http_client::RequestOptions postHello;
+  aeronet::test::RequestOptions postHello;
   postHello.method = "POST";
   postHello.target = "/hello";
   postHello.headers.emplace_back("Content-Length", "0");
-  auto resp2 = test_http_client::requestOrThrow(server.port(), postHello);
+  auto resp2 = aeronet::test::requestOrThrow(server.port(), postHello);
   EXPECT_NE(resp2.find("405 Method Not Allowed"), std::string::npos);
-  test_http_client::RequestOptions getMissing;
+  aeronet::test::RequestOptions getMissing;
   getMissing.method = "GET";
   getMissing.target = "/missing";
-  auto resp3 = test_http_client::requestOrThrow(server.port(), getMissing);
+  auto resp3 = aeronet::test::requestOrThrow(server.port(), getMissing);
   EXPECT_NE(resp3.find("404 Not Found"), std::string::npos);
-  test_http_client::RequestOptions postMulti;
+  aeronet::test::RequestOptions postMulti;
   postMulti.method = "POST";
   postMulti.target = "/multi";
   postMulti.headers.emplace_back("Content-Length", "0");
-  auto resp4 = test_http_client::requestOrThrow(server.port(), postMulti);
+  auto resp4 = aeronet::test::requestOrThrow(server.port(), postMulti);
   EXPECT_NE(resp4.find("200 OK"), std::string::npos);
   EXPECT_NE(resp4.find("POST!"), std::string::npos);
 

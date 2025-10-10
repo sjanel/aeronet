@@ -8,7 +8,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_raw_get.hpp"
+#include "aeronet/test_util.hpp"
 
 // This test only validates that two servers can bind the same port with SO_REUSEPORT enabled
 // and accept at least one connection each. It does not attempt to assert load distribution.
@@ -47,18 +47,15 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
   // Give kernel a moment to establish both listening sockets
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  std::string resp1;
-  std::string resp2;
-  test_helpers::rawGet(port, "/one", resp1);
-  test_helpers::rawGet(port, "/two", resp2);
+  std::string resp1 = aeronet::test::simpleGet(port, "/one");
+  std::string resp2 = aeronet::test::simpleGet(port, "/two");
   bool hasA = resp1.find('A') != std::string::npos || resp2.find('A') != std::string::npos;
   bool hasB = resp1.find('B') != std::string::npos || resp2.find('B') != std::string::npos;
   if (!(hasA && hasB)) {
     // try additional connects with small delays to give scheduler chance to pick different acceptors
     for (int i = 0; i < 15 && !(hasA && hasB); ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      std::string retryResp;
-      test_helpers::rawGet(port, "/retry", retryResp);
+      std::string retryResp = aeronet::test::simpleGet(port, "/retry");
       if (retryResp.find('A') != std::string::npos) {
         hasA = true;
       }

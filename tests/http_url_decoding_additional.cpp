@@ -12,11 +12,11 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_http_client.hpp"
+#include "aeronet/test_util.hpp"
 
 using namespace aeronet;
 
-// (Removed raw() helper; using shared test_http_client::request)
+// (Removed raw() helper; using shared aeronet::test::request)
 
 TEST(HttpUrlDecodingExtra, IncompletePercentSequence400) {
   HttpServerConfig cfg;
@@ -27,10 +27,10 @@ TEST(HttpUrlDecodingExtra, IncompletePercentSequence400) {
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  test_http_client::RequestOptions opt;
+  aeronet::test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/bad%";
-  auto resp = test_http_client::requestOrThrow(server.port(), opt);
+  auto resp = aeronet::test::requestOrThrow(server.port(), opt);
   EXPECT_NE(resp.find("400 Bad Request"), std::string::npos);
   done = true;  // jthread auto-joins on destruction
 }
@@ -49,10 +49,10 @@ TEST(HttpUrlDecodingExtra, MixedSegmentsDecoding) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   // encodes space in first segment only
-  test_http_client::RequestOptions opt2;
+  aeronet::test::RequestOptions opt2;
   opt2.method = "GET";
   opt2.target = "/seg%20one/part%25/two";
-  auto resp = test_http_client::requestOrThrow(server.port(), opt2);
+  auto resp = aeronet::test::requestOrThrow(server.port(), opt2);
   EXPECT_NE(resp.find("200 OK"), std::string::npos);
   EXPECT_NE(resp.find("/seg one/part%/two"), std::string::npos);
   done = true;  // jthread auto-joins on destruction

@@ -3,18 +3,19 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "test_server_fixture.hpp"
 
 using namespace std::chrono_literals;
 
 namespace {
-std::string collectSimple(uint16_t port, const std::string& req) {
+std::string collectSimple(uint16_t port, std::string_view req) {
   aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   EXPECT_GE(fd, 0);
@@ -25,7 +26,7 @@ std::string collectSimple(uint16_t port, const std::string& req) {
 }  // namespace
 
 TEST(Http10, BasicVersionEcho) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body("A");
@@ -37,7 +38,7 @@ TEST(Http10, BasicVersionEcho) {
 }
 
 TEST(Http10, No100ContinueEvenIfHeaderPresent) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body("B");
@@ -52,7 +53,7 @@ TEST(Http10, No100ContinueEvenIfHeaderPresent) {
 }
 
 TEST(Http10, RejectTransferEncoding) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body("C");
@@ -65,7 +66,7 @@ TEST(Http10, RejectTransferEncoding) {
 }
 
 TEST(Http10, KeepAliveOptInStillWorks) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body("D");

@@ -18,7 +18,8 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_server_fixture.hpp"
+#include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
 #include "zstd_test_helpers.hpp"
 
 using namespace aeronet;
@@ -73,11 +74,12 @@ std::string dechunk(std::string_view raw) {
   }
   return out;  // best effort
 }
-#include "test_response_parsing.hpp"
+
 // Extend generic ParsedResponse with plainBody + status for this file via a thin wrapper.
+// TODO move to test_util.hpp
 ParsedResponse simpleGet(uint16_t port, std::string_view target,
                          std::vector<std::pair<std::string, std::string>> extra) {
-  auto base = testutil::simpleGet(port, target, std::move(extra));
+  auto base = aeronet::test::simpleGet(port, target, std::move(extra));
   ParsedResponse out;  // reuse existing struct keeping body/headers
   out.headers = std::move(base.headers);
   out.body = base.body;
@@ -105,7 +107,7 @@ TEST(HttpCompressionZstdStreaming, ZstdActivatesAfterThreshold) {
   cfg.preferredFormats.push_back(Encoding::zstd);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string chunk1(64, 'x');
   std::string chunk2(128, 'y');
   ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
@@ -132,7 +134,7 @@ TEST(HttpCompressionZstdStreaming, BelowThresholdIdentity) {
   cfg.preferredFormats.push_back(Encoding::zstd);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string data(200, 'a');
   ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);

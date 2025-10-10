@@ -13,11 +13,9 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_http_client.hpp"
+#include "aeronet/test_util.hpp"
 
 using namespace aeronet;
-
-// (Removed old raw helper; switched to shared test_http_client::request for all requests)
 
 TEST(HttpUrlDecoding, SpaceDecoding) {
   HttpServerConfig cfg;
@@ -35,10 +33,10 @@ TEST(HttpUrlDecoding, SpaceDecoding) {
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  test_http_client::RequestOptions optHello;
+  aeronet::test::RequestOptions optHello;
   optHello.method = "GET";
   optHello.target = "/hello%20world";
-  auto respOwned = test_http_client::requestOrThrow(server.port(), optHello);
+  auto respOwned = aeronet::test::requestOrThrow(server.port(), optHello);
   std::string_view resp = respOwned;
   EXPECT_NE(resp.find("200 OK"), std::string_view::npos);
   EXPECT_NE(resp.find("hello world"), std::string_view::npos);
@@ -61,10 +59,10 @@ TEST(HttpUrlDecoding, Utf8Decoded) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   // Percent-encoded UTF-8 for snowman (E2 98 83) plus %20 and 'x'
-  test_http_client::RequestOptions optUtf8;
+  aeronet::test::RequestOptions optUtf8;
   optUtf8.method = "GET";
   optUtf8.target = "/%E2%98%83%20x";
-  auto respOwned = test_http_client::requestOrThrow(server.port(), optUtf8);
+  auto respOwned = aeronet::test::requestOrThrow(server.port(), optUtf8);
   std::string_view resp = respOwned;
   EXPECT_NE(resp.find("200 OK"), std::string_view::npos);
   EXPECT_NE(resp.find("utf8"), std::string_view::npos);
@@ -84,10 +82,10 @@ TEST(HttpUrlDecoding, PlusIsNotSpace) {
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  test_http_client::RequestOptions optPlus;
+  aeronet::test::RequestOptions optPlus;
   optPlus.method = "GET";
   optPlus.target = "/a+b";
-  auto respOwned = test_http_client::requestOrThrow(server.port(), optPlus);
+  auto respOwned = aeronet::test::requestOrThrow(server.port(), optPlus);
   std::string_view resp = respOwned;
   EXPECT_NE(resp.find("200 OK"), std::string_view::npos);
   EXPECT_NE(resp.find("plus"), std::string_view::npos);
@@ -103,10 +101,10 @@ TEST(HttpUrlDecoding, InvalidPercentSequence400) {
   for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  test_http_client::RequestOptions optBad;
+  aeronet::test::RequestOptions optBad;
   optBad.method = "GET";
   optBad.target = "/bad%G1";
-  auto respOwned = test_http_client::requestOrThrow(server.port(), optBad);
+  auto respOwned = aeronet::test::requestOrThrow(server.port(), optBad);
   std::string_view resp = respOwned;
   EXPECT_NE(resp.find("400 Bad Request"), std::string_view::npos);
   done.store(true);

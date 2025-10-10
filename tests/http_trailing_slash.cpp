@@ -1,25 +1,25 @@
 #include <gtest/gtest.h>
 
-#include <cstdint>  // uint16_t
+#include <cstdint>
 #include <string>
 
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"   // aeronet::HttpRequest
-#include "aeronet/http-response.hpp"  // aeronet::HttpResponse
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_http_client.hpp"
-#include "test_server_fixture.hpp"
+#include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
 
 using aeronet::HttpServerConfig;
 
 namespace {
 std::string rawRequest(uint16_t port, const std::string& target) {
-  test_http_client::RequestOptions opt;
+  aeronet::test::RequestOptions opt;
   opt.method = "GET";
   opt.target = target;
   opt.connection = "close";
-  auto resp = test_http_client::request(port, opt);
+  auto resp = aeronet::test::request(port, opt);
   return resp.value_or("");
 }
 
@@ -28,7 +28,7 @@ std::string rawRequest(uint16_t port, const std::string& target) {
 TEST(HttpTrailingSlash, StrictPolicyDifferent) {
   HttpServerConfig cfg{};
   cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Strict);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   ts.server.addPathHandler("/alpha", aeronet::http::Method::GET,
                            [](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("alpha"); });
   auto resp = rawRequest(ts.port(), "/alpha/");
@@ -39,7 +39,7 @@ TEST(HttpTrailingSlash, StrictPolicyDifferent) {
 TEST(HttpTrailingSlash, NormalizePolicyStrips) {
   HttpServerConfig cfg{};
   cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Normalize);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   ts.server.addPathHandler("/beta", aeronet::http::Method::GET,
                            [](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("beta"); });
   auto resp = rawRequest(ts.port(), "/beta/");
@@ -51,7 +51,7 @@ TEST(HttpTrailingSlash, NormalizePolicyStrips) {
 TEST(HttpTrailingSlash, NormalizePolicyAddSlash) {
   HttpServerConfig cfg{};
   cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Normalize);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   ts.server.addPathHandler("/beta/", aeronet::http::Method::GET,
                            [](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("beta/"); });
   auto resp = rawRequest(ts.port(), "/beta");
@@ -63,7 +63,7 @@ TEST(HttpTrailingSlash, NormalizePolicyAddSlash) {
 TEST(HttpTrailingSlash, RedirectPolicy) {
   HttpServerConfig cfg{};
   cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Redirect);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   ts.server.addPathHandler("/gamma", aeronet::http::Method::GET,
                            [](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("gamma"); });
   auto resp = rawRequest(ts.port(), "/gamma/");
@@ -78,7 +78,7 @@ TEST(HttpTrailingSlash, RedirectPolicy) {
 TEST(HttpTrailingSlash, StrictPolicyRegisteredWithSlashDoesNotMatchWithout) {
   HttpServerConfig cfg{};
   cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Strict);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   ts.server.addPathHandler("/sigma/", aeronet::http::Method::GET,
                            [](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("sigma"); });
   auto ok = rawRequest(ts.port(), "/sigma/");
@@ -91,7 +91,7 @@ TEST(HttpTrailingSlash, StrictPolicyRegisteredWithSlashDoesNotMatchWithout) {
 TEST(HttpTrailingSlash, NormalizePolicyRegisteredWithSlashAcceptsWithout) {
   HttpServerConfig cfg{};
   cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Normalize);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   ts.server.addPathHandler("/norm/", aeronet::http::Method::GET,
                            [](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("norm"); });
   auto withSlash = rawRequest(ts.port(), "/norm/");
@@ -105,7 +105,7 @@ TEST(HttpTrailingSlash, NormalizePolicyRegisteredWithSlashAcceptsWithout) {
 TEST(HttpTrailingSlash, RedirectPolicyCanonicalOnlyMatchesWithoutSlash) {
   HttpServerConfig cfg{};
   cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Redirect);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   ts.server.addPathHandler("/redir", aeronet::http::Method::GET,
                            [](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("redir"); });
   auto redirect = rawRequest(ts.port(), "/redir/");  // should 301 -> /redir
@@ -122,7 +122,7 @@ TEST(HttpTrailingSlash, RedirectPolicyRegisteredWithSlashDoesNotAddSlash) {
   // redirect)
   HttpServerConfig cfg{};
   cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Redirect);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   ts.server.addPathHandler("/only/", aeronet::http::Method::GET,
                            [](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("only"); });
   auto withSlash = rawRequest(ts.port(), "/only/");
@@ -135,7 +135,7 @@ TEST(HttpTrailingSlash, RedirectPolicyRegisteredWithSlashDoesNotAddSlash) {
 TEST(HttpTrailingSlash, RootPathNotRedirected) {
   HttpServerConfig cfg{};
   cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Redirect);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   auto resp = rawRequest(ts.port(), "/");  // no handlers => 404 but not 301
   ts.stop();
   ASSERT_NE(std::string::npos, resp.find("404"));
@@ -147,7 +147,7 @@ TEST(HttpTrailingSlash, RootPathNotRedirected) {
 TEST(HttpTrailingSlash, RedirectPolicyBothVariants_NoRedirectWhenExact) {
   HttpServerConfig cfg{};
   cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Redirect);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   ts.server.addPathHandler("/dual", aeronet::http::Method::GET,
                            [](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("dual-no-slash"); });
   ts.server.addPathHandler("/dual/", aeronet::http::Method::GET,
@@ -166,7 +166,7 @@ TEST(HttpTrailingSlash, RedirectPolicyBothVariants_NoRedirectWhenExact) {
 TEST(HttpTrailingSlash, NormalizePolicyBothVariants_Independent) {
   HttpServerConfig cfg{};
   cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Normalize);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   ts.server.addPathHandler("/sep", aeronet::http::Method::GET,
                            [](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("sep-no-slash"); });
   ts.server.addPathHandler("/sep/", aeronet::http::Method::GET,
@@ -183,7 +183,7 @@ TEST(HttpTrailingSlash, NormalizePolicyBothVariants_Independent) {
 TEST(HttpTrailingSlash, StrictPolicyBothVariants_Independent) {
   HttpServerConfig cfg{};
   cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Strict);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   ts.server.addPathHandler("/both", aeronet::http::Method::GET,
                            [](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("both-no-slash"); });
   ts.server.addPathHandler("/both/", aeronet::http::Method::GET,

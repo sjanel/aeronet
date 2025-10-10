@@ -5,21 +5,20 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "test_server_tls_fixture.hpp"
-#include "test_tls_client.hpp"
+#include "aeronet/test_server_tls_fixture.hpp"
+#include "aeronet/test_tls_client.hpp"
 
 TEST(HttpTlsBasic, HandshakeAndSimpleGet) {
   // Prepare config with in-memory self-signed cert/key
   std::string raw;
   {
-    TlsTestServer ts;  // ephemeral TLS server
+    aeronet::test::TlsTestServer ts;  // ephemeral TLS server
     ts.setHandler([](const aeronet::HttpRequest& req) {
-      return aeronet::HttpResponse(200)
-          .reason("OK")
+      return aeronet::HttpResponse(200, "OK")
           .contentType(aeronet::http::ContentTypeTextPlain)
           .body(std::string("TLS OK ") + std::string(req.path()));
     });
-    TlsClient client(ts.port());
+    aeronet::test::TlsClient client(ts.port());
     raw = client.get("/hello", {{"X-Test", "tls"}});
     ts.stop();
   }

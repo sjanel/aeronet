@@ -6,8 +6,10 @@
 #include <utility>
 
 #include "aeronet/http-server-config.hpp"
-#include "test_server_fixture.hpp"
-#include "test_tls_helper.hpp"
+#include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_tls_helper.hpp"
+
+namespace aeronet::test {
 
 // TLS-enabled variant of TestServer that auto-generates an ephemeral certificate/key
 // for each test instance and optionally configures ALPN protocols or applies additional
@@ -23,11 +25,11 @@
 struct TlsTestServer {
   TestServer server;  // underlying generic test server (already RAII-managed)
 
-  using Mutator = std::function<void(aeronet::HttpServerConfig&)>;
+  using Mutator = std::function<void(HttpServerConfig&)>;
 
-  static aeronet::HttpServerConfig makeConfig(std::initializer_list<std::string_view> alpn, const Mutator& mut) {
-    aeronet::HttpServerConfig cfg;  // ephemeral port by default
-    auto pair = aeronet::test::makeEphemeralCertKey();
+  static HttpServerConfig makeConfig(std::initializer_list<std::string_view> alpn, const Mutator& mut) {
+    HttpServerConfig cfg;  // ephemeral port by default
+    auto pair = makeEphemeralCertKey();
     cfg.withTlsCertKeyMemory(pair.first, pair.second);
     if (alpn.size() != 0) {
       cfg.withTlsAlpnProtocols(alpn);
@@ -59,5 +61,7 @@ struct TlsTestServer {
     server.server.setParserErrorCallback(std::forward<ErrCb>(cb));
   }
   [[nodiscard]] auto stats() const { return server.server.stats(); }
-  aeronet::HttpServer& http() { return server.server; }
+  HttpServer& http() { return server.server; }
 };
+
+}  // namespace aeronet::test

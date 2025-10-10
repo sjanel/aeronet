@@ -13,13 +13,11 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_server_fixture.hpp"
+#include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
 #include "zstd_test_helpers.hpp"
 
 using namespace aeronet;
-
-#include "test_response_parsing.hpp"
-using testutil::doGet;
 
 namespace {
 bool HasZstdMagic(std::string_view body) {
@@ -36,7 +34,7 @@ TEST(HttpCompressionZstdBuffered, ZstdAppliedWhenEligible) {
   cfg.preferredFormats.push_back(Encoding::zstd);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(400, 'A');
   ts.server.setHandler([payload](const HttpRequest&) {
     HttpResponse resp;
@@ -44,7 +42,7 @@ TEST(HttpCompressionZstdBuffered, ZstdAppliedWhenEligible) {
     resp.body(payload);
     return resp;
   });
-  auto resp = doGet(ts.port(), "/z", {{"Accept-Encoding", "zstd"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/z", {{"Accept-Encoding", "zstd"}});
   ASSERT_EQ(resp.statusCode, 200);
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end());
@@ -63,7 +61,7 @@ TEST(HttpCompressionZstdBuffered, WildcardSelectsZstdIfPreferred) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(256, 'B');
   ts.server.setHandler([payload](const HttpRequest&) {
     HttpResponse resp;
@@ -71,7 +69,7 @@ TEST(HttpCompressionZstdBuffered, WildcardSelectsZstdIfPreferred) {
     resp.customHeader("Content-Type", "text/plain");
     return resp;
   });
-  auto resp = doGet(ts.port(), "/w", {{"Accept-Encoding", "*;q=0.9"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/w", {{"Accept-Encoding", "*;q=0.9"}});
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "zstd");
@@ -85,7 +83,7 @@ TEST(HttpCompressionZstdBuffered, TieBreakAgainstGzipHigherQ) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(512, 'C');
   ts.server.setHandler([payload](const HttpRequest&) {
     HttpResponse resp;
@@ -93,7 +91,7 @@ TEST(HttpCompressionZstdBuffered, TieBreakAgainstGzipHigherQ) {
     resp.customHeader("Content-Type", "text/plain");
     return resp;
   });
-  auto resp = doGet(ts.port(), "/t", {{"Accept-Encoding", "gzip;q=0.9, zstd;q=0.9"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/t", {{"Accept-Encoding", "gzip;q=0.9, zstd;q=0.9"}});
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "zstd");
