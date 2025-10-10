@@ -7,8 +7,8 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "test_server_fixture.hpp"
 
 using namespace aeronet;
 
@@ -16,7 +16,7 @@ TEST(StreamingBackpressure, LargeBodyQueues) {
   HttpServerConfig cfg;
   cfg.enableKeepAlive = false;                                       // simplicity
   cfg.maxOutboundBufferBytes = static_cast<std::size_t>(64 * 1024);  // assume default maybe larger
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::size_t total = static_cast<std::size_t>(512 * 1024);  // 512 KB
   ts.server.setStreamingHandler([&]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
     writer.statusCode(200);

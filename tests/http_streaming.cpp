@@ -7,18 +7,18 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_http_client.hpp"
-#include "test_server_fixture.hpp"
+#include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
 
 using namespace std::chrono_literals;
 
 namespace {
 std::string blockingFetch(uint16_t port, const std::string& verb, const std::string& target) {
-  test_http_client::RequestOptions opt;
+  aeronet::test::RequestOptions opt;
   opt.method = verb;
   opt.target = target;
   opt.connection = "close";  // one-shot
-  auto resp = test_http_client::request(port, opt);
+  auto resp = aeronet::test::request(port, opt);
   if (!resp) {
     return {};
   }
@@ -27,7 +27,7 @@ std::string blockingFetch(uint16_t port, const std::string& verb, const std::str
 }  // namespace
 
 TEST(HttpStreaming, ChunkedSimple) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setStreamingHandler(
       []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
@@ -47,7 +47,7 @@ TEST(HttpStreaming, ChunkedSimple) {
 }
 
 TEST(HttpStreaming, HeadSuppressedBody) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setStreamingHandler(
       []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {

@@ -23,9 +23,9 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_tls_client.hpp"
+#include "aeronet/test_tls_helper.hpp"
 #include "aeronet/test_util.hpp"
-#include "test_tls_client.hpp"
-#include "test_tls_helper.hpp"
 
 TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
   auto pair = aeronet::test::makeEphemeralCertKey();
@@ -38,8 +38,7 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
 
   aeronet::HttpServer original(cfg);
   original.setHandler([](const aeronet::HttpRequest& req) {
-    return aeronet::HttpResponse(200)
-        .reason("OK")
+    return aeronet::HttpResponse(200, "OK")
         .contentType(aeronet::http::ContentTypeTextPlain)
         .body(std::string("MOVEALPN:") + (req.alpnProtocol().empty() ? "-" : std::string(req.alpnProtocol())));
   });
@@ -56,9 +55,9 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
     aeronet::test::ClientConnection probe(port, std::chrono::milliseconds{500});
   }
 
-  TlsClient::Options opts;
+  aeronet::test::TlsClient::Options opts;
   opts.alpn = {"http/1.1"};
-  TlsClient client(port, opts);
+  aeronet::test::TlsClient client(port, opts);
   ASSERT_TRUE(client.handshakeOk()) << "TLS handshake failed after move (potential stale TlsContext pointer)";
   auto raw = client.get("/moved");
   stop.store(true);

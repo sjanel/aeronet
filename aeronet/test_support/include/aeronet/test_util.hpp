@@ -1,135 +1,23 @@
 #pragma once
 
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
-#include <cerrno>
 #include <chrono>
-#include <cstddef>
+#include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
-#include <thread>
 
-#include "aeronet/http-constants.hpp"
-#include "log.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "socket.hpp"
+#include "timedef.hpp"
 
 namespace aeronet::test {
 using namespace std::chrono_literals;
-
-inline bool sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeout = 500ms) {
-  const char* cursor = data.data();
-  std::size_t remaining = data.size();
-  auto start = std::chrono::steady_clock::now();
-  auto maxTs = start + totalTimeout;
-  while (remaining > 0) {
-    auto sent = ::send(fd, cursor, remaining, 0);
-    if (sent <= 0) {
-      log::error("sendAll failed with error {}", std::strerror(errno));
-      if (std::chrono::steady_clock::now() >= maxTs) {
-        log::error("sendAll timed out after {} ms", totalTimeout.count());
-        return false;
-      }
-      std::this_thread::sleep_for(1ms);
-      continue;
-    }
-    cursor += sent;
-    remaining -= static_cast<std::size_t>(sent);
-  }
-  return true;
-}
-
-inline std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout = 1000ms) {
-  // Reads as much as is immediately available. After at least one successful read, a single EAGAIN ends the read early.
-  // This lets callers loop without incurring the full timeout on keep-alive connections.
-  std::string out;
-  auto start = std::chrono::steady_clock::now();
-  auto maxTs = start + totalTimeout;
-  bool madeProgress = false;
-  while (std::chrono::steady_clock::now() < maxTs) {
-    static constexpr std::size_t kChunkSize = static_cast<std::size_t>(64) * 1024ULL;
-    std::size_t oldSize = out.size();
-
-    if (out.capacity() < out.size() + kChunkSize) {
-      // ensure exponential growth
-      out.reserve(out.capacity() * 2UL);
-    }
-
-    out.resize_and_overwrite(oldSize + kChunkSize, [&](char* data, [[maybe_unused]] std::size_t newCap) {
-      ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, MSG_DONTWAIT);
-      if (recvBytes > 0) {
-        return oldSize + static_cast<std::size_t>(recvBytes);
-      }
-      if (recvBytes == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        // No data currently; shrink back.
-        return oldSize;  // no growth
-      }
-      // Closed or error.
-      return oldSize;  // caller will break
-    });
-    if (out.size() > oldSize) {
-      madeProgress = true;
-      continue;  // Try to drain more immediately available bytes.
-    }
-    // EAGAIN path (no growth) when progress already made -> break early
-    if (madeProgress) {
-      break;
-    }
-    std::this_thread::sleep_for(1ms);
-  }
-  return out;
-}
-
-inline std::string recvUntilClosed(int fd) {
-  std::string out;
-  for (;;) {
-    static constexpr std::size_t kChunkSize = static_cast<std::size_t>(64) * 1024ULL;
-    std::size_t oldSize = out.size();
-    bool closed = false;
-
-    if (out.capacity() < out.size() + kChunkSize) {
-      // ensure exponential growth
-      out.reserve(out.capacity() * 2UL);
-    }
-
-    out.resize_and_overwrite(oldSize + kChunkSize, [&](char* data, [[maybe_unused]] std::size_t newCap) {
-      ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);
-      if (recvBytes > 0) {
-        return oldSize + static_cast<std::size_t>(recvBytes);
-      }
-      closed = true;
-      return oldSize;  // shrink back
-    });
-    if (closed) {
-      break;
-    }
-  }
-  return out;
-}
-
-inline void connectLoop(int fd, auto port, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000}) {
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  for (const auto deadline = std::chrono::steady_clock::now() + timeout; std::chrono::steady_clock::now() < deadline;
-       std::this_thread::sleep_for(std::chrono::milliseconds{10})) {
-    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
-      break;
-    }
-    log::debug("connect failed for fd={}: {}", fd, std::strerror(errno));
-  }
-}
 
 class ClientConnection {
  public:
   ClientConnection() noexcept = default;
 
-  explicit ClientConnection(auto port, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000})
-      : _socket(SOCK_STREAM) {
-    connectLoop(_socket.fd(), port, timeout);
-  }
+  explicit ClientConnection(uint16_t port, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
   [[nodiscard]] int fd() const noexcept { return _socket.fd(); }
 
@@ -137,42 +25,64 @@ class ClientConnection {
   ::aeronet::Socket _socket;
 };
 
-inline int countOccurrences(std::string_view haystack, std::string_view needle) {
-  if (needle.empty()) {
-    return 0;
-  }
-  int count = 0;
-  std::size_t pos = 0;
-  while ((pos = haystack.find(needle, pos)) != std::string_view::npos) {
-    ++count;
-    pos += needle.size();
-  }
-  return count;
-}
+// Minimal parsed HTTP response representation for test assertions.
+struct ParsedResponse {
+  aeronet::http::StatusCode statusCode{0};
+  bool chunked{false};
+  std::string reason;
+  std::string headersRaw;                      // raw header block including final CRLFCRLF (optional)
+  std::map<std::string, std::string> headers;  // case-sensitive keys (sufficient for tests)
+  std::string body;                            // decoded body (if chunked, de-chunked)
+};
 
-inline bool noBodyAfterHeaders(std::string_view raw) {
-  const auto pivot = raw.find(aeronet::http::DoubleCRLF);
-  if (pivot == std::string_view::npos) {
-    return false;
-  }
-  return raw.substr(pivot + aeronet::http::DoubleCRLF.size()).empty();
-}
+struct RequestOptions {
+  std::string method{"GET"};
+  std::string target{"/"};
+  std::string host{"localhost"};
+  std::string connection{"close"};
+  std::string body;
+  std::vector<std::pair<std::string, std::string>> headers;  // additional headers
+  int recvTimeoutSeconds{2};                                 // socket receive timeout
+  std::size_t maxResponseBytes{1 << 20};                     // 1 MiB safety cap
+};
+
+bool sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeout = 500ms);
+
+std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout = 2000ms);
+
+std::string recvUntilClosed(int fd);
+
+std::string sendAndCollect(uint16_t port, std::string_view raw);
+
+int countOccurrences(std::string_view haystack, std::string_view needle);
+
+bool noBodyAfterHeaders(std::string_view raw);
 
 // Very small blocking GET helper (Connection: close) used by tests that just need
 // the full raw HTTP response bytes. Not HTTP-complete (no redirects, TLS, etc.).
-inline std::string simpleGet(uint16_t port, std::string_view path) {
-  ClientConnection cnx(port);
-  if (cnx.fd() < 0) {
-    return {};
-  }
-  std::string req;
-  req.reserve(64 + path.size());
-  req.append("GET ").append(path).append(" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close");
-  req.append(aeronet::http::DoubleCRLF);
-  if (!sendAll(cnx.fd(), req)) {
-    return {};
-  }
-  return recvUntilClosed(cnx.fd());
-}
+std::string simpleGet(uint16_t port, std::string_view path);
 
+// Minimal GET request helper used across compression streaming tests. Parses headers into a map and returns body raw.
+ParsedResponse simpleGet(uint16_t port, std::string_view target,
+                         std::vector<std::pair<std::string, std::string>> extraHeaders);
+
+std::string toLower(std::string input);
+
+// Very small HTTP/1.1 response parser (not resilient to all malformed cases, just for test consumption)
+std::optional<ParsedResponse> parseResponse(const std::string &raw);
+
+bool setRecvTimeout(int fd, ::aeronet::Duration timeout);
+
+std::string buildRequest(const RequestOptions &opt);
+
+std::optional<std::string> request(uint16_t port, const RequestOptions &opt = {});
+
+// Convenience wrapper that throws std::runtime_error on failure instead of returning std::nullopt.
+// This simplifies test code by eliminating explicit ASSERT checks for has_value(); gtest will treat
+// uncaught exceptions as test failures with the diagnostic message.
+std::string requestOrThrow(uint16_t port, const RequestOptions &opt = {});
+
+// Send multiple requests over a single keep-alive connection and return raw responses individually.
+// Limitations: assumes server responds fully before next request is parsed (sufficient for simple tests).
+std::vector<std::string> sequentialRequests(uint16_t port, std::span<const RequestOptions> reqs);
 }  // namespace aeronet::test

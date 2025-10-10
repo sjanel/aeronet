@@ -7,13 +7,13 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "test_server_fixture.hpp"
 
 using namespace std::chrono_literals;
 
 TEST(HttpKeepAlive, MultipleSequentialRequests) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
@@ -40,7 +40,7 @@ TEST(HttpLimits, RejectHugeHeaders) {
   aeronet::HttpServerConfig cfg;
   cfg.maxHeaderBytes = 128;
   cfg.enableKeepAlive = false;
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;

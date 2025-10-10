@@ -8,8 +8,8 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/server-stats.hpp"
-#include "test_server_tls_fixture.hpp"
-#include "test_tls_client.hpp"
+#include "aeronet/test_server_tls_fixture.hpp"
+#include "aeronet/test_tls_client.hpp"
 
 TEST(HttpTlsCipherVersion, CipherAndVersionExposedAndMetricsIncrement) {
   // Metrics now per-server; no global reset needed.
@@ -19,7 +19,7 @@ TEST(HttpTlsCipherVersion, CipherAndVersionExposedAndMetricsIncrement) {
   std::string capturedAlpn;
   aeronet::ServerStats statsSnapshot{};
   {
-    TlsTestServer ts({"http/1.1"});
+    aeronet::test::TlsTestServer ts({"http/1.1"});
     auto port = ts.port();
     ts.setHandler([&](const aeronet::HttpRequest& req) {
       capturedCipher = std::string(req.tlsCipher());
@@ -29,9 +29,9 @@ TEST(HttpTlsCipherVersion, CipherAndVersionExposedAndMetricsIncrement) {
       return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body("ok");
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(80));  // allow handshake path if needed
-    TlsClient::Options opts;
+    aeronet::test::TlsClient::Options opts;
     opts.alpn = {"http/1.1"};
-    TlsClient client(port, opts);
+    aeronet::test::TlsClient client(port, opts);
     auto resp = client.get("/");
     ts.stop();
     ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));

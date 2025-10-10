@@ -12,8 +12,8 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "test_server_fixture.hpp"
 
 using namespace aeronet;
 
@@ -21,7 +21,7 @@ TEST(HttpHeaderTimeout, SlowHeadersConnectionClosed) {
   HttpServerConfig cfg;
   std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
   cfg.withPort(0).withHeaderReadTimeout(readTimeout);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   ts.server.setHandler([](const HttpRequest&) {
     return aeronet::HttpResponse(200, "OK").body("hi").contentType(aeronet::http::ContentTypeTextPlain);
   });

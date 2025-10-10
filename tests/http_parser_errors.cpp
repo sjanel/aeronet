@@ -14,8 +14,8 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "test_server_fixture.hpp"
 
 using namespace std::chrono_literals;
 
@@ -31,7 +31,7 @@ struct Capture {
 }  // namespace
 
 TEST(HttpParserErrors, InvalidVersion505) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   Capture cap;
   ts.server.setParserErrorCallback([&](aeronet::http::StatusCode err) { cap.push(err); });
@@ -57,7 +57,7 @@ TEST(HttpParserErrors, InvalidVersion505) {
 }
 
 TEST(HttpParserErrors, Expect100OnlyWithBody) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   aeronet::test::ClientConnection clientConnection(port);
@@ -84,7 +84,7 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
 
 // Fuzz-ish incremental chunk framing with random chunk sizes & boundaries.
 TEST(HttpParserErrors, ChunkIncrementalFuzz) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body()); });
 

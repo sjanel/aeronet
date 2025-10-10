@@ -10,13 +10,13 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "test_server_fixture.hpp"
 
 using namespace std::chrono_literals;
 
 TEST(HttpChunked, DecodeBasic) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(200).body(std::string("LEN=") + std::to_string(req.body().size()) + ":" +
@@ -37,7 +37,7 @@ TEST(HttpChunked, DecodeBasic) {
 TEST(HttpChunked, RejectTooLarge) {
   aeronet::HttpServerConfig cfg;
   cfg.withMaxBodyBytes(4);  // very small limit
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body()); });
   aeronet::test::ClientConnection cnx(port);
@@ -51,7 +51,7 @@ TEST(HttpChunked, RejectTooLarge) {
 }
 
 TEST(HttpHead, NoBodyReturned) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(200).body(std::string("DATA-") + std::string(req.path()));
@@ -71,7 +71,7 @@ TEST(HttpHead, NoBodyReturned) {
 }
 
 TEST(HttpExpect, ContinueFlow) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body()); });
   aeronet::test::ClientConnection cnx(port);

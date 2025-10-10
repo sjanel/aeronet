@@ -36,8 +36,6 @@ HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, bool headRequest
 
 void HttpResponseWriter::statusCode(http::StatusCode code) {
   if (_headersSent || _failed) {
-    log::debug("Streaming: statusCode ignored fd={} reason={}", _fd,
-               _failed ? "writer-failed" : "headers-already-sent");
     return;
   }
   _fixedResponse.statusCode(code);
@@ -45,8 +43,6 @@ void HttpResponseWriter::statusCode(http::StatusCode code) {
 
 void HttpResponseWriter::statusCode(http::StatusCode code, std::string_view reason) {
   if (_headersSent || _failed) {
-    log::debug("Streaming: statusCode ignored fd={} reason={}", _fd,
-               _failed ? "writer-failed" : "headers-already-sent");
     return;
   }
   _fixedResponse.statusCode(code).reason(reason);
@@ -54,8 +50,6 @@ void HttpResponseWriter::statusCode(http::StatusCode code, std::string_view reas
 
 void HttpResponseWriter::addCustomHeader(std::string_view name, std::string_view value) {
   if (_headersSent || _failed) {
-    log::debug("Streaming: header ignored fd={} name={} reason={}", _fd, name,
-               _failed ? "writer-failed" : "headers-already-sent");
     return;
   }
   if (http::IsReservedResponseHeader(name)) {
@@ -96,7 +90,7 @@ void HttpResponseWriter::customHeader(std::string_view name, std::string_view va
 
 void HttpResponseWriter::contentLength(std::size_t len) {
   if (_headersSent || _bytesWritten > 0 || _failed) {
-    const char* reason;
+    std::string_view reason;
     if (_failed) {
       reason = "writer-failed";
     } else if (_headersSent) {
@@ -106,7 +100,7 @@ void HttpResponseWriter::contentLength(std::size_t len) {
     } else {
       reason = "unknown";
     }
-    log::debug("Streaming: contentLength ignored fd={} requestedLen={} reason={}", _fd, len, reason);
+    log::warn("Streaming: contentLength ignored fd={} requestedLen={} reason={}", _fd, len, reason);
     return;
   }
   _chunked = false;
@@ -145,8 +139,6 @@ void HttpResponseWriter::ensureHeadersSent() {
   // Do not attempt to add Connection/Date here; finalize handles them (adds Date, Connection based on keepAlive flag).
   auto finalized = _fixedResponse.finalizeAndGetFullTextResponse(
       http::HTTP_1_1, _server->_cachedDateEpoch, !_requestConnClose, _server->_config.globalHeaders, _head);
-  log::debug("Streaming: headers fd={} code={} chunked={} headerBytes={} ", _fd, _fixedResponse.statusCode(), _chunked,
-             finalized.size());
   if (!enqueue(finalized)) {
     _failed = true;
     _ended = true;
@@ -162,9 +154,8 @@ void HttpResponseWriter::emitChunk(std::string_view data) {
   }
 
   char sizeLine[32];  // hex length + CRLF
-  char* begin = sizeLine;
-  char* end = sizeLine + sizeof(sizeLine) - http::CRLF.size();
-  auto res = std::to_chars(begin, end, static_cast<unsigned long long>(data.size()), 16);
+  char* const end = sizeLine + sizeof(sizeLine) - http::CRLF.size();
+  auto res = std::to_chars(sizeLine, end, static_cast<unsigned long long>(data.size()), 16);
   assert(res.ec == std::errc());
   std::memcpy(res.ptr, http::CRLF.data(), http::CRLF.size());
   res.ptr += http::CRLF.size();
@@ -188,24 +179,10 @@ void HttpResponseWriter::emitChunk(std::string_view data) {
   } else {
     // For large payloads, we call 3 times enqueue to avoid copy on temporary data first.
     std::string_view sizeHeader(sizeLine, sizeHeaderLen);
-    if (!enqueue(sizeHeader)) {
-      _failed = true;
-      _ended = true;
-      log::error("Streaming: failed enqueuing chunk size header fd={} errno={} msg={}", _fd, errno,
-                 std::strerror(errno));
-      return;
-    }
-    if (!enqueue(data)) {
+    if (!enqueue(sizeHeader) || !enqueue(data) || !enqueue(http::CRLF)) {
       _failed = true;
       _ended = true;
       log::error("Streaming: failed enqueuing chunk data fd={} errno={} msg={}", _fd, errno, std::strerror(errno));
-      return;
-    }
-    if (!enqueue(http::CRLF)) {
-      _failed = true;
-      _ended = true;
-      log::error("Streaming: failed enqueuing chunk trailer CRLF fd={} errno={} msg={}", _fd, errno,
-                 std::strerror(errno));
       return;
     }
     ++_server->_stats.streamingChunkLarge;
@@ -246,34 +223,27 @@ bool HttpResponseWriter::write(std::string_view data) {
       }
       // Threshold reached exactly or exceeded: activate encoder.
       auto& proto = _server->_encoders[static_cast<std::size_t>(_compressionFormat)];
-      if (proto) {
-        _activeEncoderCtx = proto->makeContext();
-        _compressionActivated = true;
-      } else {
-        // Fallback silently to identity.
-        _compressionFormat = Encoding::none;
-      }
-      if (_compressionActivated) {
-        // Set Content-Encoding prior to emitting headers.
-        if (!_headersSent) {
-          _fixedResponse.setHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
-          if (_server->_config.compression.addVaryHeader) {
-            _fixedResponse.setHeader(http::Vary, http::AcceptEncoding);
-          }
+      _activeEncoderCtx = proto->makeContext();
+      _compressionActivated = true;
+      // Set Content-Encoding prior to emitting headers.
+      if (!_headersSent) {
+        _fixedResponse.setHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
+        if (_server->_config.compression.addVaryHeader) {
+          _fixedResponse.setHeader(http::Vary, http::AcceptEncoding);
         }
-        ensureHeadersSent();
-        // Compress buffered bytes.
-        auto firstOut = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, _preCompressBuffer, false);
-        if (!firstOut.empty()) {
-          if (_chunked) {
-            emitChunk(firstOut);
-          } else {
-            enqueue(firstOut);
-          }
-        }
-        _preCompressBuffer.clear();
-        return !_failed;
       }
+      ensureHeadersSent();
+      // Compress buffered bytes.
+      auto firstOut = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, _preCompressBuffer, false);
+      if (!firstOut.empty()) {
+        if (_chunked) {
+          emitChunk(firstOut);
+        } else {
+          enqueue(firstOut);
+        }
+      }
+      _preCompressBuffer.clear();
+      return !_failed;
       // If we fell back to identity compressionFormat::none we continue below emitting identity data.
     }
   }

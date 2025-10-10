@@ -18,9 +18,9 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
 #include "simple-charconv.hpp"
-#include "test_http_client.hpp"
-#include "test_server_fixture.hpp"
 #ifdef AERONET_ENABLE_ZLIB
 #include "zlib-encoder.hpp"
 #endif
@@ -75,13 +75,13 @@ struct ClientRawResponse {
 
 ClientRawResponse rawPost(uint16_t port, const std::string& target,
                           const std::vector<std::pair<std::string, std::string>>& headers, const std::string& body) {
-  test_http_client::RequestOptions opt;
+  aeronet::test::RequestOptions opt;
   opt.method = http::POST;
   opt.target = target;
   opt.connection = http::close;
   opt.body = body;
   opt.headers = headers;
-  auto raw = test_http_client::request(port, opt);
+  auto raw = aeronet::test::request(port, opt);
   if (!raw) {
     throw std::runtime_error("request failed");
   }
@@ -102,7 +102,7 @@ TEST(HttpRequestDecompression, SingleGzip) {
 #ifdef AERONET_ENABLE_ZLIB
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = "HelloCompressedWorld";
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -120,7 +120,7 @@ TEST(HttpRequestDecompression, SingleDeflate) {
 #ifdef AERONET_ENABLE_ZLIB
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = std::string(10000, 'A');
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -138,7 +138,7 @@ TEST(HttpRequestDecompression, SingleZstd) {
 #ifdef AERONET_ENABLE_ZSTD
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = std::string(10000, 'Z');
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -156,7 +156,7 @@ TEST(HttpRequestDecompression, SingleBrotli) {
 #ifdef AERONET_ENABLE_BROTLI
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = std::string(10000, 'B');
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -174,7 +174,7 @@ TEST(HttpRequestDecompression, MultiGzipDeflateNoSpaces) {
 #ifdef AERONET_ENABLE_ZLIB
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = "MultiStagePayload";
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -193,7 +193,7 @@ TEST(HttpRequestDecompression, MultiZstdGzipWithSpaces) {
 #if defined(AERONET_ENABLE_ZSTD) && defined(AERONET_ENABLE_ZLIB)
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = std::string(10000, 'Q');
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -212,7 +212,7 @@ TEST(HttpRequestDecompression, MultiGzipBrotli) {
 #if defined(AERONET_ENABLE_ZLIB) && defined(AERONET_ENABLE_BROTLI)
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = std::string(10000, 'R');
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -231,7 +231,7 @@ TEST(HttpRequestDecompression, MultiZstdBrotli) {
 #if defined(AERONET_ENABLE_ZSTD) && defined(AERONET_ENABLE_BROTLI)
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = std::string(10000, 'Z');
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -250,7 +250,7 @@ TEST(HttpRequestDecompression, IdentitySkippedInChain) {
 #ifdef AERONET_ENABLE_ZLIB
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = "SkipIdentity";
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -268,7 +268,7 @@ TEST(HttpRequestDecompression, IdentitySkippedInChain) {
 TEST(HttpRequestDecompression, UnknownCodingRejected) {
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   ts.server.setHandler([]([[maybe_unused]] const HttpRequest& req) {
     HttpResponse resp;
     resp.body("U");
@@ -282,7 +282,7 @@ TEST(HttpRequestDecompression, UnknownCodingRejected) {
 TEST(HttpRequestDecompression, EmptyTokenRejected) {
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string body = "xyz";
   auto resp = rawPost(ts.port(), "/e", {{"Content-Encoding", "identity,,identity"}}, body);
   // empty token forbidden
@@ -295,7 +295,7 @@ TEST(HttpRequestDecompression, DisabledFeaturePassThrough) {
   DecompressionConfig rdc;
   rdc.enable = false;  // disable auto decompression
   cfg.withRequestDecompression(rdc);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = "ABC";
   auto gz = gzipCompress(plain);
   ts.server.setHandler([](const HttpRequest& req) {
@@ -322,7 +322,7 @@ TEST(HttpRequestDecompression, ExpansionRatioGuard) {
   rdc.maxExpansionRatio = 2.0;
   rdc.maxDecompressedBytes = 100000;
   cfg.withRequestDecompression(rdc);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   // Highly compressible large input -> gzip then send; expect rejection if ratio >2
   std::string large(100000, 'A');
   auto gz = gzipCompress(large);
@@ -339,7 +339,7 @@ TEST(HttpRequestDecompression, MultiZstdGzipMultiSpaces) {
 #if defined(AERONET_ENABLE_ZSTD) && defined(AERONET_ENABLE_ZLIB)
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = std::string(3200, 'S');
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -358,7 +358,7 @@ TEST(HttpRequestDecompression, TripleChainSpacesTabs) {
 #if defined(AERONET_ENABLE_ZSTD) && defined(AERONET_ENABLE_ZLIB)
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = "TripleChain";
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -378,7 +378,7 @@ TEST(HttpRequestDecompression, MixedCaseTokens) {
 #ifdef AERONET_ENABLE_ZLIB
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = "CaseCheck";
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -397,7 +397,7 @@ TEST(HttpRequestDecompression, IdentityRepeated) {
 #ifdef AERONET_ENABLE_ZLIB
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = "IdentityRepeat";
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -416,7 +416,7 @@ TEST(HttpRequestDecompression, TabsBetweenTokens) {
 #ifdef AERONET_ENABLE_ZLIB
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = "TabsBetween";
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -434,7 +434,7 @@ TEST(HttpRequestDecompression, TabsBetweenTokens) {
 TEST(HttpRequestDecompression, UnknownCodingWithSpacesRejected) {
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = "UnknownSpace";
   // Apply first encoding so that unknown token appears last.
 #ifdef AERONET_ENABLE_ZLIB
@@ -453,7 +453,7 @@ TEST(HttpRequestDecompression, UnknownCodingWithSpacesRejected) {
 TEST(HttpRequestDecompression, EmptyTokenWithSpacesRejected) {
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string body = "abc123";  // intentionally not compressed
   auto resp = rawPost(ts.port(), "/emptsp", {{"Content-Encoding", "identity,  ,identity"}}, body);
   EXPECT_EQ(resp.status, 400);
@@ -465,7 +465,7 @@ TEST(HttpRequestDecompression, CorruptedGzipTruncatedTail) {
 #ifdef AERONET_ENABLE_ZLIB
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = std::string(200, 'G');
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -486,7 +486,7 @@ TEST(HttpRequestDecompression, CorruptedZstdBadMagic) {
 #ifdef AERONET_ENABLE_ZSTD
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = std::string(512, 'Z');
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -511,7 +511,7 @@ TEST(HttpRequestDecompression, CorruptedBrotliTruncated) {
 #ifdef AERONET_ENABLE_BROTLI
   HttpServerConfig cfg{};
   cfg.withRequestDecompression(DecompressionConfig{});
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   std::string plain = std::string(300, 'B');
   ts.server.setHandler([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);  // Not reached for corrupted case

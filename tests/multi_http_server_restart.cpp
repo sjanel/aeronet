@@ -9,9 +9,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/multi-http-server.hpp"
-#include "test_response_parsing.hpp"
-
-using testutil::simpleGet;
+#include "aeronet/test_util.hpp"
 
 // Verifies that MultiHttpServer can be stopped and started again (restart) while reusing the same port by default.
 // HttpServer itself remains single-shot; restart creates fresh HttpServer instances internally.
@@ -28,7 +26,7 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
   auto p1 = multi.port();
   ASSERT_GT(p1, 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(25));
-  auto r1 = simpleGet(p1, "/a", {});
+  auto r1 = aeronet::test::simpleGet(p1, "/a", {});
   ASSERT_EQ(r1.statusCode, 200);
   ASSERT_NE(r1.body.find("Phase1"), std::string::npos);
   multi.stop();
@@ -43,7 +41,7 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
   auto p2 = multi.port();  // same port expected unless user reset cfg.port in between
   EXPECT_EQ(p1, p2);
   std::this_thread::sleep_for(std::chrono::milliseconds(25));
-  auto r2 = simpleGet(p2, "/b", {});
+  auto r2 = aeronet::test::simpleGet(p2, "/b", {});
   ASSERT_EQ(r2.statusCode, 200);
   EXPECT_NE(r2.body.find("Phase2"), std::string::npos);
   multi.stop();

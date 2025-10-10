@@ -1,16 +1,15 @@
-// IWYU: add direct includes for symbols used in tests
 #include <gtest/gtest.h>
 
-#include <chrono>  // chrono literals
-#include <string>  // std::string
-#include <thread>  // std::jthread, sleep_for
+#include <chrono>
+#include <string>
+#include <thread>
 
-#include "aeronet/http-method.hpp"         // aeronet::http::Method
-#include "aeronet/http-request.hpp"        // aeronet::HttpRequest
-#include "aeronet/http-response.hpp"       // aeronet::HttpResponse
-#include "aeronet/http-server-config.hpp"  // aeronet::HttpServerConfig
-#include "aeronet/http-server.hpp"         // aeronet::HttpServer
-#include "test_raw_get.hpp"
+#include "aeronet/http-method.hpp"
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
+#include "aeronet/test_util.hpp"
 
 using namespace std::chrono_literals;
 
@@ -30,8 +29,7 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeAtEndShouldBeAccepted) {
   });
   std::jthread thr([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
-  std::string out;
-  test_helpers::rawGet(server.port(), "/e?x=%", out);
+  std::string out = aeronet::test::simpleGet(server.port(), "/e?x=%");
   EXPECT_NE(out.find("200 OK"), std::string::npos);
   server.stop();
 }
@@ -51,8 +49,8 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeOneHexShouldBeAccepted) {
                         });
   std::jthread thr([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
-  std::string resp;
-  test_helpers::rawGet(server.port(), "/e2?a=%A", resp);
+  std::string resp = aeronet::test::simpleGet(server.port(), "/e2?a=%A");
+
   EXPECT_NE(resp.find("200 OK"), std::string::npos);
   server.stop();
 }
@@ -81,8 +79,7 @@ TEST(HttpQueryParsingEdge, MultiplePairsAndEmptyValue) {
   });
   std::jthread thr([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
-  std::string resp;
-  test_helpers::rawGet(server.port(), "/m?k=1&empty=&novalue", resp);
+  std::string resp = aeronet::test::simpleGet(server.port(), "/m?k=1&empty=&novalue");
   EXPECT_NE(resp.find("EDGE3"), std::string::npos);
   server.stop();
 }
@@ -103,8 +100,8 @@ TEST(HttpQueryParsingEdge, PercentDecodingKeyAndValue) {
                         });
   std::jthread thr([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
-  std::string resp;
-  test_helpers::rawGet(server.port(), "/pd?%66o=bar%20baz", resp);
+  std::string resp = aeronet::test::simpleGet(server.port(), "/pd?%66o=bar%20baz");
+
   EXPECT_NE(resp.find("EDGE4"), std::string::npos);
   server.stop();
 }

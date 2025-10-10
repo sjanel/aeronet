@@ -11,7 +11,8 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_server_fixture.hpp"
+#include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
 
 using namespace aeronet;
 
@@ -25,8 +26,6 @@ bool LooksLikeZlib(std::string_view body) {
   return body.size() >= 2 && static_cast<unsigned char>(body[0]) == 0x78;  // ignore second byte variability
 }
 
-#include "test_response_parsing.hpp"
-using testutil::doGet;
 }  // namespace
 
 TEST(HttpCompressionBuffered, GzipAppliedWhenEligible) {
@@ -35,7 +34,7 @@ TEST(HttpCompressionBuffered, GzipAppliedWhenEligible) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string largePayload(200, 'A');
   ts.server.setHandler([largePayload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
@@ -43,7 +42,7 @@ TEST(HttpCompressionBuffered, GzipAppliedWhenEligible) {
     resp.body(largePayload);
     return resp;
   });
-  auto resp = doGet(ts.port(), "/x", {{"Accept-Encoding", "gzip"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/x", {{"Accept-Encoding", "gzip"}});
   EXPECT_EQ(resp.statusCode, 200);
   auto it = resp.headers.find("Content-Encoding");
   if (it == resp.headers.end()) {
@@ -64,7 +63,7 @@ TEST(HttpCompressionBuffered, UserContentEncodingIdentityDisablesCompression) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(128, 'B');
   ts.server.setHandler([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
@@ -73,7 +72,7 @@ TEST(HttpCompressionBuffered, UserContentEncodingIdentityDisablesCompression) {
     resp.body(payload);
     return resp;
   });
-  auto resp = doGet(ts.port(), "/o", {{"Accept-Encoding", "gzip"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/o", {{"Accept-Encoding", "gzip"}});
   EXPECT_EQ(resp.statusCode, 200);
   // Should remain uncompressed and server must not alter user-provided identity
   auto itCE = resp.headers.find("Content-Encoding");
@@ -88,7 +87,7 @@ TEST(HttpCompressionBuffered, BelowThresholdNotCompressed) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string smallPayload(32, 'C');
   ts.server.setHandler([smallPayload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
@@ -96,7 +95,7 @@ TEST(HttpCompressionBuffered, BelowThresholdNotCompressed) {
     resp.body(smallPayload);
     return resp;
   });
-  auto resp = doGet(ts.port(), "/s", {{"Accept-Encoding", "gzip"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/s", {{"Accept-Encoding", "gzip"}});
   EXPECT_EQ(resp.statusCode, 200);
   EXPECT_EQ(resp.headers.find("Content-Encoding"), resp.headers.end());
   EXPECT_EQ(resp.body.size(), smallPayload.size());
@@ -108,7 +107,7 @@ TEST(HttpCompressionBuffered, NoAcceptEncodingHeaderStillCompressesDefault) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(128, 'D');
   ts.server.setHandler([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
@@ -116,7 +115,7 @@ TEST(HttpCompressionBuffered, NoAcceptEncodingHeaderStillCompressesDefault) {
     resp.body(payload);
     return resp;
   });
-  auto resp = doGet(ts.port(), "/i", {});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/i", {});
   EXPECT_EQ(resp.statusCode, 200);
   auto it = resp.headers.find("Content-Encoding");
   if (it != resp.headers.end()) {
@@ -131,7 +130,7 @@ TEST(HttpCompressionBuffered, IdentityForbiddenNoAlternativesReturns406) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(64, 'Q');
   ts.server.setHandler([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
@@ -140,7 +139,7 @@ TEST(HttpCompressionBuffered, IdentityForbiddenNoAlternativesReturns406) {
     return resp;
   });
   // Client forbids identity and offers only unsupported encodings (br here is unsupported in current build).
-  auto resp = doGet(ts.port(), "/bad", {{"Accept-Encoding", "identity;q=0, br;q=0"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/bad", {{"Accept-Encoding", "identity;q=0, br;q=0"}});
   EXPECT_EQ(resp.statusCode, 406) << "Expected 406 when identity forbidden and no acceptable encoding";
   EXPECT_EQ(resp.body, "No acceptable content-coding available");
 }
@@ -151,7 +150,7 @@ TEST(HttpCompressionBuffered, IdentityForbiddenButGzipAvailableUsesGzip) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(128, 'Z');
   ts.server.setHandler([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
@@ -159,7 +158,7 @@ TEST(HttpCompressionBuffered, IdentityForbiddenButGzipAvailableUsesGzip) {
     resp.body(payload);
     return resp;
   });
-  auto resp = doGet(ts.port(), "/ok", {{"Accept-Encoding", "identity;q=0, gzip"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/ok", {{"Accept-Encoding", "identity;q=0, gzip"}});
   EXPECT_EQ(resp.statusCode, 200);
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end());
@@ -173,7 +172,7 @@ TEST(HttpCompressionBuffered, UnsupportedEncodingDoesNotApplyGzip) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(200, 'E');
   ts.server.setHandler([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
@@ -184,9 +183,9 @@ TEST(HttpCompressionBuffered, UnsupportedEncodingDoesNotApplyGzip) {
   // If brotli support is compiled in, 'br' is actually supported and would trigger compression.
   // Use an obviously unsupported token (snappy) in that case.
 #ifdef AERONET_ENABLE_BROTLI
-  auto resp = doGet(ts.port(), "/br", {{"Accept-Encoding", "snappy"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/br", {{"Accept-Encoding", "snappy"}});
 #else
-  auto resp = doGet(ts.port(), "/br", {{"Accept-Encoding", "br"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/br", {{"Accept-Encoding", "br"}});
 #endif
   EXPECT_EQ(resp.statusCode, 200);
   EXPECT_EQ(resp.headers.find("Content-Encoding"), resp.headers.end());
@@ -199,7 +198,7 @@ TEST(HttpCompressionBuffered, DeflateAppliedWhenPreferredAndAccepted) {
   cfg.preferredFormats.push_back(Encoding::gzip);  // ensure ordering honored
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string largePayload(300, 'F');
   ts.server.setHandler([largePayload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
@@ -207,7 +206,7 @@ TEST(HttpCompressionBuffered, DeflateAppliedWhenPreferredAndAccepted) {
     resp.body(largePayload);
     return resp;
   });
-  auto resp = doGet(ts.port(), "/d1", {{"Accept-Encoding", "deflate,gzip"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/d1", {{"Accept-Encoding", "deflate,gzip"}});
   EXPECT_EQ(resp.statusCode, 200);
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end());
@@ -223,7 +222,7 @@ TEST(HttpCompressionBuffered, GzipChosenWhenHigherPreference) {
   cfg.preferredFormats.push_back(Encoding::deflate);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(256, 'G');
   ts.server.setHandler([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
@@ -231,7 +230,7 @@ TEST(HttpCompressionBuffered, GzipChosenWhenHigherPreference) {
     resp.body(payload);
     return resp;
   });
-  auto resp = doGet(ts.port(), "/d2", {{"Accept-Encoding", "gzip,deflate"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/d2", {{"Accept-Encoding", "gzip,deflate"}});
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "gzip");
@@ -246,7 +245,7 @@ TEST(HttpCompressionBuffered, QValuesAffectSelection) {
   cfg.preferredFormats.push_back(Encoding::deflate);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(180, 'H');
   ts.server.setHandler([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
@@ -254,7 +253,7 @@ TEST(HttpCompressionBuffered, QValuesAffectSelection) {
     resp.body(payload);
     return resp;
   });
-  auto resp = doGet(ts.port(), "/d3", {{"Accept-Encoding", "gzip;q=0.1, deflate;q=0.9"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/d3", {{"Accept-Encoding", "gzip;q=0.1, deflate;q=0.9"}});
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "deflate");
@@ -267,7 +266,7 @@ TEST(HttpCompressionBuffered, IdentityFallbackIfDeflateNotRequested) {
   cfg.preferredFormats.push_back(Encoding::deflate);  // Only influences tie-breaks; does not disable gzip.
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(256, 'I');
   ts.server.setHandler([payload](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
@@ -275,7 +274,8 @@ TEST(HttpCompressionBuffered, IdentityFallbackIfDeflateNotRequested) {
     resp.body(payload);
     return resp;
   });
-  auto resp = doGet(ts.port(), "/d4", {{"Accept-Encoding", "gzip"}});  // client does NOT list deflate
+  auto resp =
+      aeronet::test::simpleGet(ts.port(), "/d4", {{"Accept-Encoding", "gzip"}});  // client does NOT list deflate
   auto it = resp.headers.find("Content-Encoding");
   // Under current semantics gzip is still chosen (higher q than identity) even if not in preferredFormats.
   ASSERT_NE(it, resp.headers.end());

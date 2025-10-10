@@ -3,7 +3,7 @@ function(aeronet_http_test NAME SOURCE)
 	# SOURCE: single cpp file in this directory
 	set(TGT ${NAME}_test)
 	add_project_executable(${TGT} ${SOURCE})
-	target_link_libraries(${TGT} PRIVATE aeronet GTest::gtest GTest::gmock GTest::gmock_main)
+	target_link_libraries(${TGT} PRIVATE aeronet aeronet_test_support GTest::gtest GTest::gmock GTest::gmock_main)
 	add_test(NAME ${NAME} COMMAND ${TGT})
 endfunction()
 
