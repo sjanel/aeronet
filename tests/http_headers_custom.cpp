@@ -1,20 +1,16 @@
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <string>
 #include <utility>
 
+#include "aeronet/compression-config.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/test_util.hpp"
 #include "test_server_fixture.hpp"
-
-using namespace std::chrono_literals;
-
-#include "aeronet/compression-config.hpp"
-#include "aeronet/encoding.hpp"
 
 TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
   TestServer ts(aeronet::HttpServerConfig{});

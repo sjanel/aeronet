@@ -19,7 +19,7 @@
 
 namespace aeronet {
 
-TlsHandshakeResult collectTlsHandshakeInfo(SSL* ssl, std::chrono::steady_clock::time_point handshakeStart) {
+TlsHandshakeResult collectTlsHandshakeInfo(const SSL* ssl, std::chrono::steady_clock::time_point handshakeStart) {
   TlsHandshakeResult res;
   if (ssl == nullptr) {
     return res;
@@ -60,7 +60,7 @@ TlsHandshakeResult collectTlsHandshakeInfo(SSL* ssl, std::chrono::steady_clock::
   return res;
 }
 
-TlsHandshakeResult collectAndLogTlsHandshake(SSL* ssl, int fd, bool logHandshake,
+TlsHandshakeResult collectAndLogTlsHandshake(const SSL* ssl, int fd, bool logHandshake,
                                              std::chrono::steady_clock::time_point handshakeStart) {
   auto res = collectTlsHandshakeInfo(ssl, handshakeStart);
   if (logHandshake) {
@@ -73,9 +73,9 @@ TlsHandshakeResult collectAndLogTlsHandshake(SSL* ssl, int fd, bool logHandshake
   return res;
 }
 
-void finalizeTlsHandshake(SSL* ssl, int fd, bool logHandshake, std::chrono::steady_clock::time_point handshakeStart,
-                          std::string& selectedAlpn, std::string& negotiatedCipher, std::string& negotiatedVersion,
-                          TlsMetricsInternal& metrics) {
+void finalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake,
+                          std::chrono::steady_clock::time_point handshakeStart, std::string& selectedAlpn,
+                          std::string& negotiatedCipher, std::string& negotiatedVersion, TlsMetricsInternal& metrics) {
   auto hs = collectAndLogTlsHandshake(ssl, fd, logHandshake, handshakeStart);
   selectedAlpn = std::move(hs.selectedAlpn);
   negotiatedCipher = std::move(hs.negotiatedCipher);
