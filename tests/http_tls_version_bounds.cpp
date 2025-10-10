@@ -9,14 +9,14 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/server-stats.hpp"  // aeronet::ServerStats
-#include "test_server_tls_fixture.hpp"
-#include "test_tls_client.hpp"
+#include "aeronet/test_server_tls_fixture.hpp"
+#include "aeronet/test_tls_client.hpp"
 
 TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
   std::string capturedVersion;
   aeronet::ServerStats statsAfter{};
   {
-    TlsTestServer ts({"http/1.1"}, [](aeronet::HttpServerConfig& cfg) {
+    aeronet::test::TlsTestServer ts({"http/1.1"}, [](aeronet::HttpServerConfig& cfg) {
       cfg.withTlsMinVersion("TLS1.2").withTlsMaxVersion("TLS1.2");
     });
     auto port = ts.port();
@@ -27,9 +27,9 @@ TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
 
       return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body("V");
     });
-    TlsClient::Options opts;
+    aeronet::test::TlsClient::Options opts;
     opts.alpn = {"http/1.1"};
-    TlsClient client(port, opts);
+    aeronet::test::TlsClient client(port, opts);
     ASSERT_TRUE(client.handshakeOk());
     auto resp = client.get("/v");
     statsAfter = ts.stats();
@@ -55,6 +55,6 @@ TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
 TEST(HttpTlsVersionBounds, InvalidMinVersionThrows) {
   // Provide invalid version string -> expect construction failure.
   EXPECT_THROW(
-      { TlsTestServer ts({}, [](aeronet::HttpServerConfig& cfg) { cfg.withTlsMinVersion("TLS1.1"); }); },
+      { aeronet::test::TlsTestServer ts({}, [](aeronet::HttpServerConfig& cfg) { cfg.withTlsMinVersion("TLS1.1"); }); },
       std::runtime_error);
 }

@@ -11,17 +11,17 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_http_client.hpp"
+#include "aeronet/test_util.hpp"
 
 using namespace std::chrono_literals;
 
 namespace {
 std::string rawGet(uint16_t port) {
-  test_http_client::RequestOptions opt;
+  aeronet::test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/";
   opt.connection = "close";
-  auto resp = test_http_client::request(port, opt);
+  auto resp = aeronet::test::request(port, opt);
   return resp.value_or("");
 }
 

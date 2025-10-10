@@ -6,9 +6,9 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "test_server_tls_fixture.hpp"
-#include "test_tls_client.hpp"
-#include "test_tls_helper.hpp"
+#include "aeronet/test_server_tls_fixture.hpp"
+#include "aeronet/test_tls_client.hpp"
+#include "aeronet/test_tls_helper.hpp"
 
 // Test mutual TLS requirement and ALPN negotiation (server selects http/1.1)
 
@@ -19,7 +19,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertHandshakeFailsWithout) {
   std::string resp;
   std::string alpn;
   {
-    TlsTestServer ts({"http/1.1"}, [&](aeronet::HttpServerConfig& cfg) {
+    aeronet::test::TlsTestServer ts({"http/1.1"}, [&](aeronet::HttpServerConfig& cfg) {
       cfg.withTlsRequireClientCert(true).withTlsAddTrustedClientCert(serverCert.first);
     });
     auto port = ts.port();
@@ -29,10 +29,10 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertHandshakeFailsWithout) {
           .contentType(aeronet::http::ContentTypeTextPlain)
           .body(std::string("SECURE") + std::string(req.path()));
     });
-    TlsClient::Options opts;
+    aeronet::test::TlsClient::Options opts;
     opts.alpn = {"http/1.1"};
     // No client cert provided, so handshake should fail due to required client cert.
-    TlsClient client(port, opts);
+    aeronet::test::TlsClient client(port, opts);
     if (client.handshakeOk()) {
       resp = client.get("/secure");
       alpn = client.negotiatedAlpn();
@@ -51,7 +51,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertSuccessWithAlpn) {
   std::string resp;
   std::string alpn;
   {
-    TlsTestServer ts({"http/1.1"}, [&](aeronet::HttpServerConfig& cfg) {
+    aeronet::test::TlsTestServer ts({"http/1.1"}, [&](aeronet::HttpServerConfig& cfg) {
       cfg.withTlsRequireClientCert(true).withTlsAddTrustedClientCert(clientCert.first);
     });
     auto port = ts.port();
@@ -61,11 +61,11 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertSuccessWithAlpn) {
           .contentType(aeronet::http::ContentTypeTextPlain)
           .body(std::string("SECURE") + std::string(req.path()));
     });
-    TlsClient::Options opts;
+    aeronet::test::TlsClient::Options opts;
     opts.alpn = {"http/1.1"};
     opts.clientCertPem = clientCert.first;
     opts.clientKeyPem = clientCert.second;
-    TlsClient client(port, opts);
+    aeronet::test::TlsClient client(port, opts);
     ASSERT_TRUE(client.handshakeOk());
     resp = client.get("/secure");
     alpn = client.negotiatedAlpn();

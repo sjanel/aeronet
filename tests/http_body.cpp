@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <chrono>   // chrono literals (leave even if IWYU flags chrono; requested to ignore chrono issues)
 #include <cstdint>  // uint16_t
 #include <string>   // std::string
 #include <utility>  // std::move
@@ -9,25 +8,23 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_http_client.hpp"
-#include "test_server_fixture.hpp"
-
-using namespace std::chrono_literals;
+#include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
 
 namespace {
 std::string httpGet(uint16_t port, const std::string& target) {
-  test_http_client::RequestOptions opt;
+  aeronet::test::RequestOptions opt;
   opt.method = "GET";
   opt.target = target;
   opt.connection = "close";
   opt.headers.emplace_back("X-Test", "abc123");
-  auto resp = test_http_client::request(port, opt);
+  auto resp = aeronet::test::request(port, opt);
   return resp.value_or("");
 }
 }  // namespace
 
 TEST(HttpBasic, SimpleGet) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     auto testHeaderIt = req.headers().find("X-Test");
@@ -41,7 +38,6 @@ TEST(HttpBasic, SimpleGet) {
     return resp;
   });
   std::string resp = httpGet(ts.port(), "/abc");
-  ts.stop();
   ASSERT_FALSE(resp.empty());
   ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));
   ASSERT_NE(std::string::npos, resp.find("You requested: /abc"));

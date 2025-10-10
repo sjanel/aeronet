@@ -7,15 +7,15 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/server-stats.hpp"
-#include "test_server_tls_fixture.hpp"
-#include "test_tls_client.hpp"
+#include "aeronet/test_server_tls_fixture.hpp"
+#include "aeronet/test_tls_client.hpp"
 
 TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
   std::string capturedAlpn;
   aeronet::ServerStats statsAfter{};
   {
     // Server prefers h2, but does NOT enforce match.
-    TlsTestServer ts({"h2"});
+    aeronet::test::TlsTestServer ts({"h2"});
     auto port = ts.port();
     ts.setHandler([&](const aeronet::HttpRequest& req) {
       if (!req.alpnProtocol().empty()) {
@@ -25,9 +25,9 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
       }
       return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body("NS");
     });
-    TlsClient::Options opts;
+    aeronet::test::TlsClient::Options opts;
     opts.alpn = {"foo"};  // no overlap
-    TlsClient client(port, opts);
+    aeronet::test::TlsClient client(port, opts);
     ASSERT_TRUE(client.handshakeOk());
     auto resp = client.get("/non_strict");
     statsAfter = ts.stats();

@@ -13,6 +13,8 @@
 #include "aeronet/http-server.hpp"
 #include "aeronet/test_util.hpp"
 
+namespace aeronet::test {
+
 // Lightweight RAII test server harness to reduce boilerplate in unit tests.
 // Responsibilities:
 //  * Construct HttpServer (binds & listens immediately)
@@ -65,3 +67,5 @@ struct TestServer {
   std::jthread loopThread;  // auto-join on destruction
   std::atomic_bool stopFlag{false};
 };
+
+}  // namespace aeronet::test

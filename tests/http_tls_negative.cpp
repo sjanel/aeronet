@@ -7,9 +7,9 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/test_server_tls_fixture.hpp"
+#include "aeronet/test_tls_client.hpp"
 #include "aeronet/test_util.hpp"
-#include "test_server_tls_fixture.hpp"
-#include "test_tls_client.hpp"
 
 namespace {
 // Helper: perform a raw TCP connect and send cleartext HTTP to a TLS-only port -> should fail handshake quickly.
@@ -27,7 +27,7 @@ bool attemptPlainHttp(auto port) {
 
 // Large response GET using TlsClient (simplified replacement).
 std::string tlsGetLarge(auto port) {
-  TlsClient client(port);
+  aeronet::test::TlsClient client(port);
   if (!client.handshakeOk()) {
     return {};
   }
@@ -38,7 +38,7 @@ std::string tlsGetLarge(auto port) {
 TEST(HttpTlsNegative, PlainHttpToTlsPortRejected) {
   bool result = false;
   {
-    TlsTestServer ts;  // default TLS (no ALPN needed here)
+    aeronet::test::TlsTestServer ts;  // default TLS (no ALPN needed here)
     result = attemptPlainHttp(ts.port());
     ts.stop();
   }
@@ -49,7 +49,7 @@ TEST(HttpTlsNegative, PlainHttpToTlsPortRejected) {
 TEST(HttpTlsNegative, LargeResponseFragmentation) {
   std::string resp;
   {
-    TlsTestServer ts;  // basic TLS
+    aeronet::test::TlsTestServer ts;  // basic TLS
     auto port = ts.port();
     ts.setHandler([](const aeronet::HttpRequest&) {
       return aeronet::HttpResponse(200)

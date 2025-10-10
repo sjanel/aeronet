@@ -1,14 +1,12 @@
 #pragma once
 
 #include <gtest/gtest.h>
+#include <zstd.h>
 
 #include <cassert>
+#include <cstddef>
 #include <string>
 #include <string_view>
-
-#ifdef AERONET_ENABLE_ZSTD
-#include <zstd.h>
-#endif
 
 namespace aeronet::test {
 
@@ -16,32 +14,28 @@ namespace aeronet::test {
 // (via frame header) we trust it; otherwise we fall back to an expected size hint.
 // expectedDecompressedSizeHint may be zero; in that case and when the frame size is
 // unknown we return an empty string to signal inability (tests can decide how to handle).
-inline std::string zstdRoundTripDecompress([[maybe_unused]] std::string_view compressed,
-                                           [[maybe_unused]] std::size_t expectedDecompressedSizeHint = 0) {
-#ifndef AERONET_ENABLE_ZSTD
-  return {};  // zstd not enabled
-#else
-  if (compressed.empty()) {
-    return {};
-  }
-  size_t frameSize = ZSTD_getFrameContentSize(compressed.data(), compressed.size());
+inline std::string zstdRoundTripDecompress(std::string_view compressed, std::size_t expectedDecompressedSizeHint = 0) {
   std::string out;
+  if (compressed.empty()) {
+    return out;
+  }
+  std::size_t frameSize = ZSTD_getFrameContentSize(compressed.data(), compressed.size());
   if (frameSize != ZSTD_CONTENTSIZE_ERROR && frameSize != ZSTD_CONTENTSIZE_UNKNOWN) {
     out.assign(frameSize, '\0');
-    size_t const dsz = ZSTD_decompress(out.data(), out.size(), compressed.data(), compressed.size());
+    std::size_t const dsz = ZSTD_decompress(out.data(), out.size(), compressed.data(), compressed.size());
     EXPECT_NE(ZSTD_isError(dsz), 1);
     out.resize(dsz);
     return out;
   }
   if (expectedDecompressedSizeHint == 0) {
-    return {};  // insufficient information
+    out.clear();
+    return out;  // insufficient information
   }
   out.assign(expectedDecompressedSizeHint, '\0');
-  size_t const dsz = ZSTD_decompress(out.data(), out.size(), compressed.data(), compressed.size());
+  std::size_t const dsz = ZSTD_decompress(out.data(), out.size(), compressed.data(), compressed.size());
   EXPECT_NE(ZSTD_isError(dsz), 1);
   out.resize(dsz);
   return out;
-#endif
 }
 
 }  // namespace aeronet::test

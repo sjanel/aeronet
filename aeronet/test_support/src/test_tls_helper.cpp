@@ -1,18 +1,20 @@
-// Shared test utility for generating ephemeral self-signed RSA certificates entirely in memory.
-// Returns {certPem, keyPem}. Intended ONLY for tests – no persistence, 2048-bit RSA, 1h validity.
-#pragma once
+#include "aeronet/test_tls_helper.hpp"
 
+#include <openssl/asn1.h>
+#include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/rsa.h>
+#include <openssl/types.h>
 #include <openssl/x509.h>
 
+#include <cstddef>
 #include <string>
 #include <utility>
 
 namespace aeronet::test {
 
-inline std::pair<std::string, std::string> makeEphemeralCertKey(const char* commonName = "localhost",
-                                                                int validSeconds = 3600) {
+std::pair<std::string, std::string> makeEphemeralCertKey(const char* commonName, int validSeconds) {
   EVP_PKEY* pkey = nullptr;
   EVP_PKEY_CTX* kctx = EVP_PKEY_CTX_new_from_name(nullptr, "RSA", nullptr);
   if (kctx == nullptr) {

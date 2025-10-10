@@ -1,5 +1,3 @@
-# CMake for aeronet library nested structure
-
 aux_source_directory(src/ AERONET_SRC_LIST)
 
 add_project_library(aeronet
@@ -11,7 +9,6 @@ add_library(aeronet::aeronet ALIAS aeronet)
 target_include_directories(aeronet
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/aeronet/test_support/include>
         $<INSTALL_INTERFACE:include>
 )
 

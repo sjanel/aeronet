@@ -10,7 +10,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_raw_get.hpp"
+#include "aeronet/test_util.hpp"
 
 TEST(HttpServerMove, MoveConstructAndServe) {
   std::atomic_bool stop{false};
@@ -27,8 +27,8 @@ TEST(HttpServerMove, MoveConstructAndServe) {
 
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  std::string resp;
-  test_helpers::rawGet(port, "/mv", resp);
+  std::string resp = aeronet::test::simpleGet(port, "/mv");
+
   stop.store(true);
 
   ASSERT_NE(std::string::npos, resp.find("ORIG:/mv"));
@@ -60,8 +60,7 @@ TEST(HttpServerMove, MoveAssignWhileStopped) {
   std::atomic_bool stop{false};
   std::jthread th([&] { s1.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(120));
-  std::string resp;
-  test_helpers::rawGet(port2, "/x", resp);
+  std::string resp = aeronet::test::simpleGet(port2, "/x");
   stop.store(true);
   ASSERT_NE(std::string::npos, resp.find("S2"));
 }

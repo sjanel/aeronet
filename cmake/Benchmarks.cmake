@@ -82,26 +82,49 @@ set(AERONET_BENCH_INTERNAL_SOURCES
   ${AERONET_BENCH_ROOT}/internal/bench_request_parse.cpp
 )
 
-# Internal microbenchmarks (Google Benchmark main contained in bench_request_parse.cpp)
-add_project_executable(aeronet-bench-internal ${AERONET_BENCH_INTERNAL_SOURCES})
-if(TARGET aeronet)
-  target_link_libraries(aeronet-bench-internal PRIVATE aeronet benchmark::benchmark)
+include(CheckIPOSupported)
+
+check_ipo_supported(RESULT result OUTPUT output LANGUAGES CXX)
+if(result)
+  set(AERONET_IPO_SUPPORTED TRUE)
+  set(AERONET_IPO_OUTPUT "${output}")
 else()
-  message(WARNING "[aeronet][bench] 'aeronet' target not found; aeronet-bench-internal will fail to link")
+  set(AERONET_IPO_SUPPORTED FALSE)
+  set(AERONET_IPO_OUTPUT "${output}")
+  message(WARNING "IPO is not supported: ${output}")
 endif()
-set_target_properties(aeronet-bench-internal PROPERTIES FOLDER "benchmarks")
+
+# Helper to create a benchmark executable with common properties.
+# Usage: add_project_benchmark(<target> <sources...>)
+function(add_project_benchmark target)
+  if(ARGC LESS 2)
+    message(FATAL_ERROR "add_project_benchmark requires at least target and one source")
+  endif()
+  # Collect sources (all remaining args)
+  set(sources ${ARGN})
+
+  # Create the executable using the project's helper macro
+  add_project_executable(${target} ${sources})
+  target_link_libraries(${target} PRIVATE aeronet aeronet_test_support benchmark::benchmark)
+  set_target_properties(${target} PROPERTIES FOLDER "benchmarks")
+
+  # Enable LTO/IPO if available and in Release builds
+  if(AERONET_IPO_SUPPORTED AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    message(STATUS "Activate LTO for ${target}")
+  endif()
+endfunction()
+
+
+# Internal microbenchmarks (Google Benchmark main contained in bench_request_parse.cpp)
+add_project_benchmark(aeronet-bench-internal ${AERONET_BENCH_INTERNAL_SOURCES})
 
 # Throughput benchmark (simple skeleton; not using Google Benchmark intentionally)
-if(TARGET aeronet)
-  add_project_executable(aeronet-bench-throughput ${AERONET_BENCH_ROOT}/e2e/bench_throughput_local.cpp)
-  target_link_libraries(aeronet-bench-throughput PRIVATE aeronet benchmark::benchmark)
-  set_target_properties(aeronet-bench-throughput PROPERTIES FOLDER "benchmarks")
-endif()
+add_project_benchmark(aeronet-bench-throughput ${AERONET_BENCH_ROOT}/e2e/bench_throughput_local.cpp)
 
 # Comparative framework benchmark (aeronet vs optional drogon/oatpp)
 set(AERONET_BENCH_FRAMEWORKS_SOURCES ${AERONET_BENCH_ROOT}/frameworks/bench_frameworks_basic.cpp)
-add_project_executable(aeronet-bench-frameworks ${AERONET_BENCH_FRAMEWORKS_SOURCES})
-target_link_libraries(aeronet-bench-frameworks PRIVATE aeronet benchmark::benchmark)
+add_project_benchmark(aeronet-bench-frameworks ${AERONET_BENCH_FRAMEWORKS_SOURCES})
 target_include_directories(aeronet-bench-frameworks PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 
 if(AERONET_BENCH_ENABLE_HTTPLIB AND DEFINED cpp_httplib_SOURCE_DIR)

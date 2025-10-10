@@ -12,8 +12,8 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_response_parsing.hpp"
-#include "test_server_fixture.hpp"
+#include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
 
 using namespace aeronet;
 
@@ -23,7 +23,6 @@ bool HasGzipMagic(std::string_view body) {
   return body.size() >= 2 && static_cast<unsigned char>(body[0]) == 0x1f && static_cast<unsigned char>(body[1]) == 0x8b;
 }
 
-using testutil::simpleGet;
 }  // namespace
 
 // NOTE: These streaming tests validate that compression is applied (or not) and that negotiation picks
@@ -36,7 +35,7 @@ TEST(HttpCompressionStreaming, GzipActivatedOverThreshold) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string part1(40, 'a');
   std::string part2(80, 'b');
   ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
@@ -46,7 +45,7 @@ TEST(HttpCompressionStreaming, GzipActivatedOverThreshold) {
     writer.write(part2);  // crosses threshold -> compression should activate
     writer.end();
   });
-  auto resp = simpleGet(ts.port(), "/sgz", {{"Accept-Encoding", "gzip"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/sgz", {{"Accept-Encoding", "gzip"}});
   // NOTE: Current implementation emits headers before compression activation, so Content-Encoding
   // may be absent even though body bytes are compressed. Accept either presence or absence but
   // verify gzip magic appears in body to confirm activation.
@@ -64,7 +63,7 @@ TEST(HttpCompressionStreaming, DeflateActivatedOverThreshold) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(128, 'X');
   ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
@@ -73,7 +72,7 @@ TEST(HttpCompressionStreaming, DeflateActivatedOverThreshold) {
     writer.write(payload.substr(40));
     writer.end();
   });
-  auto resp = simpleGet(ts.port(), "/sdf", {{"Accept-Encoding", "deflate,gzip"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/sdf", {{"Accept-Encoding", "deflate,gzip"}});
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end())
       << "Content-Encoding header should be present after delayed header emission refactor";
@@ -88,7 +87,7 @@ TEST(HttpCompressionStreaming, BelowThresholdIdentity) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string small(40, 'y');
   ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
@@ -96,7 +95,7 @@ TEST(HttpCompressionStreaming, BelowThresholdIdentity) {
     writer.write(small);  // never crosses threshold
     writer.end();
   });
-  auto resp = simpleGet(ts.port(), "/sid", {{"Accept-Encoding", "gzip"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/sid", {{"Accept-Encoding", "gzip"}});
   EXPECT_EQ(resp.headers.find("Content-Encoding"), resp.headers.end());
   EXPECT_NE(std::string::npos, resp.body.find('y'));
 }
@@ -107,7 +106,7 @@ TEST(HttpCompressionStreaming, UserProvidedContentEncodingIdentityPreventsActiva
   cfg.preferredFormats.push_back(Encoding::gzip);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string big(200, 'Z');
   ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
@@ -117,7 +116,7 @@ TEST(HttpCompressionStreaming, UserProvidedContentEncodingIdentityPreventsActiva
     writer.write(big.substr(50));
     writer.end();
   });
-  auto resp = simpleGet(ts.port(), "/soff", {{"Accept-Encoding", "gzip"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/soff", {{"Accept-Encoding", "gzip"}});
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "identity");
@@ -132,7 +131,7 @@ TEST(HttpCompressionStreaming, QValuesInfluenceStreamingSelection) {
   cfg.preferredFormats.push_back(Encoding::deflate);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(180, 'Q');
   ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
@@ -141,7 +140,7 @@ TEST(HttpCompressionStreaming, QValuesInfluenceStreamingSelection) {
     writer.write(payload.substr(60));
     writer.end();
   });
-  auto resp = simpleGet(ts.port(), "/sqv", {{"Accept-Encoding", "gzip;q=0.1, deflate;q=0.9"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/sqv", {{"Accept-Encoding", "gzip;q=0.1, deflate;q=0.9"}});
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "deflate");
@@ -153,7 +152,7 @@ TEST(HttpCompressionStreaming, IdentityForbiddenNoAlternativesReturns406) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   HttpServerConfig scfg{};
   scfg.withCompression(cfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(64, 'Q');
   ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);  // will be overridden to 406 before handler invoked if negotiation rejects
@@ -161,7 +160,7 @@ TEST(HttpCompressionStreaming, IdentityForbiddenNoAlternativesReturns406) {
     writer.write(payload);
     writer.end();
   });
-  auto resp = simpleGet(ts.port(), "/sbad", {{"Accept-Encoding", "identity;q=0, br;q=0"}});
+  auto resp = aeronet::test::simpleGet(ts.port(), "/sbad", {{"Accept-Encoding", "identity;q=0, br;q=0"}});
   EXPECT_TRUE(resp.headersRaw.rfind("HTTP/1.1 406", 0) == 0) << resp.headersRaw;
   EXPECT_EQ(resp.body, "No acceptable content-coding available");
 }

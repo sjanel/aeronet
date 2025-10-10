@@ -2,32 +2,32 @@
 
 #include <algorithm>
 #include <charconv>
-#include <cstddef>  // std::size_t
-#include <cstdint>  // uint16_t in blockingFetch signature
+#include <cstddef>
+#include <cstdint>
 #include <string>
-#include <system_error>  // std::errc
+#include <system_error>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_http_client.hpp"
-#include "test_server_fixture.hpp"
+#include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
 
 namespace {
 std::string blockingFetch(uint16_t port, const std::string& verb, const std::string& target) {
-  test_http_client::RequestOptions opt;
+  aeronet::test::RequestOptions opt;
   opt.method = verb;
   opt.target = target;
   opt.connection = "close";
-  auto resp = test_http_client::request(port, opt);
+  auto resp = aeronet::test::request(port, opt);
   return resp ? *resp : std::string{};
 }
 }  // namespace
 
 TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
   aeronet::HttpServerConfig cfg;
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   auto port = ts.port();
   constexpr std::size_t kLargeSize = 5000;  // > 4096 threshold used in writer
   std::string large(kLargeSize, 'x');
