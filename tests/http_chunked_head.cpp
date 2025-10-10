@@ -1,6 +1,8 @@
 ﻿#include <gtest/gtest.h>
+#include <sys/socket.h>
 
 #include <cerrno>
+#include <cstddef>
 #include <string>
 
 #include "aeronet/http-constants.hpp"
@@ -73,18 +75,24 @@ TEST(HttpExpect, ContinueFlow) {
   auto port = ts.port();
   ts.server.setHandler([](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body()); });
   aeronet::test::ClientConnection cnx(port);
+  auto fd = cnx.fd();
   std::string headers =
       "POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
-  auto hs = ::send(cnx.fd(), headers.data(), headers.size(), 0);
-  ASSERT_EQ(hs, static_cast<decltype(hs)>(headers.size()));
-  // read interim 100
-  char buf[128];
-  auto firstRead = ::recv(cnx.fd(), buf, sizeof(buf), 0);
-  std::string interim(buf, buf + (firstRead > 0 ? firstRead : 0));
+  auto ok = aeronet::test::sendAll(cnx.fd(), headers);
+  ASSERT_TRUE(ok);
+  std::string interim;
+  static constexpr std::size_t kChunkSize = 128;
+  interim.resize_and_overwrite(kChunkSize, [fd](char* buf, [[maybe_unused]] std::size_t) {
+    auto firstRead = ::recv(fd, buf, kChunkSize, 0);
+    if (firstRead >= 0) {
+      return static_cast<std::size_t>(firstRead);
+    }
+    return std::size_t{};
+  });
   ASSERT_NE(std::string::npos, interim.find("100 Continue"));
   std::string body = "hello";
   auto bs = ::send(cnx.fd(), body.data(), body.size(), 0);
-  ASSERT_EQ(bs, static_cast<decltype(hs)>(body.size()));
+  ASSERT_EQ(bs, static_cast<decltype(headers.size())>(body.size()));
 
   aeronet::test::sendAll(cnx.fd(), "");
   std::string full = interim + aeronet::test::recvUntilClosed(cnx.fd());

@@ -7,6 +7,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 
 namespace aeronet {
