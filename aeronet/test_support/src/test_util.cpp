@@ -464,7 +464,7 @@ std::optional<std::string> request(uint16_t port, const RequestOptions &opt) {
 
     out.resize_and_overwrite(out.size() + kChunkSize, [fd, oldSize](char *data, [[maybe_unused]] std::size_t newCap) {
       ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);
-      if (recvBytes <= 0) {
+      if (recvBytes < 0) {
         aeronet::log::error("request: recv error or connection closed, errno={}", std::strerror(errno));
         return oldSize;  // timeout or close
       }

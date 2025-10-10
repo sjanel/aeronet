@@ -18,7 +18,7 @@ TEST(StreamingBackpressure, LargeBodyQueues) {
   cfg.maxOutboundBufferBytes = static_cast<std::size_t>(64 * 1024);  // assume default maybe larger
   aeronet::test::TestServer ts(cfg);
   std::size_t total = static_cast<std::size_t>(512 * 1024);  // 512 KB
-  ts.server.setStreamingHandler([&]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+  ts.server.router().setDefault([&]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
     writer.statusCode(200);
     std::string chunk(8192, 'x');
     std::size_t sent = 0;

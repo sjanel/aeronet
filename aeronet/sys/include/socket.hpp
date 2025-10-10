@@ -11,6 +11,8 @@ class Socket {
 
   Socket(int type, int protocol = 0);
 
+  [[nodiscard]] bool isOpened() const noexcept { return _baseFd.isOpened(); }
+
   [[nodiscard]] int fd() const noexcept { return _baseFd.fd(); }
 
   void close() noexcept { _baseFd.close(); }

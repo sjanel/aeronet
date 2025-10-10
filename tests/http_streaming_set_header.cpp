@@ -42,7 +42,7 @@ void doRequest(auto port, const std::string& verb, const std::string& target, st
 TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.setStreamingHandler([](const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
     bool isHead = req.method() == aeronet::http::Method::HEAD;
     writer.statusCode(200);
     writer.customHeader("X-Custom-A", "alpha");

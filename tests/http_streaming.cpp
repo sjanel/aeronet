@@ -29,7 +29,7 @@ std::string blockingFetch(uint16_t port, const std::string& verb, const std::str
 TEST(HttpStreaming, ChunkedSimple) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.setStreamingHandler(
+  ts.server.router().setDefault(
       []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
         writer.statusCode(200);
         writer.contentType("text/plain");
@@ -49,7 +49,7 @@ TEST(HttpStreaming, ChunkedSimple) {
 TEST(HttpStreaming, HeadSuppressedBody) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.setStreamingHandler(
+  ts.server.router().setDefault(
       []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
         writer.statusCode(200);
         writer.contentType("text/plain");

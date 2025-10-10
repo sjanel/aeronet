@@ -22,6 +22,7 @@
 #include "log.hpp"
 #include "static-string-view-helpers.hpp"
 #include "string-equal-ignore-case.hpp"
+#include "timedef.hpp"
 
 namespace aeronet {
 
@@ -137,8 +138,8 @@ void HttpResponseWriter::ensureHeadersSent() {
   // Do NOT add Content-Encoding at header emission time; we wait until we actually activate
   // compression (threshold reached) to avoid mislabeling identity bodies when size < threshold.
   // Do not attempt to add Connection/Date here; finalize handles them (adds Date, Connection based on keepAlive flag).
-  auto finalized = _fixedResponse.finalizeAndGetFullTextResponse(
-      http::HTTP_1_1, _server->_cachedDateEpoch, !_requestConnClose, _server->_config.globalHeaders, _head);
+  auto finalized = _fixedResponse.finalizeAndGetFullTextResponse(http::HTTP_1_1, Clock::now(), !_requestConnClose,
+                                                                 _server->_config.globalHeaders, _head);
   if (!enqueue(finalized)) {
     _failed = true;
     _ended = true;

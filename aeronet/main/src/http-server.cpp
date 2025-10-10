@@ -15,9 +15,7 @@
 #include <functional>
 #include <memory>
 #include <stdexcept>
-#include <string>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 
 #include "aeronet/http-request.hpp"
@@ -26,6 +24,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
 #ifdef AERONET_ENABLE_BROTLI
 #include "aeronet/brotli-decoder.hpp"
@@ -44,11 +43,9 @@
 #endif
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-method-set.hpp"
 #include "aeronet/http-method.hpp"
 #include "connection-state.hpp"
 #include "http-error-build.hpp"
-#include "http-method-build.hpp"
 #include "log.hpp"
 #include "socket.hpp"
 #include "string-equal-ignore-case.hpp"
@@ -61,112 +58,14 @@
 
 namespace aeronet {
 
-// HttpServer constructor
-// Performs full listener initialization (RAII style) so that port() is valid immediately after construction.
-// Steps (in order) and rationale / failure characteristics:
-//   1. socket(AF_INET, SOCK_STREAM, 0)
-//        - Expected to succeed under normal conditions. Failure indicates resource exhaustion
-//          (EMFILE per-process fd limit, ENFILE system-wide, ENOBUFS/ENOMEM) or misconfiguration (rare EACCES).
-//   2. setsockopt(SO_REUSEADDR)
-//        - Practically infallible unless programming error (EINVAL) or extreme memory pressure (ENOMEM).
-//          Mandatory to allow rapid restart after TIME_WAIT collisions.
-//   3. setsockopt(SO_REUSEPORT) (optional best-effort)
-//        - Enabled only if cfg.reusePort. May fail on older kernels (EOPNOTSUPP/EINVAL) -> logged as warning only,
-//          not fatal. This provides horizontal scaling (multi-reactor) when supported.
-//   4. bind()
-//        - Most common legitimate failure point: EADDRINUSE when user supplies a fixed port already in use, or
-//          EACCES for privileged ports (<1024) without CAP_NET_BIND_SERVICE. With cfg.port == 0 (ephemeral) the
-//          collision probability is effectively eliminated; failures then usually imply resource exhaustion or
-//          misconfiguration. Chosen early to surface environmental issues promptly.
-//   5. listen()
-//        - Rarely fails after successful bind; would signal extreme resource pressure or unexpected kernel state.
-//   6. getsockname() (only if ephemeral port requested)
-//        - Retrieves the kernel-assigned port so tests / orchestrators can read it deterministically. Extremely
-//          reliable; failure would imply earlier descriptor issues (EBADF) which would already have thrown.
-//   7. fcntl(F_GETFL/F_SETFL O_NONBLOCK)
-//        - Should not fail unless EBADF or EINVAL (programming error). Makes accept + IO non-blocking for epoll ET.
-//   8. epoll add (via EventLoop::add)
-//        - Registers the listening fd for readiness notifications. Possible errors: ENOMEM/ENOSPC (resource limits),
-//          EBADF (logic bug), EEXIST (should not happen). Treated as fatal.
-//
-// Exception Semantics:
-//   - On any fatal failure the constructor throws std::runtime_error after closing the partially created _listenFd.
-//   - This yields strong exception safety: either you have a fully registered, listening server instance or no
-//     observable side effects. Users relying on non-throwing control flow can wrap construction in a factory that
-//     maps exceptions to error codes / expected<>.
-//
-// Operational Expectations:
-//   - In a nominal environment using an ephemeral port (cfg.port == 0), the probability of an exception is ~0 unless
-//     the process hits fd limits or severe memory pressure. Fixed ports may legitimately throw due to EADDRINUSE.
-//   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
 HttpServer::HttpServer(HttpServerConfig cfg)
-    : _config(std::move(cfg)),
-      _listenSocket(SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC),
-      _eventLoop(_config.pollInterval),
-      _encodingSelector(_config.compression) {
-  _config.validate();
-  int listenFdLocal = _listenSocket.fd();
-  // Initialize TLS context if requested (OpenSSL build).
-  if (_config.tls) {
-#ifdef AERONET_ENABLE_OPENSSL
-    // Reset external metrics container (fresh server instance)
-    _tlsMetricsExternal.alpnStrictMismatches = 0;
-    // Allocate TlsContext on the heap so its address remains stable even if HttpServer is moved.
-    // (See detailed rationale in header next to _tlsCtxHolder.)
-    _tlsCtxHolder = std::make_unique<TlsContext>(*_config.tls, &_tlsMetricsExternal);
-#else
-    throw invalid_argument("aeronet built without OpenSSL support but TLS configuration provided");
-#endif
-  }
-  static constexpr int enable = 1;
-  auto errc = ::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
-  if (errc < 0) {
-    throw exception("setsockopt(SO_REUSEADDR) failed with error {}", std::strerror(errno));
-  }
-  if (_config.reusePort) {
-    errc = ::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));
-    if (errc < 0) {
-      throw exception("setsockopt(SO_REUSEPORT) error: {}", std::strerror(errno));
-    }
-  }
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  addr.sin_port = htons(_config.port);
-  errc = ::bind(listenFdLocal, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-  if (errc < 0) {
-    throw exception("bind failed with error {}", std::strerror(errno));
-  }
-  if (::listen(listenFdLocal, SOMAXCONN) < 0) {
-    throw exception("listen failed with error {}", std::strerror(errno));
-  }
-  if (_config.port == 0) {
-    sockaddr_in actual{};
-    socklen_t alen = sizeof(actual);
-    if (::getsockname(listenFdLocal, reinterpret_cast<sockaddr*>(&actual), &alen) == 0) {
-      _config.port = ntohs(actual.sin_port);
-    }
-  }
-  if (!_eventLoop.add(listenFdLocal, EPOLLIN)) {
-    throw exception("EventLoop add listen socket failed");
-  }
-  // Register wakeup fd
-  if (!_eventLoop.add(_wakeupFd.fd(), EPOLLIN)) {
-    throw exception("EventLoop add wakeup fd failed");
-  }
-// Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
-#ifdef AERONET_ENABLE_ZLIB
-  _encoders[static_cast<std::size_t>(Encoding::gzip)] =
-      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::gzip, _config.compression);
-  _encoders[static_cast<std::size_t>(Encoding::deflate)] =
-      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::deflate, _config.compression);
-#endif
-#ifdef AERONET_ENABLE_ZSTD
-  _encoders[static_cast<std::size_t>(Encoding::zstd)] = std::make_unique<ZstdEncoder>(_config.compression);
-#endif
-#ifdef AERONET_ENABLE_BROTLI
-  _encoders[static_cast<std::size_t>(Encoding::br)] = std::make_unique<BrotliEncoder>(_config.compression);
-#endif
+    : _config(std::move(cfg)), _router(_config.router), _encodingSelector(_config.compression) {
+  init();
+}
+
+HttpServer::HttpServer(HttpServerConfig cfg, Router router)
+    : _config(std::move(cfg)), _router(std::move(router)), _encodingSelector(_config.compression) {
+  init();
 }
 
 HttpServer::~HttpServer() { stop(); }
@@ -179,13 +78,10 @@ HttpServer::HttpServer(HttpServer&& other)
       _eventLoop(std::move(other._eventLoop)),
       _wakeupFd(std::move(other._wakeupFd)),
       _running(std::exchange(other._running, false)),
-      _handler(std::move(other._handler)),
-      _streamingHandler(std::move(other._streamingHandler)),
-      _pathHandlers(std::move(other._pathHandlers)),
+      _router(std::move(other._router)),
       _connStates(std::move(other._connStates)),
       _encoders(std::move(other._encoders)),
       _encodingSelector(std::move(other._encodingSelector)),
-      _cachedDateEpoch(std::exchange(other._cachedDateEpoch, TimePoint{})),
       _parserErrCb(std::move(other._parserErrCb)),
       _metricsCb(std::move(other._metricsCb)),
       _tmpBuffer(std::move(other._tmpBuffer))
@@ -217,13 +113,10 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _eventLoop = std::move(other._eventLoop);
     _wakeupFd = std::move(other._wakeupFd);
     _running = std::exchange(other._running, false);
-    _handler = std::move(other._handler);
-    _streamingHandler = std::move(other._streamingHandler);
-    _pathHandlers = std::move(other._pathHandlers);
+    _router = std::move(other._router);
     _connStates = std::move(other._connStates);
     _encoders = std::move(other._encoders);
     _encodingSelector = std::move(other._encodingSelector);
-    _cachedDateEpoch = std::exchange(other._cachedDateEpoch, TimePoint{});
     _parserErrCb = std::move(other._parserErrCb);
     _metricsCb = std::move(other._metricsCb);
     _tmpBuffer = std::move(other._tmpBuffer);
@@ -236,64 +129,19 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
   return *this;
 }
 
-void HttpServer::setHandler(RequestHandler handler) { _handler = std::move(handler); }
-
-void HttpServer::setStreamingHandler(StreamingHandler handler) { _streamingHandler = std::move(handler); }
-
-void HttpServer::addPathHandler(std::string path, const http::MethodSet& methods, RequestHandler handler) {
-  auto it = _pathHandlers.emplace(std::move(path), PathHandlerEntry{}).first;
-  PathHandlerEntry* pEntry = &it->second;
-  RequestHandler* pHandler = nullptr;
-  for (http::Method method : methods) {
-    auto idx = static_cast<std::underlying_type_t<http::Method>>(method);
-    if (pEntry->streamingHandlers[idx]) {
-      throw exception("Cannot register normal handler: streaming handler already present for path+method");
-    }
-    if (pHandler == nullptr) {
-      pEntry->normalHandlers[idx] = std::move(handler);  // NOLINT(bugprone-use-after-move)
-      pHandler = &pEntry->normalHandlers[idx];
-    } else {
-      pEntry->normalHandlers[idx] = *pHandler;
-    }
-    pEntry->normalMethodMask |= http::singleMethodToMask(method);
-  }
-}
-
-void HttpServer::addPathHandler(std::string path, http::Method method, RequestHandler handler) {
-  addPathHandler(std::move(path), http::MethodSet{method}, std::move(handler));
-}
-
-void HttpServer::addPathStreamingHandler(std::string path, const http::MethodSet& methods, StreamingHandler handler) {
-  auto it = _pathHandlers.emplace(std::move(path), PathHandlerEntry{}).first;
-  PathHandlerEntry* pEntry = &it->second;
-  StreamingHandler* pHandler = nullptr;
-  for (http::Method method : methods) {
-    auto idx = static_cast<std::underlying_type_t<http::Method>>(method);
-    if (pEntry->normalHandlers[idx]) {
-      throw exception("Cannot register streaming handler: normal handler already present for path+method");
-    }
-    if (pHandler == nullptr) {
-      pEntry->streamingHandlers[idx] = std::move(handler);  // NOLINT(bugprone-use-after-move)
-      pHandler = &pEntry->streamingHandlers[idx];
-    } else {
-      pEntry->streamingHandlers[idx] = *pHandler;
-    }
-    pEntry->streamingMethodMask |= http::singleMethodToMask(method);
-  }
-}
-
-void HttpServer::addPathStreamingHandler(std::string path, http::Method method, StreamingHandler handler) {
-  addPathStreamingHandler(std::move(path), http::MethodSet{method}, std::move(handler));
-}
-
 void HttpServer::run() {
-  if (_running) {
-    throw exception("Server is already running");
-  }
-  log::info("Server running on port :{}", port());
+  prepareRun();
   for (_running = true; _running;) {
     eventLoop();
   }
+}
+
+void HttpServer::runUntil(const std::function<bool()>& predicate) {
+  prepareRun();
+  for (_running = true; _running && !predicate();) {
+    eventLoop();
+  }
+  _running = false;
 }
 
 void HttpServer::stop() noexcept {
@@ -304,22 +152,10 @@ void HttpServer::stop() noexcept {
   _running = false;
   // Trigger wakeup to break any blocking epoll_wait quickly.
   _wakeupFd.send();
-  // Attempt close only if descriptor still open.
-  if (_listenSocket.fd() != -1) {
-    _listenSocket.close();
-    log::info("Server stopped");
-  }
-}
 
-void HttpServer::runUntil(const std::function<bool()>& predicate) {
-  if (_running) {
-    throw exception("Server is already running");
-  }
-  log::info("Server running on port :{}", port());
-  for (_running = true; _running && !predicate();) {
-    eventLoop();
-  }
-  stop();
+  // Close the socket
+  _listenSocket.close();
+  log::info("Server stopped");
 }
 
 bool HttpServer::ModWithCloseOnFailure(EventLoop& loop, ConnectionMapIt cnxIt, uint32_t events, const char* ctx,
@@ -343,7 +179,7 @@ bool HttpServer::ModWithCloseOnFailure(EventLoop& loop, ConnectionMapIt cnxIt, u
 
 bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
   ConnectionState& state = cnxIt->second;
-  while (true) {
+  do {
     const auto reqStart = std::chrono::steady_clock::now();
     // If we don't yet have a full request line (no '\n' observed) wait for more data instead of
     // attempting to parse and wrongly emitting a 400 which would close an otherwise healthy keep-alive.
@@ -397,206 +233,61 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     if (!req.body().empty() && !maybeDecompressRequestBody(cnxIt, req)) {
       break;  // error already emitted; close or wait handled inside
     }
-    // Determine dispatch: path streaming > path normal > global streaming > global normal > 404/405
-    auto methodEnum = req.method();
     // Provide implicit HEAD->GET fallback (RFC7231: HEAD is identical to GET without body) when
     // a HEAD handler is not explicitly registered but a GET handler exists for the same path.
-    auto effectiveMethodEnum = methodEnum;
-    bool isHead = req.method() == http::Method::HEAD;
-    bool handledStreaming = false;
-    bool pathFound = false;
-    if (!_pathHandlers.empty()) {
-      // 1. Always attempt exact match first, independent of policy.
-      auto pit = _pathHandlers.find(req.path());
-      bool endsWithSlash = req.path().size() > 1 && req.path().back() == '/';
-      if (pit == _pathHandlers.end()) {
-        // 2. No exact match: apply policy decision (excluding root "/").
-        if (endsWithSlash) {
-          // Candidate canonical form (strip single trailing slash)
-          std::string_view canonical(req.path().data(), req.path().size() - 1);
-          auto canonicalIt = _pathHandlers.find(canonical);
-          if (canonicalIt != _pathHandlers.end()) {
-            switch (_config.trailingSlashPolicy) {
-              case HttpServerConfig::TrailingSlashPolicy::Normalize:
-                // Treat as if request was canonical (no redirect) by mutating path temporarily.
-                req._path = canonical;
-                pit = canonicalIt;
-                break;
-              case HttpServerConfig::TrailingSlashPolicy::Redirect: {
-                // Emit 301 redirect to canonical form.
-                HttpResponse resp(301, http::MovedPermanently);
-                resp.location(canonical).contentType(http::ContentTypeTextPlain).body("Redirecting");
-                finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
-                if (state.isAnyCloseRequested()) {
-                  return true;  // connection closing, stop loop
-                }
-                consumedBytes = 0;  // already advanced
-                continue;           // process next request (keep-alive)
-              }
-              case HttpServerConfig::TrailingSlashPolicy::Strict:
-                break;  // 404 later
-              default:
-                std::unreachable();
-            }
-          }
-        } else if (!endsWithSlash && _config.trailingSlashPolicy == HttpServerConfig::TrailingSlashPolicy::Normalize &&
-                   req.path().size() > 1) {
-          // Request lacks slash; check if ONLY slashed variant exists using tmp buffer to add an extra slash.
-          auto altIt = _pathHandlers.find(addSlash(req.path()));
-          if (altIt != _pathHandlers.end()) {
-            // Normalize treats them the same: dispatch to the registered variant.
-            pit = altIt;
-            // It's ok to point on an intem in _pathHandlers, as by design it's not modifiable after server starts.
-            req._path = altIt->first;
-          }
-        }
-      }
-      if (pit != _pathHandlers.end()) {
-        pathFound = true;
-        auto& entry = pit->second;
-        // If HEAD and no explicit HEAD handler, but GET handler exists, reuse GET handler index.
-        auto idxOriginal = static_cast<std::underlying_type_t<http::Method>>(methodEnum);
-        auto idx = idxOriginal;
-        if (isHead) {
-          auto headIdx = static_cast<std::underlying_type_t<http::Method>>(http::Method::HEAD);
-          auto getIdx = static_cast<std::underlying_type_t<http::Method>>(http::Method::GET);
-          if (!entry.streamingHandlers[headIdx] && !entry.normalHandlers[headIdx]) {
-            if (entry.streamingHandlers[getIdx] || entry.normalHandlers[getIdx]) {
-              effectiveMethodEnum = http::Method::GET;
-              idx = getIdx;
-            }
-          }
-        }
-        if (entry.streamingHandlers[idx]) {
-          bool streamingClose = callStreamingHandler(entry.streamingHandlers[idx], req, cnxIt, consumedBytes, reqStart);
-          handledStreaming = true;
-          if (streamingClose) {
-            // callStreamingHandler already set close mode if needed
-          }
-        } else if (entry.normalHandlers[idx]) {
-          HttpResponse resp(405);
-          if (http::methodAllowed(entry.normalMethodMask | entry.streamingMethodMask, effectiveMethodEnum)) {
-            // TODO: factorize this try catch code
-            try {
-              resp = entry.normalHandlers[idx](req);
-            } catch (const std::exception& ex) {
-              log::error("Exception in path handler: {}", ex.what());
-              resp.statusCode(500)
-                  .reason(http::ReasonInternalServerError)
-                  .body(ex.what())
-                  .contentType(http::ContentTypeTextPlain);
-            } catch (...) {
-              log::error("Unknown exception in path handler.");
-              resp.statusCode(500)
-                  .reason(http::ReasonInternalServerError)
-                  .body("Unknown error")
-                  .contentType(http::ContentTypeTextPlain);
-            }
-          } else {
-            resp.reason(http::ReasonMethodNotAllowed).body(resp.reason()).contentType(http::ContentTypeTextPlain);
-          }
-          finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
-        } else {
-          // path found but method not registered -> 405
-          HttpResponse resp(405, http::ReasonMethodNotAllowed);
-          resp.body(resp.reason()).contentType(http::ContentTypeTextPlain);
-          finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
-        }
-      } else if (!endsWithSlash && _config.trailingSlashPolicy == HttpServerConfig::TrailingSlashPolicy::Normalize &&
-                 req.path().size() > 1) {
-        // If we didn't find the unslashed variant, try adding a slash if such a path exists; treat as same handler.
-        auto altIt = _pathHandlers.find(addSlash(req.path()));
-        if (altIt != _pathHandlers.end()) {
-          pathFound = true;
-          // Reuse logic by setting path temporarily to registered variant.
-          req._path = altIt->first;
-          auto& entry = altIt->second;
-          auto idxOriginal = static_cast<std::underlying_type_t<http::Method>>(methodEnum);
-          auto idx = idxOriginal;
-          if (isHead) {
-            auto headIdx = static_cast<std::underlying_type_t<http::Method>>(http::Method::HEAD);
-            auto getIdx = static_cast<std::underlying_type_t<http::Method>>(http::Method::GET);
-            if (!entry.streamingHandlers[headIdx] && !entry.normalHandlers[headIdx]) {
-              if (entry.streamingHandlers[getIdx] || entry.normalHandlers[getIdx]) {
-                effectiveMethodEnum = http::Method::GET;
-                idx = getIdx;
-              }
-            }
-          }
-          if (entry.streamingHandlers[idx]) {
-            bool streamingClose =
-                callStreamingHandler(entry.streamingHandlers[idx], req, cnxIt, consumedBytes, reqStart);
-            handledStreaming = true;
-            if (streamingClose) {
-              // close mode reflects decision
-            }
-          } else if (entry.normalHandlers[idx]) {
-            HttpResponse resp(405);
-            if (http::methodAllowed(entry.normalMethodMask | entry.streamingMethodMask, effectiveMethodEnum)) {
-              try {
-                resp = entry.normalHandlers[idx](req);
-              } catch (const std::exception& ex) {
-                log::error("Exception in path handler: {}", ex.what());
-                resp.statusCode(500)
-                    .reason(http::ReasonInternalServerError)
-                    .body(ex.what())
-                    .contentType(http::ContentTypeTextPlain);
-              } catch (...) {
-                log::error("Unknown exception in path handler.");
-                resp.statusCode(500)
-                    .reason(http::ReasonInternalServerError)
-                    .body("Unknown error")
-                    .contentType(http::ContentTypeTextPlain);
-              }
-            } else {
-              resp.reason(http::ReasonMethodNotAllowed).body(resp.reason()).contentType(http::ContentTypeTextPlain);
-            }
-            finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
-          } else {
-            HttpResponse resp(405, http::ReasonMethodNotAllowed);
-            resp.body(resp.reason()).contentType(http::ContentTypeTextPlain);
-
-            finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
-          }
-          // restore original target for metric consistency? We keep canonical (augmented) for now.
-        }
-      }
-    }
-    if (handledStreaming) {
-      if (state.isAnyCloseRequested()) {
+    const auto res = _router.match(req.method(), req.path());
+    if (res.streamingHandler != nullptr) {
+      bool streamingClose = callStreamingHandler(*res.streamingHandler, req, cnxIt, consumedBytes, reqStart);
+      if (streamingClose) {
         break;
       }
-      continue;  // proceed next request in buffer
+      continue;
     }
-    if (!pathFound) {
-      if (_streamingHandler) {
-        bool streamingClose = callStreamingHandler(_streamingHandler, req, cnxIt, consumedBytes, reqStart);
-        if (streamingClose) {
-          break;
-        }
-        continue;
+
+    HttpResponse resp;
+    if (res.requestHandler != nullptr) {
+      // normal handler
+      try {
+        resp = (*res.requestHandler)(req);
+      } catch (const std::exception& ex) {
+        log::error("Exception in path handler: {}", ex.what());
+        resp.statusCode(500)
+            .reason(http::ReasonInternalServerError)
+            .body(ex.what())
+            .contentType(http::ContentTypeTextPlain);
+      } catch (...) {
+        log::error("Unknown exception in path handler.");
+        resp.statusCode(500)
+            .reason(http::ReasonInternalServerError)
+            .body("Unknown error")
+            .contentType(http::ContentTypeTextPlain);
       }
-      HttpResponse resp(500);
-      if (_handler) {
-        try {
-          resp = _handler(req);
-        } catch (const std::exception& ex) {
-          log::error("Exception in request handler: {}", ex.what());
-          resp.reason(http::ReasonInternalServerError).body(ex.what()).contentType(http::ContentTypeTextPlain);
-        } catch (...) {
-          log::error("Unknown exception in request handler");
-          resp.reason(http::ReasonInternalServerError).body("Unknown error").contentType(http::ContentTypeTextPlain);
-        }
-      } else {  // 404
-        resp.statusCode(404);
-        resp.reason(http::NotFound).body(resp.reason()).contentType(http::ContentTypeTextPlain);
+    } else if (res.redirectPathIndicator != Router::PathHandlerLookupResult::RedirectSlashMode::None) {
+      // Emit 301 redirect to canonical form.
+      resp.statusCode(http::StatusCodeMovedPermanently)
+          .reason(http::MovedPermanently)
+          .contentType(http::ContentTypeTextPlain)
+          .body("Redirecting");
+      if (res.redirectPathIndicator == Router::PathHandlerLookupResult::RedirectSlashMode::AddSlash) {
+        _tmpBuffer.assign(req.path());
+        _tmpBuffer.push_back('/');
+        resp.location(_tmpBuffer);
+      } else {
+        resp.location(req.path().substr(0, req.path().size() - 1));
       }
-      finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
+
+      consumedBytes = 0;  // already advanced
+    } else if (res.methodNotAllowed) {
+      resp.statusCode(http::StatusCodeMethodNotAllowed)
+          .reason(http::ReasonMethodNotAllowed)
+          .body(resp.reason())
+          .contentType(http::ContentTypeTextPlain);
+    } else {
+      resp.statusCode(http::StatusCodeNotFound);
+      resp.reason(http::NotFound).body(resp.reason()).contentType(http::ContentTypeTextPlain);
     }
-    if (state.isAnyCloseRequested()) {
-      break;
-    }
-  }
+    finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
+  } while (!state.isAnyCloseRequested());
   return state.isAnyCloseRequested();
 }
 
@@ -765,15 +456,134 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   return false;
 }
 
+// Performs full listener initialization (RAII style) so that port() is valid immediately after construction.
+// Steps (in order) and rationale / failure characteristics:
+//   1. socket(AF_INET, SOCK_STREAM, 0)
+//        - Expected to succeed under normal conditions. Failure indicates resource exhaustion
+//          (EMFILE per-process fd limit, ENFILE system-wide, ENOBUFS/ENOMEM) or misconfiguration (rare EACCES).
+//   2. setsockopt(SO_REUSEADDR)
+//        - Practically infallible unless programming error (EINVAL) or extreme memory pressure (ENOMEM).
+//          Mandatory to allow rapid restart after TIME_WAIT collisions.
+//   3. setsockopt(SO_REUSEPORT) (optional best-effort)
+//        - Enabled only if cfg.reusePort. May fail on older kernels (EOPNOTSUPP/EINVAL) -> logged as warning only,
+//          not fatal. This provides horizontal scaling (multi-reactor) when supported.
+//   4. bind()
+//        - Most common legitimate failure point: EADDRINUSE when user supplies a fixed port already in use, or
+//          EACCES for privileged ports (<1024) without CAP_NET_BIND_SERVICE. With cfg.port == 0 (ephemeral) the
+//          collision probability is effectively eliminated; failures then usually imply resource exhaustion or
+//          misconfiguration. Chosen early to surface environmental issues promptly.
+//   5. listen()
+//        - Rarely fails after successful bind; would signal extreme resource pressure or unexpected kernel state.
+//   6. getsockname() (only if ephemeral port requested)
+//        - Retrieves the kernel-assigned port so tests / orchestrators can read it deterministically. Extremely
+//          reliable; failure would imply earlier descriptor issues (EBADF) which would already have thrown.
+//   7. fcntl(F_GETFL/F_SETFL O_NONBLOCK)
+//        - Should not fail unless EBADF or EINVAL (programming error). Makes accept + IO non-blocking for epoll ET.
+//   8. epoll add (via EventLoop::add)
+//        - Registers the listening fd for readiness notifications. Possible errors: ENOMEM/ENOSPC (resource limits),
+//          EBADF (logic bug), EEXIST (should not happen). Treated as fatal.
+//
+// Exception Semantics:
+//   - On any fatal failure the constructor throws std::runtime_error after closing the partially created _listenFd.
+//   - This yields strong exception safety: either you have a fully registered, listening server instance or no
+//     observable side effects. Users relying on non-throwing control flow can wrap construction in a factory that
+//     maps exceptions to error codes / expected<>.
+//
+// Operational Expectations:
+//   - In a nominal environment using an ephemeral port (cfg.port == 0), the probability of an exception is ~0 unless
+//     the process hits fd limits or severe memory pressure. Fixed ports may legitimately throw due to EADDRINUSE.
+//   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
+void HttpServer::init() {
+  _config.validate();
+
+  _eventLoop = EventLoop(_config.pollInterval);
+
+  _listenSocket = Socket(SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC);
+
+  const int listenFdLocal = _listenSocket.fd();
+  // Initialize TLS context if requested (OpenSSL build).
+  if (_config.tls) {
+#ifdef AERONET_ENABLE_OPENSSL
+    // Allocate TlsContext on the heap so its address remains stable even if HttpServer is moved.
+    // (See detailed rationale in header next to _tlsCtxHolder.)
+    _tlsCtxHolder = std::make_unique<TlsContext>(*_config.tls, &_tlsMetricsExternal);
+#else
+    throw invalid_argument("aeronet built without OpenSSL support but TLS configuration provided");
+#endif
+  }
+  static constexpr int enable = 1;
+  auto errc = ::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
+  if (errc < 0) {
+    throw exception("setsockopt(SO_REUSEADDR) failed with error {}", std::strerror(errno));
+  }
+  if (_config.reusePort) {
+    errc = ::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));
+    if (errc < 0) {
+      throw exception("setsockopt(SO_REUSEPORT) error: {}", std::strerror(errno));
+    }
+  }
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_port = htons(_config.port);
+  errc = ::bind(listenFdLocal, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+  if (errc < 0) {
+    throw exception("bind failed with error {}", std::strerror(errno));
+  }
+  if (::listen(listenFdLocal, SOMAXCONN) < 0) {
+    throw exception("listen failed with error {}", std::strerror(errno));
+  }
+  if (_config.port == 0) {
+    sockaddr_in actual{};
+    socklen_t alen = sizeof(actual);
+    if (::getsockname(listenFdLocal, reinterpret_cast<sockaddr*>(&actual), &alen) == 0) {
+      _config.port = ntohs(actual.sin_port);
+    }
+  }
+  if (!_eventLoop.add(listenFdLocal, EPOLLIN)) {
+    throw exception("EventLoop add listen socket failed");
+  }
+  // Register wakeup fd
+  if (!_eventLoop.add(_wakeupFd.fd(), EPOLLIN)) {
+    throw exception("EventLoop add wakeup fd failed");
+  }
+
+  // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
+#ifdef AERONET_ENABLE_ZLIB
+  _encoders[static_cast<std::size_t>(Encoding::gzip)] =
+      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::gzip, _config.compression);
+  _encoders[static_cast<std::size_t>(Encoding::deflate)] =
+      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::deflate, _config.compression);
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+  _encoders[static_cast<std::size_t>(Encoding::zstd)] = std::make_unique<ZstdEncoder>(_config.compression);
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+  _encoders[static_cast<std::size_t>(Encoding::br)] = std::make_unique<BrotliEncoder>(_config.compression);
+#endif
+}
+
+void HttpServer::prepareRun() {
+  if (_running) {
+    throw exception("Server is already running");
+  }
+  if (!_listenSocket.isOpened()) {
+    init();
+  }
+  log::info("Server running on port :{}", port());
+}
+
 void HttpServer::eventLoop() {
-  _cachedDateEpoch = Clock::now();
   sweepIdleConnections();
-  int ready = _eventLoop.poll([&](int fd, uint32_t ev) {
+
+  bool stopRequested = false;
+  int ready = _eventLoop.poll([this, &stopRequested](int fd, uint32_t ev) {
     if (fd == _listenSocket.fd()) {
       acceptNewConnections();
     } else if (fd == _wakeupFd.fd()) {
       // Drain wakeup counter.
       _wakeupFd.read();
+      stopRequested = true;
     } else {
       if (ev & EPOLLOUT) {
         handleWritableClient(fd);
@@ -783,6 +593,7 @@ void HttpServer::eventLoop() {
       }
     }
   });
+
   // If epoll_wait failed with a non-EINTR error (EINTR is mapped to 0 in EventLoop::poll), ready will be -1.
   // Not handling this would cause a tight loop spinning on the failing epoll fd (e.g., after EBADF or EINVAL),
   // burning CPU while doing no useful work. Treat it as fatal: log and stop the server.
@@ -791,7 +602,15 @@ void HttpServer::eventLoop() {
     // Mark server as no longer running so outer loops terminate gracefully.
     _running = false;
   }
+
   // If stop() requested, loop condition will exit promptly after this iteration; we already wrote to wakeup fd.
+  if (stopRequested) {
+    // Close all remaining connections (if some) after all events processed.
+    auto it = _connStates.begin();
+    while (it != _connStates.end()) {
+      it = closeConnection(it);
+    }
+  }
 }
 
 ServerStats HttpServer::stats() const {
@@ -833,7 +652,7 @@ void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, b
   if (reason.empty()) {
     reason = http::reasonPhraseFor(code);
   }
-  BuildSimpleError(code, _cachedDateEpoch, _config.globalHeaders, reason, _tmpBuffer);
+  BuildSimpleError(code, _config.globalHeaders, reason, _tmpBuffer);
   queueData(cnxIt, _tmpBuffer);
   try {
     _parserErrCb(code);
@@ -846,17 +665,6 @@ void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, b
   } else {
     cnxIt->second.requestDrainAndClose();
   }
-}
-
-std::string_view HttpServer::addSlash(std::string_view path) {
-  RawChars& normalizedStorage = _tmpBuffer;
-  normalizedStorage.clear();
-
-  normalizedStorage.ensureAvailableCapacity(path.size() + 1U);
-  std::memcpy(normalizedStorage.data(), path.data(), path.size());
-  normalizedStorage[path.size()] = '/';
-  normalizedStorage.setSize(path.size() + 1U);
-  return normalizedStorage;
 }
 
 }  // namespace aeronet

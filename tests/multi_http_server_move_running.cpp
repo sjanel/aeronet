@@ -15,7 +15,7 @@ TEST(MultiHttpServer, MoveWhileRunning) {
   aeronet::HttpServerConfig cfg;
   cfg.withReusePort();
   aeronet::MultiHttpServer multi(cfg);
-  multi.setHandler([](const aeronet::HttpRequest&) {
+  multi.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("BeforeMove");
     return resp;
@@ -35,7 +35,6 @@ TEST(MultiHttpServer, MoveWhileRunning) {
   auto resp2 = aeronet::test::simpleGet(port, "/post", {});
   EXPECT_EQ(resp2.statusCode, 200);
   EXPECT_NE(std::string::npos, resp2.body.find("BeforeMove"));
-  moved.stop();
 }
 
 TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
@@ -47,7 +46,7 @@ TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
   cfgB.withReusePort();
   // Source server
   aeronet::MultiHttpServer src(cfgA);
-  src.setHandler([](const aeronet::HttpRequest&) {
+  src.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("SrcBody");
     return resp;
@@ -57,7 +56,7 @@ TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
   ASSERT_GT(srcPort, 0);
   // Destination server already running with a different body
   aeronet::MultiHttpServer dst(cfgB);
-  dst.setHandler([](const aeronet::HttpRequest&) {
+  dst.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.body("DstOriginal");
     return resp;
@@ -82,6 +81,4 @@ TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
   std::this_thread::sleep_for(std::chrono::milliseconds(25));
   auto post = aeronet::test::simpleGet(adoptedPort, "/after", {});
   EXPECT_NE(std::string::npos, post.body.find("SrcBody"));
-
-  dst.stop();
 }

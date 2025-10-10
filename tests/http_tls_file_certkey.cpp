@@ -27,7 +27,7 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
   cfg.withTlsAlpnProtocols({"http/1.1"});
   // Use plain TestServer since we manually set config
   aeronet::test::TestServer server(cfg, std::chrono::milliseconds{50});
-  server.server.setHandler([](const aeronet::HttpRequest& req) {
+  server.server.router().setDefault([](const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(200, "OK")
         .contentType(aeronet::http::ContentTypeTextPlain)
         .body(std::string("FILETLS-") + std::string(req.alpnProtocol().empty() ? "-" : req.alpnProtocol()));

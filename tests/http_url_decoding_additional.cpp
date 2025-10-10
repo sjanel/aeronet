@@ -6,7 +6,6 @@
 #include <thread>
 
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-method-set.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -39,8 +38,7 @@ TEST(HttpUrlDecodingExtra, MixedSegmentsDecoding) {
   HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(2);
   HttpServer server(cfg);
-  http::MethodSet ms{http::Method::GET};
-  server.addPathHandler("/seg one/part%/two", ms, [](const HttpRequest &req) {
+  server.router().setPath("/seg one/part%/two", http::Method::GET, [](const HttpRequest &req) {
     return aeronet::HttpResponse(200, "OK").body(req.path()).contentType(aeronet::http::ContentTypeTextPlain);
   });
   std::atomic<bool> done = false;

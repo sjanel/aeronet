@@ -36,7 +36,7 @@ TEST(HttpCompressionZstdBuffered, ZstdAppliedWhenEligible) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(400, 'A');
-  ts.server.setHandler([payload](const HttpRequest&) {
+  ts.server.router().setDefault([payload](const HttpRequest&) {
     HttpResponse resp;
     resp.customHeader("Content-Type", "text/plain");
     resp.body(payload);
@@ -63,7 +63,7 @@ TEST(HttpCompressionZstdBuffered, WildcardSelectsZstdIfPreferred) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(256, 'B');
-  ts.server.setHandler([payload](const HttpRequest&) {
+  ts.server.router().setDefault([payload](const HttpRequest&) {
     HttpResponse resp;
     resp.body(payload);
     resp.customHeader("Content-Type", "text/plain");
@@ -85,7 +85,7 @@ TEST(HttpCompressionZstdBuffered, TieBreakAgainstGzipHigherQ) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(512, 'C');
-  ts.server.setHandler([payload](const HttpRequest&) {
+  ts.server.router().setDefault([payload](const HttpRequest&) {
     HttpResponse resp;
     resp.body(payload);
     resp.customHeader("Content-Type", "text/plain");

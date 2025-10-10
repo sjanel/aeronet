@@ -43,7 +43,7 @@ TEST(HttpDate, PresentAndFormat) {
   std::atomic_bool stop{false};
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
   auto port = server.port();
-  server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
+  server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   std::jthread th([&] { server.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(100ms);
   auto resp = rawGet(port);
@@ -59,7 +59,7 @@ TEST(HttpDate, StableWithinSameSecond) {
   std::atomic_bool stop{false};
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
   auto port = server.port();
-  server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
+  server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   std::jthread th([&] { server.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(30ms);
 
@@ -114,7 +114,7 @@ TEST(HttpDate, ChangesAcrossSecondBoundary) {
   std::atomic_bool stop{false};
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
   auto port = server.port();
-  server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
+  server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   std::jthread th([&] { server.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(50ms);
   auto first = rawGet(port);

@@ -14,8 +14,8 @@
 
 namespace aeronet {
 
-void BuildSimpleError(http::StatusCode status, TimePoint tp, std::span<const http::Header> globalHeaders,
-                      std::string_view reason, RawChars& out) {
+void BuildSimpleError(http::StatusCode status, std::span<const http::Header> globalHeaders, std::string_view reason,
+                      RawChars& out) {
   const auto datePos = http::HTTP11Sv.size() + 1UL + 3UL + 1UL + reason.size() + http::CRLF.size() + http::Date.size() +
                        http::HeaderSep.size();
 
@@ -38,7 +38,7 @@ void BuildSimpleError(http::StatusCode status, TimePoint tp, std::span<const htt
   out.unchecked_append(http::CRLF);
   out.unchecked_append(http::Date);
   out.unchecked_append(http::HeaderSep);
-  TimeToStringRFC7231(tp, out.data() + datePos);
+  TimeToStringRFC7231(Clock::now(), out.data() + datePos);
   out.addSize(kRFC7231DateStrLen);
   out.unchecked_append(http::CRLF);
   out.unchecked_append(http::ContentLength);

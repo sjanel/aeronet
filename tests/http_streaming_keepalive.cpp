@@ -19,7 +19,7 @@ TEST(StreamingKeepAlive, TwoSequentialRequests) {
   cfg.enableKeepAlive = true;
   cfg.pollInterval = std::chrono::milliseconds(5);
   AsyncHttpServer server(cfg);
-  server.server().setStreamingHandler([](const HttpRequest&, HttpResponseWriter& writer) {
+  server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.write("hello");
     writer.write(",world");
@@ -28,7 +28,7 @@ TEST(StreamingKeepAlive, TwoSequentialRequests) {
 
   server.start();
 
-  auto port = server.server().port();
+  auto port = server.port();
   ASSERT_NE(port, 0);
 
   aeronet::test::ClientConnection cnx(port);
@@ -49,14 +49,14 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
   cfg.enableKeepAlive = true;
   cfg.pollInterval = std::chrono::milliseconds(5);
   AsyncHttpServer server(cfg);
-  server.server().setStreamingHandler([](const HttpRequest&, HttpResponseWriter& writer) {
+  server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.write("ignored-body");
     writer.end();
   });
   server.start();
 
-  auto port = server.server().port();
+  auto port = server.port();
   ASSERT_GT(port, 0);
   aeronet::test::ClientConnection cnx(port);
   int fd = cnx.fd();
