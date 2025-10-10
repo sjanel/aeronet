@@ -8,9 +8,9 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/server-stats.hpp"
-#include "test_server_tls_fixture.hpp"
-#include "test_tls_client.hpp"
-#include "test_tls_helper.hpp"
+#include "aeronet/test_server_tls_fixture.hpp"
+#include "aeronet/test_tls_client.hpp"
+#include "aeronet/test_tls_helper.hpp"
 
 // When server only requests (but does not require) a client cert, handshake should succeed
 // whether or not the client presents one; metric tlsClientCertPresent should reflect presence.
@@ -19,7 +19,7 @@ TEST(HttpTlsRequestClientCert, OptionalNoClientCertAccepted) {
   std::string body;
   aeronet::ServerStats statsAfter{};
   {
-    TlsTestServer ts({}, [](aeronet::HttpServerConfig& cfg) { cfg.withTlsRequestClientCert(true); });
+    aeronet::test::TlsTestServer ts({}, [](aeronet::HttpServerConfig& cfg) { cfg.withTlsRequestClientCert(true); });
     auto port = ts.port();
     ts.setHandler([&](const aeronet::HttpRequest& req) {
       aeronet::HttpResponse resp(200);
@@ -32,7 +32,7 @@ TEST(HttpTlsRequestClientCert, OptionalNoClientCertAccepted) {
       }
       return resp;
     });
-    TlsClient client(port);  // no client cert
+    aeronet::test::TlsClient client(port);  // no client cert
     ASSERT_TRUE(client.handshakeOk());
     body = client.get("/nocert");
     statsAfter = ts.stats();
@@ -50,7 +50,7 @@ TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
   aeronet::ServerStats statsAfter{};
   {
     // Trust the self-signed client cert for verification if sent; but handshake must still succeed w/out require flag.
-    TlsTestServer ts({}, [&](aeronet::HttpServerConfig& cfg) {
+    aeronet::test::TlsTestServer ts({}, [&](aeronet::HttpServerConfig& cfg) {
       cfg.withTlsRequestClientCert(true).withTlsAddTrustedClientCert(clientPair.first);
     });
     auto port = ts.port();
@@ -61,10 +61,10 @@ TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
           .contentType(aeronet::http::ContentTypeTextPlain)
           .body("C");
     });
-    TlsClient::Options opts;
+    aeronet::test::TlsClient::Options opts;
     opts.clientCertPem = clientPair.first;
     opts.clientKeyPem = clientPair.second;
-    TlsClient client(port, opts);
+    aeronet::test::TlsClient client(port, opts);
     ASSERT_TRUE(client.handshakeOk());
     auto response = client.get("/withcert");
     statsAfter = ts.stats();

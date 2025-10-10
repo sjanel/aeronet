@@ -7,14 +7,15 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/server-stats.hpp"
-#include "test_server_tls_fixture.hpp"
-#include "test_tls_client.hpp"
+#include "aeronet/test_server_tls_fixture.hpp"
+#include "aeronet/test_tls_client.hpp"
 
 TEST(HttpTlsAlpnMismatch, HandshakeFailsWhenNoCommonProtocolAndMustMatch) {
   bool failed = false;
   aeronet::ServerStats statsAfter{};
   {
-    TlsTestServer ts({"http/1.1", "h2"}, [](aeronet::HttpServerConfig& cfg) { cfg.withTlsAlpnMustMatch(true); });
+    aeronet::test::TlsTestServer ts({"http/1.1", "h2"},
+                                    [](aeronet::HttpServerConfig& cfg) { cfg.withTlsAlpnMustMatch(true); });
     auto port = ts.port();
     ts.setHandler([](const aeronet::HttpRequest& req) {
       return aeronet::HttpResponse(200)
@@ -23,9 +24,9 @@ TEST(HttpTlsAlpnMismatch, HandshakeFailsWhenNoCommonProtocolAndMustMatch) {
           .body(std::string("ALPN:") + std::string(req.alpnProtocol()));
     });
     // Offer only a mismatching ALPN; since TlsClient uses options, construct with protoX.
-    TlsClient::Options opts;
+    aeronet::test::TlsClient::Options opts;
     opts.alpn = {"protoX"};
-    TlsClient client(port, opts);
+    aeronet::test::TlsClient client(port, opts);
     failed = !client.handshakeOk();
     statsAfter = ts.stats();
     ts.stop();

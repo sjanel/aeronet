@@ -10,8 +10,8 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "test_server_fixture.hpp"
 
 using namespace std::chrono_literals;
 
@@ -54,7 +54,7 @@ void rawWith(auto port, const std::string& verb, std::string_view extraHeaders, 
 TEST(HttpStreamingHeadContentLength, HeadSuppressesBodyKeepsCL) {
   aeronet::HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(2);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   ts.server.setStreamingHandler(
       []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
         writer.statusCode(200);
@@ -85,7 +85,7 @@ TEST(HttpStreamingHeadContentLength, HeadSuppressesBodyKeepsCL) {
 }
 
 TEST(HttpStreamingHeadContentLength, StreamingNoContentLengthUsesChunked) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setStreamingHandler([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.write("abc");
@@ -104,7 +104,7 @@ TEST(HttpStreamingHeadContentLength, StreamingNoContentLengthUsesChunked) {
 }
 
 TEST(HttpStreamingHeadContentLength, StreamingLateContentLengthIgnoredStaysChunked) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setStreamingHandler([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.write("part1");
@@ -131,7 +131,7 @@ TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDi
   cc.minBytes = 1;  // ensure immediate activation
   aeronet::HttpServerConfig cfg;
   cfg.withCompression(cc);
-  TestServer ts(cfg);
+  aeronet::test::TestServer ts(cfg);
   static constexpr std::string_view kBody =
       "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";  // 64 'A'
   const std::size_t originalSize = kBody.size();

@@ -9,11 +9,11 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "test_server_fixture.hpp"
 
 TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.statusCode(201).reason("Created");
@@ -41,7 +41,7 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
 #else
 TEST(HttpHeadersCustom, SettingReservedHeaderTriggersAssert) {
   // We use EXPECT_DEATH to verify debug assertion fires when user attempts to set reserved headers.
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   // Connection
   ASSERT_DEATH(
       {
@@ -74,7 +74,7 @@ TEST(HttpHeadersCustom, SettingReservedHeaderTriggersAssert) {
 #endif
 
 TEST(HttpHeadersCustom, LocationHeaderAllowed) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp(302, "Found");
     resp.location("/new").body("");
@@ -92,7 +92,7 @@ TEST(HttpHeadersCustom, LocationHeaderAllowed) {
 TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
   // Verify that calling customHeader with different casing replaces existing value without duplicating the line and
   // preserves the original header name casing from the first insertion.
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.setHandler([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.customHeader("x-cAsE", "one");
@@ -120,7 +120,7 @@ TEST(HttpHeadersCustom, StreamingCaseInsensitiveContentTypeAndEncodingSuppressio
   ccfg.preferredFormats.push_back(aeronet::Encoding::gzip);
   aeronet::HttpServerConfig scfg;
   scfg.withCompression(ccfg);
-  TestServer ts(std::move(scfg));
+  aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(128, 'Z');
   ts.server.setStreamingHandler([&](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
     writer.statusCode(200);

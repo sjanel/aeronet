@@ -8,10 +8,11 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "test_server_fixture.hpp"
 
 namespace {
+// TODO: use test_util
 void doRequest(auto port, const std::string& verb, const std::string& target, std::string& out) {
   aeronet::test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -39,7 +40,7 @@ void doRequest(auto port, const std::string& verb, const std::string& target, st
 // 5. HEAD request: headers still emitted correctly without body/chunk framing; Content-Length auto added when absent.
 
 TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
-  TestServer ts(aeronet::HttpServerConfig{});
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.setStreamingHandler([](const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
     bool isHead = req.method() == aeronet::http::Method::HEAD;

@@ -1,26 +1,24 @@
 #include <gtest/gtest.h>
 
-#include <string>  // std::string
+#include <string>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
-#include "test_http_client.hpp"
-#include "test_server_fixture.hpp"
-
-using namespace aeronet;
+#include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
 
 TEST(HttpStats, BasicCountersIncrement) {
-  HttpServerConfig cfg;
+  aeronet::HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(5);
-  TestServer ts(cfg);
-  ts.server.setHandler([]([[maybe_unused]] const HttpRequest& req) {
+  aeronet::test::TestServer ts(cfg);
+  ts.server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(200, "OK").body("hello").contentType(aeronet::http::ContentTypeTextPlain);
   });
   // Single request via throwing helper
-  auto resp = test_http_client::requestOrThrow(ts.port());
+  auto resp = aeronet::test::requestOrThrow(ts.port());
   ASSERT_NE(resp.find("200 OK"), std::string::npos);
   ts.stop();
   auto st = ts.server.stats();

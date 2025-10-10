@@ -9,9 +9,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/multi-http-server.hpp"
-#include "test_response_parsing.hpp"
-
-using testutil::simpleGet;
+#include "aeronet/test_util.hpp"
 
 TEST(MultiHttpServer, MoveWhileRunning) {
   aeronet::HttpServerConfig cfg;
@@ -26,7 +24,7 @@ TEST(MultiHttpServer, MoveWhileRunning) {
   auto port = multi.port();
   ASSERT_GT(port, 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  auto resp1 = simpleGet(port, "/pre", {});
+  auto resp1 = aeronet::test::simpleGet(port, "/pre", {});
   ASSERT_EQ(resp1.statusCode, 200);
   ASSERT_NE(std::string::npos, resp1.body.find("BeforeMove"));
 
@@ -34,7 +32,7 @@ TEST(MultiHttpServer, MoveWhileRunning) {
   aeronet::MultiHttpServer moved(std::move(multi));
   // After move we still should be able to serve
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  auto resp2 = simpleGet(port, "/post", {});
+  auto resp2 = aeronet::test::simpleGet(port, "/post", {});
   EXPECT_EQ(resp2.statusCode, 200);
   EXPECT_NE(std::string::npos, resp2.body.find("BeforeMove"));
   moved.stop();
@@ -70,8 +68,8 @@ TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
   ASSERT_NE(srcPort, dstPort) << "Ephemeral ports unexpectedly collided";
   std::this_thread::sleep_for(std::chrono::milliseconds(25));
   // Sanity: both respond with their respective bodies
-  auto preSrc = simpleGet(srcPort, "/preSrc", {});
-  auto preDst = simpleGet(dstPort, "/preDst", {});
+  auto preSrc = aeronet::test::simpleGet(srcPort, "/preSrc", {});
+  auto preDst = aeronet::test::simpleGet(dstPort, "/preDst", {});
   ASSERT_NE(std::string::npos, preSrc.body.find("SrcBody"));
   ASSERT_NE(std::string::npos, preDst.body.find("DstOriginal"));
 
@@ -82,7 +80,7 @@ TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
   auto adoptedPort = dst.port();
   EXPECT_EQ(adoptedPort, srcPort);
   std::this_thread::sleep_for(std::chrono::milliseconds(25));
-  auto post = simpleGet(adoptedPort, "/after", {});
+  auto post = aeronet::test::simpleGet(adoptedPort, "/after", {});
   EXPECT_NE(std::string::npos, post.body.find("SrcBody"));
 
   dst.stop();

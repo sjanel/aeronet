@@ -8,11 +8,11 @@
 
 **aeronet** is a modern, fast, modular and ergonomic HTTP/1.1 C++ server library for Linux focused on predictable performance, explicit control and minimal dependencies.
 
-## Key Benefits (5× high‑level)
+## Key Benefits
 
 - Fast & predictable: edge‑triggered epoll, zero/low‑allocation hot paths, horizontal scaling via SO_REUSEPORT.
 - Safe by default: strict parsing, size/time guards, optional TLS & compression with defensive limits.
-- Modular & opt‑in: enable only the features you need (zlib, zstd, brotli, TLS, logging) via build flags.
+- Modular & opt‑in: enable only the features you need (zlib, zstd, brotli, TLS, logging) via build flags (no more bloat dependencies)
 - Ergonomic minimal surface: simple `HttpServer`, `AsyncHttpServer`, `MultiHttpServer` types; fluent configuration; RAII listener setup.
 - Extensible & observable: composable configs (compression, decompression, TLS) plus lightweight per‑request metrics hook.
 
@@ -26,7 +26,7 @@ Spin up a basic HTTP/1.1 server that responds on `/hello` in just a few lines. I
 using namespace aeronet;
 
 int main() {
-  HttpServer server(HttpServerConfig{}.withPort(0)); // 0 => ephemeral
+  HttpServer server(HttpServerConfig{}); // no specified port, OS will pick a free one
   server.addPathHandler("/hello", http::MethodSet{http::Method::GET}, [](const HttpRequest&) {
     return HttpResponse(200, "OK").contentType("text/plain").body("hello from aeronet\n");
   });
