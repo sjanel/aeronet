@@ -38,4 +38,11 @@ inline std::string zstdRoundTripDecompress(std::string_view compressed, std::siz
   return out;
 }
 
+constexpr bool HasZstdMagic(std::string_view body) {
+  // zstd frame magic little endian 0x28 B5 2F FD
+  return body.size() >= 4 && static_cast<unsigned char>(body[0]) == 0x28 &&
+         static_cast<unsigned char>(body[1]) == 0xB5 && static_cast<unsigned char>(body[2]) == 0x2F &&
+         static_cast<unsigned char>(body[3]) == 0xFD;
+}
+
 }  // namespace aeronet::test

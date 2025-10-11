@@ -32,7 +32,7 @@ TEST(StreamingBackpressure, LargeBodyQueues) {
   aeronet::test::ClientConnection cnx(port);
   int fd = cnx.fd();
   std::string req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
-  aeronet::test::sendAll(fd, req);
+  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
 
   auto data = aeronet::test::recvUntilClosed(fd);
   EXPECT_TRUE(data.starts_with("HTTP/1.1 200"));

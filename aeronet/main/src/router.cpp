@@ -35,7 +35,7 @@ void Router::setPath(std::string path, http::MethodBmp methods, RequestHandler h
 
   PathHandlerEntry* pEntry = &it->second;
 
-  pEntry->normalMethodMask |= methods;
+  pEntry->normalMethodBmp |= methods;
   pEntry->isNormalized = doNormalize;
 
   RequestHandler* pHandler = nullptr;
@@ -68,7 +68,7 @@ void Router::setPath(std::string path, http::MethodBmp methods, StreamingHandler
 
   PathHandlerEntry* pEntry = &it->second;
 
-  pEntry->streamingMethodMask |= methods;
+  pEntry->streamingMethodBmp |= methods;
   pEntry->isNormalized = doNormalize;
 
   StreamingHandler* pHandler = nullptr;
@@ -91,13 +91,13 @@ void Router::setPath(std::string path, http::Method method, StreamingHandler han
   setPath(std::move(path), static_cast<http::MethodBmp>(method), std::move(handler));
 }
 
-Router::PathHandlerLookupResult Router::match(http::Method method, std::string_view path) const {
+Router::RoutingResult Router::match(http::Method method, std::string_view path) const {
   std::string_view normalizedPath = path;
   if (shouldNormalize(_trailingSlashPolicy, path)) {
     normalizedPath.remove_suffix(1);
   }
 
-  PathHandlerLookupResult res;
+  RoutingResult res;
 
   // Provide implicit HEAD->GET fallback (RFC7231: HEAD is identical to GET without body) when
   // a HEAD handler is not explicitly registered but a GET handler exists for the same path.
@@ -123,7 +123,7 @@ Router::PathHandlerLookupResult Router::match(http::Method method, std::string_v
         if (normalizedPath.size() == path.size()) {
           // the path has no trailing slash
           // -> redirect to path with trailing slash
-          res.redirectPathIndicator = PathHandlerLookupResult::RedirectSlashMode::AddSlash;
+          res.redirectPathIndicator = RoutingResult::RedirectSlashMode::AddSlash;
           return res;
         }
         // the path has a trailing slash
@@ -136,7 +136,7 @@ Router::PathHandlerLookupResult Router::match(http::Method method, std::string_v
         } else {
           // the path has a trailing slash
           // -> redirect to path without trailing slash
-          res.redirectPathIndicator = PathHandlerLookupResult::RedirectSlashMode::RemoveSlash;
+          res.redirectPathIndicator = RoutingResult::RedirectSlashMode::RemoveSlash;
           return res;
         }
       }
@@ -156,9 +156,9 @@ Router::PathHandlerLookupResult Router::match(http::Method method, std::string_v
         }
       }
     }
-    if (entry.streamingHandlers[methodIdx] && http::isMethodSet(entry.streamingMethodMask, method)) {
+    if (entry.streamingHandlers[methodIdx] && http::isMethodSet(entry.streamingMethodBmp, method)) {
       res.streamingHandler = &entry.streamingHandlers[methodIdx];
-    } else if (entry.normalHandlers[methodIdx] && http::isMethodSet(entry.normalMethodMask, method)) {
+    } else if (entry.normalHandlers[methodIdx] && http::isMethodSet(entry.normalMethodBmp, method)) {
       res.requestHandler = &entry.normalHandlers[methodIdx];
     } else {
       res.methodNotAllowed = true;

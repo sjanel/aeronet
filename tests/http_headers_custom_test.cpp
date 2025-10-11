@@ -26,7 +26,7 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
   aeronet::test::ClientConnection cc(ts.port());
   int fd = cc.fd();
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  aeronet::test::sendAll(fd, req);
+  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvUntilClosed(fd);
   ASSERT_NE(std::string::npos, resp.find("201 Created"));
   ASSERT_NE(std::string::npos, resp.find("X-One: 1"));
@@ -83,7 +83,7 @@ TEST(HttpHeadersCustom, LocationHeaderAllowed) {
   aeronet::test::ClientConnection cc(ts.port());
   int fd = cc.fd();
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  aeronet::test::sendAll(fd, req);
+  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvUntilClosed(fd);
   ASSERT_NE(std::string::npos, resp.find("302 Found"));
   ASSERT_NE(std::string::npos, resp.find("Location: /new"));
@@ -104,7 +104,7 @@ TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
   aeronet::test::ClientConnection cc(ts.port());
   int fd = cc.fd();
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  aeronet::test::sendAll(fd, req);
+  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string responseText = aeronet::test::recvUntilClosed(fd);
   // Expect only one occurrence with original first casing and final value 'three'.
   ASSERT_NE(responseText.find("x-cAsE: three"), std::string::npos) << responseText;
@@ -134,7 +134,7 @@ TEST(HttpHeadersCustom, StreamingCaseInsensitiveContentTypeAndEncodingSuppressio
   int fd = cc.fd();
   std::string req =
       "GET /h HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  aeronet::test::sendAll(fd, req);
+  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvUntilClosed(fd);
   // Ensure our original casing appears exactly and no differently cased duplicate exists.
   ASSERT_NE(resp.find("cOnTeNt-TyPe: text/plain"), std::string::npos) << resp;

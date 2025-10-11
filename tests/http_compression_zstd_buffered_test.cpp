@@ -19,15 +19,6 @@
 
 using namespace aeronet;
 
-namespace {
-bool HasZstdMagic(std::string_view body) {
-  // zstd frame magic little endian 0x28 B5 2F FD
-  return body.size() >= 4 && static_cast<unsigned char>(body[0]) == 0x28 &&
-         static_cast<unsigned char>(body[1]) == 0xB5 && static_cast<unsigned char>(body[2]) == 0x2F &&
-         static_cast<unsigned char>(body[3]) == 0xFD;
-}
-}  // namespace
-
 TEST(HttpCompressionZstdBuffered, ZstdAppliedWhenEligible) {
   CompressionConfig cfg;
   cfg.minBytes = 32;
@@ -47,7 +38,7 @@ TEST(HttpCompressionZstdBuffered, ZstdAppliedWhenEligible) {
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "zstd");
-  EXPECT_TRUE(HasZstdMagic(resp.body));
+  EXPECT_TRUE(test::HasZstdMagic(resp.body));
   EXPECT_LT(resp.body.size(), payload.size());
   // Round-trip verify by decompressing (simple one-shot) to ensure integrity
   std::string decompressed = aeronet::test::zstdRoundTripDecompress(resp.body, payload.size());
@@ -73,7 +64,7 @@ TEST(HttpCompressionZstdBuffered, WildcardSelectsZstdIfPreferred) {
   auto it = resp.headers.find("Content-Encoding");
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "zstd");
-  EXPECT_TRUE(HasZstdMagic(resp.body));
+  EXPECT_TRUE(test::HasZstdMagic(resp.body));
 }
 
 TEST(HttpCompressionZstdBuffered, TieBreakAgainstGzipHigherQ) {
