@@ -33,6 +33,7 @@ struct ParsedResponse {
   std::string headersRaw;                      // raw header block including final CRLFCRLF (optional)
   std::map<std::string, std::string> headers;  // case-sensitive keys (sufficient for tests)
   std::string body;                            // decoded body (if chunked, de-chunked)
+  std::string plainBody;                       // de-chunked payload (available if Transfer-Encoding: chunked
 };
 
 struct RequestOptions {

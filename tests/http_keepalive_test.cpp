@@ -53,7 +53,7 @@ TEST(HttpLimits, RejectHugeHeaders) {
 
   std::string bigHeader(200, 'a');
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nX-Big: " + bigHeader + "\r\n\r\n";
-  aeronet::test::sendAll(fd, req);
+  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvWithTimeout(fd);
   EXPECT_NE(std::string::npos, resp.find("431"));
 }

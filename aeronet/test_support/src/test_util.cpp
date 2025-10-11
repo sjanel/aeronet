@@ -257,6 +257,51 @@ std::string simpleGet(uint16_t port, std::string_view path) {
   return recvUntilClosed(cnx.fd());
 }
 
+namespace {
+std::string dechunk(std::string_view raw) {
+  std::string out;
+  size_t cursor = 0;
+  while (cursor < raw.size()) {
+    auto lineEnd = raw.find(http::CRLF, cursor);
+    if (lineEnd == std::string::npos) {
+      break;  // malformed
+    }
+    std::string_view sizeLine = raw.substr(cursor, lineEnd - cursor);
+    cursor = lineEnd + http::CRLF.size();
+    // size may include optional chunk extensions after ';'
+    auto sc = sizeLine.find(';');
+    if (sc != std::string::npos) {
+      sizeLine = sizeLine.substr(0, sc);
+    }
+    size_t sz = 0;
+    if (sizeLine.empty()) {
+      return {};  // malformed
+    }
+    // Use std::from_chars as a compact char->hex conversion (base 16) instead of a manual loop.
+    const char *first = sizeLine.data();
+    const char *last = first + sizeLine.size();
+    auto conv = std::from_chars(first, last, sz, 16);
+    if (conv.ec != std::errc() || conv.ptr != last) {
+      return {};  // malformed / invalid hex sequence
+    }
+    if (sz == 0) {
+      // Consume trailing CRLF after last chunk (and optional trailer headers which we ignore)
+      return out;
+    }
+    if (cursor + sz + 2 > raw.size()) {
+      return {};  // malformed
+    }
+    out.append(raw.substr(cursor, sz));
+    cursor += sz;
+    if (raw[cursor] != '\r' || raw[cursor + 1] != '\n') {
+      return {};  // malformed
+    }
+    cursor += http::CRLF.size();
+  }
+  return out;  // best effort
+}
+}  // namespace
+
 // Minimal GET request helper used across compression streaming tests. Parses headers into a map and returns body raw.
 ParsedResponse simpleGet(uint16_t port, std::string_view target,
                          std::vector<std::pair<std::string, std::string>> extraHeaders) {
@@ -269,12 +314,12 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
   }
   ParsedResponse out;
   const std::string &raw = *rawOpt;
-  auto hEnd = raw.find("\r\n\r\n");
+  auto hEnd = raw.find(http::DoubleCRLF);
   if (hEnd == std::string::npos) {
     throw std::runtime_error("bad response");
   }
-  out.headersRaw = raw.substr(0, hEnd + 4);
-  auto statusLineEnd = out.headersRaw.find("\r\n");
+  out.headersRaw = raw.substr(0, hEnd + http::DoubleCRLF.size());
+  auto statusLineEnd = out.headersRaw.find(http::CRLF);
   if (statusLineEnd != std::string::npos) {
     auto firstSpace = out.headersRaw.find(' ');
     if (firstSpace != std::string::npos) {
@@ -291,12 +336,12 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
   }
   size_t cursor = 0;
   auto nextLine = [&](size_t &pos) {
-    auto le = out.headersRaw.find("\r\n", pos);
+    auto le = out.headersRaw.find(http::CRLF, pos);
     if (le == std::string::npos) {
       return std::string_view{};
     }
     std::string_view line(out.headersRaw.data() + pos, le - pos);
-    pos = le + 2;
+    pos = le + http::CRLF.size();
     return line;
   };
   (void)nextLine(cursor);
@@ -317,7 +362,14 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
     std::string val(line.substr(vs));
     out.headers.emplace(std::move(key), std::move(val));
   }
-  out.body = raw.substr(hEnd + 4);
+  out.body = raw.substr(hEnd + http::DoubleCRLF.size());
+  // Derive plainBody (dechunk if necessary)
+  auto te = out.headers.find("Transfer-Encoding");
+  if (te != out.headers.end() && te->second == "chunked") {
+    out.plainBody = dechunk(out.body);
+  } else {
+    out.plainBody = out.body;
+  }
   return out;
 }
 

@@ -137,24 +137,30 @@ class Router {
   //   - Re-registering the same kind (streaming over streaming) replaces the previous handler.
   void setPath(std::string path, http::Method method, StreamingHandler handler);
 
-  struct PathHandlerLookupResult {
+  struct RoutingResult {
     // Only one of them will be non null if found
     const RequestHandler* requestHandler{nullptr};
     const StreamingHandler* streamingHandler{nullptr};
     enum class RedirectSlashMode : int8_t {
-      None,
-      AddSlash,
-      RemoveSlash
+      None,        // Indicates that no redirection is needed
+      AddSlash,    // Indicates that a redirection to add a trailing slash is needed
+      RemoveSlash  // Indicates that a redirection to remove a trailing slash is needed
     } redirectPathIndicator{RedirectSlashMode::None};
     bool methodNotAllowed{false};
   };
 
-  [[nodiscard]] PathHandlerLookupResult match(http::Method method, std::string_view path) const;
+  // Query the router for a matching handler for the given method and path.
+  // The object returned contains pointers to the matched handler (if any),
+  // a redirect indicator (if applicable), and a methodNotAllowed flag.
+  // Other information may be added in the future.
+  // Note: the returned pointers are valid as long as the Router instance
+  // is not modified (no handler registration or replacement).
+  [[nodiscard]] RoutingResult match(http::Method method, std::string_view path) const;
 
  private:
   struct PathHandlerEntry {
-    http::MethodBmp normalMethodMask{};
-    http::MethodBmp streamingMethodMask{};
+    http::MethodBmp normalMethodBmp{};
+    http::MethodBmp streamingMethodBmp{};
     bool isNormalized{false};
     std::array<RequestHandler, http::kNbMethods> normalHandlers{};
     std::array<StreamingHandler, http::kNbMethods> streamingHandlers{};
