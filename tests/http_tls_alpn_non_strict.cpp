@@ -17,7 +17,7 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
     // Server prefers h2, but does NOT enforce match.
     aeronet::test::TlsTestServer ts({"h2"});
     auto port = ts.port();
-    ts.setHandler([&](const aeronet::HttpRequest& req) {
+    ts.setDefault([&](const aeronet::HttpRequest& req) {
       if (!req.alpnProtocol().empty()) {
         capturedAlpn = std::string(req.alpnProtocol());
       } else {

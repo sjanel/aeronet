@@ -51,7 +51,7 @@ TEST(HttpTlsNegative, LargeResponseFragmentation) {
   {
     aeronet::test::TlsTestServer ts;  // basic TLS
     auto port = ts.port();
-    ts.setHandler([](const aeronet::HttpRequest&) {
+    ts.setDefault([](const aeronet::HttpRequest&) {
       return aeronet::HttpResponse(200)
           .reason("OK")
           .contentType(aeronet::http::ContentTypeTextPlain)

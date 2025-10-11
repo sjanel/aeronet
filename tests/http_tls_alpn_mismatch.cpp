@@ -17,7 +17,7 @@ TEST(HttpTlsAlpnMismatch, HandshakeFailsWhenNoCommonProtocolAndMustMatch) {
     aeronet::test::TlsTestServer ts({"http/1.1", "h2"},
                                     [](aeronet::HttpServerConfig& cfg) { cfg.withTlsAlpnMustMatch(true); });
     auto port = ts.port();
-    ts.setHandler([](const aeronet::HttpRequest& req) {
+    ts.setDefault([](const aeronet::HttpRequest& req) {
       return aeronet::HttpResponse(200)
           .reason("OK")
           .contentType(aeronet::http::ContentTypeTextPlain)

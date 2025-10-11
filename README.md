@@ -27,7 +27,7 @@ using namespace aeronet;
 
 int main() {
   HttpServer server(HttpServerConfig{}); // no specified port, OS will pick a free one
-  server.addPathHandler("/hello", http::MethodSet{http::Method::GET}, [](const HttpRequest&) {
+  server.router().setPath("/hello", http::Method::GET, [](const HttpRequest&) {
     return HttpResponse(200, "OK").contentType("text/plain").body("hello from aeronet\n");
   });
   server.run(); // blocking
@@ -75,7 +75,7 @@ The following focused docs expand each area without cluttering the high‑level 
 - [Reserved & Managed Headers](docs/FEATURES.md#reserved--managed-response-headers)
 - [Query String & Parameter Decoding](docs/FEATURES.md#query-string--parameters)
 - [Trailing Slash Policy](docs/FEATURES.md#trailing-slash-policy)
-- [MultiHttpServer Lifecycle & Restart](docs/FEATURES.md#multihttpserver-lifecycle--restart)
+- [MultiHttpServer Lifecycle](docs/FEATURES.md#multihttpserver--lifecycle)
 - [TLS Features](docs/FEATURES.md#tls-features)
 
 If you are evaluating the library, the feature highlights above plus the minimal example are usually sufficient. Dive into the docs only when you need specifics (e.g. multi‑layer decompression safety rules or ALPN strict mode behavior).
@@ -92,7 +92,6 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Compression (gzip/deflate/zstd/br) | ✔ | Flags opt‑in; q‑value negotiation; threshold; per‑response opt‑out |
 | Inbound body decompression | ✔ | Multi‑layer, safety guards, header removal |
 | TLS | ✔ (flag) | ALPN, mTLS (optional/required), timeouts, metrics |
-| Restartable multi‑reactor | ✔ | `MultiHttpServer` stop/start cycles reuse port |
 | Async wrapper | ✔ | Background thread convenience |
 | Metrics hook | ✔ (alpha) | Per‑request basic stats |
 | Logging | ✔ (flag) | spdlog optional |
@@ -121,6 +120,7 @@ Compression libraries (zlib, zstd, brotli), OpenSSL, and spdlog provide the opti
 | Multi-instance wrapper | `MultiHttpServer` orchestrates N reactors, aggregates stats (explicit `reusePort=true` required for >1 threads; port resolved at construction) |
 | Async single-server wrapper | `AsyncHttpServer` runs one server in a background thread |
 | Move semantics | Transfer listening socket & loop state safely |
+| Restarts | All `HttpServer`, `AsyncHttpServer` and `MultiHttpServer` can be started again after stop |
 | Heterogeneous lookups | Path handler map accepts `std::string`, `std::string_view`, `const char*` |
 | Outbound stats | Bytes queued, immediate vs flush writes, high-water marks |
 | Lightweight logging | Pluggable design (spdlog optional); ISO 8601 UTC timestamps |
@@ -158,7 +158,7 @@ Detailed multi-layer decoding behavior, safety limits, examples, and configurati
 See: [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
 
 ```cpp
-server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
+server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
   w.statusCode(200, "OK");
   w.contentType("text/plain");
   for (int i=0;i<10;++i) {
@@ -228,7 +228,70 @@ Usage guidelines:
 Future possible extensions (not yet implemented): transparent compression insertion, zero‑copy file send mapping,
 and an alternate layout for extremely large header counts.
 
-### MultiHttpServer Lifecycle, Restart Semantics & reusePort Requirement
+### Server objects
+
+`aeronet` provides 3 types of servers: `HttpServer`, `AsyncHttpServer` and `MultiHttpServer`. These are the main objects expected to be used by the client code.
+
+#### HttpServer
+
+The core server of `aeronet`. It is mono-threaded, has a blocking running event loop and is not thread safe.
+
+#### AsyncHttpServer (Single-Reactor Background Wrapper)
+
+```cpp
+#include <aeronet/aeronet.hpp>
+using namespace aeronet;
+
+int main() {
+  AsyncHttpServer async(HttpServerConfig{});
+  server.server().router().setDefault([](const HttpRequest&){ return HttpResponse(200, "OK").body("hi").contentType("text/plain"); });
+  async.start();
+  // main thread free to do orchestration / other work
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  async.stop();
+  async.rethrowIfError();
+}
+```
+
+Predicate form (stop when external flag flips):
+
+```cpp
+std::atomic<bool> done{false};
+AsyncHttpServer async(HttpServerConfig{});
+async.startUntil([&]{ return done.load(); });
+// later
+done = true; // loop exits soon (bounded by poll interval)
+async.stop();
+```
+
+Notes:
+
+- Do not call `run()` directly on the underlying `HttpServer` while an `AsyncHttpServer` is active.
+- Register handlers before `start()` unless you provide external synchronization for modifications.
+- `stop()` is idempotent; destructor performs it automatically as a safety net.
+
+Handler rules mirror `HttpServer`:
+
+- Call `setDefault()` once OR register multiple `setPath()` entries before `start()`.
+- Mixing global handler with path handlers is rejected.
+- After `start()`, further registration throws.
+
+Ephemeral port binding: `multi.start()` launches threads and spin‑waits briefly until the first server resolves its kernel-assigned port (captured via `getsockname()` in the internal `HttpServer`). The resolved value is then visible via `multi.port()` and reused for all subsequent instances.
+
+Stats aggregation example:
+
+```cpp
+auto st = multi.stats();
+for (size_t i = 0; i < st.per.size(); ++i) {
+  const auto& s = st.per[i];
+  std::print("[srv{}] queued={} imm={} flush={}\n", i,
+             s.totalBytesQueued,
+             s.totalBytesWrittenImmediate,
+             s.totalBytesWrittenFlush);
+}
+```
+
+#### MultiHttpServer Lifecycle, Restart Semantics & reusePort Requirement
 
 `MultiHttpServer` constructs all underlying `HttpServer` instances immediately. If `cfg.port == 0` (ephemeral) the
 first underlying server binds and resolves the concrete port during construction, so `multi.port()` is valid right
@@ -270,7 +333,7 @@ HttpServerConfig cfg; // will use ephemeral port
 cfg.reusePort = true;  // required for >1 threads
 MultiHttpServer multi(cfg, 4); // port resolved here
 std::cout << multi.port() << "\n"; // valid now
-multi.setHandler(...);
+multi.router().setDefault(...);
 multi.start();
 ```
 
@@ -281,7 +344,7 @@ Notes:
 - You may modify or add path handlers (and/or replace the global handler) after `stop()` and before the next
   `start()`; attempting to do so while running throws.
 
-#### Example
+##### Example
 
 ```bash
 ./build/examples/aeronet-multi 8080 4   # port 8080, 4 threads
@@ -289,6 +352,26 @@ Notes:
 
 Each thread owns its own listening socket (SO_REUSEPORT) and epoll instance – no shared locks in the accept path.
 This is the simplest horizontal scaling strategy before introducing a worker pool.
+
+#### Choosing Between HttpServer, AsyncHttpServer, and MultiHttpServer
+
+| Variant | Header | Launch API | Blocking? | Threads Created Internally  | Scaling Model | Typical Use Case | Restartable? | Notes |
+|---------|--------|------------|-----------|-----------------------------|---------------|------------------|--------------|-------|
+| `HttpServer` | `aeronet/http-server.hpp` | `run()` / `runUntil(pred)`, `stop()` (called from another thread) | Yes (caller thread blocks) | 0 | Single reactor | Dedicated thread you manage or simple main-thread server | Yes |Minimal overhead |
+| `AsyncHttpServer` | `aeronet/async-http-server.hpp` | `start()`, `startUntil(pred)`, `stop()` | No | 1 `std::jthread` | Single reactor (owned) | Need non-blocking single server with safe lifetime | Yes | Owns `HttpServer` internally |
+| `MultiHttpServer` | `aeronet/multi-http-server.hpp` | `start()`, `stop()` | No | N (`threadCount`) | Horizontal SO_REUSEPORT multi-reactor | Scale across cores quickly | Yes | Replicates handlers pre-start |
+
+Decision heuristics:
+
+- Use `HttpServer` when you already own a thread (or can just block main) and want minimal abstraction.
+- Use `AsyncHttpServer` when you want a single server but need the calling thread free (e.g. integrating into a service hosting multiple subsystems, or writing higher-level control logic while serving traffic).
+- Use `MultiHttpServer` when you need multi-core throughput with separate event loops per core; simplest horizontal scale path before more advanced worker models.
+
+Blocking semantics summary:
+
+- `HttpServer::run()` / `runUntil()` – fully blocking; returns only on stop/predicate.
+- `AsyncHttpServer::start()` – non-blocking; lifecycle controlled via stop token + `server.stop()`.
+- `MultiHttpServer::start()` – non-blocking; returns after all reactors launched.
 
 ## Test Coverage Matrix
 
@@ -383,7 +466,7 @@ using namespace aeronet;
 int main() {
   HttpServerConfig cfg; cfg.reusePort = true; // ephemeral, auto-propagated
   MultiHttpServer multi(cfg, 4); // 4 underlying event loops
-  multi.setHandler([](const HttpRequest& req){
+  multi.router().setDefault([](const HttpRequest& req){
     return HttpResponse(200, "OK").body("hello\n").contentType("text/plain");
   });
   multi.start();
@@ -391,82 +474,6 @@ int main() {
   std::this_thread::sleep_for(std::chrono::seconds(30));
   auto agg = multi.stats();
   std::print("instances={} queued={}\n", agg.per.size(), agg.total.totalBytesQueued);
-  multi.stop();
-}
-```
-
-### Choosing Between HttpServer, AsyncHttpServer, and MultiHttpServer
-
-| Variant | Header | Launch API | Blocking? | Threads Created Internally | Scaling Model | Typical Use Case | Notes |
-|---------|--------|-----------|-----------|-----------------------------|---------------|------------------|-------|
-| `HttpServer` | `aeronet/http-server.hpp` | `run()` / `runUntil(pred)` | Yes (caller thread blocks) | 0 | Single reactor | Dedicated thread you manage or simple main-thread server | Minimal overhead |
-| `AsyncHttpServer` | `aeronet/async-http-server.hpp` | `start()`, `startUntil(pred)`, `requestStop()`, `stop()` | No | 1 `std::jthread` | Single reactor (owned) | Need non-blocking single server with safe lifetime | Owns `HttpServer` internally |
-| `MultiHttpServer` | `aeronet/multi-http-server.hpp` | `start()`, `stop()` | No | N (`threadCount`) | Horizontal SO_REUSEPORT multi-reactor | Scale across cores quickly | Replicates handlers pre-start |
-
-Decision heuristics:
-
-- Use `HttpServer` when you already own a thread (or can just block main) and want minimal abstraction.
-- Use `AsyncHttpServer` when you want a single server but need the calling thread free (e.g. integrating into a service hosting multiple subsystems, or writing higher-level control logic while serving traffic).
-- Use `MultiHttpServer` when you need multi-core throughput with separate event loops per core; simplest horizontal scale path before more advanced worker models.
-
-Blocking semantics summary:
-
-- `HttpServer::run()` / `runUntil()` – fully blocking; returns only on stop/predicate.
-- `AsyncHttpServer::start()` – non-blocking; lifecycle controlled via stop token + `server.stop()`.
-- `MultiHttpServer::start()` – non-blocking; returns after all reactors launched.
-
-### AsyncHttpServer (Single-Reactor Background Wrapper)
-
-```cpp
-#include <aeronet/aeronet.hpp>
-using namespace aeronet;
-
-int main() {
-  AsyncHttpServer async(HttpServerConfig{});
-  server.server().setHandler([](const HttpRequest&){ return HttpResponse(200, "OK").body("hi").contentType("text/plain"); });
-  async.start();
-  // main thread free to do orchestration / other work
-  std::this_thread::sleep_for(std::chrono::seconds(2));
-  async.stop();
-  async.rethrowIfError();
-}
-```
-
-Predicate form (stop when external flag flips):
-
-```cpp
-std::atomic<bool> done{false};
-AsyncHttpServer async(HttpServerConfig{});
-async.startUntil([&]{ return done.load(); });
-// later
-done = true; // loop exits soon (bounded by poll interval)
-async.stop();
-```
-
-Notes:
-
-- Do not call `run()` directly on the underlying `HttpServer` while an `AsyncHttpServer` is active.
-- Register handlers before `start()` unless you provide external synchronization for modifications.
-- `stop()` is idempotent; destructor performs it automatically as a safety net.
-
-Handler rules mirror `HttpServer`:
-
-- Call `setHandler()` once OR register multiple `addPathHandler()` entries before `start()`.
-- Mixing global handler with path handlers is rejected.
-- After `start()`, further registration throws.
-
-Ephemeral port binding: `multi.start()` launches threads and spin‑waits briefly until the first server resolves its kernel-assigned port (captured via `getsockname()` in the internal `HttpServer`). The resolved value is then visible via `multi.port()` and reused for all subsequent instances.
-
-Stats aggregation example:
-
-```cpp
-auto st = multi.stats();
-for (size_t i = 0; i < st.per.size(); ++i) {
-  const auto& s = st.per[i];
-  std::print("[srv{}] queued={} imm={} flush={}\n", i,
-             s.totalBytesQueued,
-             s.totalBytesWrittenImmediate,
-             s.totalBytesWrittenFlush);
 }
 ```
 
@@ -505,27 +512,27 @@ Keep-alive can be disabled globally by `cfg.withKeepAliveMode(false)`; per-reque
 
 Two mutually exclusive approaches:
 
-1. Global handler: `server.setHandler([](const HttpRequest&){ ... })` (receives every request).
-2. Per-path handlers: `server.addPathHandler("/hello", http::MethodsSet{http::Method::GET, http::Method::POST}, handler)` – exact path match.
+1. Global handler: `server.router().setDefault([](const HttpRequest&){ ... })` (receives every request).
+2. Per-path handlers: `server.router().setPath("/hello", http::Method::GET | http::Method::POST, handler)` – exact path match.
 
 Rules:
 
-- Mixing the two modes (calling `addPathHandler` after `setHandler` or vice-versa) throws.
+- Mixing the two modes (calling `setPath` after `setDefault` or vice-versa) throws.
 - If a path is not registered -> 404 Not Found.
 - If path exists but method not allowed -> 405 Method Not Allowed.
-- Allowed methods are supplied as a non-allocating `http::MethodSet` (small fixed-capacity container) containing `http::Method` values.
-- You can call `addPathHandler` repeatedly on the same path to extend the allowed method mask (handler is replaced, methods merged).
+- You can call `setPath` repeatedly on the same path to extend the allowed method mask (handler is replaced, methods merged).
+- You can also call `setPath` once for several methods by using the `|` operator (for example: `http::Method::GET | http::Method::POST`)
 
 Example:
 
 ```cpp
 HttpServer server(cfg);
-server.addPathHandler("/hello", http::MethodsSet{http::Method::GET}, [](const HttpRequest&){
+server.router().setPath("/hello", http::Method::GET | http::Method::PUT, [](const HttpRequest&){
   HttpResponse r; r.statusCode=200; r.reason="OK"; r.body="world"; r.contentType="text/plain"; return r; });
-server.addPathHandler("/echo", http::MethodsSet{http::Method::POST}, [](const HttpRequest& req){
+server.router().setPath("/echo", http::Method::POST, [](const HttpRequest& req){
   HttpResponse r; r.statusCode=200; r.reason="OK"; r.body=req.body; r.contentType="text/plain"; return r; });
 // Add another method later (merges method mask, replaces handler)
-server.addPathHandler("/echo", http::Method::GET, [](const HttpRequest& req){
+server.router().setPath("/echo", http::Method::GET, [](const HttpRequest& req){
   HttpResponse r; r.statusCode=200; r.reason="OK"; r.body = "Echo via GET"; r.contentType="text/plain"; return r; });
 ```
 

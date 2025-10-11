@@ -38,7 +38,7 @@ TEST(HttpCompressionStreaming, GzipActivatedOverThreshold) {
   aeronet::test::TestServer ts(std::move(scfg));
   std::string part1(40, 'a');
   std::string part2(80, 'b');
-  ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
+  ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
     writer.write(part1);  // below threshold so far
@@ -65,7 +65,7 @@ TEST(HttpCompressionStreaming, DeflateActivatedOverThreshold) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(128, 'X');
-  ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
+  ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
     writer.write(payload.substr(0, 40));
@@ -89,7 +89,7 @@ TEST(HttpCompressionStreaming, BelowThresholdIdentity) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string small(40, 'y');
-  ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
+  ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
     writer.write(small);  // never crosses threshold
@@ -108,7 +108,7 @@ TEST(HttpCompressionStreaming, UserProvidedContentEncodingIdentityPreventsActiva
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string big(200, 'Z');
-  ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
+  ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
     writer.customHeader("Content-Encoding", "identity");  // explicit suppression
@@ -133,7 +133,7 @@ TEST(HttpCompressionStreaming, QValuesInfluenceStreamingSelection) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(180, 'Q');
-  ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
+  ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
     writer.write(payload.substr(0, 60));
@@ -154,7 +154,7 @@ TEST(HttpCompressionStreaming, IdentityForbiddenNoAlternativesReturns406) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(64, 'Q');
-  ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
+  ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);  // will be overridden to 406 before handler invoked if negotiation rejects
     writer.contentType("text/plain");
     writer.write(payload);

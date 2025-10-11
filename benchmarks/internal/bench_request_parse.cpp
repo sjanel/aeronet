@@ -28,7 +28,7 @@ class MinimalServerFixture : public benchmark::Fixture {
   void SetUp(const benchmark::State& state [[maybe_unused]]) override {
     stopFlag.store(false, std::memory_order_relaxed);
     server = std::make_unique<aeronet::HttpServer>(aeronet::HttpServerConfig{}.withPort(0));
-    server->setHandler([](const aeronet::HttpRequest&) {
+    server->router().setDefault([](const aeronet::HttpRequest&) {
       aeronet::HttpResponse resp;
       resp.body("OK");
       return resp;

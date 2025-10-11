@@ -14,7 +14,7 @@
 
 TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.setHandler([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.statusCode(201).reason("Created");
     resp.customHeader("X-One", "1");
@@ -75,7 +75,7 @@ TEST(HttpHeadersCustom, SettingReservedHeaderTriggersAssert) {
 
 TEST(HttpHeadersCustom, LocationHeaderAllowed) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.setHandler([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp(302, "Found");
     resp.location("/new").body("");
     return resp;
@@ -93,7 +93,7 @@ TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
   // Verify that calling customHeader with different casing replaces existing value without duplicating the line and
   // preserves the original header name casing from the first insertion.
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.setHandler([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse resp;
     resp.customHeader("x-cAsE", "one");
     resp.customHeader("X-Case", "two");    // should replace value only
@@ -122,7 +122,7 @@ TEST(HttpHeadersCustom, StreamingCaseInsensitiveContentTypeAndEncodingSuppressio
   scfg.withCompression(ccfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(128, 'Z');
-  ts.server.setStreamingHandler([&](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
+  ts.server.router().setDefault([&](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.customHeader("cOnTeNt-TyPe", "text/plain");    // mixed case
     writer.customHeader("cOnTeNt-EnCoDiNg", "identity");  // should suppress auto compression

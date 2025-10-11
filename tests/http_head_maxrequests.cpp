@@ -16,7 +16,7 @@ TEST(HttpHead, MaxRequestsApplied) {
   cfg.withMaxRequestsPerConnection(3);
   aeronet::HttpServer server(cfg);
   auto port = server.port();
-  server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
+  server.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body("IGNORED");
     return resp;

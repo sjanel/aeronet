@@ -20,7 +20,7 @@ int main(int argc, char **argv) {
   }
 
   aeronet::HttpServer server(aeronet::HttpServerConfig{}.withPort(port));
-  server.setHandler([](const aeronet::HttpRequest &req) {
+  server.router().setDefault([](const aeronet::HttpRequest &req) {
     aeronet::HttpResponse resp;
     std::string body("Hello from aeronet minimal server! You requested ");
     body += req.path();

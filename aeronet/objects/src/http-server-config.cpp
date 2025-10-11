@@ -146,11 +146,6 @@ HttpServerConfig& HttpServerConfig::withoutTls() {
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withTrailingSlashPolicy(TrailingSlashPolicy policy) {
-  trailingSlashPolicy = policy;
-  return *this;
-}
-
 // Enable / configure response compression. Passing by value allows caller to move.
 HttpServerConfig& HttpServerConfig::withCompression(CompressionConfig cfg) {
   compression = std::move(cfg);

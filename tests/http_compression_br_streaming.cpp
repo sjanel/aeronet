@@ -26,7 +26,7 @@ TEST(HttpCompressionBrotliStreaming, BrActivatedOverThreshold) {
   aeronet::test::TestServer ts(std::move(scfg));
   std::string part1(40, 'a');
   std::string part2(80, 'b');
-  ts.server.setStreamingHandler([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
+  ts.server.router().setDefault([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
     writer.write(part1);
@@ -50,7 +50,7 @@ TEST(HttpCompressionBrotliStreaming, BelowThresholdIdentity) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string small(80, 'x');
-  ts.server.setStreamingHandler([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
+  ts.server.router().setDefault([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
     writer.write(small);
@@ -69,7 +69,7 @@ TEST(HttpCompressionBrotliStreaming, UserProvidedIdentityPreventsActivation) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(512, 'Y');
-  ts.server.setStreamingHandler([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
+  ts.server.router().setDefault([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.customHeader("Content-Encoding", "identity");
     writer.write(payload);
@@ -92,7 +92,7 @@ TEST(HttpCompressionBrotliStreaming, QValuesInfluenceSelection) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(600, 'Z');
-  ts.server.setStreamingHandler([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
+  ts.server.router().setDefault([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
     writer.write(payload.substr(0, 128));
@@ -115,7 +115,7 @@ TEST(HttpCompressionBrotliStreaming, IdentityForbiddenNoAlternativesReturns406) 
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string payload(90, 'F');
-  ts.server.setStreamingHandler([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
+  ts.server.router().setDefault([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.write(payload);
     writer.end();

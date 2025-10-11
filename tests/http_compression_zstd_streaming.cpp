@@ -110,7 +110,7 @@ TEST(HttpCompressionZstdStreaming, ZstdActivatesAfterThreshold) {
   aeronet::test::TestServer ts(std::move(scfg));
   std::string chunk1(64, 'x');
   std::string chunk2(128, 'y');
-  ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
+  ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
     writer.write(chunk1);
@@ -136,7 +136,7 @@ TEST(HttpCompressionZstdStreaming, BelowThresholdIdentity) {
   scfg.withCompression(cfg);
   aeronet::test::TestServer ts(std::move(scfg));
   std::string data(200, 'a');
-  ts.server.setStreamingHandler([&](const HttpRequest &, HttpResponseWriter &writer) {
+  ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
     writer.write(data);

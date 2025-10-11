@@ -44,6 +44,8 @@ aeronet_http_test(http_routing http_routing.cpp)
 aeronet_http_test(http_server_move http_server_move.cpp)
 aeronet_http_test(http_server_move_invalid http_server_move_invalid.cpp)
 
+aeronet_http_test(http_server_restart http_server_restart.cpp)
+
 # Trailing slash policy tests
 aeronet_http_test(http_trailing_slash http_trailing_slash.cpp)
 aeronet_http_test(http_headers_custom http_headers_custom.cpp)
@@ -143,6 +145,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_routing.cpp
 	http_server_move.cpp
 	http_server_move_invalid.cpp
+	http_server_restart.cpp
 	http_stats.cpp
 	server_stats_json.cpp
 	http_streaming_backpressure.cpp

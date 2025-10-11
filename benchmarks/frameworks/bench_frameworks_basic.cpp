@@ -22,7 +22,6 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/test_util.hpp"
 #include "bench_util.hpp"
 #include "log.hpp"
@@ -74,32 +73,30 @@ struct AeronetServerRunner {
         }()) {
     aeronet::log::set_level(aeronet::log::level::err);
 
-    async.server().addPathHandler(benchutil::kBodyPath, aeronet::http::Method::GET,
-                                  [this](const aeronet::HttpRequest &req) {
-                                    aeronet::HttpResponse resp;
-                                    auto sizeVal = extractSizeParam(req);
-                                    resp.body(benchutil::randomStr(sizeVal, rng));
-                                    return resp;
-                                  });
+    async.router().setPath(benchutil::kBodyPath, aeronet::http::Method::GET, [this](const aeronet::HttpRequest &req) {
+      aeronet::HttpResponse resp;
+      auto sizeVal = extractSizeParam(req);
+      resp.body(benchutil::randomStr(sizeVal, rng));
+      return resp;
+    });
 
-    async.server().addPathHandler(benchutil::kHeaderPath, aeronet::http::Method::GET,
-                                  [this](const aeronet::HttpRequest &req) {
-                                    aeronet::HttpResponse resp;
-                                    for (auto sizeVal = extractSizeParam(req); sizeVal != 0; --sizeVal) {
-                                      std::string key = benchutil::randomStr(sizeVal, rng);
-                                      std::string value = benchutil::randomStr(sizeVal, rng);
-                                      resp.customHeader(key, value);
-                                    }
-                                    resp.addCustomHeader("X-Req", req.body());
-                                    resp.body(kHeadersBody);
-                                    return resp;
-                                  });
+    async.router().setPath(benchutil::kHeaderPath, aeronet::http::Method::GET, [this](const aeronet::HttpRequest &req) {
+      aeronet::HttpResponse resp;
+      for (auto sizeVal = extractSizeParam(req); sizeVal != 0; --sizeVal) {
+        std::string key = benchutil::randomStr(sizeVal, rng);
+        std::string value = benchutil::randomStr(sizeVal, rng);
+        resp.customHeader(key, value);
+      }
+      resp.addCustomHeader("X-Req", req.body());
+      resp.body(kHeadersBody);
+      return resp;
+    });
     async.start();
     // Small grace interval so first benchmark request doesn't race initial polling cycle.
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 
-  [[nodiscard]] uint16_t port() const { return async.server().port(); }
+  [[nodiscard]] uint16_t port() const { return async.port(); }
 };
 
 #ifdef AERONET_BENCH_ENABLE_DROGON

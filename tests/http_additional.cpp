@@ -16,7 +16,7 @@ using namespace std::chrono_literals;  // retained for potential future literal 
 
 TEST(HttpPipeline, TwoRequestsBackToBack) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.setHandler([](const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body(std::string("E:") + std::string(req.path()));
     return respObj;
@@ -35,7 +35,7 @@ TEST(HttpPipeline, TwoRequestsBackToBack) {
 
 TEST(HttpExpect, ZeroLengthNo100) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.setHandler([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body("Z");
     return respObj;
@@ -54,7 +54,7 @@ TEST(HttpMaxRequests, CloseAfterLimit) {
   aeronet::HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(2);
   aeronet::test::TestServer ts(cfg);
-  ts.server.setHandler([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body("Q");
     return respObj;
@@ -72,7 +72,7 @@ TEST(HttpMaxRequests, CloseAfterLimit) {
 
 TEST(HttpPipeline, SecondMalformedAfterSuccess) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.setHandler([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body("OK");
     return respObj;
@@ -90,7 +90,7 @@ TEST(HttpContentLength, ExplicitTooLarge413) {
   aeronet::HttpServerConfig cfg;
   cfg.withMaxBodyBytes(10);
   aeronet::test::TestServer ts(cfg);
-  ts.server.setHandler([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body("R");
     return respObj;
@@ -109,7 +109,7 @@ TEST(HttpContentLength, GlobalHeaders) {
   cfg.globalHeaders.emplace_back("X-Another", "anothervalue");
   cfg.globalHeaders.emplace_back("X-Custom", "global");  // overridden by handler
   aeronet::test::TestServer ts(cfg);
-  ts.server.setHandler([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.customHeader("X-Custom", "original");
     respObj.body("R");

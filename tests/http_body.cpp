@@ -25,7 +25,7 @@ std::string httpGet(uint16_t port, const std::string& target) {
 
 TEST(HttpBasic, SimpleGet) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.setHandler([](const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     auto testHeaderIt = req.headers().find("X-Test");
     std::string body("You requested: ");
