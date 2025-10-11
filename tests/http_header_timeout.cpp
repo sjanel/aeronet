@@ -22,7 +22,7 @@ TEST(HttpHeaderTimeout, SlowHeadersConnectionClosed) {
   std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
   cfg.withPort(0).withHeaderReadTimeout(readTimeout);
   aeronet::test::TestServer ts(cfg);
-  ts.server.setHandler([](const HttpRequest&) {
+  ts.server.router().setDefault([](const HttpRequest&) {
     return aeronet::HttpResponse(200, "OK").body("hi").contentType(aeronet::http::ContentTypeTextPlain);
   });
   std::this_thread::sleep_for(std::chrono::milliseconds(20));

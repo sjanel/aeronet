@@ -23,7 +23,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertHandshakeFailsWithout) {
       cfg.withTlsRequireClientCert(true).withTlsAddTrustedClientCert(serverCert.first);
     });
     auto port = ts.port();
-    ts.setHandler([](const aeronet::HttpRequest& req) {
+    ts.setDefault([](const aeronet::HttpRequest& req) {
       return aeronet::HttpResponse(200)
           .reason("OK")
           .contentType(aeronet::http::ContentTypeTextPlain)
@@ -55,7 +55,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertSuccessWithAlpn) {
       cfg.withTlsRequireClientCert(true).withTlsAddTrustedClientCert(clientCert.first);
     });
     auto port = ts.port();
-    ts.setHandler([](const aeronet::HttpRequest& req) {
+    ts.setDefault([](const aeronet::HttpRequest& req) {
       return aeronet::HttpResponse(200)
           .reason("OK")
           .contentType(aeronet::http::ContentTypeTextPlain)

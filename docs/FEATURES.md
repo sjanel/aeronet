@@ -14,7 +14,7 @@ Single consolidated reference for **aeronet** features.
 8. [Query String & Parameters](#query-string--parameters)
 9. [Trailing Slash Policy](#trailing-slash-policy)
 10. [Construction Model (RAII & Ephemeral Ports)](#construction-model-raii--ephemeral-ports)
-11. [MultiHttpServer Lifecycle & Restart](#multihttpserver-lifecycle--restart)
+11. [MultiHttpServer Lifecycle](#multihttpserver-lifecycle)
 12. [TLS Features](#tls-features)
 13. [Streaming Responses](#streaming-responses-chunked--incremental)
 14. [Mixed Mode Dispatch Precedence](#mixed-mode--dispatch-precedence)
@@ -97,7 +97,7 @@ Legend: [x] implemented, [ ] planned / not yet.
 
 - [x] Builder style HttpServerConfig
 - [x] Simple lambda handler signature
-- [x] Simple exact-match per-path routing (`addPathHandler`)
+- [x] Simple exact-match per-path routing (`setPath`)
 - [x] Configurable trailing slash handling (Strict / Normalize / Redirect)
 - [x] Lightweight built-in logging (spdlog optional integration) – pluggable interface TBD
 - [ ] Middleware helpers
@@ -159,7 +159,7 @@ Edge cases & notes:
 Minimal example (manual gzip):
 
 ```cpp
-server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
+server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
   w.statusCode(http::StatusOK);
   w.contentType(http::ContentTypeTextPlain);
   w.contentEncoding("gzip");            // suppress auto compression
@@ -171,7 +171,7 @@ server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
 To “force identity” even if thresholds would normally trigger compression:
 
 ```cpp
-server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
+server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
   w.contentEncoding("identity"); // blocks auto compression
   w.write(largePlainBuffer);
   w.end();
@@ -243,7 +243,7 @@ c.minBytes = 64;
 c.preferredFormats = {Encoding::gzip, Encoding::deflate};
 HttpServerConfig cfg; cfg.withCompression(c);
 HttpServer server(cfg);
-server.setHandler([](const HttpRequest&) {
+server.router().setDefault([](const HttpRequest&) {
   return HttpResponse(200, "OK").contentType("text/plain").body(std::string(1024,'A'));
 });
 ```
@@ -319,7 +319,7 @@ Typical handler setup:
 ```cpp
 HttpServerConfig serverCfg; serverCfg.withRequestDecompression(RequestDecompressionConfig{});
 HttpServer server(serverCfg);
-server.setHandler([](const HttpRequest& req){
+server.router().setDefault([](const HttpRequest& req){
   return HttpResponse(200, "OK").body(std::string(req.body()));
 });
 ```
@@ -441,12 +441,13 @@ for (auto [k,v] : req.queryParams()) { /* use k,v */ }
 
 Resolution algorithm:
 
-1. Attempt an exact match first. If the incoming target exactly equals a registered path, that handler is used and the policy does not intervene (if both `/foo` and `/foo/` are registered you get whichever you requested, under every policy).
+1. Attempt an exact match first. If the incoming target exactly equals a registered path, that handler is used and the policy does not intervene.
+  Note: if both `/foo` and `/foo/` were registered, they remain distinct only under the `Strict` policy. Under `Normalize` and `Redirect` the system canonicalizes paths (registrations for a trailing-slash variant are mapped to the canonical form), so duplicate registrations for the same canonical path will be merged and the first registration wins.
 2. If no exact match:
    - If the request ends with a single trailing slash (excluding root `/`) and the canonical form without that slash exists:
      - Strict   – 404 (variants are distinct; no mapping)
-     - Normalize – treat as the canonical path (strip the slash internally, no redirect)
-     - Redirect – emit `301 Moved Permanently` with `Location: /foo`
+     - Normalize – treat as the canonical path (strip the slash internally, no redirect). Note: if both `/foo` and `/foo/` were registered by the caller, only the first registration for the canonical form is kept to avoid different endpoints for normalized variants.
+     - Redirect – emit `301 Moved Permanently` to the canonical path. Redirect mode operates symmetrically: if the registered canonical form has a trailing slash and the request omits it, the server will redirect to the slashed form, and vice-versa.
    - Else if the request does not end with a slash, policy is Normalize, and only the slashed variant exists (e.g. only `/foo/` registered): dispatch to that variant (symmetry in the opposite direction)
    - Otherwise: 404
 3. The root path `/` is never redirected or normalized.
@@ -456,8 +457,8 @@ Behavior summary:
 | Policy | `/foo` only | `/foo/` only | Both |
 |--------|-------------|--------------|------|
 | Strict | `/foo/`→404 | `/foo`→404 | each exact served |
-| Normalize | `/foo/`→serve `/foo` | `/foo`→serve `/foo/` | each exact served |
-| Redirect | `/foo/`→301 `/foo` | `/foo`→404 | each exact served |
+| Normalize | `/foo/`→serve `/foo` | `/foo`→serve `/foo/` | only first one is registered |
+| Redirect | `/foo/`→301 `/foo` | `/foo`→301 `/foo/` | only first one is registered |
 
 Tests: `tests/http_trailing_slash.cpp`.
 
@@ -493,7 +494,7 @@ Removed experimental factory: a previous non-throwing `tryCreate` was dropped to
 
 Design trade-offs: Constructor may throw on errors (bind failure, TLS init failure if configured). This is intentional to surface unrecoverable configuration issues early.
 
-## MultiHttpServer Lifecycle & Restart
+## MultiHttpServer Lifecycle
 
 Manages N reactors via SO_REUSEPORT.
 
@@ -509,7 +510,7 @@ Example:
 
 ```cpp
 HttpServerConfig cfg; cfg.port=0; cfg.reusePort=true; MultiHttpServer multi(cfg,4);
-multi.setHandler([](const HttpRequest&){ return HttpResponse(200,"OK").contentType("text/plain").body("hi\n"); });
+multi.router().setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").contentType("text/plain").body("hi\n"); });
 multi.start(); multi.stop(); multi.start();
 ```
 
@@ -631,7 +632,7 @@ Example:
 
 ```cpp
 HttpServer server(HttpServerConfig{}.withPort(8080));
-server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){
+server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
   w.setStatus(200, "OK");
   w.setHeader("Content-Type", "text/plain");
   for (int i=0;i<5;++i) {
@@ -662,12 +663,10 @@ Conflict rules:
 Example precedence illustration:
 
 ```cpp
-server.setHandler([](const HttpRequest&){ return HttpResponse(200,"OK").body("GLOBAL").contentType("text/plain"); });
-server.setStreamingHandler([](const HttpRequest&, HttpResponseWriter& w){ w.setStatus(200,"OK"); w.setHeader("Content-Type","text/plain"); w.write("STREAMFALLBACK"); w.end(); });
-http::MethodSet getOnly; getOnly.insert(http::Method::GET);
-server.addPathStreamingHandler("/stream", getOnly, [](const HttpRequest&, HttpResponseWriter& w){ w.setStatus(200,"OK"); w.setHeader("Content-Type","text/plain"); w.write("PS"); w.end(); });
-http::MethodSet postOnly; postOnly.insert(http::Method::POST);
-server.addPathHandler("/stream", postOnly, [](const HttpRequest&){ return HttpResponse{201, "Created", "text/plain", "NORMAL"}; });
+server.router().setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("GLOBAL").contentType("text/plain"); });
+server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){ w.setStatus(200,"OK"); w.setHeader("Content-Type","text/plain"); w.write("STREAMFALLBACK"); w.end(); });
+server.router().setPath("/stream", http::Method::GET, [](const HttpRequest&, HttpResponseWriter& w){ w.setStatus(200,"OK"); w.setHeader("Content-Type","text/plain"); w.write("PS"); w.end(); });
+server.router().setPath("/stream", http::Method::POST, [](const HttpRequest&){ return HttpResponse{201, "Created", "text/plain", "NORMAL"}; });
 ```
 
 Behavior:

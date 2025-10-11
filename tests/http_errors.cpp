@@ -23,7 +23,7 @@ class HttpErrorParamTest : public ::testing::TestWithParam<ErrorCase> {};
 
 TEST_P(HttpErrorParamTest, EmitsExpectedStatus) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   const auto& param = GetParam();
   std::string resp = aeronet::test::sendAndCollect(ts.port(), param.request);
   ASSERT_NE(std::string::npos, resp.find(param.expectedStatus)) << "Case=" << param.name << "\nResp=" << resp;
@@ -44,7 +44,7 @@ INSTANTIATE_TEST_SUITE_P(
 TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("ok"); });
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("ok"); });
   // HTTP/1.0 without Connection: keep-alive should close
   aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
@@ -66,7 +66,7 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
 TEST(HttpKeepAlive10, OptInWithHeader) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.setHandler([](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("ok"); });
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("ok"); });
   aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);

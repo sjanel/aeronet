@@ -31,7 +31,7 @@ TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
   auto port = ts.port();
   constexpr std::size_t kLargeSize = 5000;  // > 4096 threshold used in writer
   std::string large(kLargeSize, 'x');
-  ts.server.setStreamingHandler([&](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
+  ts.server.router().setDefault([&](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.write("small");  // coalesced path
     writer.write(large);    // large path (multi enqueue)

@@ -55,7 +55,7 @@ TEST(HttpStreamingHeadContentLength, HeadSuppressesBodyKeepsCL) {
   aeronet::HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(2);
   aeronet::test::TestServer ts(cfg);
-  ts.server.setStreamingHandler(
+  ts.server.router().setDefault(
       []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
         writer.statusCode(200);
         // We set Content-Length even though we write body pieces; for HEAD the body must be suppressed but CL retained.
@@ -86,7 +86,7 @@ TEST(HttpStreamingHeadContentLength, HeadSuppressesBodyKeepsCL) {
 
 TEST(HttpStreamingHeadContentLength, StreamingNoContentLengthUsesChunked) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.setStreamingHandler([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.write("abc");
     writer.write("def");
@@ -105,7 +105,7 @@ TEST(HttpStreamingHeadContentLength, StreamingNoContentLengthUsesChunked) {
 
 TEST(HttpStreamingHeadContentLength, StreamingLateContentLengthIgnoredStaysChunked) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.setStreamingHandler([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.write("part1");
     // This should be ignored (already wrote body bytes) and we remain in chunked mode.
@@ -135,7 +135,7 @@ TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDi
   static constexpr std::string_view kBody =
       "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";  // 64 'A'
   const std::size_t originalSize = kBody.size();
-  ts.server.setStreamingHandler([&](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
+  ts.server.router().setDefault([&](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.contentLength(originalSize);  // declares uncompressed length
     writer.write(kBody.substr(0, 10));

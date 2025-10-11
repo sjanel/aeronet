@@ -28,7 +28,7 @@
 //    using namespace aeronet;
 //    int main() {
 //      HttpServer server(HttpServerConfig{}.withPort(0));
-//      server.setHandler([](const HttpRequest& req){
+//      server.router().setDefault([](const HttpRequest& req){
 //         return HttpResponse(200, "OK").contentType("text/plain").body("hi\n");
 //      });
 //      server.run();
@@ -44,11 +44,13 @@
 #include "aeronet/async-http-server.hpp"  // IWYU pragma: export
 #include "aeronet/http-server.hpp"        // IWYU pragma: export
 #include "aeronet/multi-http-server.hpp"  // IWYU pragma: export
+#include "aeronet/router.hpp"             // IWYU pragma: export
 
 // Configuration
 #include "aeronet/compression-config.hpp"  // IWYU pragma: export
 #include "aeronet/encoding.hpp"            // IWYU pragma: export
 #include "aeronet/http-server-config.hpp"  // IWYU pragma: export
+#include "aeronet/router-config.hpp"       // IWYU pragma: export
 
 // HTTP primitives
 #include "aeronet/http-request.hpp"          // IWYU pragma: export
@@ -57,7 +59,6 @@
 
 // HTTP protocol enums & helpers
 #include "aeronet/http-constants.hpp"    // IWYU pragma: export
-#include "aeronet/http-method-set.hpp"   // IWYU pragma: export
 #include "aeronet/http-method.hpp"       // IWYU pragma: export
 #include "aeronet/http-status-code.hpp"  // IWYU pragma: export
 #include "aeronet/http-version.hpp"      // IWYU pragma: export

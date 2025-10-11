@@ -24,7 +24,7 @@ namespace aeronet::test {
 //
 // Usage pattern:
 //   TestServer ts(HttpServerConfig{});              // starts immediately
-//   ts.server.setHandler(...);                  // register handlers
+//   ts.server.router().setDefault(...);                  // register handlers
 //   auto port = ts.port();                      // fetch ephemeral port
 //   <perform requests>
 //   // automatic cleanup at scope end (or call ts.stop() early)

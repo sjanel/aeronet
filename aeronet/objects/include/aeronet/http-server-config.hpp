@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "aeronet/http-header.hpp"
+#include "aeronet/router-config.hpp"
 #include "compression-config.hpp"
 #include "decompression-config.hpp"
 #include "invalid_argument_exception.hpp"
@@ -21,8 +22,6 @@
 namespace aeronet {
 
 struct HttpServerConfig {
-  enum class TrailingSlashPolicy : std::int8_t { Strict, Normalize, Redirect };
-
   // RFC 7301 (ALPN) protocol identifier length is encoded in a single octet => maximum 255 bytes.
   // OpenSSL lacks a stable public constant for this; we define it here to avoid magic numbers.
   static constexpr std::size_t kMaxAlpnProtocolLength = 255;
@@ -102,10 +101,6 @@ struct HttpServerConfig {
   // Protective timeout for TLS handshakes (time from accept to handshake completion). 0 => disabled.
   std::chrono::milliseconds tlsHandshakeTimeout{std::chrono::milliseconds{0}};
 
-  // Behavior for resolving paths that differ only by a trailing slash.
-  // Default: Normalize
-  TrailingSlashPolicy trailingSlashPolicy{TrailingSlashPolicy::Normalize};
-
   // ===========================================
   // Response compression configuration
   // ===========================================
@@ -118,6 +113,11 @@ struct HttpServerConfig {
   // Request body decompression configuration
   // ===========================================
   DecompressionConfig requestDecompression;
+
+  // ===========================================
+  // Router configuration
+  // ===========================================
+  RouterConfig router;
 
   // ===========================================
   // Header merge behavior tuning
@@ -255,28 +255,6 @@ struct HttpServerConfig {
   HttpServerConfig& withTlsAddTrustedClientCert(std::string_view certPem);
 
   HttpServerConfig& withoutTls();
-
-  // Policy for handling a trailing slash difference between registered path handlers and incoming requests.
-  // Resolution algorithm (independent of policy):
-  //   1. ALWAYS attempt an exact match on the incoming target string first. If found, dispatch that handler.
-  //      (This means if both "/p" and "/p/" are registered, each is honored exactly as requested; no policy logic
-  //      runs.)
-  //   2. If no exact match:
-  //        a) If the request ends with one trailing slash (not root) and the canonical form without the slash exists:
-  //             - Strict   : treat as not found (404).
-  //             - Normalize: internally treat it as the canonical path (strip slash, no redirect).
-  //             - Redirect : emit a 301 with Location header pointing to the canonical (no trailing slash) path.
-  //        b) Else if the request does NOT end with a slash, policy is Normalize, and ONLY the slashed variant exists
-  //             (e.g. "/x/" registered, "/x" not): treat the slashed variant as equivalent and dispatch to it.
-  //        c) Otherwise: 404 (no transformation / redirect performed).
-  //   3. Root path "/" is never redirected or normalized.
-  //
-  // Summary:
-  //   Strict   : exact-only matching; variants differ; no implicit mapping.
-  //   Normalize: provide symmetric acceptance (one missing variant maps to the existing one) without redirects.
-  //   Redirect : like Strict unless the ONLY difference is an added trailing slash for a canonical registered path;
-  //              then a 301 to the canonical form is sent (never the inverse).
-  HttpServerConfig& withTrailingSlashPolicy(TrailingSlashPolicy policy);
 
   // Enable / configure response compression. Passing by value allows caller to move.
   HttpServerConfig& withCompression(CompressionConfig cfg);

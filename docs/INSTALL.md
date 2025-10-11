@@ -239,7 +239,7 @@ The port maps `VCPKG_LIBRARY_LINKAGE=dynamic` to `-DAERONET_BUILD_SHARED=ON` aut
 using namespace aeronet;
 int main(){
   HttpServer server(HttpServerConfig{}.withPort(8080));
-  server.setHandler([](const HttpRequest&){
+  server.router().setDefault([](const HttpRequest&){
     HttpResponse r{200, "OK"};
     r.contentType = "text/plain"; r.body = "hello\n"; return r; });
   server.run();

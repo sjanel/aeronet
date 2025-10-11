@@ -3,16 +3,69 @@
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include "aeronet/http-constants.hpp"
 
 namespace aeronet::http {
 
-// Order defines bit positions elsewhere (see http-method-build.hpp)
-enum class Method : uint8_t { GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH };
+enum class Method : uint16_t {
+  GET = 1 << 0,
+  HEAD = 1 << 1,
+  POST = 1 << 2,
+  PUT = 1 << 3,
+  DELETE = 1 << 4,
+  CONNECT = 1 << 5,
+  OPTIONS = 1 << 6,
+  TRACE = 1 << 7,
+  PATCH = 1 << 8
+};
 
-inline constexpr auto kNbMethods = 9;
+using MethodIdx = std::underlying_type_t<Method>;
+inline constexpr MethodIdx kNbMethods = 9;
+
+using MethodBmp = uint16_t;
+
+constexpr MethodBmp operator|(Method lhs, Method rhs) noexcept {
+  using T = std::underlying_type_t<Method>;
+  return static_cast<MethodBmp>(static_cast<T>(lhs) | static_cast<T>(rhs));
+}
+
+static_assert(kNbMethods <= sizeof(MethodBmp) * 8,
+              "MethodBmp type too small to hold all methods; increase size or change type");
+
+// Check if a method is allowed by mask.
+constexpr bool isMethodSet(MethodBmp mask, Method method) { return (mask & static_cast<MethodBmp>(method)) != 0U; }
+
+constexpr bool isMethodSet(MethodBmp mask, MethodIdx methodIdx) {
+  return (mask & (1U << static_cast<MethodBmp>(methodIdx))) != 0U;
+}
+
+constexpr MethodIdx toMethodIdx(Method method) {
+  switch (method) {
+    case Method::GET:
+      return 0;
+    case Method::HEAD:
+      return 1;
+    case Method::POST:
+      return 2;
+    case Method::PUT:
+      return 3;
+    case Method::DELETE:
+      return 4;
+    case Method::CONNECT:
+      return 5;
+    case Method::OPTIONS:
+      return 6;
+    case Method::TRACE:
+      return 7;
+    case Method::PATCH:
+      return 8;
+    default:
+      std::unreachable();
+  }
+}
 
 // constexpr mapping from method token to enum; falls back to GET if unknown.
 constexpr std::optional<Method> toMethodEnum(std::string_view methodStr) {

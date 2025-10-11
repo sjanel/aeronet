@@ -27,7 +27,7 @@ std::string collectSimple(uint16_t port, std::string_view req) {
 
 TEST(Http10, BasicVersionEcho) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body("A");
     return respObj;
@@ -39,7 +39,7 @@ TEST(Http10, BasicVersionEcho) {
 
 TEST(Http10, No100ContinueEvenIfHeaderPresent) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body("B");
     return respObj;
@@ -54,7 +54,7 @@ TEST(Http10, No100ContinueEvenIfHeaderPresent) {
 
 TEST(Http10, RejectTransferEncoding) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.setHandler([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body("C");
     return respObj;
@@ -67,7 +67,7 @@ TEST(Http10, RejectTransferEncoding) {
 
 TEST(Http10, KeepAliveOptInStillWorks) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse respObj;
     respObj.body("D");
     return respObj;

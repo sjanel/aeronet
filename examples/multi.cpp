@@ -27,7 +27,7 @@ int main(int argc, char** argv) {
   aeronet::HttpServerConfig cfg;
   cfg.withPort(port).withReusePort(true);
   aeronet::MultiHttpServer multi(cfg, static_cast<uint32_t>(threads));
-  multi.setHandler([](const aeronet::HttpRequest& req) {
+  multi.router().setDefault([](const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(200, "OK")
         .contentType(aeronet::http::ContentTypeTextPlain)
         .body(std::string("multi reactor response ") + std::string(req.path()) + '\n');
@@ -41,6 +41,5 @@ int main(int argc, char** argv) {
   auto stats = multi.stats();
   aeronet::log::info("Shutting down. reactors={} totalQueued={}", static_cast<size_t>(stats.per.size()),
                      static_cast<unsigned long long>(stats.total.totalBytesQueued));
-  multi.stop();
   return 0;
 }

@@ -14,7 +14,7 @@
 TEST(MultiHttpServer, BasicStartAndServe) {
   const int threads = 3;
   aeronet::MultiHttpServer multi(aeronet::HttpServerConfig{}.withReusePort(), threads);
-  multi.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
+  multi.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body(std::string("Hello ")); /* path not exposed directly */
     return resp;
@@ -32,6 +32,4 @@ TEST(MultiHttpServer, BasicStartAndServe) {
 
   auto stats = multi.stats();
   EXPECT_EQ(stats.per.size(), static_cast<std::size_t>(threads));
-
-  multi.stop();
 }

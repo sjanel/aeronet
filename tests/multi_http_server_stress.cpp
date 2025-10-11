@@ -16,7 +16,7 @@ TEST(MultiHttpServer, RapidStartStopCycles) {
   // Keep cycles modest to avoid lengthening normal test runtime too much; adjust if needed.
   for (int statePos = 0; statePos < 200; ++statePos) {
     aeronet::MultiHttpServer multi(cfg);
-    multi.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
+    multi.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest& req) {
       aeronet::HttpResponse resp;
       resp.body("S");
       return resp;

@@ -37,7 +37,7 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
   cfg.withTlsAlpnProtocols({"h2", "http/1.1"});  // offer both; client will request http/1.1 only
 
   aeronet::HttpServer original(cfg);
-  original.setHandler([](const aeronet::HttpRequest& req) {
+  original.router().setDefault([](const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(200, "OK")
         .contentType(aeronet::http::ContentTypeTextPlain)
         .body(std::string("MOVEALPN:") + (req.alpnProtocol().empty() ? "-" : std::string(req.alpnProtocol())));

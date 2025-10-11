@@ -7,7 +7,6 @@
 #include <thread>
 
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-method-set.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -21,8 +20,7 @@ TEST(HttpUrlDecoding, SpaceDecoding) {
   HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(4);
   HttpServer server(cfg);
-  http::MethodSet ms{http::Method::GET};
-  server.addPathHandler("/hello world", ms, [](const HttpRequest &req) {
+  server.router().setPath("/hello world", http::Method::GET, [](const HttpRequest &req) {
     return aeronet::HttpResponse(200)
         .reason("OK")
         .body(std::string(req.path()))
@@ -47,10 +45,9 @@ TEST(HttpUrlDecoding, Utf8Decoded) {
   HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(4);
   HttpServer server(cfg);
-  http::MethodSet ms{http::Method::GET};
   // Path contains snowman + space + 'x'
   std::string decodedPath = "/\xE2\x98\x83 x";  // /☃ x
-  server.addPathHandler(decodedPath, ms, [](const HttpRequest &) {
+  server.router().setPath(decodedPath, http::Method::GET, [](const HttpRequest &) {
     return aeronet::HttpResponse(200, "OK").body("utf8").contentType(http::ContentTypeTextPlain);
   });
   std::atomic<bool> done{false};
@@ -73,8 +70,7 @@ TEST(HttpUrlDecoding, PlusIsNotSpace) {
   HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(4);
   HttpServer server(cfg);
-  http::MethodSet ms{http::Method::GET};
-  server.addPathHandler("/a+b", ms, [](const HttpRequest &) {
+  server.router().setPath("/a+b", http::Method::GET, [](const HttpRequest &) {
     return aeronet::HttpResponse(200, "OK").body("plus").contentType(http::ContentTypeTextPlain);
   });
   std::atomic<bool> done{false};

@@ -97,7 +97,7 @@ public:
 Handler variant:
 
 ```cpp
-server.setStreamingHandler([](const HttpRequest& req, HttpResponseWriter& w){
+server.router().setDefault([](const HttpRequest& req, HttpResponseWriter& w){
   w.setStatus(200, "OK");
   w.addCustomHeader("Content-Type", "text/plain");
   w.beginChunked();

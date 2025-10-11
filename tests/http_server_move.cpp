@@ -16,7 +16,7 @@ TEST(HttpServerMove, MoveConstructAndServe) {
   std::atomic_bool stop{false};
   aeronet::HttpServer original(aeronet::HttpServerConfig{});
   auto port = original.port();
-  original.setHandler([](const aeronet::HttpRequest& req) {
+  original.router().setDefault([](const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body(std::string("ORIG:") + std::string(req.path()));
     return resp;
@@ -42,12 +42,12 @@ TEST(HttpServerMove, MoveAssignWhileStopped) {
 
   EXPECT_NE(port1, port2);
 
-  s1.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
+  s1.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body("S1");
     return resp;
   });
-  s2.setHandler([]([[maybe_unused]] const aeronet::HttpRequest& req) {
+  s2.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest& req) {
     aeronet::HttpResponse resp;
     resp.body("S2");
     return resp;

@@ -9,10 +9,16 @@
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/router.hpp"
 
 namespace aeronet {
 
 AsyncHttpServer::AsyncHttpServer(HttpServerConfig httpServerConfig) : _server(std::move(httpServerConfig)) {}
+
+AsyncHttpServer::AsyncHttpServer(HttpServerConfig httpServerConfig, Router router)
+    : _server(std::move(httpServerConfig), std::move(router)) {}
+
+AsyncHttpServer::AsyncHttpServer(HttpServer server) : _server(std::move(server)) {}
 
 AsyncHttpServer::AsyncHttpServer(AsyncHttpServer&& other) noexcept
     : _server(std::move(other._server)), _thread(std::move(other._thread)), _error(std::move(other._error)) {}
@@ -29,6 +35,11 @@ AsyncHttpServer& AsyncHttpServer::operator=(AsyncHttpServer&& other) noexcept {
 
 AsyncHttpServer::~AsyncHttpServer() { stop(); }
 
+void AsyncHttpServer::setParserErrorCallback(HttpServer::ParserErrorCallback cb) {
+  _server.setParserErrorCallback(std::move(cb));
+}
+void AsyncHttpServer::setMetricsCallback(HttpServer::MetricsCallback cb) { _server.setMetricsCallback(std::move(cb)); }
+
 void AsyncHttpServer::start() {
   ensureStartable();
   _thread = std::jthread([this](const std::stop_token& st) {
@@ -40,15 +51,20 @@ void AsyncHttpServer::start() {
   });
 }
 
-void AsyncHttpServer::requestStop() noexcept {
-  if (_thread.joinable()) {
-    _thread.request_stop();
-  }
+void AsyncHttpServer::startUntil(std::function<bool()> predicate) {
+  ensureStartable();
+  _thread = std::jthread([this, pred = std::move(predicate)](std::stop_token st) mutable {
+    try {
+      _server.runUntil([st = std::move(st), pred = std::move(pred)]() { return st.stop_requested() || pred(); });
+    } catch (...) {
+      _error = std::current_exception();
+    }
+  });
 }
 
 void AsyncHttpServer::stop() noexcept {
   if (_thread.joinable()) {
-    requestStop();
+    _thread.request_stop();
     _thread.join();
   }
 }

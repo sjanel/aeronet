@@ -13,7 +13,7 @@ TEST(HttpTlsBasic, HandshakeAndSimpleGet) {
   std::string raw;
   {
     aeronet::test::TlsTestServer ts;  // ephemeral TLS server
-    ts.setHandler([](const aeronet::HttpRequest& req) {
+    ts.setDefault([](const aeronet::HttpRequest& req) {
       return aeronet::HttpResponse(200, "OK")
           .contentType(aeronet::http::ContentTypeTextPlain)
           .body(std::string("TLS OK ") + std::string(req.path()));
