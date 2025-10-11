@@ -29,7 +29,7 @@ TEST(HttpChunked, DecodeBasic) {
   std::string req =
       "POST /c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
       "4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
-  aeronet::test::sendAll(fd, req);
+  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvUntilClosed(fd);
   ASSERT_NE(std::string::npos, resp.find("LEN=9:Wikipedia"));
 }
@@ -46,7 +46,7 @@ TEST(HttpChunked, RejectTooLarge) {
   // Single 5-byte chunk exceeds limit 4
   std::string req =
       "POST /big HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nabcde\r\n0\r\n\r\n";
-  aeronet::test::sendAll(fd, req);
+  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvUntilClosed(fd);
   ASSERT_NE(std::string::npos, resp.find("413"));
 }
@@ -60,7 +60,7 @@ TEST(HttpHead, NoBodyReturned) {
   aeronet::test::ClientConnection cnx(port);
   int fd = cnx.fd();
   std::string req = "HEAD /head HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
-  aeronet::test::sendAll(fd, req);
+  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvUntilClosed(fd);
   // Should have Content-Length header referencing length of would-be body (which is 10: DATA-/head)
   ASSERT_NE(std::string::npos, resp.find("Content-Length: 10"));
@@ -80,8 +80,7 @@ TEST(HttpExpect, ContinueFlow) {
   auto fd = cnx.fd();
   std::string headers =
       "POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
-  auto ok = aeronet::test::sendAll(cnx.fd(), headers);
-  ASSERT_TRUE(ok);
+  EXPECT_TRUE(aeronet::test::sendAll(fd, headers));
   std::string interim;
   static constexpr std::size_t kChunkSize = 128;
   interim.resize_and_overwrite(kChunkSize, [fd](char* buf, [[maybe_unused]] std::size_t) {
@@ -96,7 +95,7 @@ TEST(HttpExpect, ContinueFlow) {
   auto bs = ::send(cnx.fd(), body.data(), body.size(), 0);
   ASSERT_EQ(bs, static_cast<decltype(headers.size())>(body.size()));
 
-  aeronet::test::sendAll(cnx.fd(), "");
+  EXPECT_TRUE(aeronet::test::sendAll(cnx.fd(), ""));
   std::string full = interim + aeronet::test::recvUntilClosed(cnx.fd());
 
   ASSERT_NE(std::string::npos, full.find("hello"));

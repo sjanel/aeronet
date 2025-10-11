@@ -25,13 +25,12 @@ TEST(HttpHead, MaxRequestsApplied) {
   std::this_thread::sleep_for(std::chrono::milliseconds(60));
   aeronet::test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
-  ASSERT_GE(fd, 0);
   // 4 HEAD requests pipelined; only 3 responses expected then close
   std::string reqs;
   for (int i = 0; i < 4; ++i) {
     reqs += "HEAD /h" + std::to_string(i) + " HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";
   }
-  aeronet::test::sendAll(fd, reqs);
+  EXPECT_TRUE(aeronet::test::sendAll(fd, reqs));
   std::string resp = aeronet::test::recvUntilClosed(fd);
   server.stop();
   int statusCount = 0;

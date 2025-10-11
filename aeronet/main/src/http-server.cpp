@@ -262,13 +262,13 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
             .body("Unknown error")
             .contentType(http::ContentTypeTextPlain);
       }
-    } else if (res.redirectPathIndicator != Router::PathHandlerLookupResult::RedirectSlashMode::None) {
+    } else if (res.redirectPathIndicator != Router::RoutingResult::RedirectSlashMode::None) {
       // Emit 301 redirect to canonical form.
       resp.statusCode(http::StatusCodeMovedPermanently)
           .reason(http::MovedPermanently)
           .contentType(http::ContentTypeTextPlain)
           .body("Redirecting");
-      if (res.redirectPathIndicator == Router::PathHandlerLookupResult::RedirectSlashMode::AddSlash) {
+      if (res.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
         _tmpBuffer.assign(req.path());
         _tmpBuffer.push_back('/');
         resp.location(_tmpBuffer);

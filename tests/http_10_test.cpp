@@ -20,8 +20,7 @@ std::string collectSimple(uint16_t port, std::string_view req) {
   int fd = clientConnection.fd();
   EXPECT_GE(fd, 0);
   EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
-  return resp;
+  return aeronet::test::recvUntilClosed(fd);
 }
 }  // namespace
 

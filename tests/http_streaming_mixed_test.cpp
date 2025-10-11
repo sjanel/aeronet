@@ -28,7 +28,7 @@ std::string httpRequest(auto port, std::string_view method, std::string_view pat
   req += "\r\n";
   req += body;
 
-  aeronet::test::sendAll(fd, req);
+  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   return aeronet::test::recvUntilClosed(fd);
 }
 
