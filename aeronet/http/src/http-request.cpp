@@ -90,7 +90,7 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, RawChars& tmpBuffe
     // not enough data
     return 0;
   }
-  if (std::cmp_less(std::distance(first, lineLast), http::kHttpReqHeadersMinLen - 1UL)) {
+  if (std::cmp_less(std::distance(first, lineLast), http::kHttpReqLineMinLen - 1UL)) {
     return http::StatusCodeBadRequest;
   }
   auto* nextSep = std::find(first, lineLast, ' ');

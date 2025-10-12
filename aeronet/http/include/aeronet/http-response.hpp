@@ -125,6 +125,7 @@ class HttpResponse {
 
   // Assigns the given body to this HttpResponse.
   // Empty body is allowed.
+  // The whole buffer is copied internally in the HttpResponse.
   // Body referencing internal memory of this HttpResponse is allowed as well.
   // Example:
   //   HttpResponse resp(404, "Not Found");
@@ -136,6 +137,7 @@ class HttpResponse {
 
   // Assigns the given body to this HttpResponse.
   // Empty body is allowed.
+  // The whole buffer is copied internally in the HttpResponse.
   // Body referencing internal memory of this HttpResponse is allowed as well.
   // Example:
   //   HttpResponse resp(404, "Not Found");

@@ -123,7 +123,9 @@ aeronet_http_test(multi_http_server_stress)
 aeronet_http_test(multi_http_server_move_running)
 aeronet_http_test(multi_http_server_restart)
 
-aeronet_http_test(router_test)
+aeronet_http_test(opentelemetry_integration)
+
+aeronet_http_test(router)
 
 # Maintenance safeguard: warn if any *.cpp test file in this directory is not explicitly added above.
 # This helps avoid forgotten tests (e.g., newly created source not registered -> silently untested).
@@ -164,13 +166,14 @@ set(REGISTERED_TEST_SOURCES_REL
 	multi_http_server_move_running_test.cpp
 	multi_http_server_restart_test.cpp
 	multi_http_server_auto_test.cpp
-	router_test_test.cpp
+	router_test.cpp
 	http_trailing_slash_test.cpp
 	http_query_parsing_test.cpp
 	http_query_parsing_edge_test.cpp
 	http_query_structured_bindings_test.cpp
 	http_headers_custom_test.cpp
 	test_version_test.cpp
+	opentelemetry_integration_test.cpp
 	http_compression_zlib_buffered_test.cpp
 	http_compression_zlib_streaming_test.cpp
 	http_compression_zstd_buffered_test.cpp

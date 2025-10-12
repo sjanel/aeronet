@@ -19,6 +19,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/tracing/tracer.hpp"
 #include "connection-state.hpp"
 #include "connection.hpp"
 #include "event-fd.hpp"
@@ -299,6 +300,9 @@ class HttpServer {
   ParserErrorCallback _parserErrCb = []([[maybe_unused]] http::StatusCode) {};
   MetricsCallback _metricsCb;
   RawChars _tmpBuffer;  // can be used for any kind of temporary buffer
+
+  // Telemetry context - one per HttpServer instance (no global singletons)
+  tracing::TelemetryContext _telemetry;
 
 #ifdef AERONET_ENABLE_OPENSSL
   // TlsContext lifetime & pointer stability:

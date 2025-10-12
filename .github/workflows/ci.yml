@@ -26,8 +26,9 @@ jobs:
       - name: Update apt cache
         run: sudo apt-get update -y
 
-      - name: Install OpenSSL development headers (for TLS ON)
-        run: sudo apt-get install -y libssl-dev || true
+      - name: Install all dependencies with features
+        run: sudo apt-get install -y libssl-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
+        if: ${{ matrix.features == 'ON' }}
 
       - name: Install GCC toolchain
         if: ${{ startsWith(matrix.compiler, 'gcc') }}
@@ -82,7 +83,8 @@ jobs:
             -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
             -DAERONET_ENABLE_BROTLI=${{ matrix.features }} \
             -DAERONET_ENABLE_ZLIB=${{ matrix.features }} \
-            -DAERONET_ENABLE_ZSTD=${{ matrix.features }}
+            -DAERONET_ENABLE_ZSTD=${{ matrix.features }} \
+            -DAERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }}
 
       - name: Build
         run: |
