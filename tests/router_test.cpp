@@ -1,3 +1,5 @@
+#include "aeronet/router.hpp"
+
 #include <gtest/gtest.h>
 
 #include "aeronet/http-method.hpp"
@@ -5,12 +7,11 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/router-config.hpp"
-#include "aeronet/router.hpp"
 #include "exception.hpp"
 
 using namespace aeronet;
 
-TEST(RouterUnitTest, RegisterAndMatchNormalHandler) {
+TEST(RouterTest, RegisterAndMatchNormalHandler) {
   Router router;
 
   bool called = false;
@@ -31,7 +32,7 @@ TEST(RouterUnitTest, RegisterAndMatchNormalHandler) {
   EXPECT_TRUE(called);
 }
 
-TEST(RouterUnitTest, RegisterAndMatchStreamingHandler) {
+TEST(RouterTest, RegisterAndMatchStreamingHandler) {
   Router router;
 
   bool streamCalled = false;
@@ -48,7 +49,7 @@ TEST(RouterUnitTest, RegisterAndMatchStreamingHandler) {
   EXPECT_FALSE(streamCalled);
 }
 
-TEST(RouterUnitTest, MethodNotAllowedAndFallback) {
+TEST(RouterTest, MethodNotAllowedAndFallback) {
   Router router;
 
   router.setPath("/onlyget", http::Method::GET, [](const HttpRequest&) { return HttpResponse(200); });
@@ -70,7 +71,7 @@ TEST(RouterUnitTest, MethodNotAllowedAndFallback) {
   EXPECT_FALSE(resMissing.methodNotAllowed);
 }
 
-TEST(RouterUnitTest, GlobalDefaultHandlersUsedWhenNoPath) {
+TEST(RouterTest, GlobalDefaultHandlersUsedWhenNoPath) {
   Router router;
 
   router.setDefault([](const HttpRequest&) { return HttpResponse(204); });
@@ -92,7 +93,7 @@ TEST(RouterUnitTest, GlobalDefaultHandlersUsedWhenNoPath) {
   ASSERT_NE(res2.streamingHandler, nullptr);
 }
 
-TEST(RouterUnitTest, TrailingSlashRedirectAndNormalize) {
+TEST(RouterTest, TrailingSlashRedirectAndNormalize) {
   // Redirect policy: registering /p should redirect /p/ -> AddSlash or RemoveSlash depending
   RouterConfig cfg;
   cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Redirect);
@@ -111,7 +112,7 @@ TEST(RouterUnitTest, TrailingSlashRedirectAndNormalize) {
   EXPECT_EQ(resSlashed.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::RemoveSlash);
 }
 
-TEST(RouterUnitTest, HeadFallbackToGet) {
+TEST(RouterTest, HeadFallbackToGet) {
   Router router;
   router.setPath("/hf", http::Method::GET, [](const HttpRequest&) { return HttpResponse(200); });
 
@@ -122,7 +123,7 @@ TEST(RouterUnitTest, HeadFallbackToGet) {
   EXPECT_FALSE(resHead.methodNotAllowed);
 }
 
-TEST(RouterUnitTest, MethodMergingAndOverwrite) {
+TEST(RouterTest, MethodMergingAndOverwrite) {
   Router router;
   // register GET and then add POST using method-bmp OR
   router.setPath("/merge", http::Method::GET, [](const HttpRequest&) { return HttpResponse(200); });
@@ -137,7 +138,7 @@ TEST(RouterUnitTest, MethodMergingAndOverwrite) {
   EXPECT_FALSE(rPost.methodNotAllowed);
 }
 
-TEST(RouterUnitTest, StreamingVsNormalConflictThrows) {
+TEST(RouterTest, StreamingVsNormalConflictThrows) {
   Router router;
   router.setPath("/conf", http::Method::GET, [](const HttpRequest&) { return HttpResponse(200); });
   // Attempting to register a streaming handler for the same path+method should throw
@@ -146,7 +147,7 @@ TEST(RouterUnitTest, StreamingVsNormalConflictThrows) {
                aeronet::exception);
 }
 
-TEST(RouterUnitTest, TrailingSlashStrictAndNormalize) {
+TEST(RouterTest, TrailingSlashStrictAndNormalize) {
   // Strict: /a/ registered does not match /a
   RouterConfig cfgStrict;
   cfgStrict.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict);

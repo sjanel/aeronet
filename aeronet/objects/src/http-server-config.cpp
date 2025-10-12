@@ -187,6 +187,7 @@ void HttpServerConfig::validate() const {
       throw invalid_argument("header '{}' is invalid", headerKey);
     }
   }
+  otel.validate();
 }
 
 }  // namespace aeronet

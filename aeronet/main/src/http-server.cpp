@@ -59,12 +59,18 @@
 namespace aeronet {
 
 HttpServer::HttpServer(HttpServerConfig cfg)
-    : _config(std::move(cfg)), _router(_config.router), _encodingSelector(_config.compression) {
+    : _config(std::move(cfg)),
+      _router(_config.router),
+      _encodingSelector(_config.compression),
+      _telemetry(_config.otel) {
   init();
 }
 
 HttpServer::HttpServer(HttpServerConfig cfg, Router router)
-    : _config(std::move(cfg)), _router(std::move(router)), _encodingSelector(_config.compression) {
+    : _config(std::move(cfg)),
+      _router(std::move(router)),
+      _encodingSelector(_config.compression),
+      _telemetry(_config.otel) {
   init();
 }
 
@@ -84,7 +90,8 @@ HttpServer::HttpServer(HttpServer&& other)
       _encodingSelector(std::move(other._encodingSelector)),
       _parserErrCb(std::move(other._parserErrCb)),
       _metricsCb(std::move(other._metricsCb)),
-      _tmpBuffer(std::move(other._tmpBuffer))
+      _tmpBuffer(std::move(other._tmpBuffer)),
+      _telemetry(std::move(other._telemetry))
 #ifdef AERONET_ENABLE_OPENSSL
       ,
       _tlsCtxHolder(std::move(other._tlsCtxHolder)),
@@ -120,6 +127,7 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _parserErrCb = std::move(other._parserErrCb);
     _metricsCb = std::move(other._metricsCb);
     _tmpBuffer = std::move(other._tmpBuffer);
+    _telemetry = std::move(other._telemetry);
 #ifdef AERONET_ENABLE_OPENSSL
     _tlsCtxHolder = std::move(other._tlsCtxHolder);
     _tlsMetrics = std::move(other._tlsMetrics);
@@ -181,12 +189,18 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
   ConnectionState& state = cnxIt->second;
   do {
     // If we don't yet have a full request line (no '\n' observed) wait for more data
-    if (state.buffer.size() < http::kHttpReqHeadersMinLen) {
+    if (state.buffer.size() < http::kHttpReqLineMinLen) {
       break;  // need more bytes for at least the request line
     }
     const auto reqStart = std::chrono::steady_clock::now();
+
     HttpRequest req;
     const auto statusCode = req.setHead(state, _tmpBuffer, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders);
+    if (statusCode == 0) {
+      // need more data
+      break;
+    }
+
     if (statusCode != http::StatusCodeOK) {
       // If status code == 0, we need more data
       if (statusCode != 0) {
@@ -197,6 +211,20 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       // will be torn down after any queued error bytes are flushed. No partial recovery is
       // attempted for a malformed / protocol-violating start line or headers.
       break;
+    }
+
+    // Start a span for this request if tracing is enabled
+    // We create it after parsing the request head so we have method and path available
+    auto span = _telemetry.createSpan("http.request");
+    if (span) {
+      span->setAttribute("http.method", http::toMethodStr(req.method()));
+      span->setAttribute("http.target", req.path());
+      span->setAttribute("http.scheme", "http");
+
+      const auto header = req.headerValueOrEmpty("Host");
+      if (!header.empty()) {
+        span->setAttribute("http.host", header);
+      }
     }
 
     // A full request head (and body, if present) will now be processed; reset headerStart to signal
@@ -289,6 +317,15 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       resp.reason(http::NotFound).body(resp.reason()).contentType(http::ContentTypeTextPlain);
     }
     finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
+
+    // End the span after response is finalized
+    if (span) {
+      span->setAttribute("http.status_code", resp.statusCode());
+      const auto reqEnd = std::chrono::steady_clock::now();
+      const auto durationUs = std::chrono::duration_cast<std::chrono::microseconds>(reqEnd - reqStart);
+      span->setAttribute("http.duration_us", durationUs.count());
+      span->end();
+    }
   } while (!state.isAnyCloseRequested());
   return state.isAnyCloseRequested();
 }
@@ -503,6 +540,7 @@ void HttpServer::init() {
   _listenSocket = Socket(SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC);
 
   const int listenFdLocal = _listenSocket.fd();
+
   // Initialize TLS context if requested (OpenSSL build).
   if (_config.tls) {
 #ifdef AERONET_ENABLE_OPENSSL
@@ -595,6 +633,13 @@ void HttpServer::eventLoop() {
       }
     }
   });
+
+  // Record event loop activity metrics
+  if (ready > 0) {
+    _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(ready));
+  } else if (ready < 0) {
+    _telemetry.counterAdd("aeronet.events.errors", 1);
+  }
 
   // If epoll_wait failed with a non-EINTR error (EINTR is mapped to 0 in EventLoop::poll), ready will be -1.
   // Not handling this would cause a tight loop spinning on the failing epoll fd (e.g., after EBADF or EINVAL),

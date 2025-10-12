@@ -25,7 +25,6 @@
 #include "aeronet/test_util.hpp"
 #include "bench_util.hpp"
 #include "log.hpp"
-#include "oatpp/core/Types.hpp"
 #include "stringconv.hpp"
 
 #ifdef AERONET_BENCH_ENABLE_DROGON
@@ -37,6 +36,8 @@
 #include <oatpp/web/server/HttpConnectionHandler.hpp>
 #include <oatpp/web/server/HttpRequestHandler.hpp>
 #include <oatpp/web/server/HttpRouter.hpp>
+
+#include "oatpp/core/Types.hpp"
 #endif
 #ifdef AERONET_BENCH_ENABLE_HTTPLIB
 #include <httplib.h>

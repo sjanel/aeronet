@@ -38,7 +38,7 @@ endif()
 include("${CMAKE_CURRENT_LIST_DIR}/aeronetTargets.cmake")
 
 # Provide version variable
-set(AERONET_VERSION "@PROJECT_VERSION@")
+set(AERONET_VERSION_STR "@PROJECT_VERSION@")
 
 # If the vendored amc dependency was built internally it may have been linked privately.
 # Consumers of the exported aeronet targets do not need to locate a separate amc package;

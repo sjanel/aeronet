@@ -163,6 +163,7 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
     auto written = state.transportWrite(state.outBuffer, want);
     if (written > 0) {
       _stats.totalBytesWrittenFlush += static_cast<uint64_t>(written);
+      _telemetry.counterAdd("aeronet.bytes.written", static_cast<uint64_t>(written));
       if (std::cmp_equal(written, state.outBuffer.size())) {
         state.outBuffer.clear();
         break;

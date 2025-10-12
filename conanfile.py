@@ -27,6 +27,7 @@ class AeronetConan(ConanFile):
         "with_br": [True, False],
         "with_zlib": [True, False],
         "with_zstd": [True, False],
+        "with_opentelemetry": [True, False],
     }
     default_options = {
         "shared": False,
@@ -36,6 +37,7 @@ class AeronetConan(ConanFile):
         "with_br": False,
         "with_zlib": False,
         "with_zstd": False,
+        "with_opentelemetry": False,
     }
     exports_sources = "CMakeLists.txt", "cmake/*", "aeronet/*", "examples/*", "LICENSE", "README.md", "VERSION"
     package_type = "library"
@@ -48,9 +50,10 @@ class AeronetConan(ConanFile):
         tc = CMakeToolchain(self)
         tc.variables["AERONET_ENABLE_OPENSSL"] = "ON" if self.options.with_openssl else "OFF"
         tc.variables["AERONET_ENABLE_SPDLOG"] = "ON" if self.options.with_spdlog else "OFF"
-        tc.variables["AERONET_ENABLE_BROTLI"] - "ON" if self.options.with_br else "OFF"
+        tc.variables["AERONET_ENABLE_BROTLI"] = "ON" if self.options.with_br else "OFF"
         tc.variables["AERONET_ENABLE_ZLIB"] = "ON" if self.options.with_zlib else "OFF"
         tc.variables["AERONET_ENABLE_ZSTD"] = "ON" if self.options.with_zstd else "OFF"
+        tc.variables["AERONET_ENABLE_OPENTELEMETRY"] = "ON" if self.options.with_opentelemetry else "OFF"
         # Force OFF for tests/examples in package context
         tc.variables["AERONET_BUILD_TESTS"] = "OFF"
         tc.variables["AERONET_BUILD_EXAMPLES"] = "OFF"
@@ -70,16 +73,22 @@ class AeronetConan(ConanFile):
         # Prefer consuming dependency packages (portable builds) when features enabled.
         # If you intend to rely purely on system packages, you can remove these.
         if self.options.with_openssl:
-            # Recent OpenSSL version available in ConanCenter.
-            self.requires("openssl/3.3.1")
+            self.requires("openssl/[~3.3]")
         if self.options.with_spdlog:
-            self.requires("spdlog/1.15.3")
+            self.requires("spdlog/[~1.15]")
         if self.options.with_br:
-            self.requires("brotli/1.1.0")
+            self.requires("brotli/[~1.1]")
         if self.options.with_zlib:
-            self.requires("zlib/1.3.1")
+            self.requires("zlib/[~1.3]")
         if self.options.with_zstd:
-            self.requires("zstd/1.5.7")
+            self.requires("zstd/[~1.5]")
+        if self.options.with_opentelemetry:
+            self.requires("opentelemetry-cpp/[~1.22]")
+            # We prefer OTLP HTTP exporter in the codebase (otel-tracer.cpp)
+            # and do not currently use the gRPC exporter path. Avoid pulling
+            # the heavy gRPC dependency transitively. Keep protobuf since
+            # some opentelemetry pieces and generated protos may need it.
+            self.requires("protobuf/[~5.27]")
 
     def package(self):
         cm = CMake(self)
@@ -104,3 +113,10 @@ class AeronetConan(ConanFile):
             self.cpp_info.requires.append("zlib::zlib")
         if self.options.with_zstd:
             self.cpp_info.requires.append("zstd::zstd")
+        if self.options.with_opentelemetry:
+            self.cpp_info.requires.append("opentelemetry-cpp::opentelemetry-cpp")
+            # Protobuf is a direct requirement when OpenTelemetry support is enabled
+            # and some exported CMake targets / generated protos may need it. Ensure
+            # the Conan package_info references the protobuf requirement so Conan
+            # doesn't treat it as unused when creating the package.
+            self.cpp_info.requires.append("protobuf::protobuf")

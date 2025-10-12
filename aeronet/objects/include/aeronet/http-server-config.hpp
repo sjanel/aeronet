@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "aeronet/http-header.hpp"
+#include "aeronet/otel-config.hpp"
 #include "aeronet/router-config.hpp"
 #include "compression-config.hpp"
 #include "decompression-config.hpp"
@@ -62,6 +63,9 @@ struct HttpServerConfig {
   // Keep-Alive / connection lifecycle controls
   // ===========================================
   // Maximum number of HTTP requests to serve over a single persistent connection before forcing close.
+
+  // OpenTelemetry configuration
+  OtelConfig otel;
   // Helps cap memory use for long-lived clients and provides fairness. Default: 100.
   uint32_t maxRequestsPerConnection{100};
 
@@ -262,6 +266,12 @@ struct HttpServerConfig {
   HttpServerConfig& withRequestDecompression(DecompressionConfig cfg);
 
   HttpServerConfig& withMergeUnknownRequestHeaders(bool on = true);
+
+  // Set the OpenTelemetry configuration for this server instance
+  HttpServerConfig& withOtelConfig(OtelConfig cfg) {
+    otel = std::move(cfg);
+    return *this;
+  }
 
   // Configure adaptive read chunk sizing (two tier). Returns *this.
   HttpServerConfig& withReadChunkStrategy(std::size_t initialBytes, std::size_t bodyBytes) {
