@@ -40,19 +40,19 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
 
   // Extend deadline for benchmarks that request very large bodies over fresh TCP connections.
   // Keep tests / CI responsive while avoiding spurious timeouts for multi-megabyte responses.
-  constexpr auto kGlobalDeadline = std::chrono::seconds(15);
+  constexpr auto kGlobalDeadline = std::chrono::seconds(30);
   const auto deadline = std::chrono::steady_clock::now() + kGlobalDeadline;
   aeronet::RawChars buffer;
   std::size_t contentLength = 0;
   bool haveCL = false;
   // 1. Read headers
   while (std::chrono::steady_clock::now() < deadline) {
-    constexpr std::size_t kChunk = static_cast<std::size_t>(64) * 1024ULL;
+    constexpr std::size_t kChunkSize = static_cast<std::size_t>(64) * 1024ULL;
     std::size_t oldSize = buffer.size();
     std::size_t written = 0;
-    buffer.resize_and_overwrite(oldSize + kChunk, [&](char* data, [[maybe_unused]] std::size_t newCap) {
+    buffer.resize_and_overwrite(oldSize + kChunkSize, [&](char* data, [[maybe_unused]] std::size_t newCap) {
       for (;;) {
-        ssize_t recvBytes = ::recv(fd, data + oldSize, kChunk, 0);  // blocking
+        ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);  // blocking
         if (recvBytes > 0) {
           written = static_cast<std::size_t>(recvBytes);
           return oldSize + written;

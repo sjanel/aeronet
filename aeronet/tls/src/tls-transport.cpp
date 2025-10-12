@@ -1,11 +1,12 @@
 #include "tls-transport.hpp"
 
-#include <openssl/ssl.h>  // SSL_*, SSL_read/write, handshake, shutdown, SSL_CTX, SSL_get_error
+#include <openssl/ssl.h>
 #include <sys/types.h>
 
 #include <cerrno>
-#include <cstring>
-#include <string_view>  // std::string_view for write()
+#include <cstddef>
+#include <limits>
+#include <string_view>
 
 namespace aeronet {
 
@@ -13,8 +14,8 @@ namespace {
 inline bool isRetry(int code) { return code == SSL_ERROR_WANT_READ || code == SSL_ERROR_WANT_WRITE; }
 }  // namespace
 
-ssize_t TlsTransport::read(char* buf, std::size_t len, bool& wantRead, bool& wantWrite) {
-  wantRead = wantWrite = false;
+ssize_t TlsTransport::read(char* buf, std::size_t len, TransportWant& want) {
+  want = TransportWant::None;
   if (!_handshakeDone) {
     const auto hr = SSL_do_handshake(_ssl.get());
     if (hr == 1) {
@@ -22,9 +23,13 @@ ssize_t TlsTransport::read(char* buf, std::size_t len, bool& wantRead, bool& wan
     } else {
       const auto err = SSL_get_error(_ssl.get(), hr);
       if (isRetry(err)) {
-        wantRead = (err == SSL_ERROR_WANT_READ);
-        wantWrite = (err == SSL_ERROR_WANT_WRITE);
+        want = (err == SSL_ERROR_WANT_WRITE) ? TransportWant::WriteReady : TransportWant::ReadReady;
         return -1;  // indicate would-block during handshake
+      }
+      // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
+      if (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        want = TransportWant::ReadReady;  // Default to read, SSL will tell us if it needs write
+        return -1;
       }
       return -1;  // fatal
     }
@@ -38,40 +43,71 @@ ssize_t TlsTransport::read(char* buf, std::size_t len, bool& wantRead, bool& wan
   }
   const auto err = SSL_get_error(_ssl.get(), bytesRead);
   if (isRetry(err)) {
-    wantRead = (err == SSL_ERROR_WANT_READ);
-    wantWrite = (err == SSL_ERROR_WANT_WRITE);
+    want = (err == SSL_ERROR_WANT_WRITE) ? TransportWant::WriteReady : TransportWant::ReadReady;
+    return -1;
+  }
+  // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
+  if (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+    want = TransportWant::ReadReady;
     return -1;
   }
   return -1;  // fatal
 }
 
-ssize_t TlsTransport::write(std::string_view data, bool& wantRead, bool& wantWrite) {
-  wantRead = wantWrite = false;
+ssize_t TlsTransport::write(std::string_view data, TransportWant& want) {
+  want = TransportWant::None;
+
+  // Ensure handshake is done
   if (!_handshakeDone) {
-    const auto hr = SSL_do_handshake(_ssl.get());
+    const int hr = ::SSL_do_handshake(_ssl.get());
     if (hr == 1) {
       _handshakeDone = true;
     } else {
-      auto err = SSL_get_error(_ssl.get(), hr);
+      const int err = ::SSL_get_error(_ssl.get(), hr);
       if (isRetry(err)) {
-        wantRead = (err == SSL_ERROR_WANT_READ);
-        wantWrite = (err == SSL_ERROR_WANT_WRITE);
-        return -1;
+        want = (err == SSL_ERROR_WANT_WRITE) ? TransportWant::WriteReady : TransportWant::ReadReady;
+        return 0;  // no progress, treat like EAGAIN
+      }
+      // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
+      if (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        want = TransportWant::WriteReady;
+        return 0;
       }
       return -1;  // fatal
     }
   }
-  const auto bytesWritten = SSL_write(_ssl.get(), data.data(), static_cast<int>(data.size()));
-  if (bytesWritten > 0) {
-    return bytesWritten;
+
+  // SSL_write requires that on WANT_READ/WANT_WRITE, we retry with the EXACT same buffer and length.
+  // We cannot split into chunks and retry with different data - OpenSSL tracks this internally.
+  // Therefore, we attempt to write the entire data in one call (up to INT_MAX).
+
+  if (data.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    // For very large writes, we'd need to handle this differently, but for now we limit
+    data = data.substr(0, std::numeric_limits<int>::max());
   }
-  const auto err = SSL_get_error(_ssl.get(), bytesWritten);
+
+  const int res = ::SSL_write(_ssl.get(), data.data(), static_cast<int>(data.size()));
+  if (res > 0) {
+    return res;
+  }
+
+  const int err = ::SSL_get_error(_ssl.get(), res);
   if (isRetry(err)) {
-    wantRead = (err == SSL_ERROR_WANT_READ);
-    wantWrite = (err == SSL_ERROR_WANT_WRITE);
-    return -1;
+    want = (err == SSL_ERROR_WANT_WRITE) ? TransportWant::WriteReady : TransportWant::ReadReady;
+    return 0;  // CRITICAL: return 0 so caller retries with same data!
   }
-  return -1;  // fatal
+
+  // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
+  if (err == SSL_ERROR_SYSCALL) {
+    int saved_errno = errno;
+    if (saved_errno == EAGAIN || saved_errno == EWOULDBLOCK) {
+      want = TransportWant::WriteReady;
+      return 0;  // retry with same data
+    }
+  }
+
+  // Fatal error
+  return -1;
 }
 
 bool TlsTransport::handshakePending() const noexcept { return !_handshakeDone; }

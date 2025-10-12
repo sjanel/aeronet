@@ -29,8 +29,8 @@ struct ConnectionState {
   [[nodiscard]] bool isDrainCloseRequested() const noexcept { return closeMode == CloseMode::DrainThenClose; }
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }
 
-  ssize_t transportRead(std::size_t chunkSize, bool& wantRead, bool& wantWrite);
-  ssize_t transportWrite(std::string_view data, bool& wantRead, bool& wantWrite) const;
+  ssize_t transportRead(std::size_t chunkSize, TransportWant& want);
+  ssize_t transportWrite(std::string_view data, TransportWant& want);
 
   RawChars buffer;                        // accumulated raw data
   RawChars bodyBuffer;                    // decoded body lifetime

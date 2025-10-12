@@ -180,18 +180,20 @@ bool HttpServer::ModWithCloseOnFailure(EventLoop& loop, ConnectionMapIt cnxIt, u
 bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
   ConnectionState& state = cnxIt->second;
   do {
-    const auto reqStart = std::chrono::steady_clock::now();
-    // If we don't yet have a full request line (no '\n' observed) wait for more data instead of
-    // attempting to parse and wrongly emitting a 400 which would close an otherwise healthy keep-alive.
-    if (state.buffer.empty() || std::ranges::find(state.buffer, '\n') == state.buffer.end()) {
+    // If we don't yet have a full request line (no '\n' observed) wait for more data
+    if (state.buffer.size() < http::kHttpReqHeadersMinLen) {
       break;  // need more bytes for at least the request line
     }
+    const auto reqStart = std::chrono::steady_clock::now();
     HttpRequest req;
     const auto statusCode = req.setHead(state, _tmpBuffer, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders);
     if (statusCode != http::StatusCodeOK) {
-      emitSimpleError(cnxIt, statusCode, true);
-      // EmitSimpleError was invoked with immediate=true, which requested an Immediate close
-      // (ConnectionState::CloseMode::Immediate). We break unconditionally; the connection
+      // If status code == 0, we need more data
+      if (statusCode != 0) {
+        emitSimpleError(cnxIt, statusCode, true);
+      }
+
+      // We break unconditionally; the connection
       // will be torn down after any queued error bytes are flushed. No partial recovery is
       // attempted for a malformed / protocol-violating start line or headers.
       break;
