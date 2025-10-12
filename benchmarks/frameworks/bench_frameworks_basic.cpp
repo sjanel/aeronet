@@ -69,6 +69,8 @@ struct AeronetServerRunner {
       : async([]() {
           aeronet::HttpServerConfig cfg{};
           cfg.maxRequestsPerConnection = 1000000;  // allow plenty of persistent reuse for benchmarks
+          cfg.maxHeaderBytes = 256UL * 1024;       // allow large headers for benchmarks
+          cfg.maxBodyBytes = 1UL << 25;
           return cfg;
         }()) {
     aeronet::log::set_level(aeronet::log::level::err);
@@ -303,9 +305,9 @@ class PersistentClient {
 
   bool checkBodySz(std::size_t size) { return issueWithRetry(benchutil::kBodyPath, size, /*expectExact=*/true, size); }
 
-  bool checkHeaders() {
+  bool checkHeaders(std::size_t size) {
     // Expect body of size kHeadersBody.size(), but allow >0 for flexibility (some frameworks may append CRLF nuances)
-    return issueWithRetry(benchutil::kHeaderPath, kHeadersBody.size(), /*expectExact=*/false, kHeadersBody.size());
+    return issueWithRetry(benchutil::kHeaderPath, size, /*expectExact=*/false, kHeadersBody.size());
   }
 
   [[nodiscard]] int retryAttempts() const { return retryAttempts_; }
@@ -416,7 +418,8 @@ void HeadersMinMax(benchmark::State &state, std::string_view name, Server &serve
   std::size_t maxSize = static_cast<std::size_t>(state.range(1));
   std::uniform_int_distribution<std::size_t> dist(minSize, maxSize);
   for ([[maybe_unused]] auto st : state) {
-    if (!client.checkHeaders()) {
+    std::size_t sz = dist(server.rng);
+    if (!client.checkHeaders(sz)) {
       state.SkipWithError(std::format("{} request failed for headers", name));
       break;
     }
@@ -609,7 +612,7 @@ void DrogonResponseBuild(benchmark::State &state) {
 #endif
 
 #define REGISTER_BODY_MIN_MAX(name) BENCHMARK(name)->Args({4, 32})->Args({32, 512})->Args({4096, 8388608})
-#define REGISTER_HEADERS_MIN_MAX(name) BENCHMARK(name)->Args({1, 4})->Args({4, 16})->Args({16, 128})
+#define REGISTER_HEADERS_MIN_MAX(name) BENCHMARK(name)->Args({2, 8})->Args({16, 64})->Args({128, 1024})
 #define REGISTER_RESPONSE_BUILD(name) BENCHMARK(name)->Args({4, 32})->Args({32, 512})->Args({4096, 8388608})
 #define REGISTER_RANDOM_NOREUSE(name) REGISTER_BODY_MIN_MAX(name)
 

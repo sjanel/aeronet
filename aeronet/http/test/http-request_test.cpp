@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -24,10 +25,11 @@ std::string BuildRaw(std::string_view method, std::string_view target, std::stri
   std::string str;
   str.append(method).push_back(' ');
   str.append(target).push_back(' ');
-  str.append(version).append("\r\n");
-  str.append("Host: h\r\n");
+  str.append(version).append(http::CRLF);
+  str.append("Host: h");
+  str.append(http::CRLF);
   str.append(extraHeaders);
-  str.append("\r\n");
+  str.append(http::CRLF);
   return str;
 }
 }  // namespace
@@ -50,6 +52,11 @@ class HttpRequestTest : public ::testing::Test {
   HttpRequest req;
   ConnectionState cs;
 };
+
+TEST_F(HttpRequestTest, InvalidRequest) {
+  EXPECT_EQ(reqSet("GET / HTTP\r\n"), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet("GET / HTTP1.1"), 0);
+}
 
 TEST_F(HttpRequestTest, ParseBasicPathAndVersion) {
   auto raw = BuildRaw("GET", "/abc", "HTTP/1.1");

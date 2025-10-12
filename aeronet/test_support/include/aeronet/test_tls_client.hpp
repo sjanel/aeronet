@@ -67,6 +67,12 @@ class TlsClient {
 
   void loadClientCertKey(SSL_CTX* ctx);
 
+  // Wait for socket to be ready for reading or writing.
+  // events: POLLIN for readable, POLLOUT for writable
+  // Returns true if ready, false on timeout or error
+  template <typename Duration>
+  bool waitForSocketReady(short events, Duration timeout);
+
   uint16_t _port;
   Options _opts;
   bool _handshakeOk{false};

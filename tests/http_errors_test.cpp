@@ -31,7 +31,7 @@ TEST_P(HttpErrorParamTest, EmitsExpectedStatus) {
 
 INSTANTIATE_TEST_SUITE_P(
     HttpErrors, HttpErrorParamTest,
-    ::testing::Values(ErrorCase{"MalformedRequestLine", "GETONLY\r\n\r\n", "400"},
+    ::testing::Values(ErrorCase{"MalformedRequestLine", "GETONLYNOPATH\r\n\r\n", "400"},
                       ErrorCase{"VersionNotSupported", "GET /test HTTP/2.0\r\nHost: x\r\n\r\n", "505"},
                       ErrorCase{"UnsupportedTransferEncoding",
                                 "POST /u HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\nConnection: close\r\n\r\n",
