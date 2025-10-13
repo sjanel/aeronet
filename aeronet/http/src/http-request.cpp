@@ -81,22 +81,21 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, RawChars& tmpBuffe
   auto* first = state.buffer.data();
   auto* last = first + state.buffer.size();
 
-  /* Example HTTP request:
-
-    GET /path HTTP/1.1\r\n
-    Host: example.com\r\n
-    User-Agent: FooBar\r\n
-    \r\n
-  */
+  // Example : GET /path HTTP/1.1\r\nHost: example.com\r\nUser-Agent: FooBar\r\n\r\n
 
   // Although the HTTP standard specifies that requests should have CRLF '\r\n' as line separators,
   // some clients may send requests only with '\n'. We tolerate lone LF in parsing.
   auto* lineLast = std::find(first, last, '\n');
-  if (lineLast == last || std::distance(first, lineLast) < 2) {
+  if (lineLast == last) {
+    // not enough data
+    return 0;
+  }
+  if (std::cmp_less(std::distance(first, lineLast), http::kHttpReqHeadersMinLen - 1UL)) {
     return http::StatusCodeBadRequest;
   }
   auto* nextSep = std::find(first, lineLast, ' ');
   if (nextSep == lineLast) {
+    // we have a new line, but no spaces in the first line. This is definitely a bad request.
     return http::StatusCodeBadRequest;
   }
 
@@ -140,7 +139,10 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, RawChars& tmpBuffe
   while (first < last) {
     lineLast = std::find(first, last, '\n');
     if (lineLast == last) {  // need more data for complete header line
-      return http::StatusCodeBadRequest;
+      return 0;
+    }
+    if (std::cmp_less(maxHeadersBytes, std::distance(headersFirst, lineLast))) {
+      return http::StatusCodeRequestHeaderFieldsTooLarge;
     }
     // Detect blank line (CRLF or LF terminator) signaling end of headers.
     if (first == lineLast || (std::distance(first, lineLast) == 1 && *first == '\r')) {
@@ -235,10 +237,6 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, RawChars& tmpBuffe
     return http::StatusCodeBadRequest;
   }
   _flatHeaders = std::string_view(headersFirst, lineLast + 1);
-
-  if (_flatHeaders.size() > maxHeadersBytes + 2UL) {
-    return http::StatusCodeRequestHeaderFieldsTooLarge;
-  }
 
   // Propagate negotiated ALPN (if any) from connection state into per-request object.
   _alpnProtocol = state.selectedAlpn;

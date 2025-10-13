@@ -86,7 +86,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRequest& req
   queueData(cnxIt, data);
 
   state.buffer.erase_front(consumedBytes);
-  if (!keepAlive) {
+  if (!keepAlive && state.outBuffer.empty()) {
     state.requestDrainAndClose();
   }
   if (_metricsCb) {
@@ -103,41 +103,36 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRequest& req
 
 bool HttpServer::queueData(ConnectionMapIt cnxIt, std::string_view data) {
   ConnectionState& state = cnxIt->second;
-  if (state.outBuffer.empty()) {
-    bool wantR = false;
-    bool wantW = false;
-    auto written = state.transportWrite(data, wantR, wantW);
-    if (!state.tlsEstablished && !state.transport->handshakePending()) {
-      state.tlsEstablished = true;
-    }
+  // For TLS connections: ALWAYS buffer the data first before writing to ensure SSL_write
+  // sees a stable buffer pointer that won't change between retries (OpenSSL's "bad write retry" requirement).
+  // For plain TCP: we try immediate write for efficiency, but TLS requires buffering to maintain pointer stability.
+  const bool isTls = state.transport->handshakePending() || state.tlsEstablished;
+
+  if (state.outBuffer.empty() && !isTls) {
+    // Plain TCP path: try immediate write optimization
+    TransportWant want = TransportWant::None;
+    auto written = state.transportWrite(data, want);
     if (written > 0) {
       if (std::cmp_equal(written, data.size())) {
         _stats.totalBytesQueued += static_cast<uint64_t>(data.size());
         _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
-        // If TLS wants more write (handshake) and no buffered data, ensure EPOLLOUT
-        if (wantW && !state.waitingWritable) {
-          if (!HttpServer::ModWithCloseOnFailure(_eventLoop, cnxIt, EPOLLIN | EPOLLOUT | EPOLLET,
-                                                 "enable writable immediate write path", _stats)) {
-            return false;
-          }
-          state.waitingWritable = true;
-          ++_stats.deferredWriteEvents;
-        }
         return true;
       }
       // partial write
       _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
       state.outBuffer.append(data.data() + written, data.data() + data.size());
     } else if (written == 0 || (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))) {
-      // no progress but non fatal
+      // no progress but non fatal - buffer the data
       state.outBuffer.append(data);
     } else {  // fatal transport write
       state.requestImmediateClose();
       return false;
     }
   } else {
+    // TLS path OR buffer not empty: append to outBuffer first, then flush will handle the write
     state.outBuffer.append(data);
   }
+
   _stats.totalBytesQueued += static_cast<uint64_t>(data.size());
   _stats.maxConnectionOutboundBuffer = std::max(_stats.maxConnectionOutboundBuffer, state.outBuffer.size());
   if (state.outBuffer.size() > _config.maxOutboundBufferBytes) {
@@ -150,22 +145,22 @@ bool HttpServer::queueData(ConnectionMapIt cnxIt, std::string_view data) {
       ++_stats.deferredWriteEvents;
     }
   }
+
+  // If we buffered data, try flushing it immediately
+  if (!state.outBuffer.empty()) {
+    flushOutbound(cnxIt);
+  }
+
   return true;
 }
 
 void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   ++_stats.flushCycles;
-  bool lastWantWrite = false;
+  TransportWant want = TransportWant::None;
   ConnectionState& state = cnxIt->second;
   const int fd = cnxIt->first.fd();
   while (!state.outBuffer.empty()) {
-    bool wantR = false;
-    bool wantW = false;
-    auto written = state.transportWrite(state.outBuffer, wantR, wantW);
-    lastWantWrite = wantW;
-    if (!state.tlsEstablished && !state.transport->handshakePending()) {
-      state.tlsEstablished = true;
-    }
+    auto written = state.transportWrite(state.outBuffer, want);
     if (written > 0) {
       _stats.totalBytesWrittenFlush += static_cast<uint64_t>(written);
       if (std::cmp_equal(written, state.outBuffer.size())) {
@@ -176,7 +171,7 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
       continue;
     }
     if (written == 0 || (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))) {
-      // Need to wait for socket writable again (TLS handshake or congestion)
+      // Need to wait for socket writable or readable depending on 'want'
       break;
     }
     auto savedErr = errno;
@@ -192,14 +187,13 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
                                         "disable writable flushOutbound drop EPOLLOUT", _stats)) {
     state.waitingWritable = false;
     if (state.isAnyCloseRequested()) {
-      closeConnection(cnxIt);
       return;
     }
   }
   // Clear writable interest if no buffered data and transport no longer needs write progress.
   // (We do not call handshakePending() here because ConnStateInternal does not expose it; transport has that.)
   if (state.outBuffer.empty()) {
-    bool transportNeedsWrite = (!state.tlsEstablished && lastWantWrite);
+    bool transportNeedsWrite = (!state.tlsEstablished && want == TransportWant::WriteReady);
     if (transportNeedsWrite) {
       if (!state.waitingWritable) {
         if (!HttpServer::ModWithCloseOnFailure(_eventLoop, cnxIt, EPOLLIN | EPOLLOUT | EPOLLET,

@@ -33,6 +33,7 @@ bool HttpServer::decodeFixedLengthBody(ConnectionMapIt cnxIt, HttpRequest& req, 
       static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.buffer.data());
   if (!hasCL) {
     // No Content-Length and not chunked: treat as no body (common for GET/HEAD). Ready immediately.
+    // TODO: we should reject the query if body is non empty and ContentLength not specified
     if (state.buffer.size() >= headerEnd) {
       req._body = std::string_view{};
       consumedBytes = headerEnd;

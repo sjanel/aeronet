@@ -101,6 +101,9 @@ void HttpServer::acceptNewConnections() {
         log::error("SSL_set_fd failed for fd={}", cnxFd);
         continue;
       }
+      // Enable partial writes: SSL_write will return after writing some data rather than
+      // trying to write everything. This is crucial for non-blocking I/O performance.
+      SSL_set_mode(sslPtr.get(), SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
       SSL_set_accept_state(sslPtr.get());
       state.transport = std::make_unique<TlsTransport>(std::move(sslPtr));
       state.handshakeStart = std::chrono::steady_clock::now();
@@ -113,8 +116,7 @@ void HttpServer::acceptNewConnections() {
     ConnectionState* pCnx = &state;
     std::size_t bytesReadThisEvent = 0;
     while (true) {
-      bool wantR = false;
-      bool wantW = false;
+      TransportWant want = TransportWant::None;
       // Determine adaptive chunk size: if we have not yet parsed a full header for the current pending request
       // (heuristic: headerStart set OR buffer missing CRLFCRLF), use initialReadChunkBytes; otherwise use
       // bodyReadChunkBytes.
@@ -132,7 +134,7 @@ void HttpServer::acceptNewConnections() {
         }
         chunkSize = std::min(chunkSize, remainingBudget);
       }
-      ssize_t bytesRead = pCnx->transportRead(chunkSize, wantR, wantW);
+      ssize_t bytesRead = pCnx->transportRead(chunkSize, want);
       // Check for handshake completion
       if (!pCnx->tlsEstablished && !pCnx->transport->handshakePending()) {
 #ifdef AERONET_ENABLE_OPENSSL
@@ -164,7 +166,7 @@ void HttpServer::acceptNewConnections() {
       }
       if (bytesRead == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
         // Adjust epoll interest if TLS handshake needs write readiness
-        if (wantW && !pCnx->waitingWritable) {
+        if (want == TransportWant::WriteReady && !pCnx->waitingWritable) {
           if (_eventLoop.mod(cnxFd, EPOLLIN | EPOLLOUT | EPOLLET)) {
             pCnx->waitingWritable = true;
           }
@@ -209,10 +211,22 @@ void HttpServer::handleReadableClient(int fd) {
   }
   ConnectionState& state = cnxIt->second;
   state.lastActivity = std::chrono::steady_clock::now();
+
+  // If there's buffered outbound data, try to flush it FIRST. This handles the case where
+  // TLS needs to read before it can continue writing (SSL_ERROR_WANT_READ during SSL_write).
+  // We must attempt flush before reading new data to unblock the write operation.
+  if (!state.outBuffer.empty()) {
+    flushOutbound(cnxIt);
+    // Check if connection was closed during flush
+    if (state.isAnyCloseRequested()) {
+      closeConnection(cnxIt);
+      return;
+    }
+  }
+
   std::size_t bytesReadThisEvent = 0;
   while (true) {
-    bool wantR = false;
-    bool wantW = false;
+    TransportWant want = TransportWant::None;
     std::size_t chunkSize = _config.bodyReadChunkBytes;
     if (state.headerStart.time_since_epoch().count() != 0 ||
         std::ranges::search(state.buffer, http::DoubleCRLF).empty()) {
@@ -226,7 +240,7 @@ void HttpServer::handleReadableClient(int fd) {
       }
       chunkSize = std::min(chunkSize, remainingBudget);
     }
-    auto count = state.transportRead(chunkSize, wantR, wantW);
+    auto count = state.transportRead(chunkSize, want);
     if (!state.tlsEstablished && !state.transport->handshakePending()) {
 #ifdef AERONET_ENABLE_OPENSSL
       if (_config.tls && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
@@ -239,7 +253,7 @@ void HttpServer::handleReadableClient(int fd) {
     }
     if (count < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        if (wantW && !state.waitingWritable) {
+        if (want == TransportWant::WriteReady && !state.waitingWritable) {
           if (_eventLoop.mod(fd, EPOLLIN | EPOLLOUT | EPOLLET)) {
             state.waitingWritable = true;
           }
@@ -283,6 +297,10 @@ void HttpServer::handleReadableClient(int fd) {
       }
     }
   }
+  // Try to flush again after reading new data, in case TLS needed the read to proceed with write
+  if (!state.outBuffer.empty()) {
+    flushOutbound(cnxIt);
+  }
   if (state.isAnyCloseRequested()) {
     closeConnection(cnxIt);
   }
@@ -295,6 +313,9 @@ void HttpServer::handleWritableClient(int fd) {
     return;
   }
   flushOutbound(cnxIt);
+  if (cnxIt->second.isAnyCloseRequested()) {
+    closeConnection(cnxIt);
+  }
 }
 
 }  // namespace aeronet
