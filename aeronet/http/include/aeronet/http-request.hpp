@@ -146,7 +146,8 @@ class HttpRequest {
 
   // Attempts to set this HttpRequest (except body) from given ConnectionState.
   // Returns StatusCode OK if the request is good (it will be fully set)
-  // Or an HTTP error status to forward.
+  // or an HTTP error status to forward.
+  // If 0 is returned, it means the connection state buffer is not filled up to the first newline.
   http::StatusCode setHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
                            bool mergeAllowedForUnknownRequestHeaders);
 

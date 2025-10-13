@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string_view>
 
 #include "aeronet/http-status-code.hpp"
@@ -48,6 +49,10 @@ inline constexpr std::string_view Vary = "Vary";
 inline constexpr std::string_view AcceptEncoding = "Accept-Encoding";
 
 inline constexpr std::string_view HeaderSep = ": ";
+inline constexpr std::string_view CRLF = "\r\n";
+inline constexpr std::string_view DoubleCRLF = "\r\n\r\n";
+// 'GET / HTTP/1.1\r\n'
+inline constexpr std::size_t kHttpReqHeadersMinLen = GET.size() + 3UL + HTTP10Sv.size() + CRLF.size();
 
 // Compression
 inline constexpr std::string_view identity = "identity";
@@ -81,9 +86,6 @@ inline constexpr std::string_view ReasonHTTPVersionNotSupported = "HTTP Version 
 
 // Content type
 inline constexpr std::string_view ContentTypeTextPlain = "text/plain";
-
-inline constexpr std::string_view CRLF = "\r\n";
-inline constexpr std::string_view DoubleCRLF = "\r\n\r\n";
 
 // Return the canonical reason phrase for a subset of status codes we care about.
 // If an unmapped status is provided, returns an empty string_view, letting callers
