@@ -7,6 +7,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "char-hexadecimal-converter.hpp"
@@ -52,7 +53,7 @@ bool HttpServer::decodeFixedLengthBody(ConnectionMapIt cnxIt, HttpRequest& req, 
     return false;
   }
   if (expectContinue && declaredContentLen > 0) {
-    queueData(cnxIt, http::HTTP11_100_CONTINUE);
+    queueData(cnxIt, HttpResponseData(http::HTTP11_100_CONTINUE));
   }
   std::size_t totalNeeded = headerEnd + declaredContentLen;
   if (state.buffer.size() < totalNeeded) {
@@ -67,7 +68,7 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, HttpRequest& req, bool
                                    std::size_t& consumedBytes) {
   ConnectionState& state = cnxIt->second;
   if (expectContinue) {
-    queueData(cnxIt, http::HTTP11_100_CONTINUE);
+    queueData(cnxIt, HttpResponseData(http::HTTP11_100_CONTINUE));
   }
   std::size_t pos = static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.buffer.data());
   RawChars& decodedBody = state.bodyBuffer;

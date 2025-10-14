@@ -72,7 +72,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertSuccessWithAlpn) {
     ts.stop();
   }
   ASSERT_FALSE(resp.empty());
-  ASSERT_NE(resp.find("HTTP/1.1 200"), std::string::npos);
-  ASSERT_NE(resp.find("SECURE/secure"), std::string::npos);
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.contains("SECURE/secure"));
   ASSERT_EQ(alpn, "http/1.1");
 }

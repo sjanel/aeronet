@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string_view>
 
@@ -18,8 +19,6 @@ class HttpServer;
 
 class HttpResponseWriter {
  public:
-  HttpResponseWriter(HttpServer& srv, int fd, bool headRequest, bool requestConnClose, Encoding compressionFormat);
-
   // Replaces the status code. Must be a 3 digits integer.
   void statusCode(http::StatusCode code);
 
@@ -78,9 +77,9 @@ class HttpResponseWriter {
   // - Once set, the writer will NOT emit a Transfer-Encoding header and will not switch back to chunked.
   void contentLength(std::size_t len);
 
-  // Backpressure-aware write. Returns true if accepted (queued or immediately written). Returns
+  // Backpressure-aware body write. Returns true if accepted (queued or immediately written). Returns
   // false if a fatal error occurred or the server marked the connection for closure / overflow.
-  bool write(std::string_view data);
+  bool writeBody(std::string_view data);
 
   // Finalize the streaming response.
   // Responsibilities:
@@ -113,36 +112,47 @@ class HttpResponseWriter {
   // - Multiple invocations are harmless; only the first has effect.
   void end();
 
-  [[nodiscard]] bool finished() const { return _ended; }
+  // A writer that failed is considered finished for callers (no further writes allowed).
+  [[nodiscard]] bool finished() const { return _state == State::Ended || _state == State::Failed; }
+
+  [[nodiscard]] bool failed() const { return _state == State::Failed; }
 
   // Automatic compression suppression: if user supplies a Content-Encoding header,
   // we will not perform automatic compression (user fully controls encoding). Exposed via flag.
   [[nodiscard]] bool userProvidedContentEncoding() const { return _userProvidedContentEncoding; }
 
  private:
+  friend class HttpServer;
+
+  HttpResponseWriter(HttpServer& srv, int fd, bool headRequest, bool requestConnClose, Encoding compressionFormat);
+
   void ensureHeadersSent();
   void emitChunk(std::string_view data);
   void emitLastChunk();
-  bool enqueue(std::string_view data);
+
+  bool enqueue(HttpResponseData httpResponseData);
+
+  bool accumulateInPreCompressBuffer(std::string_view data);
 
   HttpServer* _server{nullptr};
   int _fd{-1};
   bool _head{false};
-  bool _headersSent{false};
+  // Combine transient booleans into a single state machine to reduce memory and
+  // make transitions explicit.
+  enum class State : std::uint8_t { Opened, HeadersSent, Ended, Failed };
+  State _state{State::Opened};
   bool _chunked{true};
-  bool _ended{false};
-  bool _failed{false};
   bool _requestConnClose{false};
   bool _userSetContentType{false};
   bool _userProvidedContentEncoding{false};
   Encoding _compressionFormat;
   bool _compressionActivated{false};
+
   // Internal fixed HttpResponse used solely for header accumulation and status/reason/body placeholder.
   // We never finalize until ensureHeadersSent(); body remains empty (streaming chunks / writes follow separately).
   HttpResponse _fixedResponse{200, http::ReasonOK};
   std::size_t _declaredLength{0};
   std::size_t _bytesWritten{0};
-  RawChars _chunkBuf;                                 // reusable buffer for coalesced small/medium chunks
   std::unique_ptr<EncoderContext> _activeEncoderCtx;  // streaming context
   RawChars _preCompressBuffer;                        // threshold buffering before activation
 };

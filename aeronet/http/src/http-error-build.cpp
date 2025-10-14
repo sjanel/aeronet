@@ -1,11 +1,14 @@
 ﻿#include "http-error-build.hpp"
 
 #include <cstddef>
+#include <numeric>
 #include <span>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "raw-chars.hpp"
 #include "stringconv.hpp"
@@ -14,21 +17,19 @@
 
 namespace aeronet {
 
-void BuildSimpleError(http::StatusCode status, std::span<const http::Header> globalHeaders, std::string_view reason,
-                      RawChars& out) {
+HttpResponseData BuildSimpleError(http::StatusCode status, std::span<const http::Header> globalHeaders,
+                                  std::string_view reason) {
   const auto datePos = http::HTTP11Sv.size() + 1UL + 3UL + 1UL + reason.size() + http::CRLF.size() + http::Date.size() +
                        http::HeaderSep.size();
 
-  std::size_t globalHeadersSize = 0;
-  for (const auto& [headerKey, headerValue] : globalHeaders) {
-    globalHeadersSize += http::CRLF.size() + headerKey.size() + http::HeaderSep.size() + headerValue.size();
-  }
+  std::size_t globalHeadersSize = std::accumulate(
+      globalHeaders.begin(), globalHeaders.end(), std::size_t{0}, [](std::size_t acc, const http::Header& header) {
+        return acc + http::CRLF.size() + header.first.size() + http::HeaderSep.size() + header.second.size();
+      });
 
-  out.clear();
-  out.ensureAvailableCapacity(datePos + kRFC7231DateStrLen + http::CRLF.size() + http::ContentLength.size() +
-                              http::HeaderSep.size() + 1U + http::CRLF.size() + http::Connection.size() +
-                              http::HeaderSep.size() + http::close.size() + http::DoubleCRLF.size() +
-                              globalHeadersSize);
+  RawChars out(datePos + kRFC7231DateStrLen + http::CRLF.size() + http::ContentLength.size() + http::HeaderSep.size() +
+               1U + http::CRLF.size() + http::Connection.size() + http::HeaderSep.size() + http::close.size() +
+               http::DoubleCRLF.size() + globalHeadersSize);
 
   out.unchecked_append(http::HTTP11Sv);
   out.unchecked_push_back(' ');
@@ -55,6 +56,8 @@ void BuildSimpleError(http::StatusCode status, std::span<const http::Header> glo
     out.unchecked_append(headerValue);
   }
   out.unchecked_append(http::DoubleCRLF);
+
+  return HttpResponseData(std::move(out));
 }
 
 }  // namespace aeronet

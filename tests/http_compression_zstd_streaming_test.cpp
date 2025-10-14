@@ -32,8 +32,8 @@ TEST(HttpCompressionZstdStreaming, ZstdActivatesAfterThreshold) {
   ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
-    writer.write(chunk1);
-    writer.write(chunk2);
+    writer.writeBody(chunk1);
+    writer.writeBody(chunk2);
     writer.end();
   });
   auto resp = test::simpleGet(ts.port(), "/zs", {{"Accept-Encoding", "zstd"}});
@@ -58,7 +58,7 @@ TEST(HttpCompressionZstdStreaming, BelowThresholdIdentity) {
   ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
-    writer.write(data);
+    writer.writeBody(data);
     writer.end();
   });
   auto resp = test::simpleGet(ts.port(), "/zi", {{"Accept-Encoding", "zstd"}});

@@ -8,8 +8,8 @@ TEST(AeronetVersion, Version) {
   static constexpr auto kVersion = aeronet::version();
   EXPECT_FALSE(kVersion.empty());
   auto view = aeronet::fullVersionStringView();
-  EXPECT_NE(view.find("aeronet"), std::string::npos);
-  EXPECT_NE(view.find(std::string(kVersion)), std::string::npos);
+  EXPECT_TRUE(view.contains("aeronet"));
+  EXPECT_TRUE(view.contains(std::string(kVersion)));
   // Expect multiline format now including compression section (exactly 4 lines, no trailing newline)
   auto first_nl = view.find('\n');
   ASSERT_NE(first_nl, std::string::npos);
@@ -31,13 +31,13 @@ TEST(AeronetVersion, Version) {
   // Compression line should list enabled codecs separated by comma+space in deterministic order
   // Order enforced in version.hpp join logic: zlib, zstd, brotli (if present)
 #ifdef AERONET_ENABLE_ZLIB
-  EXPECT_NE(line4.find("zlib"), std::string::npos);
+  EXPECT_TRUE(line4.contains("zlib"));
 #endif
 #ifdef AERONET_ENABLE_ZSTD
-  EXPECT_NE(line4.find("zstd"), std::string::npos);
+  EXPECT_TRUE(line4.contains("zstd"));
 #endif
 #ifdef AERONET_ENABLE_BROTLI
-  EXPECT_NE(line4.find("brotli"), std::string::npos);
+  EXPECT_TRUE(line4.contains("brotli"));
 #endif
   // The runtime string should equal the constexpr view content.
   EXPECT_EQ(view, aeronet::fullVersionStringView());

@@ -78,6 +78,7 @@ class HttpRequest {
     std::string_view key;
     std::string_view value;
   };
+
   class QueryParamRange {
    public:
     class iterator {
@@ -141,6 +142,8 @@ class HttpRequest {
  private:
   friend class HttpServer;
   friend class HttpRequestTest;
+
+  HttpRequest() noexcept = default;
 
   [[nodiscard]] bool wantClose() const;
 

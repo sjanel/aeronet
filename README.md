@@ -67,6 +67,8 @@ User-Agent: curl/8.5.0
 
 The following focused docs expand each area without cluttering the high‑level overview:
 
+- [Feature reference (FEATURES)](docs/FEATURES.md)
+
 - [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
 - [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
 - [Connection Close Semantics](docs/FEATURES.md#connection-close-semantics)

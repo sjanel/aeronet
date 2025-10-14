@@ -62,6 +62,6 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
   auto raw = client.get("/moved");
   stop.store(true);
 
-  ASSERT_NE(raw.find("HTTP/1.1 200"), std::string::npos);
-  ASSERT_NE(raw.find("MOVEALPN:http/1.1"), std::string::npos) << raw;
+  ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(raw.contains("MOVEALPN:http/1.1")) << raw;
 }

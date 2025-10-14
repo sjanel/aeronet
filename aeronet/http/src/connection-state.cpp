@@ -1,27 +1,31 @@
 #include "connection-state.hpp"
 
-#include <sys/types.h>
-
 #include <cstddef>
 #include <string_view>
 
+#include "aeronet/http-response-data.hpp"
+#include "transport.hpp"
+
 namespace aeronet {
 
-ssize_t ConnectionState::transportRead(std::size_t chunkSize, TransportWant& want) {
-  std::size_t oldSize = buffer.size();
-
+std::size_t ConnectionState::transportRead(std::size_t chunkSize, Transport& want) {
   buffer.ensureAvailableCapacity(chunkSize);
-  char* writePtr = buffer.data() + oldSize;
-  ssize_t bytesRead = transport->read(writePtr, chunkSize, want);
-  if (bytesRead > 0) {
-    buffer.addSize(static_cast<std::size_t>(bytesRead));
-  }
+  std::size_t bytesRead = transport->read(buffer.data() + buffer.size(), chunkSize, want);
+  buffer.addSize(bytesRead);
   return bytesRead;
 }
 
-ssize_t ConnectionState::transportWrite(std::string_view data, TransportWant& want) {
+std::size_t ConnectionState::transportWrite(std::string_view data, Transport& want) {
   const auto res = transport->write(data, want);
-  if (!tlsEstablished && !transport->handshakePending()) {
+  if (!tlsEstablished && transport->handshakeDone()) {
+    tlsEstablished = true;
+  }
+  return res;
+}
+
+std::size_t ConnectionState::transportWrite(const HttpResponseData& httpResponseData, Transport& want) {
+  const auto res = transport->write(httpResponseData, want);
+  if (!tlsEstablished && transport->handshakeDone()) {
     tlsEstablished = true;
   }
   return res;

@@ -1,12 +1,14 @@
 #include "tls-transport.hpp"
 
+#include <openssl/err.h>
 #include <openssl/ssl.h>
-#include <sys/types.h>
 
 #include <cerrno>
 #include <cstddef>
-#include <limits>
 #include <string_view>
+
+#include "log.hpp"
+#include "transport.hpp"
 
 namespace aeronet {
 
@@ -14,103 +16,134 @@ namespace {
 inline bool isRetry(int code) { return code == SSL_ERROR_WANT_READ || code == SSL_ERROR_WANT_WRITE; }
 }  // namespace
 
-ssize_t TlsTransport::read(char* buf, std::size_t len, TransportWant& want) {
-  want = TransportWant::None;
+std::size_t TlsTransport::read(char* buf, std::size_t len, Transport& want) {
+  want = Transport::None;
+
+  std::size_t bytesRead{};
+
   if (!_handshakeDone) {
-    const auto hr = SSL_do_handshake(_ssl.get());
-    if (hr == 1) {
+    const auto handshakeRet = ::SSL_do_handshake(_ssl.get());
+    if (handshakeRet == 1) {
       _handshakeDone = true;
     } else {
-      const auto err = SSL_get_error(_ssl.get(), hr);
+      const auto err = ::SSL_get_error(_ssl.get(), handshakeRet);
       if (isRetry(err)) {
-        want = (err == SSL_ERROR_WANT_WRITE) ? TransportWant::WriteReady : TransportWant::ReadReady;
-        return -1;  // indicate would-block during handshake
+        want = (err == SSL_ERROR_WANT_WRITE) ? Transport::WriteReady : Transport::ReadReady;
+        return bytesRead;  // indicate would-block during handshake
       }
       // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
       if (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        want = TransportWant::ReadReady;  // Default to read, SSL will tell us if it needs write
-        return -1;
+        want = Transport::ReadReady;  // Default to read, SSL will tell us if it needs write
+        return bytesRead;
       }
-      return -1;  // fatal
+      logErrorIfAny();
+      want = Transport::Error;
+      return bytesRead;
     }
   }
-  const auto bytesRead = SSL_read(_ssl.get(), buf, static_cast<int>(len));
-  if (bytesRead > 0) {
+  if (::SSL_read_ex(_ssl.get(), buf, len, &bytesRead) == 1) {
+    // success
     return bytesRead;
   }
-  if (bytesRead == 0) {
-    return 0;  // close notify or orderly close
+
+  // SSL_read_ex returned <=0. Determine why using SSL_get_error to decide whether this
+  // indicates an orderly close (ZERO_RETURN), a retry condition (WANT_READ/WANT_WRITE),
+  // or a transient/cryptic SYSCALL with errno==0 and no OpenSSL errors which should be
+  // treated as non-fatal would-block.
+  const auto err = ::SSL_get_error(_ssl.get(), 0);
+  if (err == SSL_ERROR_ZERO_RETURN) {
+    // Clean shutdown from the peer.
+    return 0;
   }
-  const auto err = SSL_get_error(_ssl.get(), bytesRead);
   if (isRetry(err)) {
-    want = (err == SSL_ERROR_WANT_WRITE) ? TransportWant::WriteReady : TransportWant::ReadReady;
-    return -1;
-  }
-  // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
-  if (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-    want = TransportWant::ReadReady;
-    return -1;
-  }
-  return -1;  // fatal
-}
-
-ssize_t TlsTransport::write(std::string_view data, TransportWant& want) {
-  want = TransportWant::None;
-
-  // Ensure handshake is done
-  if (!_handshakeDone) {
-    const int hr = ::SSL_do_handshake(_ssl.get());
-    if (hr == 1) {
-      _handshakeDone = true;
-    } else {
-      const int err = ::SSL_get_error(_ssl.get(), hr);
-      if (isRetry(err)) {
-        want = (err == SSL_ERROR_WANT_WRITE) ? TransportWant::WriteReady : TransportWant::ReadReady;
-        return 0;  // no progress, treat like EAGAIN
-      }
-      // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
-      if (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        want = TransportWant::WriteReady;
-        return 0;
-      }
-      return -1;  // fatal
-    }
-  }
-
-  // SSL_write requires that on WANT_READ/WANT_WRITE, we retry with the EXACT same buffer and length.
-  // We cannot split into chunks and retry with different data - OpenSSL tracks this internally.
-  // Therefore, we attempt to write the entire data in one call (up to INT_MAX).
-
-  if (data.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-    // For very large writes, we'd need to handle this differently, but for now we limit
-    data = data.substr(0, std::numeric_limits<int>::max());
-  }
-
-  const int res = ::SSL_write(_ssl.get(), data.data(), static_cast<int>(data.size()));
-  if (res > 0) {
-    return res;
-  }
-
-  const int err = ::SSL_get_error(_ssl.get(), res);
-  if (isRetry(err)) {
-    want = (err == SSL_ERROR_WANT_WRITE) ? TransportWant::WriteReady : TransportWant::ReadReady;
-    return 0;  // CRITICAL: return 0 so caller retries with same data!
+    want = (err == SSL_ERROR_WANT_WRITE) ? Transport::WriteReady : Transport::ReadReady;
+    return 0;
   }
 
   // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
   if (err == SSL_ERROR_SYSCALL) {
-    int saved_errno = errno;
-    if (saved_errno == EAGAIN || saved_errno == EWOULDBLOCK) {
-      want = TransportWant::WriteReady;
-      return 0;  // retry with same data
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      want = Transport::ReadReady;
+      return 0;
+    }
+    // Some platforms may present SSL_ERROR_SYSCALL with errno==0 and no OpenSSL errors
+    // during non-blocking handshakes; treat this as a non-fatal would-block to avoid
+    // prematurely closing the connection on transient EOF readings.
+    if (errno == 0 && ::ERR_peek_error() == 0) {
+      want = Transport::ReadReady;
+      return 0;
+    }
+  }
+  want = Transport::Error;
+  return bytesRead;
+}
+
+std::size_t TlsTransport::write(std::string_view data, Transport& want) {
+  want = Transport::None;
+  std::size_t bytesWritten{};
+
+  // Ensure handshake is done
+  if (!_handshakeDone) {
+    const int handshakeRet = ::SSL_do_handshake(_ssl.get());
+    if (handshakeRet == 1) {
+      _handshakeDone = true;
+    } else {
+      const int err = ::SSL_get_error(_ssl.get(), handshakeRet);
+      if (isRetry(err)) {
+        want = (err == SSL_ERROR_WANT_WRITE) ? Transport::WriteReady : Transport::ReadReady;
+        return bytesWritten;  // no progress, treat like EAGAIN
+      }
+      // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
+      if (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        want = Transport::WriteReady;
+        return bytesWritten;
+      }
+      want = Transport::Error;
+      return bytesWritten;  // fatal
     }
   }
 
-  // Fatal error
-  return -1;
+  // Avoid calling OpenSSL with a zero-length buffer. Some OpenSSL builds
+  // treat a null/zero-length pointer as an invalid argument and return
+  // 'bad length'. If there's nothing to write, simply return 0.
+  if (data.empty()) {
+    return 0;
+  }
+
+  if (::SSL_write_ex(_ssl.get(), data.data(), data.size(), &bytesWritten) == 0) {
+    const auto err = ::SSL_get_error(_ssl.get(), 0);
+    if (isRetry(err)) {
+      want = (err == SSL_ERROR_WANT_WRITE) ? Transport::WriteReady : Transport::ReadReady;
+      bytesWritten = 0;  // CRITICAL: return 0 so caller retries with same data!
+      return bytesWritten;
+    }
+
+    // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
+    if (err == SSL_ERROR_SYSCALL) {
+      auto saved_errno = errno;
+      if (saved_errno == EAGAIN || saved_errno == EWOULDBLOCK) {
+        want = Transport::WriteReady;
+        bytesWritten = 0;
+        return bytesWritten;  // retry with same data
+      }
+      if (saved_errno == 0 && ERR_peek_error() == 0) {
+        want = Transport::WriteReady;
+        bytesWritten = 0;
+        return bytesWritten;
+      }
+    }
+
+    logErrorIfAny();
+
+    want = Transport::Error;
+    bytesWritten = 0;
+    return bytesWritten;
+  }
+
+  return bytesWritten;
 }
 
-bool TlsTransport::handshakePending() const noexcept { return !_handshakeDone; }
+bool TlsTransport::handshakeDone() const noexcept { return _handshakeDone; }
 
 void TlsTransport::shutdown() noexcept {
   auto* ssl = _ssl.get();
@@ -129,9 +162,22 @@ void TlsTransport::shutdown() noexcept {
   // rely on the outer layer closing the underlying socket. We intentionally ignore WANT_READ / WANT_WRITE
   // here for simplicity; a fully asynchronous graceful close would capture those conditions and defer
   // the second call until the socket becomes readable/writable.
-  auto rc = SSL_shutdown(ssl);
+  auto rc = ::SSL_shutdown(ssl);
   if (rc == 0) {  // Need second invocation to try completing bidirectional shutdown.
-    (void)SSL_shutdown(ssl);
+    ::SSL_shutdown(ssl);
+  }
+}
+
+void TlsTransport::logErrorIfAny() {
+  auto errVal = ::ERR_get_error();
+  if (errVal != 0) {
+    char errBuf[256];
+    ::ERR_error_string_n(errVal, errBuf, sizeof(errBuf));
+    log::error("TLS transport OpenSSL error: {}", errBuf);
+    while ((errVal = ::ERR_get_error()) != 0) {
+      ::ERR_error_string_n(errVal, errBuf, sizeof(errBuf));
+      log::error("TLS transport OpenSSL error: {}", errBuf);
+    }
   }
 }
 

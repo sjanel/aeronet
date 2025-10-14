@@ -8,7 +8,6 @@
 #include <optional>
 #include <ranges>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -48,8 +47,14 @@ struct HttpServerConfig {
 
   // Maximum allowed size (in bytes) of a request body (after decoding any chunked framing). Requests exceeding
   // this limit result in a 413 (Payload Too Large) style error (currently 400/413 depending on path) and closure.
-  // Default: 1 MiB.
-  std::size_t maxBodyBytes{1 << 20};  // 1 MiB
+  // Default: 256 MiB.
+  std::size_t maxBodyBytes{1 << 28};  // 256 MiB
+
+  // For requests with a captured body, HttpResponse will concatenate the captured body contents with the head in the
+  // same buffer if their size is below this threshold. This can be efficient for small bodies because it
+  // improves cache locality and will probably save one system socket call. Larger bodies will be kept separate.
+  // Default: 8 KiB.
+  std::size_t minCapturedBodySize{8192};  // 8 KiB
 
   // =============================================
   // Outbound buffering & backpressure management
@@ -177,6 +182,9 @@ struct HttpServerConfig {
   // Adjust body size limit
   HttpServerConfig& withMaxBodyBytes(std::size_t maxBodyBytes);
 
+  // Adjust threshold (bytes) under which captured body contents are appended inline with the head.
+  HttpServerConfig& withMinCapturedBodySize(std::size_t bytes);
+
   // Adjust per-connection outbound queue cap
   HttpServerConfig& withMaxOutboundBufferBytes(std::size_t maxOutbound);
 
@@ -285,9 +293,15 @@ struct HttpServerConfig {
     maxPerEventReadBytes = capBytes;
     return *this;
   }
-};
 
-static_assert(std::is_aggregate_v<HttpServerConfig>,
-              "HttpServerConfig should be an aggregate to be used conveniently by the client");
+  // Replace the router configuration wholesale
+  HttpServerConfig& withRouterConfig(RouterConfig cfg);
+
+  // Replace the global response headers list
+  HttpServerConfig& withGlobalHeaders(std::vector<http::Header> headers);
+
+  // Convenience: add a single global header entry (appended)
+  HttpServerConfig& withGlobalHeader(http::Header header);
+};
 
 }  // namespace aeronet

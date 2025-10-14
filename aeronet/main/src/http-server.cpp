@@ -5,7 +5,6 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <algorithm>
 #include <cassert>
 #include <cerrno>
 #include <chrono>
@@ -100,8 +99,7 @@ HttpServer::HttpServer(HttpServer&& other)
 #endif
 
 {
-  if (_running) {  // original state captured before exchange
-    // Restore source invariants not needed (members already moved) then throw.
+  if (_running) {
     throw std::runtime_error("Cannot move-construct a running HttpServer");
   }
 }
@@ -459,6 +457,7 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
     }
     compressionFormat = negotiated.encoding;
   }
+
   HttpResponseWriter writer(*this, cnxIt->first.fd(), isHead, wantClose, compressionFormat);
   try {
     streamingHandler(req, writer);
@@ -669,8 +668,6 @@ ServerStats HttpServer::stats() const {
   statsOut.flushCycles = _stats.flushCycles;
   statsOut.epollModFailures = _stats.epollModFailures;
   statsOut.maxConnectionOutboundBuffer = _stats.maxConnectionOutboundBuffer;
-  statsOut.streamingChunkCoalesced = _stats.streamingChunkCoalesced;
-  statsOut.streamingChunkLarge = _stats.streamingChunkLarge;
 #ifdef AERONET_ENABLE_OPENSSL
   statsOut.tlsHandshakesSucceeded = _tlsMetrics.handshakesSucceeded;
   statsOut.tlsClientCertPresent = _tlsMetrics.clientCertPresent;
@@ -699,8 +696,7 @@ void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, b
   if (reason.empty()) {
     reason = http::reasonPhraseFor(code);
   }
-  BuildSimpleError(code, _config.globalHeaders, reason, _tmpBuffer);
-  queueData(cnxIt, _tmpBuffer);
+  queueData(cnxIt, BuildSimpleError(code, _config.globalHeaders, reason));
   try {
     _parserErrCb(code);
   } catch (const std::exception& ex) {

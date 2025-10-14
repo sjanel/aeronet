@@ -27,13 +27,13 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
   std::string req1 = "GET /one HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n";
   aeronet::test::sendAll(fd, req1);
   std::string resp1 = aeronet::test::recvWithTimeout(fd);
-  EXPECT_NE(std::string::npos, resp1.find("ECHO/one"));
-  EXPECT_NE(std::string::npos, resp1.find("Connection: keep-alive"));
+  EXPECT_TRUE(resp1.contains("ECHO/one"));
+  EXPECT_TRUE(resp1.contains("Connection: keep-alive"));
 
   std::string req2 = "GET /two HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";  // implicit keep-alive
   aeronet::test::sendAll(fd, req2);
   std::string resp2 = aeronet::test::recvWithTimeout(fd);
-  EXPECT_NE(std::string::npos, resp2.find("ECHO/two"));
+  EXPECT_TRUE(resp2.contains("ECHO/two"));
 }
 
 TEST(HttpLimits, RejectHugeHeaders) {
@@ -55,5 +55,5 @@ TEST(HttpLimits, RejectHugeHeaders) {
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nX-Big: " + bigHeader + "\r\n\r\n";
   EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvWithTimeout(fd);
-  EXPECT_NE(std::string::npos, resp.find("431"));
+  EXPECT_TRUE(resp.contains("431"));
 }

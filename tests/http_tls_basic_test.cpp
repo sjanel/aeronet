@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <string>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/test_server_tls_fixture.hpp"
 #include "aeronet/test_tls_client.hpp"
 
@@ -19,8 +21,8 @@ TEST(HttpTlsBasic, HandshakeAndSimpleGet) {
   aeronet::test::TlsClient client(ts.port());
   auto raw = client.get("/hello", {{"X-Test", "tls"}});
   ASSERT_FALSE(raw.empty());
-  ASSERT_NE(std::string::npos, raw.find("HTTP/1.1 200"));
-  ASSERT_NE(std::string::npos, raw.find("TLS OK /hello"));
+  ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(raw.contains("TLS OK /hello"));
 }
 
 TEST(HttpTlsBasic, LargePayload) {
@@ -28,7 +30,7 @@ TEST(HttpTlsBasic, LargePayload) {
   // Prepare config with in-memory self-signed cert/key
   aeronet::test::TlsTestServer ts({"http/1.1"}, [&](aeronet::HttpServerConfig& cfg) {
     cfg.maxOutboundBufferBytes = largeBody.size() + 512;  // +512 for headers
-    cfg.keepAliveTimeout = std::chrono::years(1);
+    cfg.keepAliveTimeout = std::chrono::hours(1);
   });
   ts.setDefault([&largeBody]([[maybe_unused]] const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body(largeBody);

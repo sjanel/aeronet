@@ -29,8 +29,8 @@ TEST(HttpPipeline, TwoRequestsBackToBack) {
       "0\r\nConnection: close\r\n\r\n";
   ASSERT_TRUE(aeronet::test::sendAll(fd, combo));
   std::string resp = aeronet::test::recvUntilClosed(fd);
-  ASSERT_NE(std::string::npos, resp.find("E:/a"));
-  ASSERT_NE(std::string::npos, resp.find("E:/b"));
+  ASSERT_TRUE(resp.contains("E:/a"));
+  ASSERT_TRUE(resp.contains("E:/b"));
 }
 
 TEST(HttpExpect, ZeroLengthNo100) {
@@ -46,14 +46,15 @@ TEST(HttpExpect, ZeroLengthNo100) {
       "POST /z HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
   ASSERT_TRUE(aeronet::test::sendAll(fd, headers));
   std::string resp = aeronet::test::recvUntilClosed(fd);
-  ASSERT_EQ(std::string::npos, resp.find("100 Continue"));
-  ASSERT_NE(std::string::npos, resp.find('Z'));
+  ASSERT_FALSE(resp.contains("100 Continue"));
+  ASSERT_TRUE(resp.contains('Z'));
 }
 
 TEST(HttpMaxRequests, CloseAfterLimit) {
   aeronet::HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(2);
   aeronet::test::TestServer ts(cfg);
+  // parser error callback intentionally left empty in tests
   ts.server.router().setDefault([](const aeronet::HttpRequest&) {
     aeronet::HttpResponse respObj;
     respObj.body("Q");
@@ -82,8 +83,8 @@ TEST(HttpPipeline, SecondMalformedAfterSuccess) {
   std::string piped = "GET /good HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\nBADSECONDREQUEST\r\n\r\n";
   ASSERT_TRUE(aeronet::test::sendAll(fd, piped));
   std::string resp = aeronet::test::recvUntilClosed(fd);
-  ASSERT_NE(std::string::npos, resp.find("OK"));
-  ASSERT_NE(std::string::npos, resp.find("400"));
+  ASSERT_TRUE(resp.contains("OK"));
+  ASSERT_TRUE(resp.contains("400"));
 }
 
 TEST(HttpContentLength, ExplicitTooLarge413) {
@@ -100,7 +101,7 @@ TEST(HttpContentLength, ExplicitTooLarge413) {
   std::string req = "POST /big HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\nConnection: close\r\n\r\n";
   ASSERT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvUntilClosed(fd);
-  ASSERT_NE(std::string::npos, resp.find("413"));
+  ASSERT_TRUE(resp.contains("413"));
 }
 
 TEST(HttpContentLength, GlobalHeaders) {
@@ -120,13 +121,13 @@ TEST(HttpContentLength, GlobalHeaders) {
   std::string req = "POST /big HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
   ASSERT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvUntilClosed(fd);
-  EXPECT_NE(std::string::npos, resp.find("\r\nX-Global: gvalue"));
-  EXPECT_NE(std::string::npos, resp.find("\r\nX-Another: anothervalue"));
-  EXPECT_NE(std::string::npos, resp.find("\r\nX-Custom: original"));
+  EXPECT_TRUE(resp.contains("\r\nX-Global: gvalue"));
+  EXPECT_TRUE(resp.contains("\r\nX-Another: anothervalue"));
+  EXPECT_TRUE(resp.contains("\r\nX-Custom: original"));
 }
 
 TEST(HttpBasic, LargePayload) {
-  std::string largeBody(1 << 24, 'a');
+  const std::string largeBody(1 << 24, 'a');
   aeronet::HttpServerConfig cfg;
   cfg.maxOutboundBufferBytes = largeBody.size() + 512;  // +512 for headers
   aeronet::test::TestServer ts(cfg);

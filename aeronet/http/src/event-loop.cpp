@@ -50,7 +50,7 @@ EventLoop::EventLoop(Duration pollTimeout, int epollFlags, std::size_t initialCa
 
 bool EventLoop::add(int fd, uint32_t events) const {
   epoll_event ev{events, epoll_data_t{.fd = fd}};
-  if (epoll_ctl(_baseFd.fd(), EPOLL_CTL_ADD, fd, &ev) != 0) {
+  if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_ADD, fd, &ev) != 0) {
     auto err = errno;
     log::error("epoll_ctl ADD failed (fd={}, events=0x{:x}, errno={}, msg={})", fd, events, err, std::strerror(err));
     return false;
@@ -68,7 +68,7 @@ bool EventLoop::mod(int fd, uint32_t events) const {
   return true;
 }
 void EventLoop::del(int fd) const {
-  if (epoll_ctl(_baseFd.fd(), EPOLL_CTL_DEL, fd, nullptr) != 0) {
+  if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_DEL, fd, nullptr) != 0) {
     // DEL failures are usually benign if fd already closed; log at debug to avoid noise.
     auto err = errno;
     log::debug("epoll_ctl DEL failed (fd={}, errno={}, msg={})", fd, err, strerror(err));
@@ -76,7 +76,7 @@ void EventLoop::del(int fd) const {
 }
 
 int EventLoop::poll(const std::function<void(int, uint32_t)>& cb) {
-  const int nbReadyFds = epoll_wait(_baseFd.fd(), _events.data(), static_cast<int>(_events.size()), _pollTimeoutMs);
+  const int nbReadyFds = ::epoll_wait(_baseFd.fd(), _events.data(), static_cast<int>(_events.size()), _pollTimeoutMs);
   if (nbReadyFds < 0) {
     if (errno == EINTR) {
       return 0;  // interrupted; treat as no events

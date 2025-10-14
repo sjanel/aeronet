@@ -34,7 +34,7 @@ TEST(HttpTlsCipherVersion, CipherAndVersionExposedAndMetricsIncrement) {
     aeronet::test::TlsClient client(port, opts);
     auto resp = client.get("/");
     ts.stop();
-    ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));
+    ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
     statsSnapshot = ts.stats();
     ASSERT_GE(statsSnapshot.tlsHandshakesSucceeded, 1U);
     ASSERT_EQ(statsSnapshot.tlsAlpnStrictMismatches, 0U);

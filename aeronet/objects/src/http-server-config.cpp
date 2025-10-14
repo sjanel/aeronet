@@ -13,6 +13,7 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/router-config.hpp"
 #include "aeronet/tls-config.hpp"
 #include "invalid_argument_exception.hpp"
 #include "tchars.hpp"
@@ -159,6 +160,26 @@ HttpServerConfig& HttpServerConfig::withRequestDecompression(DecompressionConfig
 
 HttpServerConfig& HttpServerConfig::withMergeUnknownRequestHeaders(bool on) {
   mergeUnknownRequestHeaders = on;
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::withMinCapturedBodySize(std::size_t bytes) {
+  this->minCapturedBodySize = bytes;
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::withRouterConfig(RouterConfig cfg) {
+  router = std::move(cfg);
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::withGlobalHeaders(std::vector<http::Header> headers) {
+  globalHeaders = std::move(headers);
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::withGlobalHeader(http::Header header) {
+  globalHeaders.emplace_back(std::move(header));
   return *this;
 }
 

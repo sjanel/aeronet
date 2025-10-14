@@ -115,13 +115,13 @@ constexpr std::string_view fullVersionStringView() {
 #elif defined(AERONET_ENABLE_ZSTD) && defined(AERONET_ENABLE_BROTLI)
   using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zstd_full, _sv_comma_space, _sv_brotli_full>;
   static constexpr std::string_view _sv_compression_section = compression_join_t::value;
-#elif defined(AERONET_ENABLE_ZLIB)
+#elifdef AERONET_ENABLE_ZLIB
   using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zlib_full>;
   static constexpr std::string_view _sv_compression_section = compression_join_t::value;
-#elif defined(AERONET_ENABLE_ZSTD)
+#elifdef AERONET_ENABLE_ZSTD
   using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zstd_full>;
   static constexpr std::string_view _sv_compression_section = compression_join_t::value;
-#elif defined(AERONET_ENABLE_BROTLI)
+#elifdef AERONET_ENABLE_BROTLI
   using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_brotli_full>;
   static constexpr std::string_view _sv_compression_section = compression_join_t::value;
 #endif

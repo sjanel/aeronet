@@ -40,7 +40,7 @@ std::string extractBody(const std::string& resp) {
   }
   std::string body = resp.substr(headerEnd + aeronet::http::DoubleCRLF.size());
   // If not chunked just return remaining.
-  if (body.find("\r\n0\r\n") == std::string::npos && body.find("0\r\n\r\n") == std::string::npos) {
+  if (!body.contains("\r\n0\r\n") && !body.contains("0\r\n\r\n")) {
     return body;
   }  // heuristic
   std::string out;
@@ -80,8 +80,8 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
                        [](const aeronet::HttpRequest& /*unused*/, aeronet::HttpResponseWriter& writer) {
                          writer.statusCode(200);
                          writer.customHeader("Content-Type", "text/plain");
-                         writer.write("S");
-                         writer.write("TREAM");
+                         writer.writeBody("S");
+                         writer.writeBody("TREAM");
                          writer.end();
                        });
   srv.router().setPath("/mix", aeronet::http::Method::POST, [](const aeronet::HttpRequest& /*unused*/) {
@@ -93,7 +93,7 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
   auto decoded = extractBody(getResp);
   EXPECT_EQ(decoded, "STREAM");
   std::string postResp = httpRequest(srv.port(), "POST", "/mix", "x");
-  EXPECT_NE(std::string::npos, postResp.find("NORMAL"));
+  EXPECT_TRUE(postResp.contains("NORMAL"));
   srv.stop();
 }
 
@@ -133,14 +133,14 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
   srv.router().setDefault([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.customHeader("Content-Type", "text/plain");
-    writer.write("STREAMFALLBACK");
+    writer.writeBody("STREAMFALLBACK");
     writer.end();
   });
   // path-specific streaming overrides both
   srv.router().setPath("/s", aeronet::http::Method::GET,
                        [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
                          writer.statusCode(200);
-                         writer.write("PS");
+                         writer.writeBody("PS");
                          writer.end();
                        });
   // path-specific normal overrides global fallbacks
@@ -150,12 +150,12 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
   std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   std::string pathStreamResp = httpRequest(srv.port(), "GET", "/s");
-  EXPECT_NE(std::string::npos, pathStreamResp.find("PS"));
+  EXPECT_TRUE(pathStreamResp.contains("PS"));
   std::string pathNormalResp = httpRequest(srv.port(), "GET", "/n");
-  EXPECT_NE(std::string::npos, pathNormalResp.find("PN"));
+  EXPECT_TRUE(pathNormalResp.contains("PN"));
   std::string fallback = httpRequest(srv.port(), "GET", "/other");
   // Should use global streaming first (higher precedence than global normal)
-  EXPECT_NE(std::string::npos, fallback.find("STREAMFALLBACK"));
+  EXPECT_TRUE(fallback.contains("STREAMFALLBACK"));
   srv.stop();
 }
 
@@ -169,7 +169,7 @@ TEST(HttpServerMixed, GlobalNormalOnlyWhenNoStreaming) {
   std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   std::string result = httpRequest(srv.port(), "GET", "/x");
-  EXPECT_NE(std::string::npos, result.find("GN"));
+  EXPECT_TRUE(result.contains("GN"));
   srv.stop();
 }
 
@@ -182,7 +182,7 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
                        [](const aeronet::HttpRequest& /*unused*/, aeronet::HttpResponseWriter& writer) {
                          writer.statusCode(200);
                          writer.customHeader("Content-Type", "text/plain");
-                         writer.write("SHOULD_NOT_APPEAR");  // for HEAD this must be suppressed by writer
+                         writer.writeBody("SHOULD_NOT_APPEAR");  // for HEAD this must be suppressed by writer
                          writer.end();
                        });
   std::jthread th([&] { srv.run(); });
@@ -194,8 +194,8 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
   std::string bodyPart = headResp.substr(headerEnd + 4);
   EXPECT_TRUE(bodyPart.empty());
   // Either explicit Content-Length: 0 is present or (future) alternate header; assert current behavior.
-  EXPECT_NE(std::string::npos, headResp.find("Content-Length: 0"));
-  EXPECT_EQ(std::string::npos, headResp.find("SHOULD_NOT_APPEAR"));
+  EXPECT_TRUE(headResp.contains("Content-Length: 0"));
+  EXPECT_FALSE(headResp.contains("SHOULD_NOT_APPEAR"));
   srv.stop();
 }
 
@@ -207,15 +207,15 @@ TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
   srv.router().setPath("/m405", aeronet::http::Method::GET,
                        [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
                          writer.statusCode(200);
-                         writer.write("OKGET");
+                         writer.writeBody("OKGET");
                          writer.end();
                        });
   std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   std::string postResp = httpRequest(srv.port(), "POST", "/m405", "data");
   // Expect 405 Method Not Allowed
-  EXPECT_NE(std::string::npos, postResp.find("405"));
-  EXPECT_NE(std::string::npos, postResp.find("Method Not Allowed"));
+  EXPECT_TRUE(postResp.contains("405"));
+  EXPECT_TRUE(postResp.contains("Method Not Allowed"));
   // Ensure GET still works and returns streaming body
   std::string getResp2 = httpRequest(srv.port(), "GET", "/m405");
   auto decoded2 = extractBody(getResp2);
@@ -233,8 +233,8 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
                        [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
                          writer.statusCode(200);
                          writer.customHeader("Content-Type", "text/plain");
-                         writer.write("A");
-                         writer.write("B");
+                         writer.writeBody("A");
+                         writer.writeBody("B");
                          writer.end();
                        });
   srv.router().setPath("/ka", aeronet::http::Method::POST, [](const aeronet::HttpRequest&) {

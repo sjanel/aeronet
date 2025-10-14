@@ -7,6 +7,7 @@
 #include <string>
 #include <system_error>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -26,36 +27,36 @@ std::string blockingFetch(uint16_t port, const std::string& verb, const std::str
 }  // namespace
 
 TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
+  constexpr std::size_t kLargeSize = 5000;
+
   aeronet::HttpServerConfig cfg;
+  cfg.minCapturedBodySize = kLargeSize - 1U;
   aeronet::test::TestServer ts(cfg);
   auto port = ts.port();
-  constexpr std::size_t kLargeSize = 5000;  // > 4096 threshold used in writer
   std::string large(kLargeSize, 'x');
   ts.server.router().setDefault([&](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
     writer.statusCode(200);
-    writer.write("small");  // coalesced path
-    writer.write(large);    // large path (multi enqueue)
+    writer.writeBody("small");  // coalesced path
+    writer.writeBody(large);    // large path (multi enqueue)
     writer.end();
   });
   std::string resp = blockingFetch(port, "GET", "/adaptive");
   auto stats = ts.server.stats();
   ts.stop();
-  ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   // Validate both chunk headers present: 5 and hex(kLargeSize)
   char hexBuf[32];
   auto res = std::to_chars(hexBuf, hexBuf + sizeof(hexBuf), static_cast<unsigned long long>(kLargeSize), 16);
   ASSERT_TRUE(res.ec == std::errc());
   std::string largeHex(hexBuf, res.ptr);
-  ASSERT_NE(std::string::npos, resp.find("5\r\nsmall"));
-  ASSERT_NE(std::string::npos, resp.find(largeHex + "\r\n"));
+  ASSERT_TRUE(resp.contains("5\r\nsmall"));
+  ASSERT_TRUE(resp.contains(largeHex + "\r\n"));
   // Count 'x' occurrences only in the body (after header terminator) to avoid false positives in headers.
-  auto hdrEnd = resp.find("\r\n\r\n");
+  auto hdrEnd = resp.find(aeronet::http::DoubleCRLF);
   ASSERT_NE(std::string::npos, hdrEnd);
-  std::string_view body(resp.data() + hdrEnd + 4, resp.size() - hdrEnd - 4);
+  std::string_view body(resp.data() + hdrEnd + aeronet::http::DoubleCRLF.size(),
+                        resp.size() - hdrEnd - aeronet::http::DoubleCRLF.size());
   // Body is chunked: <5 CRLF small CRLF> <hex CRLF largePayload CRLF> 0 CRLF CRLF.
   // We only count 'x' in the large payload; small chunk contains none.
   ASSERT_EQ(kLargeSize, static_cast<size_t>(std::count(body.begin(), body.end(), 'x')));
-  // Stats: exactly one coalesced ("small"), one large
-  ASSERT_EQ(1U, stats.streamingChunkCoalesced) << "Expected 1 coalesced chunk";
-  ASSERT_EQ(1U, stats.streamingChunkLarge) << "Expected 1 large chunk";
 }
