@@ -41,8 +41,8 @@ TEST(HttpCompressionStreaming, GzipActivatedOverThreshold) {
   ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
-    writer.write(part1);  // below threshold so far
-    writer.write(part2);  // crosses threshold -> compression should activate
+    writer.writeBody(part1);  // below threshold so far
+    writer.writeBody(part2);  // crosses threshold -> compression should activate
     writer.end();
   });
   auto resp = aeronet::test::simpleGet(ts.port(), "/sgz", {{"Accept-Encoding", "gzip"}});
@@ -53,7 +53,7 @@ TEST(HttpCompressionStreaming, GzipActivatedOverThreshold) {
   if (it != resp.headers.end()) {
     EXPECT_EQ(it->second, "gzip");
   }
-  EXPECT_TRUE(resp.body.find("\x1f\x8b") != std::string::npos || HasGzipMagic(resp.body));
+  EXPECT_TRUE(resp.body.contains("\x1f\x8b") || HasGzipMagic(resp.body));
 }
 
 TEST(HttpCompressionStreaming, DeflateActivatedOverThreshold) {
@@ -68,8 +68,8 @@ TEST(HttpCompressionStreaming, DeflateActivatedOverThreshold) {
   ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
-    writer.write(payload.substr(0, 40));
-    writer.write(payload.substr(40));
+    writer.writeBody(payload.substr(0, 40));
+    writer.writeBody(payload.substr(40));
     writer.end();
   });
   auto resp = aeronet::test::simpleGet(ts.port(), "/sdf", {{"Accept-Encoding", "deflate,gzip"}});
@@ -92,12 +92,12 @@ TEST(HttpCompressionStreaming, BelowThresholdIdentity) {
   ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
-    writer.write(small);  // never crosses threshold
+    writer.writeBody(small);  // never crosses threshold
     writer.end();
   });
   auto resp = aeronet::test::simpleGet(ts.port(), "/sid", {{"Accept-Encoding", "gzip"}});
   EXPECT_EQ(resp.headers.find("Content-Encoding"), resp.headers.end());
-  EXPECT_NE(std::string::npos, resp.body.find('y'));
+  EXPECT_TRUE(resp.body.contains('y'));
 }
 
 TEST(HttpCompressionStreaming, UserProvidedContentEncodingIdentityPreventsActivation) {
@@ -112,8 +112,8 @@ TEST(HttpCompressionStreaming, UserProvidedContentEncodingIdentityPreventsActiva
     writer.statusCode(200);
     writer.contentType("text/plain");
     writer.customHeader("Content-Encoding", "identity");  // explicit suppression
-    writer.write(big.substr(0, 50));
-    writer.write(big.substr(50));
+    writer.writeBody(big.substr(0, 50));
+    writer.writeBody(big.substr(50));
     writer.end();
   });
   auto resp = aeronet::test::simpleGet(ts.port(), "/soff", {{"Accept-Encoding", "gzip"}});
@@ -121,7 +121,7 @@ TEST(HttpCompressionStreaming, UserProvidedContentEncodingIdentityPreventsActiva
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "identity");
   // Body should contain literal 'Z' sequences (chunked framing around them)
-  EXPECT_NE(std::string::npos, resp.body.find('Z'));
+  EXPECT_TRUE(resp.body.contains('Z'));
 }
 
 TEST(HttpCompressionStreaming, QValuesInfluenceStreamingSelection) {
@@ -136,8 +136,8 @@ TEST(HttpCompressionStreaming, QValuesInfluenceStreamingSelection) {
   ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
-    writer.write(payload.substr(0, 60));
-    writer.write(payload.substr(60));
+    writer.writeBody(payload.substr(0, 60));
+    writer.writeBody(payload.substr(60));
     writer.end();
   });
   auto resp = aeronet::test::simpleGet(ts.port(), "/sqv", {{"Accept-Encoding", "gzip;q=0.1, deflate;q=0.9"}});
@@ -157,7 +157,7 @@ TEST(HttpCompressionStreaming, IdentityForbiddenNoAlternativesReturns406) {
   ts.server.router().setDefault([&](const HttpRequest &, HttpResponseWriter &writer) {
     writer.statusCode(200);  // will be overridden to 406 before handler invoked if negotiation rejects
     writer.contentType("text/plain");
-    writer.write(payload);
+    writer.writeBody(payload);
     writer.end();
   });
   auto resp = aeronet::test::simpleGet(ts.port(), "/sbad", {{"Accept-Encoding", "identity;q=0, br;q=0"}});

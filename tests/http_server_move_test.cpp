@@ -31,7 +31,7 @@ TEST(HttpServerMove, MoveConstructAndServe) {
 
   stop.store(true);
 
-  ASSERT_NE(std::string::npos, resp.find("ORIG:/mv"));
+  ASSERT_TRUE(resp.contains("ORIG:/mv"));
 }
 
 TEST(HttpServerMove, MoveAssignWhileStopped) {
@@ -62,5 +62,5 @@ TEST(HttpServerMove, MoveAssignWhileStopped) {
   std::this_thread::sleep_for(std::chrono::milliseconds(120));
   std::string resp = aeronet::test::simpleGet(port2, "/x");
   stop.store(true);
-  ASSERT_NE(std::string::npos, resp.find("S2"));
+  ASSERT_TRUE(resp.contains("S2"));
 }

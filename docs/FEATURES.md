@@ -21,6 +21,7 @@ Single consolidated reference for **aeronet** features.
 15. [Logging](#logging)
 16. [OpenTelemetry Integration](#opentelemetry-integration)
 17. [Future Expansions](#future-expansions)
+18. [Large-body optimization](#large-body-optimization)
 
 ## HTTP/1.1 Feature Matrix
 
@@ -111,6 +112,59 @@ Legend: [x] implemented, [ ] planned / not yet.
 - [x] Compression (gzip & deflate phase 1)
 - [ ] Public API stability guarantee (pre-1.0)
 - [ ] License file
+
+## Large body optimization
+
+To improve performance when serving large fixed responses (for example, generated payloads or read-in files),
+**aeronet** implements a large-body optimization that may save one copy (and growing allocation) by capturing the body by value.
+This section explains the behavior and the supported capture types.
+
+### Key points
+
+- Some `HttpResponse::body(...)` overloads accept non-owning views such as `const char*` or `std::string_view`.
+  These overloads copy the referenced bytes into the response's inline/buffered storage and therefore force an
+  allocation + copy even for large inputs. To avoid that allocation for large buffers, prefer the move-friendly
+  overloads shown above (`std::string`, `std::vector<char>`, `std::unique_ptr<char[]>`) which hand ownership to the
+  server without copying.
+- Currently only the non-streaming `HttpResponse` API is affected (streaming responses always write from user buffers).
+  The streaming `HttpResponseWriter` only partially supports this optimization internally.
+- When a handler returns an `HttpResponse` with a body whose size is lower or equal to a configurable threshold
+  (`HttpServerConfig::minCapturedBodySize`), the captured body will be appended inline with the response head.
+
+### Ergonomic body capture types
+
+The `HttpResponse` body API accepts several convenient ownership types so handlers may hand off buffers without
+copying:
+
+- `std::string` — move a string into the response body for zero-copy handoff;
+- `std::vector<char>` — move a character vector when your data is in a non-null-terminated buffer;
+- `std::unique_ptr<char[]>` — for blob ownership without a resizing container (move-only `unique_ptr` semantics).
+
+### Usage examples
+
+It is possible to avoid a full allocation + copy for large buffers by moving ownership of an existing buffer into
+the response. The `HttpResponse` API accepts move-only types and will take ownership, so the server does not need to
+allocate a new buffer and copy bytes.
+
+Short examples:
+
+```cpp
+// Move a std::string into the response
+std::string big = generate_large_payload();
+return HttpResponse(200, "OK").contentType("application/octet-stream").body(std::move(big));
+
+// Move a vector<char>
+std::vector<char> v = read_file_bytes(path);
+return HttpResponse(200, "OK").contentType("application/octet-stream").body(std::move(v));
+
+// Move a unique_ptr<char[]> for raw blob ownership
+std::unique_ptr<char[]> blob = load_blob();
+std::size_t blobSize = /* known size */;
+return HttpResponse(200, "OK").contentType("application/octet-stream").body(std::move(blob), blobSize);
+```
+
+These patterns hand ownership to the server without duplicating the payload, enabling efficient zero-copy handoff
+for large responses.
 
 ## Compression & Negotiation
 

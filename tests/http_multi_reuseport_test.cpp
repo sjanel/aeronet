@@ -49,17 +49,17 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
 
   std::string resp1 = aeronet::test::simpleGet(port, "/one");
   std::string resp2 = aeronet::test::simpleGet(port, "/two");
-  bool hasA = resp1.find('A') != std::string::npos || resp2.find('A') != std::string::npos;
-  bool hasB = resp1.find('B') != std::string::npos || resp2.find('B') != std::string::npos;
+  bool hasA = resp1.contains('A') || resp2.contains('A');
+  bool hasB = resp1.contains('B') || resp2.contains('B');
   if (!(hasA && hasB)) {
     // try additional connects with small delays to give scheduler chance to pick different acceptors
     for (int i = 0; i < 15 && !(hasA && hasB); ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       std::string retryResp = aeronet::test::simpleGet(port, "/retry");
-      if (retryResp.find('A') != std::string::npos) {
+      if (retryResp.contains('A')) {
         hasA = true;
       }
-      if (retryResp.find('B') != std::string::npos) {
+      if (retryResp.contains('B')) {
         hasB = true;
       }
     }

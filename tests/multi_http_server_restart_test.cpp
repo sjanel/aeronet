@@ -28,7 +28,7 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
   std::this_thread::sleep_for(std::chrono::milliseconds(25));
   auto r1 = aeronet::test::simpleGet(p1, "/a", {});
   ASSERT_EQ(r1.statusCode, 200);
-  ASSERT_NE(r1.body.find("Phase1"), std::string::npos);
+  ASSERT_TRUE(r1.body.contains("Phase1"));
   multi.stop();
 
   // Change handler before restart; old servers are discarded, so new handler should take effect.
@@ -43,7 +43,7 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
   std::this_thread::sleep_for(std::chrono::milliseconds(25));
   auto r2 = aeronet::test::simpleGet(p2, "/b", {});
   ASSERT_EQ(r2.statusCode, 200);
-  EXPECT_NE(r2.body.find("Phase2"), std::string::npos);
+  EXPECT_TRUE(r2.body.contains("Phase2"));
 }
 
 // If the user wants a new ephemeral port on restart they can set baseConfig.port=0 before calling start again.

@@ -17,16 +17,18 @@ class TlsTransport : public ITransport {
 
   explicit TlsTransport(SslPtr sslPtr) : _ssl(std::move(sslPtr)) {}
 
-  ssize_t read(char* buf, std::size_t len, TransportWant& want) override;
+  std::size_t read(char* buf, std::size_t len, Transport& want) override;
 
-  ssize_t write(std::string_view data, TransportWant& want) override;
+  std::size_t write(std::string_view data, Transport& want) override;
 
-  [[nodiscard]] bool handshakePending() const noexcept override;
+  [[nodiscard]] bool handshakeDone() const noexcept override;
 
   // Perform best-effort bidirectional TLS shutdown (non-blocking). Safe to call multiple times.
   void shutdown() noexcept;
 
   [[nodiscard]] SSL* rawSsl() const noexcept { return _ssl.get(); }
+
+  static void logErrorIfAny();
 
  private:
   SslPtr _ssl;

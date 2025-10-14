@@ -32,7 +32,7 @@ TEST(HttpMalformed, MissingSpacesInRequestLine) {
   std::this_thread::sleep_for(50ms);
   std::string resp = sendRaw(port, "GET/abcHTTP/1.1\r\nHost: x\r\n\r\n");
   server.stop();
-  ASSERT_NE(std::string::npos, resp.find("400")) << resp;
+  ASSERT_TRUE(resp.contains("400")) << resp;
 }
 
 TEST(HttpMalformed, OversizedHeaders) {
@@ -47,7 +47,7 @@ TEST(HttpMalformed, OversizedHeaders) {
   std::string raw = "GET / HTTP/1.1\r\nHost: x\r\nX-Big: " + big + "\r\n\r\n";
   std::string resp = sendRaw(port, raw);
   server.stop();
-  ASSERT_NE(std::string::npos, resp.find("431")) << resp;
+  ASSERT_TRUE(resp.contains("431")) << resp;
 }
 
 TEST(HttpMalformed, BadChunkExtensionHex) {
@@ -61,5 +61,5 @@ TEST(HttpMalformed, BadChunkExtensionHex) {
   std::string resp = sendRaw(port, raw);
   server.stop();
   // Expect no 200 OK; either empty (waiting for more) or eventually 413/400 once completed; we at least assert not 200
-  ASSERT_EQ(std::string::npos, resp.find("200 OK"));
+  ASSERT_FALSE(resp.contains("200 OK"));
 }

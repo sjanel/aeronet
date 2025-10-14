@@ -36,6 +36,17 @@ struct ParsedResponse {
   std::string plainBody;                       // de-chunked payload (available if Transfer-Encoding: chunked
 };
 
+// Result for content-encoding/body extraction helper used by compression tests.
+struct EncodingAndBody {
+  std::string_view contentEncoding;  // empty if absent
+  std::string body;                  // de-chunked raw body (compressed bytes if encoded)
+};
+
+// From a raw HTTP response (headers + body), return the Content-Encoding header value
+// and the de-chunked raw body. The returned body is not decompressed; callers should
+// apply the appropriate decoder based on contentEncoding.
+EncodingAndBody extractContentEncodingAndBody(std::string_view raw);
+
 struct RequestOptions {
   std::string method{"GET"};
   std::string target{"/"};

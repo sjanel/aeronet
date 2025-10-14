@@ -42,7 +42,7 @@ TEST(MultiHttpServer, AutoThreadCountConstructor) {
   ASSERT_GT(port, 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   auto resp = aeronet::test::simpleGet(port, "/");
-  EXPECT_NE(std::string::npos, resp.find("Auto"));
+  EXPECT_TRUE(resp.contains("Auto"));
   auto stats = multi.stats();
   EXPECT_GE(stats.per.size(), static_cast<std::size_t>(1));
   multi.stop();
@@ -66,7 +66,7 @@ TEST(MultiHttpServer, ExplicitThreadCountConstructor) {
   ASSERT_GT(multi.port(), 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   auto resp = aeronet::test::simpleGet(multi.port(), "/exp");
-  EXPECT_NE(std::string::npos, resp.find("Explicit"));
+  EXPECT_TRUE(resp.contains("Explicit"));
   auto stats = multi.stats();
   EXPECT_EQ(stats.per.size(), static_cast<std::size_t>(threads));
 }
@@ -92,7 +92,7 @@ TEST(MultiHttpServer, MoveConstruction) {
   // Basic request still works after move
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   auto resp = aeronet::test::simpleGet(moved.port(), "/mv");
-  EXPECT_NE(std::string::npos, resp.find("Move"));
+  EXPECT_TRUE(resp.contains("Move"));
 }
 
 // 4. Invalid thread-count explicit constructor (compile-time / runtime guard)
@@ -132,7 +132,7 @@ TEST(MultiHttpServer, DefaultConstructorAndMoveAssignment) {
   ASSERT_TRUE(target.isRunning());
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   auto resp = aeronet::test::simpleGet(target.port(), "/ma");
-  EXPECT_NE(std::string::npos, resp.find("MoveAssign"));
+  EXPECT_TRUE(resp.contains("MoveAssign"));
   target.stop();
   EXPECT_FALSE(target.isRunning());
 }

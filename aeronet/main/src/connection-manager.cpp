@@ -1,5 +1,3 @@
-#include <sys/types.h>
-
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -58,7 +56,7 @@ void HttpServer::sweepIdleConnections() {
     // TLS handshake timeout (if enabled). Applies only while handshake pending.
 #ifdef AERONET_ENABLE_OPENSSL
     if (_config.tlsHandshakeTimeout.count() > 0 && _config.tls && st.handshakeStart.time_since_epoch().count() != 0 &&
-        !st.tlsEstablished && st.transport->handshakePending()) {
+        !st.tlsEstablished && !st.transport->handshakeDone()) {
       if (now - st.handshakeStart > _config.tlsHandshakeTimeout) {
         cnxIt = closeConnection(cnxIt);
         continue;
@@ -121,7 +119,6 @@ void HttpServer::acceptNewConnections() {
     ConnectionState* pCnx = &state;
     std::size_t bytesReadThisEvent = 0;
     while (true) {
-      TransportWant want = TransportWant::None;
       // Determine adaptive chunk size: if we have not yet parsed a full header for the current pending request
       // (heuristic: headerStart set OR buffer missing CRLFCRLF), use initialReadChunkBytes; otherwise use
       // bodyReadChunkBytes.
@@ -139,9 +136,18 @@ void HttpServer::acceptNewConnections() {
         }
         chunkSize = std::min(chunkSize, remainingBudget);
       }
-      ssize_t bytesRead = pCnx->transportRead(chunkSize, want);
+      Transport want;
+      const std::size_t bytesRead = pCnx->transportRead(chunkSize, want);
       // Check for handshake completion
-      if (!pCnx->tlsEstablished && !pCnx->transport->handshakePending()) {
+      // If the TLS handshake completed during the preceding transportRead, finalize it
+      // immediately so we capture negotiated ALPN/cipher/version/client-cert and update
+      // metrics/state. This must be done even if the same read later returns an error or
+      // EOF — the handshake result is valuable and should be recorded before any
+      // connection teardown logic runs.
+      // Note: this is a transition action (handshakePending -> done) rather than a
+      // normal successful-read action, so it intentionally runs prior to evaluating
+      // transport error/EOF handling below.
+      if (!pCnx->tlsEstablished && pCnx->transport->handshakeDone()) {
 #ifdef AERONET_ENABLE_OPENSSL
         if (_config.tls && dynamic_cast<TlsTransport*>(pCnx->transport.get()) != nullptr) {
           const auto* tlsTr = static_cast<const TlsTransport*>(pCnx->transport.get());
@@ -151,37 +157,58 @@ void HttpServer::acceptNewConnections() {
 #endif
         pCnx->tlsEstablished = true;
       }
-      if (bytesRead > 0) {
-        if (pCnx->headerStart.time_since_epoch().count() == 0) {
-          pCnx->headerStart = std::chrono::steady_clock::now();
-        }
-        bytesReadThisEvent += static_cast<std::size_t>(bytesRead);
-        _telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(bytesRead));
-        if (std::cmp_less(bytesRead, chunkSize)) {
+      // Close only on fatal transport error or an orderly EOF (bytesRead==0 with no 'want' hint).
+      if (want == Transport::Error || (bytesRead == 0 && want == Transport::None)) {
+        // If TLS handshake still pending, treat a transport Error as transient and retry later.
+        if (want == Transport::Error && pCnx != nullptr && pCnx->transport && !pCnx->transport->handshakeDone()) {
+          log::warn("Transient transport error during TLS handshake on fd={}; will retry", cnxFd);
+          // Yield and let event loop drive readiness notifications; do not close yet.
           break;
         }
-        if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
-          break;  // reached fairness cap
+        // Emit richer diagnostics to aid debugging TLS handshake / transport failures.
+        log::error("Closing connection fd={} bytesRead={} want={} errno={} ({})", cnxFd, bytesRead,
+                   static_cast<int>(want), errno, std::strerror(errno));
+#ifdef AERONET_ENABLE_OPENSSL
+        if (_tlsCtxHolder) {
+          auto* tlsTr = dynamic_cast<TlsTransport*>(pCnx->transport.get());
+          if (tlsTr != nullptr) {
+            const SSL* ssl = tlsTr->rawSsl();
+            if (ssl != nullptr) {
+              const char* ver = ::SSL_get_version(ssl);
+              const char* cipher = ::SSL_get_cipher_name(ssl);
+              log::error("TLS state fd={} ver={} cipher={}", cnxFd, (ver != nullptr) ? ver : "?",
+                         (cipher != nullptr) ? cipher : "?");
+            }
+          }
+
+          TlsTransport::logErrorIfAny();
         }
-        continue;
-      }
-      if (bytesRead == 0) {
+#endif
         closeConnection(cnxIt);
         pCnx = nullptr;
         break;
       }
-      if (bytesRead == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+      if (want != Transport::None) {
+        // Transport indicates we should wait for readability or writability before continuing.
         // Adjust epoll interest if TLS handshake needs write readiness
-        if (want == TransportWant::WriteReady && !pCnx->waitingWritable) {
+        if (want == Transport::WriteReady && !pCnx->waitingWritable) {
           if (_eventLoop.mod(cnxFd, EPOLLIN | EPOLLOUT | EPOLLET)) {
             pCnx->waitingWritable = true;
           }
         }
         break;
       }
-      closeConnection(cnxIt);
-      pCnx = nullptr;
-      break;
+      if (pCnx->headerStart.time_since_epoch().count() == 0) {
+        pCnx->headerStart = std::chrono::steady_clock::now();
+      }
+      bytesReadThisEvent += static_cast<std::size_t>(bytesRead);
+      _telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(bytesRead));
+      if (bytesRead < chunkSize) {
+        break;
+      }
+      if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
+        break;  // reached fairness cap
+      }
     }
     if (pCnx == nullptr) {
       continue;
@@ -232,7 +259,7 @@ void HttpServer::handleReadableClient(int fd) {
 
   std::size_t bytesReadThisEvent = 0;
   while (true) {
-    TransportWant want = TransportWant::None;
+    Transport want = Transport::None;
     std::size_t chunkSize = _config.bodyReadChunkBytes;
     if (state.headerStart.time_since_epoch().count() != 0 ||
         std::ranges::search(state.buffer, http::DoubleCRLF).empty()) {
@@ -246,8 +273,8 @@ void HttpServer::handleReadableClient(int fd) {
       }
       chunkSize = std::min(chunkSize, remainingBudget);
     }
-    auto count = state.transportRead(chunkSize, want);
-    if (!state.tlsEstablished && !state.transport->handshakePending()) {
+    const std::size_t count = state.transportRead(chunkSize, want);
+    if (!state.tlsEstablished && state.transport->handshakeDone()) {
 #ifdef AERONET_ENABLE_OPENSSL
       if (_config.tls && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
         const auto* tlsTr = static_cast<const TlsTransport*>(state.transport.get());
@@ -257,17 +284,13 @@ void HttpServer::handleReadableClient(int fd) {
 #endif
       state.tlsEstablished = true;
     }
-    if (count < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        if (want == TransportWant::WriteReady && !state.waitingWritable) {
-          if (_eventLoop.mod(fd, EPOLLIN | EPOLLOUT | EPOLLET)) {
-            state.waitingWritable = true;
-          }
+    if (want != Transport::None) {
+      // Non-fatal: transport needs the socket to be readable or writable before proceeding.
+      if (want == Transport::WriteReady && !state.waitingWritable) {
+        if (_eventLoop.mod(fd, EPOLLIN | EPOLLOUT | EPOLLET)) {
+          state.waitingWritable = true;
         }
-        break;
       }
-      log::error("read failed: {}", std::strerror(errno));
-      state.requestImmediateClose();
       break;
     }
     if (count == 0) {
@@ -277,15 +300,13 @@ void HttpServer::handleReadableClient(int fd) {
     if (count > 0 && state.headerStart.time_since_epoch().count() == 0) {
       state.headerStart = std::chrono::steady_clock::now();
     }
-    if (count > 0) {
-      bytesReadThisEvent += static_cast<std::size_t>(count);
-      if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
-        // Reached per-event fairness cap; parse what we have then yield.
-        if (processRequestsOnConnection(cnxIt)) {
-          break;
-        }
+    bytesReadThisEvent += static_cast<std::size_t>(count);
+    if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
+      // Reached per-event fairness cap; parse what we have then yield.
+      if (processRequestsOnConnection(cnxIt)) {
         break;
       }
+      break;
     }
     if (state.buffer.size() > _config.maxHeaderBytes + _config.maxBodyBytes) {
       state.requestImmediateClose();

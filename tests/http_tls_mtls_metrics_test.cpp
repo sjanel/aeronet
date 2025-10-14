@@ -33,7 +33,7 @@ TEST(HttpTlsMtlsMetrics, ClientCertPresenceIncrementsMetric) {
     auto resp = client.get("/m");
     auto after = ts.stats();
     ts.stop();
-    ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));
+    ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
     ASSERT_LT(before.tlsClientCertPresent, after.tlsClientCertPresent);
     ASSERT_GE(after.tlsHandshakesSucceeded, 1U);
   }

@@ -23,7 +23,7 @@ TEST(StreamingBackpressure, LargeBodyQueues) {
     std::string chunk(8192, 'x');
     std::size_t sent = 0;
     while (sent < total) {
-      writer.write(chunk);
+      writer.writeBody(chunk);
       sent += chunk.size();
     }
     writer.end();

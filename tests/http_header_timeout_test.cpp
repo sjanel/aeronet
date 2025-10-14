@@ -1,9 +1,8 @@
 #include <gtest/gtest.h>
-#include <sys/socket.h>
 
-#include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <string>
 #include <string_view>
 #include <thread>
 
@@ -21,7 +20,10 @@ TEST(HttpHeaderTimeout, SlowHeadersConnectionClosed) {
   HttpServerConfig cfg;
   std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
   cfg.withPort(0).withHeaderReadTimeout(readTimeout);
-  aeronet::test::TestServer ts(cfg);
+  // Use a short poll interval so the server's periodic maintenance (which enforces
+  // header read timeouts) runs promptly even when the test runner is under heavy load.
+  // This avoids flakiness when the whole test suite is executed in parallel.
+  aeronet::test::TestServer ts(cfg, std::chrono::milliseconds{5});
   ts.server.router().setDefault([](const HttpRequest&) {
     return aeronet::HttpResponse(200, "OK").body("hi").contentType(aeronet::http::ContentTypeTextPlain);
   });
@@ -29,24 +31,20 @@ TEST(HttpHeaderTimeout, SlowHeadersConnectionClosed) {
   test::ClientConnection cnx(ts.port());
   int fd = cnx.fd();
   ASSERT_GE(fd, 0) << "connect failed";
-  // Send only method token slowly
-  const char* part1 = "GET /";  // incomplete, no version yet
-  ASSERT_GT(::send(fd, part1, std::strlen(part1), 0), 0) << strerror(errno);
+  // Send only method token slowly using test helpers
+  std::string_view part1 = "GET /";  // incomplete, no version yet
+  ASSERT_TRUE(aeronet::test::sendAll(fd, part1, std::chrono::milliseconds{500}));
   std::this_thread::sleep_for(readTimeout + std::chrono::milliseconds{5});
   // Attempt to finish request
-  const char* rest = " HTTP/1.1\r\nHost: x\r\n\r\n";
-  [[maybe_unused]] auto sent = ::send(fd, rest, std::strlen(rest), 0);
-  // Kernel may still accept bytes, but server should close shortly after detecting timeout.
+  std::string_view rest = " HTTP/1.1\r\nHost: x\r\n\r\n";
+  [[maybe_unused]] bool sent_ok = aeronet::test::sendAll(fd, rest, std::chrono::milliseconds{500});
+  // kernel may still accept bytes, server should close shortly after detecting timeout
 
-  // Attempt to read response; expect either 0 (closed) or nothing meaningful (no 200 OK)
+  // Attempt to read response; expect either empty (no response) or nothing meaningful (no 200 OK)
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
-  char buf[256];
-  auto rcv = ::recv(fd, buf, sizeof(buf), 0);
-  // If timeout occurred before headers complete, server closes without response (rcv==0) or ECONNRESET
-  if (rcv > 0) {
-    std::string_view sv(buf, static_cast<std::string_view::size_type>(rcv));
+  std::string resp = aeronet::test::recvWithTimeout(fd, std::chrono::milliseconds{100});
+  if (!resp.empty()) {
     // Should not have produced a 200 OK response because headers were never completed before timeout
-    EXPECT_EQ(sv.find("200 OK"), std::string_view::npos) << sv;
+    EXPECT_FALSE(resp.contains("200 OK")) << resp;
   }
-  ts.stop();
 }

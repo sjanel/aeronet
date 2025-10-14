@@ -31,7 +31,7 @@ TEST(HttpChunked, DecodeBasic) {
       "4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
   EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvUntilClosed(fd);
-  ASSERT_NE(std::string::npos, resp.find("LEN=9:Wikipedia"));
+  ASSERT_TRUE(resp.contains("LEN=9:Wikipedia"));
 }
 
 TEST(HttpChunked, RejectTooLarge) {
@@ -48,7 +48,7 @@ TEST(HttpChunked, RejectTooLarge) {
       "POST /big HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nabcde\r\n0\r\n\r\n";
   EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvUntilClosed(fd);
-  ASSERT_NE(std::string::npos, resp.find("413"));
+  ASSERT_TRUE(resp.contains("413"));
 }
 
 TEST(HttpHead, NoBodyReturned) {
@@ -63,7 +63,7 @@ TEST(HttpHead, NoBodyReturned) {
   EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvUntilClosed(fd);
   // Should have Content-Length header referencing length of would-be body (which is 10: DATA-/head)
-  ASSERT_NE(std::string::npos, resp.find("Content-Length: 10"));
+  ASSERT_TRUE(resp.contains("Content-Length: 10"));
   // And not actually contain DATA-/head bytes after header terminator
   auto hdrEnd = resp.find(aeronet::http::DoubleCRLF);
   ASSERT_NE(std::string::npos, hdrEnd);
@@ -90,7 +90,7 @@ TEST(HttpExpect, ContinueFlow) {
     }
     return std::size_t{};
   });
-  ASSERT_NE(std::string::npos, interim.find("100 Continue"));
+  ASSERT_TRUE(interim.contains("100 Continue"));
   std::string body = "hello";
   auto bs = ::send(cnx.fd(), body.data(), body.size(), 0);
   ASSERT_EQ(bs, static_cast<decltype(headers.size())>(body.size()));
@@ -98,5 +98,5 @@ TEST(HttpExpect, ContinueFlow) {
   EXPECT_TRUE(aeronet::test::sendAll(cnx.fd(), ""));
   std::string full = interim + aeronet::test::recvUntilClosed(cnx.fd());
 
-  ASSERT_NE(std::string::npos, full.find("hello"));
+  ASSERT_TRUE(full.contains("hello"));
 }

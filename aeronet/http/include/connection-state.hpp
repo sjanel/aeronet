@@ -1,7 +1,5 @@
 #pragma once
 
-#include <sys/types.h>
-
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -9,6 +7,7 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/http-response-data.hpp"
 #include "raw-chars.hpp"
 #include "transport.hpp"
 
@@ -29,12 +28,14 @@ struct ConnectionState {
   [[nodiscard]] bool isDrainCloseRequested() const noexcept { return closeMode == CloseMode::DrainThenClose; }
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }
 
-  ssize_t transportRead(std::size_t chunkSize, TransportWant& want);
-  ssize_t transportWrite(std::string_view data, TransportWant& want);
+  std::size_t transportRead(std::size_t chunkSize, Transport& want);
+
+  std::size_t transportWrite(std::string_view data, Transport& want);
+  std::size_t transportWrite(const HttpResponseData& httpResponseData, Transport& want);
 
   RawChars buffer;                        // accumulated raw data
   RawChars bodyBuffer;                    // decoded body lifetime
-  RawChars outBuffer;                     // pending outbound bytes not yet written
+  HttpResponseData outBuffer;             // pending outbound data not yet written
   std::unique_ptr<ITransport> transport;  // set after accept (plain or TLS)
   std::chrono::steady_clock::time_point lastActivity{std::chrono::steady_clock::now()};
   // Timestamp of first byte of the current pending request headers (buffer not yet containing full CRLFCRLF).

@@ -37,26 +37,26 @@ TEST(HttpRouting, BasicPathDispatch) {
   getHello.method = "GET";
   getHello.target = "/hello";
   auto resp1 = aeronet::test::requestOrThrow(server.port(), getHello);
-  EXPECT_NE(resp1.find("200 OK"), std::string::npos);
-  EXPECT_NE(resp1.find("world"), std::string::npos);
+  EXPECT_TRUE(resp1.contains("200 OK"));
+  EXPECT_TRUE(resp1.contains("world"));
   aeronet::test::RequestOptions postHello;
   postHello.method = "POST";
   postHello.target = "/hello";
   postHello.headers.emplace_back("Content-Length", "0");
   auto resp2 = aeronet::test::requestOrThrow(server.port(), postHello);
-  EXPECT_NE(resp2.find("405 Method Not Allowed"), std::string::npos);
+  EXPECT_TRUE(resp2.contains("405 Method Not Allowed"));
   aeronet::test::RequestOptions getMissing;
   getMissing.method = "GET";
   getMissing.target = "/missing";
   auto resp3 = aeronet::test::requestOrThrow(server.port(), getMissing);
-  EXPECT_NE(resp3.find("404 Not Found"), std::string::npos);
+  EXPECT_TRUE(resp3.contains("404 Not Found"));
   aeronet::test::RequestOptions postMulti;
   postMulti.method = "POST";
   postMulti.target = "/multi";
   postMulti.headers.emplace_back("Content-Length", "0");
   auto resp4 = aeronet::test::requestOrThrow(server.port(), postMulti);
-  EXPECT_NE(resp4.find("200 OK"), std::string::npos);
-  EXPECT_NE(resp4.find("POST!"), std::string::npos);
+  EXPECT_TRUE(resp4.contains("200 OK"));
+  EXPECT_TRUE(resp4.contains("POST!"));
 
   done.store(true);
 }

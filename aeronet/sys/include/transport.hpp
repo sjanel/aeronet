@@ -1,21 +1,19 @@
 #pragma once
 
-#include <sys/types.h>
-#include <unistd.h>
-
-#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
-#include <utility>
+
+#include "aeronet/http-response-data.hpp"
 
 namespace aeronet {
 
 // Indicates what the transport layer needs to proceed after a non-blocking I/O operation returns EAGAIN/WANT.
-enum class TransportWant : uint8_t {
-  None,       // No special action needed (operation completed or fatal error)
-  ReadReady,  // Need socket readable before operation can proceed (SSL_ERROR_WANT_READ)
-  WriteReady  // Need socket writable before operation can proceed (SSL_ERROR_WANT_WRITE)
+enum class Transport : uint8_t {
+  None,        // No special action needed (operation completed or fatal error)
+  ReadReady,   // Need socket readable before operation can proceed (SSL_ERROR_WANT_READ)
+  WriteReady,  // Need socket writable before operation can proceed (SSL_ERROR_WANT_WRITE)
+  Error
 };
 
 // Base transport abstraction; allows transparent TLS or plain socket IO.
@@ -25,13 +23,41 @@ class ITransport {
 
   // Non-blocking read. Returns bytes read (>0), 0 on orderly close, -1 on EAGAIN/WANT (caller inspects want).
   // want: indicates whether socket needs to be readable or writable for operation to proceed.
-  virtual ssize_t read(char* buf, std::size_t len, TransportWant& want) = 0;
+  virtual std::size_t read(char* buf, std::size_t len, Transport& want) = 0;
+
+  // Non-blocking write. Returns the number of bytes written. If 0, check the want parameter.
+  // want: indicates whether socket needs to be readable or writable for operation to proceed.
+  virtual std::size_t write(std::string_view data, Transport& want) = 0;
 
   // Non-blocking write. Returns bytes written (>0), 0 no progress (treat like EAGAIN), -1 fatal error.
   // want: indicates whether socket needs to be readable or writable for operation to proceed.
-  virtual ssize_t write(std::string_view data, TransportWant& want) = 0;
+  std::size_t write(const HttpResponseData& httpResponseData, Transport& want) {
+    // First attempt to write the response head. Only if the head was fully
+    // written do we proceed to write the body. This is important for TLS
+    // transports where a write call may succeed and report a positive
+    // "bytes written" value that is nevertheless smaller than the
+    // requested buffer. In that partial-write case we must not start
+    // sending the body bytes before the remaining head bytes have been
+    // flushed, otherwise the client will see a corrupted/invalid response.
+    std::size_t total = write(httpResponseData.firstBuffer(), want);
+    if (want != Transport::None) {
+      // Transport indicated it needs readiness or error — caller will retry.
+      return total;
+    }
 
-  [[nodiscard]] virtual bool handshakePending() const noexcept { return false; }
+    // Only continue to body if the head was fully consumed.
+    if (total < httpResponseData.firstBuffer().size()) {
+      return total;
+    }
+
+    auto bodyData = httpResponseData.secondBuffer();
+    if (!bodyData.empty()) {
+      total += write(bodyData, want);
+    }
+    return total;
+  }
+
+  [[nodiscard]] virtual bool handshakeDone() const noexcept { return true; }
 };
 
 // Plain transport directly operates on a non-blocking fd.
@@ -39,38 +65,9 @@ class PlainTransport : public ITransport {
  public:
   explicit PlainTransport(int fd) : _fd(fd) {}
 
-  ssize_t read(char* buf, std::size_t len, TransportWant& want) override {
-    want = TransportWant::None;
-    return ::read(_fd, buf, len);
-  }
+  std::size_t read(char* buf, std::size_t len, Transport& want) override;
 
-  ssize_t write(std::string_view data, TransportWant& want) override {
-    want = TransportWant::None;
-
-    ssize_t total = 0;
-
-    while (std::cmp_less(total, data.size())) {
-      ssize_t res = ::write(_fd, data.data() + total, data.size() - static_cast<std::size_t>(total));
-
-      if (res > 0) {
-        total += res;
-      } else if (res == -1 && errno == EINTR) {
-        // Interrupted by signal, retry immediately
-        continue;
-      } else if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        // Kernel send buffer full — caller should wait for writable event
-        want = TransportWant::WriteReady;
-        break;
-      } else {
-        // Fatal error (ECONNRESET, EPIPE, etc.)
-        return -1;
-      }
-    }
-
-    // Return how much we actually wrote.
-    // If total == 0 and wantWrite==true, treat it like EAGAIN/no progress.
-    return total;
-  }
+  std::size_t write(std::string_view data, Transport& want) override;
 
  private:
   int _fd;

@@ -51,6 +51,6 @@ TEST(HttpQueryStructuredBindings, IterateKeyValues) {
   std::string req = "GET /sb?a=1&b=two%20words&empty=&novalue HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
   ASSERT_TRUE(aeronet::test::sendAll(client.fd(), req));
   auto resp = aeronet::test::recvUntilClosed(client.fd());
-  EXPECT_NE(resp.find("OK"), std::string::npos);
+  EXPECT_TRUE(resp.contains("OK"));
   server.stop();
 }

@@ -1,6 +1,4 @@
 #include <gtest/gtest.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #include <string>
 
@@ -18,11 +16,10 @@ bool attemptPlainHttp(auto port) {
   int fd = cnx.fd();
 
   std::string bogus = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";  // not TLS handshake
-  (void)::send(fd, bogus.data(), bogus.size(), 0);
-  // Expect server to close; read should return 0 or error
-  char smallBuf[32];
-  auto rr = ::read(fd, smallBuf, sizeof(smallBuf));
-  return rr <= 0;  // success condition (auto close by RAII)
+  if (!aeronet::test::sendAll(fd, bogus)) {
+    return false;
+  }
+  return aeronet::test::recvWithTimeout(fd).empty();  // success condition (auto close by RAII)
 }
 
 // Large response GET using TlsClient (simplified replacement).
@@ -36,32 +33,21 @@ std::string tlsGetLarge(auto port) {
 }  // namespace
 
 TEST(HttpTlsNegative, PlainHttpToTlsPortRejected) {
-  bool result = false;
-  {
-    aeronet::test::TlsTestServer ts;  // default TLS (no ALPN needed here)
-    result = attemptPlainHttp(ts.port());
-    ts.stop();
-  }
-  // helper freed temporary key/cert
-  ASSERT_TRUE(result);
+  aeronet::test::TlsTestServer ts;  // default TLS (no ALPN needed here)
+  ASSERT_TRUE(attemptPlainHttp(ts.port()));
 }
 
 TEST(HttpTlsNegative, LargeResponseFragmentation) {
-  std::string resp;
-  {
-    aeronet::test::TlsTestServer ts;  // basic TLS
-    auto port = ts.port();
-    ts.setDefault([](const aeronet::HttpRequest&) {
-      return aeronet::HttpResponse(200)
-          .reason("OK")
-          .contentType(aeronet::http::ContentTypeTextPlain)
-          .body(std::string(300000, 'A'));
-    });
-    resp = tlsGetLarge(port);
-    ts.stop();
-  }
+  aeronet::test::TlsTestServer ts;  // basic TLS
+  auto port = ts.port();
+  ts.setDefault([](const aeronet::HttpRequest&) {
+    return aeronet::HttpResponse(200, "OK")
+        .contentType(aeronet::http::ContentTypeTextPlain)
+        .body(std::string(300000, 'A'));
+  });
+  std::string resp = tlsGetLarge(port);
   // helper freed temporary key/cert
   ASSERT_FALSE(resp.empty());
-  ASSERT_NE(resp.find("HTTP/1.1 200"), std::string::npos);
-  ASSERT_NE(resp.find("AAAA"), std::string::npos);
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.contains("AAAA"));
 }

@@ -5,16 +5,16 @@ suite for aeronet.
 
 ## Goals
 
-* Track performance regressions for core HTTP request handling and (later) streaming/TLS.
-* Provide comparative harnesses against other C++ HTTP frameworks (planned: oatpp, drogon).
-* Keep CI lightweight: benchmarks are **not** built in CI by default.
-* Offer reproducible local runs with JSON output for ad‑hoc analysis.
+- Track performance regressions for core HTTP request handling and (later) streaming/TLS.
+- Provide comparative harnesses against other C++ HTTP frameworks (planned: oatpp, drogon).
+- Keep CI lightweight: benchmarks are **not** built in CI by default.
+- Offer reproducible local runs with JSON output for ad‑hoc analysis.
 
 ## Non‑Goals (Current Phase)
 
-* Producing authoritative cross‑platform numbers (cloud CI noise is high).
-* Shipping benchmark binaries in packages.
-* Providing full-feature client load generation (wrk/vegeta do that better externally).
+- Producing authoritative cross‑platform numbers (cloud CI noise is high).
+- Shipping benchmark binaries in packages.
+- Providing full-feature client load generation (wrk/vegeta do that better externally).
 
 ## Build Activation
 
@@ -59,15 +59,15 @@ Google Benchmark natively supports JSON; we simply redirect stdout.
 
 An initial comparative benchmark `aeronet-bench-frameworks` is available. It spins up:
 
-* aeronet (always) – `/data?size=N` returning an iota-generated `std::string` of length N.
-* Drogon (if `-DAERONET_BENCH_ENABLE_DROGON=ON`) – identical endpoint.
-* Oatpp (if `-DAERONET_BENCH_ENABLE_OATPP=ON`) – identical endpoint.
+- aeronet (always) – `/data?size=N` returning an iota-generated `std::string` of length N.
+- Drogon (if `-DAERONET_BENCH_ENABLE_DROGON=ON`) – identical endpoint.
+- Oatpp (if `-DAERONET_BENCH_ENABLE_OATPP=ON`) – identical endpoint.
 
 Each iteration selects a random payload size in `[min,max]` and performs a blocking HTTP/1.1 request over loopback. Metrics collected:
 
-* Total wall time
-* Requests per second
-* Aggregate bytes and MB/s (body bytes only)
+- Total wall time
+- Requests per second
+- Aggregate bytes and MB/s (body bytes only)
 
 Activate extra frameworks:
 
@@ -80,9 +80,9 @@ cmake --build build_bench --target aeronet-bench-frameworks
 
 Planned enhancements:
 
-* Percentile latency (collect micro timings per request)
-* Concurrent client connections
-* Streaming & TLS variants (requires `AERONET_ENABLE_OPENSSL=ON`)
+- Percentile latency (collect micro timings per request)
+- Concurrent client connections
+- Streaming & TLS variants (requires `AERONET_ENABLE_OPENSSL=ON`)
 
 ## Planned Roadmap
 
@@ -109,9 +109,9 @@ Planned enhancements:
 
 ## Caveats
 
-* Loopback measurements elide network variability; real deployment performance can differ.
-* Single-thread server design: multi-core scaling requires multiple processes/instances; benchmarks will eventually include multi-instance harnesses.
-* Comparative numbers should always record compiler, flags, CPU model, and temperature (when publishing externally).
+- Loopback measurements elide network variability; real deployment performance can differ.
+- Single-thread server design: multi-core scaling requires multiple processes/instances; benchmarks will eventually include multi-instance harnesses.
+- Comparative numbers should always record compiler, flags, CPU model, and temperature (when publishing externally).
 
 ## Example Quick Run
 
@@ -123,10 +123,109 @@ cmake --build build --target run-aeronet-bench
 
 ## Future Ideas
 
-* Optional integration with `perf` / hardware counters (off by default).
-* Flamegraph helper script capturing `perf record -g` around a chosen benchmark.
-* Automatic detection of regression (simple % threshold) when explicitly requested.
+- Optional integration with `perf` / hardware counters (off by default).
+- Flamegraph helper script capturing `perf record -g` around a chosen benchmark.
+- Automatic detection of regression (simple % threshold) when explicitly requested.
 
----
+## Benchmark profiling with perf and kcachegrind
 
-Feel free to extend this doc as new benchmarks land.
+This file explains how to profile the `aeronet` benchmarks using `perf` and visualize the results with `kcachegrind` (via callgrind format) or with FlameGraph.
+
+### Quick helper
+
+We include a small helper script at `scripts/profile_benchmark.sh` that automates a typical workflow:
+
+- Build (optional) with frame pointers and debuginfo
+- Run `perf record` with call-graph sampling
+- Convert the `perf.data` to a callgrind file (if conversion tools are available) or to a FlameGraph SVG
+
+### Usage examples
+
+1) Build and profile the throughput benchmark (recommended):
+
+```bash
+# from repository root
+./scripts/profile_benchmark.sh --build -- ./build/benchmarks/aeronet-bench-throughput --duration 10
+```
+
+2) Profile an already-built binary (sample frequency 400Hz):
+
+```bash
+./scripts/profile_benchmark.sh --freq 400 -- ./build/benchmarks/aeronet-bench-throughput --duration 10
+```
+
+### What the script does
+
+- Runs `perf record -F <freq> -g -- <binary> ...` as root (sudo) to capture user-space stacks
+- Writes `perf.data.YYYYMMDD-HHMMSS` and `perf_script.YYYYMMDD-HHMMSS.txt`
+- Attempts to convert the `perf script` output to callgrind format using one of:
+  - `perf2calltree` (packaged with kcachegrind on some distros)
+  - `/usr/share/kcachegrind/perf2calltree` (if present)
+  - `gprof2calltree` (Python tool)
+- If conversion tools are not found, it can generate a FlameGraph SVG if you clone Brendan Gregg's FlameGraph under `scripts/FlameGraph`.
+
+### Installing useful tools on Ubuntu
+
+```bash
+sudo apt update
+# perf (kernel tools), kcachegrind, flamegraph helper
+sudo apt install -y linux-tools-$(uname -r) linux-tools-common kcachegrind python3-pip
+pip3 install gprof2calltree
+```
+
+If `perf2calltree` is missing in your distro package, you can install `kcachegrind` which may include it, or fetch `perf2calltree` from the perf-tools or kcachegrind source.
+
+### Converting manually
+
+If you prefer to do things by hand:
+
+1. Record:
+
+```bash
+sudo perf record -F 200 -g -o perf.data -- ./build/benchmarks/aeronet-bench-throughput --duration 10
+```
+
+2. Export perf script:
+
+```bash
+perf script -i perf.data > perf_script.txt
+```
+
+3. Convert to callgrind (one of):
+
+```bash
+# If perf2calltree present
+perf script -i perf.data | perf2calltree > callgrind.out
+
+# Or using gprof2calltree
+perf script -i perf.data > perf_for_gprof.txt
+gprof2calltree -i perf_for_gprof.txt -o callgrind.out
+```
+
+4. Open callgrind in kcachegrind:
+
+```bash
+kcachegrind callgrind.out
+```
+
+### FlameGraph (alternative visualization)
+
+Clone FlameGraph and run stackcollapse & flamegraph:
+
+```bash
+git clone https://github.com/brendangregg/FlameGraph.git scripts/FlameGraph
+perf script -i perf.data | scripts/FlameGraph/stackcollapse-perf.pl | scripts/FlameGraph/flamegraph.pl > flamegraph.svg
+# open flamegraph.svg in a browser
+```
+
+### Notes and tips
+
+- Build with `-fno-omit-frame-pointer` for the best call stacks if your compiler and target support it (x86_64). The helper script configures that when run with `--build`.
+- Use `RelWithDebInfo` to keep optimizations but also have debug symbols.
+- For in-depth CPU tracing of syscalls or kernel stacks, you can drop `-g` and collect kernel stacks too, but that makes conversion harder.
+- When running in containers or VMs, ensure `perf_event` access is allowed (sometimes `sysctl kernel.perf_event_paranoid=1` or lower is required).
+
+If you'd like, I can:
+
+- Add a small CMake target to build all benchmark binaries in `build/benchmarks` in one step
+- Run a sample profiling pass here and attach the generated `callgrind.out` and `flamegraph.svg` (if you consent to uploading artifacts)

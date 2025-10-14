@@ -43,7 +43,7 @@ TEST(HttpParserErrors, InvalidVersion505) {
   aeronet::test::sendAll(fd, bad);
   std::string resp = aeronet::test::recvUntilClosed(fd);
   ts.stop();
-  ASSERT_NE(std::string::npos, resp.find("505")) << resp;
+  ASSERT_TRUE(resp.contains("505")) << resp;
   bool seen = false;
   {
     std::scoped_lock lk(cap.m);
@@ -68,7 +68,7 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
       "POST /z HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
   aeronet::test::sendAll(fd, zero);
   std::string respZero = aeronet::test::recvUntilClosed(fd);
-  ASSERT_EQ(std::string::npos, respZero.find("100 Continue"));
+  ASSERT_FALSE(respZero.contains("100 Continue"));
   // non-zero length with Expect should produce interim 100 then 200
   aeronet::test::ClientConnection clientConnection2(port);
   int fd2 = clientConnection2.fd();
@@ -78,8 +78,8 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
   aeronet::test::sendAll(fd2, post);
   std::string resp = aeronet::test::recvUntilClosed(fd2);
   ts.stop();
-  ASSERT_NE(std::string::npos, resp.find("100 Continue"));
-  ASSERT_NE(std::string::npos, resp.find("200"));
+  ASSERT_TRUE(resp.contains("100 Continue"));
+  ASSERT_TRUE(resp.contains("200"));
 }
 
 // Fuzz-ish incremental chunk framing with random chunk sizes & boundaries.
@@ -118,6 +118,6 @@ TEST(HttpParserErrors, ChunkIncrementalFuzz) {
   aeronet::test::sendAll(fd, "0\r\n\r\n");
   std::string resp = aeronet::test::recvUntilClosed(fd);
   ts.stop();
-  ASSERT_NE(std::string::npos, resp.find("200"));
-  ASSERT_NE(std::string::npos, resp.find(original.substr(0, 3))) << resp;  // sanity partial check
+  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.contains(original.substr(0, 3))) << resp;  // sanity partial check
 }
