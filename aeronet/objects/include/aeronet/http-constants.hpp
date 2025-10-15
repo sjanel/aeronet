@@ -51,8 +51,26 @@ inline constexpr std::string_view AcceptEncoding = "Accept-Encoding";
 inline constexpr std::string_view HeaderSep = ": ";
 inline constexpr std::string_view CRLF = "\r\n";
 inline constexpr std::string_view DoubleCRLF = "\r\n\r\n";
-// 'GET / HTTP/1.1\r\n'
-inline constexpr std::size_t kHttpReqHeadersMinLen = GET.size() + 3UL + HTTP10Sv.size() + CRLF.size();
+// Minimal syntactic request-line example (no headers):
+//   "GET / HTTP/1.1\r\n"
+// The expression below computes the minimal request-line length for a
+// one-character target and the chosen method token (here we use `GET`).
+// Note: HTTP/1.1 requires a Host header (RFC 7230 §5.4). The bare
+// request-line alone (shown above) is valid syntactically but is NOT a
+// complete HTTP/1.1 request unless a Host header field is present. We
+// therefore expose two compile-time minima:
+//  - kHttpReqLineMinLen: minimal request-line length (HTTP/1.0 or 1.1)
+//  - kHttpReqHeadersMinLenHttp11: minimal complete HTTP/1.1 request including
+//    a one-character Host header (e.g. "Host: h\r\n").
+inline constexpr std::size_t kHttpReqLineMinLen = GET.size() + 3UL + HTTP11Sv.size() + CRLF.size();
+
+// Minimal complete HTTP/1.0 request (no Host header required by the spec):
+inline constexpr std::size_t kHttpReqHeadersMinLenHttp10 = kHttpReqLineMinLen;
+
+// Minimal complete HTTP/1.1 request: include a minimal Host header value of
+// one character. Host header length = "Host" + ": " + value (1 byte) + CRLF
+inline constexpr std::size_t kHttpReqHeadersMinLenHttp11 =
+    kHttpReqLineMinLen + Host.size() + HeaderSep.size() + 1UL + CRLF.size();
 
 // Compression
 inline constexpr std::string_view identity = "identity";

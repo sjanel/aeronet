@@ -19,7 +19,8 @@ Single consolidated reference for **aeronet** features.
 13. [Streaming Responses](#streaming-responses-chunked--incremental)
 14. [Mixed Mode Dispatch Precedence](#mixed-mode--dispatch-precedence)
 15. [Logging](#logging)
-16. [Future Expansions](#future-expansions)
+16. [OpenTelemetry Integration](#opentelemetry-integration)
+17. [Future Expansions](#future-expansions)
 
 ## HTTP/1.1 Feature Matrix
 
@@ -719,8 +720,85 @@ Usage example (fallback or spdlog):
 aeronet::log::info("server listening on {}", server.port());
 ```
 
+## OpenTelemetry Integration
+
+Optional (`AERONET_ENABLE_OPENTELEMETRY`). Provides distributed tracing and metrics via OpenTelemetry SDK.
+
+### Architecture
+
+**Instance-based telemetry.** Each `HttpServer` owns its own `TelemetryContext` instance. No global singletons or static state.
+
+Key design principles:
+
+- Per-instance isolation: Multiple servers with independent telemetry configurations
+- Explicit lifecycle: Telemetry instance tied to server lifetime
+- Error transparency: All telemetry failures logged via `log::error()` (no silent no-ops)
+
+Configuration via `HttpServerConfig::otel`:
+
+```cpp
+HttpServerConfig cfg;
+cfg.withOtelConfig(OtelConfig{
+  .enabled = true,
+  .endpoint = "http://localhost:4318",  // OTLP HTTP endpoint base URL
+  .serviceName = "my-service",
+  .sampleRate = 1.0  // trace sampling rate (0.0 to 1.0)
+});
+```
+
+### Built-in Instrumentation (phase 1)
+
+Automatic (no handler code changes):
+
+**Traces:**
+
+- `http.request` spans for each HTTP request
+- Attributes: `http.method`, `http.target`, `http.status_code`, `http.request.body.size`, `http.response.body.size`
+
+**Metrics (counters):**
+
+- `aeronet.events.processed` – epoll events processed
+- `aeronet.connections.accepted` – new connections
+- `aeronet.bytes.read` – bytes read from clients
+- `aeronet.bytes.written` – bytes written to clients
+
+All instrumentation is fully async (OTLP HTTP exporter) with configurable endpoints and sample rates.
+
+### Testing & Observability
+
+Comprehensive integration tests validate:
+
+- Multi-instance contexts with independent configurations
+- Span creation, attribute setting, lifecycle
+- Counter operations under various conditions
+- Error handling and logging
+
+Use with OpenTelemetry Collector for full observability pipeline:
+
+```yaml
+# Example collector config for testing
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  logging:
+    loglevel: debug
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [logging]
+    metrics:
+      receivers: [otlp]
+      exporters: [logging]
+```
+
 ---
 
 ## Future Expansions
 
-Planned / potential: trailers, streaming inbound decompression, encoder pooling, compression ratio metrics, TLS hot reload & SNI, richer logging & metrics.
+Planned / potential: trailers, streaming inbound decompression, encoder pooling, compression ratio metrics, TLS hot reload & SNI, richer logging & metrics, additional OpenTelemetry instrumentation (histograms, gauges).

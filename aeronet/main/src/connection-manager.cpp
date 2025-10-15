@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -88,6 +89,10 @@ void HttpServer::acceptNewConnections() {
       _eventLoop.del(cnxFd);
       continue;
     }
+
+    // Track new connection acceptance
+    _telemetry.counterAdd("aeronet.connections.accepted", 1UL);
+
     ConnectionState& state = cnxIt->second;
 #ifdef AERONET_ENABLE_OPENSSL
     if (_tlsCtxHolder) {
@@ -151,6 +156,7 @@ void HttpServer::acceptNewConnections() {
           pCnx->headerStart = std::chrono::steady_clock::now();
         }
         bytesReadThisEvent += static_cast<std::size_t>(bytesRead);
+        _telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(bytesRead));
         if (std::cmp_less(bytesRead, chunkSize)) {
           break;
         }

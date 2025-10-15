@@ -23,7 +23,7 @@
 namespace aeronet {
 
 // Semver of the project as injected by the build system.
-constexpr std::string_view version() { return AERONET_PROJECT_VERSION; }
+constexpr std::string_view version() { return AERONET_VERSION_STR; }
 
 // ---- Compile-time full version string assembly ----
 // We build a single static storage string using the JoinStringView utilities so the result
@@ -39,7 +39,7 @@ constexpr std::string_view fullVersionStringView() {
   // Base fragments
   static constexpr std::string_view _sv_name = "aeronet ";
   static constexpr std::string_view _sv_newline = "\n  ";
-  static constexpr std::string_view _sv_version_macro = AERONET_PROJECT_VERSION;  // same as version()
+  static constexpr std::string_view _sv_version_macro = AERONET_VERSION_STR;  // same as version()
 
 // TLS section fragment (either full OPENSSL_VERSION_TEXT or disabled)
 #ifdef AERONET_ENABLE_OPENSSL
