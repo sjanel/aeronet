@@ -111,6 +111,67 @@ if(AERONET_ENABLE_BROTLI)
   endif()
 endif()
 
+if(AERONET_ENABLE_OPENTELEMETRY)
+  # Prefer system-provided package if available
+  find_package(opentelemetry-cpp QUIET)
+  if(NOT TARGET opentelemetry::trace AND NOT TARGET OpenTelemetry::trace)
+    include(FetchContent)
+    # Require libcurl and protobuf development files. These are heavy native
+    # dependencies and should be provided by the system package manager when
+    # AERONET_ENABLE_OPENTELEMETRY=ON is used.
+    find_package(CURL QUIET)
+    find_package(Protobuf QUIET)
+    if(NOT CURL_FOUND)
+      message(FATAL_ERROR "AERONET_ENABLE_OPENTELEMETRY=ON requires libcurl development files to build the OTLP HTTP exporter. Install libcurl (e.g. libcurl4-openssl-dev) or set AERONET_ENABLE_OPENTELEMETRY=OFF.")
+    endif()
+    if(NOT Protobuf_FOUND)
+      message(FATAL_ERROR "AERONET_ENABLE_OPENTELEMETRY=ON requires protobuf development files (libprotobuf & protoc). Install protobuf (e.g. libprotobuf-dev and protobuf-compiler) or set AERONET_ENABLE_OPENTELEMETRY=OFF.\n\nNote: fetching opentelemetry-cpp will also attempt to fetch/build protobuf which may fail in disconnected environments. Using system protobuf avoids that and reduces build-time fetches.")
+    endif()
+
+    # If a Conan-provided Protobuf package exposes a protoc target, prefer that
+    # executable for any protobuf code generation. This prevents CMake/FetchContent
+    # builds (like opentelemetry-cpp) from accidentally invoking a system
+    # /usr/bin/protoc that is version-incompatible with the Protobuf headers
+    # that will be used for compilation (see CI failures where generated files
+    # were produced by a newer protoc than the headers available during compile).
+    if(TARGET protobuf::protoc)
+      # Try to read the imported location of the protoc executable target.
+      get_target_property(_PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION)
+      if(NOT _PROTOC_EXECUTABLE)
+        # Fallback property name used by some package configs.
+        get_target_property(_PROTOC_EXECUTABLE protobuf::protoc LOCATION)
+      endif()
+      if(_PROTOC_EXECUTABLE)
+        # Force the Protobuf CMake cache variable so subsequent find_package or
+        # libraries that rely on Protobuf use this executable for generation.
+        set(Protobuf_PROTOC_EXECUTABLE "${_PROTOC_EXECUTABLE}" CACHE FILEPATH "Protobuf protoc executable (from Conan)" FORCE)
+      endif()
+    endif()
+
+    FetchContent_Declare(
+      opentelemetry_cpp
+      URL https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v1.23.0.tar.gz
+      URL_HASH SHA256=148ef298a4ef9e016228d53d7208ab9359d4fdf87f55649d60d07ffacc093b33
+    )
+    # Configure opentelemetry-cpp to enable OTLP HTTP exporter and a curl http client.
+    # CRITICAL: Use nostd (WITH_STL=OFF) to ensure consistent ABI across all opentelemetry types.
+    # Using WITH_STL=ON causes ABI mismatch where some types use nostd::variant while others
+    # use std::shared_ptr, leading to variant destruction failures.
+    set(WITH_STL OFF CACHE BOOL "Use nostd types for ABI consistency" FORCE)
+    set(WITH_HTTP_CLIENT_CURL ON CACHE BOOL "Enable curl http client for OTLP HTTP" FORCE)
+    set(WITH_OTLP_HTTP ON CACHE BOOL "Build OTLP HTTP exporter" FORCE)
+    # Avoid pulling in gRPC/protobuf unless the user explicitly enables it upstream.
+    set(WITH_OTLP_GRPC OFF CACHE BOOL "Disable OTLP gRPC exporter by default" FORCE)
+    # Prefer to disable building tests/benchmarks/examples from the opentelemetry subtree
+    # to avoid pulling additional build-time dependencies (like Google Benchmark) into consumers.
+    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(WITH_BENCHMARKS OFF CACHE BOOL "" FORCE)
+    set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(WITH_FUNC_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(opentelemetry_cpp)
+  endif()
+endif()
+
 # Make fetch content available
 if(fetchContentPackagesToMakeAvailable)
   message(STATUS "Configuring packages ${fetchContentPackagesToMakeAvailable}")

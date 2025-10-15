@@ -14,15 +14,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
 endif()
 project(aeronet VERSION ${AERONET_PROJECT_VERSION} LANGUAGES CXX)
 
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 message(STATUS "[${CMAKE_PROJECT_NAME}] version: ${AERONET_PROJECT_VERSION}")
 
-#
-# MAIN_PROJECT CHECK
-# determine if coincenter is built as a sub-project or if it is the main project
-#
-set(MAIN_PROJECT OFF)
+set(IS_MAIN_PROJECT OFF)
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
-  set(MAIN_PROJECT ON)
+  set(IS_MAIN_PROJECT ON)
 endif()
 
 set(ASAN_DEFAULT OFF)
@@ -30,15 +30,15 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(ASAN_DEFAULT ON)
 endif()
 
-option(AERONET_ENABLE_CCACHE "Compile with ccache for faster incremental compilation" ${MAIN_PROJECT})
+option(AERONET_ENABLE_CCACHE "Compile with ccache for faster incremental compilation" ${IS_MAIN_PROJECT})
 
 # Build options
-option(AERONET_INSTALL "Enable install & package config generation" ${MAIN_PROJECT})
+option(AERONET_INSTALL "Enable install & package config generation" ${IS_MAIN_PROJECT})
 # When consumed as a package (not the main project) we never want to build tests or examples.
 # Some package managers (vcpkg/Conan) may still pass defaults or reuse a cached build tree;
 # enforce OFF deterministically here to avoid leaking test targets into consumer builds.
-set(AERONET_BUILD_TESTS_EXAMPLES_DEFAULT ${MAIN_PROJECT})
-if(AERONET_INSTALL AND NOT MAIN_PROJECT)
+set(AERONET_BUILD_TESTS_EXAMPLES_DEFAULT ${IS_MAIN_PROJECT})
+if(AERONET_INSTALL AND NOT IS_MAIN_PROJECT)
   set(AERONET_BUILD_TESTS_EXAMPLES_DEFAULT OFF CACHE BOOL "Build tests and examples" FORCE)
 endif()
 
@@ -49,22 +49,19 @@ option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_TE
 
 # Features
 # Optional dependencies (aeronet is able to compile without the feature if not enabled)
-option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" ${MAIN_PROJECT})
+option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" ${IS_MAIN_PROJECT})
+option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" ${IS_MAIN_PROJECT})
+option(AERONET_ENABLE_BROTLI "Enable usage of Brotli for br codec support" ${IS_MAIN_PROJECT})
+option(AERONET_ENABLE_ZLIB "Enable usage of zlib for deflate and gzip codec support" ${IS_MAIN_PROJECT})
+option(AERONET_ENABLE_ZSTD "Enable usage of Zstandard for zstd codec support" ${IS_MAIN_PROJECT})
+option(AERONET_ENABLE_OPENTELEMETRY "Enable OpenTelemetry C++ integration (optional)" ${IS_MAIN_PROJECT})
+
 option(AERONET_SPDLOG_USE_STD_FORMAT "Use std::format instead of fmt::format in spdlog" ON)
-option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" ${MAIN_PROJECT})
-option(AERONET_ENABLE_ZLIB "Enable usage of zlib for deflate and gzip codec support" ${MAIN_PROJECT})
-option(AERONET_ENABLE_ZSTD "Enable usage of Zstandard for zstd codec support" ${MAIN_PROJECT})
-option(AERONET_ENABLE_BROTLI "Enable usage of Brotli for br codec support" ${MAIN_PROJECT})
 
 # Linting
 option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" ${ASAN_DEFAULT})
 option(AERONET_ENABLE_CLANG_TIDY "Enable clang-tidy analysis" OFF)
 option(AERONET_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
-
-
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(AERONET_ENABLE_CCACHE)
   # Use ccache if available
@@ -176,11 +173,17 @@ if(AERONET_INSTALL)
     endif()
   endif()
 
-  install(EXPORT aeronetTargets
-    NAMESPACE aeronet::
-    FILE aeronetTargets.cmake
-    DESTINATION ${AERONET_INSTALL_CMAKE_DIR}
-  )
+  # Skip exporting aeronetTargets when opentelemetry is built via FetchContent,
+  # as the non-exported opentelemetry targets can't be included in the export set.
+  # Users should rely on find_package(aeronet) config for system-installed builds
+  # or use FetchContent for the full dependency tree including opentelemetry.
+  if(NOT (AERONET_ENABLE_OPENTELEMETRY AND DEFINED opentelemetry_cpp_SOURCE_DIR))
+    install(EXPORT aeronetTargets
+      NAMESPACE aeronet::
+      FILE aeronetTargets.cmake
+      DESTINATION ${AERONET_INSTALL_CMAKE_DIR}
+    )
+  endif()
 
   install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/aeronetConfig.cmake"

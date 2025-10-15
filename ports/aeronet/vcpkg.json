@@ -30,6 +30,10 @@
     "zstd": {
       "description": "Enable zstd compression support",
       "dependencies": ["zstd"]
+    },
+    "opentelemetry": {
+      "description": "Enable OpenTelemetry with OTLP HTTP support",
+      "dependencies": ["opentelemetry-cpp", "protobuf"]
     }
   }
 }

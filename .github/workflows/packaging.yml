@@ -22,9 +22,13 @@ jobs:
       - name: Install build prereqs
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y python3-pip ninja-build gcc g++ cmake pkg-config libssl-dev
+          sudo apt-get install -y build-essential python3-pip ninja-build cmake pkg-config git
           pipx install conan
           conan --version
+          
+      - name: Install all dependencies with features
+        run: sudo apt-get install -y libssl-dev libcurl4-openssl-dev
+        if: ${{ matrix.features == 'ON' }}
 
       - name: Conan profile detect
         run: |
@@ -39,6 +43,7 @@ jobs:
             -o aeronet/*:with_spdlog=${{ matrix.features == 'ON' && 'True' || 'False' }} \
             -o aeronet/*:with_zlib=${{ matrix.features == 'ON' && 'True' || 'False' }} \
             -o aeronet/*:with_zstd=${{ matrix.features == 'ON' && 'True' || 'False' }} \
+            -o aeronet/*:with_opentelemetry=${{ matrix.features == 'ON' && 'True' || 'False' }} \
             -s build_type=Release \
             -s compiler.cppstd=23 \
             --build=missing
@@ -56,7 +61,11 @@ jobs:
       - name: Install prerequisites
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential ninja-build cmake pkg-config git libssl-dev
+          sudo apt-get install -y build-essential ninja-build cmake pkg-config git
+
+      - name: Install all dependencies with features
+        run: sudo apt-get install -y libssl-dev libcurl4-openssl-dev
+        if: ${{ matrix.features == 'ON' }}
 
       - name: Verify vcpkg port version matches VERSION
         run: |
@@ -79,7 +88,7 @@ jobs:
           if [ "${{ matrix.features }}" = "OFF" ]; then
             ./vcpkg/vcpkg install aeronet --overlay-ports=./ports --triplet x64-linux
           else
-            ./vcpkg/vcpkg install aeronet[openssl,spdlog,zlib,zstd] --overlay-ports=./ports --triplet x64-linux
+            ./vcpkg/vcpkg install aeronet[openssl,spdlog,brotli,zlib,zstd,opentelemetry] --overlay-ports=./ports --triplet x64-linux
           fi
 
       - name: Build simple consumer

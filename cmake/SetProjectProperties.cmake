@@ -1,4 +1,7 @@
 function(set_project_properties name)
+
+  target_compile_definitions(${name} PRIVATE AERONET_VERSION_STR="${PROJECT_VERSION}")
+
   # Warning levels
   if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     # Basic warnings
@@ -120,7 +123,9 @@ function(set_project_properties name)
       endif()
     endif()
   endif()
-  target_compile_definitions(${name} PUBLIC AERONET_PROJECT_VERSION="${AERONET_PROJECT_VERSION}")
+  if(AERONET_ENABLE_OPENTELEMETRY)
+    target_compile_definitions(${name} PUBLIC AERONET_ENABLE_OPENTELEMETRY)
+  endif()
 endfunction()
 
 function(add_project_executable name)
