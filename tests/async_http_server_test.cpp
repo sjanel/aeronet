@@ -40,7 +40,7 @@ TEST(AsyncHttpServer, PredicateStop) {
   async.router().setDefault([](const aeronet::HttpRequest &req) {
     return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body(req.path());
   });
-  async.startUntil([&] { return done.load(); });
+  async.startAndStopWhen([&] { return done.load(); });
   std::this_thread::sleep_for(15ms);  // let it spin
   auto port = async.port();
   aeronet::test::RequestOptions opt;
@@ -87,4 +87,27 @@ TEST(AsyncHttpServer, Restart) {
   resp = aeronet::test::requestOrThrow(port, opt);
   ASSERT_TRUE(resp.contains("200"));
   ASSERT_TRUE(resp.contains("hello-async2"));
+}
+
+TEST(AsyncHttpServer, StartWithStopToken) {
+  aeronet::AsyncHttpServer async(aeronet::HttpServerConfig{});
+  async.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest &req) {
+    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("token-ok");
+  });
+
+  std::stop_source src;
+  async.startWithStopToken(src.get_token());
+  // Allow startup
+  std::this_thread::sleep_for(15ms);
+  auto port = async.port();
+  aeronet::test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/";
+  auto resp = aeronet::test::requestOrThrow(port, opt);
+  ASSERT_TRUE(resp.contains("token-ok"));
+
+  // Request stop via the stop_source and then join via stop().
+  src.request_stop();
+  // joining the background thread via stop should succeed even if token already requested
+  async.stop();
 }

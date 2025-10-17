@@ -51,11 +51,26 @@ void AsyncHttpServer::start() {
   });
 }
 
-void AsyncHttpServer::startUntil(std::function<bool()> predicate) {
+void AsyncHttpServer::startAndStopWhen(std::function<bool()> predicate) {
   ensureStartable();
   _thread = std::jthread([this, pred = std::move(predicate)](std::stop_token st) mutable {
     try {
       _server.runUntil([st = std::move(st), pred = std::move(pred)]() { return st.stop_requested() || pred(); });
+    } catch (...) {
+      _error = std::current_exception();
+    }
+  });
+}
+
+void AsyncHttpServer::startWithStopToken(std::stop_token token) {
+  ensureStartable();
+  // Launch a jthread that will stop when either the thread's own token is
+  // requested or when the provided token is requested. We create a thread and
+  // inside forward the provided token to the server runUntil predicate.
+  _thread = std::jthread([this, token = std::move(token)](std::stop_token st) mutable {
+    try {
+      _server.runUntil(
+          [st = std::move(st), token = std::move(token)]() { return st.stop_requested() || token.stop_requested(); });
     } catch (...) {
       _error = std::current_exception();
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <exception>
+#include <stop_token>
 #include <thread>
 
 #include "aeronet/http-server-config.hpp"
@@ -27,7 +28,7 @@ namespace aeronet {
 //   async.stop();
 //
 // Predicate:
-//   async.startUntil([&]{ return done.load(); });
+//   async.startAndStopWhen([&]{ return done.load(); });
 //
 // Thread-safety: same as HttpServer (not internally synchronized). Configure before start or
 // coordinate externally if changing handlers after start.
@@ -73,9 +74,15 @@ class AsyncHttpServer {
   void start();
 
   // Same as start(), but with an additional predicate, that returns 'true' to indicate stop requested.
-  void startUntil(std::function<bool()> predicate);
+  void startAndStopWhen(std::function<bool()> predicate);
 
-  // Stops the main loop, should be called after 'start()' or 'startUntil()'.
+  // Start the server in a background thread and stop when the provided
+  // std::stop_token reports stop requested. This is useful when the caller
+  // manages a std::stop_source and wants to control server lifetime via its
+  // token (cooperative cancellation).
+  void startWithStopToken(std::stop_token token);
+
+  // Stops the main loop, should be called after 'start()' or 'startAndStopWhen()'.
   // This call is blocking for current thread, until the underlying server is stopped.
   // After stop(), it is possible to call start() again.
   void stop() noexcept;
