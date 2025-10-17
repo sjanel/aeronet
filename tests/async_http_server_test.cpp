@@ -30,8 +30,8 @@ TEST(AsyncHttpServer, BasicStartStopAndRequest) {
   opt.method = "GET";
   opt.target = "/";
   auto resp = aeronet::test::requestOrThrow(port, opt);
-  ASSERT_NE(resp.find("200"), std::string::npos);
-  ASSERT_NE(resp.find("hello-async"), std::string::npos);
+  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.contains("hello-async"));
 }
 
 TEST(AsyncHttpServer, PredicateStop) {
@@ -47,7 +47,7 @@ TEST(AsyncHttpServer, PredicateStop) {
   opt.method = "GET";
   opt.target = "/xyz";
   auto resp = aeronet::test::requestOrThrow(port, opt);
-  ASSERT_NE(resp.find("/xyz"), std::string::npos);
+  ASSERT_TRUE(resp.contains("/xyz"));
   done.store(true);
   // stop should be idempotent after predicate triggers stop
   async.stop();
@@ -72,8 +72,8 @@ TEST(AsyncHttpServer, Restart) {
   opt.target = "/";
 
   auto resp = aeronet::test::requestOrThrow(port, opt);
-  ASSERT_NE(resp.find("200"), std::string::npos);
-  ASSERT_NE(resp.find("hello-async1"), std::string::npos);
+  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.contains("hello-async1"));
 
   async.stop();
   // change router
@@ -85,6 +85,6 @@ TEST(AsyncHttpServer, Restart) {
   async.start();
 
   resp = aeronet::test::requestOrThrow(port, opt);
-  ASSERT_NE(resp.find("200"), std::string::npos);
-  ASSERT_NE(resp.find("hello-async2"), std::string::npos);
+  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.contains("hello-async2"));
 }

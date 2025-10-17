@@ -32,7 +32,7 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
     auto resp = client.get("/non_strict");
     statsAfter = ts.stats();
     ts.stop();
-    ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));
+    ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   }
   // ALPN not negotiated => empty string
   ASSERT_TRUE(capturedAlpn.empty());

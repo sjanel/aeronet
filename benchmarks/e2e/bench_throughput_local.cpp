@@ -16,8 +16,7 @@ void BenchThroughputSkeleton(benchmark::State& state) {
     resp.body("OK");
     return resp;
   });
-  for (auto it : state) {
-    (void)it;
+  for ([[maybe_unused]] auto it : state) {
     benchmark::DoNotOptimize(server.port());
   }
   state.counters["iterations"] = static_cast<double>(state.iterations());

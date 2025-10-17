@@ -9,7 +9,7 @@ class BasicRoundTrip : public benchmark::Fixture {
  protected:
   void SetUp([[maybe_unused]] const benchmark::State& state) override {
     server_ = std::make_unique<aeronet::HttpServer>(aeronet::HttpServerConfig{}.withPort(0));
-    server_->setDefault([](const aeronet::HttpRequest&) {
+    server_->router().setDefault([](const aeronet::HttpRequest&) {
       aeronet::HttpResponse resp;
       resp.body("OK");
       return resp;
@@ -21,8 +21,7 @@ class BasicRoundTrip : public benchmark::Fixture {
 
 BENCHMARK_F(BasicRoundTrip, GET)(benchmark::State& state) {
   auto port = server_->port();
-  for (auto iter : state) {
-    (void)iter;
+  for ([[maybe_unused]] auto iter : state) {
     aeronet::test::RequestOptions opt;  // default GET /
     auto raw = aeronet::test::request(port, opt);
     if (!raw) {

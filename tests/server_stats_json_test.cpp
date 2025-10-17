@@ -37,9 +37,9 @@ TEST(ServerStatsJson, ContainsAllScalarFields) {
   // Collect expected scalar fields & verify presence of "name":value pattern.
   st.for_each_field([&](const char* name, uint64_t value) {
     std::string needle = std::string("\"") + name + "\":" + std::to_string(value);
-    EXPECT_NE(std::string::npos, json.find(needle)) << "Missing field mapping: " << needle << " in json=" << json;
+    EXPECT_TRUE(json.contains(needle)) << "Missing field mapping: " << needle << " in json=" << json;
   });
 
   // Minimal structural sanity: no trailing comma before closing brace.
-  ASSERT_EQ(std::string::npos, json.find(",}")) << "Trailing comma present in JSON: " << json;
+  ASSERT_FALSE(json.contains(",}")) << "Trailing comma present in JSON: " << json;
 }

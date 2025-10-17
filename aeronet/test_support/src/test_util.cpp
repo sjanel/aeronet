@@ -25,11 +25,21 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "log.hpp"
+#include "raw-chars.hpp"
 #include "simple-charconv.hpp"
 #include "socket.hpp"
 #include "stringconv.hpp"
 #include "timedef.hpp"
 #include "toupperlower.hpp"
+#ifdef AERONET_ENABLE_BROTLI
+#include "aeronet/brotli-decoder.hpp"
+#endif
+#ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/zlib-decoder.hpp"
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+#include <zstd.h>
+#endif
 
 namespace aeronet::test {
 using namespace std::chrono_literals;
@@ -344,7 +354,7 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
     pos = le + http::CRLF.size();
     return line;
   };
-  (void)nextLine(cursor);
+  nextLine(cursor);
   while (cursor < out.headersRaw.size()) {
     auto line = nextLine(cursor);
     if (line.empty()) {
@@ -526,6 +536,114 @@ std::optional<std::string> request(uint16_t port, const RequestOptions &opt) {
     if (out.size() == oldSize) {
       break;  // no new data read
     }
+  }
+  return out;
+}
+
+EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
+  EncodingAndBody out;
+  // Find header/body separator
+  auto sep = raw.find(http::DoubleCRLF);
+  if (sep == std::string_view::npos) {
+    // No headers found: treat entire raw as body
+    out.body.assign(raw);
+    out.contentEncoding = std::string_view{};
+    return out;
+  }
+  std::string_view headers = raw.substr(0, sep);
+  std::string_view body = raw.substr(sep + http::DoubleCRLF.size());
+
+  // Find Content-Encoding header (case-insensitive search for the header name)
+  // We'll do a simple search for "Content-Encoding:" / "content-encoding:" and then extract the value.
+  auto pos = headers.find("Content-Encoding:");
+  if (pos == std::string_view::npos) {
+    pos = headers.find("content-encoding:");
+  }
+  if (pos != std::string_view::npos) {
+    // Find line end
+    auto lineEnd = headers.find('\r', pos);
+    if (lineEnd == std::string_view::npos) {
+      lineEnd = headers.size();
+    }
+    auto valueStart = headers.find_first_not_of(" \t", pos + sizeof("Content-Encoding:") - 1);
+    if (valueStart != std::string_view::npos && valueStart < lineEnd) {
+      out.contentEncoding = headers.substr(valueStart, lineEnd - valueStart);
+    }
+  }
+
+  // De-chunk if needed (look for Transfer-Encoding: chunked header)
+  bool isChunked = false;
+  auto tePos = headers.find("Transfer-Encoding:");
+  if (tePos == std::string_view::npos) {
+    tePos = headers.find("transfer-encoding:");
+  }
+  if (tePos != std::string_view::npos) {
+    // crude check for "chunked" substring on the same header line
+    auto lineEnd = headers.find('\r', tePos);
+    std::string_view val =
+        (lineEnd == std::string_view::npos) ? headers.substr(tePos) : headers.substr(tePos, lineEnd - tePos);
+    if (val.find("chunked") != std::string_view::npos || val.find("Chunked") != std::string_view::npos) {
+      isChunked = true;
+    }
+  }
+
+  if (isChunked) {
+    out.body = dechunk(body);
+  } else {
+    out.body.assign(body);
+  }
+
+  // If a content-encoding was present, try to decompress the body now so callers
+  // receive the uncompressed payload. We do best-effort decompression and fall
+  // back to the original bytes on failure.
+  if (!out.contentEncoding.empty()) {
+    std::string encLower = toLower(std::string(out.contentEncoding));
+    // Try gzip/deflate via zlib decoder
+#ifdef AERONET_ENABLE_ZLIB
+    if (encLower.find("gzip") != std::string::npos || encLower.find("deflate") != std::string::npos) {
+      aeronet::RawChars tmp;
+      bool ok = aeronet::ZlibDecoder::Decompress(out.body, /*isGzip=*/(encLower.find("gzip") != std::string::npos),
+                                                 /*maxDecompressedBytes=*/(1 << 20), /*decoderChunkSize=*/65536, tmp);
+      if (ok) {
+        out.body.assign(tmp.data(), tmp.data() + tmp.size());
+        return out;
+      }
+    }
+#endif
+
+    // Try zstd frame decompression (test helper). The helper will inspect frame size
+    // and return empty on insufficient information; that's acceptable.
+#ifdef AERONET_ENABLE_ZSTD
+    if (encLower.find("zstd") != std::string::npos) {
+      if (!out.body.empty()) {
+        unsigned long long frameSize = ZSTD_getFrameContentSize(out.body.data(), out.body.size());
+        if (frameSize != ZSTD_CONTENTSIZE_ERROR && frameSize != ZSTD_CONTENTSIZE_UNKNOWN) {
+          std::string dec;
+          dec.assign(static_cast<size_t>(frameSize), '\0');
+          size_t dsz = ZSTD_decompress(dec.data(), dec.size(), out.body.data(), out.body.size());
+          if (ZSTD_isError(dsz) == 0U) {
+            dec.resize(dsz);
+            out.body = std::move(dec);
+            return out;
+          }
+        }
+      }
+    }
+#endif
+
+    // Try brotli
+#ifdef AERONET_ENABLE_BROTLI
+    if (encLower.find("br") != std::string::npos || encLower.find("brotli") != std::string::npos) {
+      aeronet::RawChars tmp;
+      bool ok = aeronet::BrotliDecoder::Decompress(out.body, /*maxDecompressedBytes=*/(1 << 20),
+                                                   /*decoderChunkSize=*/65536, tmp);
+      if (ok) {
+        out.body.assign(tmp.data(), tmp.data() + tmp.size());
+        return out;
+      }
+    }
+#endif
+    throw exception("Unknown content encoding {}", out.contentEncoding);
   }
   return out;
 }

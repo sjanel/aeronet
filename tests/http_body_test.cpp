@@ -39,7 +39,7 @@ TEST(HttpBasic, SimpleGet) {
   });
   std::string resp = httpGet(ts.port(), "/abc");
   ASSERT_FALSE(resp.empty());
-  ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));
-  ASSERT_NE(std::string::npos, resp.find("You requested: /abc"));
-  ASSERT_NE(std::string::npos, resp.find("X-Test=abc123"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.contains("You requested: /abc"));
+  ASSERT_TRUE(resp.contains("X-Test=abc123"));
 }

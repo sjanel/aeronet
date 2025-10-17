@@ -33,14 +33,19 @@ namespace aeronet {
 // coordinate externally if changing handlers after start.
 class AsyncHttpServer {
  public:
+  // Construct a AsyncHttpServer that does nothing.
+  // Useful only to make it default constructible for temporary purposes (for instance to move assign to it later on),
+  // but do not attempt to use a default constructed server, it will not bind to any socket.
+  AsyncHttpServer() noexcept = default;
+
   // Creates a new AsyncHttpServer from given config.
   explicit AsyncHttpServer(HttpServerConfig httpServerConfig);
 
-  // Creates a new AsyncHttpServer from given config and router.
-  AsyncHttpServer(HttpServerConfig httpServerConfig, Router router);
-
   // Creates a new AsyncHttpServer from a HttpServer (already configured, or not).
   explicit AsyncHttpServer(HttpServer server);
+
+  // Creates a new AsyncHttpServer from given config and router.
+  AsyncHttpServer(HttpServerConfig httpServerConfig, Router router);
 
   AsyncHttpServer(const AsyncHttpServer&) = delete;
   AsyncHttpServer(AsyncHttpServer&& other) noexcept;

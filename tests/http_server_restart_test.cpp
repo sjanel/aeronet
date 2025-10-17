@@ -29,7 +29,7 @@ TEST(HttpServerRestart, RestartPossible) {
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   std::string resp = aeronet::test::simpleGet(port, "/mv");
 
-  ASSERT_NE(std::string::npos, resp.find("ORIG:/mv"));
+  ASSERT_TRUE(resp.contains("ORIG:/mv"));
 
   stop1.store(true);
 
@@ -37,6 +37,6 @@ TEST(HttpServerRestart, RestartPossible) {
   EXPECT_EQ(port, server.port());
 
   resp = aeronet::test::simpleGet(port, "/mv2");
-  ASSERT_NE(std::string::npos, resp.find("ORIG:/mv2"));
+  ASSERT_TRUE(resp.contains("ORIG:/mv2"));
   stop2.store(true);
 }

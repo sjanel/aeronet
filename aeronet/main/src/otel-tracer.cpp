@@ -1,6 +1,7 @@
 #include <opentelemetry/nostd/shared_ptr.h>
 #include <opentelemetry/trace/tracer.h>
 
+#include <cstdint>
 #include <exception>
 #include <memory>
 #include <string>
@@ -144,7 +145,7 @@ TelemetryContext::TelemetryContext(const aeronet::OtelConfig& cfg) : _impl(std::
   }
   auto exporter = std::unique_ptr<opentelemetry::sdk::trace::SpanExporter>(
       new opentelemetry::exporter::otlp::OtlpHttpExporter(opts));
-#elif defined(AERONET_HAVE_OSTREAM_EXPORTER)
+#elifdef AERONET_HAVE_OSTREAM_EXPORTER
   log::info("Initializing ostream trace exporter (OTLP not available)");
   auto exporter = std::unique_ptr<opentelemetry::sdk::trace::SpanExporter>(
       new opentelemetry::exporter::trace::OStreamSpanExporter());
@@ -157,7 +158,7 @@ TelemetryContext::TelemetryContext(const aeronet::OtelConfig& cfg) : _impl(std::
       new opentelemetry::sdk::trace::SimpleSpanProcessor(std::move(exporter)));
 
   // Create provider - NO global singleton, keep it in this instance
-#if defined(AERONET_HAVE_TRACEID_RATIO)
+#ifdef AERONET_HAVE_TRACEID_RATIO
   auto sampler = std::unique_ptr<opentelemetry::sdk::trace::Sampler>(
       new opentelemetry::sdk::trace::TraceIdRatioBasedSampler(cfg.sampleRate));
 
@@ -228,7 +229,7 @@ TelemetryContext::TelemetryContext(const aeronet::OtelConfig& cfg) : _impl(std::
 TelemetryContext::~TelemetryContext() {
   // Shutdown providers
   if (_impl && _impl->_initialized) {
-#if defined(AERONET_HAVE_METRICS_SDK)
+#ifdef AERONET_HAVE_METRICS_SDK
     if (_impl->_meterProvider) {
       try {
         _impl->_meterProvider->Shutdown();
@@ -267,8 +268,8 @@ SpanPtr TelemetryContext::createSpan(std::string_view name) noexcept {
   }
 }
 
-void TelemetryContext::counterAdd(std::string_view name, uint64_t delta) noexcept {
-#if defined(AERONET_HAVE_METRICS_SDK)
+void TelemetryContext::counterAdd([[maybe_unused]] std::string_view name, [[maybe_unused]] uint64_t delta) noexcept {
+#ifdef AERONET_HAVE_METRICS_SDK
   if (!_impl || !_impl->_initialized || !_impl->_meter) {
     return;
   }
@@ -288,9 +289,6 @@ void TelemetryContext::counterAdd(std::string_view name, uint64_t delta) noexcep
   } catch (...) {
     log::error("Failed to add counter '{}': unknown error", name);
   }
-#else
-  (void)name;
-  (void)delta;
 #endif
 }
 

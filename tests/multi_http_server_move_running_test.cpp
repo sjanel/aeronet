@@ -26,7 +26,7 @@ TEST(MultiHttpServer, MoveWhileRunning) {
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   auto resp1 = aeronet::test::simpleGet(port, "/pre", {});
   ASSERT_EQ(resp1.statusCode, 200);
-  ASSERT_NE(std::string::npos, resp1.body.find("BeforeMove"));
+  ASSERT_TRUE(resp1.body.contains("BeforeMove"));
 
   // Move the running server
   aeronet::MultiHttpServer moved(std::move(multi));
@@ -34,7 +34,7 @@ TEST(MultiHttpServer, MoveWhileRunning) {
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   auto resp2 = aeronet::test::simpleGet(port, "/post", {});
   EXPECT_EQ(resp2.statusCode, 200);
-  EXPECT_NE(std::string::npos, resp2.body.find("BeforeMove"));
+  EXPECT_TRUE(resp2.body.contains("BeforeMove"));
 }
 
 TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
@@ -69,8 +69,8 @@ TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
   // Sanity: both respond with their respective bodies
   auto preSrc = aeronet::test::simpleGet(srcPort, "/preSrc", {});
   auto preDst = aeronet::test::simpleGet(dstPort, "/preDst", {});
-  ASSERT_NE(std::string::npos, preSrc.body.find("SrcBody"));
-  ASSERT_NE(std::string::npos, preDst.body.find("DstOriginal"));
+  ASSERT_TRUE(preSrc.body.contains("SrcBody"));
+  ASSERT_TRUE(preDst.body.contains("DstOriginal"));
 
   // Move-assign: destination adopts source's running threads/servers; its previous threads are stopped inside operator=
   dst = std::move(src);
@@ -80,5 +80,5 @@ TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
   EXPECT_EQ(adoptedPort, srcPort);
   std::this_thread::sleep_for(std::chrono::milliseconds(25));
   auto post = aeronet::test::simpleGet(adoptedPort, "/after", {});
-  EXPECT_NE(std::string::npos, post.body.find("SrcBody"));
+  EXPECT_TRUE(post.body.contains("SrcBody"));
 }

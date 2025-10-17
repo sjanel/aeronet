@@ -27,8 +27,8 @@ TEST(MultiHttpServer, BasicStartAndServe) {
 
   std::string r1 = aeronet::test::simpleGet(port, "/one");
   std::string r2 = aeronet::test::simpleGet(port, "/two");
-  EXPECT_NE(std::string::npos, r1.find("Hello"));
-  EXPECT_NE(std::string::npos, r2.find("Hello"));
+  EXPECT_TRUE(r1.contains("Hello"));
+  EXPECT_TRUE(r2.contains("Hello"));
 
   auto stats = multi.stats();
   EXPECT_EQ(stats.per.size(), static_cast<std::size_t>(threads));

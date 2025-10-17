@@ -26,7 +26,7 @@ TEST_P(HttpErrorParamTest, EmitsExpectedStatus) {
   ts.server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
   const auto& param = GetParam();
   std::string resp = aeronet::test::sendAndCollect(ts.port(), param.request);
-  ASSERT_NE(std::string::npos, resp.find(param.expectedStatus)) << "Case=" << param.name << "\nResp=" << resp;
+  ASSERT_TRUE(resp.contains(param.expectedStatus)) << "Case=" << param.name << "\nResp=" << resp;
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -54,7 +54,7 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
 
   std::string resp = aeronet::test::recvUntilClosed(fd);
 
-  ASSERT_NE(std::string::npos, resp.find("Connection: close"));
+  ASSERT_TRUE(resp.contains("Connection: close"));
   // Second request should not yield another response (connection closed). We attempt to read after sending.
   std::string_view req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\n\r\n";
   ASSERT_TRUE(aeronet::test::sendAll(fd, req2));
@@ -73,9 +73,9 @@ TEST(HttpKeepAlive10, OptInWithHeader) {
   std::string_view req = "GET /h HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
   ASSERT_TRUE(aeronet::test::sendAll(fd, req));
   std::string first = aeronet::test::recvWithTimeout(fd);
-  ASSERT_NE(std::string::npos, first.find("Connection: keep-alive"));
+  ASSERT_TRUE(first.contains("Connection: keep-alive"));
   std::string_view req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
   ASSERT_TRUE(aeronet::test::sendAll(fd, req2));
   std::string second = aeronet::test::recvWithTimeout(fd);
-  ASSERT_NE(std::string::npos, second.find("Connection: keep-alive"));
+  ASSERT_TRUE(second.contains("Connection: keep-alive"));
 }

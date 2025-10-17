@@ -21,8 +21,8 @@ TEST(StreamingKeepAlive, TwoSequentialRequests) {
   AsyncHttpServer server(cfg);
   server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.statusCode(200);
-    writer.write("hello");
-    writer.write(",world");
+    writer.writeBody("hello");
+    writer.writeBody(",world");
     writer.end();
   });
 
@@ -51,7 +51,7 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
   AsyncHttpServer server(cfg);
   server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.statusCode(200);
-    writer.write("ignored-body");
+    writer.writeBody("ignored-body");
     writer.end();
   });
   server.start();
@@ -72,5 +72,5 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
   std::string g2 = "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
   EXPECT_TRUE(aeronet::test::sendAll(fd, g2));
   auto gr2 = aeronet::test::recvWithTimeout(fd);
-  ASSERT_NE(gr2.find("ignored-body"), std::string::npos);  // ensure body from second request present
+  ASSERT_TRUE(gr2.contains("ignored-body"));  // ensure body from second request present
 }

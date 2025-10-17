@@ -41,14 +41,18 @@ class RawBytesImpl {
   }
 
   explicit RawBytesImpl(ViewType data) : RawBytesImpl(data.size()) {
-    std::memcpy(_buf, data.data(), _capacity);
-    _size = _capacity;
+    if (!data.empty()) {
+      std::memcpy(_buf, data.data(), _capacity);
+      _size = _capacity;
+    }
   }
 
   RawBytesImpl(const_pointer first, const_pointer last) : RawBytesImpl(static_cast<std::size_t>(last - first)) {
     assert(first <= last);
-    std::memcpy(_buf, first, _capacity);
-    _size = _capacity;
+    if (first != last) {
+      std::memcpy(_buf, first, _capacity);
+      _size = _capacity;
+    }
   }
 
   RawBytesImpl(const RawBytesImpl &rhs) : RawBytesImpl(rhs.capacity()) {
@@ -89,9 +93,11 @@ class RawBytesImpl {
   ~RawBytesImpl() { std::free(_buf); }
 
   void unchecked_append(const_pointer first, const_pointer last) {
-    const std::size_t sz = static_cast<std::size_t>(last - first);
-    std::memcpy(_buf + _size, first, sz);
-    _size += sz;
+    if (first != last) {
+      const std::size_t sz = static_cast<std::size_t>(last - first);
+      std::memcpy(_buf + _size, first, sz);
+      _size += sz;
+    }
   }
 
   void unchecked_append(const_pointer newData, size_type newDataSize) {
@@ -119,7 +125,9 @@ class RawBytesImpl {
 
   void assign(const_pointer first, size_type size) {
     reserveExponential(size);
-    std::memcpy(_buf, first, size);
+    if (size != 0) {
+      std::memcpy(_buf, first, size);
+    }
     _size = size;
   }
 
@@ -131,8 +139,10 @@ class RawBytesImpl {
 
   void erase_front(size_type n) {
     assert(n <= _size);
-    std::memmove(_buf, _buf + n, _size - n);
-    _size -= n;
+    if (n != 0) {
+      std::memmove(_buf, _buf + n, _size - n);
+      _size -= n;
+    }
   }
 
   void setSize(size_type newSize) {

@@ -23,7 +23,7 @@ TEST(HttpQueryParsing, NoQuery) {
   std::jthread thr([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   auto resp = aeronet::test::simpleGet(server.port(), "/plain");
-  EXPECT_NE(resp.find("NOQ"), std::string::npos);
+  EXPECT_TRUE(resp.contains("NOQ"));
   server.stop();
 }
 
@@ -49,7 +49,7 @@ TEST(HttpQueryParsing, SimpleQuery) {
   std::jthread thr([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   auto resp = aeronet::test::simpleGet(server.port(), "/p?a=1&b=2");
-  EXPECT_NE(resp.find("a=1&b=2"), std::string::npos);
+  EXPECT_TRUE(resp.contains("a=1&b=2"));
   server.stop();
 }
 
@@ -88,7 +88,7 @@ TEST(HttpQueryParsing, PercentDecodedQuery) {
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   auto resp = aeronet::test::simpleGet(server.port(), "/d?x=one%20two&y=%2Fpath");
   // Body should contain decoded query string now.
-  EXPECT_NE(resp.find("x=one two&y=/path"), std::string::npos);
+  EXPECT_TRUE(resp.contains("x=one two&y=/path"));
   server.stop();
 }
 
@@ -105,6 +105,6 @@ TEST(HttpQueryParsing, EmptyQueryAndTrailingQMark) {
   std::jthread thr([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   auto resp = aeronet::test::simpleGet(server.port(), "/t?");
-  EXPECT_NE(resp.find("EMPTY"), std::string::npos);
+  EXPECT_TRUE(resp.contains("EMPTY"));
   server.stop();
 }
