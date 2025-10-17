@@ -153,7 +153,7 @@ Key characteristics:
 
 #### AsyncHttpServer, an asynchronous (non-blocking) HttpServer
 
-A convenient wrapper of a `HttpServer` and a `std::jthread` object with non blocking `start()` (and `startUntil(<predicate>)`) and `stop()` methods.
+A convenient wrapper of a `HttpServer` and a `std::jthread` object with non blocking `start()` (and `startAndStopWhen(<predicate>)`) and `stop()` methods.
 
 ```cpp
 #include <aeronet/aeronet.hpp>
@@ -175,9 +175,21 @@ Predicate form (stop when external flag flips):
 ```cpp
 std::atomic<bool> done{false};
 AsyncHttpServer async(HttpServerConfig{});
-async.startUntil([&]{ return done.load(); });
+async.startAndStopWhen([&]{ return done.load(); });
 // later
 done = true; // loop exits soon (bounded by poll interval)
+async.stop();
+```
+
+Stop-token form (std::stop_token):
+
+```cpp
+// If you already manage a std::stop_source you can pass its token directly
+// to let the caller control the server lifetime via cooperative cancellation.
+std::stop_source src;
+async.startWithStopToken(src.get_token());
+// later
+src.request_stop();
 async.stop();
 ```
 
@@ -268,7 +280,7 @@ This is the simplest horizontal scaling strategy before introducing a worker poo
 | Variant | Header | Launch API | Blocking? | Threads Created Internally  | Scaling Model | Typical Use Case | Restartable? | Notes |
 |---------|--------|------------|-----------|-----------------------------|---------------|------------------|--------------|-------|
 | `HttpServer` | `aeronet/http-server.hpp` | `run()` / `runUntil(pred)`, `stop()` (called from another thread) | Yes (caller thread blocks) | 0 | Single reactor | Dedicated thread you manage or simple main-thread server | Yes |Minimal overhead |
-| `AsyncHttpServer` | `aeronet/async-http-server.hpp` | `start()`, `startUntil(pred)`, `stop()` | No | 1 `std::jthread` | Single reactor (owned) | Need non-blocking single server with safe lifetime | Yes | Owns `HttpServer` internally |
+| `AsyncHttpServer` | `aeronet/async-http-server.hpp` | `start()`, `startAndStopWhen(pred)`, `stop()` | No | 1 `std::jthread` | Single reactor (owned) | Need non-blocking single server with safe lifetime | Yes | Owns `HttpServer` internally |
 | `MultiHttpServer` | `aeronet/multi-http-server.hpp` | `start()`, `stop()` | No | N (`threadCount`) | Horizontal SO_REUSEPORT multi-reactor | Scale across cores quickly | Yes | Replicates handlers pre-start |
 
 Decision heuristics:

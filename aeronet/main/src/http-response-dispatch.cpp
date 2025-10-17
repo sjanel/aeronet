@@ -54,8 +54,8 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRequest& req
     if (reject) {
       resp.statusCode(406)
           .reason(http::ReasonNotAcceptable)
-          .body("No acceptable content-coding available")
-          .contentType(http::ContentTypeTextPlain);
+          .contentType(http::ContentTypeTextPlain)
+          .body("No acceptable content-coding available");
     }
     // Apply size threshold for non-streaming (buffered) responses: if body below minBytes skip compression.
     else if (encoding != Encoding::none && resp.body().size() < compressionConfig.minBytes) {

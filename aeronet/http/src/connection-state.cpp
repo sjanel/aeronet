@@ -10,7 +10,8 @@ namespace aeronet {
 
 std::size_t ConnectionState::transportRead(std::size_t chunkSize, Transport& want) {
   buffer.ensureAvailableCapacity(chunkSize);
-  std::size_t bytesRead = transport->read(buffer.data() + buffer.size(), chunkSize, want);
+
+  const std::size_t bytesRead = transport->read(buffer.data() + buffer.size(), chunkSize, want);
   buffer.addSize(bytesRead);
   return bytesRead;
 }
