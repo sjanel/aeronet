@@ -4,11 +4,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
+#include "aeronet/http-body.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "raw-chars.hpp"
@@ -21,7 +26,8 @@ namespace aeronet {
 // HttpResponse
 // -----------------------------------------------------------------------------
 // A contiguous single-buffer HTTP/1.x response builder focused on minimal
-// allocations and cache-friendly writes.
+// allocations and cache-friendly writes, optionally supporting large bodies captured
+// in the response.
 //
 // Memory Layout (before finalize):
 //   [HTTP/1.x SP status-code [SP reason] CRLF][CRLF][CRLF]  (DoubleCRLF sentinel)
@@ -74,6 +80,11 @@ namespace aeronet {
 //   - Not thread-safe.
 //   - Throws std::bad_alloc on growth failure.
 //   - Assumes ASCII header names; no validation performed.
+//
+// Performance hints:
+//   - Appends HttpResponse data in order of the HTTP layout (reason, headers, body) to minimize data movement.
+//   - Prefer addCustomHeader() when duplicates are acceptable or order-only semantics matter.
+//   - Minimize header mutations after body() to reduce data movement.
 // -----------------------------------------------------------------------------
 class HttpResponse {
  private:
@@ -125,29 +136,119 @@ class HttpResponse {
 
   // Assigns the given body to this HttpResponse.
   // Empty body is allowed.
-  // The whole buffer is copied internally in the HttpResponse.
+  // The whole buffer is copied internally in the HttpResponse. If the body is large, prefer the capture by value of
+  // body() overloads to avoid a copy (and possibly an allocation).
   // Body referencing internal memory of this HttpResponse is allowed as well.
   // Example:
   //   HttpResponse resp(404, "Not Found");
   //   resp.body(resp.reason()); // OK
   HttpResponse& body(std::string_view body) & {
-    setBody(body);
+    setBodyInternal(body);
+    _capturedBody = {};
     return *this;
   }
 
   // Assigns the given body to this HttpResponse.
   // Empty body is allowed.
-  // The whole buffer is copied internally in the HttpResponse.
+  // The whole buffer is copied internally in the HttpResponse. If the body is large, prefer the capture by value of
+  // body() overloads to avoid a copy (and possibly an allocation).
   // Body referencing internal memory of this HttpResponse is allowed as well.
   // Example:
   //   HttpResponse resp(404, "Not Found");
   //   resp.body(resp.reason()); // OK
   HttpResponse&& body(std::string_view body) && {
-    setBody(body);
+    setBodyInternal(body);
+    _capturedBody = {};
     return std::move(*this);
   }
 
-  [[nodiscard]] std::string_view body() const noexcept { return {_data.data() + _bodyStartPos, bodyLen()}; }
+  // Assigns the given body to this HttpResponse.
+  // Empty body is allowed.
+  // The whole buffer is copied internally in the HttpResponse. If the body is large, prefer the capture by value of
+  // body() overloads to avoid a copy (and possibly an allocation).
+  // Body referencing internal memory of this HttpResponse is allowed as well.
+  // Example:
+  //   HttpResponse resp(404, "Not Found");
+  //   resp.body(resp.reason()); // OK
+  HttpResponse& body(const char* body) & {
+    setBodyInternal(body);
+    _capturedBody = {};
+    return *this;
+  }
+
+  // Assigns the given body to this HttpResponse.
+  // Empty body is allowed.
+  // The whole buffer is copied internally in the HttpResponse. If the body is large, prefer the capture by value of
+  // body() overloads to avoid a copy (and possibly an allocation).
+  // Body referencing internal memory of this HttpResponse is allowed as well.
+  // Example:
+  //   HttpResponse resp(404, "Not Found");
+  //   resp.body(resp.reason()); // OK
+  HttpResponse&& body(const char* body) && {
+    setBodyInternal(body);
+    _capturedBody = {};
+    return std::move(*this);
+  }
+
+  // Capture the body by value to avoid a copy (and possibly an allocation).
+  // Empty body is allowed.
+  // The body instance is moved into this HttpResponse.
+  HttpResponse& body(std::string body) & noexcept {
+    setBodyInternal({});
+    _capturedBody = HttpBody(std::move(body));
+    return *this;
+  }
+
+  // Capture the body by value to avoid a copy (and possibly an allocation).
+  // Empty body is allowed.
+  // The body instance is moved into this HttpResponse.
+  HttpResponse&& body(std::string body) && noexcept {
+    setBodyInternal({});
+    _capturedBody = HttpBody(std::move(body));
+    return std::move(*this);
+  }
+
+  // Capture the body by value to avoid a copy (and possibly an allocation).
+  // Empty body is allowed.
+  // The body instance is moved into this HttpResponse.
+  HttpResponse& body(std::vector<char> body) & noexcept {
+    setBodyInternal({});
+    _capturedBody = HttpBody(std::move(body));
+    return *this;
+  }
+
+  // Capture the body by value to avoid a copy (and possibly an allocation).
+  // Empty body is allowed.
+  // The body instance is moved into this HttpResponse.
+  HttpResponse&& body(std::vector<char> body) && noexcept {
+    setBodyInternal({});
+    _capturedBody = HttpBody(std::move(body));
+    return std::move(*this);
+  }
+
+  // Capture the body by value to avoid a copy (and possibly an allocation).
+  // Empty body is allowed.
+  // The body instance is moved into this HttpResponse.
+  HttpResponse& body(std::unique_ptr<char[]> body, std::size_t size) & noexcept {
+    setBodyInternal({});
+    _capturedBody = HttpBody(std::move(body), size);
+    return *this;
+  }
+
+  // Capture the body by value to avoid a copy (and possibly an allocation).
+  // Empty body is allowed.
+  // The body instance is moved into this HttpResponse.
+  HttpResponse&& body(std::unique_ptr<char[]> body, std::size_t size) && noexcept {
+    setBodyInternal({});
+    _capturedBody = HttpBody(std::move(body), size);
+    return std::move(*this);
+  }
+
+  // Get a view of the current body stored in this HttpResponse.
+  // If the body is not present, it returns an empty view.
+  [[nodiscard]] std::string_view body() const noexcept {
+    return _capturedBody.unset() ? std::string_view{_data.begin() + _bodyStartPos, _data.end()} : _capturedBody.view();
+  }
 
   // Inserts or replaces the Content-Type header.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
@@ -253,11 +354,15 @@ class HttpResponse {
     return _bodyStartPos - kReasonBeg - http::DoubleCRLF.size();
   }
 
-  [[nodiscard]] std::size_t bodyLen() const noexcept { return _data.size() - _bodyStartPos; }
+  [[nodiscard]] std::size_t bodyLen() const noexcept {
+    return _capturedBody.unset() ? internalBodyLen() : _capturedBody.size();
+  }
+
+  [[nodiscard]] std::size_t internalBodyLen() const noexcept { return _data.size() - _bodyStartPos; }
 
   void setReason(std::string_view newReason);
 
-  void setBody(std::string_view newBody);
+  void setBodyInternal(std::string_view newBody);
 
   void setHeader(std::string_view key, std::string_view value, bool onlyIfNew = false);
 
@@ -270,15 +375,15 @@ class HttpResponse {
                            bool markContentEncoding) {
     const std::size_t headerLineSize = http::CRLF.size() + key.size() + http::HeaderSep.size() + valueSize;
     _data.ensureAvailableCapacity(headerLineSize);
-    char* insertPos = _data.data() + _bodyStartPos - http::DoubleCRLF.size();
-    std::memmove(insertPos + headerLineSize, insertPos, http::DoubleCRLF.size() + bodyLen());
-    std::memcpy(insertPos, http::CRLF.data(), http::CRLF.size());
-    insertPos += http::CRLF.size();
-    std::memcpy(insertPos, key.data(), key.size());
-    insertPos += key.size();
-    std::memcpy(insertPos, http::HeaderSep.data(), http::HeaderSep.size());
-    insertPos += http::HeaderSep.size();
-    writeValue(insertPos);  // must write exactly valueSize bytes
+    char* insertPtr = _data.data() + _bodyStartPos - http::DoubleCRLF.size();
+    std::memmove(insertPtr + headerLineSize, insertPtr, http::DoubleCRLF.size() + internalBodyLen());
+    std::memcpy(insertPtr, http::CRLF.data(), http::CRLF.size());
+    insertPtr += http::CRLF.size();
+    std::memcpy(insertPtr, key.data(), key.size());
+    insertPtr += key.size();
+    std::memcpy(insertPtr, http::HeaderSep.data(), http::HeaderSep.size());
+    insertPtr += http::HeaderSep.size();
+    writeValue(insertPtr);  // must write exactly valueSize bytes
     if (markContentEncoding) {
       _userProvidedContentEncoding = true;
     }
@@ -289,18 +394,18 @@ class HttpResponse {
     _bodyStartPos += static_cast<uint32_t>(headerLineSize);
   }
 
-  // IMPORTANT: This method finalizes the response by appending reserved headers.
-  // After it returns, calling any mutating method (statusCode, reason, body,
-  // addCustomHeader, customHeader) is undefined behavior and may corrupt the buffer or
-  // duplicate reserved headers. Higher-level server code is expected to call
-  // this exactly once right before write.
-  std::string_view finalizeAndGetFullTextResponse(http::Version version, TimePoint tp, bool keepAlive,
-                                                  std::span<const http::Header> globalHeaders, bool isHeadMethod);
+  // IMPORTANT: This method finalizes the response by appending reserved headers,
+  // and returns the internal buffers stolen from this HttpResponse instance.
+  // So this instance must not be used anymore after this call.
+  HttpResponseData finalizeAndStealData(http::Version version, TimePoint tp, bool keepAlive,
+                                        std::span<const http::Header> globalHeaders, bool isHeadMethod,
+                                        std::size_t minCapturedBodySize);
 
   RawChars _data;
   uint16_t _headersStartPos{};  // position just at the CRLF that starts the first header line
   bool _userProvidedContentEncoding{false};
   uint32_t _bodyStartPos{};  // position of first body byte (after CRLF CRLF)
+  HttpBody _capturedBody;
 };
 
 }  // namespace aeronet

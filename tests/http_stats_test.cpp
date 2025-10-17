@@ -19,7 +19,7 @@ TEST(HttpStats, BasicCountersIncrement) {
   });
   // Single request via throwing helper
   auto resp = aeronet::test::requestOrThrow(ts.port());
-  ASSERT_NE(resp.find("200 OK"), std::string::npos);
+  ASSERT_TRUE(resp.contains("200 OK"));
   ts.stop();
   auto st = ts.server.stats();
   EXPECT_GT(st.totalBytesQueued, 0U);  // headers+body accounted

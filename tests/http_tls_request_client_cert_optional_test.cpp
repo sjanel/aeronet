@@ -38,7 +38,7 @@ TEST(HttpTlsRequestClientCert, OptionalNoClientCertAccepted) {
     statsAfter = ts.stats();
     ts.stop();
   }
-  ASSERT_NE(std::string::npos, body.find("HTTP/1.1 200"));
+  ASSERT_TRUE(body.contains("HTTP/1.1 200"));
   ASSERT_EQ(statsAfter.tlsClientCertPresent, 0U);
   ASSERT_GE(statsAfter.tlsHandshakesSucceeded, 1U);
 }
@@ -69,7 +69,7 @@ TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
     auto response = client.get("/withcert");
     statsAfter = ts.stats();
     ts.stop();
-    ASSERT_NE(std::string::npos, response.find("HTTP/1.1 200"));
+    ASSERT_TRUE(response.contains("HTTP/1.1 200"));
   }
   ASSERT_GE(statsAfter.tlsHandshakesSucceeded, 1U);
   ASSERT_EQ(statsAfter.tlsClientCertPresent, 1U);

@@ -61,8 +61,7 @@ bool sendGet(uint16_t port) {
 
 BENCHMARK_F(MinimalServerFixture, GET_RoundTrip)(benchmark::State& state) {
   auto portNumber = server->port();
-  for (auto iter : state) {
-    (void)iter;
+  for ([[maybe_unused]] auto iter : state) {
     if (!sendGet(portNumber)) {
       state.SkipWithError("roundtrip failed");
       break;

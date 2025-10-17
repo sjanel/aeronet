@@ -92,7 +92,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          ctest --test-dir build --output-on-failure --timeout 300 -j $(nproc)
+          ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 300 -j $(nproc)
 
       - name: Summary
         if: always()

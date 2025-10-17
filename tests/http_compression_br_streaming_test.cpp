@@ -29,8 +29,8 @@ TEST(HttpCompressionBrotliStreaming, BrActivatedOverThreshold) {
   ts.server.router().setDefault([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
-    writer.write(part1);
-    writer.write(part2);
+    writer.writeBody(part1);
+    writer.writeBody(part2);
     writer.end();
   });
   auto resp = aeronet::test::simpleGet(ts.port(), "/sbr1", {{"Accept-Encoding", "br"}});
@@ -53,12 +53,12 @@ TEST(HttpCompressionBrotliStreaming, BelowThresholdIdentity) {
   ts.server.router().setDefault([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
-    writer.write(small);
+    writer.writeBody(small);
     writer.end();
   });
   auto resp = aeronet::test::simpleGet(ts.port(), "/sbr2", {{"Accept-Encoding", "br"}});
   EXPECT_EQ(resp.headers.find("Content-Encoding"), resp.headers.end());
-  EXPECT_NE(resp.body.find('x'), std::string::npos);
+  EXPECT_TRUE(resp.body.contains('x'));
 }
 
 TEST(HttpCompressionBrotliStreaming, UserProvidedIdentityPreventsActivation) {
@@ -72,7 +72,7 @@ TEST(HttpCompressionBrotliStreaming, UserProvidedIdentityPreventsActivation) {
   ts.server.router().setDefault([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.customHeader("Content-Encoding", "identity");
-    writer.write(payload);
+    writer.writeBody(payload);
     writer.end();
   });
   auto resp = aeronet::test::simpleGet(ts.port(), "/sbr3", {{"Accept-Encoding", "br"}});
@@ -81,7 +81,7 @@ TEST(HttpCompressionBrotliStreaming, UserProvidedIdentityPreventsActivation) {
   EXPECT_EQ(it->second, "identity");
   // Streaming identity may use chunked transfer, so body size can exceed raw payload due to framing; just ensure
   // we did not apply brotli (which would eliminate long runs of 'Y').
-  EXPECT_NE(resp.body.find(std::string(32, 'Y')), std::string::npos);
+  EXPECT_TRUE(resp.body.contains(std::string(32, 'Y')));
 }
 
 TEST(HttpCompressionBrotliStreaming, QValuesInfluenceSelection) {
@@ -95,8 +95,8 @@ TEST(HttpCompressionBrotliStreaming, QValuesInfluenceSelection) {
   ts.server.router().setDefault([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
     writer.statusCode(200);
     writer.contentType("text/plain");
-    writer.write(payload.substr(0, 128));
-    writer.write(payload.substr(128));
+    writer.writeBody(payload.substr(0, 128));
+    writer.writeBody(payload.substr(128));
     writer.end();
   });
   // Client strongly prefers br
@@ -117,10 +117,10 @@ TEST(HttpCompressionBrotliStreaming, IdentityForbiddenNoAlternativesReturns406) 
   std::string payload(90, 'F');
   ts.server.router().setDefault([&]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
     writer.statusCode(200);
-    writer.write(payload);
+    writer.writeBody(payload);
     writer.end();
   });
   auto resp = aeronet::test::simpleGet(ts.port(), "/sbr5", {{"Accept-Encoding", "identity;q=0, snappy;q=0"}});
   // Server should respond 406 (not compressible with offered encodings; identity forbidden)
-  EXPECT_NE(resp.headersRaw.find(" 406 "), std::string::npos);
+  EXPECT_TRUE(resp.headersRaw.contains(" 406 "));
 }

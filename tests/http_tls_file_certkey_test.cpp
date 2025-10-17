@@ -40,6 +40,6 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
   ASSERT_TRUE(client.handshakeOk());
   auto resp = client.get("/file");
   server.stop();
-  ASSERT_NE(resp.find("HTTP/1.1 200"), std::string::npos);
-  ASSERT_NE(resp.find("FILETLS-http/1.1"), std::string::npos);
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.contains("FILETLS-http/1.1"));
 }

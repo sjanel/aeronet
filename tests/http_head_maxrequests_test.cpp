@@ -41,5 +41,5 @@ TEST(HttpHead, MaxRequestsApplied) {
   }
   ASSERT_EQ(3, statusCount) << resp;
   // HEAD responses must not include body; ensure no accidental body token present
-  ASSERT_EQ(std::string::npos, resp.find("IGNORED"));
+  ASSERT_FALSE(resp.contains("IGNORED"));
 }

@@ -105,3 +105,42 @@ TEST(HttpUrlDecoding, InvalidPercentSequence400) {
   EXPECT_NE(resp.find("400 Bad Request"), std::string_view::npos);
   done.store(true);
 }
+
+TEST(HttpUrlDecoding, IncompletePercentSequence400) {
+  HttpServerConfig cfg;
+  cfg.withMaxRequestsPerConnection(1);
+  HttpServer server(cfg);
+  std::atomic<bool> done = false;
+  std::jthread th([&] { server.runUntil([&] { return done.load(); }); });
+  for (int i = 0; i < 200 && (!server.isRunning() || server.port() == 0); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  aeronet::test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/bad%";
+  auto resp = aeronet::test::requestOrThrow(server.port(), opt);
+  EXPECT_TRUE(resp.contains("400 Bad Request"));
+  done = true;  // jthread auto-joins on destruction
+}
+
+TEST(HttpUrlDecoding, MixedSegmentsDecoding) {
+  HttpServerConfig cfg;
+  cfg.withMaxRequestsPerConnection(2);
+  HttpServer server(cfg);
+  server.router().setPath("/seg one/part%/two", http::Method::GET, [](const HttpRequest &req) {
+    return aeronet::HttpResponse(200, "OK").body(req.path()).contentType(aeronet::http::ContentTypeTextPlain);
+  });
+  std::atomic<bool> done = false;
+  std::jthread th([&] { server.runUntil([&] { return done.load(); }); });
+  for (int i = 0; i < 200 && (!server.isRunning()); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  // encodes space in first segment only
+  aeronet::test::RequestOptions opt2;
+  opt2.method = "GET";
+  opt2.target = "/seg%20one/part%25/two";
+  auto resp = aeronet::test::requestOrThrow(server.port(), opt2);
+  EXPECT_TRUE(resp.contains("200 OK"));
+  EXPECT_TRUE(resp.contains("/seg one/part%/two"));
+  done = true;  // jthread auto-joins on destruction
+}

@@ -12,10 +12,10 @@
 #include <functional>
 #include <memory>
 #include <string_view>
-#include <type_traits>
 
 #include "accept-encoding-negotiation.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/router.hpp"
@@ -247,7 +247,7 @@ class HttpServer {
   void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, bool immediate = false,
                        std::string_view reason = {});
   // Outbound write helpers
-  bool queueData(ConnectionMapIt cnxIt, std::string_view data);
+  bool queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData);
   void flushOutbound(ConnectionMapIt cnxIt);
 
   void handleWritableClient(int fd);
@@ -269,8 +269,6 @@ class HttpServer {
     uint64_t flushCycles{0};
     uint64_t epollModFailures{0};
     std::size_t maxConnectionOutboundBuffer{0};
-    uint64_t streamingChunkCoalesced{0};
-    uint64_t streamingChunkLarge{0};
   } _stats;
 
   // Attempt an epoll_ctl MOD on the given fd; on failure logs, marks connection for close and
@@ -327,7 +325,5 @@ class HttpServer {
   TlsMetricsExternal _tlsMetricsExternal;  // shares alpnStrictMismatches with _tlsMetrics (synced in stats retrieval)
 #endif
 };
-
-static_assert(std::is_nothrow_default_constructible_v<HttpServer>);
 
 }  // namespace aeronet

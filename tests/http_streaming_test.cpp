@@ -33,17 +33,17 @@ TEST(HttpStreaming, ChunkedSimple) {
       []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
         writer.statusCode(200);
         writer.contentType("text/plain");
-        writer.write("hello ");
-        writer.write("world");
+        writer.writeBody("hello ");
+        writer.writeBody("world");
         writer.end();
       });
   std::string resp = blockingFetch(port, "GET", "/stream");
   ts.stop();
-  ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   // Should contain chunk sizes in hex (6 and 5) and terminating 0 chunk.
-  ASSERT_NE(std::string::npos, resp.find("6\r\nhello "));
-  ASSERT_NE(std::string::npos, resp.find("5\r\nworld"));
-  ASSERT_NE(std::string::npos, resp.find("0\r\n\r\n"));
+  ASSERT_TRUE(resp.contains("6\r\nhello "));
+  ASSERT_TRUE(resp.contains("5\r\nworld"));
+  ASSERT_TRUE(resp.contains("0\r\n\r\n"));
 }
 
 TEST(HttpStreaming, HeadSuppressedBody) {
@@ -53,19 +53,19 @@ TEST(HttpStreaming, HeadSuppressedBody) {
       []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
         writer.statusCode(200);
         writer.contentType("text/plain");
-        writer.write("ignored body");  // should not be emitted for HEAD
+        writer.writeBody("ignored body");  // should not be emitted for HEAD
         writer.end();
       });
   std::string resp = blockingFetch(port, "HEAD", "/head");
   ts.stop();
-  ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   // For HEAD we expect no chunked framing. "0\r\n" alone would falsely match the Content-Length header line
   // ("Content-Length: 0\r\n"). What we really want to assert is that there is no terminating chunk sequence.
   // The terminating chunk in a chunked response would appear as "\r\n0\r\n\r\n" (preceded by the blank line
   // after headers or previous chunk). We also assert absence of Transfer-Encoding: chunked and body payload.
-  ASSERT_EQ(std::string::npos, resp.find("\r\n0\r\n\r\n"));
-  ASSERT_EQ(std::string::npos, resp.find("Transfer-Encoding: chunked"));
-  ASSERT_EQ(std::string::npos, resp.find("ignored body"));
+  ASSERT_FALSE(resp.contains("\r\n0\r\n\r\n"));
+  ASSERT_FALSE(resp.contains("Transfer-Encoding: chunked"));
+  ASSERT_FALSE(resp.contains("ignored body"));
   // Positive check: we do expect a Content-Length: 0 header for HEAD.
-  ASSERT_NE(std::string::npos, resp.find("Content-Length: 0\r\n"));
+  ASSERT_TRUE(resp.contains("Content-Length: 0\r\n"));
 }

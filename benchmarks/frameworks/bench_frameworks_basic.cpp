@@ -6,6 +6,7 @@
 #include <cstring>
 #include <exception>
 #include <format>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -28,7 +29,7 @@
 #include "stringconv.hpp"
 
 #ifdef AERONET_BENCH_ENABLE_DROGON
-#include <drogon/drogon.h>
+#include <drogon/drogon.h>  // IWYU pragma: export
 #endif
 #ifdef AERONET_BENCH_ENABLE_OATPP
 #include <oatpp/network/Server.hpp>

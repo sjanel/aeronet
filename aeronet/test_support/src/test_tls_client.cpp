@@ -2,12 +2,14 @@
 
 #include <fcntl.h>
 #include <openssl/bio.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/types.h>
 #include <openssl/x509.h>
 #include <poll.h>
+#include <sys/poll.h>
 
 #include <cerrno>
 #include <chrono>
@@ -21,6 +23,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/test_util.hpp"
+#include "log.hpp"
 #include "raw-bytes.hpp"
 #include "tls-raii.hpp"
 
@@ -243,6 +246,17 @@ void TlsClient::init() {
       continue;
     }
     // Fatal error
+    // Log OpenSSL error queue for diagnostics
+    auto err2 = ERR_get_error();
+    if (err2 != 0) {
+      char buf[256];
+      ERR_error_string_n(err2, buf, sizeof(buf));
+      log::error("Client TLS handshake fatal error: {}", buf);
+      while ((err2 = ERR_get_error()) != 0) {
+        ERR_error_string_n(err2, buf, sizeof(buf));
+        log::error("Client TLS handshake fatal error: {}", buf);
+      }
+    }
     _handshakeOk = false;
     return;
   }
@@ -253,6 +267,13 @@ void TlsClient::init() {
     _negotiatedAlpn.assign(reinterpret_cast<const char*>(proto), protoLen);
   }
   _handshakeOk = true;
+  // Log negotiated values for debugging
+  {
+    const char* ver = ::SSL_get_version(_ssl.get());
+    const char* cipher = ::SSL_get_cipher_name(_ssl.get());
+    log::info("Client negotiated TLS ver={} cipher={} alpn={}", (ver != nullptr) ? ver : "?",
+              (cipher != nullptr) ? cipher : "?", _negotiatedAlpn.empty() ? "-" : _negotiatedAlpn);
+  }
 }
 
 void TlsClient::loadClientCertKey(SSL_CTX* ctx) {

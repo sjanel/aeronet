@@ -9,9 +9,11 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "log.hpp"
@@ -134,8 +136,8 @@ void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
   appendHeaderUnchecked(newKey, newValue);
 }
 
-void HttpResponse::setBody(std::string_view newBody) {
-  const int64_t diff = static_cast<int64_t>(newBody.size()) - static_cast<int64_t>(body().size());
+void HttpResponse::setBodyInternal(std::string_view newBody) {
+  const int64_t diff = static_cast<int64_t>(newBody.size()) - static_cast<int64_t>(internalBodyLen());
   if (diff > 0) {
     int64_t newBodyInternalPos = -1;
     if (newBody.data() > _data.data() && newBody.data() <= _data.data() + _data.size()) {
@@ -147,13 +149,14 @@ void HttpResponse::setBody(std::string_view newBody) {
       // restore the original data
       newBody = std::string_view(_data.data() + newBodyInternalPos, newBody.size());
     }
+    _data.addSize(static_cast<std::size_t>(diff));
+  } else {
+    _data.setSize(_data.size() - static_cast<std::size_t>(-diff));
   }
   if (!newBody.empty()) {
     // Because calling memcpy with a null pointer is undefined behavior even if size is 0
     std::memcpy(_data.data() + _bodyStartPos, newBody.data(), newBody.size());
   }
-
-  _data.addSize(static_cast<std::size_t>(diff));
 }
 
 void HttpResponse::appendHeaderUnchecked(std::string_view key, std::string_view value) {
@@ -173,10 +176,10 @@ void HttpResponse::appendDateUnchecked(TimePoint tp) {
   appendHeaderGeneric(http::Date, kRFC7231DateStrLen, [&](char* dst) { TimeToStringRFC7231(tp, dst); }, false);
 }
 
-std::string_view HttpResponse::finalizeAndGetFullTextResponse(http::Version version, TimePoint tp, bool keepAlive,
-                                                              std::span<const http::Header> globalHeaders,
-                                                              bool isHeadMethod) {
-  auto versionStr = version.str();
+HttpResponseData HttpResponse::finalizeAndStealData(http::Version version, TimePoint tp, bool keepAlive,
+                                                    std::span<const http::Header> globalHeaders, bool isHeadMethod,
+                                                    std::size_t minCapturedBodySize) {
+  const auto versionStr = version.str();
   std::memcpy(_data.data(), versionStr.data(), versionStr.size());
   _data[versionStr.size()] = ' ';
   // status code already set. Space before reason only if reason present.
@@ -201,7 +204,16 @@ std::string_view HttpResponse::finalizeAndGetFullTextResponse(http::Version vers
     setHeader(headerKey, headerValue, true);
   }
 
-  return _data;
+  if (bodySz <= minCapturedBodySize && _capturedBody.set()) {
+    // move body into main buffer
+    setBodyInternal(_capturedBody.view());
+    _capturedBody.clear();
+  }
+
+  // We don't move large inline body sizes to the separated buffer, copy has already been done and we won't gain
+  // anything.
+
+  return HttpResponseData{std::move(_data), std::move(_capturedBody)};
 }
 
 }  // namespace aeronet

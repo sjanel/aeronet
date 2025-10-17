@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
+
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
@@ -15,7 +17,7 @@ TEST(RouterTest, RegisterAndMatchNormalHandler) {
   Router router;
 
   bool called = false;
-  router.setPath("/hello", http::Method::GET, [&called](const HttpRequest&) {
+  router.setPath("/hello", http::Method::GET, [&called](const HttpRequest &) {
     called = true;
     return HttpResponse(200, "OK");
   });
@@ -25,8 +27,10 @@ TEST(RouterTest, RegisterAndMatchNormalHandler) {
   ASSERT_EQ(res.streamingHandler, nullptr);
   ASSERT_FALSE(res.methodNotAllowed);
 
-  // Invoke the handler via the pointer to ensure it is callable and behaves
-  HttpRequest dummy;
+  // Invoke the handler via the pointer to ensure it is callable and behaves correctly
+  // Use an aligned storage because HttpRequest constructor should be kept private
+  alignas(HttpRequest) std::byte httpRequestStorage[sizeof(HttpRequest)];
+  const HttpRequest &dummy = *reinterpret_cast<const HttpRequest *>(&httpRequestStorage);
   HttpResponse resp = (*res.requestHandler)(dummy);
   EXPECT_EQ(resp.statusCode(), 200);
   EXPECT_TRUE(called);
@@ -37,7 +41,7 @@ TEST(RouterTest, RegisterAndMatchStreamingHandler) {
 
   bool streamCalled = false;
   router.setPath("/stream", http::Method::POST,
-                 [&streamCalled](const HttpRequest&, [[maybe_unused]] HttpResponseWriter&) { streamCalled = true; });
+                 [&streamCalled](const HttpRequest &, [[maybe_unused]] HttpResponseWriter &) { streamCalled = true; });
 
   auto res = router.match(http::Method::POST, "/stream");
   ASSERT_EQ(res.requestHandler, nullptr);
@@ -52,7 +56,7 @@ TEST(RouterTest, RegisterAndMatchStreamingHandler) {
 TEST(RouterTest, MethodNotAllowedAndFallback) {
   Router router;
 
-  router.setPath("/onlyget", http::Method::GET, [](const HttpRequest&) { return HttpResponse(200); });
+  router.setPath("/onlyget", http::Method::GET, [](const HttpRequest &) { return HttpResponse(200); });
 
   // POST should result in methodNotAllowed
   auto resPost = router.match(http::Method::POST, "/onlyget");
@@ -74,7 +78,7 @@ TEST(RouterTest, MethodNotAllowedAndFallback) {
 TEST(RouterTest, GlobalDefaultHandlersUsedWhenNoPath) {
   Router router;
 
-  router.setDefault([](const HttpRequest&) { return HttpResponse(204); });
+  router.setDefault([](const HttpRequest &) { return HttpResponse(204); });
 
   auto res = router.match(http::Method::GET, "/nope");
   ASSERT_NE(res.requestHandler, nullptr);
@@ -84,7 +88,7 @@ TEST(RouterTest, GlobalDefaultHandlersUsedWhenNoPath) {
   // streaming default
   Router r2;
   bool sCalled = false;
-  r2.setDefault([&sCalled](const HttpRequest&, HttpResponseWriter& writerParam) {
+  r2.setDefault([&sCalled](const HttpRequest &, HttpResponseWriter &writerParam) {
     sCalled = true;
     writerParam.end();
   });
@@ -99,7 +103,7 @@ TEST(RouterTest, TrailingSlashRedirectAndNormalize) {
   cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Redirect);
   Router router(cfg);
 
-  router.setPath("/can", http::Method::GET, [](const HttpRequest&) { return HttpResponse(200); });
+  router.setPath("/can", http::Method::GET, [](const HttpRequest &) { return HttpResponse(200); });
 
   // exact match
   auto resExact = router.match(http::Method::GET, "/can");
@@ -114,7 +118,7 @@ TEST(RouterTest, TrailingSlashRedirectAndNormalize) {
 
 TEST(RouterTest, HeadFallbackToGet) {
   Router router;
-  router.setPath("/hf", http::Method::GET, [](const HttpRequest&) { return HttpResponse(200); });
+  router.setPath("/hf", http::Method::GET, [](const HttpRequest &) { return HttpResponse(200); });
 
   // HEAD should fallback to GET handler when no explicit HEAD handler registered
   auto resHead = router.match(http::Method::HEAD, "/hf");
@@ -126,8 +130,8 @@ TEST(RouterTest, HeadFallbackToGet) {
 TEST(RouterTest, MethodMergingAndOverwrite) {
   Router router;
   // register GET and then add POST using method-bmp OR
-  router.setPath("/merge", http::Method::GET, [](const HttpRequest&) { return HttpResponse(200); });
-  router.setPath("/merge", http::Method::POST, [](const HttpRequest&) { return HttpResponse(201); });
+  router.setPath("/merge", http::Method::GET, [](const HttpRequest &) { return HttpResponse(200); });
+  router.setPath("/merge", http::Method::POST, [](const HttpRequest &) { return HttpResponse(201); });
 
   auto rGet = router.match(http::Method::GET, "/merge");
   EXPECT_NE(rGet.requestHandler, nullptr);
@@ -140,10 +144,10 @@ TEST(RouterTest, MethodMergingAndOverwrite) {
 
 TEST(RouterTest, StreamingVsNormalConflictThrows) {
   Router router;
-  router.setPath("/conf", http::Method::GET, [](const HttpRequest&) { return HttpResponse(200); });
+  router.setPath("/conf", http::Method::GET, [](const HttpRequest &) { return HttpResponse(200); });
   // Attempting to register a streaming handler for the same path+method should throw
   EXPECT_THROW(router.setPath(std::string{"/conf"}, http::Method::GET,
-                              Router::StreamingHandler([](const HttpRequest&, HttpResponseWriter&) {})),
+                              Router::StreamingHandler([](const HttpRequest &, HttpResponseWriter &) {})),
                aeronet::exception);
 }
 
@@ -152,7 +156,7 @@ TEST(RouterTest, TrailingSlashStrictAndNormalize) {
   RouterConfig cfgStrict;
   cfgStrict.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict);
   Router rStrict(cfgStrict);
-  rStrict.setPath("/s/", http::Method::GET, [](const HttpRequest&) { return HttpResponse(200); });
+  rStrict.setPath("/s/", http::Method::GET, [](const HttpRequest &) { return HttpResponse(200); });
   auto res1 = rStrict.match(http::Method::GET, "/s/");
   EXPECT_NE(res1.requestHandler, nullptr);
   auto res1b = rStrict.match(http::Method::GET, "/s");
@@ -162,7 +166,7 @@ TEST(RouterTest, TrailingSlashStrictAndNormalize) {
   RouterConfig cfgNorm;
   cfgNorm.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Normalize);
   Router rNorm(cfgNorm);
-  rNorm.setPath("/n/", http::Method::GET, [](const HttpRequest&) { return HttpResponse(200); });
+  rNorm.setPath("/n/", http::Method::GET, [](const HttpRequest &) { return HttpResponse(200); });
   auto res2 = rNorm.match(http::Method::GET, "/n");
   EXPECT_NE(res2.requestHandler, nullptr);
 }

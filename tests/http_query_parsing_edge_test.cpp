@@ -31,7 +31,7 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeAtEndShouldBeAccepted) {
   std::jthread thr([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   std::string out = aeronet::test::simpleGet(server.port(), "/e?x=%");
-  EXPECT_NE(out.find("200 OK"), std::string::npos);
+  EXPECT_TRUE(out.contains("200 OK"));
   server.stop();
 }
 
@@ -52,7 +52,7 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeOneHexShouldBeAccepted) {
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   std::string resp = aeronet::test::simpleGet(server.port(), "/e2?a=%A");
 
-  EXPECT_NE(resp.find("200 OK"), std::string::npos);
+  EXPECT_TRUE(resp.contains("200 OK"));
   server.stop();
 }
 
@@ -82,7 +82,7 @@ TEST(HttpQueryParsingEdge, MultiplePairsAndEmptyValue) {
   std::jthread thr([&] { server.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   std::string resp = aeronet::test::simpleGet(server.port(), "/m?k=1&empty=&novalue");
-  EXPECT_NE(resp.find("EDGE3"), std::string::npos);
+  EXPECT_TRUE(resp.contains("EDGE3"));
   server.stop();
 }
 
@@ -104,6 +104,6 @@ TEST(HttpQueryParsingEdge, PercentDecodingKeyAndValue) {
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   std::string resp = aeronet::test::simpleGet(server.port(), "/pd?%66o=bar%20baz");
 
-  EXPECT_NE(resp.find("EDGE4"), std::string::npos);
+  EXPECT_TRUE(resp.contains("EDGE4"));
   server.stop();
 }

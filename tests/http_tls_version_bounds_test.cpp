@@ -34,11 +34,11 @@ TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
     auto resp = client.get("/v");
     statsAfter = ts.stats();
     ts.stop();
-    ASSERT_NE(std::string::npos, resp.find("HTTP/1.1 200"));
+    ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   }
   ASSERT_FALSE(capturedVersion.empty());
   // OpenSSL commonly returns "TLSv1.2"; accept any token containing 1.2
-  ASSERT_NE(capturedVersion.find("1.2"), std::string::npos);
+  ASSERT_TRUE(capturedVersion.contains("1.2"));
   bool found = false;
   // Only iterate version counts if OpenSSL enabled (members present)
 #ifdef AERONET_ENABLE_OPENSSL

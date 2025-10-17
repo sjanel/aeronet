@@ -28,11 +28,11 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
   EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvUntilClosed(fd);
-  ASSERT_NE(std::string::npos, resp.find("201 Created"));
-  ASSERT_NE(std::string::npos, resp.find("X-One: 1"));
-  ASSERT_NE(std::string::npos, resp.find("X-Two: two"));
-  ASSERT_NE(std::string::npos, resp.find("Content-Length: 1"));  // auto generated
-  ASSERT_NE(std::string::npos, resp.find("Connection:"));        // auto generated (keep-alive or close)
+  ASSERT_TRUE(resp.contains("201 Created"));
+  ASSERT_TRUE(resp.contains("X-One: 1"));
+  ASSERT_TRUE(resp.contains("X-Two: two"));
+  ASSERT_TRUE(resp.contains("Content-Length: 1"));  // auto generated
+  ASSERT_TRUE(resp.contains("Connection:"));        // auto generated (keep-alive or close)
 }
 
 #ifdef NDEBUG
@@ -85,8 +85,8 @@ TEST(HttpHeadersCustom, LocationHeaderAllowed) {
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
   EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvUntilClosed(fd);
-  ASSERT_NE(std::string::npos, resp.find("302 Found"));
-  ASSERT_NE(std::string::npos, resp.find("Location: /new"));
+  ASSERT_TRUE(resp.contains("302 Found"));
+  ASSERT_TRUE(resp.contains("Location: /new"));
 }
 
 TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
@@ -107,9 +107,9 @@ TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
   EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string responseText = aeronet::test::recvUntilClosed(fd);
   // Expect only one occurrence with original first casing and final value 'three'.
-  ASSERT_NE(responseText.find("x-cAsE: three"), std::string::npos) << responseText;
-  EXPECT_EQ(responseText.find("X-Case:"), std::string::npos) << responseText;
-  EXPECT_EQ(responseText.find("X-CASE: three"), std::string::npos) << responseText;
+  ASSERT_TRUE(responseText.contains("x-cAsE: three")) << responseText;
+  EXPECT_FALSE(responseText.contains("X-Case:")) << responseText;
+  EXPECT_FALSE(responseText.contains("X-CASE: three")) << responseText;
 }
 
 #if AERONET_ENABLE_ZLIB
@@ -126,8 +126,8 @@ TEST(HttpHeadersCustom, StreamingCaseInsensitiveContentTypeAndEncodingSuppressio
     writer.statusCode(200);
     writer.customHeader("cOnTeNt-TyPe", "text/plain");    // mixed case
     writer.customHeader("cOnTeNt-EnCoDiNg", "identity");  // should suppress auto compression
-    writer.write(payload.substr(0, 40));
-    writer.write(payload.substr(40));
+    writer.writeBody(payload.substr(0, 40));
+    writer.writeBody(payload.substr(40));
     writer.end();
   });
   aeronet::test::ClientConnection cc(ts.port());
@@ -137,11 +137,11 @@ TEST(HttpHeadersCustom, StreamingCaseInsensitiveContentTypeAndEncodingSuppressio
   EXPECT_TRUE(aeronet::test::sendAll(fd, req));
   std::string resp = aeronet::test::recvUntilClosed(fd);
   // Ensure our original casing appears exactly and no differently cased duplicate exists.
-  ASSERT_NE(resp.find("cOnTeNt-TyPe: text/plain"), std::string::npos) << resp;
-  ASSERT_NE(resp.find("cOnTeNt-EnCoDiNg: identity"), std::string::npos) << resp;
+  ASSERT_TRUE(resp.contains("cOnTeNt-TyPe: text/plain")) << resp;
+  ASSERT_TRUE(resp.contains("cOnTeNt-EnCoDiNg: identity")) << resp;
   // Should not see an added normalized Content-Type from default path.
-  EXPECT_EQ(resp.find("Content-Type: text/plain"), std::string::npos) << resp;
+  EXPECT_FALSE(resp.contains("Content-Type: text/plain")) << resp;
   // Body should be identity (contains long run of 'Z').
-  EXPECT_NE(resp.find(std::string(50, 'Z')), std::string::npos) << "Body appears compressed when it should not";
+  EXPECT_TRUE(resp.contains(std::string(50, 'Z'))) << "Body appears compressed when it should not";
 }
 #endif
