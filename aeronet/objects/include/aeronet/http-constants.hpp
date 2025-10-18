@@ -47,6 +47,7 @@ inline constexpr std::string_view Location = "Location";
 inline constexpr std::string_view ContentEncoding = "Content-Encoding";
 inline constexpr std::string_view Vary = "Vary";
 inline constexpr std::string_view AcceptEncoding = "Accept-Encoding";
+inline constexpr std::string_view Allow = "Allow";
 
 inline constexpr std::string_view HeaderSep = ": ";
 inline constexpr std::string_view CRLF = "\r\n";
