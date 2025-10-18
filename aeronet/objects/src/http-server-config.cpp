@@ -4,7 +4,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -21,10 +20,8 @@
 namespace aeronet {
 
 TLSConfig& HttpServerConfig::ensureTls() {
-  if (!tls) {
-    tls.emplace();
-  }
-  return *tls;
+  tls.enabled = true;
+  return tls;
 }
 
 HttpServerConfig& HttpServerConfig::withPort(uint16_t port) {
@@ -143,7 +140,7 @@ HttpServerConfig& HttpServerConfig::withTlsAddTrustedClientCert(std::string_view
 }
 
 HttpServerConfig& HttpServerConfig::withoutTls() {
-  tls.reset();
+  tls.enabled = false;
   return *this;
 }
 
@@ -183,23 +180,27 @@ HttpServerConfig& HttpServerConfig::withGlobalHeader(http::Header header) {
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withTracePolicy(TracePolicy policy) {
-  tracePolicy = policy;
+HttpServerConfig& HttpServerConfig::withTracePolicy(TraceMethodPolicy policy) {
+  traceMethodPolicy = policy;
+  return *this;
+}
+
+// Enable and configure builtin probes
+HttpServerConfig& HttpServerConfig::withBuiltinProbes(BuiltinProbesConfig cfg) {
+  builtinProbes = std::move(cfg);
+  builtinProbes.enabled = true;
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::enableBuiltinProbes(bool on) {
+  builtinProbes.enabled = on;
   return *this;
 }
 
 void HttpServerConfig::validate() const {
   compression.validate();
-  // Basic sanity: enforce reasonable bounds to avoid pathological configuration.
-  auto sane = [](std::size_t value) {
-    return value >= 512 && value <= (1U << 20);
-  };  // 512 .. 1 MiB per chunk upper guard
-  if (!sane(initialReadChunkBytes) || !sane(bodyReadChunkBytes)) {
-    throw invalid_argument("read chunk sizes must be in [512, 1048576]");
-  }
-  if (bodyReadChunkBytes < initialReadChunkBytes) {
-    // Allow but warn? For now accept – order is a tuning choice. No throw to avoid over-constraining.
-  }
+  requestDecompression.validate();
+
   if (maxPerEventReadBytes != 0 && maxPerEventReadBytes < initialReadChunkBytes) {
     // Normalize: cap cannot be smaller than a single chunk; promote to chunk size.
     // (Since config is const here we cannot mutate; just throw to surface mistake.)
@@ -212,8 +213,34 @@ void HttpServerConfig::validate() const {
     if (headerKey.empty() || std::ranges::any_of(headerKey, [](char ch) { return !is_tchar(ch); })) {
       throw invalid_argument("header '{}' is invalid", headerKey);
     }
+    // basic sanity on header value
+    if (std::ranges::any_of(headerValue, [](unsigned char ch) { return ch <= 0x1F || ch == 0x7F; })) {
+      throw invalid_argument("header '{}' has invalid value characters", headerKey);
+    }
   }
   otel.validate();
+  tls.validate();
+  builtinProbes.validate();
+
+  // Validate some header/body limits
+  if (std::cmp_less(maxHeaderBytes, 128)) {
+    throw invalid_argument("maxHeaderBytes must be >= 128");
+  }
+  if (maxBodyBytes == 0) {
+    throw invalid_argument("maxBodyBytes must be > 0");
+  }
+  if (keepAliveTimeout.count() < 0) {
+    throw invalid_argument("keepAliveTimeout must be non-negative");
+  }
+  if (pollInterval.count() <= 0) {
+    throw invalid_argument("pollInterval must be > 0");
+  }
+  if (headerReadTimeout.count() < 0) {
+    throw invalid_argument("headerReadTimeout must be non-negative");
+  }
+  if (std::cmp_less(maxOutboundBufferBytes, 1024)) {
+    throw invalid_argument("maxOutboundBufferBytes must be >= 1024");
+  }
 }
 
 }  // namespace aeronet

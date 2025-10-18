@@ -1,8 +1,8 @@
 // aeronet Umbrella Header
 //
 // Include this single header to pull in the core public HTTP server API:
-//   - HttpServer / AsyncHttpServer / MultiHttpServer wrappers
-//   - Configuration types (HttpServerConfig, CompressionConfig, Encoding)
+//   - Server types (HttpServer / AsyncHttpServer / MultiHttpServer)
+//   - Configuration types (HttpServerConfig, CompressionConfig, Encoding, etc)
 //   - Request / Response primitives (HttpRequest, HttpResponse, HttpResponseWriter)
 //   - HTTP enums & helpers (methods, method sets, status codes, version)
 //   - Server statistics structure
@@ -47,10 +47,12 @@
 #include "aeronet/router.hpp"             // IWYU pragma: export
 
 // Configuration
-#include "aeronet/compression-config.hpp"  // IWYU pragma: export
-#include "aeronet/encoding.hpp"            // IWYU pragma: export
-#include "aeronet/http-server-config.hpp"  // IWYU pragma: export
-#include "aeronet/router-config.hpp"       // IWYU pragma: export
+#include "aeronet/builtin-probes-config.hpp"  // IWYU pragma: export
+#include "aeronet/compression-config.hpp"     // IWYU pragma: export
+#include "aeronet/encoding.hpp"               // IWYU pragma: export
+#include "aeronet/http-server-config.hpp"     // IWYU pragma: export
+#include "aeronet/router-config.hpp"          // IWYU pragma: export
+#include "aeronet/tls-config.hpp"             // IWYU pragma: export
 
 // HTTP primitives
 #include "aeronet/http-request.hpp"          // IWYU pragma: export

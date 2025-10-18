@@ -22,7 +22,7 @@ TEST(HttpOptionsTrace, OptionsStarReturnsAllow) {
 
 TEST(HttpOptionsTrace, TraceEchoWhenEnabled) {
   HttpServerConfig cfg{};
-  cfg.withTracePolicy(HttpServerConfig::TracePolicy::EnabledPlainAndTLS);
+  cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS);
   aeronet::test::TestServer ts(cfg);
 
   auto resp = aeronet::test::requestOrThrow(
@@ -44,7 +44,7 @@ TEST(HttpOptionsTrace, TraceDisabledReturns405) {
 TEST(HttpOptionsTrace, TraceEnabledPlainOnlyAllowsPlaintext) {
   // EnabledPlainOnly should still allow TRACE over plaintext
   HttpServerConfig cfg{};
-  cfg.withTracePolicy(HttpServerConfig::TracePolicy::EnabledPlainOnly);
+  cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly);
   aeronet::test::TestServer ts(cfg);
 
   // Send TRACE over plaintext

@@ -8,6 +8,7 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/router-config.hpp"
 #include "exception.hpp"
+#include "log.hpp"
 
 namespace aeronet {
 
@@ -21,9 +22,19 @@ bool shouldNormalize(RouterConfig::TrailingSlashPolicy policy, auto path) {
 
 Router::Router(const RouterConfig& config) : _trailingSlashPolicy(config.trailingSlashPolicy) {}
 
-void Router::setDefault(RequestHandler handler) { _handler = std::move(handler); }
+void Router::setDefault(RequestHandler handler) {
+  if (_handler) {
+    log::warn("Overwriting existing default request handler");
+  }
+  _handler = std::move(handler);
+}
 
-void Router::setDefault(StreamingHandler handler) { _streamingHandler = std::move(handler); }
+void Router::setDefault(StreamingHandler handler) {
+  if (_streamingHandler) {
+    log::warn("Overwriting existing default streaming handler");
+  }
+  _streamingHandler = std::move(handler);
+}
 
 void Router::setPath(std::string path, http::MethodBmp methods, RequestHandler handler) {
   const bool doNormalize = shouldNormalize(_trailingSlashPolicy, path);
@@ -31,7 +42,11 @@ void Router::setPath(std::string path, http::MethodBmp methods, RequestHandler h
     path.pop_back();
   }
 
-  auto it = _pathHandlers.emplace(std::move(path), PathHandlerEntry{}).first;
+  auto [it, inserted] = _pathHandlers.emplace(std::move(path), PathHandlerEntry{});
+
+  if (!inserted && (methods & it->second.normalMethodBmp) != 0) {
+    log::warn("Overwriting existing path handler for path '{}'", it->first);
+  }
 
   PathHandlerEntry* pEntry = &it->second;
 
@@ -64,7 +79,11 @@ void Router::setPath(std::string path, http::MethodBmp methods, StreamingHandler
     path.pop_back();
   }
 
-  auto it = _pathHandlers.emplace(std::move(path), PathHandlerEntry{}).first;
+  auto [it, inserted] = _pathHandlers.emplace(std::move(path), PathHandlerEntry{});
+
+  if (!inserted && (methods & it->second.streamingMethodBmp) != 0) {
+    log::warn("Overwriting existing streaming path handler for path '{}'", it->first);
+  }
 
   PathHandlerEntry* pEntry = &it->second;
 

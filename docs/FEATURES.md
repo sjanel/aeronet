@@ -5,24 +5,25 @@ Single consolidated reference for **aeronet** features.
 ## Index
 
 1. [HTTP/1.1 Feature Matrix](#http11-feature-matrix)
-2. [Performance / architecture](#performance--architecture)
-3. [Compression & Negotiation](#compression--negotiation)
-4. [Inbound Request Decompression (Config Details)](#inbound-request-decompression-config-details)
-5. [Connection Close Semantics](#connection-close-semantics) — includes graceful drain lifecycle
-6. [Reserved & Managed Response Headers](#reserved--managed-response-headers)
-7. [Request Header Duplicate Handling (Detailed)](#request-header-duplicate-handling-detailed)
-8. [Query String & Parameters](#query-string--parameters)
-9. [Trailing Slash Policy](#trailing-slash-policy)
-10. [Construction Model (RAII & Ephemeral Ports)](#construction-model-raii--ephemeral-ports)
-11. [MultiHttpServer Lifecycle](#multihttpserver-lifecycle)
-12. [TLS Features](#tls-features)
-13. [CONNECT (HTTP tunneling)](#connect-http-tunneling)
-14. [Streaming Responses](#streaming-responses-chunked--incremental)
-15. [Mixed Mode Dispatch Precedence](#mixed-mode--dispatch-precedence)
-16. [Logging](#logging)
-17. [OpenTelemetry Integration](#opentelemetry-integration)
-18. [Future Expansions](#future-expansions)
-19. [Large-body optimization](#large-body-optimization)
+1. [Performance / architecture](#performance--architecture)
+1. [Compression & Negotiation](#compression--negotiation)
+1. [Inbound Request Decompression (Config Details)](#inbound-request-decompression-config-details)
+1. [Connection Close Semantics](#connection-close-semantics) — includes graceful drain lifecycle
+1. [Reserved & Managed Response Headers](#reserved--managed-response-headers)
+1. [Request Header Duplicate Handling (Detailed)](#request-header-duplicate-handling-detailed)
+1. [Query String & Parameters](#query-string--parameters)
+1. [Trailing Slash Policy](#trailing-slash-policy)
+1. [Construction Model (RAII & Ephemeral Ports)](#construction-model-raii--ephemeral-ports)
+1. [MultiHttpServer Lifecycle](#multihttpserver-lifecycle)
+1. [Built-in Kubernetes-style probes](#built-in-kubernetes-style-probes)
+1. [TLS Features](#tls-features)
+1. [CONNECT (HTTP tunneling)](#connect-http-tunneling)
+1. [Streaming Responses](#streaming-responses-chunked--incremental)
+1. [Mixed Mode Dispatch Precedence](#mixed-mode--dispatch-precedence)
+1. [Logging](#logging)
+1. [OpenTelemetry Integration](#opentelemetry-integration)
+1. [Future Expansions](#future-expansions)
+1. [Large-body optimization](#large-body-optimization)
 
 ## HTTP/1.1 Feature Matrix
 
@@ -680,11 +681,11 @@ Removed experimental factory: a previous non-throwing `tryCreate` was dropped to
 
 Design trade-offs: Constructor may throw on errors (bind failure, TLS init failure if configured). This is intentional to surface unrecoverable configuration issues early.
 
-## MultiHttpServer Lifecycle
+## MultiHttpServer lifecycle
 
-Manages N reactors via SO_REUSEPORT.
+Manages N reactors via `SO_REUSEPORT`.
 
-Key points:
+### In a nutshell
 
 - Constructor binds & resolves port (ephemeral resolved once).
 - Restart rebuilds underlying single‑shot servers; same port reused.
@@ -693,13 +694,80 @@ Key points:
 - Movable even while running (vector storage stable).
 - Graceful drain propagates: `beginDrain(maxWait)` stops all accept loops, existing keep-alive connections receive `Connection: close`, and `isDraining()` reports when any underlying instance is still draining.
 
-Example:
+### MultiHttpServer restart example
 
 ```cpp
 HttpServerConfig cfg; cfg.port=0; cfg.reusePort=true; MultiHttpServer multi(cfg,4);
 multi.router().setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").contentType("text/plain").body("hi\n"); });
 multi.start(); multi.stop(); multi.start();
 ```
+
+## Built-in Kubernetes-style probes
+
+Aeronet can optionally provide a small set of built-in HTTP probe endpoints intended to be used
+by Kubernetes-style health checks and load-balancers. These probes are lightweight, handled
+entirely by the server, and do not require application handlers to be installed when enabled.
+
+### Probes in a nutshell
+
+- Enabled via `HttpServerConfig::withBuiltinProbes(BuiltinProbesConfig)` or `enableBuiltinProbes(true)`.
+- Default probe paths (configurable in `BuiltinProbesConfig`):
+  - Liveness: `/livez` — indicates the process has started (HTTP 200 when started)
+  - Readiness: `/readyz` — indicates the server is ready to receive new requests (HTTP 200)
+  - Startup: `/startupz` — reports startup progress (returns 503 until the server has fully started)
+- The probe handlers return minimal responses (status only, configurable Content-Type) and avoid heavy work.
+
+### Probes lifecycle semantics
+
+- `liveness` (livez): reflects a simple "started" flag. Once the server has successfully entered the
+  running state this endpoint returns 200. It is intended to indicate the process is alive.
+- `readiness` (readyz): reflects a `ready` flag that is cleared early during graceful shutdown (`beginDrain()`).
+  During normal operation it returns 200. When `beginDrain()` is invoked the server sets `ready=false`
+  (returning 503) so load-balancers and Kubernetes can stop sending new connections while existing
+  keep-alive requests drain.
+- `startup` (startupz): returns 503 prior to the server fully initializing and starts returning 200 once
+  initialization completes. This is useful for probes that should fail until the server is truly ready.
+
+### Probes configuration options
+
+- `BuiltinProbesConfig::enabled` (bool): enable/disable builtin probes.
+- `BuiltinProbesConfig::contentType` (enum): response Content-Type used by the probe responses.
+- `BuiltinProbesConfig::livenessPath`, `readinessPath`, `startupPath`: customize probe paths. Paths must be
+  non-empty and begin with `/` — invalid values are rejected by `BuiltinProbesConfig::validate()`.
+
+When enabled, if an application handler is already registered on the same path(s) the server will override them
+with the probes handlers.
+
+### Probes Notes & recommendations
+
+- Builtin probes are intentionally tiny and designed for readiness/liveness checks only. If you need richer
+  health diagnostics (dependencies, DB, caches), implement a custom application handler and register it on a
+  non-conflicting path.
+- Enabling builtin probes is useful for quick deployments and reduces application boilerplate. If you prefer
+  full control or want to return structured JSON diagnostics, disable builtin probes and register your own
+  handlers.
+
+### Probes configuration example
+
+Enable builtin probes with default paths and a plain-text content type:
+
+```cpp
+HttpServerConfig cfg;
+BuiltinProbesConfig probesCfg;
+probesCfg.enabled = true;
+probesCfg.contentType = BuiltinProbesConfig::ContentType::TextPlainUtf8;
+probesCfg.livenessPath = "/livenessz";
+probesCfg.readinessPath = "/readinessz";
+probesCfg.startupPath = "/startupz";
+
+cfg.withBuiltinProbes(std::move(probesCfg));
+HttpServer server(std::move(cfg));
+```
+
+### Testing
+
+- The test suite includes `http_probes_test.cpp` which validates startup/readiness transitions and drain-time
+  behavior. Tests also cover collision detection for probe paths.
 
 ## TLS Features
 

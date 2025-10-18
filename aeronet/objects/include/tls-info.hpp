@@ -1,9 +1,8 @@
 #pragma once
 
-#include <cstdint>
 #include <string_view>
 
-#include "raw-chars.hpp"
+#include "concatenated-strings.hpp"
 
 namespace aeronet {
 
@@ -15,23 +14,17 @@ class TLSInfo {
  public:
   TLSInfo() noexcept = default;
 
-  TLSInfo(std::string_view selectedAlpn, std::string_view negotiatedCipher, std::string_view negotiatedVersion);
+  TLSInfo(std::string_view selectedAlpn, std::string_view negotiatedCipher, std::string_view negotiatedVersion)
+      : _parts({selectedAlpn, negotiatedCipher, negotiatedVersion}) {}
 
-  [[nodiscard]] std::string_view selectedAlpn() const noexcept { return {_buf.data(), _negotiatedCipherBeg}; }
+  [[nodiscard]] std::string_view selectedAlpn() const noexcept { return _parts[0]; }
 
-  [[nodiscard]] std::string_view negotiatedCipher() const noexcept {
-    return {_buf.data() + _negotiatedCipherBeg, _negotiatedVersionBeg - _negotiatedCipherBeg};
-  }
+  [[nodiscard]] std::string_view negotiatedCipher() const noexcept { return _parts[1]; }
 
-  [[nodiscard]] std::string_view negotiatedVersion() const noexcept {
-    return {_buf.data() + _negotiatedVersionBeg, _buf.size() - _negotiatedVersionBeg};
-  }
+  [[nodiscard]] std::string_view negotiatedVersion() const noexcept { return _parts[2]; }
 
  private:
-  RawChars _buf;
-
-  uint32_t _negotiatedCipherBeg{};   // negotiated TLS cipher suite (if TLS)
-  uint32_t _negotiatedVersionBeg{};  // negotiated TLS protocol version string
+  aeronet::ConcatenatedStrings<3> _parts;
 };
 
 }  // namespace aeronet
