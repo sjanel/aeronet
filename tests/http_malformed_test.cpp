@@ -37,7 +37,7 @@ TEST(HttpMalformed, MissingSpacesInRequestLine) {
 
 TEST(HttpMalformed, OversizedHeaders) {
   aeronet::HttpServerConfig cfg;
-  cfg.withMaxHeaderBytes(64);
+  cfg.withMaxHeaderBytes(128);
   aeronet::HttpServer server(cfg);
   auto port = server.port();
   server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });

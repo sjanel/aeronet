@@ -6,6 +6,8 @@
 namespace aeronet {
 
 struct TLSConfig {
+  void validate() const;
+
   std::string certFile;    // PEM server certificate (may contain chain)
   std::string keyFile;     // PEM private key
   std::string certPem;     // In-memory PEM certificate (used if certFile empty & this non-empty)

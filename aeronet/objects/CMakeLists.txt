@@ -56,3 +56,10 @@ add_unit_test(
     LIBRARIES
     aeronet_objects
 )
+
+add_unit_test(
+    extra-config-validations_test
+    test/extra-config-validations_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
