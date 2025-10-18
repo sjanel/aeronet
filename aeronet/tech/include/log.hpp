@@ -33,7 +33,7 @@ struct level {
   static constexpr int debug = 1;
   static constexpr int info = 2;
   static constexpr int warn = 3;
-  static constexpr int error = 4;
+  static constexpr int err = 4;
   static constexpr int critical = 5;
   static constexpr int off = 6;
 };
@@ -106,7 +106,7 @@ inline void warn(std::string_view fmt, Args &&...args) {
 }
 template <typename... Args>
 inline void error(std::string_view fmt, Args &&...args) {
-  if (get_level() > level::error) {
+  if (get_level() > level::err) {
     return;
   }
   detail::emit_line("[error]", true, detail::run_format(fmt, std::forward<Args>(args)...));

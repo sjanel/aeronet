@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <string>
 
+#include "tls-info.hpp"
 #include "tls-metrics.hpp"
 
 namespace aeronet {
@@ -33,8 +34,7 @@ TlsHandshakeResult collectAndLogTlsHandshake(const SSL* ssl, int fd, bool logHan
 
 // Full helper: performs collection, optional logging, populates connection state strings and updates metrics.
 // selectedAlpn / negotiatedCipher / negotiatedVersion are mutated in-place.
-void finalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake,
-                          std::chrono::steady_clock::time_point handshakeStart, std::string& selectedAlpn,
-                          std::string& negotiatedCipher, std::string& negotiatedVersion, TlsMetricsInternal& metrics);
+TLSInfo finalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake,
+                             std::chrono::steady_clock::time_point handshakeStart, TlsMetricsInternal& metrics);
 
 }  // namespace aeronet

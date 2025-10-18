@@ -16,29 +16,41 @@ Single consolidated reference for **aeronet** features.
 10. [Construction Model (RAII & Ephemeral Ports)](#construction-model-raii--ephemeral-ports)
 11. [MultiHttpServer Lifecycle](#multihttpserver-lifecycle)
 12. [TLS Features](#tls-features)
-13. [Streaming Responses](#streaming-responses-chunked--incremental)
-14. [Mixed Mode Dispatch Precedence](#mixed-mode--dispatch-precedence)
-15. [Logging](#logging)
-16. [OpenTelemetry Integration](#opentelemetry-integration)
-17. [Future Expansions](#future-expansions)
-18. [Large-body optimization](#large-body-optimization)
+13. [CONNECT (HTTP tunneling)](#connect-http-tunneling)
+14. [Streaming Responses](#streaming-responses-chunked--incremental)
+15. [Mixed Mode Dispatch Precedence](#mixed-mode--dispatch-precedence)
+16. [Logging](#logging)
+17. [OpenTelemetry Integration](#opentelemetry-integration)
+18. [Future Expansions](#future-expansions)
+19. [Large-body optimization](#large-body-optimization)
 
 ## HTTP/1.1 Feature Matrix
 
 Legend: [x] implemented, [ ] planned / not yet.
 
-### Core parsing & connection handling
+### Core HTTP parsing & routing
 
 - [x] Request line parsing (method, target, version)
 - [x] Header field parsing (no folding / continuations)
 - [x] Case-insensitive header lookup helper
+- [x] Router path matching and allowed-method computation
+- [x] Pipelined sequential requests (no parallel handler execution)
+
+Where to look: see the "Core parsing & connection handling" and router sections below for details.
+
+### Transport & connection
+
 - [x] Persistent connections (HTTP/1.1 default, HTTP/1.0 opt-in)
 - [x] HTTP/1.0 response version preserved (no silent upgrade)
 - [x] Connection: close handling
-- [x] Pipelined sequential requests (no parallel handler execution)
+- [x] CONNECT tunneling (proxy-style TCP CONNECT handling)
 - [x] Backpressure / partial write buffering
+- [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
+- [x] Keep-alive limits (maxRequestsPerConnection)
 
-### Request bodies
+Where to look: see the "CONNECT (HTTP tunneling)" subsection and the Connection Manager notes for implementation details.
+
+### Request bodies & decoding
 
 - [x] Content-Length bodies with size limit
 - [x] Chunked Transfer-Encoding decoding (request) (ignores trailers)
@@ -46,13 +58,24 @@ Legend: [x] implemented, [ ] planned / not yet.
 - [ ] Trailer header exposure
 - [ ] Multipart/form-data convenience utilities
 
-### Response generation
+Where to look: see "Inbound Request Decompression (Config Details)" for decompression behavior and the parser docs for chunked/CL handling.
+
+### Response generation & streaming
 
 - [x] Basic fixed body responses
 - [x] HEAD method (suppressed body, correct Content-Length)
 - [x] Outgoing chunked / streaming responses (basic API: status/headers + incremental write + end, keep-alive capable)
 - [x] Mixed-mode dispatch (simultaneous registration of streaming and fixed handlers with precedence)
 - [x] Compression (gzip & deflate) (phase 1: zlib) – streaming + buffered with threshold & q-values
+
+Where to look: see the "Compression & Negotiation" section for full details and configuration.
+
+### Methods & special semantics
+
+- [x] OPTIONS * handling (returns an Allow header per RFC 7231 §4.3)
+- [x] TRACE method support (echo) — optional and configurable via `HttpServerConfig::TracePolicy`
+
+Where to look: see the "OPTIONS & TRACE behavior" subsection below.
 
 ### Status & error handling
 
@@ -72,10 +95,9 @@ Legend: [x] implemented, [ ] planned / not yet.
   global Content-Type enforcement, implement a small validator middleware or configure your handlers
   to check the `Content-Type` header and return **415** when appropriate.
 
-### OPTIONS & TRACE behavior
+Where to look: see the "Status & error handling" notes and parser error descriptions below.
 
-- [x] OPTIONS * handling (returns an Allow header per RFC 7231 §4.3) — server computes the allowed methods for the targeted path using the router and emits an `Allow` header listing permitted methods.
-- [x] TRACE method support (echo) — optional and configurable via `HttpServerConfig::TracePolicy`.
+### Headers & protocol niceties
 
 TRACE semantics and safety:
 
@@ -94,15 +116,40 @@ Use cases:
 Note: `EnabledOnTls` (TRACE allowed only on TLS) was removed — the policy set is now intentionally smaller and focuses
 on disabling TRACE entirely, allowing it everywhere, or allowing it only on plaintext.
 
-### Headers & protocol niceties
+### CONNECT (HTTP tunneling)
 
-- [x] Connection keep-alive / close
-- [x] Content-Type (user supplied only)
-- [x] Expect: 100-continue handling
-- [x] Expect header ignored for HTTP/1.0 (no interim 100 sent)
-- [x] Percent-decoding of request target path (UTF-8 allowed, '+' not treated as space, invalid % -> 400)
-- [ ] Server header (intentionally omitted to keep minimal)
-- [ ] Access-Control-* (CORS) helpers
+- [x] CONNECT method support — proxy-style TCP tunneling to an upstream host:port target.
+
+Behavior summary
+
+- On receiving a `CONNECT host:port HTTP/1.1` request the server attempts to resolve the target and establish a
+  non-blocking TCP connection to the upstream address. If the connect attempt succeeds (or is in progress), the server
+  replies `200 Connection Established` and links the client and upstream sockets into a tunneling pair. From that
+  point the connections bypass HTTP parsing and are proxied bidirectionally until either side closes.
+- The server uses a small `ConnectResult` helper to capture whether the upstream connection completed immediately or is
+  still pending (`EINPROGRESS`) on a non-blocking socket. Pending connects are tracked using a `connectPending` flag
+  on the upstream `ConnectionState`; when the event loop notifies writable readiness we check `SO_ERROR` to determine
+  whether the connect completed successfully or failed and, on failure, attempt to notify the client with `502`.
+- For tunneling we record `peerFd` on each side (client and upstream). A connection is considered in tunneling mode when
+  `peerFd != -1` (exposed via `ConnectionState::isTunneling()` accessor). When the tunnel is active bytes read on one
+  side are written to the peer's transport directly. Each side keeps a dedicated tunnel buffer for the peer flow so
+  frontend HTTP outbound buffering (`outBuffer`) and tunnel forwarding remain separate.
+
+Configuration
+
+- `HttpServerConfig::connectAllowlist` — optional list of allowed target hosts (exact string match). When empty, any
+  resolved host is allowed. To populate conveniently use `withConnectAllowlist()` builder helper.
+
+Notes and implementation details
+
+- The CONNECT implementation carefully handles container rehashing: inserting the upstream connection into the server's
+  internal `_connStates` map may rehash and invalidate iterators. To avoid UB the insertion re-resolves the client
+  iterator (and updates the caller's iterator when appropriate).
+- The tunneling path prioritizes a dedicated `tunnelOutBuffer` to avoid mixing HTTP response buffering semantics with
+  raw tunneled bytes. This keeps the HTTP response life-cycle and the TCP proxying semantics independent and easier to
+  reason about.
+- Tests: Basic coverage added for successful echo tunneling and failure cases (DNS resolution failures and allowlist
+  rejections). See `tests/http_connect_success_test.cpp` and `tests/http_connect_failures_test.cpp`.
 
 ## Performance / architecture
 

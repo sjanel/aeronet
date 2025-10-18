@@ -35,7 +35,10 @@ aeronet_http_test(http_multi_reuseport)
 # Multi server wrapper test
 aeronet_http_test(http_multi_wrapper)
 
+# OPTIONS, TRACE and CONNECT methods
 aeronet_http_test(http_options_trace)
+aeronet_http_test(http_connect_success)
+aeronet_http_test(http_connect_failures)
 
 # Parser error and fuzz tests
 aeronet_http_test(http_parser_errors)
@@ -156,6 +159,8 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_multi_reuseport_test.cpp
 	http_multi_wrapper_test.cpp
 	http_options_trace_test.cpp
+	http_connect_success_test.cpp
+	http_connect_failures_test.cpp
 	http_parser_errors_test.cpp
 	http_routing_test.cpp
 	http_server_move_test.cpp

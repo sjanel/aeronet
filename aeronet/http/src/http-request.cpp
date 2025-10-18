@@ -78,8 +78,8 @@ bool HttpRequest::hasExpectContinue() const noexcept {
 
 http::StatusCode HttpRequest::setHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
                                       bool mergeAllowedForUnknownRequestHeaders) {
-  auto* first = state.buffer.data();
-  auto* last = first + state.buffer.size();
+  auto* first = state.inBuffer.data();
+  auto* last = first + state.inBuffer.size();
 
   // Example : GET /path HTTP/1.1\r\nHost: example.com\r\nUser-Agent: FooBar\r\n\r\n
 
@@ -208,7 +208,7 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, RawChars& tmpBuffe
         tmpBuffer.assign(valueFirst, szToMove - szSep);
 
         // Step 2
-        auto* firstValueFirst = state.buffer.data() + (it->second.data() - state.buffer.data());
+        auto* firstValueFirst = state.inBuffer.data() + (it->second.data() - state.inBuffer.data());
         auto* firstValueLast = firstValueFirst + it->second.size();
 
         std::memmove(firstValueLast + szToMove, firstValueLast, static_cast<std::size_t>(first - firstValueLast));
@@ -239,9 +239,9 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, RawChars& tmpBuffe
   _flatHeaders = std::string_view(headersFirst, lineLast + 1);
 
   // Propagate negotiated ALPN (if any) from connection state into per-request object.
-  _alpnProtocol = state.selectedAlpn;
-  _tlsCipher = state.negotiatedCipher;
-  _tlsVersion = state.negotiatedVersion;
+  _alpnProtocol = state.tlsInfo.selectedAlpn();
+  _tlsCipher = state.tlsInfo.negotiatedCipher();
+  _tlsVersion = state.tlsInfo.negotiatedVersion();
 
   return http::StatusCodeOK;
 }
