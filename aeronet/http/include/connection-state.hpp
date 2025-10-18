@@ -4,11 +4,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <string_view>
 
 #include "aeronet/http-response-data.hpp"
 #include "raw-chars.hpp"
+#include "tls-info.hpp"
 #include "transport.hpp"
 
 namespace aeronet {
@@ -28,12 +28,17 @@ struct ConnectionState {
   [[nodiscard]] bool isDrainCloseRequested() const noexcept { return closeMode == CloseMode::DrainThenClose; }
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }
 
-  std::size_t transportRead(std::size_t chunkSize, Transport& want);
+  std::size_t transportRead(std::size_t chunkSize, TransportHint& want);
 
-  std::size_t transportWrite(std::string_view data, Transport& want);
-  std::size_t transportWrite(const HttpResponseData& httpResponseData, Transport& want);
+  std::size_t transportWrite(std::string_view data, TransportHint& want);
+  std::size_t transportWrite(const HttpResponseData& httpResponseData, TransportHint& want);
 
-  RawChars buffer;                        // accumulated raw data
+  [[nodiscard]] bool isTunneling() const noexcept { return peerFd != -1; }
+
+  // Buffer used for tunneling raw bytes when peer is not writable.
+  RawChars tunnelOutBuffer;
+
+  RawChars inBuffer;                      // accumulated raw data
   RawChars bodyBuffer;                    // decoded body lifetime
   HttpResponseData outBuffer;             // pending outbound data not yet written
   std::unique_ptr<ITransport> transport;  // set after accept (plain or TLS)
@@ -41,16 +46,20 @@ struct ConnectionState {
   // Timestamp of first byte of the current pending request headers (buffer not yet containing full CRLFCRLF).
   // Reset when a complete request head is parsed. If std::chrono::steady_clock::time_point{} (epoch) -> inactive.
   std::chrono::steady_clock::time_point headerStart;  // default epoch value means no header timing active
+  // Tunnel support: when a connection is acting as a tunnel endpoint, peerFd holds the
+  // file descriptor of the other side (upstream or client).
+  int peerFd{-1};
   uint32_t requestsServed{0};
   // Connection close lifecycle.
   enum class CloseMode : uint8_t { None, DrainThenClose, Immediate };
 
   CloseMode closeMode{CloseMode::None};
-  bool waitingWritable{false};                           // EPOLLOUT registered
-  bool tlsEstablished{false};                            // true once TLS handshake completed (if TLS enabled)
-  std::string selectedAlpn;                              // negotiated ALPN protocol (if any)
-  std::string negotiatedCipher;                          // negotiated TLS cipher suite (if TLS)
-  std::string negotiatedVersion;                         // negotiated TLS protocol version string
+  bool waitingWritable{false};  // EPOLLOUT registered
+  bool tlsEstablished{false};   // true once TLS handshake completed (if TLS enabled)
+  // Tunnel state: true when peerFd != -1. Use accessor isTunneling() to query.
+  // True when a non-blocking connect() was issued and completion is pending (EPOLLOUT will signal).
+  bool connectPending{false};
+  TLSInfo tlsInfo;
   std::chrono::steady_clock::time_point handshakeStart;  // TLS handshake start time (steady clock)
 };
 

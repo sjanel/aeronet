@@ -170,6 +170,10 @@ struct HttpServerConfig {
   };
   TracePolicy tracePolicy{TracePolicy::Disabled};
 
+  // Optional allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT to any
+  // resolved host is allowed. When non-empty, the target host must exactly match one of these entries.
+  std::vector<std::string> connectAllowlist{};
+
   // Validates config. Throws invalid_argument if it is not valid.
   void validate() const;
 
@@ -209,6 +213,16 @@ struct HttpServerConfig {
 
   // Set slow header read timeout (0=off)
   HttpServerConfig& withHeaderReadTimeout(std::chrono::milliseconds timeout);
+
+  // Set CONNECT allowlist (replaces any existing entries). An empty list allows all targets.
+  template <class InputIt>
+  HttpServerConfig& withConnectAllowlist(InputIt first, InputIt last) {
+    connectAllowlist.clear();
+    for (auto it = first; it != last; ++it) {
+      connectAllowlist.emplace_back(*it);
+    }
+    return *this;
+  }
 
   // Accept any string-like source (const char*, std::string, std::string_view) for certificate & key file paths.
   // We intentionally copy here because configuration happens once at startup; micro-optimizing moves is unnecessary.

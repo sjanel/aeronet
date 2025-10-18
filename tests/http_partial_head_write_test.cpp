@@ -18,24 +18,24 @@ class PartialWriteTransport : public ITransport {
 
   PartialWriteTransport() = default;
 
-  std::size_t read([[maybe_unused]] char* buf, [[maybe_unused]] std::size_t len, Transport& want) override {
-    want = Transport::Error;
+  std::size_t read([[maybe_unused]] char* buf, [[maybe_unused]] std::size_t len, TransportHint& want) override {
+    want = TransportHint::Error;
     return 0;
   }
 
-  std::size_t write(std::string_view data, Transport& want) override {
+  std::size_t write(std::string_view data, TransportHint& want) override {
     // On the very first call we simulate a partial write: write only the first N bytes
     if (!_firstWriteDone) {
       _firstWriteDone = true;
       const std::size_t partial = std::min<std::size_t>(data.size(), 8);
       // pretend we wrote 'partial' bytes
-      want = Transport::None;  // indicate no special want; still returned >0 bytes means partial progress
+      want = TransportHint::None;  // indicate no special want; still returned >0 bytes means partial progress
       _out.append(data.substr(0, partial));
       return partial;
     }
     // Subsequent calls write everything
     _out.append(data.data(), data.size());
-    want = Transport::None;
+    want = TransportHint::None;
     return data.size();
   }
 
@@ -51,7 +51,7 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
   HttpResponseData httpResponseData("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n",
                                     HttpBody(std::string("hello world")));
 
-  Transport want;
+  TransportHint want;
   // First write will write partial head only
   const auto w1 = plainWriteTransport.write(httpResponseData, want);
   EXPECT_GT(w1, 0U);
@@ -75,7 +75,7 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadTls) {
   HttpResponseData httpResponseData("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n",
                                     HttpBody(std::string("hello world")));
 
-  Transport want;
+  TransportHint want;
   const auto w1 = partialWriteTransport.write(httpResponseData, want);
   EXPECT_GT(w1, 0U);
   std::string_view s1 = partialWriteTransport.out();

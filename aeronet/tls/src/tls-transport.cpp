@@ -16,8 +16,8 @@ namespace {
 inline bool isRetry(int code) { return code == SSL_ERROR_WANT_READ || code == SSL_ERROR_WANT_WRITE; }
 }  // namespace
 
-std::size_t TlsTransport::read(char* buf, std::size_t len, Transport& want) {
-  want = Transport::None;
+std::size_t TlsTransport::read(char* buf, std::size_t len, TransportHint& want) {
+  want = TransportHint::None;
 
   std::size_t bytesRead{};
 
@@ -28,16 +28,16 @@ std::size_t TlsTransport::read(char* buf, std::size_t len, Transport& want) {
     } else {
       const auto err = ::SSL_get_error(_ssl.get(), handshakeRet);
       if (isRetry(err)) {
-        want = (err == SSL_ERROR_WANT_WRITE) ? Transport::WriteReady : Transport::ReadReady;
+        want = (err == SSL_ERROR_WANT_WRITE) ? TransportHint::WriteReady : TransportHint::ReadReady;
         return bytesRead;  // indicate would-block during handshake
       }
       // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
       if (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        want = Transport::ReadReady;  // Default to read, SSL will tell us if it needs write
+        want = TransportHint::ReadReady;  // Default to read, SSL will tell us if it needs write
         return bytesRead;
       }
       logErrorIfAny();
-      want = Transport::Error;
+      want = TransportHint::Error;
       return bytesRead;
     }
   }
@@ -56,30 +56,30 @@ std::size_t TlsTransport::read(char* buf, std::size_t len, Transport& want) {
     return 0;
   }
   if (isRetry(err)) {
-    want = (err == SSL_ERROR_WANT_WRITE) ? Transport::WriteReady : Transport::ReadReady;
+    want = (err == SSL_ERROR_WANT_WRITE) ? TransportHint::WriteReady : TransportHint::ReadReady;
     return 0;
   }
 
   // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
   if (err == SSL_ERROR_SYSCALL) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      want = Transport::ReadReady;
+      want = TransportHint::ReadReady;
       return 0;
     }
     // Some platforms may present SSL_ERROR_SYSCALL with errno==0 and no OpenSSL errors
     // during non-blocking handshakes; treat this as a non-fatal would-block to avoid
     // prematurely closing the connection on transient EOF readings.
     if (errno == 0 && ::ERR_peek_error() == 0) {
-      want = Transport::ReadReady;
+      want = TransportHint::ReadReady;
       return 0;
     }
   }
-  want = Transport::Error;
+  want = TransportHint::Error;
   return bytesRead;
 }
 
-std::size_t TlsTransport::write(std::string_view data, Transport& want) {
-  want = Transport::None;
+std::size_t TlsTransport::write(std::string_view data, TransportHint& want) {
+  want = TransportHint::None;
   std::size_t bytesWritten{};
 
   // Ensure handshake is done
@@ -90,15 +90,15 @@ std::size_t TlsTransport::write(std::string_view data, Transport& want) {
     } else {
       const int err = ::SSL_get_error(_ssl.get(), handshakeRet);
       if (isRetry(err)) {
-        want = (err == SSL_ERROR_WANT_WRITE) ? Transport::WriteReady : Transport::ReadReady;
+        want = (err == SSL_ERROR_WANT_WRITE) ? TransportHint::WriteReady : TransportHint::ReadReady;
         return bytesWritten;  // no progress, treat like EAGAIN
       }
       // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
       if (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        want = Transport::WriteReady;
+        want = TransportHint::WriteReady;
         return bytesWritten;
       }
-      want = Transport::Error;
+      want = TransportHint::Error;
       return bytesWritten;  // fatal
     }
   }
@@ -113,7 +113,7 @@ std::size_t TlsTransport::write(std::string_view data, Transport& want) {
   if (::SSL_write_ex(_ssl.get(), data.data(), data.size(), &bytesWritten) == 0) {
     const auto err = ::SSL_get_error(_ssl.get(), 0);
     if (isRetry(err)) {
-      want = (err == SSL_ERROR_WANT_WRITE) ? Transport::WriteReady : Transport::ReadReady;
+      want = (err == SSL_ERROR_WANT_WRITE) ? TransportHint::WriteReady : TransportHint::ReadReady;
       bytesWritten = 0;  // CRITICAL: return 0 so caller retries with same data!
       return bytesWritten;
     }
@@ -122,12 +122,12 @@ std::size_t TlsTransport::write(std::string_view data, Transport& want) {
     if (err == SSL_ERROR_SYSCALL) {
       auto saved_errno = errno;
       if (saved_errno == EAGAIN || saved_errno == EWOULDBLOCK) {
-        want = Transport::WriteReady;
+        want = TransportHint::WriteReady;
         bytesWritten = 0;
         return bytesWritten;  // retry with same data
       }
       if (saved_errno == 0 && ERR_peek_error() == 0) {
-        want = Transport::WriteReady;
+        want = TransportHint::WriteReady;
         bytesWritten = 0;
         return bytesWritten;
       }
@@ -135,7 +135,7 @@ std::size_t TlsTransport::write(std::string_view data, Transport& want) {
 
     logErrorIfAny();
 
-    want = Transport::Error;
+    want = TransportHint::Error;
     bytesWritten = 0;
     return bytesWritten;
   }

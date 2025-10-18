@@ -49,3 +49,10 @@ add_unit_test(
     LIBRARIES
     aeronet_objects
 )
+
+add_unit_test(
+    tls-info_test
+    test/tls-info_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
