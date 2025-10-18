@@ -281,14 +281,14 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
         log::error("Exception in path handler: {}", ex.what());
         resp.statusCode(500)
             .reason(http::ReasonInternalServerError)
-            .body(ex.what())
-            .contentType(http::ContentTypeTextPlain);
+            .contentType(http::ContentTypeTextPlain)
+            .body(ex.what());
       } catch (...) {
         log::error("Unknown exception in path handler.");
         resp.statusCode(500)
             .reason(http::ReasonInternalServerError)
-            .body("Unknown error")
-            .contentType(http::ContentTypeTextPlain);
+            .contentType(http::ContentTypeTextPlain)
+            .body("Unknown error");
       }
     } else if (res.redirectPathIndicator != Router::RoutingResult::RedirectSlashMode::None) {
       // Emit 301 redirect to canonical form.
@@ -308,11 +308,11 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     } else if (res.methodNotAllowed) {
       resp.statusCode(http::StatusCodeMethodNotAllowed)
           .reason(http::ReasonMethodNotAllowed)
-          .body(resp.reason())
-          .contentType(http::ContentTypeTextPlain);
+          .contentType(http::ContentTypeTextPlain)
+          .body(resp.reason());
     } else {
       resp.statusCode(http::StatusCodeNotFound);
-      resp.reason(http::NotFound).body(resp.reason()).contentType(http::ContentTypeTextPlain);
+      resp.reason(http::NotFound).contentType(http::ContentTypeTextPlain).body(http::NotFound);
     }
     finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
 
@@ -638,12 +638,10 @@ void HttpServer::eventLoop() {
     _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(ready));
   } else if (ready < 0) {
     _telemetry.counterAdd("aeronet.events.errors", 1);
-  }
 
-  // If epoll_wait failed with a non-EINTR error (EINTR is mapped to 0 in EventLoop::poll), ready will be -1.
-  // Not handling this would cause a tight loop spinning on the failing epoll fd (e.g., after EBADF or EINVAL),
-  // burning CPU while doing no useful work. Treat it as fatal: log and stop the server.
-  if (ready < 0) {
+    // If epoll_wait failed with a non-EINTR error (EINTR is mapped to 0 in EventLoop::poll), ready will be -1.
+    // Not handling this would cause a tight loop spinning on the failing epoll fd (e.g., after EBADF or EINVAL),
+    // burning CPU while doing no useful work. Treat it as fatal: log and stop the server.
     log::error("epoll_wait (eventLoop) failed: {}", std::strerror(errno));
     // Mark server as no longer running so outer loops terminate gracefully.
     _running = false;

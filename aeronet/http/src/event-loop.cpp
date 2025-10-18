@@ -60,7 +60,7 @@ bool EventLoop::add(int fd, uint32_t events) const {
 
 bool EventLoop::mod(int fd, uint32_t events) const {
   epoll_event ev{events, epoll_data_t{.fd = fd}};
-  if (epoll_ctl(_baseFd.fd(), EPOLL_CTL_MOD, fd, &ev) != 0) {
+  if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_MOD, fd, &ev) != 0) {
     auto err = errno;
     log::error("epoll_ctl MOD failed (fd={}, events=0x{:x}, errno={}, msg={})", fd, events, err, std::strerror(err));
     return false;
