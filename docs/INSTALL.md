@@ -27,6 +27,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 | `AERONET_INSTALL` | ON* | Enable install + package config export |
 | `AERONET_ENABLE_SPDLOG` | OFF | Enable spdlog logging integration |
 | `AERONET_ENABLE_OPENSSL` | OFF | Enable TLS module (`aeronet_tls`) |
+| `AERONET_ENABLE_OPENTELEMETRY` | OFF | Enable OpenTelemetry instrumentation (build-time flag; opt-in) |
 | `AERONET_ENABLE_ZLIB` | ON* | Enable gzip/deflate (zlib) compression + decompression |
 | `AERONET_ENABLE_ZSTD` | OFF | Enable zstd compression + decompression |
 | `AERONET_ENABLE_BROTLI` | OFF | Enable brotli compression + decompression |

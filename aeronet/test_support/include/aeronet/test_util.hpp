@@ -66,6 +66,9 @@ std::string recvUntilClosed(int fd);
 
 std::string sendAndCollect(uint16_t port, std::string_view raw);
 
+// Start a simple echo server bound to loopback on an ephemeral port. Returns the port or -1 on error.
+int startEchoServer();
+
 int countOccurrences(std::string_view haystack, std::string_view needle);
 
 bool noBodyAfterHeaders(std::string_view raw);

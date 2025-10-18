@@ -8,13 +8,13 @@
 
 **aeronet** is a modern, fast, modular and ergonomic HTTP/1.1 C++ server library for Linux focused on predictable performance, explicit control and minimal dependencies.
 
-## Key Benefits
+## Why aeronet?
 
-- Fast & predictable: edge‑triggered reactor model, zero/low‑allocation hot paths, horizontal scaling with port reuse.
-- Safe by default: strict parsing, size/time guards, optional TLS & compression with defensive limits.
-- Modular & opt‑in: enable only the features you need (zlib, zstd, brotli, TLS, logging, opentelemetry) via build flags (no more bloat dependencies)
-- Ergonomic: simple `HttpServer`, `AsyncHttpServer`, `MultiHttpServer` types; fluent configuration; RAII listener setup.
-- Extensible & observable: composable configs (compression, decompression, TLS) plus lightweight per‑request metrics hook.
+- **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths, horizontal scaling with port reuse.
+- **Safe by default**: strict parsing, size/time guards, optional TLS & compression with defensive limits.
+- **Modular & opt‑in**: enable only the features you need (zlib, zstd, brotli, TLS, logging, opentelemetry) via build flags (no more bloat dependencies)
+- **Ergonomic**: simple `HttpServer`, `AsyncHttpServer`, `MultiHttpServer` types; fluent configuration; RAII listener setup.
+- **Extensible & observable**: composable configs (compression, decompression, TLS) plus lightweight per‑request metrics hook.
 
 ## Minimal Example
 

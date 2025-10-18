@@ -209,6 +209,69 @@ std::string sendAndCollect(uint16_t port, std::string_view raw) {
   return recvUntilClosed(fd);
 }
 
+int startEchoServer() {
+  // Create a listening socket bound to loopback ephemeral port using Socket RAII
+  aeronet::Socket listenSock(SOCK_STREAM);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;  // ephemeral
+  if (::bind(listenSock.fd(), reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
+    return -1;
+  }
+  if (::listen(listenSock.fd(), 1) != 0) {
+    return -1;
+  }
+  sockaddr_in actual{};
+  socklen_t alen = sizeof(actual);
+  if (::getsockname(listenSock.fd(), reinterpret_cast<sockaddr *>(&actual), &alen) != 0) {
+    return -1;
+  }
+  int port = ntohs(actual.sin_port);
+
+  // Duplicate the listening fd and let the detached thread own the raw fd. This avoids
+  // running Socket/BaseFd destructor from the detached thread which may log via spdlog
+  // during process teardown and cause use-after-free under ASan if the logger is destroyed
+  // before the thread finishes. The original Socket is closed in the current thread.
+  int dupFd = ::dup(listenSock.fd());
+  if (dupFd >= 0) {
+    std::thread([dupFd]() mutable {
+      int clientFd = ::accept(dupFd, nullptr, nullptr);
+      if (clientFd >= 0) {
+        // Echo incrementally: read chunks and write them back immediately.
+        char buf[1024];
+        ssize_t rcv;
+        while ((rcv = ::recv(clientFd, buf, static_cast<int>(sizeof(buf)), 0)) > 0) {
+          std::string_view sv(buf, static_cast<size_t>(rcv));
+          // sendAll will handle partial writes and retry with small timeout
+          sendAll(clientFd, sv);
+        }
+        ::close(clientFd);
+      }
+      // Close the duplicated listen fd using raw close (no logging via BaseFd)
+      ::close(dupFd);
+    }).detach();
+    // Close the original Socket here; its destructor / close may log but happens in main thread.
+    listenSock.close();
+  } else {
+    // Fallback: if dup failed, fall back to moving the Socket into the thread (previous behavior).
+    std::thread([lsock = std::move(listenSock)]() mutable {
+      int clientFd = ::accept(lsock.fd(), nullptr, nullptr);
+      if (clientFd >= 0) {
+        char buf[1024];
+        ssize_t rcv;
+        while ((rcv = ::recv(clientFd, buf, static_cast<int>(sizeof(buf)), 0)) > 0) {
+          std::string_view sv(buf, static_cast<size_t>(rcv));
+          sendAll(clientFd, sv);
+        }
+        ::close(clientFd);
+      }
+    }).detach();
+  }
+
+  return port;
+}
+
 namespace {
 void connectLoop(int fd, auto port, std::chrono::milliseconds timeout) {
   sockaddr_in addr{};

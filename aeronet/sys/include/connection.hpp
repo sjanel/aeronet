@@ -1,5 +1,6 @@
 #pragma once
 
+#include "base-fd.hpp"
 #include "socket.hpp"
 
 namespace aeronet {
@@ -7,7 +8,11 @@ namespace aeronet {
 // Simple RAII class wrapping a Connection accepted on a blocking socket.
 class Connection {
  public:
+  Connection() noexcept = default;
+
   explicit Connection(const Socket &socket);
+  // Construct a Connection that takes ownership of an existing fd wrapped in BaseFd.
+  explicit Connection(BaseFd &&bd) noexcept;
 
   [[nodiscard]] int fd() const noexcept { return _baseFd.fd(); }
 

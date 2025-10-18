@@ -42,6 +42,7 @@ TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
   });
   std::string resp = blockingFetch(port, "GET", "/adaptive");
   auto stats = ts.server.stats();
+  EXPECT_GT(stats.totalBytesWrittenImmediate, kLargeSize);
   ts.stop();
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   // Validate both chunk headers present: 5 and hex(kLargeSize)

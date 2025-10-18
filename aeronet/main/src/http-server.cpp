@@ -187,7 +187,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
   ConnectionState& state = cnxIt->second;
   do {
     // If we don't yet have a full request line (no '\n' observed) wait for more data
-    if (state.buffer.size() < http::kHttpReqLineMinLen) {
+    if (state.inBuffer.size() < http::kHttpReqLineMinLen) {
       break;  // need more bytes for at least the request line
     }
     const auto reqStart = std::chrono::steady_clock::now();
@@ -263,9 +263,14 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     }
 
     // Handle OPTIONS and TRACE per RFC 7231 §4.3
-    if (processSpecialMethods(cnxIt, req, consumedBytes, reqStart)) {
-      // Special method processed
+    // processSpecialMethods may emplace into _connStates (inserting upstream) and
+    // will update cnxIt by reference if rehashing occurs.
+    const auto action = processSpecialMethods(cnxIt, req, consumedBytes, reqStart);
+    if (action == LoopAction::Continue) {
       continue;
+    }
+    if (action == LoopAction::Break) {
+      break;
     }
 
     const auto res = _router.match(req.method(), req.path());
@@ -486,13 +491,13 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   bool allowKeepAlive = _config.enableKeepAlive && req.version() == http::HTTP_1_1 && !wantClose &&
                         state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.isAnyCloseRequested();
   ++state.requestsServed;
-  state.buffer.erase_front(consumedBytes);
+  state.inBuffer.erase_front(consumedBytes);
 
   if (_metricsCb) {
     RequestMetrics metrics;
     metrics.method = req.method();
     metrics.path = req.path();
-    metrics.status = 200;  // best effort (streaming handler controls status directly)
+    metrics.status = http::StatusCodeOK;  // best effort (streaming handler controls status directly)
     metrics.bytesIn = req.body().size();
     metrics.reusedConnection = state.requestsServed > 1;
     metrics.duration = std::chrono::steady_clock::now() - reqStart;

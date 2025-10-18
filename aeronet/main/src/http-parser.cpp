@@ -31,11 +31,11 @@ bool HttpServer::decodeFixedLengthBody(ConnectionMapIt cnxIt, HttpRequest& req, 
   bool hasCL = !lenViewAll.empty();
   ConnectionState& state = cnxIt->second;
   std::size_t headerEnd =
-      static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.buffer.data());
+      static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.inBuffer.data());
   if (!hasCL) {
     // No Content-Length and not chunked: treat as no body (common for GET/HEAD). Ready immediately.
     // TODO: we should reject the query if body is non empty and ContentLength not specified
-    if (state.buffer.size() >= headerEnd) {
+    if (state.inBuffer.size() >= headerEnd) {
       req._body = std::string_view{};
       consumedBytes = headerEnd;
       return true;
@@ -56,10 +56,10 @@ bool HttpServer::decodeFixedLengthBody(ConnectionMapIt cnxIt, HttpRequest& req, 
     queueData(cnxIt, HttpResponseData(http::HTTP11_100_CONTINUE));
   }
   std::size_t totalNeeded = headerEnd + declaredContentLen;
-  if (state.buffer.size() < totalNeeded) {
+  if (state.inBuffer.size() < totalNeeded) {
     return false;  // need more bytes
   }
-  req._body = {state.buffer.data() + headerEnd, declaredContentLen};
+  req._body = {state.inBuffer.data() + headerEnd, declaredContentLen};
   consumedBytes = totalNeeded;
   return true;
 }
@@ -70,17 +70,18 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, HttpRequest& req, bool
   if (expectContinue) {
     queueData(cnxIt, HttpResponseData(http::HTTP11_100_CONTINUE));
   }
-  std::size_t pos = static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.buffer.data());
+  std::size_t pos = static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.inBuffer.data());
   RawChars& decodedBody = state.bodyBuffer;
   decodedBody.clear();
   bool needMore = false;
   while (true) {
-    auto lineEndIt = std::search(state.buffer.begin() + pos, state.buffer.end(), http::CRLF.begin(), http::CRLF.end());
-    if (lineEndIt == state.buffer.end()) {
+    auto lineEndIt =
+        std::search(state.inBuffer.begin() + pos, state.inBuffer.end(), http::CRLF.begin(), http::CRLF.end());
+    if (lineEndIt == state.inBuffer.end()) {
       needMore = true;
       break;
     }
-    std::string_view sizeLine(state.buffer.data() + pos, lineEndIt);
+    std::string_view sizeLine(state.inBuffer.data() + pos, lineEndIt);
     std::size_t chunkSize = 0;
     for (char ch : sizeLine) {
       if (ch == ';') {
@@ -96,34 +97,34 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, HttpRequest& req, bool
         break;
       }
     }
-    pos = static_cast<std::size_t>(lineEndIt - state.buffer.data()) + http::CRLF.size();
+    pos = static_cast<std::size_t>(lineEndIt - state.inBuffer.data()) + http::CRLF.size();
     if (chunkSize > _config.maxBodyBytes) {
       emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
       return false;
     }
-    if (state.buffer.size() < pos + chunkSize + http::CRLF.size()) {
+    if (state.inBuffer.size() < pos + chunkSize + http::CRLF.size()) {
       needMore = true;
       break;
     }
     if (chunkSize == 0) {
-      if (state.buffer.size() < pos + http::CRLF.size()) {
+      if (state.inBuffer.size() < pos + http::CRLF.size()) {
         needMore = true;
         break;
       }
-      if (std::memcmp(state.buffer.data() + pos, http::CRLF.data(), http::CRLF.size()) != 0) {
+      if (std::memcmp(state.inBuffer.data() + pos, http::CRLF.data(), http::CRLF.size()) != 0) {
         needMore = true;
         break;
       }
       pos += http::CRLF.size();
       break;
     }
-    decodedBody.append(state.buffer.data() + pos, std::min(chunkSize, state.buffer.size() - pos));
+    decodedBody.append(state.inBuffer.data() + pos, std::min(chunkSize, state.inBuffer.size() - pos));
     if (decodedBody.size() > _config.maxBodyBytes) {
       emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
       return false;
     }
     pos += chunkSize;
-    if (std::memcmp(state.buffer.data() + pos, http::CRLF.data(), http::CRLF.size()) != 0) {
+    if (std::memcmp(state.inBuffer.data() + pos, http::CRLF.data(), http::CRLF.size()) != 0) {
       needMore = true;
       break;
     }
