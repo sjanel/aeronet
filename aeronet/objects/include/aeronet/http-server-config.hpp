@@ -7,10 +7,12 @@
 #include <initializer_list>
 #include <optional>
 #include <ranges>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/otel-config.hpp"
 #include "aeronet/router-config.hpp"
@@ -170,9 +172,14 @@ struct HttpServerConfig {
   };
   TracePolicy tracePolicy{TracePolicy::Disabled};
 
+  // ===========================================
+  // Builtin Kubernetes-style probes configuration
+  // ===========================================
+  BuiltinProbesConfig builtinProbes;
+
   // Optional allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT to any
   // resolved host is allowed. When non-empty, the target host must exactly match one of these entries.
-  std::vector<std::string> connectAllowlist{};
+  std::vector<std::string> connectAllowlist;
 
   // Validates config. Throws invalid_argument if it is not valid.
   void validate() const;
@@ -329,6 +336,11 @@ struct HttpServerConfig {
 
   // Set TRACE handling policy. Default: Disabled.
   HttpServerConfig& withTracePolicy(TracePolicy policy);
+
+  // Enable and configure builtin probes
+  HttpServerConfig& withBuiltinProbes(BuiltinProbesConfig cfg);
+
+  HttpServerConfig& enableBuiltinProbes(bool on = true);
 };
 
 }  // namespace aeronet

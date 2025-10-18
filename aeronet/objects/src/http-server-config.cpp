@@ -188,8 +188,20 @@ HttpServerConfig& HttpServerConfig::withTracePolicy(TracePolicy policy) {
   return *this;
 }
 
+// Enable and configure builtin probes
+HttpServerConfig& HttpServerConfig::withBuiltinProbes(BuiltinProbesConfig cfg) {
+  builtinProbes = std::move(cfg);
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::enableBuiltinProbes(bool on) {
+  builtinProbes.enabled = on;
+  return *this;
+}
+
 void HttpServerConfig::validate() const {
   compression.validate();
+  requestDecompression.validate();
   // Basic sanity: enforce reasonable bounds to avoid pathological configuration.
   auto sane = [](std::size_t value) {
     return value >= 512 && value <= (1U << 20);
@@ -212,8 +224,36 @@ void HttpServerConfig::validate() const {
     if (headerKey.empty() || std::ranges::any_of(headerKey, [](char ch) { return !is_tchar(ch); })) {
       throw invalid_argument("header '{}' is invalid", headerKey);
     }
+    // basic sanity on header value
+    if (std::ranges::any_of(headerValue, [](unsigned char ch) { return ch <= 0x1F || ch == 0x7F; })) {
+      throw invalid_argument("header '{}' has invalid value characters", headerKey);
+    }
   }
   otel.validate();
+  if (tls) {
+    tls->validate();
+  }
+  builtinProbes.validate();
+
+  // Validate some header/body limits
+  if (std::cmp_less(maxHeaderBytes, 128)) {
+    throw invalid_argument("maxHeaderBytes must be >= 128");
+  }
+  if (maxBodyBytes == 0) {
+    throw invalid_argument("maxBodyBytes must be > 0");
+  }
+  if (keepAliveTimeout.count() < 0) {
+    throw invalid_argument("keepAliveTimeout must be non-negative");
+  }
+  if (pollInterval.count() <= 0) {
+    throw invalid_argument("pollInterval must be > 0");
+  }
+  if (headerReadTimeout.count() < 0) {
+    throw invalid_argument("headerReadTimeout must be non-negative");
+  }
+  if (std::cmp_less(maxOutboundBufferBytes, 1024)) {
+    throw invalid_argument("maxOutboundBufferBytes must be >= 1024");
+  }
 }
 
 }  // namespace aeronet

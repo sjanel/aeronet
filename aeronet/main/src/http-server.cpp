@@ -137,6 +137,9 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
 
 void HttpServer::run() {
   prepareRun();
+  // Mark probes as started and ready before entering running state
+  _lifecycle.started.store(true, std::memory_order_relaxed);
+  _lifecycle.ready.store(true, std::memory_order_relaxed);
   _lifecycle.enterRunning();
   while (_lifecycle.isActive()) {
     eventLoop();
@@ -181,6 +184,8 @@ void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
   }
 
   log::info("Initiating graceful drain (connections={})", _connStates.size());
+  // Flip readiness immediately so external load balancers / K8s stop routing new traffic
+  _lifecycle.ready.store(false, std::memory_order_relaxed);
   closeListener();
   _lifecycle.enterDraining(deadline, hasDeadline);
 }
@@ -625,6 +630,31 @@ void HttpServer::init() {
     throw exception("EventLoop add wakeup fd failed");
   }
 
+  // Register builtin probes handlers if enabled in config
+  if (_config.builtinProbes.enabled) {
+    const auto ct = http::ContentTypeTextPlain;
+
+    // liveness: lightweight, should not depend on external systems
+    _router.setPath(_config.builtinProbes.livenessPath, http::Method::GET,
+                    [ct](const HttpRequest&) { return HttpResponse(200, "OK").contentType(ct).body("OK\n"); });
+
+    // readiness: reflects lifecycle.ready
+    _router.setPath(_config.builtinProbes.readinessPath, http::Method::GET, [this, ct](const HttpRequest&) {
+      if (_lifecycle.ready.load(std::memory_order_relaxed)) {
+        return HttpResponse(200, "OK").contentType(ct).body("OK\n");
+      }
+      return HttpResponse(503, "Service Unavailable").contentType(ct).body("Not Ready\n");
+    });
+
+    // startup: reflects lifecycle.started
+    _router.setPath(_config.builtinProbes.startupPath, http::Method::GET, [this, ct](const HttpRequest&) {
+      if (_lifecycle.started.load(std::memory_order_relaxed)) {
+        return HttpResponse(200, "OK").contentType(ct).body("OK\n");
+      }
+      return HttpResponse(503, "Service Unavailable").contentType(ct).body("Starting\n");
+    });
+  }
+
   // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
 #ifdef AERONET_ENABLE_ZLIB
   _encoders[static_cast<std::size_t>(Encoding::gzip)] =
@@ -647,6 +677,9 @@ void HttpServer::prepareRun() {
   if (!_listenSocket.isOpened()) {
     init();
   }
+  // Mark probes as started and ready for both run() and runUntil() paths
+  _lifecycle.started.store(true, std::memory_order_relaxed);
+  _lifecycle.ready.store(true, std::memory_order_relaxed);
   log::info("Server running on port :{}", port());
 }
 
