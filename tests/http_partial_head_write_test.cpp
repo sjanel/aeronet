@@ -57,7 +57,7 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
   EXPECT_GT(w1, 0U);
   // After first partial write, transport must not have body bytes in output
   std::string_view s1 = plainWriteTransport.out();
-  EXPECT_EQ(s1.find("hello world"), std::string_view::npos);
+  EXPECT_FALSE(s1.contains("hello world"));
 
   // Simulate caller retrying: write remaining head then body
   // We expect the remaining head + body to be appended on further writes
@@ -66,7 +66,7 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
   EXPECT_GT(w2, 0U);
   std::string_view s2 = plainWriteTransport.out();
   // Body must now be present
-  EXPECT_NE(s2.find("hello world"), std::string_view::npos);
+  EXPECT_TRUE(s2.contains("hello world"));
 }
 
 // Reuse the same fake transport semantics to simulate TLS partial write behavior.
@@ -79,11 +79,11 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadTls) {
   const auto w1 = partialWriteTransport.write(httpResponseData, want);
   EXPECT_GT(w1, 0U);
   std::string_view s1 = partialWriteTransport.out();
-  EXPECT_EQ(s1.find("hello world"), std::string_view::npos);
+  EXPECT_FALSE(s1.contains("hello world"));
 
   httpResponseData.addOffset(static_cast<std::size_t>(w1));
   const auto w2 = partialWriteTransport.write(httpResponseData, want);
   EXPECT_GT(w2, 0U);
   std::string_view s2 = partialWriteTransport.out();
-  EXPECT_NE(s2.find("hello world"), std::string_view::npos);
+  EXPECT_TRUE(s2.contains("hello world"));
 }

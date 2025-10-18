@@ -102,6 +102,11 @@ HttpServer::HttpServer(HttpServer&& other)
     throw std::runtime_error("Cannot move-construct a running HttpServer");
   }
   other._lifecycle.reset();
+
+  // Because probe handlers may capture 'this', they need to be re-registered on the moved-to instance
+  if (_config.builtinProbes.enabled) {
+    registerBuiltInProbes();
+  }
 }
 
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
@@ -130,6 +135,11 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _tlsMetrics = std::move(other._tlsMetrics);
     _tlsMetricsExternal = std::exchange(other._tlsMetricsExternal, {});
 #endif
+
+    // Because probe handlers may capture 'this', they need to be re-registered on the moved-to instance
+    if (_config.builtinProbes.enabled) {
+      registerBuiltInProbes();
+    }
   }
   other._lifecycle.reset();
   return *this;
@@ -181,8 +191,8 @@ void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
   }
 
   log::info("Initiating graceful drain (connections={})", _connStates.size());
-  closeListener();
   _lifecycle.enterDraining(deadline, hasDeadline);
+  closeListener();
 }
 
 bool HttpServer::ModWithCloseOnFailure(EventLoop& loop, ConnectionMapIt cnxIt, uint32_t events, const char* ctx,
@@ -579,11 +589,11 @@ void HttpServer::init() {
   const int listenFdLocal = _listenSocket.fd();
 
   // Initialize TLS context if requested (OpenSSL build).
-  if (_config.tls) {
+  if (_config.tls.enabled) {
 #ifdef AERONET_ENABLE_OPENSSL
     // Allocate TlsContext on the heap so its address remains stable even if HttpServer is moved.
     // (See detailed rationale in header next to _tlsCtxHolder.)
-    _tlsCtxHolder = std::make_unique<TlsContext>(*_config.tls, &_tlsMetricsExternal);
+    _tlsCtxHolder = std::make_unique<TlsContext>(_config.tls, &_tlsMetricsExternal);
 #else
     throw invalid_argument("aeronet built without OpenSSL support but TLS configuration provided");
 #endif
@@ -623,6 +633,11 @@ void HttpServer::init() {
   // Register wakeup fd
   if (!_eventLoop.add(_lifecycle.wakeupFd.fd(), EPOLLIN)) {
     throw exception("EventLoop add wakeup fd failed");
+  }
+
+  // Register builtin probes handlers if enabled in config
+  if (_config.builtinProbes.enabled) {
+    registerBuiltInProbes();
   }
 
   // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
@@ -774,6 +789,39 @@ void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, b
   } else {
     cnxIt->second.requestDrainAndClose();
   }
+}
+
+void HttpServer::registerBuiltInProbes() {
+  // liveness: lightweight, should not depend on external systems
+  _router.setPath(_config.builtinProbes.livenessPath, http::Method::GET, [](const HttpRequest&) {
+    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("OK\n");
+  });
+
+  // readiness: reflects lifecycle.ready
+  _router.setPath(_config.builtinProbes.readinessPath, http::Method::GET, [this](const HttpRequest&) {
+    HttpResponse resp(http::StatusCodeOK);
+    resp.contentType(http::ContentTypeTextPlain);
+    if (_lifecycle.ready.load(std::memory_order_relaxed)) {
+      resp.body("OK\n");
+    } else {
+      resp.statusCode(http::StatusCodeServiceUnavailable);
+      resp.body("Not Ready\n");
+    }
+    return resp;
+  });
+
+  // startup: reflects lifecycle.started
+  _router.setPath(_config.builtinProbes.startupPath, http::Method::GET, [this](const HttpRequest&) {
+    HttpResponse resp(http::StatusCodeOK);
+    resp.contentType(http::ContentTypeTextPlain);
+    if (_lifecycle.started.load(std::memory_order_relaxed)) {
+      resp.body("OK\n");
+    } else {
+      resp.statusCode(http::StatusCodeServiceUnavailable);
+      resp.body("Starting\n");
+    }
+    return resp;
+  });
 }
 
 }  // namespace aeronet

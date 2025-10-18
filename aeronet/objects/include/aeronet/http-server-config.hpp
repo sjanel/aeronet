@@ -5,27 +5,23 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
-#include <optional>
 #include <ranges>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/otel-config.hpp"
 #include "aeronet/router-config.hpp"
 #include "compression-config.hpp"
 #include "decompression-config.hpp"
-#include "invalid_argument_exception.hpp"
 #include "tls-config.hpp"
 
 namespace aeronet {
 
 struct HttpServerConfig {
-  // RFC 7301 (ALPN) protocol identifier length is encoded in a single octet => maximum 255 bytes.
-  // OpenSSL lacks a stable public constant for this; we define it here to avoid magic numbers.
-  static constexpr std::size_t kMaxAlpnProtocolLength = 255;
-
   // ============================
   // Listener / socket parameters
   // ============================
@@ -67,11 +63,8 @@ struct HttpServerConfig {
   // ===========================================
   // Keep-Alive / connection lifecycle controls
   // ===========================================
-  // Maximum number of HTTP requests to serve over a single persistent connection before forcing close.
 
-  // OpenTelemetry configuration
-  OtelConfig otel;
-  // Helps cap memory use for long-lived clients and provides fairness. Default: 100.
+  // Maximum number of HTTP requests to serve over a single persistent connection before forcing close.
   uint32_t maxRequestsPerConnection{100};
 
   // Whether HTTP/1.1 persistent connections (keep-alive) are enabled. When false, server always closes after
@@ -104,11 +97,14 @@ struct HttpServerConfig {
   // ===========================================
   // Optional TLS configuration
   // ===========================================
-  // Presence (has_value) means user requests TLS; constructor will throw if OpenSSL support is not compiled in.
-  std::optional<TLSConfig> tls;  // empty => plaintext
+
+  TLSConfig tls;
 
   // Protective timeout for TLS handshakes (time from accept to handshake completion). 0 => disabled.
   std::chrono::milliseconds tlsHandshakeTimeout{std::chrono::milliseconds{0}};
+
+  // OpenTelemetry configuration
+  OtelConfig otel;
 
   // ===========================================
   // Response compression configuration
@@ -161,18 +157,23 @@ struct HttpServerConfig {
   std::vector<http::Header> globalHeaders{{"Server", "aeronet"}};
 
   // Enable TRACE method handling (echo) on the server. Disabled by default for safety.
-  enum class TracePolicy : std::uint8_t {
+  enum class TraceMethodPolicy : std::uint8_t {
     Disabled,
     // Allow on both plaintext and TLS
     EnabledPlainAndTLS,
     // Allow only on plaintext connections (disable on TLS)
     EnabledPlainOnly
   };
-  TracePolicy tracePolicy{TracePolicy::Disabled};
+  TraceMethodPolicy traceMethodPolicy{TraceMethodPolicy::Disabled};
+
+  // ===========================================
+  // Builtin Kubernetes-style probes configuration
+  // ===========================================
+  BuiltinProbesConfig builtinProbes;
 
   // Optional allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT to any
   // resolved host is allowed. When non-empty, the target host must exactly match one of these entries.
-  std::vector<std::string> connectAllowlist{};
+  std::vector<std::string> connectAllowlist;
 
   // Validates config. Throws invalid_argument if it is not valid.
   void validate() const;
@@ -252,16 +253,7 @@ struct HttpServerConfig {
       tlsCfg.alpnProtocols.reserve(std::ranges::size(protos));
     }
     for (auto&& proto : protos) {
-      // Ensure each element is materialized as a string (copy). This isolates lifetime concerns
-      // when the input range is a temporary (e.g. braced initializer list or rvalue container).
-      std::string_view sv(proto);
-      if (sv.empty()) {
-        throw invalid_argument("ALPN protocol entries must be non-empty");
-      }
-      if (std::cmp_greater(sv.size(), kMaxAlpnProtocolLength)) {
-        throw invalid_argument("ALPN protocol entry length exceeds max {} bytes", kMaxAlpnProtocolLength);
-      }
-      tlsCfg.alpnProtocols.emplace_back(sv);
+      tlsCfg.alpnProtocols.emplace_back(std::string_view(proto));
     }
     return *this;
   }
@@ -328,7 +320,12 @@ struct HttpServerConfig {
   HttpServerConfig& withGlobalHeader(http::Header header);
 
   // Set TRACE handling policy. Default: Disabled.
-  HttpServerConfig& withTracePolicy(TracePolicy policy);
+  HttpServerConfig& withTracePolicy(TraceMethodPolicy policy);
+
+  // Enable and configure builtin probes
+  HttpServerConfig& withBuiltinProbes(BuiltinProbesConfig cfg);
+
+  HttpServerConfig& enableBuiltinProbes(bool on = true);
 };
 
 }  // namespace aeronet

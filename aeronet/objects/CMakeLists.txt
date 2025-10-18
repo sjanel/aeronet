@@ -51,8 +51,8 @@ add_unit_test(
 )
 
 add_unit_test(
-    tls-info_test
-    test/tls-info_test.cpp
+    extra-config-validations_test
+    test/extra-config-validations_test.cpp
     LIBRARIES
     aeronet_objects
 )

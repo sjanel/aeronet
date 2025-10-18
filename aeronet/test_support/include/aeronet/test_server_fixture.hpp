@@ -1,4 +1,5 @@
 #pragma once
+
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -12,6 +13,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/test_util.hpp"
+#include "log.hpp"
 
 namespace aeronet::test {
 
@@ -59,6 +61,29 @@ struct TestServer {
 
  private:
   void waitReady(std::chrono::milliseconds timeout) const {
+    // If builtin probes are enabled, actively poll the readiness probe path until we receive 200 OK
+    // or the timeout elapses. Otherwise fall back to the simple connect check used previously.
+    const auto& cfg = server.config();
+    if (cfg.builtinProbes.enabled) {
+      const auto probePath = cfg.builtinProbes.readinessPath;
+      const auto deadline = std::chrono::steady_clock::now() + timeout;
+      while (std::chrono::steady_clock::now() < deadline) {
+        try {
+          aeronet::test::RequestOptions opt;
+          opt.target = probePath;
+          auto resp = aeronet::test::requestOrThrow(port(), opt);
+          // Request returned; check if it contains HTTP/ status 200 in the status line.
+          if (!resp.empty() && resp.find("HTTP/1.1 200") != std::string::npos) {
+            return;
+          }
+        } catch (const std::exception& ex) {
+          log::error("Readiness probe request failed, retrying... {}", ex.what());
+        }
+        std::this_thread::sleep_for(5ms);
+      }
+      throw std::runtime_error("server readiness probe did not return 200 within timeout");
+    }
+
     // The listening socket is active immediately after server construction; a successful connect
     // simply confirms the OS accepted it. We retry briefly to absorb transient startup latency.
     aeronet::test::ClientConnection cnx(port(), timeout);

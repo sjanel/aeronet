@@ -19,11 +19,11 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/internal/lifecycle.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "connection-state.hpp"
 #include "connection.hpp"
-#include "event-fd.hpp"
 #include "event-loop.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/ssl.h>  // ensure real ::SSL is visible (avoid shadowing forward decl)
@@ -278,60 +278,10 @@ class HttpServer {
 
   void handleInTunneling(ConnectionMapIt cnxIt);
 
-  struct Lifecycle {
-    enum class State : uint8_t { Idle, Running, Draining, Stopping };
-
-    void reset() noexcept {
-      drainDeadline = {};
-      state = State::Idle;
-      drainDeadlineEnabled = false;
-    }
-
-    void enterRunning() noexcept {
-      state = State::Running;
-      drainDeadlineEnabled = false;
-    }
-
-    void enterStopping() noexcept {
-      state = State::Stopping;
-      drainDeadlineEnabled = false;
-      // Trigger wakeup to break any blocking epoll_wait quickly.
-      wakeupFd.send();
-    }
-
-    void enterDraining(std::chrono::steady_clock::time_point deadline, bool enabled) noexcept {
-      drainDeadline = deadline;
-      state = State::Draining;
-      drainDeadlineEnabled = enabled;
-      wakeupFd.send();
-    }
-
-    void shrinkDeadline(std::chrono::steady_clock::time_point deadline) noexcept {
-      if (!drainDeadlineEnabled || deadline < drainDeadline) {
-        drainDeadline = deadline;
-        drainDeadlineEnabled = true;
-      }
-      wakeupFd.send();
-    }
-
-    [[nodiscard]] bool isIdle() const noexcept { return state == State::Idle; }
-    [[nodiscard]] bool isRunning() const noexcept { return state == State::Running; }
-    [[nodiscard]] bool isDraining() const noexcept { return state == State::Draining; }
-    [[nodiscard]] bool isStopping() const noexcept { return state == State::Stopping; }
-    [[nodiscard]] bool isActive() const noexcept { return state != State::Idle; }
-    [[nodiscard]] bool acceptingConnections() const noexcept { return state == State::Running; }
-    [[nodiscard]] bool hasDeadline() const noexcept { return drainDeadlineEnabled; }
-    [[nodiscard]] std::chrono::steady_clock::time_point deadline() const noexcept { return drainDeadline; }
-
-    std::chrono::steady_clock::time_point drainDeadline;
-    // Wakeup fd (eventfd) used to interrupt epoll_wait promptly when stop() is invoked from another thread.
-    EventFd wakeupFd;
-    State state{State::Idle};
-    bool drainDeadlineEnabled{false};
-  };
-
   void closeListener() noexcept;
   void closeAllConnections(bool immediate);
+
+  void registerBuiltInProbes();
 
   struct StatsInternal {
     uint64_t totalBytesQueued{0};
@@ -354,7 +304,7 @@ class HttpServer {
   Socket _listenSocket;  // listening socket
   EventLoop _eventLoop;  // epoll-based event loop
 
-  Lifecycle _lifecycle;
+  internal::Lifecycle _lifecycle;
 
   Router _router;
 

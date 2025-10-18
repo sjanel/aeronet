@@ -57,6 +57,8 @@ aeronet_http_test(http_server_restart)
 aeronet_http_test(http_trailing_slash)
 aeronet_http_test(http_headers_custom)
 
+aeronet_http_test(http_probes)
+
 # Stats exposure test
 aeronet_http_test(http_stats)
 aeronet_http_test(server_stats_json)
@@ -193,6 +195,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_query_parsing_edge_test.cpp
 	http_query_structured_bindings_test.cpp
 	http_headers_custom_test.cpp
+		http_probes_test.cpp
 	test_version_test.cpp
 	opentelemetry_integration_test.cpp
 	http_compression_zlib_buffered_test.cpp
