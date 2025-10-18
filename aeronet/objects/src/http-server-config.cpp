@@ -183,6 +183,11 @@ HttpServerConfig& HttpServerConfig::withGlobalHeader(http::Header header) {
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withTracePolicy(TracePolicy policy) {
+  tracePolicy = policy;
+  return *this;
+}
+
 void HttpServerConfig::validate() const {
   compression.validate();
   // Basic sanity: enforce reasonable bounds to avoid pathological configuration.

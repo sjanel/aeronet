@@ -176,4 +176,24 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
   return res;
 }
 
+http::MethodBmp Router::allowedMethods(std::string_view path) const {
+  std::string_view normalizedPath = path;
+  if (shouldNormalize(_trailingSlashPolicy, path)) {
+    normalizedPath.remove_suffix(1);
+  }
+
+  const auto it = _pathHandlers.find(normalizedPath);
+  if (it != _pathHandlers.end()) {
+    const auto& entry = it->second;
+    return static_cast<http::MethodBmp>(entry.normalMethodBmp | entry.streamingMethodBmp);
+  }
+  // No path-specific handler: if global handlers exist treat them as allowing all methods
+  if (_streamingHandler || _handler) {
+    // Allow all known methods
+    static constexpr http::MethodBmp kAllMethods = (1U << http::kNbMethods) - 1U;
+    return kAllMethods;
+  }
+  return 0;
+}
+
 }  // namespace aeronet

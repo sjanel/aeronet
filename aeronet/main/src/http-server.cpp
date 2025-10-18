@@ -230,7 +230,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     state.headerStart = {};
     bool isChunked = false;
     bool hasTransferEncoding = false;
-    std::string_view transferEncoding = req.headerValueOrEmpty(http::TransferEncoding);
+    const std::string_view transferEncoding = req.headerValueOrEmpty(http::TransferEncoding);
     if (!transferEncoding.empty()) {
       hasTransferEncoding = true;
       if (req.version() == http::HTTP_1_0) {
@@ -245,14 +245,14 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       }
     }
 
-    std::string_view contentLength = req.headerValueOrEmpty(http::ContentLength);
-    bool hasContentLength = !contentLength.empty();
+    const std::string_view contentLength = req.headerValueOrEmpty(http::ContentLength);
+    const bool hasContentLength = !contentLength.empty();
     if (hasContentLength && hasTransferEncoding) {
       emitSimpleError(cnxIt, http::StatusCodeBadRequest, true,
                       "Content-Length and Transfer-Encoding cannot be used together");
       break;
     }
-    bool expectContinue = req.hasExpectContinue();
+    const bool expectContinue = req.hasExpectContinue();
     std::size_t consumedBytes = 0;
     if (!decodeBodyIfReady(cnxIt, req, isChunked, expectContinue, consumedBytes)) {
       break;  // need more bytes or error
@@ -261,11 +261,17 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     if (!req.body().empty() && !maybeDecompressRequestBody(cnxIt, req)) {
       break;  // error already emitted; close or wait handled inside
     }
-    // Provide implicit HEAD->GET fallback (RFC7231: HEAD is identical to GET without body) when
-    // a HEAD handler is not explicitly registered but a GET handler exists for the same path.
+
+    // Handle OPTIONS and TRACE per RFC 7231 §4.3
+    if (processSpecialMethods(cnxIt, req, consumedBytes, reqStart)) {
+      // Special method processed
+      continue;
+    }
+
     const auto res = _router.match(req.method(), req.path());
+
     if (res.streamingHandler != nullptr) {
-      bool streamingClose = callStreamingHandler(*res.streamingHandler, req, cnxIt, consumedBytes, reqStart);
+      const bool streamingClose = callStreamingHandler(*res.streamingHandler, req, cnxIt, consumedBytes, reqStart);
       if (streamingClose) {
         break;
       }
@@ -279,13 +285,13 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
         resp = (*res.requestHandler)(req);
       } catch (const std::exception& ex) {
         log::error("Exception in path handler: {}", ex.what());
-        resp.statusCode(500)
+        resp.statusCode(http::StatusCodeInternalServerError)
             .reason(http::ReasonInternalServerError)
             .contentType(http::ContentTypeTextPlain)
             .body(ex.what());
       } catch (...) {
         log::error("Unknown exception in path handler.");
-        resp.statusCode(500)
+        resp.statusCode(http::StatusCodeInternalServerError)
             .reason(http::ReasonInternalServerError)
             .contentType(http::ContentTypeTextPlain)
             .body("Unknown error");
@@ -314,14 +320,19 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       resp.statusCode(http::StatusCodeNotFound);
       resp.reason(http::NotFound).contentType(http::ContentTypeTextPlain).body(http::NotFound);
     }
-    finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
+
+    const auto respStatusCode = resp.statusCode();
+
+    finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
 
     // End the span after response is finalized
     if (span) {
-      span->setAttribute("http.status_code", resp.statusCode());
       const auto reqEnd = std::chrono::steady_clock::now();
       const auto durationUs = std::chrono::duration_cast<std::chrono::microseconds>(reqEnd - reqStart);
+
+      span->setAttribute("http.status_code", respStatusCode);
       span->setAttribute("http.duration_us", durationUs.count());
+
       span->end();
     }
   } while (!state.isAnyCloseRequested());
@@ -451,8 +462,8 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
     if (negotiated.reject) {
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
       HttpResponse resp(406, http::ReasonNotAcceptable);
-      resp.body("No acceptable content-coding available").contentType(http::ContentTypeTextPlain);
-      finalizeAndSendResponse(cnxIt, req, resp, consumedBytes, reqStart);
+      resp.contentType(http::ContentTypeTextPlain).body("No acceptable content-coding available");
+      finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
       return state.isAnyCloseRequested();
     }
     compressionFormat = negotiated.encoding;

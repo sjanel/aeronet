@@ -67,6 +67,31 @@ constexpr MethodIdx toMethodIdx(Method method) {
   }
 }
 
+constexpr Method fromMethodIdx(MethodIdx idx) {
+  switch (idx) {
+    case 0:
+      return Method::GET;
+    case 1:
+      return Method::HEAD;
+    case 2:
+      return Method::POST;
+    case 3:
+      return Method::PUT;
+    case 4:
+      return Method::DELETE;
+    case 5:
+      return Method::CONNECT;
+    case 6:
+      return Method::OPTIONS;
+    case 7:
+      return Method::TRACE;
+    case 8:
+      return Method::PATCH;
+    default:
+      std::unreachable();
+  }
+}
+
 // constexpr mapping from method token to enum; falls back to GET if unknown.
 constexpr std::optional<Method> toMethodEnum(std::string_view methodStr) {
   if (methodStr == http::GET) {
