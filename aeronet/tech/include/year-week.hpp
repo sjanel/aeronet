@@ -62,6 +62,6 @@ constexpr int IsoWeekNumber(std::chrono::sys_days sysDays) {
 }
 
 // Week number according to the ISO-8601 standard, weeks starting on Monday.
-constexpr int IsoWeekNumber(TimePoint tp) { return IsoWeekNumber(std::chrono::floor<std::chrono::days>(tp)); }
+constexpr int IsoWeekNumber(SysTimePoint tp) { return IsoWeekNumber(std::chrono::floor<std::chrono::days>(tp)); }
 
 }  // namespace aeronet

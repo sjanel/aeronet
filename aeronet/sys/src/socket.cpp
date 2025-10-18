@@ -15,7 +15,7 @@ Socket::Socket(int type, int protocol) : _baseFd(::socket(AF_INET, type, protoco
   if (_baseFd.fd() < 0) {
     throw exception("Unable to create a new socket, with error {}", std::strerror(errno));
   }
-  log::debug("Socket fd={} opened", _baseFd.fd());
+  log::debug("Socket fd # {} opened", _baseFd.fd());
 }
 
 }  // namespace aeronet

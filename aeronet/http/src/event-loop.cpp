@@ -20,7 +20,7 @@ namespace aeronet {
 
 namespace {
 
-int ComputeEpollTimeoutMs(Duration timeout) {
+int ComputeEpollTimeoutMs(SysDuration timeout) {
   auto timeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
   if (std::cmp_less(std::numeric_limits<int>::max(), timeoutMs)) {
     log::warn("Timeout value is too large, clamping to max int");
@@ -31,7 +31,7 @@ int ComputeEpollTimeoutMs(Duration timeout) {
 
 }  // namespace
 
-EventLoop::EventLoop(Duration pollTimeout, int epollFlags, std::size_t initialCapacity)
+EventLoop::EventLoop(SysDuration pollTimeout, int epollFlags, std::size_t initialCapacity)
     : _baseFd(::epoll_create1(epollFlags)), _pollTimeoutMs(ComputeEpollTimeoutMs(pollTimeout)) {
   if (!_baseFd.isOpened()) {
     auto err = errno;
@@ -39,7 +39,7 @@ EventLoop::EventLoop(Duration pollTimeout, int epollFlags, std::size_t initialCa
     throw std::runtime_error("epoll_create1 failed");
   }
 
-  log::debug("EventLoop fd={} opened", _baseFd.fd());
+  log::debug("EventLoop fd # {} opened", _baseFd.fd());
 
   if (initialCapacity == 0) {
     log::warn("EventLoop constructed with initialCapacity=0; promoting to 1");
@@ -52,7 +52,7 @@ bool EventLoop::add(int fd, uint32_t events) const {
   epoll_event ev{events, epoll_data_t{.fd = fd}};
   if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_ADD, fd, &ev) != 0) {
     auto err = errno;
-    log::error("epoll_ctl ADD failed (fd={}, events=0x{:x}, errno={}, msg={})", fd, events, err, std::strerror(err));
+    log::error("epoll_ctl ADD failed (fd # {}, events=0x{:x}, errno={}, msg={})", fd, events, err, std::strerror(err));
     return false;
   }
   return true;
@@ -62,7 +62,7 @@ bool EventLoop::mod(int fd, uint32_t events) const {
   epoll_event ev{events, epoll_data_t{.fd = fd}};
   if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_MOD, fd, &ev) != 0) {
     auto err = errno;
-    log::error("epoll_ctl MOD failed (fd={}, events=0x{:x}, errno={}, msg={})", fd, events, err, std::strerror(err));
+    log::error("epoll_ctl MOD failed (fd # {}, events=0x{:x}, errno={}, msg={})", fd, events, err, std::strerror(err));
     return false;
   }
   return true;
@@ -71,7 +71,7 @@ void EventLoop::del(int fd) const {
   if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_DEL, fd, nullptr) != 0) {
     // DEL failures are usually benign if fd already closed; log at debug to avoid noise.
     auto err = errno;
-    log::debug("epoll_ctl DEL failed (fd={}, errno={}, msg={})", fd, err, strerror(err));
+    log::debug("epoll_ctl DEL failed (fd # {}, errno={}, msg={})", fd, err, strerror(err));
   }
 }
 

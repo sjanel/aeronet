@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -127,6 +128,9 @@ class MultiHttpServer {
   //   the joining of their threads (ordering guaranteed by move+scope pattern in implementation).
   void stop() noexcept;
 
+  // beginDrain(): forward graceful drain to every underlying HttpServer.
+  void beginDrain(std::chrono::milliseconds maxWait = std::chrono::milliseconds{0}) noexcept;
+
   // Checks if this instance is empty (ie: it contains no server instances and should not be configured).
   [[nodiscard]] bool empty() const noexcept { return _servers.empty(); }
 
@@ -135,6 +139,8 @@ class MultiHttpServer {
   //   may have terminated due to an exception while isRunning() is still true). Use stats() or
   //   external health checks for deeper diagnostics.
   [[nodiscard]] bool isRunning() const { return !_threads.empty(); }
+
+  [[nodiscard]] bool isDraining() const;
 
   // port(): The resolved listening port shared by all underlying servers.
   // Returns 0 if the instance is empty (holding no servers)

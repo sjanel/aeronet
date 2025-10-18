@@ -112,6 +112,7 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Async single-server wrapper | `AsyncHttpServer` runs one server in a background thread |
 | Move semantics | Transfer listening socket & loop state safely |
 | Restarts | All `HttpServer`, `AsyncHttpServer` and `MultiHttpServer` can be started again after stop |
+| Graceful draining | `HttpServer::beginDrain(maxWait)` stops new accepts, closes keep-alive after current responses, optional deadline to force-close stragglers |
 | Heterogeneous lookups | Path handler map accepts `std::string`, `std::string_view`, `const char*` |
 | Outbound stats | Bytes queued, immediate vs flush writes, high-water marks |
 | Lightweight logging | Pluggable design (spdlog optional); ISO 8601 UTC timestamps |
@@ -149,6 +150,7 @@ Key characteristics:
 - It is **not copyable**, but it is **moveable** if and only if it is **not running**.
 **Warning!** Unlike most C++ objects, the move operations are not `noexcept` to make sure that client does not move a running server (it would throw in that case, and only in that case). Moving a non-running `HttpServer` is, however, perfectly safe and `noexcept` in practice.
 - It is **restartable**, you can call `start()` after a `stop()`. You can modify the routing configuration before the new `start()`.
+- Graceful draining is available via `beginDrain(std::chrono::milliseconds maxWait = 0)`: it stops accepting new connections, lets in-flight responses finish with `Connection: close`, and optionally enforces a deadline before forcing the remaining connections to close.
 - It is also [trivially relocatable](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p1144r10.html), although I doubt it will be very useful for this type.
 
 #### AsyncHttpServer, an asynchronous (non-blocking) HttpServer

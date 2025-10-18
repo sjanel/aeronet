@@ -15,10 +15,10 @@ EventFd::EventFd() : _baseFd(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)) {
   if (_baseFd.fd() < 0) {
     throw exception("Unable to create a new eventfd, with error {}", std::strerror(errno));
   }
-  log::debug("EventFd fd={} opened", _baseFd.fd());
+  log::debug("EventFd fd # {} opened", _baseFd.fd());
 }
 
-void EventFd::send() const {
+void EventFd::send() const noexcept {
   static constexpr eventfd_t one = 1;
   const auto ret = ::eventfd_write(_baseFd.fd(), one);
   if (ret != 0) {

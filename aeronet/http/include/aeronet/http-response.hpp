@@ -368,7 +368,7 @@ class HttpResponse {
 
   void appendHeaderUnchecked(std::string_view key, std::string_view value);
 
-  void appendDateUnchecked(TimePoint tp);
+  void appendDateUnchecked(SysTimePoint tp);
 
   template <class ValueWriter>
   void appendHeaderGeneric(std::string_view key, std::size_t valueSize, ValueWriter&& writeValue,
@@ -397,7 +397,7 @@ class HttpResponse {
   // IMPORTANT: This method finalizes the response by appending reserved headers,
   // and returns the internal buffers stolen from this HttpResponse instance.
   // So this instance must not be used anymore after this call.
-  HttpResponseData finalizeAndStealData(http::Version version, TimePoint tp, bool keepAlive,
+  HttpResponseData finalizeAndStealData(http::Version version, SysTimePoint tp, bool keepAlive,
                                         std::span<const http::Header> globalHeaders, bool isHeadMethod,
                                         std::size_t minCapturedBodySize);
 
