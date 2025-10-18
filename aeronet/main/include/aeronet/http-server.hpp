@@ -240,8 +240,8 @@ class HttpServer {
   bool decodeFixedLengthBody(ConnectionMapIt cnxIt, HttpRequest& req, bool expectContinue, std::size_t& consumedBytes);
   bool decodeChunkedBody(ConnectionMapIt cnxIt, HttpRequest& req, bool expectContinue, std::size_t& consumedBytes);
   bool maybeDecompressRequestBody(ConnectionMapIt cnxIt, HttpRequest& req);
-  void finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRequest& req, HttpResponse& resp, std::size_t consumedBytes,
-                               std::chrono::steady_clock::time_point reqStart);
+  void finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpRequest& req, HttpResponse&& resp,
+                               std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // If immediate=true the connection will be closed without waiting for buffered writes to drain.
   void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, bool immediate = false,
@@ -260,6 +260,9 @@ class HttpServer {
   // to mutate transient fields (target normalization already complete at this point).
   bool callStreamingHandler(const StreamingHandler& streamingHandler, HttpRequest& req, ConnectionMapIt cnxIt,
                             std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
+
+  bool processSpecialMethods(ConnectionMapIt cnxIt, const HttpRequest& req, std::size_t consumedBytes,
+                             std::chrono::steady_clock::time_point reqStart);
 
   struct StatsInternal {
     uint64_t totalBytesQueued{0};

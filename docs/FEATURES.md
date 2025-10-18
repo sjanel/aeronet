@@ -57,13 +57,42 @@ Legend: [x] implemented, [ ] planned / not yet.
 ### Status & error handling
 
 - [x] 400 Bad Request (parse errors, CL+TE conflict)
+- [x] 400 on HTTP/1.0 requests carrying Transfer-Encoding
+- [x] 405 Method Not Allowed (enforced when path exists but method not in allow set)
 - [x] 413 Payload Too Large (body limit)
+- [x] 415 Unsupported Media Type (content-encoding based)
+- [ ] 415 Unsupported Media Type (content-type based)
 - [x] 431 Request Header Fields Too Large (header limit)
 - [x] 501 Not Implemented (unsupported Transfer-Encoding)
 - [x] 505 HTTP Version Not Supported
-- [x] 400 on HTTP/1.0 requests carrying Transfer-Encoding
-- [ ] 415 Unsupported Media Type (content-type based) – not required yet
-- [x] 405 Method Not Allowed (enforced when path exists but method not in allow set)
+  
+  Note: aeronet already maps unknown request `Content-Encoding` values to **415** when the inbound
+  decompression feature is enabled (see "Inbound Request Decompression"). However, automatic
+  `Content-Type` (media-type) validation is intentionally left to application code. If you need
+  global Content-Type enforcement, implement a small validator middleware or configure your handlers
+  to check the `Content-Type` header and return **415** when appropriate.
+
+### OPTIONS & TRACE behavior
+
+- [x] OPTIONS * handling (returns an Allow header per RFC 7231 §4.3) — server computes the allowed methods for the targeted path using the router and emits an `Allow` header listing permitted methods.
+- [x] TRACE method support (echo) — optional and configurable via `HttpServerConfig::TracePolicy`.
+
+TRACE semantics and safety:
+
+- TRACE, when allowed, echoes the received request (start-line, headers and body) back with `Content-Type: message/http` so it can be used for debugging loopback-style probes as per RFC 7231 §4.3.2.
+- The server exposes a `TracePolicy` in `HttpServerConfig` with the following values:
+  - `Disabled` — TRACE disallowed (default).
+  - `Enabled` — TRACE allowed on both plaintext and TLS connections.
+  - `EnabledPlainOnly` — TRACE allowed on plaintext connections only; rejected on TLS.
+
+Server enforcement uses the per-request TLS indicator (e.g. `HttpRequest::tlsVersion()` being non-empty for TLS) to make the decision when `TracePolicy` is one of the TLS-bound options. For backward compatibility the config also provides `withEnableTrace(bool)` as a convenience that maps `true` to `Enabled` and `false` to `Disabled`.
+
+Use cases:
+
+- If you deploy behind TLS-terminating proxies and want to avoid exposing TRACE responses over TLS endpoints, set `TracePolicy::EnabledPlainOnly`.
+  
+Note: `EnabledOnTls` (TRACE allowed only on TLS) was removed — the policy set is now intentionally smaller and focuses
+on disabling TRACE entirely, allowing it everywhere, or allowing it only on plaintext.
 
 ### Headers & protocol niceties
 
@@ -663,6 +692,33 @@ Testing guidance:
 Roadmap (see also table above): session resumption, SNI routing, hot reload of cert/key, OCSP / revocation checks.
 
 ---
+
+### TRACE method policy
+
+The server exposes a configurable `TracePolicy` to control handling of the HTTP `TRACE` method. Use
+`HttpServerConfig::withTracePolicy(...)` to choose one of:
+
+- `Disabled` (default) — reject TRACE (405).
+- `Disabled` (default) — reject TRACE (405).
+- `EnabledPlainAndTLS` — allow TRACE and echo the received request message (RFC 7231 §4.3) on both plaintext and TLS.
+- `EnabledPlainOnly` — allow TRACE on plaintext connections only; reject when the request arrived over TLS.
+
+This provides a safety-minded default while allowing deployments to express site-specific policies (e.g. disallow TRACE on TLS).
+
+Quick reference matrix:
+
+| Policy | Plaintext TRACE | TLS TRACE | Description |
+|--------|-----------------|-----------|-------------|
+| Disabled | Rejected (405) | Rejected (405) | Default safe option — TRACE not allowed |
+| Enabled  | Allowed (echo)  | Allowed (echo) | TRACE permitted on all transports |
+| EnabledPlainOnly | Allowed (echo)  | Rejected (405) | Useful when TLS endpoints must not expose request echoes |
+| EnabledPlainAndTLS  | Allowed (echo)  | Allowed (echo)  | TRACE allowed on both plaintext and TLS |
+
+Examples:
+
+- To disable TRACE entirely (default): `cfg.withTracePolicy(HttpServerConfig::TracePolicy::Disabled);`
+To allow TRACE only on plaintext: `cfg.withTracePolicy(HttpServerConfig::TracePolicy::EnabledPlainOnly);`
+To allow TRACE on both plaintext and TLS: `cfg.withTracePolicy(HttpServerConfig::TracePolicy::EnabledPlainAndTLS);`
 
 ## Streaming Responses (Chunked / Incremental)
 

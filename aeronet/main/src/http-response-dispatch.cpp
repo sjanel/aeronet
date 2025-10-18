@@ -15,6 +15,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "connection-state.hpp"
 #include "connection.hpp"
@@ -25,7 +26,67 @@
 #include "transport.hpp"
 
 namespace aeronet {
-void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRequest& req, HttpResponse& resp,
+
+bool HttpServer::processSpecialMethods(ConnectionMapIt cnxIt, const HttpRequest& req, std::size_t consumedBytes,
+                                       std::chrono::steady_clock::time_point reqStart) {
+  if (req.method() == http::Method::OPTIONS) {
+    // OPTIONS * request (target="*") should return an Allow header listing supported methods.
+    if (req.path() == "*") {
+      HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
+      // Compute allowed methods for server (root/global) - use router.allowedMethods("*")
+      http::MethodBmp allowed = _router.allowedMethods("*");
+
+      // Build Allow header value by iterating known methods
+      RawChars allowVal;
+      for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
+        if (http::isMethodSet(allowed, methodIdx)) {
+          if (!allowVal.empty()) {
+            allowVal.push_back(',');
+          }
+          allowVal.append(http::toMethodStr(http::fromMethodIdx(methodIdx)));
+        }
+      }
+      resp.customHeader(http::Allow, allowVal).contentType(http::ContentTypeTextPlain);
+      finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
+      return true;
+    }
+  } else if (req.method() == http::Method::TRACE) {
+    // TRACE: echo the received request message as the body with Content-Type: message/http
+    // Respect configured TracePolicy. Default: Disabled.
+    bool allowTrace = false;
+    switch (_config.tracePolicy) {
+      case HttpServerConfig::TracePolicy::EnabledPlainAndTLS:
+        allowTrace = true;
+        break;
+      case HttpServerConfig::TracePolicy::EnabledPlainOnly:
+        // If this request arrived over TLS, disallow TRACE
+        allowTrace = req.tlsVersion().empty();
+        break;
+      case HttpServerConfig::TracePolicy::Disabled:
+      default:
+        allowTrace = false;
+        break;
+    }
+    if (allowTrace) {
+      // Reconstruct the request head from HttpRequest
+      std::string_view reqDataEchoed(cnxIt->second.buffer.data(), consumedBytes);
+
+      HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
+      resp.customHeader(http::ContentType, "message/http");
+      resp.body(reqDataEchoed);
+      finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
+      return true;
+    }
+    // TRACE disabled -> Method Not Allowed
+    HttpResponse resp(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
+    resp.contentType(http::ContentTypeTextPlain).body(resp.reason());
+    finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
+    return true;
+  }
+  return false;
+}
+
+void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpRequest& req, HttpResponse&& resp,
                                          std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart) {
   ConnectionState& state = cnxIt->second;
   ++state.requestsServed;
@@ -52,7 +113,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRequest& req
     // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
     // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
     if (reject) {
-      resp.statusCode(406)
+      resp.statusCode(http::StatusCodeNotAcceptable)
           .reason(http::ReasonNotAcceptable)
           .contentType(http::ContentTypeTextPlain)
           .body("No acceptable content-coding available");

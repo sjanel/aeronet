@@ -35,6 +35,8 @@ aeronet_http_test(http_multi_reuseport)
 # Multi server wrapper test
 aeronet_http_test(http_multi_wrapper)
 
+aeronet_http_test(http_options_trace)
+
 # Parser error and fuzz tests
 aeronet_http_test(http_parser_errors)
 
@@ -117,6 +119,7 @@ if (AERONET_ENABLE_OPENSSL)
 	aeronet_http_test(http_tls_alpn_non_strict)
 	aeronet_http_test(http_tls_version_bounds)
 	aeronet_http_test(http_tls_cipher_list_invalid)
+	aeronet_http_test(http_tls_options_trace)
 
 	# TLS streaming tests (streaming + compression/backpressure over TLS)
 	aeronet_http_test(http_tls_streaming)
@@ -152,6 +155,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_malformed_test.cpp
 	http_multi_reuseport_test.cpp
 	http_multi_wrapper_test.cpp
+	http_options_trace_test.cpp
 	http_parser_errors_test.cpp
 	http_routing_test.cpp
 	http_server_move_test.cpp
@@ -208,6 +212,7 @@ if (AERONET_ENABLE_OPENSSL)
 		http_tls_alpn_non_strict_test.cpp
 		http_tls_version_bounds_test.cpp
 		http_tls_cipher_list_invalid_test.cpp
+		http_tls_options_trace_test.cpp
 		http_tls_streaming_test.cpp
 		http_tls_compression_streaming_test.cpp
 		http_tls_streaming_backpressure_test.cpp

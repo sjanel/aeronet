@@ -160,6 +160,16 @@ struct HttpServerConfig {
   // Defaults to a list of one entry "Server: aeronet"
   std::vector<http::Header> globalHeaders{{"Server", "aeronet"}};
 
+  // Enable TRACE method handling (echo) on the server. Disabled by default for safety.
+  enum class TracePolicy : std::uint8_t {
+    Disabled,
+    // Allow on both plaintext and TLS
+    EnabledPlainAndTLS,
+    // Allow only on plaintext connections (disable on TLS)
+    EnabledPlainOnly
+  };
+  TracePolicy tracePolicy{TracePolicy::Disabled};
+
   // Validates config. Throws invalid_argument if it is not valid.
   void validate() const;
 
@@ -302,6 +312,9 @@ struct HttpServerConfig {
 
   // Convenience: add a single global header entry (appended)
   HttpServerConfig& withGlobalHeader(http::Header header);
+
+  // Set TRACE handling policy. Default: Disabled.
+  HttpServerConfig& withTracePolicy(TracePolicy policy);
 };
 
 }  // namespace aeronet
