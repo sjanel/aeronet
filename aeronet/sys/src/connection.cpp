@@ -37,4 +37,6 @@ int ComputeConnectionFd(int socketFd) {
 
 Connection::Connection(const Socket& socket) : _baseFd(ComputeConnectionFd(socket.fd())) {}
 
+Connection::Connection(BaseFd&& bd) noexcept : _baseFd(std::move(bd)) {}
+
 }  // namespace aeronet

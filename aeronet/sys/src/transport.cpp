@@ -8,23 +8,23 @@
 
 namespace aeronet {
 
-std::size_t PlainTransport::read(char* buf, std::size_t len, Transport& want) {
+std::size_t PlainTransport::read(char* buf, std::size_t len, TransportHint& want) {
   const auto ret = ::read(_fd, buf, len);
   if (ret >= 0) {
-    want = Transport::None;
+    want = TransportHint::None;
     return static_cast<std::size_t>(ret);
   }
   // ret == -1
   if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-    want = Transport::ReadReady;
+    want = TransportHint::ReadReady;
     return 0;
   }
-  want = Transport::Error;
+  want = TransportHint::Error;
   return 0;
 }
 
-std::size_t PlainTransport::write(std::string_view data, Transport& want) {
-  want = Transport::None;
+std::size_t PlainTransport::write(std::string_view data, TransportHint& want) {
+  want = TransportHint::None;
 
   std::size_t total = 0;
 
@@ -38,11 +38,11 @@ std::size_t PlainTransport::write(std::string_view data, Transport& want) {
       continue;
     } else if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
       // Kernel send buffer full — caller should wait for writable event
-      want = Transport::WriteReady;
+      want = TransportHint::WriteReady;
       break;
     } else {
       // Fatal error (ECONNRESET, EPIPE, etc.)
-      want = Transport::Error;
+      want = TransportHint::Error;
       break;
     }
   }

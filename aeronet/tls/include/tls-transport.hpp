@@ -17,9 +17,9 @@ class TlsTransport : public ITransport {
 
   explicit TlsTransport(SslPtr sslPtr) : _ssl(std::move(sslPtr)) {}
 
-  std::size_t read(char* buf, std::size_t len, Transport& want) override;
+  std::size_t read(char* buf, std::size_t len, TransportHint& want) override;
 
-  std::size_t write(std::string_view data, Transport& want) override;
+  std::size_t write(std::string_view data, TransportHint& want) override;
 
   [[nodiscard]] bool handshakeDone() const noexcept override;
 

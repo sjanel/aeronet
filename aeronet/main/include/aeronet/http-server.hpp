@@ -18,6 +18,7 @@
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "connection-state.hpp"
@@ -68,12 +69,12 @@ class HttpServer {
   using ParserErrorCallback = std::function<void(http::StatusCode)>;
 
   struct RequestMetrics {
-    int status{0};
+    http::StatusCode status{0};
     http::Method method;
     bool reusedConnection{false};
     std::string_view path;
-    uint64_t bytesIn{0};
-    uint64_t bytesOut{0};
+    std::size_t bytesIn{0};
+    std::size_t bytesOut{0};
     std::chrono::nanoseconds duration{0};
   };
 
@@ -261,8 +262,12 @@ class HttpServer {
   bool callStreamingHandler(const StreamingHandler& streamingHandler, HttpRequest& req, ConnectionMapIt cnxIt,
                             std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
 
-  bool processSpecialMethods(ConnectionMapIt cnxIt, const HttpRequest& req, std::size_t consumedBytes,
-                             std::chrono::steady_clock::time_point reqStart);
+  enum class LoopAction : uint8_t { Nothing, Continue, Break };
+
+  LoopAction processSpecialMethods(ConnectionMapIt& cnxIt, const HttpRequest& req, std::size_t consumedBytes,
+                                   std::chrono::steady_clock::time_point reqStart);
+
+  void handleInTunneling(ConnectionMapIt cnxIt);
 
   struct StatsInternal {
     uint64_t totalBytesQueued{0};

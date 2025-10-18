@@ -1,13 +1,7 @@
 # Benchmarks.cmake - encapsulates all benchmark-related build logic for aeronet.
-option(AERONET_BENCH_FORCE_CI "Force building benchmarks even when CI env var is set" OFF)
 option(AERONET_BENCH_ENABLE_OATPP "Fetch and build oatpp for comparative benchmarks" ON)
 option(AERONET_BENCH_ENABLE_DROGON "Fetch and build drogon for comparative benchmarks" ON)
 option(AERONET_BENCH_ENABLE_HTTPLIB "Fetch and build cpp-httplib for comparative benchmarks" ON)
-
-if(DEFINED ENV{CI} AND NOT AERONET_BENCH_FORCE_CI)
-  message(STATUS "[aeronet][bench] CI detected; skipping benchmarks (override with -DAERONET_BENCH_FORCE_CI=ON)")
-  return()
-endif()
 
 include(FetchContent)
 

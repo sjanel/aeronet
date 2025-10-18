@@ -6,14 +6,13 @@
 #include <openssl/types.h>
 #include <openssl/x509.h>
 
-// Project headers (public API then internal RAII helpers)
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <string>
-#include <utility>
 
 #include "log.hpp"
+#include "tls-info.hpp"
 #include "tls-metrics.hpp"
 #include "tls-raii.hpp"
 
@@ -73,32 +72,33 @@ TlsHandshakeResult collectAndLogTlsHandshake(const SSL* ssl, int fd, bool logHan
   return res;
 }
 
-void finalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake,
-                          std::chrono::steady_clock::time_point handshakeStart, std::string& selectedAlpn,
-                          std::string& negotiatedCipher, std::string& negotiatedVersion, TlsMetricsInternal& metrics) {
+TLSInfo finalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake,
+                             std::chrono::steady_clock::time_point handshakeStart, TlsMetricsInternal& metrics) {
   auto hs = collectAndLogTlsHandshake(ssl, fd, logHandshake, handshakeStart);
-  selectedAlpn = std::move(hs.selectedAlpn);
-  negotiatedCipher = std::move(hs.negotiatedCipher);
-  negotiatedVersion = std::move(hs.negotiatedVersion);
+
+  TLSInfo ret{hs.selectedAlpn, hs.negotiatedCipher, hs.negotiatedVersion};
+
   // Metrics updates
   ++metrics.handshakesSucceeded;
-  if (!selectedAlpn.empty()) {
-    ++metrics.alpnDistribution[selectedAlpn];
+  if (!hs.selectedAlpn.empty()) {
+    ++metrics.alpnDistribution[std::move(hs.selectedAlpn)];
   }
   if (hs.clientCertPresent) {
     ++metrics.clientCertPresent;
   }
-  if (!negotiatedVersion.empty()) {
-    ++metrics.versionCounts[negotiatedVersion];
+  if (!hs.negotiatedCipher.empty()) {
+    ++metrics.cipherCounts[std::move(hs.negotiatedCipher)];
   }
-  if (!negotiatedCipher.empty()) {
-    ++metrics.cipherCounts[negotiatedCipher];
+  if (!hs.negotiatedVersion.empty()) {
+    ++metrics.versionCounts[std::move(hs.negotiatedVersion)];
   }
   if (hs.durationNs > 0) {
     ++metrics.handshakeDurationCount;
     metrics.handshakeDurationTotalNs += hs.durationNs;
     metrics.handshakeDurationMaxNs = std::max(metrics.handshakeDurationMaxNs, hs.durationNs);
   }
+
+  return ret;
 }
 
 }  // namespace aeronet

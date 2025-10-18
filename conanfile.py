@@ -48,6 +48,7 @@ class AeronetConan(ConanFile):
 
     def generate(self):
         tc = CMakeToolchain(self)
+        tc.variables['AERONET_ENABLE_ASAN'] = "OFF"
         tc.variables["AERONET_ENABLE_OPENSSL"] = "ON" if self.options.with_openssl else "OFF"
         tc.variables["AERONET_ENABLE_SPDLOG"] = "ON" if self.options.with_spdlog else "OFF"
         tc.variables["AERONET_ENABLE_BROTLI"] = "ON" if self.options.with_br else "OFF"
@@ -56,6 +57,7 @@ class AeronetConan(ConanFile):
         tc.variables["AERONET_ENABLE_OPENTELEMETRY"] = "ON" if self.options.with_opentelemetry else "OFF"
         # Force OFF for tests/examples in package context
         tc.variables["AERONET_BUILD_TESTS"] = "OFF"
+        tc.variables['AERONET_BUILD_BENCHMARKS'] = "OFF"
         tc.variables["AERONET_BUILD_EXAMPLES"] = "OFF"
         tc.variables["AERONET_BUILD_SHARED"] = "ON" if self.options.shared else "OFF"
         tc.variables["AERONET_INSTALL"] = "ON"

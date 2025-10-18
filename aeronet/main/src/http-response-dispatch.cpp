@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string_view>
 #include <utility>
 
@@ -22,68 +23,154 @@
 #include "log.hpp"
 #include "raw-chars.hpp"
 #include "string-equal-ignore-case.hpp"
+#include "tcp-connector.hpp"
 #include "timedef.hpp"
 #include "transport.hpp"
 
 namespace aeronet {
 
-bool HttpServer::processSpecialMethods(ConnectionMapIt cnxIt, const HttpRequest& req, std::size_t consumedBytes,
-                                       std::chrono::steady_clock::time_point reqStart) {
-  if (req.method() == http::Method::OPTIONS) {
-    // OPTIONS * request (target="*") should return an Allow header listing supported methods.
-    if (req.path() == "*") {
-      HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
-      // Compute allowed methods for server (root/global) - use router.allowedMethods("*")
-      http::MethodBmp allowed = _router.allowedMethods("*");
+HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt, const HttpRequest& req,
+                                                         std::size_t consumedBytes,
+                                                         std::chrono::steady_clock::time_point reqStart) {
+  switch (req.method()) {
+    case http::Method::OPTIONS:
+      // OPTIONS * request (target="*") should return an Allow header listing supported methods.
+      if (req.path() == "*") {
+        HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
+        // Compute allowed methods for server (root/global) - use router.allowedMethods("*")
+        http::MethodBmp allowed = _router.allowedMethods("*");
 
-      // Build Allow header value by iterating known methods
-      RawChars allowVal;
-      for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
-        if (http::isMethodSet(allowed, methodIdx)) {
-          if (!allowVal.empty()) {
-            allowVal.push_back(',');
+        // Build Allow header value by iterating known methods
+        RawChars allowVal;
+        for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
+          if (http::isMethodSet(allowed, methodIdx)) {
+            if (!allowVal.empty()) {
+              allowVal.push_back(',');
+            }
+            allowVal.append(http::toMethodStr(http::fromMethodIdx(methodIdx)));
           }
-          allowVal.append(http::toMethodStr(http::fromMethodIdx(methodIdx)));
         }
+        resp.customHeader(http::Allow, allowVal).contentType(http::ContentTypeTextPlain);
+        finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
+        return LoopAction::Continue;
       }
-      resp.customHeader(http::Allow, allowVal).contentType(http::ContentTypeTextPlain);
-      finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
-      return true;
-    }
-  } else if (req.method() == http::Method::TRACE) {
-    // TRACE: echo the received request message as the body with Content-Type: message/http
-    // Respect configured TracePolicy. Default: Disabled.
-    bool allowTrace = false;
-    switch (_config.tracePolicy) {
-      case HttpServerConfig::TracePolicy::EnabledPlainAndTLS:
-        allowTrace = true;
-        break;
-      case HttpServerConfig::TracePolicy::EnabledPlainOnly:
-        // If this request arrived over TLS, disallow TRACE
-        allowTrace = req.tlsVersion().empty();
-        break;
-      case HttpServerConfig::TracePolicy::Disabled:
-      default:
-        allowTrace = false;
-        break;
-    }
-    if (allowTrace) {
-      // Reconstruct the request head from HttpRequest
-      std::string_view reqDataEchoed(cnxIt->second.buffer.data(), consumedBytes);
+      break;
+    case http::Method::TRACE: {
+      // TRACE: echo the received request message as the body with Content-Type: message/http
+      // Respect configured TracePolicy. Default: Disabled.
+      bool allowTrace;
+      switch (_config.tracePolicy) {
+        case HttpServerConfig::TracePolicy::EnabledPlainAndTLS:
+          allowTrace = true;
+          break;
+        case HttpServerConfig::TracePolicy::EnabledPlainOnly:
+          // If this request arrived over TLS, disallow TRACE
+          allowTrace = req.tlsVersion().empty();
+          break;
+        case HttpServerConfig::TracePolicy::Disabled:
+        default:
+          allowTrace = false;
+          break;
+      }
+      if (allowTrace) {
+        // Reconstruct the request head from HttpRequest
+        std::string_view reqDataEchoed(cnxIt->second.inBuffer.data(), consumedBytes);
 
-      HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
-      resp.customHeader(http::ContentType, "message/http");
-      resp.body(reqDataEchoed);
+        HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
+        resp.customHeader(http::ContentType, "message/http");
+        resp.body(reqDataEchoed);
+        finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
+        return LoopAction::Continue;
+      }
+      // TRACE disabled -> Method Not Allowed
+      HttpResponse resp(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
+      resp.contentType(http::ContentTypeTextPlain).body(resp.reason());
       finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
-      return true;
+      return LoopAction::Continue;
     }
-    // TRACE disabled -> Method Not Allowed
-    HttpResponse resp(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
-    resp.contentType(http::ContentTypeTextPlain).body(resp.reason());
-    finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
-    return true;
+    case http::Method::CONNECT: {
+      // CONNECT: establish a TCP tunnel to target (host:port). On success reply 200 and
+      // proxy bytes bidirectionally between client and upstream.
+      // Parse authority form in req.path() (host:port)
+      const std::string_view target = req.path();
+      const auto colonPos = target.find(':');
+      if (colonPos == std::string_view::npos) {
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Malformed CONNECT target");
+        return LoopAction::Break;
+      }
+      const std::string_view host(target.begin(), target.begin() + static_cast<size_t>(colonPos));
+      const std::string_view portStr(target.data() + colonPos + 1, static_cast<size_t>(target.size() - colonPos - 1));
+
+      // Enforce CONNECT allowlist if present
+      if (!_config.connectAllowlist.empty() &&
+          std::ranges::find(_config.connectAllowlist, host) == _config.connectAllowlist.end()) {
+        emitSimpleError(cnxIt, http::StatusCodeForbidden, true, "CONNECT target not allowed");
+        return LoopAction::Break;
+      }
+
+      // Use helper to resolve and initiate a non-blocking connect. The helper
+      // returns a ConnectResult with an owned BaseFd and flags indicating
+      // whether the connect is pending or failed.
+      ConnectResult cres = ConnectTCP(cnxIt->second.inBuffer.data(), host, portStr);
+      if (cres.failure) {
+        emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Unable to resolve CONNECT target");
+        return LoopAction::Break;
+      }
+
+      int upstreamFd = cres.cnx.fd();
+      // Register upstream in event loop for edge-triggered reads and writes so we can detect
+      // completion of non-blocking connect (EPOLLOUT) as well as incoming data.
+      if (!_eventLoop.add(upstreamFd, EPOLLIN | EPOLLOUT | EPOLLET)) {
+        emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Failed to register upstream fd");
+        return LoopAction::Break;
+      }
+      // Insert upstream connection state. Inserting may rehash and invalidate the
+      // caller's iterator; save the client's fd and re-resolve the client iterator
+      // after emplacing.
+      const int clientFd = cnxIt->first.fd();
+      auto [upIt, inserted] = _connStates.emplace(std::move(cres.cnx), ConnectionState{});
+      if (!inserted) {
+        log::error("TCP connection ConnectionState fd {} already exists, should not happen", upstreamFd);
+        _eventLoop.del(upstreamFd);
+        // Try to re-find client to report error; if not found, just return Break.
+        emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Upstream connection tracking failed");
+        return LoopAction::Break;
+      }
+      // Set upstream transport to plain (no TLS)
+      upIt->second.transport = std::make_unique<PlainTransport>(upstreamFd);
+
+      // If the connector indicated the connect is still in progress on this
+      // non-blocking socket, mark state so the event loop's writable handler
+      // can check SO_ERROR and surface failures. Use the connector's flag
+      // rather than relying on errno here (errno may have been overwritten).
+
+      // Reply 200 Connection Established to client
+      // Since cnxIt is passed by reference we will update it here so the caller need not re-find.
+      cnxIt = _connStates.find(clientFd);
+      if (cnxIt == _connStates.end()) {
+        throw std::runtime_error("Should not happend - Client connection vanished after upstream insertion");
+      }
+
+      HttpResponse resp(http::StatusCodeOK, "Connection Established");
+      resp.contentType(http::ContentTypeTextPlain);
+      finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
+
+      // Enter tunneling mode: link peer fds
+      cnxIt->second.peerFd = upstreamFd;
+      upIt->second.peerFd = cnxIt->first.fd();
+      upIt->second.connectPending = cres.connectPending;
+
+      // From now on, both connections bypass HTTP parsing; we simply proxy bytes. We'll rely on handleReadableClient
+      // to read from each side and forward to the other by writing into the peer's transport directly.
+      // Erase any partially parsed buffers for the client (we already replied)
+      cnxIt->second.inBuffer.clear();
+      upIt->second.inBuffer.clear();
+      return LoopAction::Continue;
+    }
+    default:
+      break;
   }
-  return false;
+  return LoopAction::Nothing;
 }
 
 void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpRequest& req, HttpResponse&& resp,
@@ -146,7 +233,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpReques
   queueData(cnxIt, resp.finalizeAndStealData(req.version(), Clock::now(), keepAlive, _config.globalHeaders, isHead,
                                              _config.minCapturedBodySize));
 
-  state.buffer.erase_front(consumedBytes);
+  state.inBuffer.erase_front(consumedBytes);
   if (!keepAlive && state.outBuffer.empty()) {
     state.requestDrainAndClose();
   }
@@ -169,17 +256,17 @@ bool HttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseD
 
   if (state.outBuffer.empty()) {
     // Plain TCP path: try immediate write optimization
-    Transport want;
+    TransportHint want;
     const std::size_t written = state.transportWrite(httpResponseData, want);
     switch (want) {
-      case Transport::Error:
+      case TransportHint::Error:
         state.requestImmediateClose();
         return false;
-      case Transport::ReadReady:
+      case TransportHint::ReadReady:
         [[fallthrough]];
-      case Transport::WriteReady:
+      case TransportHint::WriteReady:
         [[fallthrough]];
-      case Transport::None:
+      case TransportHint::None:
         if (std::cmp_equal(written, totalSz)) {
           _stats.totalBytesQueued += static_cast<uint64_t>(totalSz);
           _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
@@ -219,25 +306,25 @@ bool HttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseD
 
 void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   ++_stats.flushCycles;
-  Transport want = Transport::None;
+  TransportHint want = TransportHint::None;
   ConnectionState& state = cnxIt->second;
   const int fd = cnxIt->first.fd();
   while (!state.outBuffer.empty()) {
     const std::size_t written = state.transportWrite(state.outBuffer, want);
     _stats.totalBytesWrittenFlush += written;
     switch (want) {
-      case Transport::Error: {
+      case TransportHint::Error: {
         auto savedErr = errno;
         log::error("send/transportWrite failed fd={} errno={} msg={}", fd, savedErr, std::strerror(savedErr));
         state.requestImmediateClose();
         state.outBuffer.clear();
         break;
       }
-      case Transport::ReadReady:
+      case TransportHint::ReadReady:
         [[fallthrough]];
-      case Transport::WriteReady:
+      case TransportHint::WriteReady:
         [[fallthrough]];
-      case Transport::None:
+      case TransportHint::None:
         if (written > 0) {
           if (written == state.outBuffer.remainingSize()) {
             state.outBuffer.clear();
@@ -262,7 +349,7 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   // Clear writable interest if no buffered data and transport no longer needs write progress.
   // (We do not call handshakePending() here because ConnStateInternal does not expose it; transport has that.)
   if (state.outBuffer.empty()) {
-    bool transportNeedsWrite = (!state.tlsEstablished && want == Transport::WriteReady);
+    bool transportNeedsWrite = (!state.tlsEstablished && want == TransportHint::WriteReady);
     if (transportNeedsWrite) {
       if (!state.waitingWritable) {
         if (!HttpServer::ModWithCloseOnFailure(_eventLoop, cnxIt, EPOLLIN | EPOLLOUT | EPOLLET,

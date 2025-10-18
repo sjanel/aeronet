@@ -23,6 +23,8 @@
 #include "tls-raii.hpp"
 #include "tls-transport.hpp"  // from tls module include directory
 #endif
+#include <sys/socket.h>
+
 #include "event-loop.hpp"
 #include "log.hpp"
 
@@ -124,7 +126,7 @@ void HttpServer::acceptNewConnections() {
       // bodyReadChunkBytes.
       std::size_t chunkSize = _config.bodyReadChunkBytes;
       if (pCnx->headerStart.time_since_epoch().count() != 0 ||
-          std::ranges::search(pCnx->buffer, http::DoubleCRLF).empty()) {
+          std::ranges::search(pCnx->inBuffer, http::DoubleCRLF).empty()) {
         chunkSize = _config.initialReadChunkBytes;
       }
       if (_config.maxPerEventReadBytes != 0) {
@@ -136,7 +138,7 @@ void HttpServer::acceptNewConnections() {
         }
         chunkSize = std::min(chunkSize, remainingBudget);
       }
-      Transport want;
+      TransportHint want;
       const std::size_t bytesRead = pCnx->transportRead(chunkSize, want);
       // Check for handshake completion
       // If the TLS handshake completed during the preceding transportRead, finalize it
@@ -151,55 +153,53 @@ void HttpServer::acceptNewConnections() {
 #ifdef AERONET_ENABLE_OPENSSL
         if (_config.tls && dynamic_cast<TlsTransport*>(pCnx->transport.get()) != nullptr) {
           const auto* tlsTr = static_cast<const TlsTransport*>(pCnx->transport.get());
-          finalizeTlsHandshake(tlsTr->rawSsl(), cnxFd, _config.tls->logHandshake, pCnx->handshakeStart,
-                               pCnx->selectedAlpn, pCnx->negotiatedCipher, pCnx->negotiatedVersion, _tlsMetrics);
+          pCnx->tlsInfo = finalizeTlsHandshake(tlsTr->rawSsl(), cnxFd, _config.tls->logHandshake, pCnx->handshakeStart,
+                                               _tlsMetrics);
         }
 #endif
         pCnx->tlsEstablished = true;
       }
       // Close only on fatal transport error or an orderly EOF (bytesRead==0 with no 'want' hint).
-      if (want == Transport::Error || (bytesRead == 0 && want == Transport::None)) {
+      if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
         // If TLS handshake still pending, treat a transport Error as transient and retry later.
-        if (want == Transport::Error && pCnx != nullptr && pCnx->transport && !pCnx->transport->handshakeDone()) {
-          log::warn("Transient transport error during TLS handshake on fd={}; will retry", cnxFd);
-          // Yield and let event loop drive readiness notifications; do not close yet.
-          break;
-        }
-        // Emit richer diagnostics to aid debugging TLS handshake / transport failures.
-        log::error("Closing connection fd={} bytesRead={} want={} errno={} ({})", cnxFd, bytesRead,
-                   static_cast<int>(want), errno, std::strerror(errno));
+        if (want == TransportHint::Error) {
+          if (pCnx != nullptr && pCnx->transport && !pCnx->transport->handshakeDone()) {
+            log::warn("Transient transport error during TLS handshake on fd={}; will retry", cnxFd);
+            // Yield and let event loop drive readiness notifications; do not close yet.
+            break;
+          }  // Emit richer diagnostics to aid debugging TLS handshake / transport failures.
+          log::error("Closing connection fd={} bytesRead={} want={} errno={} ({})", cnxFd, bytesRead,
+                     static_cast<int>(want), errno, std::strerror(errno));
 #ifdef AERONET_ENABLE_OPENSSL
-        if (_tlsCtxHolder) {
-          auto* tlsTr = dynamic_cast<TlsTransport*>(pCnx->transport.get());
-          if (tlsTr != nullptr) {
-            const SSL* ssl = tlsTr->rawSsl();
-            if (ssl != nullptr) {
-              const char* ver = ::SSL_get_version(ssl);
-              const char* cipher = ::SSL_get_cipher_name(ssl);
-              log::error("TLS state fd={} ver={} cipher={}", cnxFd, (ver != nullptr) ? ver : "?",
-                         (cipher != nullptr) ? cipher : "?");
+          if (_tlsCtxHolder) {
+            auto* tlsTr = dynamic_cast<TlsTransport*>(pCnx->transport.get());
+            if (tlsTr != nullptr) {
+              const SSL* ssl = tlsTr->rawSsl();
+              if (ssl != nullptr) {
+                const char* ver = ::SSL_get_version(ssl);
+                const char* cipher = ::SSL_get_cipher_name(ssl);
+                log::error("TLS state fd={} ver={} cipher={}", cnxFd, (ver != nullptr) ? ver : "?",
+                           (cipher != nullptr) ? cipher : "?");
+              }
             }
-          }
 
-          TlsTransport::logErrorIfAny();
-        }
+            TlsTransport::logErrorIfAny();
+          }
 #endif
+        }
         closeConnection(cnxIt);
         pCnx = nullptr;
         break;
       }
-      if (want != Transport::None) {
+      if (want != TransportHint::None) {
         // Transport indicates we should wait for readability or writability before continuing.
         // Adjust epoll interest if TLS handshake needs write readiness
-        if (want == Transport::WriteReady && !pCnx->waitingWritable) {
+        if (want == TransportHint::WriteReady && !pCnx->waitingWritable) {
           if (_eventLoop.mod(cnxFd, EPOLLIN | EPOLLOUT | EPOLLET)) {
             pCnx->waitingWritable = true;
           }
         }
         break;
-      }
-      if (pCnx->headerStart.time_since_epoch().count() == 0) {
-        pCnx->headerStart = std::chrono::steady_clock::now();
       }
       bytesReadThisEvent += static_cast<std::size_t>(bytesRead);
       _telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(bytesRead));
@@ -213,7 +213,7 @@ void HttpServer::acceptNewConnections() {
     if (pCnx == nullptr) {
       continue;
     }
-    bool closeNow = processRequestsOnConnection(cnxIt);
+    const bool closeNow = processRequestsOnConnection(cnxIt);
     if (closeNow && pCnx->outBuffer.empty()) {
       closeConnection(cnxIt);
     }
@@ -257,12 +257,18 @@ void HttpServer::handleReadableClient(int fd) {
     }
   }
 
+  // If in tunneling mode, read raw bytes and forward to peer
+  if (state.isTunneling()) {
+    handleInTunneling(cnxIt);
+    return;
+  }
+
   std::size_t bytesReadThisEvent = 0;
   while (true) {
-    Transport want = Transport::None;
+    TransportHint want = TransportHint::None;
     std::size_t chunkSize = _config.bodyReadChunkBytes;
     if (state.headerStart.time_since_epoch().count() != 0 ||
-        std::ranges::search(state.buffer, http::DoubleCRLF).empty()) {
+        std::ranges::search(state.inBuffer, http::DoubleCRLF).empty()) {
       chunkSize = _config.initialReadChunkBytes;
     }
     if (_config.maxPerEventReadBytes != 0) {
@@ -278,15 +284,15 @@ void HttpServer::handleReadableClient(int fd) {
 #ifdef AERONET_ENABLE_OPENSSL
       if (_config.tls && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
         const auto* tlsTr = static_cast<const TlsTransport*>(state.transport.get());
-        finalizeTlsHandshake(tlsTr->rawSsl(), fd, _config.tls->logHandshake, state.handshakeStart, state.selectedAlpn,
-                             state.negotiatedCipher, state.negotiatedVersion, _tlsMetrics);
+        state.tlsInfo =
+            finalizeTlsHandshake(tlsTr->rawSsl(), fd, _config.tls->logHandshake, state.handshakeStart, _tlsMetrics);
       }
 #endif
       state.tlsEstablished = true;
     }
-    if (want != Transport::None) {
+    if (want != TransportHint::None) {
       // Non-fatal: transport needs the socket to be readable or writable before proceeding.
-      if (want == Transport::WriteReady && !state.waitingWritable) {
+      if (want == TransportHint::WriteReady && !state.waitingWritable) {
         if (_eventLoop.mod(fd, EPOLLIN | EPOLLOUT | EPOLLET)) {
           state.waitingWritable = true;
         }
@@ -297,9 +303,6 @@ void HttpServer::handleReadableClient(int fd) {
       state.requestImmediateClose();
       break;
     }
-    if (count > 0 && state.headerStart.time_since_epoch().count() == 0) {
-      state.headerStart = std::chrono::steady_clock::now();
-    }
     bytesReadThisEvent += static_cast<std::size_t>(count);
     if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
       // Reached per-event fairness cap; parse what we have then yield.
@@ -308,7 +311,7 @@ void HttpServer::handleReadableClient(int fd) {
       }
       break;
     }
-    if (state.buffer.size() > _config.maxHeaderBytes + _config.maxBodyBytes) {
+    if (state.inBuffer.size() > _config.maxHeaderBytes + _config.maxBodyBytes) {
       state.requestImmediateClose();
       break;
     }
@@ -339,9 +342,109 @@ void HttpServer::handleWritableClient(int fd) {
     log::error("Invalid fd {} received from the event loop", fd);
     return;
   }
+  ConnectionState& state = cnxIt->second;
+  // If this connection was created for an upstream non-blocking connect, and connect is pending,
+  // check SO_ERROR to determine whether connect completed successfully or failed.
+  if (state.connectPending) {
+    int soerr = 0;
+    socklen_t len = sizeof(soerr);
+    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &len) == 0) {
+      state.connectPending = false;
+      if (soerr != 0) {
+        // Upstream connect failed. Attempt to notify the client side (peerFd) with 502 and close both.
+        const auto peerIt = _connStates.find(state.peerFd);
+        if (peerIt != _connStates.end()) {
+          emitSimpleError(peerIt, http::StatusCodeBadGateway, true, "Upstream connect failed");
+        } else {
+          log::error("Unable to notify client of upstream connect failure: peer fd {} not found", state.peerFd);
+        }
+        closeConnection(cnxIt);
+        return;
+      }
+      // otherwise connect succeeded; continue to normal writable handling
+    }
+  }
+  // If tunneling, flush tunnelOutBuffer first
+  if (state.isTunneling() && !state.tunnelOutBuffer.empty()) {
+    TransportHint want;
+    const std::size_t written = state.transportWrite(state.tunnelOutBuffer, want);
+    if (want == TransportHint::Error) {
+      // Fatal error writing tunnel data: close this connection
+      closeConnection(cnxIt);
+      return;
+    }
+    if (written > 0) {
+      state.tunnelOutBuffer.erase_front(written);
+    }
+    // If still has data, keep EPOLLOUT registered
+    if (!state.tunnelOutBuffer.empty()) {
+      return;
+    }
+    // Tunnel buffer drained: fall through to normal flushOutbound handling
+  }
   flushOutbound(cnxIt);
   if (cnxIt->second.isAnyCloseRequested()) {
     closeConnection(cnxIt);
+  }
+}
+
+void HttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
+  ConnectionState& state = cnxIt->second;
+  std::size_t bytesReadThisEvent = 0;
+  while (true) {
+    std::size_t chunk = _config.bodyReadChunkBytes;
+    TransportHint want;
+    const std::size_t bytesRead = state.transportRead(chunk, want);
+    if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
+      closeConnection(cnxIt);
+      return;
+    }
+    if (want != TransportHint::None) {
+      break;
+    }
+    bytesReadThisEvent += bytesRead;
+    if (bytesRead < chunk) {
+      break;
+    }
+    if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
+      break;
+    }
+  }
+  if (state.inBuffer.empty()) {
+    return;
+  }
+  auto peerIt = _connStates.find(state.peerFd);
+  if (peerIt == _connStates.end()) {
+    closeConnection(cnxIt);
+    return;
+  }
+  ConnectionState& peer = peerIt->second;
+  TransportHint want;
+  std::string_view srcView = static_cast<std::string_view>(state.inBuffer);
+  const std::size_t written = peer.transportWrite(srcView, want);
+  if (want == TransportHint::Error) {
+    // Fatal transport error while forwarding to peer: close both sides.
+    closeConnection(peerIt);
+    closeConnection(cnxIt);
+    return;
+  }
+  if (written > 0) {
+    state.inBuffer.erase_front(written);
+  }
+  if (!state.inBuffer.empty()) {
+    if (peer.tunnelOutBuffer.empty()) {
+      state.inBuffer.swap(peer.tunnelOutBuffer);
+    } else {
+      peer.tunnelOutBuffer.append(static_cast<std::string_view>(state.inBuffer));
+      state.inBuffer.clear();
+    }
+
+    if (!peer.waitingWritable) {
+      if (HttpServer::ModWithCloseOnFailure(_eventLoop, peerIt, EPOLLIN | EPOLLOUT | EPOLLET,
+                                            "enable peer writable tunnel", _stats)) {
+        peer.waitingWritable = true;
+      }
+    }
   }
 }
 

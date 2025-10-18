@@ -25,9 +25,11 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   set(IS_MAIN_PROJECT ON)
 endif()
 
+set(AERONET_BUILD_BENCHMARKS_DEFAULT ${IS_MAIN_PROJECT})
 set(ASAN_DEFAULT OFF)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(ASAN_DEFAULT ON)
+  set(AERONET_BUILD_BENCHMARKS_DEFAULT OFF)
 endif()
 
 option(AERONET_ENABLE_CCACHE "Compile with ccache for faster incremental compilation" ${IS_MAIN_PROJECT})
@@ -40,12 +42,13 @@ option(AERONET_INSTALL "Enable install & package config generation" ${IS_MAIN_PR
 set(AERONET_BUILD_TESTS_EXAMPLES_DEFAULT ${IS_MAIN_PROJECT})
 if(AERONET_INSTALL AND NOT IS_MAIN_PROJECT)
   set(AERONET_BUILD_TESTS_EXAMPLES_DEFAULT OFF CACHE BOOL "Build tests and examples" FORCE)
+  set(AERONET_BUILD_BENCHMARKS_DEFAULT OFF CACHE BOOL "Build benchmarks" FORCE)
 endif()
 
 option(AERONET_BUILD_EXAMPLES "Build example programs" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
 option(AERONET_BUILD_TESTS "Build tests" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
 option(AERONET_BUILD_SHARED "Build aeronet libraries as shared instead of static" OFF)
-option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
+option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_BENCHMARKS_DEFAULT})
 
 # Features
 # Optional dependencies (aeronet is able to compile without the feature if not enabled)
