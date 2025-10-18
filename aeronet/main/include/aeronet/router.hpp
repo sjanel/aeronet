@@ -157,6 +157,12 @@ class Router {
   // is not modified (no handler registration or replacement).
   [[nodiscard]] RoutingResult match(http::Method method, std::string_view path) const;
 
+  // Return a bitmap of methods allowed for the given path. For a specific registered path
+  // this returns the union of normal and streaming method bitmaps. When the empty result
+  // is returned it indicates no handlers (nor global handlers) apply for that path. If
+  // the Router has global handlers installed, those are treated as allowing all methods.
+  [[nodiscard]] http::MethodBmp allowedMethods(std::string_view path) const;
+
  private:
   struct PathHandlerEntry {
     http::MethodBmp normalMethodBmp{};
