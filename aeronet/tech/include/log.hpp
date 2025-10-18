@@ -54,7 +54,7 @@ inline std::mutex &logger_mutex() {
 
 inline std::string build_timestamp() {
   // Millisecond precision ISO 8601 UTC using the standardized formatter we already expose.
-  auto now = TimePointISO8601UTC{Clock::now()};
+  auto now = TimePointISO8601UTC{SysClock::now()};
   return std::format("{:ms}", now);
 }
 

@@ -23,6 +23,7 @@ aeronet_http_test(http_errors)
 aeronet_http_test(http_head_maxrequests)
 
 aeronet_http_test(http_keepalive)
+aeronet_http_test(http_drain)
 
 # Header read timeout test
 aeronet_http_test(http_header_timeout)
@@ -34,6 +35,7 @@ aeronet_http_test(http_multi_reuseport)
 
 # Multi server wrapper test
 aeronet_http_test(http_multi_wrapper)
+aeronet_http_test(multi_http_server)
 
 # OPTIONS, TRACE and CONNECT methods
 aeronet_http_test(http_options_trace)
@@ -154,10 +156,12 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_errors_test.cpp
 	http_head_maxrequests_test.cpp
 	http_keepalive_test.cpp
+	http_drain_test.cpp
 	http_header_timeout_test.cpp
 	http_malformed_test.cpp
 	http_multi_reuseport_test.cpp
 	http_multi_wrapper_test.cpp
+	multi_http_server_test.cpp
 	http_options_trace_test.cpp
 	http_connect_success_test.cpp
 	http_connect_failures_test.cpp

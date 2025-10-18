@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 #include <cerrno>
 #include <charconv>
@@ -12,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <future>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -46,11 +48,11 @@ using namespace std::chrono_literals;
 
 bool sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeout) {
   const char *cursor = data.data();
-  std::size_t remaining = data.size();
-  auto start = std::chrono::steady_clock::now();
-  auto maxTs = start + totalTimeout;
-  while (remaining > 0) {
-    auto sent = ::send(fd, cursor, remaining, 0);
+  const auto start = std::chrono::steady_clock::now();
+  const auto maxTs = start + totalTimeout;
+
+  for (std::size_t remaining = data.size(); remaining > 0;) {
+    const auto sent = ::send(fd, cursor, remaining, MSG_NOSIGNAL);
     if (sent <= 0) {
       log::error("sendAll failed with error {}", std::strerror(errno));
       if (std::chrono::steady_clock::now() >= maxTs) {
@@ -63,6 +65,7 @@ bool sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeo
     cursor += sent;
     remaining -= static_cast<std::size_t>(sent);
   }
+
   return true;
 }
 
@@ -283,7 +286,7 @@ void connectLoop(int fd, auto port, std::chrono::milliseconds timeout) {
     if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
       break;
     }
-    log::debug("connect failed for fd={}: {}", fd, std::strerror(errno));
+    log::debug("connect failed for fd # {}: {}", fd, std::strerror(errno));
   }
 }
 }  // namespace
@@ -544,7 +547,7 @@ std::optional<ParsedResponse> parseResponse(const std::string &raw) {
   return pr;
 }
 
-bool setRecvTimeout(int fd, ::aeronet::Duration timeout) {
+bool setRecvTimeout(int fd, ::aeronet::SysDuration timeout) {
   const int timeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count());
   struct timeval tv{timeoutMs / 1000, static_cast<long>((timeoutMs % 1000) * 1000)};
   return ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
@@ -848,6 +851,37 @@ std::vector<std::string> sequentialRequests(uint16_t port, std::span<const Reque
     }
   }
   return results;
+}
+
+bool AttemptConnect(uint16_t port) {
+  ::aeronet::Socket sock(SOCK_STREAM);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  return ::connect(sock.fd(), reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0;
+}
+
+bool WaitForPeerClose(int fd, std::chrono::milliseconds timeout) {
+  // Use recvUntilClosed via an async future so we can time out waiting for remote close.
+  auto fut = std::async(std::launch::async, [fd]() { return recvUntilClosed(fd); });
+  if (fut.wait_for(timeout) == std::future_status::ready) {
+    // peer closed and we received final data
+    fut.get();
+    return true;
+  }
+  return false;
+}
+
+bool WaitForListenerClosed(uint16_t port, std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (!AttemptConnect(port)) {
+      return true;
+    }
+    std::this_thread::sleep_for(5ms);
+  }
+  return !AttemptConnect(port);
 }
 
 }  // namespace aeronet::test

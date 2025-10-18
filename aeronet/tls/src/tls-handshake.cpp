@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <utility>
 
 #include "log.hpp"
 #include "tls-info.hpp"
@@ -63,7 +64,7 @@ TlsHandshakeResult collectAndLogTlsHandshake(const SSL* ssl, int fd, bool logHan
                                              std::chrono::steady_clock::time_point handshakeStart) {
   auto res = collectTlsHandshakeInfo(ssl, handshakeStart);
   if (logHandshake) {
-    log::info("TLS handshake fd={} ver={} cipher={} alpn={} peer={}", fd,
+    log::info("TLS handshake fd # {} ver={} cipher={} alpn={} peer={}", fd,
               res.negotiatedVersion.empty() ? "?" : res.negotiatedVersion.c_str(),
               res.negotiatedCipher.empty() ? "?" : res.negotiatedCipher.c_str(),
               res.selectedAlpn.empty() ? "-" : res.selectedAlpn.c_str(),

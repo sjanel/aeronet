@@ -1,7 +1,5 @@
 #include <gtest/gtest.h>
-#include <sys/socket.h>
 
-#include <cerrno>
 #include <string>
 
 #include "aeronet/http-request.hpp"
@@ -58,9 +56,9 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
   // Second request should not yield another response (connection closed). We attempt to read after sending.
   std::string_view req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\n\r\n";
   ASSERT_TRUE(aeronet::test::sendAll(fd, req2));
-  char buf2[256];
-  auto n2 = ::recv(fd, buf2, sizeof(buf2), 0);
-  EXPECT_LE(n2, 0);
+  // Expect no data (connection should be closed) -- use test helper which waits briefly
+  auto n2 = aeronet::test::recvWithTimeout(fd);
+  EXPECT_TRUE(n2.empty());
 }
 
 TEST(HttpKeepAlive10, OptInWithHeader) {

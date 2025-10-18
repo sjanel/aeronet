@@ -43,7 +43,7 @@ class EventLoop {
   //                       balance for small/medium workloads: it fits easily in cache (< 1 KB)
   //                       yet avoids immediate reallocations. Buffer grows by doubling whenever
   //                       a poll returns exactly capacity() events. It never shrinks.
-  explicit EventLoop(Duration pollTimeout, int epollFlags = 0, std::size_t initialCapacity = kInitialCapacity);
+  explicit EventLoop(SysDuration pollTimeout, int epollFlags = 0, std::size_t initialCapacity = kInitialCapacity);
 
   [[nodiscard]] bool add(int fd, uint32_t events) const;
 
