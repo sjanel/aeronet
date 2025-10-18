@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -161,6 +162,14 @@ void MultiHttpServer::stop() noexcept {
   _threads.clear();
   _servers.erase(std::next(_servers.begin()), _servers.end());
   log::info("MultiHttpServer stopped");
+}
+
+void MultiHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
+  std::ranges::for_each(_servers, [maxWait](HttpServer& server) { server.beginDrain(maxWait); });
+}
+
+bool MultiHttpServer::isDraining() const {
+  return std::ranges::any_of(_servers, [](const HttpServer& server) { return server.isDraining(); });
 }
 
 MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {

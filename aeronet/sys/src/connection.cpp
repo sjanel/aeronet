@@ -6,6 +6,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <utility>
 
 #include "base-fd.hpp"
 #include "log.hpp"
@@ -24,11 +25,11 @@ int ComputeConnectionFd(int socketFd) {
       log::trace("Connection accept would block: {} - this is expected if no pending connections",
                  std::strerror(savedErr));
     } else {
-      log::error("Connection accept failed for socket fd {}: {}", socketFd, std::strerror(savedErr));
+      log::error("Connection accept failed for socket fd # {}: {}", socketFd, std::strerror(savedErr));
     }
     fd = -1;
   } else {
-    log::debug("Connection fd={} opened", fd);
+    log::debug("Connection fd # {} opened", fd);
   }
   return fd;
 }

@@ -81,8 +81,7 @@ HttpServer::HttpServer(HttpServer&& other)
       _config(std::move(other._config)),
       _listenSocket(std::move(other._listenSocket)),
       _eventLoop(std::move(other._eventLoop)),
-      _wakeupFd(std::move(other._wakeupFd)),
-      _running(std::exchange(other._running, false)),
+      _lifecycle(std::move(other._lifecycle)),
       _router(std::move(other._router)),
       _connStates(std::move(other._connStates)),
       _encoders(std::move(other._encoders)),
@@ -99,16 +98,17 @@ HttpServer::HttpServer(HttpServer&& other)
 #endif
 
 {
-  if (_running) {
+  if (!_lifecycle.isIdle()) {
     throw std::runtime_error("Cannot move-construct a running HttpServer");
   }
+  other._lifecycle.reset();
 }
 
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
 HttpServer& HttpServer::operator=(HttpServer&& other) {
   if (this != &other) {
     stop();
-    if (other._running) {
+    if (!other._lifecycle.isIdle()) {
       other.stop();
       throw std::runtime_error("Cannot move-assign from a running HttpServer");
     }
@@ -116,8 +116,7 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _config = std::move(other._config);
     _listenSocket = std::move(other._listenSocket);
     _eventLoop = std::move(other._eventLoop);
-    _wakeupFd = std::move(other._wakeupFd);
-    _running = std::exchange(other._running, false);
+    _lifecycle = std::move(other._lifecycle);
     _router = std::move(other._router);
     _connStates = std::move(other._connStates);
     _encoders = std::move(other._encoders);
@@ -132,36 +131,58 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _tlsMetricsExternal = std::exchange(other._tlsMetricsExternal, {});
 #endif
   }
+  other._lifecycle.reset();
   return *this;
 }
 
 void HttpServer::run() {
   prepareRun();
-  for (_running = true; _running;) {
+  _lifecycle.enterRunning();
+  while (_lifecycle.isActive()) {
     eventLoop();
   }
+  _lifecycle.reset();
 }
 
 void HttpServer::runUntil(const std::function<bool()>& predicate) {
   prepareRun();
-  for (_running = true; _running && !predicate();) {
+  _lifecycle.enterRunning();
+  while (_lifecycle.isActive() && !predicate()) {
     eventLoop();
   }
-  _running = false;
+  if (_lifecycle.isActive()) {
+    _lifecycle.reset();
+  }
 }
 
 void HttpServer::stop() noexcept {
-  if (!_running) {
+  if (!_lifecycle.isActive()) {
     return;
   }
   log::debug("Stopping server");
-  _running = false;
-  // Trigger wakeup to break any blocking epoll_wait quickly.
-  _wakeupFd.send();
+  closeListener();
+  _lifecycle.enterStopping();
+}
 
-  // Close the socket
-  _listenSocket.close();
-  log::info("Server stopped");
+void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
+  if (!_lifecycle.isActive() || _lifecycle.isStopping()) {
+    return;
+  }
+
+  const bool hasDeadline = maxWait.count() > 0;
+  const auto deadline =
+      hasDeadline ? std::chrono::steady_clock::now() + maxWait : std::chrono::steady_clock::time_point{};
+
+  if (_lifecycle.isDraining()) {
+    if (hasDeadline) {
+      _lifecycle.shrinkDeadline(deadline);
+    }
+    return;
+  }
+
+  log::info("Initiating graceful drain (connections={})", _connStates.size());
+  closeListener();
+  _lifecycle.enterDraining(deadline, hasDeadline);
 }
 
 bool HttpServer::ModWithCloseOnFailure(EventLoop& loop, ConnectionMapIt cnxIt, uint32_t events, const char* ctx,
@@ -173,11 +194,11 @@ bool HttpServer::ModWithCloseOnFailure(EventLoop& loop, ConnectionMapIt cnxIt, u
   ++stats.epollModFailures;
   // EBADF or ENOENT can occur during races where a connection is concurrently closed; downgrade severity.
   if (errCode == EBADF || errCode == ENOENT) {
-    log::warn("epoll_ctl MOD benign failure (ctx={}, fd={}, events=0x{:x}, errno={}, msg={})", ctx, cnxIt->first.fd(),
+    log::warn("epoll_ctl MOD benign failure (ctx={}, fd # {}, events=0x{:x}, errno={}, msg={})", ctx, cnxIt->first.fd(),
               events, errCode, std::strerror(errCode));
   } else {
-    log::error("epoll_ctl MOD failed (ctx={}, fd={}, events=0x{:x}, errno={}, msg={})", ctx, cnxIt->first.fd(), events,
-               errCode, std::strerror(errCode));
+    log::error("epoll_ctl MOD failed (ctx={}, fd # {}, events=0x{:x}, errno={}, msg={})", ctx, cnxIt->first.fd(),
+               events, errCode, std::strerror(errCode));
   }
   cnxIt->second.requestDrainAndClose();
   return false;
@@ -489,7 +510,8 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
     state.requestDrainAndClose();  // honor client directive for streaming path
   }
   bool allowKeepAlive = _config.enableKeepAlive && req.version() == http::HTTP_1_1 && !wantClose &&
-                        state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.isAnyCloseRequested();
+                        state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.isAnyCloseRequested() &&
+                        !_lifecycle.isDraining() && !_lifecycle.isStopping();
   ++state.requestsServed;
   state.inBuffer.erase_front(consumedBytes);
 
@@ -599,7 +621,7 @@ void HttpServer::init() {
     throw exception("EventLoop add listen socket failed");
   }
   // Register wakeup fd
-  if (!_eventLoop.add(_wakeupFd.fd(), EPOLLIN)) {
+  if (!_eventLoop.add(_lifecycle.wakeupFd.fd(), EPOLLIN)) {
     throw exception("EventLoop add wakeup fd failed");
   }
 
@@ -619,7 +641,7 @@ void HttpServer::init() {
 }
 
 void HttpServer::prepareRun() {
-  if (_running) {
+  if (_lifecycle.isActive()) {
     throw exception("Server is already running");
   }
   if (!_listenSocket.isOpened()) {
@@ -631,14 +653,15 @@ void HttpServer::prepareRun() {
 void HttpServer::eventLoop() {
   sweepIdleConnections();
 
-  bool stopRequested = false;
-  int ready = _eventLoop.poll([this, &stopRequested](int fd, uint32_t ev) {
+  int ready = _eventLoop.poll([this](int fd, uint32_t ev) {
     if (fd == _listenSocket.fd()) {
-      acceptNewConnections();
-    } else if (fd == _wakeupFd.fd()) {
-      // Drain wakeup counter.
-      _wakeupFd.read();
-      stopRequested = true;
+      if (_lifecycle.acceptingConnections()) {
+        acceptNewConnections();
+      } else {
+        log::warn("Not accepting new incoming connection");
+      }
+    } else if (fd == _lifecycle.wakeupFd.fd()) {
+      _lifecycle.wakeupFd.read();
     } else {
       if (ev & EPOLLOUT) {
         handleWritableClient(fd);
@@ -649,26 +672,55 @@ void HttpServer::eventLoop() {
     }
   });
 
-  // Record event loop activity metrics
   if (ready > 0) {
     _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(ready));
   } else if (ready < 0) {
     _telemetry.counterAdd("aeronet.events.errors", 1);
-
-    // If epoll_wait failed with a non-EINTR error (EINTR is mapped to 0 in EventLoop::poll), ready will be -1.
-    // Not handling this would cause a tight loop spinning on the failing epoll fd (e.g., after EBADF or EINVAL),
-    // burning CPU while doing no useful work. Treat it as fatal: log and stop the server.
     log::error("epoll_wait (eventLoop) failed: {}", std::strerror(errno));
-    // Mark server as no longer running so outer loops terminate gracefully.
-    _running = false;
+    _lifecycle.enterStopping();
   }
 
-  // If stop() requested, loop condition will exit promptly after this iteration; we already wrote to wakeup fd.
-  if (stopRequested) {
-    // Close all remaining connections (if some) after all events processed.
-    auto it = _connStates.begin();
-    while (it != _connStates.end()) {
+  const auto now = std::chrono::steady_clock::now();
+  const bool noConnections = _connStates.empty();
+
+  if (_lifecycle.isStopping()) {
+    closeAllConnections(true);
+    _lifecycle.reset();
+    log::info("Server stopped");
+    return;
+  }
+
+  if (_lifecycle.isDraining()) {
+    if (_lifecycle.hasDeadline() && now >= _lifecycle.deadline()) {
+      log::warn("Drain deadline reached with {} active connection(s); forcing close", _connStates.size());
+      closeAllConnections(true);
+      _lifecycle.reset();
+      log::info("Server drained after deadline");
+      return;
+    }
+    if (noConnections) {
+      _lifecycle.reset();
+      log::info("Server drained gracefully");
+      return;
+    }
+  }
+}
+
+void HttpServer::closeListener() noexcept {
+  if (_listenSocket.isOpened()) {
+    const int fd = _listenSocket.fd();
+    _eventLoop.del(fd);
+    _listenSocket.close();
+  }
+}
+
+void HttpServer::closeAllConnections(bool immediate) {
+  for (auto it = _connStates.begin(); it != _connStates.end();) {
+    if (immediate) {
       it = closeConnection(it);
+    } else {
+      it->second.requestDrainAndClose();
+      ++it;
     }
   }
 }

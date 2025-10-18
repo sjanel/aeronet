@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
-#include <sys/socket.h>
 
-#include <cstddef>  // std::size_t
+#include <cstddef>
 #include <string>
 #include <string_view>
 
@@ -20,34 +19,16 @@ void raw(auto port, const std::string& verb, std::string& out) {
   aeronet::test::ClientConnection sock(port);
   int fd = sock.fd();
   std::string req = verb + " /len HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
-  auto sent = ::send(fd, req.data(), req.size(), 0);
-  ASSERT_EQ(sent, static_cast<decltype(sent)>(req.size())) << "send partial";
-  char buf[4096];
-  out.clear();
-  while (true) {
-    auto bytesRead = ::recv(fd, buf, sizeof(buf), 0);
-    if (bytesRead <= 0) {
-      break;
-    }
-    out.append(buf, buf + bytesRead);
-  }
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
+  out = aeronet::test::recvUntilClosed(fd);
 }
 
 void rawWith(auto port, const std::string& verb, std::string_view extraHeaders, std::string& out) {
   aeronet::test::ClientConnection sock(port);
   int fd = sock.fd();
   std::string req = verb + " /len HTTP/1.1\r\nHost: x\r\n" + std::string(extraHeaders) + "Connection: close\r\n\r\n";
-  auto sent = ::send(fd, req.data(), req.size(), 0);
-  ASSERT_EQ(sent, static_cast<decltype(sent)>(req.size())) << "send partial";
-  char buf[4096];
-  out.clear();
-  while (true) {
-    auto bytesRead = ::recv(fd, buf, sizeof(buf), 0);
-    if (bytesRead <= 0) {
-      break;
-    }
-    out.append(buf, buf + bytesRead);
-  }
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
+  out = aeronet::test::recvUntilClosed(fd);
 }
 }  // namespace
 

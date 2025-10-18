@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <exception>
 #include <stop_token>
 #include <thread>
@@ -86,6 +87,12 @@ class AsyncHttpServer {
   // This call is blocking for current thread, until the underlying server is stopped.
   // After stop(), it is possible to call start() again.
   void stop() noexcept;
+
+  // Forward graceful draining controls to the underlying HttpServer (see HttpServer::beginDrain()).
+  void beginDrain(std::chrono::milliseconds maxWait = std::chrono::milliseconds{0}) noexcept;
+
+  [[nodiscard]] bool isRunning() const noexcept { return _server.isRunning(); }
+  [[nodiscard]] bool isDraining() const noexcept { return _server.isDraining(); }
 
   // If an exception has been thrown during the server loop, rethrow the exception in main process.
   void rethrowIfError();

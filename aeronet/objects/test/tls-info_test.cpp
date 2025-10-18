@@ -32,7 +32,7 @@ TEST(TLSInfo, LongStringsAreHandled) {
 
 TEST(TLSInfo, CopyAndAssign) {
   TLSInfo src("proto", "cipher", "v1");
-  TLSInfo copyInfo = src;  // copy ctor
+  TLSInfo copyInfo = src;  // NOLINT(performance-unnecessary-copy-initialization)
   EXPECT_EQ(copyInfo.selectedAlpn(), "proto");
   EXPECT_EQ(copyInfo.negotiatedCipher(), "cipher");
   EXPECT_EQ(copyInfo.negotiatedVersion(), "v1");

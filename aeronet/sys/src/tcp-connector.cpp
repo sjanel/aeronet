@@ -1,14 +1,14 @@
 #include "tcp-connector.hpp"
 
-#include <fcntl.h>
 #include <netdb.h>
 #include <sys/socket.h>
-#include <unistd.h>
 
 #include <cerrno>
 #include <cstring>
 #include <memory>
 #include <string_view>
+
+#include "base-fd.hpp"
 
 namespace aeronet {
 

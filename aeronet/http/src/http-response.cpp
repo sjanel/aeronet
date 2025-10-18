@@ -172,11 +172,11 @@ void HttpResponse::appendHeaderUnchecked(std::string_view key, std::string_view 
       markCE);
 }
 
-void HttpResponse::appendDateUnchecked(TimePoint tp) {
+void HttpResponse::appendDateUnchecked(SysTimePoint tp) {
   appendHeaderGeneric(http::Date, kRFC7231DateStrLen, [&](char* dst) { TimeToStringRFC7231(tp, dst); }, false);
 }
 
-HttpResponseData HttpResponse::finalizeAndStealData(http::Version version, TimePoint tp, bool keepAlive,
+HttpResponseData HttpResponse::finalizeAndStealData(http::Version version, SysTimePoint tp, bool keepAlive,
                                                     std::span<const http::Header> globalHeaders, bool isHeadMethod,
                                                     std::size_t minCapturedBodySize) {
   const auto versionStr = version.str();

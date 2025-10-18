@@ -1,3 +1,6 @@
+#include <asm-generic/socket.h>
+#include <sys/socket.h>
+
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -10,6 +13,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "connection-state.hpp"
 #include "connection.hpp"
 #include "raw-chars.hpp"
@@ -23,7 +27,6 @@
 #include "tls-raii.hpp"
 #include "tls-transport.hpp"  // from tls module include directory
 #endif
-#include <sys/socket.h>
 
 #include "event-loop.hpp"
 #include "log.hpp"
@@ -79,12 +82,12 @@ void HttpServer::acceptNewConnections() {
     int cnxFd = cnx.fd();
     if (!_eventLoop.add(cnxFd, EPOLLIN | EPOLLET)) {
       auto savedErr = errno;
-      log::error("EventLoop add client failed fd={} err={}: {}", cnxFd, savedErr, std::strerror(savedErr));
+      log::error("EventLoop add client failed fd # {} err={}: {}", cnxFd, savedErr, std::strerror(savedErr));
       continue;
     }
     auto [cnxIt, inserted] = _connStates.emplace(std::move(cnx), ConnectionState{});
     if (!inserted) {
-      log::error("Internal error: accepted connection fd={} already present in connection map", cnxFd);
+      log::error("Internal error: accepted connection fd # {} already present in connection map", cnxFd);
       // Close the newly accepted connection immediately to avoid fd leak.
       _eventLoop.del(cnxFd);
       continue;
@@ -103,7 +106,7 @@ void HttpServer::acceptNewConnections() {
       }
 
       if (SSL_set_fd(sslPtr.get(), cnxFd) != 1) {  // associate
-        log::error("SSL_set_fd failed for fd={}", cnxFd);
+        log::error("SSL_set_fd failed for fd # {}", cnxFd);
         continue;
       }
       // Enable partial writes: SSL_write will return after writing some data rather than
@@ -164,11 +167,11 @@ void HttpServer::acceptNewConnections() {
         // If TLS handshake still pending, treat a transport Error as transient and retry later.
         if (want == TransportHint::Error) {
           if (pCnx != nullptr && pCnx->transport && !pCnx->transport->handshakeDone()) {
-            log::warn("Transient transport error during TLS handshake on fd={}; will retry", cnxFd);
+            log::warn("Transient transport error during TLS handshake on fd # {}; will retry", cnxFd);
             // Yield and let event loop drive readiness notifications; do not close yet.
             break;
           }  // Emit richer diagnostics to aid debugging TLS handshake / transport failures.
-          log::error("Closing connection fd={} bytesRead={} want={} errno={} ({})", cnxFd, bytesRead,
+          log::error("Closing connection fd # {} bytesRead={} want={} errno={} ({})", cnxFd, bytesRead,
                      static_cast<int>(want), errno, std::strerror(errno));
 #ifdef AERONET_ENABLE_OPENSSL
           if (_tlsCtxHolder) {
@@ -178,7 +181,7 @@ void HttpServer::acceptNewConnections() {
               if (ssl != nullptr) {
                 const char* ver = ::SSL_get_version(ssl);
                 const char* cipher = ::SSL_get_cipher_name(ssl);
-                log::error("TLS state fd={} ver={} cipher={}", cnxFd, (ver != nullptr) ? ver : "?",
+                log::error("TLS state fd # {} ver={} cipher={}", cnxFd, (ver != nullptr) ? ver : "?",
                            (cipher != nullptr) ? cipher : "?");
               }
             }
@@ -339,7 +342,7 @@ void HttpServer::handleReadableClient(int fd) {
 void HttpServer::handleWritableClient(int fd) {
   const auto cnxIt = _connStates.find(fd);
   if (cnxIt == _connStates.end()) {
-    log::error("Invalid fd {} received from the event loop", fd);
+    log::error("Received an invalid fd # {} from the event loop (or already removed?)", fd);
     return;
   }
   ConnectionState& state = cnxIt->second;
@@ -356,7 +359,7 @@ void HttpServer::handleWritableClient(int fd) {
         if (peerIt != _connStates.end()) {
           emitSimpleError(peerIt, http::StatusCodeBadGateway, true, "Upstream connect failed");
         } else {
-          log::error("Unable to notify client of upstream connect failure: peer fd {} not found", state.peerFd);
+          log::error("Unable to notify client of upstream connect failure: peer fd # {} not found", state.peerFd);
         }
         closeConnection(cnxIt);
         return;

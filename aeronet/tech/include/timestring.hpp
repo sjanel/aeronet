@@ -13,7 +13,7 @@ namespace aeronet {
 /// a pointer after the last char written. The written format will be:
 ///   - 'YYYY-MM-DD'
 /// The buffer should have a space of at least 10 chars.
-constexpr auto DateISO8601UTC(TimePoint timePoint, auto out) {
+constexpr auto DateISO8601UTC(SysTimePoint timePoint, auto out) {
   const auto daysFloor = std::chrono::floor<std::chrono::days>(timePoint);
   const std::chrono::year_month_day ymd{daysFloor};
   out = write4(out, static_cast<int>(ymd.year()));
@@ -28,7 +28,7 @@ constexpr auto DateISO8601UTC(TimePoint timePoint, auto out) {
 ///   - 'YYYY-MM-DDTHH:MM:SSZ'
 /// The buffer should have a space of at least 20 chars.
 template <bool WithFinalZ = true>
-constexpr auto TimeToStringISO8601UTC(TimePoint timePoint, auto out) {
+constexpr auto TimeToStringISO8601UTC(SysTimePoint timePoint, auto out) {
   const auto daysFloor = std::chrono::floor<std::chrono::days>(timePoint);
   const std::chrono::hh_mm_ss hms{
       std::chrono::floor<std::chrono::milliseconds>(timePoint - daysFloor)};  // ms floor also used by ms variant
@@ -50,7 +50,7 @@ constexpr auto TimeToStringISO8601UTC(TimePoint timePoint, auto out) {
 /// a pointer after the last char written. The written format will be (in millisecond precision):
 ///   - 'YYYY-MM-DDTHH:MM:SS.sssZ'
 /// The buffer should have a space of at least 24 chars.
-constexpr auto TimeToStringISO8601UTCWithMs(TimePoint timePoint, auto out) {
+constexpr auto TimeToStringISO8601UTCWithMs(SysTimePoint timePoint, auto out) {
   const auto daysFloor = std::chrono::floor<std::chrono::days>(timePoint);
   const std::chrono::hh_mm_ss hms{std::chrono::floor<std::chrono::milliseconds>(timePoint - daysFloor)};
   out = TimeToStringISO8601UTC<false>(timePoint, out);
@@ -74,9 +74,9 @@ constexpr auto TimeToStringISO8601UTCWithMs(TimePoint timePoint, auto out) {
 ///  - YYYY-MM-DDTHH:MM:SS.sss+00:00
 ///  - YYYY-MM-DDTHH:MM:SS.sss-05:30
 /// Warning: Few checks are done on the input. It should contain at least 19 chars (up to the seconds part).
-TimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr);
+SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr);
 
-inline TimePoint StringToTimeISO8601UTC(std::string_view timeStr) {
+inline SysTimePoint StringToTimeISO8601UTC(std::string_view timeStr) {
   return StringToTimeISO8601UTC(timeStr.data(), timeStr.data() + timeStr.size());
 }
 
@@ -86,13 +86,13 @@ inline TimePoint StringToTimeISO8601UTC(std::string_view timeStr) {
 ///  - YYYY-Www    (example: '2025-W22')
 ///  - YYYY-MM-DD  (example: '2025-06-15')
 /// Returns a pair of time points [a, b) representing the start (inclusive) and end (exclusive) of the period.
-std::pair<TimePoint, TimePoint> ParseTimeWindow(std::string_view str);
+std::pair<SysTimePoint, SysTimePoint> ParseTimeWindow(std::string_view str);
 
 /// Format a time point to an RFC7231 IMF-fixdate string (e.g. "Sun, 06 Nov 1994 08:49:37 GMT").
 /// Buffer must have space for at least 29 characters (no null terminator added):
 /// WWW, DD Mon YYYY HH:MM:SS GMT
 /// Returns pointer past last written char.
-constexpr auto TimeToStringRFC7231(TimePoint tp, auto out) {
+constexpr auto TimeToStringRFC7231(SysTimePoint tp, auto out) {
   using namespace std::chrono;
   static constexpr const char* const WEEKDAYS[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
   static constexpr const char* const MONTHS[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",

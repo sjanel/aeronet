@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -130,7 +131,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
       const int clientFd = cnxIt->first.fd();
       auto [upIt, inserted] = _connStates.emplace(std::move(cres.cnx), ConnectionState{});
       if (!inserted) {
-        log::error("TCP connection ConnectionState fd {} already exists, should not happen", upstreamFd);
+        log::error("TCP connection ConnectionState fd # {} already exists, should not happen", upstreamFd);
         _eventLoop.del(upstreamFd);
         // Try to re-find client to report error; if not found, just return Break.
         emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Upstream connection tracking failed");
@@ -148,7 +149,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
       // Since cnxIt is passed by reference we will update it here so the caller need not re-find.
       cnxIt = _connStates.find(clientFd);
       if (cnxIt == _connStates.end()) {
-        throw std::runtime_error("Should not happend - Client connection vanished after upstream insertion");
+        throw std::runtime_error("Should not happen - Client connection vanished after upstream insertion");
       }
 
       HttpResponse resp(http::StatusCodeOK, "Connection Established");
@@ -177,18 +178,15 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpReques
                                          std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart) {
   ConnectionState& state = cnxIt->second;
   ++state.requestsServed;
-  bool keepAlive = _config.enableKeepAlive && state.requestsServed < _config.maxRequestsPerConnection;
+  bool keepAlive =
+      _config.enableKeepAlive && state.requestsServed < _config.maxRequestsPerConnection && _lifecycle.isRunning();
   if (keepAlive) {
     std::string_view connVal = req.headerValueOrEmpty(http::Connection);
     if (connVal.empty()) {
       // Default is keep-alive for HTTP/1.1, close for HTTP/1.0
       keepAlive = req.version() == http::HTTP_1_1;
-    } else {
-      if (CaseInsensitiveEqual(connVal, http::close)) {
-        keepAlive = false;
-      } else if (CaseInsensitiveEqual(connVal, http::keepalive)) {
-        keepAlive = true;
-      }
+    } else if (CaseInsensitiveEqual(connVal, http::close)) {
+      keepAlive = false;
     }
   }
 
@@ -230,7 +228,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpReques
     }
   }
 
-  queueData(cnxIt, resp.finalizeAndStealData(req.version(), Clock::now(), keepAlive, _config.globalHeaders, isHead,
+  queueData(cnxIt, resp.finalizeAndStealData(req.version(), SysClock::now(), keepAlive, _config.globalHeaders, isHead,
                                              _config.minCapturedBodySize));
 
   state.inBuffer.erase_front(consumedBytes);
@@ -315,7 +313,7 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
     switch (want) {
       case TransportHint::Error: {
         auto savedErr = errno;
-        log::error("send/transportWrite failed fd={} errno={} msg={}", fd, savedErr, std::strerror(savedErr));
+        log::error("send/transportWrite failed fd # {} errno={} msg={}", fd, savedErr, std::strerror(savedErr));
         state.requestImmediateClose();
         state.outBuffer.clear();
         break;

@@ -38,10 +38,10 @@ void BaseFd::close() noexcept {
       continue;
     }
     // Other errors: EBADF (benign if race closed elsewhere), ENOSPC (should not happen here), etc.
-    log::error("close fd={} failed: {}", _fd, std::strerror(errno));
+    log::error("close fd # {} failed: {}", _fd, std::strerror(errno));
     break;
   }
-  log::debug("fd={} closed", _fd);
+  log::debug("fd # {} closed", _fd);
   _fd = kClosedFd;
 }
 

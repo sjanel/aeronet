@@ -10,7 +10,7 @@
 namespace aeronet {
 
 struct TimePointISO8601UTC {
-  TimePoint tp;
+  SysTimePoint tp;
 };
 
 }  // namespace aeronet
