@@ -86,7 +86,7 @@ std::string toLower(std::string input);
 // Very small HTTP/1.1 response parser (not resilient to all malformed cases, just for test consumption)
 std::optional<ParsedResponse> parseResponse(const std::string &raw);
 
-bool setRecvTimeout(int fd, ::aeronet::Duration timeout);
+bool setRecvTimeout(int fd, ::aeronet::SysDuration timeout);
 
 std::string buildRequest(const RequestOptions &opt);
 
@@ -100,4 +100,11 @@ std::string requestOrThrow(uint16_t port, const RequestOptions &opt = {});
 // Send multiple requests over a single keep-alive connection and return raw responses individually.
 // Limitations: assumes server responds fully before next request is parsed (sufficient for simple tests).
 std::vector<std::string> sequentialRequests(uint16_t port, std::span<const RequestOptions> reqs);
+
+bool AttemptConnect(uint16_t port);
+
+bool WaitForPeerClose(int fd, std::chrono::milliseconds timeout);
+
+bool WaitForListenerClosed(uint16_t port, std::chrono::milliseconds timeout);
+
 }  // namespace aeronet::test

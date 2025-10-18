@@ -11,7 +11,7 @@ class EventFd {
   EventFd();
 
   // send an event
-  void send() const;
+  void send() const noexcept;
 
   // read an event
   void read() const;

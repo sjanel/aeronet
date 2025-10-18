@@ -17,7 +17,7 @@
 
 namespace aeronet {
 
-TimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
+SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
   const auto sz = endPtr - begPtr;
   if (AERONET_UNLIKELY(sz < 4)) {
     throw invalid_argument("ISO8601 Time string '{}' is too short, expected at least 4 characters",
@@ -59,8 +59,8 @@ TimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
     throw invalid_argument("Invalid date or time in ISO8601 Time string '{}'", std::string_view(begPtr, endPtr));
   }
 
-  TimePoint ts = std::chrono::sys_days{ymd} + std::chrono::hours{hours} + std::chrono::minutes{minutes} +
-                 std::chrono::seconds{seconds};
+  SysTimePoint ts = std::chrono::sys_days{ymd} + std::chrono::hours{hours} + std::chrono::minutes{minutes} +
+                    std::chrono::seconds{seconds};
 
   // For inputs like this,
   // 'begSuffix' will point here:
@@ -115,7 +115,7 @@ TimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
   return ts;
 }
 
-std::pair<TimePoint, TimePoint> ParseTimeWindow(std::string_view str) {
+std::pair<SysTimePoint, SysTimePoint> ParseTimeWindow(std::string_view str) {
   if (str.size() < 4) {
     throw invalid_argument("Invalid time window string '{}' - expected at least a year YYYY", str);
   }
@@ -132,7 +132,7 @@ std::pair<TimePoint, TimePoint> ParseTimeWindow(std::string_view str) {
     const std::chrono::sys_days fromSysDays = from;
     const std::chrono::sys_days toSysDays = to;
 
-    return {TimePoint(fromSysDays), TimePoint(toSysDays)};
+    return {SysTimePoint(fromSysDays), SysTimePoint(toSysDays)};
   }
   if (*ptr == '-') {
     ++ptr;
@@ -149,7 +149,7 @@ std::pair<TimePoint, TimePoint> ParseTimeWindow(std::string_view str) {
                                     std::chrono::Monday);
     const std::chrono::sys_days isoWeekFirstDay = isoWeekYear;
 
-    return {TimePoint(isoWeekFirstDay), TimePoint(isoWeekFirstDay + std::chrono::days{7})};
+    return {SysTimePoint(isoWeekFirstDay), SysTimePoint(isoWeekFirstDay + std::chrono::days{7})};
   }
 
   // month
@@ -163,7 +163,7 @@ std::pair<TimePoint, TimePoint> ParseTimeWindow(std::string_view str) {
     const std::chrono::sys_days fromSysDays = from;
     const std::chrono::sys_days toSysDays = to;
 
-    return {TimePoint(fromSysDays), TimePoint(toSysDays)};
+    return {SysTimePoint(fromSysDays), SysTimePoint(toSysDays)};
   }
   // day
   const auto dayOfMonth = read2(ptr + 1);
@@ -173,7 +173,7 @@ std::pair<TimePoint, TimePoint> ParseTimeWindow(std::string_view str) {
   const std::chrono::sys_days fromSysDays = from;
   const std::chrono::sys_days toSysDays = fromSysDays + std::chrono::days{1};
 
-  return {TimePoint(fromSysDays), TimePoint(toSysDays)};
+  return {SysTimePoint(fromSysDays), SysTimePoint(toSysDays)};
 }
 
 }  // namespace aeronet

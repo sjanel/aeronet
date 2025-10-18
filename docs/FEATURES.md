@@ -8,7 +8,7 @@ Single consolidated reference for **aeronet** features.
 2. [Performance / architecture](#performance--architecture)
 3. [Compression & Negotiation](#compression--negotiation)
 4. [Inbound Request Decompression (Config Details)](#inbound-request-decompression-config-details)
-5. [Connection Close Semantics](#connection-close-semantics)
+5. [Connection Close Semantics](#connection-close-semantics) — includes graceful drain lifecycle
 6. [Reserved & Managed Response Headers](#reserved--managed-response-headers)
 7. [Request Header Duplicate Handling (Detailed)](#request-header-duplicate-handling-detailed)
 8. [Query String & Parameters](#query-string--parameters)
@@ -484,6 +484,61 @@ Behavior rationale:
 
 Lifecycle: parse request → build response → determine keep-alive eligibility → either mark close mode or leave connection open for next pipelined request.
 
+### Graceful drain lifecycle
+
+`HttpServer` exposes a lifecycle state machine to coordinate shutdown:
+
+| State | Description | Entered via |
+|-------|-------------|-------------|
+| Idle | Listener closed, loop inactive | Default / after drain/stop |
+| Running | Event loop servicing connections | `run()` / `runUntil()` |
+| Draining | Listener closed; existing connections finish with `Connection: close` | `beginDrain()` |
+| Stopping | Immediate teardown, pending connections closed | `stop()` or fatal epoll error |
+
+Key API points:
+
+- **`beginDrain(std::chrono::milliseconds maxWait = 0)`** stops accepting new connections, keeps existing keep-alive sessions long enough to finish their current response, and injects `Connection: close` so the client does not reuse the socket. When `maxWait` is non-zero, a deadline is armed; any connections still open when it expires are closed immediately. Calling `beginDrain()` again with a shorter timeout shrinks the deadline.
+- **`isDraining()`** reflects whether the server is currently in the draining state. `isRunning()` still reports `true` until the drain completes or a stop occurs.
+- **Wrappers** — `AsyncHttpServer::beginDrain()` / `isDraining()` and `MultiHttpServer::beginDrain()` / `isDraining()` forward to the underlying `HttpServer` instances, enabling the same graceful drain flow when the server runs on background threads or across multiple reactors.
+- Draining is restart-friendly: once all connections are gone (or the deadline forces closure) the lifecycle resets to `Idle` and the server can be started again with another `run()`.
+- `stop()` remains the immediate shutdown primitive; it transitions to `Stopping`, force-closes all connections and wakes the event loop right away.
+
+This drain lifecycle allows supervisors to quiesce traffic (e.g., removing an instance from load balancers) while letting outstanding requests complete and optionally bounding the wait for stubborn clients.
+
+#### stop() vs beginDrain() — intent, semantics and guidance
+
+The library exposes two related shutdown controls and they serve different intent: `stop()` is the immediate termination primitive while `beginDrain()` explicitly requests a graceful quiesce. The differences are summarized below to avoid confusion.
+
+- Semantics:
+  - `stop()`:
+    - Non‑blocking request to terminate the event loop as soon as practical.
+    - Closes the listening socket and transitions the server into `Stopping` where connections are closed and the loop wakes to exit quickly.
+    - Intended for cases where you want the server to stop servicing immediately (e.g. fatal error, process shutdown).
+  - `beginDrain(maxWait)`:
+    - Non‑blocking request to begin a graceful drain.
+    - Closes the listening socket so no new connections are accepted, marks existing keep‑alive connections to be closed after their current response, and injects `Connection: close` so clients do not reuse the socket.
+    - When `maxWait > 0` a deadline is armed; any remaining idle connections are forcibly closed when the deadline expires.
+
+- Observability & lifecycle:
+  - `isDraining()` becomes true after `beginDrain()` and remains true until the drain completes (or the deadline forces closure).
+  - `isRunning()` remains true while the server's event loop is still executing; it becomes false after the loop returns (either naturally after drain completes or after `stop()`).
+
+- Blocking vs non‑blocking:
+  - Both `stop()` and `beginDrain()` are non‑blocking control requests in the current API. If consumers want synchronous semantics they must explicitly wait (e.g. monitor `isDraining()`/`isRunning()` or join the thread that runs the server).
+
+- Typical usage patterns:
+  - Graceful shutdown (recommended when you can wait or use a supervisor):
+    1. Remove instance from load balancer.
+    2. Call `beginDrain(maxWait)` to allow in‑flight requests to finish and bound the wait.
+    3. Optionally wait for `isDraining()` -> `isRunning()` transition (or stop the wrapper thread) before exiting process.
+  - Immediate teardown (fast exit / fatal conditions):
+    - Call `stop()` to request immediate termination; the server will close connections promptly.
+
+- Wrapper behavior:
+  - `AsyncHttpServer::beginDrain()` and `MultiHttpServer::beginDrain()` forward to their underlying `HttpServer` instances so the same graceful behavior is available for background or multi‑reactor setups. `stop()` continues to request immediate termination on wrappers as before.
+
+Recommendation: prefer `beginDrain()` when you intend to quiesce traffic and let outstanding requests complete; use `stop()` when you require immediate termination. If you need a blocking API (wait until drain completes), add a small wait in the supervisor code that observes `isDraining()`/`isRunning()` or joins the server thread — the public API intentionally separates "request" (non‑blocking) from "wait" to keep shutdown control explicit.
+
 ## Reserved & Managed Response Headers
 
 Managed: `Date`, `Content-Length`, `Connection`, `Transfer-Encoding`, `Trailer`, `TE`, `Upgrade`.
@@ -636,6 +691,7 @@ Key points:
 - Modify handlers only while stopped (between stop/start).
 - `reusePort=true` required for `threadCount > 1`.
 - Movable even while running (vector storage stable).
+- Graceful drain propagates: `beginDrain(maxWait)` stops all accept loops, existing keep-alive connections receive `Connection: close`, and `isDraining()` reports when any underlying instance is still draining.
 
 Example:
 

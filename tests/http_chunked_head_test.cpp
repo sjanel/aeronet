@@ -1,8 +1,5 @@
 ﻿#include <gtest/gtest.h>
-#include <sys/socket.h>
 
-#include <cerrno>
-#include <cstddef>
 #include <string>
 
 #include "aeronet/http-constants.hpp"
@@ -81,21 +78,14 @@ TEST(HttpExpect, ContinueFlow) {
   std::string headers =
       "POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
   EXPECT_TRUE(aeronet::test::sendAll(fd, headers));
-  std::string interim;
-  static constexpr std::size_t kChunkSize = 128;
-  interim.resize_and_overwrite(kChunkSize, [fd](char* buf, [[maybe_unused]] std::size_t) {
-    auto firstRead = ::recv(fd, buf, kChunkSize, 0);
-    if (firstRead >= 0) {
-      return static_cast<std::size_t>(firstRead);
-    }
-    return std::size_t{};
-  });
+  // Read the interim 100 Continue response using the helper with a short timeout.
+  std::string interim = aeronet::test::recvWithTimeout(fd, 200ms);
   ASSERT_TRUE(interim.contains("100 Continue"));
   std::string body = "hello";
-  auto bs = ::send(cnx.fd(), body.data(), body.size(), 0);
-  ASSERT_EQ(bs, static_cast<decltype(headers.size())>(body.size()));
+  // Use sendAll for robust writes
+  ASSERT_TRUE(aeronet::test::sendAll(cnx.fd(), body));
 
-  EXPECT_TRUE(aeronet::test::sendAll(cnx.fd(), ""));
+  // Ensure any remaining bytes are collected until the peer closes
   std::string full = interim + aeronet::test::recvUntilClosed(cnx.fd());
 
   ASSERT_TRUE(full.contains("hello"));

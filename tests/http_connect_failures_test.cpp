@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <string>
+#include <vector>
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/test_server_fixture.hpp"

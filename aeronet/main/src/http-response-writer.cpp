@@ -74,7 +74,7 @@ void HttpResponseWriter::addCustomHeader(std::string_view name, std::string_view
 
 void HttpResponseWriter::customHeader(std::string_view name, std::string_view value) {
   if (_state != State::Opened) {
-    log::debug("Streaming: header ignored fd={} name={} reason={}", _fd, name,
+    log::debug("Streaming: header ignored fd # {} name={} reason={}", _fd, name,
                _state == State::Failed ? "writer-failed" : "headers-already-sent");
     return;
   }
@@ -105,7 +105,7 @@ void HttpResponseWriter::contentLength(std::size_t len) {
     } else {
       reason = "unknown";
     }
-    log::warn("Streaming: contentLength ignored fd={} requestedLen={} reason={}", _fd, len, reason);
+    log::warn("Streaming: contentLength ignored fd # {} requestedLen={} reason={}", _fd, len, reason);
     return;
   }
   _chunked = false;
@@ -142,11 +142,11 @@ void HttpResponseWriter::ensureHeadersSent() {
   // Do NOT add Content-Encoding at header emission time; we wait until we actually activate
   // compression (threshold reached) to avoid mislabeling identity bodies when size < threshold.
   // Do not attempt to add Connection/Date here; finalize handles them (adds Date, Connection based on keepAlive flag).
-  if (!enqueue(_fixedResponse.finalizeAndStealData(http::HTTP_1_1, Clock::now(), !_requestConnClose,
+  if (!enqueue(_fixedResponse.finalizeAndStealData(http::HTTP_1_1, SysClock::now(), !_requestConnClose,
                                                    _server->config().globalHeaders, _head,
                                                    _server->config().minCapturedBodySize))) {
     _state = HttpResponseWriter::State::Failed;
-    log::error("Streaming: failed to enqueue headers fd={} errno={} msg={}", _fd, errno, std::strerror(errno));
+    log::error("Streaming: failed to enqueue headers fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
     return;
   }
   _state = HttpResponseWriter::State::HeadersSent;
@@ -171,7 +171,7 @@ void HttpResponseWriter::emitChunk(std::string_view data) {
   chunkBuf.unchecked_append(http::CRLF);
   if (!enqueue(HttpResponseData(std::move(chunkBuf)))) {
     _state = HttpResponseWriter::State::Failed;
-    log::error("Streaming: failed enqueuing coalesced chunk fd={} errno={} msg={}", _fd, errno, std::strerror(errno));
+    log::error("Streaming: failed enqueuing coalesced chunk fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
     return;
   }
   _bytesWritten += data.size();
@@ -184,7 +184,7 @@ void HttpResponseWriter::emitLastChunk() {
 
   if (!enqueue(HttpResponseData(std::string_view{}, HttpBody(std::string("0\r\n\r\n"))))) {
     _state = HttpResponseWriter::State::Failed;
-    log::error("Streaming: failed enqueuing last chunk fd={} errno={} msg={}", _fd, errno, std::strerror(errno));
+    log::error("Streaming: failed enqueuing last chunk fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
   }
 }
 
@@ -193,7 +193,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
     return true;
   }
   if (_state == State::Ended || _state == State::Failed) {
-    log::warn("Streaming: write ignored fd={} size={} reason={}", _fd, data.size(),
+    log::warn("Streaming: write ignored fd # {} size={} reason={}", _fd, data.size(),
               _state == State::Failed ? "writer-failed" : "already-ended");
     return false;
   }
@@ -217,18 +217,18 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
   } else if (!_head) {
     if (!enqueue(HttpResponseData(data))) {
       _state = HttpResponseWriter::State::Failed;
-      log::error("Streaming: failed enqueuing fixed body fd={} errno={} msg={}", _fd, errno, std::strerror(errno));
+      log::error("Streaming: failed enqueuing fixed body fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
       return false;
     }
     _bytesWritten += data.size();
   }
-  log::trace("Streaming: write fd={} size={} total={} chunked={}", _fd, data.size(), _bytesWritten, _chunked);
+  log::trace("Streaming: write fd # {} size={} total={} chunked={}", _fd, data.size(), _bytesWritten, _chunked);
   return _state != State::Failed;  // backpressure signaled via connection close flag, failure sets failed state
 }
 
 void HttpResponseWriter::end() {
   if (_state == State::Ended || _state == State::Failed) {
-    log::debug("Streaming: end ignored fd={} reason={}", _fd,
+    log::debug("Streaming: end ignored fd # {} reason={}", _fd,
                _state == State::Failed ? "writer-failed" : "already-ended");
     return;
   }
@@ -244,7 +244,7 @@ void HttpResponseWriter::end() {
       } else if (!_head) {
         if (!enqueue(HttpResponseData(last))) {
           _state = HttpResponseWriter::State::Failed;
-          log::error("Streaming: failed enqueuing final encoder output fd={} errno={} msg={}", _fd, errno,
+          log::error("Streaming: failed enqueuing final encoder output fd # {} errno={} msg={}", _fd, errno,
                      std::strerror(errno));
           return;
         }
@@ -258,7 +258,7 @@ void HttpResponseWriter::end() {
       } else if (!_head) {
         if (!enqueue(HttpResponseData(std::move(_preCompressBuffer)))) {
           _state = HttpResponseWriter::State::Failed;
-          log::error("Streaming: failed enqueuing buffered body fd={} errno={} msg={}", _fd, errno,
+          log::error("Streaming: failed enqueuing buffered body fd # {} errno={} msg={}", _fd, errno,
                      std::strerror(errno));
           return;
         }
@@ -285,7 +285,7 @@ void HttpResponseWriter::end() {
     }
   }
 #endif
-  log::debug("Streaming: end fd={} bytesWritten={} chunked={}", _fd, _bytesWritten, _chunked);
+  log::debug("Streaming: end fd # {} bytesWritten={} chunked={}", _fd, _bytesWritten, _chunked);
 }
 
 bool HttpResponseWriter::enqueue(HttpResponseData httpResponseData) {

@@ -23,7 +23,7 @@ namespace aeronet {
 
 class HttpResponseTest : public ::testing::Test {
  protected:
-  static constexpr TimePoint tp{};
+  static constexpr SysTimePoint tp{};
   static constexpr bool keepAlive = false;
   static constexpr bool isHeadMethod = false;
   static constexpr std::size_t minCapturedBodySize = 4096;

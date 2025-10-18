@@ -201,6 +201,13 @@ class HttpServer {
   // Note: it is possible to call 'run()' again on a stopped server.
   void stop() noexcept;
 
+  // Initiate graceful draining: stop accepting new connections, and close existing keep-alive
+  // sessions after their current in-flight response completes. When maxWait > 0 a deadline is
+  // enforced, after which remaining connections are closed immediately. Safe to call from a
+  // different thread. Calling beginDrain() while already draining updates the deadline to the
+  // earliest of the current and new values.
+  void beginDrain(std::chrono::milliseconds maxWait = std::chrono::milliseconds{0}) noexcept;
+
   // The config given to the server, with the actual allocated port if 0 was given.
   // The config is immutable after creation of the Server.
   [[nodiscard]] const HttpServerConfig& config() const { return _config; }
@@ -211,12 +218,14 @@ class HttpServer {
 
   // Returns true while the event loop is actively executing inside run() / runUntil(), and
   // false otherwise (before start, after stop(), or after loop exit due to predicate / error).
-  // Because _running is a plain bool and may be toggled from another thread via stop(), a
-  // concurrent observer may see a short delay (bounded by checkPeriod) before the flag turns
-  // false. Primarily intended for coarse-grained coordination / diagnostics, not for
+  // Because the lifecycle state is mutated from the run loop and external control methods,
+  // concurrent observers may observe a short delay (bounded by pollInterval) before noticing
+  // the transition. Primarily intended for coarse-grained coordination / diagnostics, not for
   // high-precision synchronization. For deterministic shutdown sequencing prefer joining the
   // thread that called run()/runUntil().
-  [[nodiscard]] bool isRunning() const { return _running; }
+  [[nodiscard]] bool isRunning() const { return _lifecycle.isRunning(); }
+
+  [[nodiscard]] bool isDraining() const { return _lifecycle.isDraining(); }
 
   [[nodiscard]] ServerStats stats() const;
 
@@ -269,6 +278,61 @@ class HttpServer {
 
   void handleInTunneling(ConnectionMapIt cnxIt);
 
+  struct Lifecycle {
+    enum class State : uint8_t { Idle, Running, Draining, Stopping };
+
+    void reset() noexcept {
+      drainDeadline = {};
+      state = State::Idle;
+      drainDeadlineEnabled = false;
+    }
+
+    void enterRunning() noexcept {
+      state = State::Running;
+      drainDeadlineEnabled = false;
+    }
+
+    void enterStopping() noexcept {
+      state = State::Stopping;
+      drainDeadlineEnabled = false;
+      // Trigger wakeup to break any blocking epoll_wait quickly.
+      wakeupFd.send();
+    }
+
+    void enterDraining(std::chrono::steady_clock::time_point deadline, bool enabled) noexcept {
+      drainDeadline = deadline;
+      state = State::Draining;
+      drainDeadlineEnabled = enabled;
+      wakeupFd.send();
+    }
+
+    void shrinkDeadline(std::chrono::steady_clock::time_point deadline) noexcept {
+      if (!drainDeadlineEnabled || deadline < drainDeadline) {
+        drainDeadline = deadline;
+        drainDeadlineEnabled = true;
+      }
+      wakeupFd.send();
+    }
+
+    [[nodiscard]] bool isIdle() const noexcept { return state == State::Idle; }
+    [[nodiscard]] bool isRunning() const noexcept { return state == State::Running; }
+    [[nodiscard]] bool isDraining() const noexcept { return state == State::Draining; }
+    [[nodiscard]] bool isStopping() const noexcept { return state == State::Stopping; }
+    [[nodiscard]] bool isActive() const noexcept { return state != State::Idle; }
+    [[nodiscard]] bool acceptingConnections() const noexcept { return state == State::Running; }
+    [[nodiscard]] bool hasDeadline() const noexcept { return drainDeadlineEnabled; }
+    [[nodiscard]] std::chrono::steady_clock::time_point deadline() const noexcept { return drainDeadline; }
+
+    std::chrono::steady_clock::time_point drainDeadline;
+    // Wakeup fd (eventfd) used to interrupt epoll_wait promptly when stop() is invoked from another thread.
+    EventFd wakeupFd;
+    State state{State::Idle};
+    bool drainDeadlineEnabled{false};
+  };
+
+  void closeListener() noexcept;
+  void closeAllConnections(bool immediate);
+
   struct StatsInternal {
     uint64_t totalBytesQueued{0};
     uint64_t totalBytesWrittenImmediate{0};
@@ -290,9 +354,7 @@ class HttpServer {
   Socket _listenSocket;  // listening socket
   EventLoop _eventLoop;  // epoll-based event loop
 
-  // Wakeup fd (eventfd) used to interrupt epoll_wait promptly when stop() is invoked from another thread.
-  EventFd _wakeupFd;
-  bool _running{false};
+  Lifecycle _lifecycle;
 
   Router _router;
 

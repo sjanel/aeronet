@@ -1,5 +1,6 @@
 #include "aeronet/async-http-server.hpp"
 
+#include <chrono>
 #include <exception>
 #include <functional>
 #include <stdexcept>
@@ -83,6 +84,8 @@ void AsyncHttpServer::stop() noexcept {
     _thread.join();
   }
 }
+
+void AsyncHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept { _server.beginDrain(maxWait); }
 
 void AsyncHttpServer::rethrowIfError() {
   if (_error) {
