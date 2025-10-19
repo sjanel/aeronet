@@ -35,9 +35,9 @@ TEST(HttpProbes, OverridePaths) {
   HttpServerConfig cfg{};
   BuiltinProbesConfig bp;
   bp.enabled = true;
-  bp.readinessPath = "/rdy";
-  bp.livenessPath = "/liv";
-  bp.startupPath = "/start";
+  bp.withLivenessPath("/liv");
+  bp.withReadinessPath("/rdy");
+  bp.withStartupPath("/start");
   cfg.withBuiltinProbes(bp);
 
   aeronet::test::TestServer ts(std::move(cfg));
