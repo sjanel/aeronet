@@ -732,7 +732,7 @@ entirely by the server, and do not require application handlers to be installed 
 
 - `BuiltinProbesConfig::enabled` (bool): enable/disable builtin probes.
 - `BuiltinProbesConfig::contentType` (enum): response Content-Type used by the probe responses.
-- `BuiltinProbesConfig::livenessPath`, `readinessPath`, `startupPath`: customize probe paths. Paths must be
+- `BuiltinProbesConfig::withLivenessPath / withReadinessPath / withStartupPath`: customize probe paths. Paths must be
   non-empty and begin with `/` — invalid values are rejected by `BuiltinProbesConfig::validate()`.
 
 When enabled, if an application handler is already registered on the same path(s) the server will override them
@@ -756,9 +756,9 @@ HttpServerConfig cfg;
 BuiltinProbesConfig probesCfg;
 probesCfg.enabled = true;
 probesCfg.contentType = BuiltinProbesConfig::ContentType::TextPlainUtf8;
-probesCfg.livenessPath = "/livenessz";
-probesCfg.readinessPath = "/readinessz";
-probesCfg.startupPath = "/startupz";
+probesCfg.withLivenessPath("/livenessz");
+probesCfg.withReadinessPath("/readinessz");
+probesCfg.withStartupPath("/startupz");
 
 cfg.withBuiltinProbes(std::move(probesCfg));
 HttpServer server(std::move(cfg));

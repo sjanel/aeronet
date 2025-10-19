@@ -25,6 +25,13 @@ add_unit_test(
 )
 
 add_unit_test(
+    major-minor-version_test
+    test/major-minor-version_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+add_unit_test(
     ndigits_test
     test/ndigits_test.cpp
 )

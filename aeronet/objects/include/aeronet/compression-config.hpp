@@ -32,6 +32,9 @@ struct CompressionConfig {
   // to enumeration order of Encoding.
   FixedCapacityVector<Encoding, kNbContentEncodings> preferredFormats;
 
+  // If true, adds/merges a Vary: Accept-Encoding header whenever compression is applied.
+  bool addVaryHeader{true};
+
   struct Zlib {
 #ifdef AERONET_ENABLE_ZLIB
     int8_t level = Z_DEFAULT_COMPRESSION;
@@ -67,9 +70,6 @@ struct CompressionConfig {
   // Simple allowlist of content-types (prefix match) eligible for compression. If empty, any content type will be
   // eligible for compression.
   std::vector<std::string> contentTypeAllowlist;
-
-  // If true, adds/merges a Vary: Accept-Encoding header whenever compression is applied.
-  bool addVaryHeader{true};
 
   // Chunk size of buffer growths during compression.
   // Prefer a large size if you expect big payloads in average, prefer a small size if you want to limit memory
