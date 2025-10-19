@@ -150,7 +150,7 @@ Notes and implementation details
   raw tunneled bytes. This keeps the HTTP response life-cycle and the TCP proxying semantics independent and easier to
   reason about.
 - Tests: Basic coverage added for successful echo tunneling and failure cases (DNS resolution failures and allowlist
-  rejections). See `tests/http_connect_success_test.cpp` and `tests/http_connect_failures_test.cpp`.
+  rejections). See `tests/http_connect_test.cpp`.
 
 ## Performance / architecture
 
@@ -924,7 +924,7 @@ server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
 });
 ```
 
-Testing: see `tests/http_streaming.cpp`, `tests/http_streaming_keepalive.cpp`, and mixed cases in `tests/http_streaming_mixed.cpp`.
+Testing: see `tests/http_streaming.cpp`.
 
 ## Mixed Mode & Dispatch Precedence
 
@@ -958,7 +958,7 @@ Behavior:
 - GET /other → global streaming fallback
 - POST /other → global fixed (since only global fixed + streaming; precedence chooses streaming for GET only)
 
-Testing: `tests/http_streaming_mixed.cpp` covers precedence, conflicts, HEAD suppression, keep-alive reuse.
+Testing: `tests/http_streaming_test.cpp` covers precedence, conflicts, HEAD suppression, keep-alive reuse.
 
 ### Accessing TLS Metrics
 

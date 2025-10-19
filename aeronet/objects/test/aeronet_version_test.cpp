@@ -6,6 +6,7 @@
 
 TEST(AeronetVersion, Version) {
   static constexpr auto kVersion = aeronet::version();
+
   EXPECT_FALSE(kVersion.empty());
   auto view = aeronet::fullVersionStringView();
   EXPECT_TRUE(view.contains("aeronet"));

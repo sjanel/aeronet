@@ -32,5 +32,5 @@ add_unit_test(
     mergeable-headers_test
     test/mergeable-headers_test.cpp
     LIBRARIES
-    aeronet_http
+    aeronet_tech
 )

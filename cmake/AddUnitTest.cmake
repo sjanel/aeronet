@@ -15,15 +15,12 @@ function(add_exe name)
   set(cur_var "sources")
   set(exe_sources "")
   set(exe_libraries "")
-  set(exe_definitions "")
   set(exe_directories "")
   set(exe_include_dirs "")
 
   foreach(arg IN LISTS ARGN)
     if(arg STREQUAL "LIBRARIES")
       set(cur_var "libraries")
-    elseif(arg STREQUAL "DEFINITIONS")
-      set(cur_var "definitions")
     elseif(arg STREQUAL "DIRECTORIES")
       set(cur_var "directories")
     else()
@@ -38,7 +35,6 @@ function(add_exe name)
 
   add_project_executable(${name} ${exe_sources})
   set_target_properties(${name} PROPERTIES
-    COMPILE_DEFINITIONS "${exe_definitions}"
     BUILD_RPATH "${runtime_path}")
   target_link_libraries(${name} PRIVATE ${exe_libraries})
   list(REMOVE_DUPLICATES exe_include_dirs)

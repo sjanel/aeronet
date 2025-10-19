@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <thread>
+#include <utility>
+
 #include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
