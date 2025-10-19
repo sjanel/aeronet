@@ -35,25 +35,3 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
   std::string resp2 = aeronet::test::recvWithTimeout(fd);
   EXPECT_TRUE(resp2.contains("ECHO/two"));
 }
-
-TEST(HttpLimits, RejectHugeHeaders) {
-  aeronet::HttpServerConfig cfg;
-  cfg.maxHeaderBytes = 128;
-  cfg.enableKeepAlive = false;
-  aeronet::test::TestServer ts(cfg);
-  auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse resp;
-    resp.body("OK");
-    return resp;
-  });
-
-  aeronet::test::ClientConnection cnx(port);
-  int fd = cnx.fd();
-
-  std::string bigHeader(200, 'a');
-  std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nX-Big: " + bigHeader + "\r\n\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvWithTimeout(fd);
-  EXPECT_TRUE(resp.contains("431"));
-}

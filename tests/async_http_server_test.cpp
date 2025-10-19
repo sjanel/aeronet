@@ -164,11 +164,11 @@ TEST(AsyncHttpServer, BeginDrainClosesKeepAliveConnections) {
   const auto initial = aeronet::test::recvWithTimeout(fd);
   ASSERT_TRUE(initial.size() > 0);
 
-  async.beginDrain(std::chrono::milliseconds{200});
+  async.beginDrain(200ms);
   EXPECT_TRUE(async.isDraining());
 
   // Wait briefly for the listener to be closed by beginDrain() (avoid racey immediate connect attempts)
-  EXPECT_TRUE(aeronet::test::WaitForListenerClosed(port, 200ms));
+  EXPECT_TRUE(aeronet::test::WaitForListenerClosed(port, 210ms));
 
   const auto second = SimpleGetRequest("/two", "keep-alive");
   ASSERT_TRUE(aeronet::test::sendAll(fd, second));

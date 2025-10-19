@@ -11,8 +11,8 @@ using namespace aeronet;
 TEST(HttpOptionsTraceTls, TraceDisabledOnTlsPolicyRejectsTlsTrace) {
   using namespace aeronet::test;
   // Use TlsTestServer and set TracePolicy to EnabledPlainOnly (reject TRACE over TLS)
-  TlsTestServer ts({},
-                   [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TracePolicy::EnabledPlainOnly); });
+  TlsTestServer ts(
+      {}, [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly); });
 
   // Default handler (not needed but keep server alive)
   ts.setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
@@ -29,7 +29,7 @@ TEST(HttpOptionsTraceTls, TraceEnabledOnTlsAllowsTlsTrace) {
   using namespace aeronet::test;
   // EnabledPlainAndTLS should allow TRACE over TLS
   TlsTestServer ts(
-      {}, [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TracePolicy::EnabledPlainAndTLS); });
+      {}, [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS); });
   ts.setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
 
   TlsClient client(ts.port());

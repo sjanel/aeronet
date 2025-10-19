@@ -36,8 +36,8 @@ TEST(HttpUrlDecoding, SpaceDecoding) {
   optHello.target = "/hello%20world";
   auto respOwned = aeronet::test::requestOrThrow(server.port(), optHello);
   std::string_view resp = respOwned;
-  EXPECT_NE(resp.find("200 OK"), std::string_view::npos);
-  EXPECT_NE(resp.find("hello world"), std::string_view::npos);
+  EXPECT_TRUE(resp.contains("200 OK"));
+  EXPECT_TRUE(resp.contains("hello world"));
   done.store(true);
 }
 
@@ -61,8 +61,8 @@ TEST(HttpUrlDecoding, Utf8Decoded) {
   optUtf8.target = "/%E2%98%83%20x";
   auto respOwned = aeronet::test::requestOrThrow(server.port(), optUtf8);
   std::string_view resp = respOwned;
-  EXPECT_NE(resp.find("200 OK"), std::string_view::npos);
-  EXPECT_NE(resp.find("utf8"), std::string_view::npos);
+  EXPECT_TRUE(resp.contains("200 OK"));
+  EXPECT_TRUE(resp.contains("utf8"));
   done.store(true);
 }
 
@@ -83,8 +83,8 @@ TEST(HttpUrlDecoding, PlusIsNotSpace) {
   optPlus.target = "/a+b";
   auto respOwned = aeronet::test::requestOrThrow(server.port(), optPlus);
   std::string_view resp = respOwned;
-  EXPECT_NE(resp.find("200 OK"), std::string_view::npos);
-  EXPECT_NE(resp.find("plus"), std::string_view::npos);
+  EXPECT_TRUE(resp.contains("200 OK"));
+  EXPECT_TRUE(resp.contains("plus"));
   done.store(true);
 }
 
@@ -102,7 +102,7 @@ TEST(HttpUrlDecoding, InvalidPercentSequence400) {
   optBad.target = "/bad%G1";
   auto respOwned = aeronet::test::requestOrThrow(server.port(), optBad);
   std::string_view resp = respOwned;
-  EXPECT_NE(resp.find("400 Bad Request"), std::string_view::npos);
+  EXPECT_TRUE(resp.contains("400 Bad Request"));
   done.store(true);
 }
 
