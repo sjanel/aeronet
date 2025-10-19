@@ -7,6 +7,7 @@
 #include <string>
 #include <thread>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -31,7 +32,7 @@ std::string headerValue(const std::string& resp, const std::string& name) {
   if (pos == std::string::npos) {
     return {};
   }
-  std::size_t end = resp.find("\r\n", pos);
+  std::size_t end = resp.find(aeronet::http::CRLF, pos);
   if (end == std::string::npos) {
     return {};
   }

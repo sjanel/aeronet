@@ -37,10 +37,17 @@ add_unit_test(
 )
 
 add_unit_test(
+    aeronet_version_test
+    test/aeronet_version_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+add_unit_test(
     http-body_test
     test/http-body_test.cpp
     LIBRARIES
-    aeronet_objects
+    aeronet_tech
 )
 
 add_unit_test(

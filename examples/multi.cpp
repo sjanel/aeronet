@@ -14,6 +14,7 @@ volatile std::sig_atomic_t gStop = 0;
 void handleSigint([[maybe_unused]] int signum) { gStop = 1; }
 }  // namespace
 
+// NOLINTNEXTLINE(bugprone-exception-escape)
 int main(int argc, char** argv) {
   uint16_t port = 8080;
   int threads = 4;  // default

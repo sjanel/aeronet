@@ -40,7 +40,7 @@ struct MajorMinorVersion {
   constexpr auto operator<=>(const MajorMinorVersion &) const noexcept = default;
 };
 
-// Parse a textual HTTP version token (e.g. "HTTP/1.1") into Version.
+// Parse a textual version token (e.g. "HTTP/1.1") into Version.
 // Returns true on success; false if format invalid.
 template <const char *Prefix, class VersionInt>
 bool parseVersion(const char *first, const char *last, MajorMinorVersion<Prefix, VersionInt> &out) {

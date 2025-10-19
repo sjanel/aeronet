@@ -4,14 +4,15 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/otel-config.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/tls-config.hpp"
 #include "invalid_argument_exception.hpp"
