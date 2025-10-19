@@ -172,7 +172,8 @@ class RawBytesImpl {
 
   void ensureAvailableCapacity(size_type availableCapacity) { reserveExponential(_size + availableCapacity); }
 
-  [[nodiscard]] pointer data() const noexcept { return _buf; }
+  [[nodiscard]] pointer data() noexcept { return _buf; }
+  [[nodiscard]] const_pointer data() const noexcept { return _buf; }
 
   [[nodiscard]] iterator begin() noexcept { return _buf; }
   [[nodiscard]] const_iterator begin() const noexcept { return _buf; }

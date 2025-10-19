@@ -14,6 +14,7 @@
 #include <functional>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -793,12 +794,12 @@ void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, b
 
 void HttpServer::registerBuiltInProbes() {
   // liveness: lightweight, should not depend on external systems
-  _router.setPath(_config.builtinProbes.livenessPath, http::Method::GET, [](const HttpRequest&) {
+  _router.setPath(std::string(_config.builtinProbes.livenessPath()), http::Method::GET, [](const HttpRequest&) {
     return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("OK\n");
   });
 
   // readiness: reflects lifecycle.ready
-  _router.setPath(_config.builtinProbes.readinessPath, http::Method::GET, [this](const HttpRequest&) {
+  _router.setPath(std::string(_config.builtinProbes.readinessPath()), http::Method::GET, [this](const HttpRequest&) {
     HttpResponse resp(http::StatusCodeOK);
     resp.contentType(http::ContentTypeTextPlain);
     if (_lifecycle.ready.load(std::memory_order_relaxed)) {
@@ -811,7 +812,7 @@ void HttpServer::registerBuiltInProbes() {
   });
 
   // startup: reflects lifecycle.started
-  _router.setPath(_config.builtinProbes.startupPath, http::Method::GET, [this](const HttpRequest&) {
+  _router.setPath(std::string(_config.builtinProbes.startupPath()), http::Method::GET, [this](const HttpRequest&) {
     HttpResponse resp(http::StatusCodeOK);
     resp.contentType(http::ContentTypeTextPlain);
     if (_lifecycle.started.load(std::memory_order_relaxed)) {

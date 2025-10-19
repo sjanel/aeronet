@@ -14,8 +14,8 @@ TEST(ExtraConfigValidations, TlsMissingCertKey) {
 TEST(ExtraConfigValidations, TlsAlpnMustMatch) {
   HttpServerConfig cfg;
   cfg.tls.enabled = true;
-  cfg.tls.certPem = "dummy";
-  cfg.tls.keyPem = "dummy";
+  cfg.tls.withCertPem("dummy");
+  cfg.tls.withKeyPem("dummy");
   cfg.tls.alpnMustMatch = true;
   EXPECT_THROW(cfg.validate(), invalid_argument);
 }

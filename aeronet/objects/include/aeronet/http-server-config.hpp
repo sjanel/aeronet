@@ -8,7 +8,6 @@
 #include <ranges>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 #include "aeronet/builtin-probes-config.hpp"
@@ -94,9 +93,9 @@ struct HttpServerConfig {
   // of 0 disables this protective timeout. Default: disabled.
   std::chrono::milliseconds headerReadTimeout{std::chrono::milliseconds{0}};
 
-  // ===========================================
-  // Optional TLS configuration
-  // ===========================================
+  // =================
+  // TLS configuration
+  // =================
 
   TLSConfig tls;
 
@@ -292,23 +291,13 @@ struct HttpServerConfig {
   HttpServerConfig& withMergeUnknownRequestHeaders(bool on = true);
 
   // Set the OpenTelemetry configuration for this server instance
-  HttpServerConfig& withOtelConfig(OtelConfig cfg) {
-    otel = std::move(cfg);
-    return *this;
-  }
+  HttpServerConfig& withOtelConfig(OtelConfig cfg);
 
   // Configure adaptive read chunk sizing (two tier). Returns *this.
-  HttpServerConfig& withReadChunkStrategy(std::size_t initialBytes, std::size_t bodyBytes) {
-    initialReadChunkBytes = initialBytes;
-    bodyReadChunkBytes = bodyBytes;
-    return *this;
-  }
+  HttpServerConfig& withReadChunkStrategy(std::size_t initialBytes, std::size_t bodyBytes);
 
   // Configure a per-event read fairness cap (0 => unlimited)
-  HttpServerConfig& withMaxPerEventReadBytes(std::size_t capBytes) {
-    maxPerEventReadBytes = capBytes;
-    return *this;
-  }
+  HttpServerConfig& withMaxPerEventReadBytes(std::size_t capBytes);
 
   // Replace the router configuration wholesale
   HttpServerConfig& withRouterConfig(RouterConfig cfg);

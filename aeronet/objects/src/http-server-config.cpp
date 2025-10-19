@@ -15,6 +15,7 @@
 #include "aeronet/router-config.hpp"
 #include "aeronet/tls-config.hpp"
 #include "invalid_argument_exception.hpp"
+#include "major-minor-version.hpp"
 #include "tchars.hpp"
 
 namespace aeronet {
@@ -76,32 +77,32 @@ HttpServerConfig& HttpServerConfig::withHeaderReadTimeout(std::chrono::milliseco
 
 HttpServerConfig& HttpServerConfig::withTlsCertKey(std::string_view certFile, std::string_view keyFile) {
   auto& tlsCfg = ensureTls();
-  tlsCfg.certFile.assign(certFile);
-  tlsCfg.keyFile.assign(keyFile);
+  tlsCfg.withCertFile(certFile);
+  tlsCfg.withKeyFile(keyFile);
   return *this;
 }
 
 HttpServerConfig& HttpServerConfig::withTlsCipherList(std::string_view cipherList) {
-  ensureTls().cipherList.assign(cipherList);
+  ensureTls().withCipherList(cipherList);
   return *this;
 }
 
 HttpServerConfig& HttpServerConfig::withTlsMinVersion(std::string_view ver) {
-  ensureTls().minVersion.assign(ver);
+  parseVersion(ver.data(), ver.data() + ver.size(), ensureTls().minVersion);
   return *this;
 }
 
 HttpServerConfig& HttpServerConfig::withTlsMaxVersion(std::string_view ver) {
-  ensureTls().maxVersion.assign(ver);
+  parseVersion(ver.data(), ver.data() + ver.size(), ensureTls().maxVersion);
   return *this;
 }
 
 HttpServerConfig& HttpServerConfig::withTlsCertKeyMemory(std::string_view certPem, std::string_view keyPem) {
   auto& tlsCfg = ensureTls();
-  tlsCfg.certFile.clear();
-  tlsCfg.keyFile.clear();
-  tlsCfg.certPem.assign(certPem);
-  tlsCfg.keyPem.assign(keyPem);
+  tlsCfg.withCertFile({});
+  tlsCfg.withKeyFile({});
+  tlsCfg.withCertPem(certPem);
+  tlsCfg.withKeyPem(keyPem);
   return *this;
 }
 
@@ -157,6 +158,25 @@ HttpServerConfig& HttpServerConfig::withRequestDecompression(DecompressionConfig
 
 HttpServerConfig& HttpServerConfig::withMergeUnknownRequestHeaders(bool on) {
   mergeUnknownRequestHeaders = on;
+  return *this;
+}
+
+// Set the OpenTelemetry configuration for this server instance
+HttpServerConfig& HttpServerConfig::withOtelConfig(OtelConfig cfg) {
+  otel = std::move(cfg);
+  return *this;
+}
+
+// Configure adaptive read chunk sizing (two tier). Returns *this.
+HttpServerConfig& HttpServerConfig::withReadChunkStrategy(std::size_t initialBytes, std::size_t bodyBytes) {
+  initialReadChunkBytes = initialBytes;
+  bodyReadChunkBytes = bodyBytes;
+  return *this;
+}
+
+// Configure a per-event read fairness cap (0 => unlimited)
+HttpServerConfig& HttpServerConfig::withMaxPerEventReadBytes(std::size_t capBytes) {
+  maxPerEventReadBytes = capBytes;
   return *this;
 }
 
