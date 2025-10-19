@@ -14,6 +14,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "connection-state.hpp"
+#include "major-minor-version.hpp"
 #include "mergeable-headers.hpp"
 #include "raw-chars.hpp"
 #include "string-equal-ignore-case.hpp"

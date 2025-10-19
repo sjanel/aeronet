@@ -1,9 +1,8 @@
 #include <gtest/gtest.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
 
 #include <atomic>
 #include <chrono>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -162,7 +161,7 @@ TEST(AsyncHttpServer, BeginDrainClosesKeepAliveConnections) {
   const auto req = SimpleGetRequest("/", "keep-alive");
   ASSERT_TRUE(aeronet::test::sendAll(fd, req));
   const auto initial = aeronet::test::recvWithTimeout(fd);
-  ASSERT_TRUE(initial.size() > 0);
+  ASSERT_FALSE(initial.empty());
 
   async.beginDrain(200ms);
   EXPECT_TRUE(async.isDraining());
