@@ -20,6 +20,10 @@
 #include <spdlog/version.h>
 #endif
 
+#ifndef AERONET_VERSION_STR
+#error "AERONET_VERSION_STR must be defined via build system"
+#endif
+
 namespace aeronet {
 
 // Semver of the project as injected by the build system.
