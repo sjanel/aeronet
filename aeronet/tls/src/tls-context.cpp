@@ -15,7 +15,6 @@
 #include <numeric>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 
 #include "aeronet/tls-config.hpp"
 #include "raw-bytes.hpp"
@@ -23,12 +22,12 @@
 
 namespace aeronet {
 namespace {
-int parseTlsVersion(std::string_view ver) {
-  if (ver == "TLS1.2" || ver == "TLSv1.2") {
+int parseTlsVersion(TLSConfig::Version ver) {
+  if (ver == TLSConfig::TLS_1_2) {
     return TLS1_2_VERSION;
   }
 #ifdef TLS1_3_VERSION
-  if (ver == "TLS1.3" || ver == "TLSv1.3") {
+  if (ver == TLSConfig::TLS_1_3) {
     return TLS1_3_VERSION;
   }
 #endif
@@ -43,57 +42,59 @@ void TlsContext::CtxDel::operator()(ssl_ctx_st* ctxPtr) const noexcept {
 
 TlsContext::~TlsContext() = default;
 
-TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics) : _ctx(SSL_CTX_new(TLS_server_method())) {
+TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics) : _ctx(::SSL_CTX_new(TLS_server_method())) {
   if (!_ctx) {
     throw std::runtime_error("SSL_CTX_new failed");
   }
   auto* raw = reinterpret_cast<SSL_CTX*>(_ctx.get());
-  if (!cfg.cipherList.empty()) {
-    if (SSL_CTX_set_cipher_list(raw, cfg.cipherList.c_str()) != 1) {
+  if (!cfg.cipherList().empty()) {
+    if (::SSL_CTX_set_cipher_list(raw, cfg.cipherListCstrView().c_str()) != 1) {
       throw std::runtime_error("Failed to set cipher list");
     }
   }
   // Protocol version bounds if provided
-  if (!cfg.minVersion.empty()) {
+  if (cfg.minVersion != TLSConfig::Version{}) {
     int mv = parseTlsVersion(cfg.minVersion);
-    if (mv == 0 || SSL_CTX_set_min_proto_version(raw, mv) != 1) {
+    if (mv == 0 || ::SSL_CTX_set_min_proto_version(raw, mv) != 1) {
       throw std::runtime_error("Failed to set minimum TLS version");
     }
   }
-  if (!cfg.maxVersion.empty()) {
+  if (cfg.maxVersion != TLSConfig::Version{}) {
     int Mv = parseTlsVersion(cfg.maxVersion);
-    if (Mv == 0 || SSL_CTX_set_max_proto_version(raw, Mv) != 1) {
+    if (Mv == 0 || ::SSL_CTX_set_max_proto_version(raw, Mv) != 1) {
       throw std::runtime_error("Failed to set maximum TLS version");
     }
   }
-  if (!cfg.certPem.empty() && !cfg.keyPem.empty()) {
+  std::string_view certPem = cfg.certPem();
+  std::string_view keyPem = cfg.keyPem();
+  if (!certPem.empty() && !keyPem.empty()) {
     // In-memory load path
-    auto certBio = makeMemBio(cfg.certPem.data(), static_cast<int>(cfg.certPem.size()));
-    auto keyBio = makeMemBio(cfg.keyPem.data(), static_cast<int>(cfg.keyPem.size()));
+    auto certBio = makeMemBio(certPem.data(), static_cast<int>(certPem.size()));
+    auto keyBio = makeMemBio(keyPem.data(), static_cast<int>(keyPem.size()));
     if (!certBio || !keyBio) {
       throw std::runtime_error("Failed to allocate BIO for in-memory cert/key");
     }
-    X509Ptr certX509(PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr), ::X509_free);
-    PKeyPtr pkey(PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr), ::EVP_PKEY_free);
+    X509Ptr certX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr), ::X509_free);
+    PKeyPtr pkey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr), ::EVP_PKEY_free);
     if (!certX509 || !pkey) {
       throw std::runtime_error("Failed to parse in-memory certificate/key");
     }
-    if (SSL_CTX_use_certificate(raw, certX509.get()) != 1) {
+    if (::SSL_CTX_use_certificate(raw, certX509.get()) != 1) {
       throw std::runtime_error("Failed to use in-memory certificate");
     }
-    if (SSL_CTX_use_PrivateKey(raw, pkey.get()) != 1) {
+    if (::SSL_CTX_use_PrivateKey(raw, pkey.get()) != 1) {
       throw std::runtime_error("Failed to use in-memory private key");
     }
     // SSL_CTX increases ref counts internally; unique_ptr releases will free local if ref counts allow.
   } else {
-    if (SSL_CTX_use_certificate_file(raw, cfg.certFile.c_str(), SSL_FILETYPE_PEM) != 1) {
+    if (::SSL_CTX_use_certificate_file(raw, cfg.certFileCstrView().c_str(), SSL_FILETYPE_PEM) != 1) {
       throw std::runtime_error("Failed to load certificate");
     }
-    if (SSL_CTX_use_PrivateKey_file(raw, cfg.keyFile.c_str(), SSL_FILETYPE_PEM) != 1) {
+    if (::SSL_CTX_use_PrivateKey_file(raw, cfg.keyFileCstrView().c_str(), SSL_FILETYPE_PEM) != 1) {
       throw std::runtime_error("Failed to load private key");
     }
   }
-  if (SSL_CTX_check_private_key(raw) != 1) {
+  if (::SSL_CTX_check_private_key(raw) != 1) {
     throw std::runtime_error("Private key check failed");
   }
   if (cfg.requestClientCert) {
@@ -101,7 +102,7 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics) : _ctx
     if (cfg.requireClientCert) {
       verifyMode |= SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
     }
-    SSL_CTX_set_verify(raw, verifyMode, nullptr);
+    ::SSL_CTX_set_verify(raw, verifyMode, nullptr);
     // Load any in-memory trusted client certs (appended to default store). For test / pinning usage.
     for (const auto& pem : cfg.trustedClientCertsPem) {
       if (pem.empty()) {
@@ -111,14 +112,14 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics) : _ctx
       if (!cbio) {
         throw std::runtime_error("Failed to alloc BIO for client trust cert");
       }
-      X509Ptr cx(PEM_read_bio_X509(cbio.get(), nullptr, nullptr, nullptr), ::X509_free);
+      X509Ptr cx(::PEM_read_bio_X509(cbio.get(), nullptr, nullptr, nullptr), ::X509_free);
       if (!cx) {
         throw std::runtime_error("Failed to parse trusted client certificate");
       }
-      if (SSL_CTX_get_cert_store(raw) == nullptr) {
+      if (::SSL_CTX_get_cert_store(raw) == nullptr) {
         throw std::runtime_error("No cert store available in SSL_CTX");
       }
-      if (X509_STORE_add_cert(SSL_CTX_get_cert_store(raw), cx.get()) != 1) {
+      if (::X509_STORE_add_cert(::SSL_CTX_get_cert_store(raw), cx.get()) != 1) {
         throw std::runtime_error("Failed to add trusted client certificate to store");
       }
     }
@@ -132,7 +133,7 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics) : _ctx
       _alpnData->wire.unchecked_push_back(static_cast<std::byte>(proto.size()));
       _alpnData->wire.unchecked_append(reinterpret_cast<const std::byte*>(proto.data()), proto.size());
     }
-    SSL_CTX_set_alpn_select_cb(
+    ::SSL_CTX_set_alpn_select_cb(
         raw,
         []([[maybe_unused]] SSL* ssl, const unsigned char** out, unsigned char* outlen, const unsigned char* in,
            unsigned int inlen, void* arg) -> int {

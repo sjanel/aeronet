@@ -12,6 +12,7 @@ namespace aeronet {
 // easier to evolve without breaking existing code.
 struct DecompressionConfig {
   void validate() const;
+
   // Master enable flag. When false the server performs NO automatic decompression. Bodies with
   // Content-Encoding remain compressed and are delivered verbatim to handlers (pass-through).
   // No 415 is generated solely due to compression; application code may inspect/decode manually.

@@ -21,9 +21,9 @@ void BuiltinProbesConfig::validate() const {
         throw invalid_argument("builtin probe path '{}' contains invalid characters", name);
       }
     };
-    checkPath(livenessPath, "livenessPath");
-    checkPath(readinessPath, "readinessPath");
-    checkPath(startupPath, "startupPath");
+    checkPath(livenessPath(), "livenessPath");
+    checkPath(readinessPath(), "readinessPath");
+    checkPath(startupPath(), "startupPath");
   }
 }
 

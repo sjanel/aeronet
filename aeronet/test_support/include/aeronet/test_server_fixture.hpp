@@ -7,6 +7,9 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <exception>
+#include <stdexcept>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -65,7 +68,7 @@ struct TestServer {
     // or the timeout elapses. Otherwise fall back to the simple connect check used previously.
     const auto& cfg = server.config();
     if (cfg.builtinProbes.enabled) {
-      const auto probePath = cfg.builtinProbes.readinessPath;
+      const auto probePath = std::string(cfg.builtinProbes.readinessPath());
       const auto deadline = std::chrono::steady_clock::now() + timeout;
       while (std::chrono::steady_clock::now() < deadline) {
         try {
@@ -73,7 +76,7 @@ struct TestServer {
           opt.target = probePath;
           auto resp = aeronet::test::requestOrThrow(port(), opt);
           // Request returned; check if it contains HTTP/ status 200 in the status line.
-          if (!resp.empty() && resp.find("HTTP/1.1 200") != std::string::npos) {
+          if (resp.contains("HTTP/1.1 200")) {
             return;
           }
         } catch (const std::exception& ex) {

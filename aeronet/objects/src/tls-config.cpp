@@ -14,8 +14,8 @@ void TLSConfig::validate() const {
   }
 
   // If TLS config is present we require a cert and a key supplied (either file or in-memory PEM)
-  const bool hasCert = !certFile.empty() || !certPem.empty();
-  const bool hasKey = !keyFile.empty() || !keyPem.empty();
+  const bool hasCert = !certFile().empty() || !certPem().empty();
+  const bool hasKey = !keyFile().empty() || !keyPem().empty();
 
   if (!hasCert && !hasKey) {
     throw invalid_argument("TLS configured but no certificate/key provided");
@@ -33,14 +33,16 @@ void TLSConfig::validate() const {
   }
 
   // Validate min/max version allowed tokens (if set)
-  if (!minVersion.empty()) {
-    if (minVersion != "TLS1.2" && minVersion != "TLS1.3") {
-      throw invalid_argument("Unsupported tls minVersion '{}', allowed: TLS1.2, TLS1.3", minVersion);
+  if (minVersion != Version{}) {
+    if (minVersion != TLS_1_2 && minVersion != TLS_1_3) {
+      throw invalid_argument("Unsupported tls minVersion '{}', allowed: TLS1.2, TLS1.3",
+                             std::string_view(minVersion.str()));
     }
   }
-  if (!maxVersion.empty()) {
-    if (maxVersion != "TLS1.2" && maxVersion != "TLS1.3") {
-      throw invalid_argument("Unsupported tls maxVersion '{}', allowed: TLS1.2, TLS1.3", maxVersion);
+  if (maxVersion != Version{}) {
+    if (maxVersion != TLS_1_2 && maxVersion != TLS_1_3) {
+      throw invalid_argument("Unsupported tls maxVersion '{}', allowed: TLS1.2, TLS1.3",
+                             std::string_view(maxVersion.str()));
     }
   }
 

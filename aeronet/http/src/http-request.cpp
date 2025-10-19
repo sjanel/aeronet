@@ -124,9 +124,9 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, RawChars& tmpBuffe
   }
   _path = std::string_view(first, pathLast);
 
-  // Version (allow trailing CR; parseHttpVersion tolerates it via from_chars behavior)
+  // Version (allow trailing CR; parseVersion tolerates it via from_chars behavior)
   first = nextSep + 1;
-  if (!http::parseHttpVersion(first, lineLast, _version)) {
+  if (!parseVersion(first, lineLast, _version)) {
     return http::StatusCodeBadRequest;  // malformed version token
   }
   if (_version.major != 1 || _version.minor > 1U) {

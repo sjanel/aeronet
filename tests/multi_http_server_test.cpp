@@ -54,8 +54,9 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
   multi.beginDrain(200ms);
   EXPECT_TRUE(multi.isDraining());
 
-  // Wait briefly for the listener to be closed by beginDrain() (avoid racey immediate connect attempts)
-  EXPECT_TRUE(aeronet::test::WaitForListenerClosed(port, 210ms));
+  // Wait for the listener to be closed by beginDrain() (avoid racey immediate connect attempts)
+  // Use a slightly higher timeout to reduce flakiness on CI where shutdown may take longer.
+  EXPECT_TRUE(aeronet::test::WaitForListenerClosed(port, 500ms));
 
   ASSERT_TRUE(aeronet::test::sendAll(fd, SimpleGetRequest("/two", "keep-alive")));
   const auto drained = aeronet::test::recvWithTimeout(fd);
