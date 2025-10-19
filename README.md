@@ -15,6 +15,9 @@
 - **Modular & opt‑in**: enable only the features you need (zlib, zstd, brotli, TLS, logging, opentelemetry) via build flags (no more bloat dependencies)
 - **Ergonomic**: simple `HttpServer`, `AsyncHttpServer`, `MultiHttpServer` types; fluent configuration; RAII listener setup.
 - **Extensible & observable**: composable configs (compression, decompression, TLS) plus lightweight per‑request metrics hook.
+- **Perfect for cloud-native microservices**: Built-in Kubernetes-style health & readiness probes, tiny runtime footprint, minimal dependencies, and easy embedding into service containers.
+
+The built-in probes are lightweight endpoints you can enable via `HttpServerConfig` (no application handlers required). They make aeronet especially convenient for Kubernetes deployments and health-checking behind load-balancers. Example enabling probes and testing with curl is shown below.
 
 ## Minimal Example
 
@@ -64,6 +67,38 @@ User-Agent: curl/8.5.0
 ```
 
 ## Detailed Documentation
+
+## Kubernetes probes (quick example)
+
+Enable the builtin probes via `HttpServerConfig` and test them with curl. This example enables the probes with default paths and a plain-text content type.
+
+```cpp
+#include <aeronet/aeronet.hpp>
+using namespace aeronet;
+
+int main() {
+  HttpServerConfig cfg;
+  cfg.withBuiltinProbes(BuiltinProbesConfig{});
+  HttpServer server(std::move(cfg));
+
+  // Register application handlers as usual (optional)
+  server.router().setPath("/hello", http::Method::GET, [](const HttpRequest&){
+    return HttpResponse(200, "OK").contentType("text/plain").body("hello\n");
+  });
+
+  server.run();
+}
+```
+
+Probe checks (from the host/container):
+
+```bash
+curl -i http://localhost:8080/livez   # expects HTTP/1.1 200 when running
+curl -i http://localhost:8080/readyz  # expects 200 when ready, 503 during drain/startup
+curl -i http://localhost:8080/startupz # returns 503 until initialization completes
+
+For a Kubernetes `Deployment` example that configures liveness/readiness/startup probes against these paths, see: [docs/kubernetes-probes.md](docs/kubernetes-probes.md).
+```
 
 The following focused docs expand each area without cluttering the high‑level overview:
 

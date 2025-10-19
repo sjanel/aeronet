@@ -60,8 +60,8 @@ void HttpServer::sweepIdleConnections() {
     }
     // TLS handshake timeout (if enabled). Applies only while handshake pending.
 #ifdef AERONET_ENABLE_OPENSSL
-    if (_config.tlsHandshakeTimeout.count() > 0 && _config.tls && st.handshakeStart.time_since_epoch().count() != 0 &&
-        !st.tlsEstablished && !st.transport->handshakeDone()) {
+    if (_config.tlsHandshakeTimeout.count() > 0 && _config.tls.enabled &&
+        st.handshakeStart.time_since_epoch().count() != 0 && !st.tlsEstablished && !st.transport->handshakeDone()) {
       if (now - st.handshakeStart > _config.tlsHandshakeTimeout) {
         cnxIt = closeConnection(cnxIt);
         continue;
@@ -154,10 +154,10 @@ void HttpServer::acceptNewConnections() {
       // transport error/EOF handling below.
       if (!pCnx->tlsEstablished && pCnx->transport->handshakeDone()) {
 #ifdef AERONET_ENABLE_OPENSSL
-        if (_config.tls && dynamic_cast<TlsTransport*>(pCnx->transport.get()) != nullptr) {
+        if (_config.tls.enabled && dynamic_cast<TlsTransport*>(pCnx->transport.get()) != nullptr) {
           const auto* tlsTr = static_cast<const TlsTransport*>(pCnx->transport.get());
-          pCnx->tlsInfo = finalizeTlsHandshake(tlsTr->rawSsl(), cnxFd, _config.tls->logHandshake, pCnx->handshakeStart,
-                                               _tlsMetrics);
+          pCnx->tlsInfo =
+              finalizeTlsHandshake(tlsTr->rawSsl(), cnxFd, _config.tls.logHandshake, pCnx->handshakeStart, _tlsMetrics);
         }
 #endif
         pCnx->tlsEstablished = true;
@@ -229,7 +229,7 @@ HttpServer::ConnectionMapIt HttpServer::closeConnection(ConnectionMapIt cnxIt) {
 
   // Best-effort graceful TLS shutdown
 #ifdef AERONET_ENABLE_OPENSSL
-  if (_config.tls) {
+  if (_config.tls.enabled) {
     if (auto* tlsTr = dynamic_cast<TlsTransport*>(cnxIt->second.transport.get())) {
       tlsTr->shutdown();
     }
@@ -285,10 +285,10 @@ void HttpServer::handleReadableClient(int fd) {
     const std::size_t count = state.transportRead(chunkSize, want);
     if (!state.tlsEstablished && state.transport->handshakeDone()) {
 #ifdef AERONET_ENABLE_OPENSSL
-      if (_config.tls && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
+      if (_config.tls.enabled && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
         const auto* tlsTr = static_cast<const TlsTransport*>(state.transport.get());
         state.tlsInfo =
-            finalizeTlsHandshake(tlsTr->rawSsl(), fd, _config.tls->logHandshake, state.handshakeStart, _tlsMetrics);
+            finalizeTlsHandshake(tlsTr->rawSsl(), fd, _config.tls.logHandshake, state.handshakeStart, _tlsMetrics);
       }
 #endif
       state.tlsEstablished = true;

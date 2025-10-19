@@ -15,15 +15,6 @@ This file lists planned features that are not yet implemented. For implemented f
 - Access-Control (CORS) helpers
 - Range / Conditional Requests (References: RFC 7233 (Range), RFC 7232 (Conditional Requests))
   No support yet for Range, If-Modified-Since, If-None-Match, etc. Not mandatory but important for real web servers (streaming, resume, caching).
-- Built-in probes
-
-### Built-in probes
-
-| Probe | Path | OK Status | Fail Status | Body | Purpose |
-|-------|------|-----------|-------------|------|---------|
-| Startup | /startupz | 200 | 503 | OK\n | Server initialization done |
-| Liveness | /livez | 200 | 500 | OK\n | Process alive |
-| Readiness | /readyz | 200 | 503 | OK\n | Ready to serve traffic |
 
 ## Long-term / Nice-to-have
 

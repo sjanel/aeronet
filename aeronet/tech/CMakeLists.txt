@@ -104,3 +104,10 @@ add_unit_test(
     LIBRARIES
     aeronet_tech
 )
+
+add_unit_test(
+    concatenated-strings_test
+    test/concatenated-strings_test.cpp
+    LIBRARIES
+    aeronet_tech
+)

@@ -61,12 +61,12 @@ TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
   EXPECT_EQ(prefix.substr(0, 8), "HTTP/1.1") << "Raw prefix: '" << std::string(prefix) << "'";
   EXPECT_EQ(prefix.substr(8, 1), " ");
   EXPECT_EQ(prefix.substr(9, 3), "200");
-  EXPECT_NE(full.find("Content-Type: text/plain"), std::string_view::npos);
-  EXPECT_NE(full.find("X-A: B"), std::string_view::npos);
+  EXPECT_TRUE(full.contains("Content-Type: text/plain"));
+  EXPECT_TRUE(full.contains("X-A: B"));
   auto posBody = full.find("Hello");
   ASSERT_NE(posBody, std::string_view::npos);
   auto separator = full.substr(0, posBody);
-  EXPECT_NE(separator.find("\r\n\r\n"), std::string_view::npos);
+  EXPECT_TRUE(separator.contains(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithoutHeaders) {
@@ -187,7 +187,7 @@ TEST_F(HttpResponseTest, SingleTerminatingCRLF) {
   auto full = concatenated(std::move(resp));
   ASSERT_TRUE(full.size() >= 4);
   EXPECT_EQ(full.substr(full.size() - 4), "\r\n\r\n");
-  EXPECT_NE(full.find("X-Header: v1"), std::string_view::npos);
+  EXPECT_TRUE(full.contains("X-Header: v1"));
 }
 
 TEST_F(HttpResponseTest, ReplaceDifferentSizes) {
@@ -202,10 +202,10 @@ TEST_F(HttpResponseTest, ReplaceDifferentSizes) {
   resp2.body("WorldWide");
   auto secondFull = concatenated(std::move(resp2));
   EXPECT_GT(secondFull.size(), firstLen);
-  EXPECT_NE(secondFull.find("WorldWide"), std::string_view::npos);
+  EXPECT_TRUE(secondFull.contains("WorldWide"));
   resp3.body("Yo");
   auto thirdFull = concatenated(std::move(resp3));
-  EXPECT_NE(thirdFull.find("Yo"), std::string_view::npos);
+  EXPECT_TRUE(thirdFull.contains("Yo"));
 }
 
 // --- New test: body() called with a std::string_view referencing internal buffer memory
@@ -228,7 +228,7 @@ TEST_F(HttpResponseTest, BodyAssignFromInternalReasonTriggersReallocSafe) {
   src = resp.reason();
   // Validate Content-Length header matches and body placed at tail.
   std::string clNeedle = std::string("Content-Length: ") + std::to_string(src.size()) + "\r\n";
-  EXPECT_NE(full.find(clNeedle), std::string_view::npos) << full;
+  EXPECT_TRUE(full.contains(clNeedle)) << full;
   EXPECT_TRUE(full.ends_with(std::string(src))) << full;
 }
 
@@ -418,7 +418,7 @@ TEST_F(HttpResponseTest, LargeHeaderCountStress) {
     pos = lineEnd + 2;
   }
   EXPECT_EQ(userHeaders, kCount);
-  EXPECT_NE(full.find("Connection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n"), std::string_view::npos);
+  EXPECT_TRUE(full.contains("Connection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n"));
 }
 
 namespace {  // local helpers for fuzz test
@@ -577,7 +577,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
     if (!lastHeaderKey.empty()) {
       std::string needle = lastHeaderKey;
       needle.append(http::HeaderSep).append(lastHeaderValue);
-      EXPECT_NE(full.find(needle), std::string_view::npos) << "Missing last header '" << needle << "' in: " << full;
+      EXPECT_TRUE(full.contains(needle)) << "Missing last header '" << needle << "' in: " << full;
     }
   }
 }

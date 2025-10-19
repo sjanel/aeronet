@@ -60,15 +60,15 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
       // TRACE: echo the received request message as the body with Content-Type: message/http
       // Respect configured TracePolicy. Default: Disabled.
       bool allowTrace;
-      switch (_config.tracePolicy) {
-        case HttpServerConfig::TracePolicy::EnabledPlainAndTLS:
+      switch (_config.traceMethodPolicy) {
+        case HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS:
           allowTrace = true;
           break;
-        case HttpServerConfig::TracePolicy::EnabledPlainOnly:
+        case HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly:
           // If this request arrived over TLS, disallow TRACE
           allowTrace = req.tlsVersion().empty();
           break;
-        case HttpServerConfig::TracePolicy::Disabled:
+        case HttpServerConfig::TraceMethodPolicy::Disabled:
         default:
           allowTrace = false;
           break;
