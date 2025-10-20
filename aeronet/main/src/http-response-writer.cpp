@@ -7,14 +7,12 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
-#include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
-#include "aeronet/http-body.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-response-data.hpp"
@@ -22,6 +20,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "encoder.hpp"
+#include "header-write.hpp"
 #include "log.hpp"
 #include "raw-chars.hpp"
 #include "string-equal-ignore-case.hpp"
@@ -182,7 +181,18 @@ void HttpResponseWriter::emitLastChunk() {
     return;
   }
 
-  if (!enqueue(HttpResponseData(std::string_view{}, HttpBody(std::string("0\r\n\r\n"))))) {
+  // Emit final chunk with optional trailers (RFC 7230 §4.1.2):
+  //   0\r\n
+  //   [trailer-name: value\r\n]*
+  //   \r\n
+  if (_trailers.empty()) {
+    _trailers.ensureAvailableCapacity(1UL + http::DoubleCRLF.size());
+    _trailers.unchecked_push_back('0');
+    _trailers.unchecked_append(http::CRLF);
+  }
+  _trailers.unchecked_append(http::CRLF);  // Final blank line (memory already reserved)
+
+  if (!enqueue(HttpResponseData(std::move(_trailers)))) {
     _state = HttpResponseWriter::State::Failed;
     log::error("Streaming: failed enqueuing last chunk fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
   }
@@ -224,6 +234,34 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
   }
   log::trace("Streaming: write fd # {} size={} total={} chunked={}", _fd, data.size(), _bytesWritten, _chunked);
   return _state != State::Failed;  // backpressure signaled via connection close flag, failure sets failed state
+}
+
+void HttpResponseWriter::addTrailer(std::string_view name, std::string_view value) {
+  if (_state == State::Ended || _state == State::Failed) {
+    log::warn("Streaming: addTrailer ignored fd # {} name={} reason={}", _fd, name,
+              _state == State::Failed ? "writer-failed" : "already-ended");
+    return;
+  }
+  if (!_chunked) {
+    log::warn("Streaming: addTrailer ignored fd # {} name={} reason=fixed-length-response (contentLength was set)", _fd,
+              name);
+    return;
+  }
+
+  // Trailer format: name ": " value CRLF
+  const std::size_t lineSize = name.size() + http::HeaderSep.size() + value.size() + http::CRLF.size();
+
+  if (_trailers.empty()) {
+    _trailers.ensureAvailableCapacity(lineSize + 1UL + http::DoubleCRLF.size());
+    _trailers.unchecked_push_back('0');
+    _trailers.unchecked_append(http::CRLF);
+  } else {
+    _trailers.ensureAvailableCapacity(lineSize);
+  }
+
+  WriteHeaderCRLF(_trailers.data() + _trailers.size(), name, value);
+
+  _trailers.addSize(lineSize);
 }
 
 void HttpResponseWriter::end() {

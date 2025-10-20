@@ -16,8 +16,8 @@ TEST(HttpChunked, DecodeBasic) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
-    return aeronet::HttpResponse(200).body(std::string("LEN=") + std::to_string(req.body().size()) + ":" +
-                                           std::string(req.body()));
+    return aeronet::HttpResponse(aeronet::http::StatusCodeOK)
+        .body(std::string("LEN=") + std::to_string(req.body().size()) + ":" + std::string(req.body()));
   });
 
   aeronet::test::ClientConnection sock(port);
@@ -36,8 +36,9 @@ TEST(HttpChunked, RejectTooLarge) {
   cfg.withMaxBodyBytes(4);  // very small limit
   aeronet::test::TestServer ts(cfg);
   auto port = ts.port();
-  ts.server.router().setDefault(
-      [](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body()); });
+  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
+    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body(req.body());
+  });
   aeronet::test::ClientConnection cnx(port);
   int fd = cnx.fd();
   // Single 5-byte chunk exceeds limit 4
@@ -52,7 +53,7 @@ TEST(HttpHead, NoBodyReturned) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
-    return aeronet::HttpResponse(200).body(std::string("DATA-") + std::string(req.path()));
+    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body(std::string("DATA-") + std::string(req.path()));
   });
   aeronet::test::ClientConnection cnx(port);
   int fd = cnx.fd();
@@ -71,8 +72,9 @@ TEST(HttpHead, NoBodyReturned) {
 TEST(HttpExpect, ContinueFlow) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault(
-      [](const aeronet::HttpRequest& req) { return aeronet::HttpResponse(200).body(req.body()); });
+  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
+    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body(req.body());
+  });
   aeronet::test::ClientConnection cnx(port);
   auto fd = cnx.fd();
   std::string headers =

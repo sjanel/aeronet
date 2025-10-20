@@ -127,7 +127,7 @@ TEST(HttpOptionsTraceTls, TraceDisabledOnTlsPolicyRejectsTlsTrace) {
       {}, [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly); });
 
   // Default handler (not needed but keep server alive)
-  ts.setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
+  ts.setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(aeronet::http::StatusCodeOK); });
 
   // Use a TLS client to send a TRACE request; it should be rejected (405)
   TlsClient client(ts.port());
@@ -142,7 +142,7 @@ TEST(HttpOptionsTraceTls, TraceEnabledOnTlsAllowsTlsTrace) {
   // EnabledPlainAndTLS should allow TRACE over TLS
   TlsTestServer ts(
       {}, [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS); });
-  ts.setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
+  ts.setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(aeronet::http::StatusCodeOK); });
 
   TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());

@@ -16,6 +16,7 @@
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "header-write.hpp"
 #include "log.hpp"
 #include "string-equal-ignore-case.hpp"
 #include "stringconv.hpp"
@@ -24,8 +25,6 @@
 #include "timestring.hpp"
 
 namespace aeronet {
-
-// (Helper removed: generic header insertion logic lives in HttpResponse::appendHeaderGeneric now.)
 
 HttpResponse::HttpResponse(http::StatusCode code, std::string_view reason)
     : _data(kHttp1VersionLen + 1U + 3U + (reason.empty() ? 0UL : reason.size() + 1UL) + http::DoubleCRLF.size()),
@@ -84,8 +83,8 @@ void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
                                         _data.data() + _bodyStartPos - http::CRLF.size());
 
   while (!haystack.empty()) {
-    // At this point haystack is pointing to the beginning of a header, immediately after a CRLF. For instance:
-    // 'Content-Encoding: gzip\r\n'
+    // At this point haystack is pointing to the beginning of a header, immediately after a CRLF.
+    // For instance: 'Content-Encoding: gzip\r\n'
     // Per design, we enforce the header separator to be exactly http::HeaderSep
     auto nextHeaderSepRg = std::ranges::search(haystack, http::HeaderSep);
     if (nextHeaderSepRg.empty()) {
@@ -96,7 +95,7 @@ void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
     // move haystack to beginning of old header value
     haystack = std::ranges::subrange(nextHeaderSepRg.end(), haystack.end());
 
-    auto nextCRLFRg = std::ranges::search(haystack, http::CRLF);
+    const auto nextCRLFRg = std::ranges::search(haystack, http::CRLF);
     if (nextCRLFRg.empty()) {
       throw std::runtime_error("Invalid header value");
     }
@@ -137,7 +136,10 @@ void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
 }
 
 void HttpResponse::setBodyInternal(std::string_view newBody) {
-  const int64_t diff = static_cast<int64_t>(newBody.size()) - static_cast<int64_t>(internalBodyLen());
+  if (_trailerPos != 0) {
+    throw std::logic_error("Cannot set body after the first trailer");
+  }
+  const int64_t diff = static_cast<int64_t>(newBody.size()) - static_cast<int64_t>(internalBodyAndTrailersLen());
   if (diff > 0) {
     int64_t newBodyInternalPos = -1;
     if (newBody.data() > _data.data() && newBody.data() <= _data.data() + _data.size()) {
@@ -161,19 +163,87 @@ void HttpResponse::setBodyInternal(std::string_view newBody) {
 
 void HttpResponse::appendHeaderUnchecked(std::string_view key, std::string_view value) {
   assert(!key.empty() && std::ranges::all_of(key, [](char ch) { return is_tchar(ch); }));
-  const bool markCE = CaseInsensitiveEqual(key, http::ContentEncoding);
-  appendHeaderGeneric(
-      key, value.size(),
-      [value](char* dst) {
-        if (!value.empty()) {
-          std::memcpy(dst, value.data(), value.size());
-        }
-      },
-      markCE);
+  if (CaseInsensitiveEqual(key, http::ContentEncoding)) {
+    _userProvidedContentEncoding = true;
+  }
+  if (_headersStartPos == 0) {
+    _headersStartPos = static_cast<decltype(_headersStartPos)>(_bodyStartPos - http::DoubleCRLF.size());
+  }
+  const std::size_t headerLineSize = http::CRLF.size() + key.size() + http::HeaderSep.size() + value.size();
+  _data.ensureAvailableCapacity(headerLineSize);
+  char* insertPtr = _data.data() + _bodyStartPos - http::DoubleCRLF.size();
+  std::memmove(insertPtr + headerLineSize, insertPtr, http::DoubleCRLF.size() + internalBodyAndTrailersLen());
+
+  WriteCRLFHeader(insertPtr, key, value);
+
+  _data.addSize(headerLineSize);
+  _bodyStartPos += static_cast<uint32_t>(headerLineSize);
 }
 
 void HttpResponse::appendDateUnchecked(SysTimePoint tp) {
-  appendHeaderGeneric(http::Date, kRFC7231DateStrLen, [&](char* dst) { TimeToStringRFC7231(tp, dst); }, false);
+  assert(_headersStartPos != 0);
+
+  const std::size_t headerLineSize =
+      http::CRLF.size() + http::Date.size() + http::HeaderSep.size() + kRFC7231DateStrLen;
+  _data.ensureAvailableCapacity(headerLineSize);
+  char* insertPtr = _data.data() + _bodyStartPos - http::DoubleCRLF.size();
+  std::memmove(insertPtr + headerLineSize, insertPtr, http::DoubleCRLF.size() + internalBodyAndTrailersLen());
+
+  WriteCRLFDateHeader(insertPtr, tp);
+
+  _data.addSize(headerLineSize);
+  _bodyStartPos += static_cast<uint32_t>(headerLineSize);
+}
+
+void HttpResponse::appendTrailer(std::string_view name, std::string_view value) {
+  assert(!name.empty() && std::ranges::all_of(name, [](char ch) { return is_tchar(ch); }));
+  if (bodyLen() == 0) {
+    throw std::logic_error("Trailers must be added after non empty body is set");
+  }
+
+  // Trailer format: name ": " value CRLF
+  const std::size_t lineSize = name.size() + http::HeaderSep.size() + value.size() + http::CRLF.size();
+
+  char* insertPtr;
+  if (_capturedBody.set()) {
+    // Add an extra CRLF space for the last CRLF that will terminate trailers in finalize
+    _capturedBody.ensureAvailableCapacity(lineSize + http::CRLF.size());
+    insertPtr = _capturedBody.data() + _capturedBody.size();
+    if (_trailerPos == 0) {
+      // store trailer position relative to the start of the body (captured body case)
+      _trailerPos = _capturedBody.size();
+    }
+    _capturedBody.addSize(lineSize);
+  } else {
+    _data.ensureAvailableCapacity(lineSize + http::CRLF.size());
+    insertPtr = _data.data() + _data.size();
+    if (_trailerPos == 0) {
+      // _trailerPos is stored relative to the start of the body. For inline bodies the
+      // body begins at _bodyStartPos so compute the relative offset here.
+      _trailerPos = _data.size() - _bodyStartPos;
+    }
+    _data.addSize(lineSize);
+  }
+
+  std::memcpy(insertPtr, name.data(), name.size());
+  insertPtr += name.size();
+  std::memcpy(insertPtr, http::HeaderSep.data(), http::HeaderSep.size());
+  insertPtr += http::HeaderSep.size();
+  if (!value.empty()) {
+    std::memcpy(insertPtr, value.data(), value.size());
+    insertPtr += value.size();
+  }
+  std::memcpy(insertPtr, http::CRLF.data(), http::CRLF.size());
+}
+
+HttpResponse& HttpResponse::addTrailer(std::string_view name, std::string_view value) & {
+  appendTrailer(name, value);
+  return *this;
+}
+
+HttpResponse&& HttpResponse::addTrailer(std::string_view name, std::string_view value) && {
+  appendTrailer(name, value);
+  return std::move(*this);
 }
 
 HttpResponseData HttpResponse::finalizeAndStealData(http::Version version, SysTimePoint tp, bool keepAlive,
@@ -206,12 +276,28 @@ HttpResponseData HttpResponse::finalizeAndStealData(http::Version version, SysTi
 
   if (bodySz <= minCapturedBodySize && _capturedBody.set()) {
     // move body into main buffer
+    // bypass trailer check
+    auto capturedTrailerPos = std::exchange(_trailerPos, 0);
     setBodyInternal(_capturedBody.view());
+    _trailerPos = capturedTrailerPos;
     _capturedBody.clear();
   }
 
   // We don't move large inline body sizes to the separated buffer, copy has already been done and we won't gain
   // anything.
+
+  // Append trailers after body (RFC 7230 §4.1.2).
+  // Trailers follow the body and are terminated by a final CRLF.
+  // For chunked encoding, the server will emit the zero-length chunk (0\r\n) before trailers
+  // during transmission (handled elsewhere in the streaming path or serialization layer).
+  if (_trailerPos != 0) {
+    // Final blank line terminates trailers
+    if (_capturedBody.set()) {
+      _capturedBody.append(http::CRLF);
+    } else {
+      _data.unchecked_append(http::CRLF);
+    }
+  }
 
   return HttpResponseData{std::move(_data), std::move(_capturedBody)};
 }

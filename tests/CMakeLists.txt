@@ -38,6 +38,8 @@ aeronet_http_test(http_routing)
 
 aeronet_http_test(http_server_lifecycle)
 
+aeronet_http_test(http_trailers)
+
 # Trailing slash policy tests
 aeronet_http_test(http_trailing_slash)
 aeronet_http_test(http_headers)
@@ -85,6 +87,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_body_test.cpp
 	http_partial_head_write_test.cpp
 	http_chunked_head_test.cpp
+	http_trailers_test.cpp
 	http_date_test.cpp
 	http_errors_test.cpp
 	http_head_maxrequests_test.cpp

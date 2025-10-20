@@ -20,7 +20,7 @@ class HttpRequest {
   //   * Lookup is case-insensitive (RFC 7230 token rules).
   //   * Duplicate request headers are canonicalized in-place during parsing according to a constexpr
   //     classification table (see README section "Request Header Duplicate Handling"):
-  //       - List-style headers (e.g. Accept, Via, Warning) are comma-joined:   "v1,v2"
+  //       - List-style headers (e.g. Accept, Via, Warning) are comma-joined:  "v1,v2"
   //       - Cookie is semicolon-joined:                                       "c1;c2" (no added space)
   //       - User-Agent tokens are space-joined:                               "Foo Bar"
   //       - Override headers (Authorization, Range, From, select conditionals) keep ONLY the last occurrence.
@@ -127,6 +127,15 @@ class HttpRequest {
   // Get the (already received) body of the request.
   [[nodiscard]] std::string_view body() const noexcept { return _body; }
 
+  // Returns a map-like, case-insensitive view over trailer headers received after a chunked body (RFC 7230 §4.1.2).
+  // Characteristics:
+  //   * Only populated for chunked requests; empty for fixed Content-Length or bodyless requests.
+  //   * Same duplicate-header merge policy as regular headers (comma-join, override, etc.).
+  //   * Values are string_view slices into the connection buffer; valid only during the handler call.
+  //   * Forbidden trailer fields (Transfer-Encoding, Content-Length, Host, etc.) are rejected with 400.
+  //   * Trailers count toward the maxHeadersBytes limit (combined with initial headers).
+  [[nodiscard]] const auto& trailers() const noexcept { return _trailers; }
+
   // Selected ALPN protocol (if negotiated); empty if none or not TLS.
   [[nodiscard]] std::string_view alpnProtocol() const noexcept { return _alpnProtocol; }
 
@@ -148,8 +157,7 @@ class HttpRequest {
   [[nodiscard]] bool wantClose() const;
 
   // Attempts to set this HttpRequest (except body) from given ConnectionState.
-  // Returns StatusCode OK if the request is good (it will be fully set)
-  // or an HTTP error status to forward.
+  // Returns StatusCode OK if the request is good (it will be fully set) or an HTTP error status to forward.
   // If 0 is returned, it means the connection state buffer is not filled up to the first newline.
   http::StatusCode setHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
                            bool mergeAllowedForUnknownRequestHeaders);
@@ -160,6 +168,7 @@ class HttpRequest {
   std::string_view _flatHeaders;
 
   HeadersViewMap _headers;
+  HeadersViewMap _trailers;  // Trailer headers (RFC 7230 §4.1.2) from chunked requests
 
   // Raw query component (excluding '?') retained as-is; per-key/value decoding happens on iteration.
   // Lifetime: valid only during handler invocation (points into connection buffer / in-place decode area).

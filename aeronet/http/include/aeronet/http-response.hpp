@@ -29,7 +29,7 @@ namespace aeronet {
 // allocations and cache-friendly writes, optionally supporting large bodies captured
 // in the response.
 //
-// Memory Layout (before finalize):
+// Memory layout (before finalize):
 //   [HTTP/1.x SP status-code [SP reason] CRLF][CRLF][CRLF]  (DoubleCRLF sentinel)
 //   ^             ^             ^           ^   ^
 //   |             |             |           |   +-- part of DoubleCRLF
@@ -40,6 +40,8 @@ namespace aeronet {
 //
 // After headers are appended:
 //   Status/Reason CRLF (CRLF HeaderName ": " Value)* CRLF CRLF [Body]
+//   (optional) Trailer lines may follow the body when present:
+//     CRLF Trailer-Name ": " Value CRLF ... CRLF  (trailers appear after the body)
 //
 // Header Insertion Strategy:
 //   Each user header is inserted as: CRLF + name + ": " + value (no trailing CRLF).
@@ -80,11 +82,36 @@ namespace aeronet {
 //   - Not thread-safe.
 //   - Throws std::bad_alloc on growth failure.
 //   - Assumes ASCII header names; no validation performed.
+//   - Trailers can only be added after body final set (no more body modification can happen once a trailer has been
+//   added)
 //
 // Performance hints:
 //   - Appends HttpResponse data in order of the HTTP layout (reason, headers, body) to minimize data movement.
 //   - Prefer addCustomHeader() when duplicates are acceptable or order-only semantics matter.
 //   - Minimize header mutations after body() to reduce data movement.
+//
+// Trailers (outbound / response-side):
+//   - HttpResponse supports adding trailer headers that will be transmitted after the
+//     response body when the response is serialized. Trailers are intended for metadata
+//     computed after body generation (checksums, signatures, processing totals, etc.).
+//   - Ordering constraint: trailers MUST be added after the body has been set (via
+//     any `body()` overload). This requirement enables a zero-allocation implementation
+//     where trailer text is appended directly to the existing body buffer.
+//   - Zero-allocation design: when `addTrailer()` is called the implementation appends
+//     `CRLF + name + ": " + value` lines directly to the tail buffer that holds the
+//     body. This avoids an extra heap allocation for trailer storage. For large bodies
+//     that were captured into `_capturedBody`, trailers are appended into the captured
+//     body storage prior to finalize/steal. For inline bodies they are appended into
+//     `_data` after the existing body bytes.
+//   - Finalization: `finalizeAndStealData()` is responsible for injecting any required
+//     reserved headers (Date, Connection, Content-Length when appropriate) and for
+//     returning the body buffer which already contains any appended trailer text. After
+//     finalization the HttpResponse instance must not be reused.
+//   - Complexity: appending a trailer is O(bodyLen) in the worst case due to the
+//     potential memmove of the tail (same complexity as adding a header after the body).
+//   - Streaming responses: `HttpResponseWriter` implements a separate streaming-safe
+//     `addTrailer()` API which buffers trailer lines during streaming and emits them
+//     after the final zero-length chunk (see `HttpResponseWriter` docs).
 // -----------------------------------------------------------------------------
 class HttpResponse {
  private:
@@ -171,7 +198,7 @@ class HttpResponse {
   //   HttpResponse resp(404, "Not Found");
   //   resp.body(resp.reason()); // OK
   HttpResponse& body(const char* body) & {
-    setBodyInternal(body);
+    setBodyInternal(body == nullptr ? std::string_view() : std::string_view(body));
     _capturedBody = {};
     return *this;
   }
@@ -185,7 +212,7 @@ class HttpResponse {
   //   HttpResponse resp(404, "Not Found");
   //   resp.body(resp.reason()); // OK
   HttpResponse&& body(const char* body) && {
-    setBodyInternal(body);
+    setBodyInternal(body == nullptr ? std::string_view() : std::string_view(body));
     _capturedBody = {};
     return std::move(*this);
   }
@@ -247,7 +274,12 @@ class HttpResponse {
   // Get a view of the current body stored in this HttpResponse.
   // If the body is not present, it returns an empty view.
   [[nodiscard]] std::string_view body() const noexcept {
-    return _capturedBody.unset() ? std::string_view{_data.begin() + _bodyStartPos, _data.end()} : _capturedBody.view();
+    auto ret =
+        _capturedBody.set() ? _capturedBody.view() : std::string_view{_data.begin() + _bodyStartPos, _data.end()};
+    if (_trailerPos != 0) {
+      ret.remove_suffix(ret.size() - _trailerPos);
+    }
+    return ret;
   }
 
   // Inserts or replaces the Content-Type header.
@@ -339,6 +371,34 @@ class HttpResponse {
   // or an empty value ("\r\nContent-Encoding: \r\n") though the former is preferred.
   [[nodiscard]] bool userProvidedContentEncoding() const noexcept { return _userProvidedContentEncoding; }
 
+  // Adds a trailer header to be sent after the response body (RFC 7230 §4.1.2).
+  //
+  // IMPORTANT ORDERING CONSTRAINT:
+  //   Trailers MUST be added AFTER the body has been set (via body() or its overloads).
+  //   If called before body is set, throws std::logic_error.
+  //
+  // Rationale:
+  //   To avoid additional allocations, trailers are appended directly to the body buffer:
+  //   This zero-allocation design requires the body to be finalized first.
+  //
+  // Trailer semantics (per RFC 7230 §4.1.2):
+  //   - Trailers are sent after the message body in chunked transfer encoding.
+  //   - Certain headers MUST NOT appear as trailers (e.g., Transfer-Encoding, Content-Length,
+  //     Host, Cache-Control, Authorization, Cookie, Set-Cookie). Use of forbidden trailer
+  //     headers is undefined behavior (no validation is performed here for performance;
+  //     validation may be added in debug builds).
+  //   - Typical use: computed metadata available only after body generation (checksums,
+  //     signatures, etc.).
+  //
+  // Usage example:
+  //   HttpResponse resp(200);
+  //   resp.body("Wikipedia in\r\n\r\nchunks");
+  //   resp.addTrailer("X-Checksum", "abc123");           // OK: body set first
+  //   resp.addTrailer("X-Signature", "sha256:...");      // OK: multiple trailers allowed
+  //   // resp.addTrailer("Host", "example.com");         // UNDEFINED: forbidden trailer
+  HttpResponse& addTrailer(std::string_view name, std::string_view value) &;
+  HttpResponse&& addTrailer(std::string_view name, std::string_view value) &&;
+
  private:
   friend class HttpServer;
   friend class HttpResponseTest;
@@ -355,10 +415,13 @@ class HttpResponse {
   }
 
   [[nodiscard]] std::size_t bodyLen() const noexcept {
-    return _capturedBody.unset() ? internalBodyLen() : _capturedBody.size();
+    if (_trailerPos != 0) {
+      return _trailerPos;
+    }
+    return _capturedBody.set() ? _capturedBody.size() : internalBodyAndTrailersLen();
   }
 
-  [[nodiscard]] std::size_t internalBodyLen() const noexcept { return _data.size() - _bodyStartPos; }
+  [[nodiscard]] std::size_t internalBodyAndTrailersLen() const noexcept { return _data.size() - _bodyStartPos; }
 
   void setReason(std::string_view newReason);
 
@@ -370,29 +433,7 @@ class HttpResponse {
 
   void appendDateUnchecked(SysTimePoint tp);
 
-  template <class ValueWriter>
-  void appendHeaderGeneric(std::string_view key, std::size_t valueSize, ValueWriter&& writeValue,
-                           bool markContentEncoding) {
-    const std::size_t headerLineSize = http::CRLF.size() + key.size() + http::HeaderSep.size() + valueSize;
-    _data.ensureAvailableCapacity(headerLineSize);
-    char* insertPtr = _data.data() + _bodyStartPos - http::DoubleCRLF.size();
-    std::memmove(insertPtr + headerLineSize, insertPtr, http::DoubleCRLF.size() + internalBodyLen());
-    std::memcpy(insertPtr, http::CRLF.data(), http::CRLF.size());
-    insertPtr += http::CRLF.size();
-    std::memcpy(insertPtr, key.data(), key.size());
-    insertPtr += key.size();
-    std::memcpy(insertPtr, http::HeaderSep.data(), http::HeaderSep.size());
-    insertPtr += http::HeaderSep.size();
-    writeValue(insertPtr);  // must write exactly valueSize bytes
-    if (markContentEncoding) {
-      _userProvidedContentEncoding = true;
-    }
-    if (_headersStartPos == 0) {
-      _headersStartPos = static_cast<decltype(_headersStartPos)>(_bodyStartPos - http::DoubleCRLF.size());
-    }
-    _data.addSize(headerLineSize);
-    _bodyStartPos += static_cast<uint32_t>(headerLineSize);
-  }
+  void appendTrailer(std::string_view name, std::string_view value);
 
   // IMPORTANT: This method finalizes the response by appending reserved headers,
   // and returns the internal buffers stolen from this HttpResponse instance.
@@ -406,6 +447,7 @@ class HttpResponse {
   bool _userProvidedContentEncoding{false};
   uint32_t _bodyStartPos{};  // position of first body byte (after CRLF CRLF)
   HttpBody _capturedBody;
+  std::size_t _trailerPos{};  // trailer pos in relative to body start
 };
 
 }  // namespace aeronet
