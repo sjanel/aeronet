@@ -73,4 +73,4 @@ Operational tips
 - If your service performs a lengthy startup (database migrations, caches), prefer `startupProbe` to avoid
   confusing liveness checks during initialization.
 
-See also: `docs/FEATURES.md#built-in-kubernetes-style-probes` for details on configuration and behavior.
+See also: [built-in Kubernetes-style probes](FEATURES.md#built-in-kubernetes-style-probes) for details on configuration and behavior.
