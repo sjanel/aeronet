@@ -14,8 +14,9 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "connection-state.hpp"
+#include "header-line-parse.hpp"
+#include "header-merge.hpp"
 #include "major-minor-version.hpp"
-#include "mergeable-headers.hpp"
 #include "raw-chars.hpp"
 #include "string-equal-ignore-case.hpp"
 #include "toupperlower.hpp"
@@ -128,7 +129,8 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, RawChars& tmpBuffe
   // Version (allow trailing CR; parseVersion tolerates it via from_chars behavior)
   first = nextSep + 1;
   if (!parseVersion(first, lineLast, _version)) {
-    return http::StatusCodeBadRequest;  // malformed version token
+    // malformed version token
+    return http::StatusCodeBadRequest;
   }
   if (_version.major != 1 || _version.minor > 1U) {
     return http::StatusCodeHTTPVersionNotSupported;
@@ -149,85 +151,15 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, RawChars& tmpBuffe
     if (first == lineLast || (std::distance(first, lineLast) == 1 && *first == '\r')) {
       break;  // end of headers
     }
-    nextSep = std::find(first, lineLast, ':');
-    if (nextSep == lineLast) {
+    auto [nameView, valueView] = http::parseHeaderLine(first, lineLast);
+    if (nameView.empty()) {
       return http::StatusCodeBadRequest;
     }
 
-    const auto isSpace = [](char ch) { return ch == ' ' || ch == '\t'; };
-
-    // Spaces are possible (as of ' ' or '\t') as trailing and leading around the value, but not within the key.
-    auto* valueFirst = nextSep + 1;
-    while (valueFirst < lineLast && isSpace(*valueFirst)) {
-      ++valueFirst;
-    }
-    auto* valueLast = lineLast;
-    if (*(valueLast - 1) == '\r') {
-      --valueLast;
-    }
-    while (valueLast > valueFirst && isSpace(*(valueLast - 1))) {
-      --valueLast;
-    }
-
-    // Store header as "Key\037Value\0" in _headers string for later parsing.
-    auto [it, inserted] =
-        _headers.emplace(std::make_pair(std::string_view(first, nextSep), std::string_view(valueFirst, valueLast)));
-    if (!inserted) {
-      // We have a duplicated header. We will append the duplicated value encountered now to the first key value pair
-      // inplace in memory. Plan: use the bodyBuffer (currently unused) to copy duplicate value there. In the examples
-      // below, \r\n have been replaced by [] for readability (and they keep their true size). * marks 'garbage' memory
-      // (moved from).
-      //
-      // Step 1 - copy v2 to bodyBuffer
-      // Step 2 - move size(v2) + 1 to the right and update all pointers of _headers after v1
-      // Step 3 - copy size(v2) to firstValueLast + 1, and set ',' to firstValueLast
-      //
-      // Host: example.com[]H: v1[]User-Agent: FooBar[]H: v2[]Other: v1[][]
-      // Host: example.com[]H: v1***[]User-Agent: FooBar[]v2[]Other: v1[][]
-      // Host: example.com[]H: v1,v2[]User-Agent: FooBar[]v2[]Other: v1[][]
-
-      const auto mergeSep = http::ReqHeaderValueSeparator(it->first, mergeAllowedForUnknownRequestHeaders);
-
-      if (mergeSep == '\0') {
-        // Merge is forbidden, reject 400 Bad Request
-        return http::StatusCodeBadRequest;
-      }
-
-      if (it->second.empty() || mergeSep == 'O') {
-        // we keep the last value in the map (either second value is empty, or mergeSep is 'O' for override)
-        it->second = std::string_view(valueFirst, valueLast);
-      } else if (valueFirst == valueLast) {
-        // second value is empty - we do nothing and just move on to the next headers, the first value is sufficient.
-      } else {
-        // Both non empty - we actually do the merge
-
-        // We add a separator only if both of the values are non empty
-        static constexpr std::size_t szSep = sizeof(mergeSep);
-        std::size_t szToMove = static_cast<std::size_t>(valueLast - valueFirst) + szSep;
-
-        // Step 1 - use tmpBuffer as temp data to keep value 2
-        tmpBuffer.assign(valueFirst, szToMove - szSep);
-
-        // Step 2
-        auto* firstValueFirst = state.inBuffer.data() + (it->second.data() - state.inBuffer.data());
-        auto* firstValueLast = firstValueFirst + it->second.size();
-
-        std::memmove(firstValueLast + szToMove, firstValueLast, static_cast<std::size_t>(first - firstValueLast));
-        for (auto& _header : _headers) {
-          if (_header.first.data() > firstValueLast) {
-            // we need to shift std::string_view pointers 'szToMove' bytes to the right
-            // We change the key value, but the hash and the equality comparison remain stable
-            _header.first = std::string_view(_header.first.begin() + szToMove, _header.first.end() + szToMove);
-            _header.second = std::string_view(_header.second.begin() + szToMove, _header.second.end() + szToMove);
-          }
-        }
-
-        // Step 3
-        std::memcpy(firstValueLast + szSep, tmpBuffer.data(), szToMove - szSep);
-        *firstValueLast = mergeSep;
-
-        it->second = std::string_view(firstValueFirst, firstValueLast + szToMove);
-      }
+    // Store header using in-place merge helper (headers live inside connection buffer).
+    if (!http::AddOrMergeHeaderInPlace(_headers, nameView, valueView, tmpBuffer, state.inBuffer.data(), first,
+                                       mergeAllowedForUnknownRequestHeaders)) {
+      return http::StatusCodeBadRequest;
     }
     first = lineLast + 1;
   }

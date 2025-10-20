@@ -13,6 +13,7 @@
 // Directly include <chrono> already; retain literal operator usage.
 using namespace std::chrono_literals;  // NOLINT(misc-unused-using-decls)
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -56,7 +57,7 @@ bool sendGet(uint16_t port) {
     return false;
   }
   auto raw = bench_util::recvWithTimeout(client.fd(), 200ms);
-  return raw.find("\r\n\r\n") != std::string::npos;
+  return raw.find(aeronet::http::DoubleCRLF) != std::string::npos;
 }
 
 BENCHMARK_F(MinimalServerFixture, GET_RoundTrip)(benchmark::State& state) {

@@ -3,15 +3,17 @@
 #include <cstddef>
 #include <cstring>
 #include <string_view>
-#include <system_error>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "char-hexadecimal-converter.hpp"
 #include "connection-state.hpp"
+#include "header-line-parse.hpp"
+#include "header-merge.hpp"
 #include "raw-chars.hpp"
 
 namespace aeronet {
@@ -71,23 +73,20 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, HttpRequest& req, bool
     queueData(cnxIt, HttpResponseData(http::HTTP11_100_CONTINUE));
   }
   std::size_t pos = static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.inBuffer.data());
-  RawChars& decodedBody = state.bodyBuffer;
-  decodedBody.clear();
-  bool needMore = false;
+  RawChars& bodyAndTrailers = state.bodyAndTrailersBuffer;
+  bodyAndTrailers.clear();
+  state.trailerStartPos = 0;
   while (true) {
-    auto lineEndIt =
-        std::search(state.inBuffer.begin() + pos, state.inBuffer.end(), http::CRLF.begin(), http::CRLF.end());
-    if (lineEndIt == state.inBuffer.end()) {
-      needMore = true;
-      break;
+    auto first = state.inBuffer.begin() + pos;
+    auto last = state.inBuffer.end();
+    auto lineEnd = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
+    if (lineEnd == last) {
+      return false;
     }
-    std::string_view sizeLine(state.inBuffer.data() + pos, lineEndIt);
+    auto sizeLineEnd = std::find(first, lineEnd, ';');  // ignore chunk extensions per RFC 7230 section 4.1.1
     std::size_t chunkSize = 0;
-    for (char ch : sizeLine) {
-      if (ch == ';') {
-        break;  // ignore chunk extensions per RFC 7230 section 4.1.1
-      }
-      int digit = from_hex_digit(ch);
+    for (auto it = first; it != sizeLineEnd; ++it) {
+      int digit = from_hex_digit(*it);
       if (digit < 0) {
         chunkSize = _config.maxBodyBytes + 1;  // trigger payload too large / invalid
         break;
@@ -97,43 +96,128 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, HttpRequest& req, bool
         break;
       }
     }
-    pos = static_cast<std::size_t>(lineEndIt - state.inBuffer.data()) + http::CRLF.size();
+    pos = static_cast<std::size_t>(lineEnd - state.inBuffer.data()) + http::CRLF.size();
     if (chunkSize > _config.maxBodyBytes) {
       emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
       return false;
     }
     if (state.inBuffer.size() < pos + chunkSize + http::CRLF.size()) {
-      needMore = true;
-      break;
+      return false;
     }
     if (chunkSize == 0) {
+      // Zero-chunk detected. Now parse optional trailer headers (RFC 7230 §4.1.2).
+      // Trailers are terminated by a blank line (CRLF).
+
+      // Store body size before appending trailers to the same buffer
+      std::size_t bodySize = bodyAndTrailers.size();
+
+      // First, check if we have at least the immediate terminating CRLF
       if (state.inBuffer.size() < pos + http::CRLF.size()) {
-        needMore = true;
+        return false;
+      }
+
+      // Check if trailers are present (not immediate CRLF)
+      if (std::memcmp(state.inBuffer.data() + pos, http::CRLF.data(), http::CRLF.size()) == 0) {
+        // No trailers, just the terminating CRLF
+        pos += http::CRLF.size();
         break;
       }
-      if (std::memcmp(state.inBuffer.data() + pos, http::CRLF.data(), http::CRLF.size()) != 0) {
-        needMore = true;
-        break;
+
+      // Parse trailer headers - copy raw trailer data to bodyAndTrailers buffer
+      auto* trailerStart = state.inBuffer.data() + pos;
+      state.trailerStartPos = bodySize;  // Mark where trailers begin in the buffer
+      std::size_t trailerEndPos = pos;   // Track end position for later
+
+      // First pass: validate trailers and find the end position
+      std::size_t tempPos = pos;
+      while (true) {
+        auto lineEndIt =
+            std::search(state.inBuffer.begin() + tempPos, state.inBuffer.end(), http::CRLF.begin(), http::CRLF.end());
+        if (lineEndIt == state.inBuffer.end()) {
+          return false;
+        }
+
+        // Check total trailer size limit
+        std::size_t trailerSize = static_cast<std::size_t>((state.inBuffer.data() + tempPos) - trailerStart);
+        if (trailerSize > _config.maxHeaderBytes) {
+          emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, true);
+          return false;
+        }
+
+        auto* lineStart = state.inBuffer.data() + tempPos;
+        auto* lineLast = lineEndIt;
+
+        // Detect blank line (end of trailers)
+        if (lineStart == lineLast || (std::distance(lineStart, lineLast) == 1 && *lineStart == '\r')) {
+          trailerEndPos = static_cast<std::size_t>(lineEndIt - state.inBuffer.data()) + http::CRLF.size();
+          break;
+        }
+
+        // Parse trailer field: name:value
+        auto* colonPtr = std::find(lineStart, lineLast, ':');
+        if (colonPtr == lineLast) {
+          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true);
+          return false;
+        }
+
+        // Check forbidden headers
+        std::string_view trailerNameCheck(lineStart, colonPtr);
+        if (http::IsForbiddenTrailerHeader(trailerNameCheck)) {
+          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true);
+          return false;
+        }
+
+        tempPos = static_cast<std::size_t>(lineEndIt - state.inBuffer.data()) + http::CRLF.size();
       }
-      pos += http::CRLF.size();
+
+      // Copy all trailer data at once to avoid reallocation during parsing
+      std::size_t trailerDataSize = trailerEndPos - pos - http::CRLF.size();  // Exclude final CRLF
+      bodyAndTrailers.append(trailerStart, trailerDataSize);
+
+      // Second pass: parse trailers from copied data in bodyAndTrailers
+      char* trailerData = bodyAndTrailers.data() + state.trailerStartPos;
+      char* trailerDataEnd = bodyAndTrailers.data() + bodyAndTrailers.size();
+
+      while (trailerData < trailerDataEnd) {
+        // Find line end
+        char* lineEnd = std::search(trailerData, trailerDataEnd, http::CRLF.begin(), http::CRLF.end());
+        if (lineEnd == trailerDataEnd) {
+          break;  // No more lines
+        }
+
+        auto [trailerNameView, trailerValue] = http::parseHeaderLine(trailerData, lineEnd);
+        if (trailerNameView.empty()) {
+          break;  // Malformed (shouldn't happen after first-pass validation)
+        }
+
+        // Store trailer using the in-place merge helper so semantics/pointer updates match request parsing.
+        if (!http::AddOrMergeHeaderInPlace(req._trailers, trailerNameView, trailerValue, _tmpBuffer,
+                                           bodyAndTrailers.data(), trailerData, _config.mergeUnknownRequestHeaders)) {
+          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true);
+          return false;
+        }
+
+        trailerData = lineEnd + http::CRLF.size();
+      }
+
+      pos = trailerEndPos;
+
       break;
     }
-    decodedBody.append(state.inBuffer.data() + pos, std::min(chunkSize, state.inBuffer.size() - pos));
-    if (decodedBody.size() > _config.maxBodyBytes) {
+    bodyAndTrailers.append(state.inBuffer.data() + pos, std::min(chunkSize, state.inBuffer.size() - pos));
+    if (bodyAndTrailers.size() > _config.maxBodyBytes) {
       emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
       return false;
     }
     pos += chunkSize;
     if (std::memcmp(state.inBuffer.data() + pos, http::CRLF.data(), http::CRLF.size()) != 0) {
-      needMore = true;
-      break;
+      return false;
     }
     pos += http::CRLF.size();
   }
-  if (needMore) {
-    return false;
-  }
-  req._body = std::string_view(decodedBody);
+  // Body is everything before trailerStartPos (or entire buffer if no trailers)
+  std::size_t bodyLen = (state.trailerStartPos > 0) ? state.trailerStartPos : bodyAndTrailers.size();
+  req._body = std::string_view(bodyAndTrailers.data(), bodyLen);
   consumedBytes = pos;
   return true;
 }

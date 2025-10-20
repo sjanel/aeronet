@@ -69,13 +69,13 @@ struct AeronetServerRunner {
           return cfg;
         }()) {
     aeronet::log::set_level(aeronet::log::level::err);
-    async.router().setPath(benchutil::kBodyPath, aeronet::http::Method::GET, [](const aeronet::HttpRequest &) {
+    async.router().setPath(aeronet::http::Method::GET, benchutil::kBodyPath, [](const aeronet::HttpRequest &) {
       aeronet::HttpResponse resp(200);
       resp.body(g_stringPool.next());
       return resp;
     });
 
-    async.router().setPath(benchutil::kHeaderPath, aeronet::http::Method::GET, [](const aeronet::HttpRequest &req) {
+    async.router().setPath(aeronet::http::Method::GET, benchutil::kHeaderPath, [](const aeronet::HttpRequest &req) {
       aeronet::HttpResponse resp;
       // Read requested header count from query param 'size'
       size_t headerCount = 0;

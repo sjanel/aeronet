@@ -111,7 +111,7 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
     // Check if we have a complete HTTP response
     if (madeProgress && !out.empty()) {
       // Find header boundary
-      auto headerEnd = out.find("\r\n\r\n");
+      auto headerEnd = out.find(http::DoubleCRLF);
       if (headerEnd != std::string::npos) {
         std::size_t bodyStart = headerEnd + 4;
         std::string_view headers(out.data(), headerEnd);

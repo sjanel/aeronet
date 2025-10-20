@@ -90,7 +90,7 @@ ClientRawResponse rawPost(uint16_t port, const std::string& target,
   auto firstSpace = str.find(' ');
   auto secondSpace = str.find(' ', firstSpace + 1);
   resp.status = read3(str.substr(firstSpace + 1, secondSpace - firstSpace - 1).data());
-  auto headersEnd = str.find("\r\n\r\n");
+  auto headersEnd = str.find(http::DoubleCRLF);
   resp.headersRaw = str.substr(0, headersEnd);
   resp.body = str.substr(headersEnd + 4);
   return resp;

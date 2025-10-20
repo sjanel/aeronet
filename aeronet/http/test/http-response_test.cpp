@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <iterator>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -178,7 +179,7 @@ TEST_F(HttpResponseTest, ProperTermination) {
   HttpResponse resp(200, "OK");
   auto full = concatenated(std::move(resp));
   ASSERT_TRUE(full.size() >= 4);
-  EXPECT_EQ(full.substr(full.size() - 4), "\r\n\r\n");
+  EXPECT_EQ(full.substr(full.size() - 4), http::DoubleCRLF);
 }
 
 TEST_F(HttpResponseTest, SingleTerminatingCRLF) {
@@ -186,7 +187,7 @@ TEST_F(HttpResponseTest, SingleTerminatingCRLF) {
   resp.addCustomHeader("X-Header", "v1");
   auto full = concatenated(std::move(resp));
   ASSERT_TRUE(full.size() >= 4);
-  EXPECT_EQ(full.substr(full.size() - 4), "\r\n\r\n");
+  EXPECT_EQ(full.substr(full.size() - 4), http::DoubleCRLF);
   EXPECT_TRUE(full.contains("X-Header: v1"));
 }
 
@@ -229,7 +230,7 @@ TEST_F(HttpResponseTest, BodyAssignFromInternalReasonTriggersReallocSafe) {
   // Validate Content-Length header matches and body placed at tail.
   std::string clNeedle = std::string("Content-Length: ") + std::to_string(src.size()) + "\r\n";
   EXPECT_TRUE(full.contains(clNeedle)) << full;
-  EXPECT_TRUE(full.ends_with(std::string(src))) << full;
+  EXPECT_TRUE(full.ends_with(src)) << full;
 }
 
 // --- New tests for header(K,V) replacement logic ---
@@ -393,6 +394,29 @@ TEST_F(HttpResponseTest, RepeatedGrowShrinkCycles) {
   EXPECT_EQ(full, expected);
 }
 
+// --- Trailer-related tests (response-side) ---
+
+TEST_F(HttpResponseTest, AddTrailerWithoutBodyThrows) {
+  HttpResponse resp(200);
+  // No body set at all -> adding trailer should throw
+  EXPECT_THROW(resp.addTrailer("X-Checksum", "abc123"), std::logic_error);
+}
+
+TEST_F(HttpResponseTest, AddTrailerAfterEmptyBodyThrows) {
+  HttpResponse resp(200);
+  resp.body("");
+  // Explicitly-empty body should still be considered 'no body' for trailers
+  EXPECT_THROW(resp.addTrailer("X-Checksum", "abc123"), std::logic_error);
+}
+
+TEST_F(HttpResponseTest, SetBodyAfterTrailerThrows) {
+  HttpResponse resp(200);
+  resp.body("initial");
+  resp.addTrailer("X-Test", "val");
+  // Once a trailer was inserted, setting body later must throw
+  EXPECT_THROW(resp.body("later"), std::logic_error);
+}
+
 TEST_F(HttpResponseTest, LargeHeaderCountStress) {
   constexpr int kCount = 600;
   HttpResponse resp(200, "OK");
@@ -427,6 +451,7 @@ struct ParsedResponse {
   std::string reason;
   std::vector<std::pair<std::string, std::string>> headers;
   std::string body;
+  std::vector<std::pair<std::string, std::string>> trailers;
 };
 
 ParsedResponse parseResponse(std::string_view full) {
@@ -457,15 +482,16 @@ ParsedResponse parseResponse(std::string_view full) {
       }
     }
   }
+  // Find end of headers (CRLF CRLF) to robustly locate header-body boundary
+  std::size_t headerEnd = full.find(http::DoubleCRLF, firstCRLF + 2);
+  if (headerEnd == std::string_view::npos) {
+    throw exception("Missing terminating header block in '{}'", full);
+  }
   std::size_t cursor = firstCRLF + 2;  // move past CRLF into headers section
-  while (true) {
-    auto eol = full.find("\r\n", cursor);
-    if (eol == std::string_view::npos) {
-      throw exception("No terminating header line in '{}'", full);
-    }
-    if (eol == cursor) {  // blank line
-      cursor += 2;
-      break;
+  while (cursor < headerEnd) {
+    auto eol = full.find(http::CRLF, cursor);
+    if (eol == std::string_view::npos || eol > headerEnd) {
+      throw exception("Invalid header line in '{}'", full);
     }
     auto line = full.substr(cursor, eol - cursor);
     auto sep = line.find(http::HeaderSep);
@@ -475,15 +501,65 @@ ParsedResponse parseResponse(std::string_view full) {
     pr.headers.emplace_back(std::string(line.substr(0, sep)), std::string(line.substr(sep + 2)));
     cursor = eol + 2;
   }
-  pr.body.assign(full.substr(cursor));
+  cursor = headerEnd + http::DoubleCRLF.size();  // move past CRLFCRLF into body
+  // If Content-Length header present, body length is known; otherwise body is the remainder
+  std::size_t contentLen = 0;
+  bool hasContentLen = false;
+  for (auto &hdr : pr.headers) {
+    if (hdr.first == http::ContentLength) {
+      contentLen = StringToIntegral<std::size_t>(hdr.second);
+      hasContentLen = true;
+      break;
+    }
+  }
+
+  if (hasContentLen) {
+    if (cursor + contentLen > full.size()) {
+      throw exception("Truncated body: expected {} bytes, have {}", contentLen, full.size() - cursor);
+    }
+    pr.body.assign(full.substr(cursor, contentLen));
+    cursor += contentLen;
+    // After body, there may be optional trailer headers terminated by a blank line (CRLF CRLF)
+    // If there's remaining data, parse trailers until an empty line is encountered.
+    if (cursor < full.size()) {
+      // If the next characters are CRLF, consume and treat as no trailers
+      if (full.substr(cursor, http::CRLF.size()) == http::CRLF) {
+        cursor += http::CRLF.size();  // consume terminating CRLF (no trailers)
+      } else {
+        while (true) {
+          auto eol = full.find(http::CRLF, cursor);
+          if (eol == std::string_view::npos) {
+            throw exception("No terminating trailer line in '{}'", full);
+          }
+          if (eol == cursor) {  // blank line terminator
+            cursor += http::CRLF.size();
+            break;
+          }
+          auto line = full.substr(cursor, eol - cursor);
+          auto sep = line.find(http::HeaderSep);
+          if (sep == std::string_view::npos) {
+            throw exception("No separator in trailer line '{}'", line);
+          }
+          pr.trailers.emplace_back(std::string(line.substr(0, sep)), std::string(line.substr(sep + http::CRLF.size())));
+          cursor = eol + http::CRLF.size();
+        }
+      }
+    }
+  } else {
+    // No Content-Length header: treat rest as body
+    pr.body.assign(full.substr(cursor));
+    cursor = full.size();
+  }
   return pr;
 }
 }  // namespace
 
 TEST_F(HttpResponseTest, FuzzStructuralValidation) {
-  static constexpr int kCases = 60;
+  static constexpr int kNbHttpResponses = 60;
+  static constexpr int kNbOperationsPerHttpResponse = 100;
+
   std::mt19937 rng(12345);
-  std::uniform_int_distribution<int> opDist(0, 4);
+  std::uniform_int_distribution<int> opDist(0, 5);
   std::uniform_int_distribution<int> smallLen(0, 12);
   std::uniform_int_distribution<int> midLen(0, 24);
   auto makeValue = [&](int length) {
@@ -502,45 +578,58 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
     std::string reasonStr = makeValue(length);
     return reasonStr;  // generated chars are A..Z only (no spaces)
   };
-  for (int caseIndex = 0; caseIndex < kCases; ++caseIndex) {
-    HttpResponse resp(200, "");
+  for (int caseIndex = 0; caseIndex < kNbHttpResponses; ++caseIndex) {
+    HttpResponse resp;
     std::string lastReason;
     std::string lastBody;
     std::string lastHeaderKey;
     std::string lastHeaderValue;
-    for (int step = 0; step < 40; ++step) {
+    std::string lastTrailerKey;
+    std::string lastTrailerValue;
+    for (int step = 0; step < kNbOperationsPerHttpResponse; ++step) {
       switch (opDist(rng)) {
-        case 0: {
+        case 0:
           lastHeaderKey = "X-" + std::to_string(step);
           lastHeaderValue = makeValue(smallLen(rng));
           resp.addCustomHeader(lastHeaderKey, lastHeaderValue);
           break;
-        }
-        case 1: {
+        case 1:
           lastHeaderKey = "U-" + std::to_string(step % 5);
           lastHeaderValue = makeValue(midLen(rng));
           resp.customHeader(lastHeaderKey, lastHeaderValue);
           break;
-        }
-        case 2: {
+        case 2:
           lastReason = makeReason(smallLen(rng));
           resp.reason(lastReason);
           break;
-        }
-        case 3: {
-          lastBody = makeValue(smallLen(rng));
-          resp.body(lastBody);
+        case 3:
+          if (lastTrailerKey.empty()) {
+            lastBody = makeValue(smallLen(rng));
+            resp.body(lastBody);
+          } else {
+            // Once a trailer was set, body cannot be changed
+            EXPECT_THROW(resp.body({}), std::logic_error);
+          }
           break;
-        }
         case 4: {
           static constexpr http::StatusCode opts[] = {200, 204, 404};
           resp.statusCode(opts[static_cast<std::size_t>(step) % std::size(opts)]);
           break;
         }
+        case 5:
+          if (lastBody.empty()) {
+            EXPECT_THROW(resp.addTrailer("X-Trailer", "value"), std::logic_error);
+          } else {
+            lastTrailerKey = "X-" + std::to_string(step);
+            lastTrailerValue = makeValue(smallLen(rng));
+            resp.addTrailer(lastTrailerKey, lastTrailerValue);
+          }
+          break;
         default:
           throw exception("Invalid random value, update the test");
       }
     }
+
     // Pre-finalize state checks (reason/body accessible before finalize)
     EXPECT_EQ(resp.reason(), std::string_view(lastReason));
     EXPECT_EQ(resp.body(), std::string_view(lastBody));
@@ -566,6 +655,13 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
     EXPECT_EQ(connCount, 1);
     if (!pr.body.empty()) {
       EXPECT_EQ(clCount, 1);
+      if (clVal != pr.body.size()) {
+        // Diagnostic: content-length mismatch
+        ADD_FAILURE() << "Content-Length header=" << clVal << " but parsed body size=" << pr.body.size()
+                      << "\nFull response:\n"
+                      << full;
+        return;  // stop early to inspect this failing case
+      }
       EXPECT_EQ(clVal, pr.body.size());
     } else {
       EXPECT_EQ(clCount, 0);
@@ -578,6 +674,11 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
       std::string needle = lastHeaderKey;
       needle.append(http::HeaderSep).append(lastHeaderValue);
       EXPECT_TRUE(full.contains(needle)) << "Missing last header '" << needle << "' in: " << full;
+    }
+    if (!lastTrailerKey.empty()) {
+      std::string needle = lastTrailerKey;
+      needle.append(http::HeaderSep).append(lastTrailerValue);
+      EXPECT_TRUE(full.contains(needle)) << "Missing last trailer '" << needle << "' in: " << full;
     }
   }
 }
