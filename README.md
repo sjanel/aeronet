@@ -11,13 +11,10 @@
 ## Why aeronet?
 
 - **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths, horizontal scaling with port reuse.
-- **Safe by default**: strict parsing, size/time guards, optional TLS & compression with defensive limits.
-- **Modular & opt‑in**: enable only the features you need (zlib, zstd, brotli, TLS, logging, opentelemetry) via build flags (no more bloat dependencies)
+- **Modular & opt‑in**: enable only the features you need (compression, TLS, logging, opentelemetry) via build flags
 - **Ergonomic**: simple `HttpServer`, `AsyncHttpServer`, `MultiHttpServer` types; fluent configuration; RAII listener setup.
 - **Extensible & observable**: composable configs (compression, decompression, TLS) plus lightweight per‑request metrics hook.
-- **Perfect for cloud-native microservices**: Built-in Kubernetes-style health & readiness probes, tiny runtime footprint, minimal dependencies, and easy embedding into service containers.
-
-The built-in probes are lightweight endpoints you can enable via `HttpServerConfig` (no application handlers required). They make aeronet especially convenient for Kubernetes deployments and health-checking behind load-balancers. Example enabling probes and testing with curl is shown below.
+- **Cloud native**: Built-in Kubernetes-style health & readiness probes, opentelemetry support.
 
 ## Minimal Example
 
@@ -68,38 +65,6 @@ User-Agent: curl/8.5.0
 
 ## Detailed Documentation
 
-## Kubernetes probes (quick example)
-
-Enable the builtin probes via `HttpServerConfig` and test them with curl. This example enables the probes with default paths and a plain-text content type.
-
-```cpp
-#include <aeronet/aeronet.hpp>
-using namespace aeronet;
-
-int main() {
-  HttpServerConfig cfg;
-  cfg.withBuiltinProbes(BuiltinProbesConfig{});
-  HttpServer server(std::move(cfg));
-
-  // Register application handlers as usual (optional)
-  server.router().setPath("/hello", http::Method::GET, [](const HttpRequest&){
-    return HttpResponse(200, "OK").contentType("text/plain").body("hello\n");
-  });
-
-  server.run();
-}
-```
-
-Probe checks (from the host/container):
-
-```bash
-curl -i http://localhost:8080/livez   # expects HTTP/1.1 200 when running
-curl -i http://localhost:8080/readyz  # expects 200 when ready, 503 during drain/startup
-curl -i http://localhost:8080/startupz # returns 503 until initialization completes
-
-For a Kubernetes `Deployment` example that configures liveness/readiness/startup probes against these paths, see: [docs/kubernetes-probes.md](docs/kubernetes-probes.md).
-```
-
 The following focused docs expand each area without cluttering the high‑level overview:
 
 - [Feature reference (FEATURES)](docs/FEATURES.md)
@@ -142,7 +107,7 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Feature | Notes |
 |---------|-------|
 | Epoll edge-triggered loop | One thread per `HttpServer`; writev used for header+body scatter-gather |
-| SO_REUSEPORT scaling | Horizontal multi-reactor capability |
+| `SO_REUSEPORT` scaling | Horizontal multi-reactor capability |
 | Multi-instance wrapper | `MultiHttpServer` orchestrates N reactors, aggregates stats (explicit `reusePort=true` required for >1 threads; port resolved at construction) |
 | Async single-server wrapper | `AsyncHttpServer` runs one server in a background thread |
 | Move semantics | Transfer listening socket & loop state safely |
@@ -309,7 +274,7 @@ Additional notes:
 ./build/examples/aeronet-multi 8080 4   # port 8080, 4 threads
 ```
 
-Each thread owns its own listening socket (SO_REUSEPORT) and epoll instance – no shared locks in the accept path.
+Each thread owns its own listening socket (`SO_REUSEPORT`) and epoll instance – no shared locks in the accept path.
 This is the simplest horizontal scaling strategy before introducing a worker pool.
 
 #### Choosing Between HttpServer, AsyncHttpServer, and MultiHttpServer
@@ -318,7 +283,7 @@ This is the simplest horizontal scaling strategy before introducing a worker poo
 |---------|--------|------------|-----------|-----------------------------|---------------|------------------|--------------|-------|
 | `HttpServer` | `aeronet/http-server.hpp` | `run()` / `runUntil(pred)`, `stop()` (called from another thread) | Yes (caller thread blocks) | 0 | Single reactor | Dedicated thread you manage or simple main-thread server | Yes |Minimal overhead |
 | `AsyncHttpServer` | `aeronet/async-http-server.hpp` | `start()`, `startAndStopWhen(pred)`, `stop()` | No | 1 `std::jthread` | Single reactor (owned) | Need non-blocking single server with safe lifetime | Yes | Owns `HttpServer` internally |
-| `MultiHttpServer` | `aeronet/multi-http-server.hpp` | `start()`, `stop()` | No | N (`threadCount`) | Horizontal SO_REUSEPORT multi-reactor | Scale across cores quickly | Yes | Replicates handlers pre-start |
+| `MultiHttpServer` | `aeronet/multi-http-server.hpp` | `start()`, `stop()` | No | N (`threadCount`) | Horizontal `SO_REUSEPORT` multi-reactor | Scale across cores quickly | Yes | Replicates handlers pre-start |
 
 Decision heuristics:
 
@@ -420,6 +385,38 @@ Detailed policy & implementation moved to: [Request Header Duplicate Handling](d
 
 Detailed behavior, limits & examples moved to: [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
 
+### Kubernetes style probes
+
+Enable the builtin probes via `HttpServerConfig` and test them with curl. This example enables the probes with default paths and a plain-text content type.
+
+```cpp
+#include <aeronet/aeronet.hpp>
+using namespace aeronet;
+
+int main() {
+  HttpServerConfig cfg;
+  cfg.withBuiltinProbes(BuiltinProbesConfig{});
+  HttpServer server(std::move(cfg));
+
+  // Register application handlers as usual (optional)
+  server.router().setPath("/hello", http::Method::GET, [](const HttpRequest&){
+    return HttpResponse(200, "OK").contentType("text/plain").body("hello\n");
+  });
+
+  server.run();
+}
+```
+
+Probe checks (from the host/container):
+
+```bash
+curl -i http://localhost:8080/livez   # expects HTTP/1.1 200 when running
+curl -i http://localhost:8080/readyz  # expects 200 when ready, 503 during drain/startup
+curl -i http://localhost:8080/startupz # returns 503 until initialization completes
+```
+
+For a Kubernetes `Deployment` example that configures liveness/readiness/startup probes against these paths, see: [docs/kubernetes-probes.md](docs/kubernetes-probes.md).
+
 ## Test Coverage Matrix
 
 Summary of current automated test coverage (see `tests/` directory). Legend: ✅ covered by explicit test(s), ⚠ partial / indirect, ❌ not yet.
@@ -450,7 +447,7 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 | Parsing | Percent-decoding of path | ✅ | `http_url_decoding_test.cpp`, `http_query_parsing_test.cpp` |
 | Errors | 431, 413, 505, 501 | ✅ | `http_errors_test.cpp`, `http_additional_test.cpp` |
 | Errors | PayloadTooLarge in chunk decoding | ⚠ | Exercised indirectly; dedicated test planned |
-| Concurrency | SO_REUSEPORT distribution | ✅ | `multi_http_server_test.cpp` |
+| Concurrency | `SO_REUSEPORT` distribution | ✅ | `multi_http_server_test.cpp` |
 | Lifecycle | Move semantics of server | ✅ | `http_server_lifecycle_test.cpp` |
 | Lifecycle | Graceful stop (runUntil) | ✅ | many tests use runUntil patterns |
 | Diagnostics | Parser error callback (version, bad line, limits) | ✅ | `http_parser_errors_test.cpp` |

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.28)
 
 # Silence FetchContent CMP0135 warnings about archive timestamps by opting in
 # to the NEW behavior when supported (policy introduced in newer CMake).
@@ -21,7 +21,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 message(STATUS "[${CMAKE_PROJECT_NAME}] version: ${AERONET_PROJECT_VERSION}")
 
 set(IS_MAIN_PROJECT OFF)
-if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+if(PROJECT_IS_TOP_LEVEL)
   set(IS_MAIN_PROJECT ON)
 endif()
 
@@ -40,7 +40,7 @@ option(AERONET_INSTALL "Enable install & package config generation" ${IS_MAIN_PR
 # Some package managers (vcpkg/Conan) may still pass defaults or reuse a cached build tree;
 # enforce OFF deterministically here to avoid leaking test targets into consumer builds.
 set(AERONET_BUILD_TESTS_EXAMPLES_DEFAULT ${IS_MAIN_PROJECT})
-if(AERONET_INSTALL AND NOT IS_MAIN_PROJECT)
+if(AERONET_INSTALL AND NOT PROJECT_IS_TOP_LEVEL)
   set(AERONET_BUILD_TESTS_EXAMPLES_DEFAULT OFF CACHE BOOL "Build tests and examples" FORCE)
   set(AERONET_BUILD_BENCHMARKS_DEFAULT OFF CACHE BOOL "Build benchmarks" FORCE)
 endif()

@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <exception>
 #include <format>
 #include <functional>
 #include <memory>
@@ -32,13 +31,18 @@
 #include <drogon/drogon.h>  // IWYU pragma: export
 #endif
 #ifdef AERONET_BENCH_ENABLE_OATPP
+#include <oatpp/core/Types.hpp>
+#include <oatpp/core/macro/codegen.hpp>
+#include <oatpp/core/macro/component.hpp>
+#include <oatpp/network/ConnectionHandler.hpp>
 #include <oatpp/network/Server.hpp>
 #include <oatpp/network/tcp/server/ConnectionProvider.hpp>
+#include <oatpp/web/server/AsyncHttpConnectionHandler.hpp>
 #include <oatpp/web/server/HttpConnectionHandler.hpp>
 #include <oatpp/web/server/HttpRequestHandler.hpp>
 #include <oatpp/web/server/HttpRouter.hpp>
+#include <oatpp/web/server/api/ApiController.hpp>
 
-#include "oatpp/core/Types.hpp"
 #endif
 #ifdef AERONET_BENCH_ENABLE_HTTPLIB
 #include <httplib.h>
@@ -49,23 +53,12 @@ namespace {
 inline constexpr std::string_view kHeadersBody = "OK";
 inline constexpr int kMaxConnectionRetries = 5;
 
-// NOTE: aeronet::HttpRequest::path() returns the decoded path WITHOUT the query string.
-// The earlier implementation tried to parse "?size=..." off of path(), which always failed
-// and produced zero-length bodies (hence bytes_per_second=0 for AeronetBodyMinMax).
-// We now derive the size directly from the iterator-based queryParams() API.
-std::size_t extractSizeParam(const aeronet::HttpRequest &req) {
-  for (auto qp : req.queryParams()) {
-    if (qp.key == "size") {
-      return aeronet::StringToIntegral<std::size_t>(qp.value);
-    }
-  }
-  throw std::runtime_error("missing size param");
-}
+// Global pregenerated pool used by the simplified benches (return pre-gen bodies/headers
+// and stop when exhausted). Use a plain pool object to avoid extra indirection/allocation.
+benchutil::PregenPool g_stringPool;
 
 struct AeronetServerRunner {
   aeronet::AsyncHttpServer async;
-
-  std::mt19937_64 rng;
 
   AeronetServerRunner()
       : async([]() {
@@ -76,27 +69,32 @@ struct AeronetServerRunner {
           return cfg;
         }()) {
     aeronet::log::set_level(aeronet::log::level::err);
-
-    async.router().setPath(benchutil::kBodyPath, aeronet::http::Method::GET, [this](const aeronet::HttpRequest &req) {
-      aeronet::HttpResponse resp;
-      auto sizeVal = extractSizeParam(req);
-      resp.body(benchutil::randomStr(sizeVal, rng));
+    async.router().setPath(benchutil::kBodyPath, aeronet::http::Method::GET, [](const aeronet::HttpRequest &) {
+      aeronet::HttpResponse resp(200);
+      resp.body(g_stringPool.next());
       return resp;
     });
 
-    async.router().setPath(benchutil::kHeaderPath, aeronet::http::Method::GET, [this](const aeronet::HttpRequest &req) {
+    async.router().setPath(benchutil::kHeaderPath, aeronet::http::Method::GET, [](const aeronet::HttpRequest &req) {
       aeronet::HttpResponse resp;
-      for (auto sizeVal = extractSizeParam(req); sizeVal != 0; --sizeVal) {
-        std::string key = benchutil::randomStr(sizeVal, rng);
-        std::string value = benchutil::randomStr(sizeVal, rng);
-        resp.customHeader(key, value);
+      // Read requested header count from query param 'size'
+      size_t headerCount = 0;
+      for (auto qp : req.queryParams()) {
+        if (qp.key == "size") {
+          headerCount = aeronet::StringToIntegral<std::size_t>(qp.value);
+          break;
+        }
       }
-      resp.addCustomHeader("X-Req", req.body());
-      resp.body(kHeadersBody);
+      if (headerCount == 0) {
+        throw std::runtime_error("Should have found number of headers");
+      }
+      for (size_t headerPos = 0; headerPos < headerCount; ++headerPos) {
+        resp.addCustomHeader(g_stringPool.next(), g_stringPool.next());
+      }
+      resp.body(std::to_string(headerCount));
       return resp;
     });
     async.start();
-    // Small grace interval so first benchmark request doesn't race initial polling cycle.
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 
@@ -105,9 +103,8 @@ struct AeronetServerRunner {
 
 #ifdef AERONET_BENCH_ENABLE_DROGON
 struct DrogonServerWrapper {
-  uint16_t port_ = 18081;
+  uint16_t _port = 18081;
   std::thread th;
-  std::mt19937_64 rng;
 
   DrogonServerWrapper() {
     using namespace std::chrono_literals;
@@ -115,42 +112,45 @@ struct DrogonServerWrapper {
     // All Drogon setup must happen in one thread before run()
     auto &app = drogon::app();
 
-    app.addListener("127.0.0.1", port_);
+    app.addListener("127.0.0.1", _port);
     drogon::app().setPipeliningRequestsNumber(1000000);
     drogon::app().setIdleConnectionTimeout(0);
-    app.registerHandler(
-        benchutil::kBodyPath,
-        [this](const drogon::HttpRequestPtr &req, std::function<void(const drogon::HttpResponsePtr &)> &&cb) {
-          std::size_t sizeVal = std::stoull(req->getParameter("size"));
-          auto resp = drogon::HttpResponse::newHttpResponse();
-          resp->setStatusCode(drogon::k200OK);
-          resp->setBody(benchutil::randomStr(sizeVal, rng));
-          cb(resp);
-        },
-        {drogon::Get});
 
+    // Body handler
+    app.registerHandler(benchutil::kBodyPath,
+                        [](const drogon::HttpRequestPtr &, std::function<void(const drogon::HttpResponsePtr &)> &&cb) {
+                          auto resp = drogon::HttpResponse::newHttpResponse();
+                          resp->setStatusCode(drogon::k200OK);
+                          auto body = g_stringPool.next();
+                          resp->addHeader("Content-Length", std::to_string(body.size()));
+                          resp->setBody(std::string(std::move(body)));
+                          cb(resp);
+                        },
+                        {drogon::Get});
+
+    // Header handler
     app.registerHandler(
         benchutil::kHeaderPath,
-        [this](const drogon::HttpRequestPtr &req, std::function<void(const drogon::HttpResponsePtr &)> &&cb) {
-          std::size_t sizeVal = std::stoull(req->getParameter("size"));
+        [](const drogon::HttpRequestPtr &req, std::function<void(const drogon::HttpResponsePtr &)> &&cb) {
           auto resp = drogon::HttpResponse::newHttpResponse();
           resp->setStatusCode(drogon::k200OK);
-          for (; sizeVal != 0; --sizeVal) {
-            std::string key = benchutil::randomStr(sizeVal + 1, rng);
-            std::string value = benchutil::randomStr(sizeVal, rng);
-            resp->addHeader(std::move(key), std::move(value));
+          auto sz = req->getParameter("size");
+          size_t headerCount = static_cast<size_t>(std::stoull(sz));
+
+          for (size_t i = 0; i < headerCount; ++i) {
+            resp->addHeader(g_stringPool.next(), g_stringPool.next());
           }
-          resp->addHeader("X-Req", std::string(req->getBody()));
-          resp->setBody(std::string(kHeadersBody));
+          resp->setBody(std::to_string(headerCount));
           cb(resp);
         },
         {drogon::Get});
 
     // Important: call 'app().run()' *after* listeners are configured,
     // and do it from the same thread that did the configuration.
-    th = std::thread([] {
-      drogon::app().run();  // This initializes internal managers properly
-    });
+    // Configure Drogon to run with a single worker thread so the benchmark
+    // compares single-threaded frameworks fairly. (Drogon exposes setThreadNum.)
+    drogon::app().setThreadNum(1);
+    th = std::thread([] { drogon::app().run(); });  // This initializes internal managers properly
 
     // Give it a moment to start
     std::this_thread::sleep_for(300ms);
@@ -159,8 +159,8 @@ struct DrogonServerWrapper {
   ~DrogonServerWrapper() {
     using namespace std::chrono_literals;
     drogon::app().quit();
-    for (int i = 0; i < 50 && drogon::app().isRunning(); ++i) {
-      std::this_thread::sleep_for(10ms);
+    for (int i = 0; i < 100 && drogon::app().isRunning(); ++i) {
+      std::this_thread::sleep_for(5ms);
     }
     if (th.joinable()) {
       if (drogon::app().isRunning()) {
@@ -171,7 +171,7 @@ struct DrogonServerWrapper {
     }
   }
 
-  [[nodiscard]] auto port() const { return port_; }
+  [[nodiscard]] auto port() const { return _port; }
 };
 
 std::once_flag drogonInitFlag;
@@ -179,65 +179,129 @@ DrogonServerWrapper *drogonServer = nullptr;
 #endif
 
 #ifdef AERONET_BENCH_ENABLE_OATPP
+
+#include OATPP_CODEGEN_BEGIN(ApiController)  /// <-- Begin Code-Gen
+
+class AsyncController : public oatpp::web::server::api::ApiController {
+ private:
+  using __ControllerType = AsyncController;
+
+ public:
+  AsyncController(OATPP_COMPONENT(std::shared_ptr<ObjectMapper>, objectMapper))
+      : oatpp::web::server::api::ApiController(objectMapper) {}
+
+  ENDPOINT_ASYNC("GET", benchutil::kBodyPath, GetBody){ENDPOINT_ASYNC_INIT(GetBody)
+
+                                                           Action act() override{auto body = g_stringPool.next();
+  auto bodySz = body.size();
+  auto resp = oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
+      oatpp::web::protocol::http::Status::CODE_200, std::move(body));
+  resp->putOrReplaceHeader("Content-Length", std::to_string(bodySz));
+  return _return(resp);
+}
+};
+
+ENDPOINT_ASYNC("GET", benchutil::kHeaderPath,
+               GetHeader){ENDPOINT_ASYNC_INIT(GetHeader)
+
+                              Action act() override{auto szParam = request->getQueryParameter("size");
+auto resp = oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
+    oatpp::web::protocol::http::Status::CODE_200, szParam);
+auto nbHeaders = aeronet::StringToIntegral<int>(std::string_view(szParam->data(), szParam->size()));
+for (int headerPos = 0; headerPos < nbHeaders; ++headerPos) {
+  resp->putOrReplaceHeader(oatpp::String(g_stringPool.next()), oatpp::String(g_stringPool.next()));
+}
+return _return(resp);
+}
+}
+;
+}
+;
+
+#include OATPP_CODEGEN_END(ApiController)  /// <-- End Code-Gen
+
 struct OatppBodyHandler : public oatpp::web::server::HttpRequestHandler {
-  std::mt19937_64 &rng;
+  // no local RNG; pool-owned RNG is used for pregenerated strings
+  OatppBodyHandler() = default;
 
-  explicit OatppBodyHandler(std::mt19937_64 &rng) : rng(rng) {}
-
-  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest> &req) override {
-    std::size_t sizeVal = aeronet::StringToIntegral<std::size_t>(*req->getQueryParameter("size"));
-    auto body = benchutil::randomStr(sizeVal, rng);
-    return oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
-        oatpp::web::protocol::http::Status::CODE_200, body);
+  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest> &) override {
+    auto body = g_stringPool.next();
+    auto bodySz = body.size();
+    auto resp = oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
+        oatpp::web::protocol::http::Status::CODE_200, std::move(body));
+    resp->putOrReplaceHeader("Content-Length", std::to_string(bodySz));
+    return resp;
   }
 };
 
 struct OatppHeadersHandler : public oatpp::web::server::HttpRequestHandler {
-  std::mt19937_64 &rng;
-
-  explicit OatppHeadersHandler(std::mt19937_64 &rng) : rng(rng) {}
+  // no local RNG; pool-owned RNG is used for pregenerated strings
+  OatppHeadersHandler() = default;
 
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest> &req) override {
-    std::size_t sizeVal = aeronet::StringToIntegral<std::size_t>(*req->getQueryParameter("size"));
+    auto szParam = req->getQueryParameter("size");
     auto resp = oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
-        oatpp::web::protocol::http::Status::CODE_200, std::string(kHeadersBody));
-    for (; sizeVal != 0; --sizeVal) {
-      std::string key = benchutil::randomStr(sizeVal + 1, rng);
-      std::string value = benchutil::randomStr(sizeVal, rng);
-      resp->putOrReplaceHeader(oatpp::String(std::move(key)), oatpp::String(std::move(value)));
+        oatpp::web::protocol::http::Status::CODE_200, szParam);
+    auto nbHeaders = aeronet::StringToIntegral<int>(std::string_view(szParam->data(), szParam->size()));
+    for (int headerPos = 0; headerPos < nbHeaders; ++headerPos) {
+      resp->putOrReplaceHeader(oatpp::String(g_stringPool.next()), oatpp::String(g_stringPool.next()));
     }
-    resp->putHeaderIfNotExists("X-Req", req->readBodyToString());
     return resp;
   }
 };
 
 struct OatppServerWrapper {
   std::shared_ptr<oatpp::network::Server> server;
+  std::shared_ptr<oatpp::network::tcp::server::ConnectionProvider> provider;
+  std::shared_ptr<oatpp::network::ConnectionHandler> handler;
   std::thread th;
   uint16_t _port = 18082;
-  std::mt19937_64 rng;
 
   OatppServerWrapper() {
     oatpp::base::Environment::init();
-    auto provider = oatpp::network::tcp::server::ConnectionProvider::createShared(
+
+    provider = oatpp::network::tcp::server::ConnectionProvider::createShared(
         {"127.0.0.1", _port, oatpp::network::Address::IP_4});
     auto router = oatpp::web::server::HttpRouter::createShared();
-    auto bodyHandler = std::make_shared<OatppBodyHandler>(rng);
-    auto headersHandler = std::make_shared<OatppHeadersHandler>(rng);
+    auto bodyHandler = std::make_shared<OatppBodyHandler>();
+    auto headersHandler = std::make_shared<OatppHeadersHandler>();
+
+    // router->addController(std::make_shared<AsyncController>());
 
     router->route("GET", benchutil::kBodyPath, bodyHandler);
     router->route("GET", benchutil::kHeaderPath, headersHandler);
 
-    auto handler = oatpp::web::server::HttpConnectionHandler::createShared(router);
+    // actually this spawns a new thread for each connection. We need to migrate to AsyncHttpConnectionHandler,
+    // but I could not make it work. TODO: make it fully async with 1 thread, otherwise it's not fair for the bench
+    handler = oatpp::web::server::HttpConnectionHandler::createShared(router);
+    // handler = oatpp::web::server::AsyncHttpConnectionHandler::createShared(router, 1);
+
     server = std::make_shared<oatpp::network::Server>(provider, handler);
+
     th = std::thread([this] { server->run(); });
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
   }
+
   ~OatppServerWrapper() {
-    server->stop();
+    // Stop accepting new connections first
+    if (provider) {
+      provider->stop();
+    }
+
+    // Then stop the server if still running
+    if (server && server->getStatus() == oatpp::network::Server::STATUS_RUNNING) {
+      server->stop();
+    }
+
+    // Request the connection handler to stop and wait until running connections close
+    if (handler) {
+      handler->stop();
+    }
+
     if (th.joinable()) {
       th.join();
     }
+
     oatpp::base::Environment::destroy();
   }
   [[nodiscard]] auto port() const { return _port; }
@@ -248,54 +312,36 @@ struct OatppServerWrapper {
 struct HttplibServerWrapper {
   uint16_t _port = 18083;
   std::thread th;
-  std::mt19937_64 rng;
+  // local RNG removed; pool-owned RNG is used instead
   httplib::Server svr;
 
   HttplibServerWrapper() {
     svr.set_keep_alive_max_count(1000000);  // large keep-alive reuse allowance
-    svr.Get(benchutil::kBodyPath, [this](const httplib::Request &req, httplib::Response &res) {
-      try {
-        if (!req.has_param("size")) {
-          res.status = 400;
-          res.set_content("missing size", "text/plain");
-          return;
-        }
-        std::size_t sizeVal = static_cast<std::size_t>(std::stoull(req.get_param_value("size")));
-        res.set_content(benchutil::randomStr(sizeVal, rng), "text/plain");
-      } catch (const std::exception &e) {
-        res.status = 500;
-        res.set_content(std::string("err ") + e.what(), "text/plain");
-      }
+    svr.Get(benchutil::kBodyPath, [](const httplib::Request & /*req*/, httplib::Response &res) {
+      auto bodyStr = g_stringPool.next();
+      auto bodySz = bodyStr.size();
+      res.set_content(std::move(bodyStr), "text/plain");
+      res.set_header("Content-Length", std::to_string(bodySz));
     });
-    svr.Get(benchutil::kHeaderPath, [this](const httplib::Request &req, httplib::Response &res) {
-      try {
-        if (!req.has_param("size")) {
-          res.status = 400;
-          res.set_content("missing size", "text/plain");
-          return;
-        }
-        std::size_t sizeVal = static_cast<std::size_t>(std::stoull(req.get_param_value("size")));
-        for (; sizeVal != 0; --sizeVal) {
-          std::string key = benchutil::randomStr(sizeVal + 1, rng);
-          std::string value = benchutil::randomStr(sizeVal, rng);
-          res.set_header(key, value);
-        }
-        res.set_header("X-Req", req.body);
-        res.set_content(std::string(kHeadersBody), "text/plain");
-      } catch (const std::exception &e) {
-        res.status = 500;
-        res.set_content(std::string("err ") + e.what(), "text/plain");
+    svr.Get(benchutil::kHeaderPath, [](const httplib::Request &req, httplib::Response &res) {
+      const auto nbHeaders = req.get_header_value_u64("size");
+      for (size_t headerCount = 0; headerCount < nbHeaders; ++headerCount) {
+        res.set_header(g_stringPool.next(), g_stringPool.next());
       }
+
+      res.set_content(std::to_string(nbHeaders), "text/plain");
     });
     th = std::thread([this] { svr.listen("127.0.0.1", _port); });
-    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
+
   ~HttplibServerWrapper() {
     svr.stop();
     if (th.joinable()) {
       th.join();
     }
   }
+
   [[nodiscard]] auto port() const { return _port; }
 };
 #endif
@@ -305,23 +351,30 @@ class PersistentClient {
  public:
   explicit PersistentClient(uint16_t port) : port_(port), conn(port) {}
 
-  bool checkBodySz(std::size_t size) { return issueWithRetry(benchutil::kBodyPath, size, /*expectExact=*/true, size); }
+  bool checkBodySz(std::size_t size) { return issueWithRetry(benchutil::kBodyPath, size, true, size); }
 
   bool checkHeaders(std::size_t size) {
     // Expect body of size kHeadersBody.size(), but allow >0 for flexibility (some frameworks may append CRLF nuances)
-    return issueWithRetry(benchutil::kHeaderPath, size, /*expectExact=*/false, kHeadersBody.size());
+    return issueWithRetry(benchutil::kHeaderPath, size, false, kHeadersBody.size());
   }
 
-  [[nodiscard]] int retryAttempts() const { return retryAttempts_; }
+  [[nodiscard]] int retryAttempts() const { return _retryAttempts; }
 
  private:
-  bool issueWithRetry(std::string_view path, std::size_t reqSize, bool expectExact, std::size_t expectVal) {
+  bool issueWithRetry(std::string_view path, std::size_t reqSize, bool isCheckBody, std::size_t expectVal) {
     for (int attempt = 0; attempt < kMaxConnectionRetries; ++attempt) {
       auto len = benchutil::requestBodySize("GET", path, conn.fd(), reqSize, true);
-      if (len && ((expectExact && *len == expectVal) || (!expectExact && *len > 0))) {
+      if (!len) {
+        // Failure path: reconnect and try again (unless last attempt)
+        if (attempt == 0) {
+          reconnect();
+        }
+        continue;
+      }
+      if ((isCheckBody && *len == expectVal) || (!isCheckBody && *len > 0)) {
         if (attempt > 0) {
           // Count only successful retries (attempt 1 meaning second try)conn.fd()
-          ++retryAttempts_;
+          ++_retryAttempts;
         }
         return true;
       }
@@ -337,24 +390,31 @@ class PersistentClient {
 
   uint16_t port_;
   aeronet::test::ClientConnection conn;  // persistent connection for benchmark
-  int retryAttempts_ = 0;
+  int _retryAttempts = 0;
 };
 
 template <class Server>
 void BodyMinMax(benchmark::State &state, std::string_view name, Server &server) {
-  server.rng = std::mt19937_64{};
+  // Redesigned: do not parse request params on server; instead return a pregenerated
+  // body from a pool. Create a local deterministic RNG for the benchmark sequence
+  // (so all frameworks see the same sample draws) and stop when pool is exhausted.
   PersistentClient client(server.port());
-  std::size_t minSize = static_cast<std::size_t>(state.range(0));
-  std::size_t maxSize = static_cast<std::size_t>(state.range(1));
-  std::uniform_int_distribution<std::size_t> dist(minSize, maxSize);
   std::size_t totalBytes = 0;
+  const std::size_t minSize = static_cast<std::size_t>(state.range(0));
+  const std::size_t maxSize = static_cast<std::size_t>(state.range(1));
+  const std::size_t nbPregenCount = static_cast<std::size_t>(state.range(2));
+
+  g_stringPool.reset(nbPregenCount, minSize, maxSize);
+
   for ([[maybe_unused]] auto st : state) {
-    std::size_t sz = dist(server.rng);
-    if (!client.checkBodySz(sz)) {
-      state.SkipWithError(std::format("{} request failed for size {}", name, sz));
+    const auto expectedNextBodySize = g_stringPool.nextSize();
+    if (!client.checkBodySz(expectedNextBodySize)) {
+      state.SkipWithError(std::format("{} request failed while using pregenerated pool", name));
       break;
     }
-    totalBytes += sz;
+    // We don't know the request's requested size; use the actual body size reported by the server
+    // (the client validated non-zero already). For throughput accounting approximate with bucket.
+    totalBytes += expectedNextBodySize;
   }
   state.SetBytesProcessed(static_cast<int64_t>(totalBytes));
   if (state.iterations() > 0) {
@@ -370,13 +430,6 @@ void AeronetBodyMinMax(benchmark::State &state) {
   BodyMinMax(state, "aeronet", server);
 }
 
-#ifdef AERONET_BENCH_ENABLE_OATPP
-void OatppBodyMinMax(benchmark::State &state) {
-  OatppServerWrapper server;
-  BodyMinMax(state, "oatpp", server);
-}
-#endif
-
 #ifdef AERONET_BENCH_ENABLE_DROGON
 void DrogonBodyMinMax(benchmark::State &state) {
   std::call_once(drogonInitFlag, [] {
@@ -388,40 +441,37 @@ void DrogonBodyMinMax(benchmark::State &state) {
 }
 #endif
 
+#ifdef AERONET_BENCH_ENABLE_OATPP
+void OatppBodyMinMax(benchmark::State &state) {
+  OatppServerWrapper server;
+  BodyMinMax(state, "oatpp", server);
+}
+#endif
+
 #ifdef AERONET_BENCH_ENABLE_HTTPLIB
-void HttplibResponseBuild(benchmark::State &state) {
-  std::mt19937_64 rng;
-  const int numHeaders = static_cast<int>(state.range(0));
-  const std::size_t bodySize = static_cast<std::size_t>(state.range(1));
-  auto body = benchutil::randomStr(bodySize, rng);
-  std::size_t bytesSynthesized = 0;
-  for ([[maybe_unused]] auto st : state) {
-    httplib::Response resp;
-    resp.status = 200;
-    for (int headerIndex = 0; headerIndex < numHeaders; ++headerIndex) {
-      resp.set_header(std::format("X-H{:03}", headerIndex), "v");
-    }
-    resp.set_content(body, "text/plain");
-    bytesSynthesized += body.size();
-    benchmark::DoNotOptimize(resp.body.data());
-  }
-  if (state.iterations() > 0) {
-    double iterCount = static_cast<double>(state.iterations());
-    state.counters["body_bytes_per_iter"] = benchmark::Counter(static_cast<double>(bytesSynthesized) / iterCount);
-  }
+void HttplibBodyMinMax(benchmark::State &state) {
+  HttplibServerWrapper server;
+  BodyMinMax(state, "httplib", server);
 }
 #endif
 
 template <class Server>
 void HeadersMinMax(benchmark::State &state, std::string_view name, Server &server) {
-  server.rng = std::mt19937_64{};
+  // Use a local deterministic RNG for drawing header counts so all frameworks
+  // see the same sequence across runs.
   PersistentClient client(server.port());
-  std::size_t minSize = static_cast<std::size_t>(state.range(0));
-  std::size_t maxSize = static_cast<std::size_t>(state.range(1));
-  std::uniform_int_distribution<std::size_t> dist(minSize, maxSize);
+  const std::size_t minNbHeaders = static_cast<std::size_t>(state.range(0));
+  const std::size_t maxNbHeaders = static_cast<std::size_t>(state.range(1));
+  const std::size_t minHeaderSz = static_cast<std::size_t>(state.range(2));
+  const std::size_t maxHeaderSz = static_cast<std::size_t>(state.range(3));
+  const std::size_t nbPregenCount = static_cast<std::size_t>(state.range(4));
+
+  g_stringPool.reset(nbPregenCount, minHeaderSz, maxHeaderSz);
+
+  std::uniform_int_distribution<std::size_t> dist(minNbHeaders, maxNbHeaders);
   for ([[maybe_unused]] auto st : state) {
-    std::size_t sz = dist(server.rng);
-    if (!client.checkHeaders(sz)) {
+    std::size_t nbHeaders = dist(g_stringPool.rng);
+    if (!client.checkHeaders(nbHeaders)) {
       state.SkipWithError(std::format("{} request failed for headers", name));
       break;
     }
@@ -432,22 +482,20 @@ void HeadersMinMax(benchmark::State &state, std::string_view name, Server &serve
   }
 }
 
-#ifdef AERONET_BENCH_ENABLE_HTTPLIB
-void HttplibBodyMinMax(benchmark::State &state) {
-  HttplibServerWrapper server;
-  BodyMinMax(state, "httplib", server);
-}
-
-void HttplibHeadersMinMax(benchmark::State &state) {
-  HttplibServerWrapper server;
-  HeadersMinMax(state, "httplib", server);
-}
-#endif
-
 void AeronetHeadersMinMax(benchmark::State &state) {
   AeronetServerRunner server;
   HeadersMinMax(state, "aeronet", server);
 }
+
+#ifdef AERONET_BENCH_ENABLE_DROGON
+void DrogonHeadersMinMax(benchmark::State &state) {
+  std::call_once(drogonInitFlag, [] {
+    static DrogonServerWrapper drogonServerStatic;  // Construct once, main thread
+    drogonServer = &drogonServerStatic;
+  });
+  HeadersMinMax(state, "drogon", *drogonServer);
+}
+#endif
 
 #ifdef AERONET_BENCH_ENABLE_OATPP
 void OatppHeadersMinMax(benchmark::State &state) {
@@ -456,25 +504,37 @@ void OatppHeadersMinMax(benchmark::State &state) {
 }
 #endif
 
+#ifdef AERONET_BENCH_ENABLE_HTTPLIB
+void HttplibHeadersMinMax(benchmark::State &state) {
+  HttplibServerWrapper server;
+  HeadersMinMax(state, "httplib", server);
+}
+#endif
+
 template <class Server>
-void RandomNoReuse(benchmark::State &state, std::string_view name, Server &server) {
-  std::size_t minSize = static_cast<std::size_t>(state.range(0));
-  std::size_t maxSize = static_cast<std::size_t>(state.range(1));
-  std::uniform_int_distribution<std::size_t> dist(minSize, maxSize);
-  std::size_t totalBytes = 0;
+void BodyMinMaxNoReuse(benchmark::State &state, std::string_view name, Server &server) {
+  const std::size_t minSize = static_cast<std::size_t>(state.range(0));
+  const std::size_t maxSize = static_cast<std::size_t>(state.range(1));
+  const std::size_t nbPregenCount = static_cast<std::size_t>(state.range(2));
+
+  g_stringPool.reset(nbPregenCount, minSize, maxSize);
+
   int retryCount = 0;
+
+  std::size_t totalBytes = 0;
   for ([[maybe_unused]] auto st : state) {
-    std::size_t sz = dist(server.rng);
     bool success = false;
     for (int attempt = 0; attempt < kMaxConnectionRetries && !success; ++attempt) {
+      const auto expectedNextBodySize = g_stringPool.nextSize();
+
       aeronet::test::ClientConnection ep(server.port());
-      auto len = benchutil::requestBodySize("GET", benchutil::kBodyPath, ep.fd(), sz, false);
-      if (len && *len == sz) {
-        totalBytes += *len;
+      auto len = benchutil::requestBodySize("GET", benchutil::kBodyPath, ep.fd(), expectedNextBodySize, false);
+      if (len && *len == expectedNextBodySize) {
         if (attempt > 0) {
           ++retryCount;
         }
         success = true;
+        totalBytes += expectedNextBodySize;
         break;
       }
     }
@@ -491,82 +551,65 @@ void RandomNoReuse(benchmark::State &state, std::string_view name, Server &serve
   }
 }
 
-#ifdef AERONET_BENCH_ENABLE_HTTPLIB
-void HttplibRandomNoReuse(benchmark::State &state) {
-  HttplibServerWrapper server;
-  RandomNoReuse(state, "httplib", server);
+// 1) No connection reuse: establish a fresh TCP connection for every request.
+//    This highlights accept + handshake + kernel scheduling overhead vs pure keep-alive.
+void AeronetBodyMinMaxNoReuse(benchmark::State &state) {
+  AeronetServerRunner server;  // single server instance
+  BodyMinMaxNoReuse(state, "aeronet", server);
 }
-#endif
 
 #ifdef AERONET_BENCH_ENABLE_DROGON
-void DrogonHeadersMinMax(benchmark::State &state) {
+void DrogonBodyMinMaxNoReuse(benchmark::State &state) {
   std::call_once(drogonInitFlag, [] {
     static DrogonServerWrapper drogonServerStatic;  // Construct once, main thread
     drogonServer = &drogonServerStatic;
   });
-  HeadersMinMax(state, "drogon", *drogonServer);
+  BodyMinMaxNoReuse(state, "drogon", *drogonServer);
 }
 #endif
 
 #ifdef AERONET_BENCH_ENABLE_OATPP
 // Oatpp: no connection reuse variant (fresh TCP connection each request)
-void OatppRandomNoReuse(benchmark::State &state) {
+void OatppBodyMinMaxNoReuse(benchmark::State &state) {
   OatppServerWrapper server;  // local server instance
-  RandomNoReuse(state, "oatpp", server);
+  BodyMinMaxNoReuse(state, "oatpp", server);
 }
-
-// Oatpp: response build overhead (construct outgoing response with N headers and body)
-void OatppResponseBuild(benchmark::State &state) {
-  std::mt19937_64 rng;
-  const int numHeaders = static_cast<int>(state.range(0));
-  const std::size_t bodySize = static_cast<std::size_t>(state.range(1));
-  auto body = benchutil::randomStr(bodySize, rng);
-  std::size_t bytesSynthesized = 0;
-  for ([[maybe_unused]] auto st : state) {
-    auto resp = oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
-        oatpp::web::protocol::http::Status::CODE_200, body);
-    for (int headerIndex = 0; headerIndex < numHeaders; ++headerIndex) {
-      resp->putHeader(std::format("X-H{:03}", headerIndex).c_str(), "v");
-    }
-    bytesSynthesized += body.size();
-    benchmark::DoNotOptimize(resp.get());
-  }
-  if (state.iterations() > 0) {
-    double iterCount = static_cast<double>(state.iterations());
-    state.counters["body_bytes_per_iter"] = benchmark::Counter(static_cast<double>(bytesSynthesized) / iterCount);
-  }
-}
-
 #endif
 
-// ------------------------------------------------------------
-// Additional Aeronet-specific micro benchmarks (added inline
-// here for convenience to keep a single executable when
-// exploring comparative behavior).
-// ------------------------------------------------------------
-
-// 1) No connection reuse: establish a fresh TCP connection for every request.
-//    This highlights accept + handshake + kernel scheduling overhead vs pure keep-alive.
-void AeronetRandomNoReuse(benchmark::State &state) {
-  AeronetServerRunner server;  // single server instance
-  RandomNoReuse(state, "aeronet", server);
+#ifdef AERONET_BENCH_ENABLE_HTTPLIB
+void HttplibBodyMinMaxNoReuse(benchmark::State &state) {
+  HttplibServerWrapper server;
+  BodyMinMaxNoReuse(state, "httplib", server);
 }
+#endif
 
-// 2) Response build cost: construct an HttpResponse with N custom headers and body size B.
-//    Args: {numHeaders, bodySize}
 void AeronetResponseBuild(benchmark::State &state) {
-  std::mt19937_64 rng;
-  const int numHeaders = static_cast<int>(state.range(0));
-  const std::size_t bodySize = static_cast<std::size_t>(state.range(1));
-  auto body = benchutil::randomStr(bodySize, rng);
+  const std::size_t minNbHeaders = static_cast<std::size_t>(state.range(0));
+  const std::size_t maxNbHeaders = static_cast<std::size_t>(state.range(1));
+  const std::size_t minSize = static_cast<std::size_t>(state.range(2));
+  const std::size_t maxSize = static_cast<std::size_t>(state.range(3));
+  const std::size_t nbPregenCount = static_cast<std::size_t>(state.range(4));
+
+  g_stringPool.reset(nbPregenCount, minSize, maxSize);
+
+  std::uniform_int_distribution<std::size_t> dist(minNbHeaders, maxNbHeaders);
+
   std::size_t bytesSynthesized = 0;
   for ([[maybe_unused]] auto it : state) {
-    aeronet::HttpResponse resp;  // 200 OK default
-    // Add headers (unique keys to force append path)
-    for (int headerIndex = 0; headerIndex < numHeaders; ++headerIndex) {
-      resp.addCustomHeader(std::format("X-H{:03}", headerIndex), "v");
+    const auto numHeaders = dist(g_stringPool.rng);
+
+    aeronet::HttpResponse resp(200);
+
+    auto body = g_stringPool.next();
+
+    for (std::size_t headerIndex = 0; headerIndex < numHeaders; ++headerIndex) {
+      auto headerKey = g_stringPool.next();
+      auto headerVal = g_stringPool.next();
+      bytesSynthesized += headerKey.size() + headerVal.size();
+
+      resp.addCustomHeader(headerKey, headerVal);
     }
-    resp.body(body);
+    resp.body(std::move(body));
     // Finalization occurs when serialized for send; emulate by calling body() + reserved header injection via copy
     // We approximate work by measuring the total constructed response buffer size.
     bytesSynthesized += resp.body().size();
@@ -579,31 +622,31 @@ void AeronetResponseBuild(benchmark::State &state) {
 }
 
 #ifdef AERONET_BENCH_ENABLE_DROGON
-
-// Drogon: no connection reuse variant
-void DrogonRandomNoReuse(benchmark::State &state) {
-  std::call_once(drogonInitFlag, [] {
-    static DrogonServerWrapper drogonServerStatic;  // Construct once, main thread
-    drogonServer = &drogonServerStatic;
-  });
-  RandomNoReuse(state, "drogon", *drogonServer);
-}
-
-// Drogon: response build overhead
 void DrogonResponseBuild(benchmark::State &state) {
-  std::mt19937_64 rng;
-  const int numHeaders = static_cast<int>(state.range(0));
-  const std::size_t bodySize = static_cast<std::size_t>(state.range(1));
-  auto body = benchutil::randomStr(bodySize, rng);
+  const std::size_t minNbHeaders = static_cast<std::size_t>(state.range(0));
+  const std::size_t maxNbHeaders = static_cast<std::size_t>(state.range(1));
+  const std::size_t minSize = static_cast<std::size_t>(state.range(2));
+  const std::size_t maxSize = static_cast<std::size_t>(state.range(3));
+  const std::size_t nbPregenCount = static_cast<std::size_t>(state.range(4));
+
+  g_stringPool.reset(nbPregenCount, minSize, maxSize);
+
+  std::uniform_int_distribution<std::size_t> dist(minNbHeaders, maxNbHeaders);
+
   std::size_t bytesSynthesized = 0;
   for ([[maybe_unused]] auto str : state) {
+    const auto numHeaders = dist(g_stringPool.rng);
+
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setStatusCode(drogon::k200OK);
-    resp->setBody(body);
-    for (int headerIndex = 0; headerIndex < numHeaders; ++headerIndex) {
-      resp->addHeader(std::format("X-H{:03}", headerIndex), "v");
+    resp->setBody(g_stringPool.next());
+    for (std::size_t headerIndex = 0; headerIndex < numHeaders; ++headerIndex) {
+      auto headerKey = g_stringPool.next();
+      auto headerVal = g_stringPool.next();
+      bytesSynthesized += headerKey.size() + headerVal.size();
+      resp->addHeader(std::move(headerKey), std::move(headerVal));
     }
-    bytesSynthesized += body.size();
+    bytesSynthesized += resp->getBody().size();
     benchmark::DoNotOptimize(resp.get());
   }
   if (state.iterations() > 0) {
@@ -613,10 +656,89 @@ void DrogonResponseBuild(benchmark::State &state) {
 }
 #endif
 
-#define REGISTER_BODY_MIN_MAX(name) BENCHMARK(name)->Args({4, 32})->Args({32, 512})->Args({4096, 8388608})
-#define REGISTER_HEADERS_MIN_MAX(name) BENCHMARK(name)->Args({2, 8})->Args({16, 64})->Args({128, 1024})
-#define REGISTER_RESPONSE_BUILD(name) BENCHMARK(name)->Args({4, 32})->Args({32, 512})->Args({4096, 8388608})
-#define REGISTER_RANDOM_NOREUSE(name) REGISTER_BODY_MIN_MAX(name)
+#ifdef AERONET_BENCH_ENABLE_OATPP
+void OatppResponseBuild(benchmark::State &state) {
+  const std::size_t minNbHeaders = static_cast<std::size_t>(state.range(0));
+  const std::size_t maxNbHeaders = static_cast<std::size_t>(state.range(1));
+  const std::size_t minSize = static_cast<std::size_t>(state.range(2));
+  const std::size_t maxSize = static_cast<std::size_t>(state.range(3));
+  const std::size_t nbPregenCount = static_cast<std::size_t>(state.range(4));
+
+  g_stringPool.reset(nbPregenCount, minSize, maxSize);
+
+  std::uniform_int_distribution<std::size_t> dist(minNbHeaders, maxNbHeaders);
+
+  std::size_t bytesSynthesized = 0;
+  for ([[maybe_unused]] auto st : state) {
+    const auto numHeaders = dist(g_stringPool.rng);
+
+    auto body = g_stringPool.next();
+    auto bodySz = body.size();
+    auto resp = oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
+        oatpp::web::protocol::http::Status::CODE_200, std::move(body));
+    for (std::size_t headerIndex = 0; headerIndex < numHeaders; ++headerIndex) {
+      auto headerKey = g_stringPool.next();
+      auto headerVal = g_stringPool.next();
+      bytesSynthesized += headerKey.size() + headerVal.size();
+      resp->putHeader(std::move(headerKey), std::move(headerVal));
+    }
+    bytesSynthesized += bodySz;
+    benchmark::DoNotOptimize(resp.get());
+  }
+  if (state.iterations() > 0) {
+    double iterCount = static_cast<double>(state.iterations());
+    state.counters["body_bytes_per_iter"] = benchmark::Counter(static_cast<double>(bytesSynthesized) / iterCount);
+  }
+}
+#endif
+
+#ifdef AERONET_BENCH_ENABLE_HTTPLIB
+void HttplibResponseBuild(benchmark::State &state) {
+  const std::size_t minNbHeaders = static_cast<std::size_t>(state.range(0));
+  const std::size_t maxNbHeaders = static_cast<std::size_t>(state.range(1));
+  const std::size_t minSize = static_cast<std::size_t>(state.range(2));
+  const std::size_t maxSize = static_cast<std::size_t>(state.range(3));
+  const std::size_t nbPregenCount = static_cast<std::size_t>(state.range(4));
+
+  g_stringPool.reset(nbPregenCount, minSize, maxSize);
+
+  std::uniform_int_distribution<std::size_t> dist(minNbHeaders, maxNbHeaders);
+
+  std::size_t bytesSynthesized = 0;
+  for ([[maybe_unused]] auto st : state) {
+    const auto numHeaders = dist(g_stringPool.rng);
+
+    httplib::Response resp;
+    resp.status = 200;
+    resp.set_content(g_stringPool.next(), "text/plain");
+
+    for (std::size_t headerIndex = 0; headerIndex < numHeaders; ++headerIndex) {
+      auto headerKey = g_stringPool.next();
+      auto headerVal = g_stringPool.next();
+      bytesSynthesized += headerKey.size() + headerVal.size();
+
+      resp.set_header(std::move(headerKey), std::move(headerVal));
+    }
+    bytesSynthesized += resp.body.size();
+    benchmark::DoNotOptimize(resp.body.data());
+  }
+  if (state.iterations() > 0) {
+    double iterCount = static_cast<double>(state.iterations());
+    state.counters["body_bytes_per_iter"] = benchmark::Counter(static_cast<double>(bytesSynthesized) / iterCount);
+  }
+}
+#endif
+
+#define REGISTER_BODY_MIN_MAX(name) \
+  BENCHMARK(name)->Args({4, 32, (1 << 17)})->Args({32, 512, (1 << 16)})->Args({4096, 8388608, (1 << 10)})
+#define REGISTER_HEADERS_MIN_MAX(name) \
+  BENCHMARK(name)->Args({2, 8, 4, 8, (1 << 17)})->Args({16, 64, 4, 32, (1 << 16)})->Args({128, 1024, 4, 128, (1 << 10)})
+#define REGISTER_RESPONSE_BUILD(name)   \
+  BENCHMARK(name)                       \
+      ->Args({1, 2, 4, 8, (1 << 17)})   \
+      ->Args({4, 8, 16, 64, (1 << 16)}) \
+      ->Args({16, 64, 32, (1 << 16), (1 << 10)})
+#define REGISTER_BODY_MIN_MAX_NOREUSE(name) REGISTER_BODY_MIN_MAX(name)
 
 // Body min/max across frameworks
 REGISTER_BODY_MIN_MAX(AeronetBodyMinMax);
@@ -655,15 +777,15 @@ REGISTER_RESPONSE_BUILD(HttplibResponseBuild);
 #endif
 
 // No-reuse benchmarks reuse body arg pattern
-REGISTER_RANDOM_NOREUSE(AeronetRandomNoReuse);
+REGISTER_BODY_MIN_MAX_NOREUSE(AeronetBodyMinMaxNoReuse);
 #ifdef AERONET_BENCH_ENABLE_DROGON
-REGISTER_RANDOM_NOREUSE(DrogonRandomNoReuse);
+REGISTER_BODY_MIN_MAX_NOREUSE(DrogonBodyMinMaxNoReuse);
 #endif
 #ifdef AERONET_BENCH_ENABLE_OATPP
-REGISTER_RANDOM_NOREUSE(OatppRandomNoReuse);
+REGISTER_BODY_MIN_MAX_NOREUSE(OatppBodyMinMaxNoReuse);
 #endif
 #ifdef AERONET_BENCH_ENABLE_HTTPLIB
-REGISTER_RANDOM_NOREUSE(HttplibRandomNoReuse);
+REGISTER_BODY_MIN_MAX_NOREUSE(HttplibBodyMinMaxNoReuse);
 #endif
 
 }  // namespace

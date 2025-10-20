@@ -52,13 +52,11 @@ if(AERONET_BENCH_ENABLE_DROGON)
 endif()
 
 if(AERONET_BENCH_ENABLE_HTTPLIB)
-  # Header-only; just fetch.
   FetchContent_Declare(
     cpp_httplib
-    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
-    GIT_TAG v0.26.0
-    GIT_SHALLOW TRUE
-    GIT_PROGRESS TRUE
+    URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.26.0.tar.gz
+    URL_HASH SHA256=a66f908f50ccb119769adce44fe1eac75f81b6ffab7c4ac0211bb663ffeb2688
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
   FetchContent_MakeAvailable(cpp_httplib)
 endif()
