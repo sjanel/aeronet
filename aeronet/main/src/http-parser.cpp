@@ -2,7 +2,9 @@
 #include <charconv>
 #include <cstddef>
 #include <cstring>
+#include <iterator>
 #include <string_view>
+#include <system_error>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"

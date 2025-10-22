@@ -6,10 +6,10 @@
 #include <initializer_list>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -43,7 +43,7 @@ class HttpRequestTest : public ::testing::Test {
     return req.setHead(cs, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders);
   }
 
-  void checkHeaders(std::initializer_list<std::pair<std::string_view, std::string_view>> headers) {
+  void checkHeaders(std::initializer_list<http::HeaderView> headers) {
     for (const auto &[key, val] : headers) {
       EXPECT_EQ(req.headerValueOrEmpty(key), val);
     }
@@ -73,34 +73,34 @@ TEST_F(HttpRequestTest, QueryParamsDecodingPlusAndPercent) {
   auto raw = BuildRaw("GET", "/p?a=1+2&b=hello%20world&c=%zz");
   auto st = reqSet(raw);
   ASSERT_EQ(st, http::StatusCodeOK);
-  std::vector<std::pair<std::string_view, std::string_view>> seen;
+  std::vector<http::HeaderView> seen;
   for (auto [k, v] : req.queryParams()) {
     seen.emplace_back(k, v);
   }
   ASSERT_EQ(seen.size(), 3U);
-  EXPECT_EQ(seen[0].first, "a");
-  EXPECT_EQ(seen[0].second, "1 2");  // '+' => space
-  EXPECT_EQ(seen[1].first, "b");
-  EXPECT_EQ(seen[1].second, "hello world");  // %20 decoded
-  EXPECT_EQ(seen[2].first, "c");
-  EXPECT_EQ(seen[2].second, "%zz");  // invalid escape left as-is
+  EXPECT_EQ(seen[0].name, "a");
+  EXPECT_EQ(seen[0].value, "1 2");  // '+' => space
+  EXPECT_EQ(seen[1].name, "b");
+  EXPECT_EQ(seen[1].value, "hello world");  // %20 decoded
+  EXPECT_EQ(seen[2].name, "c");
+  EXPECT_EQ(seen[2].value, "%zz");  // invalid escape left as-is
 }
 
 TEST_F(HttpRequestTest, EmptyAndMissingValues) {
   auto raw = BuildRaw("GET", "/p?k1=&k2&=v");
   auto st = reqSet(raw);
   ASSERT_EQ(st, http::StatusCodeOK);
-  std::vector<std::pair<std::string_view, std::string_view>> seen;
+  std::vector<http::HeaderView> seen;
   for (auto [k, v] : req.queryParams()) {
     seen.emplace_back(k, v);
   }
   ASSERT_EQ(seen.size(), 3U);
-  EXPECT_EQ(seen[0].first, "k1");
-  EXPECT_EQ(seen[0].second, "");
-  EXPECT_EQ(seen[1].first, "k2");
-  EXPECT_EQ(seen[1].second, "");
-  EXPECT_EQ(seen[2].first, "");
-  EXPECT_EQ(seen[2].second, "v");
+  EXPECT_EQ(seen[0].name, "k1");
+  EXPECT_EQ(seen[0].value, "");
+  EXPECT_EQ(seen[1].name, "k2");
+  EXPECT_EQ(seen[1].value, "");
+  EXPECT_EQ(seen[2].name, "");
+  EXPECT_EQ(seen[2].value, "v");
 }
 
 TEST_F(HttpRequestTest, DuplicateKeysPreservedOrder) {
