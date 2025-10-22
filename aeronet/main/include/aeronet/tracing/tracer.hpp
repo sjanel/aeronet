@@ -71,13 +71,4 @@ class TelemetryContext {
   std::unique_ptr<TelemetryContextImpl> _impl;
 };
 
-// Quick helper to know if tracing is enabled at compile-time
-constexpr bool enabled() noexcept {
-#ifdef AERONET_ENABLE_OPENTELEMETRY
-  return true;
-#else
-  return false;
-#endif
-}
-
 }  // namespace aeronet::tracing

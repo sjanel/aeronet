@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/test_util.hpp"
 #include "log.hpp"
 #include "raw-bytes.hpp"
@@ -167,14 +168,13 @@ bool TlsClient::waitForSocketReady(short events, Duration timeout) {
 }
 
 // Convenience: perform a GET request and read entire response.
-std::string TlsClient::get(const std::string& target,
-                           const std::vector<std::pair<std::string, std::string>>& extraHeaders) {
+std::string TlsClient::get(const std::string& target, const std::vector<http::Header>& extraHeaders) {
   if (!_handshakeOk) {
     return {};
   }
   std::string request = "GET " + target + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n";
   for (const auto& header : extraHeaders) {
-    request.append(header.first).append(aeronet::http::HeaderSep).append(header.second).append(aeronet::http::CRLF);
+    request.append(header.name).append(aeronet::http::HeaderSep).append(header.value).append(aeronet::http::CRLF);
   }
   request += aeronet::http::CRLF;
   if (!writeAll(request)) {

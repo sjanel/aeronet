@@ -40,7 +40,7 @@
 #include "aeronet/zlib-decoder.hpp"
 #endif
 #ifdef AERONET_ENABLE_ZSTD
-#include <zstd.h>
+#include "aeronet/zstd-decoder.hpp"
 #endif
 
 namespace aeronet::test {
@@ -664,46 +664,34 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
   // back to the original bytes on failure.
   if (!out.contentEncoding.empty()) {
     std::string encLower = toLower(std::string(out.contentEncoding));
-    // Try gzip/deflate via zlib decoder
+
 #ifdef AERONET_ENABLE_ZLIB
-    if (encLower.find("gzip") != std::string::npos || encLower.find("deflate") != std::string::npos) {
+    if (encLower.contains("gzip") || encLower.contains("deflate")) {
       aeronet::RawChars tmp;
-      bool ok = aeronet::ZlibDecoder::Decompress(out.body, /*isGzip=*/(encLower.find("gzip") != std::string::npos),
-                                                 /*maxDecompressedBytes=*/(1 << 20), /*decoderChunkSize=*/65536, tmp);
-      if (ok) {
+      if (aeronet::ZlibDecoder::Decompress(out.body, /*isGzip=*/encLower.contains("gzip"),
+                                           /*maxDecompressedBytes=*/(1 << 20), /*decoderChunkSize=*/65536, tmp)) {
         out.body.assign(tmp.data(), tmp.data() + tmp.size());
         return out;
       }
     }
 #endif
 
-    // Try zstd frame decompression (test helper). The helper will inspect frame size
-    // and return empty on insufficient information; that's acceptable.
 #ifdef AERONET_ENABLE_ZSTD
-    if (encLower.find("zstd") != std::string::npos) {
-      if (!out.body.empty()) {
-        unsigned long long frameSize = ZSTD_getFrameContentSize(out.body.data(), out.body.size());
-        if (frameSize != ZSTD_CONTENTSIZE_ERROR && frameSize != ZSTD_CONTENTSIZE_UNKNOWN) {
-          std::string dec;
-          dec.assign(static_cast<size_t>(frameSize), '\0');
-          size_t dsz = ZSTD_decompress(dec.data(), dec.size(), out.body.data(), out.body.size());
-          if (ZSTD_isError(dsz) == 0U) {
-            dec.resize(dsz);
-            out.body = std::move(dec);
-            return out;
-          }
-        }
+    if (encLower.contains("zstd")) {
+      aeronet::RawChars tmp;
+      if (aeronet::ZstdDecoder::Decompress(out.body, /*maxDecompressedBytes=*/(1 << 20),
+                                           /*decoderChunkSize=*/65536, tmp)) {
+        out.body.assign(tmp.data(), tmp.data() + tmp.size());
+        return out;
       }
     }
 #endif
 
-    // Try brotli
 #ifdef AERONET_ENABLE_BROTLI
-    if (encLower.find("br") != std::string::npos || encLower.find("brotli") != std::string::npos) {
+    if (encLower.contains("br") || encLower.contains("brotli")) {
       aeronet::RawChars tmp;
-      bool ok = aeronet::BrotliDecoder::Decompress(out.body, /*maxDecompressedBytes=*/(1 << 20),
-                                                   /*decoderChunkSize=*/65536, tmp);
-      if (ok) {
+      if (aeronet::BrotliDecoder::Decompress(out.body, /*maxDecompressedBytes=*/(1 << 20),
+                                             /*decoderChunkSize=*/65536, tmp)) {
         out.body.assign(tmp.data(), tmp.data() + tmp.size());
         return out;
       }

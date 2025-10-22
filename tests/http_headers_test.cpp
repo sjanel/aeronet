@@ -9,6 +9,7 @@
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/features.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -119,8 +120,10 @@ TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
   EXPECT_FALSE(responseText.contains("X-CASE: three")) << responseText;
 }
 
-#if AERONET_ENABLE_ZLIB
 TEST(HttpHeadersCustom, StreamingCaseInsensitiveContentTypeAndEncodingSuppression) {
+  if constexpr (!aeronet::zlibEnabled()) {
+    GTEST_SKIP();
+  }
   // Set up server with compression enabled; provide mixed-case Content-Type and Content-Encoding headers via writer.
   aeronet::CompressionConfig ccfg;
   ccfg.minBytes = 1;
@@ -151,7 +154,6 @@ TEST(HttpHeadersCustom, StreamingCaseInsensitiveContentTypeAndEncodingSuppressio
   // Body should be identity (contains long run of 'Z').
   EXPECT_TRUE(resp.contains(std::string(50, 'Z'))) << "Body appears compressed when it should not";
 }
-#endif
 
 TEST(HttpHeaderTimeout, SlowHeadersConnectionClosed) {
   HttpServerConfig cfg;

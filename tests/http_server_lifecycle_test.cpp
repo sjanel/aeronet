@@ -1,10 +1,9 @@
 #include <gtest/gtest.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
 
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 #include <string_view>

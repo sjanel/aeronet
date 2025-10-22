@@ -17,6 +17,7 @@
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/features.hpp"
 #include "aeronet/http-constants.hpp"
 #include "fixedcapacityvector.hpp"
 #include "string-equal-ignore-case.hpp"
@@ -28,26 +29,14 @@ constexpr std::string_view kWhitespace = " \t";
 
 constexpr bool encodingEnabled(Encoding enc) {
   switch (enc) {
-    // NOLINTNEXTLINE(bugprone-branch-clone)
     case Encoding::br:
-#ifdef AERONET_ENABLE_BROTLI
-      return true;
-#else
-      return false;
-#endif
+      return brotliEnabled();
     case Encoding::zstd:
-#ifdef AERONET_ENABLE_ZSTD
-      return true;
-#else
-      return false;
-#endif
+      return zstdEnabled();
     case Encoding::gzip:
+      [[fallthrough]];
     case Encoding::deflate:
-#ifdef AERONET_ENABLE_ZLIB
-      return true;
-#else
-      return false;
-#endif
+      return zlibEnabled();
     case Encoding::none:
       return true;
   }

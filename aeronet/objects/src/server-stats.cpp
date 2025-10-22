@@ -3,15 +3,17 @@
 
 #include <string>
 
+#include "aeronet/features.hpp"
+
 namespace aeronet {
 
 std::string ServerStats::json_str() const {
   std::string out;
-#ifdef AERONET_ENABLE_OPENSSL
-  out.reserve(512UL);
-#else
-  out.reserve(256UL);
-#endif
+  if constexpr (aeronet::openSslEnabled()) {
+    out.reserve(512UL);
+  } else {
+    out.reserve(256UL);
+  }
   out.push_back('{');
   out.append("\"totalBytesQueued\":").append(std::to_string(totalBytesQueued)).push_back(',');
   out.append("\"totalBytesWrittenImmediate\":").append(std::to_string(totalBytesWrittenImmediate)).push_back(',');
