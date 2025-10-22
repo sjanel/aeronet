@@ -49,7 +49,7 @@ TEST(HttpTlsAlpnMismatch, HandshakeFailsWhenNoCommonProtocolAndMustMatch) {
                                     [](aeronet::HttpServerConfig& cfg) { cfg.withTlsAlpnMustMatch(true); });
     auto port = ts.port();
     ts.setDefault([](const aeronet::HttpRequest& req) {
-      return aeronet::HttpResponse(200)
+      return aeronet::HttpResponse(aeronet::http::StatusCodeOK)
           .reason("OK")
           .contentType(aeronet::http::ContentTypeTextPlain)
           .body(std::string("ALPN:") + std::string(req.alpnProtocol()));
@@ -164,7 +164,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertHandshakeFailsWithout) {
     });
     auto port = ts.port();
     ts.setDefault([](const aeronet::HttpRequest& req) {
-      return aeronet::HttpResponse(200)
+      return aeronet::HttpResponse(aeronet::http::StatusCodeOK)
           .reason("OK")
           .contentType(aeronet::http::ContentTypeTextPlain)
           .body(std::string("SECURE") + std::string(req.path()));
@@ -196,7 +196,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertSuccessWithAlpn) {
     });
     auto port = ts.port();
     ts.setDefault([](const aeronet::HttpRequest& req) {
-      return aeronet::HttpResponse(200)
+      return aeronet::HttpResponse(aeronet::http::StatusCodeOK)
           .reason("OK")
           .contentType(aeronet::http::ContentTypeTextPlain)
           .body(std::string("SECURE") + std::string(req.path()));

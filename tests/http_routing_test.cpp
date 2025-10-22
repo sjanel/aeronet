@@ -18,10 +18,10 @@ TEST(HttpRouting, BasicPathDispatch) {
   HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(10);
   HttpServer server(cfg);
-  server.router().setPath("/hello", http::Method::GET, [](const HttpRequest&) {
+  server.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&) {
     return HttpResponse(200, "OK").body("world").contentType(aeronet::http::ContentTypeTextPlain);
   });
-  server.router().setPath("/multi", http::Method::GET | http::Method::POST, [](const HttpRequest& req) {
+  server.router().setPath(http::Method::GET | http::Method::POST, "/multi", [](const HttpRequest& req) {
     return HttpResponse(200, "OK")
         .body(std::string(http::toMethodStr(req.method())) + "!")
         .contentType(aeronet::http::ContentTypeTextPlain);
@@ -67,5 +67,5 @@ TEST(HttpRouting, GlobalFallbackWithPathHandlers) {
   server.router().setDefault([](const HttpRequest&) { return HttpResponse(200, "OK"); });
   // Adding path handler after global handler is now allowed (Phase 2 mixing model)
   EXPECT_NO_THROW(
-      server.router().setPath("/x", http::Method::GET, [](const HttpRequest&) { return HttpResponse(200); }));
+      server.router().setPath(http::Method::GET, "/x", [](const HttpRequest&) { return HttpResponse(200); }));
 }

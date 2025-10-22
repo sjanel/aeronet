@@ -2,13 +2,11 @@
 
 #include <sys/epoll.h>
 
-#include <cstddef>
 #include <cstdint>
 #include <functional>
 
 #include "base-fd.hpp"
 #include "timedef.hpp"
-#include "vector.hpp"
 
 namespace aeronet {
 
@@ -29,7 +27,7 @@ namespace aeronet {
 //    can decide policy (e.g., drop connection / abort).
 class EventLoop {
  public:
-  static constexpr std::size_t kInitialCapacity = 64;
+  static constexpr uint32_t kInitialCapacity = 64;
 
   // Default constructor - creates an empty EventLoop.
   EventLoop() noexcept = default;
@@ -43,7 +41,14 @@ class EventLoop {
   //                       balance for small/medium workloads: it fits easily in cache (< 1 KB)
   //                       yet avoids immediate reallocations. Buffer grows by doubling whenever
   //                       a poll returns exactly capacity() events. It never shrinks.
-  explicit EventLoop(SysDuration pollTimeout, int epollFlags = 0, std::size_t initialCapacity = kInitialCapacity);
+  explicit EventLoop(SysDuration pollTimeout, int epollFlags = 0, uint32_t initialCapacity = kInitialCapacity);
+
+  EventLoop(const EventLoop&) = delete;
+  EventLoop(EventLoop&& rhs) noexcept;
+  EventLoop& operator=(const EventLoop&) = delete;
+  EventLoop& operator=(EventLoop&& rhs) noexcept;
+
+  ~EventLoop();
 
   [[nodiscard]] bool add(int fd, uint32_t events) const;
 
@@ -57,12 +62,13 @@ class EventLoop {
   int poll(const std::function<void(int fd, uint32_t ev)>& cb);
 
   // Current allocated capacity (number of epoll_event slots available without reallocation).
-  [[nodiscard]] std::size_t capacity() const noexcept { return _events.size(); }
+  [[nodiscard]] uint32_t capacity() const noexcept { return _nbAllocatedEvents; }
 
  private:
-  vector<epoll_event> _events;
-  BaseFd _baseFd;
+  uint32_t _nbAllocatedEvents = 0;
   int _pollTimeoutMs = 0;
+  BaseFd _baseFd;
+  epoll_event* _events = nullptr;
 };
 
 }  // namespace aeronet

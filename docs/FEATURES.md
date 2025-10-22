@@ -8,6 +8,7 @@ Single consolidated reference for **aeronet** features.
 1. [Performance / architecture](#performance--architecture)
 1. [Compression & Negotiation](#compression--negotiation)
 1. [Inbound Request Decompression (Config Details)](#inbound-request-decompression-config-details)
+1. [Chunked Transfer Encoding (RFC 7230 §4.1)](#chunked-transfer-encoding-rfc-7230-41)
 1. [Connection Close Semantics](#connection-close-semantics) — includes graceful drain lifecycle
 1. [Reserved & Managed Response Headers](#reserved--managed-response-headers)
 1. [Request Header Duplicate Handling (Detailed)](#request-header-duplicate-handling-detailed)
@@ -54,9 +55,10 @@ Where to look: see the "CONNECT (HTTP tunneling)" subsection and the Connection 
 ### Request bodies & decoding
 
 - [x] Content-Length bodies with size limit
-- [x] Chunked Transfer-Encoding decoding (request) (ignores trailers)
+- [x] Chunked Transfer-Encoding decoding (request) with trailer header support (RFC 7230 §4.1.2)
+- [x] Trailer header exposure (incoming chunked trailers)
+- [x] Outbound trailer headers (response trailers for both buffered and streaming responses)
 - [x] Content-Encoding request body decompression (gzip, deflate, zstd, multi-layer, identity skip, safety limits)
-- [ ] Trailer header exposure
 - [ ] Multipart/form-data convenience utilities
 
 Where to look: see "Inbound Request Decompression (Config Details)" for decompression behavior and the parser docs for chunked/CL handling.
@@ -66,6 +68,7 @@ Where to look: see "Inbound Request Decompression (Config Details)" for decompre
 - [x] Basic fixed body responses
 - [x] HEAD method (suppressed body, correct Content-Length)
 - [x] Outgoing chunked / streaming responses (basic API: status/headers + incremental write + end, keep-alive capable)
+- [x] Outbound trailer headers (buffered via HttpResponse::addTrailer, streaming via HttpResponseWriter::addTrailer)
 - [x] Mixed-mode dispatch (simultaneous registration of streaming and fixed handlers with precedence)
 - [x] Compression (gzip & deflate) (phase 1: zlib) – streaming + buffered with threshold & q-values
 
@@ -455,6 +458,268 @@ server.router().setDefault([](const HttpRequest& req){
   return HttpResponse(200, "OK").body(std::string(req.body()));
 });
 ```
+
+## Chunked Transfer Encoding (RFC 7230 §4.1)
+
+**aeronet** implements full support for chunked transfer encoding on incoming HTTP/1.1 requests, including chunk extensions (§4.1.1), trailer headers (§4.1.2), and decoding chunked (§4.1.3) as specified in RFC 7230.
+
+### Chunked Encoding Format
+
+Chunked format consists of:
+
+1. **Chunk size line**: hex size (without 0x prefix), optional chunk extensions (after semicolon), CRLF
+2. **Chunk data**: `size` bytes of actual data
+3. **Chunk ending**: CRLF
+4. **Zero chunk**: `0` followed by optional trailer headers
+5. **Final CRLF**: Terminating the message
+
+Example:
+
+```http
+POST /upload HTTP/1.1
+Host: example.com
+Transfer-Encoding: chunked
+
+4
+Wiki
+5
+pedia
+0
+X-Checksum: abc123
+X-Timestamp: 2025-10-20T12:00:00Z
+
+```
+
+### Chunk Extensions (RFC 7230 §4.1.1)
+
+Chunk extensions allow metadata to be attached to individual chunks via semicolon-separated parameters after the chunk size:
+
+```text
+<size-hex>;<extension-name>[=<extension-value>]
+```
+
+**aeronet behavior**: Chunk extensions are **parsed and silently ignored**. The parser validates their syntax (presence of semicolon) but does not expose or process the extension data. This follows the RFC's guidance that chunk extensions are primarily for protocol extensions and should not affect basic message processing.
+
+Example (extension ignored but accepted):
+
+```text
+7;metadata=test
+payload
+```
+
+### Trailer Headers (RFC 7230 §4.1.2)
+
+Trailers are HTTP headers that appear after the final zero-size chunk. They allow metadata to be sent after the body (useful for checksums, signatures, or other computed values).
+
+**aeronet behavior**: Trailer headers are **fully supported**. Trailers are:
+
+- Parsed from the chunk stream after the `0\r\n` terminator
+- Exposed via `HttpRequest::trailers()` (case-insensitive map)
+- Subject to the same size limit as regular headers (`maxHeaderBytes`)
+- Validated for forbidden headers (security-sensitive headers cannot appear as trailers)
+
+**Forbidden trailer headers** (per RFC 7230 §4.1.2 and security best practices):
+
+- Authentication & authorization: `Authorization`, `Proxy-Authorization`, `Proxy-Authenticate`, `WWW-Authenticate`
+- Content framing: `Transfer-Encoding`, `Content-Length`, `Content-Range`, `Content-Encoding`, `Content-Type`
+- Request control: `Host`, `Cache-Control`, `Expect`, `Max-Forwards`, `Pragma`, `Range`, `TE`
+- Metadata: `Trailer`, `Set-Cookie`, `Cookie`
+
+Attempting to send forbidden headers as trailers results in **400 Bad Request**.
+
+#### Trailer API
+
+```cpp
+server.router().setPath(http::Method::GET, "/upload", [](const HttpRequest& req) {
+  // Access request body
+  std::string body = req.body();
+  
+  // Access trailer headers (if any)
+  auto checksum = req.trailers().find("X-Checksum");
+  if (checksum != req.trailers().end()) {
+    std::string checksumValue = std::string(checksum->second);
+    // Validate checksum against body...
+  }
+  
+  return HttpResponse(200).body("OK");
+});
+```
+
+**Memory optimization**: Trailers are stored in the same connection buffer as the body data (`bodyAndTrailersBuffer`), with a `trailerStartPos` marker indicating where trailer data begins. This avoids additional allocations and maintains zero-copy string_view semantics.
+
+### Decoding Chunked (RFC 7230 §4.1.3)
+
+aeronet's chunked decoder implements the full decoding algorithm specified in §4.1.3:
+
+1. **Parse chunk size**: Read hex digits until CRLF or semicolon (chunk extension marker)
+2. **Handle chunk extensions**: If semicolon found, skip to CRLF (extensions ignored)
+3. **Read chunk data**: Copy `size` bytes into body buffer
+4. **Consume chunk CRLF**: Validate and skip the trailing CRLF
+5. **Repeat** until zero-size chunk encountered
+6. **Parse trailers**: After `0\r\n`, parse optional trailer headers
+7. **Consume final CRLF**: Validate blank line terminating the message
+
+**Error handling**:
+
+- Invalid hex digits → **400 Bad Request**
+- Missing CRLF → need more data (or **400** if size limit reached)
+- Chunk data exceeds `maxBodyBytes` → **413 Payload Too Large**
+- Malformed trailers (no colon, forbidden headers) → **400 Bad Request**
+- Trailer section exceeds `maxHeaderBytes` → **431 Request Header Fields Too Large**
+
+**Integration with other features**:
+
+- Chunked decoding happens **before** Content-Encoding decompression
+- The complete, decoded body is available via `HttpRequest::body()`
+- Trailers are available via `HttpRequest::trailers()` after the request is fully parsed
+- `CONNECT` tunneling bypasses chunked decoding (raw TCP proxy mode)
+
+### Implementation Notes
+
+- **State machine**: Chunked decoding is implemented as part of the main HTTP parser state machine in `http-parser.cpp`
+- **Buffer management**: Chunk data is appended to `bodyAndTrailersBuffer` as chunks are decoded; trailer text is appended after the final chunk with `trailerStartPos` marking the boundary
+- **Zero-copy trailers**: Trailer name/value pairs are stored as `string_view` references into `bodyAndTrailersBuffer`, avoiding string copies
+- **Whitespace trimming**: Trailer values have leading/trailing whitespace (OWS per RFC 7230 §3.2) automatically trimmed
+- **Case-insensitive trailer lookup**: Trailer map uses the same case-insensitive hash/equality comparator as regular headers
+
+### Configuration
+
+Chunked encoding behavior is controlled by existing size limits:
+
+```cpp
+HttpServerConfig cfg;
+cfg.maxBodyBytes = 16 * 1024 * 1024;     // Limit total decoded body size
+cfg.maxHeaderBytes = 8 * 1024;           // Limit trailer header section size
+```
+
+**Security considerations**:
+
+- Trailer size is bounded by `maxHeaderBytes` to prevent trailer header bombs
+- Total body (all decoded chunks) is bounded by `maxBodyBytes`
+- Forbidden trailer headers are rejected to prevent request smuggling attacks
+- Chunk extensions are parsed but ignored to avoid complexity attacks
+
+### Outbound Trailers (Response Trailers)
+
+aeronet supports sending HTTP trailers in responses, allowing metadata to be transmitted after the response body. This is useful for checksums, signatures, or other values computed while streaming the response.
+
+**Two APIs for different response patterns**:
+
+1. **Buffered responses** (`HttpResponse`): Trailers added via `addTrailer()` after body is set
+2. **Streaming responses** (`HttpResponseWriter`): Trailers added during streaming, emitted in final chunk
+
+#### Buffered Response Trailers (HttpResponse)
+
+For fixed/buffered responses, use `HttpResponse::addTrailer()`:
+
+```cpp
+server.router().setPath(http::Method::GET, "/data", [](const HttpRequest& req) {
+  HttpResponse resp(200);
+  resp.body("response data");
+  
+  // Add trailers after body (required)
+  resp.addTrailer("X-Checksum", "abc123");
+  resp.addTrailer("X-Timestamp", "2025-10-20T12:00:00Z");
+  
+  return resp;
+});
+```
+
+**Constraints**:
+
+- **Trailers MUST be added AFTER the body** is set (via `body()` or `bodyOwned()`)
+- Attempting to add trailers before the body throws `std::logic_error`
+- This ensures correct ordering in the final serialized response
+
+**Zero-allocation design**:
+
+- Trailers are **appended directly** to the existing body buffer (no separate allocation)
+- For inline bodies: appended to the single buffer
+- For captured bodies: appended to captured body buffer
+- Format: `name: value\r\n` for each trailer, terminated with `\r\n`
+
+**Method chaining**:
+
+```cpp
+return HttpResponse(200)
+    .body("data")
+    .addTrailer("X-Checksum", "xyz")
+    .addTrailer("X-Signature", "sig123");
+```
+
+#### Streaming Response Trailers (HttpResponseWriter)
+
+For chunked/streaming responses, use `HttpResponseWriter::addTrailer()`:
+
+```cpp
+server.router().setPath(http::Method::GET, "/stream",
+    [](const HttpRequest& req, HttpResponseWriter& w) {
+  w.statusCode(200);
+  w.writeBody("chunk1");
+  w.writeBody("chunk2");
+  
+  // Add trailers during streaming
+  w.addTrailer("X-Checksum", "computed-hash");
+  w.addTrailer("X-Row-Count", "12345");
+  
+  w.end();  // Trailers emitted in final chunk
+});
+```
+
+**Behavior**:
+
+- Trailers are **buffered internally** and emitted when `end()` is called
+- Only supported for **chunked responses** (Transfer-Encoding: chunked)
+- If `contentLength()` was set (fixed-length response), trailers are **silently ignored** with a warning log
+- Trailers added after `end()` are also ignored with a warning
+
+**Wire format** (RFC 7230 §4.1.2):
+
+```text
+HTTP/1.1 200 OK
+Transfer-Encoding: chunked
+
+6\r\n
+chunk1\r\n
+6\r\n
+chunk2\r\n
+0\r\n
+X-Checksum: computed-hash\r\n
+X-Row-Count: 12345\r\n
+\r\n
+```
+
+The final `0\r\n` is the zero-length chunk indicating end of body, followed by trailer lines and a blank line.
+
+**Memory management**:
+
+- Trailers are buffered in their own buffer
+- Buffer size is reserved upfront when emitting the final chunk
+- Final chunk string is moved into HttpBody for efficient transmission
+
+#### Trailer Validation
+
+**Application responsibility**: aeronet does **not** validate trailer names against the forbidden list when sending responses (for performance). Applications should avoid sending:
+
+- Content-framing headers: `Transfer-Encoding`, `Content-Length`, `Content-Encoding`, `Content-Type`
+- Authentication headers: `Authorization`, `WWW-Authenticate`, `Set-Cookie`
+- Request control headers: `Host`, `Cache-Control`, `Trailer`
+
+Sending forbidden headers as trailers is **undefined behavior** and may break clients or intermediaries.
+
+**Best practices**:
+
+- Use custom header names with `X-` prefix or domain-specific names
+- Suitable trailer use cases: checksums, signatures, row counts, timestamps, processing metadata
+- Keep trailer count and size modest (no hard limit, but consider client parsing overhead)
+
+#### Trailer Testing
+
+Comprehensive test coverage includes:
+
+- Buffered response trailers: 7 tests validating constraints, multiple trailers, empty values, chaining
+- Streaming response trailers: 5 tests validating chunked emission, fixed-length rejection, late addition
+- Integration tests verifying wire format compliance with RFC 7230 §4.1.2
 
 ## Connection Close Semantics
 
@@ -947,8 +1212,8 @@ Example precedence illustration:
 ```cpp
 server.router().setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("GLOBAL").contentType("text/plain"); });
 server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){ w.setStatus(200,"OK"); w.setHeader("Content-Type","text/plain"); w.write("STREAMFALLBACK"); w.end(); });
-server.router().setPath("/stream", http::Method::GET, [](const HttpRequest&, HttpResponseWriter& w){ w.setStatus(200,"OK"); w.setHeader("Content-Type","text/plain"); w.write("PS"); w.end(); });
-server.router().setPath("/stream", http::Method::POST, [](const HttpRequest&){ return HttpResponse{201, "Created", "text/plain", "NORMAL"}; });
+server.router().setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& w){ w.setStatus(200,"OK"); w.setHeader("Content-Type","text/plain"); w.write("PS"); w.end(); });
+server.router().setPath(http::Method::POST, "/stream", [](const HttpRequest&){ return HttpResponse{201, "Created", "text/plain", "NORMAL"}; });
 ```
 
 Behavior:

@@ -1,4 +1,4 @@
-#include "../src/mergeable-headers.hpp"  // direct include for the constexpr function (internal test)
+#include "mergeable-headers.hpp"
 
 #include <gtest/gtest.h>
 

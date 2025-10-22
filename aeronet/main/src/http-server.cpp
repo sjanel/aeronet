@@ -395,7 +395,7 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt, HttpRequest& 
     return false;
   }
 
-  // We'll alternate between bodyBuffer (source) and _tmpBuffer (target) each stage.
+  // We'll alternate between bodyAndTrailersBuffer (source) and _tmpBuffer (target) each stage.
   std::string_view src = req.body();
   RawChars* dst = &_tmpBuffer;
   ConnectionState& state = cnxIt->second;
@@ -466,15 +466,15 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt, HttpRequest& 
     }
 
     src = *dst;
-    dst = dst == &state.bodyBuffer ? &_tmpBuffer : &state.bodyBuffer;
+    dst = dst == &state.bodyAndTrailersBuffer ? &_tmpBuffer : &state.bodyAndTrailersBuffer;
 
     last = comma;
   }
 
   if (src.data() == _tmpBuffer.data()) {
-    // make sure we use bodyBuffer to "free" usage of _tmpBuffer for other things
-    _tmpBuffer.swap(state.bodyBuffer);
-    src = state.bodyBuffer;
+    // make sure we use bodyAndTrailersBuffer to "free" usage of _tmpBuffer for other things
+    _tmpBuffer.swap(state.bodyAndTrailersBuffer);
+    src = state.bodyAndTrailersBuffer;
   }
 
   // Final decompressed data now resides in *src after last swap.
@@ -795,12 +795,12 @@ void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, b
 
 void HttpServer::registerBuiltInProbes() {
   // liveness: lightweight, should not depend on external systems
-  _router.setPath(std::string(_config.builtinProbes.livenessPath()), http::Method::GET, [](const HttpRequest&) {
+  _router.setPath(http::Method::GET, std::string(_config.builtinProbes.livenessPath()), [](const HttpRequest&) {
     return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("OK\n");
   });
 
   // readiness: reflects lifecycle.ready
-  _router.setPath(std::string(_config.builtinProbes.readinessPath()), http::Method::GET, [this](const HttpRequest&) {
+  _router.setPath(http::Method::GET, std::string(_config.builtinProbes.readinessPath()), [this](const HttpRequest&) {
     HttpResponse resp(http::StatusCodeOK);
     resp.contentType(http::ContentTypeTextPlain);
     if (_lifecycle.ready.load(std::memory_order_relaxed)) {
@@ -813,7 +813,7 @@ void HttpServer::registerBuiltInProbes() {
   });
 
   // startup: reflects lifecycle.started
-  _router.setPath(std::string(_config.builtinProbes.startupPath()), http::Method::GET, [this](const HttpRequest&) {
+  _router.setPath(http::Method::GET, std::string(_config.builtinProbes.startupPath()), [this](const HttpRequest&) {
     HttpResponse resp(http::StatusCodeOK);
     resp.contentType(http::ContentTypeTextPlain);
     if (_lifecycle.started.load(std::memory_order_relaxed)) {

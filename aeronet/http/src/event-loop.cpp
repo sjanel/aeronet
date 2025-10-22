@@ -2,14 +2,17 @@
 
 #include <sys/epoll.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <new>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 #include "base-fd.hpp"
@@ -31,22 +34,47 @@ int ComputeEpollTimeoutMs(SysDuration timeout) {
 
 }  // namespace
 
-EventLoop::EventLoop(SysDuration pollTimeout, int epollFlags, std::size_t initialCapacity)
-    : _baseFd(::epoll_create1(epollFlags)), _pollTimeoutMs(ComputeEpollTimeoutMs(pollTimeout)) {
+static_assert(std::is_trivially_copyable_v<epoll_event>);
+
+EventLoop::EventLoop(SysDuration pollTimeout, int epollFlags, uint32_t initialCapacity)
+    : _nbAllocatedEvents(std::max(1U, initialCapacity)),
+      _pollTimeoutMs(ComputeEpollTimeoutMs(pollTimeout)),
+      _baseFd(::epoll_create1(epollFlags)),
+      _events(static_cast<epoll_event*>(std::malloc(sizeof(epoll_event) * _nbAllocatedEvents))) {
+  if (_events == nullptr) {
+    throw std::bad_alloc();
+  }
   if (!_baseFd.isOpened()) {
     auto err = errno;
     log::error("epoll_create1 failed (flags={}, errno={}, msg={})", epollFlags, err, std::strerror(err));
     throw std::runtime_error("epoll_create1 failed");
   }
-
-  log::debug("EventLoop fd # {} opened", _baseFd.fd());
-
   if (initialCapacity == 0) {
     log::warn("EventLoop constructed with initialCapacity=0; promoting to 1");
-    initialCapacity = 1;
   }
-  _events.resize(static_cast<vector<epoll_event>::size_type>(initialCapacity));
+
+  log::debug("EventLoop fd # {} opened", _baseFd.fd());
 }
+
+EventLoop::EventLoop(EventLoop&& rhs) noexcept
+    : _nbAllocatedEvents(std::exchange(rhs._nbAllocatedEvents, 0)),
+      _pollTimeoutMs(rhs._pollTimeoutMs),
+      _baseFd(std::move(rhs._baseFd)),
+      _events(std::exchange(rhs._events, nullptr)) {}
+
+EventLoop& EventLoop::operator=(EventLoop&& rhs) noexcept {
+  if (this != &rhs) {
+    std::free(_events);
+
+    _nbAllocatedEvents = std::exchange(rhs._nbAllocatedEvents, 0);
+    _pollTimeoutMs = rhs._pollTimeoutMs;
+    _baseFd = std::move(rhs._baseFd);
+    _events = std::exchange(rhs._events, nullptr);
+  }
+  return *this;
+}
+
+EventLoop::~EventLoop() { std::free(_events); }
 
 bool EventLoop::add(int fd, uint32_t events) const {
   epoll_event ev{events, epoll_data_t{.fd = fd}};
@@ -76,7 +104,7 @@ void EventLoop::del(int fd) const {
 }
 
 int EventLoop::poll(const std::function<void(int, uint32_t)>& cb) {
-  const int nbReadyFds = ::epoll_wait(_baseFd.fd(), _events.data(), static_cast<int>(_events.size()), _pollTimeoutMs);
+  const int nbReadyFds = ::epoll_wait(_baseFd.fd(), _events, static_cast<int>(_nbAllocatedEvents), _pollTimeoutMs);
   if (nbReadyFds < 0) {
     if (errno == EINTR) {
       return 0;  // interrupted; treat as no events
@@ -90,9 +118,15 @@ int EventLoop::poll(const std::function<void(int, uint32_t)>& cb) {
 
     cb(event.data.fd, event.events);
   }
-  if (std::cmp_equal(nbReadyFds, _events.size())) {
+  if (std::cmp_equal(nbReadyFds, _nbAllocatedEvents)) {
     // Saturated buffer: grow exponentially (amortized O(1) realloc). No shrink to avoid churn.
-    _events.resize(_events.size() * 2);
+    auto* newEvents = static_cast<epoll_event*>(std::realloc(_events, sizeof(epoll_event) * 2UL * _nbAllocatedEvents));
+    if (newEvents == nullptr) {
+      log::error("Failed to reallocate memory for saturated events, keeping actual size of {}", _nbAllocatedEvents);
+    } else {
+      _events = newEvents;
+      _nbAllocatedEvents *= 2UL;
+    }
   }
   return nbReadyFds;
 }

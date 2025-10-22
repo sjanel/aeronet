@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -46,6 +47,22 @@ class HttpBody {
             return val.size();
           } else if constexpr (std::is_same_v<T, CharBuffer>) {
             return val.second;
+          } else {
+            return {};
+          }
+        },
+        _data);
+  }
+
+  [[nodiscard]] char* data() noexcept {
+    return std::visit(
+        [](auto& val) -> char* {
+          using T = std::decay_t<decltype(val)>;
+          if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, RawChars> ||
+                        std::is_same_v<T, std::vector<char>>) {
+            return val.data();
+          } else if constexpr (std::is_same_v<T, CharBuffer>) {
+            return val.first.get();
           } else {
             return {};
           }
@@ -113,6 +130,46 @@ class HttpBody {
             rawChars.unchecked_append(otherView);
 
             _data = std::move(rawChars);
+          }
+        },
+        _data);
+  }
+
+  void ensureAvailableCapacity(std::size_t capa) {
+    std::visit(
+        [this, capa](auto& val) -> void {
+          using T = std::decay_t<decltype(val)>;
+          if constexpr (std::is_same_v<T, std::monostate>) {
+            _data = RawChars(capa);
+          } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>>) {
+            val.reserve(val.size() + capa);
+          } else if constexpr (std::is_same_v<T, RawChars>) {
+            val.ensureAvailableCapacity(capa);
+          } else if constexpr (std::is_same_v<T, CharBuffer>) {
+            // switch to RawChars to simplify appending
+            RawChars rawChars(val.second + capa);
+
+            rawChars.unchecked_append(val.first.get(), val.second);
+
+            _data = std::move(rawChars);
+          }
+        },
+        _data);
+  }
+
+  // Should only be called after ensureAvailableCapacity (capacity should be at least size() + sz)
+  void addSize(std::size_t sz) {
+    std::visit(
+        [sz](auto& val) -> void {
+          using T = std::decay_t<decltype(val)>;
+          if constexpr (std::is_same_v<T, std::monostate>) {
+            throw std::runtime_error("Cannot call addSize on a monostate");
+          } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>>) {
+            val.resize(val.size() + sz);
+          } else if constexpr (std::is_same_v<T, RawChars>) {
+            val.addSize(sz);
+          } else if constexpr (std::is_same_v<T, CharBuffer>) {
+            throw std::runtime_error("Cannot call addSize on a CharBuffer");
           }
         },
         _data);

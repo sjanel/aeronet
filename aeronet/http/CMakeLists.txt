@@ -15,6 +15,20 @@ target_include_directories(aeronet_http
 )
 
 add_unit_test(
+    event-loop_test
+    test/event-loop_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+add_unit_test(
+    http-error-build_test
+    test/http-error-build_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+add_unit_test(
     http-response_test
     test/http-response_test.cpp
     LIBRARIES

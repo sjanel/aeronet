@@ -39,7 +39,7 @@ struct ConnectionState {
   RawChars tunnelOutBuffer;
 
   RawChars inBuffer;                      // accumulated raw data
-  RawChars bodyBuffer;                    // decoded body lifetime
+  RawChars bodyAndTrailersBuffer;         // decoded body + optional trailer headers (RFC 7230 §4.1.2)
   HttpResponseData outBuffer;             // pending outbound data not yet written
   std::unique_ptr<ITransport> transport;  // set after accept (plain or TLS)
   std::chrono::steady_clock::time_point lastActivity{std::chrono::steady_clock::now()};
@@ -50,6 +50,9 @@ struct ConnectionState {
   // file descriptor of the other side (upstream or client).
   int peerFd{-1};
   uint32_t requestsServed{0};
+  // Position where trailer headers start in bodyAndTrailersBuffer (0 if no trailers).
+  // Trailers occupy [trailerStartPos, bodyAndTrailersBuffer.size()).
+  std::size_t trailerStartPos{0};
   // Connection close lifecycle.
   enum class CloseMode : uint8_t { None, DrainThenClose, Immediate };
 

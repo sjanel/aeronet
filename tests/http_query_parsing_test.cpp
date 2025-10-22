@@ -13,7 +13,7 @@
 
 TEST(HttpQueryParsing, NoQuery) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
-  server.router().setPath("/plain", aeronet::http::Method::GET, [](const aeronet::HttpRequest& req) {
+  server.router().setPath(aeronet::http::Method::GET, "/plain", [](const aeronet::HttpRequest& req) {
     EXPECT_EQ(req.path(), "/plain");
     EXPECT_EQ(req.queryParams().begin(), req.queryParams().end());
     aeronet::HttpResponse resp;
@@ -29,7 +29,7 @@ TEST(HttpQueryParsing, NoQuery) {
 
 TEST(HttpQueryParsing, SimpleQuery) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
-  server.router().setPath("/p", aeronet::http::Method::GET, [](const aeronet::HttpRequest& req) {
+  server.router().setPath(aeronet::http::Method::GET, "/p", [](const aeronet::HttpRequest& req) {
     EXPECT_EQ(req.path(), "/p");
 
     std::string body;
@@ -55,7 +55,7 @@ TEST(HttpQueryParsing, SimpleQuery) {
 
 TEST(HttpQueryParsing, PercentDecodedQuery) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
-  server.router().setPath("/d", aeronet::http::Method::GET,
+  server.router().setPath(aeronet::http::Method::GET, "/d",
                           [](const aeronet::HttpRequest& req) -> aeronet::HttpResponse {
                             // Query is now fully percent-decoded by parser.
                             EXPECT_EQ(req.path(), "/d");
@@ -94,7 +94,7 @@ TEST(HttpQueryParsing, PercentDecodedQuery) {
 
 TEST(HttpQueryParsing, EmptyQueryAndTrailingQMark) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
-  server.router().setPath("/t", aeronet::http::Method::GET, [](const aeronet::HttpRequest& req) {
+  server.router().setPath(aeronet::http::Method::GET, "/t", [](const aeronet::HttpRequest& req) {
     EXPECT_EQ(req.path(), "/t");
     // "?" with nothing after -> empty query view
     EXPECT_EQ(req.queryParams().begin(), req.queryParams().end());
@@ -111,7 +111,7 @@ TEST(HttpQueryParsing, EmptyQueryAndTrailingQMark) {
 
 TEST(HttpQueryParsingEdge, IncompleteEscapeAtEndShouldBeAccepted) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
-  server.router().setPath("/e", aeronet::http::Method::GET,
+  server.router().setPath(aeronet::http::Method::GET, "/e",
                           [](const aeronet::HttpRequest& req) -> aeronet::HttpResponse {
                             EXPECT_EQ(req.path(), "/e");
                             // "%" at end remains literal
@@ -133,7 +133,7 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeAtEndShouldBeAccepted) {
 
 TEST(HttpQueryParsingEdge, IncompleteEscapeOneHexShouldBeAccepted) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
-  server.router().setPath("/e2", aeronet::http::Method::GET,
+  server.router().setPath(aeronet::http::Method::GET, "/e2",
                           [](const aeronet::HttpRequest& req) -> aeronet::HttpResponse {
                             auto it = req.queryParams().begin();
                             EXPECT_NE(it, req.queryParams().end());
@@ -154,7 +154,7 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeOneHexShouldBeAccepted) {
 
 TEST(HttpQueryParsingEdge, MultiplePairsAndEmptyValue) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
-  server.router().setPath("/m", aeronet::http::Method::GET,
+  server.router().setPath(aeronet::http::Method::GET, "/m",
                           [](const aeronet::HttpRequest& req) -> aeronet::HttpResponse {
                             auto range = req.queryParams();
                             auto it = range.begin();
@@ -184,7 +184,7 @@ TEST(HttpQueryParsingEdge, MultiplePairsAndEmptyValue) {
 
 TEST(HttpQueryParsingEdge, PercentDecodingKeyAndValue) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
-  server.router().setPath("/pd", aeronet::http::Method::GET,
+  server.router().setPath(aeronet::http::Method::GET, "/pd",
                           [](const aeronet::HttpRequest& req) -> aeronet::HttpResponse {
                             // encoded: %66 -> 'f'
                             // Fully decodable -> parser decodes now
@@ -206,7 +206,7 @@ TEST(HttpQueryParsingEdge, PercentDecodingKeyAndValue) {
 
 TEST(HttpQueryStructuredBindings, IterateKeyValues) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
-  server.router().setPath("/sb", aeronet::http::Method::GET,
+  server.router().setPath(aeronet::http::Method::GET, "/sb",
                           [](const aeronet::HttpRequest& req) -> aeronet::HttpResponse {
                             EXPECT_EQ(req.path(), "/sb");
                             int count = 0;

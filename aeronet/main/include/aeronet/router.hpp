@@ -111,12 +111,12 @@ class Router {
   // May coexist with global handlers and with per-path streaming handlers (but a specific
   // (path, method) pair cannot have both a normal and streaming handler simultaneously).
   // Methods can be combined using bitwise OR (e.g. http::Method::GET | http::Method::POST).
-  void setPath(std::string path, http::MethodBmp methods, RequestHandler handler);
+  void setPath(http::MethodBmp methods, std::string path, RequestHandler handler);
 
   // Register a handler for a specific absolute path and a unique allowed HTTP methods.
   // May coexist with global handlers and with per-path streaming handlers (but a specific
   // (path, method) pair cannot have both a normal and streaming handler simultaneously).
-  void setPath(std::string path, http::Method method, RequestHandler handler);
+  void setPath(http::Method method, std::string path, RequestHandler handler);
 
   // Registers streaming handlers per path+method combination. Mirrors setPath semantics
   // but installs a StreamingHandler which receives an HttpResponseWriter.
@@ -126,7 +126,7 @@ class Router {
   //     other kind afterwards is a logic error.
   // Overwrite semantics:
   //   - Re-registering the same kind (streaming over streaming) replaces the previous handler.
-  void setPath(std::string path, http::MethodBmp methods, StreamingHandler handler);
+  void setPath(http::MethodBmp methods, std::string path, StreamingHandler handler);
 
   // Registers streaming handlers per path+method combination. Mirrors setPath semantics
   // but installs a StreamingHandler which receives an HttpResponseWriter.
@@ -135,7 +135,7 @@ class Router {
   //     other kind afterwards is a logic error.
   // Overwrite semantics:
   //   - Re-registering the same kind (streaming over streaming) replaces the previous handler.
-  void setPath(std::string path, http::Method method, StreamingHandler handler);
+  void setPath(http::Method method, std::string path, StreamingHandler handler);
 
   struct RoutingResult {
     // Only one of them will be non null if found
