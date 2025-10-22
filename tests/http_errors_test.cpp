@@ -24,7 +24,8 @@ class HttpErrorParamTest : public ::testing::TestWithParam<ErrorCase> {};
 
 TEST_P(HttpErrorParamTest, EmitsExpectedStatus) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
+  ts.server.router().setDefault(
+      [](const aeronet::HttpRequest&) { return aeronet::HttpResponse(aeronet::http::StatusCodeOK); });
   const auto& param = GetParam();
   std::string resp = aeronet::test::sendAndCollect(ts.port(), param.request);
   ASSERT_TRUE(resp.contains(param.expectedStatus)) << "Case=" << param.name << "\nResp=" << resp;
@@ -95,8 +96,9 @@ std::string sendRaw(uint16_t port, std::string_view raw) {
 TEST(HttpMalformed, MissingSpacesInRequestLine) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
   auto port = server.port();
-  server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
-  std::jthread th([&] { server.runUntil([] { return false; }); });
+  server.router().setDefault(
+      [](const aeronet::HttpRequest&) { return aeronet::HttpResponse(aeronet::http::StatusCodeOK); });
+  std::jthread th([&] { server.run(); });
   std::this_thread::sleep_for(50ms);
   std::string resp = sendRaw(port, "GET/abcHTTP/1.1\r\nHost: x\r\n\r\n");
   server.stop();
@@ -108,8 +110,9 @@ TEST(HttpMalformed, OversizedHeaders) {
   cfg.withMaxHeaderBytes(128);
   aeronet::HttpServer server(cfg);
   auto port = server.port();
-  server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
-  std::jthread th([&] { server.runUntil([] { return false; }); });
+  server.router().setDefault(
+      [](const aeronet::HttpRequest&) { return aeronet::HttpResponse(aeronet::http::StatusCodeOK); });
+  std::jthread th([&] { server.run(); });
   std::this_thread::sleep_for(50ms);
   std::string big(200, 'A');
   std::string raw = "GET / HTTP/1.1\r\nHost: x\r\nX-Big: " + big + "\r\n\r\n";
@@ -121,8 +124,9 @@ TEST(HttpMalformed, OversizedHeaders) {
 TEST(HttpMalformed, BadChunkExtensionHex) {
   aeronet::HttpServer server(aeronet::HttpServerConfig{});
   auto port = server.port();
-  server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse(200); });
-  std::jthread th([&] { server.runUntil([] { return false; }); });
+  server.router().setDefault(
+      [](const aeronet::HttpRequest&) { return aeronet::HttpResponse(aeronet::http::StatusCodeOK); });
+  std::jthread th([&] { server.run(); });
   std::this_thread::sleep_for(50ms);
   // Transfer-Encoding with invalid hex char 'Z'
   std::string raw = "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nZ\r\n";  // incomplete + invalid

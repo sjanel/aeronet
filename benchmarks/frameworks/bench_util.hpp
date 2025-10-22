@@ -16,6 +16,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/test_util.hpp"
+#include "char-hexadecimal-converter.hpp"
 #include "log.hpp"
 #include "raw-chars.hpp"
 
@@ -289,29 +290,25 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
         readMore(curPos + 32);
         // find CRLF
         auto lineEnd = std::string_view(buffer.data() + curPos, buffer.size() - curPos);
-        auto posCr = lineEnd.find("\r\n");
+        auto posCr = lineEnd.find(aeronet::http::CRLF);
         while (posCr == std::string_view::npos && std::chrono::steady_clock::now() < deadline) {
           readMore(buffer.size() + 32);
           lineEnd = std::string_view(buffer.data() + curPos, buffer.size() - curPos);
-          posCr = lineEnd.find("\r\n");
+          posCr = lineEnd.find(aeronet::http::CRLF);
         }
         if (posCr == std::string_view::npos) {
           aeronet::log::error("timeout reading chunk size");
           return std::nullopt;
         }
         std::string_view sizeLine(buffer.data() + curPos, posCr);
-        // parse hex chunk size
+        // parse hex chunk size using shared helper
         std::size_t chunkSz = 0;
         for (char ch : sizeLine) {
-          if (ch >= '0' && ch <= '9') {
-            chunkSz = (chunkSz << 4) + static_cast<std::size_t>(ch - '0');
-          } else if (ch >= 'a' && ch <= 'f') {
-            chunkSz = (chunkSz << 4) + static_cast<std::size_t>(10 + (ch - 'a'));
-          } else if (ch >= 'A' && ch <= 'F') {
-            chunkSz = (chunkSz << 4) + static_cast<std::size_t>(10 + (ch - 'A'));
-          } else {
-            break;  // ignore chunk extensions
+          int digit = aeronet::from_hex_digit(ch);
+          if (digit < 0) {
+            break;  // ignore chunk extensions or invalid digits
           }
+          chunkSz = (chunkSz << 4) + static_cast<std::size_t>(digit);
         }
         curPos += posCr + 2;  // skip CRLF
         // Ensure we have the whole chunk (chunkSz bytes + CRLF)
@@ -323,11 +320,12 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
         totalBody += chunkSz;
         curPos += chunkSz;
         // expect CRLF after chunk
-        if (curPos + 2 > buffer.size() || buffer[curPos] != '\r' || buffer[curPos + 1] != '\n') {
+        if (curPos + aeronet::http::CRLF.size() > buffer.size() ||
+            !std::equal(aeronet::http::CRLF.begin(), aeronet::http::CRLF.end(), buffer.begin() + curPos)) {
           aeronet::log::error("malformed chunked encoding");
           return std::nullopt;
         }
-        curPos += 2;
+        curPos += aeronet::http::CRLF.size();
         if (chunkSz == 0) {
           return totalBody;
         }

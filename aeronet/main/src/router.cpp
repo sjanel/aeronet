@@ -36,7 +36,7 @@ void Router::setDefault(StreamingHandler handler) {
   _streamingHandler = std::move(handler);
 }
 
-void Router::setPath(std::string path, http::MethodBmp methods, RequestHandler handler) {
+void Router::setPath(http::MethodBmp methods, std::string path, RequestHandler handler) {
   const bool doNormalize = shouldNormalize(_trailingSlashPolicy, path);
   if (doNormalize) {
     path.pop_back();
@@ -69,11 +69,11 @@ void Router::setPath(std::string path, http::MethodBmp methods, RequestHandler h
   }
 }
 
-void Router::setPath(std::string path, http::Method method, RequestHandler handler) {
-  setPath(std::move(path), static_cast<http::MethodBmp>(method), std::move(handler));
+void Router::setPath(http::Method method, std::string path, RequestHandler handler) {
+  setPath(static_cast<http::MethodBmp>(method), std::move(path), std::move(handler));
 }
 
-void Router::setPath(std::string path, http::MethodBmp methods, StreamingHandler handler) {
+void Router::setPath(http::MethodBmp methods, std::string path, StreamingHandler handler) {
   const bool doNormalize = shouldNormalize(_trailingSlashPolicy, path);
   if (doNormalize) {
     path.pop_back();
@@ -106,8 +106,8 @@ void Router::setPath(std::string path, http::MethodBmp methods, StreamingHandler
   }
 }
 
-void Router::setPath(std::string path, http::Method method, StreamingHandler handler) {
-  setPath(std::move(path), static_cast<http::MethodBmp>(method), std::move(handler));
+void Router::setPath(http::Method method, std::string path, StreamingHandler handler) {
+  setPath(static_cast<http::MethodBmp>(method), std::move(path), std::move(handler));
 }
 
 Router::RoutingResult Router::match(http::Method method, std::string_view path) const {

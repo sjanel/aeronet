@@ -27,7 +27,7 @@ using namespace aeronet;
 
 int main() {
   HttpServer server(HttpServerConfig{}); // no specified port, OS will pick a free one
-  server.router().setPath("/hello", http::Method::GET, [](const HttpRequest&) {
+  server.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&) {
     return HttpResponse(200, "OK").contentType("text/plain").body("hello from aeronet\n");
   });
   server.run(); // blocking
@@ -95,7 +95,7 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Metrics hook | ✔ (alpha) | Per‑request basic stats |
 | Logging | ✔ (flag) | spdlog optional |
 | Duplicate header policy | ✔ | Deterministic, security‑minded |
-| Trailers exposure | ✖ | Planned |
+| Trailers exposure | ✔ | RFC 7230 §4.1.2 chunked trailer headers |
 | Middleware helpers | ✖ | Planned |
 | Streaming inbound decompression | ✖ | Planned |
 | sendfile / static file helper | ✖ | Planned |
@@ -399,7 +399,7 @@ int main() {
   HttpServer server(std::move(cfg));
 
   // Register application handlers as usual (optional)
-  server.router().setPath("/hello", http::Method::GET, [](const HttpRequest&){
+  server.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&){
     return HttpResponse(200, "OK").contentType("text/plain").body("hello\n");
   });
 
@@ -619,7 +619,7 @@ Keep-alive can be disabled globally by `cfg.withKeepAliveMode(false)`; per-reque
 Two mutually exclusive approaches:
 
 1. Global handler: `server.router().setDefault([](const HttpRequest&){ ... })` (receives every request).
-2. Per-path handlers: `server.router().setPath("/hello", http::Method::GET | http::Method::POST, handler)` – exact path match.
+2. Per-path handlers: `server.router().setPath(http::Method::GET | http::Method::POST, "/hello", handler)` – exact path match.
 
 Rules:
 
@@ -633,12 +633,12 @@ Example:
 
 ```cpp
 HttpServer server(cfg);
-server.router().setPath("/hello", http::Method::GET | http::Method::PUT, [](const HttpRequest&){
+server.router().setPath(http::Method::GET | http::Method::PUT, "/hello", [](const HttpRequest&){
   HttpResponse r; r.statusCode=200; r.reason="OK"; r.body="world"; r.contentType="text/plain"; return r; });
-server.router().setPath("/echo", http::Method::POST, [](const HttpRequest& req){
+server.router().setPath(http::Method::POST, "/echo", [](const HttpRequest& req){
   HttpResponse r; r.statusCode=200; r.reason="OK"; r.body=req.body; r.contentType="text/plain"; return r; });
 // Add another method later (merges method mask, replaces handler)
-server.router().setPath("/echo", http::Method::GET, [](const HttpRequest& req){
+server.router().setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
   HttpResponse r; r.statusCode=200; r.reason="OK"; r.body = "Echo via GET"; r.contentType="text/plain"; return r; });
 ```
 

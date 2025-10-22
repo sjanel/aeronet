@@ -81,6 +81,43 @@ class HttpResponseWriter {
   // false if a fatal error occurred or the server marked the connection for closure / overflow.
   bool writeBody(std::string_view data);
 
+  // Adds a trailer header to be sent after the response body (RFC 7230 §4.1.2).
+  //
+  // For streaming responses using chunked transfer encoding, trailers are emitted after the
+  // final zero-length chunk (0\r\n) when end() is called.
+  //
+  // IMPORTANT CONSTRAINTS:
+  //   - Trailers are ONLY supported for chunked responses (the default for streaming).
+  //   - If contentLength() was called (fixed-length response), trailers are NOT sent.
+  //   - addTrailer() must be called BEFORE end() is called.
+  //   - Calling addTrailer() after end() is a no-op (logged as a warning in debug builds).
+  //
+  // Trailer semantics (per RFC 7230 §4.1.2):
+  //   - Certain headers MUST NOT appear as trailers (e.g., Transfer-Encoding, Content-Length,
+  //     Host, Authorization, Cookie, Set-Cookie). No validation is performed here for performance;
+  //     sending forbidden trailers is undefined behavior.
+  //   - Typical use: metadata computed during response generation (checksums, signatures, timings).
+  //
+  // Usage example:
+  //   void handler(const HttpRequest&, HttpResponseWriter& w) {
+  //     w.statusCode(200);
+  //     w.writeBody("chunk 1");
+  //     w.writeBody("chunk 2");
+  //     w.addTrailer("X-Checksum", computeChecksum());  // Computed after body
+  //     w.addTrailer("X-Processing-Time-Ms", "42");
+  //     w.end();  // Trailers emitted here
+  //   }
+  //
+  // Serialization:
+  //   Trailers are buffered internally and emitted in end() as:
+  //     0\r\n
+  //     X-Checksum: abc123\r\n
+  //     X-Processing-Time-Ms: 42\r\n
+  //     \r\n
+  //
+  // Thread safety: Not thread-safe (same as all other methods).
+  void addTrailer(std::string_view name, std::string_view value);
+
   // Finalize the streaming response.
   // Responsibilities:
   // - Triggers emission of headers if they have not been sent yet (lazy header strategy).
@@ -150,11 +187,12 @@ class HttpResponseWriter {
 
   // Internal fixed HttpResponse used solely for header accumulation and status/reason/body placeholder.
   // We never finalize until ensureHeadersSent(); body remains empty (streaming chunks / writes follow separately).
-  HttpResponse _fixedResponse{200, http::ReasonOK};
+  HttpResponse _fixedResponse{http::StatusCodeOK, http::ReasonOK};
   std::size_t _declaredLength{0};
   std::size_t _bytesWritten{0};
   std::unique_ptr<EncoderContext> _activeEncoderCtx;  // streaming context
   RawChars _preCompressBuffer;                        // threshold buffering before activation
+  RawChars _trailers;                                 // Trailer headers (RFC 7230 §4.1.2) buffered until end()
 };
 
 }  // namespace aeronet

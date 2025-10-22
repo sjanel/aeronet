@@ -4,7 +4,6 @@ This file lists planned features that are not yet implemented. For implemented f
 
 ## High priority
 
-- Trailer header exposure (incoming chunked trailers)
 - Zero-copy sendfile() support / static file helper
 
 ## Medium priority
