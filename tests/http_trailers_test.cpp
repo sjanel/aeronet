@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"

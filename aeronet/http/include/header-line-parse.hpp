@@ -1,7 +1,6 @@
 #pragma once
 
 #include <string_view>
-#include <utility>
 
 #include "aeronet/http-header.hpp"
 
@@ -9,7 +8,7 @@ namespace aeronet::http {
 
 // Parse a single HTTP header line (range [lineStart, lineLast)).
 // Returns pair of (name, value) string_views, or empty name view on failure.
-inline std::pair<std::string_view, std::string_view> parseHeaderLine(const char* lineStart, const char* lineLast) {
+inline HeaderView parseHeaderLine(const char* lineStart, const char* lineLast) {
   const auto* colonPtr = lineStart;
   while (colonPtr < lineLast && *colonPtr != ':') {
     ++colonPtr;
@@ -28,12 +27,11 @@ inline std::pair<std::string_view, std::string_view> parseHeaderLine(const char*
     --valueLast;
   }
 
-  std::pair<std::string_view, std::string_view> ret{
-      std::string_view(lineStart, colonPtr),
-      std::string_view(valueFirst, static_cast<std::size_t>(valueLast - valueFirst))};
+  HeaderView ret{std::string_view(lineStart, colonPtr),
+                 std::string_view(valueFirst, static_cast<std::size_t>(valueLast - valueFirst))};
 
   if (colonPtr == lineLast) {
-    ret.first = {};  // malformed: no colon
+    ret.name = {};  // malformed: no colon
   }
   return ret;
 }

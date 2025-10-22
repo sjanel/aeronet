@@ -103,7 +103,7 @@ constexpr std::string_view fullVersionStringView() {
 #endif
 
   // Build a combined list with comma when both present
-  static constexpr std::string_view _sv_comma_space = ", ";
+  [[maybe_unused]] static constexpr std::string_view _sv_comma_space = ", ";
 
   // Enumerate all combinations (zlib, zstd, brotli) to keep compile-time join logic straightforward.
 #if defined(AERONET_ENABLE_ZLIB) && defined(AERONET_ENABLE_ZSTD) && defined(AERONET_ENABLE_BROTLI)

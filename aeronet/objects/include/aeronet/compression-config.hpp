@@ -37,30 +37,44 @@ struct CompressionConfig {
 
   struct Zlib {
 #ifdef AERONET_ENABLE_ZLIB
-    int8_t level = Z_DEFAULT_COMPRESSION;
+    static constexpr int8_t kDefaultLevel = Z_DEFAULT_COMPRESSION;
+    static constexpr int8_t kMinLevel = Z_BEST_SPEED;
+    static constexpr int8_t kMaxLevel = Z_BEST_COMPRESSION;
 #else
-    int8_t level = 0;
+    static constexpr int8_t kDefaultLevel = 0;
+    static constexpr int8_t kMinLevel = 0;
+    static constexpr int8_t kMaxLevel = 0;
 #endif
+    int8_t level = kDefaultLevel;
   } zlib;
 
   struct Zstd {
 #ifdef AERONET_ENABLE_ZSTD
-    int compressionLevel = ZSTD_CLEVEL_DEFAULT;
-    int windowLog = 0;  // 0 -> library default
+    int8_t compressionLevel = ZSTD_CLEVEL_DEFAULT;
 #else
-    int compressionLevel = 0;
-    int windowLog = 0;
+    int8_t compressionLevel = 0;
 #endif
+    int8_t windowLog = 0;
   } zstd;
 
   struct Brotli {
 #ifdef AERONET_ENABLE_BROTLI
-    int quality = BROTLI_DEFAULT_QUALITY;  // 0-11 (11 slowest/best)
-    int window = BROTLI_DEFAULT_WINDOW;
+    static constexpr int8_t kDefaultQuality = BROTLI_DEFAULT_QUALITY;
+    static constexpr int8_t kDefaultWindow = BROTLI_DEFAULT_WINDOW;
+    static constexpr int8_t kMinQuality = BROTLI_MIN_QUALITY;
+    static constexpr int8_t kMaxQuality = BROTLI_MAX_QUALITY;
+    static constexpr int8_t kMinWindow = BROTLI_MIN_WINDOW_BITS;
+    static constexpr int8_t kMaxWindow = BROTLI_MAX_WINDOW_BITS;
 #else
-    int quality = 0;
-    int window = 0;
+    static constexpr int8_t kDefaultQuality = 0;
+    static constexpr int8_t kDefaultWindow = 0;
+    static constexpr int8_t kMinQuality = 0;
+    static constexpr int8_t kMaxQuality = 0;
+    static constexpr int8_t kMinWindow = 0;
+    static constexpr int8_t kMaxWindow = 0;
 #endif
+    int8_t quality = kDefaultQuality;
+    int8_t window = kDefaultWindow;
   } brotli;
 
   // Only responses whose (uncompressed) size is >= this threshold are considered for compression.

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "aeronet/features.hpp"
 #include "aeronet/otel-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #ifndef AERONET_ENABLE_OPENTELEMETRY
@@ -9,7 +10,7 @@
 using namespace aeronet;
 
 namespace {
-constexpr bool kDefaultEnabled = aeronet::tracing::enabled();
+constexpr bool kDefaultEnabled = aeronet::openTelemetryEnabled();
 }
 
 // Test basic TelemetryContext functionality

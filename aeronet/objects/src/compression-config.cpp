@@ -1,9 +1,9 @@
 #include "aeronet/compression-config.hpp"
 
+#include "aeronet/features.hpp"
+
 #ifdef AERONET_ENABLE_ZLIB
 #include <zlib.h>
-
-#include <limits>
 #endif
 
 #ifdef AERONET_ENABLE_ZSTD
@@ -21,16 +21,11 @@
 namespace aeronet {
 
 void CompressionConfig::validate() const {
-#ifdef AERONET_ENABLE_ZLIB
-  using Level = decltype(zlib.level);
-
-  static_assert(Z_DEFAULT_COMPRESSION > std::numeric_limits<Level>::min());
-  static_assert(Z_BEST_COMPRESSION < std::numeric_limits<Level>::max());
-
-  if (zlib.level != Z_DEFAULT_COMPRESSION && (zlib.level < Z_BEST_SPEED || zlib.level > Z_BEST_COMPRESSION)) {
-    throw invalid_argument("Invalid ZLIB compression level {}", zlib.level);
+  if constexpr (aeronet::zlibEnabled()) {
+    if (zlib.level != Zlib::kDefaultLevel && (zlib.level < Zlib::kMinLevel || zlib.level > Zlib::kMaxLevel)) {
+      throw invalid_argument("Invalid ZLIB compression level {}", zlib.level);
+    }
   }
-#endif
 
 #ifdef AERONET_ENABLE_ZSTD
   if (zstd.compressionLevel < ZSTD_minCLevel() || zstd.compressionLevel > ZSTD_maxCLevel()) {
@@ -39,14 +34,14 @@ void CompressionConfig::validate() const {
   details::ZstdCStreamRAII testConstruction(zstd.compressionLevel, zstd.windowLog);
 #endif
 
-#ifdef AERONET_ENABLE_BROTLI
-  if (brotli.quality < BROTLI_MIN_QUALITY || brotli.quality > BROTLI_MAX_QUALITY) {
-    throw invalid_argument("Invalid Brotli quality {}", brotli.quality);
+  if constexpr (aeronet::brotliEnabled()) {
+    if (brotli.quality < Brotli::kMinQuality || brotli.quality > Brotli::kMaxQuality) {
+      throw invalid_argument("Invalid Brotli quality {}", brotli.quality);
+    }
+    if (brotli.window < Brotli::kMinWindow || brotli.window > Brotli::kMaxWindow) {
+      throw invalid_argument("Invalid Brotli window {}", brotli.window);
+    }
   }
-  if (brotli.window < BROTLI_MIN_WINDOW_BITS || brotli.window > BROTLI_MAX_WINDOW_BITS) {
-    throw invalid_argument("Invalid Brotli window {}", brotli.window);
-  }
-#endif
 }
 
 }  // namespace aeronet

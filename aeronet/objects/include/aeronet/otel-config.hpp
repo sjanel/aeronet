@@ -4,6 +4,8 @@
 #include <utility>
 #include <vector>
 
+#include "http-header.hpp"
+
 namespace aeronet {
 
 struct OtelConfig {
@@ -17,7 +19,7 @@ struct OtelConfig {
   std::string endpoint;
 
   // Optional headers to send with exporter requests (e.g. API keys). Stored as pairs (name, value).
-  std::vector<std::pair<std::string, std::string>> headers;
+  std::vector<http::Header> headers;
 
   // Service name to attach to traces. If empty, the application may supply a default.
   std::string serviceName;

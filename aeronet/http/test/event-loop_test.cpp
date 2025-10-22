@@ -1,9 +1,6 @@
 #include "event-loop.hpp"
 
 #include <gtest/gtest.h>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
-#include <sys/types.h>
 #include <unistd.h>
 
 #include <chrono>
