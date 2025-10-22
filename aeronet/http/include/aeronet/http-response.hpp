@@ -220,7 +220,7 @@ class HttpResponse {
   // Capture the body by value to avoid a copy (and possibly an allocation).
   // Empty body is allowed.
   // The body instance is moved into this HttpResponse.
-  HttpResponse& body(std::string body) & noexcept {
+  HttpResponse& body(std::string body) & {
     setBodyInternal({});
     _capturedBody = HttpBody(std::move(body));
     return *this;
@@ -229,7 +229,7 @@ class HttpResponse {
   // Capture the body by value to avoid a copy (and possibly an allocation).
   // Empty body is allowed.
   // The body instance is moved into this HttpResponse.
-  HttpResponse&& body(std::string body) && noexcept {
+  HttpResponse&& body(std::string body) && {
     setBodyInternal({});
     _capturedBody = HttpBody(std::move(body));
     return std::move(*this);
@@ -238,7 +238,7 @@ class HttpResponse {
   // Capture the body by value to avoid a copy (and possibly an allocation).
   // Empty body is allowed.
   // The body instance is moved into this HttpResponse.
-  HttpResponse& body(std::vector<char> body) & noexcept {
+  HttpResponse& body(std::vector<char> body) & {
     setBodyInternal({});
     _capturedBody = HttpBody(std::move(body));
     return *this;
@@ -247,7 +247,7 @@ class HttpResponse {
   // Capture the body by value to avoid a copy (and possibly an allocation).
   // Empty body is allowed.
   // The body instance is moved into this HttpResponse.
-  HttpResponse&& body(std::vector<char> body) && noexcept {
+  HttpResponse&& body(std::vector<char> body) && {
     setBodyInternal({});
     _capturedBody = HttpBody(std::move(body));
     return std::move(*this);
@@ -256,7 +256,7 @@ class HttpResponse {
   // Capture the body by value to avoid a copy (and possibly an allocation).
   // Empty body is allowed.
   // The body instance is moved into this HttpResponse.
-  HttpResponse& body(std::unique_ptr<char[]> body, std::size_t size) & noexcept {
+  HttpResponse& body(std::unique_ptr<char[]> body, std::size_t size) & {
     setBodyInternal({});
     _capturedBody = HttpBody(std::move(body), size);
     return *this;
@@ -265,7 +265,7 @@ class HttpResponse {
   // Capture the body by value to avoid a copy (and possibly an allocation).
   // Empty body is allowed.
   // The body instance is moved into this HttpResponse.
-  HttpResponse&& body(std::unique_ptr<char[]> body, std::size_t size) && noexcept {
+  HttpResponse&& body(std::unique_ptr<char[]> body, std::size_t size) && {
     setBodyInternal({});
     _capturedBody = HttpBody(std::move(body), size);
     return std::move(*this);

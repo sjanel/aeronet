@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "aeronet/features.hpp"
 #include "aeronet/version.hpp"
 
 TEST(AeronetVersion, Version) {
@@ -31,15 +32,15 @@ TEST(AeronetVersion, Version) {
   EXPECT_TRUE(line4.rfind("  compression:", 0) == 0);
   // Compression line should list enabled codecs separated by comma+space in deterministic order
   // Order enforced in version.hpp join logic: zlib, zstd, brotli (if present)
-#ifdef AERONET_ENABLE_ZLIB
-  EXPECT_TRUE(line4.contains("zlib"));
-#endif
-#ifdef AERONET_ENABLE_ZSTD
-  EXPECT_TRUE(line4.contains("zstd"));
-#endif
-#ifdef AERONET_ENABLE_BROTLI
-  EXPECT_TRUE(line4.contains("brotli"));
-#endif
+  if constexpr (aeronet::zlibEnabled()) {
+    EXPECT_TRUE(line4.contains("zlib"));
+  }
+  if constexpr (aeronet::zstdEnabled()) {
+    EXPECT_TRUE(line4.contains("zstd"));
+  }
+  if constexpr (aeronet::brotliEnabled()) {
+    EXPECT_TRUE(line4.contains("brotli"));
+  }
   // The runtime string should equal the constexpr view content.
   EXPECT_EQ(view, aeronet::fullVersionStringView());
   // The view should be stable (points to static storage). Multiple calls must return same data pointer.

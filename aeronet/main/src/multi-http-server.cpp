@@ -215,17 +215,17 @@ MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
         agg.total.tlsVersionCounts.push_back(kv);
       }
     }
-    for (const auto& kv : st.tlsCipherCounts) {
+    for (const auto& [newKey, newVal] : st.tlsCipherCounts) {
       bool found = false;
       for (auto& existing : agg.total.tlsCipherCounts) {
-        if (existing.first == kv.first) {
-          existing.second += kv.second;
+        if (existing.first == newKey) {
+          existing.second += newVal;
           found = true;
           break;
         }
       }
       if (!found) {
-        agg.total.tlsCipherCounts.push_back(kv);
+        agg.total.tlsCipherCounts.emplace_back(newKey, newVal);
       }
     }
     agg.total.tlsHandshakeDurationCount += st.tlsHandshakeDurationCount;

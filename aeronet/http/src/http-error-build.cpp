@@ -22,9 +22,9 @@ HttpResponseData BuildSimpleError(http::StatusCode status, std::span<const http:
   const auto datePos = http::HTTP11Sv.size() + 1UL + 3UL + 1UL + reason.size() + http::CRLF.size() + http::Date.size() +
                        http::HeaderSep.size();
 
-  std::size_t globalHeadersSize = std::accumulate(
+  const std::size_t globalHeadersSize = std::accumulate(
       globalHeaders.begin(), globalHeaders.end(), std::size_t{0}, [](std::size_t acc, const http::Header& header) {
-        return acc + http::CRLF.size() + header.first.size() + http::HeaderSep.size() + header.second.size();
+        return acc + http::CRLF.size() + header.name.size() + http::HeaderSep.size() + header.value.size();
       });
 
   RawChars out(datePos + kRFC7231DateStrLen + http::CRLF.size() + http::ContentLength.size() + http::HeaderSep.size() +

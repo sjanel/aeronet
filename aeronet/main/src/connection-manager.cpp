@@ -11,6 +11,7 @@
 #include <memory>
 #include <utility>
 
+#include "aeronet/features.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -18,6 +19,7 @@
 #include "connection.hpp"
 #include "raw-chars.hpp"
 #include "transport.hpp"
+
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/ssl.h>
 #include <openssl/types.h>
@@ -59,15 +61,15 @@ void HttpServer::sweepIdleConnections() {
       }
     }
     // TLS handshake timeout (if enabled). Applies only while handshake pending.
-#ifdef AERONET_ENABLE_OPENSSL
-    if (_config.tlsHandshakeTimeout.count() > 0 && _config.tls.enabled &&
-        st.handshakeStart.time_since_epoch().count() != 0 && !st.tlsEstablished && !st.transport->handshakeDone()) {
-      if (now - st.handshakeStart > _config.tlsHandshakeTimeout) {
-        cnxIt = closeConnection(cnxIt);
-        continue;
+    if constexpr (aeronet::openSslEnabled()) {
+      if (_config.tlsHandshakeTimeout.count() > 0 && _config.tls.enabled &&
+          st.handshakeStart.time_since_epoch().count() != 0 && !st.tlsEstablished && !st.transport->handshakeDone()) {
+        if (now - st.handshakeStart > _config.tlsHandshakeTimeout) {
+          cnxIt = closeConnection(cnxIt);
+          continue;
+        }
       }
     }
-#endif
     ++cnxIt;
   }
 }

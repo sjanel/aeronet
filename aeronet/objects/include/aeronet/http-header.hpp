@@ -2,14 +2,21 @@
 
 #include <string>
 #include <string_view>
-#include <utility>
 
 #include "http-constants.hpp"
 #include "string-equal-ignore-case.hpp"
 
 namespace aeronet::http {
 
-using Header = std::pair<std::string, std::string>;
+struct Header {
+  std::string name;
+  std::string value;
+};
+
+struct HeaderView {
+  std::string_view name;
+  std::string_view value;
+};
 
 // RFC 7230 §3.2: Header field values can be preceded and followed by optional whitespace (OWS).
 // OWS is defined as zero or more spaces (SP) or horizontal tabs (HTAB).

@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/http-header.hpp"
 #include "aeronet/test_util.hpp"
 
 namespace aeronet::test {
@@ -55,7 +56,7 @@ class TlsClient {
   std::string readAll();
 
   // Convenience: perform a GET request and read entire response.
-  std::string get(const std::string& target, const std::vector<std::pair<std::string, std::string>>& extraHeaders = {});
+  std::string get(const std::string& target, const std::vector<http::Header>& extraHeaders = {});
 
   [[nodiscard]] std::string_view negotiatedAlpn() const { return _negotiatedAlpn; }
 
