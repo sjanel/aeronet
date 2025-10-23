@@ -136,6 +136,7 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
   });
 
   multi.start();
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
   aeronet::test::ClientConnection cnx(port);
   const int fd = cnx.fd();
@@ -149,7 +150,7 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
 
   // Wait for the listener to be closed by beginDrain() (avoid racey immediate connect attempts)
   // Use a higher timeout to reduce flakiness on CI where shutdown may take longer.
-  EXPECT_TRUE(aeronet::test::WaitForListenerClosed(port, 1000ms));
+  EXPECT_TRUE(aeronet::test::WaitForListenerClosed(port, 210ms));
 
   ASSERT_TRUE(aeronet::test::sendAll(fd, SimpleGetRequest("/two", "keep-alive")));
   const auto drained = aeronet::test::recvWithTimeout(fd);
