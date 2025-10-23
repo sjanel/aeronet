@@ -143,8 +143,7 @@ void HttpServer::acceptNewConnections() {
         }
         chunkSize = std::min(chunkSize, remainingBudget);
       }
-      TransportHint want;
-      const std::size_t bytesRead = pCnx->transportRead(chunkSize, want);
+      const auto [bytesRead, want] = pCnx->transportRead(chunkSize);
       // Check for handshake completion
       // If the TLS handshake completed during the preceding transportRead, finalize it
       // immediately so we capture negotiated ALPN/cipher/version/client-cert and update
@@ -200,9 +199,7 @@ void HttpServer::acceptNewConnections() {
         // Transport indicates we should wait for readability or writability before continuing.
         // Adjust epoll interest if TLS handshake needs write readiness
         if (want == TransportHint::WriteReady && !pCnx->waitingWritable) {
-          if (_eventLoop.mod(cnxFd, EPOLLIN | EPOLLOUT | EPOLLET)) {
-            pCnx->waitingWritable = true;
-          }
+          pCnx->waitingWritable = _eventLoop.mod(cnxFd, EPOLLIN | EPOLLOUT | EPOLLET);
         }
         break;
       }
@@ -270,7 +267,6 @@ void HttpServer::handleReadableClient(int fd) {
 
   std::size_t bytesReadThisEvent = 0;
   while (true) {
-    TransportHint want = TransportHint::None;
     std::size_t chunkSize = _config.bodyReadChunkBytes;
     if (state.headerStart.time_since_epoch().count() != 0 ||
         std::ranges::search(state.inBuffer, http::DoubleCRLF).empty()) {
@@ -284,7 +280,7 @@ void HttpServer::handleReadableClient(int fd) {
       }
       chunkSize = std::min(chunkSize, remainingBudget);
     }
-    const std::size_t count = state.transportRead(chunkSize, want);
+    const auto [count, want] = state.transportRead(chunkSize);
     if (!state.tlsEstablished && state.transport->handshakeDone()) {
 #ifdef AERONET_ENABLE_OPENSSL
       if (_config.tls.enabled && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
@@ -298,9 +294,7 @@ void HttpServer::handleReadableClient(int fd) {
     if (want != TransportHint::None) {
       // Non-fatal: transport needs the socket to be readable or writable before proceeding.
       if (want == TransportHint::WriteReady && !state.waitingWritable) {
-        if (_eventLoop.mod(fd, EPOLLIN | EPOLLOUT | EPOLLET)) {
-          state.waitingWritable = true;
-        }
+        state.waitingWritable = _eventLoop.mod(fd, EPOLLIN | EPOLLOUT | EPOLLET);
       }
       break;
     }
@@ -370,19 +364,18 @@ void HttpServer::handleWritableClient(int fd) {
     }
   }
   // If tunneling, flush tunnelOutBuffer first
-  if (state.isTunneling() && !state.tunnelOutBuffer.empty()) {
-    TransportHint want;
-    const std::size_t written = state.transportWrite(state.tunnelOutBuffer, want);
+  if (state.isTunneling() && !state.tunnelOrFileBuffer.empty()) {
+    const auto [written, want] = state.transportWrite(state.tunnelOrFileBuffer);
     if (want == TransportHint::Error) {
       // Fatal error writing tunnel data: close this connection
       closeConnection(cnxIt);
       return;
     }
     if (written > 0) {
-      state.tunnelOutBuffer.erase_front(written);
+      state.tunnelOrFileBuffer.erase_front(written);
     }
     // If still has data, keep EPOLLOUT registered
-    if (!state.tunnelOutBuffer.empty()) {
+    if (!state.tunnelOrFileBuffer.empty()) {
       return;
     }
     // Tunnel buffer drained: fall through to normal flushOutbound handling
@@ -398,8 +391,7 @@ void HttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
   std::size_t bytesReadThisEvent = 0;
   while (true) {
     std::size_t chunk = _config.bodyReadChunkBytes;
-    TransportHint want;
-    const std::size_t bytesRead = state.transportRead(chunk, want);
+    const auto [bytesRead, want] = state.transportRead(chunk);
     if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
       closeConnection(cnxIt);
       return;
@@ -424,9 +416,7 @@ void HttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
     return;
   }
   ConnectionState& peer = peerIt->second;
-  TransportHint want;
-  std::string_view srcView = static_cast<std::string_view>(state.inBuffer);
-  const std::size_t written = peer.transportWrite(srcView, want);
+  const auto [written, want] = peer.transportWrite(state.inBuffer);
   if (want == TransportHint::Error) {
     // Fatal transport error while forwarding to peer: close both sides.
     closeConnection(peerIt);
@@ -437,18 +427,15 @@ void HttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
     state.inBuffer.erase_front(written);
   }
   if (!state.inBuffer.empty()) {
-    if (peer.tunnelOutBuffer.empty()) {
-      state.inBuffer.swap(peer.tunnelOutBuffer);
+    if (peer.tunnelOrFileBuffer.empty()) {
+      state.inBuffer.swap(peer.tunnelOrFileBuffer);
     } else {
-      peer.tunnelOutBuffer.append(static_cast<std::string_view>(state.inBuffer));
+      peer.tunnelOrFileBuffer.append(state.inBuffer);
       state.inBuffer.clear();
     }
 
     if (!peer.waitingWritable) {
-      if (HttpServer::ModWithCloseOnFailure(_eventLoop, peerIt, EPOLLIN | EPOLLOUT | EPOLLET,
-                                            "enable peer writable tunnel", _stats)) {
-        peer.waitingWritable = true;
-      }
+      enableWritableInterest(peerIt, "enable peer writable tunnel");
     }
   }
 }

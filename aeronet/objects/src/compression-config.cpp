@@ -2,18 +2,10 @@
 
 #include "aeronet/features.hpp"
 
-#ifdef AERONET_ENABLE_ZLIB
-#include <zlib.h>
-#endif
-
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
 
 #include "zstd-encoder.hpp"
-#endif
-
-#ifdef AERONET_ENABLE_BROTLI
-#include <brotli/encode.h>
 #endif
 
 #include "invalid_argument_exception.hpp"

@@ -166,7 +166,7 @@ Notes and implementation details
 - [x] Outbound write buffering with EPOLLOUT-driven backpressure
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
 - [ ] Benchmarks & profiling docs
-- [ ] Zero-copy sendfile() support for static files
+- [x] Zero-copy sendfile() support for static files
 
 ### Safety / robustness
 
@@ -1167,6 +1167,12 @@ Key semantics:
 - `end()` finalizes, emitting terminating `0\r\n\r\n` in chunked mode and flushing any compression trailers.
 - HEAD requests suppress body bytes automatically (still compute/send Content-Length when known).
 - Keep-alive preserved if policy allows and no fatal condition occurred.
+- Zero-copy file responses: both `HttpResponse::sendFile(...)` and `HttpResponseWriter::sendFile(...)` accept an
+  `aeronet::File` descriptor and stream its contents with Linux `sendfile(2)` on plaintext sockets. When TLS is
+  active, aeronet reuses the connection's tunnel buffer and feeds encrypted writes via `pread` + `SSL_write`, so no
+  additional heap allocations are introduced beyond that shared buffer.
+- `sendFile` automatically wires `Content-Length`, rejects trailers/body mutations, and honors HEAD semantics (headers
+  only, body suppressed).
 
 Backpressure & buffering:
 

@@ -21,17 +21,22 @@ class ITransport {
  public:
   virtual ~ITransport() = default;
 
+  struct TransportResult {
+    std::size_t bytesProcessed;  // bytes read for read operations, or written for write operations
+    TransportHint want;          // indicates whether socket needs to be readable or writable for operation to proceed.
+  };
+
   // Non-blocking read. Returns bytes read (>0), 0 on orderly close, -1 on EAGAIN/WANT (caller inspects want).
   // want: indicates whether socket needs to be readable or writable for operation to proceed.
-  virtual std::size_t read(char* buf, std::size_t len, TransportHint& want) = 0;
+  virtual TransportResult read(char* buf, std::size_t len) = 0;
 
   // Non-blocking write. Returns the number of bytes written. If 0, check the want parameter.
   // want: indicates whether socket needs to be readable or writable for operation to proceed.
-  virtual std::size_t write(std::string_view data, TransportHint& want) = 0;
+  virtual TransportResult write(std::string_view data) = 0;
 
   // Non-blocking write. Returns bytes written (>0), 0 no progress (treat like EAGAIN), -1 fatal error.
   // want: indicates whether socket needs to be readable or writable for operation to proceed.
-  std::size_t write(const HttpResponseData& httpResponseData, TransportHint& want) {
+  TransportResult write(const HttpResponseData& httpResponseData) {
     // First attempt to write the response head. Only if the head was fully
     // written do we proceed to write the body. This is important for TLS
     // transports where a write call may succeed and report a positive
@@ -39,22 +44,24 @@ class ITransport {
     // requested buffer. In that partial-write case we must not start
     // sending the body bytes before the remaining head bytes have been
     // flushed, otherwise the client will see a corrupted/invalid response.
-    std::size_t total = write(httpResponseData.firstBuffer(), want);
-    if (want != TransportHint::None) {
+    TransportResult result = write(httpResponseData.firstBuffer());
+    if (result.want != TransportHint::None) {
       // Transport indicated it needs readiness or error — caller will retry.
-      return total;
+      return result;
     }
 
     // Only continue to body if the head was fully consumed.
-    if (total < httpResponseData.firstBuffer().size()) {
-      return total;
+    if (result.bytesProcessed < httpResponseData.firstBuffer().size()) {
+      return result;
     }
 
     auto bodyData = httpResponseData.secondBuffer();
     if (!bodyData.empty()) {
-      total += write(bodyData, want);
+      const auto [bytesWritten, want] = write(bodyData);
+      result.bytesProcessed += bytesWritten;
+      result.want = want;
     }
-    return total;
+    return result;
   }
 
   [[nodiscard]] virtual bool handshakeDone() const noexcept { return true; }
@@ -65,9 +72,9 @@ class PlainTransport : public ITransport {
  public:
   explicit PlainTransport(int fd) : _fd(fd) {}
 
-  std::size_t read(char* buf, std::size_t len, TransportHint& want) override;
+  TransportResult read(char* buf, std::size_t len) override;
 
-  std::size_t write(std::string_view data, TransportHint& want) override;
+  TransportResult write(std::string_view data) override;
 
  private:
   int _fd;

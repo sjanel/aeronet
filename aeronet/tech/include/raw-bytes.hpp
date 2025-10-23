@@ -123,6 +123,7 @@ class RawBytesImpl {
     unchecked_push_back(byte);
   }
 
+  // Growth is exponential.
   void assign(const_pointer first, size_type size) {
     reserveExponential(size);
     if (size != 0) {
@@ -170,6 +171,13 @@ class RawBytesImpl {
     }
   }
 
+  void reserve(size_type newCapacity) {
+    if (_capacity < newCapacity) {
+      reallocUp(newCapacity);
+    }
+  }
+
+  // Growth is exponential.
   void ensureAvailableCapacity(size_type availableCapacity) { reserveExponential(_size + availableCapacity); }
 
   [[nodiscard]] pointer data() noexcept { return _buf; }
