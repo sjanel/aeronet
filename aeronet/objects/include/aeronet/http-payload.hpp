@@ -19,24 +19,23 @@ namespace aeronet {
 // The data is captured by value (moved or copied) at construction time.
 // The body data is immutable after construction.
 // The body view() accessor returns a std::string_view referencing the internal data.
-class HttpBody {
+class HttpPayload {
  public:
-  HttpBody() noexcept = default;
+  HttpPayload() noexcept = default;
 
   // Constructs a HttpBody by taking ownership of the given std::string.
-  explicit HttpBody(std::string str) noexcept : _data(std::move(str)) {}
+  explicit HttpPayload(std::string str) noexcept : _data(std::move(str)) {}
 
   // Constructs a HttpBody by taking ownership of the given std::vector<char>.
-  explicit HttpBody(std::vector<char> vec) noexcept : _data(std::move(vec)) {}
+  explicit HttpPayload(std::vector<char> vec) noexcept : _data(std::move(vec)) {}
 
   // Constructs a HttpBody by taking ownership of the given buffer.
-  explicit HttpBody(std::unique_ptr<char[]> buf, std::size_t size) noexcept : _data(CharBuffer{std::move(buf), size}) {}
+  explicit HttpPayload(std::unique_ptr<char[]> buf, std::size_t size) noexcept
+      : _data(CharBuffer{std::move(buf), size}) {}
 
-  explicit HttpBody(RawChars rawChars) noexcept : _data(std::move(rawChars)) {}
+  explicit HttpPayload(RawChars rawChars) noexcept : _data(std::move(rawChars)) {}
 
   [[nodiscard]] bool set() const noexcept { return _data.index() != 0; }
-
-  [[nodiscard]] bool unset() const noexcept { return _data.index() == 0; }
 
   [[nodiscard]] std::size_t size() const noexcept {
     return std::visit(
@@ -110,7 +109,7 @@ class HttpBody {
         _data);
   }
 
-  void append(const HttpBody& other) {
+  void append(const HttpPayload& other) {
     std::visit(
         [&other, this](auto& val) {
           using T = std::decay_t<decltype(val)>;

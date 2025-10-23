@@ -24,7 +24,7 @@ namespace aeronet {
 namespace {
 
 int ComputeEpollTimeoutMs(SysDuration timeout) {
-  auto timeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
+  const auto timeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
   if (std::cmp_less(std::numeric_limits<int>::max(), timeoutMs)) {
     log::warn("Timeout value is too large, clamping to max int");
     return std::numeric_limits<int>::max();

@@ -11,6 +11,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "encoder.hpp"
+#include "file.hpp"
 #include "raw-chars.hpp"
 
 namespace aeronet {
@@ -80,6 +81,10 @@ class HttpResponseWriter {
   // Backpressure-aware body write. Returns true if accepted (queued or immediately written). Returns
   // false if a fatal error occurred or the server marked the connection for closure / overflow.
   bool writeBody(std::string_view data);
+
+  // Stream the given file as the response body; zero-copy where transport allows.
+  // Call before headers are sent and finish with end().
+  void sendFile(File file, std::uint64_t offset = 0, std::uint64_t length = 0);
 
   // Adds a trailer header to be sent after the response body (RFC 7230 §4.1.2).
   //
@@ -152,6 +157,7 @@ class HttpResponseWriter {
   // A writer that failed is considered finished for callers (no further writes allowed).
   [[nodiscard]] bool finished() const { return _state == State::Ended || _state == State::Failed; }
 
+  // Returns true in an error occur during the streaming flow (unrecoverable).
   [[nodiscard]] bool failed() const { return _state == State::Failed; }
 
   // Automatic compression suppression: if user supplies a Content-Encoding header,
@@ -184,6 +190,7 @@ class HttpResponseWriter {
   bool _userProvidedContentEncoding{false};
   Encoding _compressionFormat;
   bool _compressionActivated{false};
+  bool _usingSendFile{false};
 
   // Internal fixed HttpResponse used solely for header accumulation and status/reason/body placeholder.
   // We never finalize until ensureHeadersSent(); body remains empty (streaming chunks / writes follow separately).

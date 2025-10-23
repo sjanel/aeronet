@@ -26,7 +26,7 @@ Spin up a basic HTTP/1.1 server that responds on `/hello` in just a few lines. I
 using namespace aeronet;
 
 int main() {
-  HttpServer server(HttpServerConfig{}); // no specified port, OS will pick a free one
+  HttpServer server(HttpServerConfig{}); // if no specified port, OS will pick a free one
   server.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&) {
     return HttpResponse(200, "OK").contentType("text/plain").body("hello from aeronet\n");
   });
@@ -98,7 +98,7 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Trailers exposure | ✔ | RFC 7230 §4.1.2 chunked trailer headers |
 | Middleware helpers | ✖ | Planned |
 | Streaming inbound decompression | ✖ | Planned |
-| sendfile / static file helper | ✖ | Planned |
+| sendfile / static file helper | ✔ | 0.4.0 – zero-copy plain sockets, TLS fallback |
 
 ## Core HTTP & Protocol Features (Implemented)
 
@@ -416,6 +416,36 @@ curl -i http://localhost:8080/startupz # returns 503 until initialization comple
 ```
 
 For a Kubernetes `Deployment` example that configures liveness/readiness/startup probes against these paths, see: [docs/kubernetes-probes.md](docs/kubernetes-probes.md).
+
+### Zero copy / Sendfile
+
+There is a small example demonstrating `sendFile` in `examples/aeronet-sendfile`.
+It exposes two endpoints:
+
+- `GET /static` — returns the contents of a file using `HttpResponse::sendFile` (fixed response).
+- `GET /stream` — returns the contents of a file using `HttpResponseWriter::sendFile` (streaming writer API).
+
+Build the examples and run the sendfile example:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+./build/examples/aeronet-sendfile 8080 /path/to/file
+```
+
+If the file path argument is omitted the example creates a small temp file in `/tmp` and serves it.
+
+Fetch the file with curl:
+
+```bash
+curl -i http://localhost:8080/static
+curl -i http://localhost:8080/stream
+```
+
+The example demonstrates both the fixed-response (server synthesizes a `Content-Length` header) and the
+streaming writer path. For plaintext sockets the server uses the kernel `sendfile(2)` syscall for zero-copy
+transmission. When TLS is enabled the example exercises the TLS fallback that pread()s into the connection buffer
+and writes through the TLS transport.
 
 ## Test Coverage Matrix
 

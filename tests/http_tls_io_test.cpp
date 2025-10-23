@@ -16,8 +16,10 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/test_server_tls_fixture.hpp"
+#include "aeronet/test_temp_file.hpp"
 #include "aeronet/test_tls_client.hpp"
 #include "aeronet/test_util.hpp"
+#include "file.hpp"
 
 using namespace aeronet;
 using namespace std::chrono_literals;
@@ -169,6 +171,33 @@ TEST(HttpTlsStreaming, ChunkedSimpleTls) {
   ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
   ASSERT_TRUE(raw.contains("6\r\nhello "));  // chunk size 6
   ASSERT_TRUE(raw.contains("3\r\ntls"));     // chunk size 3
+}
+
+TEST(HttpTlsStreaming, SendFileFallbackBuffers) {
+  constexpr std::string_view kPayload = "tls sendfile body contents";
+  TempFile temp = TempFile::createWithContent("aeronet-tls-sendfile-", kPayload);
+  std::string path(temp.path());
+
+  aeronet::test::TlsTestServer ts({"http/1.1"});
+  ts.setDefault([path](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
+    writer.statusCode(200);
+    writer.contentType("application/octet-stream");
+    writer.sendFile(aeronet::File(path));
+    writer.end();
+  });
+
+  aeronet::test::TlsClient client(ts.port());
+  auto raw = client.get("/file", {});
+
+  ASSERT_FALSE(raw.empty());
+  ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(raw.contains("Content-Length: " + std::to_string(kPayload.size())));
+  ASSERT_FALSE(raw.contains("Transfer-Encoding: chunked"));
+
+  auto headerEnd = raw.find(aeronet::http::DoubleCRLF);
+  ASSERT_NE(std::string::npos, headerEnd);
+  std::string body = raw.substr(headerEnd + aeronet::http::DoubleCRLF.size());
+  EXPECT_EQ(body, kPayload);
 }
 
 TEST(HttpTlsStreamingBackpressure, LargeChunksTls) {

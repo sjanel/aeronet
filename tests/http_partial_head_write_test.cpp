@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-#include "aeronet/http-body.hpp"
+#include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "transport.hpp"
 
@@ -18,25 +18,23 @@ class PartialWriteTransport : public ITransport {
 
   PartialWriteTransport() = default;
 
-  std::size_t read([[maybe_unused]] char* buf, [[maybe_unused]] std::size_t len, TransportHint& want) override {
-    want = TransportHint::Error;
-    return 0;
+  TransportResult read([[maybe_unused]] char* buf, [[maybe_unused]] std::size_t len) override {
+    return {0, TransportHint::Error};
   }
 
-  std::size_t write(std::string_view data, TransportHint& want) override {
+  TransportResult write(std::string_view data) override {
     // On the very first call we simulate a partial write: write only the first N bytes
-    if (!_firstWriteDone) {
+    TransportResult ret{data.size(), TransportHint::None};
+    if (_firstWriteDone) {  // Subsequent calls write everything
+      _out.append(data);
+    } else {
       _firstWriteDone = true;
-      const std::size_t partial = std::min<std::size_t>(data.size(), 8);
+      ret.bytesProcessed = std::min<std::size_t>(data.size(), 8);
       // pretend we wrote 'partial' bytes
-      want = TransportHint::None;  // indicate no special want; still returned >0 bytes means partial progress
-      _out.append(data.substr(0, partial));
-      return partial;
+      _out.append(data.substr(0, ret.bytesProcessed));
     }
-    // Subsequent calls write everything
-    _out.append(data.data(), data.size());
-    want = TransportHint::None;
-    return data.size();
+
+    return ret;
   }
 
   [[nodiscard]] std::string_view out() const { return _out; }
@@ -49,11 +47,10 @@ class PartialWriteTransport : public ITransport {
 TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
   PartialWriteTransport plainWriteTransport;
   HttpResponseData httpResponseData("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n",
-                                    HttpBody(std::string("hello world")));
+                                    HttpPayload(std::string("hello world")));
 
-  TransportHint want;
   // First write will write partial head only
-  const auto w1 = plainWriteTransport.write(httpResponseData, want);
+  const auto [w1, want1] = plainWriteTransport.write(httpResponseData);
   EXPECT_GT(w1, 0U);
   // After first partial write, transport must not have body bytes in output
   std::string_view s1 = plainWriteTransport.out();
@@ -62,7 +59,7 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
   // Simulate caller retrying: write remaining head then body
   // We expect the remaining head + body to be appended on further writes
   httpResponseData.addOffset(static_cast<std::size_t>(w1));
-  const auto w2 = plainWriteTransport.write(httpResponseData, want);
+  const auto [w2, want2] = plainWriteTransport.write(httpResponseData);
   EXPECT_GT(w2, 0U);
   std::string_view s2 = plainWriteTransport.out();
   // Body must now be present
@@ -73,16 +70,15 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
 TEST(PartialHeadWrite, BodyNotSentBeforeHeadTls) {
   PartialWriteTransport partialWriteTransport;
   HttpResponseData httpResponseData("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n",
-                                    HttpBody(std::string("hello world")));
+                                    HttpPayload(std::string("hello world")));
 
-  TransportHint want;
-  const auto w1 = partialWriteTransport.write(httpResponseData, want);
+  const auto [w1, want1] = partialWriteTransport.write(httpResponseData);
   EXPECT_GT(w1, 0U);
   std::string_view s1 = partialWriteTransport.out();
   EXPECT_FALSE(s1.contains("hello world"));
 
   httpResponseData.addOffset(static_cast<std::size_t>(w1));
-  const auto w2 = partialWriteTransport.write(httpResponseData, want);
+  const auto [w2, want2] = partialWriteTransport.write(httpResponseData);
   EXPECT_GT(w2, 0U);
   std::string_view s2 = partialWriteTransport.out();
   EXPECT_TRUE(s2.contains("hello world"));
