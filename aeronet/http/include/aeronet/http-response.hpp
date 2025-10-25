@@ -8,14 +8,16 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
-#include "aeronet/http-body.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "file.hpp"
 #include "raw-chars.hpp"
 #include "simple-charconv.hpp"
 #include "timedef.hpp"
@@ -115,6 +117,8 @@ namespace aeronet {
 // -----------------------------------------------------------------------------
 class HttpResponse {
  private:
+  enum class PayloadKind : uint8_t { Inline, Captured, File };
+
   // "HTTP/x.y". Should be changed if version major / minor exceed 1 digit
   static constexpr std::size_t kHttp1VersionLen = http::HTTP10Sv.size();
   static constexpr std::size_t kStatusCodeBeg = kHttp1VersionLen + 1;  // index of first status code digit
@@ -171,7 +175,6 @@ class HttpResponse {
   //   resp.body(resp.reason()); // OK
   HttpResponse& body(std::string_view body) & {
     setBodyInternal(body);
-    _capturedBody = {};
     return *this;
   }
 
@@ -185,7 +188,6 @@ class HttpResponse {
   //   resp.body(resp.reason()); // OK
   HttpResponse&& body(std::string_view body) && {
     setBodyInternal(body);
-    _capturedBody = {};
     return std::move(*this);
   }
 
@@ -199,7 +201,6 @@ class HttpResponse {
   //   resp.body(resp.reason()); // OK
   HttpResponse& body(const char* body) & {
     setBodyInternal(body == nullptr ? std::string_view() : std::string_view(body));
-    _capturedBody = {};
     return *this;
   }
 
@@ -213,7 +214,6 @@ class HttpResponse {
   //   resp.body(resp.reason()); // OK
   HttpResponse&& body(const char* body) && {
     setBodyInternal(body == nullptr ? std::string_view() : std::string_view(body));
-    _capturedBody = {};
     return std::move(*this);
   }
 
@@ -221,8 +221,9 @@ class HttpResponse {
   // Empty body is allowed.
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::string body) & {
-    setBodyInternal({});
-    _capturedBody = HttpBody(std::move(body));
+    setBodyInternal(std::string_view{});
+    _payloadVariant = HttpPayload(std::move(body));
+    _payloadKind = PayloadKind::Captured;
     return *this;
   }
 
@@ -230,8 +231,9 @@ class HttpResponse {
   // Empty body is allowed.
   // The body instance is moved into this HttpResponse.
   HttpResponse&& body(std::string body) && {
-    setBodyInternal({});
-    _capturedBody = HttpBody(std::move(body));
+    setBodyInternal(std::string_view{});
+    _payloadVariant = HttpPayload(std::move(body));
+    _payloadKind = PayloadKind::Captured;
     return std::move(*this);
   }
 
@@ -239,8 +241,9 @@ class HttpResponse {
   // Empty body is allowed.
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::vector<char> body) & {
-    setBodyInternal({});
-    _capturedBody = HttpBody(std::move(body));
+    setBodyInternal(std::string_view{});
+    _payloadVariant = HttpPayload(std::move(body));
+    _payloadKind = PayloadKind::Captured;
     return *this;
   }
 
@@ -248,8 +251,9 @@ class HttpResponse {
   // Empty body is allowed.
   // The body instance is moved into this HttpResponse.
   HttpResponse&& body(std::vector<char> body) && {
-    setBodyInternal({});
-    _capturedBody = HttpBody(std::move(body));
+    setBodyInternal(std::string_view{});
+    _payloadVariant = HttpPayload(std::move(body));
+    _payloadKind = PayloadKind::Captured;
     return std::move(*this);
   }
 
@@ -257,8 +261,9 @@ class HttpResponse {
   // Empty body is allowed.
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::unique_ptr<char[]> body, std::size_t size) & {
-    setBodyInternal({});
-    _capturedBody = HttpBody(std::move(body), size);
+    setBodyInternal(std::string_view{});
+    _payloadVariant = HttpPayload(std::move(body), size);
+    _payloadKind = PayloadKind::Captured;
     return *this;
   }
 
@@ -266,21 +271,65 @@ class HttpResponse {
   // Empty body is allowed.
   // The body instance is moved into this HttpResponse.
   HttpResponse&& body(std::unique_ptr<char[]> body, std::size_t size) && {
-    setBodyInternal({});
-    _capturedBody = HttpBody(std::move(body), size);
+    setBodyInternal(std::string_view{});
+    _payloadVariant = HttpPayload(std::move(body), size);
+    _payloadKind = PayloadKind::Captured;
+    return std::move(*this);
+  }
+
+  // Stream the contents of an already-open file as the response body.
+  // This methods takes ownership of the 'file' object into the response and sends the entire file.
+  // Notes:
+  //   - file should be opened (`file.isOpened()` must be true)
+  //   - Trailers are NOT permitted when using sendFile
+  //   - Transfer coding: sendFile produces a fixed-length response (Content-Length is set) and disables chunked
+  //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
+  //   - Errors: filesystem read/write errors are surfaced during transmission; callers should expect the connection
+  //     to be closed on fatal I/O failures.
+  HttpResponse& sendFile(File file) & { return sendFile(std::move(file), 0, 0); }
+
+  // Stream the contents of an already-open file as the response body.
+  // This methods takes ownership of the 'file' object into the response and sends the entire file.
+  // Notes:
+  //   - file should be opened (`file.isOpened()` must be true)
+  //   - Trailers are NOT permitted when using sendFile
+  //   - Transfer coding: sendFile produces a fixed-length response (Content-Length is set) and disables chunked
+  //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
+  //   - Errors: filesystem read/write errors are surfaced during transmission; callers should expect the connection
+  //     to be closed on fatal I/O failures.
+  HttpResponse&& sendFile(File file) && {
+    sendFile(std::move(file), 0, 0);
+    return std::move(*this);
+  }
+
+  // Stream the contents of an already-open file as the response body.
+  // This methods takes ownership of the 'file' object into the response and sends the [offset, offset+length) range.
+  // Notes:
+  //   - file should be opened (`file.isOpened()` must be true)
+  //   - Trailers are NOT permitted when using sendFile
+  //   - Transfer coding: sendFile produces a fixed-length response (Content-Length is set) and disables chunked
+  //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
+  //   - Errors: filesystem read/write errors are surfaced during transmission; callers should expect the connection
+  //     to be closed on fatal I/O failures.
+  HttpResponse& sendFile(File file, std::size_t offset, std::size_t length) &;
+
+  // Stream the contents of an already-open file as the response body.
+  // This methods takes ownership of the 'file' object into the response and sends the [offset, offset+length) range.
+  // Notes:
+  //   - file should be opened (`file.isOpened()` must be true)
+  //   - Trailers are NOT permitted when using sendFile
+  //   - Transfer coding: sendFile produces a fixed-length response (Content-Length is set) and disables chunked
+  //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
+  //   - Errors: filesystem read/write errors are surfaced during transmission; callers should expect the connection
+  //     to be closed on fatal I/O failures.
+  HttpResponse&& sendFile(File file, std::size_t offset, std::size_t length) && {
+    sendFile(std::move(file), offset, length);
     return std::move(*this);
   }
 
   // Get a view of the current body stored in this HttpResponse.
   // If the body is not present, it returns an empty view.
-  [[nodiscard]] std::string_view body() const noexcept {
-    auto ret =
-        _capturedBody.set() ? _capturedBody.view() : std::string_view{_data.begin() + _bodyStartPos, _data.end()};
-    if (_trailerPos != 0) {
-      ret.remove_suffix(ret.size() - _trailerPos);
-    }
-    return ret;
-  }
+  [[nodiscard]] std::string_view body() const noexcept;
 
   // Inserts or replaces the Content-Type header.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
@@ -396,8 +445,15 @@ class HttpResponse {
   //   resp.addTrailer("X-Checksum", "abc123");           // OK: body set first
   //   resp.addTrailer("X-Signature", "sha256:...");      // OK: multiple trailers allowed
   //   // resp.addTrailer("Host", "example.com");         // UNDEFINED: forbidden trailer
-  HttpResponse& addTrailer(std::string_view name, std::string_view value) &;
-  HttpResponse&& addTrailer(std::string_view name, std::string_view value) &&;
+  HttpResponse& addTrailer(std::string_view name, std::string_view value) & {
+    appendTrailer(name, value);
+    return *this;
+  }
+
+  HttpResponse&& addTrailer(std::string_view name, std::string_view value) && {
+    appendTrailer(name, value);
+    return std::move(*this);
+  }
 
  private:
   friend class HttpServer;
@@ -415,10 +471,14 @@ class HttpResponse {
   }
 
   [[nodiscard]] std::size_t bodyLen() const noexcept {
+    if (const FilePayload* pFilePayload = filePayloadPtr(); pFilePayload != nullptr) {
+      return static_cast<std::size_t>(pFilePayload->length);
+    }
     if (_trailerPos != 0) {
       return _trailerPos;
     }
-    return _capturedBody.set() ? _capturedBody.size() : internalBodyAndTrailersLen();
+    const HttpPayload* pExternPayload = externPayloadPtr();
+    return pExternPayload != nullptr ? pExternPayload->size() : internalBodyAndTrailersLen();
   }
 
   [[nodiscard]] std::size_t internalBodyAndTrailersLen() const noexcept { return _data.size() - _bodyStartPos; }
@@ -435,18 +495,44 @@ class HttpResponse {
 
   void appendTrailer(std::string_view name, std::string_view value);
 
+  struct PreparedResponse {
+    HttpResponseData data;
+    File file;
+    std::uint64_t fileOffset{0};
+    std::uint64_t fileLength{0};
+  };
+
+  struct FilePayload {
+    File file;
+    std::size_t offset{0};
+    std::size_t length{0};
+  };
+
   // IMPORTANT: This method finalizes the response by appending reserved headers,
   // and returns the internal buffers stolen from this HttpResponse instance.
   // So this instance must not be used anymore after this call.
-  HttpResponseData finalizeAndStealData(http::Version version, SysTimePoint tp, bool keepAlive,
+  PreparedResponse finalizeAndStealData(http::Version version, SysTimePoint tp, bool keepAlive,
                                         std::span<const http::Header> globalHeaders, bool isHeadMethod,
                                         std::size_t minCapturedBodySize);
+
+  HttpPayload* externPayloadPtr() noexcept { return std::get_if<HttpPayload>(&_payloadVariant); }
+  [[nodiscard]] const HttpPayload* externPayloadPtr() const noexcept {
+    return std::get_if<HttpPayload>(&_payloadVariant);
+  }
+
+  FilePayload* filePayloadPtr() noexcept { return std::get_if<FilePayload>(&_payloadVariant); }
+  [[nodiscard]] const FilePayload* filePayloadPtr() const noexcept {
+    return std::get_if<FilePayload>(&_payloadVariant);
+  }
 
   RawChars _data;
   uint16_t _headersStartPos{};  // position just at the CRLF that starts the first header line
   bool _userProvidedContentEncoding{false};
+  PayloadKind _payloadKind{PayloadKind::Inline};
   uint32_t _bodyStartPos{};  // position of first body byte (after CRLF CRLF)
-  HttpBody _capturedBody;
+  // Variant holding either an external captured payload (HttpPayload) or a FilePayload.
+  // monostate represents "no external payload".
+  std::variant<std::monostate, HttpPayload, FilePayload> _payloadVariant;
   std::size_t _trailerPos{};  // trailer pos in relative to body start
 };
 

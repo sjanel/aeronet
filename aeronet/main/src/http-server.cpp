@@ -197,11 +197,8 @@ void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
   closeListener();
 }
 
-bool HttpServer::ModWithCloseOnFailure(EventLoop& loop, ConnectionMapIt cnxIt, uint32_t events, const char* ctx,
-                                       StatsInternal& stats) {
-  if (loop.mod(cnxIt->first.fd(), events)) {
-    return true;
-  }
+namespace {
+void RecordModFailure(auto cnxIt, uint32_t events, const char* ctx, auto& stats) {
   const auto errCode = errno;
   ++stats.epollModFailures;
   // EBADF or ENOENT can occur during races where a connection is concurrently closed; downgrade severity.
@@ -213,6 +210,29 @@ bool HttpServer::ModWithCloseOnFailure(EventLoop& loop, ConnectionMapIt cnxIt, u
                events, errCode, std::strerror(errCode));
   }
   cnxIt->second.requestDrainAndClose();
+}
+}  // namespace
+
+bool HttpServer::enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) {
+  static constexpr uint32_t kEvents = EPOLLIN | EPOLLOUT | EPOLLET;
+  if (_eventLoop.mod(cnxIt->first.fd(), kEvents)) {
+    if (!cnxIt->second.waitingWritable) {
+      cnxIt->second.waitingWritable = true;
+      ++_stats.deferredWriteEvents;
+    }
+    return true;
+  }
+  RecordModFailure(cnxIt, kEvents, ctx, _stats);
+  return false;
+}
+
+bool HttpServer::disableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) {
+  static constexpr uint32_t kEvents = EPOLLIN | EPOLLET;
+  if (_eventLoop.mod(cnxIt->first.fd(), kEvents)) {
+    cnxIt->second.waitingWritable = false;
+    return true;
+  }
+  RecordModFailure(cnxIt, kEvents, ctx, _stats);
   return false;
 }
 

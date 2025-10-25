@@ -22,8 +22,10 @@
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_temp_file.hpp"
 #include "aeronet/test_util.hpp"
 #include "exception.hpp"
+#include "file.hpp"
 
 using namespace std::chrono_literals;
 
@@ -125,6 +127,62 @@ TEST(HttpStreaming, ChunkedSimple) {
   ASSERT_TRUE(resp.contains("6\r\nhello "));
   ASSERT_TRUE(resp.contains("5\r\nworld"));
   ASSERT_TRUE(resp.contains("0\r\n\r\n"));
+}
+
+TEST(HttpStreaming, SendFileFixedLengthPlain) {
+  constexpr std::string_view kPayload = "static sendfile response body";
+  TempFile temp = TempFile::createWithContent("aeronet-stream-sendfile-", kPayload);
+
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  auto port = ts.port();
+  std::string path(temp.path());
+
+  ts.server.router().setDefault([path](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
+    writer.statusCode(200);
+    writer.contentType("application/octet-stream");
+    writer.sendFile(aeronet::File(path));
+    writer.end();
+  });
+
+  std::string resp = blockingFetch(port, "GET", "/file");
+  ts.stop();
+
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_FALSE(resp.contains("Transfer-Encoding: chunked"));
+  ASSERT_TRUE(resp.contains("Content-Length: " + std::to_string(kPayload.size())));
+
+  auto headerEnd = resp.find(aeronet::http::DoubleCRLF);
+  ASSERT_NE(std::string::npos, headerEnd);
+  std::string body = resp.substr(headerEnd + aeronet::http::DoubleCRLF.size());
+  EXPECT_EQ(body, kPayload);
+}
+
+TEST(HttpStreaming, SendFileHeadSuppressesBody) {
+  constexpr std::string_view kPayload = "head sendfile streaming";
+  TempFile temp = TempFile::createWithContent("aeronet-stream-head-sendfile-", kPayload);
+
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  auto port = ts.port();
+  std::string path(temp.path());
+
+  ts.server.router().setDefault([path](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
+    writer.statusCode(200);
+    writer.contentType("application/octet-stream");
+    writer.sendFile(aeronet::File(path));
+    writer.end();
+  });
+
+  std::string resp = blockingFetch(port, "HEAD", "/file");
+  ts.stop();
+
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.contains("Content-Length: " + std::to_string(kPayload.size())));
+  ASSERT_FALSE(resp.contains("Transfer-Encoding: chunked"));
+
+  auto headerEnd = resp.find(aeronet::http::DoubleCRLF);
+  ASSERT_NE(std::string::npos, headerEnd);
+  std::string body = resp.substr(headerEnd + aeronet::http::DoubleCRLF.size());
+  EXPECT_TRUE(body.empty());
 }
 
 TEST(HttpStreaming, HeadSuppressedBody) {

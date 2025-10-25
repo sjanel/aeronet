@@ -15,6 +15,13 @@ target_include_directories(aeronet_http
 )
 
 add_unit_test(
+    connection_state_sendfile_test
+    test/connection_state_sendfile_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+add_unit_test(
     event-loop_test
     test/event-loop_test.cpp
     LIBRARIES
@@ -32,7 +39,7 @@ add_unit_test(
     http-response_test
     test/http-response_test.cpp
     LIBRARIES
-    aeronet_http
+    aeronet_http aeronet_sys
 )
 
 add_unit_test(

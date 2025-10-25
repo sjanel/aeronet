@@ -44,8 +44,8 @@ add_unit_test(
 )
 
 add_unit_test(
-    http-body_test
-    test/http-body_test.cpp
+    http-payload_test
+    test/http-payload_test.cpp
     LIBRARIES
     aeronet_tech
 )

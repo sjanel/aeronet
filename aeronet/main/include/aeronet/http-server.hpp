@@ -257,8 +257,13 @@ class HttpServer {
   void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, bool immediate = false,
                        std::string_view reason = {});
   // Outbound write helpers
-  bool queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData);
+  bool queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::PreparedResponse prepared);
+  bool queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData, std::uint64_t extraQueuedBytes = 0);
   void flushOutbound(ConnectionMapIt cnxIt);
+  void flushFilePayload(ConnectionMapIt cnxIt);
+  // Helper: attempt to flush any pending bytes in tunnelOrFileBuffer for a connection.
+  // Returns true if the caller should return early because the buffer is still non-empty or write is pending.
+  bool flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt);
 
   void handleWritableClient(int fd);
 
@@ -293,11 +298,11 @@ class HttpServer {
     std::size_t maxConnectionOutboundBuffer{0};
   } _stats;
 
-  // Attempt an epoll_ctl MOD on the given fd; on failure logs, marks connection for close and
-  // increments failure metric. Returns true on success, false on failure.
-  // EBADF / ENOENT (race where fd already closed / removed) are logged at WARN (not ERROR).
-  static bool ModWithCloseOnFailure(EventLoop& loop, ConnectionMapIt cnxIt, uint32_t events, const char* ctx,
-                                    StatsInternal& stats);
+  // Helpers to enable/disable writable interest (EPOLLOUT) for a connection. They wrap
+  // ModWithCloseOnFailure and update `ConnectionState::waitingWritable` and internal stats
+  // consistently. Return true on success, false on failure (caller should handle close).
+  bool enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx);
+  bool disableWritableInterest(ConnectionMapIt cnxIt, const char* ctx);
 
   HttpServerConfig _config;
 

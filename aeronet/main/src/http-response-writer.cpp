@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <string_view>
 #include <system_error>
@@ -20,6 +21,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "encoder.hpp"
+#include "file.hpp"
 #include "header-write.hpp"
 #include "log.hpp"
 #include "raw-chars.hpp"
@@ -121,8 +123,7 @@ void HttpResponseWriter::ensureHeadersSent() {
     _chunked = false;
   }
   if (!_chunked) {
-    // If user never called contentLength() we still provide an explicit length (zero) for fixed path
-    if (_declaredLength == 0) {
+    if (!_usingSendFile && _declaredLength == 0) {
       _fixedResponse.setHeader(http::ContentLength, "0");
     }
   } else {
@@ -141,9 +142,12 @@ void HttpResponseWriter::ensureHeadersSent() {
   // Do NOT add Content-Encoding at header emission time; we wait until we actually activate
   // compression (threshold reached) to avoid mislabeling identity bodies when size < threshold.
   // Do not attempt to add Connection/Date here; finalize handles them (adds Date, Connection based on keepAlive flag).
-  if (!enqueue(_fixedResponse.finalizeAndStealData(http::HTTP_1_1, SysClock::now(), !_requestConnClose,
-                                                   _server->config().globalHeaders, _head,
-                                                   _server->config().minCapturedBodySize))) {
+  auto cnxIt = _server->_connStates.find(_fd);
+  if (cnxIt == _server->_connStates.end() ||
+      !_server->queuePreparedResponse(
+          cnxIt, _fixedResponse.finalizeAndStealData(http::HTTP_1_1, SysClock::now(), !_requestConnClose,
+                                                     _server->config().globalHeaders, _head,
+                                                     _server->config().minCapturedBodySize))) {
     _state = HttpResponseWriter::State::Failed;
     log::error("Streaming: failed to enqueue headers fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
     return;
@@ -207,6 +211,10 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
               _state == State::Failed ? "writer-failed" : "already-ended");
     return false;
   }
+  if (_usingSendFile) {
+    log::warn("Streaming: write ignored fd # {} size={} reason=sendfile-active", _fd, data.size());
+    return false;
+  }
 
   // Threshold-based lazy activation using generic Encoder abstraction.
   // We purposefully delay header emission until we either (a) activate compression and have compressed bytes
@@ -242,6 +250,10 @@ void HttpResponseWriter::addTrailer(std::string_view name, std::string_view valu
               _state == State::Failed ? "writer-failed" : "already-ended");
     return;
   }
+  if (_usingSendFile) {
+    log::warn("Streaming: addTrailer ignored fd # {} name={} reason=sendfile-active", _fd, name);
+    return;
+  }
   if (!_chunked) {
     log::warn("Streaming: addTrailer ignored fd # {} name={} reason=fixed-length-response (contentLength was set)", _fd,
               name);
@@ -268,6 +280,13 @@ void HttpResponseWriter::end() {
   if (_state == State::Ended || _state == State::Failed) {
     log::debug("Streaming: end ignored fd # {} reason={}", _fd,
                _state == State::Failed ? "writer-failed" : "already-ended");
+    return;
+  }
+  if (_usingSendFile) {
+    ensureHeadersSent();
+    if (_state != State::Failed) {
+      _state = State::Ended;
+    }
     return;
   }
   // If compression was delayed and threshold reached earlier, write() already emitted headers and compressed data.
@@ -333,6 +352,33 @@ bool HttpResponseWriter::enqueue(HttpResponseData httpResponseData) {
     return false;
   }
   return _server->queueData(cnxIt, std::move(httpResponseData)) && !cnxIt->second.isAnyCloseRequested();
+}
+
+void HttpResponseWriter::sendFile(File file, std::uint64_t offset, std::uint64_t length) {
+  if (_state != State::Opened) {
+    log::warn("Streaming: sendFile ignored fd # {} reason=writer-not-open", _fd);
+    return;
+  }
+  if (_bytesWritten > 0) {
+    log::warn("Streaming: sendFile ignored fd # {} reason=body-bytes-already-written", _fd);
+    return;
+  }
+  _chunked = false;
+  _compressionFormat = Encoding::none;
+  _compressionActivated = false;
+  _preCompressBuffer.clear();
+  _usingSendFile = true;
+  if (_declaredLength != 0) {
+    log::warn("Streaming: sendFile overriding previously declared Content-Length fd # {}", _fd);
+    _declaredLength = 0;
+  }
+  try {
+    _fixedResponse.sendFile(std::move(file), offset, length);
+    _declaredLength = _fixedResponse.bodyLen();
+  } catch (const std::exception& ex) {
+    log::error("Streaming: sendFile failed fd # {} reason={}", _fd, ex.what());
+    _state = State::Failed;
+  }
 }
 
 bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
