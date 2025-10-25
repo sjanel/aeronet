@@ -48,6 +48,16 @@ inline constexpr std::string_view ContentEncoding = "Content-Encoding";
 inline constexpr std::string_view Vary = "Vary";
 inline constexpr std::string_view AcceptEncoding = "Accept-Encoding";
 inline constexpr std::string_view Allow = "Allow";
+inline constexpr std::string_view AcceptRanges = "Accept-Ranges";
+inline constexpr std::string_view ContentRange = "Content-Range";
+inline constexpr std::string_view ETag = "ETag";
+inline constexpr std::string_view LastModified = "Last-Modified";
+inline constexpr std::string_view Range = "Range";
+inline constexpr std::string_view IfRange = "If-Range";
+inline constexpr std::string_view IfModifiedSince = "If-Modified-Since";
+inline constexpr std::string_view IfUnmodifiedSince = "If-Unmodified-Since";
+inline constexpr std::string_view IfNoneMatch = "If-None-Match";
+inline constexpr std::string_view IfMatch = "If-Match";
 
 inline constexpr std::string_view HeaderSep = ": ";
 inline constexpr std::string_view CRLF = "\r\n";

@@ -30,6 +30,9 @@ class File {
   // Return the file size in bytes. Throws std::runtime_error on failure.
   [[nodiscard]] std::size_t size() const;
 
+  // Load the entire file content into a string. Throws on error.
+  [[nodiscard]] std::string loadAllContent() const;
+
  private:
   friend struct ConnectionState;
 

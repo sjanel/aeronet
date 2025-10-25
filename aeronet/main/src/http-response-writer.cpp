@@ -354,13 +354,13 @@ bool HttpResponseWriter::enqueue(HttpResponseData httpResponseData) {
   return _server->queueData(cnxIt, std::move(httpResponseData)) && !cnxIt->second.isAnyCloseRequested();
 }
 
-void HttpResponseWriter::sendFile(File file, std::uint64_t offset, std::uint64_t length) {
+void HttpResponseWriter::file(File fileObj, std::uint64_t offset, std::uint64_t length) {
   if (_state != State::Opened) {
-    log::warn("Streaming: sendFile ignored fd # {} reason=writer-not-open", _fd);
+    log::warn("Streaming: file ignored fd # {} reason=writer-not-open", _fd);
     return;
   }
   if (_bytesWritten > 0) {
-    log::warn("Streaming: sendFile ignored fd # {} reason=body-bytes-already-written", _fd);
+    log::warn("Streaming: file ignored fd # {} reason=body-bytes-already-written", _fd);
     return;
   }
   _chunked = false;
@@ -369,14 +369,14 @@ void HttpResponseWriter::sendFile(File file, std::uint64_t offset, std::uint64_t
   _preCompressBuffer.clear();
   _usingSendFile = true;
   if (_declaredLength != 0) {
-    log::warn("Streaming: sendFile overriding previously declared Content-Length fd # {}", _fd);
+    log::warn("Streaming: file overriding previously declared Content-Length fd # {}", _fd);
     _declaredLength = 0;
   }
   try {
-    _fixedResponse.sendFile(std::move(file), offset, length);
+    _fixedResponse.file(std::move(fileObj), offset, length);
     _declaredLength = _fixedResponse.bodyLen();
   } catch (const std::exception& ex) {
-    log::error("Streaming: sendFile failed fd # {} reason={}", _fd, ex.what());
+    log::error("Streaming: file failed fd # {} reason={}", _fd, ex.what());
     _state = State::Failed;
   }
 }

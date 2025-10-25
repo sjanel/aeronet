@@ -121,5 +121,16 @@ constexpr auto TimeToStringRFC7231(SysTimePoint tp, auto out) {
 }
 
 inline constexpr std::size_t kRFC7231DateStrLen = 29;
+inline constexpr SysTimePoint kInvalidTimePoint = SysTimePoint::max();
+
+// Parse a string representation of a given time point in RFC7231 IMF-fixdate format with maximum performance and
+// return a time_point. If parsing fails, returns kInvalidTimePoint.
+SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr);
+
+// Parse a string representation of a given time point in RFC7231 IMF-fixdate format with maximum performance and
+// return a time_point. If parsing fails, returns kInvalidTimePoint.
+inline SysTimePoint TryParseTimeRFC7231(std::string_view value) {
+  return TryParseTimeRFC7231(value.data(), value.data() + value.size());
+}
 
 }  // namespace aeronet

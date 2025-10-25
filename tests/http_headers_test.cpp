@@ -15,6 +15,8 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/http-status-code.hpp"
+#include "aeronet/router-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -162,9 +164,11 @@ TEST(HttpHeaderTimeout, SlowHeadersConnectionClosed) {
   // Use a short poll interval so the server's periodic maintenance (which enforces
   // header read timeouts) runs promptly even when the test runner is under heavy load.
   // This avoids flakiness when the whole test suite is executed in parallel.
-  aeronet::test::TestServer ts(cfg, std::chrono::milliseconds{5});
+  aeronet::test::TestServer ts(cfg, RouterConfig{}, std::chrono::milliseconds{5});
   ts.server.router().setDefault([](const HttpRequest&) {
-    return aeronet::HttpResponse(200, "OK").body("hi").contentType(aeronet::http::ContentTypeTextPlain);
+    return aeronet::HttpResponse(aeronet::http::StatusCodeOK, "OK")
+        .body("hi")
+        .contentType(aeronet::http::ContentTypeTextPlain);
   });
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   test::ClientConnection cnx(ts.port());

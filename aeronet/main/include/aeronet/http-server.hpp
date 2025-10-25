@@ -20,6 +20,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/lifecycle.hpp"
+#include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "connection-state.hpp"
@@ -91,11 +92,10 @@ class HttpServer {
   //    and registers the listening fd with the internal EventLoop.
   //  - If any step fails it throws std::runtime_error (leaving no open fd).
   //  - After construction port() returns the actual bound port (deterministic for tests using ephemeral ports).
-  explicit HttpServer(HttpServerConfig cfg);
+  explicit HttpServer(HttpServerConfig config, RouterConfig routerConfig = {});
 
   // Constructs a server bound and listening immediately according to given configuration,
   // and using the provided Router for request routing (can be configured after construction before run).
-  // See HttpServer(HttpServerConfig) for details.
   HttpServer(HttpServerConfig cfg, Router router);
 
   // Move semantics & constraints:
