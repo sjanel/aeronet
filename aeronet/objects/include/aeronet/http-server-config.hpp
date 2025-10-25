@@ -13,7 +13,6 @@
 #include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/otel-config.hpp"
-#include "aeronet/router-config.hpp"
 #include "compression-config.hpp"
 #include "decompression-config.hpp"
 #include "tls-config.hpp"
@@ -116,12 +115,7 @@ struct HttpServerConfig {
   // ===========================================
   // Request body decompression configuration
   // ===========================================
-  DecompressionConfig requestDecompression;
-
-  // ===========================================
-  // Router configuration
-  // ===========================================
-  RouterConfig router;
+  DecompressionConfig decompression;
 
   // ===========================================
   // Header merge behavior tuning
@@ -298,9 +292,6 @@ struct HttpServerConfig {
 
   // Configure a per-event read fairness cap (0 => unlimited)
   HttpServerConfig& withMaxPerEventReadBytes(std::size_t capBytes);
-
-  // Replace the router configuration wholesale
-  HttpServerConfig& withRouterConfig(RouterConfig cfg);
 
   // Replace the global response headers list
   HttpServerConfig& withGlobalHeaders(std::vector<http::Header> headers);

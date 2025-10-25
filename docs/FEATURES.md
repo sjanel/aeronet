@@ -20,6 +20,7 @@ Single consolidated reference for **aeronet** features.
 1. [TLS Features](#tls-features)
 1. [CONNECT (HTTP tunneling)](#connect-http-tunneling)
 1. [Streaming Responses](#streaming-responses-chunked--incremental)
+1. [Static File Handler (RFC 7233 / RFC 7232)](#static-file-handler-rfc-7233--rfc-7232)
 1. [Mixed Mode Dispatch Precedence](#mixed-mode--dispatch-precedence)
 1. [Logging](#logging)
 1. [OpenTelemetry Integration](#opentelemetry-integration)
@@ -1167,11 +1168,11 @@ Key semantics:
 - `end()` finalizes, emitting terminating `0\r\n\r\n` in chunked mode and flushing any compression trailers.
 - HEAD requests suppress body bytes automatically (still compute/send Content-Length when known).
 - Keep-alive preserved if policy allows and no fatal condition occurred.
-- Zero-copy file responses: both `HttpResponse::sendFile(...)` and `HttpResponseWriter::sendFile(...)` accept an
+- Zero-copy file responses: both `HttpResponse::file(...)` and `HttpResponseWriter::file(...)` accept an
   `aeronet::File` descriptor and stream its contents with Linux `sendfile(2)` on plaintext sockets. When TLS is
   active, aeronet reuses the connection's tunnel buffer and feeds encrypted writes via `pread` + `SSL_write`, so no
   additional heap allocations are introduced beyond that shared buffer.
-- `sendFile` automatically wires `Content-Length`, rejects trailers/body mutations, and honors HEAD semantics (headers
+- `file` automatically wires `Content-Length`, rejects trailers/body mutations, and honors HEAD semantics (headers
   only, body suppressed).
 
 Backpressure & buffering:
@@ -1196,6 +1197,84 @@ server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
 ```
 
 Testing: see `tests/http_streaming.cpp`.
+
+- [x] `StaticFileHandler` serves directory trees with zero-copy `file`
+- [x] RFC 7233 single-range parsing and validation (`Range`, `If-Range`)
+- [x] RFC 7232 validators (`If-None-Match`, `If-Match`, `If-Modified-Since`, `If-Unmodified-Since`)
+- [x] Strong ETag generation (`size-lastWriteTime`), `Last-Modified`, `Accept-Ranges: bytes`
+- [x] 416 (Range Not Satisfiable) with `Content-Range: bytes */N`
+- [x] Integration hooks in `HttpServerConfig::staticFiles`
+
+## Static File Handler (RFC 7233 / RFC 7232)
+
+`StaticFileHandler` provides a hardened helper for serving filesystem trees while respecting HTTP caching and range
+semantics. The handler is designed to plug into the existing routing API: it is an invocable object that accepts an
+`HttpRequest` and returns an `HttpResponse`, so it works with `HttpServer`, `AsyncHttpServer`, and
+`MultiHttpServer` exactly like any other handler.
+
+- **Zero-copy transfers**: regular GET requests use `HttpResponse::file()` so plaintext sockets reuse the kernel
+  `sendfile(2)` path. TLS endpoints automatically fall back to the buffered write path that aeronet already uses for
+  file responses.
+- **Single-range support**: `Range: bytes=N-M` (RFC 7233 §2.1) is parsed with strict validation. Valid ranges return
+  `206 Partial Content` with `Content-Range`. Invalid syntax returns `416` with `Content-Range: bytes */<size>` per the
+  spec. Multi-range requests (comma-separated) are rejected as invalid.
+- **Conditional requests**: `If-None-Match`, `If-Match`, `If-Modified-Since`, `If-Unmodified-Since`, and `If-Range`
+  are honoured using strong validators. Requests that do not modify the resource return `304 Not Modified` for GET/HEAD
+  or `412 Precondition Failed` for unsafe methods. `If-Range` transparently falls back to the full body when the
+  validator mismatches.
+- **Headers**: the handler always emits `Accept-Ranges: bytes` so clients learn range capability. `ETag` and
+  `Last-Modified` are enabled by default (configurable) and share the same strong validator used by conditionals.
+- **Safety**: all request paths are normalised under the configured root; `..` segments are rejected. Default index
+  fallback (e.g. `index.html`) is configurable or can be disabled.
+- **Config entry point**: the immutable configuration lives in `StaticFileConfig`. The handler constructor also accepts a config directly.
+
+Example usage:
+
+```cpp
+#include <aeronet/static-file-handler.hpp>
+
+using namespace aeronet;
+
+int main() {
+  HttpServerConfig cfg;
+  cfg.withPort(8080);
+
+  StaticFileConfig staticFileConfig;
+  staticFileConfig.enableRange = true;
+  staticFileConfig.addEtag = true;
+  staticFileConfig.defaultIndex = "index.html";
+
+  HttpServer server(cfg);
+  StaticFileHandler assets("/var/www/html", std::move(staticFileConfig));
+  server.router().setPath(http::Method::GET, "/", [assets](const HttpRequest& req) mutable {
+    return assets(req);
+  });
+  server.run();
+}
+```
+
+Try it (build & run the example)
+
+```bash
+# from repository root
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target aeronet-static-example
+
+# Run, optionally passing a port and a root directory to serve
+./build/examples/aeronet-static-example 8080 ./examples/static-assets
+
+# Test with curl (full file)
+curl -i http://localhost:8080/somefile.txt
+
+# Test single-range request
+curl -i -H "Range: bytes=0-3" http://localhost:8080/somefile.txt
+```
+
+Testing lives in `tests/http_range_test.cpp` which exercises full-body responses, single-range `206`, unsatisfiable
+requests, `If-None-Match`, and `If-Range`. Those tests rely on the same public API shown above, ensuring the feature is
+covered end-to-end.
+
+- [ ] Multi-range (`multipart/byteranges`) responses (planned)
 
 ## Mixed Mode & Dispatch Precedence
 

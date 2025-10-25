@@ -1,12 +1,16 @@
 #include "timestring.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <string_view>
 #include <utility>
 
+#include "cctype.hpp"
 #include "config.hpp"
 #include "invalid_argument_exception.hpp"
 #include "ipow.hpp"
@@ -174,6 +178,88 @@ std::pair<SysTimePoint, SysTimePoint> ParseTimeWindow(std::string_view str) {
   const std::chrono::sys_days toSysDays = fromSysDays + std::chrono::days{1};
 
   return {SysTimePoint(fromSysDays), SysTimePoint(toSysDays)};
+}
+
+SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
+  SysTimePoint ret = kInvalidTimePoint;
+  while (begPtr < endPtr && isspace(*begPtr)) {
+    ++begPtr;
+  }
+  while (endPtr > begPtr && isspace(*(endPtr - 1))) {
+    --endPtr;
+  }
+
+  if (begPtr >= endPtr) {
+    return ret;
+  }
+
+  const auto len = endPtr - begPtr;
+  if (std::cmp_not_equal(len, kRFC7231DateStrLen)) {
+    return ret;  // Expect strict IMF-fixdate form
+  }
+
+  const char* ptr = begPtr;
+  if (ptr[3] != ',' || ptr[4] != ' ' || ptr[7] != ' ' || ptr[11] != ' ' || ptr[16] != ' ' || ptr[19] != ':' ||
+      ptr[22] != ':' || ptr[25] != ' ') {
+    return ret;
+  }
+
+  if (!isdigit(ptr[5]) || !isdigit(ptr[6]) || !isdigit(ptr[12]) || !isdigit(ptr[13]) || !isdigit(ptr[14]) ||
+      !isdigit(ptr[15]) || !isdigit(ptr[17]) || !isdigit(ptr[18]) || !isdigit(ptr[20]) || !isdigit(ptr[21]) ||
+      !isdigit(ptr[23]) || !isdigit(ptr[24])) {
+    return ret;
+  }
+  if (ptr[26] != 'G' || ptr[27] != 'M' || ptr[28] != 'T') {
+    return ret;
+  }
+
+  static constexpr std::string_view kMonths[]{"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+  const std::string_view monthToken(ptr + 8, 3);
+
+  const auto monthIt = std::ranges::find(kMonths, monthToken);
+  if (monthIt == std::end(kMonths)) {
+    return ret;
+  }
+
+  const int dayValue = read2(ptr + 5);
+  const int yearValue = read4(ptr + 12);
+  const int hourValue = read2(ptr + 17);
+  const int minuteValue = read2(ptr + 20);
+  const int secondValue = read2(ptr + 23);
+
+  if (dayValue <= 0 || hourValue < 0 || hourValue > 23 || minuteValue < 0 || minuteValue > 59 || secondValue < 0 ||
+      secondValue > 60) {
+    return ret;
+  }
+
+  const std::chrono::year yearField{yearValue};
+  // monthIt is a 0-based index into kMonths (0 == Jan). std::chrono::month is 1-based, so add 1.
+  const std::chrono::month monthField{static_cast<unsigned>(monthIt - std::begin(kMonths)) + 1};
+  const std::chrono::day dayField{static_cast<unsigned>(dayValue)};
+  const std::chrono::year_month_day ymd{yearField, monthField, dayField};
+  // Verify the weekday token (e.g. "Sun") matches the resolved date
+  static constexpr std::string_view kWeekdays[]{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  const std::string_view weekdayToken(ptr, 3);
+  const auto weekdayIt = std::ranges::find(kWeekdays, weekdayToken);
+  if (weekdayIt == std::end(kWeekdays)) {
+    return ret;
+  }
+  if (!ymd.ok()) {
+    return ret;
+  }
+
+  const std::chrono::sys_days dayPoint{ymd};
+  // ensure weekday token matches the computed weekday for the date
+  const std::chrono::weekday wd{dayPoint};
+  if (static_cast<unsigned>(weekdayIt - std::begin(kWeekdays)) != wd.c_encoding()) {
+    return ret;
+  }
+
+  ret =
+      dayPoint + std::chrono::hours{hourValue} + std::chrono::minutes{minuteValue} + std::chrono::seconds{secondValue};
+  return ret;
 }
 
 }  // namespace aeronet

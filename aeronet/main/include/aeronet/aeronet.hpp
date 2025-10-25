@@ -41,10 +41,11 @@
 #pragma once
 
 // Core server & wrappers
-#include "aeronet/async-http-server.hpp"  // IWYU pragma: export
-#include "aeronet/http-server.hpp"        // IWYU pragma: export
-#include "aeronet/multi-http-server.hpp"  // IWYU pragma: export
-#include "aeronet/router.hpp"             // IWYU pragma: export
+#include "aeronet/async-http-server.hpp"    // IWYU pragma: export
+#include "aeronet/http-server.hpp"          // IWYU pragma: export
+#include "aeronet/multi-http-server.hpp"    // IWYU pragma: export
+#include "aeronet/router.hpp"               // IWYU pragma: export
+#include "aeronet/static-file-handler.hpp"  // IWYU pragma: export
 
 // Configuration
 #include "aeronet/builtin-probes-config.hpp"  // IWYU pragma: export
@@ -52,6 +53,7 @@
 #include "aeronet/encoding.hpp"               // IWYU pragma: export
 #include "aeronet/http-server-config.hpp"     // IWYU pragma: export
 #include "aeronet/router-config.hpp"          // IWYU pragma: export
+#include "aeronet/static-file-config.hpp"     // IWYU pragma: export
 #include "aeronet/tls-config.hpp"             // IWYU pragma: export
 
 // HTTP primitives
@@ -67,5 +69,3 @@
 
 // Stats / metrics surface
 #include "aeronet/server-stats.hpp"  // IWYU pragma: export
-
-// End of aeronet.hpp

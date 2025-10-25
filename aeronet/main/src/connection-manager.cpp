@@ -42,29 +42,39 @@ void HttpServer::sweepIdleConnections() {
   // further EPOLLIN events will arrive to trigger enforcement in handleReadableClient().
   auto now = std::chrono::steady_clock::now();
   for (auto cnxIt = _connStates.begin(); cnxIt != _connStates.end();) {
-    ConnectionState& st = cnxIt->second;
+    ConnectionState& state = cnxIt->second;
+
+    // Close immediately if requested
+    if (state.isImmediateCloseRequested()) {
+      cnxIt = closeConnection(cnxIt);
+      continue;
+    }
+
+    // For DrainThenClose mode, only close after buffers and file payload are fully drained
+    if (state.canCloseConnectionForDrain()) {
+      cnxIt = closeConnection(cnxIt);
+      continue;
+      // Otherwise, let it continue draining - writable events will flush remaining data
+    }
+
     // Keep-alive inactivity enforcement only if enabled.
-    if (_config.enableKeepAlive) {
-      if (st.isAnyCloseRequested() || (now - st.lastActivity) > _config.keepAliveTimeout) {
-        cnxIt = closeConnection(cnxIt);
-        continue;
-      }
-    } else if (st.isAnyCloseRequested()) {
+    // Don't close if there's an active file send - those can block waiting for socket to be writable.
+    if (_config.enableKeepAlive && !state.fileSend.active && (now - state.lastActivity) > _config.keepAliveTimeout) {
       cnxIt = closeConnection(cnxIt);
       continue;
     }
     // Header read timeout: active if headerStart set and duration exceeded and no full request parsed yet.
-    if (_config.headerReadTimeout.count() > 0 && st.headerStart.time_since_epoch().count() != 0) {
-      if (now - st.headerStart > _config.headerReadTimeout) {
-        cnxIt = closeConnection(cnxIt);
-        continue;
-      }
+    if (_config.headerReadTimeout.count() > 0 && state.headerStart.time_since_epoch().count() != 0 &&
+        (now - state.headerStart) > _config.headerReadTimeout) {
+      cnxIt = closeConnection(cnxIt);
+      continue;
     }
     // TLS handshake timeout (if enabled). Applies only while handshake pending.
     if constexpr (aeronet::openSslEnabled()) {
       if (_config.tlsHandshakeTimeout.count() > 0 && _config.tls.enabled &&
-          st.handshakeStart.time_since_epoch().count() != 0 && !st.tlsEstablished && !st.transport->handshakeDone()) {
-        if (now - st.handshakeStart > _config.tlsHandshakeTimeout) {
+          state.handshakeStart.time_since_epoch().count() != 0 && !state.tlsEstablished &&
+          !state.transport->handshakeDone()) {
+        if (now - state.handshakeStart > _config.tlsHandshakeTimeout) {
           cnxIt = closeConnection(cnxIt);
           continue;
         }
@@ -216,7 +226,7 @@ void HttpServer::acceptNewConnections() {
       continue;
     }
     const bool closeNow = processRequestsOnConnection(cnxIt);
-    if (closeNow && pCnx->outBuffer.empty()) {
+    if (closeNow && pCnx->outBuffer.empty() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->fileSend.active) {
       closeConnection(cnxIt);
     }
   }
@@ -224,6 +234,7 @@ void HttpServer::acceptNewConnections() {
 
 HttpServer::ConnectionMapIt HttpServer::closeConnection(ConnectionMapIt cnxIt) {
   const int cfd = cnxIt->first.fd();
+
   _eventLoop.del(cfd);
 
   // Best-effort graceful TLS shutdown
@@ -253,7 +264,7 @@ void HttpServer::handleReadableClient(int fd) {
   if (!state.outBuffer.empty()) {
     flushOutbound(cnxIt);
     // Check if connection was closed during flush
-    if (state.isAnyCloseRequested()) {
+    if (state.canCloseImmediately()) {
       closeConnection(cnxIt);
       return;
     }
@@ -305,9 +316,7 @@ void HttpServer::handleReadableClient(int fd) {
     bytesReadThisEvent += static_cast<std::size_t>(count);
     if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
       // Reached per-event fairness cap; parse what we have then yield.
-      if (processRequestsOnConnection(cnxIt)) {
-        break;
-      }
+      processRequestsOnConnection(cnxIt);
       break;
     }
     if (state.inBuffer.size() > _config.maxHeaderBytes + _config.maxBodyBytes) {
@@ -330,7 +339,7 @@ void HttpServer::handleReadableClient(int fd) {
   if (!state.outBuffer.empty()) {
     flushOutbound(cnxIt);
   }
-  if (state.isAnyCloseRequested()) {
+  if (state.canCloseImmediately()) {
     closeConnection(cnxIt);
   }
 }
@@ -381,7 +390,7 @@ void HttpServer::handleWritableClient(int fd) {
     // Tunnel buffer drained: fall through to normal flushOutbound handling
   }
   flushOutbound(cnxIt);
-  if (cnxIt->second.isAnyCloseRequested()) {
+  if (state.canCloseImmediately()) {
     closeConnection(cnxIt);
   }
 }

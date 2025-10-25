@@ -22,10 +22,10 @@ TEST(ExtraConfigValidations, TlsAlpnMustMatch) {
 
 TEST(ExtraConfigValidations, DecompressionChecks) {
   HttpServerConfig cfg;
-  cfg.requestDecompression.decoderChunkSize = 0;
+  cfg.decompression.decoderChunkSize = 0;
   EXPECT_THROW(cfg.validate(), invalid_argument);
-  cfg.requestDecompression.decoderChunkSize = 1024;
-  cfg.requestDecompression.maxDecompressedBytes = 512;
+  cfg.decompression.decoderChunkSize = 1024;
+  cfg.decompression.maxDecompressedBytes = 512;
   EXPECT_THROW(cfg.validate(), invalid_argument);
 }
 

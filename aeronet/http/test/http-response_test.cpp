@@ -4,14 +4,10 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
-#include <ios>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -20,90 +16,11 @@
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/temp-file.hpp"
 #include "exception.hpp"
 #include "file.hpp"
 #include "stringconv.hpp"
 #include "timedef.hpp"
-
-namespace {
-
-std::string toHex(unsigned long long value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(16);
-  for (int i = 15; i >= 0; --i) {
-    out.push_back(kHex[(value >> (i * 4)) & 0xF]);
-  }
-  return out;
-}
-
-class ScopedTempFile {
- public:
-  static ScopedTempFile create(std::string_view prefix, std::string_view content) {
-    namespace fs = std::filesystem;
-    const fs::path base = fs::temp_directory_path();
-    std::random_device rd;
-    std::mt19937_64 gen(rd());
-    std::uniform_int_distribution<unsigned long long> dist;
-    for (int attempt = 0; attempt < 16; ++attempt) {
-      fs::path candidate = base / (std::string(prefix) + toHex(dist(gen)) + ".tmp");
-      if (fs::exists(candidate)) {
-        continue;
-      }
-      std::ofstream ofs(candidate, std::ios::binary | std::ios::trunc);
-      if (!ofs) {
-        continue;
-      }
-      if (!content.empty()) {
-        ofs.write(content.data(), static_cast<std::streamsize>(content.size()));
-        if (!ofs) {
-          ofs.close();
-          std::error_code ec;
-          fs::remove(candidate, ec);
-          continue;
-        }
-      }
-      ofs.close();
-      return ScopedTempFile(candidate.string());
-    }
-    throw std::runtime_error("ScopedTempFile: unable to create unique file");
-  }
-
-  ScopedTempFile() = default;
-  explicit ScopedTempFile(std::string path) : _path(std::move(path)) {}
-
-  ScopedTempFile(const ScopedTempFile &) = delete;
-  ScopedTempFile &operator=(const ScopedTempFile &) = delete;
-
-  ScopedTempFile(ScopedTempFile &&other) noexcept : _path(std::move(other._path)) { other._path.clear(); }
-
-  ScopedTempFile &operator=(ScopedTempFile &&other) noexcept {
-    if (this != &other) {
-      cleanup();
-      _path = std::move(other._path);
-      other._path.clear();
-    }
-    return *this;
-  }
-
-  ~ScopedTempFile() { cleanup(); }
-
-  [[nodiscard]] std::string_view path() const { return _path; }
-
- private:
-  void cleanup() noexcept {
-    if (_path.empty()) {
-      return;
-    }
-    std::error_code ec;
-    std::filesystem::remove(_path, ec);
-    _path.clear();
-  }
-
-  std::string _path;
-};
-
-}  // namespace
 
 namespace aeronet {
 
@@ -124,6 +41,10 @@ class HttpResponseTest : public ::testing::Test {
     auto prepared = finalizePrepared(std::move(resp));
     EXPECT_EQ(prepared.fileLength, 0U);
     return std::move(prepared.data);
+  }
+
+  static const File *file(const HttpResponse::PreparedResponse &prepared) {
+    return prepared.file ? &prepared.file : nullptr;
   }
 
   static std::string concatenated(HttpResponse &&resp) {
@@ -276,13 +197,13 @@ TEST_F(HttpResponseTest, ProperTermination) {
 
 TEST_F(HttpResponseTest, SendFilePayload) {
   constexpr std::string_view kPayload = "static file payload";
-  auto tmp = ScopedTempFile::create("aeronet-sendfile-", kPayload);
-  File file(tmp.path());
+  auto tmp = aeronet::test::ScopedTempFile::create("aeronet-sendfile-", kPayload);
+  File file(tmp.filePath().string());
   ASSERT_TRUE(file);
   const std::uint64_t sz = file.size();
 
   HttpResponse resp(http::StatusCodeOK, "OK");
-  resp.sendFile(std::move(file));
+  resp.file(std::move(file));
 
   auto prepared = finalizePrepared(std::move(resp));
   EXPECT_EQ(prepared.fileLength, sz);
@@ -296,13 +217,13 @@ TEST_F(HttpResponseTest, SendFilePayload) {
 
 TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
   constexpr std::string_view kPayload = "head sendfile payload";
-  auto tmp = ScopedTempFile::create("aeronet-sendfile-head-", kPayload);
-  File file(tmp.path());
+  auto tmp = aeronet::test::ScopedTempFile::create("aeronet-sendfile-head-", kPayload);
+  File file(tmp.filePath().string());
   ASSERT_TRUE(file);
   const std::uint64_t sz = file.size();
 
   HttpResponse resp(http::StatusCodeOK, "OK");
-  resp.sendFile(std::move(file));
+  resp.file(std::move(file));
 
   auto prepared = finalizePrepared(std::move(resp), true /*head*/);
   EXPECT_EQ(prepared.fileLength, 0U);
@@ -470,6 +391,38 @@ TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
   EXPECT_EQ(full,
             "HTTP/1.1 200 OK\r\nX-Val: 0123456789\r\nContent-Length: 4\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
             "00:00:00 GMT\r\n\r\nData");
+}
+
+TEST_F(HttpResponseTest, HeaderGetterAfterSet) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  // Mix of headers to exercise several lookup cases:
+  // - customHeader replaces case-insensitively
+  // - addCustomHeader allows duplicates (first occurrence should be returned by headerValue)
+  // - empty value is a present-but-empty header
+  resp.customHeader("X-Simple", "hello");
+  resp.addCustomHeader("X-Dup", "1");
+  resp.addCustomHeader("X-Dup", "2");
+  // Replace X-Simple with different casing (should replace existing header)
+  resp.customHeader("x-simple", "HELLO2");
+  // Present but empty value
+  resp.customHeader("X-Empty", "");
+
+  // headerValue should see the replaced value (case-insensitive replace)
+  auto opt = resp.headerValue("X-Simple");
+  EXPECT_EQ(opt.value_or(""), "HELLO2");
+
+  // duplicate headers: headerValue returns the first occurrence
+  auto dup = resp.headerValue("X-Dup");
+  EXPECT_EQ(dup.value_or(""), "1");
+
+  // empty-but-present header: headerValue returns an empty string_view but present
+  auto emptyOpt = resp.headerValue("X-Empty");
+  EXPECT_EQ(emptyOpt.value_or("something"), std::string_view{});
+
+  // missing header should return nullopt via headerValue and empty view via headerValueOrEmpty
+  auto missing = resp.headerValue("No-Such-Header");
+  EXPECT_FALSE(missing.has_value());
+  EXPECT_EQ(resp.headerValueOrEmpty("No-Such-Header"), std::string_view{});
 }
 
 // Interleaved reason/header mutations stress test:
