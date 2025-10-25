@@ -5,13 +5,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
-#include <ios>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -24,86 +21,8 @@
 #include "file.hpp"
 #include "stringconv.hpp"
 #include "timedef.hpp"
-
-namespace {
-
-std::string toHex(unsigned long long value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(16);
-  for (int i = 15; i >= 0; --i) {
-    out.push_back(kHex[(value >> (i * 4)) & 0xF]);
-  }
-  return out;
-}
-
-class ScopedTempFile {
- public:
-  static ScopedTempFile create(std::string_view prefix, std::string_view content) {
-    namespace fs = std::filesystem;
-    const fs::path base = fs::temp_directory_path();
-    std::random_device rd;
-    std::mt19937_64 gen(rd());
-    std::uniform_int_distribution<unsigned long long> dist;
-    for (int attempt = 0; attempt < 16; ++attempt) {
-      fs::path candidate = base / (std::string(prefix) + toHex(dist(gen)) + ".tmp");
-      if (fs::exists(candidate)) {
-        continue;
-      }
-      std::ofstream ofs(candidate, std::ios::binary | std::ios::trunc);
-      if (!ofs) {
-        continue;
-      }
-      if (!content.empty()) {
-        ofs.write(content.data(), static_cast<std::streamsize>(content.size()));
-        if (!ofs) {
-          ofs.close();
-          std::error_code ec;
-          fs::remove(candidate, ec);
-          continue;
-        }
-      }
-      ofs.close();
-      return ScopedTempFile(candidate.string());
-    }
-    throw std::runtime_error("ScopedTempFile: unable to create unique file");
-  }
-
-  ScopedTempFile() = default;
-  explicit ScopedTempFile(std::string path) : _path(std::move(path)) {}
-
-  ScopedTempFile(const ScopedTempFile &) = delete;
-  ScopedTempFile &operator=(const ScopedTempFile &) = delete;
-
-  ScopedTempFile(ScopedTempFile &&other) noexcept : _path(std::move(other._path)) { other._path.clear(); }
-
-  ScopedTempFile &operator=(ScopedTempFile &&other) noexcept {
-    if (this != &other) {
-      cleanup();
-      _path = std::move(other._path);
-      other._path.clear();
-    }
-    return *this;
-  }
-
-  ~ScopedTempFile() { cleanup(); }
-
-  [[nodiscard]] std::string_view path() const { return _path; }
-
- private:
-  void cleanup() noexcept {
-    if (_path.empty()) {
-      return;
-    }
-    std::error_code ec;
-    std::filesystem::remove(_path, ec);
-    _path.clear();
-  }
-
-  std::string _path;
-};
-
-}  // namespace
+// Use test support utilities (ScopedTempFile) from test_support
+#include "../../test_support/include/aeronet/test_util.hpp"
 
 namespace aeronet {
 
@@ -276,8 +195,8 @@ TEST_F(HttpResponseTest, ProperTermination) {
 
 TEST_F(HttpResponseTest, SendFilePayload) {
   constexpr std::string_view kPayload = "static file payload";
-  auto tmp = ScopedTempFile::create("aeronet-sendfile-", kPayload);
-  File file(tmp.path());
+  auto tmp = aeronet::test::ScopedTempFile::create("aeronet-sendfile-", kPayload);
+  File file(tmp.filePath().string());
   ASSERT_TRUE(file);
   const std::uint64_t sz = file.size();
 
@@ -296,8 +215,8 @@ TEST_F(HttpResponseTest, SendFilePayload) {
 
 TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
   constexpr std::string_view kPayload = "head sendfile payload";
-  auto tmp = ScopedTempFile::create("aeronet-sendfile-head-", kPayload);
-  File file(tmp.path());
+  auto tmp = aeronet::test::ScopedTempFile::create("aeronet-sendfile-head-", kPayload);
+  File file(tmp.filePath().string());
   ASSERT_TRUE(file);
   const std::uint64_t sz = file.size();
 

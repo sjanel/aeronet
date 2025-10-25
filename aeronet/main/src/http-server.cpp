@@ -215,6 +215,7 @@ void RecordModFailure(auto cnxIt, uint32_t events, const char* ctx, auto& stats)
 
 bool HttpServer::enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) {
   static constexpr uint32_t kEvents = EPOLLIN | EPOLLOUT | EPOLLET;
+
   if (_eventLoop.mod(cnxIt->first.fd(), kEvents)) {
     if (!cnxIt->second.waitingWritable) {
       cnxIt->second.waitingWritable = true;
@@ -722,6 +723,20 @@ void HttpServer::eventLoop() {
     _telemetry.counterAdd("aeronet.events.errors", 1);
     log::error("epoll_wait (eventLoop) failed: {}", std::strerror(errno));
     _lifecycle.enterStopping();
+  } else {
+    // ready == 0: timeout. Retry pending writes to handle edge-triggered epoll timing issues.
+    // With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before
+    // epoll_ctl(EPOLL_CTL_MOD), we miss the edge. Periodic retries ensure we eventually resume.
+    for (auto it = _connStates.begin(); it != _connStates.end();) {
+      if (it->second.fileSend.active && it->second.waitingWritable) {
+        flushFilePayload(it);
+        if (it->second.isImmediateCloseRequested()) {
+          it = closeConnection(it);
+          continue;
+        }
+      }
+      ++it;
+    }
   }
 
   const auto now = std::chrono::steady_clock::now();

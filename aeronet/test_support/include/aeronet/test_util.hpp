@@ -2,7 +2,10 @@
 
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <map>
+#include <random>
 #include <string>
 #include <string_view>
 
@@ -84,18 +87,18 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
 std::string toLower(std::string input);
 
 // Very small HTTP/1.1 response parser (not resilient to all malformed cases, just for test consumption)
-std::optional<ParsedResponse> parseResponse(const std::string &raw);
+std::optional<ParsedResponse> parseResponse(const std::string& raw);
 
 bool setRecvTimeout(int fd, ::aeronet::SysDuration timeout);
 
-std::string buildRequest(const RequestOptions &opt);
+std::string buildRequest(const RequestOptions& opt);
 
-std::optional<std::string> request(uint16_t port, const RequestOptions &opt = {});
+std::optional<std::string> request(uint16_t port, const RequestOptions& opt = {});
 
 // Convenience wrapper that throws std::runtime_error on failure instead of returning std::nullopt.
 // This simplifies test code by eliminating explicit ASSERT checks for has_value(); gtest will treat
 // uncaught exceptions as test failures with the diagnostic message.
-std::string requestOrThrow(uint16_t port, const RequestOptions &opt = {});
+std::string requestOrThrow(uint16_t port, const RequestOptions& opt = {});
 
 // Send multiple requests over a single keep-alive connection and return raw responses individually.
 // Limitations: assumes server responds fully before next request is parsed (sufficient for simple tests).
@@ -106,5 +109,49 @@ bool AttemptConnect(uint16_t port);
 bool WaitForPeerClose(int fd, std::chrono::milliseconds timeout);
 
 bool WaitForListenerClosed(uint16_t port, std::chrono::milliseconds timeout);
+
+// ScopedTempFile: creates a unique temporary directory under the system temp
+// directory and places one file inside it. The directory (and file) are
+// removed when the object is destroyed. Useful for tests that need a
+// filesystem path to pass to components that serve files from a directory.
+class ScopedTempFile {
+ public:
+  // Create a temp file with the given name and content.
+  ScopedTempFile(std::string_view name, std::string_view content);
+
+  // Create a temp file with the given name and size and fill it with a
+  // repeating pattern starting from 'a'. The full content is kept in memory
+  // and can be retrieved with content().
+  ScopedTempFile(std::string_view name, std::uint64_t size);
+
+  static ScopedTempFile create(std::string_view prefix, std::string_view content);
+
+  // Create a uniquely-named temp file using the provided prefix and content.
+  // The returned ScopedTempFile will remove the file (and its containing
+  // temporary directory) on destruction.
+
+  ScopedTempFile(const ScopedTempFile&) = delete;
+  ScopedTempFile& operator=(const ScopedTempFile&) = delete;
+  ScopedTempFile(ScopedTempFile&& other) noexcept;
+  ScopedTempFile& operator=(ScopedTempFile&& other) noexcept;
+
+  ~ScopedTempFile();
+
+  // Directory containing the file
+  [[nodiscard]] const std::filesystem::path& dirPath() const noexcept { return _dir; }
+  // Full path to the file
+  [[nodiscard]] const std::filesystem::path& filePath() const noexcept { return _path; }
+  // Filename only
+  [[nodiscard]] std::string filename() const { return _path.filename().string(); }
+  // If constructed with the size overload, returns the generated content.
+  [[nodiscard]] const std::string& content() const noexcept { return _content; }
+
+ private:
+  void cleanup() noexcept;
+
+  std::filesystem::path _dir;
+  std::filesystem::path _path;
+  std::string _content;
+};
 
 }  // namespace aeronet::test

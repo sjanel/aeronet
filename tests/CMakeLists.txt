@@ -58,6 +58,8 @@ endif()
 
 aeronet_http_test(http_streaming)
 
+aeronet_http_test(http_range)
+
 # Async wrapper test
 aeronet_http_test(async_http_server)
 
@@ -108,6 +110,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_query_parsing_test.cpp
 	http_headers_test.cpp
 	http_probes_test.cpp
+	http_range_test.cpp
 	opentelemetry_integration_test.cpp
 	http_compression_test.cpp
 	compile_time_traits_test.cpp

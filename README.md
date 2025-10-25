@@ -70,6 +70,7 @@ The following focused docs expand each area without cluttering the high‑level 
 - [Feature reference (FEATURES)](docs/FEATURES.md)
 
 - [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
+- [Static File Handler & Range Requests](docs/FEATURES.md#static-file-handler-rfc-7233--rfc-7232)
 - [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
 - [Connection Close Semantics](docs/FEATURES.md#connection-close-semantics)
 - [Reserved & Managed Headers](docs/FEATURES.md#reserved--managed-response-headers)
@@ -98,7 +99,7 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Trailers exposure | ✔ | RFC 7230 §4.1.2 chunked trailer headers |
 | Middleware helpers | ✖ | Planned |
 | Streaming inbound decompression | ✖ | Planned |
-| sendfile / static file helper | ✔ | 0.4.0 – zero-copy plain sockets, TLS fallback |
+| sendfile / static file helper | ✔ | 0.4.x – zero-copy plain sockets plus RFC 7233 single-range & RFC 7232 validators |
 
 ## Core HTTP & Protocol Features (Implemented)
 

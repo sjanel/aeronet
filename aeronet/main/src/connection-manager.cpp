@@ -43,15 +43,29 @@ void HttpServer::sweepIdleConnections() {
   auto now = std::chrono::steady_clock::now();
   for (auto cnxIt = _connStates.begin(); cnxIt != _connStates.end();) {
     ConnectionState& st = cnxIt->second;
-    // Keep-alive inactivity enforcement only if enabled.
-    if (_config.enableKeepAlive) {
-      if (st.isAnyCloseRequested() || (now - st.lastActivity) > _config.keepAliveTimeout) {
+
+    // Close immediately if requested
+    if (st.isImmediateCloseRequested()) {
+      cnxIt = closeConnection(cnxIt);
+      continue;
+    }
+
+    // For DrainThenClose mode, only close after buffers and file payload are fully drained
+    if (st.isDrainCloseRequested()) {
+      if (st.outBuffer.empty() && st.tunnelOrFileBuffer.empty() && !st.fileSend.active) {
         cnxIt = closeConnection(cnxIt);
         continue;
       }
-    } else if (st.isAnyCloseRequested()) {
-      cnxIt = closeConnection(cnxIt);
-      continue;
+      // Otherwise, let it continue draining - writable events will flush remaining data
+    }
+
+    // Keep-alive inactivity enforcement only if enabled.
+    // Don't close if there's an active file send - those can block waiting for socket to be writable.
+    if (_config.enableKeepAlive && !st.fileSend.active) {
+      if ((now - st.lastActivity) > _config.keepAliveTimeout) {
+        cnxIt = closeConnection(cnxIt);
+        continue;
+      }
     }
     // Header read timeout: active if headerStart set and duration exceeded and no full request parsed yet.
     if (_config.headerReadTimeout.count() > 0 && st.headerStart.time_since_epoch().count() != 0) {
@@ -216,7 +230,7 @@ void HttpServer::acceptNewConnections() {
       continue;
     }
     const bool closeNow = processRequestsOnConnection(cnxIt);
-    if (closeNow && pCnx->outBuffer.empty()) {
+    if (closeNow && pCnx->outBuffer.empty() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->fileSend.active) {
       closeConnection(cnxIt);
     }
   }
@@ -224,6 +238,7 @@ void HttpServer::acceptNewConnections() {
 
 HttpServer::ConnectionMapIt HttpServer::closeConnection(ConnectionMapIt cnxIt) {
   const int cfd = cnxIt->first.fd();
+
   _eventLoop.del(cfd);
 
   // Best-effort graceful TLS shutdown
@@ -253,7 +268,8 @@ void HttpServer::handleReadableClient(int fd) {
   if (!state.outBuffer.empty()) {
     flushOutbound(cnxIt);
     // Check if connection was closed during flush
-    if (state.isAnyCloseRequested()) {
+    if (state.isImmediateCloseRequested() || (state.isDrainCloseRequested() && state.outBuffer.empty() &&
+                                              state.tunnelOrFileBuffer.empty() && !state.fileSend.active)) {
       closeConnection(cnxIt);
       return;
     }
@@ -330,7 +346,12 @@ void HttpServer::handleReadableClient(int fd) {
   if (!state.outBuffer.empty()) {
     flushOutbound(cnxIt);
   }
-  if (state.isAnyCloseRequested()) {
+  if (state.isImmediateCloseRequested()) {
+    closeConnection(cnxIt);
+    return;
+  }
+  if (state.isDrainCloseRequested() && state.outBuffer.empty() && state.tunnelOrFileBuffer.empty() &&
+      !state.fileSend.active) {
     closeConnection(cnxIt);
   }
 }
@@ -381,7 +402,12 @@ void HttpServer::handleWritableClient(int fd) {
     // Tunnel buffer drained: fall through to normal flushOutbound handling
   }
   flushOutbound(cnxIt);
-  if (cnxIt->second.isAnyCloseRequested()) {
+  if (state.isImmediateCloseRequested()) {
+    closeConnection(cnxIt);
+    return;
+  }
+  if (state.isDrainCloseRequested() && state.outBuffer.empty() && state.tunnelOrFileBuffer.empty() &&
+      !state.fileSend.active) {
     closeConnection(cnxIt);
   }
 }
