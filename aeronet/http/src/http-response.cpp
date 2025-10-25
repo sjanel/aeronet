@@ -169,7 +169,7 @@ void HttpResponse::setBodyInternal(std::string_view newBody) {
 }
 
 HttpResponse& HttpResponse::sendFile(File file, std::size_t offset, std::size_t length) & {
-  if (!file.isOpened()) {
+  if (!file) {
     throw invalid_argument("sendFile requires an opened file");
   }
   const std::size_t fileSize = file.size();

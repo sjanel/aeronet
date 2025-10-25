@@ -278,7 +278,7 @@ TEST_F(HttpResponseTest, SendFilePayload) {
   constexpr std::string_view kPayload = "static file payload";
   auto tmp = ScopedTempFile::create("aeronet-sendfile-", kPayload);
   File file(tmp.path());
-  ASSERT_TRUE(file.isOpened());
+  ASSERT_TRUE(file);
   const std::uint64_t sz = file.size();
 
   HttpResponse resp(http::StatusCodeOK, "OK");
@@ -286,7 +286,7 @@ TEST_F(HttpResponseTest, SendFilePayload) {
 
   auto prepared = finalizePrepared(std::move(resp));
   EXPECT_EQ(prepared.fileLength, sz);
-  EXPECT_TRUE(prepared.file.isOpened());
+  EXPECT_TRUE(prepared.file);
   EXPECT_EQ(prepared.file.size(), sz);
 
   std::string headers(prepared.data.firstBuffer());
@@ -298,7 +298,7 @@ TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
   constexpr std::string_view kPayload = "head sendfile payload";
   auto tmp = ScopedTempFile::create("aeronet-sendfile-head-", kPayload);
   File file(tmp.path());
-  ASSERT_TRUE(file.isOpened());
+  ASSERT_TRUE(file);
   const std::uint64_t sz = file.size();
 
   HttpResponse resp(http::StatusCodeOK, "OK");
@@ -306,7 +306,7 @@ TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
 
   auto prepared = finalizePrepared(std::move(resp), true /*head*/);
   EXPECT_EQ(prepared.fileLength, 0U);
-  EXPECT_FALSE(prepared.file.isOpened());
+  EXPECT_FALSE(prepared.file);
 
   std::string headers(prepared.data.firstBuffer());
   EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz)));

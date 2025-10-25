@@ -25,7 +25,7 @@ class File {
   explicit File(const char* path, OpenMode mode = OpenMode::ReadOnly);
 
   // Returns true when the File currently holds an open descriptor.
-  [[nodiscard]] bool isOpened() const noexcept { return _fd.isOpened(); }
+  explicit operator bool() const noexcept { return static_cast<bool>(_fd); }
 
   // Return the file size in bytes. Throws std::runtime_error on failure.
   [[nodiscard]] std::size_t size() const;
@@ -33,7 +33,7 @@ class File {
  private:
   friend struct ConnectionState;
 
-  // Returns the raw underlying file descriptor. Valid only when isOpened() is true.
+  // Returns the raw underlying file descriptor. Valid only when BaseFd is opened.
   // The caller does NOT take ownership of the descriptor; the File instance remains
   // responsible for closing it (unless you explicitly adopt the fd elsewhere first).
   [[nodiscard]] int fd() const noexcept { return _fd.fd(); }

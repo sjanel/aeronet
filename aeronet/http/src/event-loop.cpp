@@ -44,7 +44,7 @@ EventLoop::EventLoop(SysDuration pollTimeout, int epollFlags, uint32_t initialCa
   if (_events == nullptr) {
     throw std::bad_alloc();
   }
-  if (!_baseFd.isOpened()) {
+  if (!_baseFd) {
     auto err = errno;
     log::error("epoll_create1 failed (flags={}, errno={}, msg={})", epollFlags, err, std::strerror(err));
     throw std::runtime_error("epoll_create1 failed");

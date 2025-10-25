@@ -77,7 +77,7 @@ void HttpServer::sweepIdleConnections() {
 void HttpServer::acceptNewConnections() {
   while (true) {
     Connection cnx(_listenSocket);
-    if (!cnx.isOpened()) {
+    if (!cnx) {
       // no more waiting connections
       break;
     }

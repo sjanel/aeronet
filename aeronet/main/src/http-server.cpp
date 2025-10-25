@@ -538,30 +538,37 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   if (!writer.finished()) {
     writer.end();
   }
-  if (wantClose) {
-    state.requestDrainAndClose();  // honor client directive for streaming path
-  }
-  bool allowKeepAlive = _config.enableKeepAlive && req.version() == http::HTTP_1_1 && !wantClose &&
-                        state.requestsServed + 1 < _config.maxRequestsPerConnection && !state.isAnyCloseRequested() &&
-                        !_lifecycle.isDraining() && !_lifecycle.isStopping();
+
   ++state.requestsServed;
   state.inBuffer.erase_front(consumedBytes);
 
-  if (_metricsCb) {
-    RequestMetrics metrics;
-    metrics.method = req.method();
-    metrics.path = req.path();
-    metrics.status = http::StatusCodeOK;  // best effort (streaming handler controls status directly)
-    metrics.bytesIn = req.body().size();
-    metrics.reusedConnection = state.requestsServed > 1;
-    metrics.duration = std::chrono::steady_clock::now() - reqStart;
-    _metricsCb(metrics);
-  }
-  if (!allowKeepAlive) {
+  const bool shouldClose = !_config.enableKeepAlive || req.version() != http::HTTP_1_1 || wantClose ||
+                           state.requestsServed + 1 >= _config.maxRequestsPerConnection ||
+                           state.isAnyCloseRequested() || _lifecycle.isDraining() || _lifecycle.isStopping();
+  if (shouldClose) {
     state.requestDrainAndClose();
-    return true;
   }
-  return false;
+
+  if (_metricsCb) {
+    emitRequestMetrics(req, http::StatusCodeOK, req.body().size(), state.requestsServed > 1, reqStart);
+  }
+
+  return shouldClose;
+}
+
+void HttpServer::emitRequestMetrics(const HttpRequest& req, http::StatusCode status, std::size_t bytesIn,
+                                    bool reusedConnection, std::chrono::steady_clock::time_point reqStart) {
+  if (!_metricsCb) {
+    return;
+  }
+  RequestMetrics metrics;
+  metrics.method = req.method();
+  metrics.path = req.path();
+  metrics.status = status;
+  metrics.bytesIn = bytesIn;
+  metrics.reusedConnection = reusedConnection;
+  metrics.duration = std::chrono::steady_clock::now() - reqStart;
+  _metricsCb(metrics);
 }
 
 // Performs full listener initialization (RAII style) so that port() is valid immediately after construction.
@@ -681,7 +688,7 @@ void HttpServer::prepareRun() {
   if (_lifecycle.isActive()) {
     throw exception("Server is already running");
   }
-  if (!_listenSocket.isOpened()) {
+  if (!_listenSocket) {
     init();
   }
   log::info("Server running on port :{}", port());
@@ -744,7 +751,7 @@ void HttpServer::eventLoop() {
 }
 
 void HttpServer::closeListener() noexcept {
-  if (_listenSocket.isOpened()) {
+  if (_listenSocket) {
     const int fd = _listenSocket.fd();
     _eventLoop.del(fd);
     _listenSocket.close();

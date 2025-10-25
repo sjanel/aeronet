@@ -52,7 +52,7 @@ File::File(const char* path, OpenMode mode) : _fd(CreateFileBaseFd(path, mode)) 
 
 std::size_t File::size() const {
   struct stat st{};
-  if (_fd.isOpened() && ::fstat(_fd.fd(), &st) == 0) {
+  if (_fd && ::fstat(_fd.fd(), &st) == 0) {
     return static_cast<std::uint64_t>(st.st_size);
   }
   throw std::runtime_error("File::size failed");

@@ -10,17 +10,13 @@
 
 namespace aeronet {
 
-BaseFd::BaseFd(BaseFd&& other) noexcept : _fd(std::exchange(other._fd, kClosedFd)) {}
-
 BaseFd& BaseFd::operator=(BaseFd&& other) noexcept {
   if (this != &other) {
     close();
-    _fd = std::exchange(other._fd, kClosedFd);
+    _fd = other.release();
   }
   return *this;
 }
-
-BaseFd::~BaseFd() { close(); }
 
 void BaseFd::close() noexcept {
   if (_fd == kClosedFd) {
@@ -44,5 +40,7 @@ void BaseFd::close() noexcept {
   log::debug("fd # {} closed", _fd);
   _fd = kClosedFd;
 }
+
+int BaseFd::release() noexcept { return std::exchange(_fd, kClosedFd); }
 
 }  // namespace aeronet

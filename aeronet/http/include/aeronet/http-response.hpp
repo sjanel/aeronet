@@ -280,7 +280,7 @@ class HttpResponse {
   // Stream the contents of an already-open file as the response body.
   // This methods takes ownership of the 'file' object into the response and sends the entire file.
   // Notes:
-  //   - file should be opened (`file.isOpened()` must be true)
+  //   - file should be opened (`file` must be true)
   //   - Trailers are NOT permitted when using sendFile
   //   - Transfer coding: sendFile produces a fixed-length response (Content-Length is set) and disables chunked
   //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
@@ -291,7 +291,7 @@ class HttpResponse {
   // Stream the contents of an already-open file as the response body.
   // This methods takes ownership of the 'file' object into the response and sends the entire file.
   // Notes:
-  //   - file should be opened (`file.isOpened()` must be true)
+  //   - file should be opened (`file` must be true)
   //   - Trailers are NOT permitted when using sendFile
   //   - Transfer coding: sendFile produces a fixed-length response (Content-Length is set) and disables chunked
   //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
@@ -305,7 +305,7 @@ class HttpResponse {
   // Stream the contents of an already-open file as the response body.
   // This methods takes ownership of the 'file' object into the response and sends the [offset, offset+length) range.
   // Notes:
-  //   - file should be opened (`file.isOpened()` must be true)
+  //   - file should be opened (`file` must be true)
   //   - Trailers are NOT permitted when using sendFile
   //   - Transfer coding: sendFile produces a fixed-length response (Content-Length is set) and disables chunked
   //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
@@ -316,7 +316,7 @@ class HttpResponse {
   // Stream the contents of an already-open file as the response body.
   // This methods takes ownership of the 'file' object into the response and sends the [offset, offset+length) range.
   // Notes:
-  //   - file should be opened (`file.isOpened()` must be true)
+  //   - file should be opened (`file` must be true)
   //   - Trailers are NOT permitted when using sendFile
   //   - Transfer coding: sendFile produces a fixed-length response (Content-Length is set) and disables chunked
   //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
