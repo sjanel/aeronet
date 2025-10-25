@@ -55,7 +55,7 @@ ConnectResult ConnectTCP(char* buf, std::string_view host, std::string_view port
     const int socktype = rp->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC;
 
     connectResult.cnx = Connection(BaseFd(::socket(rp->ai_family, socktype, rp->ai_protocol)));
-    if (!connectResult.cnx.isOpened()) {
+    if (!connectResult.cnx) {
       int saved = errno;
       if (saved == EMFILE || saved == ENFILE) {
         connectResult.failure = true;

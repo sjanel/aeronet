@@ -16,7 +16,7 @@ class Connection {
 
   [[nodiscard]] int fd() const noexcept { return _baseFd.fd(); }
 
-  [[nodiscard]] bool isOpened() const noexcept { return _baseFd.isOpened(); }
+  explicit operator bool() const noexcept { return static_cast<bool>(_baseFd); }
 
   void close() noexcept { _baseFd.close(); }
 

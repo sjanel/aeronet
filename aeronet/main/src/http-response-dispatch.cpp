@@ -239,14 +239,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpReques
     state.requestDrainAndClose();
   }
   if (_metricsCb) {
-    RequestMetrics metrics;
-    metrics.method = req.method();
-    metrics.path = req.path();
-    metrics.status = resp.statusCode();
-    metrics.bytesIn = req.body().size();
-    metrics.reusedConnection = state.requestsServed > 0;
-    metrics.duration = std::chrono::steady_clock::now() - reqStart;
-    _metricsCb(metrics);
+    emitRequestMetrics(req, resp.statusCode(), req.body().size(), state.requestsServed > 0, reqStart);
   }
 }
 
