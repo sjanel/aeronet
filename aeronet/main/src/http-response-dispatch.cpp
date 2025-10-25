@@ -27,6 +27,9 @@
 #include "tcp-connector.hpp"
 #include "timedef.hpp"
 #include "transport.hpp"
+#ifdef AERONET_ENABLE_OPENSSL
+#include "tls-transport.hpp"
+#endif
 
 namespace aeronet {
 
@@ -228,8 +231,8 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpReques
     }
   }
 
-  queueData(cnxIt, resp.finalizeAndStealData(req.version(), SysClock::now(), keepAlive, _config.globalHeaders, isHead,
-                                             _config.minCapturedBodySize));
+  queuePreparedResponse(cnxIt, resp.finalizeAndStealData(req.version(), SysClock::now(), keepAlive,
+                                                         _config.globalHeaders, isHead, _config.minCapturedBodySize));
 
   state.inBuffer.erase_front(consumedBytes);
   if (!keepAlive && state.outBuffer.empty()) {
@@ -247,15 +250,41 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpReques
   }
 }
 
-bool HttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData) {
+bool HttpServer::queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::PreparedResponse prepared) {
+  const bool hasFile = prepared.fileLength > 0;
+  const std::uint64_t fileBytes = hasFile ? prepared.fileLength : 0;
+
+  if (!queueData(cnxIt, std::move(prepared.data), fileBytes)) {
+    return false;
+  }
+
+  if (hasFile) {
+    ConnectionState& state = cnxIt->second;
+    state.fileSend.file = std::move(prepared.file);
+    state.fileSend.offset = prepared.fileOffset;
+    state.fileSend.remaining = prepared.fileLength;
+    state.fileSend.active = state.fileSend.remaining > 0;
+    state.fileSend.headersPending = !state.outBuffer.empty();
+    if (state.fileSend.active) {
+      if (!state.waitingWritable) {
+        enableWritableInterest(cnxIt, "enable writable sendfile");
+      }
+      if (!state.fileSend.headersPending) {
+        flushFilePayload(cnxIt);
+      }
+    }
+  }
+  return true;
+}
+
+bool HttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData, std::uint64_t extraQueuedBytes) {
   ConnectionState& state = cnxIt->second;
 
-  const auto totalSz = httpResponseData.remainingSize();
+  const auto bufferedSz = httpResponseData.remainingSize();
 
   if (state.outBuffer.empty()) {
     // Plain TCP path: try immediate write optimization
-    TransportHint want;
-    const std::size_t written = state.transportWrite(httpResponseData, want);
+    const auto [written, want] = state.transportWrite(httpResponseData);
     switch (want) {
       case TransportHint::Error:
         state.requestImmediateClose();
@@ -265,8 +294,8 @@ bool HttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseD
       case TransportHint::WriteReady:
         [[fallthrough]];
       case TransportHint::None:
-        if (std::cmp_equal(written, totalSz)) {
-          _stats.totalBytesQueued += static_cast<uint64_t>(totalSz);
+        if (std::cmp_equal(written, bufferedSz)) {
+          _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
           _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
           return true;
         }
@@ -281,17 +310,13 @@ bool HttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseD
   }
 
   const std::size_t remainingSize = state.outBuffer.remainingSize();
-  _stats.totalBytesQueued += static_cast<uint64_t>(totalSz);
+  _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
   _stats.maxConnectionOutboundBuffer = std::max(_stats.maxConnectionOutboundBuffer, remainingSize);
   if (remainingSize > _config.maxOutboundBufferBytes) {
     state.requestImmediateClose();
   }
   if (!state.waitingWritable) {
-    if (HttpServer::ModWithCloseOnFailure(_eventLoop, cnxIt, EPOLLIN | EPOLLOUT | EPOLLET,
-                                          "enable writable buffered path", _stats)) {
-      state.waitingWritable = true;
-      ++_stats.deferredWriteEvents;
-    }
+    enableWritableInterest(cnxIt, "enable writable buffered path");
   }
 
   // If we buffered data, try flushing it immediately
@@ -308,7 +333,8 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   ConnectionState& state = cnxIt->second;
   const int fd = cnxIt->first.fd();
   while (!state.outBuffer.empty()) {
-    const std::size_t written = state.transportWrite(state.outBuffer, want);
+    const auto [written, stepWant] = state.transportWrite(state.outBuffer);
+    want = stepWant;
     _stats.totalBytesWrittenFlush += written;
     switch (want) {
       case TransportHint::Error: {
@@ -335,32 +361,125 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
     }
   }
 
+  if (state.outBuffer.empty() && state.fileSend.headersPending) {
+    state.fileSend.headersPending = false;
+  }
+
+  flushFilePayload(cnxIt);
+
   // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
-  if (state.outBuffer.empty() && state.waitingWritable && (state.tlsEstablished || state.transport->handshakeDone()) &&
-      HttpServer::ModWithCloseOnFailure(_eventLoop, cnxIt, EPOLLIN | EPOLLET,
-                                        "disable writable flushOutbound drop EPOLLOUT", _stats)) {
-    state.waitingWritable = false;
-    if (state.isAnyCloseRequested()) {
-      return;
+  if (state.outBuffer.empty() && !state.fileSend.active && state.waitingWritable &&
+      (state.tlsEstablished || state.transport->handshakeDone())) {
+    if (disableWritableInterest(cnxIt, "disable writable flushOutbound drop EPOLLOUT")) {
+      if (state.isAnyCloseRequested()) {
+        return;
+      }
     }
   }
   // Clear writable interest if no buffered data and transport no longer needs write progress.
   // (We do not call handshakePending() here because ConnStateInternal does not expose it; transport has that.)
-  if (state.outBuffer.empty()) {
+  if (state.outBuffer.empty() && !state.fileSend.active) {
     bool transportNeedsWrite = (!state.tlsEstablished && want == TransportHint::WriteReady);
     if (transportNeedsWrite) {
       if (!state.waitingWritable) {
-        if (!HttpServer::ModWithCloseOnFailure(_eventLoop, cnxIt, EPOLLIN | EPOLLOUT | EPOLLET,
-                                               "enable writable flushOutbound transportNeedsWrite", _stats)) {
+        if (!enableWritableInterest(cnxIt, "enable writable flushOutbound transportNeedsWrite")) {
           return;  // failure logged
         }
-        state.waitingWritable = true;
       }
     } else if (state.waitingWritable) {
-      state.waitingWritable = false;
-      HttpServer::ModWithCloseOnFailure(_eventLoop, cnxIt, EPOLLIN | EPOLLET,
-                                        "disable writable flushOutbound transport no longer needs", _stats);
+      disableWritableInterest(cnxIt, "disable writable flushOutbound transport no longer needs");
     }
+  }
+}
+
+bool HttpServer::flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt) {
+  ConnectionState& state = cnxIt->second;
+  if (state.tunnelOrFileBuffer.empty()) {
+    return false;
+  }
+
+  const auto [written, want] = state.transportWrite(state.tunnelOrFileBuffer);
+  if (want == TransportHint::Error) {
+    state.requestImmediateClose();
+    state.fileSend.active = false;
+    state.tunnelOrFileBuffer.clear();
+    return false;
+  }
+  if (written > 0) {
+    state.tunnelOrFileBuffer.erase_front(written);
+    state.fileSend.offset += written;
+    state.fileSend.remaining -= written;
+    _stats.totalBytesWrittenFlush += written;
+  }
+  if (!state.tunnelOrFileBuffer.empty() || want == TransportHint::WriteReady) {
+    if (want == TransportHint::WriteReady && !state.waitingWritable) {
+      enableWritableInterest(cnxIt, "enable writable sendfile TLS pending");
+    }
+    if (state.fileSend.remaining == 0) {
+      state.fileSend.active = false;
+    }
+    return true;
+  }
+  return false;
+}
+
+void HttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
+  ConnectionState& state = cnxIt->second;
+  if (!state.fileSend.active) {
+    return;
+  }
+
+  if (state.fileSend.headersPending) {
+    if (!state.outBuffer.empty()) {
+      return;
+    }
+    state.fileSend.headersPending = false;
+  }
+
+  if (state.fileSend.remaining == 0) {
+    state.fileSend.active = false;
+    state.tunnelOrFileBuffer.clear();
+    return;
+  }
+
+  if (!state.transport->handshakeDone()) {
+    return;
+  }
+
+#ifdef AERONET_ENABLE_OPENSSL
+  const bool tlsFlow = _config.tls.enabled && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr;
+#else
+  static constexpr bool tlsFlow = false;
+#endif
+
+  if (tlsFlow && flushPendingTunnelOrFileBuffer(cnxIt)) {
+    // First flush any pending buffered TLS bytes.
+    return;
+  }
+
+  const auto res = state.transportFile(cnxIt->first.fd(), tlsFlow);
+  switch (res.code) {
+    case ConnectionState::FileResult::Code::Read:
+      // Read case: if buffer ended up empty then either EOF (handled by helper) or nothing to do.
+      break;
+    case ConnectionState::FileResult::Code::Sent:
+      _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(res.bytesDone);
+      break;
+    case ConnectionState::FileResult::Code::Error:
+      break;
+    case ConnectionState::FileResult::Code::WouldBlock:
+      if (res.enableWritable && !state.waitingWritable) {
+        // The helper reports WouldBlock; enable writable interest so we can resume later.
+        enableWritableInterest(cnxIt, "enable writable sendfile TLS pending");
+      }
+      break;
+    default:
+      std::unreachable();
+  }
+
+  if (tlsFlow && !flushPendingTunnelOrFileBuffer(cnxIt) && state.fileSend.remaining == 0) {
+    state.fileSend.active = false;
+    state.tunnelOrFileBuffer.clear();
   }
 }
 

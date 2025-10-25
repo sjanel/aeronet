@@ -3,11 +3,15 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
-#include <iterator>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <ios>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -17,8 +21,89 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "exception.hpp"
+#include "file.hpp"
 #include "stringconv.hpp"
 #include "timedef.hpp"
+
+namespace {
+
+std::string toHex(unsigned long long value) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(16);
+  for (int i = 15; i >= 0; --i) {
+    out.push_back(kHex[(value >> (i * 4)) & 0xF]);
+  }
+  return out;
+}
+
+class ScopedTempFile {
+ public:
+  static ScopedTempFile create(std::string_view prefix, std::string_view content) {
+    namespace fs = std::filesystem;
+    const fs::path base = fs::temp_directory_path();
+    std::random_device rd;
+    std::mt19937_64 gen(rd());
+    std::uniform_int_distribution<unsigned long long> dist;
+    for (int attempt = 0; attempt < 16; ++attempt) {
+      fs::path candidate = base / (std::string(prefix) + toHex(dist(gen)) + ".tmp");
+      if (fs::exists(candidate)) {
+        continue;
+      }
+      std::ofstream ofs(candidate, std::ios::binary | std::ios::trunc);
+      if (!ofs) {
+        continue;
+      }
+      if (!content.empty()) {
+        ofs.write(content.data(), static_cast<std::streamsize>(content.size()));
+        if (!ofs) {
+          ofs.close();
+          std::error_code ec;
+          fs::remove(candidate, ec);
+          continue;
+        }
+      }
+      ofs.close();
+      return ScopedTempFile(candidate.string());
+    }
+    throw std::runtime_error("ScopedTempFile: unable to create unique file");
+  }
+
+  ScopedTempFile() = default;
+  explicit ScopedTempFile(std::string path) : _path(std::move(path)) {}
+
+  ScopedTempFile(const ScopedTempFile &) = delete;
+  ScopedTempFile &operator=(const ScopedTempFile &) = delete;
+
+  ScopedTempFile(ScopedTempFile &&other) noexcept : _path(std::move(other._path)) { other._path.clear(); }
+
+  ScopedTempFile &operator=(ScopedTempFile &&other) noexcept {
+    if (this != &other) {
+      cleanup();
+      _path = std::move(other._path);
+      other._path.clear();
+    }
+    return *this;
+  }
+
+  ~ScopedTempFile() { cleanup(); }
+
+  [[nodiscard]] std::string_view path() const { return _path; }
+
+ private:
+  void cleanup() noexcept {
+    if (_path.empty()) {
+      return;
+    }
+    std::error_code ec;
+    std::filesystem::remove(_path, ec);
+    _path.clear();
+  }
+
+  std::string _path;
+};
+
+}  // namespace
 
 namespace aeronet {
 
@@ -29,9 +114,16 @@ class HttpResponseTest : public ::testing::Test {
   static constexpr bool isHeadMethod = false;
   static constexpr std::size_t minCapturedBodySize = 4096;
 
-  static HttpResponseData finalize(HttpResponse &&resp) {
+  static HttpResponse::PreparedResponse finalizePrepared(HttpResponse &&resp, bool head = isHeadMethod,
+                                                         bool keepAliveFlag = keepAlive) {
     std::vector<http::Header> globalHeaders;
-    return resp.finalizeAndStealData(http::HTTP_1_1, tp, keepAlive, globalHeaders, isHeadMethod, minCapturedBodySize);
+    return resp.finalizeAndStealData(http::HTTP_1_1, tp, keepAliveFlag, globalHeaders, head, minCapturedBodySize);
+  }
+
+  static HttpResponseData finalize(HttpResponse &&resp) {
+    auto prepared = finalizePrepared(std::move(resp));
+    EXPECT_EQ(prepared.fileLength, 0U);
+    return std::move(prepared.data);
   }
 
   static std::string concatenated(HttpResponse &&resp) {
@@ -153,9 +245,9 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithBody) {
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
-  HttpResponse resp(404, "Not Found");
+  HttpResponse resp(http::StatusCodeNotFound, "Not Found");
   resp.body("Hello");
-  resp.statusCode(200).reason("OK");
+  resp.statusCode(http::StatusCodeOK).reason("OK");
   EXPECT_EQ(resp.reason(), "OK");
   auto full = concatenated(std::move(resp));
 
@@ -176,14 +268,53 @@ TEST_F(HttpResponseTest, AllowsDuplicates) {
 }
 
 TEST_F(HttpResponseTest, ProperTermination) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(http::StatusCodeOK, "OK");
   auto full = concatenated(std::move(resp));
   ASSERT_TRUE(full.size() >= 4);
   EXPECT_EQ(full.substr(full.size() - 4), http::DoubleCRLF);
 }
 
+TEST_F(HttpResponseTest, SendFilePayload) {
+  constexpr std::string_view kPayload = "static file payload";
+  auto tmp = ScopedTempFile::create("aeronet-sendfile-", kPayload);
+  File file(tmp.path());
+  ASSERT_TRUE(file.isOpened());
+  const std::uint64_t sz = file.size();
+
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.sendFile(std::move(file));
+
+  auto prepared = finalizePrepared(std::move(resp));
+  EXPECT_EQ(prepared.fileLength, sz);
+  EXPECT_TRUE(prepared.file.isOpened());
+  EXPECT_EQ(prepared.file.size(), sz);
+
+  std::string headers(prepared.data.firstBuffer());
+  EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz)));
+  EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
+}
+
+TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
+  constexpr std::string_view kPayload = "head sendfile payload";
+  auto tmp = ScopedTempFile::create("aeronet-sendfile-head-", kPayload);
+  File file(tmp.path());
+  ASSERT_TRUE(file.isOpened());
+  const std::uint64_t sz = file.size();
+
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.sendFile(std::move(file));
+
+  auto prepared = finalizePrepared(std::move(resp), true /*head*/);
+  EXPECT_EQ(prepared.fileLength, 0U);
+  EXPECT_FALSE(prepared.file.isOpened());
+
+  std::string headers(prepared.data.firstBuffer());
+  EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz)));
+  EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
+}
+
 TEST_F(HttpResponseTest, SingleTerminatingCRLF) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(http::StatusCodeOK, "OK");
   resp.addCustomHeader("X-Header", "v1");
   auto full = concatenated(std::move(resp));
   ASSERT_TRUE(full.size() >= 4);
@@ -192,11 +323,11 @@ TEST_F(HttpResponseTest, SingleTerminatingCRLF) {
 }
 
 TEST_F(HttpResponseTest, ReplaceDifferentSizes) {
-  HttpResponse resp1(200, "OK");
+  HttpResponse resp1(http::StatusCodeOK, "OK");
   resp1.addCustomHeader("X-A", "1").body("Hello");
-  HttpResponse resp2(200, "OK");
+  HttpResponse resp2(http::StatusCodeOK, "OK");
   resp2.addCustomHeader("X-A", "1").body("Hello");
-  HttpResponse resp3(200, "OK");
+  HttpResponse resp3(http::StatusCodeOK, "OK");
   resp3.addCustomHeader("X-A", "1").body("Hello");
   auto firstFull = concatenated(std::move(resp1));
   auto firstLen = firstFull.size();
@@ -216,7 +347,7 @@ TEST_F(HttpResponseTest, ReplaceDifferentSizes) {
 // triggered a reallocation.
 TEST_F(HttpResponseTest, BodyAssignFromInternalReasonTriggersReallocSafe) {
   // Choose a non-empty reason so we have internal bytes to reference.
-  HttpResponse resp(200, "INTERNAL-REASON");
+  HttpResponse resp(http::StatusCodeOK, "INTERNAL-REASON");
   std::string_view src = resp.reason();  // points into resp's internal buffer
   EXPECT_EQ(src, "INTERNAL-REASON");
   // Body currently empty -> diff = src.size() => ensureAvailableCapacity likely reallocates
@@ -225,7 +356,7 @@ TEST_F(HttpResponseTest, BodyAssignFromInternalReasonTriggersReallocSafe) {
   EXPECT_EQ(src, "INTERNAL-REASON");
   EXPECT_EQ(resp.body(), src);
   auto full = concatenated(std::move(resp));
-  resp = HttpResponse(200, "INTERNAL-REASON");
+  resp = HttpResponse(http::StatusCodeOK, "INTERNAL-REASON");
   src = resp.reason();
   // Validate Content-Length header matches and body placed at tail.
   std::string clNeedle = std::string("Content-Length: ") + std::to_string(src.size()) + "\r\n";
@@ -236,7 +367,7 @@ TEST_F(HttpResponseTest, BodyAssignFromInternalReasonTriggersReallocSafe) {
 // --- New tests for header(K,V) replacement logic ---
 
 TEST_F(HttpResponseTest, HeaderNewViaSetter) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(http::StatusCodeOK, "OK");
   resp.customHeader("X-First", "One");
   auto full = concatenated(std::move(resp));
   EXPECT_EQ(full,
@@ -244,7 +375,7 @@ TEST_F(HttpResponseTest, HeaderNewViaSetter) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceLargerValue) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(http::StatusCodeOK, "OK");
   resp.customHeader("X-Replace", "AA");
   // Replace with larger value
   resp.customHeader("X-Replace", "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
@@ -255,7 +386,7 @@ TEST_F(HttpResponseTest, HeaderReplaceLargerValue) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceSmallerValue) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(http::StatusCodeOK, "OK");
   resp.customHeader("X-Replace", "LONG-LONG-VALUE");
   // Replace with smaller
   resp.customHeader("X-Replace", "S");
@@ -265,7 +396,7 @@ TEST_F(HttpResponseTest, HeaderReplaceSmallerValue) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceSameLengthValue) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(http::StatusCodeOK, "OK");
   resp.customHeader("X-Replace", "LEN10VALUE");  // length 10
   resp.customHeader("X-Replace", "0123456789");  // also length 10
   auto full = concatenated(std::move(resp));
@@ -276,7 +407,7 @@ TEST_F(HttpResponseTest, HeaderReplaceSameLengthValue) {
 
 // Ensure replacement logic does not mistake key pattern inside a value as a header start.
 TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternLarger) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(http::StatusCodeOK, "OK");
   resp.customHeader("X-Key", "before X-Key: should-not-trigger");
   // Replace header; algorithm must not treat the embedded "X-Key: " in the value as another header start
   resp.customHeader("X-Key", "REPLACED-VALUE");
@@ -287,7 +418,7 @@ TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternLarger) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(http::StatusCodeOK, "OK");
   resp.customHeader("X-Key", "AAAA X-Key: B BBBBBB");
   resp.customHeader("X-Key", "SMALL");
   auto full = concatenated(std::move(resp));
@@ -298,7 +429,7 @@ TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
 // --- New tests: header replacement while a body is present ---
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(http::StatusCodeOK, "OK");
   resp.customHeader("X-Val", "AA");
   resp.body("Hello");                        // body length 5
   resp.customHeader("X-Val", "ABCDEFGHIJ");  // grow header value
@@ -309,7 +440,7 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(http::StatusCodeOK, "OK");
   resp.customHeader("X-Val", "SOME-LONG-VALUE");
   resp.body("WorldWide");           // length 9
   resp.customHeader("X-Val", "S");  // shrink header value
@@ -320,7 +451,7 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(http::StatusCodeOK, "OK");
   resp.customHeader("X-Val", "LEN10VALUE");  // length 10
   resp.body("Data");                         // length 4
   resp.customHeader("X-Val", "0123456789");  // same length replacement
@@ -331,7 +462,7 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(http::StatusCodeOK, "OK");
   resp.customHeader("X-Val", "LEN10VALUE");  // length 10
   resp.body("Data");                         // length 4
   resp.customHeader("x-val", "0123456789");  // same length replacement
@@ -350,7 +481,7 @@ TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
 // 6. Replace header with smaller value
 // 7. Finalize and assert exact layout
 TEST_F(HttpResponseTest, InterleavedReasonAndHeaderMutations) {
-  HttpResponse resp(200, "");
+  HttpResponse resp(http::StatusCodeOK, "");
   resp.addCustomHeader("X-A", "1");
   resp.addCustomHeader("X-B", "2");
   resp.reason("LONGER-REASON");
@@ -365,7 +496,7 @@ TEST_F(HttpResponseTest, InterleavedReasonAndHeaderMutations) {
 // ---------------- Additional Stress / Fuzz Tests ----------------
 
 TEST_F(HttpResponseTest, RepeatedGrowShrinkCycles) {
-  HttpResponse resp(200, "");
+  HttpResponse resp(http::StatusCodeOK, "");
   resp.addCustomHeader("X-Static", "STATIC");
   resp.customHeader("X-Cycle", "A");
   resp.reason("R1");
@@ -397,20 +528,20 @@ TEST_F(HttpResponseTest, RepeatedGrowShrinkCycles) {
 // --- Trailer-related tests (response-side) ---
 
 TEST_F(HttpResponseTest, AddTrailerWithoutBodyThrows) {
-  HttpResponse resp(200);
+  HttpResponse resp(http::StatusCodeOK);
   // No body set at all -> adding trailer should throw
   EXPECT_THROW(resp.addTrailer("X-Checksum", "abc123"), std::logic_error);
 }
 
 TEST_F(HttpResponseTest, AddTrailerAfterEmptyBodyThrows) {
-  HttpResponse resp(200);
+  HttpResponse resp(http::StatusCodeOK);
   resp.body("");
   // Explicitly-empty body should still be considered 'no body' for trailers
   EXPECT_THROW(resp.addTrailer("X-Checksum", "abc123"), std::logic_error);
 }
 
 TEST_F(HttpResponseTest, SetBodyAfterTrailerThrows) {
-  HttpResponse resp(200);
+  HttpResponse resp(http::StatusCodeOK);
   resp.body("initial");
   resp.addTrailer("X-Test", "val");
   // Once a trailer was inserted, setting body later must throw
@@ -419,7 +550,7 @@ TEST_F(HttpResponseTest, SetBodyAfterTrailerThrows) {
 
 TEST_F(HttpResponseTest, LargeHeaderCountStress) {
   constexpr int kCount = 600;
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(http::StatusCodeOK, "OK");
   for (int i = 0; i < kCount; ++i) {
     resp.addCustomHeader("X-" + std::to_string(i), std::to_string(i));
   }

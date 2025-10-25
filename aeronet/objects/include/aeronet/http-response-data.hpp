@@ -4,7 +4,7 @@
 #include <string_view>
 #include <utility>
 
-#include "http-body.hpp"
+#include "http-payload.hpp"
 #include "raw-chars.hpp"
 
 namespace aeronet {
@@ -17,10 +17,10 @@ class HttpResponseData {
 
   explicit HttpResponseData(RawChars head) noexcept : _headAndOptionalBody(std::move(head)) {}
 
-  HttpResponseData(RawChars head, HttpBody body) noexcept
+  HttpResponseData(RawChars head, HttpPayload body) noexcept
       : _headAndOptionalBody(std::move(head)), _capturedBody(std::move(body)) {}
 
-  HttpResponseData(std::string_view head, HttpBody body) noexcept
+  HttpResponseData(std::string_view head, HttpPayload body) noexcept
       : _headAndOptionalBody(head), _capturedBody(std::move(body)) {}
 
   [[nodiscard]] std::string_view firstBuffer() const noexcept {
@@ -42,13 +42,12 @@ class HttpResponseData {
   void addOffset(std::size_t sz) noexcept { _offset += sz; }
 
   void append(HttpResponseData other) {
-    if (_capturedBody.unset()) {
-      _headAndOptionalBody.append(other._headAndOptionalBody);
-      _capturedBody = std::move(other._capturedBody);
-    } else {
-      // If our captured body is already set, we can only append other's data to it.
+    if (_capturedBody.set()) {  // If our captured body is already set, we can only append other's data to it.
       _capturedBody.append(other._headAndOptionalBody);
       _capturedBody.append(other._capturedBody);
+    } else {
+      _headAndOptionalBody.append(other._headAndOptionalBody);
+      _capturedBody = std::move(other._capturedBody);
     }
   }
 
@@ -60,7 +59,7 @@ class HttpResponseData {
 
  private:
   RawChars _headAndOptionalBody;
-  HttpBody _capturedBody;
+  HttpPayload _capturedBody;
   std::size_t _offset{};
 };
 

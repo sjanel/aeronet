@@ -1,4 +1,4 @@
-#include "aeronet/http-body.hpp"
+#include "aeronet/http-payload.hpp"
 
 #include <gtest/gtest.h>
 
@@ -14,14 +14,14 @@
 using namespace aeronet;
 
 TEST(HttpBody, DefaultConstructedIsUnset) {
-  HttpBody body;
-  EXPECT_TRUE(body.unset());
+  HttpPayload body;
+  EXPECT_FALSE(body.set());
   EXPECT_EQ(body.size(), 0U);
   EXPECT_EQ(body.view().size(), 0U);
 }
 
 TEST(HttpBody, ConstructFromString) {
-  HttpBody body(std::string("hello"));
+  HttpPayload body(std::string("hello"));
   EXPECT_TRUE(body.set());
   EXPECT_EQ(body.size(), 5U);
   EXPECT_EQ(body.view(), "hello");
@@ -29,7 +29,7 @@ TEST(HttpBody, ConstructFromString) {
 
 TEST(HttpBody, ConstructFromVectorChar) {
   std::vector<char> vec{'a', 'b', 'c'};
-  HttpBody body(std::move(vec));
+  HttpPayload body(std::move(vec));
   EXPECT_TRUE(body.set());
   EXPECT_EQ(body.size(), 3U);
   EXPECT_EQ(body.view(), "abc");
@@ -38,7 +38,7 @@ TEST(HttpBody, ConstructFromVectorChar) {
 TEST(HttpBody, ConstructFromUniqueBuffer) {
   auto buf = std::make_unique<char[]>(4);
   std::memcpy(buf.get(), "abcd", 4);
-  HttpBody body(std::move(buf), 4);
+  HttpPayload body(std::move(buf), 4);
   EXPECT_TRUE(body.set());
   EXPECT_EQ(body.size(), 4U);
   EXPECT_EQ(body.view(), std::string_view("abcd", 4));
@@ -46,35 +46,35 @@ TEST(HttpBody, ConstructFromUniqueBuffer) {
 
 TEST(HttpBody, ConstructFromRawChars) {
   RawChars rawChars(std::string_view("xyz", 3));
-  HttpBody body(std::move(rawChars));
+  HttpPayload body(std::move(rawChars));
   EXPECT_TRUE(body.set());
   EXPECT_EQ(body.size(), 3U);
   EXPECT_EQ(body.view(), "xyz");
 }
 
 TEST(HttpBody, AppendStringToString) {
-  HttpBody body(std::string("foo"));
+  HttpPayload body(std::string("foo"));
   body.append(std::string_view("bar"));
   EXPECT_EQ(body.view(), "foobar");
 }
 
 TEST(HttpBody, AppendStringViewToVector) {
   std::vector<char> vec{'1', '2'};
-  HttpBody body(std::move(vec));
+  HttpPayload body(std::move(vec));
   body.append(std::string_view("34"));
   EXPECT_EQ(body.view(), "1234");
 }
 
 TEST(HttpBody, AppendHttpBodyToString) {
-  HttpBody body1(std::string("head"));
-  HttpBody body2(std::string("tail"));
+  HttpPayload body1(std::string("head"));
+  HttpPayload body2(std::string("tail"));
   body1.append(body2);
   EXPECT_EQ(body1.view(), "headtail");
 }
 
 TEST(HttpBody, AppendHttpBodyToMonostateAdopts) {
-  HttpBody body1;  // monostate
-  HttpBody body2(std::string("adopted"));
+  HttpPayload body1;  // monostate
+  HttpPayload body2(std::string("adopted"));
   body1.append(body2);
   EXPECT_TRUE(body1.set());
   EXPECT_EQ(body1.view(), "adopted");
@@ -83,42 +83,42 @@ TEST(HttpBody, AppendHttpBodyToMonostateAdopts) {
 TEST(HttpBody, AppendLargeToCharBuffer) {
   auto buf = std::make_unique<char[]>(3);
   std::memcpy(buf.get(), "ABC", 3);
-  HttpBody body(std::move(buf), 3);
+  HttpPayload body(std::move(buf), 3);
   body.append(std::string_view("DEF"));
   EXPECT_EQ(body.size(), 6U);
   EXPECT_EQ(body.view(), "ABCDEF");
 }
 
 TEST(HttpBody, ClearResetsSizeOrZeroesBuffer) {
-  HttpBody body1(std::string("toreset"));
+  HttpPayload body1(std::string("toreset"));
   EXPECT_EQ(body1.size(), 7U);
   body1.clear();
   EXPECT_EQ(body1.size(), 0U);
-  HttpBody body2(std::vector<char>{'x', 'y'});
+  HttpPayload body2(std::vector<char>{'x', 'y'});
   body2.clear();
   EXPECT_EQ(body2.size(), 0U);
   auto buf = std::make_unique<char[]>(5);
   std::memcpy(buf.get(), "hello", 5);
-  HttpBody body3(std::move(buf), 5);
+  HttpPayload body3(std::move(buf), 5);
   body3.clear();
   EXPECT_EQ(body3.size(), 0U);
 }
 
 TEST(HttpBody, MultipleAppendCombinations) {
-  HttpBody dst(std::string("A"));
-  HttpBody src(std::vector<char>{'B', 'C'});
+  HttpPayload dst(std::string("A"));
+  HttpPayload src(std::vector<char>{'B', 'C'});
   dst.append(src);
   dst.append(std::string_view("D"));
   EXPECT_EQ(dst.view(), "ABCD");
 
-  HttpBody dst2;  // start empty
+  HttpPayload dst2;  // start empty
   dst2.append(dst);
   EXPECT_EQ(dst2.view(), "ABCD");
 }
 
 // Ensure that view remains valid and consistent across operations
 TEST(HttpBody, ViewStabilityAfterAppend) {
-  HttpBody body1(std::string("start"));
+  HttpPayload body1(std::string("start"));
   std::string_view data = body1.view();
   EXPECT_EQ(data, "start");
   body1.append(std::string_view("-more"));
