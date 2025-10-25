@@ -191,6 +191,12 @@ HttpServerConfig& HttpServerConfig::withRouterConfig(RouterConfig cfg) {
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withStaticFileConfig(StaticFileConfig cfg) {
+  cfg.validate();
+  staticFiles = std::move(cfg);
+  return *this;
+}
+
 HttpServerConfig& HttpServerConfig::withGlobalHeaders(std::vector<http::Header> headers) {
   globalHeaders = std::move(headers);
   return *this;
@@ -221,6 +227,7 @@ HttpServerConfig& HttpServerConfig::enableBuiltinProbes(bool on) {
 void HttpServerConfig::validate() const {
   compression.validate();
   requestDecompression.validate();
+  staticFiles.validate();
 
   if (maxPerEventReadBytes != 0 && maxPerEventReadBytes < initialReadChunkBytes) {
     // Normalize: cap cannot be smaller than a single chunk; promote to chunk size.

@@ -1,12 +1,15 @@
 #include "timestring.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <ctime>
 #include <string_view>
 #include <utility>
 
+#include "cctype.hpp"
 #include "config.hpp"
 #include "invalid_argument_exception.hpp"
 #include "ipow.hpp"
@@ -174,6 +177,80 @@ std::pair<SysTimePoint, SysTimePoint> ParseTimeWindow(std::string_view str) {
   const std::chrono::sys_days toSysDays = fromSysDays + std::chrono::days{1};
 
   return {SysTimePoint(fromSysDays), SysTimePoint(toSysDays)};
+}
+
+SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
+  SysTimePoint ret = kInvalidTimePoint;
+  while (begPtr < endPtr && isspace(*begPtr)) {
+    ++begPtr;
+  }
+  while (endPtr > begPtr && isspace(*(endPtr - 1))) {
+    --endPtr;
+  }
+
+  if (begPtr >= endPtr) {
+    return ret;
+  }
+
+  const auto len = endPtr - begPtr;
+  if (len != static_cast<std::ptrdiff_t>(kRFC7231DateStrLen)) {
+    return ret;  // Expect strict IMF-fixdate form
+  }
+
+  const char* ptr = begPtr;
+  if (ptr[3] != ',' || ptr[4] != ' ' || ptr[7] != ' ' || ptr[11] != ' ' || ptr[16] != ' ' || ptr[19] != ':' ||
+      ptr[22] != ':' || ptr[25] != ' ') {
+    return ret;
+  }
+
+  auto isDigit = [](char ch) { return std::isdigit(static_cast<unsigned char>(ch)) != 0; };
+  if (!isDigit(ptr[5]) || !isDigit(ptr[6]) || !isDigit(ptr[12]) || !isDigit(ptr[13]) || !isDigit(ptr[14]) ||
+      !isDigit(ptr[15]) || !isDigit(ptr[17]) || !isDigit(ptr[18]) || !isDigit(ptr[20]) || !isDigit(ptr[21]) ||
+      !isDigit(ptr[23]) || !isDigit(ptr[24])) {
+    return ret;
+  }
+  if (ptr[26] != 'G' || ptr[27] != 'M' || ptr[28] != 'T') {
+    return ret;
+  }
+
+  static constexpr std::array<std::string_view, 12> MONTHS{"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                                           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+  const std::string_view monthToken(ptr + 8, 3);
+  int monthIndex = -1;
+  for (std::size_t i = 0; i < MONTHS.size(); ++i) {
+    if (MONTHS[i] == monthToken) {
+      monthIndex = static_cast<int>(i) + 1;
+      break;
+    }
+  }
+  if (monthIndex == -1) {
+    return ret;
+  }
+
+  const int dayValue = read2(ptr + 5);
+  const int yearValue = read4(ptr + 12);
+  const int hourValue = read2(ptr + 17);
+  const int minuteValue = read2(ptr + 20);
+  const int secondValue = read2(ptr + 23);
+
+  if (dayValue <= 0 || hourValue < 0 || hourValue > 23 || minuteValue < 0 || minuteValue > 59 || secondValue < 0 ||
+      secondValue > 60) {
+    return ret;
+  }
+
+  const std::chrono::year yearField{yearValue};
+  const std::chrono::month monthField{static_cast<unsigned>(monthIndex)};
+  const std::chrono::day dayField{static_cast<unsigned>(dayValue)};
+  const std::chrono::year_month_day ymd{yearField, monthField, dayField};
+  if (!ymd.ok()) {
+    return ret;
+  }
+
+  const std::chrono::sys_days dayPoint{ymd};
+  ret =
+      dayPoint + std::chrono::hours{hourValue} + std::chrono::minutes{minuteValue} + std::chrono::seconds{secondValue};
+  return ret;
 }
 
 }  // namespace aeronet

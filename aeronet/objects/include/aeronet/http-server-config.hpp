@@ -14,6 +14,7 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/otel-config.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/static-file-config.hpp"
 #include "compression-config.hpp"
 #include "decompression-config.hpp"
 #include "tls-config.hpp"
@@ -122,6 +123,11 @@ struct HttpServerConfig {
   // Router configuration
   // ===========================================
   RouterConfig router;
+
+  // ===========================================
+  // Static file helper configuration
+  // ===========================================
+  StaticFileConfig staticFiles;
 
   // ===========================================
   // Header merge behavior tuning
@@ -301,6 +307,9 @@ struct HttpServerConfig {
 
   // Replace the router configuration wholesale
   HttpServerConfig& withRouterConfig(RouterConfig cfg);
+
+  // Replace static file helper configuration (validated copy stored in config)
+  HttpServerConfig& withStaticFileConfig(StaticFileConfig cfg);
 
   // Replace the global response headers list
   HttpServerConfig& withGlobalHeaders(std::vector<http::Header> headers);

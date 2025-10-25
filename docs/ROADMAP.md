@@ -2,18 +2,20 @@
 
 This file lists planned features and near-term priorities. Implemented features are documented in `docs/FEATURES.md` and `README.md` (notably: zero-copy `sendfile()` support and the lightweight `sendFile` helper are implemented in v0.4.x).
 
-## High priority
+## Recently delivered
 
 - Range & Conditional Requests (RFC 7233, RFC 7232)
-  - Single-range 206 Partial Content support, `Content-Range` header, `Accept-Ranges: bytes`.
-  - `If-Range`, `If-Modified-Since`, `If-None-Match` / `ETag` handling and 304 responses.
-  - 416 (Range Not Satisfiable) handling.
-  - Integration with `sendFile` offsets/lengths so range serving is zero-copy on plaintext sockets.
+  - Implemented in `StaticFileHandler` (v0.4.x). See `docs/FEATURES.md#static-file-handler-rfc-7233--rfc-7232` for
+    usage, config, and tests.
+
+## High priority
+
 - KTLS integration (kernel TLS)
   - Optional kernel TLS support to enable encrypted zero-copy sendfile on platforms that support it.
   - Runtime detection + OpenSSL integration, graceful fallback to existing TLS write path when unavailable.
-- Static-file helper & directory index
-  - High-level, safe handler for serving filesystem trees: path sanitization, MIME detection, ETag/Last-Modified generation, directory index rendering, and automatic range & conditional handling.
+- Static-file directory index
+  - Directory listing rendering layered on top of the shipped static file helper.
+  - Optional template hook for custom branding / security banners.
 
 ## Medium priority
 
