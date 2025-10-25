@@ -13,3 +13,10 @@ target_include_directories(aeronet_sys
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
+
+add_unit_test(
+    base-fd_test
+    test/base-fd_test.cpp
+    LIBRARIES
+    aeronet_sys
+)
