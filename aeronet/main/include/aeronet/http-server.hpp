@@ -252,6 +252,9 @@ class HttpServer {
   bool maybeDecompressRequestBody(ConnectionMapIt cnxIt, HttpRequest& req);
   void finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpRequest& req, HttpResponse&& resp,
                                std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
+  // Helper to populate and invoke the metrics callback for a completed request.
+  void emitRequestMetrics(const HttpRequest& req, http::StatusCode status, std::size_t bytesIn, bool reusedConnection,
+                          std::chrono::steady_clock::time_point reqStart);
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // If immediate=true the connection will be closed without waiting for buffered writes to drain.
   void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, bool immediate = false,

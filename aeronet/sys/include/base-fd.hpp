@@ -7,20 +7,23 @@ class BaseFd {
  public:
   static constexpr int kClosedFd = -1;
 
-  BaseFd() noexcept = default;
+  explicit BaseFd(int fd = kClosedFd) noexcept : _fd(fd) {}
 
-  explicit BaseFd(int fd) noexcept : _fd(fd) {}
-
-  BaseFd(const BaseFd &) = delete;
-  BaseFd(BaseFd &&other) noexcept;
-  BaseFd &operator=(const BaseFd &) = delete;
+  BaseFd(const BaseFd &other) = delete;
+  BaseFd(BaseFd &&other) noexcept : _fd(other.release()) {}
+  BaseFd &operator=(const BaseFd &other) = delete;
   BaseFd &operator=(BaseFd &&other) noexcept;
 
-  ~BaseFd();
+  ~BaseFd() { close(); }
 
   [[nodiscard]] int fd() const noexcept { return _fd; }
 
-  [[nodiscard]] bool isOpened() const noexcept { return _fd != kClosedFd; }
+  // Truthy check so users can write: if (baseFd) { ... }
+  explicit operator bool() const noexcept { return _fd != kClosedFd; }
+
+  // Release ownership of the underlying fd without closing it.
+  // Returns the raw fd and sets this object to closed state.
+  [[nodiscard]] int release() noexcept;
 
   // Close the underlying file descriptor immediately.
   // Typically you should rely on RAII (destructor) except when you need to:
@@ -32,7 +35,7 @@ class BaseFd {
   bool operator==(const BaseFd &) const noexcept = default;
 
  private:
-  int _fd = kClosedFd;
+  int _fd;
 };
 
 }  // namespace aeronet
