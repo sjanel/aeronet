@@ -18,7 +18,6 @@
 #include "aeronet/server-stats.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_server_tls_fixture.hpp"
-#include "aeronet/test_temp_file.hpp"
 #include "aeronet/test_tls_client.hpp"
 #include "aeronet/test_tls_helper.hpp"
 #include "aeronet/test_util.hpp"
@@ -297,13 +296,11 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
   ASSERT_FALSE(pair.first.empty());
   ASSERT_FALSE(pair.second.empty());
   // Write both to temp files
-  auto certFile = TempFile::createWithContent("aeronet_cert_", pair.first);
-  auto keyFile = TempFile::createWithContent("aeronet_key_", pair.second);
-  ASSERT_TRUE(certFile.valid());
-  ASSERT_TRUE(keyFile.valid());
+  auto certFile = aeronet::test::ScopedTempFile::create("aeronet_cert_", pair.first);
+  auto keyFile = aeronet::test::ScopedTempFile::create("aeronet_key_", pair.second);
 
   aeronet::HttpServerConfig cfg;
-  cfg.withTlsCertKey(certFile.path(), keyFile.path());  // file-based path (not memory)
+  cfg.withTlsCertKey(certFile.filePath().string(), keyFile.filePath().string());  // file-based path (not memory)
   cfg.withTlsAlpnProtocols({"http/1.1"});
   // Use plain TestServer since we manually set config
   aeronet::test::TestServer server(cfg, std::chrono::milliseconds{50});

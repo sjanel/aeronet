@@ -16,7 +16,6 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/test_server_tls_fixture.hpp"
-#include "aeronet/test_temp_file.hpp"
 #include "aeronet/test_tls_client.hpp"
 #include "aeronet/test_util.hpp"
 #include "file.hpp"
@@ -175,8 +174,8 @@ TEST(HttpTlsStreaming, ChunkedSimpleTls) {
 
 TEST(HttpTlsStreaming, SendFileFallbackBuffers) {
   constexpr std::string_view kPayload = "tls sendfile body contents";
-  TempFile temp = TempFile::createWithContent("aeronet-tls-sendfile-", kPayload);
-  std::string path(temp.path());
+  auto tmp = aeronet::test::ScopedTempFile::create("aeronet-tls-sendfile-", kPayload);
+  std::string path = tmp.filePath().string();
 
   aeronet::test::TlsTestServer ts({"http/1.1"});
   ts.setDefault([path](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {

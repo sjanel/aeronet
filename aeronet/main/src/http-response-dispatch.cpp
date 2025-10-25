@@ -259,9 +259,9 @@ bool HttpServer::queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::Prep
     state.fileSend.active = state.fileSend.remaining > 0;
     state.fileSend.headersPending = !state.outBuffer.empty();
     if (state.fileSend.active) {
-      if (!state.waitingWritable) {
-        enableWritableInterest(cnxIt, "enable writable sendfile");
-      }
+      // Don't enable writable interest here - let flushFilePayload do it when it actually blocks.
+      // Enabling it prematurely (when the socket is already writable) causes us to miss the edge
+      // in edge-triggered epoll mode.
       if (!state.fileSend.headersPending) {
         flushFilePayload(cnxIt);
       }
@@ -359,7 +359,6 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   }
 
   flushFilePayload(cnxIt);
-
   // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
   if (state.outBuffer.empty() && !state.fileSend.active && state.waitingWritable &&
       (state.tlsEstablished || state.transport->handshakeDone())) {
@@ -391,29 +390,45 @@ bool HttpServer::flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt) {
     return false;
   }
 
-  const auto [written, want] = state.transportWrite(state.tunnelOrFileBuffer);
-  if (want == TransportHint::Error) {
-    state.requestImmediateClose();
-    state.fileSend.active = false;
-    state.tunnelOrFileBuffer.clear();
-    return false;
-  }
-  if (written > 0) {
-    state.tunnelOrFileBuffer.erase_front(written);
-    state.fileSend.offset += written;
-    state.fileSend.remaining -= written;
-    _stats.totalBytesWrittenFlush += written;
-  }
-  if (!state.tunnelOrFileBuffer.empty() || want == TransportHint::WriteReady) {
-    if (want == TransportHint::WriteReady && !state.waitingWritable) {
-      enableWritableInterest(cnxIt, "enable writable sendfile TLS pending");
-    }
-    if (state.fileSend.remaining == 0) {
+  // Loop to drain the TLS buffer until it's empty or we would block (edge-triggered epoll requirement)
+  for (;;) {
+    const auto [written, want] = state.transportWrite(state.tunnelOrFileBuffer);
+
+    if (want == TransportHint::Error) {
+      state.requestImmediateClose();
       state.fileSend.active = false;
+      state.tunnelOrFileBuffer.clear();
+      return false;
     }
-    return true;
+
+    if (written > 0) {
+      state.tunnelOrFileBuffer.erase_front(written);
+      // Note: fileSend.offset and fileSend.remaining were already updated in transportFile when the data was read.
+      // Do NOT update them again here or we'll double-count and prematurely mark the transfer complete.
+      _stats.totalBytesWrittenFlush += written;
+    }
+
+    // If buffer is now empty, we're done
+    if (state.tunnelOrFileBuffer.empty()) {
+      if (state.fileSend.remaining == 0) {
+        state.fileSend.active = false;
+      }
+      return false;
+    }
+
+    // If we would block or transport needs write progress, enable writable interest and return
+    if (want == TransportHint::WriteReady || written == 0) {
+      if (!state.waitingWritable) {
+        enableWritableInterest(cnxIt, "enable writable sendfile TLS pending");
+      }
+      if (state.fileSend.remaining == 0) {
+        state.fileSend.active = false;
+      }
+      return true;
+    }
+
+    // Otherwise, continue the loop to write more
   }
-  return false;
 }
 
 void HttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
@@ -445,34 +460,56 @@ void HttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
   static constexpr bool tlsFlow = false;
 #endif
 
-  if (tlsFlow && flushPendingTunnelOrFileBuffer(cnxIt)) {
-    // First flush any pending buffered TLS bytes.
-    return;
-  }
+  // Loop to drain file payload while we can make progress (edge-triggered epoll requires this)
+  for (;;) {
+    if (tlsFlow && flushPendingTunnelOrFileBuffer(cnxIt)) {
+      // Pending TLS bytes were not fully flushed (would block or error); return and wait for next writable event.
+      return;
+    }
 
-  const auto res = state.transportFile(cnxIt->first.fd(), tlsFlow);
-  switch (res.code) {
-    case ConnectionState::FileResult::Code::Read:
-      // Read case: if buffer ended up empty then either EOF (handled by helper) or nothing to do.
-      break;
-    case ConnectionState::FileResult::Code::Sent:
-      _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(res.bytesDone);
-      break;
-    case ConnectionState::FileResult::Code::Error:
-      break;
-    case ConnectionState::FileResult::Code::WouldBlock:
-      if (res.enableWritable && !state.waitingWritable) {
-        // The helper reports WouldBlock; enable writable interest so we can resume later.
-        enableWritableInterest(cnxIt, "enable writable sendfile TLS pending");
-      }
-      break;
-    default:
-      std::unreachable();
-  }
+    if (state.fileSend.remaining == 0) {
+      state.fileSend.active = false;
+      state.tunnelOrFileBuffer.clear();
+      return;
+    }
 
-  if (tlsFlow && !flushPendingTunnelOrFileBuffer(cnxIt) && state.fileSend.remaining == 0) {
-    state.fileSend.active = false;
-    state.tunnelOrFileBuffer.clear();
+    const auto res = state.transportFile(cnxIt->first.fd(), tlsFlow);
+    switch (res.code) {
+      case ConnectionState::FileResult::Code::Read:
+        // Read case: data read from file into buffer; now try to write it immediately.
+        if (tlsFlow) {
+          // Attempt to flush immediately; if it blocks/fails, we'll resume on next writable.
+          if (flushPendingTunnelOrFileBuffer(cnxIt)) {
+            return;  // Would block, wait for next writable event
+          }
+          // Successfully flushed, continue loop to read more
+        }
+        break;
+      case ConnectionState::FileResult::Code::Sent:
+        _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(res.bytesDone);
+        // Continue loop to send more
+        break;
+      case ConnectionState::FileResult::Code::Error:
+        return;  // Error, stop
+      case ConnectionState::FileResult::Code::WouldBlock:
+        if (res.enableWritable && !state.waitingWritable) {
+          // The helper reports WouldBlock; enable writable interest so we can resume later.
+          enableWritableInterest(cnxIt, "enable writable sendfile pending");
+
+          // Edge-triggered epoll fix: immediately retry ONCE after enabling writable interest.
+          // If the socket became writable between sendfile() returning EAGAIN and epoll_ctl(),
+          // we would miss the edge. This immediate retry catches that case.
+          const auto retryRes = state.transportFile(cnxIt->first.fd(), tlsFlow);
+          if (retryRes.code == ConnectionState::FileResult::Code::Sent) {
+            _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(retryRes.bytesDone);
+            // Socket was writable, continue the loop to send more
+            break;
+          }
+        }
+        return;  // Would block, wait for next writable event
+      default:
+        std::unreachable();
+    }
   }
 }
 

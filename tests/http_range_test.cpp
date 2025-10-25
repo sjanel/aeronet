@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -10,54 +11,13 @@
 #include "aeronet/static-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "stringconv.hpp"
+#ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/test_server_tls_fixture.hpp"
+#include "aeronet/test_tls_client.hpp"
+#endif
 
 namespace {
-class TempDir {
- public:
-  TempDir() {
-    const auto base = std::filesystem::temp_directory_path();
-    std::size_t counter = 0;
-    do {
-      _path = base / ("aeronet-static-test-" + std::to_string(counter++));
-    } while (std::filesystem::exists(_path));
-    std::filesystem::create_directories(_path);
-  }
-
-  TempDir(const TempDir&) = delete;
-  TempDir& operator=(const TempDir&) = delete;
-
-  TempDir(TempDir&& other) noexcept : _path(std::move(other._path)) { other._path.clear(); }
-  TempDir& operator=(TempDir&& other) noexcept {
-    if (this != &other) {
-      cleanup();
-      _path = std::move(other._path);
-      other._path.clear();
-    }
-    return *this;
-  }
-
-  ~TempDir() { cleanup(); }
-
-  [[nodiscard]] const std::filesystem::path& path() const noexcept { return _path; }
-
- private:
-  void cleanup() {
-    if (!_path.empty()) {
-      std::error_code ec;
-      std::filesystem::remove_all(_path, ec);
-    }
-  }
-
-  std::filesystem::path _path;
-};
-
-std::string writeFile(const std::filesystem::path& root, std::string_view name, std::string_view content) {
-  const auto filePath = root / name;
-  std::ofstream out(filePath, std::ios::binary);
-  out.write(content.data(), static_cast<std::streamsize>(content.size()));
-  out.close();
-  return filePath.filename().string();
-}
 
 std::string getHeader(const aeronet::test::ParsedResponse& resp, const std::string& key) {
   const auto it = resp.headers.find(key);
@@ -70,10 +30,10 @@ std::string getHeader(const aeronet::test::ParsedResponse& resp, const std::stri
 }  // namespace
 
 TEST(HttpRangeStatic, ServeCompleteFile) {
-  TempDir tmp;
-  const std::string fileName = writeFile(tmp.path(), "example.txt", "abcdefghij");
+  aeronet::test::ScopedTempFile tmp("example.txt", "abcdefghij");
+  const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp.path());
+  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
 
@@ -92,10 +52,10 @@ TEST(HttpRangeStatic, ServeCompleteFile) {
 }
 
 TEST(HttpRangeStatic, SingleRangePartialContent) {
-  TempDir tmp;
-  const std::string fileName = writeFile(tmp.path(), "range.txt", "abcdefghij");
+  aeronet::test::ScopedTempFile tmp("range.txt", "abcdefghij");
+  const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp.path());
+  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
 
@@ -113,10 +73,10 @@ TEST(HttpRangeStatic, SingleRangePartialContent) {
 }
 
 TEST(HttpRangeStatic, UnsatisfiableRange) {
-  TempDir tmp;
-  const std::string fileName = writeFile(tmp.path(), "range.txt", "abcdefghij");
+  aeronet::test::ScopedTempFile tmp("range.txt", "abcdefghij");
+  const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp.path());
+  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
 
@@ -133,10 +93,10 @@ TEST(HttpRangeStatic, UnsatisfiableRange) {
 }
 
 TEST(HttpRangeStatic, IfNoneMatchReturns304) {
-  TempDir tmp;
-  const std::string fileName = writeFile(tmp.path(), "etag.txt", "abcdefghij");
+  aeronet::test::ScopedTempFile tmp("etag.txt", "abcdefghij");
+  const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp.path());
+  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
 
@@ -162,10 +122,10 @@ TEST(HttpRangeStatic, IfNoneMatchReturns304) {
 }
 
 TEST(HttpRangeStatic, IfRangeMismatchFallsBackToFullBody) {
-  TempDir tmp;
-  const std::string fileName = writeFile(tmp.path(), "if-range.txt", "abcdefghij");
+  aeronet::test::ScopedTempFile tmp("if-range.txt", "abcdefghij");
+  const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp.path());
+  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
 
@@ -183,12 +143,10 @@ TEST(HttpRangeStatic, IfRangeMismatchFallsBackToFullBody) {
 }
 
 TEST(HttpRangeInvalid, BadRangeSyntax) {
-  const std::filesystem::path tmp = std::filesystem::temp_directory_path() / "aeronet-range-invalid";
-  std::error_code ec;
-  std::filesystem::create_directories(tmp, ec);
-  const std::string fileName = writeFile(tmp, "file.bin", "0123456789");
+  aeronet::test::ScopedTempFile tmp("file.bin", "0123456789");
+  const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp);
+  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
 
@@ -222,12 +180,10 @@ TEST(HttpRangeInvalid, BadRangeSyntax) {
 }
 
 TEST(HttpRangeInvalid, ConditionalInvalidDates) {
-  const std::filesystem::path tmp = std::filesystem::temp_directory_path() / "aeronet-range-invalid-dates";
-  std::error_code ec;
-  std::filesystem::create_directories(tmp, ec);
-  const std::string fileName = writeFile(tmp, "file.txt", "hello world");
+  aeronet::test::ScopedTempFile tmp("file.txt", "hello world");
+  const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp);
+  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
 
@@ -254,12 +210,10 @@ TEST(HttpRangeInvalid, ConditionalInvalidDates) {
 }
 
 TEST(HttpRangeInvalid, IfMatchPreconditionFailed) {
-  const std::filesystem::path tmp = std::filesystem::temp_directory_path() / "aeronet-ifmatch";
-  std::error_code ec;
-  std::filesystem::create_directories(tmp, ec);
-  const std::string fileName = writeFile(tmp, "file.txt", "HELLO");
+  aeronet::test::ScopedTempFile tmp("file.txt", "HELLO");
+  const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp);
+  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
 
@@ -285,62 +239,58 @@ TEST(HttpRangeInvalid, IfMatchPreconditionFailed) {
   EXPECT_EQ(parsed->statusCode, aeronet::http::StatusCodePreconditionFailed);
 }
 
-namespace {
-
-std::filesystem::path makeTempDir() {
-  const auto base = std::filesystem::temp_directory_path();
-  for (int i = 0; i < 1000; ++i) {
-    const auto p = base / ("aeronet-large-file-test-" +
-                           std::to_string(std::uint64_t(std::hash<std::string>{}(std::to_string(i)))));
-    if (!std::filesystem::exists(p)) {
-      std::error_code ec;
-      std::filesystem::create_directories(p, ec);
-      if (!ec) return p;
-    }
-  }
-  throw std::runtime_error("Failed to create temp dir");
-}
-
-std::string writeLargeFile(const std::filesystem::path& root, std::string_view name, std::uint64_t bytes) {
-  const auto filePath = root / name;
-  std::ofstream out(filePath, std::ios::binary);
-  if (!out) throw std::runtime_error("failed to open file");
-
-  const std::size_t chunkSize = 1024 * 1024;  // 1 MiB
-  std::string chunk(chunkSize, 'x');
-  std::uint64_t remaining = bytes;
-  while (remaining >= chunkSize) {
-    out.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));
-    remaining -= chunkSize;
-  }
-  if (remaining) {
-    out.write(chunk.data(), static_cast<std::streamsize>(remaining));
-  }
-  out.close();
-  return filePath.filename().string();
-}
-
-}  // namespace
-
 TEST(HttpLargeFile, ServeLargeFile) {
-  const auto tmp = makeTempDir();
-  const std::uint64_t size = (8ULL * 1024ULL * 1024ULL) + (1ULL * 1024ULL * 1024ULL);  // 9 MiB
-  const std::string fileName = writeLargeFile(tmp, "big.bin", size);
+  const std::uint64_t size = 16ULL * 1024ULL * 1024ULL;
+  aeronet::test::ScopedTempFile tmp("big.bin", size);
+  const auto fileName = tmp.filename();
+  const auto& data = tmp.content();
 
-  aeronet::StaticFileHandler handler(tmp);
+  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
 
-  aeronet::test::RequestOptions opt;
-  opt.method = "GET";
-  opt.target = "/" + fileName;
+  // Use a custom connection to manually control receive behavior for large files
+  aeronet::test::ClientConnection cnx(ts.port());
+  int fd = cnx.fd();
 
-  const auto raw = aeronet::test::requestOrThrow(ts.port(), opt);
+  std::string req = "GET /" + fileName + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
+
+  // Use recvWithTimeout which waits for complete Content-Length
+  const auto raw = aeronet::test::recvWithTimeout(fd, std::chrono::seconds(10));
+
   const auto parsed = aeronet::test::parseResponse(raw);
   ASSERT_TRUE(parsed);
   EXPECT_EQ(parsed->statusCode, aeronet::http::StatusCodeOK);
   EXPECT_EQ(parsed->body.size(), size);
   const auto it = parsed->headers.find("Content-Length");
   ASSERT_NE(it, parsed->headers.end());
-  EXPECT_EQ(std::stoull(it->second), size);
+  EXPECT_EQ(aeronet::StringToIntegral<std::uint64_t>(it->second), size);
+  EXPECT_EQ(parsed->body, data);
 }
+
+#ifdef AERONET_ENABLE_OPENSSL
+TEST(HttpLargeFile, ServeLargeFileTls) {
+  const std::uint64_t size = 16ULL * 1024ULL * 1024ULL;
+  aeronet::test::ScopedTempFile tmp("big-tls.bin", size);
+  const auto fileName = tmp.filename();
+  const auto& data = tmp.content();
+
+  aeronet::StaticFileHandler handler(tmp.dirPath());
+  aeronet::test::TlsTestServer ts({"http/1.1"});
+  ts.setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
+
+  aeronet::test::TlsClient client(ts.port());
+  const auto raw = client.get("/" + fileName, {});
+  ts.stop();
+
+  const auto parsed = aeronet::test::parseResponse(raw);
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->statusCode, aeronet::http::StatusCodeOK);
+  EXPECT_EQ(parsed->body.size(), size);
+  const auto it = parsed->headers.find("Content-Length");
+  ASSERT_NE(it, parsed->headers.end());
+  EXPECT_EQ(aeronet::StringToIntegral<std::uint64_t>(it->second), size);
+  EXPECT_EQ(parsed->body, data);
+}
+#endif

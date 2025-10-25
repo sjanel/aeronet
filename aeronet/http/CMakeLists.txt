@@ -39,7 +39,7 @@ add_unit_test(
     http-response_test
     test/http-response_test.cpp
     LIBRARIES
-    aeronet_http aeronet_sys
+    aeronet_http aeronet_sys aeronet_test_support
 )
 
 add_unit_test(
