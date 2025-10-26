@@ -57,7 +57,7 @@ bool sendGet(uint16_t port) {
     return false;
   }
   auto raw = bench_util::recvWithTimeout(client.fd(), 200ms);
-  return raw.find(aeronet::http::DoubleCRLF) != std::string::npos;
+  return raw.contains(aeronet::http::DoubleCRLF);
 }
 
 BENCHMARK_F(MinimalServerFixture, GET_RoundTrip)(benchmark::State& state) {

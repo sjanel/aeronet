@@ -197,7 +197,8 @@ TEST_F(HttpResponseTest, ProperTermination) {
 
 TEST_F(HttpResponseTest, SendFilePayload) {
   constexpr std::string_view kPayload = "static file payload";
-  auto tmp = aeronet::test::ScopedTempFile::create("aeronet-sendfile-", kPayload);
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp(tmpDir, kPayload);
   File file(tmp.filePath().string());
   ASSERT_TRUE(file);
   const std::uint64_t sz = file.size();
@@ -217,7 +218,8 @@ TEST_F(HttpResponseTest, SendFilePayload) {
 
 TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
   constexpr std::string_view kPayload = "head sendfile payload";
-  auto tmp = aeronet::test::ScopedTempFile::create("aeronet-sendfile-head-", kPayload);
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp(tmpDir, kPayload);
   File file(tmp.filePath().string());
   ASSERT_TRUE(file);
   const std::uint64_t sz = file.size();

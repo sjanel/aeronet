@@ -25,7 +25,7 @@ TEST(AeronetVersion, Version) {
   auto line2 = view.substr(first_nl + 1, second_nl - first_nl - 1);
   auto line3 = view.substr(second_nl + 1, third_nl - second_nl - 1);
   auto line4 = view.substr(third_nl + 1);
-  EXPECT_TRUE(line1.find(std::string(kVersion)) != std::string::npos);
+  EXPECT_TRUE(line1.contains(kVersion));
   // Feature lines are indented by two spaces.
   EXPECT_TRUE(line2.rfind("  tls:", 0) == 0);
   EXPECT_TRUE(line3.rfind("  logging:", 0) == 0);

@@ -1,40 +1,74 @@
 #include "aeronet/temp-file.hpp"
 
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <array>
 #include <cerrno>
-#include <cstddef>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <functional>
-#include <ios>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
+
+#include "base-fd.hpp"
+#include "log.hpp"
 
 namespace aeronet::test {
 
-// ScopedTempDir implementation
+namespace {
+std::string toHex(uint64_t value) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(16);
+  for (int i = 15; i >= 0; --i) {
+    out.push_back(kHex[(value >> (i * 4)) & 0xF]);
+  }
+  return out;
+}
+
+std::mt19937_64 &threadRng() {
+  static std::mt19937_64 engine = [] {
+    // Collect multiple entropy sources and mix via seed_seq.
+    std::random_device rd;
+    const auto now = static_cast<uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    const auto tid = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    const auto addr = reinterpret_cast<uint64_t>(&rd);
+    std::array<uint64_t, 4> seeds{static_cast<uint64_t>(rd()), now, tid, addr};
+    std::seed_seq seq(seeds.begin(), seeds.end());
+    return std::mt19937_64(seq);
+  }();
+  return engine;
+}
+
+// Note: ScopedTempFile should not create directories. The helper used to
+// create a unique directory was removed in favor of having callers provide
+// a ScopedTempDir. File creation is performed by the ScopedTempFile
+// constructor below.
+
+}  // namespace
+
 ScopedTempDir::ScopedTempDir(std::string_view prefix) {
   const auto base = std::filesystem::temp_directory_path();
-  for (int i = 0; i < 1000; ++i) {
-    _dir = base / (std::string(prefix) +
-                   std::to_string(static_cast<std::uint64_t>(std::hash<std::string>{}(std::to_string(i)))));
-    if (!std::filesystem::exists(_dir)) {
-      std::error_code ec;
-      std::filesystem::create_directories(_dir, ec);
-      if (!ec) {
-        break;
-      }
+  std::uniform_int_distribution<uint64_t> dist;
+  for (int attempt = 0; attempt < 100; ++attempt) {
+    const auto candidate = base / (std::string(prefix) + toHex(dist(threadRng())));
+    std::error_code ec;
+    if (std::filesystem::create_directories(candidate, ec)) {
+      _dir = candidate;
+      return;
     }
-    _dir.clear();
   }
-  if (_dir.empty()) {
-    throw std::runtime_error("Failed to create temp dir for ScopedTempDir");
-  }
+
+  throw std::runtime_error("ScopedTempDir: Failed to create temp dir");
 }
 
 ScopedTempDir::ScopedTempDir(ScopedTempDir &&other) noexcept : _dir(std::move(other._dir)) { other._dir.clear(); }
@@ -58,131 +92,44 @@ void ScopedTempDir::cleanup() noexcept {
   }
 }
 
-namespace {
-std::string toHex(unsigned long long value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(16);
-  for (int i = 15; i >= 0; --i) {
-    out.push_back(kHex[(value >> (i * 4)) & 0xF]);
-  }
-  return out;
-}
-}  // namespace
-
-// Create a uniquely-named temp file using the provided prefix and content.
-// This mirrors the small helper used in some tests.
-ScopedTempFile ScopedTempFile::create(std::string_view prefix, std::string_view content) {
-  std::random_device rd;
-  std::mt19937_64 gen(rd());
-  std::uniform_int_distribution<unsigned long long> dist;
-  for (int attempt = 0; attempt < 64; ++attempt) {
-    const auto name = std::string(prefix) + toHex(dist(gen));
-    return {name, content};
-  }
-  throw std::runtime_error("ScopedTempFile::create: unable to create unique file");
-}
-
-// ScopedTempFile implementation
-ScopedTempFile::ScopedTempFile(std::string_view name, std::string_view content) {
-  const auto base = std::filesystem::temp_directory_path();
-  for (int i = 0; i < 1000; ++i) {
-    _dir = base / ("aeronet-temp-file-" +
-                   std::to_string(static_cast<std::uint64_t>(std::hash<std::string>{}(std::to_string(i)))));
-    if (!std::filesystem::exists(_dir)) {
-      std::error_code ec;
-      std::filesystem::create_directories(_dir, ec);
-      if (!ec) {
-        break;
-      }
-    }
-    _dir.clear();
-  }
-  if (_dir.empty()) {
-    throw std::runtime_error("Failed to create temp dir for ScopedTempFile");
-  }
-  _path = _dir / std::string(name);
-  std::ofstream out(_path, std::ios::binary);
-  if (!out) {
-    cleanup();
-    throw std::runtime_error("ScopedTempFile: failed to open file for writing");
-  }
-  out.write(content.data(), static_cast<std::streamsize>(content.size()));
-  out.close();
-  _content.assign(content);
-}
-
-ScopedTempFile::ScopedTempFile(const ScopedTempDir &dir, std::string_view name, std::string_view content) {
-  if (dir.dirPath().empty()) {
-    throw std::runtime_error("ScopedTempFile: provided dir is empty");
-  }
+// Create a file inside the provided ScopedTempDir. The constructor does not
+// create directories; callers must ensure the target directory exists.
+ScopedTempFile::ScopedTempFile(const ScopedTempDir &dir, std::string_view content) {
   _dir = dir.dirPath();
-  _path = _dir / std::string(name);
-  std::ofstream out(_path, std::ios::binary);
-  if (!out) {
-    cleanup();
-    throw std::runtime_error("ScopedTempFile: failed to open file for writing");
-  }
-  out.write(content.data(), static_cast<std::streamsize>(content.size()));
-  out.close();
-  _content.assign(content);
-}
 
-ScopedTempFile::ScopedTempFile(std::string_view name, std::uint64_t size) {
-  const auto base = std::filesystem::temp_directory_path();
-  for (int i = 0; i < 1000; ++i) {
-    _dir = base / ("aeronet-temp-file-" +
-                   std::to_string(static_cast<std::uint64_t>(std::hash<std::string>{}(std::to_string(i)))));
-    if (!std::filesystem::exists(_dir)) {
-      std::error_code ec;
-      std::filesystem::create_directories(_dir, ec);
-      if (!ec) {
-        break;
-      }
+  // Create a unique file inside the provided directory. Use mkstemp on a
+  // template so we get an atomic create+open and avoid races.
+  std::string tmpl = _dir.string() + "/aeronet_temp_XXXXXX";
+  std::vector<char> buf(tmpl.begin(), tmpl.end());
+  buf.push_back('\0');
+
+  int fd = ::mkstemp(buf.data());
+  if (fd == -1) {
+    int err = errno;
+    throw std::system_error(err, std::generic_category(), "ScopedTempFile: mkstemp failed");
+  }
+
+  // mkstemp returns the path it created in buf.data()
+  _path = std::filesystem::path(buf.data());
+  BaseFd raii(fd);
+
+  ssize_t written = ::write(fd, content.data(), content.size());
+  if (std::cmp_not_equal(written, static_cast<ssize_t>(content.size()))) {
+    // best-effort cleanup: try to unlink the file we just created
+    int rc = ::unlink(_path.c_str());
+    if (rc != 0) {
+      int err = errno;
+      log::error("ScopedTempFile: unlink({}) failed: {} ({})", _path.string(), err, std::strerror(err));
     }
-    _dir.clear();
+    throw std::runtime_error("ScopedTempFile: write failed");
   }
-  if (_dir.empty()) {
-    throw std::runtime_error("Failed to create temp dir for ScopedTempFile");
-  }
-  _path = _dir / std::string(name);
-  _content.assign(static_cast<size_t>(size), '\0');
-  for (std::uint64_t i = 0; i < size; ++i) {
-    _content[static_cast<size_t>(i)] = static_cast<char>('a' + (i % 26));
-  }
-  std::ofstream out(_path, std::ios::binary);
-  if (!out) {
-    cleanup();
-    throw std::runtime_error("ScopedTempFile: failed to open file for writing");
-  }
-  out.write(_content.data(), static_cast<std::streamsize>(_content.size()));
-  out.close();
-}
 
-ScopedTempFile::ScopedTempFile(const ScopedTempDir &dir, std::string_view name, std::uint64_t size) {
-  if (dir.dirPath().empty()) {
-    throw std::runtime_error("ScopedTempFile: provided dir is empty");
-  }
-  _dir = dir.dirPath();
-  _path = _dir / std::string(name);
-  _content.assign(static_cast<size_t>(size), '\0');
-  for (std::uint64_t i = 0; i < size; ++i) {
-    _content[static_cast<size_t>(i)] = static_cast<char>('a' + (i % 26));
-  }
-  std::ofstream out(_path, std::ios::binary);
-  if (!out) {
-    cleanup();
-    throw std::runtime_error("ScopedTempFile: failed to open file for writing");
-  }
-  out.write(_content.data(), static_cast<std::streamsize>(_content.size()));
-  out.close();
+  _content.assign(content);
 }
 
 ScopedTempFile::ScopedTempFile(ScopedTempFile &&other) noexcept
     : _dir(std::move(other._dir)), _path(std::move(other._path)), _content(std::move(other._content)) {
-  other._dir.clear();
   other._path.clear();
-  other._content.clear();
 }
 
 ScopedTempFile &ScopedTempFile::operator=(ScopedTempFile &&other) noexcept {
@@ -191,9 +138,8 @@ ScopedTempFile &ScopedTempFile::operator=(ScopedTempFile &&other) noexcept {
     _dir = std::move(other._dir);
     _path = std::move(other._path);
     _content = std::move(other._content);
-    other._dir.clear();
+
     other._path.clear();
-    other._content.clear();
   }
   return *this;
 }
@@ -201,12 +147,16 @@ ScopedTempFile &ScopedTempFile::operator=(ScopedTempFile &&other) noexcept {
 ScopedTempFile::~ScopedTempFile() { cleanup(); }
 
 void ScopedTempFile::cleanup() noexcept {
-  if (!_dir.empty()) {
+  // Remove only the file we created. Do not touch directories — ScopedTempDir
+  // is responsible for removing its directory contents.
+  if (!_path.empty()) {
     std::error_code ec;
-    std::filesystem::remove_all(_dir, ec);
-    _dir.clear();
-    _path.clear();
-    _content.clear();
+    bool removed = std::filesystem::remove(_path, ec);
+    if (ec) {
+      log::error("ScopedTempFile::cleanup: remove({}) failed: {} ({})", _path.string(), ec.value(), ec.message());
+    } else if (!removed) {
+      log::error("ScopedTempFile::cleanup: expected to remove file {}, but nothing was removed", _path.string());
+    }
   }
 }
 

@@ -175,12 +175,13 @@ TEST(HttpTlsStreaming, ChunkedSimpleTls) {
 
 TEST(HttpTlsStreaming, SendFileFallbackBuffers) {
   constexpr std::string_view kPayload = "tls sendfile body contents";
-  auto tmp = aeronet::test::ScopedTempFile::create("aeronet-tls-sendfile-", kPayload);
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp(tmpDir, kPayload);
   std::string path = tmp.filePath().string();
 
   aeronet::test::TlsTestServer ts({"http/1.1"});
   ts.setDefault([path](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.statusCode(200);
+    writer.statusCode(http::StatusCodeOK);
     writer.contentType("application/octet-stream");
     writer.file(aeronet::File(path));
     writer.end();

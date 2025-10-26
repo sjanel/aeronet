@@ -26,7 +26,8 @@ TEST(ConnectionStateSendfileTest, KernelSendfileSuccess) {
   BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
 
   const std::string content(64UL * 1024, 'A');
-  auto tmp = ScopedTempFile::create("aeronet-sendfile-", content);
+  aeronet::test::ScopedTempDir tmpDir;
+  ScopedTempFile tmp(tmpDir, content);
   File file(tmp.filePath().string());
   ConnectionState state;
   state.fileSend.file = std::move(file);
@@ -52,7 +53,8 @@ TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
   BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
 
   const std::string content(128UL * 1024, 'B');
-  auto tmp = ScopedTempFile::create("aeronet-sendfile-wouldblock-", content);
+  aeronet::test::ScopedTempDir tmpDir;
+  ScopedTempFile tmp(tmpDir, content);
 
   File file(tmp.filePath().string());
   ConnectionState state;
@@ -100,7 +102,8 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   // Create a large file to force multiple chunks in the TLS path
   const std::size_t totalSize = (1 << 20);  // 1 MiB
   const std::string content(totalSize, 'T');
-  auto tmp = ScopedTempFile::create("aeronet-sendfile-tls-", content);
+  aeronet::test::ScopedTempDir tmpDir;
+  ScopedTempFile tmp(tmpDir, content);
 
   File file(tmp.filePath().string());
   ConnectionState state;
