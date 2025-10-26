@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
-#include <cstdint>  // uint16_t
-#include <string>   // std::string
-#include <utility>  // std::move
+#include <cstdint>
+#include <string>
+#include <utility>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"

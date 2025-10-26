@@ -33,12 +33,12 @@ std::string getHeader(const aeronet::test::ParsedResponse& resp, const std::stri
 }  // namespace
 
 TEST(HttpRangeStatic, ServeCompleteFile) {
-  aeronet::test::ScopedTempFile tmp("example.txt", "abcdefghij");
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
+  ts.server.router().setDefault(aeronet::StaticFileHandler(tmp.dirPath()));
 
   aeronet::test::RequestOptions opt;
   opt.method = "GET";
@@ -55,12 +55,12 @@ TEST(HttpRangeStatic, ServeCompleteFile) {
 }
 
 TEST(HttpRangeStatic, SingleRangePartialContent) {
-  aeronet::test::ScopedTempFile tmp("range.txt", "abcdefghij");
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
+  ts.server.router().setDefault(aeronet::StaticFileHandler(tmp.dirPath()));
 
   aeronet::test::RequestOptions opt;
   opt.method = "GET";
@@ -76,12 +76,12 @@ TEST(HttpRangeStatic, SingleRangePartialContent) {
 }
 
 TEST(HttpRangeStatic, UnsatisfiableRange) {
-  aeronet::test::ScopedTempFile tmp("range.txt", "abcdefghij");
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
+  ts.server.router().setDefault(aeronet::StaticFileHandler(tmp.dirPath()));
 
   aeronet::test::RequestOptions opt;
   opt.method = "GET";
@@ -96,12 +96,12 @@ TEST(HttpRangeStatic, UnsatisfiableRange) {
 }
 
 TEST(HttpRangeStatic, IfNoneMatchReturns304) {
-  aeronet::test::ScopedTempFile tmp("etag.txt", "abcdefghij");
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
+  ts.server.router().setDefault(aeronet::StaticFileHandler(tmp.dirPath()));
 
   aeronet::test::RequestOptions initial;
   initial.method = "GET";
@@ -125,12 +125,12 @@ TEST(HttpRangeStatic, IfNoneMatchReturns304) {
 }
 
 TEST(HttpRangeStatic, IfRangeMismatchFallsBackToFullBody) {
-  aeronet::test::ScopedTempFile tmp("if-range.txt", "abcdefghij");
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
+  ts.server.router().setDefault(aeronet::StaticFileHandler(tmp.dirPath()));
 
   aeronet::test::RequestOptions opt;
   opt.method = "GET";
@@ -146,12 +146,12 @@ TEST(HttpRangeStatic, IfRangeMismatchFallsBackToFullBody) {
 }
 
 TEST(HttpRangeInvalid, BadRangeSyntax) {
-  aeronet::test::ScopedTempFile tmp("file.bin", "0123456789");
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp(tmpDir, "0123456789");
   const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
+  ts.server.router().setDefault(aeronet::StaticFileHandler(tmp.dirPath()));
 
   aeronet::test::RequestOptions opt;
   opt.method = "GET";
@@ -183,12 +183,12 @@ TEST(HttpRangeInvalid, BadRangeSyntax) {
 }
 
 TEST(HttpRangeInvalid, ConditionalInvalidDates) {
-  aeronet::test::ScopedTempFile tmp("file.txt", "hello world");
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp(tmpDir, "hello world");
   const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
+  ts.server.router().setDefault(aeronet::StaticFileHandler(tmp.dirPath()));
 
   aeronet::test::RequestOptions opt;
   opt.method = "GET";
@@ -213,12 +213,12 @@ TEST(HttpRangeInvalid, ConditionalInvalidDates) {
 }
 
 TEST(HttpRangeInvalid, IfMatchPreconditionFailed) {
-  aeronet::test::ScopedTempFile tmp("file.txt", "HELLO");
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp(tmpDir, "HELLO");
   const std::string fileName = tmp.filename();
 
-  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
+  ts.server.router().setDefault(aeronet::StaticFileHandler(tmp.dirPath()));
 
   // First fetch to get ETag
   aeronet::test::RequestOptions initial;
@@ -245,13 +245,20 @@ TEST(HttpRangeInvalid, IfMatchPreconditionFailed) {
 
 TEST(HttpLargeFile, ServeLargeFile) {
   const std::uint64_t size = 16ULL * 1024ULL * 1024ULL;
-  aeronet::test::ScopedTempFile tmp("big.bin", size);
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp([&]() {
+    std::string data;
+    data.assign(static_cast<size_t>(size), '\0');
+    for (std::uint64_t i = 0; i < size; ++i) {
+      data[static_cast<size_t>(i)] = static_cast<char>('a' + (i % 26));
+    }
+    return aeronet::test::ScopedTempFile(tmpDir, data);
+  }());
   const auto fileName = tmp.filename();
   const auto& data = tmp.content();
 
-  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.router().setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
+  ts.server.router().setDefault(aeronet::StaticFileHandler(tmp.dirPath()));
 
   // Use a custom connection to manually control receive behavior for large files
   aeronet::test::ClientConnection cnx(ts.port());
@@ -277,13 +284,20 @@ TEST(HttpLargeFile, ServeLargeFile) {
 #ifdef AERONET_ENABLE_OPENSSL
 TEST(HttpLargeFile, ServeLargeFileTls) {
   const std::uint64_t size = 16ULL * 1024ULL * 1024ULL;
-  aeronet::test::ScopedTempFile tmp("big-tls.bin", size);
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp([&]() {
+    std::string data;
+    data.assign(static_cast<size_t>(size), '\0');
+    for (std::uint64_t i = 0; i < size; ++i) {
+      data[static_cast<size_t>(i)] = static_cast<char>('a' + (i % 26));
+    }
+    return aeronet::test::ScopedTempFile(tmpDir, data);
+  }());
   const auto fileName = tmp.filename();
   const auto& data = tmp.content();
 
-  aeronet::StaticFileHandler handler(tmp.dirPath());
   aeronet::test::TlsTestServer ts({"http/1.1"});
-  ts.setDefault([handler](const aeronet::HttpRequest& req) mutable { return handler(req); });
+  ts.setDefault(aeronet::StaticFileHandler(tmp.dirPath()));
 
   aeronet::test::TlsClient client(ts.port());
   const auto raw = client.get("/" + fileName, {});

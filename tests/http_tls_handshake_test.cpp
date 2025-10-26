@@ -297,9 +297,10 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
   auto pair = aeronet::test::makeEphemeralCertKey();
   ASSERT_FALSE(pair.first.empty());
   ASSERT_FALSE(pair.second.empty());
-  // Write both to temp files
-  auto certFile = aeronet::test::ScopedTempFile::create("aeronet_cert_", pair.first);
-  auto keyFile = aeronet::test::ScopedTempFile::create("aeronet_key_", pair.second);
+  // Write both to temp files inside a temporary directory
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile certFile(tmpDir, pair.first);
+  aeronet::test::ScopedTempFile keyFile(tmpDir, pair.second);
 
   aeronet::HttpServerConfig cfg;
   cfg.withTlsCertKey(certFile.filePath().string(), keyFile.filePath().string());  // file-based path (not memory)

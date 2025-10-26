@@ -36,7 +36,7 @@ using namespace aeronet;
 
 namespace {
 
-constexpr std::size_t kChunkSize = 256;  // small chunk size to ensure chunk loop is properly tested
+[[maybe_unused]] constexpr std::size_t kChunkSize = 256;  // small chunk size to ensure chunk loop is properly tested
 
 std::string gzipCompress([[maybe_unused]] std::string_view input) {
 #ifdef AERONET_ENABLE_ZLIB
