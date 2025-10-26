@@ -6,7 +6,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <exception>
 #include <memory>
 #include <string_view>
 #include <system_error>
@@ -363,22 +362,18 @@ void HttpResponseWriter::file(File fileObj, std::uint64_t offset, std::uint64_t 
     log::warn("Streaming: file ignored fd # {} reason=body-bytes-already-written", _fd);
     return;
   }
+  if (_declaredLength != 0) {
+    log::warn("Streaming: file overriding previously declared Content-Length fd # {}", _fd);
+    _declaredLength = 0;
+  }
   _chunked = false;
   _compressionFormat = Encoding::none;
   _compressionActivated = false;
   _preCompressBuffer.clear();
   _usingSendFile = true;
-  if (_declaredLength != 0) {
-    log::warn("Streaming: file overriding previously declared Content-Length fd # {}", _fd);
-    _declaredLength = 0;
-  }
-  try {
-    _fixedResponse.file(std::move(fileObj), offset, length);
-    _declaredLength = _fixedResponse.bodyLen();
-  } catch (const std::exception& ex) {
-    log::error("Streaming: file failed fd # {} reason={}", _fd, ex.what());
-    _state = State::Failed;
-  }
+
+  _fixedResponse.file(std::move(fileObj), offset, length);
+  _declaredLength = _fixedResponse.bodyLen();
 }
 
 bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {

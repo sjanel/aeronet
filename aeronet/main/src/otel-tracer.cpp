@@ -183,15 +183,16 @@ TelemetryContext::TelemetryContext(const aeronet::OtelConfig& cfg) : _impl(std::
     // Convert trace endpoint to metrics endpoint
     // OTLP trace: /v1/traces, metrics: /v1/metrics
     std::string endpoint = cfg.endpoint;
-    if (endpoint.find("/v1/traces") != std::string::npos) {
-      endpoint.replace(endpoint.find("/v1/traces"), 10, "/v1/metrics");
+    auto tracesPos = endpoint.find("/v1/traces");
+    if (tracesPos != std::string::npos) {
+      endpoint.replace(tracesPos, 10, "/v1/metrics");
     } else if (endpoint.back() == '/') {
       endpoint += "v1/metrics";
     } else {
       endpoint += "/v1/metrics";
     }
-    metric_opts.url = endpoint;
     log::info("Initializing OTLP HTTP metrics exporter with endpoint: {}", endpoint);
+    metric_opts.url = std::move(endpoint);
   }
 
   auto metric_exporter = std::unique_ptr<opentelemetry::sdk::metrics::PushMetricExporter>(

@@ -131,7 +131,8 @@ TEST(HttpStreaming, ChunkedSimple) {
 
 TEST(HttpStreaming, SendFileFixedLengthPlain) {
   constexpr std::string_view kPayload = "static sendfile response body";
-  auto tmp = aeronet::test::ScopedTempFile::create("aeronet-stream-sendfile-", kPayload);
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp(tmpDir, kPayload);
 
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
@@ -159,7 +160,8 @@ TEST(HttpStreaming, SendFileFixedLengthPlain) {
 
 TEST(HttpStreaming, SendFileHeadSuppressesBody) {
   constexpr std::string_view kPayload = "head sendfile streaming";
-  auto tmp = aeronet::test::ScopedTempFile::create("aeronet-stream-head-sendfile-", kPayload);
+  aeronet::test::ScopedTempDir tmpDir;
+  aeronet::test::ScopedTempFile tmp(tmpDir, kPayload);
 
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();

@@ -28,7 +28,7 @@ class TlsTransport : public ITransport {
 
   [[nodiscard]] SSL* rawSsl() const noexcept { return _ssl.get(); }
 
-  static void logErrorIfAny();
+  void logErrorIfAny() const noexcept;
 
  private:
   SslPtr _ssl;
