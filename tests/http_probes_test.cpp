@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -16,8 +18,6 @@ TEST(HttpProbes, StartupAndReadinessTransitions) {
   cfg.enableBuiltinProbes(true);
   aeronet::test::TestServer ts(std::move(cfg));
 
-  std::this_thread::sleep_for(20ms);
-
   auto readyResp = aeronet::test::simpleGet(ts.port(), "/readyz");
   EXPECT_TRUE(readyResp.contains("200"));
 
@@ -25,12 +25,21 @@ TEST(HttpProbes, StartupAndReadinessTransitions) {
   EXPECT_TRUE(liveResp.contains("200"));
 
   ts.server.beginDrain();
-  std::this_thread::sleep_for(5ms);
-  auto readyAfterDrain = aeronet::test::simpleGet(ts.port(), "/readyz");
-  // The server marks readiness=false before closing the listener. Depending on timing the
-  // listening socket may be closed before the probe request reaches the server which
-  // results in an empty response (connection failed) from the client helper. Accept
-  // either an explicit 503 Service Unavailable response or an empty string here.
+
+  // Rather than a single fixed sleep which can occasionally race with the server's
+  // internal drain transition, poll briefly for the expected states. The readiness
+  // probe may either return an explicit 503 or the client helper may fail to
+  // connect (empty string) depending on timing. Retry for a short window to make
+  // this assertion stable on CI where timing varies.
+  std::string readyAfterDrain;
+  const auto deadline = std::chrono::steady_clock::now() + 200ms;
+  while (std::chrono::steady_clock::now() < deadline) {
+    readyAfterDrain = aeronet::test::simpleGet(ts.port(), "/readyz");
+    if (readyAfterDrain.empty() || readyAfterDrain.contains("503")) {
+      break;
+    }
+    std::this_thread::sleep_for(2ms);
+  }
   EXPECT_TRUE(readyAfterDrain.empty() || readyAfterDrain.contains("503"));
 }
 
@@ -44,7 +53,6 @@ TEST(HttpProbes, OverridePaths) {
   cfg.withBuiltinProbes(bp);
 
   aeronet::test::TestServer ts(std::move(cfg));
-  std::this_thread::sleep_for(20ms);
 
   auto rResp = aeronet::test::simpleGet(ts.port(), "/rdy");
   EXPECT_TRUE(rResp.contains("200"));
