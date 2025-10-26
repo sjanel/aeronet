@@ -213,11 +213,10 @@ In your CMake project (after integrating vcpkg toolchain):
 
 ```cmake
 find_package(aeronet CONFIG REQUIRED)
+
 add_executable(app main.cpp)
+
 target_link_libraries(app PRIVATE aeronet)
-if (TARGET aeronet_tls)
-  target_link_libraries(app PRIVATE aeronet_tls)
-endif()
 ```
 
 Shared libraries via vcpkg: use (or create) a dynamic triplet, e.g.:

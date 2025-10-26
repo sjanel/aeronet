@@ -79,6 +79,29 @@ class HttpServer {
     std::chrono::nanoseconds duration{0};
   };
 
+  // Expectation handling API
+  // ------------------------
+  // The server will honour the standard "Expect: 100-continue" behaviour by default.
+  // For other Expect tokens, applications may register an ExpectationHandler to
+  // implement custom semantics (for example sending an interim 102 Processing
+  // or producing a final response). If no handler is registered and the Expect
+  // header contains any token other than "100-continue", the server will respond
+  // with 417 Expectation Failed per RFC and reject the request.
+  enum class ExpectationResultKind : uint8_t { Continue, Interim, FinalResponse, Reject };
+
+  struct ExpectationResult {
+    ExpectationResultKind kind = ExpectationResultKind::Continue;
+    // Used for Interim when the handler wants the server to emit an interim
+    // response with the given status code (e.g. 102). Stored as uint8_t because
+    // only the 1xx class (100-199) is valid and fits in one byte.
+    uint8_t interimStatus = 0;
+    // Used for FinalResponse when the handler wishes to reply immediately
+    // with a full HttpResponse (the server will send it and skip reading the body).
+    HttpResponse finalResponse;
+  };
+
+  using ExpectationHandler = std::function<ExpectationResult(const HttpRequest&, std::string_view)>;
+
   using MetricsCallback = std::function<void(const RequestMetrics&)>;
 
   // Construct a HttpServer that does nothing.
@@ -150,26 +173,15 @@ class HttpServer {
   //
   // Exceptions:
   // - Exceptions escaping the callback are caught and ignored to preserve server stability.
-  void setParserErrorCallback(ParserErrorCallback cb) { _parserErrCb = std::move(cb); }
-  void setMetricsCallback(MetricsCallback cb) { _metricsCb = std::move(cb); }
+  void setParserErrorCallback(ParserErrorCallback cb);
+  void setMetricsCallback(MetricsCallback cb);
+
+  // Register or clear the expectation handler. This handler will be invoked from
+  // the server's event-loop thread when a request contains an `Expect` header
+  // with tokens other than "100-continue". To clear, pass an empty std::function.
+  void setExpectationHandler(ExpectationHandler handler);
 
   // Run the server event loop until stop() is called (e.g. from another thread) or the process receives SIGINT/SIGTERM.
-  // checkPeriod:
-  // Acts as the maximum sleep / blocking interval in the internal poll loop (passed as the timeout to epoll_wait).
-  // Lower values:
-  //   + Faster responsiveness to external stop() calls.
-  //   + Finer granularity for periodic housekeeping (idle connection sweeping).
-  //   - More wake‑ups -> higher baseline CPU usage.
-  // Higher values:
-  //   + Fewer wake‑ups (reduced idle CPU) when the server is mostly idle.
-  //   - May delay detection of: (a) stop() requests, (b) keep‑alive timeout expiry, (c) Date header second rollover
-  //     by up to the specified duration.
-  // Epoll will still return early when I/O events arrive, so this is only a cap on maximum latency when *idle*.
-  // Typical practical ranges:
-  //   - High throughput / low latency tuning:   5–50 ms
-  //   - General purpose / balanced default:     50–250 ms
-  //   - Extremely low churn / power sensitive:  250–1000 ms (at the cost of slower shutdown & timeout precision)
-  // Default (500 ms) favors low idle CPU over sub‑100 ms shutdown responsiveness.
   // Run the server event loop until stop() is called (from another thread) or SIGINT/SIGTERM.
   // The maximum blocking interval of a single poll cycle is controlled by HttpServerConfig::pollInterval.
   // This method is blocking for the caller thread.
@@ -252,6 +264,10 @@ class HttpServer {
   bool maybeDecompressRequestBody(ConnectionMapIt cnxIt, HttpRequest& req);
   void finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpRequest& req, HttpResponse&& resp,
                                std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
+  // Handle Expect header tokens other than the built-in 100-continue.
+  // Returns true if processing should stop for this request (response already queued/sent).
+  bool handleExpectHeader(ConnectionMapIt cnxIt, HttpRequest& req, ConnectionState& state, bool& found100Continue,
+                          std::chrono::steady_clock::time_point reqStart);
   // Helper to populate and invoke the metrics callback for a completed request.
   void emitRequestMetrics(const HttpRequest& req, http::StatusCode status, std::size_t bytesIn, bool reusedConnection,
                           std::chrono::steady_clock::time_point reqStart);
@@ -325,6 +341,7 @@ class HttpServer {
 
   ParserErrorCallback _parserErrCb = []([[maybe_unused]] http::StatusCode) {};
   MetricsCallback _metricsCb;
+  ExpectationHandler _expectationHandler;
   RawChars _tmpBuffer;  // can be used for any kind of temporary buffer
 
   // Telemetry context - one per HttpServer instance (no global singletons)

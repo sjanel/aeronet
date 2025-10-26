@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cstddef>
 #include <string>
+#include <thread>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -9,10 +12,7 @@
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
-using namespace std::chrono_literals;  // retained for potential future literal use
-
-// New tests: pipelining, zero-length Expect (no 100), maxRequestsPerConnection, pipeline error after success, 413 via
-// large Content-Length
+using namespace std::chrono_literals;
 
 TEST(HttpPipeline, TwoRequestsBackToBack) {
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
@@ -206,4 +206,237 @@ TEST(HttpBasic, ManyHeadersResponse) {
   EXPECT_TRUE(resp.contains("X-Response-1499: value1499"));
   EXPECT_TRUE(resp.contains("X-Response-1999: value1999"));
   EXPECT_TRUE(resp.contains("X-Response-2999: value2999"));
+}
+
+TEST(HttpExpectation, UnknownExpectationReturns417) {
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
+    aeronet::HttpResponse respObj;
+    respObj.body("X");
+    return respObj;
+  });
+
+  aeronet::test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+  ASSERT_GE(fd, 0);
+  std::string req =
+      "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nExpect: custom-token\r\nConnection: close\r\n\r\n";
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
+  std::string resp = aeronet::test::recvUntilClosed(fd);
+  ASSERT_TRUE(resp.contains("417")) << resp;
+}
+
+TEST(HttpExpectation, HandlerCanEmit102Interim) {
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  // Register handler that emits 102 Processing for token "102-processing"
+  ts.server.setExpectationHandler([](const aeronet::HttpRequest& /*req*/, std::string_view token) {
+    aeronet::HttpServer::ExpectationResult res;
+    if (token == "102-processing") {
+      res.kind = aeronet::HttpServer::ExpectationResultKind::Interim;
+      res.interimStatus = 102;
+      return res;
+    }
+    res.kind = aeronet::HttpServer::ExpectationResultKind::Continue;
+    return res;
+  });
+
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
+    aeronet::HttpResponse respObj;
+    respObj.body("OK");
+    return respObj;
+  });
+
+  aeronet::test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+  ASSERT_GE(fd, 0);
+  std::string req =
+      "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 102-processing\r\nConnection: close\r\n\r\nHELLO";
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
+  std::string resp = aeronet::test::recvUntilClosed(fd);
+  ASSERT_TRUE(resp.contains("102 Processing")) << resp;
+  ASSERT_TRUE(resp.contains("200")) << resp;
+}
+
+TEST(HttpExpectation, HandlerInvalidInterimStatusReturns500) {
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  // Handler emits an invalid interim status (not 1xx)
+  ts.server.setExpectationHandler([](const aeronet::HttpRequest& /*req*/, std::string_view token) {
+    aeronet::HttpServer::ExpectationResult res;
+    if (token == "bad-interim") {
+      res.kind = aeronet::HttpServer::ExpectationResultKind::Interim;
+      res.interimStatus = 250;  // invalid: not 1xx
+      return res;
+    }
+    res.kind = aeronet::HttpServer::ExpectationResultKind::Continue;
+    return res;
+  });
+
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
+    aeronet::HttpResponse respObj;
+    respObj.body("SHOULD NOT SEE");
+    return respObj;
+  });
+
+  aeronet::test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+  ASSERT_GE(fd, 0);
+  std::string req =
+      "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: bad-interim\r\nConnection: close\r\n\r\nHELLO";
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
+  std::string resp = aeronet::test::recvUntilClosed(fd);
+  // Server should return 500 due to invalid interim status and not invoke handler body
+  ASSERT_TRUE(resp.contains("500")) << resp;
+  ASSERT_TRUE(resp.contains("Invalid interim status")) << resp;
+  ASSERT_FALSE(resp.contains("SHOULD NOT SEE")) << resp;
+}
+
+TEST(HttpExpectation, HandlerThrowsReturns500AndSkipsBody) {
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  // Handler throws an exception
+  ts.server.setExpectationHandler([](const aeronet::HttpRequest&, std::string_view token) {
+    if (token == "throws") {
+      throw std::runtime_error("boom");
+    }
+    aeronet::HttpServer::ExpectationResult res;
+    res.kind = aeronet::HttpServer::ExpectationResultKind::Continue;
+    return res;
+  });
+
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
+    aeronet::HttpResponse respObj;
+    respObj.body("SHOULD NOT SEE");
+    return respObj;
+  });
+
+  aeronet::test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+  ASSERT_GE(fd, 0);
+  std::string req =
+      "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: throws\r\nConnection: close\r\n\r\nHELLO";
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
+  std::string resp = aeronet::test::recvUntilClosed(fd);
+  // Server should return 500 due to exception in handler and not invoke handler body
+  ASSERT_TRUE(resp.contains("500")) << resp;
+  ASSERT_TRUE(resp.contains("Internal Server Error")) << resp;
+  ASSERT_FALSE(resp.contains("SHOULD NOT SEE")) << resp;
+}
+
+TEST(HttpExpectation, MultipleTokensWithUnknownShouldReturn417) {
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
+    aeronet::HttpResponse respObj;
+    respObj.body("X");
+    return respObj;
+  });
+
+  aeronet::test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+  ASSERT_GE(fd, 0);
+  // Include 100-continue and an unknown token -> RFC requires 417
+  std::string req =
+      "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue, custom-token\r\nConnection: "
+      "close\r\n\r\nHELLO";
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
+  std::string resp = aeronet::test::recvUntilClosed(fd);
+  ASSERT_TRUE(resp.contains("417")) << resp;
+}
+
+TEST(HttpExpectation, HandlerFinalResponseSkipsBody) {
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  // Handler returns a final response immediately
+  ts.server.setExpectationHandler([](const aeronet::HttpRequest& /*req*/, std::string_view token) {
+    aeronet::HttpServer::ExpectationResult res;
+    if (token == "auth-check") {
+      res.kind = aeronet::HttpServer::ExpectationResultKind::FinalResponse;
+      aeronet::HttpResponse hr(403, "Forbidden");
+      hr.contentType("text/plain").body("nope");
+      res.finalResponse = std::move(hr);
+      return res;
+    }
+    res.kind = aeronet::HttpServer::ExpectationResultKind::Continue;
+    return res;
+  });
+
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
+    aeronet::HttpResponse respObj;
+    respObj.body("SHOULD NOT SEE");
+    return respObj;
+  });
+
+  aeronet::test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+  ASSERT_GE(fd, 0);
+  std::string req =
+      "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: auth-check\r\nConnection: close\r\n\r\nHELLO";
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
+  std::string resp = aeronet::test::recvUntilClosed(fd);
+  ASSERT_TRUE(resp.contains("403")) << resp;
+  ASSERT_TRUE(resp.contains("nope")) << resp;
+  ASSERT_FALSE(resp.contains("SHOULD NOT SEE")) << resp;
+}
+
+TEST(HttpExpectation, Mixed100AndCustomWithHandlerContinue) {
+  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  // Handler accepts custom token and returns Continue
+  ts.server.setExpectationHandler([](const aeronet::HttpRequest& /*req*/, std::string_view token) {
+    aeronet::HttpServer::ExpectationResult res;
+    if (token == "custom-ok") {
+      res.kind = aeronet::HttpServer::ExpectationResultKind::Continue;
+      return res;
+    }
+    res.kind = aeronet::HttpServer::ExpectationResultKind::Continue;
+    return res;
+  });
+
+  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
+    aeronet::HttpResponse respObj;
+    respObj.body("DONE");
+    return respObj;
+  });
+
+  aeronet::test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+  ASSERT_GE(fd, 0);
+  std::string req =
+      "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue, custom-ok\r\nConnection: "
+      "close\r\n\r\nHELLO";
+  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
+  std::string resp = aeronet::test::recvUntilClosed(fd);
+  // Should see 100 Continue (from expectContinue path) and final 200
+  ASSERT_TRUE(resp.contains("100 Continue")) << resp;
+  ASSERT_TRUE(resp.contains("200")) << resp;
+  ASSERT_TRUE(resp.contains("DONE")) << resp;
+}
+
+TEST(HttpHead, MaxRequestsApplied) {
+  aeronet::HttpServerConfig cfg;
+  cfg.withMaxRequestsPerConnection(3);
+  aeronet::HttpServer server(cfg);
+  auto port = server.port();
+  server.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest& req) {
+    aeronet::HttpResponse resp;
+    resp.body("IGNORED");
+    return resp;
+  });
+  std::jthread th([&] { server.run(); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  aeronet::test::ClientConnection clientConnection(port);
+  int fd = clientConnection.fd();
+  // 4 HEAD requests pipelined; only 3 responses expected then close
+  std::string reqs;
+  for (int i = 0; i < 4; ++i) {
+    reqs += "HEAD /h" + std::to_string(i) + " HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";
+  }
+  EXPECT_TRUE(aeronet::test::sendAll(fd, reqs));
+  std::string resp = aeronet::test::recvUntilClosed(fd);
+  server.stop();
+  int statusCount = 0;
+  std::size_t pos = 0;
+  while ((pos = resp.find("HTTP/1.1 200", pos)) != std::string::npos) {
+    ++statusCount;
+    pos += 11;
+  }
+  ASSERT_EQ(3, statusCount) << resp;
+  // HEAD responses must not include body; ensure no accidental body token present
+  ASSERT_FALSE(resp.contains("IGNORED"));
 }
