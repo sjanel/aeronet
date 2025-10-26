@@ -195,9 +195,8 @@ void HttpServer::acceptNewConnections() {
                 log::error("TLS state fd # {} ver={} cipher={}", cnxFd, (ver != nullptr) ? ver : "?",
                            (cipher != nullptr) ? cipher : "?");
               }
+              tlsTr->logErrorIfAny();
             }
-
-            TlsTransport::logErrorIfAny();
           }
 #endif
         }

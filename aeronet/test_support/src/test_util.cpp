@@ -507,7 +507,7 @@ std::optional<ParsedResponse> parseResponse(const std::string &raw) {
   }
   pr.chunked = false;
   auto teIt = pr.headers.find("Transfer-Encoding");
-  if (teIt != pr.headers.end() && toLower(teIt->second).find("chunked") != std::string::npos) {
+  if (teIt != pr.headers.end() && toLower(teIt->second).contains("chunked")) {
     pr.chunked = true;
   }
   std::string bodyRaw = raw.substr(headerEnd + ::aeronet::http::DoubleCRLF.size());
@@ -799,7 +799,7 @@ std::vector<std::string> sequentialRequests(uint16_t port, std::span<const Reque
               haveContentLen = true;
               contentLen = StringToIntegral<decltype(contentLen)>(val);
             }
-            if (keyLower == "transfer-encoding" && toLower(val).find("chunked") != std::string::npos) {
+            if (keyLower == "transfer-encoding" && toLower(val).contains("chunked")) {
               chunked = true;
             }
           }
@@ -822,7 +822,7 @@ std::vector<std::string> sequentialRequests(uint16_t port, std::span<const Reque
         }
       } else {
         if (chunked) {
-          if (out.find("\r\n0\r\n\r\n") != std::string::npos) {
+          if (out.contains("\r\n0\r\n\r\n")) {
             break;
           }
         } else if (haveContentLen) {
