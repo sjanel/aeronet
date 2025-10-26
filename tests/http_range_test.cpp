@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -248,9 +249,9 @@ TEST(HttpLargeFile, ServeLargeFile) {
   aeronet::test::ScopedTempDir tmpDir;
   aeronet::test::ScopedTempFile tmp([&]() {
     std::string data;
-    data.assign(static_cast<size_t>(size), '\0');
+    data.assign(static_cast<std::size_t>(size), '\0');
     for (std::uint64_t i = 0; i < size; ++i) {
-      data[static_cast<size_t>(i)] = static_cast<char>('a' + (i % 26));
+      data[static_cast<std::size_t>(i)] = static_cast<char>('a' + (i % 26));
     }
     return aeronet::test::ScopedTempFile(tmpDir, data);
   }());
@@ -287,9 +288,9 @@ TEST(HttpLargeFile, ServeLargeFileTls) {
   aeronet::test::ScopedTempDir tmpDir;
   aeronet::test::ScopedTempFile tmp([&]() {
     std::string data;
-    data.assign(static_cast<size_t>(size), '\0');
+    data.assign(static_cast<std::size_t>(size), '\0');
     for (std::uint64_t i = 0; i < size; ++i) {
-      data[static_cast<size_t>(i)] = static_cast<char>('a' + (i % 26));
+      data[static_cast<std::size_t>(i)] = static_cast<char>('a' + (i % 26));
     }
     return aeronet::test::ScopedTempFile(tmpDir, data);
   }());
