@@ -84,18 +84,18 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
 std::string toLower(std::string input);
 
 // Very small HTTP/1.1 response parser (not resilient to all malformed cases, just for test consumption)
-std::optional<ParsedResponse> parseResponse(const std::string &raw);
+std::optional<ParsedResponse> parseResponse(const std::string& raw);
 
 bool setRecvTimeout(int fd, ::aeronet::SysDuration timeout);
 
-std::string buildRequest(const RequestOptions &opt);
+std::string buildRequest(const RequestOptions& opt);
 
-std::optional<std::string> request(uint16_t port, const RequestOptions &opt = {});
+std::optional<std::string> request(uint16_t port, const RequestOptions& opt = {});
 
 // Convenience wrapper that throws std::runtime_error on failure instead of returning std::nullopt.
 // This simplifies test code by eliminating explicit ASSERT checks for has_value(); gtest will treat
 // uncaught exceptions as test failures with the diagnostic message.
-std::string requestOrThrow(uint16_t port, const RequestOptions &opt = {});
+std::string requestOrThrow(uint16_t port, const RequestOptions& opt = {});
 
 // Send multiple requests over a single keep-alive connection and return raw responses individually.
 // Limitations: assumes server responds fully before next request is parsed (sufficient for simple tests).

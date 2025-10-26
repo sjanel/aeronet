@@ -84,7 +84,7 @@ class HttpResponseWriter {
 
   // Stream the given file as the response body; zero-copy where transport allows.
   // Call before headers are sent and finish with end().
-  void sendFile(File file, std::uint64_t offset = 0, std::uint64_t length = 0);
+  void file(File fileObj, std::uint64_t offset = 0, std::uint64_t length = 0);
 
   // Adds a trailer header to be sent after the response body (RFC 7230 §4.1.2).
   //

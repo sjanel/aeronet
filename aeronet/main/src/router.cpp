@@ -20,7 +20,7 @@ bool shouldNormalize(RouterConfig::TrailingSlashPolicy policy, auto path) {
 
 }  // namespace
 
-Router::Router(const RouterConfig& config) : _trailingSlashPolicy(config.trailingSlashPolicy) {}
+Router::Router(RouterConfig config) : _config(std::move(config)) {}
 
 void Router::setDefault(RequestHandler handler) {
   if (_handler) {
@@ -37,7 +37,7 @@ void Router::setDefault(StreamingHandler handler) {
 }
 
 void Router::setPath(http::MethodBmp methods, std::string path, RequestHandler handler) {
-  const bool doNormalize = shouldNormalize(_trailingSlashPolicy, path);
+  const bool doNormalize = shouldNormalize(_config.trailingSlashPolicy, path);
   if (doNormalize) {
     path.pop_back();
   }
@@ -74,7 +74,7 @@ void Router::setPath(http::Method method, std::string path, RequestHandler handl
 }
 
 void Router::setPath(http::MethodBmp methods, std::string path, StreamingHandler handler) {
-  const bool doNormalize = shouldNormalize(_trailingSlashPolicy, path);
+  const bool doNormalize = shouldNormalize(_config.trailingSlashPolicy, path);
   if (doNormalize) {
     path.pop_back();
   }
@@ -112,7 +112,7 @@ void Router::setPath(http::Method method, std::string path, StreamingHandler han
 
 Router::RoutingResult Router::match(http::Method method, std::string_view path) const {
   std::string_view normalizedPath = path;
-  if (shouldNormalize(_trailingSlashPolicy, path)) {
+  if (shouldNormalize(_config.trailingSlashPolicy, path)) {
     normalizedPath.remove_suffix(1);
   }
 
@@ -136,7 +136,7 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
     // given canonical path is kept (subsequent registrations target the same
     // canonical entry). This avoids surprising behavior where `/foo` and
     // `/foo/` would be routed to different handlers under Normalize.
-    if (_trailingSlashPolicy == RouterConfig::TrailingSlashPolicy::Redirect) {
+    if (_config.trailingSlashPolicy == RouterConfig::TrailingSlashPolicy::Redirect) {
       if (it->second.isNormalized) {
         // we registered a path with a trailing slash
         if (normalizedPath.size() == path.size()) {
@@ -197,7 +197,7 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
 
 http::MethodBmp Router::allowedMethods(std::string_view path) const {
   std::string_view normalizedPath = path;
-  if (shouldNormalize(_trailingSlashPolicy, path)) {
+  if (shouldNormalize(_config.trailingSlashPolicy, path)) {
     normalizedPath.remove_suffix(1);
   }
 

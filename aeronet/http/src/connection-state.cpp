@@ -90,13 +90,15 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
       fileSend.active = false;
     }
   } else {
-    if (bytes == 0) {
-      // EOF
-      fileSend.remaining = 0;
-    } else {
-      // Successful transfer: update state
+    // Successful transfer: update state based on the modified offset
+    if (bytes > 0) {
       fileSend.offset = static_cast<std::size_t>(off);
       fileSend.remaining -= static_cast<std::size_t>(bytes);
+    } else if (bytes == 0) {
+      // sendfile() returning 0 with a non-blocking socket typically means the socket would block.
+      // Treat it as WouldBlock to enable writable interest and wait for the socket to be ready.
+      res.code = FileResult::Code::WouldBlock;
+      res.enableWritable = true;
     }
     if (fileSend.remaining == 0) {
       fileSend.active = false;

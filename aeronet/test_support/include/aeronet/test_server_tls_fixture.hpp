@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_tls_helper.hpp"
@@ -44,7 +45,7 @@ struct TlsTestServer {
 
   explicit TlsTestServer(std::initializer_list<std::string_view> alpn = {}, const Mutator& mut = nullptr,
                          std::chrono::milliseconds poll = std::chrono::milliseconds{50})
-      : server(makeConfig(alpn, mut), poll) {}
+      : server(makeConfig(alpn, mut), RouterConfig{}, poll) {}
 
   [[nodiscard]] uint16_t port() const { return server.port(); }
   void stop() { server.stop(); }

@@ -18,7 +18,7 @@ add_unit_test(
     connection_state_sendfile_test
     test/connection_state_sendfile_test.cpp
     LIBRARIES
-    aeronet_http
+    aeronet_http aeronet_test_support
 )
 
 add_unit_test(
@@ -39,7 +39,7 @@ add_unit_test(
     http-response_test
     test/http-response_test.cpp
     LIBRARIES
-    aeronet_http aeronet_sys
+    aeronet_http aeronet_sys aeronet_test_support
 )
 
 add_unit_test(
@@ -54,4 +54,12 @@ add_unit_test(
     test/mergeable-headers_test.cpp
     LIBRARIES
     aeronet_tech
+)
+
+add_unit_test(
+    static-file-handler_test
+    test/static-file-handler_test.cpp
+    LIBRARIES
+    aeronet_http
+    aeronet_test_support
 )

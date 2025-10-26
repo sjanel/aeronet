@@ -8,33 +8,17 @@
 #include <cstddef>
 #include <cstdlib>
 #include <memory>
-#include <stdexcept>
 #include <string>
 #include <utility>
 
+#include "aeronet/temp-file.hpp"
 #include "base-fd.hpp"
 #include "connection-state.hpp"
 #include "file.hpp"
 #include "transport.hpp"
 
 using namespace aeronet;
-
-namespace {
-std::string createTempFileWithContent(const std::string& content) {
-  char tmpl[] = "/tmp/aeronet_sendfile_test_XXXXXX";
-  int fd = ::mkstemp(tmpl);
-  if (fd < 0) {
-    throw std::runtime_error("mkstemp failed");
-  }
-  BaseFd raii(fd);
-  ssize_t nb = write(fd, content.data(), content.size());
-  if (std::cmp_not_equal(nb, content.size())) {
-    unlink(tmpl);
-    throw std::runtime_error("write failed");
-  }
-  return tmpl;
-}
-}  // namespace
+using aeronet::test::ScopedTempFile;
 
 TEST(ConnectionStateSendfileTest, KernelSendfileSuccess) {
   int sv[2];
@@ -42,9 +26,8 @@ TEST(ConnectionStateSendfileTest, KernelSendfileSuccess) {
   BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
 
   const std::string content(64UL * 1024, 'A');
-  const std::string path = createTempFileWithContent(content);
-
-  File file(path);
+  auto tmp = ScopedTempFile::create("aeronet-sendfile-", content);
+  File file(tmp.filePath().string());
   ConnectionState state;
   state.fileSend.file = std::move(file);
   state.fileSend.offset = 0;
@@ -61,8 +44,6 @@ TEST(ConnectionStateSendfileTest, KernelSendfileSuccess) {
   got.resize(res.bytesDone);
   ssize_t rd = read(sv[1], got.data(), res.bytesDone);
   EXPECT_EQ(rd, static_cast<ssize_t>(res.bytesDone));
-
-  unlink(path.c_str());
 }
 
 TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
@@ -71,9 +52,9 @@ TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
   BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
 
   const std::string content(128UL * 1024, 'B');
-  const std::string path = createTempFileWithContent(content);
+  auto tmp = ScopedTempFile::create("aeronet-sendfile-wouldblock-", content);
 
-  File file(path);
+  File file(tmp.filePath().string());
   ConnectionState state;
   state.fileSend.file = std::move(file);
   state.fileSend.offset = 0;
@@ -109,8 +90,6 @@ TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
     }
   }
   EXPECT_TRUE(sawWouldBlock);
-
-  unlink(path.c_str());
 }
 
 TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
@@ -121,9 +100,9 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   // Create a large file to force multiple chunks in the TLS path
   const std::size_t totalSize = (1 << 20);  // 1 MiB
   const std::string content(totalSize, 'T');
-  const std::string path = createTempFileWithContent(content);
+  auto tmp = ScopedTempFile::create("aeronet-sendfile-tls-", content);
 
-  File file(path);
+  File file(tmp.filePath().string());
   ConnectionState state;
   state.fileSend.file = std::move(file);
   state.fileSend.offset = 0;
@@ -168,6 +147,4 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   }
 
   EXPECT_EQ(totalRead, totalSize);
-
-  unlink(path.c_str());
 }

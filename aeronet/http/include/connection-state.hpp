@@ -22,6 +22,14 @@ struct ConnectionState {
   [[nodiscard]] bool isTunneling() const noexcept { return peerFd != -1; }
   [[nodiscard]] bool isSendingFile() const noexcept { return fileSend.active; }
 
+  [[nodiscard]] bool canCloseConnectionForDrain() const noexcept {
+    return isDrainCloseRequested() && outBuffer.empty() && tunnelOrFileBuffer.empty() && !fileSend.active;
+  }
+
+  [[nodiscard]] bool canCloseImmediately() const noexcept {
+    return isImmediateCloseRequested() || canCloseConnectionForDrain();
+  }
+
   // Request to close immediately (abort outstanding buffered writes).
   void requestImmediateClose() { closeMode = CloseMode::Immediate; }
 

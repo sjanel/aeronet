@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -281,24 +282,24 @@ class HttpResponse {
   // This methods takes ownership of the 'file' object into the response and sends the entire file.
   // Notes:
   //   - file should be opened (`file` must be true)
-  //   - Trailers are NOT permitted when using sendFile
-  //   - Transfer coding: sendFile produces a fixed-length response (Content-Length is set) and disables chunked
+  //   - Trailers are NOT permitted when using file
+  //   - Transfer coding: file produces a fixed-length response (Content-Length is set) and disables chunked
   //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
   //   - Errors: filesystem read/write errors are surfaced during transmission; callers should expect the connection
   //     to be closed on fatal I/O failures.
-  HttpResponse& sendFile(File file) & { return sendFile(std::move(file), 0, 0); }
+  HttpResponse& file(File fileObj) & { return file(std::move(fileObj), 0, 0); }
 
   // Stream the contents of an already-open file as the response body.
   // This methods takes ownership of the 'file' object into the response and sends the entire file.
   // Notes:
   //   - file should be opened (`file` must be true)
-  //   - Trailers are NOT permitted when using sendFile
-  //   - Transfer coding: sendFile produces a fixed-length response (Content-Length is set) and disables chunked
+  //   - Trailers are NOT permitted when using file
+  //   - Transfer coding: file produces a fixed-length response (Content-Length is set) and disables chunked
   //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
   //   - Errors: filesystem read/write errors are surfaced during transmission; callers should expect the connection
   //     to be closed on fatal I/O failures.
-  HttpResponse&& sendFile(File file) && {
-    sendFile(std::move(file), 0, 0);
+  HttpResponse&& file(File fileObj) && {
+    file(std::move(fileObj), 0, 0);
     return std::move(*this);
   }
 
@@ -306,26 +307,29 @@ class HttpResponse {
   // This methods takes ownership of the 'file' object into the response and sends the [offset, offset+length) range.
   // Notes:
   //   - file should be opened (`file` must be true)
-  //   - Trailers are NOT permitted when using sendFile
-  //   - Transfer coding: sendFile produces a fixed-length response (Content-Length is set) and disables chunked
+  //   - Trailers are NOT permitted when using file
+  //   - Transfer coding: file produces a fixed-length response (Content-Length is set) and disables chunked
   //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
   //   - Errors: filesystem read/write errors are surfaced during transmission; callers should expect the connection
   //     to be closed on fatal I/O failures.
-  HttpResponse& sendFile(File file, std::size_t offset, std::size_t length) &;
+  HttpResponse& file(File fileObj, std::size_t offset, std::size_t length) &;
 
   // Stream the contents of an already-open file as the response body.
   // This methods takes ownership of the 'file' object into the response and sends the [offset, offset+length) range.
   // Notes:
   //   - file should be opened (`file` must be true)
-  //   - Trailers are NOT permitted when using sendFile
-  //   - Transfer coding: sendFile produces a fixed-length response (Content-Length is set) and disables chunked
+  //   - Trailers are NOT permitted when using file
+  //   - Transfer coding: file produces a fixed-length response (Content-Length is set) and disables chunked
   //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
   //   - Errors: filesystem read/write errors are surfaced during transmission; callers should expect the connection
   //     to be closed on fatal I/O failures.
-  HttpResponse&& sendFile(File file, std::size_t offset, std::size_t length) && {
-    sendFile(std::move(file), offset, length);
+  HttpResponse&& file(File fileObj, std::size_t offset, std::size_t length) && {
+    file(std::move(fileObj), offset, length);
     return std::move(*this);
   }
+
+  // Get the current file stored in this HttpResponse, or nullptr if no file is set.
+  [[nodiscard]] const File* file() const noexcept;
 
   // Get a view of the current body stored in this HttpResponse.
   // If the body is not present, it returns an empty view.
@@ -411,6 +415,20 @@ class HttpResponse {
     setHeader(key, value, false);
     return std::move(*this);
   }
+
+  // Retrieves the value of the first occurrence of the given header key (case-insensitive search per RFC 7230).
+  // If the header is not found, returns an empty string_view.
+  // To distinguish between missing and present-but-empty header values, use headerValue().
+  [[nodiscard]] std::string_view headerValueOrEmpty(std::string_view key) const noexcept {
+    if (const auto optValue = headerValue(key); optValue) {
+      return *optValue;
+    }
+    return {};
+  }
+
+  // Retrieves the value of the first occurrence of the given header key (case-insensitive search per RFC 7230).
+  // If the header is not found, returns std::nullopt.
+  [[nodiscard]] std::optional<std::string_view> headerValue(std::string_view key) const noexcept;
 
   // Whether user explicitly provided a Content-Encoding header (any value). When present
   // aeronet will NOT perform automatic compression for this response (the user fully
