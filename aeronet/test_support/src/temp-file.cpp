@@ -1,6 +1,5 @@
 #include "aeronet/temp-file.hpp"
 
-#include <fcntl.h>
 #include <unistd.h>
 
 #include <array>
@@ -8,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <functional>
@@ -100,21 +100,19 @@ ScopedTempFile::ScopedTempFile(const ScopedTempDir &dir, std::string_view conten
   // Create a unique file inside the provided directory. Use mkstemp on a
   // template so we get an atomic create+open and avoid races.
   std::string tmpl = _dir.string() + "/aeronet_temp_XXXXXX";
-  std::vector<char> buf(tmpl.begin(), tmpl.end());
-  buf.push_back('\0');
 
-  int fd = ::mkstemp(buf.data());
+  BaseFd raii(::mkstemp(tmpl.data()));
+  int fd = raii.fd();
   if (fd == -1) {
     int err = errno;
     throw std::system_error(err, std::generic_category(), "ScopedTempFile: mkstemp failed");
   }
 
   // mkstemp returns the path it created in buf.data()
-  _path = std::filesystem::path(buf.data());
-  BaseFd raii(fd);
+  _path = std::filesystem::path(tmpl.data());
 
-  ssize_t written = ::write(fd, content.data(), content.size());
-  if (std::cmp_not_equal(written, static_cast<ssize_t>(content.size()))) {
+  auto written = ::write(fd, content.data(), content.size());
+  if (std::cmp_not_equal(written, content.size())) {
     // best-effort cleanup: try to unlink the file we just created
     int rc = ::unlink(_path.c_str());
     if (rc != 0) {
