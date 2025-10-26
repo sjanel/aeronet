@@ -5,11 +5,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
+#include <variant>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
@@ -82,60 +84,39 @@ void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
     appendHeaderUnchecked(newKey, newValue);
     return;
   }
-  auto haystack = std::ranges::subrange(_data.data() + _headersStartPos + http::CRLF.size(),
-                                        _data.data() + _bodyStartPos - http::CRLF.size());
 
-  while (!haystack.empty()) {
-    // At this point haystack is pointing to the beginning of a header, immediately after a CRLF.
-    // For instance: 'Content-Encoding: gzip\r\n'
-    // Per design, we enforce the header separator to be exactly http::HeaderSep
-    auto nextHeaderSepRg = std::ranges::search(haystack, http::HeaderSep);
-    if (nextHeaderSepRg.empty()) {
-      throw std::runtime_error("Unable to locate the header separator");
-    }
-    std::string_view oldHeaderKey(haystack.begin(), nextHeaderSepRg.begin());
-
-    // move haystack to beginning of old header value
-    haystack = std::ranges::subrange(nextHeaderSepRg.end(), haystack.end());
-
-    const auto nextCRLFRg = std::ranges::search(haystack, http::CRLF);
-    if (nextCRLFRg.empty()) {
-      throw std::runtime_error("Invalid header value");
-    }
-
-    // move haystack to next header
-    haystack = std::ranges::subrange(nextCRLFRg.end(), haystack.end());
-
-    if (!CaseInsensitiveEqual(oldHeaderKey, newKey)) {
-      continue;
-    }
-
-    // Same header
-    if (onlyIfNew) {
-      return;
-    }
-
-    char* valueFirst = nextHeaderSepRg.begin() + http::HeaderSep.size();
-    const std::size_t oldHeaderValueSz = static_cast<std::size_t>(nextCRLFRg.begin() - valueFirst);
-
-    const auto diff = static_cast<int64_t>(newValue.size()) - static_cast<int64_t>(oldHeaderValueSz);
-    if (diff == 0) {
-      std::memcpy(valueFirst, newValue.data(), newValue.size());
-      return;
-    }
-    const auto valuePos = static_cast<std::size_t>(valueFirst - _data.data());
-    if (diff > 0) {
-      _data.ensureAvailableCapacity(static_cast<std::size_t>(diff));
-      valueFirst = _data.data() + valuePos;
-    }
-    std::memmove(valueFirst + newValue.size(), valueFirst + oldHeaderValueSz,
-                 _data.size() - valuePos - oldHeaderValueSz);
-    std::memcpy(valueFirst, newValue.data(), newValue.size());
-    _data.addSize(static_cast<std::size_t>(diff));
-    _bodyStartPos = static_cast<uint32_t>(static_cast<int64_t>(_bodyStartPos) + diff);
+  auto optValue = headerValue(newKey);
+  if (!optValue) {
+    appendHeaderUnchecked(newKey, newValue);
     return;
   }
-  appendHeaderUnchecked(newKey, newValue);
+  if (onlyIfNew) {
+    return;
+  }
+
+  char* valueFirst = _data.data() + (optValue->data() - _data.data());
+  const std::size_t oldHeaderValueSz = optValue->size();
+
+  const auto diff = static_cast<int64_t>(newValue.size()) - static_cast<int64_t>(oldHeaderValueSz);
+  if (diff == 0) {
+    std::memcpy(valueFirst, newValue.data(), newValue.size());
+    return;
+  }
+
+  const auto valuePos = static_cast<std::size_t>(valueFirst - _data.data());
+  if (diff > 0) {
+    _data.ensureAvailableCapacity(static_cast<std::size_t>(diff));
+    valueFirst = _data.data() + valuePos;
+  }
+
+  std::memmove(valueFirst + newValue.size(), valueFirst + oldHeaderValueSz, _data.size() - valuePos - oldHeaderValueSz);
+  std::memcpy(valueFirst, newValue.data(), newValue.size());
+
+  // Works even if diff is negative, the unsigned value will overflow and have a resulting value of exactly sz - diff.
+  // In C++, unsigned overflow is well-defined.
+  _data.addSize(static_cast<std::size_t>(diff));
+
+  _bodyStartPos = static_cast<uint32_t>(static_cast<int64_t>(_bodyStartPos) + diff);
 }
 
 void HttpResponse::setBodyInternal(std::string_view newBody) {
@@ -168,26 +149,31 @@ void HttpResponse::setBodyInternal(std::string_view newBody) {
   _payloadKind = PayloadKind::Inline;
 }
 
-HttpResponse& HttpResponse::sendFile(File file, std::size_t offset, std::size_t length) & {
-  if (!file) {
-    throw invalid_argument("sendFile requires an opened file");
+HttpResponse& HttpResponse::file(File fileObj, std::size_t offset, std::size_t length) & {
+  if (!fileObj) {
+    throw invalid_argument("file requires an opened file");
   }
-  const std::size_t fileSize = file.size();
+  const std::size_t fileSize = fileObj.size();
   if (offset > fileSize) {
-    throw invalid_argument("sendFile offset exceeds file size");
+    throw invalid_argument("file offset exceeds file size");
   }
   const std::size_t resolvedLength = length == 0 ? (fileSize - offset) : length;
   if (offset + resolvedLength > fileSize) {
-    throw invalid_argument("sendFile length exceeds file size");
+    throw invalid_argument("file length exceeds file size");
   }
   if (_trailerPos != 0) {
-    throw std::logic_error("Cannot call sendFile after adding trailers");
+    throw std::logic_error("Cannot call file after adding trailers");
   }
 
   setBodyInternal(std::string_view());
   _payloadKind = PayloadKind::File;
-  _payloadVariant.emplace<FilePayload>(std::move(file), offset, resolvedLength);
+  _payloadVariant.emplace<FilePayload>(std::move(fileObj), offset, resolvedLength);
   return *this;
+}
+
+const File* HttpResponse::file() const noexcept {
+  const auto* pFilePayload = std::get_if<FilePayload>(&_payloadVariant);
+  return pFilePayload == nullptr ? nullptr : &pFilePayload->file;
 }
 
 std::string_view HttpResponse::body() const noexcept {
@@ -199,6 +185,44 @@ std::string_view HttpResponse::body() const noexcept {
       pExternPayload != nullptr ? pExternPayload->view() : std::string_view{_data.begin() + _bodyStartPos, _data.end()};
   if (_trailerPos != 0) {
     ret.remove_suffix(ret.size() - _trailerPos);
+  }
+  return ret;
+}
+
+std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) const noexcept {
+  std::optional<std::string_view> ret;
+  if (_headersStartPos == 0) {
+    return ret;
+  }
+  auto haystack = std::ranges::subrange(_data.data() + _headersStartPos + http::CRLF.size(),
+                                        _data.data() + _bodyStartPos - http::CRLF.size());
+
+  while (!haystack.empty()) {
+    // At this point haystack is pointing to the beginning of a header, immediately after a CRLF.
+    // For instance: 'Content-Encoding: gzip\r\n'
+    // Per design, we enforce the header separator to be exactly http::HeaderSep
+    auto nextHeaderSepRg = std::ranges::search(haystack, http::HeaderSep);
+    if (nextHeaderSepRg.empty()) {
+      return ret;
+    }
+    std::string_view oldHeaderKey(haystack.begin(), nextHeaderSepRg.begin());
+
+    // move haystack to beginning of old header value
+    haystack = std::ranges::subrange(nextHeaderSepRg.end(), haystack.end());
+
+    const auto nextCRLFRg = std::ranges::search(haystack, http::CRLF);
+    if (nextCRLFRg.empty()) {
+      return ret;
+    }
+
+    // move haystack to next header
+    haystack = std::ranges::subrange(nextCRLFRg.end(), haystack.end());
+
+    if (CaseInsensitiveEqual(oldHeaderKey, key)) {
+      // Same header
+      ret = {nextHeaderSepRg.end(), nextCRLFRg.begin()};
+      break;
+    }
   }
   return ret;
 }

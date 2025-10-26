@@ -15,10 +15,11 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/router-config.hpp"
 #include "aeronet/server-stats.hpp"
+#include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_server_tls_fixture.hpp"
-#include "aeronet/test_temp_file.hpp"
 #include "aeronet/test_tls_client.hpp"
 #include "aeronet/test_tls_helper.hpp"
 #include "aeronet/test_util.hpp"
@@ -31,7 +32,7 @@ TEST(HttpTlsBasic, HandshakeAndSimpleGet) {
   // Prepare config with in-memory self-signed cert/key
   aeronet::test::TlsTestServer ts;  // ephemeral TLS server
   ts.setDefault([](const aeronet::HttpRequest& req) {
-    return aeronet::HttpResponse(200, "OK")
+    return aeronet::HttpResponse(aeronet::http::StatusCodeOK, "OK")
         .contentType(aeronet::http::ContentTypeTextPlain)
         .body(std::string("TLS OK ") + std::string(req.path()));
   });
@@ -297,16 +298,14 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
   ASSERT_FALSE(pair.first.empty());
   ASSERT_FALSE(pair.second.empty());
   // Write both to temp files
-  auto certFile = TempFile::createWithContent("aeronet_cert_", pair.first);
-  auto keyFile = TempFile::createWithContent("aeronet_key_", pair.second);
-  ASSERT_TRUE(certFile.valid());
-  ASSERT_TRUE(keyFile.valid());
+  auto certFile = aeronet::test::ScopedTempFile::create("aeronet_cert_", pair.first);
+  auto keyFile = aeronet::test::ScopedTempFile::create("aeronet_key_", pair.second);
 
   aeronet::HttpServerConfig cfg;
-  cfg.withTlsCertKey(certFile.path(), keyFile.path());  // file-based path (not memory)
+  cfg.withTlsCertKey(certFile.filePath().string(), keyFile.filePath().string());  // file-based path (not memory)
   cfg.withTlsAlpnProtocols({"http/1.1"});
   // Use plain TestServer since we manually set config
-  aeronet::test::TestServer server(cfg, std::chrono::milliseconds{50});
+  aeronet::test::TestServer server(cfg, RouterConfig{}, std::chrono::milliseconds{50});
   server.server.router().setDefault([](const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(200, "OK")
         .contentType(aeronet::http::ContentTypeTextPlain)

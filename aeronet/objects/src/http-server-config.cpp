@@ -13,7 +13,6 @@
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/otel-config.hpp"
-#include "aeronet/router-config.hpp"
 #include "aeronet/tls-config.hpp"
 #include "invalid_argument_exception.hpp"
 #include "major-minor-version.hpp"
@@ -153,7 +152,7 @@ HttpServerConfig& HttpServerConfig::withCompression(CompressionConfig cfg) {
 }
 
 HttpServerConfig& HttpServerConfig::withRequestDecompression(DecompressionConfig cfg) {
-  requestDecompression = std::move(cfg);
+  decompression = std::move(cfg);
   return *this;
 }
 
@@ -186,11 +185,6 @@ HttpServerConfig& HttpServerConfig::withMinCapturedBodySize(std::size_t bytes) {
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withRouterConfig(RouterConfig cfg) {
-  router = std::move(cfg);
-  return *this;
-}
-
 HttpServerConfig& HttpServerConfig::withGlobalHeaders(std::vector<http::Header> headers) {
   globalHeaders = std::move(headers);
   return *this;
@@ -220,7 +214,7 @@ HttpServerConfig& HttpServerConfig::enableBuiltinProbes(bool on) {
 
 void HttpServerConfig::validate() const {
   compression.validate();
-  requestDecompression.validate();
+  decompression.validate();
 
   if (maxPerEventReadBytes != 0 && maxPerEventReadBytes < initialReadChunkBytes) {
     // Normalize: cap cannot be smaller than a single chunk; promote to chunk size.

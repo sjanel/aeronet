@@ -476,10 +476,11 @@ std::optional<ParsedResponse> parseResponse(const std::string &raw) {
   pr.statusCode = static_cast<aeronet::http::StatusCode>(
       read3(statusLine.substr(firstSpace + 1, secondSpace - firstSpace - 1).data()));
   pr.reason = statusLine.substr(secondSpace + 1);
-  std::size_t headerEnd = raw.find(::aeronet::http::CRLF, pos + ::aeronet::http::CRLF.size());
+  std::size_t headerEnd = raw.find(::aeronet::http::DoubleCRLF, pos + ::aeronet::http::CRLF.size());
   if (headerEnd == std::string::npos) {
     return std::nullopt;
   }
+  pr.headersRaw = raw.substr(0, headerEnd + ::aeronet::http::DoubleCRLF.size());
   std::size_t cursor = pos + ::aeronet::http::CRLF.size();
   while (cursor < headerEnd) {
     std::size_t lineEnd = raw.find(::aeronet::http::CRLF, cursor);
@@ -509,9 +510,10 @@ std::optional<ParsedResponse> parseResponse(const std::string &raw) {
   if (teIt != pr.headers.end() && toLower(teIt->second).find("chunked") != std::string::npos) {
     pr.chunked = true;
   }
-  std::string bodyRaw = raw.substr(headerEnd + 4);
+  std::string bodyRaw = raw.substr(headerEnd + ::aeronet::http::DoubleCRLF.size());
   if (!pr.chunked) {
     pr.body = std::move(bodyRaw);
+    pr.plainBody = pr.body;
     return pr;
   }
   // De-chunk (simple algorithm; ignores trailers)
@@ -544,6 +546,7 @@ std::optional<ParsedResponse> parseResponse(const std::string &raw) {
     }
     bpos += ::aeronet::http::CRLF.size();  // skip CRLF
   }
+  pr.plainBody = pr.body;
   return pr;
 }
 

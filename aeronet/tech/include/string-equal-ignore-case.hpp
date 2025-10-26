@@ -35,14 +35,27 @@ constexpr bool CaseInsensitiveLess(std::string_view lhs, std::string_view rhs) {
   return lhsSize < rhsSize;
 }
 
-struct CaseInsensitiveHashFunc {
-  std::size_t operator()(std::string_view s) const noexcept {
-    std::size_t h = 0;
-    std::hash<char> hc;
-    for (char ch : s) {
-      h ^= hc(tolower(ch)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+constexpr bool StartsWithCaseInsensitive(std::string_view value, std::string_view prefix) {
+  const auto prefixSize = prefix.size();
+  if (value.size() < prefixSize) {
+    return false;
+  }
+  for (std::string_view::size_type charPos = 0; charPos < prefixSize; ++charPos) {
+    if (tolower(value[charPos]) != tolower(prefix[charPos])) {
+      return false;
     }
-    return h;
+  }
+  return true;
+}
+
+struct CaseInsensitiveHashFunc {
+  std::size_t operator()(std::string_view str) const noexcept {
+    std::size_t hash = 0;
+    std::hash<char> hc;
+    for (char ch : str) {
+      hash ^= hc(tolower(ch)) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+    }
+    return hash;
   }
 };
 

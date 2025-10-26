@@ -21,8 +21,8 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
-#include "aeronet/test_temp_file.hpp"
 #include "aeronet/test_util.hpp"
 #include "exception.hpp"
 #include "file.hpp"
@@ -131,16 +131,16 @@ TEST(HttpStreaming, ChunkedSimple) {
 
 TEST(HttpStreaming, SendFileFixedLengthPlain) {
   constexpr std::string_view kPayload = "static sendfile response body";
-  TempFile temp = TempFile::createWithContent("aeronet-stream-sendfile-", kPayload);
+  auto tmp = aeronet::test::ScopedTempFile::create("aeronet-stream-sendfile-", kPayload);
 
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  std::string path(temp.path());
+  std::string path = tmp.filePath().string();
 
   ts.server.router().setDefault([path](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.contentType("application/octet-stream");
-    writer.sendFile(aeronet::File(path));
+    writer.file(aeronet::File(path));
     writer.end();
   });
 
@@ -159,16 +159,16 @@ TEST(HttpStreaming, SendFileFixedLengthPlain) {
 
 TEST(HttpStreaming, SendFileHeadSuppressesBody) {
   constexpr std::string_view kPayload = "head sendfile streaming";
-  TempFile temp = TempFile::createWithContent("aeronet-stream-head-sendfile-", kPayload);
+  auto tmp = aeronet::test::ScopedTempFile::create("aeronet-stream-head-sendfile-", kPayload);
 
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  std::string path(temp.path());
+  std::string path = tmp.filePath().string();
 
   ts.server.router().setDefault([path](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.contentType("application/octet-stream");
-    writer.sendFile(aeronet::File(path));
+    writer.file(aeronet::File(path));
     writer.end();
   });
 

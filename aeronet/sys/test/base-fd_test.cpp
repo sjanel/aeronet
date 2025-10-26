@@ -1,13 +1,11 @@
 #include "base-fd.hpp"
 
-#include <fcntl.h>
 #include <gtest/gtest.h>
 #include <linux/memfd.h>
-#include <sys/stat.h>
 #include <sys/syscall.h>
-#include <sys/types.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstring>
 #include <stdexcept>
 #include <string>

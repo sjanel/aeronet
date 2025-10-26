@@ -398,6 +398,68 @@ TEST(DateIso8601UTCTest, MinimumSupportedEpoch) {
   EXPECT_EQ(std::string_view(buf, static_cast<std::size_t>(end - buf)), "1970-01-01");
 }
 
+// ------------------------ RFC7231 parsing tests ------------------------
+TEST(TimeStringRFC7231Test, RoundTrip) {
+  using namespace std::chrono;
+  SysTimePoint tp = sys_days{year{2025} / 8 / 14} + hours{12} + minutes{34} + seconds{56};
+  char buf[64];
+  char* end = TimeToStringRFC7231(tp, buf);
+  std::string_view sv(buf, static_cast<std::size_t>(end - buf));
+  auto parsed = TryParseTimeRFC7231(sv);
+  EXPECT_NE(parsed, kInvalidTimePoint);
+  EXPECT_EQ(time_point_cast<seconds>(parsed), time_point_cast<seconds>(tp));
+}
+
+TEST(TimeStringRFC7231Test, ParsesKnownExample) {
+  // Example from RFC: Sun, 06 Nov 1994 08:49:37 GMT
+  using namespace std::chrono;
+  SysTimePoint expected = sys_days{year{1994} / 11 / 6} + hours{8} + minutes{49} + seconds{37};
+  auto parsed = TryParseTimeRFC7231("Sun, 06 Nov 1994 08:49:37 GMT");
+  EXPECT_NE(parsed, kInvalidTimePoint);
+  EXPECT_EQ(time_point_cast<seconds>(parsed), time_point_cast<seconds>(expected));
+}
+
+TEST(TimeStringRFC7231Test, RejectsMissingGMT) {
+  // missing trailing GMT should fail
+  auto parsed = TryParseTimeRFC7231("Sun, 06 Nov 1994 08:49:37");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, RejectsWrongWeekday) {
+  // weekday that does not match date should be rejected
+  auto parsed = TryParseTimeRFC7231("Mon, 06 Nov 1994 08:49:37 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, RejectsBadMonth) {
+  auto parsed = TryParseTimeRFC7231("Sun, 06 Foo 1994 08:49:37 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, RejectsShortString) {
+  // truncated (missing seconds) -> invalid
+  auto parsed = TryParseTimeRFC7231("Sun, 06 Nov 1994 08:49 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, RejectsExtraCharacters) {
+  std::string badStr = "Sun, 06 Nov 1994 08:49:37 GMT";
+  badStr.push_back('x');
+  auto parsed = TryParseTimeRFC7231(badStr);
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, AcceptsStringViewOverload) {
+  using namespace std::chrono;
+  SysTimePoint tp = sys_days{year{2025} / 12 / 25} + hours{0} + minutes{0} + seconds{0};
+  char buf[64];
+  char* end = TimeToStringRFC7231(tp, buf);
+  std::string_view sv2(buf, static_cast<std::size_t>(end - buf));
+  auto parsed = TryParseTimeRFC7231(sv2);
+  EXPECT_NE(parsed, kInvalidTimePoint);
+  EXPECT_EQ(time_point_cast<seconds>(parsed), time_point_cast<seconds>(tp));
+}
+
 TEST(TimeToStringIso8601UTCFastTest, BasicDateTime) {
   char buf[32];
   SysTimePoint tp = std::chrono::sys_days{std::chrono::year{2025} / 8 / 14} + std::chrono::hours{12} +

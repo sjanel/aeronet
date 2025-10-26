@@ -151,6 +151,7 @@ class HttpRequest {
  private:
   friend class HttpServer;
   friend class HttpRequestTest;
+  friend class StaticFileHandlerTest;
 
   HttpRequest() noexcept = default;
 

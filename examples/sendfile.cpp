@@ -35,17 +35,17 @@ int main(int argc, char** argv) {
 
   aeronet::HttpServer srv(aeronet::HttpServerConfig{}.withPort(port));
 
-  // Fixed response (HttpResponse::sendFile) on /static
+  // Fixed response (HttpResponse::file) on /static
   srv.router().setPath(aeronet::http::Method::GET, "/static", [path = path](const aeronet::HttpRequest& /*req*/) {
-    return aeronet::HttpResponse(200).contentType("text/plain").sendFile(aeronet::File(path));
+    return aeronet::HttpResponse(200).contentType("text/plain").file(aeronet::File(path));
   });
 
-  // Streaming response using HttpResponseWriter::sendFile on /stream
+  // Streaming response using HttpResponseWriter::file on /stream
   srv.router().setPath(aeronet::http::Method::GET, "/stream",
                        [path = path](const aeronet::HttpRequest& /*req*/, aeronet::HttpResponseWriter& writer) {
                          writer.statusCode(200);
                          writer.contentType("text/plain");
-                         writer.sendFile(aeronet::File(path));
+                         writer.file(aeronet::File(path));
                          writer.end();
                        });
 

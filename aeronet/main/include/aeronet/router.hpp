@@ -25,7 +25,7 @@ class Router {
   Router() noexcept = default;
 
   // Creates an empty Router with the configuration taken from object.
-  explicit Router(const RouterConfig& config);
+  explicit Router(RouterConfig config);
 
   // Registers a single request handler that will be invoked for every successfully parsed
   // HTTP request not matched by a path‑specific handler (normal or streaming). The handler
@@ -176,7 +176,7 @@ class Router {
   StreamingHandler _streamingHandler;
   flat_hash_map<std::string, PathHandlerEntry, std::hash<std::string_view>, std::equal_to<>> _pathHandlers;
 
-  RouterConfig::TrailingSlashPolicy _trailingSlashPolicy = RouterConfig::TrailingSlashPolicy::Normalize;
+  RouterConfig _config;
 };
 
 }  // namespace aeronet

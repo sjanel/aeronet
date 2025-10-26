@@ -25,6 +25,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
 #ifdef AERONET_ENABLE_BROTLI
@@ -59,9 +60,9 @@
 
 namespace aeronet {
 
-HttpServer::HttpServer(HttpServerConfig cfg)
-    : _config(std::move(cfg)),
-      _router(_config.router),
+HttpServer::HttpServer(HttpServerConfig config, RouterConfig routerConfig)
+    : _config(std::move(config)),
+      _router(std::move(routerConfig)),
       _encodingSelector(_config.compression),
       _telemetry(_config.otel) {
   init();
@@ -215,6 +216,7 @@ void RecordModFailure(auto cnxIt, uint32_t events, const char* ctx, auto& stats)
 
 bool HttpServer::enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) {
   static constexpr uint32_t kEvents = EPOLLIN | EPOLLOUT | EPOLLET;
+
   if (_eventLoop.mod(cnxIt->first.fd(), kEvents)) {
     if (!cnxIt->second.waitingWritable) {
       cnxIt->second.waitingWritable = true;
@@ -398,7 +400,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
 }
 
 bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt, HttpRequest& req) {
-  const auto& cfg = _config.requestDecompression;
+  const auto& cfg = _config.decompression;
   std::string_view encHeader = req.headerValueOrEmpty(http::ContentEncoding);
   if (encHeader.empty() || CaseInsensitiveEqual(encHeader, http::identity)) {
     return true;  // nothing to do
@@ -722,6 +724,20 @@ void HttpServer::eventLoop() {
     _telemetry.counterAdd("aeronet.events.errors", 1);
     log::error("epoll_wait (eventLoop) failed: {}", std::strerror(errno));
     _lifecycle.enterStopping();
+  } else {
+    // ready == 0: timeout. Retry pending writes to handle edge-triggered epoll timing issues.
+    // With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before
+    // epoll_ctl(EPOLL_CTL_MOD), we miss the edge. Periodic retries ensure we eventually resume.
+    for (auto it = _connStates.begin(); it != _connStates.end();) {
+      if (it->second.fileSend.active && it->second.waitingWritable) {
+        flushFilePayload(it);
+        if (it->second.isImmediateCloseRequested()) {
+          it = closeConnection(it);
+          continue;
+        }
+      }
+      ++it;
+    }
   }
 
   const auto now = std::chrono::steady_clock::now();

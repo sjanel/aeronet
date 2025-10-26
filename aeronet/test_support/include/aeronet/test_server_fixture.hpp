@@ -15,6 +15,7 @@
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/router-config.hpp"
 #include "aeronet/test_util.hpp"
 #include "log.hpp"
 
@@ -37,9 +38,9 @@ namespace aeronet::test {
 // Thread-safety: same as underlying HttpServer (single-threaded event loop). Do not call stop() concurrently
 // from multiple threads (benign but unnecessary).
 struct TestServer {
-  explicit TestServer(aeronet::HttpServerConfig cfg,
+  explicit TestServer(aeronet::HttpServerConfig cfg, aeronet::RouterConfig routerCfg = {},
                       std::chrono::milliseconds pollPeriod = std::chrono::milliseconds{50})
-      : server(std::move(cfg.withPollInterval(pollPeriod))),
+      : server(std::move(cfg.withPollInterval(pollPeriod)), std::move(routerCfg)),
         loopThread([this] { server.runUntil([&] { return stopFlag.load(); }); }) {
     waitReady(std::chrono::milliseconds{500});
   }
