@@ -20,8 +20,6 @@ aeronet_http_test(http_date)
 
 aeronet_http_test(http_errors)
 
-aeronet_http_test(http_head_maxrequests)
-
 aeronet_http_test(http_keepalive)
 
 aeronet_http_test(multi_http_server)
@@ -92,7 +90,6 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_trailers_test.cpp
 	http_date_test.cpp
 	http_errors_test.cpp
-	http_head_maxrequests_test.cpp
 	http_keepalive_test.cpp
 	multi_http_server_test.cpp
 	http_options_trace_test.cpp

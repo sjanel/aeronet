@@ -19,6 +19,9 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/encoding.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
@@ -28,30 +31,32 @@
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
+#include "connection-state.hpp"
+#include "event-loop.hpp"
+#include "exception.hpp"
+#include "flat-hash-map.hpp"
+#include "http-error-build.hpp"
+#include "log.hpp"
+#include "simple-charconv.hpp"
+#include "socket.hpp"
+#include "string-equal-ignore-case.hpp"
+#include "timedef.hpp"
+
 #ifdef AERONET_ENABLE_BROTLI
 #include "aeronet/brotli-decoder.hpp"
 #include "brotli-encoder.hpp"
 #endif
-#include "event-loop.hpp"
-#include "exception.hpp"
-#include "flat-hash-map.hpp"
+
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-decoder.hpp"
 #include "zlib-encoder.hpp"
 #endif
+
 #ifdef AERONET_ENABLE_ZSTD
 #include "aeronet/zstd-decoder.hpp"
 #include "zstd-encoder.hpp"
 #endif
-#include "aeronet/encoding.hpp"
-#include "aeronet/http-constants.hpp"
-#include "aeronet/http-method.hpp"
-#include "connection-state.hpp"
-#include "http-error-build.hpp"
-#include "log.hpp"
-#include "socket.hpp"
-#include "string-equal-ignore-case.hpp"
-#include "timedef.hpp"
+
 #ifdef AERONET_ENABLE_OPENSSL
 #include "tls-context.hpp"
 #else
@@ -91,6 +96,7 @@ HttpServer::HttpServer(HttpServer&& other)
       _encodingSelector(std::move(other._encodingSelector)),
       _parserErrCb(std::move(other._parserErrCb)),
       _metricsCb(std::move(other._metricsCb)),
+      _expectationHandler(std::move(other._expectationHandler)),
       _tmpBuffer(std::move(other._tmpBuffer)),
       _telemetry(std::move(other._telemetry))
 #ifdef AERONET_ENABLE_OPENSSL
@@ -131,6 +137,7 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _encodingSelector = std::move(other._encodingSelector);
     _parserErrCb = std::move(other._parserErrCb);
     _metricsCb = std::move(other._metricsCb);
+    _expectationHandler = std::move(other._expectationHandler);
     _tmpBuffer = std::move(other._tmpBuffer);
     _telemetry = std::move(other._telemetry);
 #ifdef AERONET_ENABLE_OPENSSL
@@ -147,6 +154,12 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
   other._lifecycle.reset();
   return *this;
 }
+
+void HttpServer::setParserErrorCallback(ParserErrorCallback cb) { _parserErrCb = std::move(cb); }
+
+void HttpServer::setMetricsCallback(MetricsCallback cb) { _metricsCb = std::move(cb); }
+
+void HttpServer::setExpectationHandler(ExpectationHandler handler) { _expectationHandler = std::move(handler); }
 
 void HttpServer::run() {
   prepareRun();
@@ -307,7 +320,14 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
                       "Content-Length and Transfer-Encoding cannot be used together");
       break;
     }
-    const bool expectContinue = req.hasExpectContinue();
+    // Handle Expect header tokens beyond the built-in 100-continue.
+    // RFC: if any expectation token is not understood and not handled, respond 417.
+    const std::string_view expectHeader = req.headerValueOrEmpty(http::Expect);
+    bool found100Continue = false;
+    if (!expectHeader.empty() && handleExpectHeader(cnxIt, req, state, found100Continue, reqStart)) {
+      break;  // stop processing this request (response queued)
+    }
+    const bool expectContinue = found100Continue || req.hasExpectContinue();
     std::size_t consumedBytes = 0;
     if (!decodeBodyIfReady(cnxIt, req, isChunked, expectContinue, consumedBytes)) {
       break;  // need more bytes or error
@@ -328,10 +348,10 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       break;
     }
 
-    const auto res = _router.match(req.method(), req.path());
-
-    if (res.streamingHandler != nullptr) {
-      const bool streamingClose = callStreamingHandler(*res.streamingHandler, req, cnxIt, consumedBytes, reqStart);
+    const auto routingResult = _router.match(req.method(), req.path());
+    if (routingResult.streamingHandler != nullptr) {
+      const bool streamingClose =
+          callStreamingHandler(*routingResult.streamingHandler, req, cnxIt, consumedBytes, reqStart);
       if (streamingClose) {
         break;
       }
@@ -339,10 +359,10 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     }
 
     HttpResponse resp;
-    if (res.requestHandler != nullptr) {
+    if (routingResult.requestHandler != nullptr) {
       // normal handler
       try {
-        resp = (*res.requestHandler)(req);
+        resp = (*routingResult.requestHandler)(req);
       } catch (const std::exception& ex) {
         log::error("Exception in path handler: {}", ex.what());
         resp.statusCode(http::StatusCodeInternalServerError)
@@ -350,19 +370,19 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
             .contentType(http::ContentTypeTextPlain)
             .body(ex.what());
       } catch (...) {
-        log::error("Unknown exception in path handler.");
+        log::error("Unknown exception in path handler");
         resp.statusCode(http::StatusCodeInternalServerError)
             .reason(http::ReasonInternalServerError)
             .contentType(http::ContentTypeTextPlain)
             .body("Unknown error");
       }
-    } else if (res.redirectPathIndicator != Router::RoutingResult::RedirectSlashMode::None) {
+    } else if (routingResult.redirectPathIndicator != Router::RoutingResult::RedirectSlashMode::None) {
       // Emit 301 redirect to canonical form.
       resp.statusCode(http::StatusCodeMovedPermanently)
           .reason(http::MovedPermanently)
           .contentType(http::ContentTypeTextPlain)
           .body("Redirecting");
-      if (res.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
+      if (routingResult.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
         _tmpBuffer.assign(req.path());
         _tmpBuffer.push_back('/');
         resp.location(_tmpBuffer);
@@ -371,7 +391,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       }
 
       consumedBytes = 0;  // already advanced
-    } else if (res.methodNotAllowed) {
+    } else if (routingResult.methodNotAllowed) {
       resp.statusCode(http::StatusCodeMethodNotAllowed)
           .reason(http::ReasonMethodNotAllowed)
           .contentType(http::ContentTypeTextPlain)
@@ -867,6 +887,108 @@ void HttpServer::registerBuiltInProbes() {
     }
     return resp;
   });
+}
+
+bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, HttpRequest& req, ConnectionState& state,
+                                    bool& found100Continue, std::chrono::steady_clock::time_point reqStart) {
+  const std::string_view expectHeader = req.headerValueOrEmpty(http::Expect);
+  const std::size_t headerEnd =
+      static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.inBuffer.data());
+  // Parse comma-separated tokens (trim spaces/tabs). Case-insensitive comparison for 100-continue.
+  // headerEnd = offset from connection buffer start to end of headers
+  for (const char *cur = expectHeader.data(), *end = cur + expectHeader.size(); cur < end; ++cur) {
+    // skip leading whitespace
+    while (cur < end && http::IsHeaderWhitespace(*cur)) {
+      ++cur;
+    }
+    if (cur >= end) {
+      break;
+    }
+    const char* tokStart = cur;
+    // find comma or end
+    while (cur < end && *cur != ',') {
+      ++cur;
+    }
+    const char* tokEnd = cur;
+    // trim trailing whitespace
+    while (tokEnd > tokStart && http::IsHeaderWhitespace(*(tokEnd - 1))) {
+      --tokEnd;
+    }
+    if (tokStart == tokEnd) {
+      continue;
+    }
+    std::string_view token(tokStart, tokEnd);
+    if (CaseInsensitiveEqual(token, http::h100_continue)) {
+      // Note presence of 100-continue; we'll use this to trigger interim 100
+      found100Continue = true;
+      // built-in behaviour; leave actual 100 emission to body-decoding logic
+      continue;
+    }
+    if (!_expectationHandler) {
+      // No handler and not 100-continue -> RFC says respond 417
+      emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, true);
+      return true;
+    }
+    try {
+      auto expectationResult = _expectationHandler(req, token);
+      switch (expectationResult.kind) {
+        case ExpectationResultKind::Reject:
+          emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, true);
+          return true;
+        case ExpectationResultKind::Interim: {
+          // Emit an interim response immediately. Common case: 102 "Processing"
+          const auto status = expectationResult.interimStatus;
+          // Validate that the handler returned an informational 1xx status.
+          if (status < 100U || status >= 200U) {
+            emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true, "Invalid interim status (must be 1xx)");
+            return true;
+          }
+
+          switch (status) {
+            case 100:
+              queueData(cnxIt, HttpResponseData(http::HTTP11_100_CONTINUE));
+              break;
+            case 102: {
+              static constexpr std::string_view k102Processing = "HTTP/1.1 102 Processing\r\n\r\n";
+              queueData(cnxIt, HttpResponseData(k102Processing));
+              break;
+            }
+            default: {
+              static constexpr std::string_view kHttpResponseLinePrefix = "HTTP/1.1 ";
+
+              char buf[kHttpResponseLinePrefix.size() + 3U + http::DoubleCRLF.size()];
+
+              std::memcpy(buf, kHttpResponseLinePrefix.data(), kHttpResponseLinePrefix.size());
+              std::memcpy(write3(buf + kHttpResponseLinePrefix.size(), status), http::DoubleCRLF.data(),
+                          http::DoubleCRLF.size());
+
+              queueData(cnxIt, HttpResponseData(std::string_view(buf, sizeof(buf))));
+              break;
+            }
+          }
+
+          break;
+        }
+        case ExpectationResultKind::FinalResponse:
+          // Send the provided final response immediately and skip body processing.
+          finalizeAndSendResponse(cnxIt, req, std::move(expectationResult.finalResponse), headerEnd, reqStart);
+          return true;
+        case ExpectationResultKind::Continue:
+          break;
+        default:
+          std::unreachable();
+      }
+    } catch (const std::exception& ex) {
+      log::error("Exception in ExpectationHandler: {}", ex.what());
+      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true);
+      return true;
+    } catch (...) {
+      log::error("Unknown exception in ExpectationHandler");
+      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true);
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace aeronet

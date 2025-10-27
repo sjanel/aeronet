@@ -466,11 +466,11 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 | Expect | 100-continue w/ non-zero length | ✅ | `http_parser_errors_test.cpp` |
 | Expect | No 100 for zero-length | ✅ | `http_parser_errors_test.cpp`, `http_additional_test.cpp` |
 | Keep-Alive | Basic keep-alive persistence | ✅ | `http_keepalive_test.cpp` |
-| Keep-Alive | Max requests per connection | ✅ | `http_additional_test.cpp`, `http_head_maxrequests_test.cpp` |
+| Keep-Alive | Max requests per connection | ✅ | `http_additional_test.cpp`|
 | Keep-Alive | Idle timeout close | ⚠ | Indirectly covered; explicit idle-time tests are planned |
 | Pipelining | Sequential pipeline of requests | ✅ | `http_additional_test.cpp` |
 | Pipelining | Malformed second request handling | ✅ | `http_additional_test.cpp` |
-| Methods | HEAD semantics (no body) | ✅ | `http_chunked_head_test.cpp`, `http_head_maxrequests_test.cpp` |
+| Methods | HEAD semantics (no body) | ✅ | `http_chunked_head_test.cpp`, `http_additional_test.cpp` |
 | Date | RFC7231 format + correctness | ✅ | `http_date_test.cpp` |
 | Date | Same-second caching invariance | ✅ | `http_date_test.cpp` |
 | Date | Second-boundary refresh | ✅ | `http_date_test.cpp` |

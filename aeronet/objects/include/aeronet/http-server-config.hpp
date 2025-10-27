@@ -78,9 +78,21 @@ struct HttpServerConfig {
   // ===========================================
   // Maximum duration the event loop will block waiting for I/O in a single epoll_wait() when idle before it wakes to
   // perform housekeeping (idle sweep, Date header refresh) and to check for external stop conditions (stop() call or
-  // runUntil predicate). Lower values -> faster shutdown / predicate reactivity but higher baseline wakeups. Higher
-  // values -> lower idle CPU but slower responsiveness (bounded by this interval). Former run()/runUntil checkPeriod
-  // parameter is now centralized here for configuration-at-construct-time consistency.
+  // runUntil predicate).
+  // Lower values:
+  //   + Faster responsiveness to external stop() calls.
+  //   + Finer granularity for periodic housekeeping (idle connection sweeping).
+  //   - More wake‑ups -> higher baseline CPU usage.
+  // Higher values:
+  //   + Fewer wake‑ups (reduced idle CPU) when the server is mostly idle.
+  //   - May delay detection of: (a) stop() requests, (b) keep‑alive timeout expiry, (c) Date header second rollover
+  //     by up to the specified duration.
+  // Epoll will still return early when I/O events arrive, so this is only a cap on maximum latency when *idle*.
+  // Typical practical ranges:
+  //   - High throughput / low latency tuning:   5–50 ms
+  //   - General purpose / balanced default:     50–250 ms
+  //   - Extremely low churn / power sensitive:  250–1000 ms (at the cost of slower shutdown & timeout precision)
+  // Default (500 ms) favors low idle CPU over sub‑100 ms shutdown responsiveness.
   std::chrono::milliseconds pollInterval{std::chrono::milliseconds{500}};  // formerly run() checkPeriod
 
   // ===========================================

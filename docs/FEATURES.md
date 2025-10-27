@@ -61,6 +61,7 @@ Where to look: see the "CONNECT (HTTP tunneling)" subsection and the Connection 
 - [x] Outbound trailer headers (response trailers for both buffered and streaming responses)
 - [x] Content-Encoding request body decompression (gzip, deflate, zstd, multi-layer, identity skip, safety limits)
 - [ ] Multipart/form-data convenience utilities
+- [x] Forbidden trailer headers rejected for incoming chunked trailers (security)
 
 Where to look: see "Inbound Request Decompression (Config Details)" for decompression behavior and the parser docs for chunked/CL handling.
 
@@ -72,6 +73,8 @@ Where to look: see "Inbound Request Decompression (Config Details)" for decompre
 - [x] Outbound trailer headers (buffered via HttpResponse::addTrailer, streaming via HttpResponseWriter::addTrailer)
 - [x] Mixed-mode dispatch (simultaneous registration of streaming and fixed handlers with precedence)
 - [x] Compression (gzip & deflate) (phase 1: zlib) – streaming + buffered with threshold & q-values
+- [x] Large-body optimization (zero-copy capture for large fixed responses)
+- [x] Identity rejection -> 406 Not Acceptable when `identity;q=0` and no acceptable encoding
 
 Where to look: see the "Compression & Negotiation" section for full details and configuration.
 
@@ -79,6 +82,7 @@ Where to look: see the "Compression & Negotiation" section for full details and 
 
 - [x] OPTIONS * handling (returns an Allow header per RFC 7231 §4.3)
 - [x] TRACE method support (echo) — optional and configurable via `HttpServerConfig::TracePolicy`
+- [x] CONNECT method support — proxy-style TCP tunneling to an upstream host:port target.
 
 Where to look: see the "OPTIONS & TRACE behavior" subsection below.
 
@@ -87,10 +91,13 @@ Where to look: see the "OPTIONS & TRACE behavior" subsection below.
 - [x] 400 Bad Request (parse errors, CL+TE conflict)
 - [x] 400 on HTTP/1.0 requests carrying Transfer-Encoding
 - [x] 405 Method Not Allowed (enforced when path exists but method not in allow set)
+- [x] 406 Not Acceptable (identity rejected when no acceptable Accept-Encoding)
 - [x] 413 Payload Too Large (body limit)
 - [x] 415 Unsupported Media Type (content-encoding based)
 - [ ] 415 Unsupported Media Type (content-type based)
+- [x] 417 Expectation Failed (unknown `Expect` token when no handler installed)
 - [x] 431 Request Header Fields Too Large (header limit)
+- [x] 500 Internal Server Error (invalid interim status returned by ExpectationHandler for instance)
 - [x] 501 Not Implemented (unsupported Transfer-Encoding)
 - [x] 505 HTTP Version Not Supported
   
@@ -104,6 +111,8 @@ Where to look: see the "Status & error handling" notes and parser error descript
 
 ### Headers & protocol niceties
 
+- [x] Request header duplicate handling (merge/override/disallow policies)
+- [ ] Optional stricter duplicate-header policy (fail on unknown duplicates)
 TRACE semantics and safety:
 
 - TRACE, when allowed, echoes the received request (start-line, headers and body) back with `Content-Type: message/http` so it can be used for debugging loopback-style probes as per RFC 7231 §4.3.2.
@@ -120,6 +129,37 @@ Use cases:
   
 Note: `EnabledOnTls` (TRACE allowed only on TLS) was removed — the policy set is now intentionally smaller and focuses
 on disabling TRACE entirely, allowing it everywhere, or allowing it only on plaintext.
+
+### Expect header handling (RFC 7231 §5.1.1)
+
+- [x] `Expect` header processing with opt-in application-level expectation handler
+
+Behavior summary
+
+- The server preserves the standard `100-continue` semantics: when a client sends `Expect: 100-continue` the server
+  will emit `100 Continue` if the request proceeds to body reading. Detection recognizes `100-continue` even when
+  it appears in a comma-separated `Expect` header list and tolerates surrounding whitespace per the RFC.
+- For expectation tokens other than `100-continue` aeronet exposes an opt-in `ExpectationHandler` API (see
+  `HttpServer::setExpectationHandler` in `http-server.hpp`). When present, the handler is invoked with the
+  parsed expectation token and may respond with one of:
+  - Continue — allow normal request processing
+  - Interim — emit an informational 1xx interim response (handler supplies the specific 1xx status)
+  - FinalResponse — send the supplied final response immediately and abort normal request processing
+  - Reject — equivalent to `417 Expectation Failed` (server will send 417)
+- Default behavior when no handler is installed: any non-`100-continue` expectation token is treated as unknown and the
+  server responds with **417 Expectation Failed** per the RFC.
+
+Implementation notes & constraints
+
+- The handler is invoked on the server's event-loop thread and must be fast; heavy work should be deferred to worker
+  threads by the application.
+- If the handler returns an `Interim` result its `interimStatus` MUST be an informational status in the 1xx range;
+  an invalid interim status is treated as a server bug and the server will log an error and return **500 Internal Server
+  Error** for that request (the request body will not be processed). This validation prevents sending non-1xx interim
+  responses.
+- The Expect parsing and handler dispatch is implemented in `HttpServer::handleExpectHeader(...)` (internal helper).
+- See unit tests in `tests/http_additional_test.cpp` for example usages and behavior expectations (including mixed
+  `Expect` lists containing `100-continue` and custom tokens).
 
 ### CONNECT (HTTP tunneling)
 
@@ -175,24 +215,23 @@ Notes and implementation details
 - [x] Graceful shutdown loop (runUntil)
 - [x] Slowloris style header timeout mitigation (implemented as header read timeout)
 - [x] TLS termination (OpenSSL) with ALPN, mTLS, version bounds, handshake timeout & per-server metrics
+- [x] Graceful drain lifecycle (beginDrain / stop semantics)
 
 ### Developer experience
 
+- [x] Server objects moveable
 - [x] Builder style HttpServerConfig
 - [x] Simple lambda handler signature
 - [x] Simple exact-match per-path routing (`setPath`)
 - [x] Configurable trailing slash handling (Strict / Normalize / Redirect)
 - [x] Lightweight built-in logging (spdlog optional integration) – pluggable interface TBD
+- [x] Built-in Kubernetes-style probes (liveness/readiness/startup)
+- [x] OpenTelemetry integration (optional build flag)
 - [ ] Middleware helpers
 - [ ] Pluggable logging interface (abstract sink / formatting hooks)
-
-### Misc
-
-- [x] Move semantics for HttpServer
-- [x] MultiHttpServer convenience wrapper
-- [x] Compression (gzip & deflate phase 1)
-- [ ] Public API stability guarantee (pre-1.0)
-- [ ] License file
+- [x] Ephemeral port support (server.port() available after construction)
+- [x] JSON stats export / per-server metrics
+- [ ] Pluggable structured sinks / user-defined writer API
 
 ## Large body optimization
 
@@ -335,8 +374,6 @@ CompressionConfig c; c.minBytes = 128; c.preferredFormats = {Encoding::zstd};
 HttpServerConfig cfg; cfg.withCompression(c);
 ```
 
-Planned: content-type allow list, encoder pooling, ratio metrics, adaptive format/level selection.
-
 ### Detailed Behavior (Compression)
 
 Implemented capabilities:
@@ -383,8 +420,6 @@ server.router().setDefault([](const HttpRequest&) {
   return HttpResponse(200, "OK").contentType("text/plain").body(std::string(1024,'A'));
 });
 ```
-
-Planned / future (compression): Content-Type allowlist; per-layer ratio metrics; encoder pooling; adaptive quality selection.
 
 ## Inbound Request Decompression (Config Details)
 
@@ -1061,10 +1096,10 @@ Optional (`AERONET_ENABLE_OPENSSL`). Provides termination, optional / required m
 | Handshake duration metrics | ✅ | Count / total ns / max ns |
 | JSON stats export | ✅ | `serverStatsToJson()` includes TLS metrics |
 | No process‑global mutable TLS state | ✅ | All metrics per server instance |
-| Session resumption | ⏳ | Planned |
-| SNI multi-cert routing | ⏳ | Planned |
-| Hot cert/key reload | ⏳ | Planned |
-| OCSP / revocation | ⏳ | Planned |
+| Session resumption (tickets) | ⏳ | Server-side TLS session ticket support with planned key lifecycle/rotation. |
+| SNI multi-cert routing | ⏳ | Serve different certs per SNI name (mapping & routing rules). |
+| Hot cert/key reload (atomic swap) | ⏳ | Atomic in-memory cert/key swap to avoid restarts. |
+| OCSP stapling / revocation checks | ⏳ | OCSP staple responses & revocation checking with caching. |
 
 ### TLS Configuration Example
 
@@ -1433,3 +1468,5 @@ service:
 ## Future Expansions
 
 Planned / potential: trailers, streaming inbound decompression, encoder pooling, compression ratio metrics, TLS hot reload & SNI, richer logging & metrics, additional OpenTelemetry instrumentation (histograms, gauges).
+
+- [ ] Additional OpenTelemetry instrumentation (histograms, gauges)
