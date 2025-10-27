@@ -69,10 +69,6 @@ bool sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeo
   return true;
 }
 
-// Reads until we have a complete HTTP response or timeout.
-// For chunked responses, continues reading until the terminating chunk (0\r\n\r\n).
-// For responses with Content-Length, continues until body is complete.
-// For Connection: close responses, reads until peer closes or timeout.
 std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
   std::string out;
   auto start = std::chrono::steady_clock::now();
@@ -85,8 +81,7 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
     std::size_t oldSize = out.size();
 
     if (out.capacity() < out.size() + kChunkSize) {
-      // ensure exponential growth
-      out.reserve(out.capacity() * 2UL);
+      out.reserve(out.capacity() * 2UL + kChunkSize);
     }
 
     out.resize_and_overwrite(oldSize + kChunkSize, [&](char *data, [[maybe_unused]] std::size_t newCap) {
@@ -95,52 +90,42 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
         return oldSize + static_cast<std::size_t>(recvBytes);
       }
       if (recvBytes == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        // No data currently; shrink back.
         return oldSize;  // no growth
       }
-      // Closed or error.
-      return oldSize;  // caller will break
+      return oldSize;  // closed or error
     });
 
     if (out.size() > oldSize) {
       madeProgress = true;
       consecutiveEagain = 0;
-      continue;  // Try to drain more immediately available bytes.
+      continue;
     }
 
-    // Check if we have a complete HTTP response
     if (madeProgress && !out.empty()) {
-      // Find header boundary
       auto headerEnd = out.find(http::DoubleCRLF);
       if (headerEnd != std::string::npos) {
-        std::size_t bodyStart = headerEnd + 4;
+        std::size_t bodyStart = headerEnd + http::DoubleCRLF.size();
         std::string_view headers(out.data(), headerEnd);
 
-        // Check for chunked encoding
         auto tePos = headers.find("Transfer-Encoding: chunked");
         if (tePos == std::string_view::npos) {
           tePos = headers.find("transfer-encoding: chunked");
         }
         if (tePos != std::string_view::npos) {
-          // For chunked: look for terminating "0\r\n\r\n"
           if (out.size() >= bodyStart + 5) {
             std::string_view body(out.data() + bodyStart, out.size() - bodyStart);
             if (body.find("0\r\n\r\n") != std::string_view::npos) {
-              // Complete chunked response received
               break;
             }
           }
         } else {
-          // Check for Content-Length
           auto clPos = headers.find("Content-Length:");
           if (clPos == std::string_view::npos) {
             clPos = headers.find("content-length:");
           }
-
           if (clPos != std::string_view::npos) {
-            // Parse Content-Length value
             auto lineStart = clPos;
-            auto lineEnd = headers.find("\r\n", lineStart);
+            auto lineEnd = headers.find(http::CRLF, lineStart);
             if (lineEnd != std::string_view::npos) {
               auto colonPos = headers.find(':', lineStart);
               if (colonPos != std::string_view::npos && colonPos < lineEnd) {
@@ -152,7 +137,6 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
                 std::size_t contentLength = 0;
                 auto [ptr, ec] = std::from_chars(lengthStr.data(), lengthStr.data() + lengthStr.size(), contentLength);
                 if (ec == std::errc{}) {
-                  // Check if we have the full body
                   if (out.size() >= bodyStart + contentLength) {
                     break;
                   }
@@ -160,11 +144,7 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
               }
             }
           } else {
-            // No Content-Length, no chunked - check for Connection: close
-            // In this case, we need to wait for more data or connection close
-            // Give it a few more attempts before breaking
             if (++consecutiveEagain > 10) {
-              // Probably connection will close, or response is complete
               break;
             }
           }
@@ -174,6 +154,66 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
 
     std::this_thread::sleep_for(1ms);
   }
+
+  // If we have headers and a Content-Length but body is short, do a bounded blocking drain
+  auto headerEnd = out.find(http::DoubleCRLF);
+  if (headerEnd != std::string::npos) {
+    std::size_t bodyStart = headerEnd + http::DoubleCRLF.size();
+    std::string_view headers(out.data(), headerEnd);
+
+    auto clPos = headers.find("Content-Length:");
+    if (clPos == std::string_view::npos) {
+      clPos = headers.find("content-length:");
+    }
+    if (clPos != std::string_view::npos) {
+      auto lineStart = clPos;
+      auto lineEnd = headers.find(http::CRLF, lineStart);
+      if (lineEnd != std::string_view::npos) {
+        auto colonPos = headers.find(':', lineStart);
+        if (colonPos != std::string_view::npos && colonPos < lineEnd) {
+          auto valueStart = colonPos + 1;
+          while (valueStart < lineEnd && headers[valueStart] == ' ') {
+            ++valueStart;
+          }
+          std::string_view lengthStr = headers.substr(valueStart, lineEnd - valueStart);
+          std::size_t contentLength = 0;
+          auto [ptr, ec] = std::from_chars(lengthStr.data(), lengthStr.data() + lengthStr.size(), contentLength);
+          if (ec == std::errc{}) {
+            if (out.size() < bodyStart + contentLength) {
+              const auto now = std::chrono::steady_clock::now();
+              auto drainDeadline = maxTs;
+              if (now >= drainDeadline) {
+                return out;
+              }
+              while (out.size() < bodyStart + contentLength && std::chrono::steady_clock::now() < drainDeadline) {
+                const auto remain = drainDeadline - std::chrono::steady_clock::now();
+                setRecvTimeout(fd, std::chrono::duration_cast<::aeronet::SysDuration>(remain));
+                const std::size_t toRead = std::min<std::size_t>(static_cast<std::size_t>(64 * 1024),
+                                                                 (bodyStart + contentLength) - out.size());
+                std::size_t oldSizeInner = out.size();
+                if (out.capacity() < out.size() + toRead) {
+                  out.reserve(std::max<std::size_t>(out.capacity() * 2UL, out.size() + toRead));
+                }
+                out.resize_and_overwrite(oldSizeInner + toRead,
+                                         [fd, oldSizeInner, toRead](char *data, [[maybe_unused]] std::size_t cap) {
+                                           ssize_t r = ::recv(fd, data + oldSizeInner, toRead, 0);
+                                           if (r > 0) {
+                                             return oldSizeInner + static_cast<std::size_t>(r);
+                                           }
+                                           return oldSizeInner;
+                                         });
+                if (out.size() > oldSizeInner) {
+                  continue;
+                }
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   return out;
 }
 
@@ -185,8 +225,7 @@ std::string recvUntilClosed(int fd) {
     bool closed = false;
 
     if (out.capacity() < out.size() + kChunkSize) {
-      // ensure exponential growth
-      out.reserve(out.capacity() * 2UL);
+      out.reserve(out.capacity() * 2UL + kChunkSize);
     }
 
     out.resize_and_overwrite(oldSize + kChunkSize, [&](char *data, [[maybe_unused]] std::size_t newCap) {
@@ -213,7 +252,6 @@ std::string sendAndCollect(uint16_t port, std::string_view raw) {
 }
 
 int startEchoServer() {
-  // Create a listening socket bound to loopback ephemeral port using Socket RAII
   aeronet::Socket listenSock(SOCK_STREAM);
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -232,32 +270,23 @@ int startEchoServer() {
   }
   int port = ntohs(actual.sin_port);
 
-  // Duplicate the listening fd and let the detached thread own the raw fd. This avoids
-  // running Socket/BaseFd destructor from the detached thread which may log via spdlog
-  // during process teardown and cause use-after-free under ASan if the logger is destroyed
-  // before the thread finishes. The original Socket is closed in the current thread.
   int dupFd = ::dup(listenSock.fd());
   if (dupFd >= 0) {
     std::thread([dupFd]() mutable {
       int clientFd = ::accept(dupFd, nullptr, nullptr);
       if (clientFd >= 0) {
-        // Echo incrementally: read chunks and write them back immediately.
         char buf[1024];
         ssize_t rcv;
         while ((rcv = ::recv(clientFd, buf, static_cast<int>(sizeof(buf)), 0)) > 0) {
           std::string_view sv(buf, static_cast<size_t>(rcv));
-          // sendAll will handle partial writes and retry with small timeout
           sendAll(clientFd, sv);
         }
         ::close(clientFd);
       }
-      // Close the duplicated listen fd using raw close (no logging via BaseFd)
       ::close(dupFd);
     }).detach();
-    // Close the original Socket here; its destructor / close may log but happens in main thread.
     listenSock.close();
   } else {
-    // Fallback: if dup failed, fall back to moving the Socket into the thread (previous behavior).
     std::thread([lsock = std::move(listenSock)]() mutable {
       int clientFd = ::accept(lsock.fd(), nullptr, nullptr);
       if (clientFd >= 0) {
@@ -316,8 +345,6 @@ bool noBodyAfterHeaders(std::string_view raw) {
   return raw.substr(pivot + aeronet::http::DoubleCRLF.size()).empty();
 }
 
-// Very small blocking GET helper (Connection: close) used by tests that just need
-// the full raw HTTP response bytes. Not HTTP-complete (no redirects, TLS, etc.).
 std::string simpleGet(uint16_t port, std::string_view path) {
   ClientConnection cnx(port);
   if (cnx.fd() < 0) {
