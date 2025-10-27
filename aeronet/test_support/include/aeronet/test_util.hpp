@@ -60,6 +60,10 @@ struct RequestOptions {
 
 bool sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeout = 500ms);
 
+// Reads until we have a complete HTTP response or timeout.
+// For chunked responses, continues reading until the terminating chunk (0\r\n\r\n).
+// For responses with Content-Length, continues until body is complete.
+// For Connection: close responses, reads until peer closes or timeout.
 std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout = 2000ms);
 
 std::string recvUntilClosed(int fd);

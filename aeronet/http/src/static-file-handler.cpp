@@ -133,6 +133,16 @@ inline constexpr std::uint64_t kInvalidUint64 = std::numeric_limits<std::uint64_
   return value;
 }
 
+// Note: only single-range requests are supported here (e.g. "Range: bytes=N-M").
+// Multi-range requests (comma-separated ranges) and multipart/byteranges
+// responses are intentionally not implemented. Supporting multiple ranges requires
+// generating multipart/byteranges bodies with unique boundaries and careful
+// streaming/memory handling; implement only if you need RFC7233 multipart support.
+//
+// Also note: ETag comparisons in this file use strong validators. Weak ETags
+// (prefixed with "W/") are treated as non-matching for strong comparisons. We
+// derive ETags from file size and modification time and require exact (strong)
+// matches for conditional semantics (304/412 decisions).
 [[nodiscard]] RangeSelection parseRange(std::string_view raw, std::uint64_t fileSize) {
   RangeSelection result;
   if (raw.empty()) {
@@ -219,6 +229,7 @@ inline constexpr std::uint64_t kInvalidUint64 = std::numeric_limits<std::uint64_
   if (token.empty()) {
     return false;
   }
+  // "*" matches any current entity tag (RFC 7232 §3.2)
   if (token == "*") {
     return true;
   }
