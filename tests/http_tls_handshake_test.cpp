@@ -114,23 +114,23 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
 // here we simply assert successful handshake + ALPN negotiation after a move.
 
 TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
-  auto pair = aeronet::test::makeEphemeralCertKey();
+  auto pair = test::makeEphemeralCertKey();
   ASSERT_FALSE(pair.first.empty());
   ASSERT_FALSE(pair.second.empty());
 
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withTlsCertKeyMemory(pair.first, pair.second);
   cfg.withTlsAlpnProtocols({"h2", "http/1.1"});  // offer both; client will request http/1.1 only
 
-  aeronet::HttpServer original(cfg);
-  original.router().setDefault([](const aeronet::HttpRequest& req) {
-    return aeronet::HttpResponse(200, "OK")
+  HttpServer original(cfg);
+  original.router().setDefault([](const HttpRequest& req) {
+    return HttpResponse(http::StatusCodeOK, "OK")
         .contentType(aeronet::http::ContentTypeTextPlain)
         .body(std::string("MOVEALPN:") + (req.alpnProtocol().empty() ? "-" : std::string(req.alpnProtocol())));
   });
 
   auto port = original.port();
-  aeronet::HttpServer moved(std::move(original));
+  HttpServer moved(std::move(original));
 
   std::atomic_bool stop{false};
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
