@@ -61,7 +61,7 @@ class ScopedTempFile {
   // Filename only
   [[nodiscard]] std::string filename() const { return _path.filename().string(); }
   // If constructed with the size overload, returns the generated content.
-  [[nodiscard]] const std::string& content() const noexcept { return _content; }
+  [[nodiscard]] std::string_view content() const noexcept { return _content; }
 
  private:
   void cleanup() noexcept;

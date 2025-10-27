@@ -256,7 +256,7 @@ TEST(HttpLargeFile, ServeLargeFile) {
     return aeronet::test::ScopedTempFile(tmpDir, data);
   }());
   const auto fileName = tmp.filename();
-  const auto& data = tmp.content();
+  const std::string_view data = tmp.content();
 
   aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   ts.server.router().setDefault(aeronet::StaticFileHandler(tmp.dirPath()));
@@ -295,7 +295,7 @@ TEST(HttpLargeFile, ServeLargeFileTls) {
     return aeronet::test::ScopedTempFile(tmpDir, data);
   }());
   const auto fileName = tmp.filename();
-  const auto& data = tmp.content();
+  const std::string_view data = tmp.content();
 
   aeronet::test::TlsTestServer ts({"http/1.1"});
   ts.setDefault(aeronet::StaticFileHandler(tmp.dirPath()));
