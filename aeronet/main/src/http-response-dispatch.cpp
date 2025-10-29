@@ -33,13 +33,11 @@
 
 namespace aeronet {
 
-HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt, const HttpRequest& req,
-                                                         std::size_t consumedBytes,
-                                                         std::chrono::steady_clock::time_point reqStart) {
-  switch (req.method()) {
+HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt, std::size_t consumedBytes) {
+  switch (_request.method()) {
     case http::Method::OPTIONS:
       // OPTIONS * request (target="*") should return an Allow header listing supported methods.
-      if (req.path() == "*") {
+      if (_request.path() == "*") {
         HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
         // Compute allowed methods for server (root/global) - use router.allowedMethods("*")
         http::MethodBmp allowed = _router.allowedMethods("*");
@@ -55,7 +53,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
           }
         }
         resp.customHeader(http::Allow, allowVal).contentType(http::ContentTypeTextPlain);
-        finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
+        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
         return LoopAction::Continue;
       }
       break;
@@ -69,7 +67,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
           break;
         case HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly:
           // If this request arrived over TLS, disallow TRACE
-          allowTrace = req.tlsVersion().empty();
+          allowTrace = _request.tlsVersion().empty();
           break;
         case HttpServerConfig::TraceMethodPolicy::Disabled:
         default:
@@ -83,20 +81,20 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
         HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
         resp.customHeader(http::ContentType, "message/http");
         resp.body(reqDataEchoed);
-        finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
+        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
         return LoopAction::Continue;
       }
       // TRACE disabled -> Method Not Allowed
       HttpResponse resp(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
       resp.contentType(http::ContentTypeTextPlain).body(resp.reason());
-      finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
+      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
       return LoopAction::Continue;
     }
     case http::Method::CONNECT: {
       // CONNECT: establish a TCP tunnel to target (host:port). On success reply 200 and
       // proxy bytes bidirectionally between client and upstream.
-      // Parse authority form in req.path() (host:port)
-      const std::string_view target = req.path();
+      // Parse authority form in _request.path() (host:port)
+      const std::string_view target = _request.path();
       const auto colonPos = target.find(':');
       if (colonPos == std::string_view::npos) {
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Malformed CONNECT target");
@@ -157,7 +155,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
 
       HttpResponse resp(http::StatusCodeOK, "Connection Established");
       resp.contentType(http::ContentTypeTextPlain);
-      finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
+      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
 
       // Enter tunneling mode: link peer fds
       cnxIt->second.peerFd = upstreamFd;
@@ -177,26 +175,25 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
   return LoopAction::Nothing;
 }
 
-void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpRequest& req, HttpResponse&& resp,
-                                         std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart) {
+void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes) {
   ConnectionState& state = cnxIt->second;
   ++state.requestsServed;
   bool keepAlive =
       _config.enableKeepAlive && state.requestsServed < _config.maxRequestsPerConnection && _lifecycle.isRunning();
   if (keepAlive) {
-    std::string_view connVal = req.headerValueOrEmpty(http::Connection);
+    std::string_view connVal = _request.headerValueOrEmpty(http::Connection);
     if (connVal.empty()) {
       // Default is keep-alive for HTTP/1.1, close for HTTP/1.0
-      keepAlive = req.version() == http::HTTP_1_1;
+      keepAlive = _request.version() == http::HTTP_1_1;
     } else if (CaseInsensitiveEqual(connVal, http::close)) {
       keepAlive = false;
     }
   }
 
-  bool isHead = (req.method() == http::Method::HEAD);
+  bool isHead = (_request.method() == http::Method::HEAD);
   if (!isHead && !resp.userProvidedContentEncoding()) {
     const CompressionConfig& compressionConfig = _config.compression;
-    std::string_view encHeader = req.headerValueOrEmpty(http::AcceptEncoding);
+    std::string_view encHeader = _request.headerValueOrEmpty(http::AcceptEncoding);
     auto [encoding, reject] = _encodingSelector.negotiateAcceptEncoding(encHeader);
     // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
     // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
@@ -212,7 +209,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpReques
     }
     // Approximate allowlist check
     if (encoding != Encoding::none && !compressionConfig.contentTypeAllowlist.empty()) {
-      std::string_view contentType = req.headerValueOrEmpty(http::ContentType);
+      std::string_view contentType = _request.headerValueOrEmpty(http::ContentType);
       if (std::ranges::none_of(compressionConfig.contentTypeAllowlist,
                                [contentType](std::string_view str) { return contentType.starts_with(str); })) {
         encoding = Encoding::none;
@@ -231,7 +228,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpReques
     }
   }
 
-  queuePreparedResponse(cnxIt, resp.finalizeAndStealData(req.version(), SysClock::now(), keepAlive,
+  queuePreparedResponse(cnxIt, resp.finalizeAndStealData(_request.version(), SysClock::now(), keepAlive,
                                                          _config.globalHeaders, isHead, _config.minCapturedBodySize));
 
   state.inBuffer.erase_front(consumedBytes);
@@ -239,7 +236,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpReques
     state.requestDrainAndClose();
   }
   if (_metricsCb) {
-    emitRequestMetrics(req, resp.statusCode(), req.body().size(), state.requestsServed > 0, reqStart);
+    emitRequestMetrics(resp.statusCode(), _request.body().size(), state.requestsServed > 0);
   }
 }
 
