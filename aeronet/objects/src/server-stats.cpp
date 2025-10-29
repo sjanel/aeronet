@@ -4,6 +4,7 @@
 #include <string>
 
 #include "aeronet/features.hpp"
+#include "stringconv.hpp"
 
 namespace aeronet {
 
@@ -15,17 +16,25 @@ std::string ServerStats::json_str() const {
     out.reserve(256UL);
   }
   out.push_back('{');
-  out.append("\"totalBytesQueued\":").append(std::to_string(totalBytesQueued)).push_back(',');
-  out.append("\"totalBytesWrittenImmediate\":").append(std::to_string(totalBytesWrittenImmediate)).push_back(',');
-  out.append("\"totalBytesWrittenFlush\":").append(std::to_string(totalBytesWrittenFlush)).push_back(',');
-  out.append("\"deferredWriteEvents\":").append(std::to_string(deferredWriteEvents)).push_back(',');
-  out.append("\"flushCycles\":").append(std::to_string(flushCycles)).push_back(',');
-  out.append("\"epollModFailures\":").append(std::to_string(epollModFailures)).push_back(',');
-  out.append("\"maxConnectionOutboundBuffer\":").append(std::to_string(maxConnectionOutboundBuffer));
+  out.append("\"totalBytesQueued\":").append(std::string_view(IntegralToCharVector(totalBytesQueued))).push_back(',');
+  out.append("\"totalBytesWrittenImmediate\":")
+      .append(std::string_view(IntegralToCharVector(totalBytesWrittenImmediate)))
+      .push_back(',');
+  out.append("\"totalBytesWrittenFlush\":")
+      .append(std::string_view(IntegralToCharVector(totalBytesWrittenFlush)))
+      .push_back(',');
+  out.append("\"deferredWriteEvents\":")
+      .append(std::string_view(IntegralToCharVector(deferredWriteEvents)))
+      .push_back(',');
+  out.append("\"flushCycles\":").append(std::string_view(IntegralToCharVector(flushCycles))).push_back(',');
+  out.append("\"epollModFailures\":").append(std::string_view(IntegralToCharVector(epollModFailures))).push_back(',');
+  out.append("\"maxConnectionOutboundBuffer\":")
+      .append(std::string_view(IntegralToCharVector(maxConnectionOutboundBuffer)));
+  out.append("\"totalRequestsServed\":").append(std::string_view(IntegralToCharVector(totalRequestsServed)));
 #ifdef AERONET_ENABLE_OPENSSL
-  out.append(",\"tlsHandshakesSucceeded\":").append(std::to_string(tlsHandshakesSucceeded));
-  out.append(",\"tlsClientCertPresent\":").append(std::to_string(tlsClientCertPresent));
-  out.append(",\"tlsAlpnStrictMismatches\":").append(std::to_string(tlsAlpnStrictMismatches));
+  out.append(",\"tlsHandshakesSucceeded\":").append(std::string_view(IntegralToCharVector(tlsHandshakesSucceeded)));
+  out.append(",\"tlsClientCertPresent\":").append(std::string_view(IntegralToCharVector(tlsClientCertPresent)));
+  out.append(",\"tlsAlpnStrictMismatches\":").append(std::string_view(IntegralToCharVector(tlsAlpnStrictMismatches)));
   // ALPN distribution
   out.append(",\"tlsAlpnDistribution\":[");
   bool first = true;
@@ -38,7 +47,7 @@ std::string ServerStats::json_str() const {
     out.append(R"({"protocol":")")
         .append(kv.first)
         .append(R"(","count":)")
-        .append(std::to_string(kv.second))
+        .append(std::string_view(IntegralToCharVector(kv.second)))
         .append("}");
   }
   out.push_back(']');
@@ -54,7 +63,7 @@ std::string ServerStats::json_str() const {
     out.append(R"({"version":")")
         .append(kv.first)
         .append(R"(","count":)")
-        .append(std::to_string(kv.second))
+        .append(std::string_view(IntegralToCharVector(kv.second)))
         .append("}");
   }
   out.push_back(']');
@@ -67,12 +76,19 @@ std::string ServerStats::json_str() const {
     } else {
       first = false;
     }
-    out.append(R"({"cipher":")").append(kv.first).append(R"(","count":)").append(std::to_string(kv.second)).append("}");
+    out.append(R"({"cipher":")")
+        .append(kv.first)
+        .append(R"(","count":)")
+        .append(std::string_view(IntegralToCharVector(kv.second)))
+        .append("}");
   }
   out.push_back(']');
-  out.append(",\"tlsHandshakeDurationCount\":").append(std::to_string(tlsHandshakeDurationCount));
-  out.append(",\"tlsHandshakeDurationTotalNs\":").append(std::to_string(tlsHandshakeDurationTotalNs));
-  out.append(",\"tlsHandshakeDurationMaxNs\":").append(std::to_string(tlsHandshakeDurationMaxNs));
+  out.append(",\"tlsHandshakeDurationCount\":")
+      .append(std::string_view(IntegralToCharVector(tlsHandshakeDurationCount)));
+  out.append(",\"tlsHandshakeDurationTotalNs\":")
+      .append(std::string_view(IntegralToCharVector(tlsHandshakeDurationTotalNs)));
+  out.append(",\"tlsHandshakeDurationMaxNs\":")
+      .append(std::string_view(IntegralToCharVector(tlsHandshakeDurationMaxNs)));
 #endif
   out.push_back('}');
   return out;

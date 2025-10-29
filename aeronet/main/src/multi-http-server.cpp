@@ -185,6 +185,7 @@ MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
     agg.total.epollModFailures += st.epollModFailures;
     agg.total.maxConnectionOutboundBuffer =
         std::max(agg.total.maxConnectionOutboundBuffer, st.maxConnectionOutboundBuffer);
+    agg.total.totalRequestsServed += st.totalRequestsServed;
 #ifdef AERONET_ENABLE_OPENSSL
     agg.total.tlsHandshakesSucceeded += st.tlsHandshakesSucceeded;
     agg.total.tlsClientCertPresent += st.tlsClientCertPresent;
