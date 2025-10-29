@@ -78,10 +78,12 @@ bool HttpRequest::hasExpectContinue() const noexcept {
   return version() == http::HTTP_1_1 && CaseInsensitiveEqual(headerValueOrEmpty(http::Expect), http::h100_continue);
 }
 
-http::StatusCode HttpRequest::setHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
-                                      bool mergeAllowedForUnknownRequestHeaders) {
+http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
+                                             bool mergeAllowedForUnknownRequestHeaders) {
   auto* first = state.inBuffer.data();
   auto* last = first + state.inBuffer.size();
+
+  _reqStart = std::chrono::steady_clock::now();
 
   // Example : GET /path HTTP/1.1\r\nHost: example.com\r\nUser-Agent: FooBar\r\n\r\n
 
@@ -139,6 +141,8 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, RawChars& tmpBuffe
   // Headers
   first = lineLast + 1;
   auto* headersFirst = first;
+
+  _headers.clear();
   while (first < last) {
     lineLast = std::find(first, last, '\n');
     if (lineLast == last) {  // need more data for complete header line
@@ -176,7 +180,15 @@ http::StatusCode HttpRequest::setHead(ConnectionState& state, RawChars& tmpBuffe
   _tlsCipher = state.tlsInfo.negotiatedCipher();
   _tlsVersion = state.tlsInfo.negotiatedVersion();
 
+  _body = {};
+  _trailers.clear();
+
   return http::StatusCodeOK;
+}
+
+void HttpRequest::shrink_to_fit() {
+  _headers.rehash(0);
+  _trailers.rehash(0);
 }
 
 }  // namespace aeronet

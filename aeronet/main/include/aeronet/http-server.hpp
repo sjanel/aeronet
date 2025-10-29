@@ -257,20 +257,16 @@ class HttpServer {
   void handleReadableClient(int fd);
   bool processRequestsOnConnection(ConnectionMapIt cnxIt);
   // Split helpers
-  bool decodeBodyIfReady(ConnectionMapIt cnxIt, HttpRequest& req, bool isChunked, bool expectContinue,
-                         std::size_t& consumedBytes);
-  bool decodeFixedLengthBody(ConnectionMapIt cnxIt, HttpRequest& req, bool expectContinue, std::size_t& consumedBytes);
-  bool decodeChunkedBody(ConnectionMapIt cnxIt, HttpRequest& req, bool expectContinue, std::size_t& consumedBytes);
-  bool maybeDecompressRequestBody(ConnectionMapIt cnxIt, HttpRequest& req);
-  void finalizeAndSendResponse(ConnectionMapIt cnxIt, const HttpRequest& req, HttpResponse&& resp,
-                               std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
+  bool decodeBodyIfReady(ConnectionMapIt cnxIt, bool isChunked, bool expectContinue, std::size_t& consumedBytes);
+  bool decodeFixedLengthBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
+  bool decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
+  bool maybeDecompressRequestBody(ConnectionMapIt cnxIt);
+  void finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes);
   // Handle Expect header tokens other than the built-in 100-continue.
   // Returns true if processing should stop for this request (response already queued/sent).
-  bool handleExpectHeader(ConnectionMapIt cnxIt, HttpRequest& req, ConnectionState& state, bool& found100Continue,
-                          std::chrono::steady_clock::time_point reqStart);
+  bool handleExpectHeader(ConnectionMapIt cnxIt, ConnectionState& state, bool& found100Continue);
   // Helper to populate and invoke the metrics callback for a completed request.
-  void emitRequestMetrics(const HttpRequest& req, http::StatusCode status, std::size_t bytesIn, bool reusedConnection,
-                          std::chrono::steady_clock::time_point reqStart);
+  void emitRequestMetrics(http::StatusCode status, std::size_t bytesIn, bool reusedConnection);
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // If immediate=true the connection will be closed without waiting for buffered writes to drain.
   void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, bool immediate = false,
@@ -292,13 +288,11 @@ class HttpServer {
   // the request (either because the client requested it or keep-alive limits reached). The HttpRequest is
   // non-const because we may reuse shared response finalization paths (e.g. emitting a 406 early) that expect
   // to mutate transient fields (target normalization already complete at this point).
-  bool callStreamingHandler(const StreamingHandler& streamingHandler, HttpRequest& req, ConnectionMapIt cnxIt,
-                            std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart);
+  bool callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionMapIt cnxIt, std::size_t consumedBytes);
 
   enum class LoopAction : uint8_t { Nothing, Continue, Break };
 
-  LoopAction processSpecialMethods(ConnectionMapIt& cnxIt, const HttpRequest& req, std::size_t consumedBytes,
-                                   std::chrono::steady_clock::time_point reqStart);
+  LoopAction processSpecialMethods(ConnectionMapIt& cnxIt, std::size_t consumedBytes);
 
   void handleInTunneling(ConnectionMapIt cnxIt);
 
@@ -315,6 +309,7 @@ class HttpServer {
     uint64_t flushCycles{0};
     uint64_t epollModFailures{0};
     std::size_t maxConnectionOutboundBuffer{0};
+    uint64_t totalRequestsServed{0};
   } _stats;
 
   // Helpers to enable/disable writable interest (EPOLLOUT) for a connection. They wrap
@@ -342,7 +337,8 @@ class HttpServer {
   ParserErrorCallback _parserErrCb = []([[maybe_unused]] http::StatusCode) {};
   MetricsCallback _metricsCb;
   ExpectationHandler _expectationHandler;
-  RawChars _tmpBuffer;  // can be used for any kind of temporary buffer
+  HttpRequest _request;  // to keep allocated memory
+  RawChars _tmpBuffer;   // can be used for any kind of temporary buffer
 
   // Telemetry context - one per HttpServer instance (no global singletons)
   tracing::TelemetryContext _telemetry;

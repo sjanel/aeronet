@@ -148,6 +148,9 @@ class HttpRequest {
   // Tells whether this request has a 'Expect: 100-continue' header.
   [[nodiscard]] bool hasExpectContinue() const noexcept;
 
+  // Timestamp when request parsing began.
+  [[nodiscard]] std::chrono::steady_clock::time_point reqStart() const noexcept { return _reqStart; }
+
  private:
   friend class HttpServer;
   friend class HttpRequestTest;
@@ -160,8 +163,10 @@ class HttpRequest {
   // Attempts to set this HttpRequest (except body) from given ConnectionState.
   // Returns StatusCode OK if the request is good (it will be fully set) or an HTTP error status to forward.
   // If 0 is returned, it means the connection state buffer is not filled up to the first newline.
-  http::StatusCode setHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
-                           bool mergeAllowedForUnknownRequestHeaders);
+  http::StatusCode initTrySetHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
+                                  bool mergeAllowedForUnknownRequestHeaders);
+
+  void shrink_to_fit();
 
   http::Version _version;
   http::Method _method;
@@ -178,6 +183,8 @@ class HttpRequest {
   std::string_view _alpnProtocol;  // Selected ALPN protocol (if any) for this connection, empty if none/unsupported
   std::string_view _tlsCipher;     // Negotiated cipher suite (empty if not TLS)
   std::string_view _tlsVersion;    // Negotiated TLS protocol version (e.g. TLSv1.3) empty if not TLS
+
+  std::chrono::steady_clock::time_point _reqStart;
 };
 
 }  // namespace aeronet
