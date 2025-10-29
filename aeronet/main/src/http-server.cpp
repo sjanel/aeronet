@@ -97,6 +97,7 @@ HttpServer::HttpServer(HttpServer&& other)
       _parserErrCb(std::move(other._parserErrCb)),
       _metricsCb(std::move(other._metricsCb)),
       _expectationHandler(std::move(other._expectationHandler)),
+      _request(std::move(other._request)),
       _tmpBuffer(std::move(other._tmpBuffer)),
       _telemetry(std::move(other._telemetry))
 #ifdef AERONET_ENABLE_OPENSSL
@@ -138,6 +139,7 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _parserErrCb = std::move(other._parserErrCb);
     _metricsCb = std::move(other._metricsCb);
     _expectationHandler = std::move(other._expectationHandler);
+    _request = std::move(other._request);
     _tmpBuffer = std::move(other._tmpBuffer);
     _telemetry = std::move(other._telemetry);
 #ifdef AERONET_ENABLE_OPENSSL
@@ -258,13 +260,17 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     if (state.inBuffer.size() < http::kHttpReqLineMinLen) {
       break;  // need more bytes for at least the request line
     }
-    const auto reqStart = std::chrono::steady_clock::now();
-
-    HttpRequest req;
-    const auto statusCode = req.setHead(state, _tmpBuffer, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders);
+    const auto statusCode =
+        _request.initTrySetHead(state, _tmpBuffer, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders);
     if (statusCode == 0) {
       // need more data
       break;
+    }
+
+    static constexpr uint64_t kShrinkRequestNnRequestPeriod = 1000;
+
+    if (++_stats.totalRequestsServed % kShrinkRequestNnRequestPeriod == 0) {
+      _request.shrink_to_fit();
     }
 
     if (statusCode != http::StatusCodeOK) {
@@ -283,11 +289,11 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     // We create it after parsing the request head so we have method and path available
     auto span = _telemetry.createSpan("http.request");
     if (span) {
-      span->setAttribute("http.method", http::toMethodStr(req.method()));
-      span->setAttribute("http.target", req.path());
+      span->setAttribute("http.method", http::toMethodStr(_request.method()));
+      span->setAttribute("http.target", _request.path());
       span->setAttribute("http.scheme", "http");
 
-      const auto header = req.headerValueOrEmpty("Host");
+      const auto header = _request.headerValueOrEmpty("Host");
       if (!header.empty()) {
         span->setAttribute("http.host", header);
       }
@@ -298,10 +304,10 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     state.headerStart = {};
     bool isChunked = false;
     bool hasTransferEncoding = false;
-    const std::string_view transferEncoding = req.headerValueOrEmpty(http::TransferEncoding);
+    const std::string_view transferEncoding = _request.headerValueOrEmpty(http::TransferEncoding);
     if (!transferEncoding.empty()) {
       hasTransferEncoding = true;
-      if (req.version() == http::HTTP_1_0) {
+      if (_request.version() == http::HTTP_1_0) {
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Transfer-Encoding not allowed in HTTP/1.0");
         break;
       }
@@ -313,7 +319,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       }
     }
 
-    const std::string_view contentLength = req.headerValueOrEmpty(http::ContentLength);
+    const std::string_view contentLength = _request.headerValueOrEmpty(http::ContentLength);
     const bool hasContentLength = !contentLength.empty();
     if (hasContentLength && hasTransferEncoding) {
       emitSimpleError(cnxIt, http::StatusCodeBadRequest, true,
@@ -322,25 +328,25 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     }
     // Handle Expect header tokens beyond the built-in 100-continue.
     // RFC: if any expectation token is not understood and not handled, respond 417.
-    const std::string_view expectHeader = req.headerValueOrEmpty(http::Expect);
+    const std::string_view expectHeader = _request.headerValueOrEmpty(http::Expect);
     bool found100Continue = false;
-    if (!expectHeader.empty() && handleExpectHeader(cnxIt, req, state, found100Continue, reqStart)) {
+    if (!expectHeader.empty() && handleExpectHeader(cnxIt, state, found100Continue)) {
       break;  // stop processing this request (response queued)
     }
-    const bool expectContinue = found100Continue || req.hasExpectContinue();
+    const bool expectContinue = found100Continue || _request.hasExpectContinue();
     std::size_t consumedBytes = 0;
-    if (!decodeBodyIfReady(cnxIt, req, isChunked, expectContinue, consumedBytes)) {
+    if (!decodeBodyIfReady(cnxIt, isChunked, expectContinue, consumedBytes)) {
       break;  // need more bytes or error
     }
     // Inbound request decompression (Content-Encoding). Performed after body aggregation but before dispatch.
-    if (!req.body().empty() && !maybeDecompressRequestBody(cnxIt, req)) {
+    if (!_request.body().empty() && !maybeDecompressRequestBody(cnxIt)) {
       break;  // error already emitted; close or wait handled inside
     }
 
     // Handle OPTIONS and TRACE per RFC 7231 §4.3
     // processSpecialMethods may emplace into _connStates (inserting upstream) and
     // will update cnxIt by reference if rehashing occurs.
-    const auto action = processSpecialMethods(cnxIt, req, consumedBytes, reqStart);
+    const auto action = processSpecialMethods(cnxIt, consumedBytes);
     if (action == LoopAction::Continue) {
       continue;
     }
@@ -348,10 +354,9 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       break;
     }
 
-    const auto routingResult = _router.match(req.method(), req.path());
+    const auto routingResult = _router.match(_request.method(), _request.path());
     if (routingResult.streamingHandler != nullptr) {
-      const bool streamingClose =
-          callStreamingHandler(*routingResult.streamingHandler, req, cnxIt, consumedBytes, reqStart);
+      const bool streamingClose = callStreamingHandler(*routingResult.streamingHandler, cnxIt, consumedBytes);
       if (streamingClose) {
         break;
       }
@@ -362,7 +367,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     if (routingResult.requestHandler != nullptr) {
       // normal handler
       try {
-        resp = (*routingResult.requestHandler)(req);
+        resp = (*routingResult.requestHandler)(_request);
       } catch (const std::exception& ex) {
         log::error("Exception in path handler: {}", ex.what());
         resp.statusCode(http::StatusCodeInternalServerError)
@@ -383,11 +388,11 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
           .contentType(http::ContentTypeTextPlain)
           .body("Redirecting");
       if (routingResult.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
-        _tmpBuffer.assign(req.path());
+        _tmpBuffer.assign(_request.path());
         _tmpBuffer.push_back('/');
         resp.location(_tmpBuffer);
       } else {
-        resp.location(req.path().substr(0, req.path().size() - 1));
+        resp.location(_request.path().substr(0, _request.path().size() - 1));
       }
 
       consumedBytes = 0;  // already advanced
@@ -403,12 +408,12 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
 
     const auto respStatusCode = resp.statusCode();
 
-    finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
+    finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
 
     // End the span after response is finalized
     if (span) {
       const auto reqEnd = std::chrono::steady_clock::now();
-      const auto durationUs = std::chrono::duration_cast<std::chrono::microseconds>(reqEnd - reqStart);
+      const auto durationUs = std::chrono::duration_cast<std::chrono::microseconds>(reqEnd - _request.reqStart());
 
       span->setAttribute("http.status_code", respStatusCode);
       span->setAttribute("http.duration_us", durationUs.count());
@@ -419,9 +424,9 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
   return state.isAnyCloseRequested();
 }
 
-bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt, HttpRequest& req) {
+bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
   const auto& cfg = _config.decompression;
-  std::string_view encHeader = req.headerValueOrEmpty(http::ContentEncoding);
+  std::string_view encHeader = _request.headerValueOrEmpty(http::ContentEncoding);
   if (encHeader.empty() || CaseInsensitiveEqual(encHeader, http::identity)) {
     return true;  // nothing to do
   }
@@ -431,14 +436,14 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt, HttpRequest& 
     // rejections when opting out. Global body size limits have already been enforced.
     return true;
   }
-  const std::size_t originalCompressedSize = req.body().size();
+  const std::size_t originalCompressedSize = _request.body().size();
   if (cfg.maxCompressedBytes != 0 && originalCompressedSize > cfg.maxCompressedBytes) {
     emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
     return false;
   }
 
   // We'll alternate between bodyAndTrailersBuffer (source) and _tmpBuffer (target) each stage.
-  std::string_view src = req.body();
+  std::string_view src = _request.body();
   RawChars* dst = &_tmpBuffer;
   ConnectionState& state = cnxIt->second;
 
@@ -520,30 +525,30 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt, HttpRequest& 
   }
 
   // Final decompressed data now resides in *src after last swap.
-  req._body = src;
+  _request._body = src;
   // Strip Content-Encoding header so user handlers observe a canonical, already-decoded body.
   // Rationale: After automatic request decompression the original header no longer reflects
   // the semantics of req.body() (which now holds the decoded representation). Exposing the stale
   // header risks double-decoding attempts or confusion about body length. The original compressed
   // size can be reintroduced later via RequestMetrics enrichment.
-  req._headers.erase(http::ContentEncoding);
+  _request._headers.erase(http::ContentEncoding);
   return true;
 }
 
-bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, HttpRequest& req, ConnectionMapIt cnxIt,
-                                      std::size_t consumedBytes, std::chrono::steady_clock::time_point reqStart) {
-  bool wantClose = req.wantClose();
-  bool isHead = req.method() == http::Method::HEAD;
+bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionMapIt cnxIt,
+                                      std::size_t consumedBytes) {
+  bool wantClose = _request.wantClose();
+  bool isHead = _request.method() == http::Method::HEAD;
   Encoding compressionFormat = Encoding::none;
   ConnectionState& state = cnxIt->second;
   if (!isHead) {
-    auto encHeader = req.headerValueOrEmpty(http::AcceptEncoding);
+    auto encHeader = _request.headerValueOrEmpty(http::AcceptEncoding);
     auto negotiated = _encodingSelector.negotiateAcceptEncoding(encHeader);
     if (negotiated.reject) {
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
       HttpResponse resp(406, http::ReasonNotAcceptable);
       resp.contentType(http::ContentTypeTextPlain).body("No acceptable content-coding available");
-      finalizeAndSendResponse(cnxIt, req, std::move(resp), consumedBytes, reqStart);
+      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
       return state.isAnyCloseRequested();
     }
     compressionFormat = negotiated.encoding;
@@ -551,7 +556,7 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
 
   HttpResponseWriter writer(*this, cnxIt->first.fd(), isHead, wantClose, compressionFormat);
   try {
-    streamingHandler(req, writer);
+    streamingHandler(_request, writer);
   } catch (const std::exception& ex) {
     log::error("Exception in streaming handler: {}", ex.what());
   } catch (...) {
@@ -564,7 +569,7 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   ++state.requestsServed;
   state.inBuffer.erase_front(consumedBytes);
 
-  const bool shouldClose = !_config.enableKeepAlive || req.version() != http::HTTP_1_1 || wantClose ||
+  const bool shouldClose = !_config.enableKeepAlive || _request.version() != http::HTTP_1_1 || wantClose ||
                            state.requestsServed + 1 >= _config.maxRequestsPerConnection ||
                            state.isAnyCloseRequested() || _lifecycle.isDraining() || _lifecycle.isStopping();
   if (shouldClose) {
@@ -572,24 +577,23 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   }
 
   if (_metricsCb) {
-    emitRequestMetrics(req, http::StatusCodeOK, req.body().size(), state.requestsServed > 1, reqStart);
+    emitRequestMetrics(http::StatusCodeOK, _request.body().size(), state.requestsServed > 1);
   }
 
   return shouldClose;
 }
 
-void HttpServer::emitRequestMetrics(const HttpRequest& req, http::StatusCode status, std::size_t bytesIn,
-                                    bool reusedConnection, std::chrono::steady_clock::time_point reqStart) {
+void HttpServer::emitRequestMetrics(http::StatusCode status, std::size_t bytesIn, bool reusedConnection) {
   if (!_metricsCb) {
     return;
   }
   RequestMetrics metrics;
-  metrics.method = req.method();
-  metrics.path = req.path();
+  metrics.method = _request.method();
+  metrics.path = _request.path();
   metrics.status = status;
   metrics.bytesIn = bytesIn;
   metrics.reusedConnection = reusedConnection;
-  metrics.duration = std::chrono::steady_clock::now() - reqStart;
+  metrics.duration = std::chrono::steady_clock::now() - _request.reqStart();
   _metricsCb(metrics);
 }
 
@@ -814,6 +818,7 @@ ServerStats HttpServer::stats() const {
   statsOut.flushCycles = _stats.flushCycles;
   statsOut.epollModFailures = _stats.epollModFailures;
   statsOut.maxConnectionOutboundBuffer = _stats.maxConnectionOutboundBuffer;
+  statsOut.totalRequestsServed = _stats.totalRequestsServed;
 #ifdef AERONET_ENABLE_OPENSSL
   statsOut.tlsHandshakesSucceeded = _tlsMetrics.handshakesSucceeded;
   statsOut.tlsClientCertPresent = _tlsMetrics.clientCertPresent;
@@ -889,11 +894,10 @@ void HttpServer::registerBuiltInProbes() {
   });
 }
 
-bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, HttpRequest& req, ConnectionState& state,
-                                    bool& found100Continue, std::chrono::steady_clock::time_point reqStart) {
-  const std::string_view expectHeader = req.headerValueOrEmpty(http::Expect);
+bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, ConnectionState& state, bool& found100Continue) {
+  const std::string_view expectHeader = _request.headerValueOrEmpty(http::Expect);
   const std::size_t headerEnd =
-      static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.inBuffer.data());
+      static_cast<std::size_t>(_request._flatHeaders.data() + _request._flatHeaders.size() - state.inBuffer.data());
   // Parse comma-separated tokens (trim spaces/tabs). Case-insensitive comparison for 100-continue.
   // headerEnd = offset from connection buffer start to end of headers
   for (const char *cur = expectHeader.data(), *end = cur + expectHeader.size(); cur < end; ++cur) {
@@ -930,7 +934,7 @@ bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, HttpRequest& req, Con
       return true;
     }
     try {
-      auto expectationResult = _expectationHandler(req, token);
+      auto expectationResult = _expectationHandler(_request, token);
       switch (expectationResult.kind) {
         case ExpectationResultKind::Reject:
           emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, true);
@@ -971,7 +975,7 @@ bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, HttpRequest& req, Con
         }
         case ExpectationResultKind::FinalResponse:
           // Send the provided final response immediately and skip body processing.
-          finalizeAndSendResponse(cnxIt, req, std::move(expectationResult.finalResponse), headerEnd, reqStart);
+          finalizeAndSendResponse(cnxIt, std::move(expectationResult.finalResponse), headerEnd);
           return true;
         case ExpectationResultKind::Continue:
           break;

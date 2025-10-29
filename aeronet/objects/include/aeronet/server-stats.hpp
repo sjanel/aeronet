@@ -19,6 +19,7 @@ struct ServerStats {
     fun("flushCycles", flushCycles);
     fun("epollModFailures", epollModFailures);
     fun("maxConnectionOutboundBuffer", static_cast<uint64_t>(maxConnectionOutboundBuffer));
+    fun("totalRequestsServed", totalRequestsServed);
 #ifdef AERONET_ENABLE_OPENSSL
     fun("tlsHandshakesSucceeded", tlsHandshakesSucceeded);
     fun("tlsClientCertPresent", tlsClientCertPresent);
@@ -36,6 +37,7 @@ struct ServerStats {
   uint64_t flushCycles{};
   uint64_t epollModFailures{};
   std::size_t maxConnectionOutboundBuffer{};
+  uint64_t totalRequestsServed{};
 #ifdef AERONET_ENABLE_OPENSSL
   uint64_t tlsHandshakesSucceeded{};
   uint64_t tlsClientCertPresent{};

@@ -20,27 +20,26 @@
 
 namespace aeronet {
 
-bool HttpServer::decodeBodyIfReady(ConnectionMapIt cnxIt, HttpRequest& req, bool isChunked, bool expectContinue,
+bool HttpServer::decodeBodyIfReady(ConnectionMapIt cnxIt, bool isChunked, bool expectContinue,
                                    std::size_t& consumedBytes) {
   consumedBytes = 0;
   if (isChunked) {
-    return decodeChunkedBody(cnxIt, req, expectContinue, consumedBytes);
+    return decodeChunkedBody(cnxIt, expectContinue, consumedBytes);
   }
-  return decodeFixedLengthBody(cnxIt, req, expectContinue, consumedBytes);
+  return decodeFixedLengthBody(cnxIt, expectContinue, consumedBytes);
 }
 
-bool HttpServer::decodeFixedLengthBody(ConnectionMapIt cnxIt, HttpRequest& req, bool expectContinue,
-                                       std::size_t& consumedBytes) {
-  std::string_view lenViewAll = req.headerValueOrEmpty(http::ContentLength);
+bool HttpServer::decodeFixedLengthBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes) {
+  std::string_view lenViewAll = _request.headerValueOrEmpty(http::ContentLength);
   bool hasCL = !lenViewAll.empty();
   ConnectionState& state = cnxIt->second;
   std::size_t headerEnd =
-      static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.inBuffer.data());
+      static_cast<std::size_t>(_request._flatHeaders.data() + _request._flatHeaders.size() - state.inBuffer.data());
   if (!hasCL) {
     // No Content-Length and not chunked: treat as no body (common for GET/HEAD). Ready immediately.
     // TODO: we should reject the query if body is non empty and ContentLength not specified
     if (state.inBuffer.size() >= headerEnd) {
-      req._body = std::string_view{};
+      _request._body = std::string_view{};
       consumedBytes = headerEnd;
       return true;
     }
@@ -63,18 +62,18 @@ bool HttpServer::decodeFixedLengthBody(ConnectionMapIt cnxIt, HttpRequest& req, 
   if (state.inBuffer.size() < totalNeeded) {
     return false;  // need more bytes
   }
-  req._body = {state.inBuffer.data() + headerEnd, declaredContentLen};
+  _request._body = {state.inBuffer.data() + headerEnd, declaredContentLen};
   consumedBytes = totalNeeded;
   return true;
 }
 
-bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, HttpRequest& req, bool expectContinue,
-                                   std::size_t& consumedBytes) {
+bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes) {
   ConnectionState& state = cnxIt->second;
   if (expectContinue) {
     queueData(cnxIt, HttpResponseData(http::HTTP11_100_CONTINUE));
   }
-  std::size_t pos = static_cast<std::size_t>(req._flatHeaders.data() + req._flatHeaders.size() - state.inBuffer.data());
+  std::size_t pos =
+      static_cast<std::size_t>(_request._flatHeaders.data() + _request._flatHeaders.size() - state.inBuffer.data());
   RawChars& bodyAndTrailers = state.bodyAndTrailersBuffer;
   bodyAndTrailers.clear();
   state.trailerStartPos = 0;
@@ -106,6 +105,7 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, HttpRequest& req, bool
     if (state.inBuffer.size() < pos + chunkSize + http::CRLF.size()) {
       return false;
     }
+
     if (chunkSize == 0) {
       // Zero-chunk detected. Now parse optional trailer headers (RFC 7230 §4.1.2).
       // Trailers are terminated by a blank line (CRLF).
@@ -193,7 +193,7 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, HttpRequest& req, bool
         }
 
         // Store trailer using the in-place merge helper so semantics/pointer updates match request parsing.
-        if (!http::AddOrMergeHeaderInPlace(req._trailers, trailerNameView, trailerValue, _tmpBuffer,
+        if (!http::AddOrMergeHeaderInPlace(_request._trailers, trailerNameView, trailerValue, _tmpBuffer,
                                            bodyAndTrailers.data(), trailerData, _config.mergeUnknownRequestHeaders)) {
           emitSimpleError(cnxIt, http::StatusCodeBadRequest, true);
           return false;
@@ -219,7 +219,7 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, HttpRequest& req, bool
   }
   // Body is everything before trailerStartPos (or entire buffer if no trailers)
   std::size_t bodyLen = (state.trailerStartPos > 0) ? state.trailerStartPos : bodyAndTrailers.size();
-  req._body = std::string_view(bodyAndTrailers.data(), bodyLen);
+  _request._body = std::string_view(bodyAndTrailers.data(), bodyLen);
   consumedBytes = pos;
   return true;
 }
