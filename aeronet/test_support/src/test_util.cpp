@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
@@ -81,7 +82,7 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
     std::size_t oldSize = out.size();
 
     if (out.capacity() < out.size() + kChunkSize) {
-      out.reserve(out.capacity() * 2UL + kChunkSize);
+      out.reserve((out.capacity() * 2UL) + kChunkSize);
     }
 
     out.resize_and_overwrite(oldSize + kChunkSize, [&](char *data, [[maybe_unused]] std::size_t newCap) {
@@ -196,9 +197,9 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
                 }
                 out.resize_and_overwrite(oldSizeInner + toRead,
                                          [fd, oldSizeInner, toRead](char *data, [[maybe_unused]] std::size_t cap) {
-                                           ssize_t r = ::recv(fd, data + oldSizeInner, toRead, 0);
-                                           if (r > 0) {
-                                             return oldSizeInner + static_cast<std::size_t>(r);
+                                           ssize_t rec = ::recv(fd, data + oldSizeInner, toRead, 0);
+                                           if (rec > 0) {
+                                             return oldSizeInner + static_cast<std::size_t>(rec);
                                            }
                                            return oldSizeInner;
                                          });
@@ -225,7 +226,7 @@ std::string recvUntilClosed(int fd) {
     bool closed = false;
 
     if (out.capacity() < out.size() + kChunkSize) {
-      out.reserve(out.capacity() * 2UL + kChunkSize);
+      out.reserve((out.capacity() * 2UL) + kChunkSize);
     }
 
     out.resize_and_overwrite(oldSize + kChunkSize, [&](char *data, [[maybe_unused]] std::size_t newCap) {

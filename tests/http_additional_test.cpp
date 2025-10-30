@@ -2,8 +2,10 @@
 
 #include <chrono>
 #include <cstddef>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
