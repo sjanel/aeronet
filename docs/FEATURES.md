@@ -12,7 +12,7 @@ Single consolidated reference for **aeronet** features.
 1. [Connection Close Semantics](#connection-close-semantics) — includes graceful drain lifecycle
 1. [Reserved & Managed Response Headers](#reserved--managed-response-headers)
 1. [Request Header Duplicate Handling (Detailed)](#request-header-duplicate-handling-detailed)
-1. [Query String & Parameters](#query-string--parameters)
+1. [Path Handling](#path-handling)
 1. [Trailing Slash Policy](#trailing-slash-policy)
 1. [Construction Model (RAII & Ephemeral Ports)](#construction-model-raii--ephemeral-ports)
 1. [MultiHttpServer Lifecycle](#multihttpserver-lifecycle)
@@ -909,7 +909,9 @@ Global headers are applied to every response including error responses generated
 
 By default, it contains a `Server: aeronet` header unless you explicitly clear it out.
 
-## Query String & Parameters
+## Path Handling
+
+### Query String & Parameters
 
 - Path percent-decoded once; invalid escape ⇒ 400.
 - Query left raw; per-key/value decode on iteration (`queryParams()`).
@@ -923,7 +925,7 @@ Example:
 for (auto [k,v] : req.queryParams()) { /* use k,v */ }
 ```
 
-## Trailing Slash Policy
+### Trailing Slash Policy
 
 `HttpServerConfig::TrailingSlashPolicy` controls how paths differing only by a single trailing `/` are treated.
 
@@ -948,7 +950,7 @@ Behavior summary:
 | Normalize | `/foo/`→serve `/foo` | `/foo`→serve `/foo/` | only first one is registered |
 | Redirect | `/foo/`→301 `/foo` | `/foo`→301 `/foo/` | only first one is registered |
 
-Tests: `tests/http_trailing_slash.cpp`.
+Tests: `tests/http_routing_test.cpp`.
 
 Usage:
 
@@ -957,6 +959,74 @@ HttpServerConfig cfg; cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlas
 ```
 
 Rationale: Normalize avoids duplicate handler registration while preserving SEO-friendly consistent canonical paths; Redirect enforces consistent public URLs; Strict maximizes explicitness (APIs where `/v1/resource` vs `/v1/resource/` semantics differ).
+
+### Routing patterns & path parameters
+
+- Path pattern syntax
+
+  - Paths are absolute and must begin with `/`.
+  - A path is split into segments by the `/` character. Each segment may be:
+    - A literal segment with no braces (e.g. `hello`, `v1`).
+    - A pattern segment containing parameter fragments interleaved with literals. Example: `v{}/foo{}bar`.
+    - A terminal wildcard segment `*` which must be the final segment in the pattern (e.g. `/files/*`).
+
+- Parameter fragments
+
+  - Named captures use `{name}` and become available under the provided key (`name`).
+  - Unnamed captures use `{}`; the router assigns sequential numeric string keys (`"0"`, `"1"`, ...) in segment order.
+  - Mixing named and unnamed captures in the same pattern is not allowed — registration (`setPath`) will throw if you mix them.
+  - Consecutive parameter fragments with no literal separator (e.g. `{}{}` within a segment) are rejected.
+  - If you want to have literal braces in a segment, escape them by doubling: `{{` and `}}` become `{` and `}` respectively.
+
+- Wildcard semantics
+
+  - `*` must appear alone in a segment and must be the final segment. A wildcard matches the remainder of the
+    path but does not populate path-parameter captures.
+  - Exact registrations take precedence over wildcard matches (e.g. `/a/b` wins over `/a/*` for `/a/b`).
+
+- Registration errors
+
+  - `setPath()` will throw on:
+    - pattern not starting with `/`
+    - empty segment (double slash `//`)
+    - unterminated `{` in a segment
+    - consecutive parameters without a literal separator
+    - wildcard `*` used in a non-terminal position
+    - mixing named and unnamed parameters within the same pattern
+    - conflicting parameter naming or wildcard usage for an identical registered pattern
+
+- Matching & capture lifetime
+
+  - Patterns are compiled at registration; matching returns captures as `string_view`s (no copies of the captured
+    substrings). Captures returned by the router are transient and reference the original request path buffer
+    and the router's internal transient storage.
+  - Callers must copy captured values if they need them to survive beyond the original request buffer lifetime or
+    beyond a subsequent `match()` call which may mutate the router's transient buffers.
+
+- How to retrieve path params from handlers
+
+  - When `HttpServer` dispatches to a handler, it copies routing captures into the `HttpRequest` object. Within
+    your handler you can access them via `req.pathParams()` which returns a `flat_hash_map<std::string_view, std::string_view>`.
+  - Example:
+
+```cpp
+server.router().setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const HttpRequest& req) {
+  auto params = req.pathParams();
+  auto it = params.find("id");
+  if (it != params.end()) {
+    std::string_view userId = it->second; // points into request buffer
+    // copy if you need to keep it beyond request lifetime: std::string(userId)
+  }
+  return HttpResponse(200, "OK");
+});
+```
+
+- Unnamed capture example (keys are "0", "1", ...):
+
+```cpp
+server.router().setPath(http::Method::GET, "/files/{}/chunk/{}", handler);
+// In handler: req.pathParams().at("0"), req.pathParams().at("1")
+```
 
 ## Construction Model (RAII & Ephemeral Ports)
 

@@ -38,8 +38,6 @@ aeronet_http_test(http_server_lifecycle)
 
 aeronet_http_test(http_trailers)
 
-# Trailing slash policy tests
-aeronet_http_test(http_trailing_slash)
 aeronet_http_test(http_headers)
 
 aeronet_http_test(http_probes)
@@ -103,7 +101,6 @@ set(REGISTERED_TEST_SOURCES_REL
 	async_http_server_test.cpp
 	http_url_decoding_test.cpp
 	router_test.cpp
-	http_trailing_slash_test.cpp
 	http_query_parsing_test.cpp
 	http_headers_test.cpp
 	http_probes_test.cpp

@@ -21,8 +21,10 @@
 
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -355,6 +357,12 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     }
 
     const auto routingResult = _router.match(_request.method(), _request.path());
+
+    _request._pathParams.clear();
+    for (const auto& capture : routingResult.pathParams) {
+      _request._pathParams.emplace(capture.key, capture.value);
+    }
+
     if (routingResult.streamingHandler != nullptr) {
       const bool streamingClose = callStreamingHandler(*routingResult.streamingHandler, cnxIt, consumedBytes);
       if (streamingClose) {

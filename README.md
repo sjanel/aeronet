@@ -76,6 +76,7 @@ The following focused docs expand each area without cluttering the high‑level 
 - [Reserved & Managed Headers](docs/FEATURES.md#reserved--managed-response-headers)
 - [Query String & Parameter Decoding](docs/FEATURES.md#query-string--parameters)
 - [Trailing Slash Policy](docs/FEATURES.md#trailing-slash-policy)
+- [Routing patterns & path parameters](docs/FEATURES.md#routing-patterns--path-parameters)
 - [MultiHttpServer Lifecycle](docs/FEATURES.md#multihttpserver--lifecycle)
 - [TLS Features](docs/FEATURES.md#tls-features)
 
