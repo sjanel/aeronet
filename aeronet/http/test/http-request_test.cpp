@@ -40,7 +40,7 @@ class HttpRequestTest : public ::testing::Test {
                           std::size_t maxHeaderSize = 4096UL) {
     cs.inBuffer.assign(str.data(), str.size());
     RawChars tmpBuffer;
-    return req.initTrySetHead(cs, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders);
+    return req.initTrySetHead(cs, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders, nullptr);
   }
 
   void checkHeaders(std::initializer_list<http::HeaderView> headers) {

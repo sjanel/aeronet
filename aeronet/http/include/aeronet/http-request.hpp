@@ -8,6 +8,7 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/tracing/tracer.hpp"
 #include "connection-state.hpp"
 #include "headers-view-map.hpp"
 #include "raw-chars.hpp"
@@ -173,9 +174,11 @@ class HttpRequest {
   // Returns StatusCode OK if the request is good (it will be fully set) or an HTTP error status to forward.
   // If 0 is returned, it means the connection state buffer is not filled up to the first newline.
   http::StatusCode initTrySetHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
-                                  bool mergeAllowedForUnknownRequestHeaders);
+                                  bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan);
 
   void shrink_to_fit();
+
+  void end(http::StatusCode respStatusCode);
 
   http::Version _version;
   http::Method _method;
@@ -195,6 +198,7 @@ class HttpRequest {
   std::string_view _tlsVersion;    // Negotiated TLS protocol version (e.g. TLSv1.3) empty if not TLS
 
   std::chrono::steady_clock::time_point _reqStart;
+  tracing::SpanPtr _traceSpan;
 };
 
 }  // namespace aeronet

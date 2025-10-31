@@ -175,6 +175,9 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
 }
 
 void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes) {
+  // Capture status code for metrics / trace before resp is moved from.
+  const auto respStatusCode = resp.statusCode();
+
   ConnectionState& state = cnxIt->second;
   ++state.requestsServed;
   bool keepAlive =
@@ -235,8 +238,11 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& r
     state.requestDrainAndClose();
   }
   if (_metricsCb) {
-    emitRequestMetrics(resp.statusCode(), _request.body().size(), state.requestsServed > 0);
+    emitRequestMetrics(respStatusCode, _request.body().size(), state.requestsServed > 0);
   }
+
+  // End the span after response is finalized
+  _request.end(respStatusCode);
 }
 
 bool HttpServer::queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::PreparedResponse prepared) {

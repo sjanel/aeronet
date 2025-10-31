@@ -80,7 +80,7 @@ bool HttpRequest::hasExpectContinue() const noexcept {
 }
 
 http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
-                                             bool mergeAllowedForUnknownRequestHeaders) {
+                                             bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan) {
   auto* first = state.inBuffer.data();
   auto* last = first + state.inBuffer.size();
 
@@ -169,6 +169,19 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
     first = lineLast + 1;
   }
 
+  if (traceSpan) {
+    traceSpan->setAttribute("http.method", http::toMethodStr(_method));
+    traceSpan->setAttribute("http.target", _path);
+    traceSpan->setAttribute("http.scheme", "http");
+
+    const auto hostIt = _headers.find("Host");
+    if (hostIt != _headers.end()) {
+      traceSpan->setAttribute("http.host", hostIt->second);
+    }
+  }
+
+  _traceSpan = std::move(traceSpan);
+
   // Parsed double CRLF
   lineLast = std::find(first, last, '\n');
   if (lineLast == last) {
@@ -192,6 +205,20 @@ void HttpRequest::shrink_to_fit() {
   _headers.rehash(0);
   _trailers.rehash(0);
   _pathParams.rehash(0);
+}
+
+void HttpRequest::end(http::StatusCode respStatusCode) {
+  // End the span after response is finalized
+  if (_traceSpan) {
+    const auto reqEnd = std::chrono::steady_clock::now();
+    const auto durationUs = std::chrono::duration_cast<std::chrono::microseconds>(reqEnd - reqStart());
+
+    _traceSpan->setAttribute("http.status_code", respStatusCode);
+    _traceSpan->setAttribute("http.duration_us", durationUs.count());
+
+    _traceSpan->end();
+    _traceSpan.reset();
+  }
 }
 
 }  // namespace aeronet

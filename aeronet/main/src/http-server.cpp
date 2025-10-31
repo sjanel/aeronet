@@ -33,6 +33,7 @@
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
+#include "aeronet/tracing/tracer.hpp"
 #include "connection-state.hpp"
 #include "event-loop.hpp"
 #include "exception.hpp"
@@ -263,7 +264,8 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       break;  // need more bytes for at least the request line
     }
     const auto statusCode =
-        _request.initTrySetHead(state, _tmpBuffer, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders);
+        _request.initTrySetHead(state, _tmpBuffer, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders,
+                                _telemetry.createSpan("http.request"));
     if (statusCode == 0) {
       // need more data
       break;
@@ -285,20 +287,6 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       // will be torn down after any queued error bytes are flushed. No partial recovery is
       // attempted for a malformed / protocol-violating start line or headers.
       break;
-    }
-
-    // Start a span for this request if tracing is enabled
-    // We create it after parsing the request head so we have method and path available
-    auto span = _telemetry.createSpan("http.request");
-    if (span) {
-      span->setAttribute("http.method", http::toMethodStr(_request.method()));
-      span->setAttribute("http.target", _request.path());
-      span->setAttribute("http.scheme", "http");
-
-      const auto header = _request.headerValueOrEmpty("Host");
-      if (!header.empty()) {
-        span->setAttribute("http.host", header);
-      }
     }
 
     // A full request head (and body, if present) will now be processed; reset headerStart to signal
@@ -368,66 +356,53 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       if (streamingClose) {
         break;
       }
-      continue;
-    }
-
-    HttpResponse resp;
-    if (routingResult.requestHandler != nullptr) {
+    } else if (routingResult.requestHandler != nullptr) {
       // normal handler
       try {
-        resp = (*routingResult.requestHandler)(_request);
+        // Use RVO on the HttpResponse in the nominal case
+        finalizeAndSendResponse(cnxIt, (*routingResult.requestHandler)(_request), consumedBytes);
       } catch (const std::exception& ex) {
         log::error("Exception in path handler: {}", ex.what());
-        resp.statusCode(http::StatusCodeInternalServerError)
-            .reason(http::ReasonInternalServerError)
-            .contentType(http::ContentTypeTextPlain)
-            .body(ex.what());
+        HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
+        resp.contentType(http::ContentTypeTextPlain).body(ex.what());
+        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
       } catch (...) {
         log::error("Unknown exception in path handler");
-        resp.statusCode(http::StatusCodeInternalServerError)
-            .reason(http::ReasonInternalServerError)
-            .contentType(http::ContentTypeTextPlain)
-            .body("Unknown error");
+        HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
+        resp.contentType(http::ContentTypeTextPlain).body("Unknown error");
+        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
       }
-    } else if (routingResult.redirectPathIndicator != Router::RoutingResult::RedirectSlashMode::None) {
-      // Emit 301 redirect to canonical form.
-      resp.statusCode(http::StatusCodeMovedPermanently)
-          .reason(http::MovedPermanently)
-          .contentType(http::ContentTypeTextPlain)
-          .body("Redirecting");
-      if (routingResult.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
-        _tmpBuffer.assign(_request.path());
-        _tmpBuffer.push_back('/');
-        resp.location(_tmpBuffer);
-      } else {
-        resp.location(_request.path().substr(0, _request.path().size() - 1));
-      }
-
-      consumedBytes = 0;  // already advanced
-    } else if (routingResult.methodNotAllowed) {
-      resp.statusCode(http::StatusCodeMethodNotAllowed)
-          .reason(http::ReasonMethodNotAllowed)
-          .contentType(http::ContentTypeTextPlain)
-          .body(resp.reason());
     } else {
-      resp.statusCode(http::StatusCodeNotFound);
-      resp.reason(http::NotFound).contentType(http::ContentTypeTextPlain).body(http::NotFound);
+      HttpResponse resp;
+      if (routingResult.redirectPathIndicator != Router::RoutingResult::RedirectSlashMode::None) {
+        // Emit 301 redirect to canonical form.
+        resp.statusCode(http::StatusCodeMovedPermanently)
+            .reason(http::MovedPermanently)
+            .contentType(http::ContentTypeTextPlain)
+            .body("Redirecting");
+        if (routingResult.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
+          _tmpBuffer.assign(_request.path());
+          _tmpBuffer.push_back('/');
+          resp.location(_tmpBuffer);
+        } else {
+          resp.location(_request.path().substr(0, _request.path().size() - 1));
+        }
+
+        consumedBytes = 0;  // already advanced
+      } else if (routingResult.methodNotAllowed) {
+        resp.statusCode(http::StatusCodeMethodNotAllowed)
+            .reason(http::ReasonMethodNotAllowed)
+            .contentType(http::ContentTypeTextPlain)
+            .body(resp.reason());
+      } else {
+        resp.statusCode(http::StatusCodeNotFound)
+            .reason(http::NotFound)
+            .contentType(http::ContentTypeTextPlain)
+            .body(http::NotFound);
+      }
+      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
     }
 
-    const auto respStatusCode = resp.statusCode();
-
-    finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
-
-    // End the span after response is finalized
-    if (span) {
-      const auto reqEnd = std::chrono::steady_clock::now();
-      const auto durationUs = std::chrono::duration_cast<std::chrono::microseconds>(reqEnd - _request.reqStart());
-
-      span->setAttribute("http.status_code", respStatusCode);
-      span->setAttribute("http.duration_us", durationUs.count());
-
-      span->end();
-    }
   } while (!state.isAnyCloseRequested());
   return state.isAnyCloseRequested();
 }
@@ -855,7 +830,9 @@ void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, b
   if (reason.empty()) {
     reason = http::reasonPhraseFor(code);
   }
+
   queueData(cnxIt, BuildSimpleError(code, _config.globalHeaders, reason));
+
   try {
     _parserErrCb(code);
   } catch (const std::exception& ex) {
@@ -867,6 +844,8 @@ void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, b
   } else {
     cnxIt->second.requestDrainAndClose();
   }
+
+  _request.end(code);
 }
 
 void HttpServer::registerBuiltInProbes() {
