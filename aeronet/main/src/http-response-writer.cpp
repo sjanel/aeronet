@@ -14,7 +14,6 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-header.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -24,7 +23,6 @@
 #include "header-write.hpp"
 #include "log.hpp"
 #include "raw-chars.hpp"
-#include "string-equal-ignore-case.hpp"
 #include "stringconv.hpp"
 #include "timedef.hpp"
 
@@ -57,38 +55,12 @@ void HttpResponseWriter::addCustomHeader(std::string_view name, std::string_view
   if (_state != State::Opened) {
     return;
   }
-  if (http::IsReservedResponseHeader(name)) {
-    log::error("Attempt to set reserved or managed header '{}' in streaming response", name);
-    return;
-  }
-  if (CaseInsensitiveEqual(name, http::ContentType)) {
-    // Track explicit user override of default content type.
-    _userSetContentType = true;
-  }
-  if (CaseInsensitiveEqual(name, http::ContentEncoding)) {
-    _userProvidedContentEncoding = true;  // suppress automatic compression
-    // If user sets identity we still treat it as suppression; we do not validate value here.
-  }
   _fixedResponse.addCustomHeader(name, value);
 }
 
 void HttpResponseWriter::customHeader(std::string_view name, std::string_view value) {
   if (_state != State::Opened) {
-    log::debug("Streaming: header ignored fd # {} name={} reason={}", _fd, name,
-               _state == State::Failed ? "writer-failed" : "headers-already-sent");
     return;
-  }
-  if (http::IsReservedResponseHeader(name)) {
-    log::error("Attempt to set reserved or managed header '{}' in streaming response", name);
-    return;
-  }
-  if (CaseInsensitiveEqual(name, http::ContentType)) {
-    // Track explicit user override of default content type.
-    _userSetContentType = true;
-  }
-  if (CaseInsensitiveEqual(name, http::ContentEncoding)) {
-    _userProvidedContentEncoding = true;  // suppress automatic compression
-    // If user sets identity we still treat it as suppression; we do not validate value here.
   }
   _fixedResponse.customHeader(name, value);
 }
@@ -108,7 +80,6 @@ void HttpResponseWriter::contentLength(std::size_t len) {
     log::warn("Streaming: contentLength ignored fd # {} requestedLen={} reason={}", _fd, len, reason);
     return;
   }
-  _chunked = false;
   _declaredLength = len;
   _fixedResponse.setHeader(http::ContentLength, std::string_view(IntegralToCharVector(len)));
 }
@@ -118,19 +89,14 @@ void HttpResponseWriter::ensureHeadersSent() {
     return;
   }
   // For HEAD requests never emit chunked framing; force zero Content-Length if not provided.
-  if (_head) {
-    _chunked = false;
-  }
-  if (!_chunked) {
-    if (!_usingSendFile && _declaredLength == 0) {
+  if (!chunked()) {
+    if (!_fixedResponse.hasFile() && _declaredLength == 0) {
       _fixedResponse.setHeader(http::ContentLength, "0");
     }
   } else {
     _fixedResponse.setHeader(http::TransferEncoding, "chunked");
   }
-  if (!_userSetContentType) {
-    _fixedResponse.setHeader(http::ContentType, http::ContentTypeTextPlain);
-  }
+  _fixedResponse.setHeader(http::ContentType, http::ContentTypeTextPlain, true);
   // If compression already activated (delayed strategy) but header not sent yet, add Content-Encoding now.
   if (_compressionActivated && _compressionFormat != Encoding::none) {
     _fixedResponse.setHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
@@ -180,7 +146,7 @@ void HttpResponseWriter::emitChunk(std::string_view data) {
 }
 
 void HttpResponseWriter::emitLastChunk() {
-  if (!_chunked || _head || _state == State::Failed) {
+  if (!chunked() || _head || _state == State::Failed) {
     return;
   }
 
@@ -210,7 +176,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
               _state == State::Failed ? "writer-failed" : "already-ended");
     return false;
   }
-  if (_usingSendFile) {
+  if (_fixedResponse.hasFile()) {
     log::warn("Streaming: write ignored fd # {} size={} reason=sendfile-active", _fd, data.size());
     return false;
   }
@@ -220,7 +186,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
   // to send or (b) decide to emit identity data (on end()). This allows us to include the Content-Encoding header
   // reliably when compression triggers mid-stream.
   const auto& compressionConfig = _server->_config.compression;
-  if (_compressionFormat != Encoding::none && !_userProvidedContentEncoding && !_compressionActivated &&
+  if (_compressionFormat != Encoding::none && !_fixedResponse.userProvidedContentEncoding() && !_compressionActivated &&
       _preCompressBuffer.size() < compressionConfig.minBytes) {
     return accumulateInPreCompressBuffer(data);
   }
@@ -229,7 +195,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
 
   data = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, data, false);
 
-  if (_chunked) {
+  if (chunked()) {
     emitChunk(data);
   } else if (!_head) {
     if (!enqueue(HttpResponseData(data))) {
@@ -239,7 +205,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
     }
     _bytesWritten += data.size();
   }
-  log::trace("Streaming: write fd # {} size={} total={} chunked={}", _fd, data.size(), _bytesWritten, _chunked);
+  log::trace("Streaming: write fd # {} size={} total={} chunked={}", _fd, data.size(), _bytesWritten, chunked());
   return _state != State::Failed;  // backpressure signaled via connection close flag, failure sets failed state
 }
 
@@ -249,11 +215,11 @@ void HttpResponseWriter::addTrailer(std::string_view name, std::string_view valu
               _state == State::Failed ? "writer-failed" : "already-ended");
     return;
   }
-  if (_usingSendFile) {
+  if (_fixedResponse.hasFile()) {
     log::warn("Streaming: addTrailer ignored fd # {} name={} reason=sendfile-active", _fd, name);
     return;
   }
-  if (!_chunked) {
+  if (!chunked()) {
     log::warn("Streaming: addTrailer ignored fd # {} name={} reason=fixed-length-response (contentLength was set)", _fd,
               name);
     return;
@@ -281,7 +247,7 @@ void HttpResponseWriter::end() {
                _state == State::Failed ? "writer-failed" : "already-ended");
     return;
   }
-  if (_usingSendFile) {
+  if (_fixedResponse.hasFile()) {
     ensureHeadersSent();
     if (_state != State::Failed) {
       _state = State::Ended;
@@ -295,7 +261,7 @@ void HttpResponseWriter::end() {
     const auto& compressionConfig = _server->_config.compression;
     auto last = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, {}, true);
     if (!last.empty()) {
-      if (_chunked) {
+      if (chunked()) {
         emitChunk(last);
       } else if (!_head) {
         if (!enqueue(HttpResponseData(last))) {
@@ -309,7 +275,7 @@ void HttpResponseWriter::end() {
   } else {
     // Identity path; emit headers now (they may not have been sent yet due to delayed strategy) then flush buffered.
     if (!_preCompressBuffer.empty()) {
-      if (_chunked) {
+      if (chunked()) {
         emitChunk(_preCompressBuffer);
       } else if (!_head) {
         if (!enqueue(HttpResponseData(std::move(_preCompressBuffer)))) {
@@ -330,18 +296,18 @@ void HttpResponseWriter::end() {
   }
 #ifndef NDEBUG
   // Debug-only protocol correctness check: if a fixed Content-Length was declared, assert body byte count match.
-  if (!_chunked && !_head) {
+  if (!chunked() && !_head) {
     // _declaredLength may be zero either because user explicitly set it or because we synthesized 0 for HEAD;
     // for HEAD we suppress body so skip. For identity path we track bytesWritten; for compression path we cannot
     // validate because encoder output size may differ from raw input; in that case we only asserted the user should
     // not declare a length unless they know the final encoded size. We still assert if compression was never
     // activated (identity or user-supplied encoding) that counts match.
-    if (!_compressionActivated || _compressionFormat == Encoding::none || _userProvidedContentEncoding) {
+    if (!_compressionActivated || _compressionFormat == Encoding::none) {
       assert(_bytesWritten == _declaredLength && "Declared Content-Length does not match bytes written");
     }
   }
 #endif
-  log::debug("Streaming: end fd # {} bytesWritten={} chunked={}", _fd, _bytesWritten, _chunked);
+  log::debug("Streaming: end fd # {} bytesWritten={} chunked={}", _fd, _bytesWritten, chunked());
 }
 
 bool HttpResponseWriter::enqueue(HttpResponseData httpResponseData) {
@@ -366,11 +332,9 @@ void HttpResponseWriter::file(File fileObj, std::uint64_t offset, std::uint64_t 
     log::warn("Streaming: file overriding previously declared Content-Length fd # {}", _fd);
     _declaredLength = 0;
   }
-  _chunked = false;
   _compressionFormat = Encoding::none;
   _compressionActivated = false;
   _preCompressBuffer.clear();
-  _usingSendFile = true;
 
   _fixedResponse.file(std::move(fileObj), offset, length);
   _declaredLength = _fixedResponse.bodyLen();
@@ -401,7 +365,7 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
   auto firstOut = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, _preCompressBuffer, false);
   _preCompressBuffer.clear();
   if (!firstOut.empty()) {
-    if (_chunked) {
+    if (chunked()) {
       emitChunk(firstOut);
     } else {
       return enqueue(HttpResponseData(firstOut));
