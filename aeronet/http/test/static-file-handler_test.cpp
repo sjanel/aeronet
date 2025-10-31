@@ -54,7 +54,7 @@ class StaticFileHandlerTest : public ::testing::Test {
     cs.inBuffer.assign(raw);
   }
 
-  auto setHead() { return req.initTrySetHead(cs, tmpBuffer, 4096UL, true); }
+  auto setHead() { return req.initTrySetHead(cs, tmpBuffer, 4096UL, true, nullptr); }
 };
 
 TEST_F(StaticFileHandlerTest, Basic) {
