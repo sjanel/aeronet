@@ -37,6 +37,13 @@ add_unit_test(
 )
 
 add_unit_test(
+    object-pool_test
+    test/object-pool_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+add_unit_test(
     raw-bytes_test
     test/raw-bytes_test.cpp
     LIBRARIES

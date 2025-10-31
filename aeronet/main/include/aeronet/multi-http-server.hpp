@@ -34,16 +34,6 @@ class MultiHttpServer {
   using RequestHandler = HttpServer::RequestHandler;
   using ParserErrorCallback = HttpServer::ParserErrorCallback;
 
-  struct AggregatedStats {
-    // JSON array of per-instance objects
-    [[nodiscard]] std::string json_str() const;
-
-    // Aggregated view across all underlying servers.
-    ServerStats total{};
-    // Per-instance snapshots
-    vector<ServerStats> per;
-  };
-
   // Construct a MultiHttpServer that does nothing.
   // Useful only to make it default constructible for temporary purposes (for instance to move assign to it later on),
   // but do not attempt to use a default constructed server, it will not bind to any socket.
@@ -148,6 +138,16 @@ class MultiHttpServer {
 
   // nbThreads(): Number of underlying HttpServer instances (and threads) configured.
   [[nodiscard]] uint32_t nbThreads() const { return _servers.capacity(); }
+
+  struct AggregatedStats {
+    // JSON array of per-instance objects
+    [[nodiscard]] std::string json_str() const;
+
+    // Aggregated view across all underlying servers.
+    ServerStats total{};
+    // Per-instance snapshots
+    vector<ServerStats> per;
+  };
 
   // stats():
   //   Collects statistics from each underlying HttpServer and returns both per-instance and

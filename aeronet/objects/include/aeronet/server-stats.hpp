@@ -1,14 +1,20 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+
+#ifdef AERONET_ENABLE_OPENSSL
+#include <utility>
 #include <vector>
+#endif
 
 namespace aeronet {
 
 struct ServerStats {
   // Serialize this stats snapshot to JSON (single object).
   [[nodiscard]] std::string json_str() const;
+
   // Introspection enumeration of scalar numeric fields (order matches serialization prefix order).
   template <class F>
   void for_each_field(F&& fun) const {
