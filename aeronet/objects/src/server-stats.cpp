@@ -2,6 +2,7 @@
 #include "aeronet/server-stats.hpp"
 
 #include <string>
+#include <string_view>
 
 #include "aeronet/features.hpp"
 #include "stringconv.hpp"

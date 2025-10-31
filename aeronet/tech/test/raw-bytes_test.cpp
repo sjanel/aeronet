@@ -264,4 +264,44 @@ TEST(RawBytesCopy, SelfAssignmentNoChange) {
   EXPECT_TRUE(std::equal(buf.begin(), buf.end(), reinterpret_cast<const std::byte *>(payload.data())));
 }
 
+TEST(RawBytesEqual, EqualityOperatorNominal) {
+  std::string payload1 = "EqualTestData";
+  RawBytes buf1(reinterpret_cast<const std::byte *>(payload1.data()),
+                reinterpret_cast<const std::byte *>(payload1.data()) + payload1.size());
+  RawBytes buf2(reinterpret_cast<const std::byte *>(payload1.data()),
+                reinterpret_cast<const std::byte *>(payload1.data()) + payload1.size());
+  EXPECT_EQ(buf1, buf2);
+  EXPECT_EQ(buf2, buf1);
+
+  // Different size
+  RawBytes buf3(reinterpret_cast<const std::byte *>(payload1.data()),
+                reinterpret_cast<const std::byte *>(payload1.data()) + payload1.size() - 2);
+  EXPECT_NE(buf1, buf3);
+  EXPECT_NE(buf3, buf1);
+
+  // Different content
+  std::string payload2 = "EqualTestDataX";
+  RawBytes buf4(reinterpret_cast<const std::byte *>(payload2.data()),
+                reinterpret_cast<const std::byte *>(payload2.data()) + payload2.size());
+  EXPECT_NE(buf1, buf4);
+  EXPECT_NE(buf4, buf1);
+
+  // Different contentSameSize
+  std::string payload3 = "EqualTestDita";
+  RawBytes buf5(reinterpret_cast<const std::byte *>(payload3.data()),
+                reinterpret_cast<const std::byte *>(payload3.data()) + payload3.size());
+  EXPECT_NE(buf1, buf5);
+  EXPECT_NE(buf5, buf1);
+}
+
+TEST(RawBytesEqual, EqualityEmpty) {
+  RawBytes buf1;
+  RawBytes buf2;
+  EXPECT_EQ(buf1, buf2);
+
+  buf1.push_back(static_cast<std::byte>('a'));
+  EXPECT_NE(buf1, buf2);
+  EXPECT_NE(buf2, buf1);
+}
+
 }  // namespace aeronet

@@ -203,6 +203,20 @@ class RawBytesImpl {
 
   operator ViewType() const noexcept { return {_buf, _size}; }
 
+  bool operator==(const RawBytesImpl &rhs) const noexcept {
+    if (size() != rhs.size()) {
+      return false;
+    }
+    const auto *lhsData = data();
+    const auto *rhsData = rhs.data();
+    if (lhsData != nullptr && rhsData != nullptr) {
+      // This is because calling memcmp with nullptr is undefined behavior even if size is zero
+      return std::memcmp(lhsData, rhsData, size()) == 0;
+    }
+    // if we are here, size is same and at least one is nullptr, so both size must be zero
+    return true;
+  }
+
   /**
    * resize_and_overwrite (op MUST NOT THROW – undefined behavior otherwise; mirrors std::basic_string) .
    * Ensures capacity for `n`, invokes op(data, n) and sets size() to the returned value (<= n).

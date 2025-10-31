@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <optional>
 #include <string_view>
@@ -136,6 +137,14 @@ class HttpRequest {
   //   * Trailers count toward the maxHeadersBytes limit (combined with initial headers).
   [[nodiscard]] const auto& trailers() const noexcept { return _trailers; }
 
+  // Returns a map-like view over path parameters extracted during route matching.
+  // Characteristics:
+  //   * Key/value views point into the connection buffer; valid only during the handler call.
+  //   * Values are already percent-decoded.
+  //   * The order of entries is not specified.
+  //   * If the patterns were unnamed, the keys are numeric strings representing the 0-based index of the match.
+  [[nodiscard]] const auto& pathParams() const noexcept { return _pathParams; }
+
   // Selected ALPN protocol (if negotiated); empty if none or not TLS.
   [[nodiscard]] std::string_view alpnProtocol() const noexcept { return _alpnProtocol; }
 
@@ -175,6 +184,7 @@ class HttpRequest {
 
   HeadersViewMap _headers;
   HeadersViewMap _trailers;  // Trailer headers (RFC 7230 §4.1.2) from chunked requests
+  flat_hash_map<std::string_view, std::string_view> _pathParams;
 
   // Raw query component (excluding '?') retained as-is; per-key/value decoding happens on iteration.
   // Lifetime: valid only during handler invocation (points into connection buffer / in-place decode area).

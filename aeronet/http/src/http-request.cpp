@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <iterator>
@@ -182,6 +183,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
 
   _body = {};
   _trailers.clear();
+  _pathParams.clear();
 
   return http::StatusCodeOK;
 }
@@ -189,6 +191,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
 void HttpRequest::shrink_to_fit() {
   _headers.rehash(0);
   _trailers.rehash(0);
+  _pathParams.rehash(0);
 }
 
 }  // namespace aeronet
