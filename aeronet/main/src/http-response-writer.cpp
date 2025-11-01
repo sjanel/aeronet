@@ -319,14 +319,14 @@ bool HttpResponseWriter::enqueue(HttpResponseData httpResponseData) {
   return _server->queueData(cnxIt, std::move(httpResponseData)) && !cnxIt->second.isAnyCloseRequested();
 }
 
-void HttpResponseWriter::file(File fileObj, std::uint64_t offset, std::uint64_t length) {
+bool HttpResponseWriter::file(File fileObj, std::uint64_t offset, std::uint64_t length) {
   if (_state != State::Opened) {
     log::warn("Streaming: file ignored fd # {} reason=writer-not-open", _fd);
-    return;
+    return false;
   }
   if (_bytesWritten > 0) {
     log::warn("Streaming: file ignored fd # {} reason=body-bytes-already-written", _fd);
-    return;
+    return false;
   }
   if (_declaredLength != 0) {
     log::warn("Streaming: file overriding previously declared Content-Length fd # {}", _fd);
@@ -338,6 +338,7 @@ void HttpResponseWriter::file(File fileObj, std::uint64_t offset, std::uint64_t 
 
   _fixedResponse.file(std::move(fileObj), offset, length);
   _declaredLength = _fixedResponse.bodyLen();
+  return true;
 }
 
 bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {

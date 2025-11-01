@@ -126,19 +126,39 @@ class HttpResponse {
   static constexpr std::size_t kReasonBeg = kStatusCodeBeg + 3 + 1;    // index of first reason phrase character
 
  public:
-  explicit HttpResponse(http::StatusCode code = 200, std::string_view reason = {});
+  static constexpr std::size_t kHttpResponseMinInitialCapacity = 128UL;
 
-  // Replaces the status code. Must be a 3 digits integer.
+  // Constructs an HttpResponse with the given status code and optional reason phrase, and a default initial capacity.
+  explicit HttpResponse(http::StatusCode code = http::StatusCodeOK, std::string_view reason = {});
+
+  // Constructs an HttpResponse with an initial capacity for the internal buffer, a status code and an optional reason
+  // phrase. The initial capacity is rounded up to at least kHttpResponseMinInitialCapacity.
+  // The capacity will hold at least the status line and the headers, and possibly the inlined body.
+  HttpResponse(std::size_t initialCapacity, http::StatusCode code, std::string_view reason = {});
+
+  // Replaces the status code. Must be a 3 digits integer (undefined behavior otherwise).
   HttpResponse& statusCode(http::StatusCode statusCode) & noexcept {
-    assert(statusCode >= 100 && statusCode < 1000);
-    write3(_data.data() + kStatusCodeBeg, statusCode);
+    setStatusCode(statusCode);
     return *this;
   }
 
-  // Replaces the status code. Must be a 3 digits integer.
+  // Replaces the status code. Must be a 3 digits integer (undefined behavior otherwise).
   HttpResponse&& statusCode(http::StatusCode statusCode) && noexcept {
-    assert(statusCode >= 100 && statusCode < 1000);
-    write3(_data.data() + kStatusCodeBeg, statusCode);
+    setStatusCode(statusCode);
+    return std::move(*this);
+  }
+
+  // Replaces the status code and the reason phrase. Must be a 3 digits integer (undefined behavior otherwise).
+  HttpResponse& statusCode(http::StatusCode statusCode, std::string_view reason) & noexcept {
+    setStatusCode(statusCode);
+    setReason(reason);
+    return *this;
+  }
+
+  // Replaces the status code and the reason phrase. Must be a 3 digits integer (undefined behavior otherwise).
+  HttpResponse&& statusCode(http::StatusCode statusCode, std::string_view reason) && noexcept {
+    setStatusCode(statusCode);
+    setReason(reason);
     return std::move(*this);
   }
 
@@ -504,6 +524,11 @@ class HttpResponse {
 
   [[nodiscard]] std::size_t internalBodyAndTrailersLen() const noexcept { return _data.size() - _bodyStartPos; }
 
+  void setStatusCode(http::StatusCode statusCode) noexcept {
+    assert(statusCode >= 100 && statusCode < 1000);
+    write3(_data.data() + kStatusCodeBeg, statusCode);
+  }
+
   void setReason(std::string_view newReason);
 
   void setBodyInternal(std::string_view newBody);
@@ -547,14 +572,14 @@ class HttpResponse {
   }
 
   RawChars _data;
-  uint16_t _headersStartPos{};  // position just at the CRLF that starts the first header line
+  uint16_t _headersStartPos{0};  // position just at the CRLF that starts the first header line
   bool _userProvidedContentEncoding{false};
   PayloadKind _payloadKind{PayloadKind::Inline};
-  uint32_t _bodyStartPos{};  // position of first body byte (after CRLF CRLF)
+  uint32_t _bodyStartPos{0};  // position of first body byte (after CRLF CRLF)
   // Variant holding either an external captured payload (HttpPayload) or a FilePayload.
   // monostate represents "no external payload".
   std::variant<std::monostate, HttpPayload, FilePayload> _payloadVariant;
-  std::size_t _trailerPos{};  // trailer pos in relative to body start
+  std::size_t _trailerPos{0};  // trailer pos in relative to body start
 };
 
 }  // namespace aeronet

@@ -9,10 +9,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <exception>
 #include <filesystem>
 #include <limits>
-#include <optional>
+#include <span>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -25,16 +25,330 @@
 #include "aeronet/static-file-config.hpp"
 #include "cctype.hpp"
 #include "file.hpp"
-#include "invalid_argument_exception.hpp"
+#include "log.hpp"
 #include "ndigits.hpp"
 #include "raw-chars.hpp"
 #include "string-equal-ignore-case.hpp"
 #include "stringconv.hpp"
 #include "timedef.hpp"
 #include "timestring.hpp"
+#include "url-encode.hpp"
+#include "vector.hpp"
 
 namespace aeronet {
 namespace {
+
+[[nodiscard]] bool isHiddenName(std::string_view name) { return !name.empty() && name.front() == '.'; }
+
+// Use a constexpr lookup table indexed by unsigned char for a fast, branchless test.
+// This avoids multiple comparisons and gives the compiler a chance to emit a single
+// table-lookup instruction. We use unsigned char to index the array safely.
+constexpr auto kUnreservedTable = []() constexpr {
+  std::array<bool, std::numeric_limits<unsigned char>::max() + 1> table{};
+
+  std::ranges::fill(table.begin() + 'A', table.begin() + 'Z' + 1, true);
+  std::ranges::fill(table.begin() + 'a', table.begin() + 'z' + 1, true);
+  std::ranges::fill(table.begin() + '0', table.begin() + '9' + 1, true);
+
+  table[static_cast<unsigned char>('-')] = true;
+  table[static_cast<unsigned char>('_')] = true;
+  table[static_cast<unsigned char>('.')] = true;
+  table[static_cast<unsigned char>('~')] = true;
+
+  return table;
+}();
+
+void appendHtmlEscaped(std::string_view requestPath, RawChars& out) {
+  for (char ch : requestPath) {
+    switch (ch) {
+      case '&':
+        out.append("&amp;");
+        break;
+      case '<':
+        out.append("&lt;");
+        break;
+      case '>':
+        out.append("&gt;");
+        break;
+      case '"':
+        out.append("&quot;");
+        break;
+      case '\'':
+        out.append("&#39;");
+        break;
+      default:
+        out.push_back(ch);
+        break;
+    }
+  }
+}
+
+// Format a file size into a human-readable string using binary units (powers of 1024).
+// Rules:
+//  - Units used: B, KB, MB, GB, TB (where 1 KB == 1024 bytes, 1 MB == 1024*1024 bytes, ...).
+//  - For values < 1024 bytes the function prints an integer number of bytes, e.g. "512 B".
+//  - For values >= 1024 the value is divided by 1024 repeatedly to find the largest unit
+//    with a value < 1024. For those units we print a decimal number; formatting uses one
+//    decimal place when the numeric value is less than 10 (to preserve a single significant
+//    fractional digit) and no decimals when the value is >= 10. Examples:
+//      0         -> "0 B"
+//      512       -> "512 B"
+//      1536      -> "1.5 KB"   (1536 / 1024 == 1.5)
+//      1048576   -> "1.0 MB"   (1024*1024 -> value is 1.0, one decimal is shown)
+//      12345678  -> "11.8 MB"  (approx; displays one decimal when < 10, otherwise no fractional)
+//  - A single space separates the number and the unit (e.g. "1.5 KB").
+void addFormattedSize(std::uintmax_t size, RawChars& out) {
+  static constexpr std::array<std::string_view, 5> units{"B", "KB", "MB", "GB", "TB"};
+
+  // Find the largest unit where the value is < 1024 (binary units, 1024^n)
+  std::size_t unitIdx = 0;
+  std::uintmax_t divisor = 1;
+  for (; unitIdx + 1U < units.size() && size >= divisor * 1024U; ++unitIdx) {
+    divisor *= 1024U;
+  }
+
+  // small helper: append integer value and the unit (with leading space)
+  const auto appendIntAndUnit = [&out](std::uintmax_t value, std::string_view unit) {
+    const auto buf = IntegralToCharVector(value);
+    out.ensureAvailableCapacity(buf.size() + 1 + unit.size());
+    out.unchecked_append(buf.data(), buf.size());
+    out.unchecked_push_back(' ');
+    out.unchecked_append(unit);
+  };
+
+  // Bytes: print integer bytes
+  if (unitIdx == 0U) {
+    appendIntAndUnit(size, units[unitIdx]);
+    return;
+  }
+
+  // For units >= KB, follow existing formatting rules: if the numeric value is < 10, print one
+  // decimal place (rounded). Otherwise print an integer (rounded).
+  // Check value < 10  <=> size < divisor * 10
+  if (size < divisor * 10U) {
+    const std::uintmax_t intPart = size / divisor;
+    const std::uintmax_t rem = size % divisor;
+    // frac10 = round(rem * 10 / divisor)
+    const std::uintmax_t frac10 = (rem * 10U + divisor / 2U) / divisor;
+    std::uintmax_t finalInt = intPart;
+    std::uintmax_t finalFrac = frac10;
+    if (frac10 >= 10U) {
+      // carry into integer part (e.g. 9.96 -> rounds to 10.0)
+      finalInt = intPart + 1U;
+      finalFrac = 0U;
+    }
+    // If carry produced a value >= 10 we should print integer form (no decimal) per rules
+    if (finalInt >= 10U) {
+      appendIntAndUnit(finalInt, units[unitIdx]);
+      return;
+    }
+    // print one decimal: int.frac unit
+    const auto intBuf = IntegralToCharVector(finalInt);
+    const auto fracBuf = IntegralToCharVector(finalFrac);
+    out.ensureAvailableCapacity(intBuf.size() + 1U + fracBuf.size() + 1U + units[unitIdx].size());
+    out.unchecked_append(intBuf.data(), intBuf.size());
+    out.unchecked_push_back('.');
+    out.unchecked_append(fracBuf.data(), fracBuf.size());
+    out.unchecked_push_back(' ');
+    out.unchecked_append(units[unitIdx]);
+    return;
+  }
+
+  // Print integer with rounding
+  const std::uintmax_t rounded = (size + divisor / 2U) / divisor;
+  appendIntAndUnit(rounded, units[unitIdx]);
+}
+
+void formatLastModified(SysTimePoint tp, RawChars& buf) {
+  if (tp == kInvalidTimePoint) {
+    buf.push_back('-');
+  } else {
+    buf.ensureAvailableCapacity(kRFC7231DateStrLen);
+    TimeToStringRFC7231(tp, buf.data() + buf.size());
+    buf.addSize(kRFC7231DateStrLen);
+  }
+}
+
+void defaultDirectoryListingCss(std::string_view customCss, RawChars& buf) {
+  if (!customCss.empty()) {
+    buf.append(customCss);
+  } else {
+    buf.append(R"CSS(
+body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2rem;}
+table{border-collapse:collapse;width:100%;max-width:960px;}
+th,td{padding:0.3rem 0.6rem;text-align:left;border-bottom:1px solid #e0e0e0;}
+tbody tr:hover{background:#f8f8f8;}
+td.size,td.modified{text-align:right;font-variant-numeric:tabular-nums;}
+h1{font-size:1.4rem;margin-bottom:1rem;}
+#truncated{margin-top:1rem;color:#b24e00;}
+footer{margin-top:2rem;font-size:0.85rem;color:#666;}
+a.dir::after{content:"/";}
+)CSS");
+  }
+}
+
+struct DirectoryListingEntry {
+  std::string name;
+  bool isDirectory{false};
+  bool sizeKnown{false};
+  std::uintmax_t sizeBytes{0};
+  SysTimePoint lastModified{kInvalidTimePoint};
+  std::filesystem::directory_entry entry;
+};
+
+[[nodiscard]] RawChars renderDefaultDirectoryListing(std::string_view requestPath,
+                                                     std::span<const DirectoryListingEntry> entries, bool truncated,
+                                                     std::string_view customCss) {
+  RawChars body(2048U);
+
+  body.unchecked_append("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Index of ");
+  appendHtmlEscaped(requestPath, body);
+  body.append("</title>\n<style>");
+
+  defaultDirectoryListingCss(customCss, body);
+
+  body.append("</style>\n</head>\n<body>\n<h1>Index of ");
+  appendHtmlEscaped(requestPath, body);
+  body.append(
+      "</h1>\n<table>\n<thead><tr><th>Name</th><th class=\"size\">Size</th><th class=\"modified\">Last "
+      "Modified</th></tr></thead>\n<tbody>\n");
+
+  if (!requestPath.empty()) {
+    body.append(
+        "<tr><td class=\"name\"><a href=\"../\" class=\"dir\">..</a></td><td class=\"size\">-</td><td "
+        "class=\"modified\">-</td></tr>\n");
+  }
+
+  for (const auto& entry : entries) {
+    const bool isDir = entry.isDirectory;
+    const auto encodedSz =
+        URLEncodedSize(entry.name, [](char ch) { return kUnreservedTable[static_cast<unsigned char>(ch)]; });
+
+    body.append(R"(<tr><td class="name"><a href=")");
+
+    body.ensureAvailableCapacity(encodedSz);
+    URLEncode(
+        entry.name, [](char ch) { return kUnreservedTable[static_cast<unsigned char>(ch)]; },
+        body.data() + body.size());
+    body.addSize(encodedSz);
+
+    if (isDir) {
+      // ensure href ends with '/'
+      body.push_back('/');
+    }
+    body.push_back('"');
+    if (isDir) {
+      body.append(" class=\"dir\"");
+    }
+    body.push_back('>');
+    appendHtmlEscaped(entry.name, body);
+
+    body.append("</a></td><td class=\"size\">");
+    if (entry.sizeKnown && !isDir) {
+      addFormattedSize(entry.sizeBytes, body);
+    } else {
+      body.push_back('-');
+    }
+    body.append("</td><td class=\"modified\">");
+    formatLastModified(entry.lastModified, body);
+    body.append("</td></tr>\n");
+  }
+
+  body.append("</tbody>\n</table>\n");
+  if (truncated) {
+    body.append("<p id=\"truncated\">Listing truncated after ");
+    body.append(std::string_view(IntegralToCharVector(entries.size())));
+    body.append(" entries.</p>\n");
+  }
+  body.append("<footer>Served by aeronet</footer>\n</body>\n</html>\n");
+  return body;
+}
+
+struct DirectoryListingResult {
+  vector<DirectoryListingEntry> entries;
+  bool truncated{false};
+  bool isValid{false};
+};
+
+[[nodiscard]] DirectoryListingResult collectDirectoryListing(const std::filesystem::path& directory,
+                                                             const StaticFileConfig& config) {
+  DirectoryListingResult result;
+  const std::size_t limit =
+      config.maxEntriesToList == 0U ? std::numeric_limits<std::size_t>::max() : config.maxEntriesToList;
+
+  std::error_code ec;
+  std::filesystem::directory_iterator iter(directory, ec);
+  if (ec) {
+    log::error("Failed to open directory for listing '{}': {}", directory.c_str(), ec.message());
+    return result;
+  }
+
+  const std::filesystem::directory_iterator end;
+
+  while (!ec && iter != end) {
+    const std::filesystem::directory_entry current = *iter;
+    iter.increment(ec);
+    if (ec) {
+      log::warn("Failed to advance directory iterator for '{}': {}", directory.c_str(), ec.message());
+    }
+    const bool hasMore = !ec && iter != end;
+
+    std::string name = current.path().filename().string();
+    if (!config.showHiddenFiles && isHiddenName(name)) {
+      continue;
+    }
+
+    DirectoryListingEntry& info = result.entries.emplace_back();
+    info.name = std::move(name);
+    info.entry = current;
+
+    std::error_code stepEc;
+    const auto entryStatus = current.symlink_status(stepEc);
+    if (stepEc) {
+      log::error("Failed to get status for directory entry '{}': {}", current.path().c_str(), stepEc.message());
+    } else {
+      if (std::filesystem::is_directory(entryStatus)) {
+        info.isDirectory = true;
+      } else {
+        const auto fileSize = current.file_size(stepEc);
+        if (stepEc) {
+          log::error("Failed to get size for directory entry '{}': {}", current.path().c_str(), stepEc.message());
+        } else {
+          info.sizeKnown = true;
+          info.sizeBytes = fileSize;
+        }
+      }
+    }
+
+    const auto writeTime = current.last_write_time(stepEc);
+    if (stepEc) {
+      log::error("Failed to get last write time for directory entry '{}': {}", current.path().c_str(),
+                 stepEc.message());
+    } else {
+      info.lastModified = std::chrono::clock_cast<SysClock>(writeTime);
+    }
+
+    if (limit != std::numeric_limits<std::size_t>::max() && result.entries.size() >= limit) {
+      result.truncated = hasMore;
+      break;
+    }
+  }
+
+  if (ec) {
+    return result;
+  }
+
+  result.isValid = true;
+
+  std::ranges::sort(result.entries, [](const DirectoryListingEntry& lhs, const DirectoryListingEntry& rhs) {
+    // Directories first
+    if (lhs.isDirectory != rhs.isDirectory) {
+      return lhs.isDirectory && !rhs.isDirectory;
+    }
+    return lhs.name < rhs.name;
+  });
+  return result;
+}
 
 [[nodiscard]] std::string_view trim(std::string_view value) {
   auto beg = value.begin();
@@ -160,7 +474,7 @@ inline constexpr std::uint64_t kInvalidUint64 = std::numeric_limits<std::uint64_
     result.state = RangeSelection::State::Invalid;
     return result;
   }
-  if (raw.find(',') != std::string_view::npos) {
+  if (raw.contains(',')) {
     result.state = RangeSelection::State::Invalid;
     return result;
   }
@@ -262,17 +576,17 @@ struct ConditionalOutcome {
   enum class Kind : std::uint8_t { None, NotModified, PreconditionFailed };
 
   Kind kind{Kind::None};
-  http::StatusCode status{http::StatusCodeOK};
   bool rangeAllowed{true};
+  http::StatusCode status{http::StatusCodeOK};
 };
 
 [[nodiscard]] ConditionalOutcome evaluateConditionals(const HttpRequest& request, bool isGetOrHead,
                                                       std::string_view etag, SysTimePoint lastModified) {
-  if (etag.empty() && lastModified == kInvalidTimePoint) {
-    return {};
-  }
-
   ConditionalOutcome outcome;
+
+  if (etag.empty() && lastModified == kInvalidTimePoint) {
+    return outcome;
+  }
 
   if (auto ifMatch = request.headerValue(http::IfMatch); ifMatch.has_value()) {
     if (etag.empty() || !etagListMatches(*ifMatch, etag)) {
@@ -304,7 +618,6 @@ struct ConditionalOutcome {
       outcome.rangeAllowed = false;
       outcome.kind = isGetOrHead ? ConditionalOutcome::Kind::NotModified : ConditionalOutcome::Kind::PreconditionFailed;
       outcome.status = isGetOrHead ? http::StatusCodeNotModified : http::StatusCodePreconditionFailed;
-      return outcome;
     }
     return outcome;
   }
@@ -422,7 +735,7 @@ StaticFileHandler::StaticFileHandler(std::filesystem::path rootDirectory, Static
     _root = std::filesystem::absolute(_root);
   }
   if (!std::filesystem::exists(_root) || !std::filesystem::is_directory(_root)) {
-    throw invalid_argument("StaticFileHandler root must be an existing directory");
+    throw std::invalid_argument("StaticFileHandler root must be an existing directory");
   }
 }
 
@@ -431,7 +744,7 @@ bool StaticFileHandler::resolveTarget(const HttpRequest& request, std::filesyste
   if (rawPath.empty()) {
     rawPath = "/";
   }
-  bool requestedTrailingSlash = rawPath.ends_with('/');
+  const bool requestedTrailingSlash = rawPath.ends_with('/');
   if (rawPath.front() == '/') {
     rawPath.remove_prefix(1);
   }
@@ -457,22 +770,25 @@ bool StaticFileHandler::resolveTarget(const HttpRequest& request, std::filesyste
   if (ec) {
     return false;
   }
-  const bool isDirectory = std::filesystem::is_directory(status);
-  if (isDirectory || requestedTrailingSlash) {
-    if (_config.defaultIndex.empty()) {
-      return false;
+  if (std::filesystem::is_directory(status)) {
+    if (!_config.defaultIndex().empty()) {
+      std::filesystem::path indexPath = resolvedPath / _config.defaultIndex();
+      std::error_code indexEc;
+      const auto indexStatus = std::filesystem::symlink_status(indexPath, indexEc);
+      if (!indexEc && std::filesystem::is_regular_file(indexStatus)) {
+        resolvedPath = std::move(indexPath);
+        return true;
+      }
     }
-    resolvedPath /= _config.defaultIndex;
-    return true;
+    return _config.enableDirectoryIndex;
   }
-  return true;
+
+  return !requestedTrailingSlash;
 }
 
-HttpResponse StaticFileHandler::makeError(http::StatusCode code, std::string_view reason) {
-  HttpResponse resp(code);
-  if (!reason.empty()) {
-    resp.reason(reason);
-  }
+namespace {
+HttpResponse MakeError(http::StatusCode code, std::string_view reason) {
+  HttpResponse resp(code, reason);
   resp.contentType(http::ContentTypeTextPlain);
 
   RawChars body(reason.size() + 1UL);
@@ -482,10 +798,12 @@ HttpResponse StaticFileHandler::makeError(http::StatusCode code, std::string_vie
   resp.body(std::move(body));
   return resp;
 }
+}  // namespace
 
 HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   const bool isGet = request.method() == http::Method::GET;
   const bool isHead = request.method() == http::Method::HEAD;
+
   if (!isGet && !isHead) {
     HttpResponse resp(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
     resp.addCustomHeader(http::Allow, "GET, HEAD");
@@ -494,20 +812,71 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     return resp;
   }
 
+  std::string_view requestPath = request.path();
+  if (requestPath.empty()) {
+    requestPath = "/";
+  }
+
+  const bool requestedTrailingSlash = requestPath.ends_with('/');
+
   std::filesystem::path targetPath;
   if (!resolveTarget(request, targetPath)) {
-    return makeError(http::StatusCodeNotFound, http::NotFound);
+    return MakeError(http::StatusCodeNotFound, http::NotFound);
   }
 
   std::error_code ec;
   const auto status = std::filesystem::symlink_status(targetPath, ec);
-  if (ec || !std::filesystem::exists(status) || !std::filesystem::is_regular_file(status)) {
-    return makeError(http::StatusCodeNotFound, http::NotFound);
+  if (ec) {
+    return MakeError(http::StatusCodeNotFound, http::NotFound);
+  }
+
+  if (std::filesystem::is_directory(status)) {
+    if (!_config.enableDirectoryIndex) {
+      return MakeError(http::StatusCodeNotFound, http::NotFound);
+    }
+
+    if (!requestedTrailingSlash) {
+      std::string location(requestPath);
+      if (!location.empty() && !location.ends_with('/')) {
+        location.push_back('/');
+      }
+      HttpResponse resp(http::StatusCodeMovedPermanently, http::MovedPermanently);
+      resp.location(location);
+      resp.contentType(http::ContentTypeTextPlain);
+      resp.addCustomHeader("Cache-Control", "no-cache");
+      resp.body("Moved Permanently\n");
+      return resp;
+    }
+
+    auto listing = collectDirectoryListing(targetPath, _config);
+    if (!listing.isValid) {
+      return MakeError(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
+    }
+
+    HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
+    resp.contentType("text/html; charset=utf-8");
+    resp.addCustomHeader("Cache-Control", "no-cache");
+    resp.addCustomHeader("X-Directory-Listing-Truncated", listing.truncated ? "1" : "0");
+
+    if (_config.directoryIndexRenderer) {
+      vector<std::filesystem::directory_entry> rawEntries(listing.entries.size());
+      std::ranges::transform(listing.entries, rawEntries.begin(),
+                             [](const DirectoryListingEntry& entry) { return entry.entry; });
+      resp.body(_config.directoryIndexRenderer(targetPath, rawEntries));
+    } else {
+      resp.body(renderDefaultDirectoryListing(requestPath, listing.entries, listing.truncated,
+                                              _config.directoryListingCss()));
+    }
+    return resp;
+  }
+
+  if (!std::filesystem::exists(status) || !std::filesystem::is_regular_file(status)) {
+    return MakeError(http::StatusCodeNotFound, http::NotFound);
   }
 
   const auto fileSize = std::filesystem::file_size(targetPath, ec);
   if (ec) {
-    return makeError(http::StatusCodeNotFound, http::NotFound);
+    return MakeError(http::StatusCodeNotFound, http::NotFound);
   }
 
   SysTimePoint lastModified = kInvalidTimePoint;
@@ -518,11 +887,9 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     }
   }
 
-  File file;
-  try {
-    file = File(targetPath.string(), File::OpenMode::ReadOnly);
-  } catch (const std::exception&) {
-    return makeError(http::StatusCodeNotFound, http::NotFound);
+  File file(targetPath.string(), File::OpenMode::ReadOnly);
+  if (!file) {
+    return MakeError(http::StatusCodeNotFound, http::NotFound);
   }
 
   EtagBuf etag;
@@ -609,14 +976,14 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     if (auto resolved = _config.contentTypeResolver(targetPath.generic_string()); !resolved.empty()) {
       resp.contentType(std::move(resolved));
     } else {
-      resp.contentType(_config.defaultContentType);
+      resp.contentType(_config.defaultContentType());
     }
   } else {
-    resp.contentType(_config.defaultContentType);
+    resp.contentType(_config.defaultContentType());
   }
 
   if (rangeSelection.state == RangeSelection::State::Valid) {
-    resp.statusCode(http::StatusCodePartialContent).reason("Partial Content");
+    resp.statusCode(http::StatusCodePartialContent, "Partial Content");
     const auto rangeHeader = buildRangeHeader(rangeSelection.offset, rangeSelection.length, fileSize);
     resp.addCustomHeader(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
     resp.file(std::move(file), static_cast<std::size_t>(rangeSelection.offset),

@@ -1320,6 +1320,10 @@ semantics. The handler is designed to plug into the existing routing API: it is 
 - **Zero-copy transfers**: regular GET requests use `HttpResponse::file()` so plaintext sockets reuse the kernel
   `sendfile(2)` path. TLS endpoints automatically fall back to the buffered write path that aeronet already uses for
   file responses.
+- **Directory listings**: when `StaticFileConfig::enableDirectoryIndex` is true and no default index file is present,
+  aeronet emits an HTML index with optional trailing-slash redirect, hidden-file filtering (`showHiddenFiles`),
+  configurable CSS (`withDirectoryListingCss`) and a pluggable renderer (`directoryIndexRenderer`). Large directories
+  obey `maxEntriesToList` and advertise truncation via `X-Directory-Listing-Truncated: 1`.
 - **Single-range support**: `Range: bytes=N-M` (RFC 7233 §2.1) is parsed with strict validation. Valid ranges return
   `206 Partial Content` with `Content-Range`. Invalid syntax returns `416` with `Content-Range: bytes */<size>` per the
   spec. Multi-range requests (comma-separated) are rejected as invalid.
@@ -1347,6 +1351,7 @@ int main() {
   StaticFileConfig staticFileConfig;
   staticFileConfig.enableRange = true;
   staticFileConfig.addEtag = true;
+  staticFileConfig.enableDirectoryIndex = true;  // fallback to HTML listings when index.html is absent
   staticFileConfig.defaultIndex = "index.html";
 
   HttpServer server(cfg);

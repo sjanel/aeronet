@@ -4,12 +4,8 @@ This file lists planned features and near-term priorities. Implemented features 
 
 ## High priority
 
-- KTLS integration (kernel TLS)
-  - Optional kernel TLS support to enable encrypted zero-copy sendfile on platforms that support it.
-  - Runtime detection + OpenSSL integration, graceful fallback to existing TLS write path when unavailable.
-- Static-file directory index
-  - Directory listing rendering layered on top of the shipped static file helper.
-  - Optional template hook for custom branding / security banners.
+- KTLS integration (kernel TLS): optional kernel TLS support to enable encrypted zero-copy sendfile on capable
+  platforms, with runtime detection and a graceful fallback to the existing TLS write path when unavailable.
 
 ## Medium priority
 
