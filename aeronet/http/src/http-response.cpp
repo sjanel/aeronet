@@ -21,7 +21,6 @@
 #include "aeronet/http-version.hpp"
 #include "file.hpp"
 #include "header-write.hpp"
-#include "invalid_argument_exception.hpp"
 #include "log.hpp"
 #include "string-equal-ignore-case.hpp"
 #include "stringconv.hpp"
@@ -160,15 +159,15 @@ void HttpResponse::setBodyInternal(std::string_view newBody) {
 
 HttpResponse& HttpResponse::file(File fileObj, std::size_t offset, std::size_t length) & {
   if (!fileObj) {
-    throw invalid_argument("file requires an opened file");
+    throw std::invalid_argument("file requires an opened file");
   }
   const std::size_t fileSize = fileObj.size();
   if (offset > fileSize) {
-    throw invalid_argument("file offset exceeds file size");
+    throw std::invalid_argument("file offset exceeds file size");
   }
   const std::size_t resolvedLength = length == 0 ? (fileSize - offset) : length;
   if (offset + resolvedLength > fileSize) {
-    throw invalid_argument("file length exceeds file size");
+    throw std::invalid_argument("file length exceeds file size");
   }
   if (_trailerPos != 0) {
     throw std::logic_error("Cannot call file after adding trailers");

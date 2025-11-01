@@ -1,10 +1,11 @@
 #include "aeronet/tls-config.hpp"
 
 #include <algorithm>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
-#include "invalid_argument_exception.hpp"
+#include "log.hpp"
 
 namespace aeronet {
 
@@ -18,44 +19,44 @@ void TLSConfig::validate() const {
   const bool hasKey = !keyFile().empty() || !keyPem().empty();
 
   if (!hasCert && !hasKey) {
-    throw invalid_argument("TLS configured but no certificate/key provided");
+    throw std::invalid_argument("TLS configured but no certificate/key provided");
   }
   if (hasCert && !hasKey) {
-    throw invalid_argument("TLS configured: certificate present but private key missing");
+    throw std::invalid_argument("TLS configured: certificate present but private key missing");
   }
   if (hasKey && !hasCert) {
-    throw invalid_argument("TLS configured: private key present but certificate missing");
+    throw std::invalid_argument("TLS configured: private key present but certificate missing");
   }
 
   if (requireClientCert && trustedClientCertsPem.empty()) {
     // Policy: require at least one trusted client cert when enforcing mTLS
-    throw invalid_argument("requireClientCert=true but no trustedClientCertsPem configured");
+    throw std::invalid_argument("requireClientCert=true but no trustedClientCertsPem configured");
   }
 
   // Validate min/max version allowed tokens (if set)
   if (minVersion != Version{}) {
     if (minVersion != TLS_1_2 && minVersion != TLS_1_3) {
-      throw invalid_argument("Unsupported tls minVersion '{}', allowed: TLS1.2, TLS1.3",
-                             std::string_view(minVersion.str()));
+      log::critical("Unsupported tls minVersion '{}', allowed: TLS1.2, TLS1.3", std::string_view(minVersion.str()));
+      throw std::invalid_argument("Unsupported tls minVersion");
     }
   }
   if (maxVersion != Version{}) {
     if (maxVersion != TLS_1_2 && maxVersion != TLS_1_3) {
-      throw invalid_argument("Unsupported tls maxVersion '{}', allowed: TLS1.2, TLS1.3",
-                             std::string_view(maxVersion.str()));
+      log::critical("Unsupported tls maxVersion '{}', allowed: TLS1.2, TLS1.3", std::string_view(maxVersion.str()));
+      throw std::invalid_argument("Unsupported tls maxVersion");
     }
   }
 
   if (alpnMustMatch && alpnProtocols.empty()) {
-    throw invalid_argument("alpnMustMatch is true but alpnProtocols is empty");
+    throw std::invalid_argument("alpnMustMatch is true but alpnProtocols is empty");
   }
 
   if (std::ranges::any_of(alpnProtocols, [](std::string_view proto) { return proto.empty(); })) {
-    throw invalid_argument("ALPN protocol entries must be non-empty");
+    throw std::invalid_argument("ALPN protocol entries must be non-empty");
   }
   if (std::ranges::any_of(alpnProtocols,
                           [](std::string_view proto) { return std::cmp_less(kMaxAlpnProtocolLength, proto.size()); })) {
-    throw invalid_argument("ALPN protocol entry exceeds maximum length {}", kMaxAlpnProtocolLength);
+    throw std::invalid_argument("ALPN protocol entry exceeds maximum length");
   }
 }
 

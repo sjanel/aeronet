@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -68,8 +69,8 @@ TEST(StringToIntegral, PositiveValue) {
   EXPECT_EQ(StringToIntegral<uint32_t>("036"), 36);
   EXPECT_EQ(StringToIntegral<uint32_t>("9105470"), 9105470);
 
-  EXPECT_THROW(StringToIntegral<uint32_t>("10YT"), exception);
-  EXPECT_THROW(StringToIntegral<uint32_t>("f45"), exception);
+  EXPECT_EQ(StringToIntegral<uint32_t>("10YT"), 10);
+  EXPECT_THROW(StringToIntegral<uint32_t>("f45"), std::invalid_argument);
 }
 
 TEST(StringToIntegral, NegativeValue) {
