@@ -1,11 +1,11 @@
 #include "zstd-encoder.hpp"
 
 #include <cstddef>
+#include <format>
 #include <stdexcept>
 #include <string_view>
 
 #include "aeronet/compression-config.hpp"
-#include "exception.hpp"
 #include "raw-chars.hpp"
 
 namespace aeronet {
@@ -13,7 +13,7 @@ namespace aeronet {
 namespace details {
 ZstdCStreamRAII::ZstdCStreamRAII(int level, int windowLog) : ctx(ZSTD_createCCtx()), level(level) {
   if (ctx == nullptr) {
-    throw exception("ZSTD_createCCtx failed");
+    throw std::runtime_error("ZSTD_createCCtx failed");
   }
   if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx, ZSTD_c_compressionLevel, level)) != 0U) {
     throw std::invalid_argument("ZSTD set level failed");
@@ -31,17 +31,17 @@ ZstdEncoderContext::ZstdEncoderContext(RawChars& sharedBuf, const CompressionCon
     : _buf(sharedBuf), _zs(cfg.compressionLevel, cfg.windowLog) {}
 
 std::string_view ZstdEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk, bool finish) {
-  if (_finished) {
-    return {};
-  }
   _buf.clear();
+  if (_finished) {
+    return _buf;
+  }
   ZSTD_outBuffer outBuf{_buf.data(), _buf.capacity(), 0};
   ZSTD_inBuffer inBuf{chunk.data(), chunk.size(), 0};
   auto mode = finish ? ZSTD_e_end : ZSTD_e_continue;
   while (inBuf.pos < inBuf.size || (finish && mode == ZSTD_e_end)) {
     size_t ret = ZSTD_compressStream2(_zs.ctx, &outBuf, &inBuf, mode);
     if (ZSTD_isError(ret) != 0U) {
-      throw exception("ZSTD_compressStream2 error: {}", ZSTD_getErrorName(ret));
+      throw std::runtime_error(std::format("ZSTD_compressStream2 error: {}", ZSTD_getErrorName(ret)));
     }
     _buf.setSize(outBuf.pos);
     if (outBuf.pos == outBuf.size && (inBuf.pos < inBuf.size || (finish && ret != 0))) {
@@ -72,7 +72,7 @@ std::string_view ZstdEncoder::compressAll(std::size_t encoderChunkSize, std::str
   while (inBuf.pos < inBuf.size) {
     size_t ret = ZSTD_compressStream2(oneShot.ctx, &outBuf, &inBuf, ZSTD_e_continue);
     if (ZSTD_isError(ret) != 0U) {
-      throw exception("zstd compressStream2 error: {}", ZSTD_getErrorName(ret));
+      throw std::runtime_error(std::format("zstd compressStream2 error: {}", ZSTD_getErrorName(ret)));
     }
     if (outBuf.pos == outBuf.size) {
       _buf.ensureAvailableCapacity(encoderChunkSize);
@@ -84,7 +84,7 @@ std::string_view ZstdEncoder::compressAll(std::size_t encoderChunkSize, std::str
   for (;;) {
     size_t ret = ZSTD_compressStream2(oneShot.ctx, &outBuf, &inBuf, ZSTD_e_end);
     if (ZSTD_isError(ret) != 0U) {
-      throw exception("zstd finalize error: {}", ZSTD_getErrorName(ret));
+      throw std::runtime_error(std::format("zstd finalize error: {}", ZSTD_getErrorName(ret)));
     }
     if (ret == 0) {
       break;

@@ -50,6 +50,12 @@ class EventLoop {
 
   ~EventLoop();
 
+  // Register fd with given events.
+  // On error, throws std::system_error.
+  void add_or_throw(int fd, uint32_t events) const;
+
+  // Register fd with given events.
+  // Returns true on success, false on failure (logged).
   [[nodiscard]] bool add(int fd, uint32_t events) const;
 
   [[nodiscard]] bool mod(int fd, uint32_t events) const;

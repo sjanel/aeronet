@@ -6,11 +6,13 @@
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/static-file-config.hpp"
 #include "aeronet/temp-file.hpp"
 #include "connection-state.hpp"
 #include "file.hpp"

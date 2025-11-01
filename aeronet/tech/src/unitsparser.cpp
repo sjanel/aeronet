@@ -9,7 +9,6 @@
 #include <system_error>
 #include <utility>
 
-#include "exception.hpp"
 #include "raw-chars.hpp"
 #include "stringconv.hpp"
 
@@ -87,7 +86,7 @@ std::span<char> BytesToBuffer(int64_t numberOfBytes, std::span<char> buf, int nb
 
       auto [ptr, errc] = std::to_chars(begBuf, endBuf, nbUnits);
       if (errc != std::errc()) {
-        throw exception("Unable to decode integral into string");
+        throw std::runtime_error("Unable to decode integral into string");
       }
 
       if (ptr + kBytesUnits[unitPos].second.size() > endBuf) {
