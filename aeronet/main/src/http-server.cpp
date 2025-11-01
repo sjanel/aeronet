@@ -376,8 +376,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       HttpResponse resp;
       if (routingResult.redirectPathIndicator != Router::RoutingResult::RedirectSlashMode::None) {
         // Emit 301 redirect to canonical form.
-        resp.statusCode(http::StatusCodeMovedPermanently)
-            .reason(http::MovedPermanently)
+        resp.statusCode(http::StatusCodeMovedPermanently, http::MovedPermanently)
             .contentType(http::ContentTypeTextPlain)
             .body("Redirecting");
         if (routingResult.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
@@ -390,13 +389,11 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
 
         consumedBytes = 0;  // already advanced
       } else if (routingResult.methodNotAllowed) {
-        resp.statusCode(http::StatusCodeMethodNotAllowed)
-            .reason(http::ReasonMethodNotAllowed)
+        resp.statusCode(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed)
             .contentType(http::ContentTypeTextPlain)
             .body(resp.reason());
       } else {
-        resp.statusCode(http::StatusCodeNotFound)
-            .reason(http::NotFound)
+        resp.statusCode(http::StatusCodeNotFound, http::NotFound)
             .contentType(http::ContentTypeTextPlain)
             .body(http::NotFound);
       }
@@ -529,7 +526,7 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
     auto negotiated = _encodingSelector.negotiateAcceptEncoding(encHeader);
     if (negotiated.reject) {
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
-      HttpResponse resp(406, http::ReasonNotAcceptable);
+      HttpResponse resp(http::StatusCodeNotAcceptable, http::ReasonNotAcceptable);
       resp.contentType(http::ContentTypeTextPlain).body("No acceptable content-coding available");
       finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
       return state.isAnyCloseRequested();

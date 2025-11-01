@@ -14,7 +14,6 @@
 #include <string_view>
 #include <utility>
 
-#include "exception.hpp"
 #include "log.hpp"
 
 namespace aeronet {
@@ -30,9 +29,10 @@ int Flags(File::OpenMode mode) {
   }
 }
 
-void CheckFd(std::string_view path, int fd) {
+void CheckFd(std::string_view path, int& fd) {
   if (fd < 0) {
-    throw exception("Unable to open file '{}' (errno {}: {})", path, errno, std::strerror(errno));
+    log::error("Unable to open file '{}' (errno {}: {})", path, errno, std::strerror(errno));
+    fd = -1;
   }
 }
 
@@ -120,7 +120,8 @@ std::string File::loadAllContent() const {
     if (errno == EINTR) {
       continue;
     }
-    throw exception("Unable to read file (fd {}): errno {}: {}", _fd.fd(), errno, std::strerror(errno));
+    log::error("Unable to read file (fd {}): errno {}: {}", _fd.fd(), errno, std::strerror(errno));
+    throw std::runtime_error("File::loadAllContent read error");
   }
 
   return content;

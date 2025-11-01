@@ -84,7 +84,9 @@ class HttpResponseWriter {
 
   // Stream the given file as the response body; zero-copy where transport allows.
   // Call before headers are sent and finish with end().
-  void file(File fileObj, std::uint64_t offset = 0, std::uint64_t length = 0);
+  // Returns true on success, false if the writer is not in a state to accept a file
+  // (already sent body data, not opened, etc).
+  bool file(File fileObj, std::uint64_t offset = 0, std::uint64_t length = 0);
 
   // Adds a trailer header to be sent after the response body (RFC 7230 §4.1.2).
   //

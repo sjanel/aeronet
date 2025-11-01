@@ -115,6 +115,9 @@ inline constexpr std::string_view ReasonHTTPVersionNotSupported = "HTTP Version 
 
 // Content type
 inline constexpr std::string_view ContentTypeTextPlain = "text/plain";
+inline constexpr std::string_view ContentTypeTextHtml = "text/html";
+inline constexpr std::string_view ContentTypeApplicationJson = "application/json";
+inline constexpr std::string_view ContentTypeApplicationOctetStream = "application/octet-stream";
 
 // Return the canonical reason phrase for a subset of status codes we care about.
 // If an unmapped status is provided, returns an empty string_view, letting callers

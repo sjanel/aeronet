@@ -422,8 +422,7 @@ TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
     auto port = ts.port();
     ts.setDefault([](const aeronet::HttpRequest&) {
       return aeronet::HttpResponse()
-          .statusCode(200)
-          .reason("OK")
+          .statusCode(http::StatusCodeOK, "OK")
           .contentType(aeronet::http::ContentTypeTextPlain)
           .body("C");
     });
