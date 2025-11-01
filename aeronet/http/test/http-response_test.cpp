@@ -56,7 +56,7 @@ class HttpResponseTest : public ::testing::Test {
 };
 
 TEST_F(HttpResponseTest, StatusOnly) {
-  HttpResponse resp(200);
+  HttpResponse resp(http::StatusCodeOK);
   EXPECT_EQ(200, resp.statusCode());
   resp.statusCode(404);
   EXPECT_EQ(404, resp.statusCode());

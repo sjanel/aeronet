@@ -31,15 +31,24 @@
 
 namespace aeronet {
 
+namespace {
+constexpr std::size_t HttpResponseInitialSize(std::string_view reason = {}) {
+  return http::HTTP10Sv.size() + 1U + 3U + (reason.empty() ? 0UL : reason.size() + 1UL) + http::DoubleCRLF.size();
+}
+}  // namespace
+
 HttpResponse::HttpResponse(http::StatusCode code, std::string_view reason)
-    : _data(kHttp1VersionLen + 1U + 3U + (reason.empty() ? 0UL : reason.size() + 1UL) + http::DoubleCRLF.size()),
-      _bodyStartPos(static_cast<uint32_t>(_data.capacity())) {
-  statusCode(code);
+    : HttpResponse(kHttpResponseMinInitialCapacity, code, reason) {}
+
+HttpResponse::HttpResponse(std::size_t initialCapacity, http::StatusCode code, std::string_view reason)
+    : _data(std::max({HttpResponseInitialSize(reason), initialCapacity, kHttpResponseMinInitialCapacity})),
+      _bodyStartPos(static_cast<uint32_t>(HttpResponseInitialSize(reason))) {
+  setStatusCode(code);
   if (!reason.empty()) {
     std::memcpy(_data.data() + kReasonBeg, reason.data(), reason.size());
   }
-  _data.setSize(_data.capacity());
-  std::memcpy(_data.data() + _data.size() - http::DoubleCRLF.size(), http::DoubleCRLF.data(), http::DoubleCRLF.size());
+  std::memcpy(_data.data() + _bodyStartPos - http::DoubleCRLF.size(), http::DoubleCRLF.data(), http::DoubleCRLF.size());
+  _data.setSize(_bodyStartPos);
 }
 
 void HttpResponse::setReason(std::string_view newReason) {

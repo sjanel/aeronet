@@ -32,7 +32,9 @@ int main(int argc, char** argv) {
     aeronet::HttpServer server(std::move(cfg));
 
     // Serve files rooted at `root` using the StaticFileHandler
-    server.router().setDefault(aeronet::StaticFileHandler(root));
+    aeronet::StaticFileConfig staticCfg;
+    staticCfg.enableDirectoryIndex = true;  // render HTML listings when index.html is missing
+    server.router().setDefault(aeronet::StaticFileHandler(root, std::move(staticCfg)));
 
     std::signal(SIGINT, handleSigint);
     std::cout << "Starting static file example on port: " << server.port() << " serving root: " << root << '\n';

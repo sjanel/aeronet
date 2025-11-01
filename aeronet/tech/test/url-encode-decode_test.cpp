@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <span>
 #include <string>
 #include <string_view>
 
@@ -18,15 +17,39 @@ struct IsUnreserved {
   }
 };
 
+namespace {
+std::string encodeString(std::string_view input, const IsUnreserved &isUnreserved) {
+  const std::size_t size = URLEncodedSize(input, isUnreserved);
+  std::string out;
+  out.resize(size);
+  char *end = URLEncode(input, isUnreserved, out.data());
+  // end should point just past the last written char
+  EXPECT_EQ(end, out.data() + static_cast<std::ptrdiff_t>(size));
+  return out;
+}
+
+// Overload accepting a generic predicate functor
+template <class Pred>
+std::string encodeString(std::string_view input, Pred pred) {
+  const std::size_t size = URLEncodedSize(input, pred);
+  std::string out;
+  out.resize(size);
+  char *end = URLEncode(input, pred, out.data());
+  EXPECT_EQ(end, out.data() + static_cast<std::ptrdiff_t>(size));
+  return out;
+}
+
+}  // namespace
+
 TEST(UrlEncodeDecode, EncodeBasic) {
   std::string input = "ABC xyz";  // space must be encoded
-  auto encoded = URLEncode(std::span<const char>(input.data(), input.size()), IsUnreserved{});
+  auto encoded = encodeString(input, IsUnreserved{});
   EXPECT_EQ(encoded, "ABC%20xyz");
 }
 
 TEST(UrlEncodeDecode, EncodeReserved) {
   std::string input = "!*'();:@&=+$,/?#[]";  // From RFC 3986 reserved set + others to ensure encoding
-  auto encoded = URLEncode(std::span<const char>(input.data(), input.size()), IsUnreserved{});
+  auto encoded = encodeString(input, IsUnreserved{});
   // All should be percent encoded
   // We'll just verify no raw reserved characters remain except percent
   for (char ch : input) {
@@ -38,7 +61,7 @@ TEST(UrlEncodeDecode, EncodeReserved) {
 
 TEST(UrlEncodeDecode, RoundTripSimple) {
   std::string original = "Hello-World_~";  // all unreserved
-  auto encoded = URLEncode(std::span<const char>(original.data(), original.size()), IsUnreserved{});
+  auto encoded = encodeString(original, IsUnreserved{});
   EXPECT_EQ(encoded, original);  // no change
   RawChars copy(encoded);
   char *last = url::DecodeInPlace(copy.begin(), copy.end());
@@ -48,7 +71,7 @@ TEST(UrlEncodeDecode, RoundTripSimple) {
 
 TEST(UrlEncodeDecode, RoundTripWithSpaces) {
   std::string original = "Hello World";  // space encoded as %20
-  auto encoded = URLEncode(std::span<const char>(original.data(), original.size()), IsUnreserved{});
+  auto encoded = encodeString(original, IsUnreserved{});
   EXPECT_EQ(encoded, "Hello%20World");
   RawChars copy(encoded);
   char *last = url::DecodeInPlace(copy.begin(), copy.end());
@@ -96,7 +119,7 @@ TEST(UrlEncodeDecode, InvalidPercentNonHex) {
 TEST(UrlEncodeDecode, UTF8RoundTrip) {
   // UTF-8 snowman + text
   std::string original = "\xE2\x98\x83 snow";  // ☃ snow
-  auto encoded = URLEncode(std::span<const char>(original.data(), original.size()), IsUnreserved{});
+  auto encoded = encodeString(original, IsUnreserved{});
   RawChars copy2(encoded);
   char *last = url::DecodeInPlace(copy2.begin(), copy2.end());
   EXPECT_NE(last, nullptr);
@@ -144,7 +167,7 @@ TEST(UrlEncodeDecode, InPlaceUTF8) {
              ch == '_' || ch == '.' || ch == '~';
     }
   };
-  auto encoded = URLEncode(std::span<const char>(original.data(), original.size()), IsUnreservedLocal{});
+  auto encoded = encodeString(std::string_view(original.data(), original.size()), IsUnreservedLocal{});
   RawChars copy(encoded);
   char *last = url::DecodeInPlace(copy.begin(), copy.end());
   EXPECT_NE(last, nullptr);

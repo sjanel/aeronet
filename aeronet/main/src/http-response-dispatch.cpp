@@ -152,9 +152,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
         throw std::runtime_error("Should not happen - Client connection vanished after upstream insertion");
       }
 
-      HttpResponse resp(http::StatusCodeOK, "Connection Established");
-      resp.contentType(http::ContentTypeTextPlain);
-      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
+      finalizeAndSendResponse(cnxIt, HttpResponse(http::StatusCodeOK, "Connection Established"), consumedBytes);
 
       // Enter tunneling mode: link peer fds
       cnxIt->second.peerFd = upstreamFd;
@@ -200,8 +198,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& r
     // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
     // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
     if (reject) {
-      resp.statusCode(http::StatusCodeNotAcceptable)
-          .reason(http::ReasonNotAcceptable)
+      resp.statusCode(http::StatusCodeNotAcceptable, http::ReasonNotAcceptable)
           .contentType(http::ContentTypeTextPlain)
           .body("No acceptable content-coding available");
     }
