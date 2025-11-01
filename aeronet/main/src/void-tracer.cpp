@@ -1,9 +1,9 @@
 #include <cstdint>
+#include <stdexcept>
 #include <string_view>
 
 #include "aeronet/otel-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
-#include "invalid_argument_exception.hpp"
 
 namespace aeronet::tracing {
 
@@ -14,7 +14,7 @@ TelemetryContext::TelemetryContext() noexcept = default;
 
 TelemetryContext::TelemetryContext(const OtelConfig& cfg) {
   if (cfg.enabled) {
-    throw invalid_argument("Unable to create TelemetryContext - aeronet has been compiled without Otel support");
+    throw std::invalid_argument("Unable to create TelemetryContext - aeronet has been compiled without Otel support");
   }
 }
 

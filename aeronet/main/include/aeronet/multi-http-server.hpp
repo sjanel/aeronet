@@ -50,7 +50,7 @@ class MultiHttpServer {
   //                  port via SO_REUSEPORT (automatically enabled if threadCount > 1).
   // Behavior:
   //   - Does NOT start the servers; call start() explicitly after registering handlers.
-  //   - Validates threadCount and throws invalid_argument if < 1.
+  //   - Validates threadCount and throws std::invalid_argument if < 1.
   //   - The object itself is NOT thread-safe; expect single-threaded orchestration.
   // Performance rationale:
   //   - Avoids locks by treating start()/stop()/handler registration as single-threaded control

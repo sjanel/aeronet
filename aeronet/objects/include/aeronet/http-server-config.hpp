@@ -180,7 +180,7 @@ struct HttpServerConfig {
   // resolved host is allowed. When non-empty, the target host must exactly match one of these entries.
   std::vector<std::string> connectAllowlist;
 
-  // Validates config. Throws invalid_argument if it is not valid.
+  // Validates config. Throws std::invalid_argument if it is not valid.
   void validate() const;
 
  private:

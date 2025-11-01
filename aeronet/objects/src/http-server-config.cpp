@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -14,7 +15,7 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/otel-config.hpp"
 #include "aeronet/tls-config.hpp"
-#include "invalid_argument_exception.hpp"
+#include "log.hpp"
 #include "major-minor-version.hpp"
 #include "tchars.hpp"
 
@@ -219,18 +220,21 @@ void HttpServerConfig::validate() const {
   if (maxPerEventReadBytes != 0 && maxPerEventReadBytes < initialReadChunkBytes) {
     // Normalize: cap cannot be smaller than a single chunk; promote to chunk size.
     // (Since config is const here we cannot mutate; just throw to surface mistake.)
-    throw invalid_argument("maxPerEventReadBytes must be 0 or >= initialReadChunkBytes");
+    throw std::invalid_argument("maxPerEventReadBytes must be 0 or >= initialReadChunkBytes");
   }
   for (const auto& [headerKey, headerValue] : globalHeaders) {
     if (http::IsReservedResponseHeader(headerKey)) {
-      throw invalid_argument("'{}' is a reserved header", headerKey);
+      log::critical("'{}' is a reserved header", headerKey);
+      throw std::invalid_argument("attempt to set reserved header");
     }
     if (headerKey.empty() || std::ranges::any_of(headerKey, [](char ch) { return !is_tchar(ch); })) {
-      throw invalid_argument("header '{}' is invalid", headerKey);
+      log::critical("header '{}' is invalid", headerKey);
+      throw std::invalid_argument("header has invalid key");
     }
     // basic sanity on header value
     if (std::ranges::any_of(headerValue, [](unsigned char ch) { return ch <= 0x1F || ch == 0x7F; })) {
-      throw invalid_argument("header '{}' has invalid value characters", headerKey);
+      log::critical("header '{}' has invalid value characters", headerKey);
+      throw std::invalid_argument("header has invalid value");
     }
   }
   otel.validate();
@@ -239,22 +243,22 @@ void HttpServerConfig::validate() const {
 
   // Validate some header/body limits
   if (std::cmp_less(maxHeaderBytes, 128)) {
-    throw invalid_argument("maxHeaderBytes must be >= 128");
+    throw std::invalid_argument("maxHeaderBytes must be >= 128");
   }
   if (maxBodyBytes == 0) {
-    throw invalid_argument("maxBodyBytes must be > 0");
+    throw std::invalid_argument("maxBodyBytes must be > 0");
   }
   if (keepAliveTimeout.count() < 0) {
-    throw invalid_argument("keepAliveTimeout must be non-negative");
+    throw std::invalid_argument("keepAliveTimeout must be non-negative");
   }
   if (pollInterval.count() <= 0) {
-    throw invalid_argument("pollInterval must be > 0");
+    throw std::invalid_argument("pollInterval must be > 0");
   }
   if (headerReadTimeout.count() < 0) {
-    throw invalid_argument("headerReadTimeout must be non-negative");
+    throw std::invalid_argument("headerReadTimeout must be non-negative");
   }
   if (std::cmp_less(maxOutboundBufferBytes, 1024)) {
-    throw invalid_argument("maxOutboundBufferBytes must be >= 1024");
+    throw std::invalid_argument("maxOutboundBufferBytes must be >= 1024");
   }
 }
 

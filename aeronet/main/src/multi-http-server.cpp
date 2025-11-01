@@ -17,7 +17,6 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/router.hpp"
-#include "invalid_argument_exception.hpp"
 #include "log.hpp"
 
 namespace aeronet {
@@ -25,11 +24,11 @@ namespace aeronet {
 MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, uint32_t threadCount)
     : _stopRequested(std::make_unique<std::atomic<bool>>(false)) {
   if (threadCount == 0) {
-    throw invalid_argument("MultiHttpServer: threadCount must be >= 1");
+    throw std::invalid_argument("MultiHttpServer: threadCount must be >= 1");
   }
   // Prepare base config: if multiple threads, enforce reusePort.
   if (threadCount > 1 && !cfg.reusePort) {
-    throw invalid_argument("MultiHttpServer: reusePort must be set for multi thread MultiHttpServer");
+    throw std::invalid_argument("MultiHttpServer: reusePort must be set for multi thread MultiHttpServer");
   }
 
   // Create the HttpServer (and ensure port resolution if given port is 0)

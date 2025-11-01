@@ -1,11 +1,11 @@
 #include "zstd-encoder.hpp"
 
 #include <cstddef>
+#include <stdexcept>
 #include <string_view>
 
 #include "aeronet/compression-config.hpp"
 #include "exception.hpp"
-#include "invalid_argument_exception.hpp"
 #include "raw-chars.hpp"
 
 namespace aeronet {
@@ -16,11 +16,11 @@ ZstdCStreamRAII::ZstdCStreamRAII(int level, int windowLog) : ctx(ZSTD_createCCtx
     throw exception("ZSTD_createCCtx failed");
   }
   if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx, ZSTD_c_compressionLevel, level)) != 0U) {
-    throw invalid_argument("ZSTD set level failed");
+    throw std::invalid_argument("ZSTD set level failed");
   }
   if (windowLog > 0) {
     if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx, ZSTD_c_windowLog, windowLog)) != 0U) {
-      throw invalid_argument("ZSTD set windowLog failed");
+      throw std::invalid_argument("ZSTD set windowLog failed");
     }
   }
 }

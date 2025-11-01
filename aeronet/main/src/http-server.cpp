@@ -62,8 +62,6 @@
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "tls-context.hpp"
-#else
-#include "invalid_argument_exception.hpp"
 #endif
 
 namespace aeronet {
@@ -630,7 +628,7 @@ void HttpServer::init() {
     // (See detailed rationale in header next to _tlsCtxHolder.)
     _tlsCtxHolder = std::make_unique<TlsContext>(_config.tls, &_tlsMetricsExternal);
 #else
-    throw invalid_argument("aeronet built without OpenSSL support but TLS configuration provided");
+    throw std::invalid_argument("aeronet built without OpenSSL support but TLS configuration provided");
 #endif
   }
   static constexpr int enable = 1;

@@ -4,7 +4,7 @@
 #include "aeronet/otel-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #ifndef AERONET_ENABLE_OPENTELEMETRY
-#include "invalid_argument_exception.hpp"
+#include <stdexcept>
 #endif
 
 using namespace aeronet;
@@ -131,7 +131,7 @@ TEST(OpenTelemetryIntegration, ShouldThrowIfDisabledAndAsked) {
   cfg.enabled = true;
 
   // Should always return false when OpenTelemetry is disabled at compile-time
-  EXPECT_THROW(tracing::TelemetryContext{cfg}, ::aeronet::invalid_argument);
+  EXPECT_THROW(tracing::TelemetryContext{cfg}, std::invalid_argument);
 }
 
 #endif  // AERONET_ENABLE_OPENTELEMETRY
