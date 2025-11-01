@@ -11,7 +11,6 @@
 #include <system_error>
 #include <type_traits>
 
-#include "exception.hpp"
 #include "fixedcapacityvector.hpp"
 #include "log.hpp"
 #include "nchars.hpp"
@@ -86,7 +85,7 @@ constexpr std::span<char> IntegralToCharBuffer(std::span<char> buf, std::integra
   const auto nbDigitsInt = nchars(val);
 
   if (buf.size() < static_cast<std::size_t>(nbDigitsInt)) {
-    throw exception("Buffer size {} is too small to hold {} digits for integral {}", buf.size(), nbDigitsInt, val);
+    throw std::invalid_argument("Buffer size too small for integral conversion");
   }
 
   std::to_chars(buf.data(), buf.data() + nbDigitsInt, val);

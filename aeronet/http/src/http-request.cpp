@@ -14,6 +14,7 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/tracing/tracer.hpp"
 #include "connection-state.hpp"
 #include "header-line-parse.hpp"
 #include "header-merge.hpp"

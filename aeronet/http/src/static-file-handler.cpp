@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <limits>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>

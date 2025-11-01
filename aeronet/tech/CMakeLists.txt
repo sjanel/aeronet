@@ -15,11 +15,6 @@ add_unit_test(
 )
 
 add_unit_test(
-    exception_test
-    test/exception_test.cpp
-)
-
-add_unit_test(
     ipow_test
     test/ipow_test.cpp
 )

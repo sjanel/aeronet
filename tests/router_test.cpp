@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,7 +16,6 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/router-config.hpp"
-#include "exception.hpp"
 
 using namespace aeronet;
 
@@ -168,7 +168,7 @@ TEST(RouterTest, StreamingVsNormalConflictThrows) {
   // Attempting to register a streaming handler for the same path+method should throw
   EXPECT_THROW(router.setPath(http::Method::GET, std::string{"/conf"},
                               Router::StreamingHandler([](const HttpRequest &, HttpResponseWriter &) {})),
-               aeronet::exception);
+               std::logic_error);
 }
 
 TEST(RouterTest, TrailingSlashStrictAndNormalize) {
@@ -467,17 +467,17 @@ TEST(RouterTest, CompilePatternErrorsAndEscapes) {
   // Path must begin with '/'
   EXPECT_THROW(
       router.setPath(http::Method::GET, std::string{"no-slash"}, [](const HttpRequest &) { return HttpResponse(200); }),
-      aeronet::exception);
+      std::invalid_argument);
 
   // Empty segment
   EXPECT_THROW(
       router.setPath(http::Method::GET, std::string{"/a//b"}, [](const HttpRequest &) { return HttpResponse(200); }),
-      aeronet::exception);
+      std::invalid_argument);
 
   // Unterminated brace
   EXPECT_THROW(
       router.setPath(http::Method::GET, std::string{"/u{bad"}, [](const HttpRequest &) { return HttpResponse(200); }),
-      aeronet::exception);
+      std::invalid_argument);
 
   // Escaped braces should be accepted literally
   router.setPath(http::Method::GET, "/literal/{{}}/end", [](const HttpRequest &) { return HttpResponse(200); });
@@ -490,10 +490,10 @@ TEST(RouterTest, MixedNamedAndUnnamedParamsDisallowed) {
   Router routerBad;
   EXPECT_THROW(
       routerBad.setPath(http::Method::GET, "/mix/{}/{id}", [](const HttpRequest &) { return HttpResponse(200); }),
-      aeronet::exception);
+      std::invalid_argument);
   EXPECT_THROW(
       routerBad.setPath(http::Method::GET, "/mix/{id}/{}/", [](const HttpRequest &) { return HttpResponse(200); }),
-      aeronet::exception);
+      std::invalid_argument);
 }
 
 TEST(RouterTest, WildcardConflictAndTerminalRules) {
@@ -501,7 +501,7 @@ TEST(RouterTest, WildcardConflictAndTerminalRules) {
   // wildcard must be terminal
   EXPECT_THROW(
       routerWildcard.setPath(http::Method::GET, "/bad/*/here", [](const HttpRequest &) { return HttpResponse(200); }),
-      aeronet::exception);
+      std::invalid_argument);
 
   // wildcard matching precedence and allowedMethods
   routerWildcard.setPath(http::Method::GET, "/files/*", [](const HttpRequest &) { return HttpResponse(200); });

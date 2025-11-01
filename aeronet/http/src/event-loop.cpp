@@ -16,6 +16,7 @@
 #include <utility>
 
 #include "base-fd.hpp"
+#include "errno_throw.hpp"
 #include "log.hpp"
 #include "timedef.hpp"
 
@@ -76,6 +77,12 @@ EventLoop& EventLoop::operator=(EventLoop&& rhs) noexcept {
 
 EventLoop::~EventLoop() { std::free(_events); }
 
+void EventLoop::add_or_throw(int fd, uint32_t events) const {
+  if (!add(fd, events)) {
+    throw_errno("epoll_ctl ADD failed (fd # {}, events=0x{:x}): {}", fd, events);
+  }
+}
+
 bool EventLoop::add(int fd, uint32_t events) const {
   epoll_event ev{events, epoll_data_t{.fd = fd}};
   if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_ADD, fd, &ev) != 0) {
@@ -95,6 +102,7 @@ bool EventLoop::mod(int fd, uint32_t events) const {
   }
   return true;
 }
+
 void EventLoop::del(int fd) const {
   if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_DEL, fd, nullptr) != 0) {
     // DEL failures are usually benign if fd already closed; log at debug to avoid noise.

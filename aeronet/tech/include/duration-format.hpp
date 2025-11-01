@@ -37,14 +37,14 @@ struct std::formatter<::aeronet::PrettyDuration> {
       return it;  // must return iterator pointing at '}'
     }
     // Expect a single digit 1..N then a '}'
-    const char c = *it;
-    if (c < '1' || c > static_cast<char>('0' + std::size(kDurationUnitsFormat))) {
-      throw format_error("invalid PrettyDuration spec");
+    const char ch = *it;
+    if (ch < '1' || ch > static_cast<char>('0' + std::size(kDurationUnitsFormat))) {
+      throw std::format_error("invalid PrettyDuration spec");
     }
-    nbUnitsToPrint = c - '0';
+    nbUnitsToPrint = ch - '0';
     ++it;
     if (it == end || *it != '}') {
-      throw format_error("invalid PrettyDuration spec - missing closing brace");
+      throw std::format_error("invalid PrettyDuration spec - missing closing brace");
     }
     return it;  // points at '}'
   }
