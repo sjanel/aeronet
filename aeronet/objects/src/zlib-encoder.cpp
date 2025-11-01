@@ -6,10 +6,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <format>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
-#include "exception.hpp"
 #include "log.hpp"
 #include "raw-chars.hpp"
 
@@ -33,7 +34,7 @@ namespace details {
 ZStreamRAII::ZStreamRAII(Variant variant, int8_t level) {
   const auto ret = deflateInit2(&_stream, level, Z_DEFLATED, ComputeWindowBits(variant), 8, Z_DEFAULT_STRATEGY);
   if (ret != Z_OK) {
-    throw exception("Unable to initialize zlib compression - error {}", ret);
+    throw std::runtime_error(std::format("Unable to initialize zlib compression - error {}", ret));
   }
 }
 
@@ -51,12 +52,12 @@ ZlibEncoderContext::ZlibEncoderContext(details::ZStreamRAII::Variant variant, Ra
     : _buf(sharedBuf), _zs(variant, level) {}
 
 std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk, bool finish) {
+  _buf.clear();
   if (_finished) {
-    return std::string_view{};  // already finalized
+    return _buf;
   }
   _zs._stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(chunk.data()));
   _zs._stream.avail_in = static_cast<uInt>(chunk.size());
-  _buf.clear();
   auto flush = finish ? Z_FINISH : Z_NO_FLUSH;
   do {
     _buf.ensureAvailableCapacity(encoderChunkSize);
@@ -64,7 +65,7 @@ std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
     _zs._stream.avail_out = static_cast<decltype(_zs._stream.avail_out)>(encoderChunkSize);
     const auto ret = deflate(&_zs._stream, flush);
     if (ret == Z_STREAM_ERROR) {
-      throw exception("Zlib streaming error {}", ret);
+      throw std::runtime_error(std::format("Zlib streaming error {}", ret));
     }
     _buf.addSize(encoderChunkSize - _zs._stream.avail_out);
     if (ret == Z_STREAM_END) {
@@ -90,7 +91,7 @@ std::string_view ZlibEncoder::compressAll(std::size_t encoderChunkSize, std::str
     zs._stream.avail_out = static_cast<decltype(zs._stream.avail_out)>(encoderChunkSize);
     auto rc = deflate(&zs._stream, Z_FINISH);
     if (rc == Z_STREAM_ERROR) {
-      throw exception("Zlib error during one-shot compression");
+      throw std::runtime_error("Zlib error during one-shot compression");
     }
     _buf.addSize(encoderChunkSize - zs._stream.avail_out);
     if (rc == Z_STREAM_END) {

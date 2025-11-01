@@ -125,6 +125,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
         emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Failed to register upstream fd");
         return LoopAction::Break;
       }
+
       // Insert upstream connection state. Inserting may rehash and invalidate the
       // caller's iterator; save the client's fd and re-resolve the client iterator
       // after emplacing.

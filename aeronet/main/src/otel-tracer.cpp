@@ -1,15 +1,17 @@
 #include <opentelemetry/nostd/shared_ptr.h>
+#include <opentelemetry/sdk/trace/processor.h>
 #include <opentelemetry/trace/tracer.h>
 
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/otel-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
-#include "exception.hpp"
 #include "flat-hash-map.hpp"
 #include "log.hpp"
 
@@ -19,6 +21,8 @@
 #define AERONET_HAVE_OTEL_SDK 1
 #include <opentelemetry/sdk/trace/simple_processor.h>
 #include <opentelemetry/sdk/trace/tracer_provider.h>
+#include <opentelemetry/trace/span.h>
+#include <opentelemetry/trace/tracer_provider.h>
 
 // Conditionally include TraceIdRatioBased sampler header (path differs across versions)
 #if __has_include(<opentelemetry/sdk/trace/samplers/trace_id_ratio_based.h>)
@@ -35,6 +39,8 @@
     <opentelemetry/exporters/otlp/otlp_http_exporter.h>) && __has_include(<opentelemetry/ext/http/client/http_client.h>)
 #define AERONET_HAVE_OTLP_HTTP 1
 #include <opentelemetry/exporters/otlp/otlp_http_exporter.h>
+#include <opentelemetry/exporters/otlp/otlp_http_exporter_options.h>
+#include <opentelemetry/sdk/trace/exporter.h>
 #elif __has_include(<opentelemetry/exporters/ostream/span_exporter.h>)
 #define AERONET_HAVE_OSTREAM_EXPORTER 1
 #include <opentelemetry/exporters/ostream/span_exporter.h>
@@ -43,10 +49,12 @@
 // Detect metrics SDK support for MeterProvider
 #if __has_include(<opentelemetry/sdk/metrics/meter_provider.h>)
 #define AERONET_HAVE_METRICS_SDK 1
-#include <opentelemetry/sdk/metrics/meter.h>
+#include <opentelemetry/metrics/sync_instruments.h>
+#include <opentelemetry/nostd/unique_ptr.h>
+#include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader_options.h>
 #include <opentelemetry/sdk/metrics/meter_provider.h>
-#include <opentelemetry/sdk/metrics/view/instrument_selector.h>
-#include <opentelemetry/sdk/metrics/view/view.h>
+#include <opentelemetry/sdk/metrics/metric_reader.h>
+#include <opentelemetry/sdk/metrics/push_metric_exporter.h>
 #endif
 
 // Detect OTLP metrics exporter
@@ -54,6 +62,7 @@
 #define AERONET_HAVE_OTLP_METRICS 1
 #include <opentelemetry/exporters/otlp/otlp_http_metric_exporter.h>
 #include <opentelemetry/exporters/otlp/otlp_http_metric_exporter_options.h>
+#include <opentelemetry/metrics/meter.h>
 #include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader.h>
 #endif
 
@@ -173,7 +182,7 @@ TelemetryContext::TelemetryContext(const aeronet::OtelConfig& cfg) : _impl(std::
   _impl->_tracer = _impl->_tracerProvider->GetTracer("aeronet", AERONET_VERSION_STR);
 
   if (!_impl->_tracer) {
-    throw exception("Failed to get tracer from provider");
+    throw std::runtime_error("Failed to get tracer from provider");
   }
 
   // Initialize metrics provider if SDK available

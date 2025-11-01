@@ -6,14 +6,14 @@
 #include <cstring>
 
 #include "base-fd.hpp"
-#include "exception.hpp"
+#include "errno_throw.hpp"
 #include "log.hpp"
 
 namespace aeronet {
 
 EventFd::EventFd() : _baseFd(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)) {
   if (_baseFd.fd() < 0) {
-    throw exception("Unable to create a new eventfd, with error {}", std::strerror(errno));
+    throw_errno("Unable to create a new EventFd");
   }
   log::debug("EventFd fd # {} opened", _baseFd.fd());
 }

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -24,7 +25,6 @@
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "exception.hpp"
 #include "file.hpp"
 
 using namespace std::chrono_literals;
@@ -292,7 +292,7 @@ TEST(HttpServerMixed, ConflictRegistrationNormalThenStreaming) {
   });
   EXPECT_THROW(srv.router().setPath(aeronet::http::Method::GET, "/c",
                                     [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter&) {}),
-               aeronet::exception);
+               std::logic_error);
 }
 
 TEST(HttpServerMixed, ConflictRegistrationStreamingThenNormal) {
@@ -307,7 +307,7 @@ TEST(HttpServerMixed, ConflictRegistrationStreamingThenNormal) {
                                     [](const aeronet::HttpRequest&) {
                                       return aeronet::HttpResponse(200, "OK").body("Y").contentType("text/plain");
                                     }),
-               aeronet::exception);
+               std::logic_error);
 }
 
 TEST(HttpServerMixed, GlobalFallbackPrecedence) {

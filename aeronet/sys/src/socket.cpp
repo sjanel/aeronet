@@ -6,14 +6,14 @@
 #include <cstring>
 
 #include "base-fd.hpp"
-#include "exception.hpp"
+#include "errno_throw.hpp"
 #include "log.hpp"
 
 namespace aeronet {
 
 Socket::Socket(int type, int protocol) : _baseFd(::socket(AF_INET, type, protocol)) {
   if (_baseFd.fd() < 0) {
-    throw exception("Unable to create a new socket, with error {}", std::strerror(errno));
+    throw_errno("Unable to create a new socket");
   }
   log::debug("Socket fd # {} opened", _baseFd.fd());
 }

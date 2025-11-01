@@ -3,13 +3,13 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/http-method.hpp"
 #include "aeronet/router-config.hpp"
-#include "exception.hpp"
 #include "flat-hash-map.hpp"
 #include "log.hpp"
 
@@ -101,7 +101,7 @@ void Router::setPath(http::Method method, std::string path, StreamingHandler han
 void Router::setPathInternal(http::MethodBmp methods, std::string path, RequestHandler handler,
                              StreamingHandler streaming) {
   if (!handler && !streaming) {
-    throw exception("setPath requires a handler");
+    throw std::invalid_argument("setPath requires a handler");
   }
 
   const bool pathHasTrailingSlash = ShouldNormalize(_config.trailingSlashPolicy, path);
@@ -189,7 +189,7 @@ void Router::assignHandlers(RouteNode& node, http::MethodBmp methods, RequestHan
     }
     if (hasNormalHandler) {
       if (entry.streamingHandlers[methodIdx]) {
-        throw exception("Cannot register normal handler: streaming handler already present for path+method");
+        throw std::logic_error("Cannot register normal handler: streaming handler already present for path+method");
       }
       if (entry.normalHandlers[methodIdx]) {
         log::warn("Overwriting existing path handler");
@@ -204,7 +204,7 @@ void Router::assignHandlers(RouteNode& node, http::MethodBmp methods, RequestHan
       }
     } else {
       if (entry.normalHandlers[methodIdx]) {
-        throw exception("Cannot register streaming handler: normal handler already present for path+method");
+        throw std::logic_error("Cannot register streaming handler: normal handler already present for path+method");
       }
       if (entry.streamingHandlers[methodIdx]) {
         log::warn("Overwriting existing streaming path handler");
@@ -228,10 +228,10 @@ void Router::ensureRouteMetadata(RouteNode& node, CompiledRoute&& route) {
 
   const CompiledRoute& existing = *node.route;
   if (existing.paramNames != route.paramNames) {
-    throw exception("Conflicting parameter naming for identical path pattern");
+    throw std::logic_error("Conflicting parameter naming for identical path pattern");
   }
   if (existing.hasWildcard != route.hasWildcard) {
-    throw exception("Conflicting wildcard usage for identical path pattern");
+    throw std::logic_error("Conflicting wildcard usage for identical path pattern");
   }
   node.route->hasNoSlashRegistered |= route.hasNoSlashRegistered;
   node.route->hasWithSlashRegistered |= route.hasWithSlashRegistered;
@@ -469,7 +469,7 @@ http::MethodBmp Router::allowedMethods(std::string_view path) {
 
 Router::CompiledRoute Router::compilePattern(std::string_view path) {
   if (path.empty() || path.front() != '/') {
-    throw exception("Router paths must begin with '/'");
+    throw std::invalid_argument("Router paths must begin with '/'");
   }
 
   CompiledRoute route;
@@ -483,12 +483,12 @@ Router::CompiledRoute Router::compilePattern(std::string_view path) {
         nextSlash == std::string_view::npos ? path.substr(pos) : path.substr(pos, nextSlash - pos);
 
     if (segment.empty()) {
-      throw exception("Router path contains empty segment");
+      throw std::invalid_argument("Router path contains empty segment");
     }
 
     if (segment == "*") {
       if (nextSlash != std::string_view::npos) {
-        throw exception("Wildcard segment must be terminal");
+        throw std::invalid_argument("Wildcard segment must be terminal");
       }
       route.hasWildcard = true;
       break;
@@ -529,7 +529,7 @@ Router::CompiledRoute Router::compilePattern(std::string_view path) {
 
       const std::size_t closePos = segment.find('}', i + 1U);
       if (closePos == std::string_view::npos) {
-        throw exception("Unterminated '{' in router pattern");
+        throw std::invalid_argument("Unterminated '{' in router pattern");
       }
 
       if (!literalBuffer.empty()) {
@@ -543,7 +543,7 @@ Router::CompiledRoute Router::compilePattern(std::string_view path) {
       compiledSegment.parts.emplace_back();
 
       if (previousWasParam) {
-        throw exception("Consecutive parameters without separator are not allowed");
+        throw std::invalid_argument("Consecutive parameters without separator are not allowed");
       }
       previousWasParam = true;
       hasParam = true;
@@ -582,7 +582,7 @@ Router::CompiledRoute Router::compilePattern(std::string_view path) {
   }
 
   if (sawNamed && sawUnnamed) {
-    throw exception("Cannot mix named and unnamed parameters in a single path pattern");
+    throw std::invalid_argument("Cannot mix named and unnamed parameters in a single path pattern");
   }
 
   if (!sawNamed) {

@@ -23,7 +23,7 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
   BaseFd readEnd(fds[0]);
   BaseFd writeEnd(fds[1]);
 
-  ASSERT_TRUE(loop.add(readEnd.fd(), EPOLLIN));
+  loop.add_or_throw(readEnd.fd(), EPOLLIN);
 
   bool invoked = false;
   // write some data first so epoll_wait has something to return immediately
@@ -51,7 +51,7 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
     ASSERT_EQ(pipe(ints), 0);
     BaseFd rp(ints[0]);
     BaseFd wp(ints[1]);
-    ASSERT_TRUE(loop.add(rp.fd(), EPOLLIN));
+    loop.add_or_throw(rp.fd(), EPOLLIN);
     // write one byte so poll has something to report
     char writeByte = 'a';
     ASSERT_EQ(::write(wp.fd(), &writeByte, 1), 1);
@@ -99,7 +99,7 @@ TEST(EventLoopTest, NoShrinkPolicy) {
     ASSERT_EQ(pipe(fds), 0);
     BaseFd rp(fds[0]);
     BaseFd wp(fds[1]);
-    ASSERT_TRUE(loop.add(rp.fd(), EPOLLIN));
+    loop.add_or_throw(rp.fd(), EPOLLIN);
     char writeByte = 'b';
     ASSERT_EQ(::write(wp.fd(), &writeByte, 1), 1);
     pipes.emplace_back(std::move(rp), std::move(wp));

@@ -728,7 +728,7 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
       }
     }
 #endif
-    throw exception("Unknown content encoding {}", out.contentEncoding);
+    throw std::invalid_argument("Unknown content encoding");
   }
   return out;
 }

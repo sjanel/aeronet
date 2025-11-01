@@ -35,8 +35,8 @@
 #include "aeronet/server-stats.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "connection-state.hpp"
+#include "errno_throw.hpp"
 #include "event-loop.hpp"
-#include "exception.hpp"
 #include "flat-hash-map.hpp"
 #include "http-error-build.hpp"
 #include "log.hpp"
@@ -634,12 +634,12 @@ void HttpServer::init() {
   static constexpr int enable = 1;
   auto errc = ::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
   if (errc < 0) {
-    throw exception("setsockopt(SO_REUSEADDR) failed with error {}", std::strerror(errno));
+    throw_errno("setsockopt(SO_REUSEADDR) failed");
   }
   if (_config.reusePort) {
     errc = ::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));
     if (errc < 0) {
-      throw exception("setsockopt(SO_REUSEPORT) error: {}", std::strerror(errno));
+      throw_errno("setsockopt(SO_REUSEPORT) failed");
     }
   }
   sockaddr_in addr{};
@@ -648,25 +648,22 @@ void HttpServer::init() {
   addr.sin_port = htons(_config.port);
   errc = ::bind(listenFdLocal, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
   if (errc < 0) {
-    throw exception("bind failed with error {}", std::strerror(errno));
+    throw_errno("bind failed");
   }
   if (::listen(listenFdLocal, SOMAXCONN) < 0) {
-    throw exception("listen failed with error {}", std::strerror(errno));
+    throw_errno("listen failed");
   }
   if (_config.port == 0) {
     sockaddr_in actual{};
     socklen_t alen = sizeof(actual);
-    if (::getsockname(listenFdLocal, reinterpret_cast<sockaddr*>(&actual), &alen) == 0) {
-      _config.port = ntohs(actual.sin_port);
+    errc = ::getsockname(listenFdLocal, reinterpret_cast<sockaddr*>(&actual), &alen);
+    if (errc == -1) {
+      throw_errno("getsockname failed");
     }
+    _config.port = ntohs(actual.sin_port);
   }
-  if (!_eventLoop.add(listenFdLocal, EPOLLIN)) {
-    throw exception("EventLoop add listen socket failed");
-  }
-  // Register wakeup fd
-  if (!_eventLoop.add(_lifecycle.wakeupFd.fd(), EPOLLIN)) {
-    throw exception("EventLoop add wakeup fd failed");
-  }
+  _eventLoop.add_or_throw(listenFdLocal, EPOLLIN);
+  _eventLoop.add_or_throw(_lifecycle.wakeupFd.fd(), EPOLLIN);
 
   // Register builtin probes handlers if enabled in config
   if (_config.builtinProbes.enabled) {
@@ -690,7 +687,7 @@ void HttpServer::init() {
 
 void HttpServer::prepareRun() {
   if (_lifecycle.isActive()) {
-    throw exception("Server is already running");
+    throw std::logic_error("Server is already running");
   }
   if (!_listenSocket) {
     init();
