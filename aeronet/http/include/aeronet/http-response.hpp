@@ -331,6 +331,9 @@ class HttpResponse {
   // Get the current file stored in this HttpResponse, or nullptr if no file is set.
   [[nodiscard]] const File* file() const noexcept;
 
+  // Check if this HttpResponse has a file payload.
+  [[nodiscard]] bool hasFile() const noexcept { return _payloadKind == PayloadKind::File; }
+
   // Get a view of the current body stored in this HttpResponse.
   // If the body is not present, it returns an empty view.
   [[nodiscard]] std::string_view body() const noexcept;

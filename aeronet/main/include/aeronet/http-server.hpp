@@ -14,6 +14,7 @@
 #include <string_view>
 
 #include "accept-encoding-negotiation.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response.hpp"
@@ -22,10 +23,15 @@
 #include "aeronet/internal/lifecycle.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/server-stats.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "connection-state.hpp"
 #include "connection.hpp"
+#include "encoder.hpp"
 #include "event-loop.hpp"
+#include "flat-hash-map.hpp"
+#include "socket.hpp"
+
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/ssl.h>  // ensure real ::SSL is visible (avoid shadowing forward decl)
 
@@ -33,14 +39,9 @@
 #include "tls-metrics.hpp"
 #endif
 
-#include "aeronet/http-method.hpp"
-#include "aeronet/server-stats.hpp"
-#include "encoder.hpp"
-#include "flat-hash-map.hpp"
-#include "http-response-writer.hpp"
-#include "socket.hpp"
-
 namespace aeronet {
+
+class HttpResponseWriter;
 
 class ITransport;  // forward declaration for TLS/plain transport abstraction
 #ifdef AERONET_ENABLE_OPENSSL

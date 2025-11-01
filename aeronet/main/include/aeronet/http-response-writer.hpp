@@ -160,10 +160,6 @@ class HttpResponseWriter {
   // Returns true in an error occur during the streaming flow (unrecoverable).
   [[nodiscard]] bool failed() const { return _state == State::Failed; }
 
-  // Automatic compression suppression: if user supplies a Content-Encoding header,
-  // we will not perform automatic compression (user fully controls encoding). Exposed via flag.
-  [[nodiscard]] bool userProvidedContentEncoding() const { return _userProvidedContentEncoding; }
-
  private:
   friend class HttpServer;
 
@@ -177,6 +173,8 @@ class HttpResponseWriter {
 
   bool accumulateInPreCompressBuffer(std::string_view data);
 
+  [[nodiscard]] bool chunked() const { return _declaredLength == 0 && !_head; }
+
   HttpServer* _server{nullptr};
   int _fd{-1};
   bool _head{false};
@@ -184,17 +182,13 @@ class HttpResponseWriter {
   // make transitions explicit.
   enum class State : std::uint8_t { Opened, HeadersSent, Ended, Failed };
   State _state{State::Opened};
-  bool _chunked{true};
   bool _requestConnClose{false};
-  bool _userSetContentType{false};
-  bool _userProvidedContentEncoding{false};
-  Encoding _compressionFormat;
+  Encoding _compressionFormat{Encoding::none};
   bool _compressionActivated{false};
-  bool _usingSendFile{false};
 
   // Internal fixed HttpResponse used solely for header accumulation and status/reason/body placeholder.
   // We never finalize until ensureHeadersSent(); body remains empty (streaming chunks / writes follow separately).
-  HttpResponse _fixedResponse{http::StatusCodeOK, http::ReasonOK};
+  HttpResponse _fixedResponse{http::StatusCodeOK};
   std::size_t _declaredLength{0};
   std::size_t _bytesWritten{0};
   std::unique_ptr<EncoderContext> _activeEncoderCtx;  // streaming context
