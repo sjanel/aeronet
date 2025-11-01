@@ -212,7 +212,7 @@ TelemetryContext::TelemetryContext(const aeronet::OtelConfig& cfg) : _impl(std::
   _impl->_meterProvider->AddMetricReader(metric_reader);
 
   // Get meter from this provider (NOT from global)
-  _impl->_meter = _impl->_meterProvider->GetMeter("aeronet", "0.4.0");
+  _impl->_meter = _impl->_meterProvider->GetMeter("aeronet", AERONET_VERSION_STR);
 
   if (!_impl->_meter) {
     log::error("Failed to get meter from provider");
