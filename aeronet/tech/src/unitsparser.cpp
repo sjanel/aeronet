@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cstdint>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -23,7 +24,7 @@ int64_t ParseNumberOfBytes(std::string_view sizeStr) {
     }
     int64_t nbBytes = StringToIntegral<int64_t>(std::string_view(sizeStr.begin(), sizeStr.begin() + endDigitPos));
     if (nbBytes < 0) {
-      throw exception("Number of bytes cannot be negative");
+      throw std::invalid_argument("Number of bytes cannot be negative");
     }
     sizeStr.remove_prefix(endDigitPos);
 
@@ -33,7 +34,7 @@ int64_t ParseNumberOfBytes(std::string_view sizeStr) {
       int64_t multiplierBase = iMultiplier ? 1024L : 1000L;
       switch (sizeStr.front()) {
         case '.':
-          throw exception("Decimal number not accepted for number of bytes parsing");
+          throw std::invalid_argument("Decimal number not accepted for number of bytes parsing");
         case 'T':  // NOLINT(bugprone-branch-clone)
           multiplier *= multiplierBase;
           [[fallthrough]];
@@ -49,7 +50,7 @@ int64_t ParseNumberOfBytes(std::string_view sizeStr) {
           multiplier *= multiplierBase;
           break;
         default:
-          throw exception("Invalid suffix '{}' for number of bytes parsing", sizeStr.front());
+          throw std::invalid_argument("Invalid suffix for number of bytes parsing");
       }
       sizeStr.remove_prefix(1UL + static_cast<std::string_view::size_type>(iMultiplier));
     }
@@ -90,7 +91,7 @@ std::span<char> BytesToBuffer(int64_t numberOfBytes, std::span<char> buf, int nb
       }
 
       if (ptr + kBytesUnits[unitPos].second.size() > endBuf) {
-        throw exception("Buffer too small for number of bytes string representation");
+        throw std::invalid_argument("Buffer too small for number of bytes string representation");
       }
 
       begBuf = std::ranges::copy(kBytesUnits[unitPos].second, ptr).out;

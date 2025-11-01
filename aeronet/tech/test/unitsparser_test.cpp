@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
 #include <string_view>
 
 #include "exception.hpp"
@@ -33,9 +34,9 @@ TEST(UnitsParser, ParseNumberOfBytesSeveralUnits) {
 }
 
 TEST(UnitsParser, ParseNumberOfBytesInvalidInput) {
-  EXPECT_THROW(ParseNumberOfBytes("12.5M"), exception);
-  EXPECT_THROW(ParseNumberOfBytes("400m"), exception);
-  EXPECT_THROW(ParseNumberOfBytes("-30"), exception);
+  EXPECT_THROW(ParseNumberOfBytes("12.5M"), std::invalid_argument);
+  EXPECT_THROW(ParseNumberOfBytes("400m"), std::invalid_argument);
+  EXPECT_THROW(ParseNumberOfBytes("-30"), std::invalid_argument);
 }
 
 TEST(UnitsParser, BytesToStrBufferTooSmall) {

@@ -4,11 +4,11 @@
 
 #include <chrono>
 #include <cstddef>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 
-#include "invalid_argument_exception.hpp"
 #include "timedef.hpp"
 
 namespace aeronet {
@@ -241,7 +241,9 @@ TEST_F(StringToTimeISO8601UTCTest, AcceptsTruncations) {
   EXPECT_EQ(dur, std::chrono::hours{12} + std::chrono::minutes{34});
 }
 
-TEST_F(StringToTimeISO8601UTCTest, ThrowsOnEmptyString) { EXPECT_THROW(StringToTimeISO8601UTC(""), invalid_argument); }
+TEST_F(StringToTimeISO8601UTCTest, ThrowsOnEmptyString) {
+  EXPECT_THROW(StringToTimeISO8601UTC(""), std::invalid_argument);
+}
 
 // ------------------------ Sub-second edge cases ------------------------
 TEST_F(StringToTimeISO8601UTCTest, Handles1DigitSubsecond) {

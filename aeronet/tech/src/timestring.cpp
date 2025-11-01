@@ -7,13 +7,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
 #include "cctype.hpp"
 #include "config.hpp"
-#include "invalid_argument_exception.hpp"
 #include "ipow.hpp"
+#include "log.hpp"
 #include "simple-charconv.hpp"
 #include "stringconv.hpp"
 #include "timedef.hpp"
@@ -24,8 +25,9 @@ namespace aeronet {
 SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
   const auto sz = endPtr - begPtr;
   if (AERONET_UNLIKELY(sz < 4)) {
-    throw invalid_argument("ISO8601 Time string '{}' is too short, expected at least 4 characters",
-                           std::string_view(begPtr, endPtr));
+    log::critical("ISO8601 Time string '{}' is too short, expected at least 4 characters",
+                  std::string_view(begPtr, endPtr));
+    throw std::invalid_argument("ISO8601 Time string too short");
   }
 
   std::chrono::year year(read4(begPtr));
@@ -60,7 +62,8 @@ SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
 
   // NOLINTNEXTLINE(readability-simplify-boolean-expr)
   if (AERONET_UNLIKELY(!ymd.ok() || hours > 23 || minutes > 59 || seconds > 60)) {  // 60 is possible with leap second
-    throw invalid_argument("Invalid date or time in ISO8601 Time string '{}'", std::string_view(begPtr, endPtr));
+    log::critical("Invalid date or time in ISO8601 Time string '{}'", std::string_view(begPtr, endPtr));
+    throw std::invalid_argument("Invalid date or time in ISO8601 Time string");
   }
 
   SysTimePoint ts = std::chrono::sys_days{ymd} + std::chrono::hours{hours} + std::chrono::minutes{minutes} +
@@ -121,7 +124,8 @@ SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
 
 std::pair<SysTimePoint, SysTimePoint> ParseTimeWindow(std::string_view str) {
   if (str.size() < 4) {
-    throw invalid_argument("Invalid time window string '{}' - expected at least a year YYYY", str);
+    log::critical("Invalid time window string '{}' - expected at least a year YYYY", str);
+    throw std::invalid_argument("Invalid time window string - too short");
   }
 
   const char* ptr = str.data();
@@ -145,7 +149,8 @@ std::pair<SysTimePoint, SysTimePoint> ParseTimeWindow(std::string_view str) {
   // month or week number
   const auto dashPtr = std::find(ptr, endPtr, '-');
   if (dashPtr == ptr) {
-    throw invalid_argument("Invalid time window string '{}' - expected a single dash after the year YYYY", str);
+    log::critical("Invalid time window string '{}' - expected a single dash after the year YYYY", str);
+    throw std::invalid_argument("Invalid time window string - unexpected dash");
   }
 
   if (*ptr == 'W') {
