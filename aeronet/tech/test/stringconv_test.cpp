@@ -8,8 +8,6 @@
 #include <string>
 #include <string_view>
 
-#include "exception.hpp"
-
 namespace aeronet {
 TEST(ToChar, Zero) {
   std::string str;

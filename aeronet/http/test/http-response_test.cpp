@@ -17,7 +17,6 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/temp-file.hpp"
-#include "exception.hpp"
 #include "file.hpp"
 #include "stringconv.hpp"
 #include "timedef.hpp"
@@ -67,7 +66,7 @@ TEST_F(HttpResponseTest, StatusOnly) {
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(http::StatusCodeOK, "OK");
   resp.addCustomHeader("Content-Type", "text/plain").addCustomHeader("X-A", "B").body("Hello");
   auto full = concatenated(std::move(resp));
   ASSERT_GE(full.size(), 16U);
@@ -543,12 +542,12 @@ struct ParsedResponse {
 ParsedResponse parseResponse(std::string_view full) {
   ParsedResponse pr;
   if (!full.starts_with("HTTP/1.1 ")) {
-    throw exception("Bad version in '{}'", full);
+    throw std::runtime_error("Bad version in response");
   }
   // Extract the status line first (up to CRLF)
-  auto firstCRLF = full.find("\r\n");
+  auto firstCRLF = full.find(http::CRLF);
   if (firstCRLF == std::string_view::npos) {
-    throw exception("Missing CRLF after status line in '{}'", full);
+    throw std::runtime_error("Missing CRLF after status line in response");
   }
   std::string_view statusLine = full.substr(0, firstCRLF);  // e.g. HTTP/1.1 200 OK
   // Accept status line with or without reason; minimal validated by prefix & three digits.
@@ -571,18 +570,18 @@ ParsedResponse parseResponse(std::string_view full) {
   // Find end of headers (CRLF CRLF) to robustly locate header-body boundary
   std::size_t headerEnd = full.find(http::DoubleCRLF, firstCRLF + 2);
   if (headerEnd == std::string_view::npos) {
-    throw exception("Missing terminating header block in '{}'", full);
+    throw std::runtime_error("Missing terminating header block");
   }
-  std::size_t cursor = firstCRLF + 2;  // move past CRLF into headers section
+  std::size_t cursor = firstCRLF + http::CRLF.size();  // move past CRLF into headers section
   while (cursor < headerEnd) {
     auto eol = full.find(http::CRLF, cursor);
     if (eol == std::string_view::npos || eol > headerEnd) {
-      throw exception("Invalid header line in '{}'", full);
+      throw std::runtime_error("Invalid header line in response");
     }
     auto line = full.substr(cursor, eol - cursor);
     auto sep = line.find(http::HeaderSep);
     if (sep == std::string_view::npos) {
-      throw exception("No separator in header line '{}'", line);
+      throw std::runtime_error("No separator in header line in response");
     }
     pr.headers.emplace_back(std::string(line.substr(0, sep)), std::string(line.substr(sep + 2)));
     cursor = eol + 2;
@@ -601,7 +600,7 @@ ParsedResponse parseResponse(std::string_view full) {
 
   if (hasContentLen) {
     if (cursor + contentLen > full.size()) {
-      throw exception("Truncated body: expected {} bytes, have {}", contentLen, full.size() - cursor);
+      throw std::runtime_error("Truncated body");
     }
     pr.body.assign(full.substr(cursor, contentLen));
     cursor += contentLen;
@@ -615,7 +614,7 @@ ParsedResponse parseResponse(std::string_view full) {
         while (true) {
           auto eol = full.find(http::CRLF, cursor);
           if (eol == std::string_view::npos) {
-            throw exception("No terminating trailer line in '{}'", full);
+            throw std::runtime_error("No terminating trailer line in response");
           }
           if (eol == cursor) {  // blank line terminator
             cursor += http::CRLF.size();
@@ -624,7 +623,7 @@ ParsedResponse parseResponse(std::string_view full) {
           auto line = full.substr(cursor, eol - cursor);
           auto sep = line.find(http::HeaderSep);
           if (sep == std::string_view::npos) {
-            throw exception("No separator in trailer line '{}'", line);
+            throw std::runtime_error("No separator in trailer line in response");
           }
           pr.trailers.emplace_back(std::string(line.substr(0, sep)), std::string(line.substr(sep + http::CRLF.size())));
           cursor = eol + http::CRLF.size();
@@ -712,7 +711,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
           }
           break;
         default:
-          throw exception("Invalid random value, update the test");
+          throw std::runtime_error("Invalid random value, update the test");
       }
     }
 

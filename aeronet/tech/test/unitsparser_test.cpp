@@ -5,8 +5,6 @@
 #include <stdexcept>
 #include <string_view>
 
-#include "exception.hpp"
-
 namespace aeronet {
 
 TEST(UnitsParser, ParseNumberOfBytes1kMultipliers) {
@@ -41,7 +39,7 @@ TEST(UnitsParser, ParseNumberOfBytesInvalidInput) {
 
 TEST(UnitsParser, BytesToStrBufferTooSmall) {
   char buf[6];
-  EXPECT_THROW(BytesToBuffer(123456789, buf), exception);
+  EXPECT_THROW(BytesToBuffer(123456789, buf), std::runtime_error);
 }
 
 TEST(UnitsParser, BytesToBufferNominalCase) {

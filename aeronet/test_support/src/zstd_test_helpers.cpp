@@ -1,9 +1,9 @@
 #include "zstd_test_helpers.hpp"
 
-#include "exception.hpp"
-
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
+
+#include <stdexcept>
 #endif
 
 #include <cstddef>
@@ -18,8 +18,8 @@ namespace aeronet::test {
 // unknown we return an empty string to signal inability (tests can decide how to handle).
 std::string zstdRoundTripDecompress([[maybe_unused]] std::string_view compressed,
                                     [[maybe_unused]] std::size_t expectedDecompressedSizeHint) {
-#ifdef AERONET_ENABLE_ZSTD
   std::string out;
+#ifdef AERONET_ENABLE_ZSTD
   if (compressed.empty()) {
     return out;
   }
@@ -28,7 +28,7 @@ std::string zstdRoundTripDecompress([[maybe_unused]] std::string_view compressed
     out.assign(frameSize, '\0');
     const std::size_t dsz = ZSTD_decompress(out.data(), out.size(), compressed.data(), compressed.size());
     if (ZSTD_isError(dsz) == 1) {
-      throw exception("ZSTD decompress error");
+      throw std::runtime_error("ZSTD decompress error");
     }
     out.resize(dsz);
     return out;
@@ -40,13 +40,11 @@ std::string zstdRoundTripDecompress([[maybe_unused]] std::string_view compressed
   out.assign(expectedDecompressedSizeHint, '\0');
   const std::size_t dsz = ZSTD_decompress(out.data(), out.size(), compressed.data(), compressed.size());
   if (ZSTD_isError(dsz) == 1) {
-    throw exception("ZSTD decompress error");
+    throw std::runtime_error("ZSTD decompress error");
   }
   out.resize(dsz);
-  return out;
-#else
-  return {};
 #endif
+  return out;
 }
 
 }  // namespace aeronet::test

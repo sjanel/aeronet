@@ -4,10 +4,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
-#include "exception.hpp"
 #include "raw-chars.hpp"
 
 namespace aeronet {
@@ -17,7 +17,7 @@ BrotliEncoderContext::BrotliEncoderContext(RawChars &sharedBuf, [[maybe_unused]]
     : _buf(&sharedBuf) {
   _state = BrotliEncoderCreateInstance(nullptr, nullptr, nullptr);
   if (_state == nullptr) {
-    throw exception("BrotliEncoderCreateInstance failed");
+    throw std::runtime_error("BrotliEncoderCreateInstance failed");
   }
   if (quality >= 0) {
     BrotliEncoderSetParameter(_state, BROTLI_PARAM_QUALITY, static_cast<uint32_t>(quality));
@@ -45,10 +45,11 @@ BrotliEncoderContext &BrotliEncoderContext::operator=(BrotliEncoderContext &&oth
 BrotliEncoderContext::~BrotliEncoderContext() { BrotliEncoderDestroyInstance(_state); }
 
 std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk, bool finish) {
+  auto &buf = *_buf;
+  buf.clear();
   if (_finished) {
-    return {};
+    return buf;
   }
-  _buf->clear();
   const uint8_t *nextIn = reinterpret_cast<const uint8_t *>(chunk.data());
   std::size_t availIn = chunk.size();
   // Shared streaming loop for both one-shot and chunked encoding.
@@ -58,9 +59,9 @@ std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize,
   //  complete).
   for (;;) {
     // Ensure we have at least encoderChunkSize free (RawChars will grow exponentially as needed)
-    _buf->ensureAvailableCapacity(encoderChunkSize);
-    uint8_t *nextOut = reinterpret_cast<uint8_t *>(_buf->data() + _buf->size());
-    std::size_t availOut = _buf->capacity() - _buf->size();
+    buf.ensureAvailableCapacity(encoderChunkSize);
+    uint8_t *nextOut = reinterpret_cast<uint8_t *>(buf.data() + buf.size());
+    std::size_t availOut = buf.capacity() - buf.size();
 
     // Only switch to FINISH operation after all input has been consumed when finish requested.
     BrotliEncoderOperation op;
@@ -71,10 +72,10 @@ std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize,
     }
 
     if (BrotliEncoderCompressStream(_state, op, &availIn, &nextIn, &availOut, &nextOut, nullptr) == 0) {
-      throw exception("BrotliEncoderCompressStream failed");
+      throw std::runtime_error("BrotliEncoderCompressStream failed");
     }
 
-    _buf->setSize(_buf->capacity() - availOut);
+    buf.setSize(buf.capacity() - availOut);
 
     if (!finish) {
       // Non-finishing mode: stop once caller's input fully consumed OR output buffer filled (loop continues on fill)
@@ -96,7 +97,7 @@ std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize,
   if (finish) {
     _finished = true;
   }
-  return *_buf;
+  return buf;
 }
 
 std::string_view BrotliEncoder::compressAll(std::size_t encoderChunkSize, std::string_view in) {
