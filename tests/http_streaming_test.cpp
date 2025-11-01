@@ -441,7 +441,7 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
   std::string raw = aeronet::test::recvUntilClosed(cnx.fd());
 
   // Should contain two HTTP/1.1 status lines, first 200 OK, second 201 Created
-  auto firstPos = raw.find("200 OK");
+  auto firstPos = raw.find("HTTP/1.1 200");
   auto secondPos = raw.find("201 Created");
   EXPECT_NE(std::string::npos, firstPos);
   EXPECT_NE(std::string::npos, secondPos);
@@ -623,7 +623,7 @@ TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDi
       "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";  // 64 'A'
   const std::size_t originalSize = kBody.size();
   ts.server.router().setDefault([&](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.statusCode(200);
+    writer.statusCode(aeronet::http::StatusCodeOK);
     writer.contentLength(originalSize);  // declares uncompressed length
     writer.writeBody(kBody.substr(0, 10));
     writer.writeBody(kBody.substr(10));
@@ -631,7 +631,6 @@ TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDi
   });
   std::string resp;
   rawWith(ts.port(), "GET", "Accept-Encoding: gzip\r\n", resp);
-  ts.stop();
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   // We expect a fixed-length header present.
   std::string clHeader = std::string("Content-Length: ") + std::to_string(originalSize) + "\r\n";
