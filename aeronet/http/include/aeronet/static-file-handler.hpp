@@ -1,11 +1,9 @@
 #pragma once
 
 #include <filesystem>
-#include <string_view>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/http-status-code.hpp"
 #include "aeronet/static-file-config.hpp"
 
 namespace aeronet {
@@ -21,8 +19,6 @@ class StaticFileHandler {
 
  private:
   [[nodiscard]] bool resolveTarget(const HttpRequest& request, std::filesystem::path& resolvedPath) const;
-
-  [[nodiscard]] static HttpResponse makeError(http::StatusCode code, std::string_view reason);
 
   std::filesystem::path _root;
   StaticFileConfig _config;

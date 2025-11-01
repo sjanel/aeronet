@@ -163,6 +163,85 @@ TEST_F(StaticFileHandlerTest, DirectoryIndexPresent) {
   EXPECT_EQ(resp.statusCode(), http::StatusCodeOK);
 }
 
+TEST_F(StaticFileHandlerTest, DirectoryListingEnabled) {
+  const auto dirPath = tmpDir.dirPath() / "assets";
+  std::filesystem::create_directories(dirPath);
+  {
+    std::ofstream(dirPath / "a.txt") << "a";
+    std::ofstream(dirPath / "b.txt") << "b";
+  }
+  std::filesystem::create_directory(dirPath / "nested");
+
+  StaticFileConfig cfg;
+  cfg.enableDirectoryIndex = true;
+  cfg.withDefaultIndex("");
+  StaticFileHandler handler(tmpDir.dirPath(), std::move(cfg));
+
+  buildReq("assets/");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+
+  EXPECT_EQ(resp.statusCode(), http::StatusCodeOK);
+  EXPECT_EQ(resp.headerValueOrEmpty("Cache-Control"), "no-cache");
+  const std::string_view body = resp.body();
+  EXPECT_TRUE(body.contains("Index of /assets/"));
+  EXPECT_TRUE(body.contains("a.txt"));
+  // The displayed name should not contain the literal '/', CSS adds it via a.dir::after.
+  EXPECT_TRUE(body.contains("nested"));
+  // But the href for directories should include the trailing slash. Find the link to "nested/".
+  ASSERT_TRUE(body.contains("href=\"nested/\"")) << "Directory listing body:\n" << body;
+}
+
+TEST_F(StaticFileHandlerTest, DirectoryListingRedirectsWithoutSlash) {
+  const auto dirPath = tmpDir.dirPath() / "assets";
+  std::filesystem::create_directory(dirPath);
+
+  StaticFileConfig cfg;
+  cfg.enableDirectoryIndex = true;
+  cfg.withDefaultIndex("");
+  StaticFileHandler handler(tmpDir.dirPath(), std::move(cfg));
+
+  buildReq("assets");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+
+  EXPECT_EQ(resp.statusCode(), http::StatusCodeMovedPermanently);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Location), "/assets/");
+}
+
+TEST_F(StaticFileHandlerTest, DirectoryListingHonorsHiddenFilesFlag) {
+  const auto dirPath = tmpDir.dirPath() / "assets";
+  std::filesystem::create_directories(dirPath);
+  std::ofstream(dirPath / ".secret") << "hidden";
+  std::ofstream(dirPath / "visible.txt") << "content";
+
+  StaticFileConfig cfgNoHidden;
+  cfgNoHidden.enableDirectoryIndex = true;
+  cfgNoHidden.withDefaultIndex("");
+  StaticFileHandler handlerNoHidden(tmpDir.dirPath(), cfgNoHidden);
+
+  buildReq("assets/");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse respHidden = handlerNoHidden(req);
+  const std::string_view bodyHidden = respHidden.body();
+  EXPECT_EQ(respHidden.statusCode(), http::StatusCodeOK);
+  EXPECT_FALSE(bodyHidden.contains(".secret"));
+  EXPECT_TRUE(bodyHidden.contains("visible.txt"));
+
+  StaticFileConfig cfgShowHidden;
+  cfgShowHidden.enableDirectoryIndex = true;
+  cfgShowHidden.showHiddenFiles = true;
+  cfgShowHidden.withDefaultIndex("");
+  StaticFileHandler handlerShowHidden(tmpDir.dirPath(), cfgShowHidden);
+
+  buildReq("assets/");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse respShow = handlerShowHidden(req);
+  const std::string_view bodyShow = respShow.body();
+  EXPECT_EQ(respShow.statusCode(), http::StatusCodeOK);
+  EXPECT_TRUE(bodyShow.contains(".secret"));
+}
+
 TEST_F(StaticFileHandlerTest, RangeValid) {
   using namespace aeronet::test;
   std::string fileContent = "0123456789";  // size 10
@@ -173,7 +252,7 @@ TEST_F(StaticFileHandlerTest, RangeValid) {
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
   EXPECT_EQ(resp.statusCode(), http::StatusCodePartialContent);
-  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentRange).find("bytes 2-5/") == 0);
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentRange).starts_with("bytes 2-5/"));
 }
 
 TEST_F(StaticFileHandlerTest, RangeUnsatisfiable) {

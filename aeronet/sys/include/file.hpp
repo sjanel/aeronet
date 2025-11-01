@@ -17,14 +17,15 @@ class File {
   File() noexcept = default;
 
   // Open a file by path. Throws on error.
-  // The returned File owns the underlying descriptor and will close it on destruction.
+  // On success, the returned File owns the underlying descriptor and will close it on destruction.
+  // On failure, operator bool() returns false.
   explicit File(const std::string& path, OpenMode mode = OpenMode::ReadOnly) : File(path.c_str(), mode) {}
 
   // Path overloads accepting string_view or C-string for convenience.
   explicit File(std::string_view path, OpenMode mode = OpenMode::ReadOnly);
   explicit File(const char* path, OpenMode mode = OpenMode::ReadOnly);
 
-  // Returns true when the File currently holds an open descriptor.
+  // Returns true when the File currently holds an opened descriptor.
   explicit operator bool() const noexcept { return static_cast<bool>(_fd); }
 
   // Return the file size in bytes. Throws std::runtime_error on failure.
