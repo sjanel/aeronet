@@ -23,7 +23,6 @@
 #include "aeronet/test_tls_client.hpp"
 #include "aeronet/test_tls_helper.hpp"
 #include "aeronet/test_util.hpp"
-#include "invalid_argument_exception.hpp"
 
 using namespace aeronet;
 using namespace std::chrono_literals;
@@ -482,5 +481,5 @@ TEST(HttpTlsVersionBounds, InvalidMinVersionThrows) {
   // Provide invalid version string -> expect construction failure.
   EXPECT_THROW(
       { aeronet::test::TlsTestServer ts({}, [](aeronet::HttpServerConfig& cfg) { cfg.withTlsMinVersion("TLS1.1"); }); },
-      aeronet::invalid_argument);
+      std::invalid_argument);
 }

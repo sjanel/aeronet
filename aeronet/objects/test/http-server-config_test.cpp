@@ -2,7 +2,7 @@
 
 #include <gtest/gtest.h>
 
-#include "invalid_argument_exception.hpp"
+#include <stdexcept>
 
 namespace aeronet {
 
@@ -14,15 +14,15 @@ TEST(HttpServerConfigTest, HeaderKey) {
   EXPECT_NO_THROW(config.validate());
 
   config.globalHeaders.emplace_back("", "value");  // empty key
-  EXPECT_THROW(config.validate(), invalid_argument);
+  EXPECT_THROW(config.validate(), std::invalid_argument);
   config.globalHeaders.pop_back();
 
   config.globalHeaders.emplace_back("Invalid Char!", "value");  // invalid char '!'
-  EXPECT_THROW(config.validate(), invalid_argument);
+  EXPECT_THROW(config.validate(), std::invalid_argument);
   config.globalHeaders.pop_back();
 
   config.globalHeaders.emplace_back("Another@Invalid", "value");  // invalid char '@'
-  EXPECT_THROW(config.validate(), invalid_argument);
+  EXPECT_THROW(config.validate(), std::invalid_argument);
   config.globalHeaders.pop_back();
 
   config.globalHeaders.emplace_back("X-Valid-Again", "value");  // valid again
@@ -37,7 +37,7 @@ TEST(HttpServerConfigTest, CompressionConfig) {
   EXPECT_NO_THROW(config.validate());
 
   config.compression.zlib.level = 42;
-  EXPECT_THROW(config.validate(), invalid_argument);
+  EXPECT_THROW(config.validate(), std::invalid_argument);
   config.compression.zlib.level = 1;  // reset
 #endif
 
@@ -46,7 +46,7 @@ TEST(HttpServerConfigTest, CompressionConfig) {
   EXPECT_NO_THROW(config.validate());
 
   config.compression.zstd.compressionLevel = 30;
-  EXPECT_THROW(config.validate(), invalid_argument);
+  EXPECT_THROW(config.validate(), std::invalid_argument);
 #endif
 }
 

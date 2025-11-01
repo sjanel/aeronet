@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <future>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -16,7 +17,6 @@
 #include "aeronet/http-server.hpp"
 #include "aeronet/multi-http-server.hpp"
 #include "aeronet/test_util.hpp"
-#include "invalid_argument_exception.hpp"
 
 using namespace std::chrono_literals;
 
@@ -406,7 +406,7 @@ TEST(MultiHttpServer, MoveConstruction) {
 // 4. Invalid thread-count explicit constructor (compile-time / runtime guard)
 TEST(MultiHttpServer, InvalidExplicitThreadCountThrows) {
   aeronet::HttpServerConfig cfg;
-  EXPECT_THROW(aeronet::MultiHttpServer(cfg, 0), aeronet::invalid_argument);  // 0 illegal here
+  EXPECT_THROW(aeronet::MultiHttpServer(cfg, 0), std::invalid_argument);  // 0 illegal here
 }
 
 // 5. Default constructor + move assignment BEFORE start (moving a running server now asserts)

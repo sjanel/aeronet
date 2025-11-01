@@ -5,6 +5,7 @@
 #include <concepts>
 #include <limits>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -12,7 +13,7 @@
 
 #include "exception.hpp"
 #include "fixedcapacityvector.hpp"
-#include "invalid_argument_exception.hpp"
+#include "log.hpp"
 #include "nchars.hpp"
 
 namespace aeronet {
@@ -50,17 +51,13 @@ Integral StringToIntegral(const char *begPtr, std::size_t len) {
   const auto [ptr, errc] = std::from_chars(begPtr, endPtr, ret);
 
   if (errc != std::errc()) {
-    if (errc == std::errc::result_out_of_range) {
-      throw invalid_argument("'{}' would produce an out of range {}signed {} bits integral",
-                             std::string_view(begPtr, len), std::is_signed_v<Integral> ? "" : "un",
-                             CHAR_BIT * sizeof(Integral));
-    }
-    throw invalid_argument("Unable to decode '{}' into integral", std::string_view(begPtr, len));
+    log::critical("Unable to decode '{}' into integral", std::string_view(begPtr, len));
+    throw std::invalid_argument("StringToIntegral conversion failed");
   }
 
   if (ptr != endPtr) {
-    throw invalid_argument("Only {} chars from {} decoded into integral {}", ptr - begPtr,
-                           std::string_view(begPtr, len), ret);
+    log::error("Only '{}' chars from '{}' decoded into integral '{}'", ptr - begPtr, std::string_view(begPtr, len),
+               ret);
   }
   return ret;
 }
