@@ -4,12 +4,12 @@
 #include <unistd.h>
 
 #include <chrono>
-#include <cstdint>
 #include <functional>
 #include <utility>
 #include <vector>
 
 #include "base-fd.hpp"
+#include "event.hpp"
 
 using namespace aeronet;
 
@@ -23,20 +23,20 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
   BaseFd readEnd(fds[0]);
   BaseFd writeEnd(fds[1]);
 
-  loop.add_or_throw(readEnd.fd(), EPOLLIN);
+  loop.add_or_throw(EventLoop::EventFd{readEnd.fd(), EventIn});
 
   bool invoked = false;
   // write some data first so epoll_wait has something to return immediately
   const char ch = 'x';
   ASSERT_EQ(::write(writeEnd.fd(), &ch, 1), 1);
 
-  int nb = loop.poll([&](int fd, uint32_t ev) {
-    EXPECT_EQ(fd, readEnd.fd());
-    EXPECT_TRUE(ev & EPOLLIN);
+  int nb = loop.poll([&](EventLoop::EventFd event) {
+    EXPECT_EQ(event.fd, readEnd.fd());
+    EXPECT_EQ(event.eventBmp, EventIn);
     invoked = true;
     // consume the byte so subsequent polls don't repeatedly report it
     char tmp;
-    ::read(fd, &tmp, 1);
+    ::read(event.fd, &tmp, 1);
   });
   EXPECT_GT(nb, 0);
   EXPECT_TRUE(invoked);
@@ -51,7 +51,7 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
     ASSERT_EQ(pipe(ints), 0);
     BaseFd rp(ints[0]);
     BaseFd wp(ints[1]);
-    loop.add_or_throw(rp.fd(), EPOLLIN);
+    loop.add_or_throw(EventLoop::EventFd{rp.fd(), EventIn});
     // write one byte so poll has something to report
     char writeByte = 'a';
     ASSERT_EQ(::write(wp.fd(), &writeByte, 1), 1);
@@ -60,11 +60,11 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
 
   // Poll once and count events handled
   int handled = 0;
-  nb = loop.poll([&](int fd, uint32_t ev) {
-    ASSERT_TRUE(ev & EPOLLIN);
+  nb = loop.poll([&](EventLoop::EventFd event) {
+    ASSERT_EQ(event.eventBmp, EventIn);
     ++handled;
     char tmp;
-    ::read(fd, &tmp, 1);
+    ::read(event.fd, &tmp, 1);
   });
 
   EXPECT_EQ(nb, static_cast<int>(handled));
@@ -99,17 +99,16 @@ TEST(EventLoopTest, NoShrinkPolicy) {
     ASSERT_EQ(pipe(fds), 0);
     BaseFd rp(fds[0]);
     BaseFd wp(fds[1]);
-    loop.add_or_throw(rp.fd(), EPOLLIN);
+    loop.add_or_throw(EventLoop::EventFd{rp.fd(), EventIn});
     char writeByte = 'b';
     ASSERT_EQ(::write(wp.fd(), &writeByte, 1), 1);
     pipes.emplace_back(std::move(rp), std::move(wp));
   }
 
   // Poll once to cause growth
-  int first = loop.poll([](int fd, uint32_t ev) {
-    (void)ev;
+  int first = loop.poll([](EventLoop::EventFd event) {
     char tmp;
-    ::read(fd, &tmp, 1);
+    ::read(event.fd, &tmp, 1);
   });
   EXPECT_GT(first, 0);
   auto capacityAfterGrow = loop.capacity();
@@ -117,7 +116,10 @@ TEST(EventLoopTest, NoShrinkPolicy) {
 
   // Now repeatedly poll (without changing set) and ensure capacity doesn't shrink
   for (int i = 0; i < 20; ++i) {
-    int pollCount = loop.poll([](int, uint32_t) {});
+    int pollCount = loop.poll([](EventLoop::EventFd event) {
+      char tmp;
+      ::read(event.fd, &tmp, 1);
+    });
     (void)pollCount;  // ignore returned ready count; we care about capacity
     EXPECT_GE(loop.capacity(), capacityAfterGrow);
   }
