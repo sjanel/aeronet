@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
@@ -27,6 +28,28 @@ class Router {
   // Streaming request handler type: receives a const HttpRequest& and an HttpResponseWriter&
   // Use it for large or long-lived responses where sending partial data before completion is beneficial.
   using StreamingHandler = std::function<void(const HttpRequest&, HttpResponseWriter&)>;
+
+  // Object that stores handlers and options for a specific group of paths.
+  class PathHandlerEntry {
+   public:
+    // Attach given corsPolicy to the path handler entry.
+    PathHandlerEntry& cors(CorsPolicy corsPolicy) {
+      this->corsPolicy = std::move(corsPolicy);
+      return *this;
+    }
+
+   private:
+    friend class Router;
+
+    PathHandlerEntry() noexcept = default;
+
+    http::MethodBmp normalMethodBmp{};
+    http::MethodBmp streamingMethodBmp{};
+    std::array<RequestHandler, http::kNbMethods> normalHandlers{};
+    std::array<StreamingHandler, http::kNbMethods> streamingHandlers{};
+    // Optional per-route CorsPolicy stored by value. If set, match() will return a pointer to it.
+    CorsPolicy corsPolicy;
+  };
 
   // Creates an empty Router with a 'Normalize' trailing policy.
   //
@@ -93,20 +116,28 @@ class Router {
   //
   // A terminal wildcard `*` is supported (for example: `/files/*`) but must be the
   // final segment of the pattern and does not produce path-parameter captures.
-  void setPath(http::MethodBmp methods, std::string path, RequestHandler handler);
+  // Returns the PathHandlerEntry allowing further configuration (e.g. per-route CORS policy).
+  // The returned reference is valid until the next call to setPath.
+  PathHandlerEntry& setPath(http::MethodBmp methods, std::string path, RequestHandler handler);
 
   // Register a handler for a specific absolute path and a unique allowed HTTP method.
   // See the multi-method overload for details on pattern syntax and capture semantics.
-  void setPath(http::Method method, std::string path, RequestHandler handler);
+  // Returns the PathHandlerEntry allowing further configuration (e.g. per-route CORS policy).
+  // The returned reference is valid until the next call to setPath.
+  PathHandlerEntry& setPath(http::Method method, std::string path, RequestHandler handler);
 
   // Register a streaming handler for the provided path and methods. See setPath overloads
   // for general behavior notes. Streaming handlers receive an HttpResponseWriter and may
   // emit response bytes incrementally.
-  void setPath(http::MethodBmp methods, std::string path, StreamingHandler handler);
+  // Returns the PathHandlerEntry allowing further configuration (e.g. per-route CORS policy).
+  // The returned reference is valid until the next call to setPath.
+  PathHandlerEntry& setPath(http::MethodBmp methods, std::string path, StreamingHandler handler);
 
   // Register a streaming handler for the provided path and single method. See the multi-method
   // overload for details on pattern syntax, parameter limits, and wildcard rules.
-  void setPath(http::Method method, std::string path, StreamingHandler handler);
+  // Returns the PathHandlerEntry allowing further configuration (e.g. per-route CORS policy).
+  // The returned reference is valid until the next call to setPath.
+  PathHandlerEntry& setPath(http::Method method, std::string path, StreamingHandler handler);
 
   struct PathParamCapture {
     std::string_view key;
@@ -131,6 +162,9 @@ class Router {
     // Captured path parameters for the matched route, if any.
     // The span is valid until next call to match() on the same Router instance.
     std::span<const PathParamCapture> pathParams;
+
+    // If set, points to the per-route CorsPolicy stored in the matched route entry; nullptr if none.
+    const CorsPolicy* pCorsPolicy{nullptr};
   };
 
   // Match the provided `path` for `method` and return the matching handlers (or a
@@ -165,13 +199,6 @@ class Router {
   [[nodiscard]] http::MethodBmp allowedMethods(std::string_view path);
 
  private:
-  struct PathHandlerEntry {
-    http::MethodBmp normalMethodBmp{};
-    http::MethodBmp streamingMethodBmp{};
-    std::array<RequestHandler, http::kNbMethods> normalHandlers{};
-    std::array<StreamingHandler, http::kNbMethods> streamingHandlers{};
-  };
-
   struct SegmentPart {
     enum class Kind : std::uint8_t { Literal, Param };
 
@@ -228,14 +255,15 @@ class Router {
     CompiledRoute* route{nullptr};
   };
 
-  void setPathInternal(http::MethodBmp methods, std::string path, RequestHandler handler, StreamingHandler streaming);
+  PathHandlerEntry& setPathInternal(http::MethodBmp methods, std::string path, RequestHandler handler,
+                                    StreamingHandler streaming);
 
-  static CompiledRoute compilePattern(std::string_view path);
+  static CompiledRoute CompilePattern(std::string_view path);
 
   RouteNode* ensureLiteralChild(RouteNode& node, std::string_view segmentLiteral);
   RouteNode* ensureDynamicChild(RouteNode& node, const CompiledSegment& segmentPattern);
 
-  static void assignHandlers(RouteNode& node, http::MethodBmp methods, RequestHandler requestHandler,
+  static void AssignHandlers(RouteNode& node, http::MethodBmp methods, RequestHandler requestHandler,
                              StreamingHandler streamingHandler, bool registeredWithTrailingSlash);
 
   void ensureRouteMetadata(RouteNode& node, CompiledRoute&& route);
@@ -251,7 +279,7 @@ class Router {
   const PathHandlerEntry* computePathHandlerEntry(const RouteNode& matchedNode, bool pathHasTrailingSlash,
                                                   RoutingResult::RedirectSlashMode& redirectSlashMode) const;
 
-  static void SetMatchedHandler(http::Method method, const PathHandlerEntry& entry, RoutingResult& result);
+  void setMatchedHandler(http::Method method, const PathHandlerEntry& entry, RoutingResult& result) const;
 
   void cloneFrom(const Router& other);
 

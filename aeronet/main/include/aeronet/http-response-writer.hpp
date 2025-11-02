@@ -17,6 +17,7 @@
 namespace aeronet {
 
 class HttpServer;
+class CorsPolicy;
 
 class HttpResponseWriter {
  public:
@@ -165,7 +166,8 @@ class HttpResponseWriter {
  private:
   friend class HttpServer;
 
-  HttpResponseWriter(HttpServer& srv, int fd, bool headRequest, bool requestConnClose, Encoding compressionFormat);
+  HttpResponseWriter(HttpServer& srv, int fd, bool headRequest, bool requestConnClose, Encoding compressionFormat,
+                     const CorsPolicy* pCorsPolicy);
 
   void ensureHeadersSent();
   void emitChunk(std::string_view data);
@@ -196,6 +198,7 @@ class HttpResponseWriter {
   std::unique_ptr<EncoderContext> _activeEncoderCtx;  // streaming context
   RawChars _preCompressBuffer;                        // threshold buffering before activation
   RawChars _trailers;                                 // Trailer headers (RFC 7230 §4.1.2) buffered until end()
+  const CorsPolicy* _pCorsPolicy{nullptr};
 };
 
 }  // namespace aeronet

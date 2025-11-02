@@ -93,7 +93,11 @@ jobs:
 
       - name: Run unit tests
         run: |
-          ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 300 -j $(nproc)
+          NUM_PROC=$(nproc)
+          # Use half the CPUs for parallelism, but at least 1. Keep this explicit for readability.
+          JOBS=$(( (NUM_PROC / 2) > 0 ? (NUM_PROC / 2) : 1 ))
+          echo "Running ctest with -j=${JOBS} (NUM_PROC=${NUM_PROC})"
+          ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 100 -j ${JOBS}
 
       - name: Summary
         if: always()
