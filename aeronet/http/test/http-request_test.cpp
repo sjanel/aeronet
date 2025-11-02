@@ -4,7 +4,6 @@
 
 #include <cstddef>
 #include <initializer_list>
-#include <string>
 #include <string_view>
 #include <vector>
 
@@ -20,25 +19,30 @@ namespace aeronet {
 
 namespace {
 // Helper to build a raw HTTP request buffer we can feed into HttpRequest::setHead
-std::string BuildRaw(std::string_view method, std::string_view target, std::string_view version = "HTTP/1.1",
-                     std::string_view extraHeaders = "") {
-  std::string str;
-  str.append(method).push_back(' ');
-  str.append(target).push_back(' ');
-  str.append(version).append(http::CRLF);
+RawChars BuildRaw(std::string_view method, std::string_view target, std::string_view version = "HTTP/1.1",
+                  std::string_view extraHeaders = "", bool includeFinalCRLF = true) {
+  RawChars str;
+  str.append(method);
+  str.push_back(' ');
+  str.append(target);
+  str.push_back(' ');
+  str.append(version);
+  str.append(http::CRLF);
   str.append("Host: h");
   str.append(http::CRLF);
   str.append(extraHeaders);
-  str.append(http::CRLF);
+  if (includeFinalCRLF) {
+    str.append(http::CRLF);
+  }
   return str;
 }
 }  // namespace
 
 class HttpRequestTest : public ::testing::Test {
  protected:
-  http::StatusCode reqSet(std::string_view str, bool mergeAllowedForUnknownRequestHeaders = true,
+  http::StatusCode reqSet(RawChars raw, bool mergeAllowedForUnknownRequestHeaders = true,
                           std::size_t maxHeaderSize = 4096UL) {
-    cs.inBuffer.assign(str.data(), str.size());
+    cs.inBuffer = std::move(raw);
     RawChars tmpBuffer;
     return req.initTrySetHead(cs, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders, nullptr);
   }
@@ -54,13 +58,12 @@ class HttpRequestTest : public ::testing::Test {
 };
 
 TEST_F(HttpRequestTest, InvalidRequest) {
-  EXPECT_EQ(reqSet("GET / HTTP\r\n"), http::StatusCodeBadRequest);
-  EXPECT_EQ(reqSet("GET / HTTP1.1"), 0);
+  EXPECT_EQ(reqSet(BuildRaw("GET", "/", "HTTP")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(BuildRaw("GET", "/", "HTTP/1.1", "Server: aeronet", false)), 0);
 }
 
 TEST_F(HttpRequestTest, ParseBasicPathAndVersion) {
-  auto raw = BuildRaw("GET", "/abc", "HTTP/1.1");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/abc", "HTTP/1.1"));
   EXPECT_EQ(st, http::StatusCodeOK);
   EXPECT_EQ(req.method(), http::Method::GET);
   EXPECT_EQ(req.path(), "/abc");
@@ -70,8 +73,7 @@ TEST_F(HttpRequestTest, ParseBasicPathAndVersion) {
 
 TEST_F(HttpRequestTest, QueryParamsDecodingPlusAndPercent) {
   // a=1+2&b=hello%20world&c=%zz (malformed % sequence left verbatim for c's value)
-  auto raw = BuildRaw("GET", "/p?a=1+2&b=hello%20world&c=%zz");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p?a=1+2&b=hello%20world&c=%zz"));
   ASSERT_EQ(st, http::StatusCodeOK);
   std::vector<http::HeaderView> seen;
   for (auto [k, v] : req.queryParams()) {
@@ -87,8 +89,7 @@ TEST_F(HttpRequestTest, QueryParamsDecodingPlusAndPercent) {
 }
 
 TEST_F(HttpRequestTest, EmptyAndMissingValues) {
-  auto raw = BuildRaw("GET", "/p?k1=&k2&=v");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p?k1=&k2&=v"));
   ASSERT_EQ(st, http::StatusCodeOK);
   std::vector<http::HeaderView> seen;
   for (auto [k, v] : req.queryParams()) {
@@ -104,8 +105,7 @@ TEST_F(HttpRequestTest, EmptyAndMissingValues) {
 }
 
 TEST_F(HttpRequestTest, DuplicateKeysPreservedOrder) {
-  auto raw = BuildRaw("GET", "/p?x=1&x=2&x=3");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p?x=1&x=2&x=3"));
   ASSERT_EQ(st, http::StatusCodeOK);
   std::vector<std::string_view> values;
   for (auto [k, v] : req.queryParams()) {
@@ -120,8 +120,7 @@ TEST_F(HttpRequestTest, DuplicateKeysPreservedOrder) {
 }
 
 TEST_F(HttpRequestTest, InvalidPathEscapeCauses400) {
-  auto raw = BuildRaw("GET", "/bad%zz");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/bad%zz"));
   EXPECT_EQ(st, http::StatusCodeBadRequest);
 }
 
@@ -132,13 +131,12 @@ TEST_F(HttpRequestTest, HeaderAccessorsBasicAndEmptyVsMissing) {
   //  - value with trailing spaces (X-Trim)
   //  - value with leading & trailing mixed whitespace (X-Spaces)
   //  - lowercase key to verify case-insensitive lookup (content-length)
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "X-Test: Value\r\n"
-                      "X-Empty:\r\n"
-                      "X-Trim: value   \r\n"
-                      "X-Spaces:    abc \t  \r\n"
-                      "content-length: 0\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "X-Test: Value\r\n"
+                            "X-Empty:\r\n"
+                            "X-Trim: value   \r\n"
+                            "X-Spaces:    abc \t  \r\n"
+                            "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
   // Existing normal header
@@ -165,8 +163,7 @@ TEST_F(HttpRequestTest, HeaderAccessorsBasicAndEmptyVsMissing) {
 }
 
 TEST_F(HttpRequestTest, HeaderAccessorsAbsentHeaders) {
-  auto raw = BuildRaw("GET", "/p");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p"));
   ASSERT_EQ(st, http::StatusCodeOK);
   EXPECT_EQ(req.headerValueOrEmpty("Host"), "h");  // baseline sanity
   EXPECT_EQ(req.headerValueOrEmpty("X-Unknown"), std::string_view());
@@ -174,91 +171,84 @@ TEST_F(HttpRequestTest, HeaderAccessorsAbsentHeaders) {
 }
 
 TEST_F(HttpRequestTest, MergeConsecutiveHeaders) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "X-Test: Value\r\n"
-                      "H:v1\r\n"
-                      "H:v2\r\n"
-                      "X-Spaces:    abc \t  \r\n"
-                      "content-length: 0\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "X-Test: Value\r\n"
+                            "H:v1\r\n"
+                            "H:v2\r\n"
+                            "X-Spaces:    abc \t  \r\n"
+                            "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
   checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
 }
 
 TEST_F(HttpRequestTest, MergeConsecutiveHeadersWithSpaces) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "X-Test: Value\r\n"
-                      "H: v1  \r\n"
-                      "H: v2\r\n"
-                      "X-Spaces:    abc \t  \r\n"
-                      "content-length: 0\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "X-Test: Value\r\n"
+                            "H: v1  \r\n"
+                            "H: v2\r\n"
+                            "X-Spaces:    abc \t  \r\n"
+                            "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
   checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
 }
 
 TEST_F(HttpRequestTest, MergeNonConsecutiveHeaders) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "X-Test: Value\r\n"
-                      "H:v1\r\n"
-                      "X-Spaces:    abc \t  \r\n"
-                      "H:v2\r\n"
-                      "content-length: 0\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "X-Test: Value\r\n"
+                            "H:v1\r\n"
+                            "X-Spaces:    abc \t  \r\n"
+                            "H:v2\r\n"
+                            "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
   checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
 }
 
 TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithSpaces) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "X-Test: Value\r\n"
-                      "H: v1  \r\n"
-                      "X-Spaces:    abc \t  \r\n"
-                      "H: v2\r\n"
-                      "content-length: 0\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "X-Test: Value\r\n"
+                            "H: v1  \r\n"
+                            "X-Spaces:    abc \t  \r\n"
+                            "H: v2\r\n"
+                            "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
   checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
 }
 
 TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithEmptyOnFirst) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "X-Test: Value\r\n"
-                      "H:  \r\n"
-                      "X-Spaces:    abc \t  \r\n"
-                      "H:v2\r\n"
-                      "content-length: 0\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "X-Test: Value\r\n"
+                            "H:  \r\n"
+                            "X-Spaces:    abc \t  \r\n"
+                            "H:v2\r\n"
+                            "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
   checkHeaders({{"X-Test", "Value"}, {"H", "v2"}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
 }
 
 TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithEmptyOnSecond) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "X-Test: Value\r\n"
-                      "H: v1  \r\n"
-                      "X-Spaces:    abc \t  \r\n"
-                      "H:\r\n"
-                      "content-length: 0\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "X-Test: Value\r\n"
+                            "H: v1  \r\n"
+                            "X-Spaces:    abc \t  \r\n"
+                            "H:\r\n"
+                            "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
   checkHeaders({{"X-Test", "Value"}, {"H", "v1"}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
 }
 
 TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersBothEmpty) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "X-Test: Value\r\n"
-                      "H:   \r\n"
-                      "X-Spaces:    abc \t  \r\n"
-                      "H:\r\n"
-                      "content-length: 0\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "X-Test: Value\r\n"
+                            "H:   \r\n"
+                            "X-Spaces:    abc \t  \r\n"
+                            "H:\r\n"
+                            "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
   checkHeaders({{"X-Test", "Value"}, {"H", ""}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
@@ -267,16 +257,15 @@ TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersBothEmpty) {
 }
 
 TEST_F(HttpRequestTest, MergeMultipleCookies) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "X-Test: Value\r\n"
-                      "Cookie:  cookie1 \r\n"
-                      "X-Spaces:    abc \t  \r\n"
-                      "Cookie:\r\n"
-                      "Cookie:cookie2\r\n"
-                      "Cookie:cookie3\r\n"
-                      "content-length: 0\r\n"
-                      "Cookie: cookie4\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "X-Test: Value\r\n"
+                            "Cookie:  cookie1 \r\n"
+                            "X-Spaces:    abc \t  \r\n"
+                            "Cookie:\r\n"
+                            "Cookie:cookie2\r\n"
+                            "Cookie:cookie3\r\n"
+                            "content-length: 0\r\n"
+                            "Cookie: cookie4\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
   checkHeaders({{"X-Test", "Value"},
@@ -306,94 +295,84 @@ TEST_F(HttpRequestTest, MergeMultipleHeaders) {
                 {"Content-Length", "0"}});
 
   // merge not allowed for custom header X-Spaces
-  st = reqSet(raw, false);
+  st = reqSet(std::move(raw), false);
   ASSERT_EQ(st, http::StatusCodeBadRequest);
 }
 
 TEST_F(HttpRequestTest, AcceptHeaderCommaMerge) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "Accept: text/plain\r\n"
-                      "Accept: text/html\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "Accept: text/plain\r\n"
+                            "Accept: text/html\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
   EXPECT_EQ(req.headerValueOrEmpty("Accept"), "text/plain,text/html");
 }
 
 TEST_F(HttpRequestTest, AcceptHeaderSkipEmptySecond) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "Accept: text/plain\r\n"
-                      "Accept:   \r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "Accept: text/plain\r\n"
+                            "Accept:   \r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
   EXPECT_EQ(req.headerValueOrEmpty("Accept"), "text/plain");
 }
 
 TEST_F(HttpRequestTest, AcceptHeaderEmptyFirstTakesSecond) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "Accept:    \r\n"
-                      "Accept: text/html\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "Accept:    \r\n"
+                            "Accept: text/html\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
   EXPECT_EQ(req.headerValueOrEmpty("Accept"), "text/html");
 }
 
 TEST_F(HttpRequestTest, UserAgentSpaceMerge) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "User-Agent: Foo  \r\n"
-                      "User-Agent:   Bar   \r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "User-Agent: Foo  \r\n"
+                            "User-Agent:   Bar   \r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
   EXPECT_EQ(req.headerValueOrEmpty("User-Agent"), "Foo Bar");
 }
 
 TEST_F(HttpRequestTest, AuthorizationOverrideKeepsLast) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "Authorization: Bearer first\r\n"
-                      "Authorization: Bearer second\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "Authorization: Bearer first\r\n"
+                            "Authorization: Bearer second\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
   EXPECT_EQ(req.headerValueOrEmpty("Authorization"), "Bearer second");
 }
 
 TEST_F(HttpRequestTest, AuthorizationEmptyFirstThenValue) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "Authorization:   \r\n"
-                      "Authorization: Bearer token\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "Authorization:   \r\n"
+                            "Authorization: Bearer token\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
   EXPECT_EQ(req.headerValueOrEmpty("Authorization"), "Bearer token");
 }
 
 TEST_F(HttpRequestTest, AuthorizationOverrideCaseInsensitive) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "aUtHoRiZaTiOn: Bearer First\r\n"
-                      "AUTHORIZATION: Bearer Second\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "aUtHoRiZaTiOn: Bearer First\r\n"
+                            "AUTHORIZATION: Bearer Second\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
   EXPECT_EQ(req.headerValueOrEmpty("Authorization"), "Bearer Second");
 }
 
 TEST_F(HttpRequestTest, RangeOverrideKeepsLast) {
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
-                      "Range: bytes=0-99\r\n"
-                      "Range: bytes=100-199\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                            "Range: bytes=0-99\r\n"
+                            "Range: bytes=100-199\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
   EXPECT_EQ(req.headerValueOrEmpty("Range"), "bytes=100-199");
 }
 
 TEST_F(HttpRequestTest, DuplicateContentLengthProduces400) {
-  auto raw = BuildRaw("POST", "/p", "HTTP/1.1",
-                      "Content-Length: 5\r\n"
-                      "Content-Length: 5\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("POST", "/p", "HTTP/1.1",
+                            "Content-Length: 5\r\n"
+                            "Content-Length: 5\r\n"));
   EXPECT_EQ(st, http::StatusCodeBadRequest);
 }
 
 TEST_F(HttpRequestTest, DuplicateHostProduces400) {
   // BuildRaw already injects one Host header; we append another duplicate -> 400
-  auto raw = BuildRaw("GET", "/p", "HTTP/1.1", "Host: other\r\n");
-  auto st = reqSet(raw);
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1", "Host: other\r\n"));
   EXPECT_EQ(st, http::StatusCodeBadRequest);
 }
 

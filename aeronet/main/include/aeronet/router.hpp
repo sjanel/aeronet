@@ -181,7 +181,7 @@ class Router {
 
     [[nodiscard]] Kind kind() const noexcept { return literal.empty() ? Kind::Param : Kind::Literal; }
 
-    RawChars literal;  // non empty when Kind::Literal
+    SmallRawChars literal;  // non empty when Kind::Literal
   };
 
   struct CompiledSegment {
@@ -193,7 +193,7 @@ class Router {
 
     [[nodiscard]] Type type() const noexcept { return literal.empty() ? Type::Pattern : Type::Literal; }
 
-    RawChars literal;           // non empty when Type::Literal
+    SmallRawChars literal;      // non empty when Type::Literal
     vector<SegmentPart> parts;  // used when Type::Pattern
   };
 

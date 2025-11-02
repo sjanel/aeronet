@@ -4,8 +4,8 @@
 #include <string>
 #include <vector>
 
-#include "concatenated-strings.hpp"
 #include "major-minor-version.hpp"
+#include "static-concatenated-strings.hpp"
 
 namespace aeronet {
 
@@ -84,7 +84,7 @@ class TLSConfig {
  private:
   // PEM server certificate, PEM private key, In-memory PEM certificate, In-memory PEM private key, Optional OpenSSL
   // cipher list string
-  ConcatenatedStrings<5> _tlsStrings;  // Stored TLS-related strings
+  StaticConcatenatedStrings<5> _tlsStrings;  // Stored TLS-related strings
 };
 
 }  // namespace aeronet
