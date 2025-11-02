@@ -37,6 +37,7 @@
 #include "connection-state.hpp"
 #include "errno_throw.hpp"
 #include "event-loop.hpp"
+#include "event.hpp"
 #include "flat-hash-map.hpp"
 #include "http-error-build.hpp"
 #include "log.hpp"
@@ -231,9 +232,9 @@ void RecordModFailure(auto cnxIt, uint32_t events, const char* ctx, auto& stats)
 }  // namespace
 
 bool HttpServer::enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) {
-  static constexpr uint32_t kEvents = EPOLLIN | EPOLLOUT | EPOLLET;
+  static constexpr EventBmp kEvents = EventIn | EventOut | EventEt;
 
-  if (_eventLoop.mod(cnxIt->first.fd(), kEvents)) {
+  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) {
     if (!cnxIt->second.waitingWritable) {
       cnxIt->second.waitingWritable = true;
       ++_stats.deferredWriteEvents;
@@ -245,8 +246,8 @@ bool HttpServer::enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) 
 }
 
 bool HttpServer::disableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) {
-  static constexpr uint32_t kEvents = EPOLLIN | EPOLLET;
-  if (_eventLoop.mod(cnxIt->first.fd(), kEvents)) {
+  static constexpr EventBmp kEvents = EventIn | EventEt;
+  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) {
     cnxIt->second.waitingWritable = false;
     return true;
   }
@@ -619,7 +620,7 @@ void HttpServer::init() {
 
   _listenSocket = Socket(SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC);
 
-  const int listenFdLocal = _listenSocket.fd();
+  const int listenFd = _listenSocket.fd();
 
   // Initialize TLS context if requested (OpenSSL build).
   if (_config.tls.enabled) {
@@ -632,12 +633,12 @@ void HttpServer::init() {
 #endif
   }
   static constexpr int enable = 1;
-  auto errc = ::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
+  auto errc = ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
   if (errc < 0) {
     throw_errno("setsockopt(SO_REUSEADDR) failed");
   }
   if (_config.reusePort) {
-    errc = ::setsockopt(listenFdLocal, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));
+    errc = ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));
     if (errc < 0) {
       throw_errno("setsockopt(SO_REUSEPORT) failed");
     }
@@ -646,24 +647,24 @@ void HttpServer::init() {
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
   addr.sin_port = htons(_config.port);
-  errc = ::bind(listenFdLocal, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+  errc = ::bind(listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
   if (errc < 0) {
     throw_errno("bind failed");
   }
-  if (::listen(listenFdLocal, SOMAXCONN) < 0) {
+  if (::listen(listenFd, SOMAXCONN) < 0) {
     throw_errno("listen failed");
   }
   if (_config.port == 0) {
     sockaddr_in actual{};
     socklen_t alen = sizeof(actual);
-    errc = ::getsockname(listenFdLocal, reinterpret_cast<sockaddr*>(&actual), &alen);
+    errc = ::getsockname(listenFd, reinterpret_cast<sockaddr*>(&actual), &alen);
     if (errc == -1) {
       throw_errno("getsockname failed");
     }
     _config.port = ntohs(actual.sin_port);
   }
-  _eventLoop.add_or_throw(listenFdLocal, EPOLLIN);
-  _eventLoop.add_or_throw(_lifecycle.wakeupFd.fd(), EPOLLIN);
+  _eventLoop.add_or_throw(EventLoop::EventFd{listenFd, EventIn});
+  _eventLoop.add_or_throw(EventLoop::EventFd{_lifecycle.wakeupFd.fd(), EventIn});
 
   // Register builtin probes handlers if enabled in config
   if (_config.builtinProbes.enabled) {
@@ -698,21 +699,21 @@ void HttpServer::prepareRun() {
 void HttpServer::eventLoop() {
   sweepIdleConnections();
 
-  int ready = _eventLoop.poll([this](int fd, uint32_t ev) {
-    if (fd == _listenSocket.fd()) {
+  int ready = _eventLoop.poll([this](EventLoop::EventFd eventFd) {
+    if (eventFd.fd == _listenSocket.fd()) {
       if (_lifecycle.acceptingConnections()) {
         acceptNewConnections();
       } else {
         log::warn("Not accepting new incoming connection");
       }
-    } else if (fd == _lifecycle.wakeupFd.fd()) {
+    } else if (eventFd.fd == _lifecycle.wakeupFd.fd()) {
       _lifecycle.wakeupFd.read();
     } else {
-      if (ev & EPOLLOUT) {
-        handleWritableClient(fd);
+      if (eventFd.eventBmp & EventOut) {
+        handleWritableClient(eventFd.fd);
       }
-      if (ev & EPOLLIN) {
-        handleReadableClient(fd);
+      if (eventFd.eventBmp & EventIn) {
+        handleReadableClient(eventFd.fd);
       }
     }
   });
@@ -721,7 +722,7 @@ void HttpServer::eventLoop() {
     _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(ready));
   } else if (ready < 0) {
     _telemetry.counterAdd("aeronet.events.errors", 1);
-    log::error("epoll_wait (eventLoop) failed: {}", std::strerror(errno));
+    log::error("eventLoop.poll failed: {}", std::strerror(errno));
     _lifecycle.enterStopping();
   } else {
     // ready == 0: timeout. Retry pending writes to handle edge-triggered epoll timing issues.

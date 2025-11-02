@@ -20,6 +20,7 @@
 #include "aeronet/http-version.hpp"
 #include "connection-state.hpp"
 #include "connection.hpp"
+#include "event.hpp"
 #include "log.hpp"
 #include "raw-chars.hpp"
 #include "string-equal-ignore-case.hpp"
@@ -121,7 +122,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
       int upstreamFd = cres.cnx.fd();
       // Register upstream in event loop for edge-triggered reads and writes so we can detect
       // completion of non-blocking connect (EPOLLOUT) as well as incoming data.
-      if (!_eventLoop.add(upstreamFd, EPOLLIN | EPOLLOUT | EPOLLET)) {
+      if (!_eventLoop.add(EventLoop::EventFd{upstreamFd, EventIn | EventOut | EventEt})) {
         emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Failed to register upstream fd");
         return LoopAction::Break;
       }
