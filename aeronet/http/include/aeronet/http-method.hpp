@@ -32,6 +32,16 @@ constexpr MethodBmp operator|(Method lhs, Method rhs) noexcept {
   return static_cast<MethodBmp>(static_cast<T>(lhs) | static_cast<T>(rhs));
 }
 
+constexpr MethodBmp operator|(MethodBmp lhs, Method rhs) noexcept {
+  using T = std::underlying_type_t<Method>;
+  return static_cast<MethodBmp>(static_cast<T>(lhs) | static_cast<T>(rhs));
+}
+
+constexpr MethodBmp operator|(Method lhs, MethodBmp rhs) noexcept {
+  using T = std::underlying_type_t<Method>;
+  return static_cast<MethodBmp>(static_cast<T>(lhs) | static_cast<T>(rhs));
+}
+
 static_assert(kNbMethods <= sizeof(MethodBmp) * 8,
               "MethodBmp type too small to hold all methods; increase size or change type");
 

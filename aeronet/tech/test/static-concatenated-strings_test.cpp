@@ -1,4 +1,4 @@
-#include "concatenated-strings.hpp"
+#include "static-concatenated-strings.hpp"
 
 #include <gtest/gtest.h>
 
@@ -11,21 +11,21 @@
 using namespace aeronet;
 
 TEST(ConcatenatedStrings, BasicAccess) {
-  ConcatenatedStrings<3> cs({"alpn", "cipher", "tls1.3"});
+  StaticConcatenatedStrings<3> cs({"alpn", "cipher", "tls1.3"});
   EXPECT_EQ(cs[0], "alpn");
   EXPECT_EQ(cs[1], "cipher");
   EXPECT_EQ(cs[2], "tls1.3");
 }
 
 TEST(ConcatenatedStrings, DefaultConstructedEmpty) {
-  ConcatenatedStrings<3> info;
+  StaticConcatenatedStrings<3> info;
   EXPECT_EQ(info[0], std::string_view());
   EXPECT_EQ(info[1], std::string_view());
   EXPECT_EQ(info[2], std::string_view());
 }
 
 TEST(ConcatenatedStrings, ParameterizedStoresAndReturns) {
-  ConcatenatedStrings<3> info({"h2", "TLS_AES_128_GCM_SHA256", "TLSv1.3"});
+  StaticConcatenatedStrings<3> info({"h2", "TLS_AES_128_GCM_SHA256", "TLSv1.3"});
   EXPECT_EQ(info[0], "h2");
   EXPECT_EQ(info[1], "TLS_AES_128_GCM_SHA256");
   EXPECT_EQ(info[2], "TLSv1.3");
@@ -35,26 +35,26 @@ TEST(ConcatenatedStrings, LongStringsAreHandled) {
   std::string alpn(1000, 'A');
   std::string cipher(500, 'B');
   std::string version(200, 'C');
-  ConcatenatedStrings<3> info({alpn, cipher, version});
+  StaticConcatenatedStrings<3> info({alpn, cipher, version});
   EXPECT_EQ(info[0], std::string_view(alpn));
   EXPECT_EQ(info[1], std::string_view(cipher));
   EXPECT_EQ(info[2], std::string_view(version));
 }
 
 TEST(ConcatenatedStrings, CopyAndAssign) {
-  ConcatenatedStrings<2> src({"proto", "cipher"});
-  ConcatenatedStrings<2> copyInfo = src;  // NOLINT(performance-unnecessary-copy-initialization)
+  StaticConcatenatedStrings<2> src({"proto", "cipher"});
+  StaticConcatenatedStrings<2> copyInfo = src;  // NOLINT(performance-unnecessary-copy-initialization)
   EXPECT_EQ(copyInfo[0], "proto");
   EXPECT_EQ(copyInfo[1], "cipher");
 
-  ConcatenatedStrings<2> dst;
+  StaticConcatenatedStrings<2> dst;
   dst = src;  // copy assign
   EXPECT_EQ(dst[0], "proto");
   EXPECT_EQ(dst[1], "cipher");
 }
 
 TEST(ConcatenatedStrings, SetLarger) {
-  ConcatenatedStrings<3> cs({"a", "bb", "ccc"});
+  StaticConcatenatedStrings<3> cs({"a", "bb", "ccc"});
   // Replace middle part with a larger string
   cs.set(1, std::string_view("BBBBBBBB"));
   EXPECT_EQ(cs[0], "a");
@@ -63,7 +63,7 @@ TEST(ConcatenatedStrings, SetLarger) {
 }
 
 TEST(ConcatenatedStrings, SetShorter) {
-  ConcatenatedStrings<3> cs({"aaaa", "bbbbbb", "cccccc"});
+  StaticConcatenatedStrings<3> cs({"aaaa", "bbbbbb", "cccccc"});
   // Replace first part with a shorter string
   cs.set(0, std::string_view("X"));
   EXPECT_EQ(cs[0], "X");
@@ -72,7 +72,7 @@ TEST(ConcatenatedStrings, SetShorter) {
 }
 
 TEST(ConcatenatedStrings, SetEqualSize) {
-  ConcatenatedStrings<3> cs({"one", "two", "three"});
+  StaticConcatenatedStrings<3> cs({"one", "two", "three"});
   // Replace last part with a same-size string
   cs.set(2, std::string_view("XXX"));
   EXPECT_EQ(cs[0], "one");
@@ -81,7 +81,7 @@ TEST(ConcatenatedStrings, SetEqualSize) {
 }
 
 TEST(ConcatenatedStrings, SetFirstGrowAndShrink) {
-  ConcatenatedStrings<3> cs({"aa", "bbbb", "cc"});
+  StaticConcatenatedStrings<3> cs({"aa", "bbbb", "cc"});
   // grow first
   cs.set(0, std::string_view("AAAAAAAA"));
   EXPECT_EQ(cs[0], "AAAAAAAA");
@@ -96,7 +96,7 @@ TEST(ConcatenatedStrings, SetFirstGrowAndShrink) {
 }
 
 TEST(ConcatenatedStrings, SetMiddleMultipleTimes) {
-  ConcatenatedStrings<4> cs({"a", "bb", "ccc", "dddd"});
+  StaticConcatenatedStrings<4> cs({"a", "bb", "ccc", "dddd"});
   // grow middle part (index 1)
   cs.set(1, std::string_view("BBBBBBBBBB"));
   EXPECT_EQ(cs[0], "a");
@@ -115,7 +115,7 @@ TEST(ConcatenatedStrings, SetMiddleMultipleTimes) {
 }
 
 TEST(ConcatenatedStrings, SetLastGrowAndShrink) {
-  ConcatenatedStrings<3> cs({"X", "YY", "ZZZ"});
+  StaticConcatenatedStrings<3> cs({"X", "YY", "ZZZ"});
   cs.set(2, std::string_view("LLLLLLLLLLLL"));
   EXPECT_EQ(cs[0], "X");
   EXPECT_EQ(cs[1], "YY");
@@ -127,21 +127,21 @@ TEST(ConcatenatedStrings, SetLastGrowAndShrink) {
 
 TEST(ConcatenatedStrings, SetEmptyAtPositions) {
   // empty first
-  ConcatenatedStrings<3> cs1({"first", "middle", "last"});
+  StaticConcatenatedStrings<3> cs1({"first", "middle", "last"});
   cs1.set(0, std::string_view(""));
   EXPECT_EQ(cs1[0], std::string_view());
   EXPECT_EQ(cs1[1], "middle");
   EXPECT_EQ(cs1[2], "last");
 
   // empty middle
-  ConcatenatedStrings<3> cs2({"first", "middle", "last"});
+  StaticConcatenatedStrings<3> cs2({"first", "middle", "last"});
   cs2.set(1, std::string_view(""));
   EXPECT_EQ(cs2[0], "first");
   EXPECT_EQ(cs2[1], std::string_view());
   EXPECT_EQ(cs2[2], "last");
 
   // empty last
-  ConcatenatedStrings<3> cs3({"first", "middle", "last"});
+  StaticConcatenatedStrings<3> cs3({"first", "middle", "last"});
   cs3.set(2, std::string_view(""));
   EXPECT_EQ(cs3[0], "first");
   EXPECT_EQ(cs3[1], "middle");
@@ -150,7 +150,7 @@ TEST(ConcatenatedStrings, SetEmptyAtPositions) {
 
 TEST(ConcatenatedStrings, StressManySets) {
   // stress test: repeated small changes across many iterations
-  ConcatenatedStrings<5> cs({"a", "bb", "ccc", "dddd", "eeeee"});
+  StaticConcatenatedStrings<5> cs({"a", "bb", "ccc", "dddd", "eeeee"});
   for (int iter = 0; iter < 1000; ++iter) {
     // vary sizes and positions
     cs.set(0, std::string_view((iter % 3 == 0) ? "" : "X"));
@@ -168,7 +168,7 @@ TEST(ConcatenatedStrings, StressManySets) {
 }
 
 TEST(ConcatenatedStrings, SinglePartN1) {
-  ConcatenatedStrings<1> cs({"only"});
+  StaticConcatenatedStrings<1> cs({"only"});
   EXPECT_EQ(cs[0], "only");
   cs.set(0, std::string_view("new"));
   EXPECT_EQ(cs[0], "new");
@@ -177,7 +177,7 @@ TEST(ConcatenatedStrings, SinglePartN1) {
 }
 
 TEST(ConcatenatedStrings, TmpNullTerminated_FirstMiddleLast) {
-  ConcatenatedStrings<3> cs({"first", "middle", "last"});
+  StaticConcatenatedStrings<3> cs({"first", "middle", "last"});
 
   EXPECT_EQ(std::strlen(cs.makeNullTerminated(0).c_str()), 5UL);
 
@@ -220,7 +220,7 @@ TEST(ConcatenatedStrings, TmpNullTerminated_FirstMiddleLast) {
 }
 
 TEST(ConcatenatedStrings, TmpNullTerminated_Nested) {
-  ConcatenatedStrings<4> cs({"A", "BB", "CCC", "DDDD"});
+  StaticConcatenatedStrings<4> cs({"A", "BB", "CCC", "DDDD"});
   auto ptr0 = const_cast<char *>(cs[0].data());
   auto ptr2 = const_cast<char *>(cs[2].data());
   const char o0 = ptr0[cs[0].size()];
@@ -247,7 +247,7 @@ TEST(ConcatenatedStrings, TmpNullTerminated_Nested) {
 }
 
 TEST(ConcatenatedStrings, TmpNullTerminated_Stress) {
-  ConcatenatedStrings<4> cs({"alpha", "beta", "gamma", "delta"});
+  StaticConcatenatedStrings<4> cs({"alpha", "beta", "gamma", "delta"});
   for (int i = 0; i < 2000; ++i) {
     const size_t idx = static_cast<size_t>(i % 4);
     auto ptr = const_cast<char *>(cs[idx].data());
@@ -262,7 +262,7 @@ TEST(ConcatenatedStrings, TmpNullTerminated_Stress) {
 }
 
 TEST(ConcatenatedStrings, TmpNullTerminated_MoveConstruct) {
-  ConcatenatedStrings<3> cs({"one", "two", "three"});
+  StaticConcatenatedStrings<3> cs({"one", "two", "three"});
   auto ptr1 = const_cast<char *>(cs[1].data());
   auto t1 = cs.makeNullTerminated(1);
   // move-construct into t2
@@ -274,7 +274,7 @@ TEST(ConcatenatedStrings, TmpNullTerminated_MoveConstruct) {
 }
 
 TEST(ConcatenatedStrings, TmpNullTerminated_MoveAssign) {
-  ConcatenatedStrings<3> cs({"a", "bb", "ccc"});
+  StaticConcatenatedStrings<3> cs({"a", "bb", "ccc"});
   auto ptr0 = const_cast<char *>(cs[0].data());
   auto ptr2 = const_cast<char *>(cs[2].data());
   auto t0 = cs.makeNullTerminated(0);

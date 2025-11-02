@@ -12,7 +12,7 @@ This file lists planned features and near-term priorities. Implemented features 
 - Structured logging / pluggable sinks
 - Enhanced parser diagnostics (byte offset in parse errors)
 - Middleware helpers (lightweight routing/middleware layer)
-- Access-Control (CORS) helpers
+- Access-Control (CORS) helpers *(in progress — see docs/design/cors-helpers.md)*
 - Multipart / multiple-range responses (`multipart/byteranges`) support (RFC 7233 multi-range)
 - Performance benchmarking & CI perf tests (microbenchmarks for sendfile vs TLS fallback)
 

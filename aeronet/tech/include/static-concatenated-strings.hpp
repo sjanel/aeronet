@@ -18,8 +18,8 @@ namespace aeronet {
 // RawChars buffer. It provides access to individual parts as string_views or temporary null-terminated strings,
 // and allows replacing individual parts while keeping the rest intact.
 template <unsigned N>
-class ConcatenatedStrings {
-  static_assert(N > 0U, "ConcatenatedStrings requires N > 0");
+class StaticConcatenatedStrings {
+  static_assert(N > 0U, "StaticConcatenatedStrings requires N > 0");
 
  public:
   using size_type = std::size_t;
@@ -29,11 +29,11 @@ class ConcatenatedStrings {
 
   static constexpr size_type kParts = N;
 
-  ConcatenatedStrings() noexcept = default;
+  StaticConcatenatedStrings() noexcept = default;
 
-  ConcatenatedStrings(std::initializer_list<std::string_view> parts) {
+  StaticConcatenatedStrings(std::initializer_list<std::string_view> parts) {
     if (parts.size() != kParts) {
-      throw std::length_error("ConcatenatedStrings: must provide exactly the compile-time number of parts");
+      throw std::length_error("StaticConcatenatedStrings: must provide exactly the compile-time number of parts");
     }
 
     size_type total = 0;
@@ -42,7 +42,7 @@ class ConcatenatedStrings {
     }
 
     if (total > static_cast<size_type>(std::numeric_limits<offset_type>::max())) {
-      throw std::length_error("ConcatenatedStrings: concatenated strings too large");
+      throw std::length_error("StaticConcatenatedStrings: concatenated strings too large");
     }
 
     _buf = RawChars(static_cast<RawChars::size_type>(total) + 1UL);  // +1 for null terminator support if needed
@@ -70,7 +70,7 @@ class ConcatenatedStrings {
     if (newSize > oldSize) {
       const auto delta = newSize - oldSize;
       if (_buf.size() + delta > static_cast<size_type>(std::numeric_limits<offset_type>::max())) {
-        throw std::length_error("ConcatenatedStrings: concatenated strings too large");
+        throw std::length_error("StaticConcatenatedStrings: concatenated strings too large");
       }
       _buf.ensureAvailableCapacity(delta);
       // pointers may have changed after ensureAvailableCapacity
@@ -126,7 +126,7 @@ class ConcatenatedStrings {
     ~TmpNullTerminatedSv() { release(); }
 
    private:
-    friend class ConcatenatedStrings<N>;
+    friend class StaticConcatenatedStrings<N>;
 
     void release() noexcept {
       if (_begPtr != nullptr) {
