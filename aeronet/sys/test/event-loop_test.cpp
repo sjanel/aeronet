@@ -36,7 +36,7 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
     invoked = true;
     // consume the byte so subsequent polls don't repeatedly report it
     char tmp;
-    ::read(event.fd, &tmp, 1);
+    EXPECT_EQ(1, ::read(event.fd, &tmp, 1));
   });
   EXPECT_GT(nb, 0);
   EXPECT_TRUE(invoked);
@@ -64,7 +64,7 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
     ASSERT_EQ(event.eventBmp, EventIn);
     ++handled;
     char tmp;
-    ::read(event.fd, &tmp, 1);
+    EXPECT_EQ(1, ::read(event.fd, &tmp, 1));
   });
 
   EXPECT_EQ(nb, static_cast<int>(handled));
@@ -108,7 +108,7 @@ TEST(EventLoopTest, NoShrinkPolicy) {
   // Poll once to cause growth
   int first = loop.poll([](EventLoop::EventFd event) {
     char tmp;
-    ::read(event.fd, &tmp, 1);
+    EXPECT_EQ(1, ::read(event.fd, &tmp, 1));
   });
   EXPECT_GT(first, 0);
   auto capacityAfterGrow = loop.capacity();
@@ -118,7 +118,7 @@ TEST(EventLoopTest, NoShrinkPolicy) {
   for (int i = 0; i < 20; ++i) {
     int pollCount = loop.poll([](EventLoop::EventFd event) {
       char tmp;
-      ::read(event.fd, &tmp, 1);
+      EXPECT_EQ(1, ::read(event.fd, &tmp, 1));
     });
     (void)pollCount;  // ignore returned ready count; we care about capacity
     EXPECT_GE(loop.capacity(), capacityAfterGrow);

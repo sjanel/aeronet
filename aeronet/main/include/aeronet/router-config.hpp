@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "aeronet/cors-policy.hpp"
+
 namespace aeronet {
 
 struct RouterConfig {
@@ -10,6 +12,9 @@ struct RouterConfig {
   // Behavior for resolving paths that differ only by a trailing slash.
   // Default: Normalize
   TrailingSlashPolicy trailingSlashPolicy{TrailingSlashPolicy::Normalize};
+
+  // Optional default CORS policy applied when no per-route policy exists but a router-level default was configured
+  CorsPolicy defaultCorsPolicy;
 
   // Policy for handling a trailing slash difference between registered path handlers and incoming requests.
   // Resolution algorithm (independent of policy):
@@ -32,6 +37,10 @@ struct RouterConfig {
   //   Redirect : like Strict unless the ONLY difference is an added trailing slash for a canonical registered path;
   //              then a 301 to the canonical form is sent (never the inverse).
   RouterConfig& withTrailingSlashPolicy(TrailingSlashPolicy policy);
+
+  // Sets a default CORS policy applied to all routes that do not have a per-route CORS policy configured.
+  // If a route has its own CORS policy, that one takes precedence over the router-level default.
+  RouterConfig& withDefaultCorsPolicy(CorsPolicy policy);
 };
 
 }  // namespace aeronet

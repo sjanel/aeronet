@@ -19,6 +19,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
@@ -320,11 +321,15 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
                       "Content-Length and Transfer-Encoding cannot be used together");
       break;
     }
+
+    const auto routingResult = _router.match(_request.method(), _request.path());
+    const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
+
     // Handle Expect header tokens beyond the built-in 100-continue.
     // RFC: if any expectation token is not understood and not handled, respond 417.
     const std::string_view expectHeader = _request.headerValueOrEmpty(http::Expect);
     bool found100Continue = false;
-    if (!expectHeader.empty() && handleExpectHeader(cnxIt, state, found100Continue)) {
+    if (!expectHeader.empty() && handleExpectHeader(cnxIt, state, pCorsPolicy, found100Continue)) {
       break;  // stop processing this request (response queued)
     }
     const bool expectContinue = found100Continue || _request.hasExpectContinue();
@@ -340,7 +345,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     // Handle OPTIONS and TRACE per RFC 7231 §4.3
     // processSpecialMethods may emplace into _connStates (inserting upstream) and
     // will update cnxIt by reference if rehashing occurs.
-    const auto action = processSpecialMethods(cnxIt, consumedBytes);
+    const auto action = processSpecialMethods(cnxIt, consumedBytes, pCorsPolicy);
     if (action == LoopAction::Continue) {
       continue;
     }
@@ -348,33 +353,40 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       break;
     }
 
-    const auto routingResult = _router.match(_request.method(), _request.path());
-
     _request._pathParams.clear();
     for (const auto& capture : routingResult.pathParams) {
       _request._pathParams.emplace(capture.key, capture.value);
     }
 
     if (routingResult.streamingHandler != nullptr) {
-      const bool streamingClose = callStreamingHandler(*routingResult.streamingHandler, cnxIt, consumedBytes);
+      const bool streamingClose =
+          callStreamingHandler(*routingResult.streamingHandler, cnxIt, consumedBytes, pCorsPolicy);
       if (streamingClose) {
         break;
       }
     } else if (routingResult.requestHandler != nullptr) {
+      if (pCorsPolicy != nullptr) {
+        HttpResponse corsProbe;
+        if (pCorsPolicy->applyToResponse(_request, corsProbe) == CorsPolicy::ApplyStatus::OriginDenied) {
+          finalizeAndSendResponse(cnxIt, std::move(corsProbe), consumedBytes, pCorsPolicy);
+          continue;
+        }
+      }
+
       // normal handler
       try {
         // Use RVO on the HttpResponse in the nominal case
-        finalizeAndSendResponse(cnxIt, (*routingResult.requestHandler)(_request), consumedBytes);
+        finalizeAndSendResponse(cnxIt, (*routingResult.requestHandler)(_request), consumedBytes, pCorsPolicy);
       } catch (const std::exception& ex) {
         log::error("Exception in path handler: {}", ex.what());
         HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
         resp.contentType(http::ContentTypeTextPlain).body(ex.what());
-        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
+        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
       } catch (...) {
         log::error("Unknown exception in path handler");
         HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
         resp.contentType(http::ContentTypeTextPlain).body("Unknown error");
-        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
+        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
       }
     } else {
       HttpResponse resp;
@@ -401,7 +413,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
             .contentType(http::ContentTypeTextPlain)
             .body(http::NotFound);
       }
-      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
+      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
     }
 
   } while (!state.isAnyCloseRequested());
@@ -520,11 +532,21 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
 }
 
 bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionMapIt cnxIt,
-                                      std::size_t consumedBytes) {
+                                      std::size_t consumedBytes, const CorsPolicy* pCorsPolicy) {
   bool wantClose = _request.wantClose();
   bool isHead = _request.method() == http::Method::HEAD;
   Encoding compressionFormat = Encoding::none;
   ConnectionState& state = cnxIt->second;
+
+  // Determine active CORS policy (route-specific if provided, otherwise global)
+  if (pCorsPolicy != nullptr) {
+    HttpResponse corsProbe;
+    if (pCorsPolicy->applyToResponse(_request, corsProbe) == CorsPolicy::ApplyStatus::OriginDenied) {
+      finalizeAndSendResponse(cnxIt, std::move(corsProbe), consumedBytes, pCorsPolicy);
+      return state.isAnyCloseRequested();
+    }
+  }
+
   if (!isHead) {
     auto encHeader = _request.headerValueOrEmpty(http::AcceptEncoding);
     auto negotiated = _encodingSelector.negotiateAcceptEncoding(encHeader);
@@ -532,13 +554,14 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
       HttpResponse resp(http::StatusCodeNotAcceptable, http::ReasonNotAcceptable);
       resp.contentType(http::ContentTypeTextPlain).body("No acceptable content-coding available");
-      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
+      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
       return state.isAnyCloseRequested();
     }
     compressionFormat = negotiated.encoding;
   }
 
-  HttpResponseWriter writer(*this, cnxIt->first.fd(), isHead, wantClose, compressionFormat);
+  // Pass the resolved activeCors pointer to the streaming writer so it can apply headers lazily
+  HttpResponseWriter writer(*this, cnxIt->first.fd(), isHead, wantClose, compressionFormat, pCorsPolicy);
   try {
     streamingHandler(_request, writer);
   } catch (const std::exception& ex) {
@@ -881,7 +904,8 @@ void HttpServer::registerBuiltInProbes() {
   });
 }
 
-bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, ConnectionState& state, bool& found100Continue) {
+bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, ConnectionState& state, const CorsPolicy* pCorsPolicy,
+                                    bool& found100Continue) {
   const std::string_view expectHeader = _request.headerValueOrEmpty(http::Expect);
   const std::size_t headerEnd =
       static_cast<std::size_t>(_request._flatHeaders.data() + _request._flatHeaders.size() - state.inBuffer.data());
@@ -962,7 +986,7 @@ bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, ConnectionState& stat
         }
         case ExpectationResultKind::FinalResponse:
           // Send the provided final response immediately and skip body processing.
-          finalizeAndSendResponse(cnxIt, std::move(expectationResult.finalResponse), headerEnd);
+          finalizeAndSendResponse(cnxIt, std::move(expectationResult.finalResponse), headerEnd, pCorsPolicy);
           return true;
         case ExpectationResultKind::Continue:
           break;

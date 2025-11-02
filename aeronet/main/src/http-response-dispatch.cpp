@@ -10,6 +10,7 @@
 
 #include "accept-encoding-negotiation.hpp"
 #include "aeronet/compression-config.hpp"
+#include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
@@ -33,30 +34,73 @@
 
 namespace aeronet {
 
-HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt, std::size_t consumedBytes) {
+HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt, std::size_t consumedBytes,
+                                                         const CorsPolicy* pCorsPolicy) {
   switch (_request.method()) {
-    case http::Method::OPTIONS:
+    case http::Method::OPTIONS: {
       // OPTIONS * request (target="*") should return an Allow header listing supported methods.
+      const auto buildAllowHeader = [](http::MethodBmp mask) {
+        SmallRawChars allowValue;
+        for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
+          if (!http::isMethodSet(mask, methodIdx)) {
+            continue;
+          }
+          if (!allowValue.empty()) {
+            allowValue.push_back(',');
+          }
+          allowValue.append(http::toMethodStr(http::fromMethodIdx(methodIdx)));
+        }
+        return allowValue;
+      };
+
       if (_request.path() == "*") {
         HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
-        // Compute allowed methods for server (root/global) - use router.allowedMethods("*")
-        http::MethodBmp allowed = _router.allowedMethods("*");
-
-        // Build Allow header value by iterating known methods
-        SmallRawChars allowVal;
-        for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
-          if (http::isMethodSet(allowed, methodIdx)) {
-            if (!allowVal.empty()) {
-              allowVal.push_back(',');
-            }
-            allowVal.append(http::toMethodStr(http::fromMethodIdx(methodIdx)));
-          }
+        const http::MethodBmp allowed = _router.allowedMethods("*");
+        auto allowVal = buildAllowHeader(allowed);
+        if (!allowVal.empty()) {
+          resp.customHeader(http::Allow, allowVal);
         }
-        resp.customHeader(http::Allow, allowVal).contentType(http::ContentTypeTextPlain);
-        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
+        resp.contentType(http::ContentTypeTextPlain);
+        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
         return LoopAction::Continue;
       }
+
+      const auto routeMethods = _router.allowedMethods(_request.path());
+      if (pCorsPolicy != nullptr) {
+        auto preflight = pCorsPolicy->handlePreflight(_request, routeMethods);
+        switch (preflight.status) {
+          case CorsPolicy::PreflightResult::Status::NotPreflight:
+            break;
+          case CorsPolicy::PreflightResult::Status::Allowed:
+            finalizeAndSendResponse(cnxIt, std::move(preflight.response), consumedBytes, pCorsPolicy);
+            return LoopAction::Continue;
+          case CorsPolicy::PreflightResult::Status::OriginDenied: {
+            HttpResponse resp(http::StatusCodeForbidden, http::ReasonForbidden);
+            resp.contentType(http::ContentTypeTextPlain).body(http::ReasonForbidden);
+            finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
+            return LoopAction::Continue;
+          }
+          case CorsPolicy::PreflightResult::Status::MethodDenied: {
+            HttpResponse resp(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
+            resp.contentType(http::ContentTypeTextPlain).body(resp.reason());
+            const auto allowedForPath = buildAllowHeader(routeMethods);
+            if (!allowedForPath.empty()) {
+              resp.customHeader(http::Allow, allowedForPath);
+            }
+            finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
+            return LoopAction::Continue;
+          }
+          case CorsPolicy::PreflightResult::Status::HeadersDenied: {
+            HttpResponse resp(http::StatusCodeForbidden, http::ReasonForbidden);
+            resp.contentType(http::ContentTypeTextPlain).body(http::ReasonForbidden);
+            finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
+            return LoopAction::Continue;
+          }
+        }
+      }
+
       break;
+    }
     case http::Method::TRACE: {
       // TRACE: echo the received request message as the body with Content-Type: message/http
       // Respect configured TracePolicy. Default: Disabled.
@@ -81,13 +125,13 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
         HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
         resp.customHeader(http::ContentType, "message/http");
         resp.body(reqDataEchoed);
-        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
+        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
         return LoopAction::Continue;
       }
       // TRACE disabled -> Method Not Allowed
       HttpResponse resp(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
       resp.contentType(http::ContentTypeTextPlain).body(resp.reason());
-      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes);
+      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
       return LoopAction::Continue;
     }
     case http::Method::CONNECT: {
@@ -154,7 +198,8 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
         throw std::runtime_error("Should not happen - Client connection vanished after upstream insertion");
       }
 
-      finalizeAndSendResponse(cnxIt, HttpResponse(http::StatusCodeOK, "Connection Established"), consumedBytes);
+      finalizeAndSendResponse(cnxIt, HttpResponse(http::StatusCodeOK, "Connection Established"), consumedBytes,
+                              pCorsPolicy);
 
       // Enter tunneling mode: link peer fds
       cnxIt->second.peerFd = upstreamFd;
@@ -174,8 +219,12 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
   return LoopAction::Nothing;
 }
 
-void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes) {
-  // Capture status code for metrics / trace before resp is moved from.
+void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
+                                         const CorsPolicy* pCorsPolicy) {
+  if (pCorsPolicy != nullptr) {
+    (void)pCorsPolicy->applyToResponse(_request, resp);
+  }
+
   const auto respStatusCode = resp.statusCode();
 
   ConnectionState& state = cnxIt->second;

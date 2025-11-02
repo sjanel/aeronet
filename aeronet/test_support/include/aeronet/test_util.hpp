@@ -23,12 +23,12 @@ class ClientConnection {
   [[nodiscard]] int fd() const noexcept { return _socket.fd(); }
 
  private:
-  ::aeronet::Socket _socket;
+  Socket _socket;
 };
 
 // Minimal parsed HTTP response representation for test assertions.
 struct ParsedResponse {
-  aeronet::http::StatusCode statusCode{0};
+  http::StatusCode statusCode{0};
   bool chunked{false};
   std::string reason;
   std::string headersRaw;  // raw header block including final CRLFCRLF (optional)
@@ -74,7 +74,7 @@ std::string sendAndCollect(uint16_t port, std::string_view raw);
 
 // Start a simple echo server bound to loopback on an ephemeral port. Returns the port or throw std::system_error on
 // error.
-std::pair<aeronet::Socket, uint16_t> startEchoServer();
+std::pair<Socket, uint16_t> startEchoServer();
 
 int countOccurrences(std::string_view haystack, std::string_view needle);
 
@@ -95,7 +95,7 @@ std::optional<ParsedResponse> parseResponse(std::string_view raw);
 
 ParsedResponse parseResponseOrThrow(std::string_view raw);
 
-void setRecvTimeout(int fd, ::aeronet::SysDuration timeout);
+void setRecvTimeout(int fd, SysDuration timeout);
 
 std::string buildRequest(const RequestOptions& opt);
 

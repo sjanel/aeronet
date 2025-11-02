@@ -160,7 +160,7 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
 std::string recvUntilClosed(int fd) {
   std::string out;
   for (;;) {
-    std::size_t oldSize = out.size();
+    const std::size_t oldSize = out.size();
 
     if (out.capacity() < out.size() + kChunkSize) {
       out.reserve((out.capacity() * 2UL) + kChunkSize);
@@ -196,8 +196,8 @@ std::string sendAndCollect(uint16_t port, std::string_view raw) {
   return recvUntilClosed(fd);
 }
 
-std::pair<aeronet::Socket, uint16_t> startEchoServer() {
-  aeronet::Socket listenSock(SOCK_STREAM);
+std::pair<Socket, uint16_t> startEchoServer() {
+  Socket listenSock(SOCK_STREAM);
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -248,10 +248,11 @@ void connectLoop(int fd, auto port, std::chrono::milliseconds timeout) {
   for (const auto deadline = std::chrono::steady_clock::now() + timeout; std::chrono::steady_clock::now() < deadline;
        std::this_thread::sleep_for(std::chrono::milliseconds{1})) {
     if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
-      break;
+      return;
     }
     log::debug("connect failed for fd # {}: {}", fd, std::strerror(errno));
   }
+  log::error("Error from ::connect for fd # {}: {}", fd, std::strerror(errno));
 }
 }  // namespace
 
@@ -273,11 +274,11 @@ int countOccurrences(std::string_view haystack, std::string_view needle) {
 }
 
 bool noBodyAfterHeaders(std::string_view raw) {
-  const auto pivot = raw.find(aeronet::http::DoubleCRLF);
+  const auto pivot = raw.find(http::DoubleCRLF);
   if (pivot == std::string_view::npos) {
     return false;
   }
-  return raw.substr(pivot + aeronet::http::DoubleCRLF.size()).empty();
+  return raw.substr(pivot + http::DoubleCRLF.size()).empty();
 }
 
 std::string simpleGet(uint16_t port, std::string_view path) {
@@ -288,7 +289,7 @@ std::string simpleGet(uint16_t port, std::string_view path) {
   std::string req;
   req.reserve(64 + path.size());
   req.append("GET ").append(path).append(" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close");
-  req.append(aeronet::http::DoubleCRLF);
+  req.append(http::DoubleCRLF);
   try {
     sendAll(cnx.fd(), req);
   } catch (const std::runtime_error &err) {
@@ -368,7 +369,7 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
                          ? out.headersRaw.substr(firstSpace + 1, statusLineEnd - firstSpace - 1)
                          : out.headersRaw.substr(firstSpace + 1, secondSpace - firstSpace - 1);
       try {
-        out.statusCode = static_cast<aeronet::http::StatusCode>(read3(codeStr.data()));
+        out.statusCode = static_cast<http::StatusCode>(read3(codeStr.data()));
       } catch (...) {
         out.statusCode = -1;
       }
@@ -415,7 +416,7 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
 
 std::string toLower(std::string input) {
   for (char &ch : input) {
-    ch = ::aeronet::tolower(ch);
+    ch = tolower(ch);
   }
   return input;
 }
@@ -423,7 +424,7 @@ std::string toLower(std::string input) {
 // Very small HTTP/1.1 response parser (not resilient to all malformed cases, just for test consumption)
 std::optional<ParsedResponse> parseResponse(std::string_view raw) {
   ParsedResponse pr;
-  std::size_t pos = raw.find(::aeronet::http::CRLF);
+  std::size_t pos = raw.find(http::CRLF);
   if (pos == std::string_view::npos) {
     return std::nullopt;
   }
@@ -440,24 +441,20 @@ std::optional<ParsedResponse> parseResponse(std::string_view raw) {
   } else {
     pr.reason = statusLine.substr(codeEnd + 1);
   }
-  auto codeStr = statusLine.substr(firstSpace + 1, codeEnd - (firstSpace + 1));
-  if (codeStr.size() < 3) {
-    return std::nullopt;
-  }
-  pr.statusCode = static_cast<aeronet::http::StatusCode>(read3(codeStr.data()));
-  std::size_t headerEnd = raw.find(::aeronet::http::DoubleCRLF, pos + ::aeronet::http::CRLF.size());
+  pr.statusCode = static_cast<http::StatusCode>(read3(statusLine.data() + firstSpace + 1));
+  std::size_t headerEnd = raw.find(http::DoubleCRLF, pos + http::CRLF.size());
   if (headerEnd == std::string_view::npos) {
     return std::nullopt;
   }
-  pr.headersRaw = raw.substr(0, headerEnd + ::aeronet::http::DoubleCRLF.size());
-  std::size_t cursor = pos + ::aeronet::http::CRLF.size();
+  pr.headersRaw = raw.substr(0, headerEnd + http::DoubleCRLF.size());
+  std::size_t cursor = pos + http::CRLF.size();
   while (cursor < headerEnd) {
-    std::size_t lineEnd = raw.find(::aeronet::http::CRLF, cursor);
+    std::size_t lineEnd = raw.find(http::CRLF, cursor);
     if (lineEnd == std::string_view::npos || lineEnd > headerEnd) {
       break;
     }
     std::string_view line = raw.substr(cursor, lineEnd - cursor);
-    cursor = lineEnd + ::aeronet::http::CRLF.size();
+    cursor = lineEnd + http::CRLF.size();
     if (line.empty()) {
       break;
     }
@@ -479,7 +476,7 @@ std::optional<ParsedResponse> parseResponse(std::string_view raw) {
   if (teIt != pr.headers.end() && toLower(teIt->second).contains("chunked")) {
     pr.chunked = true;
   }
-  std::string_view bodyRaw = raw.substr(headerEnd + ::aeronet::http::DoubleCRLF.size());
+  std::string_view bodyRaw = raw.substr(headerEnd + http::DoubleCRLF.size());
   if (!pr.chunked) {
     pr.body = std::move(bodyRaw);
     pr.plainBody = pr.body;
@@ -488,12 +485,12 @@ std::optional<ParsedResponse> parseResponse(std::string_view raw) {
   // De-chunk (simple algorithm; ignores trailers)
   std::size_t bpos = 0;
   while (bpos < bodyRaw.size()) {
-    std::size_t lineEnd = bodyRaw.find(::aeronet::http::CRLF, bpos);
+    std::size_t lineEnd = bodyRaw.find(http::CRLF, bpos);
     if (lineEnd == std::string_view::npos) {
       break;
     }
     std::string_view lenHex = bodyRaw.substr(bpos, lineEnd - bpos);
-    bpos = lineEnd + ::aeronet::http::CRLF.size();
+    bpos = lineEnd + http::CRLF.size();
     // lenHex may include chunk extensions (e.g. "4;ext=val"). Trim at first ';'.
     auto semipos = lenHex.find(';');
     std::string_view lenOnly = (semipos == std::string_view::npos) ? lenHex : lenHex.substr(0, semipos);
@@ -510,10 +507,10 @@ std::optional<ParsedResponse> parseResponse(std::string_view raw) {
     pr.body.append(bodyRaw.data() + bpos, chunkLen);
     bpos += chunkLen;
     // expect CRLF
-    if (bpos + ::aeronet::http::CRLF.size() > bodyRaw.size()) {
+    if (bpos + http::CRLF.size() > bodyRaw.size()) {
       break;
     }
-    bpos += ::aeronet::http::CRLF.size();  // skip CRLF
+    bpos += http::CRLF.size();  // skip CRLF
   }
   pr.plainBody = pr.body;
   return pr;
@@ -527,7 +524,7 @@ ParsedResponse parseResponseOrThrow(std::string_view raw) {
   return *prOpt;
 }
 
-void setRecvTimeout(int fd, ::aeronet::SysDuration timeout) {
+void setRecvTimeout(int fd, SysDuration timeout) {
   const int timeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count());
   struct timeval tv{timeoutMs / 1000, static_cast<long>((timeoutMs % 1000) * 1000)};
   if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == -1) {
@@ -539,15 +536,15 @@ std::string buildRequest(const RequestOptions &opt) {
   std::string req;
   req.reserve(256 + opt.body.size());
   req.append(opt.method).append(" ").append(opt.target).append(" HTTP/1.1\r\n");
-  req.append("Host: ").append(opt.host).append(::aeronet::http::CRLF);
-  req.append("Connection: ").append(opt.connection).append(::aeronet::http::CRLF);
+  req.append("Host: ").append(opt.host).append(http::CRLF);
+  req.append("Connection: ").append(opt.connection).append(http::CRLF);
   for (auto &header : opt.headers) {
-    req.append(header.first).append(::aeronet::http::HeaderSep).append(header.second).append(::aeronet::http::CRLF);
+    req.append(header.first).append(http::HeaderSep).append(header.second).append(http::CRLF);
   }
   if (!opt.body.empty()) {
-    req.append("Content-Length: ").append(std::to_string(opt.body.size())).append(::aeronet::http::CRLF);
+    req.append("Content-Length: ").append(std::to_string(opt.body.size())).append(http::CRLF);
   }
-  req.append(::aeronet::http::CRLF);
+  req.append(http::CRLF);
   req.append(opt.body);
   return req;
 }
@@ -624,9 +621,9 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
 
 #ifdef AERONET_ENABLE_ZLIB
     if (encLower.contains("gzip") || encLower.contains("deflate")) {
-      aeronet::RawChars tmp;
-      if (aeronet::ZlibDecoder::Decompress(out.body, /*isGzip=*/encLower.contains("gzip"),
-                                           /*maxDecompressedBytes=*/(1 << 20), /*decoderChunkSize=*/65536, tmp)) {
+      RawChars tmp;
+      if (ZlibDecoder::Decompress(out.body, /*isGzip=*/encLower.contains("gzip"),
+                                  /*maxDecompressedBytes=*/(1 << 20), /*decoderChunkSize=*/65536, tmp)) {
         out.body.assign(tmp.data(), tmp.data() + tmp.size());
         return out;
       }
@@ -635,9 +632,9 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
 
 #ifdef AERONET_ENABLE_ZSTD
     if (encLower.contains("zstd")) {
-      aeronet::RawChars tmp;
-      if (aeronet::ZstdDecoder::Decompress(out.body, /*maxDecompressedBytes=*/(1 << 20),
-                                           /*decoderChunkSize=*/65536, tmp)) {
+      RawChars tmp;
+      if (ZstdDecoder::Decompress(out.body, /*maxDecompressedBytes=*/(1 << 20),
+                                  /*decoderChunkSize=*/65536, tmp)) {
         out.body.assign(tmp.data(), tmp.data() + tmp.size());
         return out;
       }
@@ -646,9 +643,9 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
 
 #ifdef AERONET_ENABLE_BROTLI
     if (encLower.contains("br") || encLower.contains("brotli")) {
-      aeronet::RawChars tmp;
-      if (aeronet::BrotliDecoder::Decompress(out.body, /*maxDecompressedBytes=*/(1 << 20),
-                                             /*decoderChunkSize=*/65536, tmp)) {
+      RawChars tmp;
+      if (BrotliDecoder::Decompress(out.body, /*maxDecompressedBytes=*/(1 << 20),
+                                    /*decoderChunkSize=*/65536, tmp)) {
         out.body.assign(tmp.data(), tmp.data() + tmp.size());
         return out;
       }
@@ -671,7 +668,7 @@ std::string requestOrThrow(uint16_t port, const RequestOptions &opt) {
 }
 
 bool AttemptConnect(uint16_t port) {
-  aeronet::Socket sock(SOCK_STREAM);
+  Socket sock(SOCK_STREAM);
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
