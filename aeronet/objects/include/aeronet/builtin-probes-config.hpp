@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string_view>
 
-#include "concatenated-strings.hpp"
+#include "static-concatenated-strings.hpp"
 
 namespace aeronet {
 
@@ -38,7 +38,7 @@ class BuiltinProbesConfig {
   ContentType contentType{ContentType::TextPlainUtf8};
 
  private:
-  using Paths = ConcatenatedStrings<3>;
+  using Paths = StaticConcatenatedStrings<3>;
 
   Paths _paths{"/livez", "/readyz", "/startupz"};
 };

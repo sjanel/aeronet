@@ -24,6 +24,7 @@ Single consolidated reference for **aeronet** features.
 1. [Mixed Mode Dispatch Precedence](#mixed-mode--dispatch-precedence)
 1. [Logging](#logging)
 1. [OpenTelemetry Integration](#opentelemetry-integration)
+1. [Access-Control (CORS) Helpers](#access-control-cors-helpers)
 1. [Future Expansions](#future-expansions)
 1. [Large-body optimization](#large-body-optimization)
 
@@ -1536,6 +1537,32 @@ service:
     metrics:
       receivers: [otlp]
       exporters: [logging]
+```
+
+## Access-Control (CORS) Helpers
+
+Opt-in helpers for Access-Control (CORS) response headers live in `aeronet/http/cors-policy.hpp`.
+
+- Central `aeronet::CorsPolicy` captures all configuration (allow-list, credentials, headers, max-age, private network flag).
+- Policy objects are immutable after setup and safe to reuse across threads.
+- `applyToResponse()` mirrors the resolved origin on application responses, injects `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials`, `Access-Control-Expose-Headers`, and normalizes `Vary`.
+- `handlePreflight()` produces a ready-to-send 204 response for preflight requests (`OPTIONS` + `Access-Control-Request-Method`), including allow-method/header serialization and max-age caching.
+- Header tokens are validated case-insensitively with zero allocations in the hot path; comma-joined header strings are precomputed when the policy is configured.
+
+Example usage:
+
+```cpp
+CorsPolicy cors;
+cors.allowOrigin("https://example.com")
+    .allowMethods(http::Method::GET | http::Method::POST)
+    .allowRequestHeader("X-Custom-Header")
+    .allowCredentials(true)
+    .maxAge(std::chrono::minutes{10});
+
+auto status = cors.applyToResponse(request, response);
+if (auto preflight = cors.handlePreflight(request); preflight.status == CorsPolicy::PreflightResult::Status::Allowed) {
+  return preflight.response;
+}
 ```
 
 ---

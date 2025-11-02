@@ -6,15 +6,15 @@
 [![Packaging](https://github.com/sjanel/aeronet/actions/workflows/packaging.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/packaging.yml)
 [![clang-format](https://github.com/sjanel/aeronet/actions/workflows/clang-format-check.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/clang-format-check.yml)
 
-**aeronet** is a modern, fast, modular and ergonomic HTTP/1.1 C++ server library for Linux focused on predictable performance, explicit control and minimal dependencies.
+**aeronet** is a modern, fast, modular and ergonomic HTTP/1.1 C++ **server library** for **Linux** focused on predictable performance, explicit control and minimal dependencies.
 
-## Why aeronet?
+## In a nutshell
 
-- **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths, horizontal scaling with port reuse.
+- **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths, horizontal scaling with port reuse
 - **Modular & opt‑in**: enable only the features you need (compression, TLS, logging, opentelemetry) via build flags
-- **Ergonomic**: simple `HttpServer`, `AsyncHttpServer`, `MultiHttpServer` types; fluent configuration; RAII listener setup.
-- **Extensible & observable**: composable configs (compression, decompression, TLS) plus lightweight per‑request metrics hook.
-- **Cloud native**: Built-in Kubernetes-style health & readiness probes, opentelemetry support.
+- **Ergonomic**: ease of use, one purpose types `HttpServer`, `AsyncHttpServer`, `MultiHttpServer`; RAII listener setup, no hidden global state
+- **Configurable**: fully configurable with reasonable defaults
+- **Cloud native**: Built-in Kubernetes-style health & readiness probes, opentelemetry support (metrics & tracing)
 
 ## Minimal Example
 
@@ -28,7 +28,7 @@ using namespace aeronet;
 int main() {
   HttpServer server(HttpServerConfig{}); // if no specified port, OS will pick a free one
   server.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&) {
-    return HttpResponse(200, "OK").contentType("text/plain").body("hello from aeronet\n");
+    return HttpResponse(200).contentType("text/plain").body("hello from aeronet\n");
   });
   server.run(); // blocking
 }
@@ -80,7 +80,7 @@ The following focused docs expand each area without cluttering the high‑level 
 - [MultiHttpServer Lifecycle](docs/FEATURES.md#multihttpserver--lifecycle)
 - [TLS Features](docs/FEATURES.md#tls-features)
 
-If you are evaluating the library, the feature highlights above plus the minimal example are usually sufficient. Dive into the docs only when you need specifics (e.g. multi‑layer decompression safety rules or ALPN strict mode behavior).
+If you are evaluating the library, the feature highlights above plus the minimal example are usually sufficient. Dive into the docs only when you need specifics.
 
 ## Feature Matrix (Concise)
 
@@ -101,8 +101,6 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Middleware helpers | ✖ | Planned |
 | Streaming inbound decompression | ✖ | Planned |
 | sendfile / static file helper | ✔ | 0.4.x – zero-copy plain sockets plus RFC 7233 single-range & RFC 7232 validators |
-
-## Core HTTP & Protocol Features (Implemented)
 
 ## Developer / Operational Features
 
@@ -133,7 +131,7 @@ Moved out of the landing page to keep things concise. See the full, continually 
 - [HTTP/1.1 Feature Matrix](docs/FEATURES.md#http11-feature-matrix)
 - [Performance / architecture](docs/FEATURES.md#performance--architecture)
 
-## Main objects
+## Public objects and usage
 
 Consuming `aeronet` will result in the client code interacting with [server objects](#server-objects), [http responses](#building-the-http-response), streaming HTTP responses (documentation TODO) and reading HTTP requests.
 
@@ -243,7 +241,7 @@ int main() {
   HttpServerConfig cfg; cfg.reusePort = true; // ephemeral, auto-propagated
   MultiHttpServer multi(cfg, 4); // 4 underlying event loops
   multi.router().setDefault([](const HttpRequest& req){
-    return HttpResponse(200, "OK").body("hello\n").contentType("text/plain");
+    return HttpResponse(200).body("hello\n").contentType("text/plain");
   });
   multi.start();
   // ... run until external signal, or call stop() ...
@@ -303,13 +301,15 @@ Blocking semantics summary:
 
 The router expects callback functions returning a `HttpResponse`. You can build it thanks to the numerous provided methods to store the main components of a HTTP 1 response (status code, reason, headers and body):
 
-| Operation          | Complexity | Notes |
-|--------------------|------------|-------|
-| `statusCode()`     | O(1)       | Overwrites 3 digits |
-| `reason()`         | O(trailing) | One tail `memmove` if size delta |
-| `addCustomHeader()`| O(bodyLen) | Shift tail once; no scan |
-| `customHeader()`   | O(headers + bodyLen) | Linear scan + maybe one shift |
-| `body()`           | O(delta) + realloc | Exponential growth strategy |
+| Operation          | Complexity           | Notes                                  |
+|--------------------|----------------------|----------------------------------------|
+| `statusCode()`     | O(1)                 | Overwrites 3 digits                    |
+| `reason()`         | O(trailing)          | One tail `memmove` if size delta       |
+| `addCustomHeader()`| O(bodyLen)           | Shift tail once; no scan               |
+| `customHeader()`   | O(headers + bodyLen) | Linear scan + maybe one shift          |
+| `body()`           | O(delta) + realloc   | Exponential growth strategy            |
+| `file()`           | O(1)                 | Zero-copy sendfile helper              |
+| `addTrailer()`     | O(1)                 | Append-only; no scan (only after body) |
 
 Usage guidelines:
 
@@ -370,7 +370,7 @@ See: [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompress
 
 ```cpp
 server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
-  w.statusCode(200, "OK");
+  w.statusCode(200);
   w.contentType("text/plain");
   for (int i = 0;i < 10; ++i) {
     w.write(std::string(50,'x')); // accumulates until threshold then switches to compressed chunks

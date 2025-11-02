@@ -2,7 +2,7 @@
 
 #include <string_view>
 
-#include "concatenated-strings.hpp"
+#include "static-concatenated-strings.hpp"
 
 namespace aeronet {
 
@@ -24,7 +24,7 @@ class TLSInfo {
   [[nodiscard]] std::string_view negotiatedVersion() const noexcept { return _parts[2]; }
 
  private:
-  aeronet::ConcatenatedStrings<3> _parts;
+  aeronet::StaticConcatenatedStrings<3> _parts;
 };
 
 }  // namespace aeronet
