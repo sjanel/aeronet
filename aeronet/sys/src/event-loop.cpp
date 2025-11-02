@@ -17,6 +17,7 @@
 
 #include "base-fd.hpp"
 #include "errno_throw.hpp"
+#include "event.hpp"
 #include "log.hpp"
 #include "timedef.hpp"
 
@@ -33,16 +34,21 @@ int ComputeEpollTimeoutMs(SysDuration timeout) {
   return static_cast<int>(timeoutMs);
 }
 
-}  // namespace
+static_assert(std::is_trivially_copyable_v<epoll_event>,
+              "epoll_event must be trivially copyable for malloc / realloc usage");
 
-static_assert(std::is_trivially_copyable_v<epoll_event>);
+static_assert(EventIn == EPOLLIN, "EventIn value mismatch");
+static_assert(EventOut == EPOLLOUT, "EventOut value mismatch");
+static_assert(EventEt == EPOLLET, "EventEt value mismatch");
+
+}  // namespace
 
 EventLoop::EventLoop(SysDuration pollTimeout, int epollFlags, uint32_t initialCapacity)
     : _nbAllocatedEvents(std::max(1U, initialCapacity)),
       _pollTimeoutMs(ComputeEpollTimeoutMs(pollTimeout)),
       _baseFd(::epoll_create1(epollFlags)),
-      _events(static_cast<epoll_event*>(std::malloc(sizeof(epoll_event) * _nbAllocatedEvents))) {
-  if (_events == nullptr) {
+      _pEvents(std::malloc(_nbAllocatedEvents * sizeof(epoll_event))) {
+  if (_pEvents == nullptr) {
     throw std::bad_alloc();
   }
   if (!_baseFd) {
@@ -61,43 +67,45 @@ EventLoop::EventLoop(EventLoop&& rhs) noexcept
     : _nbAllocatedEvents(std::exchange(rhs._nbAllocatedEvents, 0)),
       _pollTimeoutMs(rhs._pollTimeoutMs),
       _baseFd(std::move(rhs._baseFd)),
-      _events(std::exchange(rhs._events, nullptr)) {}
+      _pEvents(std::exchange(rhs._pEvents, nullptr)) {}
 
 EventLoop& EventLoop::operator=(EventLoop&& rhs) noexcept {
   if (this != &rhs) {
-    std::free(_events);
+    std::free(_pEvents);
 
     _nbAllocatedEvents = std::exchange(rhs._nbAllocatedEvents, 0);
     _pollTimeoutMs = rhs._pollTimeoutMs;
     _baseFd = std::move(rhs._baseFd);
-    _events = std::exchange(rhs._events, nullptr);
+    _pEvents = std::exchange(rhs._pEvents, nullptr);
   }
   return *this;
 }
 
-EventLoop::~EventLoop() { std::free(_events); }
+EventLoop::~EventLoop() { std::free(_pEvents); }
 
-void EventLoop::add_or_throw(int fd, uint32_t events) const {
-  if (!add(fd, events)) {
-    throw_errno("epoll_ctl ADD failed (fd # {}, events=0x{:x}): {}", fd, events);
+void EventLoop::add_or_throw(EventFd event) const {
+  if (!add(event)) {
+    throw_errno("epoll_ctl ADD failed (fd # {}, events=0x{:x})", event.fd, event.eventBmp);
   }
 }
 
-bool EventLoop::add(int fd, uint32_t events) const {
-  epoll_event ev{events, epoll_data_t{.fd = fd}};
-  if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_ADD, fd, &ev) != 0) {
+bool EventLoop::add(EventFd event) const {
+  epoll_event ev{event.eventBmp, epoll_data_t{.fd = event.fd}};
+  if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_ADD, event.fd, &ev) != 0) {
     auto err = errno;
-    log::error("epoll_ctl ADD failed (fd # {}, events=0x{:x}, errno={}, msg={})", fd, events, err, std::strerror(err));
+    log::error("epoll_ctl ADD failed (fd # {}, events=0x{:x}, errno={}, msg={})", event.fd, event.eventBmp, err,
+               std::strerror(err));
     return false;
   }
   return true;
 }
 
-bool EventLoop::mod(int fd, uint32_t events) const {
-  epoll_event ev{events, epoll_data_t{.fd = fd}};
-  if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_MOD, fd, &ev) != 0) {
+bool EventLoop::mod(EventFd event) const {
+  epoll_event ev{event.eventBmp, epoll_data_t{.fd = event.fd}};
+  if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_MOD, event.fd, &ev) != 0) {
     auto err = errno;
-    log::error("epoll_ctl MOD failed (fd # {}, events=0x{:x}, errno={}, msg={})", fd, events, err, std::strerror(err));
+    log::error("epoll_ctl MOD failed (fd # {}, events=0x{:x}, errno={}, msg={})", event.fd, event.eventBmp, err,
+               std::strerror(err));
     return false;
   }
   return true;
@@ -111,8 +119,9 @@ void EventLoop::del(int fd) const {
   }
 }
 
-int EventLoop::poll(const std::function<void(int, uint32_t)>& cb) {
-  const int nbReadyFds = ::epoll_wait(_baseFd.fd(), _events, static_cast<int>(_nbAllocatedEvents), _pollTimeoutMs);
+int EventLoop::poll(const std::function<void(EventFd)>& cb) {
+  const int nbReadyFds = ::epoll_wait(_baseFd.fd(), static_cast<epoll_event*>(_pEvents),
+                                      static_cast<int>(_nbAllocatedEvents), _pollTimeoutMs);
   if (nbReadyFds < 0) {
     if (errno == EINTR) {
       return 0;  // interrupted; treat as no events
@@ -122,17 +131,17 @@ int EventLoop::poll(const std::function<void(int, uint32_t)>& cb) {
     return -1;
   }
   for (int fdPos = 0; fdPos < nbReadyFds; ++fdPos) {
-    const auto& event = _events[static_cast<uint32_t>(fdPos)];
+    const epoll_event& event = static_cast<epoll_event*>(_pEvents)[static_cast<uint32_t>(fdPos)];
 
-    cb(event.data.fd, event.events);
+    cb(EventFd{event.data.fd, event.events});
   }
   if (std::cmp_equal(nbReadyFds, _nbAllocatedEvents)) {
     // Saturated buffer: grow exponentially (amortized O(1) realloc). No shrink to avoid churn.
-    auto* newEvents = static_cast<epoll_event*>(std::realloc(_events, sizeof(epoll_event) * 2UL * _nbAllocatedEvents));
+    auto* newEvents = std::realloc(_pEvents, sizeof(epoll_event) * 2UL * _nbAllocatedEvents);
     if (newEvents == nullptr) {
       log::error("Failed to reallocate memory for saturated events, keeping actual size of {}", _nbAllocatedEvents);
     } else {
-      _events = newEvents;
+      _pEvents = newEvents;
       _nbAllocatedEvents *= 2UL;
     }
   }

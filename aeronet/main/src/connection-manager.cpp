@@ -17,6 +17,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "connection-state.hpp"
 #include "connection.hpp"
+#include "event.hpp"
 #include "raw-chars.hpp"
 #include "transport.hpp"
 
@@ -92,7 +93,7 @@ void HttpServer::acceptNewConnections() {
       break;
     }
     int cnxFd = cnx.fd();
-    if (!_eventLoop.add(cnxFd, EPOLLIN | EPOLLET)) {
+    if (!_eventLoop.add(EventLoop::EventFd{cnxFd, EventIn | EventEt})) {
       auto savedErr = errno;
       log::error("EventLoop add client failed fd # {} err={}: {}", cnxFd, savedErr, std::strerror(savedErr));
       continue;
@@ -208,7 +209,7 @@ void HttpServer::acceptNewConnections() {
         // Transport indicates we should wait for readability or writability before continuing.
         // Adjust epoll interest if TLS handshake needs write readiness
         if (want == TransportHint::WriteReady && !pCnx->waitingWritable) {
-          pCnx->waitingWritable = _eventLoop.mod(cnxFd, EPOLLIN | EPOLLOUT | EPOLLET);
+          pCnx->waitingWritable = _eventLoop.mod(EventLoop::EventFd{cnxFd, EventIn | EventOut | EventEt});
         }
         break;
       }
@@ -304,7 +305,7 @@ void HttpServer::handleReadableClient(int fd) {
     if (want != TransportHint::None) {
       // Non-fatal: transport needs the socket to be readable or writable before proceeding.
       if (want == TransportHint::WriteReady && !state.waitingWritable) {
-        state.waitingWritable = _eventLoop.mod(fd, EPOLLIN | EPOLLOUT | EPOLLET);
+        state.waitingWritable = _eventLoop.mod(EventLoop::EventFd{fd, EventIn | EventOut | EventEt});
       }
       break;
     }

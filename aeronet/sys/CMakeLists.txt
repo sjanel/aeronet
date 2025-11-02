@@ -20,3 +20,10 @@ add_unit_test(
     LIBRARIES
     aeronet_sys
 )
+
+add_unit_test(
+    event-loop_test
+    test/event-loop_test.cpp
+    LIBRARIES
+    aeronet_sys
+)
