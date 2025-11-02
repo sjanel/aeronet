@@ -43,7 +43,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
         http::MethodBmp allowed = _router.allowedMethods("*");
 
         // Build Allow header value by iterating known methods
-        RawChars allowVal;
+        SmallRawChars allowVal;
         for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
           if (http::isMethodSet(allowed, methodIdx)) {
             if (!allowVal.empty()) {

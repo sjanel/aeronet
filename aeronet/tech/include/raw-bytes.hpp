@@ -17,11 +17,11 @@ namespace aeronet {
  * require a simple, low-level buffer interface, do not use it for general-purpose data storage (prefer vector in that
  * case).
  */
-template <class T, class ViewType = std::span<const T>>
+template <class T, class ViewType = std::span<const T>, class SizeType = std::size_t>
 class RawBytesImpl {
  public:
   using value_type = T;
-  using size_type = std::size_t;
+  using size_type = SizeType;
   using pointer = value_type *;
   using const_pointer = const value_type *;
   using reference = value_type &;
@@ -47,7 +47,7 @@ class RawBytesImpl {
     }
   }
 
-  RawBytesImpl(const_pointer first, const_pointer last) : RawBytesImpl(static_cast<std::size_t>(last - first)) {
+  RawBytesImpl(const_pointer first, const_pointer last) : RawBytesImpl(static_cast<size_type>(last - first)) {
     assert(first <= last);
     if (first != last) {
       std::memcpy(_buf, first, _capacity);
@@ -80,7 +80,7 @@ class RawBytesImpl {
   RawBytesImpl &operator=(const RawBytesImpl &rhs) {
     if (this != &rhs) {
       if (rhs.capacity() > capacity()) {
-        ensureAvailableCapacity(static_cast<std::size_t>(rhs.capacity() - capacity()));
+        ensureAvailableCapacity(static_cast<size_type>(rhs.capacity() - capacity()));
       }
       _size = rhs.size();
       if (!empty()) {
@@ -94,7 +94,7 @@ class RawBytesImpl {
 
   void unchecked_append(const_pointer first, const_pointer last) {
     if (first != last) {
-      const std::size_t sz = static_cast<std::size_t>(last - first);
+      const size_type sz = static_cast<size_type>(last - first);
       std::memcpy(_buf + _size, first, sz);
       _size += sz;
     }
@@ -108,7 +108,7 @@ class RawBytesImpl {
 
   void append(const_pointer first, const_pointer last) {
     assert(first <= last);
-    ensureAvailableCapacity(static_cast<std::size_t>(last - first));
+    ensureAvailableCapacity(static_cast<size_type>(last - first));
     unchecked_append(first, last);
   }
 
@@ -132,7 +132,7 @@ class RawBytesImpl {
     _size = size;
   }
 
-  void assign(ViewType data) { assign(data.data(), data.size()); }
+  void assign(ViewType data) { assign(data.data(), static_cast<size_type>(data.size())); }
 
   void assign(const_pointer first, const_pointer last) { assign(first, static_cast<size_type>(last - first)); }
 
@@ -226,9 +226,8 @@ class RawBytesImpl {
   template <class Operation>
   void resize_and_overwrite(size_type n, Operation &&op) {
     reserveExponential(n);
-    size_type newSize = static_cast<size_type>(std::forward<Operation>(op)(_buf, n));
-    assert(newSize <= n && "resize_and_overwrite: operation returned size larger than requested n");
-    _size = newSize;
+    _size = static_cast<size_type>(std::forward<Operation>(op)(_buf, n));
+    assert(_size <= n && "resize_and_overwrite: operation returned size larger than requested n");
   }
 
   using trivially_relocatable = std::true_type;

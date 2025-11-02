@@ -506,7 +506,7 @@ Router::CompiledRoute Router::compilePattern(std::string_view path) {
       continue;
     }
 
-    RawChars literalBuffer;
+    SmallRawChars literalBuffer;
     bool previousWasParam = false;
     bool hasParam = false;
 

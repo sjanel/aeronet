@@ -15,6 +15,13 @@ add_unit_test(
 )
 
 add_unit_test(
+    dynamic-concatenated-strings_test
+    test/dynamic-concatenated-strings_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+add_unit_test(
     ipow_test
     test/ipow_test.cpp
 )
@@ -41,6 +48,20 @@ add_unit_test(
 add_unit_test(
     raw-bytes_test
     test/raw-bytes_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+add_unit_test(
+    simple-charconv_test
+    test/simple-charconv_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+add_unit_test(
+    static-concatenated-strings_test
+    test/static-concatenated-strings_test.cpp
     LIBRARIES
     aeronet_tech
 )
@@ -80,22 +101,8 @@ add_unit_test(
 )
 
 add_unit_test(
-    unitsparser_test
-    test/unitsparser_test.cpp
-    LIBRARIES
-    aeronet_tech
-)
-
-add_unit_test(
     flat-hash-map_test
     test/flat-hash-map_test.cpp
-    LIBRARIES
-    aeronet_tech
-)
-
-add_unit_test(
-    simple-charconv_test
-    test/simple-charconv_test.cpp
     LIBRARIES
     aeronet_tech
 )
@@ -110,13 +117,6 @@ add_unit_test(
 add_unit_test(
     year-week_test
     test/year-week_test.cpp
-    LIBRARIES
-    aeronet_tech
-)
-
-add_unit_test(
-    concatenated-strings_test
-    test/concatenated-strings_test.cpp
     LIBRARIES
     aeronet_tech
 )

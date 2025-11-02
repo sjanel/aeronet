@@ -165,6 +165,7 @@ class HttpRequest {
   friend class HttpServer;
   friend class HttpRequestTest;
   friend class StaticFileHandlerTest;
+  friend class CorsPolicyHarness;
 
   HttpRequest() noexcept = default;
 

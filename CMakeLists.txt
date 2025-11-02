@@ -96,6 +96,9 @@ endif()
 
 include(cmake/Dependencies.cmake)
 
+# Job pool detection and defaults (compute cpus and RAM-derived link pool)
+include(cmake/JobPool.cmake)
+
 include(cmake/SetProjectProperties.cmake)
 include(cmake/AddUnitTest.cmake)
 

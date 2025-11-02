@@ -7,7 +7,7 @@
 #include <string>
 #include <string_view>
 
-#include "concatenated-strings.hpp"
+#include "static-concatenated-strings.hpp"
 
 namespace aeronet {
 
@@ -69,7 +69,7 @@ class StaticFileConfig {
   std::size_t maxEntriesToList = 10000;
 
  private:
-  ConcatenatedStrings<3> _staticFileStrings{"index.html", "application/octet-stream", std::string_view()};
+  StaticConcatenatedStrings<3> _staticFileStrings{"index.html", "application/octet-stream", std::string_view()};
 };
 
 }  // namespace aeronet
