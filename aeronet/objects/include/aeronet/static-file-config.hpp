@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <span>
@@ -69,7 +70,8 @@ class StaticFileConfig {
   std::size_t maxEntriesToList = 10000;
 
  private:
-  StaticConcatenatedStrings<3> _staticFileStrings{"index.html", "application/octet-stream", std::string_view()};
+  StaticConcatenatedStrings<3, uint32_t> _staticFileStrings{"index.html", "application/octet-stream",
+                                                            std::string_view()};
 };
 
 }  // namespace aeronet

@@ -38,7 +38,7 @@ class BuiltinProbesConfig {
   ContentType contentType{ContentType::TextPlainUtf8};
 
  private:
-  using Paths = StaticConcatenatedStrings<3>;
+  using Paths = StaticConcatenatedStrings<3, uint32_t>;
 
   Paths _paths{"/livez", "/readyz", "/startupz"};
 };

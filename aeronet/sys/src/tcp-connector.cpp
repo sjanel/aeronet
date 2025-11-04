@@ -9,13 +9,12 @@
 #include <string_view>
 
 #include "base-fd.hpp"
+#include "log.hpp"
 
 namespace aeronet {
 
 ConnectResult ConnectTCP(char* buf, std::string_view host, std::string_view port, int family) {
   addrinfo* res = nullptr;
-
-  ConnectResult connectResult;
 
   int gai;
   {
@@ -44,6 +43,7 @@ ConnectResult ConnectTCP(char* buf, std::string_view host, std::string_view port
     gai = ::getaddrinfo(host.data(), port.data(), &hints, &res);
   }
   std::unique_ptr<addrinfo, void (*)(addrinfo*)> resRAII(res, &::freeaddrinfo);
+  ConnectResult connectResult;
 
   if (gai != 0 || res == nullptr) {
     // avoid depending on a logging helper here; getaddrinfo error is enough
@@ -69,11 +69,27 @@ ConnectResult ConnectTCP(char* buf, std::string_view host, std::string_view port
       return connectResult;
     }
 
-    if (errno == EINPROGRESS) {
-      // non-blocking connect in progress
+    const int connectErr = errno;
+    // Non-blocking connect started -> completion will be signalled via poll/epoll
+    if (connectErr == EINPROGRESS) {
       connectResult.connectPending = true;
       return connectResult;
     }
+    // EALREADY: a previous non-blocking connect is already in progress on this socket
+    if (connectErr == EALREADY) {
+      connectResult.connectPending = true;
+      return connectResult;
+    }
+    // EISCONN: socket is already connected
+    if (connectErr == EISCONN) {
+      return connectResult;
+    }
+    // EINTR: interrupted system call; treat as transient and try next address
+    if (connectErr == EINTR) {
+      continue;
+    }
+    log::warn("ConnectTCP: connect() failed for addrinfo entry (family={}, socktype={}, protocol={}): errno={}, msg={}",
+              rp->ai_family, rp->ai_socktype, rp->ai_protocol, connectErr, std::strerror(connectErr));
   }
   connectResult.failure = true;
   return connectResult;

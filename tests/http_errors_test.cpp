@@ -14,6 +14,11 @@
 #include "aeronet/test_util.hpp"
 
 using namespace std::chrono_literals;
+using namespace aeronet;
+
+namespace {
+test::TestServer ts(HttpServerConfig{});
+}
 
 struct ErrorCase {
   const char* name;
@@ -24,11 +29,9 @@ struct ErrorCase {
 class HttpErrorParamTest : public ::testing::TestWithParam<ErrorCase> {};
 
 TEST_P(HttpErrorParamTest, EmitsExpectedStatus) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.router().setDefault(
-      [](const aeronet::HttpRequest&) { return aeronet::HttpResponse(aeronet::http::StatusCodeOK); });
+  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   const auto& param = GetParam();
-  std::string resp = aeronet::test::sendAndCollect(ts.port(), param.request);
+  std::string resp = test::sendAndCollect(ts.port(), param.request);
   ASSERT_TRUE(resp.contains(param.expectedStatus)) << "Case=" << param.name << "\nResp=" << resp;
 }
 
@@ -45,74 +48,66 @@ INSTANTIATE_TEST_SUITE_P(
                                 "400"}));
 
 TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("ok"); });
+  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse().body("ok"); });
   // HTTP/1.0 without Connection: keep-alive should close
-  aeronet::test::ClientConnection clientConnection(port);
+  test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string_view req = "GET /h HTTP/1.0\r\nHost: x\r\n\r\n";
-  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
+  ASSERT_TRUE(test::sendAll(fd, req));
 
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  std::string resp = test::recvUntilClosed(fd);
 
   ASSERT_TRUE(resp.contains("Connection: close"));
   // Second request should not yield another response (connection closed). We attempt to read after sending.
   std::string_view req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\n\r\n";
-  ASSERT_TRUE(aeronet::test::sendAll(fd, req2));
+  ASSERT_TRUE(test::sendAll(fd, req2));
   // Expect no data (connection should be closed) -- use test helper which waits briefly
-  auto n2 = aeronet::test::recvWithTimeout(fd);
+  auto n2 = test::recvWithTimeout(fd);
   EXPECT_TRUE(n2.empty());
 }
 
 TEST(HttpKeepAlive10, OptInWithHeader) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest&) { return aeronet::HttpResponse().body("ok"); });
-  aeronet::test::ClientConnection clientConnection(port);
+  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse().body("ok"); });
+  test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string_view req = "GET /h HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
-  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string first = aeronet::test::recvWithTimeout(fd);
+  ASSERT_TRUE(test::sendAll(fd, req));
+  std::string first = test::recvWithTimeout(fd);
   ASSERT_TRUE(first.contains("Connection: keep-alive"));
   std::string_view req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
-  ASSERT_TRUE(aeronet::test::sendAll(fd, req2));
-  std::string second = aeronet::test::recvWithTimeout(fd);
+  ASSERT_TRUE(test::sendAll(fd, req2));
+  std::string second = test::recvWithTimeout(fd);
   ASSERT_TRUE(second.contains("Connection: keep-alive"));
 }
 
 namespace {
 std::string sendRaw(uint16_t port, std::string_view raw) {
-  aeronet::test::ClientConnection clientConnection(port);
+  test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
-  aeronet::test::sendAll(fd, raw);
-  std::string resp = aeronet::test::recvWithTimeout(fd, 300ms);
+  test::sendAll(fd, raw);
+  std::string resp = test::recvWithTimeout(fd, 300ms);
   // server may close depending on error severity
   return resp;
 }
 }  // anonymous namespace
 
 TEST(HttpMalformed, MissingSpacesInRequestLine) {
-  aeronet::HttpServer server(aeronet::HttpServerConfig{});
-  auto port = server.port();
-  server.router().setDefault(
-      [](const aeronet::HttpRequest&) { return aeronet::HttpResponse(aeronet::http::StatusCodeOK); });
-  std::jthread th([&] { server.run(); });
-  std::this_thread::sleep_for(50ms);
+  auto port = ts.port();
+  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   std::string resp = sendRaw(port, "GET/abcHTTP/1.1\r\nHost: x\r\n\r\n");
-  server.stop();
   ASSERT_TRUE(resp.contains("400")) << resp;
 }
 
 TEST(HttpMalformed, OversizedHeaders) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withMaxHeaderBytes(128);
-  aeronet::HttpServer server(cfg);
+  HttpServer server(cfg);
   auto port = server.port();
-  server.router().setDefault(
-      [](const aeronet::HttpRequest&) { return aeronet::HttpResponse(aeronet::http::StatusCodeOK); });
+  server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   std::jthread th([&] { server.run(); });
   std::this_thread::sleep_for(50ms);
   std::string big(200, 'A');
@@ -123,16 +118,12 @@ TEST(HttpMalformed, OversizedHeaders) {
 }
 
 TEST(HttpMalformed, BadChunkExtensionHex) {
-  aeronet::HttpServer server(aeronet::HttpServerConfig{});
-  auto port = server.port();
-  server.router().setDefault(
-      [](const aeronet::HttpRequest&) { return aeronet::HttpResponse(aeronet::http::StatusCodeOK); });
-  std::jthread th([&] { server.run(); });
-  std::this_thread::sleep_for(50ms);
+  auto port = ts.port();
+  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+
   // Transfer-Encoding with invalid hex char 'Z'
   std::string raw = "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nZ\r\n";  // incomplete + invalid
   std::string resp = sendRaw(port, raw);
-  server.stop();
   // Expect no 200 OK; either empty (waiting for more) or eventually 413/400 once completed; we at least assert not 200
   ASSERT_FALSE(resp.contains("200 OK"));
 }

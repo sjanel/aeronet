@@ -22,7 +22,7 @@ aeronet_http_test(http_errors)
 
 aeronet_http_test(http_keepalive)
 
-aeronet_http_test(multi_http_server)
+aeronet_http_test(multi-http-server)
 
 # OPTIONS, TRACE and CONNECT methods
 aeronet_http_test(http_options_trace)
@@ -89,7 +89,7 @@ set(REGISTERED_TEST_SOURCES_REL
 	http_date_test.cpp
 	http_errors_test.cpp
 	http_keepalive_test.cpp
-	multi_http_server_test.cpp
+	multi-http-server_test.cpp
 	http_options_trace_test.cpp
 	http_connect_test.cpp
 	http_parser_errors_test.cpp

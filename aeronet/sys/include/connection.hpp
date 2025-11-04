@@ -11,6 +11,7 @@ class Connection {
   Connection() noexcept = default;
 
   explicit Connection(const Socket &socket);
+
   // Construct a Connection that takes ownership of an existing fd wrapped in BaseFd.
   explicit Connection(BaseFd &&bd) noexcept;
 

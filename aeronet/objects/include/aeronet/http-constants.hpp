@@ -113,6 +113,7 @@ inline constexpr std::string_view HTTP11_100_CONTINUE = "HTTP/1.1 100 Continue\r
 inline constexpr std::string_view ReasonOK = "OK";                                               // 200
 inline constexpr std::string_view MovedPermanently = "Moved Permanently";                        // 301
 inline constexpr std::string_view ReasonBadRequest = "Bad Request";                              // 400
+inline constexpr std::string_view ReasonForbidden = "Forbidden";                                 // 403
 inline constexpr std::string_view NotFound = "Not Found";                                        // 404
 inline constexpr std::string_view ReasonMethodNotAllowed = "Method Not Allowed";                 // 405
 inline constexpr std::string_view ReasonNotAcceptable = "Not Acceptable";                        // 406
@@ -140,6 +141,8 @@ constexpr std::string_view reasonPhraseFor(http::StatusCode status) noexcept {
       return MovedPermanently;
     case StatusCodeBadRequest:
       return ReasonBadRequest;
+    case StatusCodeForbidden:
+      return ReasonForbidden;
     case StatusCodeNotFound:
       return NotFound;
     case StatusCodeMethodNotAllowed:

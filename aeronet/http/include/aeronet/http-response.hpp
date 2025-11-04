@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cassert>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -21,6 +22,7 @@
 #include "file.hpp"
 #include "raw-chars.hpp"
 #include "simple-charconv.hpp"
+#include "stringconv.hpp"
 #include "timedef.hpp"
 
 namespace aeronet {
@@ -402,6 +404,13 @@ class HttpResponse {
     return *this;
   }
 
+  // Convenient overload adding a header to a numeric value.
+  HttpResponse& addCustomHeader(std::string_view key, std::integral auto value) & {
+    assert(!http::IsReservedResponseHeader(key));
+    appendHeaderUnchecked(key, std::string_view(IntegralToCharVector(value)));
+    return *this;
+  }
+
   // Append a header line (duplicates allowed, fastest path).
   // No scan over existing headers. Prefer this when duplicates are OK or
   // when constructing headers once.
@@ -410,6 +419,13 @@ class HttpResponse {
   HttpResponse&& addCustomHeader(std::string_view key, std::string_view value) && {
     assert(!http::IsReservedResponseHeader(key));
     appendHeaderUnchecked(key, value);
+    return std::move(*this);
+  }
+
+  // Convenient overload adding a header to a numeric value.
+  HttpResponse&& addCustomHeader(std::string_view key, std::integral auto value) && {
+    assert(!http::IsReservedResponseHeader(key));
+    appendHeaderUnchecked(key, std::string_view(IntegralToCharVector(value)));
     return std::move(*this);
   }
 
@@ -426,6 +442,13 @@ class HttpResponse {
     return *this;
   }
 
+  // Convenient overload setting a header to a numeric value.
+  HttpResponse& customHeader(std::string_view key, std::integral auto value) & {
+    assert(!http::IsReservedResponseHeader(key));
+    setHeader(key, std::string_view(IntegralToCharVector(value)), false);
+    return *this;
+  }
+
   // Set or replace a header value ensuring at most one instance.
   // Performs a linear scan (slower than addCustomHeader()) using case-insensitive comparison of header names per
   // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
@@ -436,6 +459,13 @@ class HttpResponse {
   HttpResponse&& customHeader(std::string_view key, std::string_view value) && {
     assert(!http::IsReservedResponseHeader(key));
     setHeader(key, value, false);
+    return std::move(*this);
+  }
+
+  // Convenient overload setting a header to a numeric value.
+  HttpResponse&& customHeader(std::string_view key, std::integral auto value) && {
+    assert(!http::IsReservedResponseHeader(key));
+    setHeader(key, std::string_view(IntegralToCharVector(value)), false);
     return std::move(*this);
   }
 

@@ -4,7 +4,6 @@
 #include <zstd.h>
 #endif
 
-#include <map>
 #include <string>
 #include <string_view>
 #include <utility>

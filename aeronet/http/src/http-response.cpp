@@ -185,9 +185,6 @@ const File* HttpResponse::file() const noexcept {
 }
 
 std::string_view HttpResponse::body() const noexcept {
-  if (_payloadKind == PayloadKind::File) {
-    return {};
-  }
   const HttpPayload* pExternPayload = externPayloadPtr();
   auto ret =
       pExternPayload != nullptr ? pExternPayload->view() : std::string_view{_data.begin() + _bodyStartPos, _data.end()};
