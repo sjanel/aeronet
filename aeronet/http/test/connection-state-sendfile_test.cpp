@@ -18,7 +18,7 @@
 #include "transport.hpp"
 
 using namespace aeronet;
-using aeronet::test::ScopedTempFile;
+using test::ScopedTempFile;
 
 TEST(ConnectionStateSendfileTest, KernelSendfileSuccess) {
   int sv[2];
@@ -26,7 +26,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileSuccess) {
   BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
 
   const std::string content(64UL * 1024, 'A');
-  aeronet::test::ScopedTempDir tmpDir;
+  test::ScopedTempDir tmpDir;
   ScopedTempFile tmp(tmpDir, content);
   File file(tmp.filePath().string());
   ConnectionState state;
@@ -53,7 +53,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
   BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
 
   const std::string content(128UL * 1024, 'B');
-  aeronet::test::ScopedTempDir tmpDir;
+  test::ScopedTempDir tmpDir;
   ScopedTempFile tmp(tmpDir, content);
 
   File file(tmp.filePath().string());
@@ -102,7 +102,7 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   // Create a large file to force multiple chunks in the TLS path
   const std::size_t totalSize = (1 << 20);  // 1 MiB
   const std::string content(totalSize, 'T');
-  aeronet::test::ScopedTempDir tmpDir;
+  test::ScopedTempDir tmpDir;
   ScopedTempFile tmp(tmpDir, content);
 
   File file(tmp.filePath().string());

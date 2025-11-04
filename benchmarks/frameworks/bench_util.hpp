@@ -139,10 +139,8 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
   req.append(" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: ");
   req.append(keepAlive ? aeronet::http::keepalive : aeronet::http::close);
   req.append(aeronet::http::DoubleCRLF);
-  if (!aeronet::test::sendAll(fd, req)) {
-    aeronet::log::error("sendAll failed: {}", std::strerror(errno));
-    return std::nullopt;
-  }
+
+  aeronet::test::sendAll(fd, req);
 
   // Extend deadline for benchmarks that request very large bodies over fresh TCP connections.
   // Keep tests / CI responsive while avoiding spurious timeouts for multi-megabyte responses.

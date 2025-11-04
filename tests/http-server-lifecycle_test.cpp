@@ -18,23 +18,24 @@
 #include "aeronet/test_util.hpp"
 
 using namespace std::chrono_literals;
+using namespace aeronet;
 
 TEST(HttpServerMove, MoveConstructAndServe) {
   std::atomic_bool stop{false};
-  aeronet::HttpServer original(aeronet::HttpServerConfig{});
+  HttpServer original(HttpServerConfig{});
   auto port = original.port();
-  original.router().setDefault([](const aeronet::HttpRequest& req) {
-    aeronet::HttpResponse resp;
+  original.router().setDefault([](const HttpRequest& req) {
+    HttpResponse resp;
     resp.body(std::string("ORIG:") + std::string(req.path()));
     return resp;
   });
 
   // Move construct server before running
-  aeronet::HttpServer moved(std::move(original));
+  HttpServer moved(std::move(original));
 
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  std::string resp = aeronet::test::simpleGet(port, "/mv");
+  std::string resp = test::simpleGet(port, "/mv");
 
   stop.store(true);
 
@@ -42,20 +43,20 @@ TEST(HttpServerMove, MoveConstructAndServe) {
 }
 
 TEST(HttpServerMove, MoveAssignWhileStopped) {
-  aeronet::HttpServer s1(aeronet::HttpServerConfig{}.withReusePort(false));
-  aeronet::HttpServer s2(aeronet::HttpServerConfig{}.withReusePort(false));
+  HttpServer s1(HttpServerConfig{}.withReusePort(false));
+  HttpServer s2(HttpServerConfig{}.withReusePort(false));
   auto port1 = s1.port();
   auto port2 = s2.port();
 
   EXPECT_NE(port1, port2);
 
-  s1.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest& req) {
-    aeronet::HttpResponse resp;
+  s1.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
+    HttpResponse resp;
     resp.body("S1");
     return resp;
   });
-  s2.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest& req) {
-    aeronet::HttpResponse resp;
+  s2.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
+    HttpResponse resp;
     resp.body("S2");
     return resp;
   });
@@ -67,7 +68,7 @@ TEST(HttpServerMove, MoveAssignWhileStopped) {
   std::atomic_bool stop{false};
   std::jthread th([&] { s1.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(120));
-  std::string resp = aeronet::test::simpleGet(port2, "/x");
+  std::string resp = test::simpleGet(port2, "/x");
   stop.store(true);
   ASSERT_TRUE(resp.contains("S2"));
 }
@@ -75,17 +76,17 @@ TEST(HttpServerMove, MoveAssignWhileStopped) {
 TEST(HttpServerMove, MoveConstructProbesCapturesThis) {
   std::atomic_bool stop{false};
   // Construct original with builtin probes enabled so they get registered and capture 'this'
-  aeronet::HttpServer original(aeronet::HttpServerConfig{}.enableBuiltinProbes(true));
+  HttpServer original(HttpServerConfig{}.enableBuiltinProbes(true));
   auto port = original.port();
 
   // Move construct server before running; handlers were registered on the original and captured its 'this'
-  aeronet::HttpServer moved(std::move(original));
+  HttpServer moved(std::move(original));
 
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
   // Probe startup path. Correct behavior: after moved.runUntil started, startup probe should return 200.
-  std::string resp = aeronet::test::simpleGet(port, "/startupz");
+  std::string resp = test::simpleGet(port, "/startupz");
 
   stop.store(true);
 
@@ -96,22 +97,22 @@ TEST(HttpServerMove, MoveConstructProbesCapturesThis) {
 
 TEST(HttpServerMove, ReRegisterHandlersAfterMove) {
   std::atomic_bool stop{false};
-  aeronet::HttpServer original(aeronet::HttpServerConfig{});
+  HttpServer original(HttpServerConfig{});
   auto port = original.port();
 
   // initial handler registered on original
-  original.router().setDefault([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse resp;
+  original.router().setDefault([](const HttpRequest&) {
+    HttpResponse resp;
     resp.body("ORIG");
     return resp;
   });
 
   // Move server (handlers are moved too)
-  aeronet::HttpServer moved(std::move(original));
+  HttpServer moved(std::move(original));
 
   // Re-register handlers on the moved instance to new behavior
-  moved.router().setDefault([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse resp;
+  moved.router().setDefault([](const HttpRequest&) {
+    HttpResponse resp;
     resp.body("MOVED");
     return resp;
   });
@@ -119,7 +120,7 @@ TEST(HttpServerMove, ReRegisterHandlersAfterMove) {
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  std::string resp = aeronet::test::simpleGet(port, "/x");
+  std::string resp = test::simpleGet(port, "/x");
   stop.store(true);
 
   ASSERT_TRUE(resp.contains("MOVED"));
@@ -128,12 +129,12 @@ TEST(HttpServerMove, ReRegisterHandlersAfterMove) {
 // Disabled by default: demonstrates the hazard when a handler captures `this` and is not re-registered
 TEST(HttpServerMove, DISABLED_CapturedThisAfterMoveHazard) {
   std::atomic_bool stop{false};
-  aeronet::HttpServer original(aeronet::HttpServerConfig{});
+  HttpServer original(HttpServerConfig{});
   auto port = original.port();
 
   // handler captures raw this pointer and returns it as string
-  original.router().setDefault([&original](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse resp;
+  original.router().setDefault([&original](const HttpRequest&) {
+    HttpResponse resp;
     // print the pointer value (implementation detail) to observe which 'this' is used
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%p", static_cast<void*>(&original));
@@ -142,12 +143,12 @@ TEST(HttpServerMove, DISABLED_CapturedThisAfterMoveHazard) {
   });
 
   // Move construct (do not re-register handler)
-  aeronet::HttpServer moved(std::move(original));
+  HttpServer moved(std::move(original));
 
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  std::string resp = aeronet::test::simpleGet(port, "/y");
+  std::string resp = test::simpleGet(port, "/y");
   stop.store(true);
 
   // The safe expectation is that handler, when invoked on moved server, observes the moved-to 'this'.
@@ -161,16 +162,16 @@ TEST(HttpServerMove, DISABLED_CapturedThisAfterMoveHazard) {
 // running status, so the moved-from object may be left in a valid but stopped state.
 
 TEST(HttpServer, MoveAssignWhileRunningThrows) {
-  aeronet::HttpServerConfig cfg;
-  aeronet::HttpServer serverA(cfg);
-  aeronet::HttpServer serverB(cfg);
-  serverA.router().setDefault([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse resp;
+  HttpServerConfig cfg;
+  HttpServer serverA(cfg);
+  HttpServer serverB(cfg);
+  serverA.router().setDefault([](const HttpRequest&) {
+    HttpResponse resp;
     resp.body("a");
     return resp;
   });
-  serverB.router().setDefault([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse resp;
+  serverB.router().setDefault([](const HttpRequest&) {
+    HttpResponse resp;
     resp.body("b");
     return resp;
   });
@@ -186,10 +187,10 @@ TEST(HttpServer, MoveAssignWhileRunningThrows) {
 TEST(HttpServerRestart, RestartPossible) {
   std::atomic_bool stop1{false};
   std::atomic_bool stop2{false};
-  aeronet::HttpServer server(aeronet::HttpServerConfig{});
+  HttpServer server(HttpServerConfig{});
   auto port = server.port();
-  server.router().setDefault([](const aeronet::HttpRequest& req) {
-    aeronet::HttpResponse resp;
+  server.router().setDefault([](const HttpRequest& req) {
+    HttpResponse resp;
     resp.body(std::string("ORIG:") + std::string(req.path()));
     return resp;
   });
@@ -199,7 +200,7 @@ TEST(HttpServerRestart, RestartPossible) {
     server.runUntil([&] { return stop2.load(); });
   });
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  std::string resp = aeronet::test::simpleGet(port, "/mv");
+  std::string resp = test::simpleGet(port, "/mv");
 
   ASSERT_TRUE(resp.contains("ORIG:/mv"));
 
@@ -208,7 +209,7 @@ TEST(HttpServerRestart, RestartPossible) {
   // Should start a second time, same port.
   EXPECT_EQ(port, server.port());
 
-  resp = aeronet::test::simpleGet(port, "/mv2");
+  resp = test::simpleGet(port, "/mv2");
   ASSERT_TRUE(resp.contains("ORIG:/mv2"));
   stop2.store(true);
 }
@@ -225,7 +226,7 @@ std::string SimpleGetRequest(std::string_view target, std::string_view connectio
   return req;
 }
 
-bool WaitForServerRunning(aeronet::HttpServer& server, std::chrono::milliseconds timeout) {
+bool WaitForServerRunning(HttpServer& server, std::chrono::milliseconds timeout) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(5ms);
@@ -239,85 +240,85 @@ bool WaitForServerRunning(aeronet::HttpServer& server, std::chrono::milliseconds
 }  // namespace
 
 TEST(HttpDrain, StopsNewConnections) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.enableKeepAlive = true;
-  aeronet::test::TestServer ts(cfg);
+  test::TestServer ts(cfg);
 
-  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse resp;
+  ts.server.router().setDefault([](const HttpRequest&) {
+    HttpResponse resp;
     resp.body("OK");
     return resp;
   });
 
   const auto port = ts.port();
 
-  ASSERT_TRUE(aeronet::test::AttemptConnect(port));
+  ASSERT_TRUE(test::AttemptConnect(port));
 
   // Baseline request to ensure server responds prior to draining.
   {
-    aeronet::test::ClientConnection cnx(port);
-    ASSERT_TRUE(aeronet::test::sendAll(cnx.fd(), SimpleGetRequest("/pre", "keep-alive")));
-    const auto resp = aeronet::test::recvWithTimeout(cnx.fd());
+    test::ClientConnection cnx(port);
+    test::sendAll(cnx.fd(), SimpleGetRequest("/pre", "keep-alive"));
+    const auto resp = test::recvWithTimeout(cnx.fd());
     EXPECT_TRUE(resp.contains("200"));
   }
 
   ts.server.beginDrain();
 
-  EXPECT_FALSE(aeronet::test::AttemptConnect(port));
+  EXPECT_FALSE(test::AttemptConnect(port));
 
   ts.stop();
 }
 
 TEST(HttpDrain, KeepAliveConnectionsCloseAfterDrain) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.enableKeepAlive = true;
-  aeronet::test::TestServer ts(cfg);
+  test::TestServer ts(cfg);
 
-  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse resp;
+  ts.server.router().setDefault([](const HttpRequest&) {
+    HttpResponse resp;
     resp.body("OK");
     return resp;
   });
 
   const auto port = ts.port();
-  aeronet::test::ClientConnection cnx(port);
+  test::ClientConnection cnx(port);
   const int fd = cnx.fd();
 
-  ASSERT_TRUE(aeronet::test::sendAll(fd, SimpleGetRequest("/one", "keep-alive")));
-  auto firstResponse = aeronet::test::recvWithTimeout(fd);
+  test::sendAll(fd, SimpleGetRequest("/one", "keep-alive"));
+  auto firstResponse = test::recvWithTimeout(fd);
   ASSERT_TRUE(firstResponse.contains("Connection: keep-alive"));
 
   ts.server.beginDrain();
 
-  ASSERT_TRUE(aeronet::test::sendAll(fd, SimpleGetRequest("/two", "keep-alive")));
-  auto drainedResponse = aeronet::test::recvWithTimeout(fd);
+  test::sendAll(fd, SimpleGetRequest("/two", "keep-alive"));
+  auto drainedResponse = test::recvWithTimeout(fd);
   EXPECT_TRUE(drainedResponse.contains("Connection: close"));
 
-  EXPECT_TRUE(aeronet::test::WaitForPeerClose(fd, 500ms));
+  EXPECT_TRUE(test::WaitForPeerClose(fd, 500ms));
 
   ts.stop();
 }
 
 TEST(HttpDrain, DeadlineForcesIdleConnectionsToClose) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.keepAliveTimeout = 5s;  // ensure default timeout does not interfere with the test window
-  aeronet::test::TestServer ts(cfg);
+  test::TestServer ts(cfg);
 
-  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
-    aeronet::HttpResponse resp;
+  ts.server.router().setDefault([](const HttpRequest&) {
+    HttpResponse resp;
     resp.body("OK");
     return resp;
   });
 
   const auto port = ts.port();
-  aeronet::test::ClientConnection idle(port);
+  test::ClientConnection idle(port);
   const int fd = idle.fd();
 
   ASSERT_TRUE(WaitForServerRunning(ts.server, 200ms));
   ts.server.beginDrain(std::chrono::milliseconds{50});
   ASSERT_TRUE(ts.server.isDraining());
 
-  EXPECT_TRUE(aeronet::test::WaitForPeerClose(fd, 500ms));
+  EXPECT_TRUE(test::WaitForPeerClose(fd, 500ms));
 
   ts.stop();
 }

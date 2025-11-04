@@ -55,14 +55,14 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string_view req = "GET /h HTTP/1.0\r\nHost: x\r\n\r\n";
-  ASSERT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
 
   std::string resp = test::recvUntilClosed(fd);
 
   ASSERT_TRUE(resp.contains("Connection: close"));
   // Second request should not yield another response (connection closed). We attempt to read after sending.
   std::string_view req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\n\r\n";
-  ASSERT_TRUE(test::sendAll(fd, req2));
+  test::sendAll(fd, req2);
   // Expect no data (connection should be closed) -- use test helper which waits briefly
   auto n2 = test::recvWithTimeout(fd);
   EXPECT_TRUE(n2.empty());
@@ -75,11 +75,11 @@ TEST(HttpKeepAlive10, OptInWithHeader) {
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string_view req = "GET /h HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
-  ASSERT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string first = test::recvWithTimeout(fd);
   ASSERT_TRUE(first.contains("Connection: keep-alive"));
   std::string_view req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
-  ASSERT_TRUE(test::sendAll(fd, req2));
+  test::sendAll(fd, req2);
   std::string second = test::recvWithTimeout(fd);
   ASSERT_TRUE(second.contains("Connection: keep-alive"));
 }

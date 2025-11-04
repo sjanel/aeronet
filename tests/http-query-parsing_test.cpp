@@ -205,7 +205,7 @@ TEST(HttpQueryStructuredBindings, IterateKeyValues) {
   // Build raw HTTP request using helpers
   test::ClientConnection client(ts.port());
   std::string req = "GET /sb?a=1&b=two%20words&empty=&novalue HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
-  ASSERT_TRUE(test::sendAll(client.fd(), req));
+  test::sendAll(client.fd(), req);
   auto resp = test::recvUntilClosed(client.fd());
   EXPECT_TRUE(resp.contains("OK"));
 }

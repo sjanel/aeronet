@@ -16,24 +16,24 @@ class HttpConnectDefaultConfig : public ::testing::Test {
  public:
   virtual ~HttpConnectDefaultConfig() = default;
 
-  aeronet::test::TestServer ts{HttpServerConfig{}};
-  aeronet::test::ClientConnection client{ts.port()};
+  test::TestServer ts{HttpServerConfig{}};
+  test::ClientConnection client{ts.port()};
   int fd{client.fd()};
 };
 
 TEST_F(HttpConnectDefaultConfig, EchoTunnelSuccess) {
-  auto [sock, port] = aeronet::test::startEchoServer();
+  auto [sock, port] = test::startEchoServer();
   // Build CONNECT request
   std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
-  aeronet::test::sendAll(fd, req);
-  auto resp = aeronet::test::recvWithTimeout(fd, 2000ms);
+  test::sendAll(fd, req);
+  auto resp = test::recvWithTimeout(fd, 500ms);
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
 
   // Now send data through the tunnel and expect echo
   std::string_view payload = "hello-tunnel";
-  aeronet::test::sendAll(fd, payload);
-  auto echoed = aeronet::test::recvWithTimeout(fd, 2000ms);
+  test::sendAll(fd, payload);
+  auto echoed = test::recvWithTimeout(fd, 500ms);
   ASSERT_TRUE(echoed.contains(payload));
 }
 
@@ -46,28 +46,28 @@ TEST_F(HttpConnectDefaultConfig, EchoTunnelSuccess) {
 // eventually forwarded.
 TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   // Use the test helper to start an echo server on loopback (returns ephemeral port).
-  auto [sock, port] = aeronet::test::startEchoServer();
+  auto [sock, port] = test::startEchoServer();
   // Build CONNECT request to our upstream
   std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
-  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
-  auto resp = aeronet::test::recvWithTimeout(fd, 2000ms);
+  test::sendAll(fd, req);
+  auto resp = test::recvWithTimeout(fd, 500ms);
   ASSERT_TRUE(resp.contains("200"));
 
   // Send payload that upstream will partially echo
   std::string payload(6000000, 'a');
-  ASSERT_TRUE(aeronet::test::sendAll(fd, payload));
+  test::sendAll(fd, payload);
 
   // Wait to receive the full payload (some arrives quickly, remainder after upstream sleeps)
-  auto echoed = aeronet::test::recvWithTimeout(fd, 2000ms);
+  auto echoed = test::recvWithTimeout(fd, 2000ms);
   ASSERT_TRUE(echoed.contains(payload));
 }
 
 TEST_F(HttpConnectDefaultConfig, DnsFailureReturns502) {
   std::string req = "CONNECT no-such-host.example.invalid:80 HTTP/1.1\r\nHost: no-such-host.example.invalid\r\n\r\n";
   ASSERT_GT(fd, 0);
-  aeronet::test::sendAll(fd, req);
-  auto resp = aeronet::test::recvWithTimeout(fd, 2000ms);
+  test::sendAll(fd, req);
+  auto resp = test::recvWithTimeout(fd, 500ms);
   // Expect 502 Bad Gateway or connection close
   ASSERT_TRUE(resp.contains("502") || resp.empty());
 }
@@ -77,13 +77,13 @@ TEST(HttpConnect, AllowlistRejectsTarget) {
   // only allow example.com
   std::vector<std::string> list = {"example.com"};
   cfg.withConnectAllowlist(list.begin(), list.end());
-  aeronet::test::TestServer ts2(cfg);
+  test::TestServer ts2(cfg);
 
   std::string req = "CONNECT 127.0.0.1:80 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
-  aeronet::test::ClientConnection client2(ts2.port());
+  test::ClientConnection client2(ts2.port());
   int fd2 = client2.fd();
   ASSERT_GT(fd2, 0);
-  aeronet::test::sendAll(fd2, req);
-  auto resp = aeronet::test::recvWithTimeout(fd2, 2000ms);
+  test::sendAll(fd2, req);
+  auto resp = test::recvWithTimeout(fd2, 500ms);
   ASSERT_TRUE(resp.contains("403") || resp.contains("CONNECT target not allowed"));
 }
