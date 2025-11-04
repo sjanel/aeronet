@@ -13,8 +13,11 @@
 
 using namespace std::chrono_literals;
 
+namespace {
+aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+}
+
 TEST(HttpChunked, DecodeBasic) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(aeronet::http::StatusCodeOK)
@@ -35,9 +38,9 @@ TEST(HttpChunked, DecodeBasic) {
 TEST(HttpChunked, RejectTooLarge) {
   aeronet::HttpServerConfig cfg;
   cfg.withMaxBodyBytes(4);  // very small limit
-  aeronet::test::TestServer ts(cfg);
-  auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
+  aeronet::test::TestServer tsSmallBody(cfg);
+  auto port = tsSmallBody.port();
+  tsSmallBody.server.router().setDefault([](const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body(req.body());
   });
   aeronet::test::ClientConnection cnx(port);
@@ -51,7 +54,6 @@ TEST(HttpChunked, RejectTooLarge) {
 }
 
 TEST(HttpHead, NoBodyReturned) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body(std::string("DATA-") + std::string(req.path()));
@@ -71,7 +73,6 @@ TEST(HttpHead, NoBodyReturned) {
 }
 
 TEST(HttpExpect, ContinueFlow) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
   auto port = ts.port();
   ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body(req.body());

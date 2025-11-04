@@ -31,8 +31,8 @@ class HttpRequest {
   //   * Empty value handling avoids manufacturing leading/trailing separators:
   //       first="" + second="v"  -> "v"
   //       first="v" + second=""  -> "v" (unchanged)
-  //   * Leading & trailing horizontal whitespace around the original field value are trimmed; internal whitespace
-  //     is preserved verbatim (except for deliberate single-space joins in the User-Agent merge case).
+  //   * Leading & trailing horizontal whitespaces around the original field value are trimmed; internal whitespaces
+  //     are preserved verbatim (except for deliberate single-space joins in the User-Agent merge case).
   //   * The returned view points into the connection's receive buffer; it is valid only for the lifetime of the
   //     handler invocation (do not persist it beyond the request scope).
   //   * If you need to distinguish between a missing header and an explicitly present empty header, use headerValue().

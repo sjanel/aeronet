@@ -2,10 +2,12 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <new>
 #include <span>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
@@ -30,6 +32,7 @@ class RawBytesImpl {
   using const_iterator = const value_type *;
 
   static_assert(std::is_trivially_copyable_v<T> && sizeof(T) == 1);
+  static_assert(std::is_unsigned_v<SizeType>, "RawBytesImpl requires an unsigned size type");
 
   RawBytesImpl() noexcept = default;
 
@@ -41,6 +44,11 @@ class RawBytesImpl {
   }
 
   explicit RawBytesImpl(ViewType data) : RawBytesImpl(data.size()) {
+    if constexpr (sizeof(size_type) < sizeof(uint64_t)) {
+      if (std::cmp_less(std::numeric_limits<size_type>::max(), data.size())) {
+        throw std::length_error("RawBytesImpl: constructor size exceeds maximum");
+      }
+    }
     if (!data.empty()) {
       std::memcpy(_buf, data.data(), _capacity);
       _size = _capacity;
@@ -49,6 +57,11 @@ class RawBytesImpl {
 
   RawBytesImpl(const_pointer first, const_pointer last) : RawBytesImpl(static_cast<size_type>(last - first)) {
     assert(first <= last);
+    if constexpr (sizeof(size_type) < sizeof(uint64_t)) {
+      if (std::cmp_less(std::numeric_limits<size_type>::max(), last - first)) {
+        throw std::length_error("RawBytesImpl: constructor size exceeds maximum");
+      }
+    }
     if (first != last) {
       std::memcpy(_buf, first, _capacity);
       _size = _capacity;
@@ -79,7 +92,7 @@ class RawBytesImpl {
 
   RawBytesImpl &operator=(const RawBytesImpl &rhs) {
     if (this != &rhs) {
-      if (rhs.capacity() > capacity()) {
+      if (capacity() < rhs.capacity()) {
         ensureAvailableCapacity(static_cast<size_type>(rhs.capacity() - capacity()));
       }
       _size = rhs.size();
@@ -94,9 +107,9 @@ class RawBytesImpl {
 
   void unchecked_append(const_pointer first, const_pointer last) {
     if (first != last) {
-      const size_type sz = static_cast<size_type>(last - first);
+      const std::size_t sz = static_cast<std::size_t>(last - first);
       std::memcpy(_buf + _size, first, sz);
-      _size += sz;
+      _size += static_cast<size_type>(sz);
     }
   }
 
@@ -108,6 +121,11 @@ class RawBytesImpl {
 
   void append(const_pointer first, const_pointer last) {
     assert(first <= last);
+    if constexpr (sizeof(size_type) < sizeof(uint64_t)) {
+      if (std::cmp_less(std::numeric_limits<size_type>::max(), last - first)) {
+        throw std::length_error("RawBytesImpl: append size exceeds maximum");
+      }
+    }
     ensureAvailableCapacity(static_cast<size_type>(last - first));
     unchecked_append(first, last);
   }
@@ -119,7 +137,7 @@ class RawBytesImpl {
   void unchecked_push_back(value_type byte) { _buf[_size++] = byte; }
 
   void push_back(value_type byte) {
-    ensureAvailableCapacity(1);
+    ensureAvailableCapacity(1U);
     unchecked_push_back(byte);
   }
 
@@ -132,9 +150,23 @@ class RawBytesImpl {
     _size = size;
   }
 
-  void assign(ViewType data) { assign(data.data(), static_cast<size_type>(data.size())); }
+  void assign(ViewType data) {
+    if constexpr (sizeof(size_type) < sizeof(typename ViewType::size_type)) {
+      if (std::cmp_less(std::numeric_limits<size_type>::max(), data.size())) {
+        throw std::length_error("RawBytesImpl: assign size exceeds maximum");
+      }
+    }
+    assign(data.data(), static_cast<size_type>(data.size()));
+  }
 
-  void assign(const_pointer first, const_pointer last) { assign(first, static_cast<size_type>(last - first)); }
+  void assign(const_pointer first, const_pointer last) {
+    if constexpr (sizeof(size_type) < sizeof(uint64_t)) {
+      if (std::cmp_less(std::numeric_limits<size_type>::max(), last - first)) {
+        throw std::length_error("RawBytesImpl: assign size exceeds maximum");
+      }
+    }
+    assign(first, static_cast<size_type>(last - first));
+  }
 
   void clear() noexcept { _size = 0; }
 
@@ -162,7 +194,14 @@ class RawBytesImpl {
 
   void reserveExponential(size_type newCapacity) {
     if (_capacity < newCapacity) {
-      const auto doubledCapacity = (_capacity * 2U) + 1U;
+      if constexpr (sizeof(uintmax_t) > sizeof(size_type)) {
+        // prevent overflow when doubling capacity
+        static constexpr uintmax_t kMaxCapacity = static_cast<uintmax_t>(std::numeric_limits<size_type>::max());
+        if ((static_cast<uintmax_t>(_capacity) * 2UL) + 1UL > kMaxCapacity) {
+          throw std::bad_alloc();
+        }
+      }
+      const auto doubledCapacity = static_cast<size_type>((_capacity * size_type{2}) + size_type{1});
       // NOLINTNEXTLINE(readability-use-std-min-max) to avoid include of <algorithm> which is a big include
       if (newCapacity < doubledCapacity) {
         newCapacity = doubledCapacity;
@@ -178,7 +217,15 @@ class RawBytesImpl {
   }
 
   // Growth is exponential.
-  void ensureAvailableCapacity(size_type availableCapacity) { reserveExponential(_size + availableCapacity); }
+  void ensureAvailableCapacity(size_type availableCapacity) {
+    if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
+      static constexpr uintmax_t kMaxCapacity = static_cast<uintmax_t>(std::numeric_limits<size_type>::max());
+      if (kMaxCapacity < static_cast<uintmax_t>(_size) + availableCapacity) {
+        throw std::bad_alloc();
+      }
+    }
+    reserveExponential(_size + availableCapacity);
+  }
 
   [[nodiscard]] pointer data() noexcept { return _buf; }
   [[nodiscard]] const_pointer data() const noexcept { return _buf; }

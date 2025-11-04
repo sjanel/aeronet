@@ -6,7 +6,6 @@
 #include <limits>
 #include <span>
 #include <stdexcept>
-#include <string>
 #include <string_view>
 #include <system_error>
 #include <type_traits>
@@ -16,14 +15,6 @@
 #include "nchars.hpp"
 
 namespace aeronet {
-
-constexpr std::string IntegralToString(std::integral auto val) {
-  std::string str(static_cast<std::string::size_type>(nchars(val)), '0');
-
-  std::to_chars(str.data(), str.data() + str.size(), val);
-
-  return str;
-}
 
 inline auto IntegralToCharVector(std::integral auto val) {
   using Int = decltype(val);
@@ -64,15 +55,6 @@ Integral StringToIntegral(const char *begPtr, std::size_t len) {
 template <std::integral Integral>
 Integral StringToIntegral(std::string_view str) {
   return StringToIntegral<Integral>(str.data(), str.size());
-}
-
-constexpr void AppendIntegralToString(auto &str, std::integral auto val) {
-  const auto nbDigitsInt = nchars(val);
-
-  str.append(static_cast<std::size_t>(nbDigitsInt), '0');
-
-  char *ptr = str.data() + static_cast<decltype(nbDigitsInt)>(str.size());
-  std::to_chars(ptr - nbDigitsInt, ptr, val);
 }
 
 constexpr char *AppendIntegralToCharBuf(char *buf, std::integral auto val) {

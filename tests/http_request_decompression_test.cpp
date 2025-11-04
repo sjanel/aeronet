@@ -98,12 +98,24 @@ ClientRawResponse rawPost(uint16_t port, const std::string& target,
   }
   ClientRawResponse resp;
   auto& str = *raw;
+  if (str.empty()) {
+    throw std::runtime_error("empty response from server");
+  }
   auto firstSpace = str.find(' ');
+  if (firstSpace == std::string::npos) {
+    throw std::runtime_error(std::string("malformed status line in response: ") + str);
+  }
   auto secondSpace = str.find(' ', firstSpace + 1);
+  if (secondSpace == std::string::npos) {
+    throw std::runtime_error(std::string("malformed status line in response: ") + str);
+  }
   resp.status = read3(str.substr(firstSpace + 1, secondSpace - firstSpace - 1).data());
   auto headersEnd = str.find(http::DoubleCRLF);
+  if (headersEnd == std::string::npos) {
+    throw std::runtime_error(std::string("missing header/body separator (CRLFCRLF) in response: ") + str);
+  }
   resp.headersRaw = str.substr(0, headersEnd);
-  resp.body = str.substr(headersEnd + 4);
+  resp.body = str.substr(headersEnd + http::DoubleCRLF.size());
   return resp;
 }
 

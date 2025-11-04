@@ -5,6 +5,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "aeronet/http-status-code.hpp"
 #include "socket.hpp"
@@ -89,6 +90,8 @@ std::string toLower(std::string input);
 
 // Very small HTTP/1.1 response parser (not resilient to all malformed cases, just for test consumption)
 std::optional<ParsedResponse> parseResponse(const std::string& raw);
+
+ParsedResponse parseResponseOrThrow(const std::string& raw);
 
 bool setRecvTimeout(int fd, ::aeronet::SysDuration timeout);
 

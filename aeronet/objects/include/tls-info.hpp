@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string_view>
 
 #include "static-concatenated-strings.hpp"
@@ -24,7 +25,7 @@ class TLSInfo {
   [[nodiscard]] std::string_view negotiatedVersion() const noexcept { return _parts[2]; }
 
  private:
-  aeronet::StaticConcatenatedStrings<3> _parts;
+  aeronet::StaticConcatenatedStrings<3, uint32_t> _parts;
 };
 
 }  // namespace aeronet

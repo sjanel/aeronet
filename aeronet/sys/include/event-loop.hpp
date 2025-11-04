@@ -72,6 +72,7 @@ class EventLoop {
   // Polls for ready events up to the poll timeout. On success returns number of ready fds.
   // Returns 0 when interrupted by a signal (EINTR handled internally) or when timeout expires with no events.
   // Returns -1 on unrecoverable epoll_wait failure (already logged).
+  // The callback is invoked for each ready fd.
   int poll(const std::function<void(EventFd event)>& cb);
 
   // Current allocated capacity (number of epoll_event slots available without reallocation).

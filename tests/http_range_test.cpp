@@ -46,13 +46,12 @@ TEST(HttpRangeStatic, ServeCompleteFile) {
   opt.target = "/" + fileName;
 
   const auto raw = aeronet::test::requestOrThrow(ts.port(), opt);
-  const auto parsed = aeronet::test::parseResponse(raw);
-  ASSERT_TRUE(parsed);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).statusCode, aeronet::http::StatusCodeOK);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).body, "abcdefghij");
-  EXPECT_EQ(getHeader(parsed.value_or(aeronet::test::ParsedResponse{}), "Accept-Ranges"), "bytes");
-  EXPECT_FALSE(getHeader(parsed.value_or(aeronet::test::ParsedResponse{}), "ETag").empty());
-  EXPECT_FALSE(getHeader(parsed.value_or(aeronet::test::ParsedResponse{}), "Last-Modified").empty());
+  const auto parsed = aeronet::test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, aeronet::http::StatusCodeOK);
+  EXPECT_EQ(parsed.body, "abcdefghij");
+  EXPECT_EQ(getHeader(parsed, "Accept-Ranges"), "bytes");
+  EXPECT_FALSE(getHeader(parsed, "ETag").empty());
+  EXPECT_FALSE(getHeader(parsed, "Last-Modified").empty());
 }
 
 TEST(HttpRangeStatic, SingleRangePartialContent) {
@@ -69,11 +68,10 @@ TEST(HttpRangeStatic, SingleRangePartialContent) {
   opt.headers.emplace_back("Range", "bytes=0-3");
 
   const auto raw = aeronet::test::requestOrThrow(ts.port(), opt);
-  const auto parsed = aeronet::test::parseResponse(raw);
-  ASSERT_TRUE(parsed);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).statusCode, aeronet::http::StatusCodePartialContent);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).body, "abcd");
-  EXPECT_EQ(getHeader(parsed.value_or(aeronet::test::ParsedResponse{}), "Content-Range"), "bytes 0-3/10");
+  const auto parsed = aeronet::test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, aeronet::http::StatusCodePartialContent);
+  EXPECT_EQ(parsed.body, "abcd");
+  EXPECT_EQ(getHeader(parsed, "Content-Range"), "bytes 0-3/10");
 }
 
 TEST(HttpRangeStatic, UnsatisfiableRange) {
@@ -90,10 +88,9 @@ TEST(HttpRangeStatic, UnsatisfiableRange) {
   opt.headers.emplace_back("Range", "bytes=100-200");
 
   const auto raw = aeronet::test::requestOrThrow(ts.port(), opt);
-  const auto parsed = aeronet::test::parseResponse(raw);
-  ASSERT_TRUE(parsed);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).statusCode, aeronet::http::StatusCodeRangeNotSatisfiable);
-  EXPECT_EQ(getHeader(parsed.value_or(aeronet::test::ParsedResponse{}), "Content-Range"), "bytes */10");
+  const auto parsed = aeronet::test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, aeronet::http::StatusCodeRangeNotSatisfiable);
+  EXPECT_EQ(getHeader(parsed, "Content-Range"), "bytes */10");
 }
 
 TEST(HttpRangeStatic, IfNoneMatchReturns304) {
@@ -108,9 +105,8 @@ TEST(HttpRangeStatic, IfNoneMatchReturns304) {
   initial.method = "GET";
   initial.target = "/" + fileName;
   const auto firstRaw = aeronet::test::requestOrThrow(ts.port(), initial);
-  const auto firstParsed = aeronet::test::parseResponse(firstRaw);
-  ASSERT_TRUE(firstParsed);
-  const auto etag = getHeader(firstParsed.value_or(aeronet::test::ParsedResponse{}), "ETag");
+  const auto firstParsed = aeronet::test::parseResponseOrThrow(firstRaw);
+  const auto etag = getHeader(firstParsed, "ETag");
   ASSERT_FALSE(etag.empty());
 
   aeronet::test::RequestOptions opt;
@@ -119,10 +115,9 @@ TEST(HttpRangeStatic, IfNoneMatchReturns304) {
   opt.headers.emplace_back("If-None-Match", etag);
 
   const auto raw = aeronet::test::requestOrThrow(ts.port(), opt);
-  const auto parsed = aeronet::test::parseResponse(raw);
-  ASSERT_TRUE(parsed);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).statusCode, aeronet::http::StatusCodeNotModified);
-  EXPECT_TRUE(parsed.value_or(aeronet::test::ParsedResponse{}).body.empty());
+  const auto parsed = aeronet::test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, aeronet::http::StatusCodeNotModified);
+  EXPECT_TRUE(parsed.body.empty());
 }
 
 TEST(HttpRangeStatic, IfRangeMismatchFallsBackToFullBody) {
@@ -140,10 +135,9 @@ TEST(HttpRangeStatic, IfRangeMismatchFallsBackToFullBody) {
   opt.headers.emplace_back("If-Range", "\"mismatch\"");
 
   const auto raw = aeronet::test::requestOrThrow(ts.port(), opt);
-  const auto parsed = aeronet::test::parseResponse(raw);
-  ASSERT_TRUE(parsed);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).statusCode, aeronet::http::StatusCodeOK);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).body, "abcdefghij");
+  const auto parsed = aeronet::test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, aeronet::http::StatusCodeOK);
+  EXPECT_EQ(parsed.body, "abcdefghij");
 }
 
 TEST(HttpRangeInvalid, BadRangeSyntax) {
@@ -162,25 +156,22 @@ TEST(HttpRangeInvalid, BadRangeSyntax) {
   opt.headers.clear();
   opt.headers.emplace_back("Range", "bytes=abc-4");
   auto raw = aeronet::test::requestOrThrow(ts.port(), opt);
-  auto parsed = aeronet::test::parseResponse(raw);
-  ASSERT_TRUE(parsed);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).statusCode, aeronet::http::StatusCodeRangeNotSatisfiable);
+  auto parsed = aeronet::test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, aeronet::http::StatusCodeRangeNotSatisfiable);
 
   // Multiple ranges -> treated as invalid (per implementation)
   opt.headers.clear();
   opt.headers.emplace_back("Range", "bytes=0-1,2-3");
   raw = aeronet::test::requestOrThrow(ts.port(), opt);
-  parsed = aeronet::test::parseResponse(raw);
-  ASSERT_TRUE(parsed);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).statusCode, aeronet::http::StatusCodeRangeNotSatisfiable);
+  parsed = aeronet::test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, aeronet::http::StatusCodeRangeNotSatisfiable);
 
   // Suffix zero is invalid (bytes=-0)
   opt.headers.clear();
   opt.headers.emplace_back("Range", "bytes=-0");
   raw = aeronet::test::requestOrThrow(ts.port(), opt);
-  parsed = aeronet::test::parseResponse(raw);
-  ASSERT_TRUE(parsed);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).statusCode, aeronet::http::StatusCodeRangeNotSatisfiable);
+  parsed = aeronet::test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, aeronet::http::StatusCodeRangeNotSatisfiable);
 }
 
 TEST(HttpRangeInvalid, ConditionalInvalidDates) {
@@ -199,18 +190,16 @@ TEST(HttpRangeInvalid, ConditionalInvalidDates) {
   opt.headers.clear();
   opt.headers.emplace_back("If-Modified-Since", "Not a date");
   auto raw = aeronet::test::requestOrThrow(ts.port(), opt);
-  auto parsed = aeronet::test::parseResponse(raw);
-  ASSERT_TRUE(parsed);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).statusCode, aeronet::http::StatusCodeOK);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).body, "hello world");
+  auto parsed = aeronet::test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, aeronet::http::StatusCodeOK);
+  EXPECT_EQ(parsed.body, "hello world");
 
   // If-Unmodified-Since invalid date should be ignored (no 412)
   opt.headers.clear();
   opt.headers.emplace_back("If-Unmodified-Since", "garbage-date");
   raw = aeronet::test::requestOrThrow(ts.port(), opt);
-  parsed = aeronet::test::parseResponse(raw);
-  ASSERT_TRUE(parsed);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).statusCode, aeronet::http::StatusCodeOK);
+  parsed = aeronet::test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, aeronet::http::StatusCodeOK);
 }
 
 TEST(HttpRangeInvalid, IfMatchPreconditionFailed) {
@@ -226,9 +215,8 @@ TEST(HttpRangeInvalid, IfMatchPreconditionFailed) {
   initial.method = "GET";
   initial.target = "/" + fileName;
   const auto firstRaw = aeronet::test::requestOrThrow(ts.port(), initial);
-  const auto firstParsed = aeronet::test::parseResponse(firstRaw);
-  ASSERT_TRUE(firstParsed);
-  const auto headers = firstParsed.value_or(aeronet::test::ParsedResponse{}).headers;
+  const auto firstParsed = aeronet::test::parseResponseOrThrow(firstRaw);
+  const auto headers = firstParsed.headers;
   const auto etag = headers.find("ETag");
   ASSERT_NE(etag, headers.end());
 
@@ -239,9 +227,8 @@ TEST(HttpRangeInvalid, IfMatchPreconditionFailed) {
   opt.headers.emplace_back("If-Match", "\"no-match\"");
 
   auto raw = aeronet::test::requestOrThrow(ts.port(), opt);
-  auto parsed = aeronet::test::parseResponse(raw);
-  ASSERT_TRUE(parsed);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).statusCode, aeronet::http::StatusCodePreconditionFailed);
+  auto parsed = aeronet::test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, aeronet::http::StatusCodePreconditionFailed);
 }
 
 TEST(HttpLargeFile, ServeLargeFile) {
@@ -271,15 +258,14 @@ TEST(HttpLargeFile, ServeLargeFile) {
   // Use recvWithTimeout which waits for complete Content-Length
   const auto raw = aeronet::test::recvWithTimeout(fd, std::chrono::seconds(10));
 
-  const auto parsed = aeronet::test::parseResponse(raw);
-  ASSERT_TRUE(parsed);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).statusCode, aeronet::http::StatusCodeOK);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).body.size(), size);
-  const auto headers = parsed.value_or(aeronet::test::ParsedResponse{}).headers;
+  const auto parsed = aeronet::test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, aeronet::http::StatusCodeOK);
+  EXPECT_EQ(parsed.body.size(), size);
+  const auto headers = parsed.headers;
   const auto it = headers.find("Content-Length");
   ASSERT_NE(it, headers.end());
   EXPECT_EQ(aeronet::StringToIntegral<std::uint64_t>(it->second), size);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).body, data);
+  EXPECT_TRUE(parsed.body == data);
 }
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -304,14 +290,15 @@ TEST(HttpLargeFile, ServeLargeFileTls) {
   const auto raw = client.get("/" + fileName, {});
   ts.stop();
 
-  const auto parsed = aeronet::test::parseResponse(raw);
-  ASSERT_TRUE(parsed);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).statusCode, aeronet::http::StatusCodeOK);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).body.size(), size);
-  const auto headers = parsed.value_or(aeronet::test::ParsedResponse{}).headers;
+  const auto parsed = aeronet::test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, aeronet::http::StatusCodeOK);
+  EXPECT_EQ(parsed.body.size(), size);
+  const auto headers = parsed.headers;
   const auto it = headers.find("Content-Length");
   ASSERT_NE(it, headers.end());
   EXPECT_EQ(aeronet::StringToIntegral<std::uint64_t>(it->second), size);
-  EXPECT_EQ(parsed.value_or(aeronet::test::ParsedResponse{}).body, data);
+  // Compare content without printing huge data on failure
+  const auto& body = parsed.body;
+  EXPECT_TRUE(body == data) << "Body content mismatch (size: " << body.size() << " bytes)";
 }
 #endif

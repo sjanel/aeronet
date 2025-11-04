@@ -203,7 +203,6 @@ void TlsClient::init() {
                                 static_cast<unsigned int>(wire.size()));
     }
   }
-  _cnx = aeronet::test::ClientConnection(_port);
 
   // Set socket to non-blocking mode for poll()-based I/O
   int fd = _cnx.fd();
