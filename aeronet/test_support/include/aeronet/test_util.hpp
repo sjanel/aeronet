@@ -2,12 +2,14 @@
 
 #include <chrono>
 #include <cstdint>
-#include <map>
+#include <functional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "aeronet/http-status-code.hpp"
+#include "flat-hash-map.hpp"
 #include "socket.hpp"
 #include "timedef.hpp"
 
@@ -16,9 +18,7 @@ using namespace std::chrono_literals;
 
 class ClientConnection {
  public:
-  ClientConnection() noexcept = default;
-
-  explicit ClientConnection(uint16_t port, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+  explicit ClientConnection(uint16_t port, std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
 
   [[nodiscard]] int fd() const noexcept { return _socket.fd(); }
 
@@ -31,10 +31,11 @@ struct ParsedResponse {
   aeronet::http::StatusCode statusCode{0};
   bool chunked{false};
   std::string reason;
-  std::string headersRaw;                      // raw header block including final CRLFCRLF (optional)
-  std::map<std::string, std::string> headers;  // case-sensitive keys (sufficient for tests)
-  std::string body;                            // decoded body (if chunked, de-chunked)
-  std::string plainBody;                       // de-chunked payload (available if Transfer-Encoding: chunked
+  std::string headersRaw;  // raw header block including final CRLFCRLF (optional)
+  flat_hash_map<std::string, std::string, std::hash<std::string_view>, std::equal_to<>>
+      headers;            // case-sensitive keys (sufficient for tests)
+  std::string body;       // decoded body (if chunked, de-chunked)
+  std::string plainBody;  // de-chunked payload (available if Transfer-Encoding: chunked
 };
 
 // Result for content-encoding/body extraction helper used by compression tests.
@@ -65,14 +66,16 @@ bool sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeo
 // For chunked responses, continues reading until the terminating chunk (0\r\n\r\n).
 // For responses with Content-Length, continues until body is complete.
 // For Connection: close responses, reads until peer closes or timeout.
-std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout = 2000ms);
+std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout = 500ms);
 
+std::string recvUntilClosed(int fd, std::chrono::milliseconds inactivityTimeout);
 std::string recvUntilClosed(int fd);
 
 std::string sendAndCollect(uint16_t port, std::string_view raw);
 
-// Start a simple echo server bound to loopback on an ephemeral port. Returns the port or -1 on error.
-int startEchoServer();
+// Start a simple echo server bound to loopback on an ephemeral port. Returns the port or throw std::system_error on
+// error.
+std::pair<aeronet::Socket, uint16_t> startEchoServer();
 
 int countOccurrences(std::string_view haystack, std::string_view needle);
 
@@ -89,11 +92,11 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
 std::string toLower(std::string input);
 
 // Very small HTTP/1.1 response parser (not resilient to all malformed cases, just for test consumption)
-std::optional<ParsedResponse> parseResponse(const std::string& raw);
+std::optional<ParsedResponse> parseResponse(std::string_view raw);
 
-ParsedResponse parseResponseOrThrow(const std::string& raw);
+ParsedResponse parseResponseOrThrow(std::string_view raw);
 
-bool setRecvTimeout(int fd, ::aeronet::SysDuration timeout);
+void setRecvTimeout(int fd, ::aeronet::SysDuration timeout);
 
 std::string buildRequest(const RequestOptions& opt);
 
