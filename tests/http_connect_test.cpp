@@ -22,7 +22,7 @@ class HttpConnectDefaultConfig : public ::testing::Test {
 };
 
 TEST_F(HttpConnectDefaultConfig, EchoTunnelSuccess) {
-  auto port = aeronet::test::startEchoServer();
+  auto [sock, port] = aeronet::test::startEchoServer();
   // Build CONNECT request
   std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
@@ -46,7 +46,7 @@ TEST_F(HttpConnectDefaultConfig, EchoTunnelSuccess) {
 // eventually forwarded.
 TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   // Use the test helper to start an echo server on loopback (returns ephemeral port).
-  auto port = aeronet::test::startEchoServer();
+  auto [sock, port] = aeronet::test::startEchoServer();
   // Build CONNECT request to our upstream
   std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
