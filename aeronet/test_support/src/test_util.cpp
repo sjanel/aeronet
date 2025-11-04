@@ -27,6 +27,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "errno_throw.hpp"
 #include "log.hpp"
 #include "raw-chars.hpp"
 #include "simple-charconv.hpp"
@@ -46,6 +47,39 @@
 
 namespace aeronet::test {
 using namespace std::chrono_literals;
+
+namespace {
+constexpr std::size_t kChunkSize = 8192;
+
+struct BlockingRecvOp {
+  std::size_t operator()(char *data, [[maybe_unused]] std::size_t newCap) {
+    didTimeout = false;
+    remoteClosed = false;
+
+    const ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);
+    if (recvBytes == 0) {
+      remoteClosed = true;
+      return oldSize;
+    }
+    if (recvBytes == -1) {
+      // When SO_RCVTIMEO is set on a blocking socket, recv returns -1 with errno = EAGAIN/EWOULDBLOCK
+      // when the timeout expires. Callers use didTimeout to decide whether to keep waiting.
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        didTimeout = true;
+        return oldSize;
+      }
+      throw_errno("Error from blocking recv");
+    }
+
+    return oldSize + static_cast<std::size_t>(recvBytes);
+  }
+
+  int fd;
+  std::size_t oldSize;
+  bool didTimeout = false;
+  bool remoteClosed = false;
+};
+}  // namespace
 
 bool sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeout) {
   const char *cursor = data.data();
@@ -78,7 +112,6 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
   int consecutiveEagain = 0;
 
   while (std::chrono::steady_clock::now() < maxTs) {
-    static constexpr std::size_t kChunkSize = static_cast<std::size_t>(64) * 1024ULL;
     std::size_t oldSize = out.size();
 
     if (out.capacity() < out.size() + kChunkSize) {
@@ -221,7 +254,6 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
 std::string recvUntilClosed(int fd) {
   std::string out;
   for (;;) {
-    static constexpr std::size_t kChunkSize = static_cast<std::size_t>(64) * 1024ULL;
     std::size_t oldSize = out.size();
     bool closed = false;
 
@@ -244,6 +276,53 @@ std::string recvUntilClosed(int fd) {
   return out;
 }
 
+std::string recvUntilClosed(int fd, std::chrono::milliseconds inactivityTimeout) {
+  std::string out;
+  const bool useTimeoutBudget = inactivityTimeout.count() > 0;
+  auto deadline = useTimeoutBudget ? std::chrono::steady_clock::now() + inactivityTimeout
+                                   : std::chrono::steady_clock::time_point::max();
+
+  for (;;) {
+    const std::size_t oldSize = out.size();
+
+    if (out.capacity() < out.size() + kChunkSize) {
+      const auto desired = out.size() + kChunkSize;
+      const auto doubled = (out.capacity() > 0) ? (out.capacity() * 2UL) : desired;
+      out.reserve(std::max(doubled, desired));
+    }
+
+    BlockingRecvOp op{fd, oldSize};
+
+    out.resize_and_overwrite(oldSize + kChunkSize, op);
+
+    if (op.remoteClosed) {
+      break;
+    }
+
+    if (op.didTimeout) {
+      if (useTimeoutBudget && std::chrono::steady_clock::now() >= deadline) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds{5});
+      continue;
+    }
+
+    if (out.size() == oldSize) {
+      if (useTimeoutBudget && std::chrono::steady_clock::now() >= deadline) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds{1});
+      continue;
+    }
+
+    if (useTimeoutBudget) {
+      deadline = std::chrono::steady_clock::now() + inactivityTimeout;
+    }
+  }
+
+  return out;
+}
+
 std::string sendAndCollect(uint16_t port, std::string_view raw) {
   ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
@@ -252,57 +331,49 @@ std::string sendAndCollect(uint16_t port, std::string_view raw) {
   return recvUntilClosed(fd);
 }
 
-int startEchoServer() {
+std::pair<aeronet::Socket, uint16_t> startEchoServer() {
   aeronet::Socket listenSock(SOCK_STREAM);
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = 0;  // ephemeral
   if (::bind(listenSock.fd(), reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
-    return -1;
+    throw_errno("Error from ::bind");
   }
-  if (::listen(listenSock.fd(), 1) != 0) {
-    return -1;
+  if (::listen(listenSock.fd(), 1) == -1) {
+    throw_errno("Error from ::listen");
   }
   sockaddr_in actual{};
   socklen_t alen = sizeof(actual);
   if (::getsockname(listenSock.fd(), reinterpret_cast<sockaddr *>(&actual), &alen) != 0) {
-    return -1;
-  }
-  int port = ntohs(actual.sin_port);
-
-  int dupFd = ::dup(listenSock.fd());
-  if (dupFd >= 0) {
-    std::thread([dupFd]() mutable {
-      int clientFd = ::accept(dupFd, nullptr, nullptr);
-      if (clientFd >= 0) {
-        char buf[1024];
-        ssize_t rcv;
-        while ((rcv = ::recv(clientFd, buf, static_cast<int>(sizeof(buf)), 0)) > 0) {
-          std::string_view sv(buf, static_cast<size_t>(rcv));
-          sendAll(clientFd, sv);
-        }
-        ::close(clientFd);
-      }
-      ::close(dupFd);
-    }).detach();
-    listenSock.close();
-  } else {
-    std::thread([lsock = std::move(listenSock)]() mutable {
-      int clientFd = ::accept(lsock.fd(), nullptr, nullptr);
-      if (clientFd >= 0) {
-        char buf[1024];
-        ssize_t rcv;
-        while ((rcv = ::recv(clientFd, buf, static_cast<int>(sizeof(buf)), 0)) > 0) {
-          std::string_view sv(buf, static_cast<size_t>(rcv));
-          sendAll(clientFd, sv);
-        }
-        ::close(clientFd);
-      }
-    }).detach();
+    throw_errno("Error from ::getsockname");
   }
 
-  return port;
+  uint16_t port = ntohs(actual.sin_port);
+
+  std::thread([fd = listenSock.fd()]() {
+    BaseFd clientFd(::accept(fd, nullptr, nullptr));
+    if (clientFd.fd() == -1) {
+      throw_errno("Error from ::accept");
+    }
+    char buf[1024];
+
+    while (true) {
+      ssize_t recvBytes = ::recv(clientFd.fd(), buf, static_cast<int>(sizeof(buf)), 0);
+      if (recvBytes == -1) {
+        throw_errno("Error from ::recv");
+      }
+      if (recvBytes == 0) {
+        break;  // connection closed
+      }
+
+      if (!sendAll(clientFd.fd(), std::string_view(buf, static_cast<std::size_t>(recvBytes)))) {
+        throw std::runtime_error("Error in sendAll");
+      }
+    }
+  }).detach();
+
+  return std::make_pair(std::move(listenSock), port);
 }
 
 namespace {
@@ -485,60 +556,65 @@ std::string toLower(std::string input) {
 }
 
 // Very small HTTP/1.1 response parser (not resilient to all malformed cases, just for test consumption)
-std::optional<ParsedResponse> parseResponse(const std::string &raw) {
+std::optional<ParsedResponse> parseResponse(std::string_view raw) {
   ParsedResponse pr;
   std::size_t pos = raw.find(::aeronet::http::CRLF);
-  if (pos == std::string::npos) {
+  if (pos == std::string_view::npos) {
     return std::nullopt;
   }
-  std::string statusLine = raw.substr(0, pos);
+  std::string_view statusLine = raw.substr(0, pos);
   // Expect: HTTP/1.1 <code> <reason>
   auto firstSpace = statusLine.find(' ');
-  if (firstSpace == std::string::npos) {
+  if (firstSpace == std::string_view::npos) {
     return std::nullopt;
   }
-  auto secondSpace = statusLine.find(' ', firstSpace + 1);
-  if (secondSpace == std::string::npos) {
+  auto codeEnd = statusLine.find(' ', firstSpace + 1);
+  if (codeEnd == std::string_view::npos) {
+    codeEnd = statusLine.size();
+    pr.reason.clear();
+  } else {
+    pr.reason = statusLine.substr(codeEnd + 1);
+  }
+  auto codeStr = statusLine.substr(firstSpace + 1, codeEnd - (firstSpace + 1));
+  if (codeStr.size() < 3) {
     return std::nullopt;
   }
-  pr.statusCode = static_cast<aeronet::http::StatusCode>(
-      read3(statusLine.substr(firstSpace + 1, secondSpace - firstSpace - 1).data()));
-  pr.reason = statusLine.substr(secondSpace + 1);
+  pr.statusCode = static_cast<aeronet::http::StatusCode>(read3(codeStr.data()));
   std::size_t headerEnd = raw.find(::aeronet::http::DoubleCRLF, pos + ::aeronet::http::CRLF.size());
-  if (headerEnd == std::string::npos) {
+  if (headerEnd == std::string_view::npos) {
     return std::nullopt;
   }
   pr.headersRaw = raw.substr(0, headerEnd + ::aeronet::http::DoubleCRLF.size());
   std::size_t cursor = pos + ::aeronet::http::CRLF.size();
   while (cursor < headerEnd) {
     std::size_t lineEnd = raw.find(::aeronet::http::CRLF, cursor);
-    if (lineEnd == std::string::npos || lineEnd > headerEnd) {
+    if (lineEnd == std::string_view::npos || lineEnd > headerEnd) {
       break;
     }
-    std::string line = raw.substr(cursor, lineEnd - cursor);
+    std::string_view line = raw.substr(cursor, lineEnd - cursor);
     cursor = lineEnd + ::aeronet::http::CRLF.size();
     if (line.empty()) {
       break;
     }
     auto colon = line.find(':');
-    if (colon == std::string::npos) {
+    if (colon == std::string_view::npos) {
       continue;
     }
-    std::string key = line.substr(0, colon);
+    std::string_view key = line.substr(0, colon);
     // skip space after colon if present
     std::size_t valueStart = colon + 1;
     if (valueStart < line.size() && line[valueStart] == ' ') {
       ++valueStart;
     }
-    std::string value = line.substr(valueStart);
-    pr.headers[key] = value;
+    std::string_view value = line.substr(valueStart);
+    pr.headers.insert_or_assign(std::string(key), std::string(value));
   }
   pr.chunked = false;
   auto teIt = pr.headers.find("Transfer-Encoding");
   if (teIt != pr.headers.end() && toLower(teIt->second).contains("chunked")) {
     pr.chunked = true;
   }
-  std::string bodyRaw = raw.substr(headerEnd + ::aeronet::http::DoubleCRLF.size());
+  std::string_view bodyRaw = raw.substr(headerEnd + ::aeronet::http::DoubleCRLF.size());
   if (!pr.chunked) {
     pr.body = std::move(bodyRaw);
     pr.plainBody = pr.body;
@@ -548,14 +624,14 @@ std::optional<ParsedResponse> parseResponse(const std::string &raw) {
   std::size_t bpos = 0;
   while (bpos < bodyRaw.size()) {
     std::size_t lineEnd = bodyRaw.find(::aeronet::http::CRLF, bpos);
-    if (lineEnd == std::string::npos) {
+    if (lineEnd == std::string_view::npos) {
       break;
     }
-    std::string lenHex = bodyRaw.substr(bpos, lineEnd - bpos);
+    std::string_view lenHex = bodyRaw.substr(bpos, lineEnd - bpos);
     bpos = lineEnd + ::aeronet::http::CRLF.size();
     // lenHex may include chunk extensions (e.g. "4;ext=val"). Trim at first ';'.
     auto semipos = lenHex.find(';');
-    std::string lenOnly = (semipos == std::string::npos) ? lenHex : lenHex.substr(0, semipos);
+    std::string_view lenOnly = (semipos == std::string_view::npos) ? lenHex : lenHex.substr(0, semipos);
     // Parse hex using std::from_chars for robustness (no locale, fast).
     std::size_t chunkLen = 0;
     auto fc = std::from_chars(lenOnly.data(), lenOnly.data() + lenOnly.size(), chunkLen, 16);
@@ -578,7 +654,7 @@ std::optional<ParsedResponse> parseResponse(const std::string &raw) {
   return pr;
 }
 
-ParsedResponse parseResponseOrThrow(const std::string &raw) {
+ParsedResponse parseResponseOrThrow(std::string_view raw) {
   auto prOpt = parseResponse(raw);
   if (!prOpt) {
     throw std::runtime_error("parseResponse: failed to parse response");
@@ -586,10 +662,12 @@ ParsedResponse parseResponseOrThrow(const std::string &raw) {
   return *prOpt;
 }
 
-bool setRecvTimeout(int fd, ::aeronet::SysDuration timeout) {
+void setRecvTimeout(int fd, ::aeronet::SysDuration timeout) {
   const int timeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count());
   struct timeval tv{timeoutMs / 1000, static_cast<long>((timeoutMs % 1000) * 1000)};
-  return ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
+  if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == -1) {
+    throw_errno("Error from setRecvTimeout");
+  }
 }
 
 std::string buildRequest(const RequestOptions &opt) {
@@ -619,7 +697,6 @@ std::optional<std::string> request(uint16_t port, const RequestOptions &opt) {
     return std::nullopt;
   }
   std::string out;
-  static constexpr std::size_t kChunkSize = 4096;
 
   for (;;) {
     std::size_t oldSize = out.size();
@@ -783,8 +860,6 @@ std::vector<std::string> sequentialRequests(uint16_t port, std::span<const Reque
     bool haveContentLen = false;
     bool chunked = false;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(ro.recvTimeoutSeconds);
-
-    static constexpr std::size_t kChunkSize = 4096;
 
     while (std::chrono::steady_clock::now() < deadline) {
       std::size_t oldSize = out.size();
