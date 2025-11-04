@@ -60,7 +60,7 @@ struct RequestOptions {
   std::size_t maxResponseBytes{1 << 20};                     // 1 MiB safety cap
 };
 
-bool sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeout = 500ms);
+void sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeout = 500ms);
 
 // Reads until we have a complete HTTP response or timeout.
 // For chunked responses, continues reading until the terminating chunk (0\r\n\r\n).
@@ -68,7 +68,6 @@ bool sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeo
 // For Connection: close responses, reads until peer closes or timeout.
 std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout = 500ms);
 
-std::string recvUntilClosed(int fd, std::chrono::milliseconds inactivityTimeout);
 std::string recvUntilClosed(int fd);
 
 std::string sendAndCollect(uint16_t port, std::string_view raw);
@@ -106,10 +105,6 @@ std::optional<std::string> request(uint16_t port, const RequestOptions& opt = {}
 // This simplifies test code by eliminating explicit ASSERT checks for has_value(); gtest will treat
 // uncaught exceptions as test failures with the diagnostic message.
 std::string requestOrThrow(uint16_t port, const RequestOptions& opt = {});
-
-// Send multiple requests over a single keep-alive connection and return raw responses individually.
-// Limitations: assumes server responds fully before next request is parsed (sufficient for simple tests).
-std::vector<std::string> sequentialRequests(uint16_t port, std::span<const RequestOptions> reqs);
 
 bool AttemptConnect(uint16_t port);
 

@@ -48,6 +48,8 @@
 #include <httplib.h>
 #endif
 
+using namespace aeronet;
+
 namespace {
 
 inline constexpr std::string_view kHeadersBody = "OK";
@@ -58,30 +60,30 @@ inline constexpr int kMaxConnectionRetries = 5;
 benchutil::PregenPool g_stringPool;
 
 struct AeronetServerRunner {
-  aeronet::AsyncHttpServer async;
+  AsyncHttpServer async;
 
   AeronetServerRunner()
       : async([]() {
-          aeronet::HttpServerConfig cfg{};
+          HttpServerConfig cfg{};
           cfg.maxRequestsPerConnection = 1000000;  // allow plenty of persistent reuse for benchmarks
           cfg.maxHeaderBytes = 256UL * 1024;       // allow large headers for benchmarks
           cfg.maxBodyBytes = 1UL << 25;
           return cfg;
         }()) {
-    aeronet::log::set_level(aeronet::log::level::err);
-    async.router().setPath(aeronet::http::Method::GET, benchutil::kBodyPath, [](const aeronet::HttpRequest &) {
-      aeronet::HttpResponse resp(200);
+    log::set_level(log::level::err);
+    async.router().setPath(http::Method::GET, benchutil::kBodyPath, [](const HttpRequest &) {
+      HttpResponse resp(200);
       resp.body(g_stringPool.next());
       return resp;
     });
 
-    async.router().setPath(aeronet::http::Method::GET, benchutil::kHeaderPath, [](const aeronet::HttpRequest &req) {
-      aeronet::HttpResponse resp;
+    async.router().setPath(http::Method::GET, benchutil::kHeaderPath, [](const HttpRequest &req) {
+      HttpResponse resp;
       // Read requested header count from query param 'size'
       size_t headerCount = 0;
       for (auto qp : req.queryParams()) {
         if (qp.key == "size") {
-          headerCount = aeronet::StringToIntegral<std::size_t>(qp.value);
+          headerCount = StringToIntegral<std::size_t>(qp.value);
           break;
         }
       }
@@ -207,7 +209,7 @@ ENDPOINT_ASYNC("GET", benchutil::kHeaderPath,
                               Action act() override{auto szParam = request->getQueryParameter("size");
 auto resp = oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
     oatpp::web::protocol::http::Status::CODE_200, szParam);
-auto nbHeaders = aeronet::StringToIntegral<int>(std::string_view(szParam->data(), szParam->size()));
+auto nbHeaders = StringToIntegral<int>(std::string_view(szParam->data(), szParam->size()));
 for (int headerPos = 0; headerPos < nbHeaders; ++headerPos) {
   resp->putOrReplaceHeader(oatpp::String(g_stringPool.next()), oatpp::String(g_stringPool.next()));
 }
@@ -242,7 +244,7 @@ struct OatppHeadersHandler : public oatpp::web::server::HttpRequestHandler {
     auto szParam = req->getQueryParameter("size");
     auto resp = oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
         oatpp::web::protocol::http::Status::CODE_200, szParam);
-    auto nbHeaders = aeronet::StringToIntegral<int>(std::string_view(szParam->data(), szParam->size()));
+    auto nbHeaders = StringToIntegral<int>(std::string_view(szParam->data(), szParam->size()));
     for (int headerPos = 0; headerPos < nbHeaders; ++headerPos) {
       resp->putOrReplaceHeader(oatpp::String(g_stringPool.next()), oatpp::String(g_stringPool.next()));
     }
@@ -386,10 +388,10 @@ class PersistentClient {
     return false;
   }
 
-  void reconnect() { conn = aeronet::test::ClientConnection(port_); }
+  void reconnect() { conn = test::ClientConnection(port_); }
 
   uint16_t port_;
-  aeronet::test::ClientConnection conn;  // persistent connection for benchmark
+  test::ClientConnection conn;  // persistent connection for benchmark
   int _retryAttempts = 0;
 };
 
@@ -527,7 +529,7 @@ void BodyMinMaxNoReuse(benchmark::State &state, std::string_view name, Server &s
     for (int attempt = 0; attempt < kMaxConnectionRetries && !success; ++attempt) {
       const auto expectedNextBodySize = g_stringPool.nextSize();
 
-      aeronet::test::ClientConnection ep(server.port());
+      test::ClientConnection ep(server.port());
       auto len = benchutil::requestBodySize("GET", benchutil::kBodyPath, ep.fd(), expectedNextBodySize, false);
       if (len && *len == expectedNextBodySize) {
         if (attempt > 0) {
@@ -598,7 +600,7 @@ void AeronetResponseBuild(benchmark::State &state) {
   for ([[maybe_unused]] auto it : state) {
     const auto numHeaders = dist(g_stringPool.rng);
 
-    aeronet::HttpResponse resp(200);
+    HttpResponse resp(200);
 
     auto body = g_stringPool.next();
 

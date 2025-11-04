@@ -64,7 +64,7 @@ TEST_F(StaticFileHandlerTest, Basic) {
 
   std::string fileContent = "Hello, static file!";
 
-  aeronet::test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
 
   // Construct handler rooted at the temp directory created by tmpFile
   StaticFileHandler handler(tmpFile.dirPath());
@@ -94,9 +94,8 @@ TEST_F(StaticFileHandlerTest, Basic) {
 }
 
 TEST_F(StaticFileHandlerTest, HeadRequests) {
-  using namespace aeronet::test;
   std::string fileContent = "Hello, static file!";
-  ScopedTempFile tmpFile(tmpDir, fileContent);
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
 
   StaticFileHandler handler(tmpFile.dirPath());
 
@@ -113,9 +112,8 @@ TEST_F(StaticFileHandlerTest, HeadRequests) {
 }
 
 TEST_F(StaticFileHandlerTest, MethodNotAllowed) {
-  using namespace aeronet::test;
   std::string fileContent = "x";
-  ScopedTempFile tmpFile(tmpDir, fileContent);
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
 
   StaticFileHandler handler(tmpFile.dirPath());
 
@@ -148,7 +146,6 @@ TEST_F(StaticFileHandlerTest, DirectoryIndexMissing) {
 }
 
 TEST_F(StaticFileHandlerTest, DirectoryIndexPresent) {
-  using namespace aeronet::test;
   const auto dirPath = tmpDir.dirPath() / "subdir";
   std::filesystem::create_directories(dirPath);
   // Create index file in the subdirectory manually; ScopedTempFile creates files
@@ -245,9 +242,8 @@ TEST_F(StaticFileHandlerTest, DirectoryListingHonorsHiddenFilesFlag) {
 }
 
 TEST_F(StaticFileHandlerTest, RangeValid) {
-  using namespace aeronet::test;
   std::string fileContent = "0123456789";  // size 10
-  ScopedTempFile tmpFile(tmpDir, fileContent);
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
   StaticFileHandler handler(tmpFile.dirPath());
 
   buildReqWithHeaders(tmpFile.filename(), "Range: bytes=2-5");
@@ -258,9 +254,8 @@ TEST_F(StaticFileHandlerTest, RangeValid) {
 }
 
 TEST_F(StaticFileHandlerTest, RangeUnsatisfiable) {
-  using namespace aeronet::test;
   std::string fileContent = "0123456789";  // size 10
-  ScopedTempFile tmpFile(tmpDir, fileContent);
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
   StaticFileHandler handler(tmpFile.dirPath());
 
   buildReqWithHeaders(tmpFile.filename(), "Range: bytes=100-200");
@@ -271,9 +266,8 @@ TEST_F(StaticFileHandlerTest, RangeUnsatisfiable) {
 }
 
 TEST_F(StaticFileHandlerTest, ConditionalIfNoneMatchNotModified) {
-  using namespace aeronet::test;
   std::string fileContent = "Hello";
-  ScopedTempFile tmpFile(tmpDir, fileContent);
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
   StaticFileHandler handler(tmpDir.dirPath());
 
   // If-None-Match: * should match any etag and produce 304 when conditional handling is enabled
@@ -284,9 +278,8 @@ TEST_F(StaticFileHandlerTest, ConditionalIfNoneMatchNotModified) {
 }
 
 TEST_F(StaticFileHandlerTest, ConditionalIfMatchPreconditionFailed) {
-  using namespace aeronet::test;
   std::string fileContent = "Hello";
-  ScopedTempFile tmpFile(tmpDir, fileContent);
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
   StaticFileHandler handler(tmpDir.dirPath());
 
   // If-Match with non-matching token should trigger 412

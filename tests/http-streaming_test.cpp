@@ -28,14 +28,15 @@
 #include "file.hpp"
 
 using namespace std::chrono_literals;
+using namespace aeronet;
 
 namespace {
 std::string blockingFetch(uint16_t port, const std::string& verb, const std::string& target) {
-  aeronet::test::RequestOptions opt;
+  test::RequestOptions opt;
   opt.method = verb;
   opt.target = target;
   opt.connection = "close";  // one-shot
-  auto resp = aeronet::test::request(port, opt);
+  auto resp = test::request(port, opt);
   if (!resp) {
     return {};
   }
@@ -43,7 +44,7 @@ std::string blockingFetch(uint16_t port, const std::string& verb, const std::str
 }
 
 std::string doRequest(auto port, std::string_view verb, std::string_view target) {
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req(verb);
@@ -51,12 +52,12 @@ std::string doRequest(auto port, std::string_view verb, std::string_view target)
   req.append(target);
 
   req.append(" HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  return aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  return test::recvUntilClosed(fd);
 }
 
 std::string httpRequest(auto port, std::string_view method, std::string_view path, const std::string& body = {}) {
-  aeronet::test::ClientConnection cnx(port);
+  test::ClientConnection cnx(port);
   int fd = cnx.fd();
 
   std::string req = std::string(method) + " " + std::string(path) + " HTTP/1.1\r\nHost: test\r\nConnection: close\r\n";
@@ -66,17 +67,17 @@ std::string httpRequest(auto port, std::string_view method, std::string_view pat
   req += "\r\n";
   req += body;
 
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  return aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  return test::recvUntilClosed(fd);
 }
 
 // Very small chunked decoder for tests (single pass, no trailers). Expects full HTTP response.
 std::string extractBody(const std::string& resp) {
-  auto headerEnd = resp.find(aeronet::http::DoubleCRLF);
+  auto headerEnd = resp.find(http::DoubleCRLF);
   if (headerEnd == std::string::npos) {
     return {};
   }
-  std::string body = resp.substr(headerEnd + aeronet::http::DoubleCRLF.size());
+  std::string body = resp.substr(headerEnd + http::DoubleCRLF.size());
   // If not chunked just return remaining.
   if (!body.contains("\r\n0\r\n") && !body.contains("0\r\n\r\n")) {
     return body;
@@ -110,16 +111,15 @@ std::string extractBody(const std::string& resp) {
 }  // namespace
 
 TEST(HttpStreaming, ChunkedSimple) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault(
-      []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
-        writer.statusCode(200);
-        writer.contentType("text/plain");
-        writer.writeBody("hello ");
-        writer.writeBody("world");
-        writer.end();
-      });
+  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+    writer.statusCode(200);
+    writer.contentType("text/plain");
+    writer.writeBody("hello ");
+    writer.writeBody("world");
+    writer.end();
+  });
   std::string resp = blockingFetch(port, "GET", "/stream");
   ts.stop();
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
@@ -131,17 +131,17 @@ TEST(HttpStreaming, ChunkedSimple) {
 
 TEST(HttpStreaming, SendFileFixedLengthPlain) {
   constexpr std::string_view kPayload = "static sendfile response body";
-  aeronet::test::ScopedTempDir tmpDir;
-  aeronet::test::ScopedTempFile tmp(tmpDir, kPayload);
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
 
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
   std::string path = tmp.filePath().string();
 
-  ts.server.router().setDefault([path](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
+  ts.server.router().setDefault([path](const HttpRequest&, HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.contentType("application/octet-stream");
-    writer.file(aeronet::File(path));
+    writer.file(File(path));
     writer.end();
   });
 
@@ -152,25 +152,25 @@ TEST(HttpStreaming, SendFileFixedLengthPlain) {
   ASSERT_FALSE(resp.contains("Transfer-Encoding: chunked"));
   ASSERT_TRUE(resp.contains("Content-Length: " + std::to_string(kPayload.size())));
 
-  auto headerEnd = resp.find(aeronet::http::DoubleCRLF);
+  auto headerEnd = resp.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, headerEnd);
-  std::string body = resp.substr(headerEnd + aeronet::http::DoubleCRLF.size());
+  std::string body = resp.substr(headerEnd + http::DoubleCRLF.size());
   EXPECT_EQ(body, kPayload);
 }
 
 TEST(HttpStreaming, SendFileHeadSuppressesBody) {
   constexpr std::string_view kPayload = "head sendfile streaming";
-  aeronet::test::ScopedTempDir tmpDir;
-  aeronet::test::ScopedTempFile tmp(tmpDir, kPayload);
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
 
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
   std::string path = tmp.filePath().string();
 
-  ts.server.router().setDefault([path](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
+  ts.server.router().setDefault([path](const HttpRequest&, HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.contentType("application/octet-stream");
-    writer.file(aeronet::File(path));
+    writer.file(File(path));
     writer.end();
   });
 
@@ -181,22 +181,21 @@ TEST(HttpStreaming, SendFileHeadSuppressesBody) {
   ASSERT_TRUE(resp.contains("Content-Length: " + std::to_string(kPayload.size())));
   ASSERT_FALSE(resp.contains("Transfer-Encoding: chunked"));
 
-  auto headerEnd = resp.find(aeronet::http::DoubleCRLF);
+  auto headerEnd = resp.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, headerEnd);
-  std::string body = resp.substr(headerEnd + aeronet::http::DoubleCRLF.size());
+  std::string body = resp.substr(headerEnd + http::DoubleCRLF.size());
   EXPECT_TRUE(body.empty());
 }
 
 TEST(HttpStreaming, HeadSuppressedBody) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault(
-      []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
-        writer.statusCode(200);
-        writer.contentType("text/plain");
-        writer.writeBody("ignored body");  // should not be emitted for HEAD
-        writer.end();
-      });
+  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+    writer.statusCode(200);
+    writer.contentType("text/plain");
+    writer.writeBody("ignored body");  // should not be emitted for HEAD
+    writer.end();
+  });
   std::string resp = blockingFetch(port, "HEAD", "/head");
   ts.stop();
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
@@ -219,21 +218,20 @@ TEST(HttpStreaming, HeadSuppressedBody) {
 // 5. HEAD request: headers still emitted correctly without body/chunk framing; Content-Length auto added when absent.
 
 TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault(
-      []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
-        writer.statusCode(200);
-        writer.customHeader("X-Custom-A", "alpha");
-        writer.customHeader("X-Custom-B", "beta");
-        writer.customHeader("Content-Type", "application/json");  // override default
-        // First write sends headers implicitly.
-        writer.writeBody("{\"k\":1}");
-        // These should be ignored because headers already sent.
-        writer.customHeader("X-Ignored", "zzz");
-        writer.customHeader("Content-Type", "text/plain");
-        writer.end();
-      });
+  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+    writer.statusCode(200);
+    writer.customHeader("X-Custom-A", "alpha");
+    writer.customHeader("X-Custom-B", "beta");
+    writer.customHeader("Content-Type", "application/json");  // override default
+    // First write sends headers implicitly.
+    writer.writeBody("{\"k\":1}");
+    // These should be ignored because headers already sent.
+    writer.customHeader("X-Ignored", "zzz");
+    writer.customHeader("Content-Type", "text/plain");
+    writer.end();
+  });
 
   std::string getResp = doRequest(port, "GET", "/hdr");
   std::string headResp = doRequest(port, "HEAD", "/hdr");
@@ -259,20 +257,19 @@ TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
 }
 
 TEST(HttpServerMixed, MixedPerPathHandlers) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.enableKeepAlive = false;
-  aeronet::HttpServer srv(cfg);
+  HttpServer srv(cfg);
   // path /mix : GET streaming, POST normal
-  srv.router().setPath(aeronet::http::Method::GET, "/mix",
-                       [](const aeronet::HttpRequest& /*unused*/, aeronet::HttpResponseWriter& writer) {
-                         writer.statusCode(200);
-                         writer.customHeader("Content-Type", "text/plain");
-                         writer.writeBody("S");
-                         writer.writeBody("TREAM");
-                         writer.end();
-                       });
-  srv.router().setPath(aeronet::http::Method::POST, "/mix", [](const aeronet::HttpRequest& /*unused*/) {
-    return aeronet::HttpResponse(201).reason("Created").contentType(aeronet::http::ContentTypeTextPlain).body("NORMAL");
+  srv.router().setPath(http::Method::GET, "/mix", [](const HttpRequest& /*unused*/, HttpResponseWriter& writer) {
+    writer.statusCode(200);
+    writer.customHeader("Content-Type", "text/plain");
+    writer.writeBody("S");
+    writer.writeBody("TREAM");
+    writer.end();
+  });
+  srv.router().setPath(http::Method::POST, "/mix", [](const HttpRequest& /*unused*/) {
+    return HttpResponse(201).reason("Created").contentType(http::ContentTypeTextPlain).body("NORMAL");
   });
   std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
@@ -285,54 +282,49 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
 }
 
 TEST(HttpServerMixed, ConflictRegistrationNormalThenStreaming) {
-  aeronet::HttpServerConfig cfg;
-  aeronet::HttpServer srv(cfg);
-  srv.router().setPath(aeronet::http::Method::GET, "/c", [](const aeronet::HttpRequest&) {
-    return aeronet::HttpResponse(200, "OK").body("X").contentType("text/plain");
-  });
-  EXPECT_THROW(srv.router().setPath(aeronet::http::Method::GET, "/c",
-                                    [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter&) {}),
+  HttpServerConfig cfg;
+  HttpServer srv(cfg);
+  srv.router().setPath(http::Method::GET, "/c",
+                       [](const HttpRequest&) { return HttpResponse(200, "OK").body("X").contentType("text/plain"); });
+  EXPECT_THROW(srv.router().setPath(http::Method::GET, "/c", [](const HttpRequest&, HttpResponseWriter&) {}),
                std::logic_error);
 }
 
 TEST(HttpServerMixed, ConflictRegistrationStreamingThenNormal) {
-  aeronet::HttpServerConfig cfg;
-  aeronet::HttpServer srv(cfg);
-  srv.router().setPath(aeronet::http::Method::GET, "/c2",
-                       [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-                         writer.statusCode(200);
-                         writer.end();
-                       });
-  EXPECT_THROW(srv.router().setPath(aeronet::http::Method::GET, "/c2",
-                                    [](const aeronet::HttpRequest&) {
-                                      return aeronet::HttpResponse(200, "OK").body("Y").contentType("text/plain");
-                                    }),
+  HttpServerConfig cfg;
+  HttpServer srv(cfg);
+  srv.router().setPath(http::Method::GET, "/c2", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(200);
+    writer.end();
+  });
+  EXPECT_THROW(srv.router().setPath(
+                   http::Method::GET, "/c2",
+                   [](const HttpRequest&) { return HttpResponse(200, "OK").body("Y").contentType("text/plain"); }),
                std::logic_error);
 }
 
 TEST(HttpServerMixed, GlobalFallbackPrecedence) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.enableKeepAlive = false;
-  aeronet::HttpServer srv(cfg);
-  srv.router().setDefault([](const aeronet::HttpRequest&) {
-    return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body("GLOBAL");
+  HttpServer srv(cfg);
+  srv.router().setDefault([](const HttpRequest&) {
+    return HttpResponse(200, "OK").contentType(http::ContentTypeTextPlain).body("GLOBAL");
   });
-  srv.router().setDefault([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
+  srv.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.customHeader("Content-Type", "text/plain");
     writer.writeBody("STREAMFALLBACK");
     writer.end();
   });
   // path-specific streaming overrides both
-  srv.router().setPath(aeronet::http::Method::GET, "/s",
-                       [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-                         writer.statusCode(200);
-                         writer.writeBody("PS");
-                         writer.end();
-                       });
+  srv.router().setPath(http::Method::GET, "/s", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(200);
+    writer.writeBody("PS");
+    writer.end();
+  });
   // path-specific normal overrides global fallbacks
-  srv.router().setPath(aeronet::http::Method::GET, "/n", [](const aeronet::HttpRequest&) {
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK, "OK").body("PN").contentType("text/plain");
+  srv.router().setPath(http::Method::GET, "/n", [](const HttpRequest&) {
+    return HttpResponse(http::StatusCodeOK, "OK").body("PN").contentType("text/plain");
   });
   std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
@@ -347,12 +339,11 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
 }
 
 TEST(HttpServerMixed, GlobalNormalOnlyWhenNoStreaming) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.enableKeepAlive = false;
-  aeronet::HttpServer srv(cfg);
-  srv.router().setDefault([](const aeronet::HttpRequest&) {
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK, "OK").body("GN").contentType("text/plain");
-  });
+  HttpServer srv(cfg);
+  srv.router().setDefault(
+      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("GN").contentType("text/plain"); });
   std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   std::string result = httpRequest(srv.port(), "GET", "/x");
@@ -361,22 +352,21 @@ TEST(HttpServerMixed, GlobalNormalOnlyWhenNoStreaming) {
 }
 
 TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.enableKeepAlive = false;
-  aeronet::HttpServer srv(cfg);
+  HttpServer srv(cfg);
   // Register streaming handler for GET; it will attempt to write a body.
-  srv.router().setPath(aeronet::http::Method::GET, "/head",
-                       [](const aeronet::HttpRequest& /*unused*/, aeronet::HttpResponseWriter& writer) {
-                         writer.statusCode(aeronet::http::StatusCodeOK);
-                         writer.customHeader("Content-Type", "text/plain");
-                         writer.writeBody("SHOULD_NOT_APPEAR");  // for HEAD this must be suppressed by writer
-                         writer.end();
-                       });
+  srv.router().setPath(http::Method::GET, "/head", [](const HttpRequest& /*unused*/, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
+    writer.customHeader("Content-Type", "text/plain");
+    writer.writeBody("SHOULD_NOT_APPEAR");  // for HEAD this must be suppressed by writer
+    writer.end();
+  });
   std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   std::string headResp = httpRequest(srv.port(), "HEAD", "/head");
   // Body should be empty; ensure word not present and Content-Length: 0 (or if chunked not used at all)
-  auto headerEnd = headResp.find(aeronet::http::DoubleCRLF);
+  auto headerEnd = headResp.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, headerEnd);
   std::string bodyPart = headResp.substr(headerEnd + 4);
   EXPECT_TRUE(bodyPart.empty());
@@ -387,16 +377,15 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
 }
 
 TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.enableKeepAlive = false;
-  aeronet::HttpServer srv(cfg);
+  HttpServer srv(cfg);
   // Register only GET streaming handler
-  srv.router().setPath(aeronet::http::Method::GET, "/m405",
-                       [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-                         writer.statusCode(aeronet::http::StatusCodeOK);
-                         writer.writeBody("OKGET");
-                         writer.end();
-                       });
+  srv.router().setPath(http::Method::GET, "/m405", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
+    writer.writeBody("OKGET");
+    writer.end();
+  });
   std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   std::string postResp = httpRequest(srv.port(), "POST", "/m405", "data");
@@ -411,21 +400,20 @@ TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
 }
 
 TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.enableKeepAlive = true;
   cfg.maxRequestsPerConnection = 3;  // allow at least two
-  aeronet::HttpServer srv(cfg);
+  HttpServer srv(cfg);
   // Register streaming GET and normal POST on same path
-  srv.router().setPath(aeronet::http::Method::GET, "/ka",
-                       [](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-                         writer.statusCode(aeronet::http::StatusCodeOK);
-                         writer.customHeader("Content-Type", "text/plain");
-                         writer.writeBody("A");
-                         writer.writeBody("B");
-                         writer.end();
-                       });
-  srv.router().setPath(aeronet::http::Method::POST, "/ka", [](const aeronet::HttpRequest&) {
-    return aeronet::HttpResponse(201).reason("Created").body("NORMAL").contentType("text/plain");
+  srv.router().setPath(http::Method::GET, "/ka", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
+    writer.customHeader("Content-Type", "text/plain");
+    writer.writeBody("A");
+    writer.writeBody("B");
+    writer.end();
+  });
+  srv.router().setPath(http::Method::POST, "/ka", [](const HttpRequest&) {
+    return HttpResponse(201).reason("Created").body("NORMAL").contentType("text/plain");
   });
   std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
@@ -434,11 +422,11 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
   std::string r2 =
       "POST /ka HTTP/1.1\r\nHost: test\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";  // normal, closes
 
-  aeronet::test::ClientConnection cnx(srv.port());
+  test::ClientConnection cnx(srv.port());
 
-  aeronet::test::sendAll(cnx.fd(), r1 + r2);
+  test::sendAll(cnx.fd(), r1 + r2);
 
-  std::string raw = aeronet::test::recvUntilClosed(cnx.fd());
+  std::string raw = test::recvUntilClosed(cnx.fd());
 
   // Should contain two HTTP/1.1 status lines, first 200 OK, second 201 Created
   auto firstPos = raw.find("HTTP/1.1 200");
@@ -446,7 +434,7 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
   EXPECT_NE(std::string::npos, firstPos);
   EXPECT_NE(std::string::npos, secondPos);
   // Decode first body (chunked) expecting AB
-  auto firstHeaderEnd = raw.find(aeronet::http::DoubleCRLF);
+  auto firstHeaderEnd = raw.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, firstHeaderEnd);
   auto afterFirst = raw.find("HTTP/1.1 201 Created", firstHeaderEnd);
   ASSERT_NE(std::string::npos, afterFirst);
@@ -460,12 +448,12 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
 }
 
 TEST(StreamingKeepAlive, TwoSequentialRequests) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.enableKeepAlive = true;
   cfg.pollInterval = std::chrono::milliseconds(5);
-  aeronet::AsyncHttpServer server(cfg);
-  server.router().setDefault([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.statusCode(aeronet::http::StatusCodeOK);
+  AsyncHttpServer server(cfg);
+  server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
     writer.writeBody("hello");
     writer.writeBody(",world");
     writer.end();
@@ -476,26 +464,26 @@ TEST(StreamingKeepAlive, TwoSequentialRequests) {
   auto port = server.port();
   ASSERT_NE(port, 0);
 
-  aeronet::test::ClientConnection cnx(port);
+  test::ClientConnection cnx(port);
   int fd = cnx.fd();
   std::string req1 = "GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req1));
-  auto r1 = aeronet::test::recvWithTimeout(fd);
+  test::sendAll(fd, req1);
+  auto r1 = test::recvWithTimeout(fd);
   ASSERT_FALSE(r1.empty());
   // Send second request on same connection.
   std::string req2 = "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";  // request close after second
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req2));
-  auto r2 = aeronet::test::recvWithTimeout(fd);
+  test::sendAll(fd, req2);
+  auto r2 = test::recvWithTimeout(fd);
   ASSERT_FALSE(r2.empty());
 }
 
 TEST(StreamingKeepAlive, HeadRequestReuse) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.enableKeepAlive = true;
   cfg.pollInterval = std::chrono::milliseconds(5);
-  aeronet::AsyncHttpServer server(cfg);
-  server.router().setDefault([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.statusCode(aeronet::http::StatusCodeOK);
+  AsyncHttpServer server(cfg);
+  server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
     writer.writeBody("ignored-body");
     writer.end();
   });
@@ -503,55 +491,54 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
 
   auto port = server.port();
   ASSERT_GT(port, 0);
-  aeronet::test::ClientConnection cnx(port);
+  test::ClientConnection cnx(port);
   int fd = cnx.fd();
 
   std::string hreq = "HEAD / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, hreq));
-  auto hr = aeronet::test::recvWithTimeout(fd);
+  test::sendAll(fd, hreq);
+  auto hr = test::recvWithTimeout(fd);
   // Ensure no body appears after header terminator.
-  auto pos = hr.find(aeronet::http::DoubleCRLF);
+  auto pos = hr.find(http::DoubleCRLF);
   ASSERT_NE(pos, std::string::npos);
-  ASSERT_TRUE(hr.substr(pos + aeronet::http::DoubleCRLF.size()).empty());
+  ASSERT_TRUE(hr.substr(pos + http::DoubleCRLF.size()).empty());
   // second GET
   std::string g2 = "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, g2));
-  auto gr2 = aeronet::test::recvWithTimeout(fd);
+  test::sendAll(fd, g2);
+  auto gr2 = test::recvWithTimeout(fd);
   ASSERT_TRUE(gr2.contains("ignored-body"));  // ensure body from second request present
 }
 
 namespace {
 void raw(auto port, const std::string& verb, std::string& out) {
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
   std::string req = verb + " /len HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
-  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
-  out = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  out = test::recvUntilClosed(fd);
 }
 
 void rawWith(auto port, const std::string& verb, std::string_view extraHeaders, std::string& out) {
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
   std::string req = verb + " /len HTTP/1.1\r\nHost: x\r\n" + std::string(extraHeaders) + "Connection: close\r\n\r\n";
-  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
-  out = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  out = test::recvUntilClosed(fd);
 }
 }  // namespace
 
 TEST(HttpStreamingHeadContentLength, HeadSuppressesBodyKeepsCL) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(2);
-  aeronet::test::TestServer ts(cfg);
-  ts.server.router().setDefault(
-      []([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
-        writer.statusCode(aeronet::http::StatusCodeOK);
-        // We set Content-Length even though we write body pieces; for HEAD the body must be suppressed but CL retained.
-        static constexpr std::string_view body = "abcdef";  // length 6
-        writer.contentLength(body.size());
-        writer.writeBody(body.substr(0, 3));
-        writer.writeBody(body.substr(3));
-        writer.end();
-      });
+  test::TestServer ts(cfg);
+  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
+    // We set Content-Length even though we write body pieces; for HEAD the body must be suppressed but CL retained.
+    static constexpr std::string_view body = "abcdef";  // length 6
+    writer.contentLength(body.size());
+    writer.writeBody(body.substr(0, 3));
+    writer.writeBody(body.substr(3));
+    writer.end();
+  });
   auto port = ts.port();
   std::string headResp;
   std::string getResp;
@@ -572,9 +559,9 @@ TEST(HttpStreamingHeadContentLength, HeadSuppressesBodyKeepsCL) {
 }
 
 TEST(HttpStreamingHeadContentLength, StreamingNoContentLengthUsesChunked) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.router().setDefault([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.statusCode(aeronet::http::StatusCodeOK);
+  test::TestServer ts(HttpServerConfig{});
+  ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
     writer.writeBody("abc");
     writer.writeBody("def");
     writer.end();
@@ -591,9 +578,9 @@ TEST(HttpStreamingHeadContentLength, StreamingNoContentLengthUsesChunked) {
 }
 
 TEST(HttpStreamingHeadContentLength, StreamingLateContentLengthIgnoredStaysChunked) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.router().setDefault([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.statusCode(aeronet::http::StatusCodeOK);
+  test::TestServer ts(HttpServerConfig{});
+  ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
     writer.writeBody("part1");
     // This should be ignored (already wrote body bytes) and we remain in chunked mode.
     writer.contentLength(9999);
@@ -614,16 +601,16 @@ TEST(HttpStreamingHeadContentLength, StreamingLateContentLengthIgnoredStaysChunk
 #if AERONET_ENABLE_ZLIB
 TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDiscouragedButHonored) {
   // We intentionally (mis)use contentLength with auto compression; library will not adjust size.
-  aeronet::CompressionConfig cc;
+  CompressionConfig cc;
   cc.minBytes = 1;  // ensure immediate activation
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withCompression(cc);
-  aeronet::test::TestServer ts(cfg);
+  test::TestServer ts(cfg);
   static constexpr std::string_view kBody =
       "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";  // 64 'A'
   const std::size_t originalSize = kBody.size();
-  ts.server.router().setDefault([&](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.statusCode(aeronet::http::StatusCodeOK);
+  ts.server.router().setDefault([&](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
     writer.contentLength(originalSize);  // declares uncompressed length
     writer.writeBody(kBody.substr(0, 10));
     writer.writeBody(kBody.substr(10));
@@ -640,7 +627,7 @@ TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDi
   // Body should not be chunked.
   ASSERT_FALSE(resp.contains("Transfer-Encoding: chunked"));
   // Extract body (after double CRLF) and verify it differs from original (compressed) and starts with gzip magic.
-  auto pos = resp.find(aeronet::http::DoubleCRLF);
+  auto pos = resp.find(http::DoubleCRLF);
   ASSERT_NE(pos, std::string::npos);
   auto body = resp.substr(pos + 4);
   ASSERT_FALSE(body.empty());
@@ -654,42 +641,41 @@ TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDi
 #endif
 
 TEST(StreamingBackpressure, LargeBodyQueues) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.enableKeepAlive = false;                                       // simplicity
   cfg.maxOutboundBufferBytes = static_cast<std::size_t>(64 * 1024);  // assume default maybe larger
-  aeronet::test::TestServer ts(cfg);
+  test::TestServer ts(cfg);
   std::size_t total = static_cast<std::size_t>(512 * 1024);  // 512 KB
-  ts.server.router().setDefault(
-      [&]([[maybe_unused]] const aeronet::HttpRequest& req, aeronet::HttpResponseWriter& writer) {
-        writer.statusCode(aeronet::http::StatusCodeOK);
-        std::string chunk(8192, 'x');
-        std::size_t sent = 0;
-        while (sent < total) {
-          writer.writeBody(chunk);
-          sent += chunk.size();
-        }
-        writer.end();
-      });
+  ts.server.router().setDefault([&]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
+    std::string chunk(8192, 'x');
+    std::size_t sent = 0;
+    while (sent < total) {
+      writer.writeBody(chunk);
+      sent += chunk.size();
+    }
+    writer.end();
+  });
   auto port = ts.port();
-  aeronet::test::ClientConnection cnx(port);
+  test::ClientConnection cnx(port);
   int fd = cnx.fd();
   std::string req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
+  test::sendAll(fd, req);
 
-  auto data = aeronet::test::recvUntilClosed(fd);
+  auto data = test::recvUntilClosed(fd);
   EXPECT_TRUE(data.starts_with("HTTP/1.1 200"));
 }
 
 TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
   constexpr std::size_t kLargeSize = 5000;
 
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.minCapturedBodySize = kLargeSize - 1U;
-  aeronet::test::TestServer ts(cfg);
+  test::TestServer ts(cfg);
   auto port = ts.port();
   std::string large(kLargeSize, 'x');
-  ts.server.router().setDefault([&](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.statusCode(aeronet::http::StatusCodeOK);
+  ts.server.router().setDefault([&](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
     writer.writeBody("small");  // coalesced path
     writer.writeBody(large);    // large path (multi enqueue)
     writer.end();
@@ -707,10 +693,9 @@ TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
   ASSERT_TRUE(resp.contains("5\r\nsmall"));
   ASSERT_TRUE(resp.contains(largeHex + "\r\n"));
   // Count 'x' occurrences only in the body (after header terminator) to avoid false positives in headers.
-  auto hdrEnd = resp.find(aeronet::http::DoubleCRLF);
+  auto hdrEnd = resp.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, hdrEnd);
-  std::string_view body(resp.data() + hdrEnd + aeronet::http::DoubleCRLF.size(),
-                        resp.size() - hdrEnd - aeronet::http::DoubleCRLF.size());
+  std::string_view body(resp.data() + hdrEnd + http::DoubleCRLF.size(), resp.size() - hdrEnd - http::DoubleCRLF.size());
   // Body is chunked: <5 CRLF small CRLF> <hex CRLF largePayload CRLF> 0 CRLF CRLF.
   // We only count 'x' in the large payload; small chunk contains none.
   ASSERT_EQ(kLargeSize, static_cast<size_t>(std::count(body.begin(), body.end(), 'x')));

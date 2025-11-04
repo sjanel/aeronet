@@ -39,7 +39,7 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
   test::ClientConnection cc(ts.port());
   int fd = cc.fd();
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  EXPECT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("201 Created"));
   ASSERT_TRUE(resp.contains("X-One: 1"));
@@ -57,7 +57,7 @@ TEST(HttpHeadersCustom, LocationHeaderAllowed) {
   test::ClientConnection cc(ts.port());
   int fd = cc.fd();
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  EXPECT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("302 Found"));
   ASSERT_TRUE(resp.contains("Location: /new"));
@@ -77,7 +77,7 @@ TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
   test::ClientConnection cc(ts.port());
   int fd = cc.fd();
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  EXPECT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string responseText = test::recvUntilClosed(fd);
   // Expect only one occurrence with original first casing and final value 'three'.
   ASSERT_TRUE(responseText.contains("x-cAsE: three")) << responseText;
@@ -109,7 +109,7 @@ TEST(HttpHeadersCustom, StreamingCaseInsensitiveContentTypeAndEncodingSuppressio
   int fd = cc.fd();
   std::string req =
       "GET /h HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  EXPECT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   // Ensure our original casing appears exactly and no differently cased duplicate exists.
   ASSERT_TRUE(resp.contains("cOnTeNt-TyPe: text/plain")) << resp;
@@ -137,11 +137,11 @@ TEST(HttpHeaderTimeout, SlowHeadersConnectionClosed) {
   ASSERT_GE(fd, 0) << "connect failed";
   // Send only method token slowly using test helpers
   std::string_view part1 = "GET /";  // incomplete, no version yet
-  ASSERT_TRUE(test::sendAll(fd, part1, std::chrono::milliseconds{500}));
+  test::sendAll(fd, part1, std::chrono::milliseconds{500});
   std::this_thread::sleep_for(readTimeout + std::chrono::milliseconds{5});
   // Attempt to finish request
   std::string_view rest = " HTTP/1.1\r\nHost: x\r\n\r\n";
-  [[maybe_unused]] bool sent_ok = test::sendAll(fd, rest, std::chrono::milliseconds{500});
+  test::sendAll(fd, rest, std::chrono::milliseconds{500});
   // kernel may still accept bytes, server should close shortly after detecting timeout
 
   // Attempt to read response; expect either empty (no response) or nothing meaningful (no 200 OK)

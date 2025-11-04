@@ -35,7 +35,7 @@ TEST(HttpPipeline, TwoRequestsBackToBack) {
   std::string combo =
       "GET /a HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\nContent-Length: "
       "0\r\nConnection: close\r\n\r\n";
-  ASSERT_TRUE(test::sendAll(fd, combo));
+  test::sendAll(fd, combo);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("E:/a"));
   ASSERT_TRUE(resp.contains("E:/b"));
@@ -51,7 +51,7 @@ TEST(HttpExpect, ZeroLengthNo100) {
   int fd = clientConnection.fd();
   std::string headers =
       "POST /z HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
-  ASSERT_TRUE(test::sendAll(fd, headers));
+  test::sendAll(fd, headers);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_FALSE(resp.contains("100 Continue"));
   ASSERT_TRUE(resp.contains('Z'));
@@ -72,7 +72,7 @@ TEST(HttpMaxRequests, CloseAfterLimit) {
   std::string reqs =
       "GET /1 HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\nGET /2 HTTP/1.1\r\nHost: x\r\nContent-Length: "
       "0\r\n\r\nGET /3 HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";
-  ASSERT_TRUE(test::sendAll(fd, reqs));
+  test::sendAll(fd, reqs);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_EQ(2, test::countOccurrences(resp, "HTTP/1.1 200"));
   ASSERT_EQ(2, test::countOccurrences(resp, "Q"));
@@ -87,7 +87,7 @@ TEST(HttpPipeline, SecondMalformedAfterSuccess) {
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
   std::string piped = "GET /good HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\nBADSECONDREQUEST\r\n\r\n";
-  ASSERT_TRUE(test::sendAll(fd, piped));
+  test::sendAll(fd, piped);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("OK"));
   ASSERT_TRUE(resp.contains("400"));
@@ -105,7 +105,7 @@ TEST(HttpContentLength, ExplicitTooLarge413) {
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
   std::string req = "POST /big HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\nConnection: close\r\n\r\n";
-  ASSERT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("413"));
 }
@@ -125,7 +125,7 @@ TEST(HttpContentLength, GlobalHeaders) {
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
   std::string req = "POST /big HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
-  ASSERT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   EXPECT_TRUE(resp.contains("\r\nX-Global: gvalue"));
   EXPECT_TRUE(resp.contains("\r\nX-Another: anothervalue"));
@@ -145,7 +145,7 @@ TEST(HttpBasic, LargePayload) {
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
   std::string req = "GET /good HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  ASSERT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
   EXPECT_TRUE(resp.contains(largeBody));
@@ -185,7 +185,7 @@ TEST(HttpBasic, ManyHeadersRequest) {
   req.append("Content-Length: 0\r\nConnection: close");
   req.append(http::DoubleCRLF);
 
-  ASSERT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
   EXPECT_TRUE(resp.contains("Received " + std::to_string(kNbHeaders) + " custom headers"));
@@ -206,7 +206,7 @@ TEST(HttpBasic, ManyHeadersResponse) {
   int fd = clientConnection.fd();
 
   std::string req = "GET /test HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  ASSERT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
   EXPECT_TRUE(resp.contains("Response with many headers"));
@@ -232,7 +232,7 @@ TEST(HttpExpectation, UnknownExpectationReturns417) {
   ASSERT_GE(fd, 0);
   std::string req =
       "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nExpect: custom-token\r\nConnection: close\r\n\r\n";
-  ASSERT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("417")) << resp;
 }
@@ -251,7 +251,7 @@ TEST(HttpExpectation, MultipleTokensWithUnknownShouldReturn417) {
   std::string req =
       "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue, custom-token\r\nConnection: "
       "close\r\n\r\nHELLO";
-  ASSERT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("417")) << resp;
 }
@@ -280,7 +280,7 @@ TEST(HttpExpectation, HandlerCanEmit102Interim) {
   ASSERT_GE(fd, 0);
   std::string req =
       "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 102-processing\r\nConnection: close\r\n\r\nHELLO";
-  ASSERT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("102 Processing")) << resp;
   ASSERT_TRUE(resp.contains("200")) << resp;
@@ -310,7 +310,7 @@ TEST(HttpExpectation, HandlerInvalidInterimStatusReturns500) {
   ASSERT_GE(fd, 0);
   std::string req =
       "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: bad-interim\r\nConnection: close\r\n\r\nHELLO";
-  ASSERT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   // Server should return 500 due to invalid interim status and not invoke handler body
   ASSERT_TRUE(resp.contains("500")) << resp;
@@ -340,7 +340,7 @@ TEST(HttpExpectation, HandlerThrowsReturns500AndSkipsBody) {
   ASSERT_GE(fd, 0);
   std::string req =
       "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: throws\r\nConnection: close\r\n\r\nHELLO";
-  ASSERT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   // Server should return 500 due to exception in handler and not invoke handler body
   ASSERT_TRUE(resp.contains("500")) << resp;
@@ -374,7 +374,7 @@ TEST(HttpExpectation, HandlerFinalResponseSkipsBody) {
   ASSERT_GE(fd, 0);
   std::string req =
       "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: auth-check\r\nConnection: close\r\n\r\nHELLO";
-  ASSERT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("403")) << resp;
   ASSERT_TRUE(resp.contains("nope")) << resp;
@@ -405,7 +405,7 @@ TEST(HttpExpectation, Mixed100AndCustomWithHandlerContinue) {
   std::string req =
       "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue, custom-ok\r\nConnection: "
       "close\r\n\r\nHELLO";
-  ASSERT_TRUE(test::sendAll(fd, req));
+  test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   // Should see 100 Continue (from expectContinue path) and final 200
   ASSERT_TRUE(resp.contains("100 Continue")) << resp;
@@ -432,7 +432,7 @@ TEST(HttpHead, MaxRequestsApplied) {
   for (int i = 0; i < 4; ++i) {
     reqs += "HEAD /h" + std::to_string(i) + " HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";
   }
-  EXPECT_TRUE(test::sendAll(fd, reqs));
+  test::sendAll(fd, reqs);
   std::string resp = test::recvUntilClosed(fd);
   server.stop();
   int statusCount = 0;

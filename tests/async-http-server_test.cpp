@@ -1,3 +1,5 @@
+#include "aeronet/async-http-server.hpp"
+
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -7,7 +9,6 @@
 #include <string_view>
 #include <thread>
 
-#include "aeronet/async-http-server.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -16,6 +17,7 @@
 #include "aeronet/test_util.hpp"
 
 using namespace std::chrono_literals;
+using namespace aeronet;
 
 namespace {
 
@@ -29,7 +31,7 @@ std::string SimpleGetRequest(std::string_view target, std::string_view connectio
   return req;
 }
 
-bool WaitForServerRunning(const aeronet::AsyncHttpServer &server, std::chrono::milliseconds timeout) {
+bool WaitForServerRunning(const AsyncHttpServer &server, std::chrono::milliseconds timeout) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(5ms);
@@ -43,37 +45,33 @@ bool WaitForServerRunning(const aeronet::AsyncHttpServer &server, std::chrono::m
 }  // namespace
 
 TEST(AsyncHttpServer, BasicStartStopAndRequest) {
-  aeronet::AsyncHttpServer async(aeronet::HttpServerConfig{});
-  async.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest &req) {
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK)
-        .contentType(aeronet::http::ContentTypeTextPlain)
-        .body("hello-async");
+  AsyncHttpServer async(HttpServerConfig{});
+  async.router().setDefault([]([[maybe_unused]] const HttpRequest &req) {
+    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("hello-async");
   });
   async.start();
   // Allow a short grace period.
   std::this_thread::sleep_for(20ms);
   auto port = async.port();
-  aeronet::test::RequestOptions opt;
+  test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/";
-  auto resp = aeronet::test::requestOrThrow(port, opt);
+  auto resp = test::requestOrThrow(port, opt);
   ASSERT_TRUE(resp.contains("200"));
   ASSERT_TRUE(resp.contains("hello-async"));
 }
 
 TEST(AsyncHttpServer, PredicateStop) {
   std::atomic<bool> done{false};
-  aeronet::AsyncHttpServer async(aeronet::HttpServerConfig{});
-  async.router().setDefault([](const aeronet::HttpRequest &req) {
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body(req.path());
-  });
+  AsyncHttpServer async(HttpServerConfig{});
+  async.router().setDefault([](const HttpRequest &req) { return HttpResponse(http::StatusCodeOK).body(req.path()); });
   async.startAndStopWhen([&] { return done.load(); });
   std::this_thread::sleep_for(15ms);  // let it spin
   auto port = async.port();
-  aeronet::test::RequestOptions opt;
+  test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/xyz";
-  auto resp = aeronet::test::requestOrThrow(port, opt);
+  auto resp = test::requestOrThrow(port, opt);
   ASSERT_TRUE(resp.contains("/xyz"));
   done.store(true);
   // stop should be idempotent after predicate triggers stop
@@ -82,55 +80,50 @@ TEST(AsyncHttpServer, PredicateStop) {
 }
 
 TEST(AsyncHttpServer, Restart) {
-  aeronet::AsyncHttpServer async(aeronet::HttpServerConfig{});
+  AsyncHttpServer async(HttpServerConfig{});
   auto port = async.port();
   EXPECT_GT(port, 0);
-  async.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest &req) {
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK)
-        .contentType(aeronet::http::ContentTypeTextPlain)
-        .body("hello-async1");
+  async.router().setDefault([]([[maybe_unused]] const HttpRequest &req) {
+    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("hello-async1");
   });
   async.start();
   // Allow a short grace period.
   std::this_thread::sleep_for(20ms);
 
-  aeronet::test::RequestOptions opt;
+  test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/";
 
-  auto resp = aeronet::test::requestOrThrow(port, opt);
+  auto resp = test::requestOrThrow(port, opt);
   ASSERT_TRUE(resp.contains("200"));
   ASSERT_TRUE(resp.contains("hello-async1"));
 
   async.stop();
   // change router
-  async.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest &req) {
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK)
-        .contentType(aeronet::http::ContentTypeTextPlain)
-        .body("hello-async2");
+  async.router().setDefault([]([[maybe_unused]] const HttpRequest &req) {
+    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("hello-async2");
   });
   async.start();
 
-  resp = aeronet::test::requestOrThrow(port, opt);
+  resp = test::requestOrThrow(port, opt);
   ASSERT_TRUE(resp.contains("200"));
   ASSERT_TRUE(resp.contains("hello-async2"));
 }
 
 TEST(AsyncHttpServer, StartWithStopToken) {
-  aeronet::AsyncHttpServer async(aeronet::HttpServerConfig{});
-  async.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest &req) {
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("token-ok");
-  });
+  AsyncHttpServer async(HttpServerConfig{});
+  async.router().setDefault(
+      []([[maybe_unused]] const HttpRequest &req) { return HttpResponse(http::StatusCodeOK).body("token-ok"); });
 
   std::stop_source src;
   async.startWithStopToken(src.get_token());
   // Allow startup
   std::this_thread::sleep_for(15ms);
   auto port = async.port();
-  aeronet::test::RequestOptions opt;
+  test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/";
-  auto resp = aeronet::test::requestOrThrow(port, opt);
+  auto resp = test::requestOrThrow(port, opt);
   ASSERT_TRUE(resp.contains("token-ok"));
 
   // Request stop via the stop_source and then join via stop().
@@ -140,12 +133,12 @@ TEST(AsyncHttpServer, StartWithStopToken) {
 }
 
 TEST(AsyncHttpServer, BeginDrainClosesKeepAliveConnections) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.enableKeepAlive = true;
-  aeronet::AsyncHttpServer async(cfg);
+  AsyncHttpServer async(cfg);
 
-  async.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest &req) {
-    aeronet::HttpResponse resp;
+  async.router().setDefault([]([[maybe_unused]] const HttpRequest &req) {
+    HttpResponse resp;
     resp.body("OK");
     return resp;
   });
@@ -154,27 +147,27 @@ TEST(AsyncHttpServer, BeginDrainClosesKeepAliveConnections) {
   ASSERT_TRUE(WaitForServerRunning(async, 1s));
 
   const auto port = async.port();
-  aeronet::test::ClientConnection cnx(port);
+  test::ClientConnection cnx(port);
   const int fd = cnx.fd();
   ASSERT_GE(fd, 0);
 
   const auto req = SimpleGetRequest("/", "keep-alive");
-  ASSERT_TRUE(aeronet::test::sendAll(fd, req));
-  const auto initial = aeronet::test::recvWithTimeout(fd);
+  test::sendAll(fd, req);
+  const auto initial = test::recvWithTimeout(fd);
   ASSERT_FALSE(initial.empty());
 
   async.beginDrain(200ms);
   EXPECT_TRUE(async.isDraining());
 
   // Wait briefly for the listener to be closed by beginDrain() (avoid racey immediate connect attempts)
-  EXPECT_TRUE(aeronet::test::WaitForListenerClosed(port, 210ms));
+  EXPECT_TRUE(test::WaitForListenerClosed(port, 210ms));
 
   const auto second = SimpleGetRequest("/two", "keep-alive");
-  ASSERT_TRUE(aeronet::test::sendAll(fd, second));
-  const auto drained = aeronet::test::recvWithTimeout(fd);
+  test::sendAll(fd, second);
+  const auto drained = test::recvWithTimeout(fd);
   EXPECT_TRUE(drained.contains("Connection: close"));
 
-  EXPECT_TRUE(aeronet::test::WaitForPeerClose(fd, 500ms));
+  EXPECT_TRUE(test::WaitForPeerClose(fd, 500ms));
 
   async.stop();
   EXPECT_FALSE(async.isRunning());
