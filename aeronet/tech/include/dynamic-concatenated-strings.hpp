@@ -4,27 +4,30 @@
 #include <cstddef>
 #include <string_view>
 
-#include "raw-chars.hpp"
+#include "raw-bytes.hpp"
 #include "string-equal-ignore-case.hpp"
 
 namespace aeronet {
 
-template <const char *Sep, bool ContainsCaseInsensitive = false>
+template <const char *Sep, bool ContainsCaseInsensitive = false, class SizeType = std::size_t>
 class DynamicConcatenatedStrings {
  private:
   static constexpr char kNullChar = '\0';
   static constexpr std::string_view kSep = Sep[0] == '\0' ? std::string_view(&kNullChar, 1UL) : std::string_view(Sep);
 
  public:
+  using size_type = SizeType;
+  using BufferType = RawBytesImpl<char, std::string_view, SizeType>;
+
   DynamicConcatenatedStrings() noexcept = default;
 
-  explicit DynamicConcatenatedStrings(std::size_t initialCapacity) : _buf(initialCapacity) {}
+  explicit DynamicConcatenatedStrings(size_type initialCapacity) : _buf(initialCapacity) {}
 
   // Append a new string part.
   // The string must not contain the separator character.
   void append(std::string_view str) {
     assert(!str.contains(kSep));
-    _buf.ensureAvailableCapacity(str.size() + kSep.size());
+    _buf.ensureAvailableCapacity(static_cast<size_type>(str.size() + kSep.size()));
     _buf.unchecked_append(str);
     _buf.unchecked_append(kSep);
   }
@@ -59,8 +62,8 @@ class DynamicConcatenatedStrings {
   }
 
   // Get the full size of the concatenated string
-  [[nodiscard]] std::size_t fullSize(bool removeLastSep = true) const noexcept {
-    auto ret = _buf.size();
+  [[nodiscard]] size_type fullSize(bool removeLastSep = true) const noexcept {
+    size_type ret = _buf.size();
     if (removeLastSep && !_buf.empty()) {
       ret -= kSep.size();
     }
@@ -74,12 +77,12 @@ class DynamicConcatenatedStrings {
   void clear() noexcept { _buf.clear(); }
 
   // Get the current capacity of the internal buffer
-  [[nodiscard]] std::size_t capacity() const noexcept { return _buf.capacity(); }
+  [[nodiscard]] size_type capacity() const noexcept { return _buf.capacity(); }
 
   // Get the number of concatenated strings.
   // To get the full size of the concatenated string, use fullSize().
-  [[nodiscard]] std::size_t size() const noexcept {
-    std::size_t count = 0;
+  [[nodiscard]] size_type size() const noexcept {
+    size_type count = 0;
     for (std::string_view buf = _buf; !buf.empty(); ++count) {
       const auto nextSep = buf.find(kSep);
       buf.remove_prefix(nextSep + kSep.size());
@@ -88,7 +91,7 @@ class DynamicConcatenatedStrings {
   }
 
   // Capture the full concatenated string buffer (moves it out).
-  [[nodiscard]] RawChars captureFullString(bool removeLastSep = true) noexcept {
+  [[nodiscard]] BufferType captureFullString(bool removeLastSep = true) noexcept {
     auto ret = std::move(_buf);
     if (removeLastSep && !ret.empty()) {
       ret.setSize(ret.size() - kSep.size());
@@ -97,7 +100,7 @@ class DynamicConcatenatedStrings {
   }
 
  private:
-  RawChars _buf;
+  BufferType _buf;
 };
 
 }  // namespace aeronet

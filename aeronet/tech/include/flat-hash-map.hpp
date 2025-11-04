@@ -400,6 +400,11 @@ class sherwood_v3_table : private EntryAlloc, private Hasher, private Equal {
   size_t count(const K &key) const {
     return find(key) == end() ? 0 : 1;
   }
+  bool contains(const FindKey &key) const { return find(key) != end(); }
+  template <typename K>
+  bool contains(const K &key) const {
+    return find(key) != end();
+  }
   std::pair<iterator, iterator> equal_range(const FindKey &key) {
     iterator found = find(key);
     if (found == end())

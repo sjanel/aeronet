@@ -2,6 +2,7 @@
 #include <sys/socket.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -96,13 +97,19 @@ void HttpServer::acceptNewConnections() {
     if (!_eventLoop.add(EventLoop::EventFd{cnxFd, EventIn | EventEt})) {
       auto savedErr = errno;
       log::error("EventLoop add client failed fd # {} err={}: {}", cnxFd, savedErr, std::strerror(savedErr));
+      _telemetry.counterAdd("aeronet.connections.add_event_failed", 1UL);
       continue;
     }
+
     auto [cnxIt, inserted] = _connStates.emplace(std::move(cnx), ConnectionState{});
     if (!inserted) {
+      // This should not happen, if it does, it's probably a bug in the library of a very weird usage of HttpServer.
       log::error("Internal error: accepted connection fd # {} already present in connection map", cnxFd);
       // Close the newly accepted connection immediately to avoid fd leak.
       _eventLoop.del(cnxFd);
+      _telemetry.counterAdd("aeronet.connections.duplicate_accept", 1UL);
+
+      assert(false);
       continue;
     }
 

@@ -180,7 +180,7 @@ TEST(HttpServer, MoveAssignWhileRunningThrows) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   ASSERT_TRUE(serverA.isRunning());
-  EXPECT_THROW({ serverB = std::move(serverA); }, std::runtime_error);
+  EXPECT_THROW({ serverB = std::move(serverA); }, std::logic_error);
 }
 
 TEST(HttpServerRestart, RestartPossible) {

@@ -84,7 +84,7 @@ struct Slot<T, true> {
 }  // namespace internal
 
 // Object pools for fast allocation/deallocation of frequently used objects.
-// Once allocated and constructed, object pointers remain valid.
+// Once allocated and constructed, object pointers remain valid along with the pool lifetime.
 // All allocated objects are destroyed when the pool is destroyed.
 template <class T>
 class ObjectPool {
@@ -99,8 +99,7 @@ class ObjectPool {
   ObjectPool() noexcept = default;
 
   // Custom constructor with initial capacity.
-  // The initial capacity is rounded up to the next power of two to make the size of previous allocated blocks
-  // predictable. The growth factor is 2, so the next block capacity will be the double of last block capacity.
+  // The growth factor is 2, so the next block capacity will be the double of last block capacity.
   explicit ObjectPool(size_type initialCapacity) : _totalCapacity(initialCapacity) { addBlock(); }
 
   // Disable copy operations.
@@ -153,7 +152,7 @@ class ObjectPool {
   [[nodiscard]] bool empty() const noexcept { return _liveCount == 0U; }
 
   // Clears the pool, destroying all live objects.
-  // Capacity remains allocated for future allocations.
+  // Capacity remains untouched (all memory blocks are kept).
   void clear() noexcept;
 
   // Clears the pool and release all allocated blocks.
@@ -321,6 +320,7 @@ void ObjectPool<T>::reset() noexcept {
     }
 
     if (prev == nullptr) {
+      // Resets total capacity to its initial value (at construction of the pool)
       _totalCapacity = block->_blockSize;
     }
 
@@ -332,8 +332,6 @@ void ObjectPool<T>::reset() noexcept {
   _lastBlock = nullptr;
   _freeList = nullptr;
   _liveCount = 0U;
-  // restore growth state so that subsequent allocations behave as if the pool was
-  // constructed with the user provided initial capacity (or default if none).
   _nextSlot = nullptr;
 }
 

@@ -9,7 +9,9 @@ class Socket {
  public:
   Socket() noexcept = default;
 
-  Socket(int type, int protocol = 0);
+  // Construct a socket with the given type and protocol.
+  // Throws std::system_error on failure.
+  explicit Socket(int type, int protocol = 0);
 
   [[nodiscard]] int fd() const noexcept { return _baseFd.fd(); }
 

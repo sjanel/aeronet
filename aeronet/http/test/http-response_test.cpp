@@ -768,4 +768,41 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
   }
 }
 
+#ifdef NDEBUG
+// In release builds assertions are disabled; just ensure we can set non-reserved but not crash when attempting what
+// would be reserved (we avoid actually invoking UB). This block left empty intentionally.
+#else
+TEST(HttpHeadersCustom, SettingReservedHeaderTriggersAssert) {
+  // We use EXPECT_DEATH to verify debug assertion fires when user attempts to set reserved headers.
+  // Connection
+  ASSERT_DEATH(
+      {
+        HttpResponse resp;
+        resp.customHeader("Connection", "keep-alive");
+      },
+      "");
+  // Date
+  ASSERT_DEATH(
+      {
+        HttpResponse resp;
+        resp.customHeader("Date", "Wed, 01 Jan 2020 00:00:00 GMT");
+      },
+      "");
+  // Content-Length
+  ASSERT_DEATH(
+      {
+        HttpResponse resp;
+        resp.customHeader("Content-Length", "10");
+      },
+      "");
+  // Transfer-Encoding
+  ASSERT_DEATH(
+      {
+        HttpResponse resp;
+        resp.customHeader("Transfer-Encoding", "chunked");
+      },
+      "");
+}
+#endif
+
 }  // namespace aeronet

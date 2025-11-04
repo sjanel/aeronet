@@ -578,6 +578,14 @@ std::optional<ParsedResponse> parseResponse(const std::string &raw) {
   return pr;
 }
 
+ParsedResponse parseResponseOrThrow(const std::string &raw) {
+  auto prOpt = parseResponse(raw);
+  if (!prOpt) {
+    throw std::runtime_error("parseResponse: failed to parse response");
+  }
+  return *prOpt;
+}
+
 bool setRecvTimeout(int fd, ::aeronet::SysDuration timeout) {
   const int timeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count());
   struct timeval tv{timeoutMs / 1000, static_cast<long>((timeoutMs % 1000) * 1000)};

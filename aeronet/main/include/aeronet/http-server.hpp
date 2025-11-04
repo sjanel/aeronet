@@ -128,8 +128,8 @@ class HttpServer {
   // running server is a logic error: the event loop thread would continue executing against the old "this"
   // while ownership of its internal epoll fd, listening socket, wakeup fd, connection maps, handlers and TLS
   // context had been transferred, leading to immediate undefined behaviour. To make this failure mode explicit
-  // and prevent silent partial moves, the move constructor and move assignment operator now THROW
-  // std::runtime_error if the source object is running.
+  // and prevent silent partial moves, the move constructor and move assignment operator throws
+  // std::logic_error if the source object is running.
   //
   // Design choice:
   //  * We intentionally drop noexcept on move operations to surface misuse instead of asserting and then

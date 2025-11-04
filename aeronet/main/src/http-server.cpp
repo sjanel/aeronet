@@ -67,8 +67,14 @@
 
 namespace aeronet {
 
+namespace {
+constexpr int kListenSocketType = SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC;
+}
+
 HttpServer::HttpServer(HttpServerConfig config, RouterConfig routerConfig)
     : _config(std::move(config)),
+      _listenSocket(kListenSocketType),
+      _eventLoop(_config.pollInterval),
       _router(std::move(routerConfig)),
       _encodingSelector(_config.compression),
       _telemetry(_config.otel) {
@@ -77,6 +83,8 @@ HttpServer::HttpServer(HttpServerConfig config, RouterConfig routerConfig)
 
 HttpServer::HttpServer(HttpServerConfig cfg, Router router)
     : _config(std::move(cfg)),
+      _listenSocket(kListenSocketType),
+      _eventLoop(_config.pollInterval),
       _router(std::move(router)),
       _encodingSelector(_config.compression),
       _telemetry(_config.otel) {
@@ -111,7 +119,7 @@ HttpServer::HttpServer(HttpServer&& other)
 
 {
   if (!_lifecycle.isIdle()) {
-    throw std::runtime_error("Cannot move-construct a running HttpServer");
+    throw std::logic_error("Cannot move-construct a running HttpServer");
   }
   other._lifecycle.reset();
 
@@ -127,7 +135,7 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     stop();
     if (!other._lifecycle.isIdle()) {
       other.stop();
-      throw std::runtime_error("Cannot move-assign from a running HttpServer");
+      throw std::logic_error("Cannot move-assign from a running HttpServer");
     }
     _stats = std::exchange(other._stats, {});
     _config = std::move(other._config);
@@ -190,8 +198,8 @@ void HttpServer::stop() noexcept {
     return;
   }
   log::debug("Stopping server");
-  closeListener();
   _lifecycle.enterStopping();
+  closeListener();
 }
 
 void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
@@ -277,10 +285,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     }
 
     if (statusCode != http::StatusCodeOK) {
-      // If status code == 0, we need more data
-      if (statusCode != 0) {
-        emitSimpleError(cnxIt, statusCode, true);
-      }
+      emitSimpleError(cnxIt, statusCode, true);
 
       // We break unconditionally; the connection
       // will be torn down after any queued error bytes are flushed. No partial recovery is
@@ -616,9 +621,10 @@ void HttpServer::emitRequestMetrics(http::StatusCode status, std::size_t bytesIn
 void HttpServer::init() {
   _config.validate();
 
-  _eventLoop = EventLoop(_config.pollInterval);
-
-  _listenSocket = Socket(SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC);
+  if (!_listenSocket) {
+    _listenSocket = Socket(kListenSocketType);
+    _eventLoop = EventLoop(_config.pollInterval);
+  }
 
   const int listenFd = _listenSocket.fd();
 
@@ -768,9 +774,10 @@ void HttpServer::eventLoop() {
 
 void HttpServer::closeListener() noexcept {
   if (_listenSocket) {
-    const int fd = _listenSocket.fd();
-    _eventLoop.del(fd);
+    _eventLoop.del(_listenSocket.fd());
     _listenSocket.close();
+    // Trigger wakeup to break any blocking epoll_wait quickly.
+    _lifecycle.wakeupFd.send();
   }
 }
 
