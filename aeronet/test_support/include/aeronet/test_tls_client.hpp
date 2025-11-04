@@ -35,10 +35,10 @@ class TlsClient {
   };
 
   // Constructor without custom options.
-  explicit TlsClient(uint16_t port) : _port(port), _opts() { init(); }
+  explicit TlsClient(uint16_t port) : _port(port), _opts(), _cnx(_port) { init(); }
 
   // Constructor with explicit options.
-  TlsClient(uint16_t port, Options options) : _port(port), _opts(std::move(options)) { init(); }
+  TlsClient(uint16_t port, Options options) : _port(port), _opts(std::move(options)), _cnx(_port) { init(); }
 
   TlsClient(const TlsClient&) = delete;
   TlsClient(TlsClient&&) noexcept = delete;

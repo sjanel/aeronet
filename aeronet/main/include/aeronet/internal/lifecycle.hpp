@@ -60,8 +60,6 @@ struct Lifecycle {
   void enterStopping() noexcept {
     state = State::Stopping;
     drainDeadlineEnabled = false;
-    // Trigger wakeup to break any blocking epoll_wait quickly.
-    wakeupFd.send();
   }
 
   void enterDraining(std::chrono::steady_clock::time_point deadline, bool enabled) noexcept {
@@ -70,7 +68,6 @@ struct Lifecycle {
     drainDeadline = deadline;
     state = State::Draining;
     drainDeadlineEnabled = enabled;
-    wakeupFd.send();
   }
 
   void shrinkDeadline(std::chrono::steady_clock::time_point deadline) noexcept {

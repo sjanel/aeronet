@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -84,7 +85,7 @@ class TLSConfig {
  private:
   // PEM server certificate, PEM private key, In-memory PEM certificate, In-memory PEM private key, Optional OpenSSL
   // cipher list string
-  StaticConcatenatedStrings<5> _tlsStrings;  // Stored TLS-related strings
+  StaticConcatenatedStrings<5, uint32_t> _tlsStrings;  // Stored TLS-related strings
 };
 
 }  // namespace aeronet

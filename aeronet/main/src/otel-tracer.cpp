@@ -141,7 +141,7 @@ TelemetryContext::TelemetryContext() noexcept = default;
 
 TelemetryContext::TelemetryContext(const aeronet::OtelConfig& cfg) : _impl(std::make_unique<TelemetryContextImpl>()) {
   if (!cfg.enabled) {
-    log::debug("Telemetry disabled in config");
+    log::trace("Telemetry disabled in config");
     return;
   }
 

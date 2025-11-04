@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <initializer_list>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "aeronet/http-constants.hpp"

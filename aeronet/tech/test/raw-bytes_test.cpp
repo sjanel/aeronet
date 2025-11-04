@@ -28,8 +28,8 @@ BytesView toBytes(std::string_view sv) { return {reinterpret_cast<const std::byt
 
 }  // namespace
 
-TEST(SimpleBufferTest, DefaultConstructor) {
-  RawBytes buf;  // Explicit <> to avoid CTAD selecting the span constructor
+TEST(RawBytesTest, DefaultConstructor) {
+  RawBytes buf;
   EXPECT_EQ(buf.size(), 0);
   EXPECT_TRUE(buf.empty());
   EXPECT_EQ(buf.data(), nullptr);
@@ -37,7 +37,7 @@ TEST(SimpleBufferTest, DefaultConstructor) {
   EXPECT_EQ(buf.data(), buf.data() + buf.size());
 }
 
-TEST(SimpleBufferTest, RandomAccessIteratorConstructor) {
+TEST(RawBytesTest, RandomAccessIteratorConstructor) {
   std::string text = "Hello";
   RawBytes buf(reinterpret_cast<const std::byte *>(text.data()),
                reinterpret_cast<const std::byte *>(text.data()) + text.size());
@@ -47,7 +47,7 @@ TEST(SimpleBufferTest, RandomAccessIteratorConstructor) {
   EXPECT_TRUE(std::equal(bufView.data(), bufView.data() + bufView.size(), textView.data()));
 }
 
-TEST(SimpleBufferTest, MoveConstructor) {
+TEST(RawBytesTest, MoveConstructor) {
   auto data = toCharVec("move-me");
   RawBytes buf1(data.begin(), data.end());
   auto *oldPtr = buf1.data();
@@ -62,7 +62,7 @@ TEST(SimpleBufferTest, MoveConstructor) {
   EXPECT_TRUE(std::equal(buf2View.data(), buf2View.data() + buf2View.size(), dataView.data()));
 }
 
-TEST(SimpleBufferTest, MoveAssignment) {
+TEST(RawBytesTest, MoveAssignment) {
   auto data = toCharVec("move-me");
   RawBytes buf1(data.begin(), data.end());
   auto *oldPtr = buf1.data();
@@ -78,7 +78,7 @@ TEST(SimpleBufferTest, MoveAssignment) {
   EXPECT_TRUE(std::equal(buf2View.data(), buf2View.data() + buf2View.size(), dataView.data()));
 }
 
-TEST(SimpleBufferTest, RangeForLoop) {
+TEST(RawBytesTest, RangeForLoop) {
   std::string text = "range";
   RawBytes buf(reinterpret_cast<const std::byte *>(text.data()),
                reinterpret_cast<const std::byte *>(text.data()) + text.size());
@@ -89,7 +89,7 @@ TEST(SimpleBufferTest, RangeForLoop) {
   EXPECT_EQ(collected, text);
 }
 
-TEST(SimpleBufferTest, RangesAlgorithmsWork) {
+TEST(RawBytesTest, RangesAlgorithmsWork) {
   vector<std::byte> text({std::byte('x'), std::byte('y'), std::byte('z')});
   RawBytes buf(text.begin(), text.end());
 
@@ -101,6 +101,14 @@ TEST(SimpleBufferTest, RangesAlgorithmsWork) {
   std::ranges::copy(buf, copied.begin());
   std::ranges::copy(buf, copied.begin());
   EXPECT_EQ(copied, text);
+}
+
+TEST(RawBytesTest, GuardAgainstSmallSizeTypeOverflow) {
+  RawBytesImpl<char, std::string_view, uint8_t> smallBuffer;
+
+  smallBuffer.append(std::string(100U, 'A'));  // OK
+  smallBuffer.append(std::string(100U, 'B'));  // OK
+  EXPECT_THROW(smallBuffer.append(std::string(100U, 'C')), std::bad_alloc);
 }
 
 TEST(RawBytesResizeAndOverwrite, BasicAppendAndShrink) {

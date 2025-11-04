@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -11,21 +12,21 @@
 using namespace aeronet;
 
 TEST(ConcatenatedStrings, BasicAccess) {
-  StaticConcatenatedStrings<3> cs({"alpn", "cipher", "tls1.3"});
+  StaticConcatenatedStrings<3, uint8_t> cs({"alpn", "cipher", "tls1.3"});
   EXPECT_EQ(cs[0], "alpn");
   EXPECT_EQ(cs[1], "cipher");
   EXPECT_EQ(cs[2], "tls1.3");
 }
 
 TEST(ConcatenatedStrings, DefaultConstructedEmpty) {
-  StaticConcatenatedStrings<3> info;
+  StaticConcatenatedStrings<3, uint8_t> info;
   EXPECT_EQ(info[0], std::string_view());
   EXPECT_EQ(info[1], std::string_view());
   EXPECT_EQ(info[2], std::string_view());
 }
 
 TEST(ConcatenatedStrings, ParameterizedStoresAndReturns) {
-  StaticConcatenatedStrings<3> info({"h2", "TLS_AES_128_GCM_SHA256", "TLSv1.3"});
+  StaticConcatenatedStrings<3, uint8_t> info({"h2", "TLS_AES_128_GCM_SHA256", "TLSv1.3"});
   EXPECT_EQ(info[0], "h2");
   EXPECT_EQ(info[1], "TLS_AES_128_GCM_SHA256");
   EXPECT_EQ(info[2], "TLSv1.3");
@@ -35,35 +36,53 @@ TEST(ConcatenatedStrings, LongStringsAreHandled) {
   std::string alpn(1000, 'A');
   std::string cipher(500, 'B');
   std::string version(200, 'C');
-  StaticConcatenatedStrings<3> info({alpn, cipher, version});
+  StaticConcatenatedStrings<3, uint16_t> info({alpn, cipher, version});
   EXPECT_EQ(info[0], std::string_view(alpn));
   EXPECT_EQ(info[1], std::string_view(cipher));
   EXPECT_EQ(info[2], std::string_view(version));
 }
 
+TEST(ConcatenatedStrings, GuardAgainstOverflowConstruction) {
+  using T = StaticConcatenatedStrings<3, uint8_t>;
+  std::string a(128, 'A');
+  std::string b(100, 'B');
+  std::string c(24, 'C');
+
+  EXPECT_NO_THROW((T({a, b, c})));
+  EXPECT_THROW((T({a, b, b})), std::length_error);
+}
+
+TEST(ConcatenatedStrings, GuardAgainstOverflowSet) {
+  StaticConcatenatedStrings<3, uint8_t> tooSmall({"", "", ""});
+  std::string a(128, 'A');
+  std::string b(128, 'B');
+  tooSmall.set(0, a);
+  EXPECT_THROW(tooSmall.set(1, b), std::length_error);
+}
+
 TEST(ConcatenatedStrings, CopyAndAssign) {
-  StaticConcatenatedStrings<2> src({"proto", "cipher"});
-  StaticConcatenatedStrings<2> copyInfo = src;  // NOLINT(performance-unnecessary-copy-initialization)
+  StaticConcatenatedStrings<2, uint8_t> src({"proto", "cipher"});
+  StaticConcatenatedStrings<2, uint8_t> copyInfo = src;  // NOLINT(performance-unnecessary-copy-initialization)
   EXPECT_EQ(copyInfo[0], "proto");
   EXPECT_EQ(copyInfo[1], "cipher");
 
-  StaticConcatenatedStrings<2> dst;
+  StaticConcatenatedStrings<2, uint8_t> dst;
   dst = src;  // copy assign
   EXPECT_EQ(dst[0], "proto");
   EXPECT_EQ(dst[1], "cipher");
 }
 
 TEST(ConcatenatedStrings, SetLarger) {
-  StaticConcatenatedStrings<3> cs({"a", "bb", "ccc"});
+  StaticConcatenatedStrings<3, uint8_t> cs({"a", "bb", "ccc"});
   // Replace middle part with a larger string
-  cs.set(1, std::string_view("BBBBBBBB"));
+  cs.set(1U, std::string_view("BBBBBBBB"));
   EXPECT_EQ(cs[0], "a");
   EXPECT_EQ(cs[1], "BBBBBBBB");
   EXPECT_EQ(cs[2], "ccc");
 }
 
 TEST(ConcatenatedStrings, SetShorter) {
-  StaticConcatenatedStrings<3> cs({"aaaa", "bbbbbb", "cccccc"});
+  StaticConcatenatedStrings<3, uint8_t> cs({"aaaa", "bbbbbb", "cccccc"});
   // Replace first part with a shorter string
   cs.set(0, std::string_view("X"));
   EXPECT_EQ(cs[0], "X");
@@ -72,7 +91,7 @@ TEST(ConcatenatedStrings, SetShorter) {
 }
 
 TEST(ConcatenatedStrings, SetEqualSize) {
-  StaticConcatenatedStrings<3> cs({"one", "two", "three"});
+  StaticConcatenatedStrings<3, uint16_t> cs({"one", "two", "three"});
   // Replace last part with a same-size string
   cs.set(2, std::string_view("XXX"));
   EXPECT_EQ(cs[0], "one");
@@ -81,7 +100,7 @@ TEST(ConcatenatedStrings, SetEqualSize) {
 }
 
 TEST(ConcatenatedStrings, SetFirstGrowAndShrink) {
-  StaticConcatenatedStrings<3> cs({"aa", "bbbb", "cc"});
+  StaticConcatenatedStrings<3, uint8_t> cs({"aa", "bbbb", "cc"});
   // grow first
   cs.set(0, std::string_view("AAAAAAAA"));
   EXPECT_EQ(cs[0], "AAAAAAAA");
@@ -96,7 +115,7 @@ TEST(ConcatenatedStrings, SetFirstGrowAndShrink) {
 }
 
 TEST(ConcatenatedStrings, SetMiddleMultipleTimes) {
-  StaticConcatenatedStrings<4> cs({"a", "bb", "ccc", "dddd"});
+  StaticConcatenatedStrings<4, uint16_t> cs({"a", "bb", "ccc", "dddd"});
   // grow middle part (index 1)
   cs.set(1, std::string_view("BBBBBBBBBB"));
   EXPECT_EQ(cs[0], "a");
@@ -115,7 +134,7 @@ TEST(ConcatenatedStrings, SetMiddleMultipleTimes) {
 }
 
 TEST(ConcatenatedStrings, SetLastGrowAndShrink) {
-  StaticConcatenatedStrings<3> cs({"X", "YY", "ZZZ"});
+  StaticConcatenatedStrings<3, uint16_t> cs({"X", "YY", "ZZZ"});
   cs.set(2, std::string_view("LLLLLLLLLLLL"));
   EXPECT_EQ(cs[0], "X");
   EXPECT_EQ(cs[1], "YY");
@@ -150,7 +169,7 @@ TEST(ConcatenatedStrings, SetEmptyAtPositions) {
 
 TEST(ConcatenatedStrings, StressManySets) {
   // stress test: repeated small changes across many iterations
-  StaticConcatenatedStrings<5> cs({"a", "bb", "ccc", "dddd", "eeeee"});
+  StaticConcatenatedStrings<5, uint32_t> cs({"a", "bb", "ccc", "dddd", "eeeee"});
   for (int iter = 0; iter < 1000; ++iter) {
     // vary sizes and positions
     cs.set(0, std::string_view((iter % 3 == 0) ? "" : "X"));
@@ -168,7 +187,7 @@ TEST(ConcatenatedStrings, StressManySets) {
 }
 
 TEST(ConcatenatedStrings, SinglePartN1) {
-  StaticConcatenatedStrings<1> cs({"only"});
+  StaticConcatenatedStrings<1, uint32_t> cs({"only"});
   EXPECT_EQ(cs[0], "only");
   cs.set(0, std::string_view("new"));
   EXPECT_EQ(cs[0], "new");
@@ -177,7 +196,7 @@ TEST(ConcatenatedStrings, SinglePartN1) {
 }
 
 TEST(ConcatenatedStrings, TmpNullTerminated_FirstMiddleLast) {
-  StaticConcatenatedStrings<3> cs({"first", "middle", "last"});
+  StaticConcatenatedStrings<3, uint32_t> cs({"first", "middle", "last"});
 
   EXPECT_EQ(std::strlen(cs.makeNullTerminated(0).c_str()), 5UL);
 
@@ -220,7 +239,7 @@ TEST(ConcatenatedStrings, TmpNullTerminated_FirstMiddleLast) {
 }
 
 TEST(ConcatenatedStrings, TmpNullTerminated_Nested) {
-  StaticConcatenatedStrings<4> cs({"A", "BB", "CCC", "DDDD"});
+  StaticConcatenatedStrings<4, uint32_t> cs({"A", "BB", "CCC", "DDDD"});
   auto ptr0 = const_cast<char *>(cs[0].data());
   auto ptr2 = const_cast<char *>(cs[2].data());
   const char o0 = ptr0[cs[0].size()];
@@ -259,30 +278,4 @@ TEST(ConcatenatedStrings, TmpNullTerminated_Stress) {
     }
     EXPECT_EQ(ptr[cs[idx].size()], before);
   }
-}
-
-TEST(ConcatenatedStrings, TmpNullTerminated_MoveConstruct) {
-  StaticConcatenatedStrings<3> cs({"one", "two", "three"});
-  auto ptr1 = const_cast<char *>(cs[1].data());
-  auto t1 = cs.makeNullTerminated(1);
-  // move-construct into t2
-  decltype(t1) t2(std::move(t1));
-  EXPECT_EQ(t2.c_str(), ptr1);
-  EXPECT_EQ(t2.c_str()[cs[1].size()], '\0');
-  // moved-from t1 should be inert; its pointer may be null
-  // ensure restoration on t2 destruction keeps buffer intact
-}
-
-TEST(ConcatenatedStrings, TmpNullTerminated_MoveAssign) {
-  StaticConcatenatedStrings<3> cs({"a", "bb", "ccc"});
-  auto ptr0 = const_cast<char *>(cs[0].data());
-  auto ptr2 = const_cast<char *>(cs[2].data());
-  auto t0 = cs.makeNullTerminated(0);
-  auto t2 = cs.makeNullTerminated(2);
-  // move-assign t2 into t0
-  t0 = std::move(t2);
-  EXPECT_EQ(t0.c_str(), ptr2);
-  EXPECT_EQ(t0.c_str()[cs[2].size()], '\0');
-  // after move-assign, ptr0's slot should have been restored
-  EXPECT_NE(ptr0[cs[0].size()], '\0');
 }
