@@ -200,7 +200,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
 
   ensureHeadersSent();
 
-  data = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, data, false);
+  data = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, data);
 
   if (chunked()) {
     emitChunk(data);
@@ -266,7 +266,7 @@ void HttpResponseWriter::end() {
   ensureHeadersSent();
   if (_compressionActivated) {
     const auto& compressionConfig = _server->_config.compression;
-    auto last = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, {}, true);
+    auto last = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, std::string_view{});
     if (!last.empty()) {
       if (chunked()) {
         emitChunk(last);
@@ -370,7 +370,7 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
   }
   ensureHeadersSent();
   // Compress buffered bytes.
-  auto firstOut = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, _preCompressBuffer, false);
+  auto firstOut = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, _preCompressBuffer);
   _preCompressBuffer.clear();
   if (!firstOut.empty()) {
     if (chunked()) {

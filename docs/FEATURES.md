@@ -1654,7 +1654,6 @@ Routes with explicit `.cors(...)` always take precedence over the default policy
 - Zero-allocation origin lookup (case-insensitive interned comparison)
 - Precomputed comma-joined header lists
 - Single-pass Vary header reconciliation
-- Thread-safe policy reuse (immutable after setup)
 
 ### CORS Test Coverage
 
