@@ -984,7 +984,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   }
 
   if (rangeSelection.state == RangeSelection::State::Valid) {
-    resp.statusCode(http::StatusCodePartialContent, "Partial Content");
+    resp.status(http::StatusCodePartialContent, "Partial Content");
     const auto rangeHeader = buildRangeHeader(rangeSelection.offset, rangeSelection.length, fileSize);
     resp.addCustomHeader(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
     resp.file(std::move(file), static_cast<std::size_t>(rangeSelection.offset),

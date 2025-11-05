@@ -184,7 +184,7 @@ TEST_F(HttpCorsIntegration, ActualRequestOriginDeniedReturns403) {
 
 TEST_F(HttpCorsIntegration, StreamingResponseCarriesCorsHeaders) {
   ts.server.router().setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.contentType("text/plain");
     writer.writeBody("chunk-one");
     writer.end();
@@ -213,7 +213,7 @@ TEST_F(HttpCorsIntegration, StreamingResponseCarriesCorsHeaders) {
 
 TEST_F(HttpCorsIntegration, StreamingVaryHeaderAppendsOrigin) {
   ts.server.router().setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.customHeader("Vary", "Accept-Encoding");
     writer.contentType("text/plain");
     writer.writeBody("data");
@@ -240,7 +240,7 @@ TEST_F(HttpCorsIntegration, StreamingOriginDeniedSkipsHandler) {
   ts.server.router().setPath(http::Method::GET, "/stream",
                              [&handlerInvoked](const HttpRequest&, HttpResponseWriter& writer) {
                                handlerInvoked.store(true);
-                               writer.statusCode(http::StatusCodeOK);
+                               writer.status(http::StatusCodeOK);
                                writer.writeBody("should-not-send");
                                writer.end();
                              });

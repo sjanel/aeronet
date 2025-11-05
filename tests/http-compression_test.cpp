@@ -166,7 +166,7 @@ TEST(HttpCompressionBrotliStreaming, BrActivatedOverThreshold) {
   std::string part1(40, 'a');
   std::string part2(80, 'b');
   ts.server.router().setDefault([part1, part2](const HttpRequest &, HttpResponseWriter &writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.contentType("text/plain");
     writer.writeBody(part1);
     writer.writeBody(part2);
@@ -214,7 +214,7 @@ TEST(HttpCompressionBrotliStreaming, UserProvidedIdentityPreventsActivation) {
   test::TestServer ts(std::move(scfg));
   std::string payload(512, 'Y');
   ts.server.router().setDefault([payload]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.customHeader("Content-Encoding", "identity");
     writer.writeBody(payload);
     writer.end();
@@ -240,7 +240,7 @@ TEST(HttpCompressionBrotliStreaming, QValuesInfluenceSelection) {
   test::TestServer ts(std::move(scfg));
   std::string payload(600, 'Z');
   ts.server.router().setDefault([payload]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.contentType("text/plain");
     writer.writeBody(payload.substr(0, 128));
     writer.writeBody(payload.substr(128));
@@ -266,7 +266,7 @@ TEST(HttpCompressionBrotliStreaming, IdentityForbiddenNoAlternativesReturns406) 
   test::TestServer ts(std::move(scfg));
   std::string payload(90, 'F');
   ts.server.router().setDefault([payload]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.writeBody(payload);
     writer.end();
   });
@@ -544,7 +544,7 @@ TEST(HttpCompressionStreaming, GzipActivatedOverThreshold) {
   std::string part1(40, 'a');
   std::string part2(80, 'b');
   ts.server.router().setDefault([part1, part2](const HttpRequest &, HttpResponseWriter &writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.contentType("text/plain");
     writer.writeBody(part1);  // below threshold so far
     writer.writeBody(part2);  // crosses threshold -> compression should activate
@@ -574,7 +574,7 @@ TEST(HttpCompressionStreaming, DeflateActivatedOverThreshold) {
   test::TestServer ts(std::move(scfg));
   std::string payload(128, 'X');
   ts.server.router().setDefault([payload](const HttpRequest &, HttpResponseWriter &writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.contentType("text/plain");
     writer.writeBody(payload.substr(0, 40));
     writer.writeBody(payload.substr(40));
@@ -601,7 +601,7 @@ TEST(HttpCompressionStreaming, BelowThresholdIdentity) {
   test::TestServer ts(std::move(scfg));
   std::string small(40, 'y');
   ts.server.router().setDefault([small](const HttpRequest &, HttpResponseWriter &writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.contentType("text/plain");
     writer.writeBody(small);  // never crosses threshold
     writer.end();
@@ -620,7 +620,7 @@ TEST(HttpCompressionStreaming, UserProvidedContentEncodingIdentityPreventsActiva
   test::TestServer ts(std::move(scfg));
   std::string big(200, 'Z');
   ts.server.router().setDefault([big](const HttpRequest &, HttpResponseWriter &writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.contentType("text/plain");
     writer.customHeader("Content-Encoding", "identity");  // explicit suppression
     writer.writeBody(big.substr(0, 50));
@@ -648,7 +648,7 @@ TEST(HttpCompressionStreaming, QValuesInfluenceStreamingSelection) {
   test::TestServer ts(std::move(scfg));
   std::string payload(180, 'Q');
   ts.server.router().setDefault([payload](const HttpRequest &, HttpResponseWriter &writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.contentType("text/plain");
     writer.writeBody(payload.substr(0, 60));
     writer.writeBody(payload.substr(60));
@@ -668,7 +668,7 @@ TEST(HttpCompressionStreaming, IdentityForbiddenNoAlternativesReturns406) {
   scfg.withCompression(cfg);
   test::TestServer ts(std::move(scfg));
   ts.server.router().setDefault([](const HttpRequest &, HttpResponseWriter &writer) {
-    writer.statusCode(http::StatusCodeOK);  // will be overridden to 406 before handler invoked if negotiation rejects
+    writer.status(http::StatusCodeOK);  // will be overridden to 406 before handler invoked if negotiation rejects
     writer.contentType("text/plain");
     writer.writeBody(std::string(64, 'Q'));
     writer.end();
@@ -776,7 +776,7 @@ TEST(HttpCompressionZstdStreaming, ZstdActivatesAfterThreshold) {
     std::string chunk1(64, 'x');
     std::string chunk2(128, 'y');
     ts.server.router().setDefault([chunk1, chunk2](const HttpRequest &, HttpResponseWriter &writer) {
-      writer.statusCode(http::StatusCodeOK);
+      writer.status(http::StatusCodeOK);
       writer.contentType("text/plain");
       writer.writeBody(chunk1);
       writer.writeBody(chunk2);
@@ -806,7 +806,7 @@ TEST(HttpCompressionZstdStreaming, BelowThresholdIdentity) {
     test::TestServer ts(std::move(scfg));
     std::string data(200, 'a');
     ts.server.router().setDefault([data](const HttpRequest &, HttpResponseWriter &writer) {
-      writer.statusCode(http::StatusCodeOK);
+      writer.status(http::StatusCodeOK);
       writer.contentType("text/plain");
       writer.writeBody(data);
       writer.end();

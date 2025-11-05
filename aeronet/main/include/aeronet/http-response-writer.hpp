@@ -22,10 +22,10 @@ class CorsPolicy;
 class HttpResponseWriter {
  public:
   // Replaces the status code. Must be a 3 digits integer.
-  void statusCode(http::StatusCode code);
+  void status(http::StatusCode code);
 
   // Convenience overload: set both status code and reason phrase in one call.
-  void statusCode(http::StatusCode code, std::string_view reason);
+  void status(http::StatusCode code, std::string_view reason);
 
   // Sets or replace the reason phrase for this instance.
   // Inserting empty reason is allowed.
@@ -108,7 +108,7 @@ class HttpResponseWriter {
   //
   // Usage example:
   //   void handler(const HttpRequest&, HttpResponseWriter& w) {
-  //     w.statusCode(200);
+  //     w.status(200);
   //     w.writeBody("chunk 1");
   //     w.writeBody("chunk 2");
   //     w.addTrailer("X-Checksum", computeChecksum());  // Computed after body

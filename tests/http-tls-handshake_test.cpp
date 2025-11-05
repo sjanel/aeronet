@@ -415,7 +415,7 @@ TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
     });
     auto port = ts.port();
     ts.setDefault([](const HttpRequest&) {
-      return HttpResponse().statusCode(http::StatusCodeOK, "OK").contentType(http::ContentTypeTextPlain).body("C");
+      return HttpResponse().status(http::StatusCodeOK, "OK").contentType(http::ContentTypeTextPlain).body("C");
     });
     test::TlsClient::Options opts;
     opts.clientCertPem = clientPair.first;

@@ -38,7 +38,7 @@ TEST(RouterTest, RegisterAndMatchNormalHandler) {
   alignas(HttpRequest) std::byte httpRequestStorage[sizeof(HttpRequest)];
   const HttpRequest &dummy = *reinterpret_cast<const HttpRequest *>(&httpRequestStorage);
   HttpResponse resp = (*res.requestHandler)(dummy);
-  EXPECT_EQ(resp.statusCode(), http::StatusCodeOK);
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
   EXPECT_TRUE(called);
 }
 
@@ -330,12 +330,12 @@ TEST(RouterTest, CopyAssignmentPreservesHandlersAndIsIndependent) {
   auto rBase2 = baseRouter.match(http::Method::GET, "/indep/x");
   ASSERT_NE(rBase2.requestHandler, nullptr);
   HttpResponse respBase = (*rBase2.requestHandler)(dummyReq2);
-  EXPECT_EQ(respBase.statusCode(), 201);
+  EXPECT_EQ(respBase.status(), 201);
 
   auto rDest2 = destRouter.match(http::Method::GET, "/indep/x");
   ASSERT_NE(rDest2.requestHandler, nullptr);
   HttpResponse respDest = (*rDest2.requestHandler)(dummyReq2);
-  EXPECT_EQ(respDest.statusCode(), 200);
+  EXPECT_EQ(respDest.status(), 200);
 }
 
 TEST(RouterTest, CopyPreservesTrailingSlashVariantsAndMethodTypes) {
@@ -355,7 +355,7 @@ TEST(RouterTest, CopyPreservesTrailingSlashVariantsAndMethodTypes) {
   alignas(HttpRequest) std::byte dummyTsReq[sizeof(HttpRequest)];
   const HttpRequest &dummyTs = *reinterpret_cast<const HttpRequest *>(&dummyTsReq);
   HttpResponse resp = (*rp.requestHandler)(dummyTs);
-  EXPECT_EQ(resp.statusCode(), 201);
+  EXPECT_EQ(resp.status(), 201);
 }
 
 TEST(RouterTest, CopyHandlesHeadFallbackAndMethodBitmaps) {
@@ -402,7 +402,7 @@ TEST(RouterTest, CopyPreservesLiteralOnlyFastPath) {
   auto resCloneAfter = clone.match(http::Method::GET, "/api/v1/users/list");
   ASSERT_NE(resCloneAfter.requestHandler, nullptr);
   HttpResponse resp = (*resCloneAfter.requestHandler)(dummyReq);
-  EXPECT_EQ(resp.statusCode(), 200);  // Clone still has old handler
+  EXPECT_EQ(resp.status(), 200);  // Clone still has old handler
   EXPECT_EQ(callCount, 3);
 }
 
@@ -445,7 +445,7 @@ TEST(RouterTest, NonCopyableHandlerAcrossMultipleMethods) {
     }
     try {
       HttpResponse response = (*res.requestHandler)(dummyReq);
-      if (response.statusCode() == 200) {
+      if (response.status() == 200) {
         ++successCount;
       }
     } catch (const std::bad_function_call &) {

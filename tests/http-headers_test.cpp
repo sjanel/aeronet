@@ -29,7 +29,7 @@ test::TestServer ts(HttpServerConfig{});
 TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
   ts.server.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
-    resp.statusCode(201).reason("Created");
+    resp.status(201).reason("Created");
     resp.customHeader("X-One", "1");
     resp.customHeader("X-Two", "two");
     resp.contentType("text/plain");
@@ -98,7 +98,7 @@ TEST(HttpHeadersCustom, StreamingCaseInsensitiveContentTypeAndEncodingSuppressio
   test::TestServer tsComp(std::move(scfg));
   std::string payload(128, 'Z');
   tsComp.server.router().setDefault([&](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.statusCode(200);
+    writer.status(200);
     writer.customHeader("cOnTeNt-TyPe", "text/plain");    // mixed case
     writer.customHeader("cOnTeNt-EnCoDiNg", "identity");  // should suppress auto compression
     writer.writeBody(payload.substr(0, 40));

@@ -139,7 +139,7 @@ CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequest& request, 
     return ApplyStatus::NotCors;
   }
   if (!originAllowed(origin)) {
-    response.statusCode(http::StatusCodeForbidden, http::ReasonForbidden);
+    response.status(http::StatusCodeForbidden, http::ReasonForbidden);
     response.contentType(http::ContentTypeTextPlain).body(http::ReasonForbidden);
     return ApplyStatus::OriginDenied;
   }
