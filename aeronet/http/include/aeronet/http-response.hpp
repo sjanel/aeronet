@@ -67,7 +67,7 @@ namespace aeronet {
 //       addCustomHeader() when duplicates are acceptable or order-only semantics matter.
 //
 // Mutators & Finalization:
-//   statusCode(), reason(), body(), addCustomHeader(), customHeader() may be called in any
+//   status(), reason(), body(), addCustomHeader(), customHeader() may be called in any
 //   order prior to finalizeAndGetFullTextResponse(). finalize* injects reserved
 //   headers (Content-Length if body non-empty, Date, Connection) every time it is
 //   called; therefore call it exactly once. Post-finalization mutation is NOT
@@ -77,7 +77,7 @@ namespace aeronet {
 //   Transfer-Encoding, Trailer, Upgrade, TE.
 //
 // Complexity Summary:
-//   - statusCode(): O(1)
+//   - status(): O(1)
 //   - reason(): O(size of tail - adjusts headers/body offsets)
 //   - body(): O(delta) for copy; may reallocate
 //   - addCustomHeader(): O(bodyLen) for memmove of tail
@@ -139,33 +139,33 @@ class HttpResponse {
   HttpResponse(std::size_t initialCapacity, http::StatusCode code, std::string_view reason = {});
 
   // Replaces the status code. Must be a 3 digits integer (undefined behavior otherwise).
-  HttpResponse& statusCode(http::StatusCode statusCode) & noexcept {
+  HttpResponse& status(http::StatusCode statusCode) & noexcept {
     setStatusCode(statusCode);
     return *this;
   }
 
   // Replaces the status code. Must be a 3 digits integer (undefined behavior otherwise).
-  HttpResponse&& statusCode(http::StatusCode statusCode) && noexcept {
+  HttpResponse&& status(http::StatusCode statusCode) && noexcept {
     setStatusCode(statusCode);
     return std::move(*this);
   }
 
   // Replaces the status code and the reason phrase. Must be a 3 digits integer (undefined behavior otherwise).
-  HttpResponse& statusCode(http::StatusCode statusCode, std::string_view reason) & noexcept {
+  HttpResponse& status(http::StatusCode statusCode, std::string_view reason) & noexcept {
     setStatusCode(statusCode);
     setReason(reason);
     return *this;
   }
 
   // Replaces the status code and the reason phrase. Must be a 3 digits integer (undefined behavior otherwise).
-  HttpResponse&& statusCode(http::StatusCode statusCode, std::string_view reason) && noexcept {
+  HttpResponse&& status(http::StatusCode statusCode, std::string_view reason) && noexcept {
     setStatusCode(statusCode);
     setReason(reason);
     return std::move(*this);
   }
 
   // Get the current status code stored in this HttpResponse.
-  [[nodiscard]] http::StatusCode statusCode() const noexcept {
+  [[nodiscard]] http::StatusCode status() const noexcept {
     return static_cast<http::StatusCode>(read3(_data.data() + kStatusCodeBeg));
   }
 

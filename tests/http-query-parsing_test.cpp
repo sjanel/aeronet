@@ -21,7 +21,7 @@ TEST(HttpQueryParsing, NoQuery) {
     EXPECT_EQ(req.path(), "/plain");
     EXPECT_EQ(req.queryParams().begin(), req.queryParams().end());
     HttpResponse resp;
-    resp.statusCode(200).reason("OK").body("NOQ").contentType("text/plain");
+    resp.status(200).reason("OK").body("NOQ").contentType("text/plain");
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/plain");
@@ -76,7 +76,7 @@ TEST(HttpQueryParsing, PercentDecodedQuery) {
       body.push_back('=');
       body.append(val);
     }
-    resp.statusCode(200).reason("OK").body(body).contentType("text/plain");
+    resp.status(200).reason("OK").body(body).contentType("text/plain");
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/d?x=one%20two&y=%2Fpath");
@@ -90,7 +90,7 @@ TEST(HttpQueryParsing, EmptyQueryAndTrailingQMark) {
     // "?" with nothing after -> empty query view
     EXPECT_EQ(req.queryParams().begin(), req.queryParams().end());
     HttpResponse resp;
-    resp.statusCode(200).reason("OK").body("EMPTY").contentType("text/plain");
+    resp.status(200).reason("OK").body("EMPTY").contentType("text/plain");
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/t?");
@@ -164,7 +164,7 @@ TEST(HttpQueryParsingEdge, PercentDecodingKeyAndValue) {
     EXPECT_EQ((*it).key, "fo");
     EXPECT_EQ((*it).value, "bar baz");
     HttpResponse resp;
-    resp.statusCode(200).reason("OK").body("EDGE4").contentType("text/plain");
+    resp.status(200).reason("OK").body("EDGE4").contentType("text/plain");
     return resp;
   });
   std::string resp = test::simpleGet(ts.port(), "/pd?%66o=bar%20baz");

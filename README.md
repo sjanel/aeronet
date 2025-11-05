@@ -303,7 +303,7 @@ The router expects callback functions returning a `HttpResponse`. You can build 
 
 | Operation          | Complexity           | Notes                                  |
 |--------------------|----------------------|----------------------------------------|
-| `statusCode()`     | O(1)                 | Overwrites 3 digits                    |
+| `status()`         | O(1)                 | Overwrites 3 digits                    |
 | `reason()`         | O(trailing)          | One tail `memmove` if size delta       |
 | `addCustomHeader()`| O(bodyLen)           | Shift tail once; no scan               |
 | `customHeader()`   | O(headers + bodyLen) | Linear scan + maybe one shift          |
@@ -375,7 +375,7 @@ See: [CORS Support](docs/FEATURES.md#cors-support)
 
 ```cpp
 server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
-  w.statusCode(200);
+  w.status(200);
   w.contentType("text/plain");
   for (int i = 0;i < 10; ++i) {
     w.write(std::string(50,'x')); // accumulates until threshold then switches to compressed chunks
@@ -655,7 +655,7 @@ Keep-alive can be disabled globally by `cfg.withKeepAliveMode(false)`; per-reque
 
 Two mutually exclusive approaches:
 
-1. Global handler: `server.router().setDefault([](const HttpRequest&){ ... })` (receives every request).
+1. Global handler: `server.router().setDefault([](const HttpRequest&){ ... })` (receives every request if no specific path matches).
 2. Per-path handlers: `server.router().setPath(http::Method::GET | http::Method::POST, "/hello", handler)` – exact path match.
 
 Rules:
@@ -671,12 +671,15 @@ Example:
 ```cpp
 HttpServer server(cfg);
 server.router().setPath(http::Method::GET | http::Method::PUT, "/hello", [](const HttpRequest&){
-  HttpResponse r; r.statusCode=200; r.reason="OK"; r.body="world"; r.contentType="text/plain"; return r; });
+  return HttpResponse(200, "OK").body("world").contentType("text/plain");
+});
 server.router().setPath(http::Method::POST, "/echo", [](const HttpRequest& req){
-  HttpResponse r; r.statusCode=200; r.reason="OK"; r.body=req.body; r.contentType="text/plain"; return r; });
+  return HttpResponse(200, "OK").body(req.body).contentType("text/plain");
+});
 // Add another method later (merges method mask, replaces handler)
 server.router().setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
-  HttpResponse r; r.statusCode=200; r.reason="OK"; r.body = "Echo via GET"; r.contentType="text/plain"; return r; });
+  return HttpResponse(200, "OK").body("Echo via GET").contentType("text/plain");
+});
 ```
 
 ### Limits
