@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -158,5 +159,13 @@ constexpr std::string_view toMethodStr(Method method) {
       std::unreachable();
   }
 }
+
+inline constexpr std::size_t kAllMethodsStrLen = []() {
+  std::size_t len = 0;
+  for (MethodIdx methodIdx = 0; methodIdx < kNbMethods; ++methodIdx) {
+    len += toMethodStr(fromMethodIdx(methodIdx)).size();
+  }
+  return len;
+}();
 
 }  // namespace aeronet::http

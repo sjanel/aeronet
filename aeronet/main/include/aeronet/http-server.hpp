@@ -42,6 +42,7 @@
 namespace aeronet {
 
 class HttpResponseWriter;
+class CorsPolicy;
 
 class ITransport;  // forward declaration for TLS/plain transport abstraction
 #ifdef AERONET_ENABLE_OPENSSL
@@ -262,10 +263,12 @@ class HttpServer {
   bool decodeFixedLengthBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
   bool decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
   bool maybeDecompressRequestBody(ConnectionMapIt cnxIt);
-  void finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes);
+  void finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
+                               const CorsPolicy* pCorsPolicy);
   // Handle Expect header tokens other than the built-in 100-continue.
   // Returns true if processing should stop for this request (response already queued/sent).
-  bool handleExpectHeader(ConnectionMapIt cnxIt, ConnectionState& state, bool& found100Continue);
+  bool handleExpectHeader(ConnectionMapIt cnxIt, ConnectionState& state, const CorsPolicy* pCorsPolicy,
+                          bool& found100Continue);
   // Helper to populate and invoke the metrics callback for a completed request.
   void emitRequestMetrics(http::StatusCode status, std::size_t bytesIn, bool reusedConnection);
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
@@ -289,11 +292,12 @@ class HttpServer {
   // the request (either because the client requested it or keep-alive limits reached). The HttpRequest is
   // non-const because we may reuse shared response finalization paths (e.g. emitting a 406 early) that expect
   // to mutate transient fields (target normalization already complete at this point).
-  bool callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionMapIt cnxIt, std::size_t consumedBytes);
+  bool callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionMapIt cnxIt, std::size_t consumedBytes,
+                            const CorsPolicy* pCorsPolicy);
 
   enum class LoopAction : uint8_t { Nothing, Continue, Break };
 
-  LoopAction processSpecialMethods(ConnectionMapIt& cnxIt, std::size_t consumedBytes);
+  LoopAction processSpecialMethods(ConnectionMapIt& cnxIt, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy);
 
   void handleInTunneling(ConnectionMapIt cnxIt);
 

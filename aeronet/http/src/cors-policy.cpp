@@ -1,10 +1,19 @@
 #include "aeronet/cors-policy.hpp"
 
+#include <chrono>
+#include <cstdint>
+#include <stdexcept>
+#include <string_view>
 #include <utility>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-method.hpp"
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/http-status-code.hpp"
+#include "fixedcapacityvector.hpp"
+#include "raw-chars.hpp"
 #include "string-equal-ignore-case.hpp"
-#include "stringconv.hpp"
 
 namespace aeronet {
 namespace {
@@ -41,20 +50,21 @@ namespace {
   return false;
 }
 
-constexpr http::MethodBmp defaultSimpleMethods() { return http::Method::GET | http::Method::HEAD | http::Method::POST; }
+constexpr http::MethodBmp kAllMethodsMask = static_cast<http::MethodBmp>((1U << http::kNbMethods) - 1U);
 
 }  // namespace
 
-CorsPolicy::CorsPolicy() : _allowedMethods(defaultSimpleMethods()) {}
-
 CorsPolicy& CorsPolicy::allowAnyOrigin() {
+  _active = true;
   _originMode = OriginMode::Any;
   _allowedOrigins.clear();
   return *this;
 }
 
 CorsPolicy& CorsPolicy::allowOrigin(std::string_view origin) {
+  _active = true;
   _originMode = OriginMode::Enumerated;
+
   origin = trimView(origin);
   if (!origin.empty() && !_allowedOrigins.contains(origin)) {
     _allowedOrigins.append(origin);
@@ -63,23 +73,32 @@ CorsPolicy& CorsPolicy::allowOrigin(std::string_view origin) {
 }
 
 CorsPolicy& CorsPolicy::allowCredentials(bool enable) {
+  _active = true;
   _allowCredentials = enable;
   return *this;
 }
 
+CorsPolicy& CorsPolicy::allowMethods(http::Method method) {
+  _active = true;
+  _allowedMethods = static_cast<http::MethodBmp>(method);
+  return *this;
+}
+
 CorsPolicy& CorsPolicy::allowMethods(http::MethodBmp methods) {
+  _active = true;
   _allowedMethods = methods;
   return *this;
 }
 
 CorsPolicy& CorsPolicy::allowAnyRequestHeaders() {
-  _allowAnyRequestHeaders = true;
+  _active = true;
   _allowedRequestHeaders.clear();
+  _allowedRequestHeaders.append("*");
   return *this;
 }
 
 CorsPolicy& CorsPolicy::allowRequestHeader(std::string_view header) {
-  _allowAnyRequestHeaders = false;
+  _active = true;
   header = trimView(header);
   if (!header.empty() && !_allowedRequestHeaders.contains(header)) {
     _allowedRequestHeaders.append(header);
@@ -88,26 +107,31 @@ CorsPolicy& CorsPolicy::allowRequestHeader(std::string_view header) {
 }
 
 CorsPolicy& CorsPolicy::exposeHeader(std::string_view header) {
+  _active = true;
   header = trimView(header);
   if (!header.empty() && !_exposedHeaders.contains(header)) {
     _exposedHeaders.append(header);
   }
-
   return *this;
 }
 
 CorsPolicy& CorsPolicy::maxAge(std::chrono::seconds maxAge) {
-  _maxAge = maxAge.count() >= 0 ? maxAge : std::chrono::seconds{-1};
+  if (maxAge < std::chrono::seconds{0}) {
+    throw std::invalid_argument("maxAge must be non-negative");
+  }
+  _active = true;
+  _maxAge = maxAge;
   return *this;
 }
 
 CorsPolicy& CorsPolicy::allowPrivateNetwork(bool enable) {
+  _active = true;
   _allowPrivateNetwork = enable;
   return *this;
 }
 
 CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequest& request, HttpResponse& response) const {
-  if (isPreflightRequest(request)) {
+  if (!_active || isPreflightRequest(request)) {
     return ApplyStatus::NotCors;
   }
   const auto origin = request.headerValueOrEmpty(http::Origin);
@@ -115,15 +139,18 @@ CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequest& request, 
     return ApplyStatus::NotCors;
   }
   if (!originAllowed(origin)) {
+    response.statusCode(http::StatusCodeForbidden, http::ReasonForbidden);
+    response.contentType(http::ContentTypeTextPlain).body(http::ReasonForbidden);
     return ApplyStatus::OriginDenied;
   }
   applyResponseHeaders(response, origin);
   return ApplyStatus::Applied;
 }
 
-CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequest& request) const {
+CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequest& request,
+                                                        http::MethodBmp routeMethods) const {
   PreflightResult result;
-  if (!isPreflightRequest(request)) {
+  if (!_active || !isPreflightRequest(request)) {
     return result;
   }
 
@@ -133,8 +160,10 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequest& reque
     return result;
   }
 
+  const auto effectiveMethods = effectiveAllowedMethods(routeMethods);
+
   const auto methodOpt = request.headerValue(http::AccessControlRequestMethod);
-  if (!methodOpt || !methodAllowed(*methodOpt)) {
+  if (!methodOpt || !methodAllowed(*methodOpt, effectiveMethods)) {
     result.status = PreflightResult::Status::MethodDenied;
     return result;
   }
@@ -148,27 +177,25 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequest& reque
   auto& response = result.response;
   applyResponseHeaders(response, origin);
 
-  if (_allowedMethods != 0) {
-    SmallRawChars value;
+  if (effectiveMethods != 0) {
+    FixedCapacityVector<char, http::kAllMethodsStrLen + static_cast<uint32_t>((http::kNbMethods - 1U) * 2U)> value;
     for (http::MethodIdx idx = 0; idx < http::kNbMethods; ++idx) {
       const auto method = http::fromMethodIdx(idx);
-      if (!http::isMethodSet(_allowedMethods, method)) {
-        continue;
+      if (http::isMethodSet(effectiveMethods, method)) {
+        if (!value.empty()) {
+          value.push_back(',');
+          value.push_back(' ');
+        }
+        value.append_range(http::toMethodStr(method));
       }
-      if (!value.empty()) {
-        value.append(", ");
-      }
-      value.append(http::toMethodStr(method));
     }
-    response.customHeader(http::AccessControlAllowMethods, std::move(value));
+    response.customHeader(http::AccessControlAllowMethods, std::string_view(value));
   }
 
-  if (_allowAnyRequestHeaders) {
-    response.customHeader(http::AccessControlAllowHeaders, "*");
-  } else if (!_allowedRequestHeaders.empty()) {
+  if (!_allowedRequestHeaders.empty()) {
     response.customHeader(http::AccessControlAllowHeaders, _allowedRequestHeaders.fullString());
   } else if (!requestedHeaders.empty()) {
-    response.customHeader(http::AccessControlAllowHeaders, trimView(requestedHeaders));
+    response.customHeader(http::AccessControlAllowHeaders, requestedHeaders);
   }
 
   if (_allowPrivateNetwork) {
@@ -176,8 +203,7 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequest& reque
   }
 
   if (_maxAge.count() >= 0) {
-    const auto value = IntegralToCharVector(static_cast<std::uint64_t>(_maxAge.count()));
-    response.customHeader(http::AccessControlMaxAge, std::string_view(value.data(), value.size()));
+    response.customHeader(http::AccessControlMaxAge, static_cast<std::uint64_t>(_maxAge.count()));
   }
 
   result.status = PreflightResult::Status::Allowed;
@@ -202,18 +228,19 @@ bool CorsPolicy::originAllowed(std::string_view origin) const noexcept {
   return _allowedOrigins.contains(origin);
 }
 
-bool CorsPolicy::methodAllowed(std::string_view methodToken) const noexcept {
-  if (_allowedMethods == 0) {
+bool CorsPolicy::methodAllowed(std::string_view methodToken, http::MethodBmp routeMethods) const noexcept {
+  const auto effectiveMask = effectiveAllowedMethods(routeMethods);
+  if (effectiveMask == 0) {
     return false;
   }
   if (const auto method = http::toMethodEnum(methodToken); method.has_value()) {
-    return http::isMethodSet(_allowedMethods, *method);
+    return http::isMethodSet(effectiveMask, *method);
   }
   return false;
 }
 
 bool CorsPolicy::requestHeadersAllowed(std::string_view headerList) const {
-  if (_allowAnyRequestHeaders) {
+  if (_allowedRequestHeaders.fullString() == "*") {
     return true;
   }
   auto remaining = trimView(headerList);
@@ -241,8 +268,8 @@ void CorsPolicy::applyResponseHeaders(HttpResponse& response, std::string_view o
     response.customHeader(http::AccessControlAllowOrigin, origin);
     auto existing = response.headerValueOrEmpty(http::Vary);
     if (existing.empty()) {
-      response.addCustomHeader(http::Vary, "Origin");
-    } else if (!listContainsToken(existing, "Origin")) {
+      response.addCustomHeader(http::Vary, http::Origin);
+    } else if (!listContainsToken(existing, http::Origin)) {
       static constexpr std::string_view kAppendedOrigin = ", Origin";
       SmallRawChars combined(static_cast<uint32_t>(existing.size()) + kAppendedOrigin.size());
       combined.unchecked_append(existing);
@@ -260,6 +287,16 @@ void CorsPolicy::applyResponseHeaders(HttpResponse& response, std::string_view o
   if (!_exposedHeaders.empty()) {
     response.customHeader(http::AccessControlExposeHeaders, _exposedHeaders.fullString());
   }
+}
+
+http::MethodBmp CorsPolicy::effectiveAllowedMethods(http::MethodBmp routeMethods) const noexcept {
+  if (_allowedMethods == 0 || routeMethods == 0) {
+    return 0;
+  }
+  if (routeMethods == kAllMethodsMask) {
+    return _allowedMethods;
+  }
+  return _allowedMethods & routeMethods;
 }
 
 }  // namespace aeronet

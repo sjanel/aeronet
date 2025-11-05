@@ -8,6 +8,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/router-config.hpp"
 #include "flat-hash-map.hpp"
@@ -68,45 +69,35 @@ void Router::splitPathSegments(std::string_view path) {
   }
 }
 
-void Router::setDefault(RequestHandler handler) {
-  if (_handler) {
-    log::warn("Overwriting existing default request handler");
-  }
-  _handler = std::move(handler);
+void Router::setDefault(RequestHandler handler) { _handler = std::move(handler); }
+
+void Router::setDefault(StreamingHandler handler) { _streamingHandler = std::move(handler); }
+
+Router::PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string path, RequestHandler handler) {
+  return setPathInternal(methods, std::move(path), std::move(handler), StreamingHandler{});
 }
 
-void Router::setDefault(StreamingHandler handler) {
-  if (_streamingHandler) {
-    log::warn("Overwriting existing default streaming handler");
-  }
-  _streamingHandler = std::move(handler);
+Router::PathHandlerEntry& Router::setPath(http::Method method, std::string path, RequestHandler handler) {
+  return setPathInternal(static_cast<http::MethodBmp>(method), std::move(path), std::move(handler), StreamingHandler{});
 }
 
-void Router::setPath(http::MethodBmp methods, std::string path, RequestHandler handler) {
-  setPathInternal(methods, std::move(path), std::move(handler), StreamingHandler{});
+Router::PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string path, StreamingHandler handler) {
+  return setPathInternal(methods, std::move(path), RequestHandler{}, std::move(handler));
 }
 
-void Router::setPath(http::Method method, std::string path, RequestHandler handler) {
-  setPath(static_cast<http::MethodBmp>(method), std::move(path), std::move(handler));
+Router::PathHandlerEntry& Router::setPath(http::Method method, std::string path, StreamingHandler handler) {
+  return setPathInternal(static_cast<http::MethodBmp>(method), std::move(path), RequestHandler{}, std::move(handler));
 }
 
-void Router::setPath(http::MethodBmp methods, std::string path, StreamingHandler handler) {
-  setPathInternal(methods, std::move(path), RequestHandler{}, std::move(handler));
-}
-
-void Router::setPath(http::Method method, std::string path, StreamingHandler handler) {
-  setPath(static_cast<http::MethodBmp>(method), std::move(path), std::move(handler));
-}
-
-void Router::setPathInternal(http::MethodBmp methods, std::string path, RequestHandler handler,
-                             StreamingHandler streaming) {
+Router::PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string path, RequestHandler handler,
+                                                  StreamingHandler streaming) {
   if (!handler && !streaming) {
     throw std::invalid_argument("setPath requires a handler");
   }
 
   const bool pathHasTrailingSlash = ShouldNormalize(_config.trailingSlashPolicy, path);
 
-  CompiledRoute compiled = compilePattern(path);
+  CompiledRoute compiled = CompilePattern(path);
   if (pathHasTrailingSlash) {
     compiled.hasWithSlashRegistered = true;
   } else {
@@ -139,12 +130,17 @@ void Router::setPathInternal(http::MethodBmp methods, std::string path, RequestH
   }
 
   ensureRouteMetadata(*node, std::move(compiled));
-  assignHandlers(*node, methods, std::move(handler), std::move(streaming), pathHasTrailingSlash);
+  AssignHandlers(*node, methods, std::move(handler), std::move(streaming), pathHasTrailingSlash);
+
+  // Store per-path CorsPolicy if provided into the handler entry matching trailing slash variant
+  PathHandlerEntry& targetEntry = pathHasTrailingSlash ? node->handlersWithSlash : node->handlersNoSlash;
 
   // If this is a literal-only route, also store it in the fast-path map for O(1) lookup
   if (isLiteralOnly) {
     _literalOnlyRoutes[path] = node;
   }
+
+  return targetEntry;
 }
 
 Router::RouteNode* Router::ensureLiteralChild(RouteNode& node, std::string_view segmentLiteral) {
@@ -167,7 +163,7 @@ Router::RouteNode* Router::ensureDynamicChild(RouteNode& node, const CompiledSeg
   return node.dynamicChildren.emplace_back(segmentPattern, _nodePool.allocateAndConstruct()).child;
 }
 
-void Router::assignHandlers(RouteNode& node, http::MethodBmp methods, RequestHandler requestHandler,
+void Router::AssignHandlers(RouteNode& node, http::MethodBmp methods, RequestHandler requestHandler,
                             StreamingHandler streamingHandler, bool registeredWithTrailingSlash) {
   PathHandlerEntry& entry = registeredWithTrailingSlash ? node.handlersWithSlash : node.handlersNoSlash;
 
@@ -396,7 +392,7 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
       return result;
     }
 
-    SetMatchedHandler(method, *entryPtr, result);
+    setMatchedHandler(method, *entryPtr, result);
 
     // No path params for literal-only routes
     return result;
@@ -426,7 +422,7 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
     return result;
   }
 
-  SetMatchedHandler(method, *entryPtr, result);
+  setMatchedHandler(method, *entryPtr, result);
 
   const auto paramCount = std::min(_matchStateBuffer.size(), route->paramNames.size());
 
@@ -467,7 +463,7 @@ http::MethodBmp Router::allowedMethods(std::string_view path) {
   return 0U;
 }
 
-Router::CompiledRoute Router::compilePattern(std::string_view path) {
+Router::CompiledRoute Router::CompilePattern(std::string_view path) {
   if (path.empty() || path.front() != '/') {
     throw std::invalid_argument("Router paths must begin with '/'");
   }
@@ -639,7 +635,7 @@ const Router::PathHandlerEntry* Router::computePathHandlerEntry(
   }
 }
 
-void Router::SetMatchedHandler(http::Method method, const PathHandlerEntry& entry, RoutingResult& result) {
+void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entry, RoutingResult& result) const {
   auto methodIdx = toMethodIdx(method);
   if (method == http::Method::HEAD) {
     static constexpr auto kHeadIdx = toMethodIdx(http::Method::HEAD);
@@ -658,6 +654,13 @@ void Router::SetMatchedHandler(http::Method method, const PathHandlerEntry& entr
     result.requestHandler = &entry.normalHandlers[methodIdx];
   } else {
     result.methodNotAllowed = true;
+  }
+
+  // Expose per-route cors policy pointer if present
+  if (entry.corsPolicy.active()) {
+    result.pCorsPolicy = &entry.corsPolicy;
+  } else if (_config.defaultCorsPolicy.active()) {
+    result.pCorsPolicy = &_config.defaultCorsPolicy;
   }
 }
 

@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "aeronet/compression-config.hpp"
+#include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-response-data.hpp"
@@ -29,13 +30,14 @@
 namespace aeronet {
 
 HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, bool headRequest, bool requestConnClose,
-                                       Encoding compressionFormat)
+                                       Encoding compressionFormat, const CorsPolicy* pCorsPolicy)
     : _server(&srv),
       _fd(fd),
       _head(headRequest),
       _requestConnClose(requestConnClose),
       _compressionFormat(compressionFormat),
-      _activeEncoderCtx(std::make_unique<IdentityEncoderContext>()) {}
+      _activeEncoderCtx(std::make_unique<IdentityEncoderContext>()),
+      _pCorsPolicy(pCorsPolicy) {}
 
 void HttpResponseWriter::statusCode(http::StatusCode code) {
   if (_state != State::Opened) {
@@ -107,6 +109,11 @@ void HttpResponseWriter::ensureHeadersSent() {
   // Do NOT add Content-Encoding at header emission time; we wait until we actually activate
   // compression (threshold reached) to avoid mislabeling identity bodies when size < threshold.
   // Do not attempt to add Connection/Date here; finalize handles them (adds Date, Connection based on keepAlive flag).
+  if (_pCorsPolicy != nullptr) {
+    (void)_pCorsPolicy->applyToResponse(_server->_request, _fixedResponse);
+    _pCorsPolicy = nullptr;
+  }
+
   auto cnxIt = _server->_connStates.find(_fd);
   if (cnxIt == _server->_connStates.end() ||
       !_server->queuePreparedResponse(

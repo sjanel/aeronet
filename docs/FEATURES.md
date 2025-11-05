@@ -1541,31 +1541,151 @@ service:
 
 ## Access-Control (CORS) Helpers
 
-Opt-in helpers for Access-Control (CORS) response headers live in `aeronet/http/cors-policy.hpp`.
+**Opt-in per-route CORS configuration** for web APIs served by aeronet. The CORS implementation is fully RFC-compliant and production-ready.
 
-- Central `aeronet::CorsPolicy` captures all configuration (allow-list, credentials, headers, max-age, private network flag).
-- Policy objects are immutable after setup and safe to reuse across threads.
-- `applyToResponse()` mirrors the resolved origin on application responses, injects `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials`, `Access-Control-Expose-Headers`, and normalizes `Vary`.
-- `handlePreflight()` produces a ready-to-send 204 response for preflight requests (`OPTIONS` + `Access-Control-Request-Method`), including allow-method/header serialization and max-age caching.
-- Header tokens are validated case-insensitively with zero allocations in the hot path; comma-joined header strings are precomputed when the policy is configured.
+### Overview
 
-Example usage:
+- **Header:** `aeronet/cors-policy.hpp`
+- **Core class:** `aeronet::CorsPolicy` — immutable after setup, thread-safe for reuse
+- **Integration:** Attach policy to individual routes via `Router::setPath(...).cors(policy)` or set a default policy for all routes via `RouterConfig::withDefaultCorsPolicy(policy)`
+- **Automatic preflight:** OPTIONS requests with `Access-Control-Request-Method` header are recognized as preflight and receive automatic 204 No Content responses with appropriate CORS headers
+- **Actual request handling:** CORS headers are injected into all matching responses (both buffered `HttpResponse` and streaming `HttpResponseWriter`)
+
+### Key Features
+
+1. **Origin validation:**
+   - Wildcard (`*`) for public APIs
+   - Exact-match allow-list (case-insensitive, zero-alloc lookup)
+   - Automatic origin mirroring when credentials are enabled or specific origins configured
+
+2. **Credentials support:**
+   - `allowCredentials(true)` enables `Access-Control-Allow-Credentials: true` and forces specific origin mirroring (never `*`)
+
+3. **Method & header control:**
+   - `allowMethods(Method bitmask)` — configures which HTTP methods are allowed for the route
+   - `allowRequestHeader(name)` / `allowRequestHeaders({...})` — controls which custom headers clients can send
+   - `exposeHeaders({...})` — controls which response headers are exposed to client JavaScript
+
+4. **Preflight caching:**
+   - `maxAge(duration)` sets `Access-Control-Max-Age` to reduce preflight requests
+
+5. **Private network access:**
+   - `allowPrivateNetwork(true)` enables `Access-Control-Allow-Private-Network: true` for local network requests
+
+6. **Vary header handling:**
+   - When origin is mirrored (credentials or specific origins), aeronet automatically adds `Vary: Origin` or appends `, Origin` to existing `Vary` header
+   - Prevents cache confusion when different origins receive different responses
+   - Works correctly for both buffered and streaming responses
+
+### Configuration API
 
 ```cpp
-CorsPolicy cors;
-cors.allowOrigin("https://example.com")
-    .allowMethods(http::Method::GET | http::Method::POST)
-    .allowRequestHeader("X-Custom-Header")
-    .allowCredentials(true)
-    .maxAge(std::chrono::minutes{10});
-
-auto status = cors.applyToResponse(request, response);
-if (auto preflight = cors.handlePreflight(request); preflight.status == CorsPolicy::PreflightResult::Status::Allowed) {
-  return preflight.response;
-}
+CorsPolicy policy;
+policy.allowOrigin("https://app.example.com")
+      .allowOrigin("https://staging.example.com")
+      .allowMethods(http::Method::GET | http::Method::POST | http::Method::PUT)
+      .allowRequestHeader("Authorization")
+      .allowRequestHeader("X-Custom-Header")
+      .exposeHeaders({"X-Total-Count", "X-Page-Size"})
+      .allowCredentials(true)
+      .maxAge(std::chrono::hours{1});
 ```
 
----
+All configuration methods return `CorsPolicy&` for fluent chaining.
+
+### Router Integration
+
+**Per-route policy:**
+
+```cpp
+server.router()
+      .setPath(http::Method::GET | http::Method::POST, "/api/data", 
+               [](const HttpRequest& req) { ... })
+      .cors(std::move(policy));
+```
+
+**Default policy for all routes:**
+
+```cpp
+RouterConfig routerConfig;
+routerConfig.withDefaultCorsPolicy(std::move(policy));
+HttpServer server(HttpServerConfig{}, routerConfig);
+```
+
+**Route-specific override:**
+Routes with explicit `.cors(...)` always take precedence over the default policy.
+
+### Behavior Details
+
+#### Preflight Requests
+
+- Recognized when: `OPTIONS` method + `Access-Control-Request-Method` header present
+- Response: `204 No Content` with:
+  - `Access-Control-Allow-Origin` (mirrored or `*`)
+  - `Access-Control-Allow-Methods` (computed from route registration)
+  - `Access-Control-Allow-Headers` (echoed from request or from allow-list)
+  - `Access-Control-Max-Age` (if configured)
+  - `Access-Control-Allow-Credentials` (if enabled)
+  - `Vary: Origin` (if origin is mirrored)
+
+#### Actual Requests
+
+- CORS headers added to all responses (both `HttpResponse` and `HttpResponseWriter`)
+- Headers injected:
+  - `Access-Control-Allow-Origin`
+  - `Access-Control-Allow-Credentials` (if enabled)
+  - `Access-Control-Expose-Headers` (if configured)
+  - `Vary: Origin` (if origin is mirrored)
+
+#### Origin Validation
+
+- Case-insensitive comparison
+- Empty origin header → rejected (no CORS headers)
+- Origin not in allow-list → rejected (403 Forbidden for preflight, suppressed handler for actual requests)
+
+#### Precedence Rules
+
+1. **Per-route policy** (via `.cors(...)`) — highest priority
+2. **Router default policy** (via `RouterConfig::withDefaultCorsPolicy(...)`)
+3. **No CORS** — no headers emitted
+
+### Performance Notes
+
+- Zero-allocation origin lookup (case-insensitive interned comparison)
+- Precomputed comma-joined header lists
+- Single-pass Vary header reconciliation
+- Thread-safe policy reuse (immutable after setup)
+
+### CORS Test Coverage
+
+Comprehensive test coverage in `tests/http_options_trace_test.cpp`:
+
+- Preflight handling (success, method/header/origin denial)
+- Actual request CORS header injection
+- Vary header handling (both buffered and streaming)
+- Credentials + specific origins
+- Wildcard origins
+- Multiple allowed origins
+- Private network access
+
+See also: `docs/cors-helpers.md` for extended design notes and implementation details.
+
+### Example: Multi-Origin API
+
+```cpp
+CorsPolicy apiCors;
+apiCors.allowOrigin("https://app.example.com")
+       .allowOrigin("https://mobile.example.com")
+       .allowMethods(http::Method::GET | http::Method::POST | http::Method::PUT | http::Method::DELETE)
+       .allowRequestHeaders({"Authorization", "Content-Type", "X-Request-ID"})
+       .exposeHeaders({"X-Total-Count", "X-RateLimit-Remaining"})
+       .allowCredentials(true)
+       .maxAge(std::chrono::hours{24});
+
+server.router()
+      .setPath(http::Method::GET | http::Method::POST, "/api/*", apiHandler)
+      .cors(std::move(apiCors));
+```
 
 ## Future Expansions
 
