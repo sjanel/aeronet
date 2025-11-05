@@ -53,9 +53,7 @@ class MinimalServerFixture : public benchmark::Fixture {
 bool sendGet(uint16_t port) {
   bench_util::ClientConnection client(port);
   static constexpr std::string_view kReq = "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-  if (!bench_util::sendAll(client.fd(), kReq)) {
-    return false;
-  }
+  bench_util::sendAll(client.fd(), kReq);
   auto raw = bench_util::recvWithTimeout(client.fd(), 200ms);
   return raw.contains(aeronet::http::DoubleCRLF);
 }
