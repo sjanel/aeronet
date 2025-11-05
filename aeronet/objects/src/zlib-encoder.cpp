@@ -51,14 +51,14 @@ ZStreamRAII::~ZStreamRAII() {
 ZlibEncoderContext::ZlibEncoderContext(details::ZStreamRAII::Variant variant, RawChars& sharedBuf, int8_t level)
     : _buf(sharedBuf), _zs(variant, level) {}
 
-std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk, bool finish) {
+std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) {
   _buf.clear();
   if (_finished) {
     return _buf;
   }
   _zs._stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(chunk.data()));
   _zs._stream.avail_in = static_cast<uInt>(chunk.size());
-  auto flush = finish ? Z_FINISH : Z_NO_FLUSH;
+  auto flush = chunk.empty() ? Z_FINISH : Z_NO_FLUSH;
   do {
     _buf.ensureAvailableCapacity(encoderChunkSize);
     _zs._stream.next_out = reinterpret_cast<unsigned char*>(_buf.data() + _buf.size());
@@ -73,7 +73,7 @@ std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
       break;
     }
   } while (_zs._stream.avail_out == 0 || _zs._stream.avail_in > 0);
-  if (finish) {
+  if (chunk.empty()) {
     _finished = true;
   }
   return _buf;

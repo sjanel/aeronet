@@ -14,17 +14,10 @@ namespace aeronet {
 
 namespace details {
 
-struct ZstdCStreamRAII {
-  ZstdCStreamRAII(int level, int windowLog);
+struct ZstdContextRAII {
+  ZstdContextRAII(int level, int windowLog);
 
-  ZstdCStreamRAII(const ZstdCStreamRAII&) = delete;
-  ZstdCStreamRAII& operator=(const ZstdCStreamRAII&) = delete;
-  ZstdCStreamRAII(ZstdCStreamRAII&&) = delete;
-  ZstdCStreamRAII& operator=(ZstdCStreamRAII&&) = delete;
-
-  ~ZstdCStreamRAII();
-
-  ZSTD_CCtx* ctx{nullptr};
+  std::unique_ptr<ZSTD_CCtx, void (*)(ZSTD_CCtx*)> ctx;
   int level{0};
 };
 
@@ -33,12 +26,13 @@ struct ZstdCStreamRAII {
 class ZstdEncoderContext : public EncoderContext {
  public:
   ZstdEncoderContext(RawChars& sharedBuf, const CompressionConfig::Zstd& cfg);
-  std::string_view encodeChunk(std::size_t encoderChunkSize, std::string_view chunk, bool finish) override;
+
+  std::string_view encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) override;
 
  private:
   RawChars& _buf;
   bool _finished{false};
-  details::ZstdCStreamRAII _zs;
+  details::ZstdContextRAII _zs;
 };
 
 class ZstdEncoder : public Encoder {
@@ -51,7 +45,6 @@ class ZstdEncoder : public Encoder {
   std::unique_ptr<EncoderContext> makeContext() override { return std::make_unique<ZstdEncoderContext>(_buf, _cfg); }
 
  private:
-  std::string_view compressAll(std::size_t encoderChunkSize, std::string_view in);
   RawChars _buf;
   CompressionConfig::Zstd _cfg;
 };
