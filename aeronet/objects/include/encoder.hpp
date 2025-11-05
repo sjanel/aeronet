@@ -54,7 +54,8 @@ class EncoderContext {
  public:
   virtual ~EncoderContext() = default;
 
-  virtual std::string_view encodeChunk(std::size_t encoderChunkSize, std::string_view data, bool finish) = 0;
+  // Streaming chunk encoder. If 'data' is empty, it will be considered as a finish.
+  virtual std::string_view encodeChunk(std::size_t encoderChunkSize, std::string_view data) = 0;
 };
 
 class Encoder {
@@ -71,8 +72,7 @@ class Encoder {
 // directly (except when finish && data.empty() -> returns empty view).
 class IdentityEncoderContext : public EncoderContext {
  public:
-  std::string_view encodeChunk([[maybe_unused]] std::size_t encoderChunkSize, std::string_view data,
-                               [[maybe_unused]] bool finish) override {
+  std::string_view encodeChunk([[maybe_unused]] std::size_t encoderChunkSize, std::string_view data) override {
     return data;
   }
 };

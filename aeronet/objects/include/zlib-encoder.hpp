@@ -36,7 +36,7 @@ class ZlibEncoderContext : public EncoderContext {
  public:
   ZlibEncoderContext(details::ZStreamRAII::Variant variant, RawChars& sharedBuf, int8_t level);
 
-  std::string_view encodeChunk(std::size_t encoderChunkSize, std::string_view chunk, bool finish) override;
+  std::string_view encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) override;
 
  private:
   RawChars& _buf;

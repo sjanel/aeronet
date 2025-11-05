@@ -26,7 +26,7 @@ void CompressionConfig::validate() const {
     log::critical("Invalid ZSTD compression level {}", zstd.compressionLevel);
     throw std::invalid_argument("Invalid ZSTD compression level");
   }
-  details::ZstdCStreamRAII testConstruction(zstd.compressionLevel, zstd.windowLog);
+  details::ZstdContextRAII testConstruction(zstd.compressionLevel, zstd.windowLog);
 #endif
 
   if constexpr (aeronet::brotliEnabled()) {
