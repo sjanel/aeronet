@@ -336,7 +336,7 @@ Minimal example (manual gzip):
 
 ```cpp
 server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
-  w.statusCode(http::StatusOK);
+  w.status(http::StatusOK);
   w.contentType(http::ContentTypeTextPlain);
   w.contentEncoding("gzip");            // suppress auto compression
   w.write(preCompressedHelloGzipBytes);  // already gzip-compressed data
@@ -691,7 +691,7 @@ For chunked/streaming responses, use `HttpResponseWriter::addTrailer()`:
 ```cpp
 server.router().setPath(http::Method::GET, "/stream",
     [](const HttpRequest& req, HttpResponseWriter& w) {
-  w.statusCode(200);
+  w.status(200);
   w.writeBody("chunk1");
   w.writeBody("chunk2");
   

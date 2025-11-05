@@ -89,7 +89,7 @@ TEST_F(CorsPolicyHarness, PreflightAllowed) {
   const auto result = policy.handlePreflight(request);
   ASSERT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
   const auto& response = result.response;
-  EXPECT_EQ(response.statusCode(), http::StatusCodeNoContent);
+  EXPECT_EQ(response.status(), http::StatusCodeNoContent);
   EXPECT_EQ(response.headerValueOrEmpty(http::AccessControlAllowOrigin), "https://example.com");
   EXPECT_EQ(response.headerValueOrEmpty(http::AccessControlAllowMethods), "GET, POST");
   EXPECT_EQ(response.headerValueOrEmpty(http::AccessControlAllowHeaders), "X-Trace");

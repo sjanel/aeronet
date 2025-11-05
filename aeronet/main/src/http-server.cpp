@@ -392,7 +392,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       HttpResponse resp;
       if (routingResult.redirectPathIndicator != Router::RoutingResult::RedirectSlashMode::None) {
         // Emit 301 redirect to canonical form.
-        resp.statusCode(http::StatusCodeMovedPermanently, http::MovedPermanently)
+        resp.status(http::StatusCodeMovedPermanently, http::MovedPermanently)
             .contentType(http::ContentTypeTextPlain)
             .body("Redirecting");
         if (routingResult.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
@@ -405,11 +405,11 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
 
         consumedBytes = 0;  // already advanced
       } else if (routingResult.methodNotAllowed) {
-        resp.statusCode(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed)
+        resp.status(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed)
             .contentType(http::ContentTypeTextPlain)
             .body(resp.reason());
       } else {
-        resp.statusCode(http::StatusCodeNotFound, http::NotFound)
+        resp.status(http::StatusCodeNotFound, http::NotFound)
             .contentType(http::ContentTypeTextPlain)
             .body(http::NotFound);
       }
@@ -884,7 +884,7 @@ void HttpServer::registerBuiltInProbes() {
     if (_lifecycle.ready.load(std::memory_order_relaxed)) {
       resp.body("OK\n");
     } else {
-      resp.statusCode(http::StatusCodeServiceUnavailable);
+      resp.status(http::StatusCodeServiceUnavailable);
       resp.body("Not Ready\n");
     }
     return resp;
@@ -897,7 +897,7 @@ void HttpServer::registerBuiltInProbes() {
     if (_lifecycle.started.load(std::memory_order_relaxed)) {
       resp.body("OK\n");
     } else {
-      resp.statusCode(http::StatusCodeServiceUnavailable);
+      resp.status(http::StatusCodeServiceUnavailable);
       resp.body("Starting\n");
     }
     return resp;
