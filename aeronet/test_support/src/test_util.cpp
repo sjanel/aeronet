@@ -16,7 +16,6 @@
 #include <cstring>
 #include <future>
 #include <optional>
-#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -32,7 +31,6 @@
 #include "raw-chars.hpp"
 #include "simple-charconv.hpp"
 #include "socket.hpp"
-#include "stringconv.hpp"
 #include "timedef.hpp"
 #include "toupperlower.hpp"
 #ifdef AERONET_ENABLE_BROTLI
@@ -49,39 +47,10 @@ namespace aeronet::test {
 using namespace std::chrono_literals;
 
 namespace {
-constexpr std::size_t kChunkSize = 8192;
+constexpr std::size_t kChunkSize = 1 << 13;
+}
 
-struct BlockingRecvOp {
-  std::size_t operator()(char *data, [[maybe_unused]] std::size_t newCap) {
-    didTimeout = false;
-    remoteClosed = false;
-
-    const ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);
-    if (recvBytes == 0) {
-      remoteClosed = true;
-      return oldSize;
-    }
-    if (recvBytes == -1) {
-      // When SO_RCVTIMEO is set on a blocking socket, recv returns -1 with errno = EAGAIN/EWOULDBLOCK
-      // when the timeout expires. Callers use didTimeout to decide whether to keep waiting.
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        didTimeout = true;
-        return oldSize;
-      }
-      throw_errno("Error from blocking recv");
-    }
-
-    return oldSize + static_cast<std::size_t>(recvBytes);
-  }
-
-  int fd;
-  std::size_t oldSize;
-  bool didTimeout = false;
-  bool remoteClosed = false;
-};
-}  // namespace
-
-bool sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeout) {
+void sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeout) {
   const char *cursor = data.data();
   const auto start = std::chrono::steady_clock::now();
   const auto maxTs = start + totalTimeout;
@@ -92,7 +61,7 @@ bool sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeo
       log::error("sendAll failed with error {}", std::strerror(errno));
       if (std::chrono::steady_clock::now() >= maxTs) {
         log::error("sendAll timed out after {} ms", totalTimeout.count());
-        return false;
+        throw std::runtime_error("sendAll timed out");
       }
       std::this_thread::sleep_for(1ms);
       continue;
@@ -100,150 +69,87 @@ bool sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeo
     cursor += sent;
     remaining -= static_cast<std::size_t>(sent);
   }
-
-  return true;
 }
 
 std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
   std::string out;
   auto start = std::chrono::steady_clock::now();
   auto maxTs = start + totalTimeout;
-  bool madeProgress = false;
-  int consecutiveEagain = 0;
 
   while (std::chrono::steady_clock::now() < maxTs) {
-    std::size_t oldSize = out.size();
+    const std::size_t oldSize = out.size();
 
     if (out.capacity() < out.size() + kChunkSize) {
-      out.reserve((out.capacity() * 2UL) + kChunkSize);
+      const auto desired = out.size() + kChunkSize;
+      const auto doubled = (out.capacity() > 0) ? (out.capacity() * 2UL) : desired;
+      out.reserve(std::max(doubled, desired));
     }
 
-    out.resize_and_overwrite(oldSize + kChunkSize, [&](char *data, [[maybe_unused]] std::size_t newCap) {
-      ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, MSG_DONTWAIT);
-      if (recvBytes > 0) {
-        return oldSize + static_cast<std::size_t>(recvBytes);
-      }
-      if (recvBytes == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        return oldSize;  // no growth
-      }
-      return oldSize;  // closed or error
-    });
+    bool again = false;
 
-    if (out.size() > oldSize) {
-      madeProgress = true;
-      consecutiveEagain = 0;
+    out.resize_and_overwrite(oldSize + kChunkSize,
+                             [fd, oldSize, &again](char *data, [[maybe_unused]] std::size_t newCap) {
+                               ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, MSG_DONTWAIT);
+                               if (recvBytes == -1) {
+                                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                                   std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                                   again = true;
+                                   return oldSize;
+                                 }
+                                 throw_errno("Error from non-blocking recv");
+                               }
+                               return oldSize + static_cast<std::size_t>(recvBytes);
+                             });
+
+    if (again) {
       continue;
     }
 
-    if (madeProgress && !out.empty()) {
-      auto headerEnd = out.find(http::DoubleCRLF);
-      if (headerEnd != std::string::npos) {
-        std::size_t bodyStart = headerEnd + http::DoubleCRLF.size();
-        std::string_view headers(out.data(), headerEnd);
+    auto headerEnd = out.find(http::DoubleCRLF);
+    if (headerEnd != std::string::npos) {
+      std::size_t bodyStart = headerEnd + http::DoubleCRLF.size();
+      std::string_view headers(out.data(), headerEnd);
 
-        auto tePos = headers.find("Transfer-Encoding: chunked");
-        if (tePos == std::string_view::npos) {
-          tePos = headers.find("transfer-encoding: chunked");
+      auto tePos = headers.find("Transfer-Encoding: chunked");
+      if (tePos == std::string_view::npos) {
+        tePos = headers.find("transfer-encoding: chunked");
+      }
+      if (tePos != std::string_view::npos) {
+        if (out.size() >= bodyStart + 5) {
+          std::string_view body(out.data() + bodyStart, out.size() - bodyStart);
+          if (body.find("0\r\n\r\n") != std::string_view::npos) {
+            break;
+          }
         }
-        if (tePos != std::string_view::npos) {
-          if (out.size() >= bodyStart + 5) {
-            std::string_view body(out.data() + bodyStart, out.size() - bodyStart);
-            if (body.find("0\r\n\r\n") != std::string_view::npos) {
-              break;
-            }
-          }
-        } else {
-          auto clPos = headers.find("Content-Length:");
-          if (clPos == std::string_view::npos) {
-            clPos = headers.find("content-length:");
-          }
-          if (clPos != std::string_view::npos) {
-            auto lineStart = clPos;
-            auto lineEnd = headers.find(http::CRLF, lineStart);
-            if (lineEnd != std::string_view::npos) {
-              auto colonPos = headers.find(':', lineStart);
-              if (colonPos != std::string_view::npos && colonPos < lineEnd) {
-                auto valueStart = colonPos + 1;
-                while (valueStart < lineEnd && headers[valueStart] == ' ') {
-                  ++valueStart;
-                }
-                std::string_view lengthStr = headers.substr(valueStart, lineEnd - valueStart);
-                std::size_t contentLength = 0;
-                auto [ptr, ec] = std::from_chars(lengthStr.data(), lengthStr.data() + lengthStr.size(), contentLength);
-                if (ec == std::errc{}) {
-                  if (out.size() >= bodyStart + contentLength) {
-                    break;
-                  }
+      } else {
+        auto clPos = headers.find("Content-Length:");
+        if (clPos == std::string_view::npos) {
+          clPos = headers.find("content-length:");
+        }
+        if (clPos != std::string_view::npos) {
+          auto lineStart = clPos;
+          auto lineEnd = headers.find(http::CRLF, lineStart);
+          if (lineEnd != std::string_view::npos) {
+            auto colonPos = headers.find(':', lineStart);
+            if (colonPos != std::string_view::npos && colonPos < lineEnd) {
+              auto valueStart = colonPos + 1;
+              while (valueStart < lineEnd && headers[valueStart] == ' ') {
+                ++valueStart;
+              }
+              std::string_view lengthStr = headers.substr(valueStart, lineEnd - valueStart);
+              std::size_t contentLength = 0;
+              auto [ptr, ec] = std::from_chars(lengthStr.data(), lengthStr.data() + lengthStr.size(), contentLength);
+              if (ec == std::errc{}) {
+                if (out.size() >= bodyStart + contentLength) {
+                  break;
                 }
               }
-            }
-          } else {
-            if (++consecutiveEagain > 10) {
-              break;
             }
           }
         }
       }
-    }
-
-    std::this_thread::sleep_for(1ms);
-  }
-
-  // If we have headers and a Content-Length but body is short, do a bounded blocking drain
-  auto headerEnd = out.find(http::DoubleCRLF);
-  if (headerEnd != std::string::npos) {
-    std::size_t bodyStart = headerEnd + http::DoubleCRLF.size();
-    std::string_view headers(out.data(), headerEnd);
-
-    auto clPos = headers.find("Content-Length:");
-    if (clPos == std::string_view::npos) {
-      clPos = headers.find("content-length:");
-    }
-    if (clPos != std::string_view::npos) {
-      auto lineStart = clPos;
-      auto lineEnd = headers.find(http::CRLF, lineStart);
-      if (lineEnd != std::string_view::npos) {
-        auto colonPos = headers.find(':', lineStart);
-        if (colonPos != std::string_view::npos && colonPos < lineEnd) {
-          auto valueStart = colonPos + 1;
-          while (valueStart < lineEnd && headers[valueStart] == ' ') {
-            ++valueStart;
-          }
-          std::string_view lengthStr = headers.substr(valueStart, lineEnd - valueStart);
-          std::size_t contentLength = 0;
-          auto [ptr, ec] = std::from_chars(lengthStr.data(), lengthStr.data() + lengthStr.size(), contentLength);
-          if (ec == std::errc{}) {
-            if (out.size() < bodyStart + contentLength) {
-              const auto now = std::chrono::steady_clock::now();
-              auto drainDeadline = maxTs;
-              if (now >= drainDeadline) {
-                return out;
-              }
-              while (out.size() < bodyStart + contentLength && std::chrono::steady_clock::now() < drainDeadline) {
-                const auto remain = drainDeadline - std::chrono::steady_clock::now();
-                setRecvTimeout(fd, std::chrono::duration_cast<::aeronet::SysDuration>(remain));
-                const std::size_t toRead = std::min<std::size_t>(static_cast<std::size_t>(64 * 1024),
-                                                                 (bodyStart + contentLength) - out.size());
-                std::size_t oldSizeInner = out.size();
-                if (out.capacity() < out.size() + toRead) {
-                  out.reserve(std::max<std::size_t>(out.capacity() * 2UL, out.size() + toRead));
-                }
-                out.resize_and_overwrite(oldSizeInner + toRead,
-                                         [fd, oldSizeInner, toRead](char *data, [[maybe_unused]] std::size_t cap) {
-                                           ssize_t rec = ::recv(fd, data + oldSizeInner, toRead, 0);
-                                           if (rec > 0) {
-                                             return oldSizeInner + static_cast<std::size_t>(rec);
-                                           }
-                                           return oldSizeInner;
-                                         });
-                if (out.size() > oldSizeInner) {
-                  continue;
-                }
-                break;
-              }
-            }
-          }
-        }
+      if (out.size() == oldSize) {
+        break;
       }
     }
   }
@@ -255,71 +161,30 @@ std::string recvUntilClosed(int fd) {
   std::string out;
   for (;;) {
     std::size_t oldSize = out.size();
-    bool closed = false;
 
     if (out.capacity() < out.size() + kChunkSize) {
       out.reserve((out.capacity() * 2UL) + kChunkSize);
     }
 
-    out.resize_and_overwrite(oldSize + kChunkSize, [&](char *data, [[maybe_unused]] std::size_t newCap) {
-      ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);
-      if (recvBytes > 0) {
-        return oldSize + static_cast<std::size_t>(recvBytes);
+    out.resize_and_overwrite(oldSize + kChunkSize, [fd, oldSize](char *data, [[maybe_unused]] std::size_t newCap) {
+      const ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);
+      if (recvBytes == -1) {
+        // When SO_RCVTIMEO is set on a blocking socket, recv returns -1 with errno = EAGAIN/EWOULDBLOCK
+        // when the timeout expires.
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+          std::this_thread::sleep_for(1ms);
+          return oldSize;
+        }
+        throw_errno("Error from blocking recv");
       }
-      closed = true;
-      return oldSize;  // shrink back
+
+      return oldSize + static_cast<std::size_t>(recvBytes);
     });
-    if (closed) {
-      break;
-    }
-  }
-  return out;
-}
-
-std::string recvUntilClosed(int fd, std::chrono::milliseconds inactivityTimeout) {
-  std::string out;
-  const bool useTimeoutBudget = inactivityTimeout.count() > 0;
-  auto deadline = useTimeoutBudget ? std::chrono::steady_clock::now() + inactivityTimeout
-                                   : std::chrono::steady_clock::time_point::max();
-
-  for (;;) {
-    const std::size_t oldSize = out.size();
-
-    if (out.capacity() < out.size() + kChunkSize) {
-      const auto desired = out.size() + kChunkSize;
-      const auto doubled = (out.capacity() > 0) ? (out.capacity() * 2UL) : desired;
-      out.reserve(std::max(doubled, desired));
-    }
-
-    BlockingRecvOp op{fd, oldSize};
-
-    out.resize_and_overwrite(oldSize + kChunkSize, op);
-
-    if (op.remoteClosed) {
-      break;
-    }
-
-    if (op.didTimeout) {
-      if (useTimeoutBudget && std::chrono::steady_clock::now() >= deadline) {
-        break;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds{5});
-      continue;
-    }
 
     if (out.size() == oldSize) {
-      if (useTimeoutBudget && std::chrono::steady_clock::now() >= deadline) {
-        break;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds{1});
-      continue;
-    }
-
-    if (useTimeoutBudget) {
-      deadline = std::chrono::steady_clock::now() + inactivityTimeout;
+      break;
     }
   }
-
   return out;
 }
 
@@ -367,9 +232,7 @@ std::pair<aeronet::Socket, uint16_t> startEchoServer() {
         break;  // connection closed
       }
 
-      if (!sendAll(clientFd.fd(), std::string_view(buf, static_cast<std::size_t>(recvBytes)))) {
-        throw std::runtime_error("Error in sendAll");
-      }
+      sendAll(clientFd.fd(), std::string_view(buf, static_cast<std::size_t>(recvBytes)));
     }
   }).detach();
 
@@ -426,7 +289,9 @@ std::string simpleGet(uint16_t port, std::string_view path) {
   req.reserve(64 + path.size());
   req.append("GET ").append(path).append(" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close");
   req.append(aeronet::http::DoubleCRLF);
-  if (!sendAll(cnx.fd(), req)) {
+  try {
+    sendAll(cnx.fd(), req);
+  } catch (const std::runtime_error &err) {
     return {};
   }
   return recvUntilClosed(cnx.fd());
@@ -692,34 +557,10 @@ std::optional<std::string> request(uint16_t port, const RequestOptions &opt) {
   int fd = cnx.fd();
   setRecvTimeout(fd, std::chrono::seconds(opt.recvTimeoutSeconds));
   auto reqStr = buildRequest(opt);
-  ssize_t sent = ::send(fd, reqStr.data(), reqStr.size(), 0);
-  if (std::cmp_not_equal(sent, reqStr.size())) {
-    return std::nullopt;
-  }
-  std::string out;
 
-  for (;;) {
-    std::size_t oldSize = out.size();
+  sendAll(fd, reqStr);
 
-    if (out.capacity() < out.size() + kChunkSize) {
-      // ensure exponential growth
-      out.reserve(out.capacity() * 2UL);
-    }
-
-    out.resize_and_overwrite(out.size() + kChunkSize, [fd, oldSize](char *data, [[maybe_unused]] std::size_t newCap) {
-      ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);
-      if (recvBytes < 0) {
-        aeronet::log::error("request: recv error or connection closed, errno={}", std::strerror(errno));
-        return oldSize;  // timeout or close
-      }
-
-      return oldSize + static_cast<std::size_t>(recvBytes);
-    });
-    if (out.size() == oldSize) {
-      break;  // no new data read
-    }
-  }
-  return out;
+  return recvUntilClosed(fd);
 }
 
 EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
@@ -829,134 +670,8 @@ std::string requestOrThrow(uint16_t port, const RequestOptions &opt) {
   return std::move(*resp);
 }
 
-// Send multiple requests over a single keep-alive connection and return raw responses individually.
-// Limitations: assumes server responds fully before next request is parsed (sufficient for simple tests).
-std::vector<std::string> sequentialRequests(uint16_t port, std::span<const RequestOptions> reqs) {
-  std::vector<std::string> results;
-  if (reqs.empty()) {
-    return results;
-  }
-  ClientConnection cnx(port);
-  int fd = cnx.fd();
-  setRecvTimeout(fd, std::chrono::seconds(reqs.front().recvTimeoutSeconds));
-
-  for (std::size_t i = 0; i < reqs.size(); ++i) {
-    RequestOptions ro = reqs[i];
-    // For all but last, force keep-alive unless caller explicitly set close.
-    if (i + 1 < reqs.size() && ro.connection == "close") {
-      ro.connection = "keep-alive";
-    }
-    std::string rq = buildRequest(ro);
-    if (::send(fd, rq.data(), rq.size(), 0) != static_cast<ssize_t>(rq.size())) {
-      break;
-    }
-    // Collect one response (headers + body); naive: read until either connection closes (last) or we have
-    // headers+body by heuristic.
-    std::string out;
-    // We'll read until: if Connection: close seen in headers and header terminator reached & body length satisfied
-    // (if Content-Length), or until timeout.
-    bool headersDone = false;
-    std::size_t contentLen = 0;
-    bool haveContentLen = false;
-    bool chunked = false;
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(ro.recvTimeoutSeconds);
-
-    while (std::chrono::steady_clock::now() < deadline) {
-      std::size_t oldSize = out.size();
-
-      if (out.capacity() < out.size() + kChunkSize) {
-        // ensure exponential growth
-        out.reserve(out.capacity() * 2UL);
-      }
-
-      out.resize_and_overwrite(out.size() + kChunkSize, [fd, oldSize](char *data, [[maybe_unused]] std::size_t newCap) {
-        ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);
-        if (recvBytes <= 0) {
-          aeronet::log::error("request: recv error or connection closed, errno={}", std::strerror(errno));
-          return oldSize;  // timeout or close
-        }
-
-        return oldSize + static_cast<std::size_t>(recvBytes);
-      });
-
-      if (!headersDone) {
-        auto hpos = out.find(::aeronet::http::DoubleCRLF);
-        if (hpos != std::string::npos) {
-          headersDone = true;
-          // Parse minimal headers for length/chunked
-          std::string headerBlock = out.substr(0, hpos + ::aeronet::http::DoubleCRLF.size());
-          std::size_t lineStart = 0;
-          while (lineStart < headerBlock.size()) {
-            auto lineEnd = headerBlock.find("\r\n", lineStart);
-            if (lineEnd == std::string::npos) {
-              break;
-            }
-            if (lineEnd == lineStart) {
-              break;  // blank line
-            }
-            std::string line = headerBlock.substr(lineStart, lineEnd - lineStart);
-            lineStart = lineEnd + 2;
-            auto colon = line.find(':');
-            if (colon == std::string::npos) {
-              continue;
-            }
-            std::string key = line.substr(0, colon);
-            std::string val = line.substr(colon + 1);
-            if (!val.empty() && val[0] == ' ') {
-              val.erase(0, 1);
-            }
-            std::string keyLower = toLower(key);
-            if (keyLower == "content-length") {
-              haveContentLen = true;
-              contentLen = StringToIntegral<decltype(contentLen)>(val);
-            }
-            if (keyLower == "transfer-encoding" && toLower(val).contains("chunked")) {
-              chunked = true;
-            }
-          }
-          if (chunked) {
-            // For simplicity, read until terminating 0 chunk appears.
-            if (out.find("\r\n0\r\n\r\n", hpos + ::aeronet::http::DoubleCRLF.size()) != std::string::npos) {
-              break;
-            }
-          } else if (haveContentLen) {
-            std::size_t bodySoFar = out.size() - (hpos + ::aeronet::http::DoubleCRLF.size());
-            if (bodySoFar >= contentLen) {
-              break;
-            }
-          } else if (ro.connection == "close") {
-            // no length framing, rely on connection close -> will continue until server closes or timeout.
-          } else {
-            // cannot determine length; break to avoid indefinite wait.
-            break;
-          }
-        }
-      } else {
-        if (chunked) {
-          if (out.contains("\r\n0\r\n\r\n")) {
-            break;
-          }
-        } else if (haveContentLen) {
-          auto hpos = out.find(::aeronet::http::DoubleCRLF);
-          if (hpos != std::string::npos) {
-            std::size_t bodySoFar = out.size() - (hpos + ::aeronet::http::DoubleCRLF.size());
-            if (bodySoFar >= contentLen) {
-              break;
-            }
-          }
-        }
-      }
-    }
-    results.push_back(std::move(out));
-    if (ro.connection == "close") {
-      break;
-    }
-  }
-  return results;
-}
-
 bool AttemptConnect(uint16_t port) {
-  ::aeronet::Socket sock(SOCK_STREAM);
+  aeronet::Socket sock(SOCK_STREAM);
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);

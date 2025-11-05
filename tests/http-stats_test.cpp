@@ -12,15 +12,17 @@
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
+using namespace aeronet;
+
 TEST(HttpStats, BasicCountersIncrement) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(5);
-  aeronet::test::TestServer ts(cfg);
-  ts.server.router().setDefault([]([[maybe_unused]] const aeronet::HttpRequest& req) {
-    return aeronet::HttpResponse(200, "OK").body("hello").contentType(aeronet::http::ContentTypeTextPlain);
+  test::TestServer ts(cfg);
+  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
+    return HttpResponse(200, "OK").body("hello").contentType(http::ContentTypeTextPlain);
   });
   // Single request via throwing helper
-  auto resp = aeronet::test::requestOrThrow(ts.port());
+  auto resp = test::requestOrThrow(ts.port());
   ASSERT_TRUE(resp.contains("200 OK"));
   ts.stop();
   auto st = ts.server.stats();
@@ -33,7 +35,7 @@ TEST(HttpStats, BasicCountersIncrement) {
 // Test that ServerStats::json_str contains all numeric scalar fields and basic JSON structure without
 // requiring brittle full-string matching. This makes the test resilient to new fields being added.
 TEST(ServerStatsJson, ContainsAllScalarFields) {
-  aeronet::ServerStats st;
+  ServerStats st;
   // Populate with some non-zero, distinct-ish values so textual search is unique.
   st.totalBytesQueued = 42;
   st.totalBytesWrittenImmediate = 7;

@@ -61,7 +61,7 @@ struct TestServer {
     }
   }
 
-  aeronet::HttpServer server;
+  HttpServer server;
 
  private:
   void waitReady(std::chrono::milliseconds timeout) const {
@@ -73,9 +73,9 @@ struct TestServer {
       const auto deadline = std::chrono::steady_clock::now() + timeout;
       while (std::chrono::steady_clock::now() < deadline) {
         try {
-          aeronet::test::RequestOptions opt;
+          RequestOptions opt;
           opt.target = probePath;
-          auto resp = aeronet::test::requestOrThrow(port(), opt);
+          auto resp = requestOrThrow(port(), opt);
           // Request returned; check if it contains HTTP/ status 200 in the status line.
           if (resp.contains("HTTP/1.1 200")) {
             return;
@@ -90,7 +90,7 @@ struct TestServer {
 
     // The listening socket is active immediately after server construction; a successful connect
     // simply confirms the OS accepted it. We retry briefly to absorb transient startup latency.
-    aeronet::test::ClientConnection cnx(port(), timeout);
+    ClientConnection cnx(port(), timeout);
   }
 
   std::jthread loopThread;  // auto-join on destruction

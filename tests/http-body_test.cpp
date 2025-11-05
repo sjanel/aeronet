@@ -11,22 +11,24 @@
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
+using namespace aeronet;
+
 namespace {
 std::string httpGet(uint16_t port, const std::string& target) {
-  aeronet::test::RequestOptions opt;
+  test::RequestOptions opt;
   opt.method = "GET";
   opt.target = target;
   opt.connection = "close";
   opt.headers.emplace_back("X-Test", "abc123");
-  auto resp = aeronet::test::request(port, opt);
+  auto resp = test::request(port, opt);
   return resp.value_or("");
 }
 }  // namespace
 
 TEST(HttpBasic, SimpleGet) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
-  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
-    aeronet::HttpResponse resp;
+  test::TestServer ts(HttpServerConfig{});
+  ts.server.router().setDefault([](const HttpRequest& req) {
+    HttpResponse resp;
     auto testHeaderIt = req.headers().find("X-Test");
     std::string body("You requested: ");
     body += req.path();

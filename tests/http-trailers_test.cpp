@@ -16,12 +16,13 @@
 #include "aeronet/test_util.hpp"
 
 using namespace std::chrono_literals;
+using namespace aeronet;
 
 // Basic trailer parsing test
 TEST(HttpTrailers, BasicTrailer) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([](const HttpRequest& req) {
     EXPECT_EQ(req.body(), "Wikipedia");
     // Check trailer headers
     EXPECT_EQ(req.trailers().size(), 1U);
@@ -30,10 +31,10 @@ TEST(HttpTrailers, BasicTrailer) {
     if (it != req.trailers().end()) {
       EXPECT_EQ(it->second, "abc123");
     }
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("OK");
+    return HttpResponse(http::StatusCodeOK).body("OK");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -47,16 +48,16 @@ TEST(HttpTrailers, BasicTrailer) {
       "0\r\n"
       "X-Checksum: abc123\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("200"));
 }
 
 // Multiple trailer headers
 TEST(HttpTrailers, MultipleTrailers) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([](const HttpRequest& req) {
     EXPECT_EQ(req.body(), "test");
     EXPECT_EQ(req.trailers().size(), 3U);
 
@@ -78,10 +79,10 @@ TEST(HttpTrailers, MultipleTrailers) {
       EXPECT_EQ(custom->second, "value123");
     }
 
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("OK");
+    return HttpResponse(http::StatusCodeOK).body("OK");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -96,22 +97,22 @@ TEST(HttpTrailers, MultipleTrailers) {
       "X-Timestamp: 2025-10-20T12:00:00Z\r\n"
       "X-Custom-Trailer: value123\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("200"));
 }
 
 // Empty trailers (just zero chunk and terminating CRLF)
 TEST(HttpTrailers, NoTrailers) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([](const HttpRequest& req) {
     EXPECT_EQ(req.body(), "data");
     EXPECT_TRUE(req.trailers().empty());
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("OK");
+    return HttpResponse(http::StatusCodeOK).body("OK");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -123,25 +124,25 @@ TEST(HttpTrailers, NoTrailers) {
       "4\r\ndata\r\n"
       "0\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("200"));
 }
 
 // Trailer with whitespace trimming
 TEST(HttpTrailers, TrailerWhitespaceTrim) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([](const HttpRequest& req) {
     auto trailer = req.trailers().find("X-Data");
     EXPECT_NE(trailer, req.trailers().end());
     if (trailer != req.trailers().end()) {
       EXPECT_EQ(trailer->second, "trimmed");  // should be trimmed
     }
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("OK");
+    return HttpResponse(http::StatusCodeOK).body("OK");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -154,21 +155,21 @@ TEST(HttpTrailers, TrailerWhitespaceTrim) {
       "0\r\n"
       "X-Data:   trimmed  \r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("200"));
 }
 
 // Forbidden trailer: Transfer-Encoding
 TEST(HttpTrailers, ForbiddenTrailerTransferEncoding) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const HttpRequest&) {
     ADD_FAILURE() << "Handler should not be called for forbidden trailer";
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("FAIL");
+    return HttpResponse(http::StatusCodeOK).body("FAIL");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -180,21 +181,21 @@ TEST(HttpTrailers, ForbiddenTrailerTransferEncoding) {
       "0\r\n"
       "Transfer-Encoding: chunked\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("400"));
 }
 
 // Forbidden trailer: Content-Length
 TEST(HttpTrailers, ForbiddenTrailerContentLength) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const HttpRequest&) {
     ADD_FAILURE() << "Handler should not be called for forbidden trailer";
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("FAIL");
+    return HttpResponse(http::StatusCodeOK).body("FAIL");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -206,21 +207,21 @@ TEST(HttpTrailers, ForbiddenTrailerContentLength) {
       "0\r\n"
       "Content-Length: 100\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("400"));
 }
 
 // Forbidden trailer: Host
 TEST(HttpTrailers, ForbiddenTrailerHost) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const HttpRequest&) {
     ADD_FAILURE() << "Handler should not be called for forbidden trailer";
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("FAIL");
+    return HttpResponse(http::StatusCodeOK).body("FAIL");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -232,21 +233,21 @@ TEST(HttpTrailers, ForbiddenTrailerHost) {
       "0\r\n"
       "Host: evil.com\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("400"));
 }
 
 // Forbidden trailer: Authorization
 TEST(HttpTrailers, ForbiddenTrailerAuthorization) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const HttpRequest&) {
     ADD_FAILURE() << "Handler should not be called for forbidden trailer";
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("FAIL");
+    return HttpResponse(http::StatusCodeOK).body("FAIL");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -258,23 +259,23 @@ TEST(HttpTrailers, ForbiddenTrailerAuthorization) {
       "0\r\n"
       "Authorization: Bearer token123\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("400"));
 }
 
 // Trailer size exceeds limit
 TEST(HttpTrailers, TrailerSizeLimit) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withMaxHeaderBytes(200);  // reasonable small limit
-  aeronet::test::TestServer ts(cfg);
+  test::TestServer ts(cfg);
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const HttpRequest&) {
     ADD_FAILURE() << "Handler should not be called when trailer size exceeded";
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("FAIL");
+    return HttpResponse(http::StatusCodeOK).body("FAIL");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   // Create a very large trailer that exceeds the 200-byte limit
@@ -290,25 +291,25 @@ TEST(HttpTrailers, TrailerSizeLimit) {
       largeValue +
       "\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("431"));
 }
 
 // Trailer with empty value
 TEST(HttpTrailers, TrailerEmptyValue) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([](const HttpRequest& req) {
     auto trailer = req.trailers().find("X-Empty");
     EXPECT_NE(trailer, req.trailers().end());
     if (trailer != req.trailers().end()) {
       EXPECT_TRUE(trailer->second.empty());
     }
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("OK");
+    return HttpResponse(http::StatusCodeOK).body("OK");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -321,16 +322,16 @@ TEST(HttpTrailers, TrailerEmptyValue) {
       "0\r\n"
       "X-Empty:\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("200"));
 }
 
 // Case-insensitive trailer lookup
 TEST(HttpTrailers, TrailerCaseInsensitive) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([](const HttpRequest& req) {
     // Should be able to find with different case
     auto lower = req.trailers().find("x-checksum");
     auto upper = req.trailers().find("X-CHECKSUM");
@@ -343,10 +344,10 @@ TEST(HttpTrailers, TrailerCaseInsensitive) {
     if (lower != req.trailers().end()) {
       EXPECT_EQ(lower->second, "test123");
     }
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("OK");
+    return HttpResponse(http::StatusCodeOK).body("OK");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -359,26 +360,26 @@ TEST(HttpTrailers, TrailerCaseInsensitive) {
       "0\r\n"
       "X-Checksum: test123\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("200"));
 }
 
 // Duplicate trailers that should be merged using list semantics (comma)
 TEST(HttpTrailers, DuplicateMergeTrailers) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([](const HttpRequest& req) {
     // Accept header should be merged with a comma separator
     auto it = req.trailers().find("Accept");
     EXPECT_NE(it, req.trailers().end());
     if (it != req.trailers().end()) {
       EXPECT_EQ(it->second, "text/html,application/json");
     }
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("OK");
+    return HttpResponse(http::StatusCodeOK).body("OK");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -392,27 +393,27 @@ TEST(HttpTrailers, DuplicateMergeTrailers) {
       "Accept: text/html\r\n"
       "Accept: application/json\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("200"));
 }
 
 // Duplicate trailers with override semantics (keep last)
 TEST(HttpTrailers, DuplicateOverrideTrailers) {
-  aeronet::HttpServerConfig cfg;
-  aeronet::test::TestServer ts(cfg);
+  HttpServerConfig cfg;
+  test::TestServer ts(cfg);
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([](const HttpRequest& req) {
     auto it = req.trailers().find("From");
     EXPECT_NE(it, req.trailers().end());
     if (it != req.trailers().end()) {
       // 'From' has override semantics in ReqHeaderValueSeparator, keep the last occurrence
       EXPECT_EQ(it->second, "b@example.com");
     }
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("OK");
+    return HttpResponse(http::StatusCodeOK).body("OK");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -426,23 +427,23 @@ TEST(HttpTrailers, DuplicateOverrideTrailers) {
       "From: a@example.com\r\n"
       "From: b@example.com\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("200"));
 }
 
 // Unknown header duplicates when mergeUnknownRequestHeaders is disabled -> should be rejected
 TEST(HttpTrailers, UnknownHeaderNoMergeTrailers) {
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withMergeUnknownRequestHeaders(false);
-  aeronet::test::TestServer ts(cfg);
+  test::TestServer ts(cfg);
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const HttpRequest&) {
     ADD_FAILURE() << "Handler should not be called when unknown-header duplicates are forbidden";
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("FAIL");
+    return HttpResponse(http::StatusCodeOK).body("FAIL");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -455,21 +456,21 @@ TEST(HttpTrailers, UnknownHeaderNoMergeTrailers) {
       "X-Experimental: a\r\n"
       "X-Experimental: b\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("400"));
 }
 
 // Malformed trailer (no colon)
 TEST(HttpTrailers, MalformedTrailerNoColon) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest&) {
+  ts.server.router().setDefault([](const HttpRequest&) {
     ADD_FAILURE() << "Handler should not be called for malformed trailer";
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("FAIL");
+    return HttpResponse(http::StatusCodeOK).body("FAIL");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -481,22 +482,22 @@ TEST(HttpTrailers, MalformedTrailerNoColon) {
       "0\r\n"
       "MalformedTrailer\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("400"));
 }
 
 // Non-chunked request should have empty trailers
 TEST(HttpTrailers, NonChunkedNoTrailers) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
-  ts.server.router().setDefault([](const aeronet::HttpRequest& req) {
+  ts.server.router().setDefault([](const HttpRequest& req) {
     EXPECT_EQ(req.body(), "test");
     EXPECT_TRUE(req.trailers().empty());
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("OK");
+    return HttpResponse(http::StatusCodeOK).body("OK");
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -506,14 +507,14 @@ TEST(HttpTrailers, NonChunkedNoTrailers) {
       "Connection: close\r\n"
       "\r\n"
       "test";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("200"));
 }
 
 // Basic trailer test - verify trailers are appended after body
 TEST(HttpResponseTrailers, BasicTrailer) {
-  aeronet::HttpResponse resp(aeronet::http::StatusCodeOK);
+  HttpResponse resp(http::StatusCodeOK);
   resp.body("test body");
   resp.addTrailer("X-Checksum", "abc123");
 
@@ -524,27 +525,27 @@ TEST(HttpResponseTrailers, BasicTrailer) {
 
 // Test error when adding trailer before body
 TEST(HttpResponseTrailers, ErrorBeforeBody) {
-  aeronet::HttpResponse resp(aeronet::http::StatusCodeOK);
+  HttpResponse resp(http::StatusCodeOK);
   EXPECT_THROW(resp.addTrailer("X-Checksum", "abc123"), std::logic_error);
 }
 
 // Test error when adding trailer after an explicitly empty body
 TEST(HttpResponseTrailers, EmptyBodyThrows) {
-  aeronet::HttpResponse resp(aeronet::http::StatusCodeOK);
+  HttpResponse resp(http::StatusCodeOK);
   resp.body("");  // empty body set explicitly
   EXPECT_THROW(resp.addTrailer("X-Checksum", "abc123"), std::logic_error);
 }
 
 // Test trailer with captured body (std::string)
 TEST(HttpResponseTrailers, CapturedBodyString) {
-  aeronet::HttpResponse resp(aeronet::http::StatusCodeOK);
+  HttpResponse resp(http::StatusCodeOK);
   resp.body(std::string("captured body content"));
   EXPECT_NO_THROW(resp.addTrailer("X-Custom", "value"));
 }
 
 // Test trailer with captured body (std::vector<char>)
 TEST(HttpResponseTrailers, CapturedBodyVector) {
-  aeronet::HttpResponse resp(aeronet::http::StatusCodeOK);
+  HttpResponse resp(http::StatusCodeOK);
   std::vector<char> vec = {'h', 'e', 'l', 'l', 'o'};
   resp.body(std::move(vec));
   EXPECT_NO_THROW(resp.addTrailer("X-Data", "123"));
@@ -552,7 +553,7 @@ TEST(HttpResponseTrailers, CapturedBodyVector) {
 
 // Test multiple trailers
 TEST(HttpResponseTrailers, MultipleTrailers) {
-  aeronet::HttpResponse resp(aeronet::http::StatusCodeOK);
+  HttpResponse resp(http::StatusCodeOK);
   resp.body("body");
   resp.addTrailer("X-Checksum", "abc");
   resp.addTrailer("X-Timestamp", "2025-10-20T12:00:00Z");
@@ -562,19 +563,19 @@ TEST(HttpResponseTrailers, MultipleTrailers) {
 
 // Test empty trailer value
 TEST(HttpResponseTrailers, EmptyValue) {
-  aeronet::HttpResponse resp(aeronet::http::StatusCodeOK);
+  HttpResponse resp(http::StatusCodeOK);
   resp.body("test");
   EXPECT_NO_THROW(resp.addTrailer("X-Empty", ""));
 }
 
 // Test rvalue ref version
 TEST(HttpResponseTrailers, RvalueRef) {
-  EXPECT_NO_THROW(aeronet::HttpResponse(aeronet::http::StatusCodeOK).body("test").addTrailer("X-Check", "val"));
+  EXPECT_NO_THROW(HttpResponse(http::StatusCodeOK).body("test").addTrailer("X-Check", "val"));
 }
 
 // Test that setting the body after inserting a trailer throws
 TEST(HttpResponseTrailers, BodyAfterTrailerThrows) {
-  aeronet::HttpResponse resp(aeronet::http::StatusCodeOK);
+  HttpResponse resp(http::StatusCodeOK);
   resp.body("initial");
   resp.addTrailer("X-After", "v");
   // setting inline body after trailer insertion should throw
@@ -585,18 +586,18 @@ TEST(HttpResponseTrailers, BodyAfterTrailerThrows) {
 
 // Test streaming response with trailers
 TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
 
-  ts.server.router().setDefault([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.statusCode(aeronet::http::StatusCodeOK);
+  ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
     writer.writeBody("chunk1");
     writer.writeBody("chunk2");
     writer.addTrailer("X-Checksum", "abc123");
     writer.end();
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -604,8 +605,8 @@ TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
       "Host: example.com\r\n"
       "Connection: close\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
 
   // Check for chunked encoding
   EXPECT_TRUE(resp.contains("Transfer-Encoding: chunked"));
@@ -620,10 +621,10 @@ TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
 
 // Test multiple trailers
 TEST(HttpResponseWriterTrailers, MultipleTrailers) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
 
-  ts.server.router().setDefault([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
+  ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.statusCode(200);
     writer.writeBody("data");
     writer.addTrailer("X-Checksum", "xyz789");
@@ -632,7 +633,7 @@ TEST(HttpResponseWriterTrailers, MultipleTrailers) {
     writer.end();
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -640,8 +641,8 @@ TEST(HttpResponseWriterTrailers, MultipleTrailers) {
       "Host: example.com\r\n"
       "Connection: close\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
 
   EXPECT_TRUE(resp.contains("X-Checksum: xyz789"));
   EXPECT_TRUE(resp.contains("X-Timestamp: 2025-10-20T12:00:00Z"));
@@ -650,17 +651,17 @@ TEST(HttpResponseWriterTrailers, MultipleTrailers) {
 
 // Test trailer with empty value
 TEST(HttpResponseWriterTrailers, EmptyValue) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
 
-  ts.server.router().setDefault([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.statusCode(aeronet::http::StatusCodeOK);
+  ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
     writer.writeBody("test");
     writer.addTrailer("X-Empty", "");
     writer.end();
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -668,8 +669,8 @@ TEST(HttpResponseWriterTrailers, EmptyValue) {
       "Host: example.com\r\n"
       "Connection: close\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
 
   // Empty value should still create the header line
   EXPECT_TRUE(resp.contains("X-Empty:"));
@@ -677,17 +678,17 @@ TEST(HttpResponseWriterTrailers, EmptyValue) {
 
 // Test trailer added after end() is ignored
 TEST(HttpResponseWriterTrailers, AfterEndIgnored) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
 
-  ts.server.router().setDefault([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.statusCode(aeronet::http::StatusCodeOK);
+  ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
     writer.writeBody("test");
     writer.end();
     writer.addTrailer("X-Late", "ignored");  // Should be ignored
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -695,8 +696,8 @@ TEST(HttpResponseWriterTrailers, AfterEndIgnored) {
       "Host: example.com\r\n"
       "Connection: close\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
 
   // Late trailer should NOT appear
   EXPECT_FALSE(resp.contains("X-Late"));
@@ -704,18 +705,18 @@ TEST(HttpResponseWriterTrailers, AfterEndIgnored) {
 
 // Test trailers ignored for fixed-length responses
 TEST(HttpResponseWriterTrailers, IgnoredForFixedLength) {
-  aeronet::test::TestServer ts(aeronet::HttpServerConfig{});
+  test::TestServer ts(HttpServerConfig{});
   auto port = ts.port();
 
-  ts.server.router().setDefault([](const aeronet::HttpRequest&, aeronet::HttpResponseWriter& writer) {
-    writer.statusCode(aeronet::http::StatusCodeOK);
+  ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
     writer.contentLength(4);  // Fixed length
     writer.writeBody("test");
     writer.addTrailer("X-Ignored", "value");  // Should be ignored
     writer.end();
   });
 
-  aeronet::test::ClientConnection sock(port);
+  test::ClientConnection sock(port);
   int fd = sock.fd();
 
   std::string req =
@@ -723,8 +724,8 @@ TEST(HttpResponseWriterTrailers, IgnoredForFixedLength) {
       "Host: example.com\r\n"
       "Connection: close\r\n"
       "\r\n";
-  EXPECT_TRUE(aeronet::test::sendAll(fd, req));
-  std::string resp = aeronet::test::recvUntilClosed(fd);
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
 
   // Should use Content-Length, not chunked
   EXPECT_TRUE(resp.contains("Content-Length: 4"));

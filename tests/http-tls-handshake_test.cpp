@@ -29,13 +29,13 @@ using namespace std::chrono_literals;
 
 TEST(HttpTlsBasic, HandshakeAndSimpleGet) {
   // Prepare config with in-memory self-signed cert/key
-  aeronet::test::TlsTestServer ts;  // ephemeral TLS server
-  ts.setDefault([](const aeronet::HttpRequest& req) {
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK, "OK")
-        .contentType(aeronet::http::ContentTypeTextPlain)
+  test::TlsTestServer ts;  // ephemeral TLS server
+  ts.setDefault([](const HttpRequest& req) {
+    return HttpResponse(http::StatusCodeOK, "OK")
+        .contentType(http::ContentTypeTextPlain)
         .body(std::string("TLS OK ") + std::string(req.path()));
   });
-  aeronet::test::TlsClient client(ts.port());
+  test::TlsClient client(ts.port());
   auto raw = client.get("/hello", {{"X-Test", "tls"}});
   ASSERT_FALSE(raw.empty());
   ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
@@ -44,21 +44,20 @@ TEST(HttpTlsBasic, HandshakeAndSimpleGet) {
 
 TEST(HttpTlsAlpnMismatch, HandshakeFailsWhenNoCommonProtocolAndMustMatch) {
   bool failed = false;
-  aeronet::ServerStats statsAfter{};
+  ServerStats statsAfter{};
   {
-    aeronet::test::TlsTestServer ts({"http/1.1", "h2"},
-                                    [](aeronet::HttpServerConfig& cfg) { cfg.withTlsAlpnMustMatch(true); });
+    test::TlsTestServer ts({"http/1.1", "h2"}, [](HttpServerConfig& cfg) { cfg.withTlsAlpnMustMatch(true); });
     auto port = ts.port();
-    ts.setDefault([](const aeronet::HttpRequest& req) {
-      return aeronet::HttpResponse(aeronet::http::StatusCodeOK)
+    ts.setDefault([](const HttpRequest& req) {
+      return HttpResponse(http::StatusCodeOK)
           .reason("OK")
-          .contentType(aeronet::http::ContentTypeTextPlain)
+          .contentType(http::ContentTypeTextPlain)
           .body(std::string("ALPN:") + std::string(req.alpnProtocol()));
     });
     // Offer only a mismatching ALPN; since TlsClient uses options, construct with protoX.
-    aeronet::test::TlsClient::Options opts;
+    test::TlsClient::Options opts;
     opts.alpn = {"protoX"};
-    aeronet::test::TlsClient client(port, opts);
+    test::TlsClient client(port, opts);
     failed = !client.handshakeOk();
     statsAfter = ts.stats();
     ts.stop();
@@ -69,22 +68,22 @@ TEST(HttpTlsAlpnMismatch, HandshakeFailsWhenNoCommonProtocolAndMustMatch) {
 
 TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
   std::string capturedAlpn;
-  aeronet::ServerStats statsAfter{};
+  ServerStats statsAfter{};
   {
     // Server prefers h2, but does NOT enforce match.
-    aeronet::test::TlsTestServer ts({"h2"});
+    test::TlsTestServer ts({"h2"});
     auto port = ts.port();
-    ts.setDefault([&](const aeronet::HttpRequest& req) {
+    ts.setDefault([&](const HttpRequest& req) {
       if (!req.alpnProtocol().empty()) {
         capturedAlpn = std::string(req.alpnProtocol());
       } else {
         capturedAlpn.clear();
       }
-      return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body("NS");
+      return HttpResponse(200, "OK").contentType(http::ContentTypeTextPlain).body("NS");
     });
-    aeronet::test::TlsClient::Options opts;
+    test::TlsClient::Options opts;
     opts.alpn = {"foo"};  // no overlap
-    aeronet::test::TlsClient client(port, opts);
+    test::TlsClient client(port, opts);
     ASSERT_TRUE(client.handshakeOk());
     auto resp = client.get("/non_strict");
     statsAfter = ts.stats();
@@ -124,7 +123,7 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
   HttpServer original(cfg);
   original.router().setDefault([](const HttpRequest& req) {
     return HttpResponse(http::StatusCodeOK, "OK")
-        .contentType(aeronet::http::ContentTypeTextPlain)
+        .contentType(http::ContentTypeTextPlain)
         .body(std::string("MOVEALPN:") + (req.alpnProtocol().empty() ? "-" : std::string(req.alpnProtocol())));
   });
 
@@ -137,12 +136,12 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
   // Actively wait until the listening socket accepts a plain TCP connection to avoid race.
   // This replicates TestServer readiness logic without duplicating its wrapper.
   {
-    aeronet::test::ClientConnection probe(port, std::chrono::milliseconds{500});
+    test::ClientConnection probe(port, std::chrono::milliseconds{500});
   }
 
-  aeronet::test::TlsClient::Options opts;
+  test::TlsClient::Options opts;
   opts.alpn = {"http/1.1"};
-  aeronet::test::TlsClient client(port, opts);
+  test::TlsClient client(port, opts);
   ASSERT_TRUE(client.handshakeOk()) << "TLS handshake failed after move (potential stale TlsContext pointer)";
   auto raw = client.get("/moved");
   stop.store(true);
@@ -154,26 +153,26 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
 // Test mutual TLS requirement and ALPN negotiation (server selects http/1.1)
 
 TEST(HttpTlsMtlsAlpn, RequireClientCertHandshakeFailsWithout) {
-  auto serverCert = aeronet::test::makeEphemeralCertKey();  // still needed for trust store
+  auto serverCert = test::makeEphemeralCertKey();  // still needed for trust store
   ASSERT_FALSE(serverCert.first.empty());
   ASSERT_FALSE(serverCert.second.empty());
   std::string resp;
   std::string alpn;
   {
-    aeronet::test::TlsTestServer ts({"http/1.1"}, [&](aeronet::HttpServerConfig& cfg) {
+    test::TlsTestServer ts({"http/1.1"}, [&](HttpServerConfig& cfg) {
       cfg.withTlsRequireClientCert(true).withTlsAddTrustedClientCert(serverCert.first);
     });
     auto port = ts.port();
-    ts.setDefault([](const aeronet::HttpRequest& req) {
-      return aeronet::HttpResponse(aeronet::http::StatusCodeOK)
+    ts.setDefault([](const HttpRequest& req) {
+      return HttpResponse(http::StatusCodeOK)
           .reason("OK")
-          .contentType(aeronet::http::ContentTypeTextPlain)
+          .contentType(http::ContentTypeTextPlain)
           .body(std::string("SECURE") + std::string(req.path()));
     });
-    aeronet::test::TlsClient::Options opts;
+    test::TlsClient::Options opts;
     opts.alpn = {"http/1.1"};
     // No client cert provided, so handshake should fail due to required client cert.
-    aeronet::test::TlsClient client(port, opts);
+    test::TlsClient client(port, opts);
     if (client.handshakeOk()) {
       resp = client.get("/secure");
       alpn = client.negotiatedAlpn();
@@ -185,28 +184,28 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertHandshakeFailsWithout) {
 }
 
 TEST(HttpTlsMtlsAlpn, RequireClientCertSuccessWithAlpn) {
-  auto serverCert = aeronet::test::makeEphemeralCertKey();
+  auto serverCert = test::makeEphemeralCertKey();
   ASSERT_FALSE(serverCert.first.empty());
   ASSERT_FALSE(serverCert.second.empty());
   auto clientCert = serverCert;  // reuse same self-signed for simplicity
   std::string resp;
   std::string alpn;
   {
-    aeronet::test::TlsTestServer ts({"http/1.1"}, [&](aeronet::HttpServerConfig& cfg) {
+    test::TlsTestServer ts({"http/1.1"}, [&](HttpServerConfig& cfg) {
       cfg.withTlsRequireClientCert(true).withTlsAddTrustedClientCert(clientCert.first);
     });
     auto port = ts.port();
-    ts.setDefault([](const aeronet::HttpRequest& req) {
-      return aeronet::HttpResponse(aeronet::http::StatusCodeOK)
+    ts.setDefault([](const HttpRequest& req) {
+      return HttpResponse(http::StatusCodeOK)
           .reason("OK")
-          .contentType(aeronet::http::ContentTypeTextPlain)
+          .contentType(http::ContentTypeTextPlain)
           .body(std::string("SECURE") + std::string(req.path()));
     });
-    aeronet::test::TlsClient::Options opts;
+    test::TlsClient::Options opts;
     opts.alpn = {"http/1.1"};
     opts.clientCertPem = clientCert.first;
     opts.clientKeyPem = clientCert.second;
-    aeronet::test::TlsClient client(port, opts);
+    test::TlsClient client(port, opts);
     ASSERT_TRUE(client.handshakeOk());
     resp = client.get("/secure");
     alpn = client.negotiatedAlpn();
@@ -224,21 +223,21 @@ TEST(HttpTlsCipherVersion, CipherAndVersionExposedAndMetricsIncrement) {
   std::string capturedCipher;
   std::string capturedVersion;
   std::string capturedAlpn;
-  aeronet::ServerStats statsSnapshot{};
+  ServerStats statsSnapshot{};
   {
-    aeronet::test::TlsTestServer ts({"http/1.1"});
+    test::TlsTestServer ts({"http/1.1"});
     auto port = ts.port();
-    ts.setDefault([&](const aeronet::HttpRequest& req) {
+    ts.setDefault([&](const HttpRequest& req) {
       capturedCipher = std::string(req.tlsCipher());
       capturedVersion = std::string(req.tlsVersion());
       capturedAlpn = std::string(req.alpnProtocol());
 
-      return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body("ok");
+      return HttpResponse(200, "OK").contentType(http::ContentTypeTextPlain).body("ok");
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(80));  // allow handshake path if needed
-    aeronet::test::TlsClient::Options opts;
+    test::TlsClient::Options opts;
     opts.alpn = {"http/1.1"};
-    aeronet::test::TlsClient client(port, opts);
+    test::TlsClient client(port, opts);
     auto resp = client.get("/");
     ts.stop();
     ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
@@ -285,37 +284,34 @@ TEST(HttpTlsCipherVersion, CipherAndVersionExposedAndMetricsIncrement) {
 
 TEST(HttpTlsCipherList, InvalidCipherListThrows) {
   EXPECT_THROW(
-      {
-        aeronet::test::TlsTestServer ts(
-            {}, [](aeronet::HttpServerConfig& cfg) { cfg.withTlsCipherList("INVALID-CIPHER-1234"); });
-      },
+      { test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsCipherList("INVALID-CIPHER-1234"); }); },
       std::runtime_error);
 }
 
 TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
-  auto pair = aeronet::test::makeEphemeralCertKey();
+  auto pair = test::makeEphemeralCertKey();
   ASSERT_FALSE(pair.first.empty());
   ASSERT_FALSE(pair.second.empty());
   // Write both to temp files inside a temporary directory
-  aeronet::test::ScopedTempDir tmpDir;
-  aeronet::test::ScopedTempFile certFile(tmpDir, pair.first);
-  aeronet::test::ScopedTempFile keyFile(tmpDir, pair.second);
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile certFile(tmpDir, pair.first);
+  test::ScopedTempFile keyFile(tmpDir, pair.second);
 
-  aeronet::HttpServerConfig cfg;
+  HttpServerConfig cfg;
   cfg.withTlsCertKey(certFile.filePath().string(), keyFile.filePath().string());  // file-based path (not memory)
   cfg.withTlsAlpnProtocols({"http/1.1"});
   // Use plain TestServer since we manually set config
-  aeronet::test::TestServer server(cfg, RouterConfig{}, std::chrono::milliseconds{50});
-  server.server.router().setDefault([](const aeronet::HttpRequest& req) {
-    return aeronet::HttpResponse(200, "OK")
-        .contentType(aeronet::http::ContentTypeTextPlain)
+  test::TestServer server(cfg, RouterConfig{}, std::chrono::milliseconds{50});
+  server.server.router().setDefault([](const HttpRequest& req) {
+    return HttpResponse(200, "OK")
+        .contentType(http::ContentTypeTextPlain)
         .body(std::string("FILETLS-") + std::string(req.alpnProtocol().empty() ? "-" : req.alpnProtocol()));
   });
   uint16_t port = server.port();
 
-  aeronet::test::TlsClient::Options opts;
+  test::TlsClient::Options opts;
   opts.alpn = {"http/1.1"};
-  aeronet::test::TlsClient client(port, opts);
+  test::TlsClient client(port, opts);
   ASSERT_TRUE(client.handshakeOk());
   auto resp = client.get("/file");
   server.stop();
@@ -325,23 +321,22 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
 
 TEST(HttpTlsMtlsMetrics, ClientCertPresenceIncrementsMetric) {
   // Per-server metrics now, no global reset required.
-  auto certKey = aeronet::test::makeEphemeralCertKey();  // also used as trusted client CA
+  auto certKey = test::makeEphemeralCertKey();  // also used as trusted client CA
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
   {
-    aeronet::test::TlsTestServer ts({"http/1.1"}, [&](aeronet::HttpServerConfig& cfg) {
+    test::TlsTestServer ts({"http/1.1"}, [&](HttpServerConfig& cfg) {
       cfg.withTlsRequireClientCert(true).withTlsAddTrustedClientCert(certKey.first);
     });
     auto port = ts.port();
-    ts.setDefault([](const aeronet::HttpRequest&) {
-      return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body("m");
-    });
+    ts.setDefault(
+        [](const HttpRequest&) { return HttpResponse(200, "OK").contentType(http::ContentTypeTextPlain).body("m"); });
     auto before = ts.stats();
-    aeronet::test::TlsClient::Options opts;
+    test::TlsClient::Options opts;
     opts.alpn = {"http/1.1"};
     opts.clientCertPem = certKey.first;
     opts.clientKeyPem = certKey.second;
-    aeronet::test::TlsClient client(port, opts);
+    test::TlsClient client(port, opts);
     ASSERT_TRUE(client.handshakeOk());
     auto resp = client.get("/m");
     auto after = ts.stats();
@@ -355,7 +350,7 @@ TEST(HttpTlsMtlsMetrics, ClientCertPresenceIncrementsMetric) {
 namespace {
 // Large response GET using TlsClient (simplified replacement).
 std::string tlsGetLarge(auto port) {
-  aeronet::test::TlsClient client(port);
+  test::TlsClient client(port);
   if (!client.handshakeOk()) {
     return {};
   }
@@ -366,15 +361,15 @@ std::string tlsGetLarge(auto port) {
 TEST(HttpTlsNegative, PlainHttpToTlsPortRejected) {
   // perform a raw TCP connect and send cleartext HTTP to a TLS-only port -> should fail handshake quickly.
 
-  aeronet::test::TlsTestServer ts;  // default TLS (no ALPN needed here)
+  test::TlsTestServer ts;  // default TLS (no ALPN needed here)
 
-  aeronet::test::ClientConnection cnx(ts.port());
+  test::ClientConnection cnx(ts.port());
   int fd = cnx.fd();
 
   std::string bogus = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";  // not TLS handshake
-  ASSERT_TRUE(aeronet::test::sendAll(fd, bogus));
+  test::sendAll(fd, bogus);
   // default recvWithTimeout waits 2000ms; explicit shorter timeout keeps test fast
-  ASSERT_TRUE(aeronet::test::recvWithTimeout(fd, 500ms).empty());
+  ASSERT_TRUE(test::recvWithTimeout(fd, 500ms).empty());
 }
 
 // When server only requests (but does not require) a client cert, handshake should succeed
@@ -382,14 +377,14 @@ TEST(HttpTlsNegative, PlainHttpToTlsPortRejected) {
 
 TEST(HttpTlsRequestClientCert, OptionalNoClientCertAccepted) {
   std::string body;
-  aeronet::ServerStats statsAfter{};
+  ServerStats statsAfter{};
   {
-    aeronet::test::TlsTestServer ts({}, [](aeronet::HttpServerConfig& cfg) { cfg.withTlsRequestClientCert(true); });
+    test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsRequestClientCert(true); });
     auto port = ts.port();
-    ts.setDefault([&](const aeronet::HttpRequest& req) {
-      aeronet::HttpResponse resp(200);
+    ts.setDefault([&](const HttpRequest& req) {
+      HttpResponse resp(200);
       resp.reason("OK");
-      resp.contentType(aeronet::http::ContentTypeTextPlain);
+      resp.contentType(http::ContentTypeTextPlain);
       if (!req.tlsCipher().empty()) {
         resp.body(std::string("REQ-") + std::string(req.tlsCipher()));
       } else {
@@ -397,7 +392,7 @@ TEST(HttpTlsRequestClientCert, OptionalNoClientCertAccepted) {
       }
       return resp;
     });
-    aeronet::test::TlsClient client(port);  // no client cert
+    test::TlsClient client(port);  // no client cert
     ASSERT_TRUE(client.handshakeOk());
     body = client.get("/nocert");
     statsAfter = ts.stats();
@@ -409,26 +404,23 @@ TEST(HttpTlsRequestClientCert, OptionalNoClientCertAccepted) {
 }
 
 TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
-  auto clientPair = aeronet::test::makeEphemeralCertKey();
+  auto clientPair = test::makeEphemeralCertKey();
   ASSERT_FALSE(clientPair.first.empty());
   ASSERT_FALSE(clientPair.second.empty());
-  aeronet::ServerStats statsAfter{};
+  ServerStats statsAfter{};
   {
     // Trust the self-signed client cert for verification if sent; but handshake must still succeed w/out require flag.
-    aeronet::test::TlsTestServer ts({}, [&](aeronet::HttpServerConfig& cfg) {
+    test::TlsTestServer ts({}, [&](HttpServerConfig& cfg) {
       cfg.withTlsRequestClientCert(true).withTlsAddTrustedClientCert(clientPair.first);
     });
     auto port = ts.port();
-    ts.setDefault([](const aeronet::HttpRequest&) {
-      return aeronet::HttpResponse()
-          .statusCode(http::StatusCodeOK, "OK")
-          .contentType(aeronet::http::ContentTypeTextPlain)
-          .body("C");
+    ts.setDefault([](const HttpRequest&) {
+      return HttpResponse().statusCode(http::StatusCodeOK, "OK").contentType(http::ContentTypeTextPlain).body("C");
     });
-    aeronet::test::TlsClient::Options opts;
+    test::TlsClient::Options opts;
     opts.clientCertPem = clientPair.first;
     opts.clientKeyPem = clientPair.second;
-    aeronet::test::TlsClient client(port, opts);
+    test::TlsClient client(port, opts);
     ASSERT_TRUE(client.handshakeOk());
     auto response = client.get("/withcert");
     statsAfter = ts.stats();
@@ -441,22 +433,21 @@ TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
 
 TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
   std::string capturedVersion;
-  aeronet::ServerStats statsAfter{};
+  ServerStats statsAfter{};
   {
-    aeronet::test::TlsTestServer ts({"http/1.1"}, [](aeronet::HttpServerConfig& cfg) {
-      cfg.withTlsMinVersion("TLS1.2").withTlsMaxVersion("TLS1.2");
-    });
+    test::TlsTestServer ts({"http/1.1"},
+                           [](HttpServerConfig& cfg) { cfg.withTlsMinVersion("TLS1.2").withTlsMaxVersion("TLS1.2"); });
     auto port = ts.port();
-    ts.setDefault([&](const aeronet::HttpRequest& req) {
+    ts.setDefault([&](const HttpRequest& req) {
       if (!req.tlsVersion().empty()) {
         capturedVersion = std::string(req.tlsVersion());
       }
 
-      return aeronet::HttpResponse(200, "OK").contentType(aeronet::http::ContentTypeTextPlain).body("V");
+      return HttpResponse(200, "OK").contentType(http::ContentTypeTextPlain).body("V");
     });
-    aeronet::test::TlsClient::Options opts;
+    test::TlsClient::Options opts;
     opts.alpn = {"http/1.1"};
-    aeronet::test::TlsClient client(port, opts);
+    test::TlsClient client(port, opts);
     ASSERT_TRUE(client.handshakeOk());
     auto resp = client.get("/v");
     statsAfter = ts.stats();
@@ -480,6 +471,6 @@ TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
 TEST(HttpTlsVersionBounds, InvalidMinVersionThrows) {
   // Provide invalid version string -> expect construction failure.
   EXPECT_THROW(
-      { aeronet::test::TlsTestServer ts({}, [](aeronet::HttpServerConfig& cfg) { cfg.withTlsMinVersion("TLS1.1"); }); },
+      { test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsMinVersion("TLS1.1"); }); },
       std::invalid_argument);
 }

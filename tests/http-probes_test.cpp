@@ -16,12 +16,12 @@ using namespace std::chrono_literals;
 TEST(HttpProbes, StartupAndReadinessTransitions) {
   HttpServerConfig cfg{};
   cfg.enableBuiltinProbes(true);
-  aeronet::test::TestServer ts(std::move(cfg));
+  test::TestServer ts(std::move(cfg));
 
-  auto readyResp = aeronet::test::simpleGet(ts.port(), "/readyz");
+  auto readyResp = test::simpleGet(ts.port(), "/readyz");
   EXPECT_TRUE(readyResp.contains("200"));
 
-  auto liveResp = aeronet::test::simpleGet(ts.port(), "/livez");
+  auto liveResp = test::simpleGet(ts.port(), "/livez");
   EXPECT_TRUE(liveResp.contains("200"));
 
   ts.server.beginDrain();
@@ -34,7 +34,7 @@ TEST(HttpProbes, StartupAndReadinessTransitions) {
   std::string readyAfterDrain;
   const auto deadline = std::chrono::steady_clock::now() + 200ms;
   while (std::chrono::steady_clock::now() < deadline) {
-    readyAfterDrain = aeronet::test::simpleGet(ts.port(), "/readyz");
+    readyAfterDrain = test::simpleGet(ts.port(), "/readyz");
     if (readyAfterDrain.empty() || readyAfterDrain.contains("503")) {
       break;
     }
@@ -52,12 +52,12 @@ TEST(HttpProbes, OverridePaths) {
   bp.withStartupPath("/start");
   cfg.withBuiltinProbes(bp);
 
-  aeronet::test::TestServer ts(std::move(cfg));
+  test::TestServer ts(std::move(cfg));
 
-  auto rResp = aeronet::test::simpleGet(ts.port(), "/rdy");
+  auto rResp = test::simpleGet(ts.port(), "/rdy");
   EXPECT_TRUE(rResp.contains("200"));
-  auto lResp = aeronet::test::simpleGet(ts.port(), "/liv");
+  auto lResp = test::simpleGet(ts.port(), "/liv");
   EXPECT_TRUE(lResp.contains("200"));
-  auto sResp = aeronet::test::simpleGet(ts.port(), "/start");
+  auto sResp = test::simpleGet(ts.port(), "/start");
   EXPECT_TRUE(sResp.contains("200"));
 }

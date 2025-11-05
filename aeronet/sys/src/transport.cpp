@@ -14,7 +14,7 @@ ITransport::TransportResult PlainTransport::read(char* buf, std::size_t len) {
   if (nbRead >= 0) {
     return ret;
   }
-  // ret == -1
+  // nbRead == -1
   ret.bytesProcessed = 0;
   if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
     ret.want = TransportHint::ReadReady;
