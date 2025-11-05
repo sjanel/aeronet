@@ -53,18 +53,18 @@ void HttpResponseWriter::status(http::StatusCode code, std::string_view reason) 
   _fixedResponse.status(code).reason(reason);
 }
 
-void HttpResponseWriter::addCustomHeader(std::string_view name, std::string_view value) {
+void HttpResponseWriter::addHeader(std::string_view name, std::string_view value) {
   if (_state != State::Opened) {
     return;
   }
-  _fixedResponse.addCustomHeader(name, value);
+  _fixedResponse.addHeader(name, value);
 }
 
-void HttpResponseWriter::customHeader(std::string_view name, std::string_view value) {
+void HttpResponseWriter::header(std::string_view name, std::string_view value) {
   if (_state != State::Opened) {
     return;
   }
-  _fixedResponse.customHeader(name, value);
+  _fixedResponse.header(name, value);
 }
 
 void HttpResponseWriter::contentLength(std::size_t len) {
@@ -98,7 +98,7 @@ void HttpResponseWriter::ensureHeadersSent() {
   } else {
     _fixedResponse.setHeader(http::TransferEncoding, "chunked");
   }
-  _fixedResponse.setHeader(http::ContentType, http::ContentTypeTextPlain, true);
+  _fixedResponse.setHeader(http::ContentType, http::ContentTypeApplicationOctetStream, true);
   // If compression already activated (delayed strategy) but header not sent yet, add Content-Encoding now.
   if (_compressionActivated && _compressionFormat != Encoding::none) {
     _fixedResponse.setHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
@@ -326,7 +326,7 @@ bool HttpResponseWriter::enqueue(HttpResponseData httpResponseData) {
   return _server->queueData(cnxIt, std::move(httpResponseData)) && !cnxIt->second.isAnyCloseRequested();
 }
 
-bool HttpResponseWriter::file(File fileObj, std::uint64_t offset, std::uint64_t length) {
+bool HttpResponseWriter::file(File fileObj, std::uint64_t offset, std::uint64_t length, std::string_view contentType) {
   if (_state != State::Opened) {
     log::warn("Streaming: file ignored fd # {} reason=writer-not-open", _fd);
     return false;
@@ -343,7 +343,7 @@ bool HttpResponseWriter::file(File fileObj, std::uint64_t offset, std::uint64_t 
   _compressionActivated = false;
   _preCompressBuffer.clear();
 
-  _fixedResponse.file(std::move(fileObj), offset, length);
+  _fixedResponse.file(std::move(fileObj), offset, length, contentType);
   _declaredLength = _fixedResponse.bodyLen();
   return true;
 }

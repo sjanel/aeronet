@@ -26,6 +26,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "base-fd.hpp"
 #include "errno_throw.hpp"
 #include "log.hpp"
 #include "raw-chars.hpp"

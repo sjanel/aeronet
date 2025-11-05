@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/mime-mappings.hpp"
 #include "base-fd.hpp"
 
 namespace aeronet {
@@ -21,8 +22,14 @@ class File {
   // On failure, operator bool() returns false.
   explicit File(const std::string& path, OpenMode mode = OpenMode::ReadOnly) : File(path.c_str(), mode) {}
 
-  // Path overloads accepting string_view or C-string for convenience.
+  // Open a file by path. Throws on error.
+  // On success, the returned File owns the underlying descriptor and will close it on destruction.
+  // On failure, operator bool() returns false.
   explicit File(std::string_view path, OpenMode mode = OpenMode::ReadOnly);
+
+  // Open a file by path (must be null-terminated). Throws on error.
+  // On success, the returned File owns the underlying descriptor and will close it on destruction.
+  // On failure, operator bool() returns false.
   explicit File(const char* path, OpenMode mode = OpenMode::ReadOnly);
 
   // Returns true when the File currently holds an opened descriptor.
@@ -34,6 +41,10 @@ class File {
   // Load the entire file content into a string. Throws on error.
   [[nodiscard]] std::string loadAllContent() const;
 
+  // Returns the probable content type based on the file extension.
+  // If not found, return 'application/octet-stream'.
+  [[nodiscard]] std::string_view detectedContentType() const;
+
  private:
   friend struct ConnectionState;
 
@@ -43,6 +54,7 @@ class File {
   [[nodiscard]] int fd() const noexcept { return _fd.fd(); }
 
   BaseFd _fd;
+  MIMETypeIdx _mimeMappingIdx = kUnknownMIMEMappingIdx;
 };
 
 }  // namespace aeronet

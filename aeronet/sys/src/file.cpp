@@ -5,15 +5,19 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/http-constants.hpp"
+#include "aeronet/mime-mappings.hpp"
 #include "log.hpp"
 
 namespace aeronet {
@@ -48,11 +52,25 @@ int CreateFileBaseFd(const char* path, File::OpenMode mode) {
   return fd;
 }
 
+MIMETypeIdx DetermineMIMETypeIdx(std::string_view path) {
+  const auto dotPos = path.rfind('.');
+  if (dotPos != std::string_view::npos) {
+    const std::string_view ext = path.substr(dotPos + 1);
+    const auto it = std::ranges::lower_bound(kMIMEMappings, ext, {}, &MIMEMapping::extension);
+    if (it != std::end(kMIMEMappings) && it->extension == ext) {
+      return static_cast<MIMETypeIdx>(std::distance(std::begin(kMIMEMappings), it));
+    }
+  }
+  return kUnknownMIMEMappingIdx;
+}
+
 }  // namespace
 
-File::File(std::string_view path, OpenMode mode) : _fd(CreateFileBaseFd(path, mode)) {}
+File::File(std::string_view path, OpenMode mode)
+    : _fd(CreateFileBaseFd(path, mode)), _mimeMappingIdx(DetermineMIMETypeIdx(path)) {}
 
-File::File(const char* path, OpenMode mode) : _fd(CreateFileBaseFd(path, mode)) {}
+File::File(const char* path, OpenMode mode)
+    : _fd(CreateFileBaseFd(path, mode)), _mimeMappingIdx(DetermineMIMETypeIdx(path)) {}
 
 std::size_t File::size() const {
   struct stat st{};
@@ -125,6 +143,13 @@ std::string File::loadAllContent() const {
   }
 
   return content;
+}
+
+std::string_view File::detectedContentType() const {
+  if (_mimeMappingIdx == kUnknownMIMEMappingIdx) {
+    return http::ContentTypeApplicationOctetStream;
+  }
+  return kMIMEMappings[_mimeMappingIdx].mimeType;
 }
 
 }  // namespace aeronet

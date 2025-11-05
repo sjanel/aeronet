@@ -27,3 +27,11 @@ add_unit_test(
     LIBRARIES
     aeronet_sys
 )
+
+add_unit_test(
+    file_test
+    test/file_test.cpp
+    LIBRARIES
+    aeronet_sys
+    aeronet_test_support
+)

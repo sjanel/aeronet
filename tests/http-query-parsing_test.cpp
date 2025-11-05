@@ -21,7 +21,7 @@ TEST(HttpQueryParsing, NoQuery) {
     EXPECT_EQ(req.path(), "/plain");
     EXPECT_EQ(req.queryParams().begin(), req.queryParams().end());
     HttpResponse resp;
-    resp.status(200).reason("OK").body("NOQ").contentType("text/plain");
+    resp.status(200).reason("OK").body("NOQ");
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/plain");
@@ -43,7 +43,7 @@ TEST(HttpQueryParsing, SimpleQuery) {
     }
 
     HttpResponse resp(200, "OK");
-    resp.body(body).contentType("text/plain");
+    resp.body(body);
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/p?a=1&b=2");
@@ -76,7 +76,7 @@ TEST(HttpQueryParsing, PercentDecodedQuery) {
       body.push_back('=');
       body.append(val);
     }
-    resp.status(200).reason("OK").body(body).contentType("text/plain");
+    resp.status(200).reason("OK").body(body);
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/d?x=one%20two&y=%2Fpath");
@@ -90,7 +90,7 @@ TEST(HttpQueryParsing, EmptyQueryAndTrailingQMark) {
     // "?" with nothing after -> empty query view
     EXPECT_EQ(req.queryParams().begin(), req.queryParams().end());
     HttpResponse resp;
-    resp.status(200).reason("OK").body("EMPTY").contentType("text/plain");
+    resp.status(200).reason("OK").body("EMPTY");
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/t?");
@@ -107,7 +107,7 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeAtEndShouldBeAccepted) {
     EXPECT_EQ((*it).key, "x");
     EXPECT_EQ((*it).value, "%");
     HttpResponse resp(200, "OK");
-    resp.body("EDGE1").contentType("text/plain");
+    resp.body("EDGE1");
     return resp;
   });
   std::string out = test::simpleGet(ts.port(), "/e?x=%");
@@ -122,7 +122,7 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeOneHexShouldBeAccepted) {
     // Invalid -> left as literal
     EXPECT_EQ((*it).value, "%A");
     HttpResponse resp(200, "OK");
-    resp.body("EDGE2").contentType("text/plain");
+    resp.body("EDGE2");
     return resp;
   });
   std::string resp = test::simpleGet(ts.port(), "/e2?a=%A");
@@ -148,7 +148,7 @@ TEST(HttpQueryParsingEdge, MultiplePairsAndEmptyValue) {
     ++it;
     EXPECT_EQ(it, range.end());
     HttpResponse resp(200, "OK");
-    resp.body("EDGE3").contentType("text/plain");
+    resp.body("EDGE3");
     return resp;
   });
   std::string resp = test::simpleGet(ts.port(), "/m?k=1&empty=&novalue");
@@ -164,7 +164,7 @@ TEST(HttpQueryParsingEdge, PercentDecodingKeyAndValue) {
     EXPECT_EQ((*it).key, "fo");
     EXPECT_EQ((*it).value, "bar baz");
     HttpResponse resp;
-    resp.status(200).reason("OK").body("EDGE4").contentType("text/plain");
+    resp.status(200).reason("OK").body("EDGE4");
     return resp;
   });
   std::string resp = test::simpleGet(ts.port(), "/pd?%66o=bar%20baz");
@@ -199,7 +199,7 @@ TEST(HttpQueryStructuredBindings, IterateKeyValues) {
     EXPECT_EQ(count, 4);
     EXPECT_TRUE(sawA && sawB && sawEmpty && sawNoValue);
     HttpResponse resp(200, "OK");
-    resp.body("OK").contentType("text/plain");
+    resp.body("OK");
     return resp;
   });
   // Build raw HTTP request using helpers

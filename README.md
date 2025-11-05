@@ -16,9 +16,11 @@
 - **Configurable**: fully configurable with reasonable defaults
 - **Cloud native**: Built-in Kubernetes-style health & readiness probes, opentelemetry support (metrics & tracing)
 
-## Minimal Example
+## Minimal Examples
 
 Spin up a basic HTTP/1.1 server that responds on `/hello` in just a few lines. If you pass `0` as the port (or omit it), the kernel picks an ephemeral port which you can query immediately.
+
+### HTTP response
 
 ```cpp
 #include <aeronet/aeronet.hpp>
@@ -28,10 +30,23 @@ using namespace aeronet;
 int main() {
   HttpServer server(HttpServerConfig{}); // if no specified port, OS will pick a free one
   server.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&) {
-    return HttpResponse(200).contentType("text/plain").body("hello from aeronet\n");
+    return HttpResponse(200).body("hello from aeronet\n");
   });
   server.run(); // blocking
 }
+```
+
+### Streaming response
+
+```cpp
+server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
+  w.status(200);
+  w.contentType("text/plain");
+  for (int i = 0; i < 10; ++i) {
+    w.writeBody(std::string(50,'x')); // write by chunks
+  }
+  w.end();
+});
 ```
 
 ## Quick Start with provided examples
@@ -163,7 +178,7 @@ using namespace aeronet;
 
 int main() {
   AsyncHttpServer async(HttpServerConfig{});
-  server.server().router().setDefault([](const HttpRequest&){ return HttpResponse(200, "OK").body("hi").contentType("text/plain"); });
+  server.server().router().setDefault([](const HttpRequest&){ return HttpResponse(200, "OK").body("hi"); });
   async.start();
   // main thread free to do orchestration / other work
   std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -241,7 +256,7 @@ int main() {
   HttpServerConfig cfg; cfg.reusePort = true; // ephemeral, auto-propagated
   MultiHttpServer multi(cfg, 4); // 4 underlying event loops
   multi.router().setDefault([](const HttpRequest& req){
-    return HttpResponse(200).body("hello\n").contentType("text/plain");
+    return HttpResponse(200).body("hello\n");
   });
   multi.start();
   // ... run until external signal, or call stop() ...
@@ -305,22 +320,18 @@ The router expects callback functions returning a `HttpResponse`. You can build 
 |--------------------|----------------------|----------------------------------------|
 | `status()`         | O(1)                 | Overwrites 3 digits                    |
 | `reason()`         | O(trailing)          | One tail `memmove` if size delta       |
-| `addCustomHeader()`| O(bodyLen)           | Shift tail once; no scan               |
-| `customHeader()`   | O(headers + bodyLen) | Linear scan + maybe one shift          |
+| `addHeader()`      | O(bodyLen)           | Shift tail once; no scan               |
+| `header()`         | O(headers + bodyLen) | Linear scan + maybe one shift          |
 | `body()`           | O(delta) + realloc   | Exponential growth strategy            |
 | `file()`           | O(1)                 | Zero-copy sendfile helper              |
 | `addTrailer()`     | O(1)                 | Append-only; no scan (only after body) |
 
 Usage guidelines:
 
-- Use `addCustomHeader()` when duplicates are acceptable or not possible from the client code (cheapest path).
-- Use `customHeader()` only when you must guarantee uniqueness. Matching is case‑insensitive; prefer a canonical style (e.g.
+- Use `addHeader()` when duplicates are acceptable or not possible from the client code (cheapest path).
+- Use `header()` only when you must guarantee uniqueness. Matching is case‑insensitive; prefer a canonical style (e.g.
   `Content-Type`) for readability, but behavior is the same regardless of input casing.
 - Chain on temporaries for concise construction; the rvalue-qualified overloads keep the object movable.
-- Finalize exactly once right before sending.
-
-Future possible extensions (not yet implemented): transparent compression insertion, zero‑copy file send mapping,
-and an alternate layout for extremely large header counts.
 
 #### Reserved Headers
 
@@ -342,8 +353,16 @@ Reserved now (assert if attempted in debug; ignored in release for streaming):
 
 Allowed convenience helpers:
 
-- `Content-Type` via `contentType()` or `setHeader("Content-Type", ...)` in streaming.
+- `Content-Type` via `contentType()` in streaming.
 - `Location` via `location()` for redirects.
+
+Content-Type resolution for static files
+
+When serving files with the built-in static helpers, aeronet chooses the response `Content-Type` using the
+following precedence: (1) user-provided resolver callback if installed and non-empty, (2) the configured default
+content type in `HttpServerConfig`, and (3) `application/octet-stream` as a final fallback. The `File::detectedContentType()`
+helper is available for filename-extension based detection (the built-in mapping now includes common C/C++ extensions
+such as `c`, `h`, `cpp`, `hpp`, `cc`).
 
 All other headers (custom application / caching / CORS / etc.) may be freely set; they are forwarded verbatim.
 This central rule lives in a single helper (`http::IsReservedResponseHeader`).
@@ -373,17 +392,6 @@ See: [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompress
 Full RFC-compliant CORS support with per-route and router-wide configuration:
 See: [CORS Support](docs/FEATURES.md#cors-support)
 
-```cpp
-server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
-  w.status(200);
-  w.contentType("text/plain");
-  for (int i = 0;i < 10; ++i) {
-    w.write(std::string(50,'x')); // accumulates until threshold then switches to compressed chunks
-  }
-  w.end();
-});
-```
-
 ### Request Header Duplicate Handling
 
 Detailed policy & implementation moved to: [Request Header Duplicate Handling](docs/FEATURES.md#request-header-duplicate-handling-detailed)
@@ -407,7 +415,7 @@ int main() {
 
   // Register application handlers as usual (optional)
   server.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&){
-    return HttpResponse(200, "OK").contentType("text/plain").body("hello\n");
+    return HttpResponse(200, "OK").body("hello\n");
   });
 
   server.run();
@@ -671,14 +679,14 @@ Example:
 ```cpp
 HttpServer server(cfg);
 server.router().setPath(http::Method::GET | http::Method::PUT, "/hello", [](const HttpRequest&){
-  return HttpResponse(200, "OK").body("world").contentType("text/plain");
+  return HttpResponse(200, "OK").body("world");
 });
 server.router().setPath(http::Method::POST, "/echo", [](const HttpRequest& req){
-  return HttpResponse(200, "OK").body(req.body).contentType("text/plain");
+  return HttpResponse(200, "OK").body(req.body);
 });
 // Add another method later (merges method mask, replaces handler)
 server.router().setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
-  return HttpResponse(200, "OK").body("Echo via GET").contentType("text/plain");
+  return HttpResponse(200, "OK").body("Echo via GET");
 });
 ```
 

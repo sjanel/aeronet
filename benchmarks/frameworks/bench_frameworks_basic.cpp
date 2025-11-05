@@ -91,7 +91,7 @@ struct AeronetServerRunner {
         throw std::runtime_error("Should have found number of headers");
       }
       for (size_t headerPos = 0; headerPos < headerCount; ++headerPos) {
-        resp.addCustomHeader(g_stringPool.next(), g_stringPool.next());
+        resp.addHeader(g_stringPool.next(), g_stringPool.next());
       }
       resp.body(std::to_string(headerCount));
       return resp;
@@ -609,7 +609,7 @@ void AeronetResponseBuild(benchmark::State &state) {
       auto headerVal = g_stringPool.next();
       bytesSynthesized += headerKey.size() + headerVal.size();
 
-      resp.addCustomHeader(headerKey, headerVal);
+      resp.addHeader(headerKey, headerVal);
     }
     resp.body(std::move(body));
     // Finalization occurs when serialized for send; emulate by calling body() + reserved header injection via copy

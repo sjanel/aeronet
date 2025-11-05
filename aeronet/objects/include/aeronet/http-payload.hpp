@@ -20,6 +20,10 @@ namespace aeronet {
 // The body data is immutable after construction.
 // The body view() accessor returns a std::string_view referencing the internal data.
 class HttpPayload {
+ private:
+  using CharBuffer = std::pair<std::unique_ptr<char[]>, std::size_t>;
+  using BytesBuffer = std::pair<std::unique_ptr<std::byte[]>, std::size_t>;
+
  public:
   HttpPayload() noexcept = default;
 
@@ -29,9 +33,16 @@ class HttpPayload {
   // Constructs a HttpBody by taking ownership of the given std::vector<char>.
   explicit HttpPayload(std::vector<char> vec) noexcept : _data(std::move(vec)) {}
 
+  // Constructs a HttpBody by taking ownership of the given std::vector<std::byte>.
+  explicit HttpPayload(std::vector<std::byte> vec) noexcept : _data(std::move(vec)) {}
+
   // Constructs a HttpBody by taking ownership of the given buffer.
   explicit HttpPayload(std::unique_ptr<char[]> buf, std::size_t size) noexcept
       : _data(CharBuffer{std::move(buf), size}) {}
+
+  // Constructs a HttpBody by taking ownership of the given buffer.
+  explicit HttpPayload(std::unique_ptr<std::byte[]> buf, std::size_t size) noexcept
+      : _data(BytesBuffer{std::move(buf), size}) {}
 
   explicit HttpPayload(RawChars rawChars) noexcept : _data(std::move(rawChars)) {}
 
@@ -42,9 +53,9 @@ class HttpPayload {
         [](auto const& val) -> std::size_t {
           using T = std::decay_t<decltype(val)>;
           if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
-                        std::is_same_v<T, RawChars>) {
+                        std::is_same_v<T, std::vector<std::byte>> || std::is_same_v<T, RawChars>) {
             return val.size();
-          } else if constexpr (std::is_same_v<T, CharBuffer>) {
+          } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
             return val.second;
           } else {
             return {};
@@ -57,11 +68,15 @@ class HttpPayload {
     return std::visit(
         [](auto& val) -> char* {
           using T = std::decay_t<decltype(val)>;
-          if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, RawChars> ||
-                        std::is_same_v<T, std::vector<char>>) {
+          if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
+                        std::is_same_v<T, RawChars>) {
             return val.data();
+          } else if constexpr (std::is_same_v<T, std::vector<std::byte>>) {
+            return reinterpret_cast<char*>(val.data());
           } else if constexpr (std::is_same_v<T, CharBuffer>) {
             return val.first.get();
+          } else if constexpr (std::is_same_v<T, BytesBuffer>) {
+            return reinterpret_cast<char*>(val.first.get());
           } else {
             return {};
           }
@@ -77,8 +92,12 @@ class HttpPayload {
             return std::string_view(val);
           } else if constexpr (std::is_same_v<T, std::vector<char>>) {
             return std::string_view(val.data(), val.size());
+          } else if constexpr (std::is_same_v<T, std::vector<std::byte>>) {
+            return std::string_view(reinterpret_cast<const char*>(val.data()), val.size());
           } else if constexpr (std::is_same_v<T, CharBuffer>) {
             return std::string_view(val.first.get(), val.second);
+          } else if constexpr (std::is_same_v<T, BytesBuffer>) {
+            return std::string_view(reinterpret_cast<const char*>(val.first.get()), val.second);
           } else {
             return {};
           }
@@ -96,11 +115,14 @@ class HttpPayload {
             val.append(data);
           } else if constexpr (std::is_same_v<T, std::vector<char>>) {
             val.insert(val.end(), data.begin(), data.end());
-          } else if constexpr (std::is_same_v<T, CharBuffer>) {
+          } else if constexpr (std::is_same_v<T, std::vector<std::byte>>) {
+            val.insert(val.end(), reinterpret_cast<const std::byte*>(data.begin()),
+                       reinterpret_cast<const std::byte*>(data.end()));
+          } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
             // switch to RawChars to simplify appending
             RawChars rawChars(val.second + data.size());
 
-            rawChars.unchecked_append(val.first.get(), val.second);
+            rawChars.unchecked_append(reinterpret_cast<const char*>(val.first.get()), val.second);
             rawChars.unchecked_append(data);
 
             _data = std::move(rawChars);
@@ -120,12 +142,16 @@ class HttpPayload {
           } else if constexpr (std::is_same_v<T, std::vector<char>>) {
             const auto otherView = other.view();
             val.insert(val.end(), otherView.data(), otherView.data() + otherView.size());
-          } else if constexpr (std::is_same_v<T, CharBuffer>) {
+          } else if constexpr (std::is_same_v<T, std::vector<std::byte>>) {
+            const auto otherView = other.view();
+            val.insert(val.end(), reinterpret_cast<const std::byte*>(otherView.data()),
+                       reinterpret_cast<const std::byte*>(otherView.data() + otherView.size()));
+          } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
             // switch to RawChars to simplify appending
             const auto otherView = other.view();
             RawChars rawChars(val.second + otherView.size());
 
-            rawChars.unchecked_append(val.first.get(), val.second);
+            rawChars.unchecked_append(reinterpret_cast<const char*>(val.first.get()), val.second);
             rawChars.unchecked_append(otherView);
 
             _data = std::move(rawChars);
@@ -140,15 +166,16 @@ class HttpPayload {
           using T = std::decay_t<decltype(val)>;
           if constexpr (std::is_same_v<T, std::monostate>) {
             _data = RawChars(capa);
-          } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>>) {
+          } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
+                               std::is_same_v<T, std::vector<std::byte>>) {
             val.reserve(val.size() + capa);
           } else if constexpr (std::is_same_v<T, RawChars>) {
             val.ensureAvailableCapacity(capa);
-          } else if constexpr (std::is_same_v<T, CharBuffer>) {
+          } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
             // switch to RawChars to simplify appending
             RawChars rawChars(val.second + capa);
 
-            rawChars.unchecked_append(val.first.get(), val.second);
+            rawChars.unchecked_append(reinterpret_cast<const char*>(val.first.get()), val.second);
 
             _data = std::move(rawChars);
           }
@@ -163,12 +190,15 @@ class HttpPayload {
           using T = std::decay_t<decltype(val)>;
           if constexpr (std::is_same_v<T, std::monostate>) {
             throw std::runtime_error("Cannot call addSize on a monostate");
-          } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>>) {
+          } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
+                               std::is_same_v<T, std::vector<std::byte>>) {
             val.resize(val.size() + sz);
           } else if constexpr (std::is_same_v<T, RawChars>) {
             val.addSize(sz);
           } else if constexpr (std::is_same_v<T, CharBuffer>) {
             throw std::runtime_error("Cannot call addSize on a CharBuffer");
+          } else if constexpr (std::is_same_v<T, BytesBuffer>) {
+            throw std::runtime_error("Cannot call addSize on a BytesBuffer");
           }
         },
         _data);
@@ -179,9 +209,9 @@ class HttpPayload {
         [](auto& val) -> void {
           using T = std::decay_t<decltype(val)>;
           if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
-                        std::is_same_v<T, RawChars>) {
+                        std::is_same_v<T, std::vector<std::byte>> || std::is_same_v<T, RawChars>) {
             val.clear();
-          } else if constexpr (std::is_same_v<T, CharBuffer>) {
+          } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
             val.second = 0;
           }
         },
@@ -189,9 +219,9 @@ class HttpPayload {
   }
 
  private:
-  using CharBuffer = std::pair<std::unique_ptr<char[]>, std::size_t>;
-
-  std::variant<std::monostate, std::string, std::vector<char>, CharBuffer, RawChars> _data;
+  std::variant<std::monostate, std::string, std::vector<char>, std::vector<std::byte>, CharBuffer, BytesBuffer,
+               RawChars>
+      _data;
 };
 
 }  // namespace aeronet
