@@ -140,7 +140,6 @@ TEST(HttpStreaming, SendFileFixedLengthPlain) {
 
   ts.server.router().setDefault([path](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
-    writer.contentType("application/octet-stream");
     writer.file(File(path));
     writer.end();
   });
@@ -169,7 +168,6 @@ TEST(HttpStreaming, SendFileHeadSuppressesBody) {
 
   ts.server.router().setDefault([path](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
-    writer.contentType("application/octet-stream");
     writer.file(File(path));
     writer.end();
   });
@@ -222,14 +220,14 @@ TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
   auto port = ts.port();
   ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
     writer.status(200);
-    writer.customHeader("X-Custom-A", "alpha");
-    writer.customHeader("X-Custom-B", "beta");
-    writer.customHeader("Content-Type", "application/json");  // override default
+    writer.header("X-Custom-A", "alpha");
+    writer.header("X-Custom-B", "beta");
+    writer.header("Content-Type", "application/json");  // override default
     // First write sends headers implicitly.
     writer.writeBody("{\"k\":1}");
     // These should be ignored because headers already sent.
-    writer.customHeader("X-Ignored", "zzz");
-    writer.customHeader("Content-Type", "text/plain");
+    writer.header("X-Ignored", "zzz");
+    writer.header("Content-Type", "text/plain");
     writer.end();
   });
 
@@ -263,13 +261,13 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
   // path /mix : GET streaming, POST normal
   srv.router().setPath(http::Method::GET, "/mix", [](const HttpRequest& /*unused*/, HttpResponseWriter& writer) {
     writer.status(200);
-    writer.customHeader("Content-Type", "text/plain");
+    writer.header("Content-Type", "text/plain");
     writer.writeBody("S");
     writer.writeBody("TREAM");
     writer.end();
   });
   srv.router().setPath(http::Method::POST, "/mix", [](const HttpRequest& /*unused*/) {
-    return HttpResponse(201).reason("Created").contentType(http::ContentTypeTextPlain).body("NORMAL");
+    return HttpResponse(201).reason("Created").body("NORMAL");
   });
   std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
@@ -284,8 +282,7 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
 TEST(HttpServerMixed, ConflictRegistrationNormalThenStreaming) {
   HttpServerConfig cfg;
   HttpServer srv(cfg);
-  srv.router().setPath(http::Method::GET, "/c",
-                       [](const HttpRequest&) { return HttpResponse(200, "OK").body("X").contentType("text/plain"); });
+  srv.router().setPath(http::Method::GET, "/c", [](const HttpRequest&) { return HttpResponse(200, "OK").body("X"); });
   EXPECT_THROW(srv.router().setPath(http::Method::GET, "/c", [](const HttpRequest&, HttpResponseWriter&) {}),
                std::logic_error);
 }
@@ -297,9 +294,8 @@ TEST(HttpServerMixed, ConflictRegistrationStreamingThenNormal) {
     writer.status(200);
     writer.end();
   });
-  EXPECT_THROW(srv.router().setPath(
-                   http::Method::GET, "/c2",
-                   [](const HttpRequest&) { return HttpResponse(200, "OK").body("Y").contentType("text/plain"); }),
+  EXPECT_THROW(srv.router().setPath(http::Method::GET, "/c2",
+                                    [](const HttpRequest&) { return HttpResponse(200, "OK").body("Y"); }),
                std::logic_error);
 }
 
@@ -307,12 +303,10 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
   HttpServerConfig cfg;
   cfg.enableKeepAlive = false;
   HttpServer srv(cfg);
-  srv.router().setDefault([](const HttpRequest&) {
-    return HttpResponse(200, "OK").contentType(http::ContentTypeTextPlain).body("GLOBAL");
-  });
+  srv.router().setDefault([](const HttpRequest&) { return HttpResponse(200, "OK").body("GLOBAL"); });
   srv.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
-    writer.customHeader("Content-Type", "text/plain");
+    writer.header("Content-Type", "text/plain");
     writer.writeBody("STREAMFALLBACK");
     writer.end();
   });
@@ -323,9 +317,8 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
     writer.end();
   });
   // path-specific normal overrides global fallbacks
-  srv.router().setPath(http::Method::GET, "/n", [](const HttpRequest&) {
-    return HttpResponse(http::StatusCodeOK, "OK").body("PN").contentType("text/plain");
-  });
+  srv.router().setPath(http::Method::GET, "/n",
+                       [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("PN"); });
   std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   std::string pathStreamResp = httpRequest(srv.port(), "GET", "/s");
@@ -342,8 +335,7 @@ TEST(HttpServerMixed, GlobalNormalOnlyWhenNoStreaming) {
   HttpServerConfig cfg;
   cfg.enableKeepAlive = false;
   HttpServer srv(cfg);
-  srv.router().setDefault(
-      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("GN").contentType("text/plain"); });
+  srv.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("GN"); });
   std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   std::string result = httpRequest(srv.port(), "GET", "/x");
@@ -358,7 +350,7 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
   // Register streaming handler for GET; it will attempt to write a body.
   srv.router().setPath(http::Method::GET, "/head", [](const HttpRequest& /*unused*/, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.customHeader("Content-Type", "text/plain");
+    writer.header("Content-Type", "text/plain");
     writer.writeBody("SHOULD_NOT_APPEAR");  // for HEAD this must be suppressed by writer
     writer.end();
   });
@@ -407,14 +399,13 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
   // Register streaming GET and normal POST on same path
   srv.router().setPath(http::Method::GET, "/ka", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.customHeader("Content-Type", "text/plain");
+    writer.header("Content-Type", "text/plain");
     writer.writeBody("A");
     writer.writeBody("B");
     writer.end();
   });
-  srv.router().setPath(http::Method::POST, "/ka", [](const HttpRequest&) {
-    return HttpResponse(201).reason("Created").body("NORMAL").contentType("text/plain");
-  });
+  srv.router().setPath(http::Method::POST, "/ka",
+                       [](const HttpRequest&) { return HttpResponse(201).reason("Created").body("NORMAL"); });
   std::jthread th([&] { srv.run(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   // Build raw requests (each must include Host and Connection: keep-alive)

@@ -140,7 +140,7 @@ CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequest& request, 
   }
   if (!originAllowed(origin)) {
     response.status(http::StatusCodeForbidden, http::ReasonForbidden);
-    response.contentType(http::ContentTypeTextPlain).body(http::ReasonForbidden);
+    response.body(http::ReasonForbidden);
     return ApplyStatus::OriginDenied;
   }
   applyResponseHeaders(response, origin);
@@ -189,21 +189,21 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequest& reque
         value.append_range(http::toMethodStr(method));
       }
     }
-    response.customHeader(http::AccessControlAllowMethods, std::string_view(value));
+    response.header(http::AccessControlAllowMethods, std::string_view(value));
   }
 
   if (!_allowedRequestHeaders.empty()) {
-    response.customHeader(http::AccessControlAllowHeaders, _allowedRequestHeaders.fullString());
+    response.header(http::AccessControlAllowHeaders, _allowedRequestHeaders.fullString());
   } else if (!requestedHeaders.empty()) {
-    response.customHeader(http::AccessControlAllowHeaders, requestedHeaders);
+    response.header(http::AccessControlAllowHeaders, requestedHeaders);
   }
 
   if (_allowPrivateNetwork) {
-    response.customHeader(http::AccessControlAllowPrivateNetwork, "true");
+    response.header(http::AccessControlAllowPrivateNetwork, "true");
   }
 
   if (_maxAge.count() >= 0) {
-    response.customHeader(http::AccessControlMaxAge, static_cast<std::uint64_t>(_maxAge.count()));
+    response.header(http::AccessControlMaxAge, static_cast<std::uint64_t>(_maxAge.count()));
   }
 
   result.status = PreflightResult::Status::Allowed;
@@ -265,27 +265,27 @@ bool CorsPolicy::requestHeadersAllowed(std::string_view headerList) const {
 void CorsPolicy::applyResponseHeaders(HttpResponse& response, std::string_view origin) const {
   const bool mirrorOrigin = _originMode == OriginMode::Enumerated || _allowCredentials;
   if (mirrorOrigin) {
-    response.customHeader(http::AccessControlAllowOrigin, origin);
+    response.header(http::AccessControlAllowOrigin, origin);
     auto existing = response.headerValueOrEmpty(http::Vary);
     if (existing.empty()) {
-      response.addCustomHeader(http::Vary, http::Origin);
+      response.addHeader(http::Vary, http::Origin);
     } else if (!listContainsToken(existing, http::Origin)) {
       static constexpr std::string_view kAppendedOrigin = ", Origin";
       SmallRawChars combined(static_cast<uint32_t>(existing.size()) + kAppendedOrigin.size());
       combined.unchecked_append(existing);
       combined.unchecked_append(kAppendedOrigin);
-      response.customHeader(http::Vary, std::move(combined));
+      response.header(http::Vary, std::move(combined));
     }
   } else {
-    response.customHeader(http::AccessControlAllowOrigin, "*");
+    response.header(http::AccessControlAllowOrigin, "*");
   }
 
   if (_allowCredentials) {
-    response.customHeader(http::AccessControlAllowCredentials, "true");
+    response.header(http::AccessControlAllowCredentials, "true");
   }
 
   if (!_exposedHeaders.empty()) {
-    response.customHeader(http::AccessControlExposeHeaders, _exposedHeaders.fullString());
+    response.header(http::AccessControlExposeHeaders, _exposedHeaders.fullString());
   }
 }
 

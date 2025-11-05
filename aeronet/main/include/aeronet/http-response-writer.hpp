@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string_view>
 
 #include "aeronet/encoding.hpp"
@@ -33,28 +34,27 @@ class HttpResponseWriter {
   void reason(std::string_view reason);
 
   // Append a header line (duplicates allowed, fastest path).
-  // No scan over existing headers. Prefer this when duplicates are OK or
-  // when constructing headers once.
+  // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
   // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  void addCustomHeader(std::string_view name, std::string_view value);
+  void addHeader(std::string_view name, std::string_view value);
 
   // Set or replace a header value ensuring at most one instance.
-  // Performs a linear scan (slower than addCustomHeader()) using case-insensitive comparison of header names per
+  // Performs a linear scan (slower than addHeader()) using case-insensitive comparison of header names per
   // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
-  // If not found, falls back to addCustomHeader(). Use only when you must guarantee uniqueness; otherwise prefer
-  // addCustomHeader().
+  // If not found, falls back to addHeader(). Use only when you must guarantee uniqueness; otherwise prefer
+  // addHeader().
   // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  void customHeader(std::string_view name, std::string_view value);
+  void header(std::string_view name, std::string_view value);
 
   // Inserts or replaces the Content-Type header.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  void contentType(std::string_view ct) { customHeader(http::ContentType, ct); }
+  void contentType(std::string_view ct) { header(http::ContentType, ct); }
 
   // Inserts or replaces the Content-Encoding header.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  void contentEncoding(std::string_view ce) { customHeader(http::ContentEncoding, ce); }
+  void contentEncoding(std::string_view ce) { header(http::ContentEncoding, ce); }
 
   // Declare an explicit fixed Content-Length for the streaming response and disable chunked framing.
   // Usage & semantics:
@@ -81,13 +81,31 @@ class HttpResponseWriter {
 
   // Backpressure-aware body write. Returns true if accepted (queued or immediately written). Returns
   // false if a fatal error occurred or the server marked the connection for closure / overflow.
+  // The content type will be 'application/octet-stream' if not previously set by the user.
   bool writeBody(std::string_view data);
+
+  // Backpressure-aware body write. Returns true if accepted (queued or immediately written). Returns
+  // false if a fatal error occurred or the server marked the connection for closure / overflow.
+  // The content type will be 'application/octet-stream' if not previously set by the user.
+  bool writeBody(std::span<const std::byte> data) {
+    return writeBody(std::string_view{reinterpret_cast<const char*>(data.data()), data.size()});
+  }
 
   // Stream the given file as the response body; zero-copy where transport allows.
   // Call before headers are sent and finish with end().
   // Returns true on success, false if the writer is not in a state to accept a file
   // (already sent body data, not opened, etc).
-  bool file(File fileObj, std::uint64_t offset = 0, std::uint64_t length = 0);
+  // 'contentType': if non-empty, sets given content type value. Otherwise, attempt to guess it from the file
+  // object. If the MIME type is unknown, sets 'application/octet-stream' as Content type.
+  bool file(File fileObj, std::string_view contentType = {}) { return file(std::move(fileObj), 0, 0, contentType); }
+
+  // Stream the given file as the response body; zero-copy where transport allows.
+  // Call before headers are sent and finish with end().
+  // Returns true on success, false if the writer is not in a state to accept a file
+  // (already sent body data, not opened, etc).
+  // 'contentType': if non-empty, sets given content type value. Otherwise, attempt to guess it from the file
+  // object. If the MIME type is unknown, sets 'application/octet-stream' as Content type.
+  bool file(File fileObj, std::uint64_t offset, std::uint64_t length, std::string_view contentType = {});
 
   // Adds a trailer header to be sent after the response body (RFC 7230 §4.1.2).
   //
@@ -98,7 +116,6 @@ class HttpResponseWriter {
   //   - Trailers are ONLY supported for chunked responses (the default for streaming).
   //   - If contentLength() was called (fixed-length response), trailers are NOT sent.
   //   - addTrailer() must be called BEFORE end() is called.
-  //   - Calling addTrailer() after end() is a no-op (logged as a warning in debug builds).
   //
   // Trailer semantics (per RFC 7230 §4.1.2):
   //   - Certain headers MUST NOT appear as trailers (e.g., Transfer-Encoding, Content-Length,
@@ -122,8 +139,6 @@ class HttpResponseWriter {
   //     X-Checksum: abc123\r\n
   //     X-Processing-Time-Ms: 42\r\n
   //     \r\n
-  //
-  // Thread safety: Not thread-safe (same as all other methods).
   void addTrailer(std::string_view name, std::string_view value);
 
   // Finalize the streaming response.

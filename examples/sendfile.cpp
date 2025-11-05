@@ -37,15 +37,14 @@ int main(int argc, char** argv) {
 
   // Fixed response (HttpResponse::file) on /static
   srv.router().setPath(aeronet::http::Method::GET, "/static", [path = path](const aeronet::HttpRequest& /*req*/) {
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).contentType("text/plain").file(aeronet::File(path));
+    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).file(aeronet::File(path));
   });
 
   // Streaming response using HttpResponseWriter::file on /stream
   srv.router().setPath(aeronet::http::Method::GET, "/stream",
                        [path = path](const aeronet::HttpRequest& /*req*/, aeronet::HttpResponseWriter& writer) {
                          writer.status(aeronet::http::StatusCodeOK);
-                         writer.contentType("text/plain");
-                         writer.file(aeronet::File(path));
+                         writer.file(aeronet::File(path), "text/plain");
                          writer.end();
                        });
 

@@ -380,21 +380,19 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       } catch (const std::exception& ex) {
         log::error("Exception in path handler: {}", ex.what());
         HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
-        resp.contentType(http::ContentTypeTextPlain).body(ex.what());
+        resp.body(ex.what());
         finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
       } catch (...) {
         log::error("Unknown exception in path handler");
         HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
-        resp.contentType(http::ContentTypeTextPlain).body("Unknown error");
+        resp.body("Unknown error");
         finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
       }
     } else {
       HttpResponse resp;
       if (routingResult.redirectPathIndicator != Router::RoutingResult::RedirectSlashMode::None) {
         // Emit 301 redirect to canonical form.
-        resp.status(http::StatusCodeMovedPermanently, http::MovedPermanently)
-            .contentType(http::ContentTypeTextPlain)
-            .body("Redirecting");
+        resp.status(http::StatusCodeMovedPermanently, http::MovedPermanently).body("Redirecting");
         if (routingResult.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
           _tmpBuffer.assign(_request.path());
           _tmpBuffer.push_back('/');
@@ -405,13 +403,9 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
 
         consumedBytes = 0;  // already advanced
       } else if (routingResult.methodNotAllowed) {
-        resp.status(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed)
-            .contentType(http::ContentTypeTextPlain)
-            .body(resp.reason());
+        resp.status(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed).body(resp.reason());
       } else {
-        resp.status(http::StatusCodeNotFound, http::NotFound)
-            .contentType(http::ContentTypeTextPlain)
-            .body(http::NotFound);
+        resp.status(http::StatusCodeNotFound, http::NotFound).body(http::NotFound);
       }
       finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
     }
@@ -553,7 +547,7 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
     if (negotiated.reject) {
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
       HttpResponse resp(http::StatusCodeNotAcceptable, http::ReasonNotAcceptable);
-      resp.contentType(http::ContentTypeTextPlain).body("No acceptable content-coding available");
+      resp.body("No acceptable content-coding available");
       finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
       return state.isAnyCloseRequested();
     }
@@ -873,14 +867,12 @@ void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, b
 
 void HttpServer::registerBuiltInProbes() {
   // liveness: lightweight, should not depend on external systems
-  _router.setPath(http::Method::GET, std::string(_config.builtinProbes.livenessPath()), [](const HttpRequest&) {
-    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("OK\n");
-  });
+  _router.setPath(http::Method::GET, std::string(_config.builtinProbes.livenessPath()),
+                  [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("OK\n"); });
 
   // readiness: reflects lifecycle.ready
   _router.setPath(http::Method::GET, std::string(_config.builtinProbes.readinessPath()), [this](const HttpRequest&) {
     HttpResponse resp(http::StatusCodeOK);
-    resp.contentType(http::ContentTypeTextPlain);
     if (_lifecycle.ready.load(std::memory_order_relaxed)) {
       resp.body("OK\n");
     } else {
@@ -893,7 +885,6 @@ void HttpServer::registerBuiltInProbes() {
   // startup: reflects lifecycle.started
   _router.setPath(http::Method::GET, std::string(_config.builtinProbes.startupPath()), [this](const HttpRequest&) {
     HttpResponse resp(http::StatusCodeOK);
-    resp.contentType(http::ContentTypeTextPlain);
     if (_lifecycle.started.load(std::memory_order_relaxed)) {
       resp.body("OK\n");
     } else {

@@ -5,9 +5,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <string_view>
-#include <utility>
 
 using namespace aeronet;
 
@@ -44,20 +44,20 @@ TEST(ConcatenatedStrings, LongStringsAreHandled) {
 
 TEST(ConcatenatedStrings, GuardAgainstOverflowConstruction) {
   using T = StaticConcatenatedStrings<3, uint8_t>;
-  std::string a(128, 'A');
-  std::string b(100, 'B');
-  std::string c(24, 'C');
+  std::string aa(128, 'A');
+  std::string bb(100, 'B');
+  std::string cc(24, 'C');
 
-  EXPECT_NO_THROW((T({a, b, c})));
-  EXPECT_THROW((T({a, b, b})), std::length_error);
+  EXPECT_NO_THROW((T({aa, bb, cc})));
+  EXPECT_THROW((T({aa, bb, bb})), std::length_error);
 }
 
 TEST(ConcatenatedStrings, GuardAgainstOverflowSet) {
   StaticConcatenatedStrings<3, uint8_t> tooSmall({"", "", ""});
-  std::string a(128, 'A');
-  std::string b(128, 'B');
-  tooSmall.set(0, a);
-  EXPECT_THROW(tooSmall.set(1, b), std::length_error);
+  std::string aa(128, 'A');
+  std::string bb(128, 'B');
+  tooSmall.set(0, aa);
+  EXPECT_THROW(tooSmall.set(1, bb), std::length_error);
 }
 
 TEST(ConcatenatedStrings, CopyAndAssign) {
