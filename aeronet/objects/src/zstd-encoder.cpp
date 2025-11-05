@@ -11,82 +11,79 @@
 namespace aeronet {
 
 namespace details {
-ZstdCStreamRAII::ZstdCStreamRAII(int level, int windowLog) : ctx(ZSTD_createCCtx()), level(level) {
-  if (ctx == nullptr) {
+
+namespace {
+void ZSTD_freeWrapper(ZSTD_CCtx* pCtx) { (void)ZSTD_freeCCtx(pCtx); }
+}  // namespace
+
+ZstdContextRAII::ZstdContextRAII(int level, int windowLog) : ctx(ZSTD_createCCtx(), &ZSTD_freeWrapper), level(level) {
+  if (!ctx) {
     throw std::runtime_error("ZSTD_createCCtx failed");
   }
-  if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx, ZSTD_c_compressionLevel, level)) != 0U) {
+
+  if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx.get(), ZSTD_c_compressionLevel, level)) != 0U) {
     throw std::invalid_argument("ZSTD set level failed");
   }
   if (windowLog > 0) {
-    if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx, ZSTD_c_windowLog, windowLog)) != 0U) {
+    if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx.get(), ZSTD_c_windowLog, windowLog)) != 0U) {
       throw std::invalid_argument("ZSTD set windowLog failed");
     }
   }
 }
-ZstdCStreamRAII::~ZstdCStreamRAII() { ZSTD_freeCCtx(ctx); }
 }  // namespace details
 
 ZstdEncoderContext::ZstdEncoderContext(RawChars& sharedBuf, const CompressionConfig::Zstd& cfg)
     : _buf(sharedBuf), _zs(cfg.compressionLevel, cfg.windowLog) {}
 
-std::string_view ZstdEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk, bool finish) {
+std::string_view ZstdEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) {
   _buf.clear();
   if (_finished) {
     return _buf;
   }
   ZSTD_outBuffer outBuf{_buf.data(), _buf.capacity(), 0};
   ZSTD_inBuffer inBuf{chunk.data(), chunk.size(), 0};
-  auto mode = finish ? ZSTD_e_end : ZSTD_e_continue;
-  while (inBuf.pos < inBuf.size || (finish && mode == ZSTD_e_end)) {
-    size_t ret = ZSTD_compressStream2(_zs.ctx, &outBuf, &inBuf, mode);
+  const auto mode = chunk.empty() ? ZSTD_e_end : ZSTD_e_continue;
+  while (true) {
+    _buf.ensureAvailableCapacity(encoderChunkSize);
+    outBuf.dst = _buf.data() + outBuf.pos;
+    outBuf.size = _buf.capacity() - outBuf.pos;
+
+    std::size_t ret = ZSTD_compressStream2(_zs.ctx.get(), &outBuf, &inBuf, mode);
     if (ZSTD_isError(ret) != 0U) {
       throw std::runtime_error(std::format("ZSTD_compressStream2 error: {}", ZSTD_getErrorName(ret)));
     }
     _buf.setSize(outBuf.pos);
-    if (outBuf.pos == outBuf.size && (inBuf.pos < inBuf.size || (finish && ret != 0))) {
-      _buf.ensureAvailableCapacity(encoderChunkSize);
-      outBuf.dst = _buf.data() + outBuf.pos;
-      outBuf.size = _buf.capacity() - outBuf.pos;
-      continue;
-    }
-    if (finish && ret == 0) {
-      _finished = true;
-      break;
-    }
-    if (inBuf.pos >= inBuf.size && !finish) {
-      break;
+    if (chunk.empty()) {
+      if (ret == 0) {
+        break;
+      }
+    } else {
+      if (inBuf.pos == inBuf.size) {
+        break;
+      }
     }
   }
-  if (finish) {
+  if (chunk.empty()) {
     _finished = true;
   }
   return _buf;
 }
 
-std::string_view ZstdEncoder::compressAll(std::size_t encoderChunkSize, std::string_view in) {
+std::string_view ZstdEncoder::encodeFull(std::size_t encoderChunkSize, std::string_view full) {
   _buf.clear();
-  details::ZstdCStreamRAII oneShot(_cfg.compressionLevel, _cfg.windowLog);
+  details::ZstdContextRAII ctxRAII(_cfg.compressionLevel, _cfg.windowLog);
   ZSTD_outBuffer outBuf{_buf.data(), _buf.capacity(), 0};
-  ZSTD_inBuffer inBuf{in.data(), in.size(), 0};
-  while (inBuf.pos < inBuf.size) {
-    size_t ret = ZSTD_compressStream2(oneShot.ctx, &outBuf, &inBuf, ZSTD_e_continue);
+  ZSTD_inBuffer inBuf{full.data(), full.size(), 0};
+
+  ZSTD_EndDirective op = ZSTD_e_continue;
+
+  while (true) {
+    std::size_t ret = ZSTD_compressStream2(ctxRAII.ctx.get(), &outBuf, &inBuf, op);
+
     if (ZSTD_isError(ret) != 0U) {
       throw std::runtime_error(std::format("zstd compressStream2 error: {}", ZSTD_getErrorName(ret)));
     }
-    if (outBuf.pos == outBuf.size) {
-      _buf.ensureAvailableCapacity(encoderChunkSize);
-      outBuf.dst = _buf.data() + outBuf.pos;
-      outBuf.size = _buf.capacity() - outBuf.pos;
-    }
-  }
-  // finalize
-  for (;;) {
-    size_t ret = ZSTD_compressStream2(oneShot.ctx, &outBuf, &inBuf, ZSTD_e_end);
-    if (ZSTD_isError(ret) != 0U) {
-      throw std::runtime_error(std::format("zstd finalize error: {}", ZSTD_getErrorName(ret)));
-    }
-    if (ret == 0) {
+    if (op == ZSTD_e_end && ret == 0) {
       break;
     }
     if (outBuf.pos == outBuf.size) {
@@ -94,13 +91,13 @@ std::string_view ZstdEncoder::compressAll(std::size_t encoderChunkSize, std::str
       outBuf.dst = _buf.data() + outBuf.pos;
       outBuf.size = _buf.capacity() - outBuf.pos;
     }
+    if (op == ZSTD_e_continue && inBuf.pos == inBuf.size) {
+      op = ZSTD_e_end;
+    }
   }
+
   _buf.setSize(outBuf.pos);
   return _buf;
-}
-
-std::string_view ZstdEncoder::encodeFull(std::size_t encoderChunkSize, std::string_view full) {
-  return compressAll(encoderChunkSize, full);
 }
 
 }  // namespace aeronet

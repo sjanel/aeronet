@@ -6,49 +6,34 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string_view>
-#include <utility>
 
 #include "raw-chars.hpp"
 
 namespace aeronet {
 
-BrotliEncoderContext::BrotliEncoderContext(RawChars &sharedBuf, [[maybe_unused]] int quality,
-                                           [[maybe_unused]] int window)
-    : _buf(&sharedBuf) {
-  _state = BrotliEncoderCreateInstance(nullptr, nullptr, nullptr);
-  if (_state == nullptr) {
+BrotliEncoderContext::BrotliEncoderContext(RawChars &sharedBuf, int quality, int window)
+    : _state(BrotliEncoderCreateInstance(nullptr, nullptr, nullptr), &BrotliEncoderDestroyInstance), _buf(sharedBuf) {
+  if (!_state) {
     throw std::runtime_error("BrotliEncoderCreateInstance failed");
   }
   if (quality >= 0) {
-    BrotliEncoderSetParameter(_state, BROTLI_PARAM_QUALITY, static_cast<uint32_t>(quality));
+    if (!static_cast<bool>(
+            BrotliEncoderSetParameter(_state.get(), BROTLI_PARAM_QUALITY, static_cast<uint32_t>(quality)))) {
+      throw std::invalid_argument("Brotli set quality failed");
+    }
   }
   if (window > 0) {
-    BrotliEncoderSetParameter(_state, BROTLI_PARAM_LGWIN, static_cast<uint32_t>(window));
+    if (!static_cast<bool>(
+            BrotliEncoderSetParameter(_state.get(), BROTLI_PARAM_LGWIN, static_cast<uint32_t>(window)))) {
+      throw std::invalid_argument("Brotli set window failed");
+    }
   }
 }
 
-BrotliEncoderContext::BrotliEncoderContext(BrotliEncoderContext &&other) noexcept
-    : _state(std::exchange(other._state, nullptr)),
-      _buf(std::exchange(other._buf, nullptr)),
-      _finished(std::exchange(other._finished, true)) {}
-
-BrotliEncoderContext &BrotliEncoderContext::operator=(BrotliEncoderContext &&other) noexcept {
-  if (this != &other) {
-    BrotliEncoderDestroyInstance(_state);
-    _state = std::exchange(other._state, nullptr);
-    _buf = std::exchange(other._buf, nullptr);
-    _finished = std::exchange(other._finished, true);
-  }
-  return *this;
-}
-
-BrotliEncoderContext::~BrotliEncoderContext() { BrotliEncoderDestroyInstance(_state); }
-
-std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk, bool finish) {
-  auto &buf = *_buf;
-  buf.clear();
+std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) {
+  _buf.clear();
   if (_finished) {
-    return buf;
+    return _buf;
   }
   const uint8_t *nextIn = reinterpret_cast<const uint8_t *>(chunk.data());
   std::size_t availIn = chunk.size();
@@ -58,33 +43,29 @@ std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize,
   //  - If finish == true: keep invoking the encoder until the stream reports finished (all input consumed and flush
   //  complete).
   for (;;) {
-    // Ensure we have at least encoderChunkSize free (RawChars will grow exponentially as needed)
-    buf.ensureAvailableCapacity(encoderChunkSize);
-    uint8_t *nextOut = reinterpret_cast<uint8_t *>(buf.data() + buf.size());
-    std::size_t availOut = buf.capacity() - buf.size();
+    _buf.ensureAvailableCapacity(encoderChunkSize);
+
+    uint8_t *nextOut = reinterpret_cast<uint8_t *>(_buf.data() + _buf.size());
+    std::size_t availOut = _buf.capacity() - _buf.size();
 
     // Only switch to FINISH operation after all input has been consumed when finish requested.
-    BrotliEncoderOperation op;
-    if (!finish) {
-      op = BROTLI_OPERATION_PROCESS;
-    } else {
-      op = (availIn == 0) ? BROTLI_OPERATION_FINISH : BROTLI_OPERATION_PROCESS;
-    }
+    BrotliEncoderOperation op = chunk.empty() && availIn == 0 ? BROTLI_OPERATION_FINISH : BROTLI_OPERATION_PROCESS;
 
-    if (BrotliEncoderCompressStream(_state, op, &availIn, &nextIn, &availOut, &nextOut, nullptr) == 0) {
+    if (BrotliEncoderCompressStream(_state.get(), op, &availIn, &nextIn, &availOut, &nextOut, nullptr) == 0) {
       throw std::runtime_error("BrotliEncoderCompressStream failed");
     }
 
-    buf.setSize(buf.capacity() - availOut);
+    _buf.setSize(_buf.capacity() - availOut);
 
-    if (!finish) {
-      // Non-finishing mode: stop once caller's input fully consumed OR output buffer filled (loop continues on fill)
-      if (availIn == 0) {
+    if (chunk.empty()) {
+      // Finishing mode: break only when encoder reports finished after issuing FINISH op
+      if (op == BROTLI_OPERATION_FINISH && BrotliEncoderIsFinished(_state.get()) != 0) {
         break;
       }
     } else {
-      // Finishing mode: break only when encoder reports finished after issuing FINISH op
-      if (op == BROTLI_OPERATION_FINISH && BrotliEncoderIsFinished(_state) != 0) {
+      // Non-finishing mode: stop once caller's input fully consumed OR output buffer filled (loop continues on
+      // fill)
+      if (availIn == 0) {
         break;
       }
     }
@@ -94,19 +75,16 @@ std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize,
       continue;
     }
   }
-  if (finish) {
+  if (chunk.empty()) {
     _finished = true;
   }
-  return buf;
-}
-
-std::string_view BrotliEncoder::compressAll(std::size_t encoderChunkSize, std::string_view in) {
-  BrotliEncoderContext ctx(_buf, _quality, _window);
-  return ctx.encodeChunk(encoderChunkSize, in, true);
+  return _buf;
 }
 
 std::string_view BrotliEncoder::encodeFull(std::size_t encoderChunkSize, std::string_view full) {
-  return compressAll(encoderChunkSize, full);
+  BrotliEncoderContext ctx(_buf, _quality, _window);
+  ctx.encodeChunk(encoderChunkSize, full);
+  return ctx.encodeChunk(encoderChunkSize, std::string_view{});
 }
 
 }  // namespace aeronet

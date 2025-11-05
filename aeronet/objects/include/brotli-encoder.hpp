@@ -16,18 +16,11 @@ class BrotliEncoderContext : public EncoderContext {
  public:
   BrotliEncoderContext(RawChars &sharedBuf, int quality, int window);
 
-  BrotliEncoderContext(const BrotliEncoderContext &) = delete;
-  BrotliEncoderContext(BrotliEncoderContext &&) noexcept;
-  BrotliEncoderContext &operator=(const BrotliEncoderContext &) = delete;
-  BrotliEncoderContext &operator=(BrotliEncoderContext &&) noexcept;
-
-  ~BrotliEncoderContext();
-
-  std::string_view encodeChunk(std::size_t encoderChunkSize, std::string_view chunk, bool finish) override;
+  std::string_view encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) override;
 
  private:
-  BrotliEncoderState *_state{nullptr};
-  RawChars *_buf;
+  std::unique_ptr<BrotliEncoderState, void (*)(BrotliEncoderState *)> _state;
+  RawChars &_buf;
   bool _finished{false};
 };
 
@@ -43,7 +36,6 @@ class BrotliEncoder : public Encoder {
   }
 
  private:
-  std::string_view compressAll(std::size_t encoderChunkSize, std::string_view in);
   RawChars _buf;
   int _quality;
   int _window;
