@@ -1,17 +1,25 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
+#include <utility>
+
+#include "aeronet/cors-policy.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/http-status-code.hpp"
+#include "aeronet/router-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
 using namespace aeronet;
 
 TEST(HttpOptionsTrace, OptionsStarReturnsAllow) {
-  HttpServerConfig cfg{};
-  // Install global simple handler so Router.allowedMethods returns non-empty set
-  test::TestServer ts(cfg);
+  test::TestServer ts(HttpServerConfig{});
   ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(200); });
 
   auto resp = test::requestOrThrow(ts.port(),
@@ -33,8 +41,7 @@ TEST(HttpOptionsTrace, TraceEchoWhenEnabled) {
 }
 
 TEST(HttpOptionsTrace, TraceDisabledReturns405) {
-  HttpServerConfig cfg{};
-  test::TestServer ts(cfg);
+  test::TestServer ts(HttpServerConfig{});
 
   auto resp = test::requestOrThrow(
       ts.port(), test::RequestOptions{.method = "TRACE", .target = "/test", .body = "", .headers = {}});
@@ -42,7 +49,6 @@ TEST(HttpOptionsTrace, TraceDisabledReturns405) {
 }
 
 TEST(HttpOptionsTrace, TraceEnabledPlainOnlyAllowsPlaintext) {
-  // EnabledPlainOnly should still allow TRACE over plaintext
   HttpServerConfig cfg{};
   cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly);
   test::TestServer ts(cfg);
@@ -51,4 +57,556 @@ TEST(HttpOptionsTrace, TraceEnabledPlainOnlyAllowsPlaintext) {
   auto resp = test::requestOrThrow(
       ts.port(), test::RequestOptions{.method = "TRACE", .target = "/test", .body = "", .headers = {}});
   ASSERT_TRUE(resp.contains("200"));
+}
+
+namespace {
+CorsPolicy MakePolicy() {
+  CorsPolicy policy;
+  policy.allowOrigin("https://app.example")
+      .allowMethods(http::Method::GET | http::Method::POST)
+      .allowAnyRequestHeaders();
+  return policy;
+}
+}  // namespace
+
+class HttpCorsIntegration : public ::testing::Test {
+ public:
+  static RouterConfig MakeConfigWithCors() {
+    RouterConfig cfg{};
+    cfg.withDefaultCorsPolicy(MakePolicy());
+    return cfg;
+  }
+
+ protected:
+  HttpServerConfig cfg;
+  test::TestServer ts{cfg, MakeConfigWithCors()};
+};
+
+TEST_F(HttpCorsIntegration, PreflightUsesRouterAllowedMethods) {
+  ts.server.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
+    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("ok");
+  });
+
+  test::RequestOptions opt;
+  opt.method = "OPTIONS";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://app.example"},
+                 {"Access-Control-Request-Method", "GET"},
+                 {"Access-Control-Request-Headers", "X-Trace"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
+
+  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  ASSERT_NE(originIt, parsed.headers.end());
+  EXPECT_EQ(originIt->second, "https://app.example");
+
+  auto methodsIt = parsed.headers.find("Access-Control-Allow-Methods");
+  ASSERT_NE(methodsIt, parsed.headers.end());
+  EXPECT_EQ(methodsIt->second, "GET");
+
+  auto hdrsIt = parsed.headers.find("Access-Control-Allow-Headers");
+  ASSERT_NE(hdrsIt, parsed.headers.end());
+  EXPECT_EQ(hdrsIt->second, "*");
+}
+
+TEST_F(HttpCorsIntegration, PreflightMethodDeniedReturns405WithAllow) {
+  ts.server.router().setPath(http::Method::GET, "/data",
+                             [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+
+  test::RequestOptions opt;
+  opt.method = "OPTIONS";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://app.example"}, {"Access-Control-Request-Method", "PUT"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeMethodNotAllowed);
+
+  auto allowIt = parsed.headers.find("Allow");
+  ASSERT_NE(allowIt, parsed.headers.end());
+  EXPECT_EQ(allowIt->second, "GET");
+}
+
+TEST_F(HttpCorsIntegration, PreflightOriginDeniedReturns403) {
+  ts.server.router().setPath(http::Method::GET, "/data",
+                             [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+
+  test::RequestOptions opt;
+  opt.method = "OPTIONS";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://denied.example"}, {"Access-Control-Request-Method", "GET"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
+
+  EXPECT_FALSE(parsed.headers.contains("Access-Control-Allow-Origin"));
+}
+
+TEST_F(HttpCorsIntegration, ActualRequestIncludesAllowOriginHeader) {
+  ts.server.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
+    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("ok");
+  });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://app.example"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+
+  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  ASSERT_NE(originIt, parsed.headers.end());
+  EXPECT_EQ(originIt->second, "https://app.example");
+}
+
+TEST_F(HttpCorsIntegration, ActualRequestOriginDeniedReturns403) {
+  std::atomic<bool> handlerInvoked{false};
+  ts.server.router().setPath(http::Method::GET, "/data", [&handlerInvoked](const HttpRequest&) {
+    handlerInvoked.store(true);
+    return HttpResponse(http::StatusCodeOK);
+  });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://blocked.example"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
+  EXPECT_FALSE(handlerInvoked.load());
+}
+
+TEST_F(HttpCorsIntegration, StreamingResponseCarriesCorsHeaders) {
+  ts.server.router().setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
+    writer.contentType("text/plain");
+    writer.writeBody("chunk-one");
+    writer.end();
+  });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/stream";
+  opt.headers = {{"Origin", "https://app.example"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+
+  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  ASSERT_NE(originIt, parsed.headers.end());
+  EXPECT_EQ(originIt->second, "https://app.example");
+
+  // Verify Vary: Origin is present for mirrored origin (credentials enabled in fixture)
+  auto varyIt = parsed.headers.find("Vary");
+  ASSERT_NE(varyIt, parsed.headers.end());
+  EXPECT_TRUE(varyIt->second.find("Origin") != std::string::npos);
+
+  EXPECT_EQ(parsed.plainBody, "chunk-one");
+}
+
+TEST_F(HttpCorsIntegration, StreamingVaryHeaderAppendsOrigin) {
+  ts.server.router().setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.statusCode(http::StatusCodeOK);
+    writer.customHeader("Vary", "Accept-Encoding");
+    writer.contentType("text/plain");
+    writer.writeBody("data");
+    writer.end();
+  });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/stream";
+  opt.headers = {{"Origin", "https://app.example"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+
+  auto varyIt = parsed.headers.find("Vary");
+  ASSERT_NE(varyIt, parsed.headers.end());
+  EXPECT_TRUE(varyIt->second.find("Accept-Encoding") != std::string::npos);
+  EXPECT_TRUE(varyIt->second.find("Origin") != std::string::npos);
+}
+
+TEST_F(HttpCorsIntegration, StreamingOriginDeniedSkipsHandler) {
+  std::atomic<bool> handlerInvoked{false};
+  ts.server.router().setPath(http::Method::GET, "/stream",
+                             [&handlerInvoked](const HttpRequest&, HttpResponseWriter& writer) {
+                               handlerInvoked.store(true);
+                               writer.statusCode(http::StatusCodeOK);
+                               writer.writeBody("should-not-send");
+                               writer.end();
+                             });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/stream";
+  opt.headers = {{"Origin", "https://blocked.example"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
+  EXPECT_FALSE(handlerInvoked.load());
+  EXPECT_EQ(parsed.headers.count("Access-Control-Allow-Origin"), 0);
+}
+
+TEST_F(HttpCorsIntegration, PerRouteCorsPolicyOverridesDefault_ActualAndPreflight) {
+  // Attach a per-route policy that only allows https://per.example and GET
+  CorsPolicy per;
+  per.allowOrigin("https://per.example").allowMethods(http::Method::GET).allowAnyRequestHeaders();
+
+  ts.server.router()
+      .setPath(http::Method::GET, "/per",
+               [](const HttpRequest&) {
+                 return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("ok");
+               })
+      .cors(std::move(per));
+
+  // Actual request with allowed per-route origin
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/per";
+  opt.headers = {{"Origin", "https://per.example"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  ASSERT_NE(originIt, parsed.headers.end());
+  EXPECT_EQ(originIt->second, "https://per.example");
+
+  // Actual request with origin allowed by router default but not per-route -> should be denied
+  opt.headers = {{"Origin", "https://app.example"}};
+  raw = test::requestOrThrow(ts.port(), opt);
+  parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
+
+  // Preflight for per-route allowed origin
+  test::RequestOptions pre;
+  pre.method = "OPTIONS";
+  pre.target = "/per";
+  pre.headers = {{"Origin", "https://per.example"}, {"Access-Control-Request-Method", "GET"}};
+
+  raw = test::requestOrThrow(ts.port(), pre);
+  parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
+  originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  ASSERT_NE(originIt, parsed.headers.end());
+  EXPECT_EQ(originIt->second, "https://per.example");
+}
+
+TEST(HttpCorsDetailed, PreflightWithCredentialsEmitsMirroredOriginAndCredentials) {
+  HttpServerConfig cfg{};
+  CorsPolicy policy = MakePolicy();
+  policy.allowCredentials(true);
+  RouterConfig routerCfg;
+  routerCfg.withDefaultCorsPolicy(std::move(policy));
+
+  test::TestServer ts(cfg, routerCfg);
+  ts.server.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
+    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("ok");
+  });
+
+  test::RequestOptions opt;
+  opt.method = "OPTIONS";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://app.example"}, {"Access-Control-Request-Method", "GET"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
+
+  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  ASSERT_NE(originIt, parsed.headers.end());
+  EXPECT_EQ(originIt->second, "https://app.example");
+
+  auto credIt = parsed.headers.find("Access-Control-Allow-Credentials");
+  ASSERT_NE(credIt, parsed.headers.end());
+  EXPECT_EQ(credIt->second, "true");
+}
+
+TEST(HttpCorsDetailed, ActualRequestWithCredentialsEmitsCredentials) {
+  HttpServerConfig cfg{};
+  CorsPolicy policy = MakePolicy();
+  policy.allowCredentials(true);
+  RouterConfig routerCfg;
+  routerCfg.withDefaultCorsPolicy(std::move(policy));
+
+  test::TestServer ts(cfg, routerCfg);
+  ts.server.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
+    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("ok");
+  });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://app.example"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+
+  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  ASSERT_NE(originIt, parsed.headers.end());
+  EXPECT_EQ(originIt->second, "https://app.example");
+
+  auto credIt = parsed.headers.find("Access-Control-Allow-Credentials");
+  ASSERT_NE(credIt, parsed.headers.end());
+  EXPECT_EQ(credIt->second, "true");
+}
+
+TEST(HttpCorsDetailed, PreflightExposeHeadersAndMaxAge) {
+  HttpServerConfig cfg{};
+  CorsPolicy policy = MakePolicy();
+  policy.exposeHeader("X-My-Header").maxAge(std::chrono::seconds{600});
+  RouterConfig routerCfg;
+  routerCfg.withDefaultCorsPolicy(std::move(policy));
+
+  test::TestServer ts(cfg, routerCfg);
+  ts.server.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
+    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("ok");
+  });
+
+  test::RequestOptions opt;
+  opt.method = "OPTIONS";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://app.example"}, {"Access-Control-Request-Method", "GET"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
+
+  auto exposIt = parsed.headers.find("Access-Control-Expose-Headers");
+  ASSERT_NE(exposIt, parsed.headers.end());
+  EXPECT_EQ(exposIt->second, "X-My-Header");
+
+  auto maxAgeIt = parsed.headers.find("Access-Control-Max-Age");
+  ASSERT_NE(maxAgeIt, parsed.headers.end());
+  EXPECT_EQ(maxAgeIt->second, "600");
+}
+
+TEST(HttpCorsDetailed, PreflightPrivateNetworkHeader) {
+  HttpServerConfig cfg{};
+  CorsPolicy policy = MakePolicy();
+  policy.allowPrivateNetwork(true);
+  RouterConfig routerCfg;
+  routerCfg.withDefaultCorsPolicy(std::move(policy));
+
+  test::TestServer ts(cfg, routerCfg);
+  ts.server.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
+    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("ok");
+  });
+
+  test::RequestOptions opt;
+  opt.method = "OPTIONS";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://app.example"}, {"Access-Control-Request-Method", "GET"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
+
+  auto pnetIt = parsed.headers.find("Access-Control-Allow-Private-Network");
+  ASSERT_NE(pnetIt, parsed.headers.end());
+  EXPECT_EQ(pnetIt->second, "true");
+}
+
+TEST(HttpCorsDetailed, PreflightRequestedHeaderDeniedWhenNotAllowed) {
+  HttpServerConfig cfg{};
+  CorsPolicy policy;
+  policy.allowOrigin("https://app.example");
+  policy.allowMethods(http::Method::GET | http::Method::POST);
+  policy.allowRequestHeader("X-Foo");
+  RouterConfig routerCfg;
+  routerCfg.withDefaultCorsPolicy(std::move(policy));
+
+  test::TestServer ts(cfg, routerCfg);
+  ts.server.router().setPath(http::Method::GET, "/data",
+                             [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+
+  test::RequestOptions opt;
+  opt.method = "OPTIONS";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://app.example"},
+                 {"Access-Control-Request-Method", "GET"},
+                 {"Access-Control-Request-Headers", "X-Bar"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
+  EXPECT_EQ(parsed.headers.count("Access-Control-Allow-Headers"), 0);
+}
+
+TEST(HttpCorsDetailed, PreflightEchoesRequestedHeadersWhenNoAllowedList) {
+  HttpServerConfig cfg{};
+  CorsPolicy policy;
+  policy.allowOrigin("https://app.example");
+  policy.allowMethods(http::Method::GET | http::Method::POST);
+  // Do not call allowAnyRequestHeaders or allowRequestHeader -> allowedRequestHeaders empty
+  RouterConfig routerCfg;
+  routerCfg.withDefaultCorsPolicy(std::move(policy));
+
+  test::TestServer ts(cfg, routerCfg);
+  ts.server.router().setPath(http::Method::GET, "/data",
+                             [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+
+  test::RequestOptions opt;
+  opt.method = "OPTIONS";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://app.example"},
+                 {"Access-Control-Request-Method", "GET"},
+                 {"Access-Control-Request-Headers", "  X-Trace , X-Other  "}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  // When no allowed-request-headers are configured and we did not call allowAnyRequestHeaders(),
+  // a non-empty requested header list should be denied (HeadersDenied -> 403).
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
+  EXPECT_EQ(parsed.headers.count("Access-Control-Allow-Headers"), 0);
+}
+
+TEST(HttpCorsDetailed, VaryIncludesOriginWhenMirroring) {
+  // Case 1: no existing Vary -> should add 'Origin'
+  {
+    HttpServerConfig cfg{};
+    CorsPolicy policy;
+    policy.allowOrigin("https://app.example").allowCredentials(true);
+    RouterConfig routerCfg;
+    routerCfg.withDefaultCorsPolicy(std::move(policy));
+
+    test::TestServer ts(cfg, routerCfg);
+    ts.server.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
+      return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("ok");
+    });
+
+    test::RequestOptions opt;
+    opt.method = "GET";
+    opt.target = "/data";
+    opt.headers = {{"Origin", "https://app.example"}};
+
+    auto raw = test::requestOrThrow(ts.port(), opt);
+    auto parsed = test::parseResponseOrThrow(raw);
+    EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+
+    auto varyIt = parsed.headers.find("Vary");
+    ASSERT_NE(varyIt, parsed.headers.end());
+    EXPECT_TRUE(varyIt->second.find("Origin") != std::string::npos);
+  }
+
+  // Case 2: existing Vary -> should append ', Origin'
+  {
+    HttpServerConfig cfg{};
+    CorsPolicy policy;
+    policy.allowOrigin("https://app.example").allowCredentials(true);
+    RouterConfig routerCfg;
+    routerCfg.withDefaultCorsPolicy(std::move(policy));
+
+    test::TestServer ts(cfg, routerCfg);
+    ts.server.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
+      HttpResponse resp(http::StatusCodeOK);
+      resp.customHeader(http::Vary, "Accept-Encoding");
+      return resp;
+    });
+
+    test::RequestOptions opt;
+    opt.method = "GET";
+    opt.target = "/data";
+    opt.headers = {{"Origin", "https://app.example"}};
+
+    auto raw = test::requestOrThrow(ts.port(), opt);
+    auto parsed = test::parseResponseOrThrow(raw);
+    EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+
+    auto varyIt = parsed.headers.find("Vary");
+    ASSERT_NE(varyIt, parsed.headers.end());
+    EXPECT_TRUE(varyIt->second.find("Accept-Encoding") != std::string::npos);
+    EXPECT_TRUE(varyIt->second.find("Origin") != std::string::npos);
+  }
+}
+
+TEST(HttpCorsDetailed, VaryNoDuplicateWhenOriginAlreadyPresent) {
+  HttpServerConfig cfg{};
+  CorsPolicy policy;
+  policy.allowOrigin("https://app.example").allowCredentials(true);
+  RouterConfig routerCfg;
+  routerCfg.withDefaultCorsPolicy(std::move(policy));
+
+  test::TestServer ts(cfg, routerCfg);
+  ts.server.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
+    HttpResponse resp(http::StatusCodeOK);
+    resp.addCustomHeader(http::Vary, "Origin");
+    return resp;
+  });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://app.example"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+
+  auto varyIt = parsed.headers.find("Vary");
+  ASSERT_NE(varyIt, parsed.headers.end());
+  EXPECT_TRUE(varyIt->second.find("Origin") != std::string::npos);
+  EXPECT_EQ(varyIt->second.find(", Origin", 0), std::string::npos);
+}
+
+TEST(HttpCorsDetailed, MultipleAllowedOriginsMirrorCorrectOne) {
+  HttpServerConfig cfg{};
+  CorsPolicy policy;
+  policy.allowOrigin("https://one.example");
+  policy.allowOrigin("https://two.example");
+  RouterConfig routerCfg;
+  routerCfg.withDefaultCorsPolicy(std::move(policy));
+
+  test::TestServer ts(cfg, routerCfg);
+  ts.server.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
+    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("ok");
+  });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://two.example"}};
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+
+  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  ASSERT_NE(originIt, parsed.headers.end());
+  EXPECT_EQ(originIt->second, "https://two.example");
+}
+
+TEST(HttpCorsDetailed, OptionsWithoutAcrMethodTreatedAsSimpleCors) {
+  HttpServerConfig cfg{};
+  CorsPolicy policy;
+  policy.allowOrigin("https://app.example").allowMethods(static_cast<http::MethodBmp>(http::Method::GET));
+  RouterConfig routerCfg;
+  routerCfg.withDefaultCorsPolicy(std::move(policy));
+
+  test::TestServer ts(cfg, routerCfg);
+  ts.server.router().setPath(http::Method::OPTIONS, "/data",
+                             [](const HttpRequest&) { return HttpResponse(http::StatusCodeNoContent); });
+
+  test::RequestOptions opt;
+  opt.method = "OPTIONS";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://app.example"}};  // no Access-Control-Request-Method header
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
+  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  ASSERT_NE(originIt, parsed.headers.end());
+  EXPECT_EQ(originIt->second, "https://app.example");
 }

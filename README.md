@@ -368,6 +368,11 @@ response. Details & examples: [Manual Content-Encoding Override](docs/FEATURES.m
 Detailed multi-layer decoding behavior, safety limits, examples, and configuration moved here:
 See: [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
 
+### CORS (Cross-Origin Resource Sharing)
+
+Full RFC-compliant CORS support with per-route and router-wide configuration:
+See: [CORS Support](docs/FEATURES.md#cors-support)
+
 ```cpp
 server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
   w.statusCode(200);
