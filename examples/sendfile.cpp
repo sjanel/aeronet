@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
   // Streaming response using HttpResponseWriter::file on /stream
   srv.router().setPath(aeronet::http::Method::GET, "/stream",
                        [path = path](const aeronet::HttpRequest& /*req*/, aeronet::HttpResponseWriter& writer) {
-                         writer.statusCode(aeronet::http::StatusCodeOK);
+                         writer.status(aeronet::http::StatusCodeOK);
                          writer.contentType("text/plain");
                          writer.file(aeronet::File(path));
                          writer.end();

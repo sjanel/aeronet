@@ -39,18 +39,18 @@ HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, bool headRequest
       _activeEncoderCtx(std::make_unique<IdentityEncoderContext>()),
       _pCorsPolicy(pCorsPolicy) {}
 
-void HttpResponseWriter::statusCode(http::StatusCode code) {
+void HttpResponseWriter::status(http::StatusCode code) {
   if (_state != State::Opened) {
     return;
   }
-  _fixedResponse.statusCode(code);
+  _fixedResponse.status(code);
 }
 
-void HttpResponseWriter::statusCode(http::StatusCode code, std::string_view reason) {
+void HttpResponseWriter::status(http::StatusCode code, std::string_view reason) {
   if (_state != State::Opened) {
     return;
   }
-  _fixedResponse.statusCode(code).reason(reason);
+  _fixedResponse.status(code).reason(reason);
 }
 
 void HttpResponseWriter::addCustomHeader(std::string_view name, std::string_view value) {

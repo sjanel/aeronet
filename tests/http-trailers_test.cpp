@@ -590,7 +590,7 @@ TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
   auto port = ts.port();
 
   ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.writeBody("chunk1");
     writer.writeBody("chunk2");
     writer.addTrailer("X-Checksum", "abc123");
@@ -625,7 +625,7 @@ TEST(HttpResponseWriterTrailers, MultipleTrailers) {
   auto port = ts.port();
 
   ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.statusCode(200);
+    writer.status(200);
     writer.writeBody("data");
     writer.addTrailer("X-Checksum", "xyz789");
     writer.addTrailer("X-Timestamp", "2025-10-20T12:00:00Z");
@@ -655,7 +655,7 @@ TEST(HttpResponseWriterTrailers, EmptyValue) {
   auto port = ts.port();
 
   ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.writeBody("test");
     writer.addTrailer("X-Empty", "");
     writer.end();
@@ -682,7 +682,7 @@ TEST(HttpResponseWriterTrailers, AfterEndIgnored) {
   auto port = ts.port();
 
   ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.writeBody("test");
     writer.end();
     writer.addTrailer("X-Late", "ignored");  // Should be ignored
@@ -709,7 +709,7 @@ TEST(HttpResponseWriterTrailers, IgnoredForFixedLength) {
   auto port = ts.port();
 
   ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.contentLength(4);  // Fixed length
     writer.writeBody("test");
     writer.addTrailer("X-Ignored", "value");  // Should be ignored

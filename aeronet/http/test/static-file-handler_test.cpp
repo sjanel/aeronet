@@ -78,7 +78,7 @@ TEST_F(StaticFileHandlerTest, Basic) {
   // Call handler directly and inspect the HttpResponse
   HttpResponse resp = handler(req);
 
-  EXPECT_EQ(resp.statusCode(), http::StatusCodeOK);
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
   EXPECT_EQ(resp.body(), "");  // Body is not set directly when using file responses
 
   EXPECT_EQ(resp.headerValueOrEmpty(http::AcceptRanges), "bytes");
@@ -104,7 +104,7 @@ TEST_F(StaticFileHandlerTest, HeadRequests) {
   ASSERT_EQ(setHead(), http::StatusCodeOK);
 
   HttpResponse resp = handler(req);
-  EXPECT_EQ(resp.statusCode(), http::StatusCodeOK);
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
   EXPECT_EQ(resp.body(), "");
   const File* pFile = resp.file();
   ASSERT_NE(pFile, nullptr);
@@ -121,7 +121,7 @@ TEST_F(StaticFileHandlerTest, MethodNotAllowed) {
   ASSERT_EQ(setHead(), http::StatusCodeOK);
 
   HttpResponse resp = handler(req);
-  EXPECT_EQ(resp.statusCode(), http::StatusCodeMethodNotAllowed);
+  EXPECT_EQ(resp.status(), http::StatusCodeMethodNotAllowed);
   EXPECT_EQ(resp.headerValueOrEmpty(http::Allow), "GET, HEAD");
 }
 
@@ -130,7 +130,7 @@ TEST_F(StaticFileHandlerTest, NotFound) {
   buildReq("no-such-file.txt");
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
-  EXPECT_EQ(resp.statusCode(), http::StatusCodeNotFound);
+  EXPECT_EQ(resp.status(), http::StatusCodeNotFound);
 }
 
 TEST_F(StaticFileHandlerTest, DirectoryIndexMissing) {
@@ -142,7 +142,7 @@ TEST_F(StaticFileHandlerTest, DirectoryIndexMissing) {
   buildReq("subdir/index.html");
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
-  EXPECT_EQ(resp.statusCode(), http::StatusCodeNotFound);
+  EXPECT_EQ(resp.status(), http::StatusCodeNotFound);
 }
 
 TEST_F(StaticFileHandlerTest, DirectoryIndexPresent) {
@@ -159,7 +159,7 @@ TEST_F(StaticFileHandlerTest, DirectoryIndexPresent) {
   buildReq("subdir/index.html");
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
-  EXPECT_EQ(resp.statusCode(), http::StatusCodeOK);
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
 }
 
 TEST_F(StaticFileHandlerTest, DirectoryListingEnabled) {
@@ -180,7 +180,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingEnabled) {
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
 
-  EXPECT_EQ(resp.statusCode(), http::StatusCodeOK);
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
   EXPECT_EQ(resp.headerValueOrEmpty("Cache-Control"), "no-cache");
   const std::string_view body = resp.body();
   EXPECT_TRUE(body.contains("Index of /assets/"));
@@ -204,7 +204,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingRedirectsWithoutSlash) {
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
 
-  EXPECT_EQ(resp.statusCode(), http::StatusCodeMovedPermanently);
+  EXPECT_EQ(resp.status(), http::StatusCodeMovedPermanently);
   EXPECT_EQ(resp.headerValueOrEmpty(http::Location), "/assets/");
 }
 
@@ -223,7 +223,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingHonorsHiddenFilesFlag) {
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse respHidden = handlerNoHidden(req);
   const std::string_view bodyHidden = respHidden.body();
-  EXPECT_EQ(respHidden.statusCode(), http::StatusCodeOK);
+  EXPECT_EQ(respHidden.status(), http::StatusCodeOK);
   EXPECT_FALSE(bodyHidden.contains(".secret"));
   EXPECT_TRUE(bodyHidden.contains("visible.txt"));
 
@@ -237,7 +237,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingHonorsHiddenFilesFlag) {
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse respShow = handlerShowHidden(req);
   const std::string_view bodyShow = respShow.body();
-  EXPECT_EQ(respShow.statusCode(), http::StatusCodeOK);
+  EXPECT_EQ(respShow.status(), http::StatusCodeOK);
   EXPECT_TRUE(bodyShow.contains(".secret"));
 }
 
@@ -249,7 +249,7 @@ TEST_F(StaticFileHandlerTest, RangeValid) {
   buildReqWithHeaders(tmpFile.filename(), "Range: bytes=2-5");
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
-  EXPECT_EQ(resp.statusCode(), http::StatusCodePartialContent);
+  EXPECT_EQ(resp.status(), http::StatusCodePartialContent);
   EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentRange).starts_with("bytes 2-5/"));
 }
 
@@ -261,7 +261,7 @@ TEST_F(StaticFileHandlerTest, RangeUnsatisfiable) {
   buildReqWithHeaders(tmpFile.filename(), "Range: bytes=100-200");
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
-  EXPECT_EQ(resp.statusCode(), http::StatusCodeRangeNotSatisfiable);
+  EXPECT_EQ(resp.status(), http::StatusCodeRangeNotSatisfiable);
   EXPECT_NE(resp.headerValueOrEmpty(http::ContentRange).size(), 0U);
 }
 
@@ -274,7 +274,7 @@ TEST_F(StaticFileHandlerTest, ConditionalIfNoneMatchNotModified) {
   buildReqWithHeaders(tmpFile.filename(), "If-None-Match: *");
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
-  EXPECT_EQ(resp.statusCode(), http::StatusCodeNotModified);
+  EXPECT_EQ(resp.status(), http::StatusCodeNotModified);
 }
 
 TEST_F(StaticFileHandlerTest, ConditionalIfMatchPreconditionFailed) {
@@ -286,7 +286,7 @@ TEST_F(StaticFileHandlerTest, ConditionalIfMatchPreconditionFailed) {
   buildReqWithHeaders(tmpFile.filename(), "If-Match: \"nope\"");
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
-  EXPECT_EQ(resp.statusCode(), http::StatusCodePreconditionFailed);
+  EXPECT_EQ(resp.status(), http::StatusCodePreconditionFailed);
 }
 
 }  // namespace aeronet

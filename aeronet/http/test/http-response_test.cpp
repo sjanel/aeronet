@@ -56,9 +56,9 @@ class HttpResponseTest : public ::testing::Test {
 
 TEST_F(HttpResponseTest, StatusOnly) {
   HttpResponse resp(http::StatusCodeOK);
-  EXPECT_EQ(200, resp.statusCode());
-  resp.statusCode(404);
-  EXPECT_EQ(404, resp.statusCode());
+  EXPECT_EQ(200, resp.status());
+  resp.status(404);
+  EXPECT_EQ(404, resp.status());
 
   auto full = concatenated(std::move(resp));
 
@@ -85,7 +85,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithoutHeaders) {
   HttpResponse resp(200, "OK");
   EXPECT_EQ(resp.reason(), "OK");
-  resp.statusCode(404).reason("Not Found");
+  resp.status(404).reason("Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
@@ -95,7 +95,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithoutHeaders) {
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
   HttpResponse resp(404, "Not Found");
   EXPECT_EQ(resp.reason(), http::NotFound);
-  resp.statusCode(200).reason("OK");
+  resp.status(200).reason("OK");
   EXPECT_EQ(resp.reason(), "OK");
   auto full = concatenated(std::move(resp));
 
@@ -105,7 +105,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithHeaders) {
   HttpResponse resp(200, "OK");
   resp.addCustomHeader("X-Header", "Value");
-  resp.statusCode(404).reason("Not Found");
+  resp.status(404).reason("Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
@@ -118,7 +118,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
   HttpResponse resp(404, "Not Found");
   resp.addCustomHeader("X-Header-1", "Value1");
   resp.addCustomHeader("X-Header-2", "Value2");
-  resp.statusCode(200).reason("OK");
+  resp.status(200).reason("OK");
   EXPECT_EQ(resp.reason(), "OK");
   auto full = concatenated(std::move(resp));
 
@@ -130,7 +130,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
 TEST_F(HttpResponseTest, StatusReasonAndBodyAddReasonWithHeaders) {
   HttpResponse resp(200, "");
   resp.addCustomHeader("X-Header", "Value");
-  resp.statusCode(404).reason("Not Found");
+  resp.status(404).reason("Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
@@ -143,7 +143,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyRemoveReasonWithHeaders) {
   HttpResponse resp(404, "Not Found");
   resp.addCustomHeader("X-Header-1", "Value1");
   resp.addCustomHeader("X-Header-2", "Value2");
-  resp.statusCode(200).reason("");
+  resp.status(200).reason("");
   EXPECT_EQ(resp.reason(), "");
   auto full = concatenated(std::move(resp));
 
@@ -155,7 +155,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyRemoveReasonWithHeaders) {
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithBody) {
   HttpResponse resp(200, "OK");
   resp.body("Hello");
-  resp.statusCode(404).reason("Not Found");
+  resp.status(404).reason("Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
@@ -167,7 +167,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithBody) {
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
   HttpResponse resp(http::StatusCodeNotFound, "Not Found");
   resp.body("Hello");
-  resp.statusCode(http::StatusCodeOK).reason("OK");
+  resp.status(http::StatusCodeOK).reason("OK");
   EXPECT_EQ(resp.reason(), "OK");
   auto full = concatenated(std::move(resp));
 
@@ -698,7 +698,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
           break;
         case 4: {
           static constexpr http::StatusCode opts[] = {200, 204, 404};
-          resp.statusCode(opts[static_cast<std::size_t>(step) % std::size(opts)]);
+          resp.status(opts[static_cast<std::size_t>(step) % std::size(opts)]);
           break;
         }
         case 5:

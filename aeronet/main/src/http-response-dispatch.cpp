@@ -225,7 +225,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& r
     (void)pCorsPolicy->applyToResponse(_request, resp);
   }
 
-  const auto respStatusCode = resp.statusCode();
+  const auto respStatusCode = resp.status();
 
   ConnectionState& state = cnxIt->second;
   ++state.requestsServed;
@@ -249,7 +249,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& r
     // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
     // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
     if (reject) {
-      resp.statusCode(http::StatusCodeNotAcceptable, http::ReasonNotAcceptable)
+      resp.status(http::StatusCodeNotAcceptable, http::ReasonNotAcceptable)
           .contentType(http::ContentTypeTextPlain)
           .body("No acceptable content-coding available");
     }

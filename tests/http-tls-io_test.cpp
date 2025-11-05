@@ -61,7 +61,7 @@ TEST(HttpTlsCompressionStreaming, CompressionActivatedOverThresholdTls) {
   std::string part2(64000, 'b');
 
   ts.setDefault([&](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.contentType("text/plain");
 
     static constexpr std::size_t kChunkSize = 512;
@@ -155,7 +155,7 @@ TEST(HttpOptionsTraceTls, TraceEnabledOnTlsAllowsTlsTrace) {
 TEST(HttpTlsStreaming, ChunkedSimpleTls) {
   test::TlsTestServer ts({"http/1.1"});
   ts.setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
-    writer.statusCode(200);
+    writer.status(200);
     writer.contentType("text/plain");
     writer.writeBody("hello ");
     writer.writeBody("tls");
@@ -177,7 +177,7 @@ TEST(HttpTlsStreaming, SendFileFallbackBuffers) {
 
   test::TlsTestServer ts({"http/1.1"});
   ts.setDefault([path](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.statusCode(http::StatusCodeOK);
+    writer.status(http::StatusCodeOK);
     writer.contentType("application/octet-stream");
     writer.file(File(path));
     writer.end();
@@ -205,7 +205,7 @@ TEST(HttpTlsStreamingBackpressure, LargeChunksTls) {
 
   std::string chunk(kChunkSize, 'X');
   ts.setDefault([&]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
-    writer.statusCode(200);
+    writer.status(200);
     writer.contentType("text/plain");
     // write several large chunks
     for (int chunkPos = 0; chunkPos < kNbChunks; ++chunkPos) {
