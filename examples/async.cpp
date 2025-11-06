@@ -7,9 +7,8 @@ using namespace aeronet;
 
 int main() {
   AsyncHttpServer async(HttpServerConfig{});
-  async.router().setDefault([](const HttpRequest&) {
-    return HttpResponse(200, "OK").contentType(http::ContentTypeTextPlain).body("hello from async server\n");
-  });
+  async.router().setDefault(
+      [](const HttpRequest&) { return HttpResponse(200, "OK").body("hello from async server\n"); });
   async.start();
   std::cout << "Async server listening on port " << async.port() << '\n';
   std::cout << "Sleeping for 2 seconds while serving..." << '\n';

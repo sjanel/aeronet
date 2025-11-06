@@ -58,9 +58,8 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
         const http::MethodBmp allowed = _router.allowedMethods("*");
         auto allowVal = buildAllowHeader(allowed);
         if (!allowVal.empty()) {
-          resp.customHeader(http::Allow, allowVal);
+          resp.header(http::Allow, allowVal);
         }
-        resp.contentType(http::ContentTypeTextPlain);
         finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
         return LoopAction::Continue;
       }
@@ -76,23 +75,23 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
             return LoopAction::Continue;
           case CorsPolicy::PreflightResult::Status::OriginDenied: {
             HttpResponse resp(http::StatusCodeForbidden, http::ReasonForbidden);
-            resp.contentType(http::ContentTypeTextPlain).body(http::ReasonForbidden);
+            resp.body(http::ReasonForbidden);
             finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
             return LoopAction::Continue;
           }
           case CorsPolicy::PreflightResult::Status::MethodDenied: {
             HttpResponse resp(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
-            resp.contentType(http::ContentTypeTextPlain).body(resp.reason());
+            resp.body(resp.reason());
             const auto allowedForPath = buildAllowHeader(routeMethods);
             if (!allowedForPath.empty()) {
-              resp.customHeader(http::Allow, allowedForPath);
+              resp.header(http::Allow, allowedForPath);
             }
             finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
             return LoopAction::Continue;
           }
           case CorsPolicy::PreflightResult::Status::HeadersDenied: {
             HttpResponse resp(http::StatusCodeForbidden, http::ReasonForbidden);
-            resp.contentType(http::ContentTypeTextPlain).body(http::ReasonForbidden);
+            resp.body(http::ReasonForbidden);
             finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
             return LoopAction::Continue;
           }
@@ -123,14 +122,13 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
         std::string_view reqDataEchoed(cnxIt->second.inBuffer.data(), consumedBytes);
 
         HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
-        resp.customHeader(http::ContentType, "message/http");
-        resp.body(reqDataEchoed);
+        resp.body(reqDataEchoed, http::ContentTypeMessageHttp);
         finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
         return LoopAction::Continue;
       }
       // TRACE disabled -> Method Not Allowed
       HttpResponse resp(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
-      resp.contentType(http::ContentTypeTextPlain).body(resp.reason());
+      resp.body(resp.reason());
       finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
       return LoopAction::Continue;
     }
@@ -250,7 +248,6 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& r
     // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
     if (reject) {
       resp.status(http::StatusCodeNotAcceptable, http::ReasonNotAcceptable)
-          .contentType(http::ContentTypeTextPlain)
           .body("No acceptable content-coding available");
     }
     // Apply size threshold for non-streaming (buffered) responses: if body below minBytes skip compression.
@@ -269,9 +266,9 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& r
       auto& encoder = _encoders[static_cast<size_t>(encoding)];
       if (encoder) {
         auto out = encoder->encodeFull(compressionConfig.encoderChunkSize, resp.body());
-        resp.customHeader(http::ContentEncoding, GetEncodingStr(encoding));
+        resp.header(http::ContentEncoding, GetEncodingStr(encoding));
         if (compressionConfig.addVaryHeader) {
-          resp.customHeader(http::Vary, http::AcceptEncoding);
+          resp.header(http::Vary, http::AcceptEncoding);
         }
         resp.body(out);
       }

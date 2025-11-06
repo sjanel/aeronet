@@ -127,6 +127,52 @@ void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
   _bodyStartPos = static_cast<uint32_t>(static_cast<int64_t>(_bodyStartPos) + diff);
 }
 
+void HttpResponse::setContentTypeHeader(std::string_view contentTypeValue, bool isEmpty) {
+  if (isEmpty) {
+    removeContentTypeHeader();
+  } else {
+    setHeader(http::ContentType, contentTypeValue);
+  }
+}
+
+void HttpResponse::removeContentTypeHeader() {
+  if (_headersStartPos == 0) {
+    return;
+  }
+  auto begSearch = _data.data() + _headersStartPos + http::CRLF.size();
+  auto endSearch = _data.data() + _bodyStartPos - http::DoubleCRLF.size();
+  auto foundIt = std::search(begSearch, endSearch, http::ContentType.begin(), http::ContentType.end());
+  if (foundIt != endSearch) {
+    /*
+    \r\nHost: example.com
+    \r\nContent-Type: text/plain
+    \r\nContent-Encoding: gzip
+    \r\n\r\n
+    */
+    // Found the header, now remove it. First, locate the end of the header value:
+    auto lineEndIt = std::search(foundIt + http::ContentType.size() + http::HeaderSep.size(), _data.end(),
+                                 http::CRLF.begin(), http::CRLF.end());
+    assert(lineEndIt != _data.end());
+
+    std::memmove(foundIt - http::CRLF.size(), lineEndIt, static_cast<std::size_t>(_data.end() - lineEndIt));
+
+    const std::size_t contentTypeHeaderFullLen = static_cast<std::size_t>(lineEndIt - foundIt) + http::CRLF.size();
+
+    /*
+    \r\nContent-Type: text/plain
+    \r\n\r\n
+    */
+
+    // If content type header was the only header, we need to reset _headersStartPos to 0
+    if (static_cast<std::size_t>(endSearch - begSearch) + http::CRLF.size() == contentTypeHeaderFullLen) {
+      _headersStartPos = 0;
+    }
+
+    _bodyStartPos -= static_cast<decltype(_bodyStartPos)>(contentTypeHeaderFullLen);
+    _data.setSize(_data.size() - contentTypeHeaderFullLen);
+  }
+}
+
 void HttpResponse::setBodyInternal(std::string_view newBody) {
   if (_trailerPos != 0) {
     throw std::logic_error("Cannot set body after the first trailer");
@@ -157,7 +203,7 @@ void HttpResponse::setBodyInternal(std::string_view newBody) {
   _payloadKind = PayloadKind::Inline;
 }
 
-HttpResponse& HttpResponse::file(File fileObj, std::size_t offset, std::size_t length) & {
+HttpResponse& HttpResponse::file(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType) & {
   if (!fileObj) {
     throw std::invalid_argument("file requires an opened file");
   }
@@ -172,7 +218,11 @@ HttpResponse& HttpResponse::file(File fileObj, std::size_t offset, std::size_t l
   if (_trailerPos != 0) {
     throw std::logic_error("Cannot call file after adding trailers");
   }
-
+  if (contentType.empty()) {
+    setHeader(http::ContentType, fileObj.detectedContentType());
+  } else {
+    setHeader(http::ContentType, contentType);
+  }
   setBodyInternal(std::string_view());
   _payloadKind = PayloadKind::File;
   _payloadVariant.emplace<FilePayload>(std::move(fileObj), offset, resolvedLength);

@@ -370,7 +370,7 @@ inline void addLastModifiedHeader(HttpResponse& resp, SysTimePoint tp) {
   auto* end = TimeToStringRFC7231(tp, buf.data());
   const std::size_t len = static_cast<std::size_t>(end - buf.data());
   assert(len == kRFC7231DateStrLen);
-  resp.addCustomHeader(http::LastModified, std::string_view(buf.data(), len));
+  resp.addHeader(http::LastModified, std::string_view(buf.data(), len));
 }
 
 inline constexpr std::size_t kMaxHexChars = sizeof(std::uint64_t) * 2;
@@ -790,7 +790,6 @@ bool StaticFileHandler::resolveTarget(const HttpRequest& request, std::filesyste
 namespace {
 HttpResponse MakeError(http::StatusCode code, std::string_view reason) {
   HttpResponse resp(code, reason);
-  resp.contentType(http::ContentTypeTextPlain);
 
   RawChars body(reason.size() + 1UL);
   body.unchecked_append(reason);
@@ -807,8 +806,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
 
   if (!isGet && !isHead) {
     HttpResponse resp(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
-    resp.addCustomHeader(http::Allow, "GET, HEAD");
-    resp.contentType(http::ContentTypeTextPlain);
+    resp.addHeader(http::Allow, "GET, HEAD");
     resp.body("Method Not Allowed\n");
     return resp;
   }
@@ -843,8 +841,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
       }
       HttpResponse resp(http::StatusCodeMovedPermanently, http::MovedPermanently);
       resp.location(location);
-      resp.contentType(http::ContentTypeTextPlain);
-      resp.addCustomHeader("Cache-Control", "no-cache");
+      resp.addHeader("Cache-Control", "no-cache");
       resp.body("Moved Permanently\n");
       return resp;
     }
@@ -855,18 +852,19 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     }
 
     HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
-    resp.contentType("text/html; charset=utf-8");
-    resp.addCustomHeader("Cache-Control", "no-cache");
-    resp.addCustomHeader("X-Directory-Listing-Truncated", listing.truncated ? "1" : "0");
+    resp.addHeader("Cache-Control", "no-cache");
+    resp.addHeader("X-Directory-Listing-Truncated", listing.truncated ? "1" : "0");
 
+    static constexpr std::string_view kContentType = "text/html; charset=utf-8";
     if (_config.directoryIndexRenderer) {
       vector<std::filesystem::directory_entry> rawEntries(listing.entries.size());
       std::ranges::transform(listing.entries, rawEntries.begin(),
                              [](const DirectoryListingEntry& entry) { return entry.entry; });
-      resp.body(_config.directoryIndexRenderer(targetPath, rawEntries));
+      resp.body(_config.directoryIndexRenderer(targetPath, rawEntries), kContentType);
     } else {
-      resp.body(renderDefaultDirectoryListing(requestPath, listing.entries, listing.truncated,
-                                              _config.directoryListingCss()));
+      resp.body(
+          renderDefaultDirectoryListing(requestPath, listing.entries, listing.truncated, _config.directoryListingCss()),
+          kContentType);
     }
     return resp;
   }
@@ -906,26 +904,25 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     conditionalOutcome = evaluateConditionals(request, isGet || isHead, etagView, lastModified);
     if (conditionalOutcome.kind == ConditionalOutcome::Kind::PreconditionFailed) {
       HttpResponse resp(conditionalOutcome.status, "Precondition Failed");
-      resp.contentType(http::ContentTypeTextPlain);
       if (!etagView.empty()) {
-        resp.addCustomHeader(http::ETag, etagView);
+        resp.addHeader(http::ETag, etagView);
       }
       if (_config.addLastModified && lastModified != kInvalidTimePoint) {
         addLastModifiedHeader(resp, lastModified);
       }
-      resp.addCustomHeader(http::AcceptRanges, "bytes");
+      resp.addHeader(http::AcceptRanges, "bytes");
       resp.body("Precondition Failed\n");
       return resp;
     }
     if (conditionalOutcome.kind == ConditionalOutcome::Kind::NotModified) {
       HttpResponse resp(http::StatusCodeNotModified, "Not Modified");
       if (!etagView.empty()) {
-        resp.addCustomHeader(http::ETag, etagView);
+        resp.addHeader(http::ETag, etagView);
       }
       if (_config.addLastModified && lastModified != kInvalidTimePoint) {
         addLastModifiedHeader(resp, lastModified);
       }
-      resp.addCustomHeader(http::AcceptRanges, "bytes");
+      resp.addHeader(http::AcceptRanges, "bytes");
       return resp;
     }
   }
@@ -946,47 +943,52 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
 
   if (rangeSelection.state == RangeSelection::State::Invalid) {
     HttpResponse resp(http::StatusCodeRangeNotSatisfiable, "Range Not Satisfiable");
-    resp.contentType(http::ContentTypeTextPlain);
     const auto rangeHeader = buildUnsatisfiedRangeHeader(fileSize);
-    resp.addCustomHeader(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
-    resp.addCustomHeader(http::AcceptRanges, "bytes");
+    resp.addHeader(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
+    resp.addHeader(http::AcceptRanges, "bytes");
     resp.body("Invalid Range\n");
     return resp;
   }
 
   if (rangeSelection.state == RangeSelection::State::Unsatisfiable) {
     HttpResponse resp(http::StatusCodeRangeNotSatisfiable, "Range Not Satisfiable");
-    resp.contentType(http::ContentTypeTextPlain);
     const auto rangeHeader = buildUnsatisfiedRangeHeader(fileSize);
-    resp.addCustomHeader(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
-    resp.addCustomHeader(http::AcceptRanges, "bytes");
+    resp.addHeader(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
+    resp.addHeader(http::AcceptRanges, "bytes");
     resp.body("Range Not Satisfiable\n");
     return resp;
   }
 
   HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
-  resp.addCustomHeader(http::AcceptRanges, "bytes");
+  resp.addHeader(http::AcceptRanges, "bytes");
   if (!etagView.empty()) {
-    resp.addCustomHeader(http::ETag, etagView);
+    resp.addHeader(http::ETag, etagView);
   }
   if (_config.addLastModified && lastModified != kInvalidTimePoint) {
     addLastModifiedHeader(resp, lastModified);
   }
 
+  bool contentTypeSet = false;
   if (_config.contentTypeResolver) {
-    if (auto resolved = _config.contentTypeResolver(targetPath.generic_string()); !resolved.empty()) {
-      resp.contentType(std::move(resolved));
-    } else {
-      resp.contentType(_config.defaultContentType());
+    auto resolved = _config.contentTypeResolver(targetPath.generic_string());
+    if (!resolved.empty()) {
+      resp.header(http::ContentType, std::move(resolved));
+      contentTypeSet = true;
     }
-  } else {
-    resp.contentType(_config.defaultContentType());
+  }
+
+  if (!contentTypeSet) {
+    if (_config.defaultContentType().empty()) {
+      resp.header(http::ContentType, http::ContentTypeApplicationOctetStream);
+    } else {
+      resp.header(http::ContentType, _config.defaultContentType());
+    }
   }
 
   if (rangeSelection.state == RangeSelection::State::Valid) {
     resp.status(http::StatusCodePartialContent, "Partial Content");
     const auto rangeHeader = buildRangeHeader(rangeSelection.offset, rangeSelection.length, fileSize);
-    resp.addCustomHeader(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
+    resp.addHeader(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
     resp.file(std::move(file), static_cast<std::size_t>(rangeSelection.offset),
               static_cast<std::size_t>(rangeSelection.length));
     return resp;

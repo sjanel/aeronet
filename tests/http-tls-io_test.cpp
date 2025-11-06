@@ -32,7 +32,7 @@ TEST(HttpTlsBasic, LargePayload) {
     cfg.keepAliveTimeout = std::chrono::hours(1);
   });
   ts.setDefault([&largeBody]([[maybe_unused]] const HttpRequest& req) {
-    return HttpResponse(http::StatusCodeOK, "OK").contentType(http::ContentTypeTextPlain).body(largeBody);
+    return HttpResponse(http::StatusCodeOK, "OK").body(largeBody);
   });
   test::TlsClient client(ts.port());
   auto raw = client.get("/hello", {{"X-Test", "tls"}});
@@ -111,9 +111,7 @@ std::string tlsGetLarge(auto port) {
 TEST(HttpTlsNegative, LargeResponseFragmentation) {
   test::TlsTestServer ts;  // basic TLS
   auto port = ts.port();
-  ts.setDefault([](const HttpRequest&) {
-    return HttpResponse(200, "OK").contentType(http::ContentTypeTextPlain).body(std::string(300000, 'A'));
-  });
+  ts.setDefault([](const HttpRequest&) { return HttpResponse(200, "OK").body(std::string(300000, 'A')); });
   std::string resp = tlsGetLarge(port);
   // helper freed temporary key/cert
   ASSERT_FALSE(resp.empty());
@@ -178,7 +176,6 @@ TEST(HttpTlsStreaming, SendFileFallbackBuffers) {
   test::TlsTestServer ts({"http/1.1"});
   ts.setDefault([path](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.contentType("application/octet-stream");
     writer.file(File(path));
     writer.end();
   });

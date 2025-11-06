@@ -14,6 +14,7 @@
 #include "aeronet/http-server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "raw-chars.hpp"
 #include "stringconv.hpp"
 
 using namespace std::chrono_literals;
@@ -118,7 +119,7 @@ TEST(HttpContentLength, GlobalHeaders) {
   test::TestServer ts(cfg);
   ts.server.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
-    respObj.customHeader("X-Custom", "original");
+    respObj.header("X-Custom", "original");
     respObj.body("R");
     return respObj;
   });
@@ -197,7 +198,7 @@ TEST(HttpBasic, ManyHeadersResponse) {
     HttpResponse respObj;
     // Add 3000 custom headers to response
     for (int i = 0; i < 3000; ++i) {
-      respObj.addCustomHeader("X-Response-" + std::to_string(i), "value" + std::to_string(i));
+      respObj.addHeader("X-Response-" + std::to_string(i), "value" + std::to_string(i));
     }
     respObj.body("Response with many headers");
     return respObj;
@@ -355,7 +356,7 @@ TEST(HttpExpectation, HandlerFinalResponseSkipsBody) {
     if (token == "auth-check") {
       res.kind = HttpServer::ExpectationResultKind::FinalResponse;
       HttpResponse hr(403, "Forbidden");
-      hr.contentType("text/plain").body("nope");
+      hr.body("nope");
       res.finalResponse = std::move(hr);
       return res;
     }

@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
+#include <new>
 #include <span>
 #include <string>
 #include <string_view>

@@ -14,7 +14,7 @@ using namespace aeronet;
 
 class HttpConnectDefaultConfig : public ::testing::Test {
  public:
-  virtual ~HttpConnectDefaultConfig() = default;
+  ~HttpConnectDefaultConfig() override = default;
 
   test::TestServer ts{HttpServerConfig{}};
   test::ClientConnection client{ts.port()};

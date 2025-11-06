@@ -4,7 +4,6 @@
 #include <string>
 #include <utility>
 
-#include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -22,13 +21,10 @@ test::TestServer ts(HttpServerConfig{});
 }
 
 TEST(HttpRouting, BasicPathDispatch) {
-  ts.server.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&) {
-    return HttpResponse(http::StatusCodeOK, "OK").body("world").contentType(http::ContentTypeTextPlain);
-  });
+  ts.server.router().setPath(http::Method::GET, "/hello",
+                             [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("world"); });
   ts.server.router().setPath(http::Method::GET | http::Method::POST, "/multi", [](const HttpRequest& req) {
-    return HttpResponse(http::StatusCodeOK, "OK")
-        .body(std::string(http::toMethodStr(req.method())) + "!")
-        .contentType(http::ContentTypeTextPlain);
+    return HttpResponse(http::StatusCodeOK, "OK").body(std::string(http::toMethodStr(req.method())) + "!");
   });
 
   test::RequestOptions getHello;
@@ -75,7 +71,7 @@ TEST(HttpRouting, PathParametersInjectedIntoRequest) {
     if (const auto itPost = params.find("postId"); itPost != params.end()) {
       seenPost.assign(itPost->second);
     }
-    return HttpResponse(200, "OK").contentType(http::ContentTypeTextPlain).body("ok");
+    return HttpResponse(200, "OK").body("ok");
   });
 
   test::RequestOptions reqOpts;

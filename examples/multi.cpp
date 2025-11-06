@@ -6,7 +6,6 @@
 #include <string>
 #include <thread>
 
-#include "aeronet/http-constants.hpp"
 #include "log.hpp"
 
 namespace {
@@ -29,9 +28,8 @@ int main(int argc, char** argv) {
   cfg.withPort(port).withReusePort(true);
   aeronet::MultiHttpServer multi(cfg, static_cast<uint32_t>(threads));
   multi.router().setDefault([](const aeronet::HttpRequest& req) {
-    return aeronet::HttpResponse(200, "OK")
-        .contentType(aeronet::http::ContentTypeTextPlain)
-        .body(std::string("multi reactor response ") + std::string(req.path()) + '\n');
+    return aeronet::HttpResponse(200, "OK").body(std::string("multi reactor response ") + std::string(req.path()) +
+                                                 '\n');
   });
   multi.start();
   aeronet::log::info("Listening on {} with {} reactors (SO_REUSEPORT). Press Ctrl+C to stop.", multi.port(), threads);
