@@ -9,7 +9,6 @@
 #include <string_view>
 #include <thread>
 
-#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -46,9 +45,8 @@ bool WaitForServerRunning(const AsyncHttpServer &server, std::chrono::millisecon
 
 TEST(AsyncHttpServer, BasicStartStopAndRequest) {
   AsyncHttpServer async(HttpServerConfig{});
-  async.router().setDefault([]([[maybe_unused]] const HttpRequest &req) {
-    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("hello-async");
-  });
+  async.router().setDefault(
+      []([[maybe_unused]] const HttpRequest &req) { return HttpResponse(http::StatusCodeOK).body("hello-async"); });
   async.start();
   // Allow a short grace period.
   std::this_thread::sleep_for(20ms);
@@ -83,9 +81,8 @@ TEST(AsyncHttpServer, Restart) {
   AsyncHttpServer async(HttpServerConfig{});
   auto port = async.port();
   EXPECT_GT(port, 0);
-  async.router().setDefault([]([[maybe_unused]] const HttpRequest &req) {
-    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("hello-async1");
-  });
+  async.router().setDefault(
+      []([[maybe_unused]] const HttpRequest &req) { return HttpResponse(http::StatusCodeOK).body("hello-async1"); });
   async.start();
   // Allow a short grace period.
   std::this_thread::sleep_for(20ms);
@@ -100,9 +97,8 @@ TEST(AsyncHttpServer, Restart) {
 
   async.stop();
   // change router
-  async.router().setDefault([]([[maybe_unused]] const HttpRequest &req) {
-    return HttpResponse(http::StatusCodeOK).contentType(http::ContentTypeTextPlain).body("hello-async2");
-  });
+  async.router().setDefault(
+      []([[maybe_unused]] const HttpRequest &req) { return HttpResponse(http::StatusCodeOK).body("hello-async2"); });
   async.start();
 
   resp = test::requestOrThrow(port, opt);

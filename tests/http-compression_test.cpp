@@ -48,7 +48,7 @@ TEST(HttpCompressionBrotliBuffered, BrAppliedWhenEligible) {
   std::string payload(400, 'B');
   ts.server.router().setDefault([payload](const HttpRequest &) {
     HttpResponse respObj;
-    respObj.customHeader("Content-Type", "text/plain");
+    respObj.header("Content-Type", "text/plain");
     respObj.body(payload);
     return respObj;
   });
@@ -73,8 +73,8 @@ TEST(HttpCompressionBrotliBuffered, UserContentEncodingIdentityDisablesCompressi
   std::string payload(128, 'U');
   ts.server.router().setDefault([payload](const HttpRequest &) {
     HttpResponse respObj;
-    respObj.customHeader("Content-Type", "text/plain");
-    respObj.customHeader("Content-Encoding", "identity");
+    respObj.header("Content-Type", "text/plain");
+    respObj.header("Content-Encoding", "identity");
     respObj.body(payload);
     return respObj;
   });
@@ -215,7 +215,7 @@ TEST(HttpCompressionBrotliStreaming, UserProvidedIdentityPreventsActivation) {
   std::string payload(512, 'Y');
   ts.server.router().setDefault([payload]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
     writer.status(http::StatusCodeOK);
-    writer.customHeader("Content-Encoding", "identity");
+    writer.header("Content-Encoding", "identity");
     writer.writeBody(payload);
     writer.end();
   });
@@ -288,8 +288,8 @@ TEST(HttpCompressionBuffered, UserContentEncodingIdentityDisablesCompression) {
   std::string payload(128, 'B');
   ts.server.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.customHeader("Content-Type", "text/plain");
-    resp.customHeader("Content-Encoding", "identity");  // explicit suppression
+    resp.header("Content-Type", "text/plain");
+    resp.header("Content-Encoding", "identity");  // explicit suppression
     resp.body(payload);
     return resp;
   });
@@ -315,7 +315,7 @@ TEST(HttpCompressionBuffered, BelowThresholdNotCompressed) {
   std::string smallPayload(32, 'C');
   ts.server.router().setDefault([smallPayload](const HttpRequest &) {
     HttpResponse resp;
-    resp.customHeader("Content-Type", "text/plain");
+    resp.header("Content-Type", "text/plain");
     resp.body(smallPayload);
     return resp;
   });
@@ -338,7 +338,7 @@ TEST(HttpCompressionBuffered, NoAcceptEncodingHeaderStillCompressesDefault) {
   std::string payload(128, 'D');
   ts.server.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.customHeader("Content-Type", "text/plain");
+    resp.header("Content-Type", "text/plain");
     resp.body(payload);
     return resp;
   });
@@ -364,7 +364,7 @@ TEST(HttpCompressionBuffered, IdentityForbiddenNoAlternativesReturns406) {
   std::string payload(64, 'Q');
   ts.server.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.customHeader("Content-Type", "text/plain");
+    resp.header("Content-Type", "text/plain");
     resp.body(payload);
     return resp;
   });
@@ -387,7 +387,7 @@ TEST(HttpCompressionBuffered, IdentityForbiddenButGzipAvailableUsesGzip) {
   std::string payload(128, 'Z');
   ts.server.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.customHeader("Content-Type", "text/plain");
+    resp.header("Content-Type", "text/plain");
     resp.body(payload);
     return resp;
   });
@@ -412,7 +412,7 @@ TEST(HttpCompressionBuffered, UnsupportedEncodingDoesNotApplyGzip) {
   std::string payload(200, 'E');
   ts.server.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.customHeader("Content-Type", "text/plain");
+    resp.header("Content-Type", "text/plain");
     resp.body(payload);
     return resp;
   });
@@ -437,7 +437,7 @@ TEST(HttpCompressionBuffered, DeflateAppliedWhenPreferredAndAccepted) {
   std::string largePayload(300, 'F');
   ts.server.router().setDefault([largePayload](const HttpRequest &) {
     HttpResponse resp;
-    resp.customHeader("Content-Type", "text/plain");
+    resp.header("Content-Type", "text/plain");
     resp.body(largePayload);
     return resp;
   });
@@ -464,7 +464,7 @@ TEST(HttpCompressionBuffered, GzipChosenWhenHigherPreference) {
   std::string payload(256, 'G');
   ts.server.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.customHeader("Content-Type", "text/plain");
+    resp.header("Content-Type", "text/plain");
     resp.body(payload);
     return resp;
   });
@@ -490,7 +490,7 @@ TEST(HttpCompressionBuffered, QValuesAffectSelection) {
   std::string payload(180, 'H');
   ts.server.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.customHeader("Content-Type", "text/plain");
+    resp.header("Content-Type", "text/plain");
     resp.body(payload);
     return resp;
   });
@@ -514,7 +514,7 @@ TEST(HttpCompressionBuffered, IdentityFallbackIfDeflateNotRequested) {
   std::string payload(256, 'I');
   ts.server.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.customHeader("Content-Type", "text/plain");
+    resp.header("Content-Type", "text/plain");
     resp.body(payload);
     return resp;
   });
@@ -622,7 +622,7 @@ TEST(HttpCompressionStreaming, UserProvidedContentEncodingIdentityPreventsActiva
   ts.server.router().setDefault([big](const HttpRequest &, HttpResponseWriter &writer) {
     writer.status(http::StatusCodeOK);
     writer.contentType("text/plain");
-    writer.customHeader("Content-Encoding", "identity");  // explicit suppression
+    writer.header("Content-Encoding", "identity");  // explicit suppression
     writer.writeBody(big.substr(0, 50));
     writer.writeBody(big.substr(50));
     writer.end();
@@ -691,7 +691,7 @@ TEST(HttpCompressionZstdBuffered, ZstdAppliedWhenEligible) {
     std::string payload(400, 'A');
     ts.server.router().setDefault([payload](const HttpRequest &) {
       HttpResponse resp;
-      resp.customHeader("Content-Type", "text/plain");
+      resp.header("Content-Type", "text/plain");
       resp.body(payload);
       return resp;
     });
@@ -725,7 +725,7 @@ TEST(HttpCompressionZstdBuffered, WildcardSelectsZstdIfPreferred) {
     ts.server.router().setDefault([payload](const HttpRequest &) {
       HttpResponse resp;
       resp.body(payload);
-      resp.customHeader("Content-Type", "text/plain");
+      resp.header("Content-Type", "text/plain");
       return resp;
     });
     auto resp = test::simpleGet(ts.port(), "/w", {{"Accept-Encoding", "*;q=0.9"}});
@@ -753,7 +753,7 @@ TEST(HttpCompressionZstdBuffered, TieBreakAgainstGzipHigherQ) {
     ts.server.router().setDefault([payload](const HttpRequest &) {
       HttpResponse resp;
       resp.body(payload);
-      resp.customHeader("Content-Type", "text/plain");
+      resp.header("Content-Type", "text/plain");
       return resp;
     });
     auto resp = test::simpleGet(ts.port(), "/t", {{"Accept-Encoding", "gzip;q=0.9, zstd;q=0.9"}});

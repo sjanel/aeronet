@@ -272,16 +272,16 @@ Short examples:
 ```cpp
 // Move a std::string into the response
 std::string big = generate_large_payload();
-return HttpResponse(200, "OK").contentType("application/octet-stream").body(std::move(big));
+return HttpResponse(200, "OK").body(std::move(big), "application/octet-stream");
 
 // Move a vector<char>
 std::vector<char> v = read_file_bytes(path);
-return HttpResponse(200, "OK").contentType("application/octet-stream").body(std::move(v));
+return HttpResponse(200, "OK").body(std::move(v), "application/octet-stream");
 
 // Move a unique_ptr<char[]> for raw blob ownership
 std::unique_ptr<char[]> blob = load_blob();
 std::size_t blobSize = /* known size */;
-return HttpResponse(200, "OK").contentType("application/octet-stream").body(std::move(blob), blobSize);
+return HttpResponse(200, "OK").body(std::move(blob), blobSize, "application/octet-stream");
 ```
 
 These patterns hand ownership to the server without duplicating the payload, enabling efficient zero-copy handoff
@@ -307,7 +307,7 @@ Supported (build‑flag gated): gzip, deflate (zlib), zstd, brotli.
 
 When you stream or build a response using `HttpResponseWriter`, aeronet will decide whether to apply
 automatic compression (based on `Accept-Encoding`, size threshold, configured preferences, and build flags).
-However, if you explicitly set a `Content-Encoding` header yourself (via `customHeader()` / `contentEncoding()` or on a
+However, if you explicitly set a `Content-Encoding` header yourself (via `header()` / `contentEncoding()` or on a
 fixed `HttpResponse`), aeronet treats this as a hard override and will NEVER engage its own encoder for that
 response. This applies even if the header value is `identity`.
 
@@ -339,7 +339,7 @@ server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
   w.status(http::StatusOK);
   w.contentType(http::ContentTypeTextPlain);
   w.contentEncoding("gzip");            // suppress auto compression
-  w.write(preCompressedHelloGzipBytes);  // already gzip-compressed data
+  w.writeBody(preCompressedHelloGzipBytes);  // already gzip-compressed data
   w.end();
 });
 ```
@@ -349,7 +349,7 @@ To “force identity” even if thresholds would normally trigger compression:
 ```cpp
 server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
   w.contentEncoding("identity"); // blocks auto compression
-  w.write(largePlainBuffer);
+  w.writeBody(largePlainBuffer);
   w.end();
 });
 ```
@@ -418,7 +418,7 @@ c.preferredFormats = {Encoding::gzip, Encoding::deflate};
 HttpServerConfig cfg; cfg.withCompression(c);
 HttpServer server(cfg);
 server.router().setDefault([](const HttpRequest&) {
-  return HttpResponse(200, "OK").contentType("text/plain").body(std::string(1024,'A'));
+  return HttpResponse(200, "OK").body(std::string(1024,'A'));
 });
 ```
 
@@ -1070,7 +1070,7 @@ Manages N reactors via `SO_REUSEPORT`.
 
 ```cpp
 HttpServerConfig cfg; cfg.port=0; cfg.reusePort=true; MultiHttpServer multi(cfg,4);
-multi.router().setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").contentType("text/plain").body("hi\n"); });
+multi.router().setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("hi\n"); });
 multi.start(); multi.stop(); multi.start();
 ```
 
@@ -1296,7 +1296,7 @@ server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
   w.setStatus(200, "OK");
   w.setHeader("Content-Type", "text/plain");
   for (int i=0;i<5;++i) {
-    if (!w.write("chunk-" + std::to_string(i) + "\n")) break;
+    if (!w.writeBody("chunk-" + std::to_string(i) + "\n")) break;
   }
   w.end();
 });
@@ -1334,6 +1334,14 @@ semantics. The handler is designed to plug into the existing routing API: it is 
   validator mismatches.
 - **Headers**: the handler always emits `Accept-Ranges: bytes` so clients learn range capability. `ETag` and
   `Last-Modified` are enabled by default (configurable) and share the same strong validator used by conditionals.
+
+- **Content-Type resolution**: when serving files the handler resolves the `Content-Type` header with the following
+  precedence: (1) a user-provided content-type resolver callback (if installed) and returning a non-empty value,
+  (2) the configured default content type in `HttpServerConfig` (if non-empty), and (3) the hard fallback
+  `application/octet-stream`. The library exposes `File::detectedContentType()` which performs filename-extension based
+  detection using the bundled extension → mime table (the table was extended to include common C/C++ extensions such as
+  `c`, `h`, `cpp`, `hpp`, `cc`). Applications with different heuristics (case-insensitive lookup, longest-suffix
+  matching like `tar.gz`, etc.) can supply their own resolver to override the default behavior.
 - **Safety**: all request paths are normalised under the configured root; `..` segments are rejected. Default index
   fallback (e.g. `index.html`) is configurable or can be disabled.
 - **Config entry point**: the immutable configuration lives in `StaticFileConfig`. The handler constructor also accepts a config directly.
@@ -1406,10 +1414,20 @@ Conflict rules:
 Example precedence illustration:
 
 ```cpp
-server.router().setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("GLOBAL").contentType("text/plain"); });
-server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){ w.setStatus(200,"OK"); w.setHeader("Content-Type","text/plain"); w.write("STREAMFALLBACK"); w.end(); });
-server.router().setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& w){ w.setStatus(200,"OK"); w.setHeader("Content-Type","text/plain"); w.write("PS"); w.end(); });
-server.router().setPath(http::Method::POST, "/stream", [](const HttpRequest&){ return HttpResponse{201, "Created", "text/plain", "NORMAL"}; });
+server.router().setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("GLOBAL"); });
+server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){ 
+  w.setStatus(200,"OK");
+  w.contentType("text/plain");
+  w.writeBody("STREAMFALLBACK"); 
+  w.end(); 
+});
+server.router().setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& w){ 
+  w.setStatus(200,"OK"); 
+  w.contentType("text/plain"); 
+  w.writeBody("PS"); 
+  w.end(); 
+});
+server.router().setPath(http::Method::POST, "/stream", [](const HttpRequest&){ return HttpResponse{201, "Created"}.body("NORMAL"); });
 ```
 
 Behavior:

@@ -10,7 +10,6 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
-#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -30,9 +29,8 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
   ts.server.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.status(201).reason("Created");
-    resp.customHeader("X-One", "1");
-    resp.customHeader("X-Two", "two");
-    resp.contentType("text/plain");
+    resp.header("X-One", "1");
+    resp.header("X-Two", "two");
     resp.body("B");
     return resp;
   });
@@ -68,9 +66,9 @@ TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
   // preserves the original header name casing from the first insertion.
   ts.server.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
-    resp.customHeader("x-cAsE", "one");
-    resp.customHeader("X-Case", "two");    // should replace value only
-    resp.customHeader("X-CASE", "three");  // replace again
+    resp.header("x-cAsE", "one");
+    resp.header("X-Case", "two");    // should replace value only
+    resp.header("X-CASE", "three");  // replace again
     resp.body("b");
     return resp;
   });
@@ -99,8 +97,8 @@ TEST(HttpHeadersCustom, StreamingCaseInsensitiveContentTypeAndEncodingSuppressio
   std::string payload(128, 'Z');
   tsComp.server.router().setDefault([&](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
-    writer.customHeader("cOnTeNt-TyPe", "text/plain");    // mixed case
-    writer.customHeader("cOnTeNt-EnCoDiNg", "identity");  // should suppress auto compression
+    writer.header("cOnTeNt-TyPe", "text/plain");    // mixed case
+    writer.header("cOnTeNt-EnCoDiNg", "identity");  // should suppress auto compression
     writer.writeBody(payload.substr(0, 40));
     writer.writeBody(payload.substr(40));
     writer.end();
@@ -128,9 +126,8 @@ TEST(HttpHeaderTimeout, SlowHeadersConnectionClosed) {
   // header read timeouts) runs promptly even when the test runner is under heavy load.
   // This avoids flakiness when the whole test suite is executed in parallel.
   test::TestServer tsFastPool(cfg, RouterConfig{}, std::chrono::milliseconds{5});
-  tsFastPool.server.router().setDefault([](const HttpRequest&) {
-    return HttpResponse(http::StatusCodeOK, "OK").body("hi").contentType(http::ContentTypeTextPlain);
-  });
+  tsFastPool.server.router().setDefault(
+      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("hi"); });
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   test::ClientConnection cnx(tsFastPool.port());
   int fd = cnx.fd();

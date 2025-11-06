@@ -64,7 +64,7 @@ TEST_F(CorsPolicyHarness, ApplyAllowListMirrorsOriginAndAddsCredentials) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   HttpResponse response;
-  response.addCustomHeader(http::Vary, "Accept-Encoding");
+  response.addHeader(http::Vary, "Accept-Encoding");
 
   const auto applyStatus = policy.applyToResponse(request, response);
   EXPECT_EQ(applyStatus, CorsPolicy::ApplyStatus::Applied);
@@ -185,7 +185,7 @@ TEST_F(CorsPolicyHarness, ExposeHeadersAndVaryMerging) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   HttpResponse response;
-  response.addCustomHeader(http::Vary, "Accept-Encoding");
+  response.addHeader(http::Vary, "Accept-Encoding");
 
   const auto applyStatus = policy.applyToResponse(request, response);
   EXPECT_EQ(applyStatus, CorsPolicy::ApplyStatus::Applied);
