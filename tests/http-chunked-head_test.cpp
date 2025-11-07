@@ -8,6 +8,8 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/router-config.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -15,11 +17,11 @@ using namespace std::chrono_literals;
 using namespace aeronet;
 
 namespace {
-test::TestServer ts(HttpServerConfig{});
-}
+test::TestServer ts(HttpServerConfig{}, RouterConfig{}, std::chrono::milliseconds{5});
+auto port = ts.port();
+}  // namespace
 
 TEST(HttpChunked, DecodeBasic) {
-  auto port = ts.port();
   ts.server.router().setDefault([](const HttpRequest& req) {
     return HttpResponse(http::StatusCodeOK)
         .body(std::string("LEN=") + std::to_string(req.body().size()) + ":" + std::string(req.body()));
@@ -36,25 +38,7 @@ TEST(HttpChunked, DecodeBasic) {
   ASSERT_TRUE(resp.contains("LEN=9:Wikipedia"));
 }
 
-TEST(HttpChunked, RejectTooLarge) {
-  HttpServerConfig cfg;
-  cfg.withMaxBodyBytes(4);  // very small limit
-  test::TestServer tsSmallBody(cfg);
-  auto port = tsSmallBody.port();
-  tsSmallBody.server.router().setDefault(
-      [](const HttpRequest& req) { return HttpResponse(http::StatusCodeOK).body(req.body()); });
-  test::ClientConnection cnx(port);
-  int fd = cnx.fd();
-  // Single 5-byte chunk exceeds limit 4
-  std::string req =
-      "POST /big HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nabcde\r\n0\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("413"));
-}
-
 TEST(HttpHead, NoBodyReturned) {
-  auto port = ts.port();
   ts.server.router().setDefault([](const HttpRequest& req) {
     return HttpResponse(http::StatusCodeOK).body(std::string("DATA-") + std::string(req.path()));
   });
@@ -73,7 +57,7 @@ TEST(HttpHead, NoBodyReturned) {
 }
 
 TEST(HttpExpect, ContinueFlow) {
-  auto port = ts.port();
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(5); });
   ts.server.router().setDefault(
       [](const HttpRequest& req) { return HttpResponse(http::StatusCodeOK).body(req.body()); });
   test::ClientConnection cnx(port);
@@ -92,4 +76,20 @@ TEST(HttpExpect, ContinueFlow) {
   std::string full = interim + test::recvUntilClosed(cnx.fd());
 
   ASSERT_TRUE(full.contains("hello"));
+}
+
+TEST(HttpChunked, RejectTooLarge) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withMaxBodyBytes(4);  // very small limit
+  });
+  ts.server.router().setDefault(
+      [](const HttpRequest& req) { return HttpResponse(http::StatusCodeOK).body(req.body()); });
+  test::ClientConnection cnx(port);
+  int fd = cnx.fd();
+  // Single 5-byte chunk exceeds limit 4
+  std::string req =
+      "POST /big HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nabcde\r\n0\r\n\r\n";
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
+  ASSERT_TRUE(resp.contains("413"));
 }

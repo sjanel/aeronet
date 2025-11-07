@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <stdexcept>
@@ -236,6 +237,12 @@ MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
   }
   log::trace("Aggregated stats across {} server instance(s)", agg.per.size());
   return agg;
+}
+
+void MultiHttpServer::postConfigUpdate(const std::function<void(HttpServerConfig&)>& updater) {
+  for (auto& server : _servers) {
+    server.postConfigUpdate(updater);
+  }
 }
 
 }  // namespace aeronet

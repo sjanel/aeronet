@@ -168,6 +168,10 @@ Key characteristics:
 - Graceful draining is available via `beginDrain(std::chrono::milliseconds maxWait = 0)`: it stops accepting new connections, lets in-flight responses finish with `Connection: close`, and optionally enforces a deadline before forcing the remaining connections to close.
 - It is also [trivially relocatable](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p1144r10.html), although I doubt it will be very useful for this type.
 
+##### Configuration
+
+`HttpServer` takes a `HttpServerConfig` by value at construction, which allows full control over the server parameters (port, timeouts, limits, TLS setup, compression options, etc). Once constructed, some fields can be updated, even while the server is running thanks to `postConfigUpdate` method.
+
 #### AsyncHttpServer, an asynchronous (non-blocking) HttpServer
 
 A convenient wrapper of a `HttpServer` and a `std::jthread` object with non blocking `start()` (and `startAndStopWhen(<predicate>)`) and `stop()` methods.
@@ -468,36 +472,36 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 
 | Area | Feature | Test Status | Notes / Representative Test Files |
 |------|---------|-------------|-----------------------------------|
-| Parsing | Request line (method/target/version) | ✅ | `http-parser-errors_test.cpp`, `http-errors_test.cpp` |
+| Parsing | Request line (method/target/version) | ✅ | `http-parser-errors_test.cpp`, `http-core_test.cpp` |
 | Parsing | Unsupported HTTP version (505) | ✅ | `http-parser-errors_test.cpp` |
-| Parsing | Header parsing & lookup | ✅ | `http-headers_test.cpp`, `http-errors_test.cpp` |
-| Limits | Max header size -> 431 | ✅ | `http-errors_test.cpp` |
+| Parsing | Header parsing & lookup | ✅ | `http-core_test.cpp`, `http-core_test.cpp` |
+| Limits | Max header size -> 431 | ✅ | `http-core_test.cpp` |
 | Limits | Max body size (Content-Length) -> 413 | ✅ | `http-additional_test.cpp` |
 | Limits | Chunk total/body growth -> 413 | ✅ | exercised across `http-chunked-head_test.cpp` and parser fuzz paths |
-| Bodies | Content-Length body handling | ✅ | `http-body_test.cpp`, `http-additional_test.cpp` |
+| Bodies | Content-Length body handling | ✅ | `http-core_test.cpp`, `http-additional_test.cpp` |
 | Bodies | Chunked decoding | ✅ | `http-chunked-head_test.cpp`, `http-parser-errors_test.cpp` |
 | Bodies | Trailers exposure | ❌ | Not implemented (roadmap) |
 | Expect | 100-continue w/ non-zero length | ✅ | `http-parser-errors_test.cpp` |
 | Expect | No 100 for zero-length | ✅ | `http-parser-errors_test.cpp`, `http-additional_test.cpp` |
-| Keep-Alive | Basic keep-alive persistence | ✅ | `http-keepalive_test.cpp` |
+| Keep-Alive | Basic keep-alive persistence | ✅ | `http-core_test.cpp` |
 | Keep-Alive | Max requests per connection | ✅ | `http-additional_test.cpp`|
 | Keep-Alive | Idle timeout close | ⚠ | Indirectly covered; explicit idle-time tests are planned |
 | Pipelining | Sequential pipeline of requests | ✅ | `http-additional_test.cpp` |
 | Pipelining | Malformed second request handling | ✅ | `http-additional_test.cpp` |
 | Methods | HEAD semantics (no body) | ✅ | `http-chunked-head_test.cpp`, `http-additional_test.cpp` |
-| Date | RFC7231 format + correctness | ✅ | `http-date_test.cpp` |
-| Date | Same-second caching invariance | ✅ | `http-date_test.cpp` |
-| Date | Second-boundary refresh | ✅ | `http-date_test.cpp` |
-| Errors | 400 Bad Request (malformed line) | ✅ | `http-errors_test.cpp` |
+| Date | RFC7231 format + correctness | ✅ | `http-core_test.cpp` |
+| Date | Same-second caching invariance | ✅ | `http-core_test.cpp` |
+| Date | Second-boundary refresh | ✅ | `http-core_test.cpp` |
+| Errors | 400 Bad Request (malformed line) | ✅ | `http-core_test.cpp` |
 | Parsing | Percent-decoding of path | ✅ | `http-url-decoding_test.cpp`, `http-query-parsing_test.cpp` |
-| Errors | 431, 413, 505, 501 | ✅ | `http-errors_test.cpp`, `http-additional_test.cpp` |
+| Errors | 431, 413, 505, 501 | ✅ | `http-core_test.cpp`, `http-additional_test.cpp` |
 | Errors | PayloadTooLarge in chunk decoding | ⚠ | Exercised indirectly; dedicated test planned |
 | Concurrency | `SO_REUSEPORT` distribution | ✅ | `multi-http-server_test.cpp` |
 | Lifecycle | Move semantics of server | ✅ | `http-server-lifecycle_test.cpp` |
 | Lifecycle | Graceful stop (runUntil) | ✅ | many tests use runUntil patterns |
 | Diagnostics | Parser error callback (version, bad line, limits) | ✅ | `http-parser-errors_test.cpp` |
 | Diagnostics | PayloadTooLarge callback (Content-Length) | ⚠ | Indirect; explicit capture test planned |
-| Performance | Date caching buffer size correctness | ✅ | covered by `http-date_test.cpp` assertions |
+| Performance | Date caching buffer size correctness | ✅ | covered by `http-core_test.cpp` assertions |
 | Performance | writev header+body path | ⚠ | Indirectly exercised; no direct assertion yet |
 | TLS | Handshake & rejection behavior | ✅ | `http-tls-handshake_test.cpp`, `http-tls-io_test.cpp` |
 | Streaming | Streaming response & incremental flush | ✅ | `http-streaming_test.cpp` |
@@ -505,7 +509,7 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 | Compression | Negotiation & outbound insertion | ✅ | `http-compression_test.cpp`, `http-request-decompression_test.cpp` |
 | OpenTelemetry | Basic integration smoke | ✅ | `opentelemetry-integration_test.cpp` |
 | Async wrapper | AsyncHttpServer behavior | ✅ | `async-http-server_test.cpp` |
-| Misc / Smoke | Probes, stats, misc invariants | ✅ | `http-probes_test.cpp`, `http-stats_test.cpp` |
+| Misc / Smoke | Probes, stats, misc invariants | ✅ | `http-server-lifecycle_test.cpp`, `http-stats_test.cpp` |
 | Not Implemented | Trailers (outgoing chunked / trailing headers planned) | ❌ | Roadmap |
 
 ## Build & Installation

@@ -41,15 +41,21 @@ bool WaitForServerRunning(const AsyncHttpServer &server, std::chrono::millisecon
   return server.isRunning();
 }
 
+HttpServerConfig makeDefaultConfig() {
+  HttpServerConfig cfg;
+  cfg.withPollInterval(1ms);
+  return cfg;
+}
+
+AsyncHttpServer async(makeDefaultConfig());
+
 }  // namespace
 
 TEST(AsyncHttpServer, BasicStartStopAndRequest) {
-  AsyncHttpServer async(HttpServerConfig{});
   async.router().setDefault(
       []([[maybe_unused]] const HttpRequest &req) { return HttpResponse(http::StatusCodeOK).body("hello-async"); });
   async.start();
-  // Allow a short grace period.
-  std::this_thread::sleep_for(20ms);
+  ASSERT_TRUE(WaitForServerRunning(async, 1s));
   auto port = async.port();
   test::RequestOptions opt;
   opt.method = "GET";
@@ -57,14 +63,14 @@ TEST(AsyncHttpServer, BasicStartStopAndRequest) {
   auto resp = test::requestOrThrow(port, opt);
   ASSERT_TRUE(resp.contains("200"));
   ASSERT_TRUE(resp.contains("hello-async"));
+  async.stop();
 }
 
 TEST(AsyncHttpServer, PredicateStop) {
   std::atomic<bool> done{false};
-  AsyncHttpServer async(HttpServerConfig{});
   async.router().setDefault([](const HttpRequest &req) { return HttpResponse(http::StatusCodeOK).body(req.path()); });
   async.startAndStopWhen([&] { return done.load(); });
-  std::this_thread::sleep_for(15ms);  // let it spin
+  ASSERT_TRUE(WaitForServerRunning(async, 1s));
   auto port = async.port();
   test::RequestOptions opt;
   opt.method = "GET";
@@ -78,14 +84,12 @@ TEST(AsyncHttpServer, PredicateStop) {
 }
 
 TEST(AsyncHttpServer, Restart) {
-  AsyncHttpServer async(HttpServerConfig{});
   auto port = async.port();
   EXPECT_GT(port, 0);
   async.router().setDefault(
       []([[maybe_unused]] const HttpRequest &req) { return HttpResponse(http::StatusCodeOK).body("hello-async1"); });
   async.start();
-  // Allow a short grace period.
-  std::this_thread::sleep_for(20ms);
+  ASSERT_TRUE(WaitForServerRunning(async, 1s));
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -104,17 +108,16 @@ TEST(AsyncHttpServer, Restart) {
   resp = test::requestOrThrow(port, opt);
   ASSERT_TRUE(resp.contains("200"));
   ASSERT_TRUE(resp.contains("hello-async2"));
+  async.stop();
 }
 
 TEST(AsyncHttpServer, StartWithStopToken) {
-  AsyncHttpServer async(HttpServerConfig{});
   async.router().setDefault(
       []([[maybe_unused]] const HttpRequest &req) { return HttpResponse(http::StatusCodeOK).body("token-ok"); });
 
   std::stop_source src;
   async.startWithStopToken(src.get_token());
-  // Allow startup
-  std::this_thread::sleep_for(15ms);
+  ASSERT_TRUE(WaitForServerRunning(async, 1s));
   auto port = async.port();
   test::RequestOptions opt;
   opt.method = "GET";
@@ -129,9 +132,7 @@ TEST(AsyncHttpServer, StartWithStopToken) {
 }
 
 TEST(AsyncHttpServer, BeginDrainClosesKeepAliveConnections) {
-  HttpServerConfig cfg;
-  cfg.enableKeepAlive = true;
-  AsyncHttpServer async(cfg);
+  async.postConfigUpdate([](HttpServerConfig &cfg) { cfg.enableKeepAlive = true; });
 
   async.router().setDefault([]([[maybe_unused]] const HttpRequest &req) {
     HttpResponse resp;

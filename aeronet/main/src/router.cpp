@@ -69,9 +69,21 @@ void Router::splitPathSegments(std::string_view path) {
   }
 }
 
-void Router::setDefault(RequestHandler handler) { _handler = std::move(handler); }
+void Router::setDefault(RequestHandler handler) {
+  _handler = std::move(handler);
+  if (_streamingHandler) {
+    log::warn("Overwriting existing default streaming handler with normal handler");
+    _streamingHandler = {};
+  }
+}
 
-void Router::setDefault(StreamingHandler handler) { _streamingHandler = std::move(handler); }
+void Router::setDefault(StreamingHandler handler) {
+  _streamingHandler = std::move(handler);
+  if (_handler) {
+    log::warn("Overwriting existing default handler with streaming handler");
+    _handler = {};
+  }
+}
 
 Router::PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string path, RequestHandler handler) {
   return setPathInternal(methods, std::move(path), std::move(handler), StreamingHandler{});

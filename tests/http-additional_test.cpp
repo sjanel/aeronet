@@ -1,10 +1,8 @@
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <utility>
 
 #include "aeronet/http-constants.hpp"
@@ -12,6 +10,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/router-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "raw-chars.hpp"
@@ -21,7 +20,7 @@ using namespace std::chrono_literals;
 using namespace aeronet;
 
 namespace {
-test::TestServer ts(HttpServerConfig{});
+test::TestServer ts(HttpServerConfig{}, RouterConfig{}, std::chrono::milliseconds{5});
 }
 
 TEST(HttpPipeline, TwoRequestsBackToBack) {
@@ -59,9 +58,7 @@ TEST(HttpExpect, ZeroLengthNo100) {
 }
 
 TEST(HttpMaxRequests, CloseAfterLimit) {
-  HttpServerConfig cfg;
-  cfg.withMaxRequestsPerConnection(2);
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(2); });
   // parser error callback intentionally left empty in tests
   ts.server.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
@@ -95,9 +92,7 @@ TEST(HttpPipeline, SecondMalformedAfterSuccess) {
 }
 
 TEST(HttpContentLength, ExplicitTooLarge413) {
-  HttpServerConfig cfg;
-  cfg.withMaxBodyBytes(10);
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(10); });
   ts.server.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body("R");
@@ -112,11 +107,12 @@ TEST(HttpContentLength, ExplicitTooLarge413) {
 }
 
 TEST(HttpContentLength, GlobalHeaders) {
-  HttpServerConfig cfg;
-  cfg.globalHeaders.emplace_back("X-Global", "gvalue");
-  cfg.globalHeaders.emplace_back("X-Another", "anothervalue");
-  cfg.globalHeaders.emplace_back("X-Custom", "global");  // overridden by handler
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.globalHeaders.clear();
+    cfg.globalHeaders.emplace_back("X-Global", "gvalue");
+    cfg.globalHeaders.emplace_back("X-Another", "anothervalue");
+    cfg.globalHeaders.emplace_back("X-Custom", "global");
+  });
   ts.server.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.header("X-Custom", "original");
@@ -135,9 +131,10 @@ TEST(HttpContentLength, GlobalHeaders) {
 
 TEST(HttpBasic, LargePayload) {
   const std::string largeBody(1 << 24, 'a');
-  HttpServerConfig cfg;
-  cfg.maxOutboundBufferBytes = largeBody.size() + 512;  // +512 for headers
-  test::TestServer ts(cfg);
+
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withMaxOutboundBufferBytes(1 << 25);  // 32 MiB
+  });
   ts.server.router().setDefault([&largeBody](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body(largeBody);
@@ -154,10 +151,8 @@ TEST(HttpBasic, LargePayload) {
 
 TEST(HttpBasic, ManyHeadersRequest) {
   // Test handling a request with thousands of headers
-  HttpServerConfig cfg;
   static constexpr std::size_t kMaxHeaderBytes = 128UL * 1024UL;
-  cfg.withMaxHeaderBytes(kMaxHeaderBytes);
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(kMaxHeaderBytes); });
   ts.server.router().setDefault([](const HttpRequest& req) {
     int headerCount = 0;
     for (const auto& [key, value] : req.headers()) {
@@ -415,17 +410,13 @@ TEST(HttpExpectation, Mixed100AndCustomWithHandlerContinue) {
 }
 
 TEST(HttpHead, MaxRequestsApplied) {
-  HttpServerConfig cfg;
-  cfg.withMaxRequestsPerConnection(3);
-  HttpServer server(cfg);
-  auto port = server.port();
-  server.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(3); });
+  auto port = ts.port();
+  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
     HttpResponse resp;
     resp.body("IGNORED");
     return resp;
   });
-  std::jthread th([&] { server.run(); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(60));
   test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   // 4 HEAD requests pipelined; only 3 responses expected then close
@@ -435,7 +426,6 @@ TEST(HttpHead, MaxRequestsApplied) {
   }
   test::sendAll(fd, reqs);
   std::string resp = test::recvUntilClosed(fd);
-  server.stop();
   int statusCount = 0;
   std::size_t pos = 0;
   while ((pos = resp.find("HTTP/1.1 200", pos)) != std::string::npos) {

@@ -94,8 +94,7 @@ class StaticConcatenatedStrings {
       std::memcpy(data + oldBegPos, str.data(), static_cast<std::size_t>(newSize));
       _buf.addSize(delta);
       // update offsets for subsequent parts
-      for (typename offsets_array::size_type offsetIdx = static_cast<typename offsets_array::size_type>(idx);
-           offsetIdx + 1U < kParts; ++offsetIdx) {
+      for (auto offsetIdx = static_cast<typename offsets_array::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
         _offsets[offsetIdx] += static_cast<size_type>(delta);
       }
     } else if (newSize < oldSize) {
@@ -107,8 +106,7 @@ class StaticConcatenatedStrings {
       }
       _buf.setSize(static_cast<size_type>(_buf.size() - delta));
       // update offsets for subsequent parts
-      for (typename offsets_array::size_type offsetIdx = static_cast<typename offsets_array::size_type>(idx);
-           offsetIdx + 1U < kParts; ++offsetIdx) {
+      for (auto offsetIdx = static_cast<typename offsets_array::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
         _offsets[offsetIdx] -= static_cast<size_type>(delta);
       }
     } else if (newSize != 0) {
@@ -126,6 +124,7 @@ class StaticConcatenatedStrings {
     TmpNullTerminatedSv(TmpNullTerminatedSv &&other) = delete;
     TmpNullTerminatedSv &operator=(TmpNullTerminatedSv &&other) = delete;
 
+    // Get a temporary null-terminated c-string.
     [[nodiscard]] const char *c_str() const noexcept { return _begPtr; }
 
     ~TmpNullTerminatedSv() { _begPtr[_svSz] = _ch; }
@@ -157,6 +156,8 @@ class StaticConcatenatedStrings {
   auto makeNullTerminated(size_type idx) const noexcept {
     return TmpNullTerminatedSv(const_cast<char *>(begPtr(idx)), endPtr(idx));
   }
+
+  bool operator==(const StaticConcatenatedStrings<N, size_type> &) const noexcept = default;
 
  private:
   auto *begPtr(size_type idx) noexcept {

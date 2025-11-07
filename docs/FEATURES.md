@@ -222,6 +222,7 @@ Notes and implementation details
 
 - [x] Server objects moveable
 - [x] Builder style HttpServerConfig
+- Note: Some configuration fields are immutable after construction (for example: `port`, `reusePort`, TLS and OpenTelemetry setup). Other fields (limits, timeouts, compression, headers, etc.) are runtime-updatable via `postConfigUpdate()`; see `docs/CONFIG_MUTABILITY.md` for the full field-by-field guide.
 - [x] Simple lambda handler signature
 - [x] Simple exact-match per-path routing (`setPath`)
 - [x] Configurable trailing slash handling (Strict / Normalize / Redirect)
@@ -1205,7 +1206,7 @@ Key configuration helpers:
 | `withTlsHandshakeLogging()` | Emit per-handshake diagnostic log (cipher/version/ALPN) |
 | `withTlsRequestClientCert()` | Request (but not require) client cert (mTLS optional) |
 | `withTlsRequireClientCert()` | Strict mTLS (fatal if absent/invalid) |
-| `withTlsAddTrustedClientCert(pem)` | Append trust anchor (repeatable) |
+| `withTlsTrustedClientCert(pem)` | Append trust anchor (repeatable) |
 
 Client certificate modes:
 

@@ -10,6 +10,8 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/builtin-probes-config.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -321,4 +323,135 @@ TEST(HttpDrain, DeadlineForcesIdleConnectionsToClose) {
   EXPECT_TRUE(test::WaitForPeerClose(fd, 500ms));
 
   ts.stop();
+}
+
+TEST(HttpConfigUpdate, InlineApplyWhenStopped) {
+  // Post an update while server is stopped; it should be stored and applied when
+  // the event loop next runs.
+  HttpServer server(HttpServerConfig{});
+  server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(12345); });
+
+  // Start the server briefly to allow eventLoop to run and apply pending updates.
+  std::atomic_bool stop{false};
+  std::jthread th([&] { server.runUntil([&] { return stop.load(); }); });
+  std::this_thread::sleep_for(50ms);
+  stop.store(true);
+  th.join();
+
+  EXPECT_EQ(server.config().maxRequestsPerConnection, 12345U);
+}
+
+TEST(HttpConfigUpdate, CoalesceWhileRunning) {
+  test::TestServer ts(HttpServerConfig{});
+  auto& server = ts.server;
+
+  // register a handler that returns current config value
+  server.router().setPath(aeronet::http::Method::GET, std::string("/cfg"), [&server](const HttpRequest&) {
+    HttpResponse resp;
+    resp.body(std::to_string(server.config().maxRequestsPerConnection));
+    return resp;
+  });
+
+  // Post multiple updates rapidly; only the last should be observed when applied
+  server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(1); });
+  server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(2); });
+  server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(3); });
+
+  // small sleep to allow event loop to process wakeup
+  std::this_thread::sleep_for(20ms);
+
+  auto raw = test::simpleGet(ts.port(), "/cfg");
+  // response contains full HTTP response, parse body substring
+  EXPECT_TRUE(raw.contains('3'));
+}
+
+TEST(HttpProbes, StartupAndReadinessTransitions) {
+  HttpServerConfig cfg{};
+  cfg.enableBuiltinProbes(true);
+  test::TestServer ts(std::move(cfg));
+
+  auto readyResp = test::simpleGet(ts.port(), "/readyz");
+  EXPECT_TRUE(readyResp.contains("200"));
+
+  auto liveResp = test::simpleGet(ts.port(), "/livez");
+  EXPECT_TRUE(liveResp.contains("200"));
+
+  ts.server.beginDrain();
+
+  // Rather than a single fixed sleep which can occasionally race with the server's
+  // internal drain transition, poll briefly for the expected states. The readiness
+  // probe may either return an explicit 503 or the client helper may fail to
+  // connect (empty string) depending on timing. Retry for a short window to make
+  // this assertion stable on CI where timing varies.
+  std::string readyAfterDrain;
+  const auto deadline = std::chrono::steady_clock::now() + 200ms;
+  while (std::chrono::steady_clock::now() < deadline) {
+    readyAfterDrain = test::simpleGet(ts.port(), "/readyz");
+    if (readyAfterDrain.empty() || readyAfterDrain.contains("503")) {
+      break;
+    }
+    std::this_thread::sleep_for(2ms);
+  }
+  EXPECT_TRUE(readyAfterDrain.empty() || readyAfterDrain.contains("503"));
+}
+
+TEST(HttpProbes, OverridePaths) {
+  HttpServerConfig cfg{};
+  BuiltinProbesConfig bp;
+  bp.enabled = true;
+  bp.withLivenessPath("/liv");
+  bp.withReadinessPath("/rdy");
+  bp.withStartupPath("/start");
+  cfg.withBuiltinProbes(bp);
+
+  test::TestServer ts(std::move(cfg));
+
+  auto rResp = test::simpleGet(ts.port(), "/rdy");
+  EXPECT_TRUE(rResp.contains("200"));
+  auto lResp = test::simpleGet(ts.port(), "/liv");
+  EXPECT_TRUE(lResp.contains("200"));
+  auto sResp = test::simpleGet(ts.port(), "/start");
+  EXPECT_TRUE(sResp.contains("200"));
+}
+
+TEST(HttpConfigUpdate, ImmutableFieldsProtected) {
+  HttpServerConfig cfg{};
+  cfg.withPort(0);  // ephemeral
+  cfg.withReusePort(false);
+
+  test::TestServer ts(std::move(cfg));
+
+  const auto originalPort = ts.port();
+  const auto originalReusePort = ts.server.config().reusePort;
+
+  // Handler that echoes current config values
+  ts.server.router().setDefault([&ts](const HttpRequest& req) {
+    HttpResponse resp;
+    if (req.path() == "/port") {
+      resp.body(std::to_string(ts.server.config().port));
+    } else if (req.path() == "/reuseport") {
+      resp.body(ts.server.config().reusePort ? "true" : "false");
+    } else if (req.path() == "/maxbody") {
+      resp.body(std::to_string(ts.server.config().maxBodyBytes));
+    }
+    return resp;
+  });
+
+  // Attempt to modify immutable fields (should be silently restored)
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.port = 9999;                     // immutable - will be restored
+    cfg.reusePort = true;                // immutable - will be restored
+    cfg.maxBodyBytes = 1024UL * 1024UL;  // mutable - will take effect
+  });
+
+  auto portResp = test::simpleGet(ts.port(), "/port");
+  auto reusePortResp = test::simpleGet(ts.port(), "/reuseport");
+  auto maxBodyResp = test::simpleGet(ts.port(), "/maxbody");
+
+  // Immutable fields should remain unchanged
+  EXPECT_TRUE(portResp.contains(std::to_string(originalPort)));
+  EXPECT_TRUE(reusePortResp.contains(originalReusePort ? "true" : "false"));
+
+  // Mutable field should have changed
+  EXPECT_TRUE(maxBodyResp.contains("1048576"));  // 1024*1024
 }

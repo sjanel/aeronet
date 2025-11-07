@@ -33,6 +33,8 @@ std::string getHeader(const test::ParsedResponse& resp, const std::string& key) 
   return it->second;
 }
 
+test::TestServer ts(HttpServerConfig{});
+
 }  // namespace
 
 TEST(HttpRangeStatic, ServeCompleteFile) {
@@ -40,7 +42,6 @@ TEST(HttpRangeStatic, ServeCompleteFile) {
   test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  test::TestServer ts(HttpServerConfig{});
   ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   test::RequestOptions opt;
@@ -61,7 +62,6 @@ TEST(HttpRangeStatic, SingleRangePartialContent) {
   test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  test::TestServer ts(HttpServerConfig{});
   ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   test::RequestOptions opt;
@@ -81,7 +81,6 @@ TEST(HttpRangeStatic, UnsatisfiableRange) {
   test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  test::TestServer ts(HttpServerConfig{});
   ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   test::RequestOptions opt;
@@ -100,7 +99,6 @@ TEST(HttpRangeStatic, IfNoneMatchReturns304) {
   test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  test::TestServer ts(HttpServerConfig{});
   ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   test::RequestOptions initial;
@@ -127,7 +125,6 @@ TEST(HttpRangeStatic, IfRangeMismatchFallsBackToFullBody) {
   test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  test::TestServer ts(HttpServerConfig{});
   ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   test::RequestOptions opt;
@@ -147,7 +144,6 @@ TEST(HttpRangeInvalid, BadRangeSyntax) {
   test::ScopedTempFile tmp(tmpDir, "0123456789");
   const std::string fileName = tmp.filename();
 
-  test::TestServer ts(HttpServerConfig{});
   ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   test::RequestOptions opt;
@@ -181,7 +177,6 @@ TEST(HttpRangeInvalid, ConditionalInvalidDates) {
   test::ScopedTempFile tmp(tmpDir, "hello world");
   const std::string fileName = tmp.filename();
 
-  test::TestServer ts(HttpServerConfig{});
   ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   test::RequestOptions opt;
@@ -209,7 +204,6 @@ TEST(HttpRangeInvalid, IfMatchPreconditionFailed) {
   test::ScopedTempFile tmp(tmpDir, "HELLO");
   const std::string fileName = tmp.filename();
 
-  test::TestServer ts(HttpServerConfig{});
   ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   // First fetch to get ETag
@@ -247,7 +241,6 @@ TEST(HttpLargeFile, ServeLargeFile) {
   const auto fileName = tmp.filename();
   const std::string_view data = tmp.content();
 
-  test::TestServer ts(HttpServerConfig{});
   ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   // Use a custom connection to manually control receive behavior for large files
@@ -285,12 +278,12 @@ TEST(HttpLargeFile, ServeLargeFileTls) {
   const auto fileName = tmp.filename();
   const std::string_view data = tmp.content();
 
-  test::TlsTestServer ts({"http/1.1"});
-  ts.setDefault(StaticFileHandler(tmp.dirPath()));
+  test::TlsTestServer tlsServer({"http/1.1"});
+  tlsServer.setDefault(StaticFileHandler(tmp.dirPath()));
 
-  test::TlsClient client(ts.port());
+  test::TlsClient client(tlsServer.port());
   const auto raw = client.get("/" + fileName, {});
-  ts.stop();
+  tlsServer.stop();
 
   const auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);

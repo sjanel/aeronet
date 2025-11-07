@@ -32,6 +32,21 @@ struct HttpServerConfig {
   // or kernel does not support it (failure is logged, not fatal). Disabled by default.
   bool reusePort{false};
 
+  // ===========================================
+  // Keep-Alive / connection lifecycle controls
+  // ===========================================
+
+  // Whether HTTP/1.1 persistent connections (keep-alive) are enabled. When false, server always closes after
+  // each response regardless of client headers. Default: true.
+  bool enableKeepAlive{true};
+
+  // Maximum number of HTTP requests to serve over a single persistent connection before forcing close.
+  uint32_t maxRequestsPerConnection{100};
+
+  // Idle timeout for keep-alive connections (duration to wait for next request after previous response is fully
+  // sent). Once exceeded the server proactively closes the connection. Default: 5000 ms.
+  std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
+
   // ============================
   // Request parsing & body limits
   // ============================
@@ -57,21 +72,6 @@ struct HttpServerConfig {
   // Includes headers + body (streaming or aggregated). When exceeded further writes are rejected and the
   // connection marked for closure after flushing what is already queued. Default: 4 MiB per connection.
   std::size_t maxOutboundBufferBytes{4 << 20};  // 4 MiB
-
-  // ===========================================
-  // Keep-Alive / connection lifecycle controls
-  // ===========================================
-
-  // Maximum number of HTTP requests to serve over a single persistent connection before forcing close.
-  uint32_t maxRequestsPerConnection{100};
-
-  // Whether HTTP/1.1 persistent connections (keep-alive) are enabled. When false, server always closes after
-  // each response regardless of client headers. Default: true.
-  bool enableKeepAlive{true};
-
-  // Idle timeout for keep-alive connections (duration to wait for next request after previous response is fully
-  // sent). Once exceeded the server proactively closes the connection. Default: 5000 ms.
-  std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
 
   // ===========================================
   // Event loop polling / responsiveness tuning
@@ -107,7 +107,6 @@ struct HttpServerConfig {
   // =================
   // TLS configuration
   // =================
-
   TLSConfig tls;
 
   // Protective timeout for TLS handshakes (time from accept to handshake completion). 0 => disabled.
@@ -253,13 +252,7 @@ struct HttpServerConfig {
     requires std::convertible_to<std::ranges::range_reference_t<R>, std::string_view>
   HttpServerConfig& withTlsAlpnProtocols(R&& protos) {
     auto& tlsCfg = ensureTls();
-    tlsCfg.alpnProtocols.clear();
-    if constexpr (std::ranges::sized_range<R>) {
-      tlsCfg.alpnProtocols.reserve(std::ranges::size(protos));
-    }
-    for (auto&& proto : protos) {
-      tlsCfg.alpnProtocols.emplace_back(std::string_view(proto));
-    }
+    tlsCfg.withTlsAlpnProtocols(std::forward<R>(protos));
     return *this;
   }
 
@@ -285,8 +278,9 @@ struct HttpServerConfig {
   HttpServerConfig& withTlsHandshakeTimeout(std::chrono::milliseconds timeout);
 
   // Add a single trusted client certificate (PEM) to verification store (useful for tests / pinning). Multiple allowed.
-  HttpServerConfig& withTlsAddTrustedClientCert(std::string_view certPem);
+  HttpServerConfig& withTlsTrustedClientCert(std::string_view certPem);
 
+  // Disable TLS entirely
   HttpServerConfig& withoutTls();
 
   // Enable / configure response compression. Passing by value allows caller to move.
@@ -317,6 +311,7 @@ struct HttpServerConfig {
   // Enable and configure builtin probes
   HttpServerConfig& withBuiltinProbes(BuiltinProbesConfig cfg);
 
+  // Enable (or disable) builtin probes with default configuration.
   HttpServerConfig& enableBuiltinProbes(bool on = true);
 };
 

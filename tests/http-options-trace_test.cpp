@@ -18,44 +18,47 @@
 
 using namespace aeronet;
 
+namespace {
+test::TestServer ts(HttpServerConfig{}, RouterConfig{}, std::chrono::milliseconds{5});
+auto port = ts.port();
+}  // namespace
+
 TEST(HttpOptionsTrace, OptionsStarReturnsAllow) {
-  test::TestServer ts(HttpServerConfig{});
   ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(200); });
 
-  auto resp = test::requestOrThrow(ts.port(),
-                                   test::RequestOptions{.method = "OPTIONS", .target = "*", .body = "", .headers = {}});
+  auto resp =
+      test::requestOrThrow(port, test::RequestOptions{.method = "OPTIONS", .target = "*", .body = "", .headers = {}});
   ASSERT_TRUE(resp.contains("200"));
   ASSERT_TRUE(resp.contains("Allow:"));
 }
 
 TEST(HttpOptionsTrace, TraceEchoWhenEnabled) {
-  HttpServerConfig cfg{};
-  cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS);
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate(
+      [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS); });
 
   auto resp = test::requestOrThrow(
-      ts.port(), test::RequestOptions{.method = "TRACE", .target = "/test", .body = "abcd", .headers = {}});
+      port, test::RequestOptions{.method = "TRACE", .target = "/test", .body = "abcd", .headers = {}});
   // Should contain echoed body
   ASSERT_TRUE(resp.contains("abcd"));
   ASSERT_TRUE(resp.contains("Content-Type: message/http"));
 }
 
 TEST(HttpOptionsTrace, TraceDisabledReturns405) {
-  test::TestServer ts(HttpServerConfig{});
+  ts.postConfigUpdate(
+      [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::Disabled); });
 
-  auto resp = test::requestOrThrow(
-      ts.port(), test::RequestOptions{.method = "TRACE", .target = "/test", .body = "", .headers = {}});
+  auto resp =
+      test::requestOrThrow(port, test::RequestOptions{.method = "TRACE", .target = "/test", .body = "", .headers = {}});
   ASSERT_TRUE(resp.contains("405"));
 }
 
 TEST(HttpOptionsTrace, TraceEnabledPlainOnlyAllowsPlaintext) {
-  HttpServerConfig cfg{};
-  cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly);
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate(
+      [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly); });
 
   // Send TRACE over plaintext
-  auto resp = test::requestOrThrow(
-      ts.port(), test::RequestOptions{.method = "TRACE", .target = "/test", .body = "", .headers = {}});
+  auto resp =
+      test::requestOrThrow(port, test::RequestOptions{.method = "TRACE", .target = "/test", .body = "", .headers = {}});
   ASSERT_TRUE(resp.contains("200"));
 }
 
@@ -77,9 +80,7 @@ class HttpCorsIntegration : public ::testing::Test {
     return cfg;
   }
 
- protected:
-  HttpServerConfig cfg;
-  test::TestServer ts{cfg, MakeConfigWithCors()};
+  void SetUp() override { ts.server.router() = Router{MakeConfigWithCors()}; }
 };
 
 TEST_F(HttpCorsIntegration, PreflightUsesRouterAllowedMethods) {
@@ -299,13 +300,13 @@ TEST_F(HttpCorsIntegration, PerRouteCorsPolicyOverridesDefault_ActualAndPrefligh
 }
 
 TEST(HttpCorsDetailed, PreflightWithCredentialsEmitsMirroredOriginAndCredentials) {
-  HttpServerConfig cfg{};
   CorsPolicy policy = MakePolicy();
   policy.allowCredentials(true);
   RouterConfig routerCfg;
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
-  test::TestServer ts(cfg, routerCfg);
+  ts.server.router() = Router{routerCfg};
+
   ts.server.router().setPath(http::Method::GET, "/data",
                              [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); });
 
@@ -328,13 +329,12 @@ TEST(HttpCorsDetailed, PreflightWithCredentialsEmitsMirroredOriginAndCredentials
 }
 
 TEST(HttpCorsDetailed, ActualRequestWithCredentialsEmitsCredentials) {
-  HttpServerConfig cfg{};
   CorsPolicy policy = MakePolicy();
   policy.allowCredentials(true);
   RouterConfig routerCfg;
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
-  test::TestServer ts(cfg, routerCfg);
+  ts.server.router() = Router{routerCfg};
   ts.server.router().setPath(http::Method::GET, "/data",
                              [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); });
 
@@ -357,13 +357,12 @@ TEST(HttpCorsDetailed, ActualRequestWithCredentialsEmitsCredentials) {
 }
 
 TEST(HttpCorsDetailed, PreflightExposeHeadersAndMaxAge) {
-  HttpServerConfig cfg{};
   CorsPolicy policy = MakePolicy();
   policy.exposeHeader("X-My-Header").maxAge(std::chrono::seconds{600});
   RouterConfig routerCfg;
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
-  test::TestServer ts(cfg, routerCfg);
+  ts.server.router() = Router{routerCfg};
   ts.server.router().setPath(http::Method::GET, "/data",
                              [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); });
 
@@ -386,13 +385,12 @@ TEST(HttpCorsDetailed, PreflightExposeHeadersAndMaxAge) {
 }
 
 TEST(HttpCorsDetailed, PreflightPrivateNetworkHeader) {
-  HttpServerConfig cfg{};
   CorsPolicy policy = MakePolicy();
   policy.allowPrivateNetwork(true);
   RouterConfig routerCfg;
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
-  test::TestServer ts(cfg, routerCfg);
+  ts.server.router() = Router{routerCfg};
   ts.server.router().setPath(http::Method::GET, "/data",
                              [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); });
 
@@ -411,7 +409,6 @@ TEST(HttpCorsDetailed, PreflightPrivateNetworkHeader) {
 }
 
 TEST(HttpCorsDetailed, PreflightRequestedHeaderDeniedWhenNotAllowed) {
-  HttpServerConfig cfg{};
   CorsPolicy policy;
   policy.allowOrigin("https://app.example");
   policy.allowMethods(http::Method::GET | http::Method::POST);
@@ -419,7 +416,7 @@ TEST(HttpCorsDetailed, PreflightRequestedHeaderDeniedWhenNotAllowed) {
   RouterConfig routerCfg;
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
-  test::TestServer ts(cfg, routerCfg);
+  ts.server.router() = Router{routerCfg};
   ts.server.router().setPath(http::Method::GET, "/data",
                              [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
@@ -437,7 +434,6 @@ TEST(HttpCorsDetailed, PreflightRequestedHeaderDeniedWhenNotAllowed) {
 }
 
 TEST(HttpCorsDetailed, PreflightEchoesRequestedHeadersWhenNoAllowedList) {
-  HttpServerConfig cfg{};
   CorsPolicy policy;
   policy.allowOrigin("https://app.example");
   policy.allowMethods(http::Method::GET | http::Method::POST);
@@ -445,7 +441,7 @@ TEST(HttpCorsDetailed, PreflightEchoesRequestedHeadersWhenNoAllowedList) {
   RouterConfig routerCfg;
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
-  test::TestServer ts(cfg, routerCfg);
+  ts.server.router() = Router{routerCfg};
   ts.server.router().setPath(http::Method::GET, "/data",
                              [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
@@ -467,13 +463,12 @@ TEST(HttpCorsDetailed, PreflightEchoesRequestedHeadersWhenNoAllowedList) {
 TEST(HttpCorsDetailed, VaryIncludesOriginWhenMirroring) {
   // Case 1: no existing Vary -> should add 'Origin'
   {
-    HttpServerConfig cfg{};
     CorsPolicy policy;
     policy.allowOrigin("https://app.example").allowCredentials(true);
     RouterConfig routerCfg;
     routerCfg.withDefaultCorsPolicy(std::move(policy));
 
-    test::TestServer ts(cfg, routerCfg);
+    ts.server.router() = Router{routerCfg};
     ts.server.router().setPath(http::Method::GET, "/data",
                                [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); });
 
@@ -493,13 +488,12 @@ TEST(HttpCorsDetailed, VaryIncludesOriginWhenMirroring) {
 
   // Case 2: existing Vary -> should append ', Origin'
   {
-    HttpServerConfig cfg{};
     CorsPolicy policy;
     policy.allowOrigin("https://app.example").allowCredentials(true);
     RouterConfig routerCfg;
     routerCfg.withDefaultCorsPolicy(std::move(policy));
 
-    test::TestServer ts(cfg, routerCfg);
+    ts.server.router() = Router{routerCfg};
     ts.server.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
       HttpResponse resp(http::StatusCodeOK);
       resp.header(http::Vary, "Accept-Encoding");
@@ -523,13 +517,12 @@ TEST(HttpCorsDetailed, VaryIncludesOriginWhenMirroring) {
 }
 
 TEST(HttpCorsDetailed, VaryNoDuplicateWhenOriginAlreadyPresent) {
-  HttpServerConfig cfg{};
   CorsPolicy policy;
   policy.allowOrigin("https://app.example").allowCredentials(true);
   RouterConfig routerCfg;
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
-  test::TestServer ts(cfg, routerCfg);
+  ts.server.router() = Router{routerCfg};
   ts.server.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
     HttpResponse resp(http::StatusCodeOK);
     resp.addHeader(http::Vary, "Origin");
@@ -552,14 +545,13 @@ TEST(HttpCorsDetailed, VaryNoDuplicateWhenOriginAlreadyPresent) {
 }
 
 TEST(HttpCorsDetailed, MultipleAllowedOriginsMirrorCorrectOne) {
-  HttpServerConfig cfg{};
   CorsPolicy policy;
   policy.allowOrigin("https://one.example");
   policy.allowOrigin("https://two.example");
   RouterConfig routerCfg;
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
-  test::TestServer ts(cfg, routerCfg);
+  ts.server.router() = Router{routerCfg};
   ts.server.router().setPath(http::Method::GET, "/data",
                              [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); });
 
@@ -578,13 +570,12 @@ TEST(HttpCorsDetailed, MultipleAllowedOriginsMirrorCorrectOne) {
 }
 
 TEST(HttpCorsDetailed, OptionsWithoutAcrMethodTreatedAsSimpleCors) {
-  HttpServerConfig cfg{};
   CorsPolicy policy;
   policy.allowOrigin("https://app.example").allowMethods(static_cast<http::MethodBmp>(http::Method::GET));
   RouterConfig routerCfg;
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
-  test::TestServer ts(cfg, routerCfg);
+  ts.server.router() = Router{routerCfg};
   ts.server.router().setPath(http::Method::OPTIONS, "/data",
                              [](const HttpRequest&) { return HttpResponse(http::StatusCodeNoContent); });
 
