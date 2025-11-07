@@ -817,4 +817,76 @@ TEST(HttpHeadersCustom, SettingReservedHeaderTriggersAssert) {
 }
 #endif
 
+// Basic trailer test - verify trailers are appended after body
+TEST(HttpResponseTrailers, BasicTrailer) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("test body");
+  resp.addTrailer("X-Checksum", "abc123");
+
+  // We can't easily test the serialized output without finalizing,
+  // but we can verify no exception is thrown
+  EXPECT_NO_THROW(resp.addTrailer("X-Signature", "sha256:..."));
+}
+
+// Test error when adding trailer before body
+TEST(HttpResponseTrailers, ErrorBeforeBody) {
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_THROW(resp.addTrailer("X-Checksum", "abc123"), std::logic_error);
+}
+
+// Test error when adding trailer after an explicitly empty body
+TEST(HttpResponseTrailers, EmptyBodyThrows) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("");  // empty body set explicitly
+  EXPECT_THROW(resp.addTrailer("X-Checksum", "abc123"), std::logic_error);
+}
+
+// Test trailer with captured body (std::string)
+TEST(HttpResponseTrailers, CapturedBodyString) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::string("captured body content"));
+  EXPECT_NO_THROW(resp.addTrailer("X-Custom", "value"));
+}
+
+// Test trailer with captured body (std::vector<char>)
+TEST(HttpResponseTrailers, CapturedBodyVector) {
+  HttpResponse resp(http::StatusCodeOK);
+  std::vector<char> vec = {'h', 'e', 'l', 'l', 'o'};
+  resp.body(std::move(vec));
+  EXPECT_NO_THROW(resp.addTrailer("X-Data", "123"));
+}
+
+// Test multiple trailers
+TEST(HttpResponseTrailers, MultipleTrailers) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("body");
+  resp.addTrailer("X-Checksum", "abc");
+  resp.addTrailer("X-Timestamp", "2025-10-20T12:00:00Z");
+  resp.addTrailer("X-Custom", "val");
+  // No assertion - just verify no crashes
+}
+
+// Test empty trailer value
+TEST(HttpResponseTrailers, EmptyValue) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("test");
+  EXPECT_NO_THROW(resp.addTrailer("X-Empty", ""));
+}
+
+// Test rvalue ref version
+TEST(HttpResponseTrailers, RvalueRef) {
+  EXPECT_NO_THROW(HttpResponse(http::StatusCodeOK).body("test").addTrailer("X-Check", "val"));
+}
+
+// Test that setting the body after inserting a trailer throws
+TEST(HttpResponseTrailers, BodyAfterTrailerThrows) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("initial");
+  resp.addTrailer("X-After", "v");
+  // setting inline body after trailer insertion should throw
+  EXPECT_THROW(resp.body("later"), std::logic_error);
+  // setting captured string body after trailer insertion should also throw
+  EXPECT_THROW(resp.body(std::string_view("later2")), std::logic_error);
+}
+
 }  // namespace aeronet

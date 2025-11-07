@@ -39,7 +39,7 @@ namespace aeronet::test {
 // from multiple threads (benign but unnecessary).
 struct TestServer {
   explicit TestServer(aeronet::HttpServerConfig cfg, aeronet::RouterConfig routerCfg = {},
-                      std::chrono::milliseconds pollPeriod = std::chrono::milliseconds{50})
+                      std::chrono::milliseconds pollPeriod = std::chrono::milliseconds{5})
       : server(std::move(cfg.withPollInterval(pollPeriod)), std::move(routerCfg)),
         loopThread([this] { server.runUntil([&] { return stopFlag.load(); }); }) {
     waitReady(std::chrono::milliseconds{500});
@@ -53,6 +53,11 @@ struct TestServer {
   ~TestServer() { stop(); }
 
   [[nodiscard]] uint16_t port() const { return server.port(); }
+
+  void postConfigUpdate(std::function<void(HttpServerConfig&)> updater) {
+    server.postConfigUpdate(std::move(updater));
+    std::this_thread::sleep_for(server.config().pollInterval + 100us);  // allow event loop to process update
+  }
 
   // Cooperative stop; safe to call multiple times.
   void stop() {

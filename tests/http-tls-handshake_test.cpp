@@ -159,7 +159,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertHandshakeFailsWithout) {
   std::string alpn;
   {
     test::TlsTestServer ts({"http/1.1"}, [&](HttpServerConfig& cfg) {
-      cfg.withTlsRequireClientCert(true).withTlsAddTrustedClientCert(serverCert.first);
+      cfg.withTlsRequireClientCert(true).withTlsTrustedClientCert(serverCert.first);
     });
     auto port = ts.port();
     ts.setDefault([](const HttpRequest& req) {
@@ -191,7 +191,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertSuccessWithAlpn) {
   std::string alpn;
   {
     test::TlsTestServer ts({"http/1.1"}, [&](HttpServerConfig& cfg) {
-      cfg.withTlsRequireClientCert(true).withTlsAddTrustedClientCert(clientCert.first);
+      cfg.withTlsRequireClientCert(true).withTlsTrustedClientCert(clientCert.first);
     });
     auto port = ts.port();
     ts.setDefault([](const HttpRequest& req) {
@@ -325,7 +325,7 @@ TEST(HttpTlsMtlsMetrics, ClientCertPresenceIncrementsMetric) {
   ASSERT_FALSE(certKey.second.empty());
   {
     test::TlsTestServer ts({"http/1.1"}, [&](HttpServerConfig& cfg) {
-      cfg.withTlsRequireClientCert(true).withTlsAddTrustedClientCert(certKey.first);
+      cfg.withTlsRequireClientCert(true).withTlsTrustedClientCert(certKey.first);
     });
     auto port = ts.port();
     ts.setDefault([](const HttpRequest&) { return HttpResponse(200, "OK").body("m"); });
@@ -408,7 +408,7 @@ TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
   {
     // Trust the self-signed client cert for verification if sent; but handshake must still succeed w/out require flag.
     test::TlsTestServer ts({}, [&](HttpServerConfig& cfg) {
-      cfg.withTlsRequestClientCert(true).withTlsAddTrustedClientCert(clientPair.first);
+      cfg.withTlsRequestClientCert(true).withTlsTrustedClientCert(clientPair.first);
     });
     auto port = ts.port();
     ts.setDefault([](const HttpRequest&) { return HttpResponse().status(http::StatusCodeOK, "OK").body("C"); });

@@ -119,15 +119,15 @@ ClientRawResponse rawPost(uint16_t port, const std::string& target,
   return resp;
 }
 
+test::TestServer ts(HttpServerConfig{});
+
 }  // namespace
 
 TEST(HttpRequestDecompression, SingleGzip) {
   if constexpr (!zlibEnabled()) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "HelloCompressedWorld";
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -144,9 +144,7 @@ TEST(HttpRequestDecompression, SingleDeflate) {
   if constexpr (!zlibEnabled()) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(10000, 'A');
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -163,9 +161,7 @@ TEST(HttpRequestDecompression, SingleZstd) {
   if constexpr (!zstdEnabled()) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(10000, 'Z');
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -182,9 +178,7 @@ TEST(HttpRequestDecompression, SingleBrotli) {
   if constexpr (!brotliEnabled()) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(10000, 'B');
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -201,9 +195,7 @@ TEST(HttpRequestDecompression, MultiGzipDeflateNoSpaces) {
   if constexpr (!zlibEnabled()) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "MultiStagePayload";
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -221,9 +213,7 @@ TEST(HttpRequestDecompression, MultiZstdGzipWithSpaces) {
   if constexpr (!(zstdEnabled() && zlibEnabled())) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(10000, 'Q');
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -241,9 +231,7 @@ TEST(HttpRequestDecompression, MultiGzipBrotli) {
   if constexpr (!(zlibEnabled() && brotliEnabled())) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(10000, 'R');
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -261,9 +249,7 @@ TEST(HttpRequestDecompression, MultiZstdBrotli) {
   if constexpr (!(zstdEnabled() && brotliEnabled())) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(10000, 'Z');
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -281,9 +267,7 @@ TEST(HttpRequestDecompression, IdentitySkippedInChain) {
   if constexpr (!zlibEnabled()) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "SkipIdentity";
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -298,9 +282,7 @@ TEST(HttpRequestDecompression, IdentitySkippedInChain) {
 }
 
 TEST(HttpRequestDecompression, UnknownCodingRejected) {
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
     HttpResponse resp;
     resp.body("U");
@@ -312,9 +294,7 @@ TEST(HttpRequestDecompression, UnknownCodingRejected) {
 }
 
 TEST(HttpRequestDecompression, EmptyTokenRejected) {
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string body = "xyz";
   auto resp = rawPost(ts.port(), "/e", {{"Content-Encoding", "identity,,identity"}}, body);
   // empty token forbidden
@@ -325,11 +305,12 @@ TEST(HttpRequestDecompression, DisabledFeaturePassThrough) {
   if constexpr (!zlibEnabled()) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  DecompressionConfig rdc;
-  rdc.enable = false;  // disable auto decompression
-  cfg.withRequestDecompression(rdc);
-  test::TestServer ts(cfg);
+
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.decompression = {};
+    cfg.decompression.enable = false;
+  });
+
   std::string plain = "ABC";
   auto gz = gzipCompress(plain);
   ts.server.router().setDefault([](const HttpRequest& req) {
@@ -352,12 +333,12 @@ TEST(HttpRequestDecompression, ExpansionRatioGuard) {
   if constexpr (!zlibEnabled()) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  DecompressionConfig rdc;
-  rdc.maxExpansionRatio = 2.0;
-  rdc.maxDecompressedBytes = 100000;
-  cfg.withRequestDecompression(rdc);
-  test::TestServer ts(cfg);
+
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.decompression = {};
+    cfg.decompression.maxExpansionRatio = 2.0;
+    cfg.decompression.maxDecompressedBytes = 100000;
+  });
   // Highly compressible large input -> gzip then send; expect rejection if ratio >2
   std::string large(100000, 'A');
   auto gz = gzipCompress(large);
@@ -373,9 +354,7 @@ TEST(HttpRequestDecompression, MultiZstdGzipMultiSpaces) {
   if constexpr (!(zstdEnabled() && zlibEnabled())) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(3200, 'S');
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -393,9 +372,7 @@ TEST(HttpRequestDecompression, TripleChainSpacesTabs) {
   if constexpr (!(zstdEnabled() && zlibEnabled())) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "TripleChain";
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -414,9 +391,7 @@ TEST(HttpRequestDecompression, MixedCaseTokens) {
   if constexpr (!zlibEnabled()) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "CaseCheck";
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -434,9 +409,7 @@ TEST(HttpRequestDecompression, IdentityRepeated) {
   if constexpr (!zlibEnabled()) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "IdentityRepeat";
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -454,9 +427,7 @@ TEST(HttpRequestDecompression, TabsBetweenTokens) {
   if constexpr (!zlibEnabled()) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "TabsBetween";
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -471,9 +442,7 @@ TEST(HttpRequestDecompression, TabsBetweenTokens) {
 }
 
 TEST(HttpRequestDecompression, UnknownCodingWithSpacesRejected) {
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "UnknownSpace";
   // Apply first encoding so that unknown token appears last.
   auto gz = [&] {
@@ -492,9 +461,7 @@ TEST(HttpRequestDecompression, UnknownCodingWithSpacesRejected) {
 }
 
 TEST(HttpRequestDecompression, EmptyTokenWithSpacesRejected) {
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string body = "abc123";  // intentionally not compressed
   auto resp = rawPost(ts.port(), "/emptsp", {{"Content-Encoding", "identity,  ,identity"}}, body);
   EXPECT_EQ(resp.status, 400);
@@ -506,9 +473,7 @@ TEST(HttpRequestDecompression, CorruptedGzipTruncatedTail) {
   if constexpr (!zlibEnabled()) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(200, 'G');
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -528,9 +493,7 @@ TEST(HttpRequestDecompression, CorruptedZstdBadMagic) {
   if constexpr (!zstdEnabled()) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(512, 'Z');
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -554,9 +517,7 @@ TEST(HttpRequestDecompression, CorruptedBrotliTruncated) {
   if constexpr (!brotliEnabled()) {
     GTEST_SKIP();
   }
-  HttpServerConfig cfg{};
-  cfg.withRequestDecompression(DecompressionConfig{});
-  test::TestServer ts(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(300, 'B');
   ts.server.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);  // Not reached for corrupted case

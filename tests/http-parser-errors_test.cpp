@@ -14,6 +14,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/router-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -29,11 +30,12 @@ struct Capture {
     errors.push_back(err);
   }
 };
+
+test::TestServer ts(HttpServerConfig{}, RouterConfig{}, std::chrono::milliseconds{5});
+auto port = ts.port();
 }  // namespace
 
 TEST(HttpParserErrors, InvalidVersion505) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
   Capture cap;
   ts.server.setParserErrorCallback([&](http::StatusCode err) { cap.push(err); });
   ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
@@ -43,7 +45,6 @@ TEST(HttpParserErrors, InvalidVersion505) {
   std::string bad = "GET / HTTP/9.9\r\nHost: x\r\nConnection: close\r\n\r\n";  // unsupported version
   test::sendAll(fd, bad);
   std::string resp = test::recvUntilClosed(fd);
-  ts.stop();
   ASSERT_TRUE(resp.contains("505")) << resp;
   bool seen = false;
   {
@@ -58,8 +59,6 @@ TEST(HttpParserErrors, InvalidVersion505) {
 }
 
 TEST(HttpParserErrors, Expect100OnlyWithBody) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
   ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
@@ -78,15 +77,12 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
       "POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\nHELLO";
   test::sendAll(fd2, post);
   std::string resp = test::recvUntilClosed(fd2);
-  ts.stop();
   ASSERT_TRUE(resp.contains("100 Continue"));
   ASSERT_TRUE(resp.contains("200"));
 }
 
 // Fuzz-ish incremental chunk framing with random chunk sizes & boundaries.
 TEST(HttpParserErrors, ChunkIncrementalFuzz) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
   ts.server.router().setDefault(
       [](const HttpRequest& req) { return HttpResponse(http::StatusCodeOK).body(req.body()); });
 
@@ -118,7 +114,6 @@ TEST(HttpParserErrors, ChunkIncrementalFuzz) {
   // terminating chunk
   test::sendAll(fd, "0\r\n\r\n");
   std::string resp = test::recvUntilClosed(fd);
-  ts.stop();
   ASSERT_TRUE(resp.contains("200"));
   ASSERT_TRUE(resp.contains(original.substr(0, 3))) << resp;  // sanity partial check
 }

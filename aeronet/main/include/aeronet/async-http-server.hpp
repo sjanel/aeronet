@@ -97,6 +97,12 @@ class AsyncHttpServer {
   // If an exception has been thrown during the server loop, rethrow the exception in main process.
   void rethrowIfError();
 
+  // Post a configuration update to be applied safely to underlying server.
+  // See HttpServer::postConfigUpdate for semantics.
+  void postConfigUpdate(std::function<void(HttpServerConfig&)> updater) {
+    _server.postConfigUpdate(std::move(updater));
+  }
+
  private:
   void ensureStartable();
 

@@ -1,17 +1,26 @@
 #pragma once
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <string>
-#include <vector>
+#include <ranges>
+#include <string_view>
 
+#include "dynamic-concatenated-strings.hpp"
 #include "major-minor-version.hpp"
 #include "static-concatenated-strings.hpp"
 
 namespace aeronet {
 
 class TLSConfig {
+ private:
+  static constexpr char kNullCharSep[] = {'\0'};
+
+  using NullSeparatedStrings = DynamicConcatenatedStrings<kNullCharSep, false, uint32_t>;
+
  public:
+  using StringViewRange = std::ranges::subrange<NullSeparatedStrings::iterator>;
+
   // RFC 7301 (ALPN) protocol identifier length is encoded in a single octet => maximum 255 bytes.
   // OpenSSL lacks a stable public constant for this; we define it here to avoid magic numbers.
   static constexpr std::size_t kMaxAlpnProtocolLength = 255;
@@ -70,6 +79,39 @@ class TLSConfig {
     return *this;
   }
 
+  // Set (overwrite) ALPN protocol preference list. Order matters; first matching protocol is selected.
+  template <std::ranges::input_range R>
+    requires std::convertible_to<std::ranges::range_reference_t<R>, std::string_view>
+  TLSConfig& withTlsAlpnProtocols(R&& protos) {
+    _alpnProtocols.clear();
+    for (auto&& proto : protos) {
+      _alpnProtocols.append(std::string_view(proto));
+    }
+    return *this;
+  }
+
+  // Append a trusted client certificate (PEM) to the list used for client cert validation.
+  TLSConfig& withTlsTrustedClientCert(std::string_view certPem) {
+    _trustedClientCertsPem.append(certPem);
+    return *this;
+  }
+
+  // Clear all trusted client certificates.
+  TLSConfig& withoutTlsTrustedClientCert() {
+    _trustedClientCertsPem.clear();
+    return *this;
+  }
+
+  // Ordered ALPN protocol list (first match preferred). Empty = disabled.
+  [[nodiscard]] StringViewRange alpnProtocols() const noexcept {
+    return {_alpnProtocols.begin(), _alpnProtocols.end()};
+  }
+
+  // Ordered ALPN protocol list (first match preferred). Empty = disabled.
+  [[nodiscard]] StringViewRange trustedClientCertsPem() const noexcept {
+    return {_trustedClientCertsPem.begin(), _trustedClientCertsPem.end()};
+  }
+
   bool enabled{false};            // Master TLS enable/disable switch
   bool requestClientCert{false};  // Request (but not require) a client certificate
   bool requireClientCert{false};  // Require + verify client certificate (strict mTLS). Implies requestClientCert.
@@ -77,15 +119,17 @@ class TLSConfig {
   bool logHandshake{false};       // If true, emit log line on TLS handshake completion (ALPN, cipher, version, peer CN)
 
   // Optional protocol version bounds (empty => library defaults). Accepted values: "TLS1.2", "TLS1.3".
-  Version minVersion;                      // If set, enforce minimum TLS protocol version.
-  Version maxVersion;                      // If set, enforce maximum TLS protocol version.
-  std::vector<std::string> alpnProtocols;  // Ordered ALPN protocol list (first match preferred). Empty = disabled.
-  std::vector<std::string> trustedClientCertsPem;  // Additional trusted client root / leaf certs (PEM, no files yet)
+  Version minVersion;  // If set, enforce minimum TLS protocol version.
+  Version maxVersion;  // If set, enforce maximum TLS protocol version.
 
  private:
   // PEM server certificate, PEM private key, In-memory PEM certificate, In-memory PEM private key, Optional OpenSSL
   // cipher list string
   StaticConcatenatedStrings<5, uint32_t> _tlsStrings;  // Stored TLS-related strings
+
+  NullSeparatedStrings _alpnProtocols;
+  // Additional trusted client root / leaf certs (PEM, stored as NUL-separated entries)
+  NullSeparatedStrings _trustedClientCertsPem;
 };
 
 }  // namespace aeronet
