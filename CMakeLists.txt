@@ -20,26 +20,21 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 message(STATUS "[${CMAKE_PROJECT_NAME}] version: ${AERONET_PROJECT_VERSION}")
 
-set(IS_MAIN_PROJECT OFF)
-if(PROJECT_IS_TOP_LEVEL)
-  set(IS_MAIN_PROJECT ON)
-endif()
-
-set(AERONET_BUILD_BENCHMARKS_DEFAULT ${IS_MAIN_PROJECT})
+set(AERONET_BUILD_BENCHMARKS_DEFAULT ${PROJECT_IS_TOP_LEVEL})
 set(ASAN_DEFAULT OFF)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(ASAN_DEFAULT ON)
   set(AERONET_BUILD_BENCHMARKS_DEFAULT OFF)
 endif()
 
-option(AERONET_ENABLE_CCACHE "Compile with ccache for faster incremental compilation" ${IS_MAIN_PROJECT})
+option(AERONET_ENABLE_CCACHE "Compile with ccache for faster incremental compilation" ${PROJECT_IS_TOP_LEVEL})
 
 # Build options
-option(AERONET_INSTALL "Enable install & package config generation" ${IS_MAIN_PROJECT})
+option(AERONET_INSTALL "Enable install & package config generation" ${PROJECT_IS_TOP_LEVEL})
 # When consumed as a package (not the main project) we never want to build tests or examples.
 # Some package managers (vcpkg/Conan) may still pass defaults or reuse a cached build tree;
 # enforce OFF deterministically here to avoid leaking test targets into consumer builds.
-set(AERONET_BUILD_TESTS_EXAMPLES_DEFAULT ${IS_MAIN_PROJECT})
+set(AERONET_BUILD_TESTS_EXAMPLES_DEFAULT ${PROJECT_IS_TOP_LEVEL})
 if(AERONET_INSTALL AND NOT PROJECT_IS_TOP_LEVEL)
   set(AERONET_BUILD_TESTS_EXAMPLES_DEFAULT OFF CACHE BOOL "Build tests and examples" FORCE)
   set(AERONET_BUILD_BENCHMARKS_DEFAULT OFF CACHE BOOL "Build benchmarks" FORCE)
@@ -52,12 +47,12 @@ option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_BE
 
 # Features
 # Optional dependencies (aeronet is able to compile without the feature if not enabled)
-option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" ${IS_MAIN_PROJECT})
-option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" ${IS_MAIN_PROJECT})
-option(AERONET_ENABLE_BROTLI "Enable usage of Brotli for br codec support" ${IS_MAIN_PROJECT})
-option(AERONET_ENABLE_ZLIB "Enable usage of zlib for deflate and gzip codec support" ${IS_MAIN_PROJECT})
-option(AERONET_ENABLE_ZSTD "Enable usage of Zstandard for zstd codec support" ${IS_MAIN_PROJECT})
-option(AERONET_ENABLE_OPENTELEMETRY "Enable OpenTelemetry C++ integration (optional)" ${IS_MAIN_PROJECT})
+option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" ${PROJECT_IS_TOP_LEVEL})
+option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" ${PROJECT_IS_TOP_LEVEL})
+option(AERONET_ENABLE_BROTLI "Enable usage of Brotli for br codec support" ${PROJECT_IS_TOP_LEVEL})
+option(AERONET_ENABLE_ZLIB "Enable usage of zlib for deflate and gzip codec support" ${PROJECT_IS_TOP_LEVEL})
+option(AERONET_ENABLE_ZSTD "Enable usage of Zstandard for zstd codec support" ${PROJECT_IS_TOP_LEVEL})
+option(AERONET_ENABLE_OPENTELEMETRY "Enable OpenTelemetry C++ integration (optional)" ${PROJECT_IS_TOP_LEVEL})
 
 option(AERONET_SPDLOG_USE_STD_FORMAT "Use std::format instead of fmt::format in spdlog" ON)
 
