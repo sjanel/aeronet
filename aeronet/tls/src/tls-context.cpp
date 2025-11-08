@@ -46,6 +46,11 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics) : _ctx
     throw std::runtime_error("SSL_CTX_new failed");
   }
   auto* raw = reinterpret_cast<SSL_CTX*>(_ctx.get());
+#if defined(AERONET_ENABLE_KTLS) && defined(SSL_OP_ENABLE_KTLS)
+  if (cfg.ktlsMode != TLSConfig::KtlsMode::Disabled) {
+    ::SSL_CTX_set_options(raw, SSL_OP_ENABLE_KTLS);
+  }
+#endif
   if (!cfg.cipherList().empty()) {
     if (::SSL_CTX_set_cipher_list(raw, cfg.cipherListCstrView().c_str()) != 1) {
       throw std::runtime_error("Failed to set cipher list");

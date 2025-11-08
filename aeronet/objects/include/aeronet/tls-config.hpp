@@ -29,6 +29,8 @@ class TLSConfig {
 
   using Version = MajorMinorVersion<kTlsVersionPrefix>;
 
+  enum class KtlsMode : std::uint8_t { Disabled, Auto, Enabled, Forced };
+
   static constexpr Version TLS_1_2 = Version{1, 2};
   static constexpr Version TLS_1_3 = Version{1, 3};
 
@@ -96,6 +98,11 @@ class TLSConfig {
     return *this;
   }
 
+  TLSConfig& withKtlsMode(KtlsMode mode) {
+    ktlsMode = mode;
+    return *this;
+  }
+
   // Clear all trusted client certificates.
   TLSConfig& withoutTlsTrustedClientCert() {
     _trustedClientCertsPem.clear();
@@ -118,9 +125,19 @@ class TLSConfig {
   bool alpnMustMatch{false};      // If true and client offers no overlapping ALPN protocol, fail handshake.
   bool logHandshake{false};       // If true, emit log line on TLS handshake completion (ALPN, cipher, version, peer CN)
 
+  KtlsMode ktlsMode{
+#ifdef AERONET_ENABLE_KTLS
+      KtlsMode::Auto
+#else
+      KtlsMode::Disabled
+#endif
+  };
+
   // Optional protocol version bounds (empty => library defaults). Accepted values: "TLS1.2", "TLS1.3".
   Version minVersion;  // If set, enforce minimum TLS protocol version.
   Version maxVersion;  // If set, enforce maximum TLS protocol version.
+
+  bool operator==(const TLSConfig&) const noexcept = default;
 
  private:
   // PEM server certificate, PEM private key, In-memory PEM certificate, In-memory PEM private key, Optional OpenSSL

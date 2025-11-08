@@ -13,9 +13,6 @@
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
 #endif
-#ifdef AERONET_ENABLE_BROTLI
-#include <brotli/encode.h>
-#endif
 #ifdef AERONET_ENABLE_SPDLOG
 #include <spdlog/version.h>
 #endif
@@ -49,12 +46,20 @@ constexpr std::string_view fullVersionStringView() {
 #ifdef AERONET_ENABLE_OPENSSL
   static constexpr std::string_view _sv_openssl_ver = OPENSSL_VERSION_TEXT;  // e.g. "OpenSSL 3.0.13 30 Jan 2024"
   static constexpr std::string_view _sv_tls_prefix = "tls: ";
+
+// KTLS section fragment: report whether the build provided KTLS support.
+#ifdef AERONET_ENABLE_KTLS
+  static constexpr std::string_view _sv_ktls_section = ", ktls: provided";
+#else
+  static constexpr std::string_view _sv_ktls_section = ", ktls: not provided";
+#endif
+
   // We choose to keep full OPENSSL_VERSION_TEXT (concise enough) – trimming can be added later if needed.
-  using tls_join_t = JoinStringView<_sv_tls_prefix, _sv_openssl_ver>;
+  using tls_join_t = JoinStringView<_sv_tls_prefix, _sv_openssl_ver, _sv_ktls_section>;
+
   static constexpr std::string_view _sv_tls_section = tls_join_t::value;
 #else
-  static constexpr std::string_view _sv_tls_disabled = "tls: disabled";
-  static constexpr std::string_view _sv_tls_section = _sv_tls_disabled;
+  static constexpr std::string_view _sv_tls_section = "tls: disabled";
 #endif
 
 // Logging section fragment
@@ -88,18 +93,8 @@ constexpr std::string_view fullVersionStringView() {
   static constexpr std::string_view _sv_zstd_full = zstd_join_t::value;
 #endif
 #ifdef AERONET_ENABLE_BROTLI
-#if defined(BROTLI_VERSION_MAJOR) && defined(BROTLI_VERSION_MINOR) && defined(BROTLI_VERSION_PATCH)
-  static constexpr auto _sv_brotli_major = IntToStringView<BROTLI_VERSION_MAJOR>::value;
-  static constexpr auto _sv_brotli_minor = IntToStringView<BROTLI_VERSION_MINOR>::value;
-  static constexpr auto _sv_brotli_patch = IntToStringView<BROTLI_VERSION_PATCH>::value;
-  static constexpr auto _sv_dot = CharToStringView_v<'.'>;  // reuse of '.' ok (already defined above for spdlog)
-  static constexpr std::string_view _sv_brotli_prefix = "brotli ";
-  using brotli_join_t =
-      JoinStringView<_sv_brotli_prefix, _sv_brotli_major, _sv_dot, _sv_brotli_minor, _sv_dot, _sv_brotli_patch>;
-  static constexpr std::string_view _sv_brotli_full = brotli_join_t::value;
-#else
-  static constexpr std::string_view _sv_brotli_full = "brotli (unknown)";
-#endif
+  // Brotli version detection is impossible at compile time.
+  static constexpr std::string_view _sv_brotli_full = "brotli (present)";
 #endif
 
   // Build a combined list with comma when both present

@@ -12,3 +12,8 @@ target_link_libraries(aeronet-sendfile PRIVATE aeronet)
 
 add_project_executable(aeronet-static-example static-file.cpp)
 target_link_libraries(aeronet-static-example PRIVATE aeronet)
+
+if (AERONET_ENABLE_OPENSSL AND AERONET_ENABLE_KTLS)
+	add_project_executable(aeronet-tls-ktls tls-ktls.cpp)
+	target_link_libraries(aeronet-tls-ktls PRIVATE aeronet)
+endif()

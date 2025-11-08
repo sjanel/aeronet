@@ -2,6 +2,9 @@
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#ifdef AERONET_ENABLE_KTLS
+#include <openssl/bio.h>
+#endif
 
 #include <cerrno>
 #include <cstddef>
@@ -182,5 +185,68 @@ void TlsTransport::logErrorIfAny() const noexcept {
     }
   }
 }
+
+#ifdef AERONET_ENABLE_KTLS
+TlsTransport::KtlsEnableResult TlsTransport::enableKtlsSend() {
+  KtlsEnableResult result{};
+
+  if (_ktlsSendAttempted) {
+    result.status = _ktlsSendEnabled ? KtlsEnableResult::Status::AlreadyEnabled : KtlsEnableResult::Status::Failed;
+    return result;
+  }
+  _ktlsSendAttempted = true;
+
+#if defined(__linux__) && defined(BIO_CTRL_GET_KTLS_SEND) && !defined(OPENSSL_NO_KTLS)
+  BIO* writeBio = ::SSL_get_wbio(_ssl.get());
+  log::debug("enableKtlsSend: writeBio = {}", static_cast<void*>(writeBio));
+  if (writeBio == nullptr) {
+    log::debug("enableKtlsSend: writeBio == nullptr -> fail");
+    result.status = KtlsEnableResult::Status::Failed;
+    return result;
+  }
+
+  auto getResLong = ::BIO_ctrl(writeBio, BIO_CTRL_GET_KTLS_SEND, 0, nullptr);
+  int getRes = static_cast<int>(getResLong);
+  log::debug("enableKtlsSend: BIO_CTRL_GET_KTLS_SEND -> {}", getRes);
+  if (getRes == 1) {
+    _ktlsSendEnabled = true;
+    result.status = KtlsEnableResult::Status::AlreadyEnabled;
+    return result;
+  }
+  /*
+   * Some OpenSSL distributions expose the GET control but intentionally
+   * do not expose the SET control as a public macro (it may be internal).
+   * Detect that at compile-time and adapt: if the SET control isn't
+   * available we cannot request KTLS via the BIO and must report
+   * Unsupported.
+   */
+#ifdef BIO_CTRL_SET_KTLS_SEND
+  log::debug("enableKtlsSend: BIO_CTRL_SET_KTLS_SEND defined at compile time");
+  errno = 0;
+  int setRes = ::BIO_ctrl(writeBio, BIO_CTRL_SET_KTLS_SEND, 0, nullptr);
+  log::debug("enableKtlsSend: BIO_CTRL_SET_KTLS_SEND -> {} errno={} ({})", setRes, errno,
+             (errno == 0) ? std::string_view("no error") : std::string_view(std::strerror(errno)));
+
+  if (setRes == 1) {
+    _ktlsSendEnabled = true;
+    result.status = KtlsEnableResult::Status::Enabled;
+    return result;
+  }
+
+  result.status = KtlsEnableResult::Status::Failed;
+  result.sysError = errno;
+  if (unsigned long lastErr = ::ERR_peek_last_error(); lastErr != 0) {
+    result.sslError = lastErr;
+  }
+#else
+  log::warn("enableKtlsSend: BIO_CTRL_SET_KTLS_SEND not defined in OpenSSL headers; cannot request KTLS via BIO");
+  result.status = KtlsEnableResult::Status::Unsupported;
+#endif
+#else
+  result.status = KtlsEnableResult::Status::Unsupported;
+#endif
+  return result;
+}
+#endif
 
 }  // namespace aeronet

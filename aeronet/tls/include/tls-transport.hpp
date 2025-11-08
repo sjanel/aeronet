@@ -30,9 +30,26 @@ class TlsTransport : public ITransport {
 
   void logErrorIfAny() const noexcept;
 
+#ifdef AERONET_ENABLE_KTLS
+  struct KtlsEnableResult {
+    enum class Status : std::uint8_t { Unsupported, Enabled, AlreadyEnabled, Failed };
+    Status status{Status::Unsupported};
+    int sysError{0};
+    unsigned long sslError{0};
+  };
+
+  [[nodiscard]] bool ktlsSendEnabled() const noexcept { return _ktlsSendEnabled; }
+
+  KtlsEnableResult enableKtlsSend();
+#endif
+
  private:
   SslPtr _ssl;
   bool _handshakeDone{false};
+#ifdef AERONET_ENABLE_KTLS
+  bool _ktlsSendAttempted{false};
+  bool _ktlsSendEnabled{false};
+#endif
 };
 
 }  // namespace aeronet

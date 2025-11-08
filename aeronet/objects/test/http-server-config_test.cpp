@@ -50,4 +50,13 @@ TEST(HttpServerConfigTest, CompressionConfig) {
 #endif
 }
 
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+TEST(HttpServerConfigTest, WithTlsKtlsModeEnablesTls) {
+  HttpServerConfig config;
+  config.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled);
+  EXPECT_TRUE(config.tls.enabled);
+  EXPECT_EQ(config.tls.ktlsMode, TLSConfig::KtlsMode::Enabled);
+}
+#endif
+
 }  // namespace aeronet

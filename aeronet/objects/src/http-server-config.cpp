@@ -121,6 +121,11 @@ HttpServerConfig& HttpServerConfig::withTlsRequireClientCert(bool on) {
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withTlsKtlsMode(TLSConfig::KtlsMode mode) {
+  ensureTls().ktlsMode = mode;
+  return *this;
+}
+
 HttpServerConfig& HttpServerConfig::withTlsAlpnMustMatch(bool on) {
   ensureTls().alpnMustMatch = on;
   return *this;

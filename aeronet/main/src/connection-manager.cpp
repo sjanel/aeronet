@@ -174,12 +174,20 @@ void HttpServer::acceptNewConnections() {
       if (!pCnx->tlsEstablished && pCnx->transport->handshakeDone()) {
 #ifdef AERONET_ENABLE_OPENSSL
         if (_config.tls.enabled && dynamic_cast<TlsTransport*>(pCnx->transport.get()) != nullptr) {
-          const auto* tlsTr = static_cast<const TlsTransport*>(pCnx->transport.get());
+          auto* tlsTr = static_cast<TlsTransport*>(pCnx->transport.get());
           pCnx->tlsInfo =
               finalizeTlsHandshake(tlsTr->rawSsl(), cnxFd, _config.tls.logHandshake, pCnx->handshakeStart, _tlsMetrics);
+#ifdef AERONET_ENABLE_KTLS
+          maybeEnableKtlsSend(*pCnx, *tlsTr, cnxFd);
+#endif
         }
 #endif
         pCnx->tlsEstablished = true;
+        if (pCnx->isImmediateCloseRequested()) {
+          cnxIt = closeConnection(cnxIt);
+          pCnx = nullptr;
+          break;
+        }
       }
       // Close only on fatal transport error or an orderly EOF (bytesRead==0 with no 'want' hint).
       if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
@@ -302,12 +310,21 @@ void HttpServer::handleReadableClient(int fd) {
     if (!state.tlsEstablished && state.transport->handshakeDone()) {
 #ifdef AERONET_ENABLE_OPENSSL
       if (_config.tls.enabled && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
-        const auto* tlsTr = static_cast<const TlsTransport*>(state.transport.get());
+        auto* tlsTr = static_cast<TlsTransport*>(state.transport.get());
         state.tlsInfo =
             finalizeTlsHandshake(tlsTr->rawSsl(), fd, _config.tls.logHandshake, state.handshakeStart, _tlsMetrics);
+#ifdef AERONET_ENABLE_KTLS
+        maybeEnableKtlsSend(state, *tlsTr, fd);
+#endif
       }
 #endif
       state.tlsEstablished = true;
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+      if (state.isImmediateCloseRequested()) {
+        closeConnection(cnxIt);
+        return;
+      }
+#endif
     }
     if (want != TransportHint::None) {
       // Non-fatal: transport needs the socket to be readable or writable before proceeding.

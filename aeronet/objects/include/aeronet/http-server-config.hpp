@@ -247,6 +247,8 @@ struct HttpServerConfig {
   // Enforce mutual TLS: handshake fails if client does not present *and* validate a certificate.
   HttpServerConfig& withTlsRequireClientCert(bool on = true);
 
+  HttpServerConfig& withTlsKtlsMode(TLSConfig::KtlsMode mode);
+
   // Set (overwrite) ALPN protocol preference list. Order matters; first matching protocol is selected.
   template <std::ranges::input_range R>
     requires std::convertible_to<std::ranges::range_reference_t<R>, std::string_view>

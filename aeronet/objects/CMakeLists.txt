@@ -159,6 +159,13 @@ add_unit_test(
 )
 
 add_unit_test(
+    server-stats_test
+    test/server-stats_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
+
+add_unit_test(
     opentelemetry-integration_test
     test/opentelemetry-integration_test.cpp
     LIBRARIES

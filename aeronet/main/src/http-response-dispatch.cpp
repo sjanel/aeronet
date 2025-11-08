@@ -502,10 +502,18 @@ void HttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
   }
 
 #ifdef AERONET_ENABLE_OPENSSL
-  const bool tlsFlow = _config.tls.enabled && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr;
+  const bool tlsTransport = _config.tls.enabled && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr;
 #else
-  static constexpr bool tlsFlow = false;
+  static constexpr bool tlsTransport = false;
 #endif
+
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+  const bool ktlsSend = tlsTransport && state.ktlsSendEnabled;
+#else
+  static constexpr bool ktlsSend = false;
+#endif
+
+  const bool tlsFlow = tlsTransport && !ktlsSend;
 
   // Loop to drain file payload while we can make progress (edge-triggered epoll requires this)
   for (;;) {
@@ -534,6 +542,11 @@ void HttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
         break;
       case ConnectionState::FileResult::Code::Sent:
         _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(res.bytesDone);
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+        if (ktlsSend) {
+          _stats.ktlsSendBytes += static_cast<std::uint64_t>(res.bytesDone);
+        }
+#endif
         // Continue loop to send more
         break;
       case ConnectionState::FileResult::Code::Error:
@@ -549,6 +562,11 @@ void HttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
           const auto retryRes = state.transportFile(cnxIt->first.fd(), tlsFlow);
           if (retryRes.code == ConnectionState::FileResult::Code::Sent) {
             _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(retryRes.bytesDone);
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+            if (ktlsSend) {
+              _stats.ktlsSendBytes += static_cast<std::uint64_t>(retryRes.bytesDone);
+            }
+#endif
             // Socket was writable, continue the loop to send more
             break;
           }
