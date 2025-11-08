@@ -1,6 +1,10 @@
 function(set_project_properties name)
 
-  target_compile_definitions(${name} PRIVATE AERONET_VERSION_STR="${PROJECT_VERSION}")
+  # Export the version string to consumers. Use a PUBLIC compile definition so
+  # installed/exported targets provide AERONET_VERSION_STR to downstream
+  # consumers (vcpkg/Conan consumers link the target but will not see PRIVATE
+  # compile definitions). Define it as a C string literal.
+  target_compile_definitions(${name} PUBLIC "AERONET_VERSION_STR=\"${PROJECT_VERSION}\"")
 
   # Warning levels
   if(CMAKE_BUILD_TYPE STREQUAL "Debug")
