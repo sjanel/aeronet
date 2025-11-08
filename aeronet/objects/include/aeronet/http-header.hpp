@@ -9,6 +9,8 @@
 namespace aeronet::http {
 
 struct Header {
+  bool operator==(const Header &) const noexcept = default;
+
   std::string name;
   std::string value;
 };

@@ -14,6 +14,12 @@ void TLSConfig::validate() const {
     return;
   }
 
+#ifndef AERONET_ENABLE_KTLS
+  if (ktlsMode != KtlsMode::Disabled) {
+    throw std::invalid_argument("KTLS requested but not enabled at build time");
+  }
+#endif
+
   // If TLS config is present we require a cert and a key supplied (either file or in-memory PEM)
   const bool hasCert = !certFile().empty() || !certPem().empty();
   const bool hasKey = !keyFile().empty() || !keyPem().empty();

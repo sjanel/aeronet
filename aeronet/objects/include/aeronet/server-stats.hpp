@@ -27,6 +27,10 @@ struct ServerStats {
     fun("maxConnectionOutboundBuffer", static_cast<uint64_t>(maxConnectionOutboundBuffer));
     fun("totalRequestsServed", totalRequestsServed);
 #ifdef AERONET_ENABLE_OPENSSL
+    fun("ktlsSendEnabledConnections", ktlsSendEnabledConnections);
+    fun("ktlsSendEnableFallbacks", ktlsSendEnableFallbacks);
+    fun("ktlsSendForcedShutdowns", ktlsSendForcedShutdowns);
+    fun("ktlsSendBytes", ktlsSendBytes);
     fun("tlsHandshakesSucceeded", tlsHandshakesSucceeded);
     fun("tlsClientCertPresent", tlsClientCertPresent);
     fun("tlsAlpnStrictMismatches", tlsAlpnStrictMismatches);
@@ -45,6 +49,10 @@ struct ServerStats {
   std::size_t maxConnectionOutboundBuffer{};
   uint64_t totalRequestsServed{};
 #ifdef AERONET_ENABLE_OPENSSL
+  uint64_t ktlsSendEnabledConnections{};
+  uint64_t ktlsSendEnableFallbacks{};
+  uint64_t ktlsSendForcedShutdowns{};
+  uint64_t ktlsSendBytes{};
   uint64_t tlsHandshakesSucceeded{};
   uint64_t tlsClientCertPresent{};
   uint64_t tlsAlpnStrictMismatches{};

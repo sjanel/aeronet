@@ -12,6 +12,10 @@
 #include <string>
 #include <thread>
 #include <utility>
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+#include <mutex>
+#include <vector>
+#endif
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
@@ -37,6 +41,58 @@ namespace aeronet::test {
 //
 // Thread-safety: same as underlying HttpServer (single-threaded event loop). Do not call stop() concurrently
 // from multiple threads (benign but unnecessary).
+
+class TestHttpServer : public HttpServer {
+ public:
+  using HttpServer::HttpServer;
+
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+  void setKtlsEnableScript(std::vector<TlsTransport::KtlsEnableResult> script,
+                           TlsTransport::KtlsEnableResult fallback = {}) {
+    std::scoped_lock lock(_ktlsMutex);
+    _ktlsScript = std::move(script);
+    _ktlsNextIndex = 0;
+    _ktlsFallback = fallback;
+    _ktlsCallCount = 0;
+    _ktlsOverrideActive = true;
+  }
+
+  void clearKtlsEnableScript() {
+    std::scoped_lock lock(_ktlsMutex);
+    _ktlsScript.clear();
+    _ktlsNextIndex = 0;
+    _ktlsCallCount = 0;
+    _ktlsOverrideActive = false;
+  }
+
+  [[nodiscard]] std::size_t ktlsEnableCallCount() const {
+    std::scoped_lock lock(_ktlsMutex);
+    return _ktlsCallCount;
+  }
+
+ protected:
+  TlsTransport::KtlsEnableResult doEnableKtlsSend(TlsTransport& transport) override {
+    std::scoped_lock lock(_ktlsMutex);
+    if (!_ktlsOverrideActive) {
+      return HttpServer::doEnableKtlsSend(transport);
+    }
+    ++_ktlsCallCount;
+    if (_ktlsNextIndex < _ktlsScript.size()) {
+      return _ktlsScript[_ktlsNextIndex++];
+    }
+    return _ktlsFallback;
+  }
+
+ private:
+  mutable std::mutex _ktlsMutex;
+  std::vector<TlsTransport::KtlsEnableResult> _ktlsScript;
+  std::size_t _ktlsNextIndex{0};
+  TlsTransport::KtlsEnableResult _ktlsFallback{};
+  std::size_t _ktlsCallCount{0};
+  bool _ktlsOverrideActive{false};
+#endif
+};
+
 struct TestServer {
   explicit TestServer(aeronet::HttpServerConfig cfg, aeronet::RouterConfig routerCfg = {},
                       std::chrono::milliseconds pollPeriod = std::chrono::milliseconds{5})
@@ -66,7 +122,7 @@ struct TestServer {
     }
   }
 
-  HttpServer server;
+  TestHttpServer server;
 
  private:
   void waitReady(std::chrono::milliseconds timeout) const {

@@ -24,12 +24,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Update apt cache
-        run: sudo apt-get update -y
+      - name: Install Release dependencies
+        if: ${{ matrix.build == 'Release' }}
+        run: | 
+          sudo apt-get install -y libjsoncpp-dev uuid-dev
 
       - name: Install all dependencies with features
-        run: sudo apt-get install -y libssl-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
         if: ${{ matrix.features == 'ON' }}
+        run: |
+          sudo apt-get install -y libssl-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
 
       - name: Install GCC toolchain
         if: ${{ startsWith(matrix.compiler, 'gcc') }}
@@ -62,15 +65,6 @@ jobs:
         run: |
           $CXX --version
 
-      - name: Cache build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            build
-            ~/.cache/ccache
-          key: ${{ runner.os }}-${{ matrix.compiler }}-${{ hashFiles('**/CMakeLists.txt','**/*.cmake') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.compiler }}-
-
       - name: Configure (CMake)
         run: |
           cmake -S . -B build -G Ninja \
@@ -82,6 +76,7 @@ jobs:
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
             -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
             -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
+            -DAERONET_ENABLE_KTLS=${{ matrix.features }} \
             -DAERONET_ENABLE_BROTLI=${{ matrix.features }} \
             -DAERONET_ENABLE_ZLIB=${{ matrix.features }} \
             -DAERONET_ENABLE_ZSTD=${{ matrix.features }} \

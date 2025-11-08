@@ -4,8 +4,7 @@ This file lists planned features and near-term priorities. Implemented features 
 
 ## High priority
 
-- KTLS integration (kernel TLS): optional kernel TLS support to enable encrypted zero-copy sendfile on capable
-  platforms, with runtime detection and a graceful fallback to the existing TLS write path when unavailable.
+- _(none – recent milestones addressed)_
 
 ## Medium priority
 
