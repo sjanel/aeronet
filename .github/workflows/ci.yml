@@ -10,7 +10,7 @@ on:
 jobs:
   build-test:
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         compiler: [gcc-13, clang-21]
         features: [OFF, ON]

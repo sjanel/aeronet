@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <thread>
 
@@ -155,6 +156,10 @@ class MultiHttpServer {
   //   telemetry paths. Thread-safe for read-only access under assumption that start()/stop()
   //   are not racing with this call (class not fully synchronized).
   [[nodiscard]] AggregatedStats stats() const;
+
+  // Post a configuration update to be applied safely to all underlying servers.
+  // See HttpServer::postConfigUpdate for semantics.
+  void postConfigUpdate(const std::function<void(HttpServerConfig&)>& updater);
 
  private:
   void ensureNotStarted() const;

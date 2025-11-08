@@ -72,18 +72,17 @@ TEST_F(HttpConnectDefaultConfig, DnsFailureReturns502) {
   ASSERT_TRUE(resp.contains("502") || resp.empty());
 }
 
-TEST(HttpConnect, AllowlistRejectsTarget) {
-  HttpServerConfig cfg{};
+TEST_F(HttpConnectDefaultConfig, AllowlistRejectsTarget) {
   // only allow example.com
-  std::vector<std::string> list = {"example.com"};
-  cfg.withConnectAllowlist(list.begin(), list.end());
-  test::TestServer ts2(cfg);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    std::vector<std::string> list = {"example.com"};
+    cfg.withConnectAllowlist(list.begin(), list.end());
+  });
 
   std::string req = "CONNECT 127.0.0.1:80 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
-  test::ClientConnection client2(ts2.port());
-  int fd2 = client2.fd();
-  ASSERT_GT(fd2, 0);
-  test::sendAll(fd2, req);
-  auto resp = test::recvWithTimeout(fd2, 500ms);
+
+  ASSERT_GT(fd, 0);
+  test::sendAll(fd, req);
+  auto resp = test::recvWithTimeout(fd, 500ms);
   ASSERT_TRUE(resp.contains("403") || resp.contains("CONNECT target not allowed"));
 }

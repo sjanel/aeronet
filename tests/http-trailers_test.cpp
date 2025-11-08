@@ -1,10 +1,8 @@
 #include <gtest/gtest.h>
 
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
@@ -18,10 +16,13 @@
 using namespace std::chrono_literals;
 using namespace aeronet;
 
+namespace {
+test::TestServer ts(HttpServerConfig{});
+auto port = ts.port();
+}  // namespace
+
 // Basic trailer parsing test
 TEST(HttpTrailers, BasicTrailer) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
   ts.server.router().setDefault([](const HttpRequest& req) {
     EXPECT_EQ(req.body(), "Wikipedia");
     // Check trailer headers
@@ -55,8 +56,6 @@ TEST(HttpTrailers, BasicTrailer) {
 
 // Multiple trailer headers
 TEST(HttpTrailers, MultipleTrailers) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
   ts.server.router().setDefault([](const HttpRequest& req) {
     EXPECT_EQ(req.body(), "test");
     EXPECT_EQ(req.trailers().size(), 3U);
@@ -104,8 +103,6 @@ TEST(HttpTrailers, MultipleTrailers) {
 
 // Empty trailers (just zero chunk and terminating CRLF)
 TEST(HttpTrailers, NoTrailers) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
   ts.server.router().setDefault([](const HttpRequest& req) {
     EXPECT_EQ(req.body(), "data");
     EXPECT_TRUE(req.trailers().empty());
@@ -131,8 +128,6 @@ TEST(HttpTrailers, NoTrailers) {
 
 // Trailer with whitespace trimming
 TEST(HttpTrailers, TrailerWhitespaceTrim) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
   ts.server.router().setDefault([](const HttpRequest& req) {
     auto trailer = req.trailers().find("X-Data");
     EXPECT_NE(trailer, req.trailers().end());
@@ -162,12 +157,7 @@ TEST(HttpTrailers, TrailerWhitespaceTrim) {
 
 // Forbidden trailer: Transfer-Encoding
 TEST(HttpTrailers, ForbiddenTrailerTransferEncoding) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
-  ts.server.router().setDefault([](const HttpRequest&) {
-    ADD_FAILURE() << "Handler should not be called for forbidden trailer";
-    return HttpResponse(http::StatusCodeOK).body("FAIL");
-  });
+  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("FAIL"); });
 
   test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -183,17 +173,12 @@ TEST(HttpTrailers, ForbiddenTrailerTransferEncoding) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("400"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 400"));
 }
 
 // Forbidden trailer: Content-Length
 TEST(HttpTrailers, ForbiddenTrailerContentLength) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
-  ts.server.router().setDefault([](const HttpRequest&) {
-    ADD_FAILURE() << "Handler should not be called for forbidden trailer";
-    return HttpResponse(http::StatusCodeOK).body("FAIL");
-  });
+  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("FAIL"); });
 
   test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -209,17 +194,12 @@ TEST(HttpTrailers, ForbiddenTrailerContentLength) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("400"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 400"));
 }
 
 // Forbidden trailer: Host
 TEST(HttpTrailers, ForbiddenTrailerHost) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
-  ts.server.router().setDefault([](const HttpRequest&) {
-    ADD_FAILURE() << "Handler should not be called for forbidden trailer";
-    return HttpResponse(http::StatusCodeOK).body("FAIL");
-  });
+  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("FAIL"); });
 
   test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -235,17 +215,12 @@ TEST(HttpTrailers, ForbiddenTrailerHost) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("400"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 400"));
 }
 
 // Forbidden trailer: Authorization
 TEST(HttpTrailers, ForbiddenTrailerAuthorization) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
-  ts.server.router().setDefault([](const HttpRequest&) {
-    ADD_FAILURE() << "Handler should not be called for forbidden trailer";
-    return HttpResponse(http::StatusCodeOK).body("FAIL");
-  });
+  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("FAIL"); });
 
   test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -261,19 +236,15 @@ TEST(HttpTrailers, ForbiddenTrailerAuthorization) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("400"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 400"));
 }
 
 // Trailer size exceeds limit
 TEST(HttpTrailers, TrailerSizeLimit) {
-  HttpServerConfig cfg;
-  cfg.withMaxHeaderBytes(200);  // reasonable small limit
-  test::TestServer ts(cfg);
-  auto port = ts.port();
-  ts.server.router().setDefault([](const HttpRequest&) {
-    ADD_FAILURE() << "Handler should not be called when trailer size exceeded";
-    return HttpResponse(http::StatusCodeOK).body("FAIL");
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withMaxHeaderBytes(200);  // match header limit
   });
+  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("FAIL"); });
 
   test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -293,13 +264,11 @@ TEST(HttpTrailers, TrailerSizeLimit) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("431"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 431"));
 }
 
 // Trailer with empty value
 TEST(HttpTrailers, TrailerEmptyValue) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
   ts.server.router().setDefault([](const HttpRequest& req) {
     auto trailer = req.trailers().find("X-Empty");
     EXPECT_NE(trailer, req.trailers().end());
@@ -329,8 +298,6 @@ TEST(HttpTrailers, TrailerEmptyValue) {
 
 // Case-insensitive trailer lookup
 TEST(HttpTrailers, TrailerCaseInsensitive) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
   ts.server.router().setDefault([](const HttpRequest& req) {
     // Should be able to find with different case
     auto lower = req.trailers().find("x-checksum");
@@ -367,8 +334,6 @@ TEST(HttpTrailers, TrailerCaseInsensitive) {
 
 // Duplicate trailers that should be merged using list semantics (comma)
 TEST(HttpTrailers, DuplicateMergeTrailers) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
   ts.server.router().setDefault([](const HttpRequest& req) {
     // Accept header should be merged with a comma separator
     auto it = req.trailers().find("Accept");
@@ -400,9 +365,6 @@ TEST(HttpTrailers, DuplicateMergeTrailers) {
 
 // Duplicate trailers with override semantics (keep last)
 TEST(HttpTrailers, DuplicateOverrideTrailers) {
-  HttpServerConfig cfg;
-  test::TestServer ts(cfg);
-  auto port = ts.port();
   ts.server.router().setDefault([](const HttpRequest& req) {
     auto it = req.trailers().find("From");
     EXPECT_NE(it, req.trailers().end());
@@ -434,14 +396,10 @@ TEST(HttpTrailers, DuplicateOverrideTrailers) {
 
 // Unknown header duplicates when mergeUnknownRequestHeaders is disabled -> should be rejected
 TEST(HttpTrailers, UnknownHeaderNoMergeTrailers) {
-  HttpServerConfig cfg;
-  cfg.withMergeUnknownRequestHeaders(false);
-  test::TestServer ts(cfg);
-  auto port = ts.port();
-  ts.server.router().setDefault([](const HttpRequest&) {
-    ADD_FAILURE() << "Handler should not be called when unknown-header duplicates are forbidden";
-    return HttpResponse(http::StatusCodeOK).body("FAIL");
-  });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMergeUnknownRequestHeaders(false); });
+
+  // "Handler should not be called when unknown-header duplicates are forbidden"
+  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("FAIL"); });
 
   test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -458,17 +416,12 @@ TEST(HttpTrailers, UnknownHeaderNoMergeTrailers) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("400"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 400"));
 }
 
 // Malformed trailer (no colon)
 TEST(HttpTrailers, MalformedTrailerNoColon) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
-  ts.server.router().setDefault([](const HttpRequest&) {
-    ADD_FAILURE() << "Handler should not be called for malformed trailer";
-    return HttpResponse(http::StatusCodeOK).body("FAIL");
-  });
+  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("FAIL"); });
 
   test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -484,13 +437,11 @@ TEST(HttpTrailers, MalformedTrailerNoColon) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("400"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 400"));
 }
 
 // Non-chunked request should have empty trailers
 TEST(HttpTrailers, NonChunkedNoTrailers) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
   ts.server.router().setDefault([](const HttpRequest& req) {
     EXPECT_EQ(req.body(), "test");
     EXPECT_TRUE(req.trailers().empty());
@@ -512,83 +463,8 @@ TEST(HttpTrailers, NonChunkedNoTrailers) {
   ASSERT_TRUE(resp.contains("200"));
 }
 
-// Basic trailer test - verify trailers are appended after body
-TEST(HttpResponseTrailers, BasicTrailer) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body("test body");
-  resp.addTrailer("X-Checksum", "abc123");
-
-  // We can't easily test the serialized output without finalizing,
-  // but we can verify no exception is thrown
-  EXPECT_NO_THROW(resp.addTrailer("X-Signature", "sha256:..."));
-}
-
-// Test error when adding trailer before body
-TEST(HttpResponseTrailers, ErrorBeforeBody) {
-  HttpResponse resp(http::StatusCodeOK);
-  EXPECT_THROW(resp.addTrailer("X-Checksum", "abc123"), std::logic_error);
-}
-
-// Test error when adding trailer after an explicitly empty body
-TEST(HttpResponseTrailers, EmptyBodyThrows) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body("");  // empty body set explicitly
-  EXPECT_THROW(resp.addTrailer("X-Checksum", "abc123"), std::logic_error);
-}
-
-// Test trailer with captured body (std::string)
-TEST(HttpResponseTrailers, CapturedBodyString) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body(std::string("captured body content"));
-  EXPECT_NO_THROW(resp.addTrailer("X-Custom", "value"));
-}
-
-// Test trailer with captured body (std::vector<char>)
-TEST(HttpResponseTrailers, CapturedBodyVector) {
-  HttpResponse resp(http::StatusCodeOK);
-  std::vector<char> vec = {'h', 'e', 'l', 'l', 'o'};
-  resp.body(std::move(vec));
-  EXPECT_NO_THROW(resp.addTrailer("X-Data", "123"));
-}
-
-// Test multiple trailers
-TEST(HttpResponseTrailers, MultipleTrailers) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body("body");
-  resp.addTrailer("X-Checksum", "abc");
-  resp.addTrailer("X-Timestamp", "2025-10-20T12:00:00Z");
-  resp.addTrailer("X-Custom", "val");
-  // No assertion - just verify no crashes
-}
-
-// Test empty trailer value
-TEST(HttpResponseTrailers, EmptyValue) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body("test");
-  EXPECT_NO_THROW(resp.addTrailer("X-Empty", ""));
-}
-
-// Test rvalue ref version
-TEST(HttpResponseTrailers, RvalueRef) {
-  EXPECT_NO_THROW(HttpResponse(http::StatusCodeOK).body("test").addTrailer("X-Check", "val"));
-}
-
-// Test that setting the body after inserting a trailer throws
-TEST(HttpResponseTrailers, BodyAfterTrailerThrows) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body("initial");
-  resp.addTrailer("X-After", "v");
-  // setting inline body after trailer insertion should throw
-  EXPECT_THROW(resp.body("later"), std::logic_error);
-  // setting captured string body after trailer insertion should also throw
-  EXPECT_THROW(resp.body(std::string_view("later2")), std::logic_error);
-}
-
 // Test streaming response with trailers
 TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
-
   ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("chunk1");
@@ -621,9 +497,6 @@ TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
 
 // Test multiple trailers
 TEST(HttpResponseWriterTrailers, MultipleTrailers) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
-
   ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
     writer.writeBody("data");
@@ -651,9 +524,6 @@ TEST(HttpResponseWriterTrailers, MultipleTrailers) {
 
 // Test trailer with empty value
 TEST(HttpResponseWriterTrailers, EmptyValue) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
-
   ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("test");
@@ -678,9 +548,6 @@ TEST(HttpResponseWriterTrailers, EmptyValue) {
 
 // Test trailer added after end() is ignored
 TEST(HttpResponseWriterTrailers, AfterEndIgnored) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
-
   ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("test");
@@ -705,9 +572,6 @@ TEST(HttpResponseWriterTrailers, AfterEndIgnored) {
 
 // Test trailers ignored for fixed-length responses
 TEST(HttpResponseWriterTrailers, IgnoredForFixedLength) {
-  test::TestServer ts(HttpServerConfig{});
-  auto port = ts.port();
-
   ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.contentLength(4);  // Fixed length

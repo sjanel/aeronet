@@ -14,11 +14,13 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 
+#include "accept-encoding-negotiation.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
@@ -31,9 +33,11 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/otel-config.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
+#include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "connection-state.hpp"
 #include "errno_throw.hpp"
@@ -70,7 +74,30 @@ namespace aeronet {
 
 namespace {
 constexpr int kListenSocketType = SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC;
+
+// Snapshot of immutable HttpServerConfig fields that require socket rebind or structural reinitialization.
+// These fields are captured before allowing config updates and silently restored afterward to prevent
+// runtime modification of settings that cannot be changed without recreating the server.
+struct ImmutableConfigSnapshot {
+  uint16_t port;
+  bool reusePort;
+  TLSConfig tls;
+  OtelConfig otel;
+};
+
+ImmutableConfigSnapshot CaptureImmutable(const HttpServerConfig& cfg) {
+  return {cfg.port, cfg.reusePort, cfg.tls, cfg.otel};
 }
+
+void RestoreImmutable(HttpServerConfig& cfg, ImmutableConfigSnapshot snapshot) {
+  // Restore immutable fields regardless of whether they changed
+  cfg.port = snapshot.port;
+  cfg.reusePort = snapshot.reusePort;
+  cfg.tls = std::move(snapshot.tls);
+  cfg.otel = std::move(snapshot.otel);
+}
+
+}  // namespace
 
 HttpServer::HttpServer(HttpServerConfig config, RouterConfig routerConfig)
     : _config(std::move(config)),
@@ -122,6 +149,9 @@ HttpServer::HttpServer(HttpServer&& other)
   if (!_lifecycle.isIdle()) {
     throw std::logic_error("Cannot move-construct a running HttpServer");
   }
+  // transfer pending updates state; mutex remains with each instance (do not move mutex)
+  _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_acq_rel);
+  _pendingConfigUpdates = std::move(other._pendingConfigUpdates);
   other._lifecycle.reset();
 
   // Because probe handlers may capture 'this', they need to be re-registered on the moved-to instance
@@ -153,6 +183,11 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _request = std::move(other._request);
     _tmpBuffer = std::move(other._tmpBuffer);
     _telemetry = std::move(other._telemetry);
+
+    // transfer pending updates state; keep mutex per-instance
+    _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_acq_rel);
+    _pendingConfigUpdates = std::move(other._pendingConfigUpdates);
+
 #ifdef AERONET_ENABLE_OPENSSL
     _tlsCtxHolder = std::move(other._tlsCtxHolder);
     _tlsMetrics = std::move(other._tlsMetrics);
@@ -164,6 +199,7 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
       registerBuiltInProbes();
     }
   }
+
   other._lifecycle.reset();
   return *this;
 }
@@ -173,6 +209,30 @@ void HttpServer::setParserErrorCallback(ParserErrorCallback cb) { _parserErrCb =
 void HttpServer::setMetricsCallback(MetricsCallback cb) { _metricsCb = std::move(cb); }
 
 void HttpServer::setExpectationHandler(ExpectationHandler handler) { _expectationHandler = std::move(handler); }
+
+void HttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater) {
+  // Capture snapshot of immutable fields before queuing the update
+  auto configSnapshot = CaptureImmutable(_config);
+
+  {
+    std::scoped_lock lock(_configUpdateLock);
+    // Wrap user's updater with immutability enforcement: apply user changes then restore immutable fields
+
+    struct WrappedUpdater {
+      void operator()(HttpServerConfig& cfg) {
+        userUpdater(cfg);
+        RestoreImmutable(cfg, std::move(snapshot));
+      }
+
+      std::function<void(HttpServerConfig&)> userUpdater;
+      ImmutableConfigSnapshot snapshot;
+    };
+
+    _pendingConfigUpdates.emplace_back(WrappedUpdater{std::move(updater), std::move(configSnapshot)});
+    _hasPendingConfigUpdates.store(true, std::memory_order_release);
+  }
+  _lifecycle.wakeupFd.send();
+}
 
 void HttpServer::run() {
   prepareRun();
@@ -722,6 +782,12 @@ void HttpServer::prepareRun() {
 void HttpServer::eventLoop() {
   sweepIdleConnections();
 
+  // Apply any pending config updates posted from other threads. Fast-path: check
+  // atomic flag before taking the lock to avoid contention in the nominal case.
+  if (_hasPendingConfigUpdates.load(std::memory_order_acquire)) {
+    applyConfigUpdates();
+  }
+
   int ready = _eventLoop.poll([this](EventLoop::EventFd eventFd) {
     if (eventFd.fd == _listenSocket.fd()) {
       if (_lifecycle.acceptingConnections()) {
@@ -995,6 +1061,26 @@ bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, ConnectionState& stat
     }
   }
   return false;
+}
+
+void HttpServer::applyConfigUpdates() {
+  ConfigUpdateVector pendingUpdates;
+  {
+    std::scoped_lock lock(_configUpdateLock);
+    pendingUpdates.swap(_pendingConfigUpdates);
+    _hasPendingConfigUpdates.store(false, std::memory_order_release);
+  }
+
+  for (auto& updater : pendingUpdates) {
+    try {
+      updater(_config);
+    } catch (const std::exception& ex) {
+      log::error("Exception while applying posted config update: {}", ex.what());
+    } catch (...) {
+      log::error("Unknown exception while applying posted config update");
+    }
+  }
+  _encodingSelector = EncodingSelector(_config.compression);
 }
 
 }  // namespace aeronet

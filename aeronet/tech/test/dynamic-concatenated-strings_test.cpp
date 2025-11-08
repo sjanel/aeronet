@@ -6,6 +6,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace aeronet {
 
@@ -90,6 +91,62 @@ TEST(DynamicConcatenatedStringsTest, NoSepKeepLastSepIncludesNul) {
   expected.push_back('\0');
   EXPECT_EQ(fullKeep, std::string_view(expected));
   EXPECT_EQ(pool.fullSize(/*removeLastSep=*/false), expected.size());
+}
+
+TEST(DynamicConcatenatedStringsTest, IteratorEmptyAndSingle) {
+  static constexpr char sep[] = ", ";
+  DynamicConcatenatedStrings<sep, false> pool;
+  // empty
+  size_t count = 0;
+  for (auto partView : pool) {
+    (void)partView;
+    ++count;
+  }
+  EXPECT_EQ(count, 0U);
+
+  pool.append("solo");
+  auto it = pool.begin();
+  auto end = pool.end();
+  EXPECT_NE(it, end);
+  EXPECT_EQ(*it, std::string_view("solo"));
+  ++it;
+  EXPECT_EQ(it, end);
+}
+
+TEST(DynamicConcatenatedStringsTest, IteratorMultipleParts) {
+  static constexpr char sep[] = ", ";
+  DynamicConcatenatedStrings<sep, false> pool;
+  pool.append("one");
+  pool.append("two");
+  pool.append("three");
+
+  std::vector<std::string_view> parts;
+  for (auto partView : pool) {
+    parts.emplace_back(partView);
+  }
+
+  ASSERT_EQ(parts.size(), 3U);
+  EXPECT_EQ(parts[0], std::string_view("one"));
+  EXPECT_EQ(parts[1], std::string_view("two"));
+  EXPECT_EQ(parts[2], std::string_view("three"));
+}
+
+TEST(DynamicConcatenatedStringsTest, IteratorCaseInsensitive) {
+  static constexpr char sep[] = ", ";
+  DynamicConcatenatedStrings<sep, true> pool;
+  pool.append("AbC");
+  pool.append("DeF");
+
+  std::vector<std::string_view> parts;
+  for (auto partView : pool) {
+    parts.emplace_back(partView);
+  }
+
+  ASSERT_EQ(parts.size(), 2U);
+  // iterator yields raw parts; contains uses case-insensitive compare
+  EXPECT_EQ(parts[0], std::string_view("AbC"));
+  EXPECT_EQ(parts[1], std::string_view("DeF"));
+  EXPECT_TRUE(pool.contains("abc"));
 }
 
 }  // namespace aeronet

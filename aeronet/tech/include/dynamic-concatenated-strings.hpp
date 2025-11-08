@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstddef>
+#include <iterator>
 #include <string_view>
 
 #include "raw-bytes.hpp"
@@ -9,7 +10,7 @@
 
 namespace aeronet {
 
-template <const char *Sep, bool ContainsCaseInsensitive = false, class SizeType = std::size_t>
+template <const char* Sep, bool ContainsCaseInsensitive = false, class SizeType = std::size_t>
 class DynamicConcatenatedStrings {
  private:
   static constexpr char kNullChar = '\0';
@@ -51,6 +52,65 @@ class DynamicConcatenatedStrings {
     }
     return false;
   }
+
+  // Non-allocating forward iterator over the concatenated parts. Yields std::string_view for each part.
+  class iterator {
+   public:
+    using value_type = std::string_view;
+    using reference = std::string_view;
+    using pointer = const std::string_view*;
+    using difference_type = std::ptrdiff_t;
+    using iterator_category = std::forward_iterator_tag;
+
+    iterator() noexcept = default;
+
+    reference operator*() const noexcept { return _cur; }
+    pointer operator->() const noexcept { return &_cur; }
+
+    iterator& operator++() noexcept {
+      advance();
+      return *this;
+    }
+
+    iterator operator++(int) noexcept {
+      iterator temp = *this;
+      advance();
+      return temp;
+    }
+
+    bool operator==(const iterator&) const noexcept = default;
+
+   private:
+    friend class DynamicConcatenatedStrings<Sep, ContainsCaseInsensitive, SizeType>;
+
+    explicit iterator(std::string_view buf) noexcept : _cur(buf.begin(), buf.end()), _end(buf.end()) { advance(true); }
+
+    void advance(bool init = false) noexcept {
+      if ((init && _cur.empty()) || _cur.end() + kSep.size() == _end) {
+        _cur = std::string_view{};
+        _end = nullptr;
+        return;
+      }
+      for (const char* endPtr = init ? _cur.begin() : _cur.end() + kSep.size(); endPtr != _end; ++endPtr) {
+        if (std::string_view(endPtr, kSep.size()) == kSep) {
+          if (init) {
+            _cur = std::string_view(_cur.begin(), endPtr);
+          } else {
+            _cur = std::string_view(_cur.end() + kSep.size(), endPtr);
+          }
+
+          return;
+        }
+      }
+    }
+
+    std::string_view _cur;
+    const char* _end = nullptr;
+  };
+
+  // Range helpers
+  [[nodiscard]] iterator begin() const noexcept { return iterator(std::string_view(_buf.data(), _buf.size())); }
+  [[nodiscard]] iterator end() const noexcept { return {}; }
 
   // Get the full concatenated string
   [[nodiscard]] std::string_view fullString(bool removeLastSep = true) const noexcept {
@@ -98,6 +158,8 @@ class DynamicConcatenatedStrings {
     }
     return ret;
   }
+
+  bool operator==(const DynamicConcatenatedStrings& other) const noexcept = default;
 
  private:
   BufferType _buf;

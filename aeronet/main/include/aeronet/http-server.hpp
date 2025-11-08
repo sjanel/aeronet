@@ -4,6 +4,7 @@
 #include <sys/uio.h>      // iovec
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -11,6 +12,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string_view>
 
 #include "accept-encoding-negotiation.hpp"
@@ -31,6 +33,7 @@
 #include "event-loop.hpp"
 #include "flat-hash-map.hpp"
 #include "socket.hpp"
+#include "vector.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/ssl.h>  // ensure real ::SSL is visible (avoid shadowing forward decl)
@@ -223,7 +226,7 @@ class HttpServer {
   void beginDrain(std::chrono::milliseconds maxWait = std::chrono::milliseconds{0}) noexcept;
 
   // The config given to the server, with the actual allocated port if 0 was given.
-  // The config is immutable after creation of the Server.
+  // The config may be modified in-flight via postConfigUpdate.
   [[nodiscard]] const HttpServerConfig& config() const { return _config; }
 
   // Get the actual port of this server.
@@ -243,6 +246,22 @@ class HttpServer {
 
   [[nodiscard]] ServerStats stats() const;
 
+  // Post a configuration update to be applied safely from the server's event loop thread.
+  // Semantics (simple): the updater is appended to an internal queue and will be applied
+  // at the beginning of the next event loop iteration on the server thread. If the server
+  // is stopped, the updater is retained and will be applied in the first event loop run.
+  //
+  // Immutability protection:
+  //   The following fields are immutable (require socket rebind or structural reinitialization)
+  //   and will be silently restored to their original values after the updater runs:
+  //     - port, reusePort (socket binding parameters)
+  //     - tls (SSL_CTX is initialized once at construction)
+  //     - otel (tracer/exporter setup is one-time at construction)
+  //   Attempting to modify these fields will have no effect and will emit a warning log in
+  //   debug builds. All other fields (limits, timeouts, compression settings, etc.) are
+  //   mutable and will take effect as documented for each field.
+  void postConfigUpdate(std::function<void(HttpServerConfig&)> updater);
+
  private:
   friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
 
@@ -255,6 +274,7 @@ class HttpServer {
 
   void eventLoop();
   void sweepIdleConnections();
+  void applyConfigUpdates();
   void acceptNewConnections();
   void handleReadableClient(int fd);
   bool processRequestsOnConnection(ConnectionMapIt cnxIt);
@@ -326,6 +346,7 @@ class HttpServer {
   HttpServerConfig _config;
 
   Socket _listenSocket;  // listening socket
+  std::atomic<bool> _hasPendingConfigUpdates{false};
   EventLoop _eventLoop;  // epoll-based event loop
 
   internal::Lifecycle _lifecycle;
@@ -344,6 +365,14 @@ class HttpServer {
   ExpectationHandler _expectationHandler;
   HttpRequest _request;  // to keep allocated memory
   RawChars _tmpBuffer;   // can be used for any kind of temporary buffer
+
+  using ConfigUpdateVector = vector<std::function<void(HttpServerConfig&)>>;
+
+  // Simple pending updates container: updaters are appended and applied at the
+  // start of the next event loop iteration on the server thread. Protected by mutex
+  // since callers may post from other threads.
+  mutable std::mutex _configUpdateLock;
+  ConfigUpdateVector _pendingConfigUpdates;
 
   // Telemetry context - one per HttpServer instance (no global singletons)
   tracing::TelemetryContext _telemetry;

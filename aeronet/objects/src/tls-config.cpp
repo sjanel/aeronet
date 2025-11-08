@@ -28,7 +28,7 @@ void TLSConfig::validate() const {
     throw std::invalid_argument("TLS configured: private key present but certificate missing");
   }
 
-  if (requireClientCert && trustedClientCertsPem.empty()) {
+  if (requireClientCert && trustedClientCertsPem().empty()) {
     // Policy: require at least one trusted client cert when enforcing mTLS
     throw std::invalid_argument("requireClientCert=true but no trustedClientCertsPem configured");
   }
@@ -47,6 +47,7 @@ void TLSConfig::validate() const {
     }
   }
 
+  auto alpnProtocols = this->alpnProtocols();
   if (alpnMustMatch && alpnProtocols.empty()) {
     throw std::invalid_argument("alpnMustMatch is true but alpnProtocols is empty");
   }

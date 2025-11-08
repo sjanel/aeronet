@@ -14,7 +14,6 @@
 #include <memory>
 #include <numeric>
 #include <stdexcept>
-#include <string>
 
 #include "aeronet/tls-config.hpp"
 #include "raw-bytes.hpp"
@@ -104,9 +103,9 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics) : _ctx
     }
     ::SSL_CTX_set_verify(raw, verifyMode, nullptr);
     // Load any in-memory trusted client certs (appended to default store). For test / pinning usage.
-    for (const auto& pem : cfg.trustedClientCertsPem) {
+    for (std::string_view pem : cfg.trustedClientCertsPem()) {
       if (pem.empty()) {
-        continue;
+        throw std::runtime_error("Empty trusted client certificate PEM provided");
       }
       auto cbio = makeMemBio(pem.data(), static_cast<int>(pem.size()));
       if (!cbio) {
@@ -125,11 +124,14 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics) : _ctx
     }
   }
 
-  std::size_t wireLen = std::accumulate(cfg.alpnProtocols.begin(), cfg.alpnProtocols.end(), std::size_t{0},
+  // ALPN setup
+  auto alpnProtocols = cfg.alpnProtocols();
+
+  std::size_t wireLen = std::accumulate(alpnProtocols.begin(), alpnProtocols.end(), std::size_t{0},
                                         [](std::size_t sum, const auto& proto) { return sum + 1UL + proto.size(); });
   if (wireLen != 0) {
     _alpnData = std::make_unique<AlpnData>(RawBytes{wireLen}, cfg.alpnMustMatch, metrics);
-    for (const auto& proto : cfg.alpnProtocols) {
+    for (const auto& proto : alpnProtocols) {
       _alpnData->wire.unchecked_push_back(static_cast<std::byte>(proto.size()));
       _alpnData->wire.unchecked_append(reinterpret_cast<const std::byte*>(proto.data()), proto.size());
     }
