@@ -11,6 +11,8 @@ set(AERONET_PROJECT_VERSION "0.0.0")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
   file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" AERONET_VERSION_FILE)
   string(STRIP "${AERONET_VERSION_FILE}" AERONET_PROJECT_VERSION)
+else()
+  message(WARNING "VERSION file not found; defaulting to version ${AERONET_PROJECT_VERSION}")
 endif()
 project(aeronet VERSION ${AERONET_PROJECT_VERSION} LANGUAGES CXX)
 
@@ -49,6 +51,24 @@ option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_BE
 # Optional dependencies (aeronet is able to compile without the feature if not enabled)
 option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" ${PROJECT_IS_TOP_LEVEL})
+
+# Kernel TLS (KTLS) is meaningful only when OpenSSL support is compiled in and the
+# underlying platform is Linux. Default to ON for Linux builds when OpenSSL is
+# enabled so modern deployments automatically benefit, while keeping the option
+# explicit and overridable for other environments.
+set(AERONET_ENABLE_KTLS_DEFAULT OFF)
+if(AERONET_ENABLE_OPENSSL AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(AERONET_ENABLE_KTLS_DEFAULT ON)
+endif()
+option(AERONET_ENABLE_KTLS "Enable Linux kernel TLS (KTLS) integration" ${AERONET_ENABLE_KTLS_DEFAULT})
+if(AERONET_ENABLE_KTLS)
+  if(NOT AERONET_ENABLE_OPENSSL)
+    message(FATAL_ERROR "AERONET_ENABLE_KTLS requires AERONET_ENABLE_OPENSSL=ON")
+  endif()
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "AERONET_ENABLE_KTLS is only supported on Linux platforms")
+  endif()
+endif()
 option(AERONET_ENABLE_BROTLI "Enable usage of Brotli for br codec support" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_ZLIB "Enable usage of zlib for deflate and gzip codec support" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_ZSTD "Enable usage of Zstandard for zstd codec support" ${PROJECT_IS_TOP_LEVEL})

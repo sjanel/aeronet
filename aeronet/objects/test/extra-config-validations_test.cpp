@@ -39,4 +39,19 @@ TEST(ExtraConfigValidations, HeaderBodyLimits) {
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+TEST(ExtraConfigValidations, KtlsModeWithoutCredentialsThrows) {
+  HttpServerConfig cfg;
+  cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled);
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+TEST(ExtraConfigValidations, KtlsRequiresCredentials) {
+  HttpServerConfig cfg;
+  cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Auto);
+  cfg.withTlsCertKeyMemory("cert", "key");
+  EXPECT_NO_THROW(cfg.validate());
+}
+#endif
+
 }  // namespace aeronet

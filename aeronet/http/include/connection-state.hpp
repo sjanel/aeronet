@@ -92,6 +92,10 @@ struct ConnectionState {
   CloseMode closeMode{CloseMode::None};
   bool waitingWritable{false};  // EPOLLOUT registered
   bool tlsEstablished{false};   // true once TLS handshake completed (if TLS enabled)
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+  bool ktlsSendAttempted{false};
+  bool ktlsSendEnabled{false};
+#endif
   // Tunnel state: true when peerFd != -1. Use accessor isTunneling() to query.
   // True when a non-blocking connect() was issued and completion is pending (EPOLLOUT will signal).
   bool connectPending{false};

@@ -40,6 +40,9 @@
 
 #include "tls-context.hpp"  // brings TlsContext & TlsMetricsExternal
 #include "tls-metrics.hpp"
+#ifdef AERONET_ENABLE_KTLS
+#include "tls-transport.hpp"
+#endif
 #endif
 
 namespace aeronet {
@@ -50,6 +53,7 @@ class CorsPolicy;
 class ITransport;  // forward declaration for TLS/plain transport abstraction
 #ifdef AERONET_ENABLE_OPENSSL
 class TlsContext;  // forward declaration still okay
+class TlsTransport;
 // NOTE: We intentionally do NOT forward declare SSL here because doing so inside the aeronet namespace would create
 // a different type aeronet::SSL, shadowing the real ::SSL from OpenSSL and breaking overload resolution for
 // SSL_* functions. Instead we include <openssl/ssl.h> above under the same feature flag, which provides the
@@ -262,6 +266,11 @@ class HttpServer {
   //   mutable and will take effect as documented for each field.
   void postConfigUpdate(std::function<void(HttpServerConfig&)> updater);
 
+ protected:
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+  [[nodiscard]] virtual TlsTransport::KtlsEnableResult doEnableKtlsSend(TlsTransport& transport);
+#endif
+
  private:
   friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
 
@@ -326,6 +335,10 @@ class HttpServer {
 
   void registerBuiltInProbes();
 
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+  void maybeEnableKtlsSend(ConnectionState& state, TlsTransport& transport, int fd);
+#endif
+
   struct StatsInternal {
     uint64_t totalBytesQueued{0};
     uint64_t totalBytesWrittenImmediate{0};
@@ -335,6 +348,12 @@ class HttpServer {
     uint64_t epollModFailures{0};
     std::size_t maxConnectionOutboundBuffer{0};
     uint64_t totalRequestsServed{0};
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+    uint64_t ktlsSendEnabledConnections{0};
+    uint64_t ktlsSendEnableFallbacks{0};
+    uint64_t ktlsSendForcedShutdowns{0};
+    uint64_t ktlsSendBytes{0};
+#endif
   } _stats;
 
   // Helpers to enable/disable writable interest (EPOLLOUT) for a connection. They wrap

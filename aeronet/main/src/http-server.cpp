@@ -51,6 +51,12 @@
 #include "string-equal-ignore-case.hpp"
 #include "timedef.hpp"
 
+#if defined(AERONET_ENABLE_OPENSSL)
+#include <openssl/err.h>
+
+#include "tls-transport.hpp"
+#endif
+
 #ifdef AERONET_ENABLE_BROTLI
 #include "aeronet/brotli-decoder.hpp"
 #include "brotli-encoder.hpp"
@@ -90,11 +96,22 @@ ImmutableConfigSnapshot CaptureImmutable(const HttpServerConfig& cfg) {
 }
 
 void RestoreImmutable(HttpServerConfig& cfg, ImmutableConfigSnapshot snapshot) {
-  // Restore immutable fields regardless of whether they changed
-  cfg.port = snapshot.port;
-  cfg.reusePort = snapshot.reusePort;
-  cfg.tls = std::move(snapshot.tls);
-  cfg.otel = std::move(snapshot.otel);
+  if (cfg.port != snapshot.port) {
+    cfg.port = snapshot.port;
+    log::warn("Attempted to modify immutable HttpServerConfig.port at runtime; change ignored");
+  }
+  if (cfg.reusePort != snapshot.reusePort) {
+    cfg.reusePort = snapshot.reusePort;
+    log::warn("Attempted to modify immutable HttpServerConfig.reusePort at runtime; change ignored");
+  }
+  if (cfg.tls != snapshot.tls) {
+    cfg.tls = std::move(snapshot.tls);
+    log::warn("Attempted to modify immutable HttpServerConfig.tls at runtime; change ignored");
+  }
+  if (cfg.otel != snapshot.otel) {
+    cfg.otel = std::move(snapshot.otel);
+    log::warn("Attempted to modify immutable HttpServerConfig.otel at runtime; change ignored");
+  }
 }
 
 }  // namespace
@@ -875,6 +892,84 @@ void HttpServer::closeAllConnections(bool immediate) {
   }
 }
 
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+void HttpServer::maybeEnableKtlsSend(ConnectionState& state, TlsTransport& transport, int fd) {
+  if (state.ktlsSendAttempted || _config.tls.ktlsMode == TLSConfig::KtlsMode::Disabled) {
+    state.ktlsSendAttempted = true;
+    return;
+  }
+  state.ktlsSendAttempted = true;
+
+  const bool force = _config.tls.ktlsMode == TLSConfig::KtlsMode::Forced;
+  // Treat Auto as an opportunistic mode but do NOT fail silently: emit a warning on fallback so
+  // deployments using Auto are informed about why kernel offload wasn't available. This follows the
+  // principle of least surprise while preserving Auto's opportunistic behavior.
+  const bool warnOnFailure =
+      _config.tls.ktlsMode == TLSConfig::KtlsMode::Enabled || _config.tls.ktlsMode == TLSConfig::KtlsMode::Auto;
+
+  const auto result = doEnableKtlsSend(transport);
+  switch (result.status) {
+    case TlsTransport::KtlsEnableResult::Status::Enabled:
+    case TlsTransport::KtlsEnableResult::Status::AlreadyEnabled:
+      state.ktlsSendEnabled = true;
+      ++_stats.ktlsSendEnabledConnections;
+      log::debug("KTLS send enabled on fd # {}", fd);
+      break;
+    case TlsTransport::KtlsEnableResult::Status::Unsupported:
+      ++_stats.ktlsSendEnableFallbacks;
+      if (force) {
+        ++_stats.ktlsSendForcedShutdowns;
+        log::error("KTLS send unsupported on fd # {} while forced", fd);
+        state.requestImmediateClose();
+      } else if (warnOnFailure) {
+        log::warn(
+            "KTLS send unsupported on fd # {} (falling back to user-space TLS). Consider using "
+            "TLSConfig::KtlsMode::Forced to treat this as fatal.",
+            fd);
+      } else {
+        log::debug("KTLS send unsupported on fd # {} (fallback)", fd);
+      }
+      break;
+    case TlsTransport::KtlsEnableResult::Status::Failed: {
+      ++_stats.ktlsSendEnableFallbacks;
+      std::string reason;
+      if (result.sysError != 0) {
+        reason.append("errno=")
+            .append(std::to_string(result.sysError))
+            .append(" ")
+            .append(std::strerror(result.sysError));
+      }
+      if (result.sslError != 0) {
+        char errBuf[256];
+        ::ERR_error_string_n(result.sslError, errBuf, sizeof(errBuf));
+        if (!reason.empty()) {
+          reason.append("; ");
+        }
+        reason.append("ssl=").append(errBuf);
+      }
+      if (force) {
+        ++_stats.ktlsSendForcedShutdowns;
+        log::error("KTLS send enable failed for fd # {} (forced mode) reason={}", fd,
+                   reason.empty() ? "unknown" : reason.c_str());
+        state.requestImmediateClose();
+      } else if (warnOnFailure) {
+        log::warn("KTLS send enable failed for fd # {} (falling back) reason={}", fd,
+                  reason.empty() ? "unknown" : reason.c_str());
+      } else {
+        log::debug("KTLS send enable failed for fd # {} reason={}", fd, reason.empty() ? "unknown" : reason.c_str());
+      }
+      break;
+    }
+    default:
+      std::unreachable();
+  }
+}
+
+TlsTransport::KtlsEnableResult HttpServer::doEnableKtlsSend(TlsTransport& transport) {
+  return transport.enableKtlsSend();
+}
+#endif
+
 ServerStats HttpServer::stats() const {
   ServerStats statsOut;
   statsOut.totalBytesQueued = _stats.totalBytesQueued;
@@ -885,6 +980,12 @@ ServerStats HttpServer::stats() const {
   statsOut.epollModFailures = _stats.epollModFailures;
   statsOut.maxConnectionOutboundBuffer = _stats.maxConnectionOutboundBuffer;
   statsOut.totalRequestsServed = _stats.totalRequestsServed;
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+  statsOut.ktlsSendEnabledConnections = _stats.ktlsSendEnabledConnections;
+  statsOut.ktlsSendEnableFallbacks = _stats.ktlsSendEnableFallbacks;
+  statsOut.ktlsSendForcedShutdowns = _stats.ktlsSendForcedShutdowns;
+  statsOut.ktlsSendBytes = _stats.ktlsSendBytes;
+#endif
 #ifdef AERONET_ENABLE_OPENSSL
   statsOut.tlsHandshakesSucceeded = _tlsMetrics.handshakesSucceeded;
   statsOut.tlsClientCertPresent = _tlsMetrics.clientCertPresent;

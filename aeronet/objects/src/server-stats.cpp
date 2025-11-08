@@ -31,8 +31,14 @@ std::string ServerStats::json_str() const {
   out.append("\"epollModFailures\":").append(std::string_view(IntegralToCharVector(epollModFailures))).push_back(',');
   out.append("\"maxConnectionOutboundBuffer\":")
       .append(std::string_view(IntegralToCharVector(maxConnectionOutboundBuffer)));
+  out.push_back(',');
   out.append("\"totalRequestsServed\":").append(std::string_view(IntegralToCharVector(totalRequestsServed)));
 #ifdef AERONET_ENABLE_OPENSSL
+  out.append(",\"ktlsSendEnabledConnections\":")
+      .append(std::string_view(IntegralToCharVector(ktlsSendEnabledConnections)));
+  out.append(",\"ktlsSendEnableFallbacks\":").append(std::string_view(IntegralToCharVector(ktlsSendEnableFallbacks)));
+  out.append(",\"ktlsSendForcedShutdowns\":").append(std::string_view(IntegralToCharVector(ktlsSendForcedShutdowns)));
+  out.append(",\"ktlsSendBytes\":").append(std::string_view(IntegralToCharVector(ktlsSendBytes)));
   out.append(",\"tlsHandshakesSucceeded\":").append(std::string_view(IntegralToCharVector(tlsHandshakesSucceeded)));
   out.append(",\"tlsClientCertPresent\":").append(std::string_view(IntegralToCharVector(tlsClientCertPresent)));
   out.append(",\"tlsAlpnStrictMismatches\":").append(std::string_view(IntegralToCharVector(tlsAlpnStrictMismatches)));
