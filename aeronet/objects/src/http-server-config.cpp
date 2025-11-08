@@ -136,8 +136,8 @@ HttpServerConfig& HttpServerConfig::withTlsHandshakeTimeout(std::chrono::millise
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withTlsAddTrustedClientCert(std::string_view certPem) {
-  ensureTls().trustedClientCertsPem.emplace_back(certPem);
+HttpServerConfig& HttpServerConfig::withTlsTrustedClientCert(std::string_view certPem) {
+  ensureTls().withTlsTrustedClientCert(certPem);
   return *this;
 }
 
