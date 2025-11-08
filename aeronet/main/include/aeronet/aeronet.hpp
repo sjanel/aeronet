@@ -69,3 +69,4 @@
 
 // Stats / metrics surface
 #include "aeronet/server-stats.hpp"  // IWYU pragma: export
+#include "aeronet/version.hpp"       // IWYU pragma: export
