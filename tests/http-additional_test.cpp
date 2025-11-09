@@ -24,7 +24,7 @@ test::TestServer ts(HttpServerConfig{}, RouterConfig{}, std::chrono::millisecond
 }
 
 TEST(HttpPipeline, TwoRequestsBackToBack) {
-  ts.server.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequest& req) {
     HttpResponse respObj;
     respObj.body(std::string("E:") + std::string(req.path()));
     return respObj;
@@ -42,7 +42,7 @@ TEST(HttpPipeline, TwoRequestsBackToBack) {
 }
 
 TEST(HttpExpect, ZeroLengthNo100) {
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body("Z");
     return respObj;
@@ -60,7 +60,7 @@ TEST(HttpExpect, ZeroLengthNo100) {
 TEST(HttpMaxRequests, CloseAfterLimit) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(2); });
   // parser error callback intentionally left empty in tests
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body("Q");
     return respObj;
@@ -77,7 +77,7 @@ TEST(HttpMaxRequests, CloseAfterLimit) {
 }
 
 TEST(HttpPipeline, SecondMalformedAfterSuccess) {
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body("OK");
     return respObj;
@@ -93,7 +93,7 @@ TEST(HttpPipeline, SecondMalformedAfterSuccess) {
 
 TEST(HttpContentLength, ExplicitTooLarge413) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(10); });
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body("R");
     return respObj;
@@ -113,7 +113,7 @@ TEST(HttpContentLength, GlobalHeaders) {
     cfg.globalHeaders.emplace_back("X-Another", "anothervalue");
     cfg.globalHeaders.emplace_back("X-Custom", "global");
   });
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.header("X-Custom", "original");
     respObj.body("R");
@@ -135,7 +135,7 @@ TEST(HttpBasic, LargePayload) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.withMaxOutboundBufferBytes(1 << 25);  // 32 MiB
   });
-  ts.server.router().setDefault([&largeBody](const HttpRequest&) {
+  ts.router().setDefault([&largeBody](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body(largeBody);
     return respObj;
@@ -153,7 +153,7 @@ TEST(HttpBasic, ManyHeadersRequest) {
   // Test handling a request with thousands of headers
   static constexpr std::size_t kMaxHeaderBytes = 128UL * 1024UL;
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(kMaxHeaderBytes); });
-  ts.server.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequest& req) {
     int headerCount = 0;
     for (const auto& [key, value] : req.headers()) {
       if (key.starts_with("X-Custom-")) {
@@ -189,7 +189,7 @@ TEST(HttpBasic, ManyHeadersRequest) {
 
 TEST(HttpBasic, ManyHeadersResponse) {
   // Test generating a response with thousands of headers
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     // Add 3000 custom headers to response
     for (int i = 0; i < 3000; ++i) {
@@ -217,7 +217,7 @@ TEST(HttpBasic, ManyHeadersResponse) {
 }
 
 TEST(HttpExpectation, UnknownExpectationReturns417) {
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body("X");
     return respObj;
@@ -234,7 +234,7 @@ TEST(HttpExpectation, UnknownExpectationReturns417) {
 }
 
 TEST(HttpExpectation, MultipleTokensWithUnknownShouldReturn417) {
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body("X");
     return respObj;
@@ -265,7 +265,7 @@ TEST(HttpExpectation, HandlerCanEmit102Interim) {
     return res;
   });
 
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body("OK");
     return respObj;
@@ -295,7 +295,7 @@ TEST(HttpExpectation, HandlerInvalidInterimStatusReturns500) {
     return res;
   });
 
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body("SHOULD NOT SEE");
     return respObj;
@@ -325,7 +325,7 @@ TEST(HttpExpectation, HandlerThrowsReturns500AndSkipsBody) {
     return res;
   });
 
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body("SHOULD NOT SEE");
     return respObj;
@@ -359,7 +359,7 @@ TEST(HttpExpectation, HandlerFinalResponseSkipsBody) {
     return res;
   });
 
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body("SHOULD NOT SEE");
     return respObj;
@@ -389,7 +389,7 @@ TEST(HttpExpectation, Mixed100AndCustomWithHandlerContinue) {
     return res;
   });
 
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body("DONE");
     return respObj;
@@ -412,7 +412,7 @@ TEST(HttpExpectation, Mixed100AndCustomWithHandlerContinue) {
 TEST(HttpHead, MaxRequestsApplied) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(3); });
   auto port = ts.port();
-  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
     HttpResponse resp;
     resp.body("IGNORED");
     return resp;

@@ -56,7 +56,7 @@ class TlsClient {
   std::string readAll();
 
   // Convenience: perform a GET request and read entire response.
-  std::string get(const std::string& target, const std::vector<http::Header>& extraHeaders = {});
+  std::string get(std::string_view target, const std::vector<http::Header>& extraHeaders = {});
 
   [[nodiscard]] std::string_view negotiatedAlpn() const { return _negotiatedAlpn; }
 

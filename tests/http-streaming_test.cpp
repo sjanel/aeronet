@@ -30,7 +30,7 @@ using namespace std::chrono_literals;
 using namespace aeronet;
 
 namespace {
-std::string blockingFetch(uint16_t port, const std::string& verb, const std::string& target) {
+std::string blockingFetch(uint16_t port, std::string_view verb, std::string_view target) {
   test::RequestOptions opt;
   opt.method = verb;
   opt.target = target;
@@ -55,7 +55,7 @@ std::string doRequest(auto port, std::string_view verb, std::string_view target)
   return test::recvUntilClosed(fd);
 }
 
-std::string httpRequest(auto port, std::string_view method, std::string_view path, const std::string& body = {}) {
+std::string httpRequest(auto port, std::string_view method, std::string_view path, std::string_view body = {}) {
   test::ClientConnection cnx(port);
   int fd = cnx.fd();
 
@@ -71,12 +71,12 @@ std::string httpRequest(auto port, std::string_view method, std::string_view pat
 }
 
 // Very small chunked decoder for tests (single pass, no trailers). Expects full HTTP response.
-std::string extractBody(const std::string& resp) {
+std::string extractBody(std::string_view resp) {
   auto headerEnd = resp.find(http::DoubleCRLF);
   if (headerEnd == std::string::npos) {
     return {};
   }
-  std::string body = resp.substr(headerEnd + http::DoubleCRLF.size());
+  std::string body(resp.substr(headerEnd + http::DoubleCRLF.size()));
   // If not chunked just return remaining.
   if (!body.contains("\r\n0\r\n") && !body.contains("0\r\n\r\n")) {
     return body;
@@ -113,7 +113,7 @@ auto port = ts.port();
 }  // namespace
 
 TEST(HttpStreaming, ChunkedSimple) {
-  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
     writer.status(200);
     writer.contentType("text/plain");
     writer.writeBody("hello ");
@@ -135,7 +135,7 @@ TEST(HttpStreaming, SendFileFixedLengthPlain) {
 
   std::string path = tmp.filePath().string();
 
-  ts.server.router().setDefault([path](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([path](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
     writer.file(File(path));
     writer.end();
@@ -160,7 +160,7 @@ TEST(HttpStreaming, SendFileHeadSuppressesBody) {
 
   std::string path = tmp.filePath().string();
 
-  ts.server.router().setDefault([path](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([path](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
     writer.file(File(path));
     writer.end();
@@ -179,7 +179,7 @@ TEST(HttpStreaming, SendFileHeadSuppressesBody) {
 }
 
 TEST(HttpStreaming, HeadSuppressedBody) {
-  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
     writer.status(200);
     writer.contentType("text/plain");
     writer.writeBody("ignored body");  // should not be emitted for HEAD
@@ -206,7 +206,7 @@ TEST(HttpStreaming, HeadSuppressedBody) {
 // 5. HEAD request: headers still emitted correctly without body/chunk framing; Content-Length auto added when absent.
 
 TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
-  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
     writer.status(200);
     writer.header("X-Custom-A", "alpha");
     writer.header("X-Custom-B", "beta");
@@ -246,16 +246,15 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = false; });
 
   // path /mix : GET streaming, POST normal
-  ts.server.router().setPath(http::Method::GET, "/mix", [](const HttpRequest& /*unused*/, HttpResponseWriter& writer) {
+  ts.router().setPath(http::Method::GET, "/mix", [](const HttpRequest& /*unused*/, HttpResponseWriter& writer) {
     writer.status(200);
     writer.header("Content-Type", "text/plain");
     writer.writeBody("S");
     writer.writeBody("TREAM");
     writer.end();
   });
-  ts.server.router().setPath(http::Method::POST, "/mix", [](const HttpRequest& /*unused*/) {
-    return HttpResponse(201).reason("Created").body("NORMAL");
-  });
+  ts.router().setPath(http::Method::POST, "/mix",
+                      [](const HttpRequest& /*unused*/) { return HttpResponse(201).reason("Created").body("NORMAL"); });
   std::string getResp = httpRequest(port, "GET", "/mix");
   auto decoded = extractBody(getResp);
   EXPECT_EQ(decoded, "STREAM");
@@ -264,40 +263,39 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
 }
 
 TEST(HttpServerMixed, ConflictRegistrationNormalThenStreaming) {
-  ts.server.router().setPath(http::Method::GET, "/c",
-                             [](const HttpRequest&) { return HttpResponse(200, "OK").body("X"); });
-  EXPECT_THROW(ts.server.router().setPath(http::Method::GET, "/c", [](const HttpRequest&, HttpResponseWriter&) {}),
+  ts.router().setPath(http::Method::GET, "/c", [](const HttpRequest&) { return HttpResponse(200, "OK").body("X"); });
+  EXPECT_THROW(ts.router().setPath(http::Method::GET, "/c", [](const HttpRequest&, HttpResponseWriter&) {}),
                std::logic_error);
 }
 
 TEST(HttpServerMixed, ConflictRegistrationStreamingThenNormal) {
-  ts.server.router().setPath(http::Method::GET, "/c2", [](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setPath(http::Method::GET, "/c2", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
     writer.end();
   });
-  EXPECT_THROW(ts.server.router().setPath(http::Method::GET, "/c2",
-                                          [](const HttpRequest&) { return HttpResponse(200, "OK").body("Y"); }),
+  EXPECT_THROW(ts.router().setPath(http::Method::GET, "/c2",
+                                   [](const HttpRequest&) { return HttpResponse(200, "OK").body("Y"); }),
                std::logic_error);
 }
 
 TEST(HttpServerMixed, GlobalFallbackPrecedence) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = false; });
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(200, "OK").body("GLOBAL"); });
-  ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(200, "OK").body("GLOBAL"); });
+  ts.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
     writer.header("Content-Type", "text/plain");
     writer.writeBody("STREAMFALLBACK");
     writer.end();
   });
   // path-specific streaming overrides both
-  ts.server.router().setPath(http::Method::GET, "/s", [](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setPath(http::Method::GET, "/s", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
     writer.writeBody("PS");
     writer.end();
   });
   // path-specific normal overrides global fallbacks
-  ts.server.router().setPath(http::Method::GET, "/n",
-                             [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("PN"); });
+  ts.router().setPath(http::Method::GET, "/n",
+                      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("PN"); });
 
   std::string pathStreamResp = httpRequest(port, "GET", "/s");
   EXPECT_TRUE(pathStreamResp.contains("PS"));
@@ -310,7 +308,7 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
 
 TEST(HttpServerMixed, GlobalNormalOnlyWhenNoStreaming) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = false; });
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("GN"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("GN"); });
 
   std::string result = httpRequest(port, "GET", "/x");
   EXPECT_TRUE(result.contains("GN"));
@@ -319,7 +317,7 @@ TEST(HttpServerMixed, GlobalNormalOnlyWhenNoStreaming) {
 TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = false; });
   // Register streaming handler for GET; it will attempt to write a body.
-  ts.server.router().setPath(http::Method::GET, "/head", [](const HttpRequest& /*unused*/, HttpResponseWriter& writer) {
+  ts.router().setPath(http::Method::GET, "/head", [](const HttpRequest& /*unused*/, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.header("Content-Type", "text/plain");
     writer.writeBody("SHOULD_NOT_APPEAR");  // for HEAD this must be suppressed by writer
@@ -339,7 +337,7 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
 TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = false; });
   // Register only GET streaming handler
-  ts.server.router().setPath(http::Method::GET, "/m405", [](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setPath(http::Method::GET, "/m405", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("OKGET");
     writer.end();
@@ -360,15 +358,15 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
     cfg.maxRequestsPerConnection = 3;  // allow at least two
   });
   // Register streaming GET and normal POST on same path
-  ts.server.router().setPath(http::Method::GET, "/ka", [](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setPath(http::Method::GET, "/ka", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.header("Content-Type", "text/plain");
     writer.writeBody("A");
     writer.writeBody("B");
     writer.end();
   });
-  ts.server.router().setPath(http::Method::POST, "/ka",
-                             [](const HttpRequest&) { return HttpResponse(201).reason("Created").body("NORMAL"); });
+  ts.router().setPath(http::Method::POST, "/ka",
+                      [](const HttpRequest&) { return HttpResponse(201).reason("Created").body("NORMAL"); });
 
   // Build raw requests (each must include Host and Connection: keep-alive)
   std::string r1 = "GET /ka HTTP/1.1\r\nHost: test\r\nConnection: keep-alive\r\n\r\n";  // streaming
@@ -401,7 +399,7 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
 
 TEST(StreamingKeepAlive, TwoSequentialRequests) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = true; });
-  ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("hello");
     writer.writeBody(",world");
@@ -423,7 +421,7 @@ TEST(StreamingKeepAlive, TwoSequentialRequests) {
 
 TEST(StreamingKeepAlive, HeadRequestReuse) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = true; });
-  ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("ignored-body");
     writer.end();
@@ -447,18 +445,22 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
 }
 
 namespace {
-void raw(auto port, const std::string& verb, std::string& out) {
+void raw(auto port, std::string_view verb, std::string& out) {
   test::ClientConnection sock(port);
   int fd = sock.fd();
-  std::string req = verb + " /len HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+  std::string req(verb);
+  req += " /len HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
   out = test::recvUntilClosed(fd);
 }
 
-void rawWith(auto port, const std::string& verb, std::string_view extraHeaders, std::string& out) {
+void rawWith(auto port, std::string_view verb, std::string_view extraHeaders, std::string& out) {
   test::ClientConnection sock(port);
   int fd = sock.fd();
-  std::string req = verb + " /len HTTP/1.1\r\nHost: x\r\n" + std::string(extraHeaders) + "Connection: close\r\n\r\n";
+  std::string req(verb);
+  req += " /len HTTP/1.1\r\nHost: x\r\n";
+  req += extraHeaders;
+  req += "Connection: close\r\n\r\n";
   test::sendAll(fd, req);
   out = test::recvUntilClosed(fd);
 }
@@ -469,7 +471,7 @@ TEST(HttpStreamingHeadContentLength, HeadSuppressesBodyKeepsCL) {
     cfg.enableKeepAlive = true;
     cfg.maxRequestsPerConnection = 2;
   });
-  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     // We set Content-Length even though we write body pieces; for HEAD the body must be suppressed but CL retained.
     static constexpr std::string_view body = "abcdef";  // length 6
@@ -496,7 +498,7 @@ TEST(HttpStreamingHeadContentLength, HeadSuppressesBodyKeepsCL) {
 }
 
 TEST(HttpStreamingHeadContentLength, StreamingNoContentLengthUsesChunked) {
-  ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("abc");
     writer.writeBody("def");
@@ -513,7 +515,7 @@ TEST(HttpStreamingHeadContentLength, StreamingNoContentLengthUsesChunked) {
 }
 
 TEST(HttpStreamingHeadContentLength, StreamingLateContentLengthIgnoredStaysChunked) {
-  ts.server.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("part1");
     // This should be ignored (already wrote body bytes) and we remain in chunked mode.
@@ -542,7 +544,7 @@ TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDi
   static constexpr std::string_view kBody =
       "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";  // 64 'A'
   const std::size_t originalSize = kBody.size();
-  ts.server.router().setDefault([&](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([&](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.contentLength(originalSize);  // declares uncompressed length
     writer.writeBody(kBody.substr(0, 10));
@@ -579,7 +581,7 @@ TEST(StreamingBackpressure, LargeBodyQueues) {
     cfg.maxOutboundBufferBytes = static_cast<std::size_t>(64 * 1024);  // assume default maybe larger
   });
   std::size_t total = static_cast<std::size_t>(512 * 1024);  // 512 KB
-  ts.server.router().setDefault([&]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+  ts.router().setDefault([&]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     std::string chunk(8192, 'x');
     std::size_t sent = 0;
@@ -604,7 +606,7 @@ TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.minCapturedBodySize = kLargeSize - 1U; });
 
   std::string large(kLargeSize, 'x');
-  ts.server.router().setDefault([&](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([&](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("small");  // coalesced path
     writer.writeBody(large);    // large path (multi enqueue)

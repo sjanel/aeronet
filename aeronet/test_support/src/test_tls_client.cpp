@@ -168,11 +168,11 @@ bool TlsClient::waitForSocketReady(short events, Duration timeout) {
 }
 
 // Convenience: perform a GET request and read entire response.
-std::string TlsClient::get(const std::string& target, const std::vector<http::Header>& extraHeaders) {
+std::string TlsClient::get(std::string_view target, const std::vector<http::Header>& extraHeaders) {
   if (!_handshakeOk) {
     return {};
   }
-  std::string request = "GET " + target + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n";
+  std::string request = "GET " + std::string(target) + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n";
   for (const auto& header : extraHeaders) {
     request.append(header.name).append(aeronet::http::HeaderSep).append(header.value).append(aeronet::http::CRLF);
   }

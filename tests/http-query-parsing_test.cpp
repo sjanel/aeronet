@@ -17,7 +17,7 @@ test::TestServer ts{HttpServerConfig{}};
 }
 
 TEST(HttpQueryParsing, NoQuery) {
-  ts.server.router().setPath(http::Method::GET, "/plain", [](const HttpRequest& req) {
+  ts.router().setPath(http::Method::GET, "/plain", [](const HttpRequest& req) {
     EXPECT_EQ(req.path(), "/plain");
     EXPECT_EQ(req.queryParams().begin(), req.queryParams().end());
     HttpResponse resp;
@@ -29,7 +29,7 @@ TEST(HttpQueryParsing, NoQuery) {
 }
 
 TEST(HttpQueryParsing, SimpleQuery) {
-  ts.server.router().setPath(http::Method::GET, "/p", [](const HttpRequest& req) {
+  ts.router().setPath(http::Method::GET, "/p", [](const HttpRequest& req) {
     EXPECT_EQ(req.path(), "/p");
 
     std::string body;
@@ -51,7 +51,7 @@ TEST(HttpQueryParsing, SimpleQuery) {
 }
 
 TEST(HttpQueryParsing, PercentDecodedQuery) {
-  ts.server.router().setPath(http::Method::GET, "/d", [](const HttpRequest& req) -> HttpResponse {
+  ts.router().setPath(http::Method::GET, "/d", [](const HttpRequest& req) -> HttpResponse {
     // Query is now fully percent-decoded by parser.
     EXPECT_EQ(req.path(), "/d");
     auto range = req.queryParams();
@@ -85,7 +85,7 @@ TEST(HttpQueryParsing, PercentDecodedQuery) {
 }
 
 TEST(HttpQueryParsing, EmptyQueryAndTrailingQMark) {
-  ts.server.router().setPath(http::Method::GET, "/t", [](const HttpRequest& req) {
+  ts.router().setPath(http::Method::GET, "/t", [](const HttpRequest& req) {
     EXPECT_EQ(req.path(), "/t");
     // "?" with nothing after -> empty query view
     EXPECT_EQ(req.queryParams().begin(), req.queryParams().end());
@@ -98,7 +98,7 @@ TEST(HttpQueryParsing, EmptyQueryAndTrailingQMark) {
 }
 
 TEST(HttpQueryParsingEdge, IncompleteEscapeAtEndShouldBeAccepted) {
-  ts.server.router().setPath(http::Method::GET, "/e", [](const HttpRequest& req) -> HttpResponse {
+  ts.router().setPath(http::Method::GET, "/e", [](const HttpRequest& req) -> HttpResponse {
     EXPECT_EQ(req.path(), "/e");
     // "%" at end remains literal
     // Malformed escape -> fallback leaves query raw
@@ -115,7 +115,7 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeAtEndShouldBeAccepted) {
 }
 
 TEST(HttpQueryParsingEdge, IncompleteEscapeOneHexShouldBeAccepted) {
-  ts.server.router().setPath(http::Method::GET, "/e2", [](const HttpRequest& req) -> HttpResponse {
+  ts.router().setPath(http::Method::GET, "/e2", [](const HttpRequest& req) -> HttpResponse {
     auto it = req.queryParams().begin();
     EXPECT_NE(it, req.queryParams().end());
     EXPECT_EQ((*it).key, "a");
@@ -131,7 +131,7 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeOneHexShouldBeAccepted) {
 }
 
 TEST(HttpQueryParsingEdge, MultiplePairsAndEmptyValue) {
-  ts.server.router().setPath(http::Method::GET, "/m", [](const HttpRequest& req) -> HttpResponse {
+  ts.router().setPath(http::Method::GET, "/m", [](const HttpRequest& req) -> HttpResponse {
     auto range = req.queryParams();
     auto it = range.begin();
     EXPECT_NE(it, range.end());
@@ -156,7 +156,7 @@ TEST(HttpQueryParsingEdge, MultiplePairsAndEmptyValue) {
 }
 
 TEST(HttpQueryParsingEdge, PercentDecodingKeyAndValue) {
-  ts.server.router().setPath(http::Method::GET, "/pd", [](const HttpRequest& req) -> HttpResponse {
+  ts.router().setPath(http::Method::GET, "/pd", [](const HttpRequest& req) -> HttpResponse {
     // encoded: %66 -> 'f'
     // Fully decodable -> parser decodes now
     auto it = req.queryParams().begin();
@@ -173,7 +173,7 @@ TEST(HttpQueryParsingEdge, PercentDecodingKeyAndValue) {
 }
 
 TEST(HttpQueryStructuredBindings, IterateKeyValues) {
-  ts.server.router().setPath(http::Method::GET, "/sb", [](const HttpRequest& req) -> HttpResponse {
+  ts.router().setPath(http::Method::GET, "/sb", [](const HttpRequest& req) -> HttpResponse {
     EXPECT_EQ(req.path(), "/sb");
     int count = 0;
     bool sawA = false;

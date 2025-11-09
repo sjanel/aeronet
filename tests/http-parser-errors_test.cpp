@@ -38,7 +38,7 @@ auto port = ts.port();
 TEST(HttpParserErrors, InvalidVersion505) {
   Capture cap;
   ts.server.setParserErrorCallback([&](http::StatusCode err) { cap.push(err); });
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -59,7 +59,7 @@ TEST(HttpParserErrors, InvalidVersion505) {
 }
 
 TEST(HttpParserErrors, Expect100OnlyWithBody) {
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -83,8 +83,7 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
 
 // Fuzz-ish incremental chunk framing with random chunk sizes & boundaries.
 TEST(HttpParserErrors, ChunkIncrementalFuzz) {
-  ts.server.router().setDefault(
-      [](const HttpRequest& req) { return HttpResponse(http::StatusCodeOK).body(req.body()); });
+  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(http::StatusCodeOK).body(req.body()); });
 
   std::mt19937 rng(12345);
   std::uniform_int_distribution<int> sizeDist(1, 15);
