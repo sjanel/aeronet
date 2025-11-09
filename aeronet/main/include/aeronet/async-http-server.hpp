@@ -61,10 +61,21 @@ class AsyncHttpServer {
 
   // Get a reference to the router object of this instance.
   // You may use this to query or modify path handlers after initial configuration.
-  Router& router() noexcept { return _server.router(); }
+  Router& router() { return _server.router(); }
 
+  // Sets a callback invoked on HTTP parsing errors.
+  // See HttpServer::setParserErrorCallback for semantics.
   void setParserErrorCallback(HttpServer::ParserErrorCallback cb);
+
+  // Sets a callback invoked after completing each request (including errors).
+  // See HttpServer::setMetricsCallback for semantics.
   void setMetricsCallback(HttpServer::MetricsCallback cb);
+
+  // Install a custom expectation handler. See `HttpServer::setExpectationHandler` for semantics.
+  void setExpectationHandler(HttpServer::ExpectationHandler handler);
+
+  // Install a callback invoked with middleware metrics. See `HttpServer::setMiddlewareMetricsCallback`.
+  void setMiddlewareMetricsCallback(HttpServer::MiddlewareMetricsCallback cb);
 
   // Server port. You can call this method directly after construction, ephemeral ports will be resolved.
   [[nodiscard]] uint16_t port() const noexcept { return _server.port(); }

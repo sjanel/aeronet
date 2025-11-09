@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
     std::cout << "Starting static file example on port: " << server.port() << " serving root: " << root << '\n';
     server.runUntil([]() { return gStop.load(); });
   } catch (const std::exception& ex) {
-    std::cerr << "Error during setup: " << ex.what() << '\n';
+    std::cerr << "Error: " << ex.what() << '\n';
     return EXIT_FAILURE;
   }
 
