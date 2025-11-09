@@ -13,6 +13,7 @@ Single consolidated reference for **aeronet** features.
 1. [Reserved & Managed Response Headers](#reserved--managed-response-headers)
 1. [Request Header Duplicate Handling (Detailed)](#request-header-duplicate-handling-detailed)
 1. [Path Handling](#path-handling)
+1. [Middleware Pipeline](#middleware-pipeline)
 1. [Trailing Slash Policy](#trailing-slash-policy)
 1. [Construction Model (RAII & Ephemeral Ports)](#construction-model-raii--ephemeral-ports)
 1. [MultiHttpServer Lifecycle](#multihttpserver-lifecycle)
@@ -229,7 +230,7 @@ Notes and implementation details
 - [x] Lightweight built-in logging (spdlog optional integration) – pluggable interface TBD
 - [x] Built-in Kubernetes-style probes (liveness/readiness/startup)
 - [x] OpenTelemetry integration (optional build flag)
-- [ ] Middleware helpers
+- [x] Middleware helpers (global + per-route pre/post chains, streaming support)
 - [ ] Pluggable logging interface (abstract sink / formatting hooks)
 - [x] Ephemeral port support (server.port() available after construction)
 - [x] JSON stats export / per-server metrics
@@ -927,7 +928,60 @@ Example:
 for (auto [k,v] : req.queryParams()) { /* use k,v */ }
 ```
 
-### Trailing Slash Policy
+## Middleware Pipeline
+
+- **Global hooks** – use `Router::addRequestMiddleware` and `Router::addResponseMiddleware` (or the convenience `HttpServer::add*` wrappers) to install request/response middleware that runs for every request.
+- **Per-route hooks** – `Router::PathHandlerEntry::before(RequestMiddleware)` and `::after(ResponseMiddleware)` scope middleware to a specific path registration.
+- **Execution order** – `global pre → route pre → handler → route post → global post`. When a route does not match (404/405/redirect), only the global hooks run; per-route chains are skipped.
+- **Short-circuiting** – returning `MiddlewareResult::ShortCircuit(HttpResponse)` from any pre middleware skips the remaining pre chain and the handler. The produced response is still passed through the post chain so that shared concerns (headers, logging, metrics) execute uniformly.
+- **Threading** – middleware executes on the server's event loop thread; avoid blocking work inside hooks.
+
+### Streaming Integration
+
+- `HttpResponseWriter` driven handlers share the same middleware semantics. Post middleware runs right before headers are flushed, allowing status and header mutation even when body chunks were emitted.
+- Automatic CORS headers are applied after middleware adjustments, mirroring buffered responses.
+- Synthetic responses generated before the handler (CORS denials, 406 content-coding fallback, pre-chain short-circuits) still traverse the post middleware chain.
+
+### Example
+
+```cpp
+Router router;
+router.addRequestMiddleware([](HttpRequest& req) {
+  if (!isAuthenticated(req)) {  // user-defined helper
+    HttpResponse resp(http::StatusCodeUnauthorized, http::ReasonUnauthorized);
+    resp.body("auth required");
+    return MiddlewareResult::ShortCircuit(std::move(resp));
+  }
+  return MiddlewareResult::Continue();
+});
+
+router.addResponseMiddleware([](const HttpRequest&, HttpResponse& resp) {
+  resp.header("X-Powered-By", "aeronet");
+});
+
+auto& entry = router.setPath(http::Method::GET, "/metrics", [](const HttpRequest&) {
+  HttpResponse resp;
+  resp.body(renderMetrics());  // user-defined helper
+  return resp;
+});
+
+entry.before([](HttpRequest& req) {
+  tagRequest(req, "metrics");  // user-defined helper
+  return MiddlewareResult::Continue();
+});
+
+entry.after([](const HttpRequest&, HttpResponse& resp) {
+  resp.header("Cache-Control", "no-store");
+});
+
+HttpServer server(HttpServerConfig{}, std::move(router));
+```
+
+### Related Tests
+
+- See `tests/http-routing_test.cpp` for examples covering ordering, short-circuits, and streaming responses.
+
+## Trailing Slash Policy
 
 `HttpServerConfig::TrailingSlashPolicy` controls how paths differing only by a single trailing `/` are treated.
 

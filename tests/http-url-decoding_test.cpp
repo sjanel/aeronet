@@ -19,7 +19,7 @@ test::TestServer ts(HttpServerConfig{});
 }
 
 TEST(HttpUrlDecoding, SpaceDecoding) {
-  ts.server.router().setPath(http::Method::GET, "/hello world", [](const HttpRequest &req) {
+  ts.router().setPath(http::Method::GET, "/hello world", [](const HttpRequest &req) {
     return HttpResponse(http::StatusCodeOK).reason("OK").body(std::string(req.path()));
   });
   test::RequestOptions optHello;
@@ -34,8 +34,8 @@ TEST(HttpUrlDecoding, SpaceDecoding) {
 TEST(HttpUrlDecoding, Utf8Decoded) {
   // Path contains snowman + space + 'x'
   std::string decodedPath = "/\xE2\x98\x83 x";  // /☃ x
-  ts.server.router().setPath(http::Method::GET, decodedPath,
-                             [](const HttpRequest &) { return HttpResponse(200, "OK").body("utf8"); });
+  ts.router().setPath(http::Method::GET, decodedPath,
+                      [](const HttpRequest &) { return HttpResponse(200, "OK").body("utf8"); });
   // Percent-encoded UTF-8 for snowman (E2 98 83) plus %20 and 'x'
   test::RequestOptions optUtf8;
   optUtf8.method = "GET";
@@ -47,8 +47,8 @@ TEST(HttpUrlDecoding, Utf8Decoded) {
 }
 
 TEST(HttpUrlDecoding, PlusIsNotSpace) {
-  ts.server.router().setPath(http::Method::GET, "/a+b",
-                             [](const HttpRequest &) { return HttpResponse(200, "OK").body("plus"); });
+  ts.router().setPath(http::Method::GET, "/a+b",
+                      [](const HttpRequest &) { return HttpResponse(200, "OK").body("plus"); });
   test::RequestOptions optPlus;
   optPlus.method = "GET";
   optPlus.target = "/a+b";
@@ -76,8 +76,8 @@ TEST(HttpUrlDecoding, IncompletePercentSequence400) {
 }
 
 TEST(HttpUrlDecoding, MixedSegmentsDecoding) {
-  ts.server.router().setPath(http::Method::GET, "/seg one/part%/two",
-                             [](const HttpRequest &req) { return HttpResponse(200, "OK").body(req.path()); });
+  ts.router().setPath(http::Method::GET, "/seg one/part%/two",
+                      [](const HttpRequest &req) { return HttpResponse(200, "OK").body(req.path()); });
   // encodes space in first segment only
   test::RequestOptions opt2;
   opt2.method = "GET";

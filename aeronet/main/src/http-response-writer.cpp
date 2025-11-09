@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -30,14 +31,16 @@
 namespace aeronet {
 
 HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, bool headRequest, bool requestConnClose,
-                                       Encoding compressionFormat, const CorsPolicy* pCorsPolicy)
+                                       Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
+                                       std::span<const ResponseMiddleware> routeResponseMiddleware)
     : _server(&srv),
       _fd(fd),
       _head(headRequest),
       _requestConnClose(requestConnClose),
       _compressionFormat(compressionFormat),
       _activeEncoderCtx(std::make_unique<IdentityEncoderContext>()),
-      _pCorsPolicy(pCorsPolicy) {}
+      _pCorsPolicy(pCorsPolicy),
+      _routeResponseMiddleware(routeResponseMiddleware) {}
 
 void HttpResponseWriter::status(http::StatusCode code) {
   if (_state != State::Opened) {
@@ -98,6 +101,7 @@ void HttpResponseWriter::ensureHeadersSent() {
   } else {
     _fixedResponse.setHeader(http::TransferEncoding, "chunked");
   }
+  // If Content-Type has not been set, set to 'application/octet-stream' by default.
   _fixedResponse.setHeader(http::ContentType, http::ContentTypeApplicationOctetStream, true);
   // If compression already activated (delayed strategy) but header not sent yet, add Content-Encoding now.
   if (_compressionActivated && _compressionFormat != Encoding::none) {
@@ -106,6 +110,11 @@ void HttpResponseWriter::ensureHeadersSent() {
       _fixedResponse.setHeader(http::Vary, http::AcceptEncoding);
     }
   }
+  if (!_responseMiddlewareApplied) {
+    _server->applyResponseMiddleware(_fixedResponse, _routeResponseMiddleware);
+    _responseMiddlewareApplied = true;
+  }
+
   // Do NOT add Content-Encoding at header emission time; we wait until we actually activate
   // compression (threshold reached) to avoid mislabeling identity bodies when size < threshold.
   // Do not attempt to add Connection/Date here; finalize handles them (adds Date, Connection based on keepAlive flag).

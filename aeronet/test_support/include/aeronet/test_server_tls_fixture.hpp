@@ -22,7 +22,7 @@ namespace aeronet::test {
 //   TlsTestServer ts; // basic TLS (no ALPN)
 //   TlsTestServer ts({"http/1.1"}); // with ALPN preference list
 //   TlsTestServer ts({}, [](HttpServerConfig& cfg){ cfg.withMaxRequestsPerConnection(5); });
-//   ts.server.router().setDefault(...);
+//   ts.router().setDefault(...);
 //
 // Exposes the same interface expectations as TestServer (ts.server, ts.port(), ts.stop()).
 struct TlsTestServer {

@@ -17,7 +17,7 @@ test::TestServer ts(HttpServerConfig{});
 }  // namespace
 
 TEST(Http10, BasicVersionEcho) {
-  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
     HttpResponse respObj;
     respObj.body("A");
     return respObj;
@@ -28,7 +28,7 @@ TEST(Http10, BasicVersionEcho) {
 }
 
 TEST(Http10, No100ContinueEvenIfHeaderPresent) {
-  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
     HttpResponse respObj;
     respObj.body("B");
     return respObj;
@@ -42,7 +42,7 @@ TEST(Http10, No100ContinueEvenIfHeaderPresent) {
 }
 
 TEST(Http10, RejectTransferEncoding) {
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
     respObj.body("C");
     return respObj;
@@ -54,7 +54,7 @@ TEST(Http10, RejectTransferEncoding) {
 }
 
 TEST(Http10, KeepAliveOptInStillWorks) {
-  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
     HttpResponse respObj;
     respObj.body("D");
     return respObj;

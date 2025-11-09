@@ -246,7 +246,7 @@ TEST(HttpDrain, StopsNewConnections) {
   cfg.enableKeepAlive = true;
   test::TestServer ts(cfg);
 
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.body("OK");
     return resp;
@@ -276,7 +276,7 @@ TEST(HttpDrain, KeepAliveConnectionsCloseAfterDrain) {
   cfg.enableKeepAlive = true;
   test::TestServer ts(cfg);
 
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.body("OK");
     return resp;
@@ -306,7 +306,7 @@ TEST(HttpDrain, DeadlineForcesIdleConnectionsToClose) {
   cfg.keepAliveTimeout = 5s;  // ensure default timeout does not interfere with the test window
   test::TestServer ts(cfg);
 
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.body("OK");
     return resp;
@@ -425,7 +425,7 @@ TEST(HttpConfigUpdate, ImmutableFieldsProtected) {
   const auto originalReusePort = ts.server.config().reusePort;
 
   // Handler that echoes current config values
-  ts.server.router().setDefault([&ts](const HttpRequest& req) {
+  ts.router().setDefault([&ts](const HttpRequest& req) {
     HttpResponse resp;
     if (req.path() == "/port") {
       resp.body(std::to_string(ts.server.config().port));

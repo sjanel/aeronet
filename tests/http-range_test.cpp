@@ -8,7 +8,6 @@
 #include <string_view>
 #include <utility>
 
-#include "aeronet/http-request.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/static-file-handler.hpp"
@@ -25,7 +24,7 @@ using namespace aeronet;
 
 namespace {
 
-std::string getHeader(const test::ParsedResponse& resp, const std::string& key) {
+std::string getHeader(const test::ParsedResponse& resp, std::string_view key) {
   const auto it = resp.headers.find(key);
   if (it == resp.headers.end()) {
     return {};
@@ -42,7 +41,7 @@ TEST(HttpRangeStatic, ServeCompleteFile) {
   test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
+  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -62,7 +61,7 @@ TEST(HttpRangeStatic, SingleRangePartialContent) {
   test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
+  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -81,7 +80,7 @@ TEST(HttpRangeStatic, UnsatisfiableRange) {
   test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
+  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -99,7 +98,7 @@ TEST(HttpRangeStatic, IfNoneMatchReturns304) {
   test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
+  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   test::RequestOptions initial;
   initial.method = "GET";
@@ -125,7 +124,7 @@ TEST(HttpRangeStatic, IfRangeMismatchFallsBackToFullBody) {
   test::ScopedTempFile tmp(tmpDir, "abcdefghij");
   const std::string fileName = tmp.filename();
 
-  ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
+  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -144,7 +143,7 @@ TEST(HttpRangeInvalid, BadRangeSyntax) {
   test::ScopedTempFile tmp(tmpDir, "0123456789");
   const std::string fileName = tmp.filename();
 
-  ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
+  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -177,7 +176,7 @@ TEST(HttpRangeInvalid, ConditionalInvalidDates) {
   test::ScopedTempFile tmp(tmpDir, "hello world");
   const std::string fileName = tmp.filename();
 
-  ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
+  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -204,7 +203,7 @@ TEST(HttpRangeInvalid, IfMatchPreconditionFailed) {
   test::ScopedTempFile tmp(tmpDir, "HELLO");
   const std::string fileName = tmp.filename();
 
-  ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
+  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   // First fetch to get ETag
   test::RequestOptions initial;
@@ -241,7 +240,7 @@ TEST(HttpLargeFile, ServeLargeFile) {
   const auto fileName = tmp.filename();
   const std::string_view data = tmp.content();
 
-  ts.server.router().setDefault(StaticFileHandler(tmp.dirPath()));
+  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
   // Use a custom connection to manually control receive behavior for large files
   test::ClientConnection cnx(ts.port());

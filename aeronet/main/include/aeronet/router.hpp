@@ -12,6 +12,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/router-config.hpp"
 #include "flat-hash-map.hpp"
 #include "object-pool.hpp"
@@ -19,6 +20,8 @@
 #include "vector.hpp"
 
 namespace aeronet {
+
+class HttpServer;
 
 class Router {
  public:
@@ -29,17 +32,27 @@ class Router {
   // Use it for large or long-lived responses where sending partial data before completion is beneficial.
   using StreamingHandler = std::function<void(const HttpRequest&, HttpResponseWriter&)>;
 
+  using RequestMiddlewareRange = std::span<const RequestMiddleware>;
+
+  using ResponseMiddlewareRange = std::span<const ResponseMiddleware>;
+
   // Object that stores handlers and options for a specific group of paths.
   class PathHandlerEntry {
    public:
     // Attach given corsPolicy to the path handler entry.
-    PathHandlerEntry& cors(CorsPolicy corsPolicy) {
-      this->corsPolicy = std::move(corsPolicy);
-      return *this;
-    }
+    PathHandlerEntry& cors(CorsPolicy corsPolicy);
+
+    // Register middleware executed before the route handler. The middleware may mutate
+    // the request and short-circuit the chain by returning a response.
+    PathHandlerEntry& before(RequestMiddleware middleware);
+
+    // Register middleware executed after the route handler produces a response. The middleware
+    // can amend headers or body before the response is finalized.
+    PathHandlerEntry& after(ResponseMiddleware middleware);
 
    private:
     friend class Router;
+    friend class HttpServer;
 
     PathHandlerEntry() noexcept = default;
 
@@ -49,6 +62,8 @@ class Router {
     std::array<StreamingHandler, http::kNbMethods> streamingHandlers{};
     // Optional per-route CorsPolicy stored by value. If set, match() will return a pointer to it.
     CorsPolicy corsPolicy;
+    vector<RequestMiddleware> preMiddleware;
+    vector<ResponseMiddleware> postMiddleware;
   };
 
   // Creates an empty Router with a 'Normalize' trailing policy.
@@ -65,6 +80,21 @@ class Router {
   // the caller to opt into strict trailing slash semantics or automatic normalization.
   explicit Router(RouterConfig config);
 
+  // Register a request middleware executed before any matched handler (including defaults).
+  void addRequestMiddleware(RequestMiddleware middleware);
+
+  // Register a response middleware executed after handlers (or short-circuited pre hooks).
+  void addResponseMiddleware(ResponseMiddleware middleware);
+
+  // Access the global pre middleware chain.
+  // The items are ordered from first to last executed.
+  [[nodiscard]] RequestMiddlewareRange globalRequestMiddleware() const noexcept { return _globalPreMiddleware; }
+
+  // Access the global post middleware chain.
+  // The items are ordered from first to last executed.
+  [[nodiscard]] ResponseMiddlewareRange globalResponseMiddleware() const noexcept { return _globalPostMiddleware; }
+
+  // Copy operations duplicate the router state including all registered handlers.
   Router(const Router& other);
   Router& operator=(const Router& other);
 
@@ -152,8 +182,8 @@ class Router {
     };
 
     // Only one of them will be non null if found
-    const RequestHandler* requestHandler{nullptr};
-    const StreamingHandler* streamingHandler{nullptr};
+    const RequestHandler* pRequestHandler{nullptr};
+    const StreamingHandler* pStreamingHandler{nullptr};
 
     RedirectSlashMode redirectPathIndicator{RedirectSlashMode::None};
 
@@ -165,6 +195,12 @@ class Router {
 
     // If set, points to the per-route CorsPolicy stored in the matched route entry; nullptr if none.
     const CorsPolicy* pCorsPolicy{nullptr};
+
+    // The ordered range of RequestMiddleware to be applied.
+    RequestMiddlewareRange requestMiddlewareRange;
+
+    // The ordered range of ResponseMiddleware to be applied.
+    ResponseMiddlewareRange responseMiddlewareRange;
   };
 
   // Match the provided `path` for `method` and return the matching handlers (or a
@@ -197,6 +233,10 @@ class Router {
   //    all method bits set).
   //  - If no match and no global handler, returns an empty bitmap (0).
   [[nodiscard]] http::MethodBmp allowedMethods(std::string_view path);
+
+  // Clear all registered routes and handlers from the router.
+  // The configuration stays unchanged.
+  void clear() noexcept;
 
  private:
   struct SegmentPart {
@@ -281,7 +321,7 @@ class Router {
 
   void setMatchedHandler(http::Method method, const PathHandlerEntry& entry, RoutingResult& result) const;
 
-  void cloneFrom(const Router& other);
+  void cloneNodesFrom(const Router& other);
 
   struct StackFrame {
     const RouteNode* node;
@@ -294,6 +334,9 @@ class Router {
 
   RequestHandler _handler;
   StreamingHandler _streamingHandler;
+
+  vector<RequestMiddleware> _globalPreMiddleware;
+  vector<ResponseMiddleware> _globalPostMiddleware;
 
   ObjectPool<RouteNode> _nodePool;
   ObjectPool<CompiledRoute> _compiledRoutePool;

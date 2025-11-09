@@ -84,8 +84,8 @@ struct ClientRawResponse {
   std::string headersRaw;
 };
 
-ClientRawResponse rawPost(uint16_t port, const std::string& target,
-                          const std::vector<std::pair<std::string, std::string>>& headers, const std::string& body) {
+ClientRawResponse rawPost(uint16_t port, std::string_view target,
+                          const std::vector<std::pair<std::string, std::string>>& headers, std::string_view body) {
   test::RequestOptions opt;
   opt.method = http::POST;
   opt.target = target;
@@ -129,7 +129,7 @@ TEST(HttpRequestDecompression, SingleGzip) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "HelloCompressedWorld";
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("OK");
@@ -146,7 +146,7 @@ TEST(HttpRequestDecompression, SingleDeflate) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(10000, 'A');
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("Z");
@@ -163,7 +163,7 @@ TEST(HttpRequestDecompression, SingleZstd) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(10000, 'Z');
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("S");
@@ -180,7 +180,7 @@ TEST(HttpRequestDecompression, SingleBrotli) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(10000, 'B');
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("BR");
@@ -197,7 +197,7 @@ TEST(HttpRequestDecompression, MultiGzipDeflateNoSpaces) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "MultiStagePayload";
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("M");
@@ -215,7 +215,7 @@ TEST(HttpRequestDecompression, MultiZstdGzipWithSpaces) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(10000, 'Q');
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("M2");
@@ -233,7 +233,7 @@ TEST(HttpRequestDecompression, MultiGzipBrotli) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(10000, 'R');
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("GB");
@@ -251,7 +251,7 @@ TEST(HttpRequestDecompression, MultiZstdBrotli) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(10000, 'Z');
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("ZB");
@@ -269,7 +269,7 @@ TEST(HttpRequestDecompression, IdentitySkippedInChain) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "SkipIdentity";
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("I");
@@ -283,7 +283,7 @@ TEST(HttpRequestDecompression, IdentitySkippedInChain) {
 
 TEST(HttpRequestDecompression, UnknownCodingRejected) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  ts.server.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
     HttpResponse resp;
     resp.body("U");
     return resp;
@@ -313,7 +313,7 @@ TEST(HttpRequestDecompression, DisabledFeaturePassThrough) {
 
   std::string plain = "ABC";
   auto gz = gzipCompress(plain);
-  ts.server.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequest& req) {
     // With feature disabled the body should still be compressed (gzip header 0x1f 0x8b)
     EXPECT_GE(req.body().size(), 2U);
     EXPECT_EQ(static_cast<unsigned char>(req.body()[0]), 0x1f);
@@ -356,7 +356,7 @@ TEST(HttpRequestDecompression, MultiZstdGzipMultiSpaces) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(3200, 'S');
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("OK");
@@ -374,7 +374,7 @@ TEST(HttpRequestDecompression, TripleChainSpacesTabs) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "TripleChain";
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("T");
@@ -393,7 +393,7 @@ TEST(HttpRequestDecompression, MixedCaseTokens) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "CaseCheck";
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("C");
@@ -411,7 +411,7 @@ TEST(HttpRequestDecompression, IdentityRepeated) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "IdentityRepeat";
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("IR");
@@ -429,7 +429,7 @@ TEST(HttpRequestDecompression, TabsBetweenTokens) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "TabsBetween";
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("TB");
@@ -475,7 +475,7 @@ TEST(HttpRequestDecompression, CorruptedGzipTruncatedTail) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(200, 'G');
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("OK");
@@ -495,7 +495,7 @@ TEST(HttpRequestDecompression, CorruptedZstdBadMagic) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(512, 'Z');
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     HttpResponse resp;
     resp.body("OK");
@@ -519,7 +519,7 @@ TEST(HttpRequestDecompression, CorruptedBrotliTruncated) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(300, 'B');
-  ts.server.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);  // Not reached for corrupted case
     HttpResponse resp;
     resp.body("OK");
