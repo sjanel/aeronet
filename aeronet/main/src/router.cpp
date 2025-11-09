@@ -10,6 +10,7 @@
 
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/router-config.hpp"
 #include "flat-hash-map.hpp"
 #include "log.hpp"

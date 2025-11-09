@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
@@ -238,19 +239,19 @@ TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
   std::vector<std::string> sequence;
 
   ts.resetRouterAndGet().addRequestMiddleware([&](HttpRequest&) {
-    std::lock_guard lock(seqMutex);
+    std::scoped_lock lock(seqMutex);
     sequence.emplace_back("global-pre");
     return MiddlewareResult::Continue();
   });
 
   ts.router().addResponseMiddleware([&](const HttpRequest&, HttpResponse& resp) {
-    std::lock_guard lock(seqMutex);
+    std::scoped_lock lock(seqMutex);
     sequence.emplace_back("global-post");
     resp.header("X-Global-Middleware", "post");
   });
 
   auto& entry = ts.router().setPath(http::Method::GET, "/mw-route", [&](const HttpRequest&) {
-    std::lock_guard lock(seqMutex);
+    std::scoped_lock lock(seqMutex);
     sequence.emplace_back("handler");
     HttpResponse resp;
     resp.body("handler");
@@ -258,13 +259,13 @@ TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
   });
 
   entry.before([&](HttpRequest&) {
-    std::lock_guard lock(seqMutex);
+    std::scoped_lock lock(seqMutex);
     sequence.emplace_back("route-pre");
     return MiddlewareResult::Continue();
   });
 
   entry.after([&](const HttpRequest&, HttpResponse& resp) {
-    std::lock_guard lock(seqMutex);
+    std::scoped_lock lock(seqMutex);
     sequence.emplace_back("route-post");
     resp.header("X-Route-Middleware", "post");
     const std::string existingBody(resp.body());
@@ -281,7 +282,7 @@ TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
 
   std::vector<std::string> snapshot;
   {
-    std::lock_guard lock(seqMutex);
+    std::scoped_lock lock(seqMutex);
     snapshot = sequence;
   }
   const std::vector<std::string> expected{"global-pre", "route-pre", "handler", "route-post", "global-post"};
@@ -293,13 +294,13 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
   std::vector<std::string> sequence;
 
   ts.resetRouterAndGet().addRequestMiddleware([&](HttpRequest&) {
-    std::lock_guard lock(seqMutex);
+    std::scoped_lock lock(seqMutex);
     sequence.emplace_back("global-pre");
     return MiddlewareResult::Continue();
   });
 
   ts.router().addResponseMiddleware([&](const HttpRequest&, HttpResponse& resp) {
-    std::lock_guard lock(seqMutex);
+    std::scoped_lock lock(seqMutex);
     sequence.emplace_back("global-post");
     resp.header("X-Global-Streaming", "post");
   });
@@ -307,7 +308,7 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
   auto& entry =
       ts.router().setPath(http::Method::GET, "/mw-stream", [&](const HttpRequest&, HttpResponseWriter& writer) {
         {
-          std::lock_guard lock(seqMutex);
+          std::scoped_lock lock(seqMutex);
           sequence.emplace_back("handler");
         }
         writer.status(http::StatusCodeOK, http::ReasonOK);
@@ -319,13 +320,13 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
       });
 
   entry.before([&](HttpRequest&) {
-    std::lock_guard lock(seqMutex);
+    std::scoped_lock lock(seqMutex);
     sequence.emplace_back("route-pre");
     return MiddlewareResult::Continue();
   });
 
   entry.after([&](const HttpRequest&, HttpResponse& resp) {
-    std::lock_guard lock(seqMutex);
+    std::scoped_lock lock(seqMutex);
     sequence.emplace_back("route-post");
     resp.status(http::StatusCodeAccepted, "Accepted by middleware");
     resp.header("X-Route-Streaming", "post");
@@ -341,11 +342,183 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
 
   std::vector<std::string> snapshot;
   {
-    std::lock_guard lock(seqMutex);
+    std::scoped_lock lock(seqMutex);
     snapshot = sequence;
   }
   const std::vector<std::string> expected{"global-pre", "route-pre", "handler", "route-post", "global-post"};
   EXPECT_EQ(snapshot, expected);
+}
+
+TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
+  std::mutex metricsMutex;
+  std::vector<HttpServer::MiddlewareMetrics> captured;
+  std::vector<std::string> requestPaths;
+  ts.server.setMiddlewareMetricsCallback([&](const HttpServer::MiddlewareMetrics& metrics) {
+    std::scoped_lock lock(metricsMutex);
+    captured.push_back(metrics);
+    requestPaths.emplace_back(metrics.requestPath);
+  });
+
+  auto& router = ts.resetRouterAndGet();
+  router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
+  router.addResponseMiddleware([](const HttpRequest&, HttpResponse&) {});
+
+  auto& entry = router.setPath(http::Method::GET, "/mw-metrics", [](const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("from-handler");
+    return resp;
+  });
+
+  entry.before([](HttpRequest&) { return MiddlewareResult::Continue(); });
+  entry.after([](const HttpRequest&, HttpResponse&) {});
+
+  const std::string response = test::simpleGet(ts.port(), "/mw-metrics");
+  ASSERT_TRUE(response.contains("HTTP/1.1 200")) << response;
+
+  ts.server.setMiddlewareMetricsCallback({});
+
+  std::vector<HttpServer::MiddlewareMetrics> metrics;
+  {
+    std::scoped_lock lock(metricsMutex);
+    metrics = captured;
+  }
+
+  ASSERT_EQ(metrics.size(), 4U);
+
+  EXPECT_EQ(metrics[0].phase, HttpServer::MiddlewareMetrics::Phase::Pre);
+  EXPECT_TRUE(metrics[0].isGlobal);
+  EXPECT_FALSE(metrics[0].shortCircuited);
+  EXPECT_FALSE(metrics[0].threw);
+  EXPECT_FALSE(metrics[0].streaming);
+  EXPECT_EQ(metrics[0].index, 0U);
+  EXPECT_EQ(metrics[0].method, http::Method::GET);
+  EXPECT_EQ(requestPaths[0], "/mw-metrics");
+
+  EXPECT_EQ(metrics[1].phase, HttpServer::MiddlewareMetrics::Phase::Pre);
+  EXPECT_FALSE(metrics[1].isGlobal);
+  EXPECT_FALSE(metrics[1].shortCircuited);
+  EXPECT_FALSE(metrics[1].threw);
+  EXPECT_FALSE(metrics[1].streaming);
+  EXPECT_EQ(metrics[1].index, 0U);
+  EXPECT_EQ(requestPaths[1], "/mw-metrics");
+
+  EXPECT_EQ(metrics[2].phase, HttpServer::MiddlewareMetrics::Phase::Post);
+  EXPECT_FALSE(metrics[2].isGlobal);
+  EXPECT_FALSE(metrics[2].shortCircuited);
+  EXPECT_FALSE(metrics[2].threw);
+  EXPECT_FALSE(metrics[2].streaming);
+  EXPECT_EQ(metrics[2].index, 0U);
+
+  EXPECT_EQ(metrics[3].phase, HttpServer::MiddlewareMetrics::Phase::Post);
+  EXPECT_TRUE(metrics[3].isGlobal);
+  EXPECT_FALSE(metrics[3].shortCircuited);
+  EXPECT_FALSE(metrics[3].threw);
+  EXPECT_FALSE(metrics[3].streaming);
+  EXPECT_EQ(metrics[3].index, 0U);
+}
+
+TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
+  std::mutex metricsMutex;
+  std::vector<HttpServer::MiddlewareMetrics> captured;
+  ts.server.setMiddlewareMetricsCallback([&](const HttpServer::MiddlewareMetrics& metrics) {
+    std::scoped_lock lock(metricsMutex);
+    captured.push_back(metrics);
+  });
+
+  auto& router = ts.resetRouterAndGet();
+  router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
+  router.addResponseMiddleware([](const HttpRequest&, HttpResponse&) {});
+
+  std::atomic_bool handlerInvoked{false};
+  auto& entry = router.setPath(http::Method::GET, "/mw-short-metrics", [&](const HttpRequest&) {
+    handlerInvoked.store(true, std::memory_order_relaxed);
+    return HttpResponse(http::StatusCodeOK).body("should-not-run");
+  });
+
+  entry.before([](HttpRequest&) {
+    HttpResponse resp(http::StatusCodeServiceUnavailable, "blocked");
+    resp.body("shorted");
+    return MiddlewareResult::ShortCircuit(std::move(resp));
+  });
+  entry.after([](const HttpRequest&, HttpResponse&) {});
+
+  const std::string response = test::simpleGet(ts.port(), "/mw-short-metrics");
+  ASSERT_TRUE(response.contains("HTTP/1.1 503")) << response;
+  ASSERT_FALSE(handlerInvoked.load(std::memory_order_relaxed));
+
+  ts.server.setMiddlewareMetricsCallback({});
+
+  std::vector<HttpServer::MiddlewareMetrics> metrics;
+  {
+    std::scoped_lock lock(metricsMutex);
+    metrics = captured;
+  }
+
+  ASSERT_EQ(metrics.size(), 4U);
+  EXPECT_EQ(metrics[0].phase, HttpServer::MiddlewareMetrics::Phase::Pre);
+  EXPECT_TRUE(metrics[0].isGlobal);
+  EXPECT_FALSE(metrics[0].shortCircuited);
+  EXPECT_FALSE(metrics[0].streaming);
+
+  EXPECT_EQ(metrics[1].phase, HttpServer::MiddlewareMetrics::Phase::Pre);
+  EXPECT_FALSE(metrics[1].isGlobal);
+  EXPECT_TRUE(metrics[1].shortCircuited);
+  EXPECT_FALSE(metrics[1].streaming);
+
+  EXPECT_EQ(metrics[2].phase, HttpServer::MiddlewareMetrics::Phase::Post);
+  EXPECT_FALSE(metrics[2].isGlobal);
+  EXPECT_FALSE(metrics[2].shortCircuited);
+  EXPECT_FALSE(metrics[2].streaming);
+
+  EXPECT_EQ(metrics[3].phase, HttpServer::MiddlewareMetrics::Phase::Post);
+  EXPECT_TRUE(metrics[3].isGlobal);
+  EXPECT_FALSE(metrics[3].shortCircuited);
+  EXPECT_FALSE(metrics[3].streaming);
+}
+
+TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
+  std::mutex metricsMutex;
+  std::vector<HttpServer::MiddlewareMetrics> captured;
+  std::vector<std::string> requestPaths;
+  ts.server.setMiddlewareMetricsCallback([&](const HttpServer::MiddlewareMetrics& metrics) {
+    std::scoped_lock lock(metricsMutex);
+    captured.push_back(metrics);
+    requestPaths.emplace_back(metrics.requestPath);
+  });
+
+  auto& router = ts.resetRouterAndGet();
+  router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
+  router.addResponseMiddleware([](const HttpRequest&, HttpResponse&) {});
+
+  auto& entry =
+      router.setPath(http::Method::GET, "/mw-stream-metrics", [](const HttpRequest&, HttpResponseWriter& writer) {
+        writer.status(http::StatusCodeOK, http::ReasonOK);
+        writer.header("X", "1");
+        EXPECT_TRUE(writer.writeBody("chunk"));
+        writer.end();
+      });
+
+  entry.before([](HttpRequest&) { return MiddlewareResult::Continue(); });
+  entry.after([](const HttpRequest&, HttpResponse&) {});
+
+  const std::string response = test::simpleGet(ts.port(), "/mw-stream-metrics");
+  ASSERT_TRUE(response.contains("HTTP/1.1 200")) << response;
+
+  ts.server.setMiddlewareMetricsCallback({});
+
+  std::vector<HttpServer::MiddlewareMetrics> metrics;
+  {
+    std::scoped_lock lock(metricsMutex);
+    metrics = captured;
+  }
+
+  ASSERT_EQ(metrics.size(), 4U);
+  for (const auto& metric : metrics) {
+    EXPECT_TRUE(metric.streaming);
+  }
+  for (const auto& path : requestPaths) {
+    EXPECT_EQ(path, "/mw-stream-metrics");
+  }
 }
 
 TEST(HttpMiddleware, RouterOwnsGlobalMiddleware) {

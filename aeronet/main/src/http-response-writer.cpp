@@ -20,6 +20,7 @@
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/middleware.hpp"
 #include "encoder.hpp"
 #include "file.hpp"
 #include "header-write.hpp"
@@ -111,7 +112,7 @@ void HttpResponseWriter::ensureHeadersSent() {
     }
   }
   if (!_responseMiddlewareApplied) {
-    _server->applyResponseMiddleware(_fixedResponse, _routeResponseMiddleware);
+    _server->applyResponseMiddleware(_fixedResponse, _routeResponseMiddleware, true);
     _responseMiddlewareApplied = true;
   }
 

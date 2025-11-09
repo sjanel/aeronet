@@ -1,10 +1,5 @@
 #include "aeronet/http-server.hpp"
 
-#include <asm-generic/socket.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
 #include <atomic>
 #include <cassert>
 #include <cerrno>
@@ -13,10 +8,8 @@
 #include <cstring>
 #include <exception>
 #include <functional>
-#include <memory>
 #include <mutex>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -36,13 +29,11 @@
 #include "aeronet/http-version.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/otel-config.hpp"
-#include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "connection-state.hpp"
-#include "errno_throw.hpp"
 #include "event-loop.hpp"
 #include "event.hpp"
 #include "flat-hash-map.hpp"
@@ -51,9 +42,8 @@
 #include "simple-charconv.hpp"
 #include "socket.hpp"
 #include "string-equal-ignore-case.hpp"
-#include "timedef.hpp"
 
-#if defined(AERONET_ENABLE_OPENSSL)
+#ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/err.h>
 
 #include "tls-transport.hpp"
@@ -61,17 +51,14 @@
 
 #ifdef AERONET_ENABLE_BROTLI
 #include "aeronet/brotli-decoder.hpp"
-#include "brotli-encoder.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-decoder.hpp"
-#include "zlib-encoder.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_ZSTD
 #include "aeronet/zstd-decoder.hpp"
-#include "zstd-encoder.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -81,7 +68,6 @@
 namespace aeronet {
 
 namespace {
-constexpr int kListenSocketType = SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC;
 
 // Snapshot of immutable HttpServerConfig fields that require socket rebind or structural reinitialization.
 // These fields are captured before allowing config updates and silently restored afterward to prevent
@@ -118,111 +104,6 @@ void RestoreImmutable(HttpServerConfig& cfg, ImmutableConfigSnapshot snapshot) {
 
 }  // namespace
 
-HttpServer::HttpServer(HttpServerConfig config, RouterConfig routerConfig)
-    : _config(std::move(config)),
-      _listenSocket(kListenSocketType),
-      _eventLoop(_config.pollInterval),
-      _router(std::move(routerConfig)),
-      _encodingSelector(_config.compression),
-      _telemetry(_config.otel) {
-  init();
-}
-
-HttpServer::HttpServer(HttpServerConfig cfg, Router router)
-    : _config(std::move(cfg)),
-      _listenSocket(kListenSocketType),
-      _eventLoop(_config.pollInterval),
-      _router(std::move(router)),
-      _encodingSelector(_config.compression),
-      _telemetry(_config.otel) {
-  init();
-}
-
-HttpServer::~HttpServer() { stop(); }
-
-// NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
-HttpServer::HttpServer(HttpServer&& other)
-    : _stats(std::exchange(other._stats, {})),
-      _config(std::move(other._config)),
-      _listenSocket(std::move(other._listenSocket)),
-      _eventLoop(std::move(other._eventLoop)),
-      _lifecycle(std::move(other._lifecycle)),
-      _router(std::move(other._router)),
-      _connStates(std::move(other._connStates)),
-      _encoders(std::move(other._encoders)),
-      _encodingSelector(std::move(other._encodingSelector)),
-      _parserErrCb(std::move(other._parserErrCb)),
-      _metricsCb(std::move(other._metricsCb)),
-      _expectationHandler(std::move(other._expectationHandler)),
-      _request(std::move(other._request)),
-      _tmpBuffer(std::move(other._tmpBuffer)),
-      _telemetry(std::move(other._telemetry))
-#ifdef AERONET_ENABLE_OPENSSL
-      ,
-      _tlsCtxHolder(std::move(other._tlsCtxHolder)),
-      _tlsMetrics(std::move(other._tlsMetrics)),
-      _tlsMetricsExternal(std::exchange(other._tlsMetricsExternal, {}))
-#endif
-
-{
-  if (!_lifecycle.isIdle()) {
-    throw std::logic_error("Cannot move-construct a running HttpServer");
-  }
-  // transfer pending updates state; mutex remains with each instance (do not move mutex)
-  _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_acq_rel);
-  _pendingConfigUpdates = std::move(other._pendingConfigUpdates);
-  other._lifecycle.reset();
-
-  // Because probe handlers may capture 'this', they need to be re-registered on the moved-to instance
-  if (_config.builtinProbes.enabled) {
-    registerBuiltInProbes();
-  }
-}
-
-// NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
-HttpServer& HttpServer::operator=(HttpServer&& other) {
-  if (this != &other) {
-    stop();
-    if (!other._lifecycle.isIdle()) {
-      other.stop();
-      throw std::logic_error("Cannot move-assign from a running HttpServer");
-    }
-    _stats = std::exchange(other._stats, {});
-    _config = std::move(other._config);
-    _listenSocket = std::move(other._listenSocket);
-    _eventLoop = std::move(other._eventLoop);
-    _lifecycle = std::move(other._lifecycle);
-    _router = std::move(other._router);
-    _connStates = std::move(other._connStates);
-    _encoders = std::move(other._encoders);
-    _encodingSelector = std::move(other._encodingSelector);
-    _parserErrCb = std::move(other._parserErrCb);
-    _metricsCb = std::move(other._metricsCb);
-    _expectationHandler = std::move(other._expectationHandler);
-    _request = std::move(other._request);
-    _tmpBuffer = std::move(other._tmpBuffer);
-    _telemetry = std::move(other._telemetry);
-
-    // transfer pending updates state; keep mutex per-instance
-    _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_acq_rel);
-    _pendingConfigUpdates = std::move(other._pendingConfigUpdates);
-
-#ifdef AERONET_ENABLE_OPENSSL
-    _tlsCtxHolder = std::move(other._tlsCtxHolder);
-    _tlsMetrics = std::move(other._tlsMetrics);
-    _tlsMetricsExternal = std::exchange(other._tlsMetricsExternal, {});
-#endif
-
-    // Because probe handlers may capture 'this', they need to be re-registered on the moved-to instance
-    if (_config.builtinProbes.enabled) {
-      registerBuiltInProbes();
-    }
-  }
-
-  other._lifecycle.reset();
-  return *this;
-}
-
 void HttpServer::setParserErrorCallback(ParserErrorCallback cb) { _parserErrCb = std::move(cb); }
 
 void HttpServer::setMetricsCallback(MetricsCallback cb) { _metricsCb = std::move(cb); }
@@ -251,56 +132,6 @@ void HttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater
     _hasPendingConfigUpdates.store(true, std::memory_order_release);
   }
   _lifecycle.wakeupFd.send();
-}
-
-void HttpServer::run() {
-  prepareRun();
-  _lifecycle.enterRunning();
-  while (_lifecycle.isActive()) {
-    eventLoop();
-  }
-  _lifecycle.reset();
-}
-
-void HttpServer::runUntil(const std::function<bool()>& predicate) {
-  prepareRun();
-  _lifecycle.enterRunning();
-  while (_lifecycle.isActive() && !predicate()) {
-    eventLoop();
-  }
-  if (_lifecycle.isActive()) {
-    _lifecycle.reset();
-  }
-}
-
-void HttpServer::stop() noexcept {
-  if (!_lifecycle.isActive()) {
-    return;
-  }
-  log::debug("Stopping server");
-  _lifecycle.enterStopping();
-  closeListener();
-}
-
-void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
-  if (!_lifecycle.isActive() || _lifecycle.isStopping()) {
-    return;
-  }
-
-  const bool hasDeadline = maxWait.count() > 0;
-  const auto deadline =
-      hasDeadline ? std::chrono::steady_clock::now() + maxWait : std::chrono::steady_clock::time_point{};
-
-  if (_lifecycle.isDraining()) {
-    if (hasDeadline) {
-      _lifecycle.shrinkDeadline(deadline);
-    }
-    return;
-  }
-
-  log::info("Initiating graceful drain (connections={})", _connStates.size());
-  _lifecycle.enterDraining(deadline, hasDeadline);
-  closeListener();
 }
 
 namespace {
@@ -442,26 +273,17 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     auto responseMiddlewareRange = routingResult.responseMiddlewareRange;
 
     auto sendResponse = [this, responseMiddlewareRange, cnxIt, consumedBytes, pCorsPolicy](HttpResponse&& resp) {
-      applyResponseMiddleware(resp, responseMiddlewareRange);
+      applyResponseMiddleware(resp, responseMiddlewareRange, false);
       finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
     };
 
-    auto runPreChain = [this](std::span<const RequestMiddleware> chain, HttpResponse& out) {
-      for (const auto& middleware : chain) {
-        MiddlewareResult decision = middleware(_request);
-        if (decision.shouldShortCircuit()) {
-          out = std::move(decision).takeResponse();
-          return true;
-        }
-      }
-      return false;
-    };
+    const bool isStreaming = routingResult.pStreamingHandler != nullptr;
 
     HttpResponse middlewareResponse;
     const auto globalPreChain = _router.globalRequestMiddleware();
-    bool shortCircuited = runPreChain(globalPreChain, middlewareResponse);
+    bool shortCircuited = runPreChain(isStreaming, globalPreChain, middlewareResponse, true);
     if (!shortCircuited) {
-      shortCircuited = runPreChain(requestMiddlewareRange, middlewareResponse);
+      shortCircuited = runPreChain(isStreaming, requestMiddlewareRange, middlewareResponse, false);
     }
     if (shortCircuited) {
       sendResponse(std::move(middlewareResponse));
@@ -647,7 +469,7 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   if (pCorsPolicy != nullptr) {
     HttpResponse corsProbe;
     if (pCorsPolicy->applyToResponse(_request, corsProbe) == CorsPolicy::ApplyStatus::OriginDenied) {
-      applyResponseMiddleware(corsProbe, postMiddleware);
+      applyResponseMiddleware(corsProbe, postMiddleware, false);
       finalizeAndSendResponse(cnxIt, std::move(corsProbe), consumedBytes, pCorsPolicy);
       return state.isAnyCloseRequested();
     }
@@ -660,7 +482,7 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
       HttpResponse resp(http::StatusCodeNotAcceptable, http::ReasonNotAcceptable);
       resp.body("No acceptable content-coding available");
-      applyResponseMiddleware(resp, postMiddleware);
+      applyResponseMiddleware(resp, postMiddleware, false);
       finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
       return state.isAnyCloseRequested();
     }
@@ -712,147 +534,75 @@ void HttpServer::emitRequestMetrics(http::StatusCode status, std::size_t bytesIn
   _metricsCb(metrics);
 }
 
-void HttpServer::applyResponseMiddleware(HttpResponse& response, std::span<const ResponseMiddleware> routeChain) {
-  // In C++26, we will be able to use: std::ranges::concat_view
-  for (const auto& middleware : routeChain) {
-    try {
-      middleware(_request, response);
-    } catch (const std::exception& ex) {
-      log::error("Exception in response middleware: {}", ex.what());
-    } catch (...) {
-      log::error("Unknown exception in response middleware");
+void HttpServer::applyResponseMiddleware(HttpResponse& response, std::span<const ResponseMiddleware> routeChain,
+                                         bool streaming) {
+  auto runChain = [&](std::span<const ResponseMiddleware> postMiddleware, bool isGlobal) {
+    for (uint32_t hookIdx = 0; hookIdx < postMiddleware.size(); ++hookIdx) {
+      const auto& middleware = postMiddleware[hookIdx];
+      auto spanScope = startMiddlewareSpan(MiddlewareMetrics::Phase::Post, isGlobal, hookIdx, streaming);
+      const auto start = std::chrono::steady_clock::now();
+      bool threwEx = false;
+      try {
+        middleware(_request, response);
+      } catch (const std::exception& ex) {
+        threwEx = true;
+        log::error("Exception in {} response middleware: {}", isGlobal ? "global" : "route", ex.what());
+      } catch (...) {
+        threwEx = true;
+        log::error("Unknown exception in {} response middleware", isGlobal ? "global" : "route");
+      }
+      const auto duration =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
+      if (spanScope.span) {
+        spanScope.span->setAttribute("aeronet.middleware.exception", threwEx ? int64_t{1} : int64_t{0});
+        spanScope.span->setAttribute("aeronet.middleware.short_circuit", int64_t{0});
+        spanScope.span->setAttribute("aeronet.middleware.duration_ns", static_cast<int64_t>(duration.count()));
+      }
+      emitMiddlewareMetrics(MiddlewareMetrics::Phase::Post, isGlobal, hookIdx, static_cast<uint64_t>(duration.count()),
+                            false, threwEx, streaming);
     }
-  }
-  for (const auto& middleware : _router.globalResponseMiddleware()) {
-    try {
-      middleware(_request, response);
-    } catch (const std::exception& ex) {
-      log::error("Exception in global response middleware: {}", ex.what());
-    } catch (...) {
-      log::error("Unknown exception in global response middleware");
-    }
-  }
+  };
+  runChain(routeChain, false);
+  runChain(_router.globalResponseMiddleware(), true);
 }
 
-// Performs full listener initialization (RAII style) so that port() is valid immediately after construction.
-// Steps (in order) and rationale / failure characteristics:
-//   1. socket(AF_INET, SOCK_STREAM, 0)
-//        - Expected to succeed under normal conditions. Failure indicates resource exhaustion
-//          (EMFILE per-process fd limit, ENFILE system-wide, ENOBUFS/ENOMEM) or misconfiguration (rare EACCES).
-//   2. setsockopt(SO_REUSEADDR)
-//        - Practically infallible unless programming error (EINVAL) or extreme memory pressure (ENOMEM).
-//          Mandatory to allow rapid restart after TIME_WAIT collisions.
-//   3. setsockopt(SO_REUSEPORT) (optional best-effort)
-//        - Enabled only if cfg.reusePort. May fail on older kernels (EOPNOTSUPP/EINVAL) -> logged as warning only,
-//          not fatal. This provides horizontal scaling (multi-reactor) when supported.
-//   4. bind()
-//        - Most common legitimate failure point: EADDRINUSE when user supplies a fixed port already in use, or
-//          EACCES for privileged ports (<1024) without CAP_NET_BIND_SERVICE. With cfg.port == 0 (ephemeral) the
-//          collision probability is effectively eliminated; failures then usually imply resource exhaustion or
-//          misconfiguration. Chosen early to surface environmental issues promptly.
-//   5. listen()
-//        - Rarely fails after successful bind; would signal extreme resource pressure or unexpected kernel state.
-//   6. getsockname() (only if ephemeral port requested)
-//        - Retrieves the kernel-assigned port so tests / orchestrators can read it deterministically. Extremely
-//          reliable; failure would imply earlier descriptor issues (EBADF) which would already have thrown.
-//   7. fcntl(F_GETFL/F_SETFL O_NONBLOCK)
-//        - Should not fail unless EBADF or EINVAL (programming error). Makes accept + IO non-blocking for epoll ET.
-//   8. epoll add (via EventLoop::add)
-//        - Registers the listening fd for readiness notifications. Possible errors: ENOMEM/ENOSPC (resource limits),
-//          EBADF (logic bug), EEXIST (should not happen). Treated as fatal.
-//
-// Exception Semantics:
-//   - On any fatal failure the constructor throws std::runtime_error after closing the partially created _listenFd.
-//   - This yields strong exception safety: either you have a fully registered, listening server instance or no
-//     observable side effects. Users relying on non-throwing control flow can wrap construction in a factory that
-//     maps exceptions to error codes / expected<>.
-//
-// Operational Expectations:
-//   - In a nominal environment using an ephemeral port (cfg.port == 0), the probability of an exception is ~0 unless
-//     the process hits fd limits or severe memory pressure. Fixed ports may legitimately throw due to EADDRINUSE.
-//   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
-void HttpServer::init() {
-  _config.validate();
-
-  if (!_listenSocket) {
-    _listenSocket = Socket(kListenSocketType);
-    _eventLoop = EventLoop(_config.pollInterval);
+void HttpServer::emitMiddlewareMetrics(MiddlewareMetrics::Phase phase, bool isGlobal, uint32_t index,
+                                       uint64_t durationNs, bool shortCircuited, bool threw, bool streaming) {
+  if (!_middlewareMetricsCb) {
+    return;
   }
 
-  const int listenFd = _listenSocket.fd();
-
-  // Initialize TLS context if requested (OpenSSL build).
-  if (_config.tls.enabled) {
-#ifdef AERONET_ENABLE_OPENSSL
-    // Allocate TlsContext on the heap so its address remains stable even if HttpServer is moved.
-    // (See detailed rationale in header next to _tlsCtxHolder.)
-    _tlsCtxHolder = std::make_unique<TlsContext>(_config.tls, &_tlsMetricsExternal);
-#else
-    throw std::invalid_argument("aeronet built without OpenSSL support but TLS configuration provided");
-#endif
-  }
-  static constexpr int enable = 1;
-  auto errc = ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
-  if (errc < 0) {
-    throw_errno("setsockopt(SO_REUSEADDR) failed");
-  }
-  if (_config.reusePort) {
-    errc = ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));
-    if (errc < 0) {
-      throw_errno("setsockopt(SO_REUSEPORT) failed");
-    }
-  }
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  addr.sin_port = htons(_config.port);
-  errc = ::bind(listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-  if (errc < 0) {
-    throw_errno("bind failed");
-  }
-  if (::listen(listenFd, SOMAXCONN) < 0) {
-    throw_errno("listen failed");
-  }
-  if (_config.port == 0) {
-    sockaddr_in actual{};
-    socklen_t alen = sizeof(actual);
-    errc = ::getsockname(listenFd, reinterpret_cast<sockaddr*>(&actual), &alen);
-    if (errc == -1) {
-      throw_errno("getsockname failed");
-    }
-    _config.port = ntohs(actual.sin_port);
-  }
-  _eventLoop.add_or_throw(EventLoop::EventFd{listenFd, EventIn});
-  _eventLoop.add_or_throw(EventLoop::EventFd{_lifecycle.wakeupFd.fd(), EventIn});
-
-  // Register builtin probes handlers if enabled in config
-  if (_config.builtinProbes.enabled) {
-    registerBuiltInProbes();
-  }
-
-  // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
-#ifdef AERONET_ENABLE_ZLIB
-  _encoders[static_cast<std::size_t>(Encoding::gzip)] =
-      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::gzip, _config.compression);
-  _encoders[static_cast<std::size_t>(Encoding::deflate)] =
-      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::deflate, _config.compression);
-#endif
-#ifdef AERONET_ENABLE_ZSTD
-  _encoders[static_cast<std::size_t>(Encoding::zstd)] = std::make_unique<ZstdEncoder>(_config.compression);
-#endif
-#ifdef AERONET_ENABLE_BROTLI
-  _encoders[static_cast<std::size_t>(Encoding::br)] = std::make_unique<BrotliEncoder>(_config.compression);
-#endif
+  MiddlewareMetrics metrics;
+  metrics.phase = phase;
+  metrics.isGlobal = isGlobal;
+  metrics.shortCircuited = shortCircuited;
+  metrics.threw = threw;
+  metrics.streaming = streaming;
+  metrics.index = index;
+  metrics.durationNs = durationNs;
+  metrics.method = _request.method();
+  metrics.requestPath = _request.path();
+  _middlewareMetricsCb(metrics);
 }
 
-void HttpServer::prepareRun() {
-  if (_lifecycle.isActive()) {
-    throw std::logic_error("Server is already running");
+tracing::SpanRAII HttpServer::startMiddlewareSpan(MiddlewareMetrics::Phase phase, bool isGlobal, uint32_t index,
+                                                  bool streaming) {
+  auto spanPtr = _telemetry.createSpan("http.middleware");
+  tracing::SpanRAII spanScope(std::move(spanPtr));
+  if (!spanScope.span) {
+    return spanScope;
   }
-  if (!_listenSocket) {
-    init();
-  }
-  log::info("Server running on port :{}", port());
+
+  spanScope.span->setAttribute("aeronet.middleware.phase", phase == MiddlewareMetrics::Phase::Pre
+                                                               ? std::string_view("request")
+                                                               : std::string_view("response"));
+  spanScope.span->setAttribute("aeronet.middleware.scope",
+                               isGlobal ? std::string_view("global") : std::string_view("route"));
+  spanScope.span->setAttribute("aeronet.middleware.index", static_cast<int64_t>(index));
+  spanScope.span->setAttribute("aeronet.middleware.streaming", streaming ? int64_t{1} : int64_t{0});
+  spanScope.span->setAttribute("http.method", http::toMethodStr(_request.method()));
+  spanScope.span->setAttribute("http.target", _request.path());
+  return spanScope;
 }
 
 void HttpServer::eventLoop() {
@@ -966,7 +716,7 @@ void HttpServer::maybeEnableKtlsSend(ConnectionState& state, TlsTransport& trans
   const bool warnOnFailure =
       _config.tls.ktlsMode == TLSConfig::KtlsMode::Enabled || _config.tls.ktlsMode == TLSConfig::KtlsMode::Auto;
 
-  const auto result = doEnableKtlsSend(transport);
+  const auto result = transport.enableKtlsSend();
   switch (result.status) {
     case TlsTransport::KtlsEnableResult::Status::Enabled:
     case TlsTransport::KtlsEnableResult::Status::AlreadyEnabled:
@@ -1022,10 +772,6 @@ void HttpServer::maybeEnableKtlsSend(ConnectionState& state, TlsTransport& trans
     default:
       std::unreachable();
   }
-}
-
-TlsTransport::KtlsEnableResult HttpServer::doEnableKtlsSend(TlsTransport& transport) {
-  return transport.enableKtlsSend();
 }
 #endif
 
@@ -1241,6 +987,41 @@ void HttpServer::applyConfigUpdates() {
     }
   }
   _encodingSelector = EncodingSelector(_config.compression);
+}
+
+bool HttpServer::runPreChain(bool willStream, std::span<const RequestMiddleware> chain, HttpResponse& out,
+                             bool isGlobal) {
+  for (uint32_t idx = 0; idx < chain.size(); ++idx) {
+    const auto& middleware = chain[idx];
+    const auto start = std::chrono::steady_clock::now();
+    auto spanScope = startMiddlewareSpan(MiddlewareMetrics::Phase::Pre, isGlobal, idx, willStream);
+    MiddlewareResult decision;
+    bool threwEx = true;
+    try {
+      decision = middleware(_request);
+      threwEx = false;
+    } catch (const std::exception& ex) {
+      log::error("Exception while applying pre middleware: {}", ex.what());
+    } catch (...) {
+      log::error("Unknown exception while applying pre middleware");
+    }
+
+    const auto duration =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
+    const bool shortCircuited = decision.shouldShortCircuit();
+    if (spanScope.span) {
+      spanScope.span->setAttribute("aeronet.middleware.exception", threwEx ? int64_t{1} : int64_t{0});
+      spanScope.span->setAttribute("aeronet.middleware.short_circuit", shortCircuited ? int64_t{1} : int64_t{0});
+      spanScope.span->setAttribute("aeronet.middleware.duration_ns", static_cast<int64_t>(duration.count()));
+    }
+    emitMiddlewareMetrics(MiddlewareMetrics::Phase::Pre, isGlobal, idx, static_cast<uint64_t>(duration.count()),
+                          shortCircuited, false, willStream);
+    if (shortCircuited) {
+      out = std::move(decision).takeResponse();
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace aeronet

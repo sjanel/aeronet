@@ -1,0 +1,333 @@
+#include <asm-generic/socket.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+
+#include <atomic>
+#include <cassert>
+#include <cerrno>
+#include <chrono>
+#include <cstring>
+#include <functional>
+#include <memory>
+#include <stdexcept>
+#include <string_view>
+#include <utility>
+
+#include "accept-encoding-negotiation.hpp"
+#include "aeronet/encoding.hpp"
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response-writer.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
+#include "aeronet/router-config.hpp"
+#include "aeronet/router.hpp"
+#include "aeronet/tls-config.hpp"
+#include "aeronet/tracing/tracer.hpp"
+#include "errno_throw.hpp"
+#include "event-loop.hpp"
+#include "event.hpp"
+#include "log.hpp"
+#include "socket.hpp"
+#include "timedef.hpp"
+
+#ifdef AERONET_ENABLE_BROTLI
+#include "brotli-encoder.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_ZLIB
+#include "zlib-encoder.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_ZSTD
+#include "zstd-encoder.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_OPENSSL
+#include "tls-context.hpp"
+#endif
+
+namespace aeronet {
+
+namespace {
+constexpr int kListenSocketType = SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC;
+}
+
+HttpServer::HttpServer(HttpServerConfig config, RouterConfig routerConfig)
+    : _config(std::move(config)),
+      _listenSocket(kListenSocketType),
+      _eventLoop(_config.pollInterval),
+      _router(std::move(routerConfig)),
+      _encodingSelector(_config.compression),
+      _telemetry(_config.otel) {
+  init();
+}
+
+HttpServer::HttpServer(HttpServerConfig cfg, Router router)
+    : _config(std::move(cfg)),
+      _listenSocket(kListenSocketType),
+      _eventLoop(_config.pollInterval),
+      _router(std::move(router)),
+      _encodingSelector(_config.compression),
+      _telemetry(_config.otel) {
+  init();
+}
+
+HttpServer::~HttpServer() { stop(); }
+
+// NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
+HttpServer::HttpServer(HttpServer&& other)
+    : _stats(std::exchange(other._stats, {})),
+      _config(std::move(other._config)),
+      _listenSocket(std::move(other._listenSocket)),
+      _eventLoop(std::move(other._eventLoop)),
+      _lifecycle(std::move(other._lifecycle)),
+      _router(std::move(other._router)),
+      _connStates(std::move(other._connStates)),
+      _encoders(std::move(other._encoders)),
+      _encodingSelector(std::move(other._encodingSelector)),
+      _parserErrCb(std::move(other._parserErrCb)),
+      _metricsCb(std::move(other._metricsCb)),
+      _middlewareMetricsCb(std::move(other._middlewareMetricsCb)),
+      _expectationHandler(std::move(other._expectationHandler)),
+      _request(std::move(other._request)),
+      _tmpBuffer(std::move(other._tmpBuffer)),
+      _telemetry(std::move(other._telemetry))
+#ifdef AERONET_ENABLE_OPENSSL
+      ,
+      _tlsCtxHolder(std::move(other._tlsCtxHolder)),
+      _tlsMetrics(std::move(other._tlsMetrics)),
+      _tlsMetricsExternal(std::exchange(other._tlsMetricsExternal, {}))
+#endif
+
+{
+  if (!_lifecycle.isIdle()) {
+    throw std::logic_error("Cannot move-construct a running HttpServer");
+  }
+  // transfer pending updates state; mutex remains with each instance (do not move mutex)
+  _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_acq_rel);
+  _pendingConfigUpdates = std::move(other._pendingConfigUpdates);
+  other._lifecycle.reset();
+
+  // Because probe handlers may capture 'this', they need to be re-registered on the moved-to instance
+  if (_config.builtinProbes.enabled) {
+    registerBuiltInProbes();
+  }
+}
+
+// NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
+HttpServer& HttpServer::operator=(HttpServer&& other) {
+  if (this != &other) {
+    stop();
+    if (!other._lifecycle.isIdle()) {
+      other.stop();
+      throw std::logic_error("Cannot move-assign from a running HttpServer");
+    }
+    _stats = std::exchange(other._stats, {});
+    _config = std::move(other._config);
+    _listenSocket = std::move(other._listenSocket);
+    _eventLoop = std::move(other._eventLoop);
+    _lifecycle = std::move(other._lifecycle);
+    _router = std::move(other._router);
+    _connStates = std::move(other._connStates);
+    _encoders = std::move(other._encoders);
+    _encodingSelector = std::move(other._encodingSelector);
+    _parserErrCb = std::move(other._parserErrCb);
+    _metricsCb = std::move(other._metricsCb);
+    _middlewareMetricsCb = std::move(other._middlewareMetricsCb);
+    _expectationHandler = std::move(other._expectationHandler);
+    _request = std::move(other._request);
+    _tmpBuffer = std::move(other._tmpBuffer);
+    _telemetry = std::move(other._telemetry);
+
+    // transfer pending updates state; keep mutex per-instance
+    _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_acq_rel);
+    _pendingConfigUpdates = std::move(other._pendingConfigUpdates);
+
+#ifdef AERONET_ENABLE_OPENSSL
+    _tlsCtxHolder = std::move(other._tlsCtxHolder);
+    _tlsMetrics = std::move(other._tlsMetrics);
+    _tlsMetricsExternal = std::exchange(other._tlsMetricsExternal, {});
+#endif
+
+    // Because probe handlers may capture 'this', they need to be re-registered on the moved-to instance
+    if (_config.builtinProbes.enabled) {
+      registerBuiltInProbes();
+    }
+  }
+
+  other._lifecycle.reset();
+  return *this;
+}
+
+// Performs full listener initialization (RAII style) so that port() is valid immediately after construction.
+// Steps (in order) and rationale / failure characteristics:
+//   1. socket(AF_INET, SOCK_STREAM, 0)
+//        - Expected to succeed under normal conditions. Failure indicates resource exhaustion
+//          (EMFILE per-process fd limit, ENFILE system-wide, ENOBUFS/ENOMEM) or misconfiguration (rare EACCES).
+//   2. setsockopt(SO_REUSEADDR)
+//        - Practically infallible unless programming error (EINVAL) or extreme memory pressure (ENOMEM).
+//          Mandatory to allow rapid restart after TIME_WAIT collisions.
+//   3. setsockopt(SO_REUSEPORT) (optional best-effort)
+//        - Enabled only if cfg.reusePort. May fail on older kernels (EOPNOTSUPP/EINVAL) -> logged as warning only,
+//          not fatal. This provides horizontal scaling (multi-reactor) when supported.
+//   4. bind()
+//        - Most common legitimate failure point: EADDRINUSE when user supplies a fixed port already in use, or
+//          EACCES for privileged ports (<1024) without CAP_NET_BIND_SERVICE. With cfg.port == 0 (ephemeral) the
+//          collision probability is effectively eliminated; failures then usually imply resource exhaustion or
+//          misconfiguration. Chosen early to surface environmental issues promptly.
+//   5. listen()
+//        - Rarely fails after successful bind; would signal extreme resource pressure or unexpected kernel state.
+//   6. getsockname() (only if ephemeral port requested)
+//        - Retrieves the kernel-assigned port so tests / orchestrators can read it deterministically. Extremely
+//          reliable; failure would imply earlier descriptor issues (EBADF) which would already have thrown.
+//   7. fcntl(F_GETFL/F_SETFL O_NONBLOCK)
+//        - Should not fail unless EBADF or EINVAL (programming error). Makes accept + IO non-blocking for epoll ET.
+//   8. epoll add (via EventLoop::add)
+//        - Registers the listening fd for readiness notifications. Possible errors: ENOMEM/ENOSPC (resource limits),
+//          EBADF (logic bug), EEXIST (should not happen). Treated as fatal.
+//
+// Exception Semantics:
+//   - On any fatal failure the constructor throws std::runtime_error after closing the partially created _listenFd.
+//   - This yields strong exception safety: either you have a fully registered, listening server instance or no
+//     observable side effects. Users relying on non-throwing control flow can wrap construction in a factory that
+//     maps exceptions to error codes / expected<>.
+//
+// Operational Expectations:
+//   - In a nominal environment using an ephemeral port (cfg.port == 0), the probability of an exception is ~0 unless
+//     the process hits fd limits or severe memory pressure. Fixed ports may legitimately throw due to EADDRINUSE.
+//   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
+void HttpServer::init() {
+  _config.validate();
+
+  if (!_listenSocket) {
+    _listenSocket = Socket(kListenSocketType);
+    _eventLoop = EventLoop(_config.pollInterval);
+  }
+
+  const int listenFd = _listenSocket.fd();
+
+  // Initialize TLS context if requested (OpenSSL build).
+  if (_config.tls.enabled) {
+#ifdef AERONET_ENABLE_OPENSSL
+    // Allocate TlsContext on the heap so its address remains stable even if HttpServer is moved.
+    // (See detailed rationale in header next to _tlsCtxHolder.)
+    _tlsCtxHolder = std::make_unique<TlsContext>(_config.tls, &_tlsMetricsExternal);
+#else
+    throw std::invalid_argument("aeronet built without OpenSSL support but TLS configuration provided");
+#endif
+  }
+  static constexpr int enable = 1;
+  auto errc = ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
+  if (errc < 0) {
+    throw_errno("setsockopt(SO_REUSEADDR) failed");
+  }
+  if (_config.reusePort) {
+    errc = ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));
+    if (errc < 0) {
+      throw_errno("setsockopt(SO_REUSEPORT) failed");
+    }
+  }
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_port = htons(_config.port);
+  errc = ::bind(listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+  if (errc < 0) {
+    throw_errno("bind failed");
+  }
+  if (::listen(listenFd, SOMAXCONN) < 0) {
+    throw_errno("listen failed");
+  }
+  if (_config.port == 0) {
+    sockaddr_in actual{};
+    socklen_t alen = sizeof(actual);
+    errc = ::getsockname(listenFd, reinterpret_cast<sockaddr*>(&actual), &alen);
+    if (errc == -1) {
+      throw_errno("getsockname failed");
+    }
+    _config.port = ntohs(actual.sin_port);
+  }
+  _eventLoop.add_or_throw(EventLoop::EventFd{listenFd, EventIn});
+  _eventLoop.add_or_throw(EventLoop::EventFd{_lifecycle.wakeupFd.fd(), EventIn});
+
+  // Register builtin probes handlers if enabled in config
+  if (_config.builtinProbes.enabled) {
+    registerBuiltInProbes();
+  }
+
+  // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
+#ifdef AERONET_ENABLE_ZLIB
+  _encoders[static_cast<std::size_t>(Encoding::gzip)] =
+      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::gzip, _config.compression);
+  _encoders[static_cast<std::size_t>(Encoding::deflate)] =
+      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::deflate, _config.compression);
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+  _encoders[static_cast<std::size_t>(Encoding::zstd)] = std::make_unique<ZstdEncoder>(_config.compression);
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+  _encoders[static_cast<std::size_t>(Encoding::br)] = std::make_unique<BrotliEncoder>(_config.compression);
+#endif
+}
+
+void HttpServer::prepareRun() {
+  if (_lifecycle.isActive()) {
+    throw std::logic_error("Server is already running");
+  }
+  if (!_listenSocket) {
+    init();
+  }
+  log::info("Server running on port :{}", port());
+}
+
+void HttpServer::run() {
+  prepareRun();
+  _lifecycle.enterRunning();
+  while (_lifecycle.isActive()) {
+    eventLoop();
+  }
+  _lifecycle.reset();
+}
+
+void HttpServer::runUntil(const std::function<bool()>& predicate) {
+  prepareRun();
+  _lifecycle.enterRunning();
+  while (_lifecycle.isActive() && !predicate()) {
+    eventLoop();
+  }
+  if (_lifecycle.isActive()) {
+    _lifecycle.reset();
+  }
+}
+
+void HttpServer::stop() noexcept {
+  if (!_lifecycle.isActive()) {
+    return;
+  }
+  log::debug("Stopping server");
+  _lifecycle.enterStopping();
+  closeListener();
+}
+
+void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
+  if (!_lifecycle.isActive() || _lifecycle.isStopping()) {
+    return;
+  }
+
+  const bool hasDeadline = maxWait.count() > 0;
+  const auto deadline =
+      hasDeadline ? std::chrono::steady_clock::now() + maxWait : std::chrono::steady_clock::time_point{};
+
+  if (_lifecycle.isDraining()) {
+    if (hasDeadline) {
+      _lifecycle.shrinkDeadline(deadline);
+    }
+    return;
+  }
+
+  log::info("Initiating graceful drain (connections={})", _connStates.size());
+  _lifecycle.enterDraining(deadline, hasDeadline);
+  closeListener();
+}
+
+}  // namespace aeronet
