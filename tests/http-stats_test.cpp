@@ -17,8 +17,7 @@ TEST(HttpStats, BasicCountersIncrement) {
   HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(5);
   test::TestServer ts(cfg);
-  ts.server.router().setDefault(
-      []([[maybe_unused]] const HttpRequest& req) { return HttpResponse(200, "OK").body("hello"); });
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse(200, "OK").body("hello"); });
   // Single request via throwing helper
   auto resp = test::requestOrThrow(ts.port());
   ASSERT_TRUE(resp.contains("200 OK"));

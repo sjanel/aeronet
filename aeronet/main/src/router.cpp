@@ -36,15 +36,51 @@ bool ShouldNormalize(RouterConfig::TrailingSlashPolicy policy, auto& path) noexc
 
 }  // namespace
 
+Router::PathHandlerEntry& Router::PathHandlerEntry::cors(CorsPolicy corsPolicy) {
+  this->corsPolicy = std::move(corsPolicy);
+  return *this;
+}
+
+Router::PathHandlerEntry& Router::PathHandlerEntry::before(RequestMiddleware middleware) {
+  preMiddleware.emplace_back(std::move(middleware));
+  return *this;
+}
+
+Router::PathHandlerEntry& Router::PathHandlerEntry::after(ResponseMiddleware middleware) {
+  postMiddleware.emplace_back(std::move(middleware));
+  return *this;
+}
+
 Router::Router(RouterConfig config) : _config(std::move(config)) {}
 
-Router::Router(const Router& other) { cloneFrom(other); }
+Router::Router(const Router& other)
+    : _config(other._config),
+      _handler(other._handler),
+      _streamingHandler(other._streamingHandler),
+      _globalPreMiddleware(other._globalPreMiddleware),
+      _globalPostMiddleware(other._globalPostMiddleware) {
+  cloneNodesFrom(other);
+}
 
 Router& Router::operator=(const Router& other) {
   if (this != &other) {
-    cloneFrom(other);
+    _config = other._config;
+    _handler = other._handler;
+    _streamingHandler = other._streamingHandler;
+    _globalPreMiddleware = other._globalPreMiddleware;
+    _globalPostMiddleware = other._globalPostMiddleware;
+
+    cloneNodesFrom(other);
   }
   return *this;
+}
+
+void Router::addRequestMiddleware(RequestMiddleware middleware) {
+  _globalPreMiddleware.emplace_back(std::move(middleware));
+}
+
+void Router::addResponseMiddleware(ResponseMiddleware middleware) {
+  _globalPostMiddleware.emplace_back(std::move(middleware));
 }
 
 void Router::splitPathSegments(std::string_view path) {
@@ -418,9 +454,9 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
 
   if (!matched || pMatchedNode == nullptr) {
     if (_streamingHandler) {
-      result.streamingHandler = &_streamingHandler;
+      result.pStreamingHandler = &_streamingHandler;
     } else if (_handler) {
-      result.requestHandler = &_handler;
+      result.pRequestHandler = &_handler;
     }
     return result;
   }
@@ -661,9 +697,9 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
   }
 
   if (entry.streamingHandlers[methodIdx] && http::isMethodSet(entry.streamingMethodBmp, method)) {
-    result.streamingHandler = &entry.streamingHandlers[methodIdx];
+    result.pStreamingHandler = &entry.streamingHandlers[methodIdx];
   } else if (entry.normalHandlers[methodIdx] && http::isMethodSet(entry.normalMethodBmp, method)) {
-    result.requestHandler = &entry.normalHandlers[methodIdx];
+    result.pRequestHandler = &entry.normalHandlers[methodIdx];
   } else {
     result.methodNotAllowed = true;
   }
@@ -674,9 +710,12 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
   } else if (_config.defaultCorsPolicy.active()) {
     result.pCorsPolicy = &_config.defaultCorsPolicy;
   }
+
+  result.requestMiddlewareRange = entry.preMiddleware;
+  result.responseMiddlewareRange = entry.postMiddleware;
 }
 
-void Router::cloneFrom(const Router& other) {
+void Router::cloneNodesFrom(const Router& other) {
   // Clone strategy:
   // 1. Copy compiled routes and build a mapping (routeMap) for pointer remapping
   // 2. Traverse the trie tree (starting from _root) and clone all RouteNode objects
@@ -687,10 +726,6 @@ void Router::cloneFrom(const Router& other) {
   // The _literalOnlyRoutes map is just a fast-path index pointing to trie nodes,
   // so we don't need to separately clone those nodes - they're already cloned during
   // trie traversal. We only need to remap the pointers in the fast-path map.
-
-  _config = other._config;
-  _handler = other._handler;
-  _streamingHandler = other._streamingHandler;
 
   _nodePool.clear();
 
@@ -824,6 +859,17 @@ void Router::cloneFrom(const Router& other) {
       _literalOnlyRoutes.emplace(path, it->second);
     }
   }
+}
+
+void Router::clear() noexcept {
+  _handler = {};
+  _streamingHandler = {};
+  _globalPreMiddleware.clear();
+  _globalPostMiddleware.clear();
+  _nodePool.clear();
+  _compiledRoutePool.clear();
+  _pRootRouteNode = nullptr;
+  _literalOnlyRoutes.clear();
 }
 
 }  // namespace aeronet

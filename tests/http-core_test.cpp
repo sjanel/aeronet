@@ -36,7 +36,7 @@ auto port = ts.port();
 }  // namespace
 
 TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.status(201).reason("Created");
     resp.header("X-One", "1");
@@ -57,7 +57,7 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
 }
 
 TEST(HttpHeadersCustom, LocationHeaderAllowed) {
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse resp(302, "Found");
     resp.location("/new").body("");
     return resp;
@@ -74,7 +74,7 @@ TEST(HttpHeadersCustom, LocationHeaderAllowed) {
 TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
   // Verify that calling customHeader with different casing replaces existing value without duplicating the line and
   // preserves the original header name casing from the first insertion.
-  ts.server.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.header("x-cAsE", "one");
     resp.header("X-Case", "two");    // should replace value only
@@ -103,7 +103,7 @@ TEST(HttpHeadersCustom, StreamingCaseInsensitiveContentTypeAndEncodingSuppressio
     cfg.compression.preferredFormats.assign(1U, Encoding::gzip);
   });
   std::string payload(128, 'Z');
-  ts.server.router().setDefault([payload](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([payload](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
     writer.header("cOnTeNt-TyPe", "text/plain");    // mixed case
     writer.header("cOnTeNt-EnCoDiNg", "identity");  // should suppress auto compression
@@ -131,7 +131,7 @@ TEST(HttpHeaderTimeout, SlowHeadersConnectionClosed) {
 
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withHeaderReadTimeout(readTimeout); });
 
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("hi"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("hi"); });
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   test::ClientConnection cnx(ts.port());
   int fd = cnx.fd();
@@ -155,7 +155,7 @@ TEST(HttpHeaderTimeout, SlowHeadersConnectionClosed) {
 }
 
 namespace {
-std::string httpGet(uint16_t port, const std::string& target) {
+std::string httpGet(uint16_t port, std::string_view target) {
   test::RequestOptions opt;
   opt.method = "GET";
   opt.target = target;
@@ -167,7 +167,7 @@ std::string httpGet(uint16_t port, const std::string& target) {
 }  // namespace
 
 TEST(HttpBasic, SimpleGet) {
-  ts.server.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequest& req) {
     HttpResponse resp;
     auto testHeaderIt = req.headers().find("X-Test");
     std::string body("You requested: ");
@@ -187,7 +187,7 @@ TEST(HttpBasic, SimpleGet) {
 }
 
 TEST(HttpKeepAlive, MultipleSequentialRequests) {
-  ts.server.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequest& req) {
     HttpResponse resp;
     resp.body(std::string("ECHO") + std::string(req.path()));
     return resp;
@@ -234,7 +234,7 @@ std::string headerValue(std::string_view resp, std::string_view name) {
 }  // namespace
 
 TEST(HttpDate, PresentAndFormat) {
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   auto resp = rawGet(port);
   ASSERT_FALSE(resp.empty());
   auto date = headerValue(resp, "Date");
@@ -244,7 +244,7 @@ TEST(HttpDate, PresentAndFormat) {
 }
 
 TEST(HttpDate, StableWithinSameSecond) {
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   // To avoid flakiness near a second rollover on slower / contended CI hosts:
   // Probe until the current second is "stable" for at least ~20ms before sampling sequence.
@@ -294,7 +294,7 @@ TEST(HttpDate, StableWithinSameSecond) {
 }
 
 TEST(HttpDate, ChangesAcrossSecondBoundary) {
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   auto first = rawGet(port);
   auto d1 = headerValue(first, "Date");
@@ -320,7 +320,7 @@ struct ErrorCase {
 class HttpErrorParamTest : public ::testing::TestWithParam<ErrorCase> {};
 
 TEST_P(HttpErrorParamTest, EmitsExpectedStatus) {
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   const auto& param = GetParam();
   std::string resp = test::sendAndCollect(port, param.request);
   ASSERT_TRUE(resp.contains(param.expectedStatus)) << "Case=" << param.name << "\nResp=" << resp;
@@ -339,7 +339,7 @@ INSTANTIATE_TEST_SUITE_P(
                                 "400"}));
 
 TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse().body("ok"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse().body("ok"); });
   // HTTP/1.0 without Connection: keep-alive should close
   test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
@@ -359,7 +359,7 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
 }
 
 TEST(HttpKeepAlive10, OptInWithHeader) {
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse().body("ok"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse().body("ok"); });
   test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -385,14 +385,14 @@ std::string sendRaw(uint16_t port, std::string_view raw) {
 }  // anonymous namespace
 
 TEST(HttpMalformed, MissingSpacesInRequestLine) {
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   std::string resp = sendRaw(port, "GET/abcHTTP/1.1\r\nHost: x\r\n\r\n");
   ASSERT_TRUE(resp.contains("400")) << resp;
 }
 
 TEST(HttpMalformed, OversizedHeaders) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(128); });
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   std::string big(200, 'A');
   std::string raw = "GET / HTTP/1.1\r\nHost: x\r\nX-Big: " + big + "\r\n\r\n";
@@ -401,7 +401,7 @@ TEST(HttpMalformed, OversizedHeaders) {
 }
 
 TEST(HttpMalformed, BadChunkExtensionHex) {
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   // Transfer-Encoding with invalid hex char 'Z'
   std::string raw = "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nZ\r\n";  // incomplete + invalid

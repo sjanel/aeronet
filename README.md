@@ -113,7 +113,7 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Logging | ✔ (flag) | spdlog optional |
 | Duplicate header policy | ✔ | Deterministic, security‑minded |
 | Trailers exposure | ✔ | RFC 7230 §4.1.2 chunked trailer headers |
-| Middleware helpers | ✖ | Planned |
+| Middleware helpers | ✔ | Global + per-route request/response hooks (streaming-aware) |
 | Streaming inbound decompression | ✖ | Planned |
 | sendfile / static file helper | ✔ | 0.4.x – zero-copy plain sockets plus RFC 7233 single-range & RFC 7232 validators |
 
@@ -584,7 +584,7 @@ sudo dnf install libcurl-devel protobuf-devel protobuf-compiler
 sudo pacman -S curl protobuf
 ```
 
-### Configuration
+### Configuration Example
 
 Configure OpenTelemetry via `HttpServerConfig`:
 
