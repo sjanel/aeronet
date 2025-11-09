@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -33,6 +34,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/otel-config.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
@@ -399,7 +401,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       break;
     }
 
-    const auto routingResult = _router.match(_request.method(), _request.path());
+    const Router::RoutingResult routingResult = _router.match(_request.method(), _request.path());
     const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
 
     // Handle Expect header tokens beyond the built-in 100-continue.
@@ -430,22 +432,53 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       break;
     }
 
+    // Set path params map view
     _request._pathParams.clear();
     for (const auto& capture : routingResult.pathParams) {
       _request._pathParams.emplace(capture.key, capture.value);
     }
 
-    if (routingResult.streamingHandler != nullptr) {
-      const bool streamingClose =
-          callStreamingHandler(*routingResult.streamingHandler, cnxIt, consumedBytes, pCorsPolicy);
+    auto requestMiddlewareRange = routingResult.requestMiddlewareRange;
+    auto responseMiddlewareRange = routingResult.responseMiddlewareRange;
+
+    auto sendResponse = [this, responseMiddlewareRange, cnxIt, consumedBytes, pCorsPolicy](HttpResponse&& resp) {
+      applyResponseMiddleware(resp, responseMiddlewareRange);
+      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
+    };
+
+    auto runPreChain = [this](std::span<const RequestMiddleware> chain, HttpResponse& out) {
+      for (const auto& middleware : chain) {
+        MiddlewareResult decision = middleware(_request);
+        if (decision.shouldShortCircuit()) {
+          out = std::move(decision).takeResponse();
+          return true;
+        }
+      }
+      return false;
+    };
+
+    HttpResponse middlewareResponse;
+    const auto globalPreChain = _router.globalRequestMiddleware();
+    bool shortCircuited = runPreChain(globalPreChain, middlewareResponse);
+    if (!shortCircuited) {
+      shortCircuited = runPreChain(requestMiddlewareRange, middlewareResponse);
+    }
+    if (shortCircuited) {
+      sendResponse(std::move(middlewareResponse));
+      continue;
+    }
+
+    if (routingResult.pStreamingHandler != nullptr) {
+      const bool streamingClose = callStreamingHandler(*routingResult.pStreamingHandler, cnxIt, consumedBytes,
+                                                       pCorsPolicy, responseMiddlewareRange);
       if (streamingClose) {
         break;
       }
-    } else if (routingResult.requestHandler != nullptr) {
+    } else if (routingResult.pRequestHandler != nullptr) {
       if (pCorsPolicy != nullptr) {
         HttpResponse corsProbe;
         if (pCorsPolicy->applyToResponse(_request, corsProbe) == CorsPolicy::ApplyStatus::OriginDenied) {
-          finalizeAndSendResponse(cnxIt, std::move(corsProbe), consumedBytes, pCorsPolicy);
+          sendResponse(std::move(corsProbe));
           continue;
         }
       }
@@ -453,17 +486,17 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       // normal handler
       try {
         // Use RVO on the HttpResponse in the nominal case
-        finalizeAndSendResponse(cnxIt, (*routingResult.requestHandler)(_request), consumedBytes, pCorsPolicy);
+        sendResponse((*routingResult.pRequestHandler)(_request));
       } catch (const std::exception& ex) {
         log::error("Exception in path handler: {}", ex.what());
         HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
         resp.body(ex.what());
-        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
+        sendResponse(std::move(resp));
       } catch (...) {
         log::error("Unknown exception in path handler");
         HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
         resp.body("Unknown error");
-        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
+        sendResponse(std::move(resp));
       }
     } else {
       HttpResponse resp;
@@ -484,7 +517,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       } else {
         resp.status(http::StatusCodeNotFound, http::NotFound).body(http::NotFound);
       }
-      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
+      sendResponse(std::move(resp));
     }
 
   } while (!state.isAnyCloseRequested());
@@ -603,7 +636,8 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
 }
 
 bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionMapIt cnxIt,
-                                      std::size_t consumedBytes, const CorsPolicy* pCorsPolicy) {
+                                      std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
+                                      std::span<const ResponseMiddleware> postMiddleware) {
   bool wantClose = _request.wantClose();
   bool isHead = _request.method() == http::Method::HEAD;
   Encoding compressionFormat = Encoding::none;
@@ -613,6 +647,7 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   if (pCorsPolicy != nullptr) {
     HttpResponse corsProbe;
     if (pCorsPolicy->applyToResponse(_request, corsProbe) == CorsPolicy::ApplyStatus::OriginDenied) {
+      applyResponseMiddleware(corsProbe, postMiddleware);
       finalizeAndSendResponse(cnxIt, std::move(corsProbe), consumedBytes, pCorsPolicy);
       return state.isAnyCloseRequested();
     }
@@ -625,6 +660,7 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
       HttpResponse resp(http::StatusCodeNotAcceptable, http::ReasonNotAcceptable);
       resp.body("No acceptable content-coding available");
+      applyResponseMiddleware(resp, postMiddleware);
       finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
       return state.isAnyCloseRequested();
     }
@@ -632,7 +668,8 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   }
 
   // Pass the resolved activeCors pointer to the streaming writer so it can apply headers lazily
-  HttpResponseWriter writer(*this, cnxIt->first.fd(), isHead, wantClose, compressionFormat, pCorsPolicy);
+  HttpResponseWriter writer(*this, cnxIt->first.fd(), isHead, wantClose, compressionFormat, pCorsPolicy,
+                            postMiddleware);
   try {
     streamingHandler(_request, writer);
   } catch (const std::exception& ex) {
@@ -673,6 +710,28 @@ void HttpServer::emitRequestMetrics(http::StatusCode status, std::size_t bytesIn
   metrics.reusedConnection = reusedConnection;
   metrics.duration = std::chrono::steady_clock::now() - _request.reqStart();
   _metricsCb(metrics);
+}
+
+void HttpServer::applyResponseMiddleware(HttpResponse& response, std::span<const ResponseMiddleware> routeChain) {
+  // In C++26, we will be able to use: std::ranges::concat_view
+  for (const auto& middleware : routeChain) {
+    try {
+      middleware(_request, response);
+    } catch (const std::exception& ex) {
+      log::error("Exception in response middleware: {}", ex.what());
+    } catch (...) {
+      log::error("Unknown exception in response middleware");
+    }
+  }
+  for (const auto& middleware : _router.globalResponseMiddleware()) {
+    try {
+      middleware(_request, response);
+    } catch (const std::exception& ex) {
+      log::error("Exception in global response middleware: {}", ex.what());
+    } catch (...) {
+      log::error("Unknown exception in global response middleware");
+    }
+  }
 }
 
 // Performs full listener initialization (RAII style) so that port() is valid immediately after construction.

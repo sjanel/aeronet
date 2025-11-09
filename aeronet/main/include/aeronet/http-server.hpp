@@ -13,6 +13,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string_view>
 
 #include "accept-encoding-negotiation.hpp"
@@ -23,6 +24,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/lifecycle.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
@@ -191,7 +193,6 @@ class HttpServer {
   void setExpectationHandler(ExpectationHandler handler);
 
   // Run the server event loop until stop() is called (e.g. from another thread) or the process receives SIGINT/SIGTERM.
-  // Run the server event loop until stop() is called (from another thread) or SIGINT/SIGTERM.
   // The maximum blocking interval of a single poll cycle is controlled by HttpServerConfig::pollInterval.
   // This method is blocking for the caller thread.
   void run();
@@ -300,6 +301,7 @@ class HttpServer {
                           bool& found100Continue);
   // Helper to populate and invoke the metrics callback for a completed request.
   void emitRequestMetrics(http::StatusCode status, std::size_t bytesIn, bool reusedConnection);
+  void applyResponseMiddleware(HttpResponse& response, std::span<const ResponseMiddleware> routeChain);
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // If immediate=true the connection will be closed without waiting for buffered writes to drain.
   void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, bool immediate = false,
@@ -322,7 +324,7 @@ class HttpServer {
   // non-const because we may reuse shared response finalization paths (e.g. emitting a 406 early) that expect
   // to mutate transient fields (target normalization already complete at this point).
   bool callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionMapIt cnxIt, std::size_t consumedBytes,
-                            const CorsPolicy* pCorsPolicy);
+                            const CorsPolicy* pCorsPolicy, std::span<const ResponseMiddleware> postMiddleware);
 
   enum class LoopAction : uint8_t { Nothing, Continue, Break };
 

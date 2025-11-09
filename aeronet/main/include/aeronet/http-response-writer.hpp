@@ -11,6 +11,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/middleware.hpp"
 #include "encoder.hpp"
 #include "file.hpp"
 #include "raw-chars.hpp"
@@ -182,7 +183,7 @@ class HttpResponseWriter {
   friend class HttpServer;
 
   HttpResponseWriter(HttpServer& srv, int fd, bool headRequest, bool requestConnClose, Encoding compressionFormat,
-                     const CorsPolicy* pCorsPolicy);
+                     const CorsPolicy* pCorsPolicy, std::span<const ResponseMiddleware> routeResponseMiddleware);
 
   void ensureHeadersSent();
   void emitChunk(std::string_view data);
@@ -204,6 +205,7 @@ class HttpResponseWriter {
   bool _requestConnClose{false};
   Encoding _compressionFormat{Encoding::none};
   bool _compressionActivated{false};
+  bool _responseMiddlewareApplied{false};
 
   // Internal fixed HttpResponse used solely for header accumulation and status/reason/body placeholder.
   // We never finalize until ensureHeadersSent(); body remains empty (streaming chunks / writes follow separately).
@@ -214,6 +216,7 @@ class HttpResponseWriter {
   RawChars _preCompressBuffer;                        // threshold buffering before activation
   RawChars _trailers;                                 // Trailer headers (RFC 7230 §4.1.2) buffered until end()
   const CorsPolicy* _pCorsPolicy{nullptr};
+  std::span<const ResponseMiddleware> _routeResponseMiddleware;
 };
 
 }  // namespace aeronet

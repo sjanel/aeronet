@@ -34,7 +34,7 @@ namespace aeronet::test {
 //
 // Usage pattern:
 //   TestServer ts(HttpServerConfig{});              // starts immediately
-//   ts.server.router().setDefault(...);                  // register handlers
+//   ts.router().setDefault(...);                  // register handlers
 //   auto port = ts.port();                      // fetch ephemeral port
 //   <perform requests>
 //   // automatic cleanup at scope end (or call ts.stop() early)
@@ -120,6 +120,13 @@ struct TestServer {
     if (!stopFlag.exchange(true)) {
       server.stop();
     }
+  }
+
+  Router& router() { return server.router(); }
+
+  Router& resetRouterAndGet() {
+    router().clear();
+    return router();
   }
 
   TestHttpServer server;

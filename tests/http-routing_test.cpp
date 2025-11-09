@@ -1,15 +1,20 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -21,9 +26,9 @@ test::TestServer ts(HttpServerConfig{});
 }
 
 TEST(HttpRouting, BasicPathDispatch) {
-  ts.server.router().setPath(http::Method::GET, "/hello",
-                             [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("world"); });
-  ts.server.router().setPath(http::Method::GET | http::Method::POST, "/multi", [](const HttpRequest& req) {
+  ts.router().setPath(http::Method::GET, "/hello",
+                      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("world"); });
+  ts.router().setPath(http::Method::GET | http::Method::POST, "/multi", [](const HttpRequest& req) {
     return HttpResponse(http::StatusCodeOK, "OK").body(std::string(http::toMethodStr(req.method())) + "!");
   });
 
@@ -54,16 +59,15 @@ TEST(HttpRouting, BasicPathDispatch) {
 }
 
 TEST(HttpRouting, GlobalFallbackWithPathHandlers) {
-  ts.server.router().setDefault([](const HttpRequest&) { return HttpResponse(200, "OK"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(200, "OK"); });
   // Adding path handler after global handler is now allowed (Phase 2 mixing model)
-  EXPECT_NO_THROW(
-      ts.server.router().setPath(http::Method::GET, "/x", [](const HttpRequest&) { return HttpResponse(200); }));
+  EXPECT_NO_THROW(ts.router().setPath(http::Method::GET, "/x", [](const HttpRequest&) { return HttpResponse(200); }));
 }
 
 TEST(HttpRouting, PathParametersInjectedIntoRequest) {
   std::string seenUser;
   std::string seenPost;
-  ts.server.router().setPath(http::Method::GET, "/users/{userId}/posts/{postId}", [&](const HttpRequest& req) {
+  ts.router().setPath(http::Method::GET, "/users/{userId}/posts/{postId}", [&](const HttpRequest& req) {
     const auto& params = req.pathParams();
     if (const auto itUser = params.find("userId"); itUser != params.end()) {
       seenUser.assign(itUser->second);
@@ -84,58 +88,53 @@ TEST(HttpRouting, PathParametersInjectedIntoRequest) {
 }
 
 namespace {
-std::string rawRequest(uint16_t port, const std::string& target) {
+std::string rawRequest(uint16_t port, std::string_view target) {
   test::RequestOptions opt;
   opt.method = "GET";
   opt.target = target;
   opt.connection = "close";
-  auto resp = test::request(port, opt);
-  return resp.value_or("");
+  return test::request(port, opt).value_or("");
 }
 
 }  // namespace
 
 class HttpTrailingSlash : public ::testing::Test {
  protected:
-  static test::TestServer createTestServer(RouterConfig::TrailingSlashPolicy trailingSlashPolicy) {
+  static void setTrailingSlash(RouterConfig::TrailingSlashPolicy trailingSlashPolicy) {
     RouterConfig routerCfg;
     routerCfg.withTrailingSlashPolicy(trailingSlashPolicy);
-    return test::TestServer(HttpServerConfig{}, std::move(routerCfg));
+    ts.router() = Router(std::move(routerCfg));
   }
 };
 
 TEST_F(HttpTrailingSlash, StrictPolicyDifferent) {
-  auto server = createTestServer(RouterConfig::TrailingSlashPolicy::Strict);
-  server.server.router().setPath(http::Method::GET, "/alpha",
-                                 [](const HttpRequest&) { return HttpResponse().body("alpha"); });
-  auto resp = rawRequest(server.port(), "/alpha/");
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Strict);
+  ts.router().setPath(http::Method::GET, "/alpha", [](const HttpRequest&) { return HttpResponse().body("alpha"); });
+  auto resp = rawRequest(ts.port(), "/alpha/");
   ASSERT_TRUE(resp.contains("404"));
 }
 
 TEST_F(HttpTrailingSlash, NormalizePolicyStrips) {
-  auto server = createTestServer(RouterConfig::TrailingSlashPolicy::Normalize);
-  server.server.router().setPath(http::Method::GET, "/beta",
-                                 [](const HttpRequest&) { return HttpResponse().body("beta"); });
-  auto resp = rawRequest(server.port(), "/beta/");
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Normalize);
+  ts.router().setPath(http::Method::GET, "/beta", [](const HttpRequest&) { return HttpResponse().body("beta"); });
+  auto resp = rawRequest(ts.port(), "/beta/");
   ASSERT_TRUE(resp.contains("200"));
   ASSERT_TRUE(resp.contains("beta"));
 }
 
 TEST_F(HttpTrailingSlash, NormalizePolicyAddSlash) {
-  auto server = createTestServer(RouterConfig::TrailingSlashPolicy::Normalize);
-  server.server.router().setPath(http::Method::GET, "/beta/",
-                                 [](const HttpRequest&) { return HttpResponse().body("beta/"); });
-  auto resp = rawRequest(server.port(), "/beta");
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Normalize);
+  ts.router().setPath(http::Method::GET, "/beta/", [](const HttpRequest&) { return HttpResponse().body("beta/"); });
+  auto resp = rawRequest(ts.port(), "/beta");
 
   ASSERT_TRUE(resp.contains("200"));
   ASSERT_TRUE(resp.contains("beta"));
 }
 
 TEST_F(HttpTrailingSlash, RedirectPolicy) {
-  auto redirectTestServer = createTestServer(RouterConfig::TrailingSlashPolicy::Redirect);
-  redirectTestServer.server.router().setPath(http::Method::GET, "/gamma",
-                                             [](const HttpRequest&) { return HttpResponse().body("gamma"); });
-  auto resp = rawRequest(redirectTestServer.port(), "/gamma/");
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
+  ts.router().setPath(http::Method::GET, "/gamma", [](const HttpRequest&) { return HttpResponse().body("gamma"); });
+  auto resp = rawRequest(ts.port(), "/gamma/");
   // Expect 301 and Location header
   ASSERT_TRUE(resp.contains("301"));
   ASSERT_TRUE(resp.contains("Location: /gamma\r\n"));
@@ -144,32 +143,29 @@ TEST_F(HttpTrailingSlash, RedirectPolicy) {
 // Additional matrix coverage
 
 TEST_F(HttpTrailingSlash, StrictPolicyRegisteredWithSlashDoesNotMatchWithout) {
-  auto strictTestServer = createTestServer(RouterConfig::TrailingSlashPolicy::Strict);
-  strictTestServer.server.router().setPath(http::Method::GET, "/sigma/",
-                                           [](const HttpRequest&) { return HttpResponse().body("sigma"); });
-  auto ok = rawRequest(strictTestServer.port(), "/sigma/");
-  auto notFound = rawRequest(strictTestServer.port(), "/sigma");
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Strict);
+  ts.router().setPath(http::Method::GET, "/sigma/", [](const HttpRequest&) { return HttpResponse().body("sigma"); });
+  auto ok = rawRequest(ts.port(), "/sigma/");
+  auto notFound = rawRequest(ts.port(), "/sigma");
   ASSERT_TRUE(ok.contains("200"));
   ASSERT_TRUE(notFound.contains("404"));
 }
 
 TEST_F(HttpTrailingSlash, NormalizePolicyRegisteredWithSlashAcceptsWithout) {
-  auto normTestServer = createTestServer(RouterConfig::TrailingSlashPolicy::Normalize);
-  normTestServer.server.router().setPath(http::Method::GET, "/norm/",
-                                         [](const HttpRequest&) { return HttpResponse().body("norm"); });
-  auto withSlash = rawRequest(normTestServer.port(), "/norm/");
-  auto withoutSlash = rawRequest(normTestServer.port(), "/norm");
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Normalize);
+  ts.router().setPath(http::Method::GET, "/norm/", [](const HttpRequest&) { return HttpResponse().body("norm"); });
+  auto withSlash = rawRequest(ts.port(), "/norm/");
+  auto withoutSlash = rawRequest(ts.port(), "/norm");
   ASSERT_TRUE(withSlash.contains("200"));
   ASSERT_TRUE(withoutSlash.contains("200"));
   ASSERT_TRUE(withoutSlash.contains("norm"));
 }
 
 TEST_F(HttpTrailingSlash, RedirectPolicyRemoveSlash) {
-  auto redirectTestServer = createTestServer(RouterConfig::TrailingSlashPolicy::Redirect);
-  redirectTestServer.server.router().setPath(http::Method::GET, "/redir",
-                                             [](const HttpRequest&) { return HttpResponse().body("redir"); });
-  auto redirect = rawRequest(redirectTestServer.port(), "/redir/");  // should 301 -> /redir
-  auto canonical = rawRequest(redirectTestServer.port(), "/redir");  // should 200
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
+  ts.router().setPath(http::Method::GET, "/redir", [](const HttpRequest&) { return HttpResponse().body("redir"); });
+  auto redirect = rawRequest(ts.port(), "/redir/");  // should 301 -> /redir
+  auto canonical = rawRequest(ts.port(), "/redir");  // should 200
   ASSERT_TRUE(redirect.contains("301"));
   ASSERT_TRUE(redirect.contains("Location: /redir\r\n"));
   ASSERT_TRUE(canonical.contains("200"));
@@ -177,34 +173,201 @@ TEST_F(HttpTrailingSlash, RedirectPolicyRemoveSlash) {
 }
 
 TEST_F(HttpTrailingSlash, RedirectPolicyAddSlash) {
-  auto redirectTestServer = createTestServer(RouterConfig::TrailingSlashPolicy::Redirect);
-  redirectTestServer.server.router().setPath(http::Method::GET, "/only/",
-                                             [](const HttpRequest&) { return HttpResponse().body("only"); });
-  auto withSlash = rawRequest(redirectTestServer.port(), "/only/");
-  auto withoutSlash = rawRequest(redirectTestServer.port(), "/only");
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
+  ts.router().setPath(http::Method::GET, "/only/", [](const HttpRequest&) { return HttpResponse().body("only"); });
+  auto withSlash = rawRequest(ts.port(), "/only/");
+  auto withoutSlash = rawRequest(ts.port(), "/only");
 
   ASSERT_TRUE(withSlash.contains("200"));
   ASSERT_TRUE(withoutSlash.contains("301"));
 }
 
 TEST_F(HttpTrailingSlash, RootPathNotRedirected) {
-  auto redirectTestServer = createTestServer(RouterConfig::TrailingSlashPolicy::Redirect);
-  auto resp = rawRequest(redirectTestServer.port(), "/");  // no handlers => 404 but not 301
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
+  auto resp = rawRequest(ts.port(), "/");  // no handlers => 404 but not 301
   ASSERT_TRUE(resp.contains("404"));
   ASSERT_FALSE(resp.contains("301"));
 }
 
 TEST_F(HttpTrailingSlash, StrictPolicyBothVariants_Independent) {
-  auto strictTestServer = createTestServer(RouterConfig::TrailingSlashPolicy::Strict);
-  strictTestServer.server.router().setPath(http::Method::GET, "/both",
-                                           [](const HttpRequest&) { return HttpResponse().body("both-no-slash"); });
-  strictTestServer.server.router().setPath(http::Method::GET, "/both/",
-                                           [](const HttpRequest&) { return HttpResponse().body("both-with-slash"); });
-  auto respNoSlash = rawRequest(strictTestServer.port(), "/both");
-  auto respWithSlash = rawRequest(strictTestServer.port(), "/both/");
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Strict);
+  ts.router().setPath(http::Method::GET, "/both",
+                      [](const HttpRequest&) { return HttpResponse().body("both-no-slash"); });
+  ts.router().setPath(http::Method::GET, "/both/",
+                      [](const HttpRequest&) { return HttpResponse().body("both-with-slash"); });
+  auto respNoSlash = rawRequest(ts.port(), "/both");
+  auto respWithSlash = rawRequest(ts.port(), "/both/");
 
   ASSERT_TRUE(respNoSlash.contains("200"));
   ASSERT_TRUE(respNoSlash.contains("both-no-slash"));
   ASSERT_TRUE(respWithSlash.contains("200"));
   ASSERT_TRUE(respWithSlash.contains("both-with-slash"));
+}
+
+TEST(HttpMiddleware, GlobalRequestShortCircuit) {
+  std::atomic_bool handlerCalled{false};
+
+  ts.resetRouterAndGet().setDefault([&](const HttpRequest&) {
+    handlerCalled.store(true, std::memory_order_relaxed);
+    HttpResponse resp;
+    resp.body("handler");
+    return resp;
+  });
+
+  ts.router().addResponseMiddleware(
+      [](const HttpRequest&, HttpResponse& resp) { resp.header("X-Global-Middleware", "applied"); });
+
+  ts.router().addRequestMiddleware([](HttpRequest& req) {
+    if (req.path() == "/mw-short") {
+      HttpResponse resp(http::StatusCodeServiceUnavailable, "Service Unavailable");
+      resp.body("short-circuited");
+      return MiddlewareResult::ShortCircuit(std::move(resp));
+    }
+    return MiddlewareResult::Continue();
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/mw-short");
+  EXPECT_TRUE(response.contains("HTTP/1.1 503")) << response;
+  EXPECT_TRUE(response.contains("short-circuited")) << response;
+  EXPECT_TRUE(response.contains("X-Global-Middleware: applied")) << response;
+  EXPECT_FALSE(handlerCalled.load(std::memory_order_relaxed));
+}
+
+TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
+  std::mutex seqMutex;
+  std::vector<std::string> sequence;
+
+  ts.resetRouterAndGet().addRequestMiddleware([&](HttpRequest&) {
+    std::lock_guard lock(seqMutex);
+    sequence.emplace_back("global-pre");
+    return MiddlewareResult::Continue();
+  });
+
+  ts.router().addResponseMiddleware([&](const HttpRequest&, HttpResponse& resp) {
+    std::lock_guard lock(seqMutex);
+    sequence.emplace_back("global-post");
+    resp.header("X-Global-Middleware", "post");
+  });
+
+  auto& entry = ts.router().setPath(http::Method::GET, "/mw-route", [&](const HttpRequest&) {
+    std::lock_guard lock(seqMutex);
+    sequence.emplace_back("handler");
+    HttpResponse resp;
+    resp.body("handler");
+    return resp;
+  });
+
+  entry.before([&](HttpRequest&) {
+    std::lock_guard lock(seqMutex);
+    sequence.emplace_back("route-pre");
+    return MiddlewareResult::Continue();
+  });
+
+  entry.after([&](const HttpRequest&, HttpResponse& resp) {
+    std::lock_guard lock(seqMutex);
+    sequence.emplace_back("route-post");
+    resp.header("X-Route-Middleware", "post");
+    const std::string existingBody(resp.body());
+    std::string updatedBody("route:");
+    updatedBody += existingBody;
+    resp.body(updatedBody);
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/mw-route");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.contains("route:handler")) << response;
+  EXPECT_TRUE(response.contains("X-Route-Middleware: post")) << response;
+  EXPECT_TRUE(response.contains("X-Global-Middleware: post")) << response;
+
+  std::vector<std::string> snapshot;
+  {
+    std::lock_guard lock(seqMutex);
+    snapshot = sequence;
+  }
+  const std::vector<std::string> expected{"global-pre", "route-pre", "handler", "route-post", "global-post"};
+  EXPECT_EQ(snapshot, expected);
+}
+
+TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
+  std::mutex seqMutex;
+  std::vector<std::string> sequence;
+
+  ts.resetRouterAndGet().addRequestMiddleware([&](HttpRequest&) {
+    std::lock_guard lock(seqMutex);
+    sequence.emplace_back("global-pre");
+    return MiddlewareResult::Continue();
+  });
+
+  ts.router().addResponseMiddleware([&](const HttpRequest&, HttpResponse& resp) {
+    std::lock_guard lock(seqMutex);
+    sequence.emplace_back("global-post");
+    resp.header("X-Global-Streaming", "post");
+  });
+
+  auto& entry =
+      ts.router().setPath(http::Method::GET, "/mw-stream", [&](const HttpRequest&, HttpResponseWriter& writer) {
+        {
+          std::lock_guard lock(seqMutex);
+          sequence.emplace_back("handler");
+        }
+        writer.status(http::StatusCodeOK, http::ReasonOK);
+        writer.header("X-Handler", "emitted");
+        writer.contentType("text/plain");
+        EXPECT_TRUE(writer.writeBody("chunk-1"));
+        EXPECT_TRUE(writer.writeBody("chunk-2"));
+        writer.end();
+      });
+
+  entry.before([&](HttpRequest&) {
+    std::lock_guard lock(seqMutex);
+    sequence.emplace_back("route-pre");
+    return MiddlewareResult::Continue();
+  });
+
+  entry.after([&](const HttpRequest&, HttpResponse& resp) {
+    std::lock_guard lock(seqMutex);
+    sequence.emplace_back("route-post");
+    resp.status(http::StatusCodeAccepted, "Accepted by middleware");
+    resp.header("X-Route-Streaming", "post");
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/mw-stream");
+  EXPECT_TRUE(response.contains("HTTP/1.1 202")) << response;
+  EXPECT_TRUE(response.contains("X-Handler: emitted")) << response;
+  EXPECT_TRUE(response.contains("X-Route-Streaming: post")) << response;
+  EXPECT_TRUE(response.contains("X-Global-Streaming: post")) << response;
+  EXPECT_TRUE(response.contains("chunk-1")) << response;
+  EXPECT_TRUE(response.contains("chunk-2")) << response;
+
+  std::vector<std::string> snapshot;
+  {
+    std::lock_guard lock(seqMutex);
+    snapshot = sequence;
+  }
+  const std::vector<std::string> expected{"global-pre", "route-pre", "handler", "route-post", "global-post"};
+  EXPECT_EQ(snapshot, expected);
+}
+
+TEST(HttpMiddleware, RouterOwnsGlobalMiddleware) {
+  std::atomic_bool preSeen{false};
+  std::atomic_bool postSeen{false};
+
+  ts.resetRouterAndGet().addRequestMiddleware([&](HttpRequest&) {
+    preSeen.store(true, std::memory_order_relaxed);
+    return MiddlewareResult::Continue();
+  });
+
+  ts.router().addResponseMiddleware([&](const HttpRequest&, HttpResponse& resp) {
+    postSeen.store(true, std::memory_order_relaxed);
+    resp.header("X-Router-Post", "ok");
+  });
+
+  ts.router().setPath(http::Method::GET, "/router-owned",
+                      [](const HttpRequest&) { return HttpResponse().body("payload"); });
+
+  const std::string response = test::simpleGet(ts.port(), "/router-owned");
+  EXPECT_TRUE(response.contains("payload")) << response;
+  EXPECT_TRUE(response.contains("X-Router-Post: ok")) << response;
+  EXPECT_TRUE(preSeen.load(std::memory_order_relaxed));
+  EXPECT_TRUE(postSeen.load(std::memory_order_relaxed));
 }
