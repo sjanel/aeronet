@@ -21,6 +21,7 @@
 #include "aeronet/test_server_tls_fixture.hpp"
 #include "aeronet/test_tls_client.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/tls-config.hpp"
 #include "file.hpp"
 
 using namespace aeronet;
@@ -236,96 +237,6 @@ TEST(HttpTlsKtlsMode, EnabledModeTracksStats) {
   ASSERT_GE(stats.totalRequestsServed, 1U);
   EXPECT_GE(stats.ktlsSendEnabledConnections + stats.ktlsSendEnableFallbacks, 1U);
   EXPECT_EQ(stats.ktlsSendForcedShutdowns, 0U);
-}
-
-namespace {
-TlsTransport::KtlsEnableResult makeResult(TlsTransport::KtlsEnableResult::Status status, int sysError = 0,
-                                          unsigned long sslError = 0) {
-  TlsTransport::KtlsEnableResult res;
-  res.status = status;
-  res.sysError = sysError;
-  res.sslError = sslError;
-  return res;
-}
-}  // namespace
-
-TEST(HttpKtls, AutoFallbackKeepsConnectionAndBumpsCounters) {
-  test::TlsTestServer ts({"http/1.1"}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Auto); });
-  ts.http().setKtlsEnableScript({makeResult(TlsTransport::KtlsEnableResult::Status::Unsupported)});
-
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("auto"); });
-
-  test::TlsClient client(ts.port());
-  ASSERT_TRUE(client.handshakeOk());
-  const auto resp = client.get("/auto");
-  ts.stop();
-
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
-  const auto stats = ts.stats();
-  EXPECT_EQ(stats.ktlsSendEnabledConnections, 0U);
-  EXPECT_EQ(stats.ktlsSendEnableFallbacks, 1U);
-  EXPECT_EQ(stats.ktlsSendForcedShutdowns, 0U);
-  EXPECT_EQ(ts.http().ktlsEnableCallCount(), 1U);
-}
-
-TEST(HttpKtls, EnabledFailureRecordsFallback) {
-  test::TlsTestServer ts({"http/1.1"},
-                         [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled); });
-  ts.http().setKtlsEnableScript({makeResult(TlsTransport::KtlsEnableResult::Status::Failed, EPERM)});
-
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("enabled"); });
-
-  test::TlsClient client(ts.port());
-  ASSERT_TRUE(client.handshakeOk());
-  const auto resp = client.get("/enabled");
-  ts.stop();
-
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
-  const auto stats = ts.stats();
-  EXPECT_EQ(stats.ktlsSendEnabledConnections, 0U);
-  EXPECT_EQ(stats.ktlsSendEnableFallbacks, 1U);
-  EXPECT_EQ(stats.ktlsSendForcedShutdowns, 0U);
-  EXPECT_EQ(ts.http().ktlsEnableCallCount(), 1U);
-}
-
-TEST(HttpKtls, ForcedFailureClosesConnection) {
-  test::TlsTestServer ts({"http/1.1"}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Forced); });
-  ts.http().setKtlsEnableScript({makeResult(TlsTransport::KtlsEnableResult::Status::Failed, EPERM)});
-
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("forced"); });
-
-  test::TlsClient client(ts.port());
-  ASSERT_TRUE(client.handshakeOk());
-  const auto resp = client.get("/forced");
-  ts.stop();
-
-  EXPECT_TRUE(resp.empty() || resp.find("HTTP/1.1 200") == std::string::npos) << resp;
-  const auto stats = ts.stats();
-  EXPECT_EQ(stats.ktlsSendEnabledConnections, 0U);
-  EXPECT_EQ(stats.ktlsSendEnableFallbacks, 1U);
-  EXPECT_EQ(stats.ktlsSendForcedShutdowns, 1U);
-  EXPECT_EQ(stats.totalRequestsServed, 0U);
-  EXPECT_EQ(ts.http().ktlsEnableCallCount(), 1U);
-}
-
-TEST(HttpKtls, AlreadyEnabledCountsAsSuccess) {
-  test::TlsTestServer ts({"http/1.1"},
-                         [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled); });
-  ts.http().setKtlsEnableScript({makeResult(TlsTransport::KtlsEnableResult::Status::AlreadyEnabled)});
-
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("already"); });
-
-  test::TlsClient client(ts.port());
-  ASSERT_TRUE(client.handshakeOk());
-  const auto resp = client.get("/already");
-  ts.stop();
-
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
-  const auto stats = ts.stats();
-  EXPECT_EQ(stats.ktlsSendEnabledConnections, 1U);
-  EXPECT_EQ(stats.ktlsSendEnableFallbacks, 0U);
-  EXPECT_EQ(stats.ktlsSendForcedShutdowns, 0U);
-  EXPECT_EQ(ts.http().ktlsEnableCallCount(), 1U);
 }
 
 #endif

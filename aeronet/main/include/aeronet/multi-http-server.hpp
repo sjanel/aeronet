@@ -9,6 +9,7 @@
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
 #include "vector.hpp"
 
@@ -32,9 +33,6 @@ namespace aeronet {
 //  - Stats from previous runs are not accumulated across restarts because the underlying servers are rebuilt.
 class MultiHttpServer {
  public:
-  using RequestHandler = HttpServer::RequestHandler;
-  using ParserErrorCallback = HttpServer::ParserErrorCallback;
-
   // Construct a MultiHttpServer that does nothing.
   // Useful only to make it default constructible for temporary purposes (for instance to move assign to it later on),
   // but do not attempt to use a default constructed server, it will not bind to any socket.
@@ -95,7 +93,20 @@ class MultiHttpServer {
   //   - The callback is copied into each server at start() time.
   // Clearing:
   //   - Pass an empty std::function to clear prior to start().
-  void setParserErrorCallback(ParserErrorCallback cb);
+  void setParserErrorCallback(HttpServer::ParserErrorCallback cb);
+
+  // Sets a callback invoked after completing each request on every underlying server.
+  // See HttpServer::setMetricsCallback for semantics. The callback is copied into each
+  // HttpServer instance at start() time. Must be set before start().
+  void setMetricsCallback(HttpServer::MetricsCallback cb);
+
+  // Install a custom expectation handler on all underlying servers. Copied into each
+  // HttpServer at start() time. Must be set before start().
+  void setExpectationHandler(HttpServer::ExpectationHandler handler);
+
+  // Install a middleware metrics callback on all underlying servers. Copied into each
+  // HttpServer at start() time. Must be set before start().
+  void setMiddlewareMetricsCallback(HttpServer::MiddlewareMetricsCallback cb);
 
   // start():
   //   Launches the configured number of HttpServer instances, each on its own std::jthread.
@@ -162,9 +173,8 @@ class MultiHttpServer {
   void postConfigUpdate(const std::function<void(HttpServerConfig&)>& updater);
 
  private:
-  void ensureNotStarted() const;
+  void canSetCallbacks() const;
 
-  ParserErrorCallback _parserErrCb;
   // single-writer (controller thread), multi-reader (worker threads)
   // It is useful to avoid freezes when stop() before the server thread has entered the main loop after start.
   std::unique_ptr<std::atomic<bool>> _stopRequested;

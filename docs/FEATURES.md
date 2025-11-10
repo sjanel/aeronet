@@ -977,6 +977,19 @@ entry.after([](const HttpRequest&, HttpResponse& resp) {
 HttpServer server(HttpServerConfig{}, std::move(router));
 ```
 
+### Middleware Metrics Callback
+
+- `HttpServer::setMiddlewareMetricsCallback(MiddlewareMetricsCallback)` installs an opt-in hook that receives a
+  `MiddlewareMetrics` record for every middleware invocation. The record captures whether the middleware belongs to the
+  global or per-route chain, the execution phase (`Pre` or `Post`), the zero-based index within that chain, whether the
+  middleware short-circuited request processing, threw an exception, and how long the call lasted in nanoseconds.
+- Metrics are emitted for both buffered and streaming handlers; the `streaming` flag is set when the active route uses
+  `HttpResponseWriter`. Request method and the canonical request path are included to simplify downstream tagging.
+- When no callback is registered, the server skips the timing code paths entirely to keep the hot path allocation-free
+  and avoid the additional steady clock reads.
+- Tests: see `tests/http-routing_test.cpp` (`HttpMiddlewareMetrics.RecordsPreAndPostMetrics`,
+  `HttpMiddlewareMetrics.MarksShortCircuit`, `HttpMiddlewareMetrics.StreamingFlagPropagates`).
+
 ### Related Tests
 
 - See `tests/http-routing_test.cpp` for examples covering ordering, short-circuits, and streaming responses.
@@ -1611,6 +1624,9 @@ Automatic (no handler code changes):
 **Traces:**
 
 - `http.request` spans for each HTTP request
+- `http.middleware` spans around request (pre) and response (post) middleware execution with attributes capturing
+  scope (`aeronet.middleware.scope`), position (`aeronet.middleware.index`), streaming state, short-circuit decisions, and exception
+  flags (see `tests/http-routing_test.cpp` for middleware pipeline coverage)
 - Attributes: `http.method`, `http.target`, `http.status_code`, `http.request.body.size`, `http.response.body.size`
 
 **Metrics (counters):**

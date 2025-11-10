@@ -41,6 +41,14 @@ void AsyncHttpServer::setParserErrorCallback(HttpServer::ParserErrorCallback cb)
 }
 void AsyncHttpServer::setMetricsCallback(HttpServer::MetricsCallback cb) { _server.setMetricsCallback(std::move(cb)); }
 
+void AsyncHttpServer::setExpectationHandler(HttpServer::ExpectationHandler handler) {
+  _server.setExpectationHandler(std::move(handler));
+}
+
+void AsyncHttpServer::setMiddlewareMetricsCallback(HttpServer::MiddlewareMetricsCallback cb) {
+  _server.setMiddlewareMetricsCallback(std::move(cb));
+}
+
 void AsyncHttpServer::start() {
   ensureStartable();
   _thread = std::jthread([this](const std::stop_token& st) {

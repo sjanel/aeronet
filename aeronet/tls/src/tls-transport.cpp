@@ -197,7 +197,7 @@ TlsTransport::KtlsEnableResult TlsTransport::enableKtlsSend() {
   _ktlsSendAttempted = true;
 
 #if defined(__linux__) && defined(BIO_CTRL_GET_KTLS_SEND) && !defined(OPENSSL_NO_KTLS)
-  BIO* writeBio = ::SSL_get_wbio(_ssl.get());
+  auto* writeBio = ::SSL_get_wbio(_ssl.get());
   log::debug("enableKtlsSend: writeBio = {}", static_cast<void*>(writeBio));
   if (writeBio == nullptr) {
     log::debug("enableKtlsSend: writeBio == nullptr -> fail");

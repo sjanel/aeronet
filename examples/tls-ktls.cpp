@@ -3,8 +3,10 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <string>
+#include <utility>
 
 namespace {
 std::atomic_bool gStop{false};
@@ -25,27 +27,32 @@ int main(int argc, char** argv) {
     port = static_cast<uint16_t>(std::stoi(argv[3]));
   }
 
-  aeronet::HttpServerConfig cfg;
-  cfg.withPort(port).withTlsCertKey(certPath, keyPath).withTlsKtlsMode(aeronet::TLSConfig::KtlsMode::Auto);
+  try {
+    aeronet::HttpServerConfig cfg;
+    cfg.withPort(port).withTlsCertKey(certPath, keyPath).withTlsKtlsMode(aeronet::TLSConfig::KtlsMode::Auto);
 
-  aeronet::HttpServer server(std::move(cfg));
-  server.router().setDefault([](const aeronet::HttpRequest& req) {
-    aeronet::HttpResponse resp(aeronet::http::StatusCodeOK);
-    std::string body("Hello from aeronet with kernel TLS!\n");
-    body += "Path: ";
-    body += req.path();
-    body.push_back('\n');
-    resp.body(std::move(body));
-    return resp;
-  });
+    aeronet::HttpServer server(std::move(cfg));
+    server.router().setDefault([](const aeronet::HttpRequest& req) {
+      aeronet::HttpResponse resp(aeronet::http::StatusCodeOK);
+      std::string body("Hello from aeronet with kernel TLS!\n");
+      body += "Path: ";
+      body += req.path();
+      body.push_back('\n');
+      resp.body(std::move(body));
+      return resp;
+    });
 
-  std::signal(SIGINT, handleSigint);
+    std::signal(SIGINT, handleSigint);
 
-  server.runUntil([] { return gStop.load(); });
+    server.runUntil([] { return gStop.load(); });
 
-  const auto stats = server.stats();
-  std::cout << "KTLS send enabled connections: " << stats.ktlsSendEnabledConnections << '\n';
-  std::cout << "KTLS send fallbacks: " << stats.ktlsSendEnableFallbacks << '\n';
-  std::cout << "KTLS forced shutdowns: " << stats.ktlsSendForcedShutdowns << '\n';
-  std::cout << "KTLS bytes sent via kernel TLS: " << stats.ktlsSendBytes << '\n';
+    const auto stats = server.stats();
+    std::cout << "KTLS send enabled connections: " << stats.ktlsSendEnabledConnections << '\n';
+    std::cout << "KTLS send fallbacks: " << stats.ktlsSendEnableFallbacks << '\n';
+    std::cout << "KTLS forced shutdowns: " << stats.ktlsSendForcedShutdowns << '\n';
+    std::cout << "KTLS bytes sent via kernel TLS: " << stats.ktlsSendBytes << '\n';
+  } catch (const std::exception& ex) {
+    std::cerr << "Error: " << ex.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }
