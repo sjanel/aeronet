@@ -6,7 +6,7 @@
 
 namespace aeronet {
 
-#if defined(AERONET_ENABLE_OPENSSL)
+#ifdef AERONET_ENABLE_OPENSSL
 TEST(ServerStatsTest, JsonIncludesKtlsFieldsWhenOpenSslEnabled) {
   ServerStats stats;
   stats.totalBytesQueued = 1;

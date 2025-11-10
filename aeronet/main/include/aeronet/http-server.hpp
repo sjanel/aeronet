@@ -90,6 +90,22 @@ class HttpServer {
     std::chrono::nanoseconds duration{0};
   };
 
+  struct MiddlewareMetrics {
+    enum class Phase : uint8_t { Pre, Post };
+
+    Phase phase{Phase::Pre};
+    bool isGlobal{false};
+    bool shortCircuited{false};
+    bool threw{false};
+    bool streaming{false};
+    http::Method method{http::Method::GET};
+    uint32_t index{0};
+    uint64_t durationNs{0};
+    std::string_view requestPath;
+  };
+
+  using MiddlewareMetricsCallback = std::function<void(const MiddlewareMetrics&)>;
+
   // Expectation handling API
   // ------------------------
   // The server will honour the standard "Expect: 100-continue" behaviour by default.
@@ -115,9 +131,10 @@ class HttpServer {
 
   using MetricsCallback = std::function<void(const RequestMetrics&)>;
 
-  // Construct a HttpServer that does nothing.
+  // Construct a void HttpServer, that will not serve anything.
   // Useful only to make it default constructible for temporary purposes (for instance to move assign to it later on),
   // but do not attempt to use a default constructed server, it will not bind to any socket.
+  // It's NOT equivalent to HttpServer(HttpServerConfig{}) - the default constructed server is not usable.
   HttpServer() noexcept = default;
 
   // Construct a server bound and listening immediately according to given configuration.
@@ -165,7 +182,8 @@ class HttpServer {
 
   // Get the object managing per-path handlers.
   // You may use it to modify path handlers after initial configuration.
-  Router& router() noexcept { return _router; }
+  // However, it is not allowed to modify the Router while the server is running.
+  Router& router() { return _router; }
 
   // Install a callback invoked whenever the request parser encounters a non‑recoverable
   // protocol error for a connection. Typical causes correspond to the HTTP status codes.
@@ -185,12 +203,25 @@ class HttpServer {
   // Exceptions:
   // - Exceptions escaping the callback are caught and ignored to preserve server stability.
   void setParserErrorCallback(ParserErrorCallback cb);
+
+  // Install a callback invoked after completing each request (including errors).
+  // Semantics:
+  //   - Callback is executed in the server's event loop thread after the response
+  //     has been fully sent.
+  //   - Keep the body extremely light (metrics increment, logging). Avoid blocking or heavy
+  //     allocations – it delays processing of other connections.
+  // Lifetime:
+  //   - May be set or replaced at any time; the latest callback is used for subsequent requests.
+  //     Provide an empty std::function ({}) to clear.
   void setMetricsCallback(MetricsCallback cb);
 
   // Register or clear the expectation handler. This handler will be invoked from
   // the server's event-loop thread when a request contains an `Expect` header
   // with tokens other than "100-continue". To clear, pass an empty std::function.
   void setExpectationHandler(ExpectationHandler handler);
+
+  // Install a callback invoked with middleware metrics.
+  void setMiddlewareMetricsCallback(MiddlewareMetricsCallback cb) { _middlewareMetricsCb = std::move(cb); }
 
   // Run the server event loop until stop() is called (e.g. from another thread) or the process receives SIGINT/SIGTERM.
   // The maximum blocking interval of a single poll cycle is controlled by HttpServerConfig::pollInterval.
@@ -249,6 +280,7 @@ class HttpServer {
 
   [[nodiscard]] bool isDraining() const { return _lifecycle.isDraining(); }
 
+  // Retrieve current server statistics snapshot.
   [[nodiscard]] ServerStats stats() const;
 
   // Post a configuration update to be applied safely from the server's event loop thread.
@@ -267,13 +299,9 @@ class HttpServer {
   //   mutable and will take effect as documented for each field.
   void postConfigUpdate(std::function<void(HttpServerConfig&)> updater);
 
- protected:
-#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
-  [[nodiscard]] virtual TlsTransport::KtlsEnableResult doEnableKtlsSend(TlsTransport& transport);
-#endif
-
  private:
   friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
+  friend class MultiHttpServer;
 
   using ConnectionMap = flat_hash_map<Connection, ConnectionState, std::hash<int>, std::equal_to<>>;
 
@@ -301,7 +329,7 @@ class HttpServer {
                           bool& found100Continue);
   // Helper to populate and invoke the metrics callback for a completed request.
   void emitRequestMetrics(http::StatusCode status, std::size_t bytesIn, bool reusedConnection);
-  void applyResponseMiddleware(HttpResponse& response, std::span<const ResponseMiddleware> routeChain);
+  void applyResponseMiddleware(HttpResponse& response, std::span<const ResponseMiddleware> routeChain, bool streaming);
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // If immediate=true the connection will be closed without waiting for buffered writes to drain.
   void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, bool immediate = false,
@@ -341,6 +369,20 @@ class HttpServer {
   void maybeEnableKtlsSend(ConnectionState& state, TlsTransport& transport, int fd);
 #endif
 
+  // Helpers to enable/disable writable interest (EPOLLOUT) for a connection. They wrap
+  // ModWithCloseOnFailure and update `ConnectionState::waitingWritable` and internal stats
+  // consistently. Return true on success, false on failure (caller should handle close).
+  bool enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx);
+  bool disableWritableInterest(ConnectionMapIt cnxIt, const char* ctx);
+
+  void emitMiddlewareMetrics(MiddlewareMetrics::Phase phase, bool isGlobal, uint32_t index, uint64_t durationNs,
+                             bool shortCircuited, bool threw, bool streaming);
+
+  [[nodiscard]] tracing::SpanRAII startMiddlewareSpan(MiddlewareMetrics::Phase phase, bool isGlobal, uint32_t index,
+                                                      bool streaming);
+
+  bool runPreChain(bool willStream, std::span<const RequestMiddleware> chain, HttpResponse& out, bool isGlobal);
+
   struct StatsInternal {
     uint64_t totalBytesQueued{0};
     uint64_t totalBytesWrittenImmediate{0};
@@ -357,12 +399,6 @@ class HttpServer {
     uint64_t ktlsSendBytes{0};
 #endif
   } _stats;
-
-  // Helpers to enable/disable writable interest (EPOLLOUT) for a connection. They wrap
-  // ModWithCloseOnFailure and update `ConnectionState::waitingWritable` and internal stats
-  // consistently. Return true on success, false on failure (caller should handle close).
-  bool enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx);
-  bool disableWritableInterest(ConnectionMapIt cnxIt, const char* ctx);
 
   HttpServerConfig _config;
 
@@ -383,6 +419,7 @@ class HttpServer {
 
   ParserErrorCallback _parserErrCb = []([[maybe_unused]] http::StatusCode) {};
   MetricsCallback _metricsCb;
+  MiddlewareMetricsCallback _middlewareMetricsCb;
   ExpectationHandler _expectationHandler;
   HttpRequest _request;  // to keep allocated memory
   RawChars _tmpBuffer;   // can be used for any kind of temporary buffer

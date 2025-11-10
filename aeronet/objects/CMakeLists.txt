@@ -131,8 +131,8 @@ add_unit_test(
 )
 
 add_unit_test(
-    aeronet_version_test
-    test/aeronet_version_test.cpp
+    aeronet-version_test
+    test/aeronet-version_test.cpp
     LIBRARIES
     aeronet_tech
 )

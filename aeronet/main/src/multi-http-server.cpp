@@ -54,8 +54,7 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg)
           }()) {}
 
 MultiHttpServer::MultiHttpServer(MultiHttpServer&& other) noexcept
-    : _parserErrCb(std::move(other._parserErrCb)),
-      _stopRequested(std::move(other._stopRequested)),
+    : _stopRequested(std::move(other._stopRequested)),
       _servers(std::move(other._servers)),
       _threads(std::move(other._threads)) {}
 
@@ -63,7 +62,7 @@ MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
   if (this != &other) {
     // Ensure we are not leaking running threads; stop existing group first.
     stop();
-    _parserErrCb = std::move(other._parserErrCb);
+
     _stopRequested = std::move(other._stopRequested);
     _servers = std::move(other._servers);
     _threads = std::move(other._threads);
@@ -97,17 +96,35 @@ std::string MultiHttpServer::AggregatedStats::json_str() const {
   return out;
 }
 
-void MultiHttpServer::ensureNotStarted() const {
+void MultiHttpServer::canSetCallbacks() const {
   if (!_threads.empty()) {
     // Only disallow mutations while the server farm is actively running. After stop() (threads cleared)
     // handlers and callbacks may be adjusted prior to a restart.
     throw std::logic_error("Cannot mutate configuration while running (stop() first)");
   }
+  if (_servers.empty()) {
+    throw std::logic_error("Cannot set callbacks on an empty MultiHttpServer");
+  }
 }
 
-void MultiHttpServer::setParserErrorCallback(ParserErrorCallback cb) {
-  ensureNotStarted();
-  _parserErrCb = std::move(cb);
+void MultiHttpServer::setParserErrorCallback(HttpServer::ParserErrorCallback cb) {
+  canSetCallbacks();
+  _servers.front().setParserErrorCallback(std::move(cb));
+}
+
+void MultiHttpServer::setMetricsCallback(HttpServer::MetricsCallback cb) {
+  canSetCallbacks();
+  _servers.front().setMetricsCallback(std::move(cb));
+}
+
+void MultiHttpServer::setExpectationHandler(HttpServer::ExpectationHandler handler) {
+  canSetCallbacks();
+  _servers.front().setExpectationHandler(std::move(handler));
+}
+
+void MultiHttpServer::setMiddlewareMetricsCallback(HttpServer::MiddlewareMetricsCallback cb) {
+  canSetCallbacks();
+  _servers.front().setMiddlewareMetricsCallback(std::move(cb));
 }
 
 void MultiHttpServer::start() {
@@ -121,7 +138,10 @@ void MultiHttpServer::start() {
   while (_servers.size() < _servers.capacity()) {
     auto& server = _servers.emplace_back(firstServer.config(), firstServer.router());
 
-    server.setParserErrorCallback(_parserErrCb);
+    server.setParserErrorCallback(firstServer._parserErrCb);
+    server.setMetricsCallback(firstServer._metricsCb);
+    server.setExpectationHandler(firstServer._expectationHandler);
+    server.setMiddlewareMetricsCallback(firstServer._middlewareMetricsCb);
   }
 
   _stopRequested->store(false, std::memory_order_relaxed);

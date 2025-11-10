@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <charconv>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -26,7 +25,6 @@
 #include "aeronet/test_util.hpp"
 #include "file.hpp"
 
-using namespace std::chrono_literals;
 using namespace aeronet;
 
 namespace {
