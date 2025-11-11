@@ -2,13 +2,14 @@
 #include <chrono>
 #include <iostream>
 #include <thread>
+#include <utility>
 
 using namespace aeronet;
 
 int main() {
-  AsyncHttpServer async(HttpServerConfig{});
-  async.router().setDefault(
-      [](const HttpRequest&) { return HttpResponse(200, "OK").body("hello from async server\n"); });
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200, "OK").body("hello from async server\n"); });
+  AsyncHttpServer async(HttpServerConfig{}, std::move(router));
   async.start();
   std::cout << "Async server listening on port " << async.port() << '\n';
   std::cout << "Sleeping for 2 seconds while serving..." << '\n';

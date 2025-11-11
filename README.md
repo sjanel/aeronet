@@ -28,10 +28,11 @@ Spin up a basic HTTP/1.1 server that responds on `/hello` in just a few lines. I
 using namespace aeronet;
 
 int main() {
-  HttpServer server(HttpServerConfig{}); // if no specified port, OS will pick a free one
-  server.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&) {
+  Router router;
+  router.setPath(http::Method::GET, "/hello", [](const HttpRequest&) {
     return HttpResponse(200).body("hello from aeronet\n");
   });
+  HttpServer server(HttpServerConfig{}, std::move(router)); // if no specified port, OS will pick a free one
   server.run(); // blocking
 }
 ```
@@ -39,7 +40,7 @@ int main() {
 ### Streaming response
 
 ```cpp
-server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
+router.setDefault([](const HttpRequest&, HttpResponseWriter& w){
   w.status(200);
   w.contentType("text/plain");
   for (int i = 0; i < 10; ++i) {
@@ -181,8 +182,9 @@ A convenient wrapper of a `HttpServer` and a `std::jthread` object with non bloc
 using namespace aeronet;
 
 int main() {
-  AsyncHttpServer async(HttpServerConfig{});
-  server.server().router().setDefault([](const HttpRequest&){ return HttpResponse(200, "OK").body("hi"); });
+  Router router;
+  router.setDefault([](const HttpRequest&){ return HttpResponse(200, "OK").body("hi"); });
+  AsyncHttpServer async(HttpServerConfig{}, std::move(router));
   async.start();
   // main thread free to do orchestration / other work
   std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -257,11 +259,13 @@ Example:
 using namespace aeronet;
 
 int main() {
-  HttpServerConfig cfg; cfg.reusePort = true; // ephemeral, auto-propagated
-  MultiHttpServer multi(cfg, 4); // 4 underlying event loops
-  multi.router().setDefault([](const HttpRequest& req){
+  HttpServerConfig cfg; 
+  cfg.reusePort = true; // ephemeral, auto-propagated
+  Router router;
+  router.setDefault([](const HttpRequest& req){
     return HttpResponse(200).body("hello\n");
   });
+  MultiHttpServer multi(std::move(cfg), std::move(router), 4); // 4 underlying event loops
   multi.start();
   // ... run until external signal, or call stop() ...
   std::this_thread::sleep_for(std::chrono::seconds(30));
@@ -315,6 +319,42 @@ Blocking semantics summary:
 - `HttpServer::run()` / `runUntil()` – fully blocking; returns only on stop/predicate.
 - `AsyncHttpServer::start()` – non-blocking; lifecycle controlled via stop token + `server.stop()`.
 - `MultiHttpServer::start()` – non-blocking; returns after all reactors launched.
+
+### Router configuration: two safe ways to set handlers
+
+Routing configuration may be applied in two different ways depending on your application's lifecycle and threading model. Prefer pre-start configuration when possible; use the runtime proxy when you must mutate routing after server construction.
+
+#### Pre-start configuration (recommended)
+
+Construct and fully configure a `Router` instance on the calling thread, then pass it to the server constructor. This is the simplest and safest approach: router will be up to date immediately directly at server construction.
+
+Example (recommended):
+
+```cpp
+Router router;
+router.setPath(http::Method::GET, "/hello", [](const HttpRequest&){ return HttpResponse(200).body("hello"); });
+HttpServer server(HttpServerConfig{}, std::move(router));
+server.run();
+```
+
+#### Runtime updates via `RouterUpdateProxy`
+
+If you need to mutate routes while a server is active, use the `RouterUpdateProxy` exposed by `HttpServer::router()` and by convenience `AsyncHttpServer::router()` / `MultiHttpServer::router()`. The proxy accepts handler registration calls and forwards them to the server's event-loop thread so updates occur without racing the request processing. If the server is running, the update will be effective at most after one event polling period.
+
+Example (runtime-safe):
+
+```cpp
+AsyncHttpServer async(HttpServerConfig{});
+async.start();
+// later, from another thread:
+async.router().setPath(http::Method::POST, "/upload", [](const HttpRequest&){ return HttpResponse(201); });
+```
+
+Notes:
+
+- The proxy methods schedule updates to run on the server thread; they may execute immediately when the server is idle, or be queued and applied at the next loop iteration.
+- The proxy will propagate exceptions thrown by your updater back to the caller when possible; handler registration conflicts (e.g. streaming vs non-streaming for same method+path) are reported.
+- Prefer pre-start configuration for simpler semantics and testability; use runtime updates only when dynamic reconfiguration is required.
 
 ### Building the HTTP response
 
@@ -415,12 +455,14 @@ using namespace aeronet;
 int main() {
   HttpServerConfig cfg;
   cfg.withBuiltinProbes(BuiltinProbesConfig{});
-  HttpServer server(std::move(cfg));
 
+  Router router;
   // Register application handlers as usual (optional)
-  server.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&){
+  router.setPath(http::Method::GET, "/hello", [](const HttpRequest&){
     return HttpResponse(200, "OK").body("hello\n");
   });
+
+  HttpServer server(std::move(cfg), std::move(router));
 
   server.run();
 }
@@ -667,8 +709,8 @@ Keep-alive can be disabled globally by `cfg.withKeepAliveMode(false)`; per-reque
 
 Two mutually exclusive approaches:
 
-1. Global handler: `server.router().setDefault([](const HttpRequest&){ ... })` (receives every request if no specific path matches).
-2. Per-path handlers: `server.router().setPath(http::Method::GET | http::Method::POST, "/hello", handler)` – exact path match.
+1. Global handler: `router.setDefault([](const HttpRequest&){ ... })` (receives every request if no specific path matches).
+2. Per-path handlers: `router.setPath(http::Method::GET | http::Method::POST, "/hello", handler)` – exact path match.
 
 Rules:
 
@@ -681,15 +723,15 @@ Rules:
 Example:
 
 ```cpp
-HttpServer server(cfg);
-server.router().setPath(http::Method::GET | http::Method::PUT, "/hello", [](const HttpRequest&){
+Router router;
+router.setPath(http::Method::GET | http::Method::PUT, "/hello", [](const HttpRequest&){
   return HttpResponse(200, "OK").body("world");
 });
-server.router().setPath(http::Method::POST, "/echo", [](const HttpRequest& req){
+router.setPath(http::Method::POST, "/echo", [](const HttpRequest& req){
   return HttpResponse(200, "OK").body(req.body);
 });
 // Add another method later (merges method mask, replaces handler)
-server.router().setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
+router.setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
   return HttpResponse(200, "OK").body("Echo via GET");
 });
 ```

@@ -26,11 +26,14 @@ int main(int argc, char** argv) {
 
   aeronet::HttpServerConfig cfg;
   cfg.withPort(port).withReusePort(true);
-  aeronet::MultiHttpServer multi(cfg, static_cast<uint32_t>(threads));
-  multi.router().setDefault([](const aeronet::HttpRequest& req) {
+  aeronet::Router router;
+  router.setDefault([](const aeronet::HttpRequest& req) {
     return aeronet::HttpResponse(200, "OK").body(std::string("multi reactor response ") + std::string(req.path()) +
                                                  '\n');
   });
+
+  aeronet::MultiHttpServer multi(cfg, std::move(router), static_cast<uint32_t>(threads));
+
   multi.start();
   aeronet::log::info("Listening on {} with {} reactors (SO_REUSEPORT). Press Ctrl+C to stop.", multi.port(), threads);
   std::signal(SIGINT, handleSigint);
