@@ -9,6 +9,7 @@
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
 #include "vector.hpp"
@@ -54,12 +55,20 @@ class MultiHttpServer {
   // Performance rationale:
   //   - Avoids locks by treating start()/stop()/handler registration as single-threaded control
   //     operations; the hot path remains inside individual HttpServer event loops.
-  MultiHttpServer(HttpServerConfig cfg, uint32_t threadCount);
+  MultiHttpServer(HttpServerConfig cfg, Router router, uint32_t threadCount);
+
+  // Variant of MultiHttpServer(HttpServerConfig, Router, uint32_t) with a default constructed
+  // Router.
+  MultiHttpServer(HttpServerConfig cfg, uint32_t threadCount)
+      : MultiHttpServer(std::move(cfg), Router(), threadCount) {}
 
   // Construct a MultiHttpServer wrapper, with the number of available processors as number of threads (if detection is
   // possible). You can verify how many threads were chosen after construction of this instance thanks to nbThreads()
   // method.
-  explicit MultiHttpServer(HttpServerConfig cfg);
+  MultiHttpServer(HttpServerConfig cfg, Router router);
+
+  // Variant of MultiHttpServer(HttpServerConfig, Router, uint32_t) with a default constructed router.
+  explicit MultiHttpServer(HttpServerConfig cfg) : MultiHttpServer(std::move(cfg), Router()) {}
 
   // MultiHttpServer is moveable. Rationale:
   //   - Threads capture ONLY raw pointers to stable HttpServer elements stored inside the
@@ -79,10 +88,8 @@ class MultiHttpServer {
 
   ~MultiHttpServer();
 
-  // Returns a reference to the router of this instance.
-  // You can modify it as long as the MultiHttpServer is not started.
-  // Prerequisites: 'empty()' should be 'false'
-  Router& router();
+  // Obtain a proxy enabling fluent router updates across all underlying servers.
+  RouterUpdateProxy router();
 
   // setParserErrorCallback:
   //   Installs a callback invoked by each underlying HttpServer when a parser error occurs
@@ -171,6 +178,9 @@ class MultiHttpServer {
   // Post a configuration update to be applied safely to all underlying servers.
   // See HttpServer::postConfigUpdate for semantics.
   void postConfigUpdate(const std::function<void(HttpServerConfig&)>& updater);
+
+  // Schedule a router update applied to every underlying HttpServer on the event loop threads.
+  void postRouterUpdate(std::function<void(Router&)> updater);
 
  private:
   void canSetCallbacks() const;

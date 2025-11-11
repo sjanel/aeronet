@@ -1,8 +1,5 @@
 #pragma once
 
-#include <sys/eventfd.h>  // eventfd wakeups
-#include <sys/uio.h>      // iovec
-
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -11,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -26,6 +24,7 @@
 #include "aeronet/internal/lifecycle.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
 #include "aeronet/tracing/tracer.hpp"
@@ -38,9 +37,7 @@
 #include "vector.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
-#include <openssl/ssl.h>  // ensure real ::SSL is visible (avoid shadowing forward decl)
-
-#include "tls-context.hpp"  // brings TlsContext & TlsMetricsExternal
+#include "tls-context.hpp"
 #include "tls-metrics.hpp"
 #ifdef AERONET_ENABLE_KTLS
 #include "tls-transport.hpp"
@@ -51,16 +48,6 @@ namespace aeronet {
 
 class HttpResponseWriter;
 class CorsPolicy;
-
-class ITransport;  // forward declaration for TLS/plain transport abstraction
-#ifdef AERONET_ENABLE_OPENSSL
-class TlsContext;  // forward declaration still okay
-class TlsTransport;
-// NOTE: We intentionally do NOT forward declare SSL here because doing so inside the aeronet namespace would create
-// a different type aeronet::SSL, shadowing the real ::SSL from OpenSSL and breaking overload resolution for
-// SSL_* functions. Instead we include <openssl/ssl.h> above under the same feature flag, which provides the
-// correct ::SSL definition while keeping this header lightweight when TLS support is disabled.
-#endif
 
 // HttpServer
 //  - Single-threaded event loop by design: one instance == one epoll/reactor running in the
@@ -164,8 +151,9 @@ class HttpServer {
   //  * This keeps normal (non‑running) moves available for ergonomic construction & storage patterns.
   //
   // Safe usage pattern:
-  //    HttpServer tmp(cfg);
-  //    tmp.router().setDefault(...);
+  //    Router router;
+  //    router.setDefault(...);
+  //    HttpServer tmp(cfg, std::move(router));
   //    HttpServer server(std::move(tmp)); // OK (tmp not running)
   //    std::jthread t([&]{ server.run(); });
   //
@@ -180,10 +168,9 @@ class HttpServer {
 
   ~HttpServer();
 
-  // Get the object managing per-path handlers.
-  // You may use it to modify path handlers after initial configuration.
-  // However, it is not allowed to modify the Router while the server is running.
-  Router& router() { return _router; }
+  // Obtain a proxy enabling fluent router updates without accessing the router directly while running.
+  // Allows call chaining and implicit conversion to Router& for inspection during setup.
+  RouterUpdateProxy router();
 
   // Install a callback invoked whenever the request parser encounters a non‑recoverable
   // protocol error for a connection. Typical causes correspond to the HTTP status codes.
@@ -299,6 +286,10 @@ class HttpServer {
   //   mutable and will take effect as documented for each field.
   void postConfigUpdate(std::function<void(HttpServerConfig&)> updater);
 
+  // Post a router update to be applied from the event loop thread. The updater executes with exclusive
+  // access to the Router immediately before the next loop iteration, ensuring thread-safety for handler updates.
+  void postRouterUpdate(std::function<void(Router&)> updater);
+
  private:
   friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
   friend class MultiHttpServer;
@@ -313,6 +304,7 @@ class HttpServer {
   void eventLoop();
   void sweepIdleConnections();
   void applyConfigUpdates();
+  void applyRouterUpdates();
   void acceptNewConnections();
   void handleReadableClient(int fd);
   bool processRequestsOnConnection(ConnectionMapIt cnxIt);
@@ -365,6 +357,9 @@ class HttpServer {
 
   void registerBuiltInProbes();
 
+  void submitRouterUpdate(std::function<void(Router&)> updater,
+                          std::shared_ptr<std::promise<std::exception_ptr>> completion);
+
 #if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
   void maybeEnableKtlsSend(ConnectionState& state, TlsTransport& transport, int fd);
 #endif
@@ -404,6 +399,7 @@ class HttpServer {
 
   Socket _listenSocket;  // listening socket
   std::atomic<bool> _hasPendingConfigUpdates{false};
+  std::atomic<bool> _hasPendingRouterUpdates{false};
   EventLoop _eventLoop;  // epoll-based event loop
 
   internal::Lifecycle _lifecycle;
@@ -425,12 +421,14 @@ class HttpServer {
   RawChars _tmpBuffer;   // can be used for any kind of temporary buffer
 
   using ConfigUpdateVector = vector<std::function<void(HttpServerConfig&)>>;
+  using RouterUpdateVector = vector<std::function<void(Router&)>>;
 
   // Simple pending updates container: updaters are appended and applied at the
   // start of the next event loop iteration on the server thread. Protected by mutex
   // since callers may post from other threads.
-  mutable std::mutex _configUpdateLock;
+  mutable std::mutex _updateLock;
   ConfigUpdateVector _pendingConfigUpdates;
+  RouterUpdateVector _pendingRouterUpdates;
 
   // Telemetry context - one per HttpServer instance (no global singletons)
   tracing::TelemetryContext _telemetry;

@@ -365,6 +365,46 @@ TEST(HttpConfigUpdate, CoalesceWhileRunning) {
   EXPECT_TRUE(raw.contains('3'));
 }
 
+TEST(HttpRouterUpdate, RuntimeChangeObserved) {
+  // Ensure router proxy updates applied while server runs are observed by clients.
+  test::TestServer ts(HttpServerConfig{});
+
+  // initial handler returns v1
+  ts.router().setPath(aeronet::http::Method::GET, std::string("/dyn"), [](const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("v1");
+    return resp;
+  });
+
+  // verify baseline response
+  auto raw1 = test::simpleGet(ts.port(), "/dyn");
+  EXPECT_TRUE(raw1.find("v1") != std::string::npos);
+
+  // From another thread, post an update to change the handler to v2 after a small delay
+  std::jthread updater([&ts] {
+    std::this_thread::sleep_for(25ms);
+    ts.router().setPath(aeronet::http::Method::GET, std::string("/dyn"), [](const HttpRequest&) {
+      HttpResponse resp;
+      resp.body("v2");
+      return resp;
+    });
+  });
+
+  // Poll for the updated behavior for a short while
+  const auto deadline = std::chrono::steady_clock::now() + 500ms;
+  bool sawV2 = false;
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto raw = test::simpleGet(ts.port(), "/dyn");
+    if (raw.find("v2") != std::string::npos) {
+      sawV2 = true;
+      break;
+    }
+    std::this_thread::sleep_for(10ms);
+  }
+
+  EXPECT_TRUE(sawV2) << "Did not observe runtime router update within timeout";
+}
+
 TEST(HttpProbes, StartupAndReadinessTransitions) {
   HttpServerConfig cfg{};
   cfg.enableBuiltinProbes(true);
