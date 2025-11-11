@@ -51,8 +51,10 @@ struct TlsTestServer {
   void stop() { server.stop(); }
 
   // Forward selected HttpServer APIs for convenience to reduce nested server.server noise.
-  void setDefault(Router::RequestHandler handler) { server.server.router().setDefault(std::move(handler)); }
-  void setDefault(Router::StreamingHandler handler) { server.server.router().setDefault(std::move(handler)); }
+  RouterUpdateProxy router() { return server.router(); }
+
+  void setDefault(Router::RequestHandler handler) { router().setDefault(std::move(handler)); }
+  void setDefault(Router::StreamingHandler handler) { router().setDefault(std::move(handler)); }
 
   template <typename ErrCb>
   void setParserErrorCallback(ErrCb&& cb) {

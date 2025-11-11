@@ -27,10 +27,11 @@
 //    #include <aeronet/aeronet.hpp>
 //    using namespace aeronet;
 //    int main() {
-//      HttpServer server(HttpServerConfig{}.withPort(0));
-//      server.router().setDefault([](const HttpRequest& req){
+//      Router router;
+//      router.setDefault([](const HttpRequest& req){
 //         return HttpResponse(200, "OK").contentType("text/plain").body("hi\n");
 //      });
+//      HttpServer server(HttpServerConfig{}.withPort(0), std::move(router));
 //      server.run();
 //    }
 //

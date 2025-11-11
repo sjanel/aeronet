@@ -4,6 +4,8 @@
 
 #include <stdexcept>
 
+#include "aeronet/tls-config.hpp"
+
 namespace aeronet {
 
 TEST(HttpServerConfigTest, HeaderKey) {

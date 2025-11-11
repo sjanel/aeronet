@@ -1,12 +1,16 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <exception>
+#include <functional>
 #include <stop_token>
 #include <thread>
+#include <utility>
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 
 namespace aeronet {
@@ -22,8 +26,9 @@ namespace aeronet {
 //   MultiHttpServer::start()      -> non-blocking (N background threads)
 //
 // Basic usage:
-//   AsyncHttpServer async(HttpServerConfig{}.withPort(0));
-//   async.router().setDefault(...);
+//   Router router;
+//   router.setDefault(...);
+//   AsyncHttpServer async(HttpServerConfig{}.withPort(0), std::move(router));
 //   async.start();
 //   // ... work ...
 //   async.stop();
@@ -59,9 +64,8 @@ class AsyncHttpServer {
 
   [[nodiscard]] bool started() const noexcept { return _thread.joinable(); }
 
-  // Get a reference to the router object of this instance.
-  // You may use this to query or modify path handlers after initial configuration.
-  Router& router() { return _server.router(); }
+  // Obtain a proxy that forwards router updates to the underlying server, supporting fluent configuration.
+  RouterUpdateProxy router() { return _server.router(); }
 
   // Sets a callback invoked on HTTP parsing errors.
   // See HttpServer::setParserErrorCallback for semantics.
@@ -113,6 +117,9 @@ class AsyncHttpServer {
   void postConfigUpdate(std::function<void(HttpServerConfig&)> updater) {
     _server.postConfigUpdate(std::move(updater));
   }
+
+  // Apply router updates on the underlying server thread (preferred for in-flight changes).
+  void postRouterUpdate(std::function<void(Router&)> updater);
 
  private:
   void ensureStartable();

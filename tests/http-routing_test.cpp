@@ -17,6 +17,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -250,7 +251,7 @@ TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
     resp.header("X-Global-Middleware", "post");
   });
 
-  auto& entry = ts.router().setPath(http::Method::GET, "/mw-route", [&](const HttpRequest&) {
+  auto entry = ts.router().setPath(http::Method::GET, "/mw-route", [&](const HttpRequest&) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("handler");
     HttpResponse resp;
@@ -305,7 +306,7 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
     resp.header("X-Global-Streaming", "post");
   });
 
-  auto& entry =
+  auto entry =
       ts.router().setPath(http::Method::GET, "/mw-stream", [&](const HttpRequest&, HttpResponseWriter& writer) {
         {
           std::scoped_lock lock(seqMutex);
@@ -359,11 +360,11 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
     requestPaths.emplace_back(metrics.requestPath);
   });
 
-  auto& router = ts.resetRouterAndGet();
+  auto router = ts.resetRouterAndGet();
   router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
   router.addResponseMiddleware([](const HttpRequest&, HttpResponse&) {});
 
-  auto& entry = router.setPath(http::Method::GET, "/mw-metrics", [](const HttpRequest&) {
+  auto entry = router.setPath(http::Method::GET, "/mw-metrics", [](const HttpRequest&) {
     HttpResponse resp;
     resp.body("from-handler");
     return resp;
@@ -425,12 +426,12 @@ TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
     captured.push_back(metrics);
   });
 
-  auto& router = ts.resetRouterAndGet();
+  auto router = ts.resetRouterAndGet();
   router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
   router.addResponseMiddleware([](const HttpRequest&, HttpResponse&) {});
 
   std::atomic_bool handlerInvoked{false};
-  auto& entry = router.setPath(http::Method::GET, "/mw-short-metrics", [&](const HttpRequest&) {
+  auto entry = router.setPath(http::Method::GET, "/mw-short-metrics", [&](const HttpRequest&) {
     handlerInvoked.store(true, std::memory_order_relaxed);
     return HttpResponse(http::StatusCodeOK).body("should-not-run");
   });
@@ -486,11 +487,11 @@ TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
     requestPaths.emplace_back(metrics.requestPath);
   });
 
-  auto& router = ts.resetRouterAndGet();
+  auto router = ts.resetRouterAndGet();
   router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
   router.addResponseMiddleware([](const HttpRequest&, HttpResponse&) {});
 
-  auto& entry =
+  auto entry =
       router.setPath(http::Method::GET, "/mw-stream-metrics", [](const HttpRequest&, HttpResponseWriter& writer) {
         writer.status(http::StatusCodeOK, http::ReasonOK);
         writer.header("X", "1");

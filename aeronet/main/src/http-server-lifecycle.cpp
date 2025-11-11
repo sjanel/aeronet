@@ -91,6 +91,8 @@ HttpServer::HttpServer(HttpServer&& other)
       _expectationHandler(std::move(other._expectationHandler)),
       _request(std::move(other._request)),
       _tmpBuffer(std::move(other._tmpBuffer)),
+      _pendingConfigUpdates(std::move(other._pendingConfigUpdates)),
+      _pendingRouterUpdates(std::move(other._pendingRouterUpdates)),
       _telemetry(std::move(other._telemetry))
 #ifdef AERONET_ENABLE_OPENSSL
       ,
@@ -105,7 +107,7 @@ HttpServer::HttpServer(HttpServer&& other)
   }
   // transfer pending updates state; mutex remains with each instance (do not move mutex)
   _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_acq_rel);
-  _pendingConfigUpdates = std::move(other._pendingConfigUpdates);
+  _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.exchange(false), std::memory_order_acq_rel);
   other._lifecycle.reset();
 
   // Because probe handlers may capture 'this', they need to be re-registered on the moved-to instance
@@ -118,6 +120,7 @@ HttpServer::HttpServer(HttpServer&& other)
 HttpServer& HttpServer::operator=(HttpServer&& other) {
   if (this != &other) {
     stop();
+
     if (!other._lifecycle.isIdle()) {
       other.stop();
       throw std::logic_error("Cannot move-assign from a running HttpServer");
@@ -137,17 +140,19 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _expectationHandler = std::move(other._expectationHandler);
     _request = std::move(other._request);
     _tmpBuffer = std::move(other._tmpBuffer);
-    _telemetry = std::move(other._telemetry);
-
-    // transfer pending updates state; keep mutex per-instance
-    _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_acq_rel);
     _pendingConfigUpdates = std::move(other._pendingConfigUpdates);
+    _pendingRouterUpdates = std::move(other._pendingRouterUpdates);
+    _telemetry = std::move(other._telemetry);
 
 #ifdef AERONET_ENABLE_OPENSSL
     _tlsCtxHolder = std::move(other._tlsCtxHolder);
     _tlsMetrics = std::move(other._tlsMetrics);
     _tlsMetricsExternal = std::exchange(other._tlsMetricsExternal, {});
 #endif
+
+    // transfer pending updates state; keep mutex per-instance
+    _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_acq_rel);
+    _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.exchange(false), std::memory_order_acq_rel);
 
     // Because probe handlers may capture 'this', they need to be re-registered on the moved-to instance
     if (_config.builtinProbes.enabled) {

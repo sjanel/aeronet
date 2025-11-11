@@ -8,10 +8,12 @@
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <future>
 #include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include "accept-encoding-negotiation.hpp"
@@ -104,6 +106,18 @@ void RestoreImmutable(HttpServerConfig& cfg, ImmutableConfigSnapshot snapshot) {
 
 }  // namespace
 
+RouterUpdateProxy HttpServer::router() {
+  return {[this](std::function<void(Router&)> updater) {
+            auto completion = std::make_shared<std::promise<std::exception_ptr>>();
+            auto future = completion->get_future();
+            this->submitRouterUpdate(std::move(updater), std::move(completion));
+            if (auto ex = future.get()) {
+              std::rethrow_exception(ex);
+            }
+          },
+          [this]() -> Router& { return _router; }};
+}
+
 void HttpServer::setParserErrorCallback(ParserErrorCallback cb) { _parserErrCb = std::move(cb); }
 
 void HttpServer::setMetricsCallback(MetricsCallback cb) { _metricsCb = std::move(cb); }
@@ -115,7 +129,7 @@ void HttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater
   auto configSnapshot = CaptureImmutable(_config);
 
   {
-    std::scoped_lock lock(_configUpdateLock);
+    std::scoped_lock lock(_updateLock);
     // Wrap user's updater with immutability enforcement: apply user changes then restore immutable fields
 
     struct WrappedUpdater {
@@ -130,6 +144,44 @@ void HttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater
 
     _pendingConfigUpdates.emplace_back(WrappedUpdater{std::move(updater), std::move(configSnapshot)});
     _hasPendingConfigUpdates.store(true, std::memory_order_release);
+  }
+  _lifecycle.wakeupFd.send();
+}
+
+void HttpServer::postRouterUpdate(std::function<void(Router&)> updater) { submitRouterUpdate(std::move(updater), {}); }
+
+void HttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
+                                    std::shared_ptr<std::promise<std::exception_ptr>> completion) {
+  auto wrappedUpdater = [fn = std::move(updater), completionPtr = std::move(completion)](Router& router) mutable {
+    try {
+      fn(router);
+      if (completionPtr) {
+        completionPtr->set_value(nullptr);
+      }
+    } catch (const std::exception& ex) {
+      if (completionPtr) {
+        completionPtr->set_value(std::current_exception());
+      } else {
+        log::error("Exception while applying posted router update: {}", ex.what());
+      }
+    } catch (...) {
+      if (completionPtr) {
+        completionPtr->set_value(std::current_exception());
+      } else {
+        log::error("Unknown exception while applying posted router update");
+      }
+    }
+  };
+
+  if (!_lifecycle.isActive()) {
+    wrappedUpdater(_router);
+    return;
+  }
+
+  {
+    std::scoped_lock lock(_updateLock);
+    _pendingRouterUpdates.emplace_back(std::move(wrappedUpdater));
+    _hasPendingRouterUpdates.store(true, std::memory_order_release);
   }
   _lifecycle.wakeupFd.send();
 }
@@ -613,6 +665,9 @@ void HttpServer::eventLoop() {
   if (_hasPendingConfigUpdates.load(std::memory_order_acquire)) {
     applyConfigUpdates();
   }
+  if (_hasPendingRouterUpdates.load(std::memory_order_acquire)) {
+    applyRouterUpdates();
+  }
 
   int ready = _eventLoop.poll([this](EventLoop::EventFd eventFd) {
     if (eventFd.fd == _listenSocket.fd()) {
@@ -969,24 +1024,38 @@ bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, ConnectionState& stat
   return false;
 }
 
-void HttpServer::applyConfigUpdates() {
-  ConfigUpdateVector pendingUpdates;
+namespace {
+
+void ApplyPendingUpdates(std::mutex& mutex, auto& vec, std::atomic<bool>& flag, auto& objToUpdate,
+                         std::string_view name) {
+  std::remove_reference_t<decltype(vec)> pendingUpdates;
   {
-    std::scoped_lock lock(_configUpdateLock);
-    pendingUpdates.swap(_pendingConfigUpdates);
-    _hasPendingConfigUpdates.store(false, std::memory_order_release);
+    std::scoped_lock lock(mutex);
+    pendingUpdates.swap(vec);
+    flag.store(false, std::memory_order_release);
   }
 
   for (auto& updater : pendingUpdates) {
     try {
-      updater(_config);
+      updater(objToUpdate);
     } catch (const std::exception& ex) {
-      log::error("Exception while applying posted config update: {}", ex.what());
+      log::error("Exception while applying posted {} update: {}", name, ex.what());
     } catch (...) {
-      log::error("Unknown exception while applying posted config update");
+      log::error("Unknown exception while applying posted {} update", name);
     }
   }
+}
+
+}  // namespace
+
+void HttpServer::applyConfigUpdates() {
+  ApplyPendingUpdates(_updateLock, _pendingConfigUpdates, _hasPendingConfigUpdates, _config, "config");
+
   _encodingSelector = EncodingSelector(_config.compression);
+}
+
+void HttpServer::applyRouterUpdates() {
+  ApplyPendingUpdates(_updateLock, _pendingRouterUpdates, _hasPendingRouterUpdates, _router, "router");
 }
 
 bool HttpServer::runPreChain(bool willStream, std::span<const RequestMiddleware> chain, HttpResponse& out,

@@ -301,7 +301,7 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
   cfg.withTlsAlpnProtocols({"http/1.1"});
   // Use plain TestServer since we manually set config
   test::TestServer server(cfg, RouterConfig{}, std::chrono::milliseconds{50});
-  server.server.router().setDefault([](const HttpRequest& req) {
+  server.router().setDefault([](const HttpRequest& req) {
     return HttpResponse(200, "OK")
 
         .body(std::string("FILETLS-") + std::string(req.alpnProtocol().empty() ? "-" : req.alpnProtocol()));

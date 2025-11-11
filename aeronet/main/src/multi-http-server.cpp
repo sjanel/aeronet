@@ -22,7 +22,7 @@
 
 namespace aeronet {
 
-MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, uint32_t threadCount)
+MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router, uint32_t threadCount)
     : _stopRequested(std::make_unique<std::atomic<bool>>(false)) {
   if (threadCount == 0) {
     throw std::invalid_argument("MultiHttpServer: threadCount must be >= 1");
@@ -37,13 +37,13 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, uint32_t threadCount)
 
   // Construct first server. If port was ephemeral (0), HttpServer constructor resolves it synchronously.
   // We move the base config into the first server then copy back the resolved version (with concrete port).
-  _servers.emplace_back(std::move(cfg));
+  _servers.emplace_back(std::move(cfg), std::move(router));
 }
 
-MultiHttpServer::MultiHttpServer(HttpServerConfig cfg)
+MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
     : MultiHttpServer(
           HttpServerConfig(std::move(cfg)),  // make a copy for base storage
-          []() {
+          std::move(router), []() {
             auto hc = std::thread::hardware_concurrency();
             if (hc == 0) {
               hc = 1;
@@ -72,11 +72,23 @@ MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
 
 MultiHttpServer::~MultiHttpServer() { stop(); }
 
-Router& MultiHttpServer::router() {
+void MultiHttpServer::postRouterUpdate(std::function<void(Router&)> updater) {
   if (empty()) {
-    throw std::logic_error("Cannot get a router on an empty MultiHttpServer");
+    throw std::logic_error("Cannot post a router update on an empty MultiHttpServer");
   }
-  return _servers.front().router();
+
+  auto sharedUpdater = std::make_shared<std::function<void(Router&)>>(std::move(updater));
+  for (auto& server : _servers) {
+    server.postRouterUpdate([sharedUpdater](Router& router) { (*sharedUpdater)(router); });
+  }
+}
+
+RouterUpdateProxy MultiHttpServer::router() {
+  if (empty()) {
+    throw std::logic_error("Cannot access router proxy on an empty MultiHttpServer");
+  }
+  return {[this](std::function<void(Router&)> fn) { this->postRouterUpdate(std::move(fn)); },
+          [this]() -> Router& { return this->_servers.front()._router; }};
 }
 
 std::string MultiHttpServer::AggregatedStats::json_str() const {
@@ -136,7 +148,7 @@ void MultiHttpServer::start() {
   // firstServer reference is stable within the loop, because we have called reserved in the constructor.
   HttpServer& firstServer = _servers[0];
   while (_servers.size() < _servers.capacity()) {
-    auto& server = _servers.emplace_back(firstServer.config(), firstServer.router());
+    auto& server = _servers.emplace_back(firstServer.config(), firstServer._router);
 
     server.setParserErrorCallback(firstServer._parserErrCb);
     server.setMetricsCallback(firstServer._metricsCb);
