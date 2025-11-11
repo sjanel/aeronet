@@ -49,6 +49,10 @@ void AsyncHttpServer::setMiddlewareMetricsCallback(HttpServer::MiddlewareMetrics
   _server.setMiddlewareMetricsCallback(std::move(cb));
 }
 
+void AsyncHttpServer::postRouterUpdate(std::function<void(Router&)> updater) {
+  _server.postRouterUpdate(std::move(updater));
+}
+
 void AsyncHttpServer::start() {
   ensureStartable();
   _thread = std::jthread([this](const std::stop_token& st) {

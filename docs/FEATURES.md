@@ -337,7 +337,7 @@ Edge cases & notes:
 Minimal example (manual gzip):
 
 ```cpp
-server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
+router.setDefault([](const HttpRequest&, HttpResponseWriter& w){
   w.status(http::StatusOK);
   w.contentType(http::ContentTypeTextPlain);
   w.contentEncoding("gzip");            // suppress auto compression
@@ -349,7 +349,7 @@ server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
 To “force identity” even if thresholds would normally trigger compression:
 
 ```cpp
-server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
+router.setDefault([](const HttpRequest&, HttpResponseWriter& w){
   w.contentEncoding("identity"); // blocks auto compression
   w.writeBody(largePlainBuffer);
   w.end();
@@ -418,10 +418,13 @@ CompressionConfig c;
 c.minBytes = 64;
 c.preferredFormats = {Encoding::gzip, Encoding::deflate};
 HttpServerConfig cfg; cfg.withCompression(c);
-HttpServer server(cfg);
-server.router().setDefault([](const HttpRequest&) {
+
+Router router;
+router.setDefault([](const HttpRequest&) {
   return HttpResponse(200, "OK").body(std::string(1024,'A'));
 });
+
+HttpServer server(cfg, std::move(router));
 ```
 
 ## Inbound Request Decompression (Config Details)
@@ -492,10 +495,11 @@ Typical handler setup:
 
 ```cpp
 HttpServerConfig serverCfg; serverCfg.withRequestDecompression(RequestDecompressionConfig{});
-HttpServer server(serverCfg);
-server.router().setDefault([](const HttpRequest& req){
+Router router;
+router.setDefault([](const HttpRequest& req){
   return HttpResponse(200, "OK").body(std::string(req.body()));
 });
+HttpServer server(std::move(serverCfg), std::move(router));
 ```
 
 ## Chunked Transfer Encoding (RFC 7230 §4.1)
@@ -569,7 +573,7 @@ Attempting to send forbidden headers as trailers results in **400 Bad Request**.
 #### Trailer API
 
 ```cpp
-server.router().setPath(http::Method::GET, "/upload", [](const HttpRequest& req) {
+router.setPath(http::Method::GET, "/upload", [](const HttpRequest& req) {
   // Access request body
   std::string body = req.body();
   
@@ -652,7 +656,7 @@ aeronet supports sending HTTP trailers in responses, allowing metadata to be tra
 For fixed/buffered responses, use `HttpResponse::addTrailer()`:
 
 ```cpp
-server.router().setPath(http::Method::GET, "/data", [](const HttpRequest& req) {
+router.setPath(http::Method::GET, "/data", [](const HttpRequest& req) {
   HttpResponse resp(200);
   resp.body("response data");
   
@@ -691,7 +695,7 @@ return HttpResponse(200)
 For chunked/streaming responses, use `HttpResponseWriter::addTrailer()`:
 
 ```cpp
-server.router().setPath(http::Method::GET, "/stream",
+router.setPath(http::Method::GET, "/stream",
     [](const HttpRequest& req, HttpResponseWriter& w) {
   w.status(200);
   w.writeBody("chunk1");
@@ -1079,7 +1083,7 @@ Rationale: Normalize avoids duplicate handler registration while preserving SEO-
   - Example:
 
 ```cpp
-server.router().setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const HttpRequest& req) {
+router.setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const HttpRequest& req) {
   auto params = req.pathParams();
   auto it = params.find("id");
   if (it != params.end()) {
@@ -1093,7 +1097,7 @@ server.router().setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const 
 - Unnamed capture example (keys are "0", "1", ...):
 
 ```cpp
-server.router().setPath(http::Method::GET, "/files/{}/chunk/{}", handler);
+router.setPath(http::Method::GET, "/files/{}/chunk/{}", handler);
 // In handler: req.pathParams().at("0"), req.pathParams().at("1")
 ```
 
@@ -1137,9 +1141,13 @@ Manages N reactors via `SO_REUSEPORT`.
 ### MultiHttpServer restart example
 
 ```cpp
-HttpServerConfig cfg; cfg.port=0; cfg.reusePort=true; MultiHttpServer multi(cfg,4);
-multi.router().setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("hi\n"); });
-multi.start(); multi.stop(); multi.start();
+Router router;
+router.setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("hi\n"); });
+HttpServerConfig cfg; cfg.port=0; cfg.reusePort=true;
+MultiHttpServer multi(cfg, std::move(router), 4);
+multi.start();
+multi.stop();
+multi.start();
 ```
 
 ## Built-in Kubernetes-style probes
@@ -1402,8 +1410,8 @@ Limitations (current phase): no trailer support; compression integration limited
 Example:
 
 ```cpp
-HttpServer server(HttpServerConfig{}.withPort(8080));
-server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
+Router router;
+router.setDefault([](const HttpRequest&, HttpResponseWriter& w){
   w.setStatus(200, "OK");
   w.setHeader("Content-Type", "text/plain");
   for (int i=0;i<5;++i) {
@@ -1411,6 +1419,8 @@ server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){
   }
   w.end();
 });
+
+HttpServer server(HttpServerConfig{}.withPort(8080), std::move(router));
 ```
 
 Testing: see `tests/http_streaming.cpp`.
@@ -1474,11 +1484,14 @@ int main() {
   staticFileConfig.enableDirectoryIndex = true;  // fallback to HTML listings when index.html is absent
   staticFileConfig.defaultIndex = "index.html";
 
-  HttpServer server(cfg);
+  Router router;
   StaticFileHandler assets("/var/www/html", std::move(staticFileConfig));
-  server.router().setPath(http::Method::GET, "/", [assets](const HttpRequest& req) mutable {
+  router.setPath(http::Method::GET, "/", [assets](const HttpRequest& req) mutable {
     return assets(req);
   });
+
+  HttpServer server(std::move(cfg), std::move(router));
+
   server.run();
 }
 ```
@@ -1525,20 +1538,20 @@ Conflict rules:
 Example precedence illustration:
 
 ```cpp
-server.router().setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("GLOBAL"); });
-server.router().setDefault([](const HttpRequest&, HttpResponseWriter& w){ 
+router.setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("GLOBAL"); });
+router.setDefault([](const HttpRequest&, HttpResponseWriter& w){ 
   w.setStatus(200,"OK");
   w.contentType("text/plain");
   w.writeBody("STREAMFALLBACK"); 
   w.end(); 
 });
-server.router().setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& w){ 
+router.setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& w){ 
   w.setStatus(200,"OK"); 
   w.contentType("text/plain"); 
   w.writeBody("PS"); 
   w.end(); 
 });
-server.router().setPath(http::Method::POST, "/stream", [](const HttpRequest&){ return HttpResponse{201, "Created"}.body("NORMAL"); });
+router.setPath(http::Method::POST, "/stream", [](const HttpRequest&){ return HttpResponse{201, "Created"}.body("NORMAL"); });
 ```
 
 Behavior:
@@ -1730,8 +1743,7 @@ All configuration methods return `CorsPolicy&` for fluent chaining.
 **Per-route policy:**
 
 ```cpp
-server.router()
-      .setPath(http::Method::GET | http::Method::POST, "/api/data", 
+router.setPath(http::Method::GET | http::Method::POST, "/api/data", 
                [](const HttpRequest& req) { ... })
       .cors(std::move(policy));
 ```
@@ -1813,8 +1825,7 @@ apiCors.allowOrigin("https://app.example.com")
        .allowCredentials(true)
        .maxAge(std::chrono::hours{24});
 
-server.router()
-      .setPath(http::Method::GET | http::Method::POST, "/api/*", apiHandler)
+router.setPath(http::Method::GET | http::Method::POST, "/api/*", apiHandler)
       .cors(std::move(apiCors));
 ```
 

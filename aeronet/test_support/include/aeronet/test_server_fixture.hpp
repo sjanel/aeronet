@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -65,6 +66,18 @@ struct TestServer {
     std::this_thread::sleep_for(server.config().pollInterval + 100us);  // allow event loop to process update
   }
 
+  void postRouterUpdate(std::function<void(Router&)> updater) {
+    server.postRouterUpdate(std::move(updater));
+    std::this_thread::sleep_for(server.config().pollInterval + 100us);
+  }
+
+  RouterUpdateProxy router() { return server.router(); }
+
+  RouterUpdateProxy resetRouterAndGet(std::function<void(Router&)> initializer = {}) {
+    resetRouter(std::move(initializer));
+    return router();
+  }
+
   // Cooperative stop; safe to call multiple times.
   void stop() {
     if (!stopFlag.exchange(true)) {
@@ -72,11 +85,13 @@ struct TestServer {
     }
   }
 
-  Router& router() { return server.router(); }
-
-  Router& resetRouterAndGet() {
-    router().clear();
-    return router();
+  void resetRouter(std::function<void(Router&)> initializer = {}) {
+    postRouterUpdate([init = std::move(initializer)](Router& router) mutable {
+      router.clear();
+      if (init) {
+        init(router);
+      }
+    });
   }
 
   TestHttpServer server;
