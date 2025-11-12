@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -16,11 +17,13 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/signal-handler.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
 using namespace std::chrono_literals;
-using namespace aeronet;
+
+namespace aeronet {
 
 TEST(HttpServerMove, MoveConstructAndServe) {
   std::atomic_bool stop{false};
@@ -456,7 +459,6 @@ TEST(HttpProbes, OverridePaths) {
 
 TEST(HttpConfigUpdate, ImmutableFieldsProtected) {
   HttpServerConfig cfg{};
-  cfg.withPort(0);  // ephemeral
   cfg.withReusePort(false);
 
   test::TestServer ts(std::move(cfg));
@@ -495,3 +497,84 @@ TEST(HttpConfigUpdate, ImmutableFieldsProtected) {
   // Mutable field should have changed
   EXPECT_TRUE(maxBodyResp.contains("1048576"));  // 1024*1024
 }
+
+class SignalHandlerGlobalTest : public ::testing::Test {
+ protected:
+  void TearDown() override {
+    SignalHandler::ResetStopRequest();
+    SignalHandler::Disable();
+  }
+};
+
+TEST_F(SignalHandlerGlobalTest, AutoDrainOnStopRequest) {
+  // Verify that the global signal handler mechanism triggers drain on all servers
+
+  // Install global signal handler with 2s drain timeout
+  SignalHandler::Enable(2000ms);
+
+  test::TestServer ts(HttpServerConfig{});
+
+  ts.router().setDefault([](const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("alive");
+    return resp;
+  });
+
+  // Verify server is running and responsive
+  auto resp1 = test::simpleGet(ts.port(), "/");
+  EXPECT_TRUE(resp1.contains("alive"));
+  EXPECT_FALSE(ts.server.isDraining());
+  EXPECT_FALSE(SignalHandler::IsStopRequested());
+
+  // Simulate signal delivery by directly raising SIGINT (safe in test context)
+  // Note: raise() is synchronous in the calling thread, so the handler runs immediately
+  ::raise(SIGINT);
+
+  // IsStopRequested should now be true
+  EXPECT_TRUE(SignalHandler::IsStopRequested());
+
+  // Allow event loop iteration to notice the stop request and call beginDrain
+  // The event loop checks IsStopRequested() after each epoll_wait cycle
+  std::this_thread::sleep_for(100ms);
+
+  // Server should have initiated drain (may have already completed if no connections)
+  // We can't reliably check isDraining() because with 0 connections the drain completes immediately
+  // Instead, verify the server stopped accepting new connections
+  EXPECT_FALSE(ts.server.isRunning());
+}
+
+TEST_F(SignalHandlerGlobalTest, MultiServerCoordination) {
+  // Verify that multiple HttpServers in the same process all respond to the global signal
+  SignalHandler::Enable(3000ms);
+
+  test::TestServer ts1(HttpServerConfig{});
+  test::TestServer ts2(HttpServerConfig{});
+
+  ts1.router().setDefault([](const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("server1");
+    return resp;
+  });
+  ts2.router().setDefault([](const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("server2");
+    return resp;
+  });
+
+  // Both servers running
+  EXPECT_FALSE(ts1.server.isDraining());
+  EXPECT_FALSE(ts2.server.isDraining());
+  EXPECT_FALSE(SignalHandler::IsStopRequested());
+
+  // Simulate signal
+  ::raise(SIGTERM);
+  EXPECT_TRUE(SignalHandler::IsStopRequested());
+
+  // Allow both event loops to notice
+  std::this_thread::sleep_for(100ms);
+
+  // Both servers should have stopped (drain completed immediately with no connections)
+  EXPECT_FALSE(ts1.server.isRunning());
+  EXPECT_FALSE(ts2.server.isRunning());
+}
+}  // namespace aeronet
