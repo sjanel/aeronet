@@ -77,8 +77,7 @@ struct HttpServerConfig {
   // Event loop polling / responsiveness tuning
   // ===========================================
   // Maximum duration the event loop will block waiting for I/O in a single epoll_wait() when idle before it wakes to
-  // perform housekeeping (idle sweep, Date header refresh) and to check for external stop conditions (stop() call or
-  // runUntil predicate).
+  // perform housekeeping and to check for external stop conditions (stop() call or runUntil predicate).
   // Lower values:
   //   + Faster responsiveness to external stop() calls.
   //   + Finer granularity for periodic housekeeping (idle connection sweeping).
@@ -93,7 +92,7 @@ struct HttpServerConfig {
   //   - General purpose / balanced default:     50–250 ms
   //   - Extremely low churn / power sensitive:  250–1000 ms (at the cost of slower shutdown & timeout precision)
   // Default (500 ms) favors low idle CPU over sub‑100 ms shutdown responsiveness.
-  std::chrono::milliseconds pollInterval{std::chrono::milliseconds{500}};  // formerly run() checkPeriod
+  std::chrono::milliseconds pollInterval{std::chrono::milliseconds{500}};
 
   // ===========================================
   // Slowloris / header read timeout mitigation

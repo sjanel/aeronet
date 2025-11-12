@@ -32,8 +32,8 @@ int main() {
   router.setPath(http::Method::GET, "/hello", [](const HttpRequest&) {
     return HttpResponse(200).body("hello from aeronet\n");
   });
-  HttpServer server(HttpServerConfig{}, std::move(router)); // if no specified port, OS will pick a free one
-  server.run(); // blocking
+  HttpServer server(HttpServerConfig{}, std::move(router));
+  server.run();
 }
 ```
 
@@ -52,7 +52,7 @@ router.setDefault([](const HttpRequest&, HttpResponseWriter& w){
 
 ## Quick Start with provided examples
 
-Minimal server examples are provided in [examples](examples) directory.
+Minimal server examples for typical use cases are provided in [examples](examples) directory.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -66,17 +66,13 @@ Test with curl:
 curl -i http://localhost:8080/hello
 
 HTTP/1.1 200
+Content-Type: text/plain
 Content-Length: 151
 Connection: keep-alive
-Date: Sun, 05 Oct 2025 09:08:14 GMT
+Date: Wed, 12 Nov 2025 18:56:52 GMT
+Server: aeronet
 
 Hello from aeronet minimal server! You requested /hello
-Method: GET
-Version: HTTP/1.1
-Headers:
-Accept: */*
-Host: localhost:8080
-User-Agent: curl/8.5.0
 ```
 
 ## Detailed Documentation
@@ -129,6 +125,7 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Move semantics | Transfer listening socket & loop state safely |
 | Restarts | All `HttpServer`, `AsyncHttpServer` and `MultiHttpServer` can be started again after stop |
 | Graceful draining | `HttpServer::beginDrain(maxWait)` stops new accepts, closes keep-alive after current responses, optional deadline to force-close stragglers |
+| Signal handling | Optional built-in SIGINT/SIGTERM handler to initiate draining when stop requested |
 | Heterogeneous lookups | Path handler map accepts `std::string`, `std::string_view`, `const char*` |
 | Outbound stats | Bytes queued, immediate vs flush writes, high-water marks |
 | Lightweight logging | Pluggable design (spdlog optional); ISO 8601 UTC timestamps |
@@ -170,6 +167,8 @@ Key characteristics:
 - It is also [trivially relocatable](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p1144r10.html), although I doubt it will be very useful for this type.
 
 ##### Configuration
+
+Most configuration is applied per **server instance**.
 
 `HttpServer` takes a `HttpServerConfig` by value at construction, which allows full control over the server parameters (port, timeouts, limits, TLS setup, compression options, etc). Once constructed, some fields can be updated, even while the server is running thanks to `postConfigUpdate` method.
 
@@ -319,6 +318,28 @@ Blocking semantics summary:
 - `HttpServer::run()` / `runUntil()` – fully blocking; returns only on stop/predicate.
 - `AsyncHttpServer::start()` – non-blocking; lifecycle controlled via stop token + `server.stop()`.
 - `MultiHttpServer::start()` – non-blocking; returns after all reactors launched.
+
+#### Signal-driven Shutdown (Process-wide)
+
+`aeronet` provides a global signal handler mechanism for graceful shutdown of **all** running servers:
+
+```cpp
+#include <aeronet/aeronet.hpp>
+
+// Install signal handlers for SIGINT/SIGTERM (typically in main before starting servers)
+std::chrono::milliseconds maxDrainPeriod{5000}; // 5s max drain
+aeronet::SignalHandler::Enable(maxDrainPeriod);
+
+// All HttpServer instances regularly check for stop requests in their event loops
+HttpServer server(cfg);
+server.run();  // Will drain and stop when SIGINT/SIGTERM received
+```
+
+Key points:
+
+- **Process-wide**: `SignalHandler::Enable()` installs handlers that set a global flag checked by all `HttpServer` instances (and so, `MultiHttpServer` and `AsyncHttpServer` are also affected).
+- **Automatic drain**: When a signal arrives, all running servers automatically call `beginDrain(maxDrainPeriod)` at the next event loop iteration.
+- **Optional**: Don't call `SignalHandler::Enable()` if your application manages signals differently.
 
 ### Router configuration: two safe ways to set handlers
 
@@ -702,8 +723,6 @@ cfg.withPort(8080)
 
 HttpServer server(cfg); // or HttpServer(8080) then server.setConfig(cfgWithoutPort);
 ```
-
-Keep-alive can be disabled globally by `cfg.withKeepAliveMode(false)`; per-request `Connection: close` or `Connection: keep-alive` headers are also honored (HTTP/1.1 default keep-alive, HTTP/1.0 requires explicit header).
 
 ### Handler Registration / Routing (Detailed)
 

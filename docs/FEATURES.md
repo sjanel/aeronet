@@ -774,6 +774,8 @@ Comprehensive test coverage includes:
 
 Handlers normally rely on automatic policy; unrecoverable errors escalate to Immediate.
 
+Keep-alive can be disabled globally by `cfg.withKeepAliveMode(false)`; per-request `Connection: close` or `Connection: keep-alive` headers are also honored (HTTP/1.1 default keep-alive, HTTP/1.0 requires explicit header).
+
 ### CloseMode Details
 
 `ConnectionState::CloseMode` models post-response connection intent.
@@ -801,7 +803,7 @@ Lifecycle: parse request → build response → determine keep-alive eligibility
 |-------|-------------|-------------|
 | Idle | Listener closed, loop inactive | Default / after drain/stop |
 | Running | Event loop servicing connections | `run()` / `runUntil()` |
-| Draining | Listener closed; existing connections finish with `Connection: close` | `beginDrain()` |
+| Draining | Listener closed; existing connections finish with `Connection: close` | `beginDrain()` or signal-driven auto-drain |
 | Stopping | Immediate teardown, pending connections closed | `stop()` or fatal epoll error |
 
 Key API points:
@@ -813,6 +815,33 @@ Key API points:
 - `stop()` remains the immediate shutdown primitive; it transitions to `Stopping`, force-closes all connections and wakes the event loop right away.
 
 This drain lifecycle allows supervisors to quiesce traffic (e.g., removing an instance from load balancers) while letting outstanding requests complete and optionally bounding the wait for stubborn clients.
+
+#### Signal-driven automatic drain
+
+`aeronet` provides a global signal handler mechanism that coordinates graceful shutdown across all `HttpServer` instances in the process:
+
+```cpp
+#include <aeronet/aeronet.hpp>
+
+// Install process-wide signal handlers for SIGINT/SIGTERM
+aeronet::SignalHandler::Enable(std::chrono::milliseconds{5000});  // 5s max drain
+
+aeronet::HttpServer server1(cfg1);
+aeronet::HttpServer server2(cfg2);
+// Both servers will automatically call beginDrain(5s) when SIGINT/SIGTERM is received
+```
+
+Key characteristics:
+
+- **Process-wide coordination**: `SignalHandler::Enable()` installs `SIGINT` and `SIGTERM` handlers that set a global `sig_atomic_t` flag, visible to all `HttpServer` instances.
+- **Automatic drain**: Each server's event loop checks `SignalHandler::IsStopRequested()` at the end of every iteration (after lifecycle state checks) and calls `beginDrain(maxDrainPeriod)` if the flag is set.
+- **Thread-safe**: The signal handler only sets an atomic flag; the actual drain logic runs from each server's event loop thread.
+- **Multi-server friendly**: Unlike per-server signal handling (which has races where only the first reader consumes the signal), the global flag ensures all servers in the process see the stop request simultaneously.
+- **Optional**: Applications that manage signals centrally can skip `SignalHandler::Enable()` and call `beginDrain()` directly as needed.
+
+This mechanism is recommended for most deployments where a clean shutdown on `SIGINT`/`SIGTERM` is desired without writing custom signal-handling code. For containerized environments (Kubernetes, Docker), it ensures that `SIGTERM` (sent by orchestrators during pod shutdown) triggers a graceful drain with a bounded timeout, improving availability during rolling updates.
+
+Where to look: [`signal-handler.hpp`](../aeronet/tech/include/aeronet/signal-handler.hpp), [`http-server-lifecycle_test.cpp`](../tests/http-server-lifecycle_test.cpp) for signal-driven drain tests.
 
 #### stop() vs beginDrain() — intent, semantics and guidance
 
