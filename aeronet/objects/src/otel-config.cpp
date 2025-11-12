@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-#include "log.hpp"
+#include "aeronet/log.hpp"
 
 namespace aeronet {
 

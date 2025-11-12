@@ -1,4 +1,4 @@
-#include "connection-state.hpp"
+#include "aeronet/connection-state.hpp"
 
 #include <sys/sendfile.h>
 #include <sys/types.h>
@@ -12,8 +12,8 @@
 #include <string_view>
 
 #include "aeronet/http-response-data.hpp"
-#include "log.hpp"
-#include "transport.hpp"
+#include "aeronet/log.hpp"
+#include "aeronet/transport.hpp"
 
 namespace aeronet {
 

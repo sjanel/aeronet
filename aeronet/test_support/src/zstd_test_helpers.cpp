@@ -1,4 +1,4 @@
-#include "zstd_test_helpers.hpp"
+#include "aeronet/zstd_test_helpers.hpp"
 
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>

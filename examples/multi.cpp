@@ -6,7 +6,7 @@
 #include <string>
 #include <thread>
 
-#include "log.hpp"
+#include "aeronet/log.hpp"
 
 namespace {
 volatile std::sig_atomic_t gStop = 0;

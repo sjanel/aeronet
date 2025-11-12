@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "aeronet/compression-config.hpp"
+#include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
@@ -23,7 +24,6 @@
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "file.hpp"
 
 using namespace aeronet;
 

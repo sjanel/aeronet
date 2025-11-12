@@ -3,8 +3,8 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/string-equal-ignore-case.hpp"
 #include "http-constants.hpp"
-#include "string-equal-ignore-case.hpp"
 
 namespace aeronet::http {
 

@@ -5,7 +5,7 @@
 #include <string_view>
 
 #include "aeronet/features.hpp"
-#include "stringconv.hpp"
+#include "aeronet/stringconv.hpp"
 
 namespace aeronet {
 

@@ -4,10 +4,10 @@
 #include <cstdint>
 #include <string_view>
 
+#include "aeronet/dynamic-concatenated-strings.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "dynamic-concatenated-strings.hpp"
 
 namespace aeronet {
 

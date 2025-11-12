@@ -16,9 +16,9 @@
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/test_util.hpp"
-#include "log.hpp"
 
 namespace aeronet::test {
 

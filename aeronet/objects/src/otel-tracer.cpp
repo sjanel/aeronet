@@ -10,10 +10,10 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/flat-hash-map.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/otel-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
-#include "flat-hash-map.hpp"
-#include "log.hpp"
 
 // Detect SDK and processor support
 #if __has_include( \

@@ -6,14 +6,14 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/fixedcapacityvector.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "fixedcapacityvector.hpp"
-#include "raw-chars.hpp"
-#include "string-equal-ignore-case.hpp"
+#include "aeronet/raw-chars.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet {
 namespace {

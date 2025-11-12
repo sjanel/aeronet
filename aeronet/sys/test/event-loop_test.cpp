@@ -1,4 +1,4 @@
-#include "event-loop.hpp"
+#include "aeronet/event-loop.hpp"
 
 #include <gtest/gtest.h>
 #include <unistd.h>
@@ -8,8 +8,8 @@
 #include <utility>
 #include <vector>
 
-#include "base-fd.hpp"
-#include "event.hpp"
+#include "aeronet/base-fd.hpp"
+#include "aeronet/event.hpp"
 
 using namespace aeronet;
 

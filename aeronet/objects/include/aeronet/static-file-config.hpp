@@ -8,7 +8,7 @@
 #include <string>
 #include <string_view>
 
-#include "static-concatenated-strings.hpp"
+#include "aeronet/static-concatenated-strings.hpp"
 
 namespace aeronet {
 
