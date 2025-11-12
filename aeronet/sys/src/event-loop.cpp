@@ -83,7 +83,7 @@ EventLoop& EventLoop::operator=(EventLoop&& rhs) noexcept {
 
 EventLoop::~EventLoop() { std::free(_pEvents); }
 
-void EventLoop::add_or_throw(EventFd event) const {
+void EventLoop::addOrThrow(EventFd event) const {
   if (!add(event)) {
     throw_errno("epoll_ctl ADD failed (fd # {}, events=0x{:x})", event.fd, event.eventBmp);
   }
@@ -147,5 +147,7 @@ int EventLoop::poll(const std::function<void(EventFd)>& cb) {
   }
   return nbReadyFds;
 }
+
+void EventLoop::updatePollTimeout(SysDuration pollTimeout) { _pollTimeoutMs = ComputeEpollTimeoutMs(pollTimeout); }
 
 }  // namespace aeronet

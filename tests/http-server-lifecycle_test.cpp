@@ -6,6 +6,7 @@
 #include <csignal>
 #include <cstdio>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -577,4 +578,157 @@ TEST_F(SignalHandlerGlobalTest, MultiServerCoordination) {
   EXPECT_FALSE(ts1.server.isRunning());
   EXPECT_FALSE(ts2.server.isRunning());
 }
+
+// Tests for HttpServer::AsyncHandle and start() methods
+TEST(HttpServerAsyncHandle, BasicStartAndStop) {
+  HttpServerConfig cfg;
+  cfg.withPollInterval(1ms);
+  HttpServer server(cfg);
+  auto port = server.port();
+
+  server.router().setDefault([](const HttpRequest& req) {
+    HttpResponse resp;
+    resp.body(std::string("async:") + std::string(req.path()));
+    return resp;
+  });
+
+  auto handle = server.startDetached();
+  EXPECT_TRUE(handle.started());
+
+  // Give server time to start
+  std::this_thread::sleep_for(50ms);
+
+  // Make a request
+  auto resp = test::simpleGet(port, "/test");
+  EXPECT_TRUE(resp.contains("async:/test"));
+
+  // Stop the server
+  handle.stop();
+  EXPECT_FALSE(handle.started());
+
+  // Check no errors occurred
+  EXPECT_NO_THROW(handle.rethrowIfError());
+}
+
+TEST(HttpServerAsyncHandle, RAIIAutoStop) {
+  HttpServerConfig cfg;
+  cfg.withPollInterval(1ms);
+  HttpServer server(cfg);
+  auto port = server.port();
+
+  server.router().setDefault([](const HttpRequest&) { return HttpResponse(200).body("raii-test"); });
+
+  {
+    auto handle = server.startDetached();
+    std::this_thread::sleep_for(50ms);
+
+    auto resp = test::simpleGet(port, "/");
+    EXPECT_TRUE(resp.contains("raii-test"));
+
+    // handle goes out of scope - should auto-stop
+  }
+
+  // Server should be stopped now
+  std::this_thread::sleep_for(50ms);
+  EXPECT_FALSE(server.isRunning());
+}
+
+TEST(HttpServerAsyncHandle, StartAndStopWhen) {
+  std::atomic<bool> done{false};
+  HttpServerConfig cfg;
+  cfg.withPollInterval(1ms);
+  HttpServer server(cfg);
+  auto port = server.port();
+
+  server.router().setDefault([](const HttpRequest& req) { return HttpResponse(200).body(req.path()); });
+
+  auto handle = server.startDetachedAndStopWhen([&] { return done.load(); });
+  std::this_thread::sleep_for(50ms);
+
+  auto resp = test::simpleGet(port, "/predicate");
+  EXPECT_TRUE(resp.contains("/predicate"));
+
+  // Trigger predicate
+  done.store(true);
+  std::this_thread::sleep_for(100ms);
+
+  // Server should have stopped
+  EXPECT_FALSE(server.isRunning());
+  EXPECT_NO_THROW(handle.rethrowIfError());
+}
+
+TEST(HttpServerAsyncHandle, StartWithStopToken) {
+  std::stop_source source;
+  HttpServerConfig cfg;
+  cfg.withPollInterval(1ms);
+  HttpServer server(cfg);
+  auto port = server.port();
+
+  server.router().setDefault([](const HttpRequest&) { return HttpResponse(200).body("token-test"); });
+
+  auto handle = server.startDetachedWithStopToken(source.get_token());
+  std::this_thread::sleep_for(50ms);
+
+  auto resp = test::simpleGet(port, "/");
+  EXPECT_TRUE(resp.contains("token-test"));
+
+  // Request stop via token
+  source.request_stop();
+  std::this_thread::sleep_for(100ms);
+
+  // Server should have stopped
+  EXPECT_FALSE(server.isRunning());
+  EXPECT_NO_THROW(handle.rethrowIfError());
+}
+
+TEST(HttpServerAsyncHandle, MoveHandle) {
+  HttpServerConfig cfg;
+  cfg.withPollInterval(1ms);
+  HttpServer server(cfg);
+  auto port = server.port();
+
+  server.router().setDefault([](const HttpRequest&) { return HttpResponse(200).body("move-test"); });
+
+  auto handle1 = server.startDetached();
+  std::this_thread::sleep_for(50ms);
+
+  // Move construct
+  HttpServer::AsyncHandle handle2(std::move(handle1));
+  EXPECT_TRUE(handle2.started());
+  EXPECT_FALSE(handle1.started());  // NOLINT(bugprone-use-after-move)
+
+  auto resp = test::simpleGet(port, "/");
+  EXPECT_TRUE(resp.contains("move-test"));
+
+  handle2.stop();
+  EXPECT_NO_THROW(handle2.rethrowIfError());
+}
+
+TEST(HttpServerAsyncHandle, RestartAfterStop) {
+  HttpServerConfig cfg;
+  cfg.withPollInterval(1ms);
+  HttpServer server(cfg);
+  auto port = server.port();
+
+  server.router().setDefault([](const HttpRequest&) { return HttpResponse(200).body("restart"); });
+
+  // First run
+  {
+    auto handle = server.startDetached();
+    std::this_thread::sleep_for(50ms);
+    auto resp = test::simpleGet(port, "/");
+    EXPECT_TRUE(resp.contains("restart"));
+  }
+
+  std::this_thread::sleep_for(50ms);
+
+  // Second run - server should be restartable
+  {
+    auto handle = server.startDetached();
+    std::this_thread::sleep_for(50ms);
+    auto resp = test::simpleGet(port, "/");
+    EXPECT_TRUE(resp.contains("restart"));
+  }
+}
+
 }  // namespace aeronet

@@ -12,7 +12,7 @@
 
 - **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths, horizontal scaling with port reuse
 - **Modular & opt‑in**: enable only the features you need (compression, TLS, logging, opentelemetry) via build flags
-- **Ergonomic**: ease of use, one purpose types `HttpServer`, `AsyncHttpServer`, `MultiHttpServer`; RAII listener setup, no hidden global state
+- **Ergonomic**: ease of use, RAII listener setup, no hidden global state
 - **Configurable**: fully configurable with reasonable defaults
 - **Cloud native**: Built-in Kubernetes-style health & readiness probes, opentelemetry support (metrics & tracing)
 
@@ -121,9 +121,9 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Epoll edge-triggered loop | One thread per `HttpServer`; writev used for header+body scatter-gather |
 | `SO_REUSEPORT` scaling | Horizontal multi-reactor capability |
 | Multi-instance wrapper | `MultiHttpServer` orchestrates N reactors, aggregates stats (explicit `reusePort=true` required for >1 threads; port resolved at construction) |
-| Async single-server wrapper | `AsyncHttpServer` runs one server in a background thread |
+| Async server methods | `start()` (void convenience) and `startDetached()` (returns `AsyncHandle`) |
 | Move semantics | Transfer listening socket & loop state safely |
-| Restarts | All `HttpServer`, `AsyncHttpServer` and `MultiHttpServer` can be started again after stop |
+| Restarts | `HttpServer` and `MultiHttpServer` can be started again after stop |
 | Graceful draining | `HttpServer::beginDrain(maxWait)` stops new accepts, closes keep-alive after current responses, optional deadline to force-close stragglers |
 | Signal handling | Optional built-in SIGINT/SIGTERM handler to initiate draining when stop requested |
 | Heterogeneous lookups | Path handler map accepts `std::string`, `std::string_view`, `const char*` |
@@ -150,12 +150,13 @@ Consuming `aeronet` will result in the client code interacting with [server obje
 
 ### Server objects
 
-`aeronet` provides 3 types of servers: `HttpServer`, `AsyncHttpServer` and `MultiHttpServer`. These are the main objects expected to be used by the client code.
+`aeronet` provides 2 types of servers: `HttpServer` and `MultiHttpServer`. These are the main objects expected to be used by the client code.
 
 #### HttpServer
 
 The core server of `aeronet`. It is mono-threaded process based on a reactor pattern powered by `epoll` with a blocking running event loop.
 The call to `run()` (or `runUntil(<predicate>)`) is blocking, and can be stopped by another thread by calling `stop()` on this instance.
+The non-blocking APIs launch the event loop in the background. Use `start()` when you want a void convenience that manages an internal handle for you, or `startDetached()` (and the related `startDetachedAndStopWhen(<predicate>)`, `startDetachedWithStopToken(<stop token>)`) when you need an `AsyncHandle` you can inspect or control explicitly.
 
 Key characteristics:
 
@@ -172,9 +173,19 @@ Most configuration is applied per **server instance**.
 
 `HttpServer` takes a `HttpServerConfig` by value at construction, which allows full control over the server parameters (port, timeouts, limits, TLS setup, compression options, etc). Once constructed, some fields can be updated, even while the server is running thanks to `postConfigUpdate` method.
 
-#### AsyncHttpServer, an asynchronous (non-blocking) HttpServer
+#### Running an asynchronous event loop (non blocking)
 
-A convenient wrapper of a `HttpServer` and a `std::jthread` object with non blocking `start()` (and `startAndStopWhen(<predicate>)`) and `stop()` methods.
+A convenient set of methods on a `HttpServer` that allow non blocking:
+
+`start()` — non-blocking convenience (returns void); the server manages an internal handle.
+
+`startDetached()` — non-blocking; returns an `AsyncHandle` giving explicit lifecycle control.
+
+`startDetachedAndStopWhen(<predicate>)` — like `startDetached()` but stops when predicate fires.
+
+`startDetachedWithStopToken(<stop token>)` — like `startDetached()` but integrates with `std::stop_token`.
+
+These methods allow running the server in a background thread; pick `startDetached()` when you need the handle, or `start()` when you do not.
 
 ```cpp
 #include <aeronet/aeronet.hpp>
@@ -183,12 +194,13 @@ using namespace aeronet;
 int main() {
   Router router;
   router.setDefault([](const HttpRequest&){ return HttpResponse(200, "OK").body("hi"); });
-  AsyncHttpServer async(HttpServerConfig{}, std::move(router));
-  async.start();
+  HttpServer srv(HttpServerConfig{}, std::move(router));
+  // Launch in background thread and capture lifetime handle
+  auto handle = srv.start();
   // main thread free to do orchestration / other work
   std::this_thread::sleep_for(std::chrono::seconds(2));
-  async.stop();
-  async.rethrowIfError();
+  handle.stop();
+  handle.rethrowIfError();
 }
 ```
 
@@ -196,11 +208,10 @@ Predicate form (stop when external flag flips):
 
 ```cpp
 std::atomic<bool> done{false};
-AsyncHttpServer async(HttpServerConfig{});
-async.startAndStopWhen([&]{ return done.load(); });
+HttpServer srv(HttpServerConfig{});
+auto handle = srv.startDetachedAndStopWhen([&]{ return done.load(); });
 // later
 done = true; // loop exits soon (bounded by poll interval)
-async.stop();
 ```
 
 Stop-token form (std::stop_token):
@@ -209,35 +220,16 @@ Stop-token form (std::stop_token):
 // If you already manage a std::stop_source you can pass its token directly
 // to let the caller control the server lifetime via cooperative cancellation.
 std::stop_source src;
-async.startWithStopToken(src.get_token());
+auto handle = srv.startDetachedWithStopToken(src.get_token());
 // later
 src.request_stop();
-async.stop();
 ```
 
 Notes:
 
 - Register handlers before `start()` unless you provide external synchronization for modifications.
 - `stop()` is idempotent; destructor performs it automatically as a safety net.
-
-Handler rules mirror `HttpServer`:
-
-- Routing should be configured before `start()`.
-- Mixing global handler with path handlers is rejected.
-- After `start()`, further registration throws.
-
-Stats aggregation example:
-
-```cpp
-auto st = multi.stats();
-for (size_t i = 0; i < st.per.size(); ++i) {
-  const auto& s = st.per[i];
-  std::print("[srv{}] queued={} imm={} flush={}\n", i,
-             s.totalBytesQueued,
-             s.totalBytesWrittenImmediate,
-             s.totalBytesWrittenFlush);
-}
-```
+- keep returned `AsyncHandle` to keep the server running; server will be stopped at its destruction.
 
 #### MultiHttpServer, a multi threading version of HttpServer
 
@@ -283,12 +275,22 @@ Additional notes:
   port automatically. (Design choice: stable port across cycles is usually what supervisors / load balancers expect.)
   To obtain a new ephemeral port you must construct a new `MultiHttpServer` (or in a future API explicitly reset
   the base configuration before a restart to `port=0`).
-- Handlers: global or path handlers registered before the first `start()` are re-applied to the fresh servers on each
-  restart. You may add/remove/replace path handlers and/or the global handler while the server is STOPPED (i.e. after
-  `stop()` and before the next `start()`). Modification while running is still forbidden.
+- Handlers: global or path handlers registered are re-applied to the fresh servers on each
+  restart. You may add/remove/replace path handlers using `postRouterUpdate()` is possible at any time (even during running).
 - Per‑run statistics are not accumulated across restarts; each run begins with fresh counters (servers rebuilt).
-- You may modify or add path handlers (and/or replace the global handler) after `stop()` and before the next
-  `start()`; attempting to do so while running throws.
+
+Stats aggregation example:
+
+```cpp
+auto st = multi.stats();
+for (size_t i = 0; i < st.per.size(); ++i) {
+  const auto& s = st.per[i];
+  std::print("[srv{}] queued={} imm={} flush={}\n", i,
+             s.totalBytesQueued,
+             s.totalBytesWrittenImmediate,
+             s.totalBytesWrittenFlush);
+}
+```
 
 ##### Example
 
@@ -299,25 +301,27 @@ Additional notes:
 Each thread owns its own listening socket (`SO_REUSEPORT`) and epoll instance – no shared locks in the accept path.
 This is the simplest horizontal scaling strategy before introducing a worker pool.
 
-#### Choosing Between HttpServer, AsyncHttpServer, and MultiHttpServer
+#### Summary table
 
-| Variant | Header | Launch API | Blocking? | Threads Created Internally  | Scaling Model | Typical Use Case | Restartable? | Notes |
-|---------|--------|------------|-----------|-----------------------------|---------------|------------------|--------------|-------|
-| `HttpServer` | `aeronet/http-server.hpp` | `run()` / `runUntil(pred)`, `stop()` (called from another thread) | Yes (caller thread blocks) | 0 | Single reactor | Dedicated thread you manage or simple main-thread server | Yes |Minimal overhead |
-| `AsyncHttpServer` | `aeronet/async-http-server.hpp` | `start()`, `startAndStopWhen(pred)`, `stop()` | No | 1 `std::jthread` | Single reactor (owned) | Need non-blocking single server with safe lifetime | Yes | Owns `HttpServer` internally |
-| `MultiHttpServer` | `aeronet/multi-http-server.hpp` | `start()`, `stop()` | No | N (`threadCount`) | Horizontal `SO_REUSEPORT` multi-reactor | Scale across cores quickly | Yes | Replicates handlers pre-start |
+| Variant | Header | Launch API | Blocking? | Threads Created | Scaling Model | Typical Use Case | Restartable? | Notes |
+|---------|--------|------------|-----------|--------------------|---------------|------------------|--------------|-------|
+| `HttpServer` | `aeronet/http-server.hpp` | `run()` / `runUntil(pred)` | Yes (caller thread blocks) | 0 | Single reactor | Dedicated thread you manage or simple main-thread server | Yes | Minimal overhead, zero thread creation |
+| `HttpServer` | `aeronet/http-server.hpp` | `start()` (void convenience) / `startDetached()` / `startDetachedAndStopWhen(pred)` / `startDetachedWithStopToken(token)` | No (`startDetached()` returns `AsyncHandle`) | 1 `std::jthread` (owned by handle) | Single reactor (background) | Non-blocking single server, calling thread remains free | Yes | `startDetached()` returns RAII handle; `start()` is a void convenience |
+| `MultiHttpServer` | `aeronet/multi-http-server.hpp` | `run()` / `runUntil(pred)` | Yes (caller thread blocks) | N (`threadCount`) | Horizontal `SO_REUSEPORT` multi-reactor | Multi-core throughput, blocking orchestration | Yes | All reactors run on caller thread until stop |
+| `MultiHttpServer` | `aeronet/multi-http-server.hpp` | `start()` (void convenience) / `startDetached()` | No (`startDetached()` returns `AsyncHandle`) | N `std::jthread`s (internal) | Horizontal `SO_REUSEPORT` multi-reactor | Multi-core throughput, non-blocking launch | Yes | `startDetached()` returns RAII handle; `start()` is a void convenience |
 
 Decision heuristics:
 
-- Use `HttpServer` when you already own a thread (or can just block main) and want minimal abstraction.
-- Use `AsyncHttpServer` when you want a single server but need the calling thread free (e.g. integrating into a service hosting multiple subsystems, or writing higher-level control logic while serving traffic).
-- Use `MultiHttpServer` when you need multi-core throughput with separate event loops per core; simplest horizontal scale path before more advanced worker models.
+- Use `HttpServer::run()` / `runUntil()` when you already own a thread (or can block `main()`) and want minimal abstraction with zero overhead.
+- Use `HttpServer::start()` family when you want a single server running in the background while keeping the calling thread free (e.g., integrating into a service hosting multiple subsystems, or writing higher-level control logic while serving traffic). The returned `AsyncHandle` provides RAII lifetime management with no added weight to `HttpServer` itself.
+- Use `MultiHttpServer` when you need multi-core throughput with separate event loops per core – the simplest horizontal scaling path before introducing more advanced worker models.
 
 Blocking semantics summary:
 
-- `HttpServer::run()` / `runUntil()` – fully blocking; returns only on stop/predicate.
-- `AsyncHttpServer::start()` – non-blocking; lifecycle controlled via stop token + `server.stop()`.
-- `MultiHttpServer::start()` – non-blocking; returns after all reactors launched.
+- `HttpServer::run()` / `runUntil()` – fully blocking; returns only on `stop()` or when predicate is satisfied.
+- `HttpServer::start()` / `startDetachedAndStopWhen()` / `startDetachedWithStopToken()` – non-blocking; returns immediately with an `AsyncHandle`. Lifetime controlled via the handle's destructor (RAII) or explicit `handle.stop()`.
+- `MultiHttpServer::run()` / `runUntil()` – fully blocking; returns only on `stop()` or when predicate is satisfied.
+- `MultiHttpServer::start()` – non-blocking; returns after all reactors are launched, manages internal thread pool.
 
 #### Signal-driven Shutdown (Process-wide)
 
@@ -337,7 +341,7 @@ server.run();  // Will drain and stop when SIGINT/SIGTERM received
 
 Key points:
 
-- **Process-wide**: `SignalHandler::Enable()` installs handlers that set a global flag checked by all `HttpServer` instances (and so, `MultiHttpServer` and `AsyncHttpServer` are also affected).
+- **Process-wide**: `SignalHandler::Enable()` installs handlers that set a global flag checked by all `HttpServer` instances (and so, `MultiHttpServer` instances are also affected).
 - **Automatic drain**: When a signal arrives, all running servers automatically call `beginDrain(maxDrainPeriod)` at the next event loop iteration.
 - **Optional**: Don't call `SignalHandler::Enable()` if your application manages signals differently.
 
@@ -360,15 +364,15 @@ server.run();
 
 #### Runtime updates via `RouterUpdateProxy`
 
-If you need to mutate routes while a server is active, use the `RouterUpdateProxy` exposed by `HttpServer::router()` and by convenience `AsyncHttpServer::router()` / `MultiHttpServer::router()`. The proxy accepts handler registration calls and forwards them to the server's event-loop thread so updates occur without racing the request processing. If the server is running, the update will be effective at most after one event polling period.
+If you need to mutate routes while a server is active, use the `RouterUpdateProxy` exposed by `HttpServer::router()` and by convenience  `MultiHttpServer::router()`. The proxy accepts handler registration calls and forwards them to the server's event-loop thread so updates occur without racing the request processing. If the server is running, the update will be effective at most after one event polling period.
 
 Example (runtime-safe):
 
 ```cpp
-AsyncHttpServer async(HttpServerConfig{});
-async.start();
+HttpServer server(HttpServerConfig{});
+auto handle = server.startDetached();
 // later, from another thread:
-async.router().setPath(http::Method::POST, "/upload", [](const HttpRequest&){ return HttpResponse(201); });
+server.router().setPath(http::Method::POST, "/upload", [](const HttpRequest&){ return HttpResponse(201); });
 ```
 
 Notes:
@@ -571,7 +575,7 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 | Routing | Path & method matching | ✅ | `http-routing_test.cpp`, `router_test.cpp` |
 | Compression | Negotiation & outbound insertion | ✅ | `http-compression_test.cpp`, `http-request-decompression_test.cpp` |
 | OpenTelemetry | Basic integration smoke | ✅ | `opentelemetry-integration_test.cpp` |
-| Async wrapper | AsyncHttpServer behavior | ✅ | `async-http-server_test.cpp` |
+| Async run | HttpServer::start() behavior | ✅ | `http-server-lifecycle_test.cpp` |
 | Misc / Smoke | Probes, stats, misc invariants | ✅ | `http-server-lifecycle_test.cpp`, `http-stats_test.cpp` |
 | Not Implemented | Trailers (outgoing chunked / trailing headers planned) | ❌ | Roadmap |
 

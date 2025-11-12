@@ -9,13 +9,14 @@
 #include <exception>
 #include <functional>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
-
+#
 #include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
@@ -37,6 +38,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/otel-config.hpp"
+#include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
 #include "aeronet/signal-handler.hpp"
@@ -1055,6 +1057,7 @@ void HttpServer::applyConfigUpdates() {
   ApplyPendingUpdates(_updateLock, _pendingConfigUpdates, _hasPendingConfigUpdates, _config, "config");
 
   _encodingSelector = EncodingSelector(_config.compression);
+  _eventLoop.updatePollTimeout(_config.pollInterval);
 }
 
 void HttpServer::applyRouterUpdates() {
