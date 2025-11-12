@@ -39,6 +39,7 @@
 #include "aeronet/otel-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
+#include "aeronet/signal-handler.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -733,6 +734,8 @@ void HttpServer::eventLoop() {
       log::info("Server drained gracefully");
       return;
     }
+  } else if (SignalHandler::IsStopRequested()) {
+    beginDrain(SignalHandler::GetMaxDrainPeriod());
   }
 }
 

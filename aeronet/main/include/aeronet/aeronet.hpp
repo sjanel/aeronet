@@ -54,6 +54,7 @@
 #include "aeronet/encoding.hpp"               // IWYU pragma: export
 #include "aeronet/http-server-config.hpp"     // IWYU pragma: export
 #include "aeronet/router-config.hpp"          // IWYU pragma: export
+#include "aeronet/signal-handler.hpp"         // IWYU pragma: export
 #include "aeronet/static-file-config.hpp"     // IWYU pragma: export
 #include "aeronet/tls-config.hpp"             // IWYU pragma: export
 
