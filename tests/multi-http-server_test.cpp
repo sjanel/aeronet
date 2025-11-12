@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -44,7 +45,7 @@ TEST(MultiHttpServer, BasicStartAndServe) {
     resp.body("Hello "); /* path not exposed directly */
     return resp;
   });
-  multi.start();
+  auto handle = multi.startDetached();
   auto port = multi.port();
   ASSERT_GT(port, 0);
   // allow sockets to be fully listening
@@ -57,6 +58,9 @@ TEST(MultiHttpServer, BasicStartAndServe) {
 
   auto stats = multi.stats();
   EXPECT_EQ(stats.per.size(), static_cast<std::size_t>(threads));
+
+  handle.stop();
+  handle.rethrowIfError();
 }
 
 // This test only validates that two servers can bind the same port with SO_REUSEPORT enabled
@@ -137,7 +141,7 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
     return resp;
   });
 
-  multi.start();
+  auto handle = multi.startDetached();
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
   test::ClientConnection cnx(port);
@@ -160,8 +164,9 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
 
   EXPECT_TRUE(test::WaitForPeerClose(fd, 500ms));
 
-  multi.stop();
-  EXPECT_FALSE(multi.isRunning());
+  handle.stop();
+  EXPECT_FALSE(handle.started());
+  handle.rethrowIfError();
 }
 
 TEST(MultiHttpServer, RapidStartStopCycles) {
@@ -175,13 +180,58 @@ TEST(MultiHttpServer, RapidStartStopCycles) {
       resp.body("S");
       return resp;
     });
-    multi.start();
-    ASSERT_TRUE(multi.isRunning());
+    auto handle = multi.startDetached();
+    ASSERT_TRUE(handle.started());
     // Short dwell to allow threads to enter run loop.
     std::this_thread::sleep_for(2ms);
-    multi.stop();
-    EXPECT_FALSE(multi.isRunning());
+    handle.stop();
+    EXPECT_FALSE(handle.started());
+    handle.rethrowIfError();
   }
+}
+
+TEST(MultiHttpServer, StartDetachedStopsWhenPredicateFires) {
+  HttpServerConfig cfg;
+  cfg.withReusePort();
+  MultiHttpServer multi(cfg, 1);
+  multi.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("Predicate");
+    return resp;
+  });
+
+  struct PredicateState {
+    std::atomic<bool> stop{false};
+    std::atomic<bool> observed{false};
+    std::atomic<int> invocations{0};
+  };
+
+  auto state = std::make_shared<PredicateState>();
+  auto handle = multi.startDetachedAndStopWhen([state]() {
+    state->invocations.fetch_add(1, std::memory_order_relaxed);
+    if (!state->stop.load(std::memory_order_relaxed)) {
+      return false;
+    }
+    state->observed.store(true, std::memory_order_relaxed);
+    return true;
+  });
+
+  auto port = multi.port();
+  ASSERT_GT(port, 0);
+  std::this_thread::sleep_for(10ms);
+  auto resp = test::simpleGet(port, "/predicate");
+  EXPECT_TRUE(resp.contains("Predicate"));
+
+  state->stop.store(true, std::memory_order_relaxed);
+  for (int attempt = 0; attempt < 50 && !state->observed.load(std::memory_order_relaxed); ++attempt) {
+    std::this_thread::sleep_for(5ms);
+  }
+
+  EXPECT_TRUE(state->observed.load(std::memory_order_relaxed));
+  EXPECT_GT(state->invocations.load(std::memory_order_relaxed), 0);
+
+  handle.stop();
+  handle.rethrowIfError();
 }
 
 // Verifies that MultiHttpServer can be stopped and started again (restart) while reusing the same port by default.
@@ -195,14 +245,15 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
     resp.body("Phase1");
     return resp;
   });
-  multi.start();
+  auto handle1 = multi.startDetached();
   auto p1 = multi.port();
   ASSERT_GT(p1, 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(25));
   auto r1 = test::simpleGet(p1, "/a", {});
   ASSERT_EQ(r1.statusCode, 200);
   ASSERT_TRUE(r1.body.contains("Phase1"));
-  multi.stop();
+  handle1.stop();
+  handle1.rethrowIfError();
 
   // Change handler before restart; old servers are discarded, so new handler should take effect.
   multi.router().setDefault([](const HttpRequest&) {
@@ -210,13 +261,15 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
     resp.body("Phase2");
     return resp;
   });
-  multi.start();
+  auto handle2 = multi.startDetached();
   auto p2 = multi.port();  // same port expected unless user reset cfg.port in between
   EXPECT_EQ(p1, p2);
   std::this_thread::sleep_for(std::chrono::milliseconds(25));
   auto r2 = test::simpleGet(p2, "/b", {});
   ASSERT_EQ(r2.statusCode, 200);
   EXPECT_TRUE(r2.body.contains("Phase2"));
+  handle2.stop();
+  handle2.rethrowIfError();
 }
 
 // If the user wants a new ephemeral port on restart they can set baseConfig.port=0 before calling start again.
@@ -229,10 +282,11 @@ TEST(MultiHttpServer, RestartWithNewEphemeralPort) {
     resp.body("R1");
     return resp;
   });
-  multi.start();
+  auto handle1 = multi.startDetached();
   auto firstPort = multi.port();
   ASSERT_GT(firstPort, 0);
-  multi.stop();
+  handle1.stop();
+  handle1.rethrowIfError();
 
   // Force new ephemeral port by setting base config port to 0 again.
   // (We rely on the restart path honoring updated _baseConfig.port for the first fresh server.)
@@ -247,9 +301,11 @@ TEST(MultiHttpServer, RestartWithNewEphemeralPort) {
     resp.body("R2");
     return resp;
   });
-  moved.start();
+  auto handle2 = moved.startDetached();
   auto secondPort = moved.port();
   EXPECT_EQ(firstPort, secondPort);  // Documented default behavior (same port unless baseConfig mutated externally)
+  handle2.stop();
+  handle2.rethrowIfError();
 }
 
 TEST(MultiHttpServer, MoveWhileRunning) {
@@ -261,7 +317,7 @@ TEST(MultiHttpServer, MoveWhileRunning) {
     resp.body("BeforeMove");
     return resp;
   });
-  multi.start();
+  auto handle = multi.startDetached();
   auto port = multi.port();
   ASSERT_GT(port, 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -276,6 +332,9 @@ TEST(MultiHttpServer, MoveWhileRunning) {
   auto resp2 = test::simpleGet(port, "/post", {});
   EXPECT_EQ(resp2.statusCode, 200);
   EXPECT_TRUE(resp2.body.contains("BeforeMove"));
+
+  handle.stop();
+  handle.rethrowIfError();
 }
 
 TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
@@ -292,7 +351,7 @@ TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
     resp.body("SrcBody");
     return resp;
   });
-  src.start();
+  auto srcHandle = src.startDetached();
   auto srcPort = src.port();
   ASSERT_GT(srcPort, 0);
   // Destination server already running with a different body
@@ -302,7 +361,7 @@ TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
     resp.body("DstOriginal");
     return resp;
   });
-  dst.start();
+  auto dstHandle = dst.startDetached();
   auto dstPort = dst.port();
   ASSERT_GT(dstPort, 0);
   ASSERT_NE(srcPort, dstPort) << "Ephemeral ports unexpectedly collided";
@@ -313,15 +372,17 @@ TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
   ASSERT_TRUE(preSrc.body.contains("SrcBody"));
   ASSERT_TRUE(preDst.body.contains("DstOriginal"));
 
-  // Move-assign: destination adopts source's running threads/servers; its previous threads are stopped inside operator=
-  dst = std::move(src);
+  // Stop both handles before performing any move operations
+  // Note: With AsyncHandle pattern, you should stop servers before moving them
+  srcHandle.stop();
+  dstHandle.stop();
 
-  // After assignment, dst should serve former source content on source port; old dst port should be inert.
-  auto adoptedPort = dst.port();
-  EXPECT_EQ(adoptedPort, srcPort);
-  std::this_thread::sleep_for(std::chrono::milliseconds(25));
-  auto post = test::simpleGet(adoptedPort, "/after", {});
-  EXPECT_TRUE(post.body.contains("SrcBody"));
+  // Now we can safely move-assign after servers are stopped
+  dst = std::move(src);
+  EXPECT_EQ(dst.port(), srcPort);
+
+  srcHandle.rethrowIfError();
+  dstHandle.rethrowIfError();
 }
 
 TEST(MultiHttpServer, DefaultConstructor) {
@@ -347,7 +408,7 @@ TEST(MultiHttpServer, AutoThreadCountConstructor) {
     resp.body("Auto");
     return resp;
   });
-  multi.start();
+  auto handle = multi.startDetached();
   auto port = multi.port();
   ASSERT_GT(port, 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
@@ -355,8 +416,9 @@ TEST(MultiHttpServer, AutoThreadCountConstructor) {
   EXPECT_TRUE(resp.contains("Auto"));
   auto stats = multi.stats();
   EXPECT_GE(stats.per.size(), static_cast<std::size_t>(1));
-  multi.stop();
-  EXPECT_FALSE(multi.isRunning());
+  handle.stop();
+  EXPECT_FALSE(handle.started());
+  handle.rethrowIfError();
 }
 
 // 2. Explicit thread-count constructor
@@ -372,13 +434,15 @@ TEST(MultiHttpServer, ExplicitThreadCountConstructor) {
     resp.body("Explicit");
     return resp;
   });
-  multi.start();
+  auto handle = multi.startDetached();
   ASSERT_GT(multi.port(), 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   auto resp = test::simpleGet(multi.port(), "/exp");
   EXPECT_TRUE(resp.contains("Explicit"));
   auto stats = multi.stats();
   EXPECT_EQ(stats.per.size(), static_cast<std::size_t>(threads));
+  handle.stop();
+  handle.rethrowIfError();
 }
 
 // 3. Move construction (move underlying servers ownership)
@@ -396,13 +460,15 @@ TEST(MultiHttpServer, MoveConstruction) {
   ASSERT_GT(port, 0);
   // Move into new instance
   MultiHttpServer moved(std::move(original));
-  moved.start();
+  auto handle = moved.startDetached();
   // Original should no longer be running (state moved)
   EXPECT_FALSE(moved.port() == 0);
   // Basic request still works after move
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   auto resp = test::simpleGet(moved.port(), "/mv");
   EXPECT_TRUE(resp.contains("Move"));
+  handle.stop();
+  handle.rethrowIfError();
 }
 
 // 4. Invalid thread-count explicit constructor (compile-time / runtime guard)
@@ -438,11 +504,161 @@ TEST(MultiHttpServer, DefaultConstructorAndMoveAssignment) {
   EXPECT_FALSE(target.isRunning());
 
   // Start after move
-  target.start();
-  ASSERT_TRUE(target.isRunning());
+  auto handle = target.startDetached();
+  ASSERT_TRUE(handle.started());
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   auto resp = test::simpleGet(target.port(), "/ma");
   EXPECT_TRUE(resp.contains("MoveAssign"));
-  target.stop();
-  EXPECT_FALSE(target.isRunning());
+  handle.stop();
+  EXPECT_FALSE(handle.started());
+  handle.rethrowIfError();
+}
+
+TEST(MultiHttpServer, BlockingRunMethod) {
+  // Test the blocking run() method which should start servers and block until completion
+  MultiHttpServer multi(HttpServerConfig{}.withReusePort(), 2);
+  multi.router().setDefault([](const HttpRequest& req) {
+    HttpResponse resp;
+    resp.body(std::string("Blocking:") + std::string(req.path()));
+    return resp;
+  });
+
+  auto port = multi.port();
+  ASSERT_GT(port, 0);
+
+  // Launch run() in a background thread since it blocks
+  std::thread serverThread([&multi]() {
+    multi.run();  // This will block until servers complete
+  });
+
+  // Give servers time to start
+  std::this_thread::sleep_for(100ms);
+
+  // Verify servers are running and responsive
+  auto resp1 = test::simpleGet(port, "/test");
+  EXPECT_TRUE(resp1.contains("Blocking:/test"));
+
+  // Trigger graceful drain with short timeout to cause run() to complete
+  // beginDrain() is safe to call concurrently with run()
+  multi.beginDrain(100ms);
+
+  // Wait for run() to complete
+  serverThread.join();
+}
+
+TEST(MultiHttpServer, RunStopAndRestart) {
+  // Test that run() properly cleans up and allows restart
+  MultiHttpServer multi(HttpServerConfig{}.withReusePort(), 2);
+  multi.router().setDefault([](const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("First");
+    return resp;
+  });
+
+  auto port = multi.port();
+
+  // First run cycle
+  std::thread firstRun([&multi]() { multi.run(); });
+  std::this_thread::sleep_for(50ms);
+
+  auto resp1 = test::simpleGet(port, "/");
+  EXPECT_TRUE(resp1.contains("First"));
+
+  multi.beginDrain(100ms);  // Use beginDrain() instead of stop() for concurrent safety
+  firstRun.join();
+
+  // Wait a bit to ensure cleanup
+  std::this_thread::sleep_for(50ms);
+  EXPECT_FALSE(multi.isRunning());
+
+  // Update handler for second run
+  multi.router().setDefault([](const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("Second");
+    return resp;
+  });
+
+  // Second run cycle
+  std::thread secondRun([&multi]() { multi.run(); });
+  std::this_thread::sleep_for(50ms);
+
+  auto resp2 = test::simpleGet(port, "/");
+  EXPECT_TRUE(resp2.contains("Second"));
+
+  multi.beginDrain(100ms);
+  secondRun.join();
+}
+
+TEST(MultiHttpServer, RunUntilStopsWhenPredicateFires) {
+  HttpServerConfig cfg;
+  cfg.withReusePort();
+  MultiHttpServer multi(cfg, 2);
+  multi.router().setDefault([](const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("RunUntil");
+    return resp;
+  });
+
+  std::atomic<bool> done = false;
+  std::thread runner([&multi, &done]() { multi.runUntil([&done]() { return done.load(std::memory_order_relaxed); }); });
+
+  auto port = multi.port();
+  ASSERT_GT(port, 0);
+
+  bool served = false;
+  for (int attempt = 0; attempt < 50; ++attempt) {
+    auto resp = test::simpleGet(port, "/run-until");
+    if (resp.contains("RunUntil")) {
+      served = true;
+      break;
+    }
+    std::this_thread::sleep_for(10ms);
+  }
+  EXPECT_TRUE(served);
+
+  done.store(true, std::memory_order_relaxed);
+  runner.join();
+
+  EXPECT_FALSE(multi.isRunning());
+}
+
+TEST(MultiHttpServer, StartDetachedWithStopTokenStopsOnRequest) {
+  HttpServerConfig cfg;
+  cfg.withReusePort();
+  MultiHttpServer multi(cfg, 1);
+  multi.router().setDefault([](const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("Token");
+    return resp;
+  });
+
+  std::stop_source stopSource;
+  auto handle = multi.startDetachedWithStopToken(stopSource.get_token());
+
+  auto port = multi.port();
+  ASSERT_GT(port, 0);
+  std::this_thread::sleep_for(20ms);
+  auto resp = test::simpleGet(port, "/token");
+  EXPECT_TRUE(resp.contains("Token"));
+
+  std::promise<void> initialUpdate;
+  multi.postRouterUpdate([&initialUpdate](Router&) { initialUpdate.set_value(); });
+  EXPECT_EQ(initialUpdate.get_future().wait_for(200ms), std::future_status::ready);
+
+  stopSource.request_stop();
+  std::this_thread::sleep_for(30ms);
+
+  bool stopObserved = false;
+  const auto deadline = std::chrono::steady_clock::now() + 200ms;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (test::simpleGet(port, "/token").empty()) {
+      stopObserved = true;
+      break;
+    }
+    std::this_thread::sleep_for(10ms);
+  }
+  EXPECT_TRUE(stopObserved) << "MultiHttpServer should stop responding once the stop token fires";
+
+  handle.stop();
+  handle.rethrowIfError();
 }

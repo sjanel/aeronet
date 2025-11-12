@@ -2,7 +2,6 @@
 
 #include <type_traits>
 
-#include "aeronet/async-http-server.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/multi-http-server.hpp"
@@ -12,10 +11,6 @@ TEST(CompileTimeTraits, StaticChecks) {
   static_assert(std::is_nothrow_default_constructible_v<aeronet::HttpServer>);
   static_assert(std::is_move_constructible_v<aeronet::HttpServer>);
   static_assert(std::is_move_assignable_v<aeronet::HttpServer>);
-
-  static_assert(std::is_nothrow_default_constructible_v<aeronet::AsyncHttpServer>);
-  static_assert(std::is_move_constructible_v<aeronet::AsyncHttpServer>);
-  static_assert(std::is_move_assignable_v<aeronet::AsyncHttpServer>);
 
   static_assert(std::is_nothrow_default_constructible_v<aeronet::MultiHttpServer>);
   static_assert(std::is_move_constructible_v<aeronet::MultiHttpServer>);

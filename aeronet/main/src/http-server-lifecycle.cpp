@@ -7,10 +7,13 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <stdexcept>
+#include <stop_token>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include "aeronet/accept-encoding-negotiation.hpp"
@@ -52,6 +55,24 @@ namespace {
 constexpr int kListenSocketType = SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC;
 }
 
+HttpServer::AsyncHandle::AsyncHandle(std::jthread thread, std::shared_ptr<std::exception_ptr> error)
+    : _thread(std::move(thread)), _error(std::move(error)) {}
+
+HttpServer::AsyncHandle::~AsyncHandle() { stop(); }
+
+void HttpServer::AsyncHandle::stop() noexcept {
+  if (_thread.joinable()) {
+    _thread.request_stop();
+    _thread.join();
+  }
+}
+
+void HttpServer::AsyncHandle::rethrowIfError() {
+  if (_error && *_error) {
+    std::rethrow_exception(*_error);
+  }
+}
+
 HttpServer::HttpServer(HttpServerConfig config, RouterConfig routerConfig)
     : _config(std::move(config)),
       _listenSocket(kListenSocketType),
@@ -72,8 +93,6 @@ HttpServer::HttpServer(HttpServerConfig cfg, Router router)
   init();
 }
 
-HttpServer::~HttpServer() { stop(); }
-
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
 HttpServer::HttpServer(HttpServer&& other)
     : _stats(std::exchange(other._stats, {})),
@@ -93,7 +112,8 @@ HttpServer::HttpServer(HttpServer&& other)
       _tmpBuffer(std::move(other._tmpBuffer)),
       _pendingConfigUpdates(std::move(other._pendingConfigUpdates)),
       _pendingRouterUpdates(std::move(other._pendingRouterUpdates)),
-      _telemetry(std::move(other._telemetry))
+      _telemetry(std::move(other._telemetry)),
+      _internalHandle(std::move(other._internalHandle))
 #ifdef AERONET_ENABLE_OPENSSL
       ,
       _tlsCtxHolder(std::move(other._tlsCtxHolder)),
@@ -143,6 +163,7 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _pendingConfigUpdates = std::move(other._pendingConfigUpdates);
     _pendingRouterUpdates = std::move(other._pendingRouterUpdates);
     _telemetry = std::move(other._telemetry);
+    _internalHandle = std::move(other._internalHandle);
 
 #ifdef AERONET_ENABLE_OPENSSL
     _tlsCtxHolder = std::move(other._tlsCtxHolder);
@@ -163,6 +184,8 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
   other._lifecycle.reset();
   return *this;
 }
+
+HttpServer::~HttpServer() { stop(); }
 
 // Performs full listener initialization (RAII style) so that port() is valid immediately after construction.
 // Steps (in order) and rationale / failure characteristics:
@@ -252,8 +275,8 @@ void HttpServer::init() {
     }
     _config.port = ntohs(actual.sin_port);
   }
-  _eventLoop.add_or_throw(EventLoop::EventFd{listenFd, EventIn});
-  _eventLoop.add_or_throw(EventLoop::EventFd{_lifecycle.wakeupFd.fd(), EventIn});
+  _eventLoop.addOrThrow(EventLoop::EventFd{listenFd, EventIn});
+  _eventLoop.addOrThrow(EventLoop::EventFd{_lifecycle.wakeupFd.fd(), EventIn});
 
   // Register builtin probes handlers if enabled in config
   if (_config.builtinProbes.enabled) {
@@ -305,6 +328,47 @@ void HttpServer::runUntil(const std::function<bool()>& predicate) {
   }
 }
 
+void HttpServer::start() { _internalHandle.emplace(startDetached()); }
+
+HttpServer::AsyncHandle HttpServer::startDetached() {
+  auto errorPtr = std::make_shared<std::exception_ptr>();
+
+  return {std::jthread([this, errorPtr](const std::stop_token& st) {
+            try {
+              runUntil([&st]() { return st.stop_requested(); });
+            } catch (...) {
+              *errorPtr = std::current_exception();
+            }
+          }),
+          std::move(errorPtr)};
+}
+
+HttpServer::AsyncHandle HttpServer::startDetachedAndStopWhen(std::function<bool()> predicate) {
+  auto errorPtr = std::make_shared<std::exception_ptr>();
+
+  return {std::jthread([this, pred = std::move(predicate), errorPtr](const std::stop_token& st) {
+            try {
+              runUntil([&st, &pred]() { return st.stop_requested() || pred(); });
+            } catch (...) {
+              *errorPtr = std::current_exception();
+            }
+          }),
+          std::move(errorPtr)};
+}
+
+HttpServer::AsyncHandle HttpServer::startDetachedWithStopToken(std::stop_token token) {
+  auto errorPtr = std::make_shared<std::exception_ptr>();
+
+  return {std::jthread([this, token = std::move(token), errorPtr](const std::stop_token& st) {
+            try {
+              runUntil([&st, &token]() { return st.stop_requested() || token.stop_requested(); });
+            } catch (...) {
+              *errorPtr = std::current_exception();
+            }
+          }),
+          std::move(errorPtr)};
+}
+
 void HttpServer::stop() noexcept {
   if (!_lifecycle.isActive()) {
     return;
@@ -312,6 +376,12 @@ void HttpServer::stop() noexcept {
   log::debug("Stopping server");
   _lifecycle.enterStopping();
   closeListener();
+
+  // Stop internal handle if start() was used (non-blocking API)
+  if (_internalHandle.has_value()) {
+    _internalHandle->stop();
+    _internalHandle.reset();
+  }
 }
 
 void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {

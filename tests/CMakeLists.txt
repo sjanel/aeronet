@@ -5,7 +5,6 @@ function(aeronet_http_test NAME)
 	add_test(NAME ${TGT} COMMAND ${TGT})
 endfunction()
 
-aeronet_http_test(async-http-server)
 aeronet_http_test(compile-time-traits)
 aeronet_http_test(http-10)
 aeronet_http_test(http-additional)
