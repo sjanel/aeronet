@@ -1,4 +1,4 @@
-#include "brotli-encoder.hpp"
+#include "aeronet/brotli-encoder.hpp"
 
 #include <brotli/encode.h>
 
@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string_view>
 
-#include "raw-chars.hpp"
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 

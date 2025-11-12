@@ -9,11 +9,11 @@
 #include <utility>
 
 #include "aeronet/cors-policy.hpp"
+#include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/router-config.hpp"
-#include "flat-hash-map.hpp"
-#include "log.hpp"
 
 namespace aeronet {
 

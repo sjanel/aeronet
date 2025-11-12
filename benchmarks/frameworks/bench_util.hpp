@@ -14,11 +14,11 @@
 #include <string>
 #include <thread>
 
+#include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/log.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/test_util.hpp"
-#include "char-hexadecimal-converter.hpp"
-#include "log.hpp"
-#include "raw-chars.hpp"
 
 // (Pregen pools are declared inside the benchutil namespace below)
 

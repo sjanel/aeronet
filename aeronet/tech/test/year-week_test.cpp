@@ -1,8 +1,8 @@
-#include "year-week.hpp"
+#include "aeronet/year-week.hpp"
 
 #include <gtest/gtest.h>
 
-#include "timestring.hpp"
+#include "aeronet/timestring.hpp"
 
 namespace aeronet {
 

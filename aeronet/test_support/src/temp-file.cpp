@@ -19,8 +19,8 @@
 #include <thread>
 #include <utility>
 
-#include "base-fd.hpp"
-#include "log.hpp"
+#include "aeronet/base-fd.hpp"
+#include "aeronet/log.hpp"
 
 namespace aeronet::test {
 

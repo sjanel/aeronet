@@ -1,4 +1,4 @@
-#include "zlib-encoder.hpp"
+#include "aeronet/zlib-encoder.hpp"
 
 #include <zconf.h>
 #include <zlib.h>
@@ -11,8 +11,8 @@
 #include <string_view>
 #include <utility>
 
-#include "log.hpp"
-#include "raw-chars.hpp"
+#include "aeronet/log.hpp"
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 

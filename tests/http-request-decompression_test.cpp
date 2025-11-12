@@ -18,17 +18,17 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/simple-charconv.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "simple-charconv.hpp"
 #ifdef AERONET_ENABLE_ZLIB
-#include "zlib-encoder.hpp"
+#include "aeronet/zlib-encoder.hpp"
 #endif
 #ifdef AERONET_ENABLE_ZSTD
-#include "zstd-encoder.hpp"
+#include "aeronet/zstd-encoder.hpp"
 #endif
 #ifdef AERONET_ENABLE_BROTLI
-#include "brotli-encoder.hpp"
+#include "aeronet/brotli-encoder.hpp"
 #endif
 
 using namespace aeronet;

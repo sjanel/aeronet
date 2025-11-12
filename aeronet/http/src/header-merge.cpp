@@ -1,12 +1,12 @@
-#include "header-merge.hpp"
+#include "aeronet/header-merge.hpp"
 
 #include <cstddef>
 #include <cstring>
 #include <string_view>
 
-#include "headers-view-map.hpp"
-#include "mergeable-headers.hpp"
-#include "raw-chars.hpp"
+#include "aeronet/headers-view-map.hpp"
+#include "aeronet/mergeable-headers.hpp"
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet::http {
 

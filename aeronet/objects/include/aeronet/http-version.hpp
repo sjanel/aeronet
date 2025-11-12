@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "major-minor-version.hpp"
+#include "aeronet/major-minor-version.hpp"
 
 namespace aeronet::http {
 

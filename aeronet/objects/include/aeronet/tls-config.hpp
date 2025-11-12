@@ -6,9 +6,9 @@
 #include <ranges>
 #include <string_view>
 
-#include "dynamic-concatenated-strings.hpp"
-#include "major-minor-version.hpp"
-#include "static-concatenated-strings.hpp"
+#include "aeronet/dynamic-concatenated-strings.hpp"
+#include "aeronet/major-minor-version.hpp"
+#include "aeronet/static-concatenated-strings.hpp"
 
 namespace aeronet {
 

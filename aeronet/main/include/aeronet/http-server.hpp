@@ -14,7 +14,12 @@
 #include <span>
 #include <string_view>
 
-#include "accept-encoding-negotiation.hpp"
+#include "aeronet/accept-encoding-negotiation.hpp"
+#include "aeronet/connection-state.hpp"
+#include "aeronet/connection.hpp"
+#include "aeronet/encoder.hpp"
+#include "aeronet/event-loop.hpp"
+#include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
@@ -27,20 +32,15 @@
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
+#include "aeronet/socket.hpp"
 #include "aeronet/tracing/tracer.hpp"
-#include "connection-state.hpp"
-#include "connection.hpp"
-#include "encoder.hpp"
-#include "event-loop.hpp"
-#include "flat-hash-map.hpp"
-#include "socket.hpp"
-#include "vector.hpp"
+#include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
-#include "tls-context.hpp"
-#include "tls-metrics.hpp"
+#include "aeronet/tls-context.hpp"
+#include "aeronet/tls-metrics.hpp"
 #ifdef AERONET_ENABLE_KTLS
-#include "tls-transport.hpp"
+#include "aeronet/tls-transport.hpp"
 #endif
 #endif
 
@@ -451,7 +451,7 @@ class HttpServer {
   // This is the least invasive way to provide pointer stability without prohibiting HttpServer move
   // semantics or introducing a heavier PImpl layer.
   std::unique_ptr<TlsContext> _tlsCtxHolder;  // stable address for OpenSSL callbacks
-  TlsMetricsInternal _tlsMetrics;             // defined in tls-metrics.hpp
+  TlsMetricsInternal _tlsMetrics;             // defined in aeronet/tls-metrics.hpp
   // External metrics struct used by TLS context for ALPN mismatch increments only.
   TlsMetricsExternal _tlsMetricsExternal;  // shares alpnStrictMismatches with _tlsMetrics (synced in stats retrieval)
 #endif

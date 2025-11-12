@@ -1,4 +1,4 @@
-#include "static-concatenated-strings.hpp"
+#include "aeronet/static-concatenated-strings.hpp"
 
 #include <gtest/gtest.h>
 

@@ -12,28 +12,28 @@
 #include <memory>
 #include <utility>
 
+#include "aeronet/connection-state.hpp"
+#include "aeronet/connection.hpp"
+#include "aeronet/event.hpp"
 #include "aeronet/features.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "connection-state.hpp"
-#include "connection.hpp"
-#include "event.hpp"
-#include "raw-chars.hpp"
-#include "transport.hpp"
+#include "aeronet/raw-chars.hpp"
+#include "aeronet/transport.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/ssl.h>
 #include <openssl/types.h>
 
-#include "tls-context.hpp"
-#include "tls-handshake.hpp"
-#include "tls-raii.hpp"
-#include "tls-transport.hpp"  // from tls module include directory
+#include "aeronet/tls-context.hpp"
+#include "aeronet/tls-handshake.hpp"
+#include "aeronet/tls-raii.hpp"
+#include "aeronet/tls-transport.hpp"  // from tls module include directory
 #endif
 
-#include "event-loop.hpp"
-#include "log.hpp"
+#include "aeronet/event-loop.hpp"
+#include "aeronet/log.hpp"
 
 namespace aeronet {
 

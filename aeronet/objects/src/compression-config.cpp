@@ -3,12 +3,12 @@
 #include <stdexcept>
 
 #include "aeronet/features.hpp"
-#include "log.hpp"
+#include "aeronet/log.hpp"
 
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
 
-#include "zstd-encoder.hpp"
+#include "aeronet/zstd-encoder.hpp"
 #endif
 
 namespace aeronet {

@@ -16,10 +16,15 @@
 #include <type_traits>
 #include <utility>
 
-#include "accept-encoding-negotiation.hpp"
+#include "aeronet/accept-encoding-negotiation.hpp"
+#include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/event-loop.hpp"
+#include "aeronet/event.hpp"
+#include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-error-build.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
@@ -29,26 +34,21 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/otel-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
+#include "aeronet/simple-charconv.hpp"
+#include "aeronet/socket.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
-#include "connection-state.hpp"
-#include "event-loop.hpp"
-#include "event.hpp"
-#include "flat-hash-map.hpp"
-#include "http-error-build.hpp"
-#include "log.hpp"
-#include "simple-charconv.hpp"
-#include "socket.hpp"
-#include "string-equal-ignore-case.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/err.h>
 
-#include "tls-transport.hpp"
+#include "aeronet/tls-transport.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_BROTLI
@@ -64,7 +64,7 @@
 #endif
 
 #ifdef AERONET_ENABLE_OPENSSL
-#include "tls-context.hpp"
+#include "aeronet/tls-context.hpp"
 #endif
 
 namespace aeronet {
@@ -241,7 +241,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       break;
     }
 
-    static constexpr uint64_t kShrinkRequestNnRequestPeriod = 1000;
+    static constexpr uint64_t kShrinkRequestNnRequestPeriod = 10000;
 
     if (++_stats.totalRequestsServed % kShrinkRequestNnRequestPeriod == 0) {
       _request.shrink_to_fit();

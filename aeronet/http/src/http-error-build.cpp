@@ -1,4 +1,4 @@
-﻿#include "http-error-build.hpp"
+﻿#include "aeronet/http-error-build.hpp"
 
 #include <cstddef>
 #include <numeric>
@@ -10,10 +10,10 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "raw-chars.hpp"
-#include "stringconv.hpp"
-#include "timedef.hpp"
-#include "timestring.hpp"
+#include "aeronet/raw-chars.hpp"
+#include "aeronet/stringconv.hpp"
+#include "aeronet/timedef.hpp"
+#include "aeronet/timestring.hpp"
 
 namespace aeronet {
 

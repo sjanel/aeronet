@@ -1,4 +1,4 @@
-#include "accept-encoding-negotiation.hpp"
+#include "aeronet/accept-encoding-negotiation.hpp"
 
 #include <algorithm>
 #include <array>
@@ -18,9 +18,9 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
+#include "aeronet/fixedcapacityvector.hpp"
 #include "aeronet/http-constants.hpp"
-#include "fixedcapacityvector.hpp"
-#include "string-equal-ignore-case.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet {
 namespace {
