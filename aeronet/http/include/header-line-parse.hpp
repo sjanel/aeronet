@@ -20,9 +20,6 @@ inline HeaderView parseHeaderLine(const char* lineStart, const char* lineLast) {
     ++valueFirst;
   }
   const auto* valueLast = lineLast;
-  if (valueLast > lineStart && *(valueLast - 1) == '\r') {
-    --valueLast;
-  }
   while (valueLast > valueFirst && IsHeaderWhitespace(*(valueLast - 1))) {
     --valueLast;
   }
