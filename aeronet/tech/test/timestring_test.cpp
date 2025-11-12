@@ -1,4 +1,4 @@
-#include "timestring.hpp"
+#include "aeronet/timestring.hpp"
 
 #include <gtest/gtest.h>
 
@@ -9,7 +9,7 @@
 #include <string_view>
 #include <utility>
 
-#include "timedef.hpp"
+#include "aeronet/timedef.hpp"
 
 namespace aeronet {
 

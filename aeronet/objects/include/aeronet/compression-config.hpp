@@ -5,8 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "aeronet/fixedcapacityvector.hpp"
 #include "encoding.hpp"
-#include "fixedcapacityvector.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
 #include <zlib.h>

@@ -10,11 +10,6 @@ target_include_directories(aeronet_tech
 )
 
 add_unit_test(
-    duration-format_test
-    test/duration-format_test.cpp
-)
-
-add_unit_test(
     dynamic-concatenated-strings_test
     test/dynamic-concatenated-strings_test.cpp
     LIBRARIES
@@ -74,13 +69,6 @@ add_unit_test(
 add_unit_test(
     stringconv_test
     test/stringconv_test.cpp
-)
-
-add_unit_test(
-    time-format_test
-    test/time-format_test.cpp
-    LIBRARIES
-    aeronet_tech
 )
 
 add_unit_test(

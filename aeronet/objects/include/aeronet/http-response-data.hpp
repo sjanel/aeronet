@@ -4,8 +4,8 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/raw-chars.hpp"
 #include "http-payload.hpp"
-#include "raw-chars.hpp"
 
 namespace aeronet {
 

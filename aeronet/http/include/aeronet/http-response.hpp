@@ -14,17 +14,17 @@
 #include <variant>
 #include <vector>
 
+#include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
-#include "file.hpp"
-#include "raw-chars.hpp"
-#include "simple-charconv.hpp"
-#include "stringconv.hpp"
-#include "timedef.hpp"
+#include "aeronet/raw-chars.hpp"
+#include "aeronet/simple-charconv.hpp"
+#include "aeronet/stringconv.hpp"
+#include "aeronet/timedef.hpp"
 
 namespace aeronet {
 

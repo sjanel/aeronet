@@ -8,10 +8,10 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "flat-hash-map.hpp"
-#include "socket.hpp"
-#include "timedef.hpp"
+#include "aeronet/socket.hpp"
+#include "aeronet/timedef.hpp"
 
 namespace aeronet::test {
 using namespace std::chrono_literals;

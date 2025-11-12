@@ -1,4 +1,4 @@
-#include "major-minor-version.hpp"
+#include "aeronet/major-minor-version.hpp"
 
 #include <gtest/gtest.h>
 

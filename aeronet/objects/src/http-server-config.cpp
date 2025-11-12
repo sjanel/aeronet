@@ -13,11 +13,11 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/log.hpp"
+#include "aeronet/major-minor-version.hpp"
 #include "aeronet/otel-config.hpp"
+#include "aeronet/tchars.hpp"
 #include "aeronet/tls-config.hpp"
-#include "log.hpp"
-#include "major-minor-version.hpp"
-#include "tchars.hpp"
 
 namespace aeronet {
 

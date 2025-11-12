@@ -1,4 +1,4 @@
-#include "tcp-connector.hpp"
+#include "aeronet/tcp-connector.hpp"
 
 #include <netdb.h>
 #include <sys/socket.h>
@@ -8,8 +8,8 @@
 #include <memory>
 #include <string_view>
 
-#include "base-fd.hpp"
-#include "log.hpp"
+#include "aeronet/base-fd.hpp"
+#include "aeronet/log.hpp"
 
 namespace aeronet {
 

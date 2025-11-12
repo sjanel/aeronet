@@ -1,4 +1,4 @@
-#include "timestring.hpp"
+#include "aeronet/timestring.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,14 +11,14 @@
 #include <string_view>
 #include <utility>
 
-#include "cctype.hpp"
-#include "config.hpp"
-#include "ipow.hpp"
-#include "log.hpp"
-#include "simple-charconv.hpp"
-#include "stringconv.hpp"
-#include "timedef.hpp"
-#include "year-week.hpp"
+#include "aeronet/cctype.hpp"
+#include "aeronet/config.hpp"
+#include "aeronet/ipow.hpp"
+#include "aeronet/log.hpp"
+#include "aeronet/simple-charconv.hpp"
+#include "aeronet/stringconv.hpp"
+#include "aeronet/timedef.hpp"
+#include "aeronet/year-week.hpp"
 
 namespace aeronet {
 

@@ -2,7 +2,7 @@
 
 #include <string_view>
 
-#include "static-string-view-helpers.hpp"
+#include "aeronet/static-string-view-helpers.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/opensslv.h>

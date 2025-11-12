@@ -12,7 +12,7 @@
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
-#include "vector.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 
