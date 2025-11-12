@@ -34,20 +34,22 @@ inline constexpr std::string_view PATCH = "PATCH";
 
 // Standard Header Field Names (as they typically appear in canonical form)
 inline constexpr std::string_view Connection = "Connection";
-inline constexpr std::string_view ContentLength = "Content-Length";
 inline constexpr std::string_view TransferEncoding = "Transfer-Encoding";
+inline constexpr std::string_view ContentLength = "Content-Length";
+inline constexpr std::string_view ContentType = "Content-Type";
+inline constexpr std::string_view ContentEncoding = "Content-Encoding";
+inline constexpr std::string_view AcceptEncoding = "Accept-Encoding";
+inline constexpr std::string_view UserAgent = "User-Agent";
+inline constexpr std::string_view RetryAfter = "Retry-After";
 inline constexpr std::string_view TE = "TE";
 inline constexpr std::string_view Trailer = "Trailer";
 inline constexpr std::string_view Upgrade = "Upgrade";
 inline constexpr std::string_view Expect = "Expect";
 inline constexpr std::string_view Host = "Host";
 inline constexpr std::string_view Date = "Date";  // only used for writing (server side)
-inline constexpr std::string_view ContentType = "Content-Type";
 inline constexpr std::string_view Location = "Location";
-inline constexpr std::string_view ContentEncoding = "Content-Encoding";
 inline constexpr std::string_view Vary = "Vary";
 inline constexpr std::string_view Origin = "Origin";
-inline constexpr std::string_view AcceptEncoding = "Accept-Encoding";
 inline constexpr std::string_view Allow = "Allow";
 inline constexpr std::string_view AcceptRanges = "Accept-Ranges";
 inline constexpr std::string_view ContentRange = "Content-Range";
