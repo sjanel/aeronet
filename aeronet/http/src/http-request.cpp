@@ -5,7 +5,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstring>
-#include <iterator>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -89,14 +88,12 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
 
   // Example : GET /path HTTP/1.1\r\nHost: example.com\r\nUser-Agent: FooBar\r\n\r\n
 
-  // Although the HTTP standard specifies that requests should have CRLF '\r\n' as line separators,
-  // some clients may send requests only with '\n'. We tolerate lone LF in parsing.
-  auto* lineLast = std::find(first, last, '\n');
+  auto* lineLast = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
   if (lineLast == last) {
     // not enough data
     return 0;
   }
-  if (std::cmp_less(std::distance(first, lineLast), http::kHttpReqLineMinLen - 1UL)) {
+  if (std::cmp_less(lineLast - first, http::kHttpReqLineMinLen - http::CRLF.size())) {
     return http::StatusCodeBadRequest;
   }
   auto* nextSep = std::find(first, lineLast, ' ');
@@ -141,21 +138,20 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
   }
 
   // Headers
-  first = lineLast + 1;
-  auto* headersFirst = first;
+  auto* headersFirst = lineLast + http::CRLF.size();
 
   _headers.clear();
-  while (first < last) {
-    lineLast = std::find(first, last, '\n');
+  for (first = headersFirst; first < last; first = lineLast + http::CRLF.size()) {
+    lineLast = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
     if (lineLast == last) {  // need more data for complete header line
       return 0;
     }
-    if (std::cmp_less(maxHeadersBytes, std::distance(headersFirst, lineLast))) {
+    if (std::cmp_less(maxHeadersBytes, static_cast<std::size_t>(lineLast - headersFirst) + http::CRLF.size())) {
       return http::StatusCodeRequestHeaderFieldsTooLarge;
     }
-    // Detect blank line (CRLF or LF terminator) signaling end of headers.
-    if (first == lineLast || (std::distance(first, lineLast) == 1 && *first == '\r')) {
-      break;  // end of headers
+    // Detect blank line signaling end of headers.
+    if (lineLast == first) {
+      break;
     }
     auto [nameView, valueView] = http::parseHeaderLine(first, lineLast);
     if (nameView.empty()) {
@@ -167,7 +163,12 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
                                        mergeAllowedForUnknownRequestHeaders)) {
       return http::StatusCodeBadRequest;
     }
-    first = lineLast + 1;
+  }
+
+  // Parsed double CRLF
+  if (std::cmp_less(last - first, http::CRLF.size())) {
+    // not enough data
+    return 0;
   }
 
   if (traceSpan) {
@@ -183,12 +184,10 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
 
   _traceSpan = std::move(traceSpan);
 
-  // Parsed double CRLF
-  lineLast = std::find(first, last, '\n');
-  if (lineLast == last) {
+  if (std::memcmp(first, http::CRLF.data(), http::CRLF.size()) != 0) {
     return http::StatusCodeBadRequest;
   }
-  _flatHeaders = std::string_view(headersFirst, lineLast + 1);
+  _flatHeaders = std::string_view(headersFirst, first + http::CRLF.size());
 
   // Propagate negotiated ALPN (if any) from connection state into per-request object.
   _alpnProtocol = state.tlsInfo.selectedAlpn();
