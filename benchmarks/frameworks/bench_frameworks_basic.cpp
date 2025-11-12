@@ -22,10 +22,10 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/log.hpp"
+#include "aeronet/stringconv.hpp"
 #include "aeronet/test_util.hpp"
 #include "bench_util.hpp"
-#include "log.hpp"
-#include "stringconv.hpp"
 
 #ifdef AERONET_BENCH_ENABLE_DROGON
 #include <drogon/drogon.h>  // IWYU pragma: export

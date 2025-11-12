@@ -8,13 +8,13 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/connection-state.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
-#include "connection-state.hpp"
-#include "raw-chars.hpp"
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 

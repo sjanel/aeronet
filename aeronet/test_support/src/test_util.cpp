@@ -24,16 +24,16 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/base-fd.hpp"
+#include "aeronet/errno_throw.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "base-fd.hpp"
-#include "errno_throw.hpp"
-#include "log.hpp"
-#include "raw-chars.hpp"
-#include "simple-charconv.hpp"
-#include "socket.hpp"
-#include "timedef.hpp"
-#include "toupperlower.hpp"
+#include "aeronet/log.hpp"
+#include "aeronet/raw-chars.hpp"
+#include "aeronet/simple-charconv.hpp"
+#include "aeronet/socket.hpp"
+#include "aeronet/timedef.hpp"
+#include "aeronet/toupperlower.hpp"
 #ifdef AERONET_ENABLE_BROTLI
 #include "aeronet/brotli-decoder.hpp"
 #endif

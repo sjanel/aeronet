@@ -1,4 +1,4 @@
-#include "zstd-encoder.hpp"
+#include "aeronet/zstd-encoder.hpp"
 
 #include <cstddef>
 #include <format>
@@ -6,7 +6,7 @@
 #include <string_view>
 
 #include "aeronet/compression-config.hpp"
-#include "raw-chars.hpp"
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 

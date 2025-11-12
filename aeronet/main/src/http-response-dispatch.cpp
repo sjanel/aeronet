@@ -8,10 +8,13 @@
 #include <string_view>
 #include <utility>
 
-#include "accept-encoding-negotiation.hpp"
+#include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/compression-config.hpp"
+#include "aeronet/connection-state.hpp"
+#include "aeronet/connection.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/event.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
@@ -19,17 +22,14 @@
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
-#include "connection-state.hpp"
-#include "connection.hpp"
-#include "event.hpp"
-#include "log.hpp"
-#include "raw-chars.hpp"
-#include "string-equal-ignore-case.hpp"
-#include "tcp-connector.hpp"
-#include "timedef.hpp"
-#include "transport.hpp"
+#include "aeronet/log.hpp"
+#include "aeronet/raw-chars.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/tcp-connector.hpp"
+#include "aeronet/timedef.hpp"
+#include "aeronet/transport.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
-#include "tls-transport.hpp"
+#include "aeronet/tls-transport.hpp"
 #endif
 
 namespace aeronet {

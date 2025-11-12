@@ -13,20 +13,20 @@
 #include <utility>
 #include <variant>
 
+#include "aeronet/file.hpp"
+#include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
-#include "file.hpp"
-#include "header-write.hpp"
-#include "log.hpp"
-#include "string-equal-ignore-case.hpp"
-#include "stringconv.hpp"
-#include "tchars.hpp"
-#include "timedef.hpp"
-#include "timestring.hpp"
+#include "aeronet/log.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/stringconv.hpp"
+#include "aeronet/tchars.hpp"
+#include "aeronet/timedef.hpp"
+#include "aeronet/timestring.hpp"
 
 namespace aeronet {
 

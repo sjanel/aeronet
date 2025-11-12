@@ -1,5 +1,5 @@
 
-#include "connection.hpp"
+#include "aeronet/connection.hpp"
 
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -8,9 +8,9 @@
 #include <cstring>
 #include <utility>
 
-#include "base-fd.hpp"
-#include "log.hpp"
-#include "socket.hpp"
+#include "aeronet/base-fd.hpp"
+#include "aeronet/log.hpp"
+#include "aeronet/socket.hpp"
 
 namespace aeronet {
 

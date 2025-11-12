@@ -23,7 +23,7 @@
 #include "aeronet/router-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "zstd_test_helpers.hpp"
+#include "aeronet/zstd_test_helpers.hpp"
 
 using namespace aeronet;
 

@@ -4,9 +4,9 @@
 #include <string>
 #include <string_view>
 
-#include "raw-chars.hpp"
-#include "url-decode.hpp"
-#include "url-encode.hpp"
+#include "aeronet/raw-chars.hpp"
+#include "aeronet/url-decode.hpp"
+#include "aeronet/url-encode.hpp"
 
 namespace aeronet {
 
