@@ -12,9 +12,9 @@
 
 - **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths, horizontal scaling with port reuse
 - **Modular & opt‑in**: enable only the features you need (compression, TLS, logging, opentelemetry) via build flags
-- **Ergonomic**: ease of use, RAII listener setup, no hidden global state
+- **Ergonomic**: ease of use, RAII listener setup, no hidden global state, no complex macros
 - **Configurable**: fully configurable with reasonable defaults
-- **Cloud native**: Built-in Kubernetes-style health & readiness probes, opentelemetry support (metrics & tracing)
+- **Cloud native**: Built-in Kubernetes-style health & readiness probes, opentelemetry support (metrics & tracing), perfect for micro-services
 
 ## Minimal Examples
 
@@ -146,7 +146,7 @@ Moved out of the landing page to keep things concise. See the full, continually 
 
 ## Public objects and usage
 
-Consuming `aeronet` will result in the client code interacting with [server objects](#server-objects), [http responses](#building-the-http-response), streaming HTTP responses (documentation TODO) and reading HTTP requests.
+Consuming `aeronet` will result in the client code interacting with [server objects](#server-objects), [router](#router-configuration-two-safe-ways-to-set-handlers), [http responses](#building-the-http-response), streaming HTTP responses (documentation TODO) and reading HTTP requests.
 
 ### Server objects
 
@@ -154,7 +154,7 @@ Consuming `aeronet` will result in the client code interacting with [server obje
 
 #### HttpServer
 
-The core server of `aeronet`. It is mono-threaded process based on a reactor pattern powered by `epoll` with a blocking running event loop.
+The core server of `aeronet`. It is a mono-threaded process based on a reactor pattern powered by `epoll` with a blocking running event loop.
 The call to `run()` (or `runUntil(<predicate>)`) is blocking, and can be stopped by another thread by calling `stop()` on this instance.
 The non-blocking APIs launch the event loop in the background. Use `start()` when you want a void convenience that manages an internal handle for you, or `startDetached()` (and the related `startDetachedAndStopWhen(<predicate>)`, `startDetachedWithStopToken(<stop token>)`) when you need an `AsyncHandle` you can inspect or control explicitly.
 
@@ -237,10 +237,10 @@ Instead of manually creating N threads and N `HttpServer` instances, you can use
 
 - Accepts a base `HttpServerConfig` (set `port=0` for ephemeral bind; the chosen port is propagated to all instances)
 - Forces `reusePort=true` automatically when thread count > 1
-- Replicates either a global handler or all registered path handlers across each underlying server
+- Replicates either a global handler or all registered path handlers across each underlying server (even after in-flight updates)
 - Exposes `stats()` returning both per-instance and aggregated totals (sums; `maxConnectionOutboundBuffer` is a max)
 - Manages lifecycle with internal `std::jthread`s; `stop()` requests shutdown of every instance
-- Provides the resolved listening `port()` after start (even for ephemeral port 0 requests)
+- Provides the resolved listening `port()` directly after construction (even for ephemeral port 0 requests)
 
 Example:
 
@@ -268,15 +268,10 @@ int main() {
 Additional notes:
 
 - If `cfg.port` was 0 the kernel-chosen ephemeral port printed above will remain stable across any later `stop()` /
-  `start()` cycles for this `MultiHttpServer` instance.
+  `start()` cycles for this `MultiHttpServer` instance. To obtain a new ephemeral port you must construct a new `MultiHttpServer` (or in a future API explicitly reset the base configuration before a restart to `port=0`).
 - You may call `stop()` and then `start()` again on the same `MultiHttpServer` instance.
-- Ephemeral port reuse: if the initial construction used `port=0`, the kernel-chosen port is stored in the resolved
-  config and that SAME port is reused for all subsequent restarts by default. Restarts do not request a new ephemeral
-  port automatically. (Design choice: stable port across cycles is usually what supervisors / load balancers expect.)
-  To obtain a new ephemeral port you must construct a new `MultiHttpServer` (or in a future API explicitly reset
-  the base configuration before a restart to `port=0`).
 - Handlers: global or path handlers registered are re-applied to the fresh servers on each
-  restart. You may add/remove/replace path handlers using `postRouterUpdate()` is possible at any time (even during running).
+  restart. You may add/remove/replace path handlers using `postRouterUpdate()` or `router()` at any time (even during running).
 - Per‑run statistics are not accumulated across restarts; each run begins with fresh counters (servers rebuilt).
 
 Stats aggregation example:
@@ -391,7 +386,8 @@ The router expects callback functions returning a `HttpResponse`. You can build 
 | `reason()`         | O(trailing)          | One tail `memmove` if size delta       |
 | `addHeader()`      | O(bodyLen)           | Shift tail once; no scan               |
 | `header()`         | O(headers + bodyLen) | Linear scan + maybe one shift          |
-| `body()`           | O(delta) + realloc   | Exponential growth strategy            |
+| `body()` (inline)  | O(delta) + realloc   | Exponential growth strategy            |
+| `body()` (capture) | O(1)                 | Zero copy client buffer capture        |
 | `file()`           | O(1)                 | Zero-copy sendfile helper              |
 | `addTrailer()`     | O(1)                 | Append-only; no scan (only after body) |
 
@@ -425,7 +421,7 @@ Allowed convenience helpers:
 - `Content-Type` via `contentType()` in streaming.
 - `Location` via `location()` for redirects.
 
-Content-Type resolution for static files
+##### Content-Type resolution for static files
 
 When serving files with the built-in static helpers, aeronet chooses the response `Content-Type` using the
 following precedence: (1) user-provided resolver callback if installed and non-empty, (2) the configured default
@@ -444,6 +440,8 @@ Full details (modes, triggers, helpers) have been moved out of the landing page:
 See: [Connection Close Semantics](docs/FEATURES.md#connection-close-semantics)
 
 ### Compression (gzip, deflate, zstd, brotli)
+
+`aeronet` has built-in support for automatic outbound response compression (and inbound requests decompression) with multiple algorithms, provided that the library is built with each available encoder compile time flag.
 
 Detailed negotiation rules, thresholds, opt-outs, and tuning have moved:
 See: [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
@@ -464,10 +462,6 @@ See: [CORS Support](docs/FEATURES.md#cors-support)
 ### Request Header Duplicate Handling
 
 Detailed policy & implementation moved to: [Request Header Duplicate Handling](docs/FEATURES.md#request-header-duplicate-handling-detailed)
-
-### Inbound Request Body Decompression (Content-Encoding)
-
-Detailed behavior, limits & examples moved to: [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
 
 ### Kubernetes style probes
 
@@ -686,7 +680,7 @@ When OpenTelemetry is enabled, aeronet automatically tracks:
 
 - `http.request` spans for each HTTP request with attributes (method, path, status_code, etc.)
 
-**Metrics:**
+**Metrics (non exhaustive list):**
 
 - `aeronet.events.processed` – epoll events successfully processed per iteration
 - `aeronet.connections.accepted` – new connections accepted
@@ -761,10 +755,10 @@ router.setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
 
 ### Limits
 
-- 431 is returned if the header section exceeds `maxHeaderBytes`.
-- 413 is returned if the declared `Content-Length` exceeds `maxBodyBytes`.
+- **431** is returned if the header section exceeds `maxHeaderBytes`.
+- **413** is returned if the declared `Content-Length` exceeds `maxBodyBytes`.
 - Connections exceeding `maxOutboundBufferBytes` (buffered pending write bytes) are marked to close after flush (default 4MB) to prevent unbounded memory growth if peers stop reading.
-- Slowloris protection: configure `withHeaderReadTimeout(ms)` to bound how long a client may take to send an entire request head (request line + headers). 0 disables.
+- Slowloris protection: configure `withHeaderReadTimeout(ms)` to bound how long a client may take to send an entire request head (request line + headers) (0 to disable). `aeronet` will return HTTP error **408 Request Timeout** if exceeded.
 
 ### Performance / Metrics & Backpressure
 

@@ -14,7 +14,6 @@
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/major-minor-version.hpp"
 #include "aeronet/otel-config.hpp"
 #include "aeronet/tchars.hpp"
 #include "aeronet/tls-config.hpp"
@@ -89,12 +88,12 @@ HttpServerConfig& HttpServerConfig::withTlsCipherList(std::string_view cipherLis
 }
 
 HttpServerConfig& HttpServerConfig::withTlsMinVersion(std::string_view ver) {
-  parseVersion(ver.data(), ver.data() + ver.size(), ensureTls().minVersion);
+  ensureTls().withTlsMinVersion(ver);
   return *this;
 }
 
 HttpServerConfig& HttpServerConfig::withTlsMaxVersion(std::string_view ver) {
-  parseVersion(ver.data(), ver.data() + ver.size(), ensureTls().maxVersion);
+  ensureTls().withTlsMaxVersion(ver);
   return *this;
 }
 
@@ -137,7 +136,7 @@ HttpServerConfig& HttpServerConfig::withTlsHandshakeLogging(bool on) {
 }
 
 HttpServerConfig& HttpServerConfig::withTlsHandshakeTimeout(std::chrono::milliseconds timeout) {
-  tlsHandshakeTimeout = timeout;
+  ensureTls().handshakeTimeout = timeout;
   return *this;
 }
 
