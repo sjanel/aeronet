@@ -4,7 +4,10 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "aeronet/http-server-config.hpp"
@@ -18,22 +21,61 @@ namespace aeronet {
 
 // MultiHttpServer: convenience wrapper that spins up N HttpServer instances
 // (each with its own event loop) listening on the same port via SO_REUSEPORT.
-// Threads start in start(); they are std::jthread so they auto-join on destruction.
-// Handlers must be registered before start(). Post-start registration throws.
-// NOTE: This class is intentionally NOT thread-safe. It assumes a single controlling
-// thread performs construction, handler registration, start(), stats() calls and stop().
-// Dropping the mutex avoids unnecessary synchronization on the hot path of start/stop.
 //
 // Restart semantics:
 //  - MultiHttpServer can be restarted: after stop() you may call start() again. A restart constructs
 //    a fresh set of underlying HttpServer instances (HttpServer itself is currently single-shot; its
 //    stop() closes the listening socket). Handlers registered prior to the *first* start() are retained;
-//    you may also replace the global handler between stops. The same port is reused unless you set
-//    _baseConfig.port = 0 (via an external config mutation API in the future) before restarting, in which
-//    case a new ephemeral port will be chosen and propagated.
+//    you may also replace the global handler between stops. The same port is reused.
 //  - Stats from previous runs are not accumulated across restarts because the underlying servers are rebuilt.
 class MultiHttpServer {
  public:
+  // AsyncHandle: RAII wrapper for non-blocking multi-server execution
+  // ------------------------------------------------------------------
+  // Returned by start() methods to manage the background threads running the MultiHttpServer instances.
+  // Provides lifetime management (RAII join on destruction) and error propagation from background threads.
+  //
+  // Typical usage:
+  //   MultiHttpServer multi(cfg, router, 4);
+  //   auto handle = multi.start();  // non-blocking, returns immediately
+  //   // ... do work while servers run in background ...
+  //   handle.stop();  // or let handle destructor auto-stop
+  //   handle.rethrowIfError();  // check for exceptions from any event loop
+  class AsyncHandle {
+   public:
+    AsyncHandle(const AsyncHandle&) = delete;
+    AsyncHandle& operator=(const AsyncHandle&) = delete;
+
+    AsyncHandle(AsyncHandle&& other) noexcept;
+    AsyncHandle& operator=(AsyncHandle&& other) noexcept;
+
+    // Destructor automatically stops and joins all background threads (RAII)
+    ~AsyncHandle();
+
+    // Stop all background event loops and join threads (blocking).
+    // Safe to call multiple times; subsequent calls are no-ops.
+    void stop() noexcept;
+
+    // Rethrow the first exception that occurred in any background event loop.
+    // Call after stop() to check for errors.
+    void rethrowIfError();
+
+    // Check if any background thread is still active (not yet joined).
+    [[nodiscard]] bool started() const noexcept;
+
+   private:
+    friend class MultiHttpServer;
+
+    AsyncHandle(vector<std::jthread> threads, std::shared_ptr<std::exception_ptr> error,
+                std::shared_ptr<std::atomic<bool>> stopRequested, std::shared_ptr<std::function<void()>> onStop);
+
+    vector<std::jthread> _threads;
+    std::shared_ptr<std::exception_ptr> _error;         // shared for lambda capture
+    std::shared_ptr<std::atomic<bool>> _stopRequested;  // shared with server logic
+    std::shared_ptr<std::function<void()>> _onStop;
+    std::atomic<bool> _stopCalled{false};
+  };
+
   // Construct a MultiHttpServer that does nothing.
   // Useful only to make it default constructible for temporary purposes (for instance to move assign to it later on),
   // but do not attempt to use a default constructed server, it will not bind to any socket.
@@ -49,12 +91,9 @@ class MultiHttpServer {
   //                  Each instance owns an independent epoll/event loop and shares the listening
   //                  port via SO_REUSEPORT (automatically enabled if threadCount > 1).
   // Behavior:
-  //   - Does NOT start the servers; call start() explicitly after registering handlers.
+  //   - Does NOT start the servers, you need to call start() or run() family of methods to launch them.
   //   - Validates threadCount and throws std::invalid_argument if < 1.
   //   - The object itself is NOT thread-safe; expect single-threaded orchestration.
-  // Performance rationale:
-  //   - Avoids locks by treating start()/stop()/handler registration as single-threaded control
-  //     operations; the hot path remains inside individual HttpServer event loops.
   MultiHttpServer(HttpServerConfig cfg, Router router, uint32_t threadCount);
 
   // Variant of MultiHttpServer(HttpServerConfig, Router, uint32_t) with a default constructed
@@ -115,20 +154,28 @@ class MultiHttpServer {
   // HttpServer at start() time. Must be set before start().
   void setMiddlewareMetricsCallback(HttpServer::MiddlewareMetricsCallback cb);
 
-  // start():
-  //   Launches the configured number of HttpServer instances, each on its own std::jthread.
-  //   Enables SO_REUSEPORT automatically when threadCount > 1 (overrides cfg.reusePort=false).
-  //   For ephemeral ports (cfg.port==0): waits (busy sleep up to ~200ms) for the first server to
-  //   resolve a concrete port, then propagates that port to subsequent instances so the entire
-  //   group listens on a single shared port.
+  // run():
+  //   Blocking variant of start(). Launches the configured number of HttpServer instances and
+  //   blocks the calling thread until all servers complete (via stop() or graceful drain completion).
+  //   Functionally equivalent to: start(); <wait for all threads to complete>; stop();
   // Error handling:
   //   - Throws std::logic_error if called more than once.
-  //   - Exceptions during individual HttpServer::run() are logged; that thread exits but others
-  //     continue (future improvement could surface an aggregated failure signal).
+  //   - Exceptions during individual HttpServer event loops are logged; that thread exits but others
+  //     continue until all have completed.
   // Post-conditions:
-  //   - isRunning() returns true if startup sequence completed.
-  //   - Handler registration becomes immutable after this call.
-  void start();
+  //   - When run() returns, all server threads have exited and the MultiHttpServer is stopped.
+  //   - The instance can be restarted by calling start() or run() again (handlers are retained).
+  // Use case:
+  //   - Primary use case for simple applications where the main thread should block serving requests
+  //     until shutdown is triggered (e.g., via signal handler calling beginDrain() or stop()).
+  void run();
+
+  // runUntil():
+  //   Blocking variant that keeps serving until the supplied predicate returns true or stop() is invoked.
+  //   The predicate is evaluated from each worker thread between event loop iterations, mirroring
+  //   HttpServer::runUntil semantics. The predicate must therefore be thread-safe. When the predicate
+  //   fires, all servers are requested to stop and the method waits until every worker thread exits.
+  void runUntil(const std::function<bool()>& predicate);
 
   // stop():
   //   Signals all underlying servers to stop, then joins their threads (via std::jthread RAII
@@ -136,6 +183,41 @@ class MultiHttpServer {
   //   Blocks until all servers have exited their event loops. Ensures HttpServer objects outlive
   //   the joining of their threads (ordering guaranteed by move+scope pattern in implementation).
   void stop() noexcept;
+
+  // start():
+  //   Launches the configured number of HttpServer instances, each on its own background thread.
+  //   The server manages the thread lifetime internally and will automatically stop and join all
+  //   threads when the server is destroyed or stop() is called. This is the simple, recommended
+  //   API for most use cases.
+  // Error handling:
+  //   - Throws std::logic_error if called while already running.
+  //   - Exceptions during individual HttpServer::run() are captured and can be rethrown via stop() cleanup.
+  // Post-conditions:
+  //   - Returns immediately (non-blocking); servers run in background threads.
+  //   - Handler registration becomes immutable after this call.
+  void start();
+
+  // startDetached():
+  //   Like start(), but returns an AsyncHandle for explicit lifetime management.
+  //   Use this when you need fine-grained control (checking if started, rethrowIfError, etc).
+  //   The AsyncHandle will automatically stop and join all threads on destruction (RAII).
+  // Error handling:
+  //   - Throws std::logic_error if called while already running.
+  //   - Exceptions during individual HttpServer::run() are captured and can be rethrown via handle.rethrowIfError().
+  // Post-conditions:
+  //   - Returns immediately with an AsyncHandle; servers run in background threads.
+  //   - Handler registration becomes immutable after this call.
+  [[nodiscard]] AsyncHandle startDetached();
+
+  // startDetachedAndStopWhen():
+  //   Like startDetached(), but also terminates the event loops when the provided predicate returns true.
+  //   Useful for coordinating shutdown with external signals. Predicate is evaluated from each worker thread.
+  [[nodiscard]] AsyncHandle startDetachedAndStopWhen(std::function<bool()> predicate);
+
+  // startDetachedWithStopToken():
+  //   Launch the event loops and stop them when either the returned AsyncHandle is stopped or the provided
+  //   std::stop_token is triggered. Handy for integrating with cooperative cancellation infrastructure.
+  [[nodiscard]] AsyncHandle startDetachedWithStopToken(std::stop_token token);
 
   // beginDrain(): forward graceful drain to every underlying HttpServer.
   void beginDrain(std::chrono::milliseconds maxWait = std::chrono::milliseconds{0}) noexcept;
@@ -147,11 +229,14 @@ class MultiHttpServer {
   //   Reflects the high-level lifecycle, not the liveness of each individual thread (a thread
   //   may have terminated due to an exception while isRunning() is still true). Use stats() or
   //   external health checks for deeper diagnostics.
-  [[nodiscard]] bool isRunning() const { return !_threads.empty(); }
+  [[nodiscard]] bool isRunning() const { return _internalHandle.has_value() || !_threads.empty(); }
 
+  // isDraining(): true if all underlying servers are currently draining.
   [[nodiscard]] bool isDraining() const;
 
   // port(): The resolved listening port shared by all underlying servers.
+  // If the port was ephemeral (0) at construction time, this returns the concrete port chosen by
+  // the first server.
   // Returns 0 if the instance is empty (holding no servers)
   [[nodiscard]] uint16_t port() const { return empty() ? 0 : _servers[0].port(); }
 
@@ -185,9 +270,16 @@ class MultiHttpServer {
  private:
   void canSetCallbacks() const;
 
+  void rebuildServers();
+  [[nodiscard]] vector<HttpServer*> collectServerPointers();
+  void runBlocking(std::function<bool()> predicate, std::string_view modeLabel);
+
+  [[nodiscard]] AsyncHandle startDetachedInternal(std::function<bool()> extraStopCondition, bool monitorPredicateAsync);
+
   // single-writer (controller thread), multi-reader (worker threads)
   // It is useful to avoid freezes when stop() before the server thread has entered the main loop after start.
-  std::unique_ptr<std::atomic<bool>> _stopRequested;
+  // Shared ownership allows both MultiHttpServer and AsyncHandle to control stopping.
+  std::shared_ptr<std::atomic<bool>> _stopRequested{std::make_shared<std::atomic<bool>>(false)};
 
   // IMPORTANT LIFETIME NOTE:
   // Each server thread captures a raw pointer to its corresponding HttpServer element stored in _servers.
@@ -195,6 +287,13 @@ class MultiHttpServer {
   // Destruction order is reverse of declaration order, so declare 'servers' BEFORE 'threads'.
   vector<HttpServer> _servers;    // created on start()
   vector<std::jthread> _threads;  // run server.run()
+
+  // Internal handle for simple start() API - managed by the server itself.
+  // When start() is called, the handle is stored here and the server takes ownership.
+  // When startDetached() is called, the handle is returned to the caller.
+  std::optional<AsyncHandle> _internalHandle;
+  std::weak_ptr<std::function<void()>> _lastHandleStopFn;
+  std::shared_ptr<std::atomic<bool>> _serversAlive{std::make_shared<std::atomic<bool>>(true)};
 };
 
 }  // namespace aeronet

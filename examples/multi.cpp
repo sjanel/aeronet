@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
     log::info("Listening on {} with {} reactors (SO_REUSEPORT). Press Ctrl+C to stop.", multi.port(), threads);
     std::signal(SIGINT, handleSigint);
     while (gStop == 0) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
     auto stats = multi.stats();
     log::info("Shutting down. reactors={} totalQueued={}", static_cast<size_t>(stats.per.size()),
