@@ -56,7 +56,7 @@ class EventLoop {
 
   // Register fd with given events.
   // On error, throws std::system_error.
-  void add_or_throw(EventFd event) const;
+  void addOrThrow(EventFd event) const;
 
   // Register fd with given events.
   // Returns true on success, false on failure (logged).
@@ -77,6 +77,9 @@ class EventLoop {
 
   // Current allocated capacity (number of epoll_event slots available without reallocation).
   [[nodiscard]] uint32_t capacity() const noexcept { return _nbAllocatedEvents; }
+
+  // Update the poll timeout.
+  void updatePollTimeout(SysDuration pollTimeout);
 
  private:
   uint32_t _nbAllocatedEvents = 0;

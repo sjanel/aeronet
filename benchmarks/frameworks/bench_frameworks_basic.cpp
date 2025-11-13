@@ -17,11 +17,11 @@
 #include <utility>
 #include <vector>
 
-#include "aeronet/async-http-server.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/test_util.hpp"
@@ -60,10 +60,10 @@ inline constexpr int kMaxConnectionRetries = 5;
 benchutil::PregenPool g_stringPool;
 
 struct AeronetServerRunner {
-  AsyncHttpServer async;
+  HttpServer server;
 
   AeronetServerRunner()
-      : async([]() {
+      : server([]() {
           HttpServerConfig cfg{};
           cfg.maxRequestsPerConnection = 1000000;  // allow plenty of persistent reuse for benchmarks
           cfg.maxHeaderBytes = 256UL * 1024;       // allow large headers for benchmarks
@@ -71,13 +71,13 @@ struct AeronetServerRunner {
           return cfg;
         }()) {
     log::set_level(log::level::err);
-    async.router().setPath(http::Method::GET, benchutil::kBodyPath, [](const HttpRequest &) {
+    server.router().setPath(http::Method::GET, benchutil::kBodyPath, [](const HttpRequest &) {
       HttpResponse resp(200);
       resp.body(g_stringPool.next());
       return resp;
     });
 
-    async.router().setPath(http::Method::GET, benchutil::kHeaderPath, [](const HttpRequest &req) {
+    server.router().setPath(http::Method::GET, benchutil::kHeaderPath, [](const HttpRequest &req) {
       HttpResponse resp;
       // Read requested header count from query param 'size'
       size_t headerCount = 0;
@@ -96,11 +96,11 @@ struct AeronetServerRunner {
       resp.body(std::to_string(headerCount));
       return resp;
     });
-    async.start();
+    server.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 
-  [[nodiscard]] uint16_t port() const { return async.port(); }
+  [[nodiscard]] uint16_t port() const { return server.port(); }
 };
 
 #ifdef AERONET_BENCH_ENABLE_DROGON

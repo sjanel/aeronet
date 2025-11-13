@@ -13,6 +13,7 @@
 #include <mutex>
 #include <span>
 #include <string_view>
+#include <thread>
 
 #include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/connection-state.hpp"
@@ -117,6 +118,48 @@ class HttpServer {
   using ExpectationHandler = std::function<ExpectationResult(const HttpRequest&, std::string_view)>;
 
   using MetricsCallback = std::function<void(const RequestMetrics&)>;
+
+  // AsyncHandle: RAII wrapper for non-blocking server execution
+  // ------------------------------------------------------------
+  // Returned by start() methods to manage the background thread running the HttpServer event loop.
+  // Provides lifetime management (RAII join on destruction) and error propagation from the background thread.
+  //
+  // Typical usage:
+  //   HttpServer server(cfg, router);
+  //   auto handle = server.start();  // non-blocking
+  //   // ... do work while server runs in background ...
+  //   handle.stop();  // or let handle destructor auto-stop
+  //   handle.rethrowIfError();  // check for exceptions from event loop
+  class AsyncHandle {
+   public:
+    AsyncHandle(const AsyncHandle&) = delete;
+    AsyncHandle& operator=(const AsyncHandle&) = delete;
+
+    AsyncHandle(AsyncHandle&&) noexcept = default;
+    AsyncHandle& operator=(AsyncHandle&&) noexcept = default;
+
+    // Destructor automatically stops and joins the background thread (RAII)
+    ~AsyncHandle();
+
+    // Stop the background event loop and join the thread (blocking).
+    // Safe to call multiple times; subsequent calls are no-ops.
+    void stop() noexcept;
+
+    // Rethrow any exception that occurred in the background event loop.
+    // Call after stop() to check for errors.
+    void rethrowIfError();
+
+    // Check if the background thread is still active (not yet joined).
+    [[nodiscard]] bool started() const noexcept { return _thread.joinable(); }
+
+   private:
+    friend class HttpServer;
+
+    AsyncHandle(std::jthread thread, std::shared_ptr<std::exception_ptr> error);
+
+    std::jthread _thread;
+    std::shared_ptr<std::exception_ptr> _error;  // shared for lambda capture
+  };
 
   // Construct a void HttpServer, that will not serve anything.
   // Useful only to make it default constructible for temporary purposes (for instance to move assign to it later on),
@@ -223,6 +266,54 @@ class HttpServer {
   // Like run() but exits when the user-supplied predicate returns true (checked once per loop iteration) or stop()
   // is invoked / signal received. Poll sleep upper bound is HttpServerConfig::pollInterval.
   void runUntil(const std::function<bool()>& predicate);
+
+  // start():
+  //   Launch the event loop in a background thread. The server manages the thread lifetime
+  //   internally and will automatically stop and join when the server is destroyed or stop()
+  //   is called.
+  //
+  // Usage:
+  //   HttpServer server(cfg, router);
+  //   server.start();  // non-blocking, returns void
+  //   // ... server runs in background ...
+  //   // Destructor or stop() will clean up automatically
+  void start();
+
+  // startDetached():
+  //   Like start(), but returns an AsyncHandle for explicit lifetime management.
+  //   Use this when you need fine-grained control (checking if started, rethrowIfError, etc).
+  //   The AsyncHandle will automatically stop and join the thread on destruction (RAII).
+  //
+  // Usage:
+  //   HttpServer server(cfg, router);
+  //   auto handle = server.startDetached();  // non-blocking
+  //   // ... server runs in background ...
+  //   handle.stop();  // or let destructor handle it
+  //   handle.rethrowIfError();
+  [[nodiscard]] AsyncHandle startDetached();
+
+  // startDetachedAndStopWhen():
+  //   Like startDetached(), but the event loop will also terminate when the provided predicate returns true.
+  //   The predicate is checked once per loop iteration alongside the stop token check.
+  //
+  // Usage:
+  //   std::atomic<bool> done{false};
+  //   auto handle = server.startDetachedAndStopWhen([&]{ return done.load(); });
+  //   // ... later ...
+  //   done = true;  // triggers shutdown
+  [[nodiscard]] AsyncHandle startDetachedAndStopWhen(std::function<bool()> predicate);
+
+  // startDetachedWithStopToken():
+  //   Launch the event loop that stops when either the provided std::stop_token or the
+  //   AsyncHandle's internal token requests stop. Useful for integrating with external
+  //   cooperative cancellation mechanisms.
+  //
+  // Usage:
+  //   std::stop_source source;
+  //   auto handle = server.startDetachedWithStopToken(source.get_token());
+  //   // ... later ...
+  //   source.request_stop();  // triggers shutdown
+  [[nodiscard]] AsyncHandle startDetachedWithStopToken(std::stop_token token);
 
   // Requests cooperative termination of the event loop. Safe to invoke from a different thread
   // (best‑effort). The maximum observable latency before run()/runUntil() return is bounded by
@@ -432,6 +523,11 @@ class HttpServer {
 
   // Telemetry context - one per HttpServer instance (no global singletons)
   tracing::TelemetryContext _telemetry;
+
+  // Internal handle for simple start() API - managed by the server itself.
+  // When start() is called, the handle is stored here and the server takes ownership.
+  // When startDetached() is called, the handle is returned to the caller.
+  std::optional<AsyncHandle> _internalHandle;
 
 #ifdef AERONET_ENABLE_OPENSSL
   // TlsContext lifetime & pointer stability:

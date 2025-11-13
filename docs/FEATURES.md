@@ -810,7 +810,7 @@ Key API points:
 
 - **`beginDrain(std::chrono::milliseconds maxWait = 0)`** stops accepting new connections, keeps existing keep-alive sessions long enough to finish their current response, and injects `Connection: close` so the client does not reuse the socket. When `maxWait` is non-zero, a deadline is armed; any connections still open when it expires are closed immediately. Calling `beginDrain()` again with a shorter timeout shrinks the deadline.
 - **`isDraining()`** reflects whether the server is currently in the draining state. `isRunning()` still reports `true` until the drain completes or a stop occurs.
-- **Wrappers** — `AsyncHttpServer::beginDrain()` / `isDraining()` and `MultiHttpServer::beginDrain()` / `isDraining()` forward to the underlying `HttpServer` instances, enabling the same graceful drain flow when the server runs on background threads or across multiple reactors.
+- **Wrappers** — `MultiHttpServer::beginDrain()` / `isDraining()` forward to the underlying `HttpServer` instances, enabling the same graceful drain flow when the server runs on background threads or across multiple reactors.
 - Draining is restart-friendly: once all connections are gone (or the deadline forces closure) the lifecycle resets to `Idle` and the server can be started again with another `run()`.
 - `stop()` remains the immediate shutdown primitive; it transitions to `Stopping`, force-closes all connections and wakes the event loop right away.
 
@@ -873,7 +873,7 @@ The library exposes two related shutdown controls and they serve different inten
     - Call `stop()` to request immediate termination; the server will close connections promptly.
 
 - Wrapper behavior:
-  - `AsyncHttpServer::beginDrain()` and `MultiHttpServer::beginDrain()` forward to their underlying `HttpServer` instances so the same graceful behavior is available for background or multi‑reactor setups. `stop()` continues to request immediate termination on wrappers as before.
+  - `MultiHttpServer::beginDrain()` forward to their underlying `HttpServer` instances so the same graceful behavior is available for background or multi‑reactor setups. `stop()` continues to request immediate termination on wrappers as before.
 
 Recommendation: prefer `beginDrain()` when you intend to quiesce traffic and let outstanding requests complete; use `stop()` when you require immediate termination. If you need a blocking API (wait until drain completes), add a small wait in the supervisor code that observes `isDraining()`/`isRunning()` or joins the server thread — the public API intentionally separates "request" (non‑blocking) from "wait" to keep shutdown control explicit.
 
@@ -1174,6 +1174,8 @@ Router router;
 router.setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("hi\n"); });
 HttpServerConfig cfg; cfg.port=0; cfg.reusePort=true;
 MultiHttpServer multi(cfg, std::move(router), 4);
+// Use `start()` as a void convenience which manages an internal handle. Use `startDetached()` if you need
+// an `AsyncHandle` to control or inspect the background threads explicitly.
 multi.start();
 multi.stop();
 multi.start();
@@ -1465,8 +1467,7 @@ Testing: see `tests/http_streaming.cpp`.
 
 `StaticFileHandler` provides a hardened helper for serving filesystem trees while respecting HTTP caching and range
 semantics. The handler is designed to plug into the existing routing API: it is an invocable object that accepts an
-`HttpRequest` and returns an `HttpResponse`, so it works with `HttpServer`, `AsyncHttpServer`, and
-`MultiHttpServer` exactly like any other handler.
+`HttpRequest` and returns an `HttpResponse`, so it works with `HttpServer` and `MultiHttpServer` exactly like any other handler.
 
 - **Zero-copy transfers**: regular GET requests use `HttpResponse::file()` so plaintext sockets reuse the kernel
   `sendfile(2)` path. TLS endpoints automatically fall back to the buffered write path that aeronet already uses for
