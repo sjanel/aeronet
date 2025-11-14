@@ -72,6 +72,13 @@ add_unit_test(
 )
 
 add_unit_test(
+    string-equal-ignore-case_test
+    test/string-equal-ignore-case_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+add_unit_test(
     timestring_test
     test/timestring_test.cpp
     LIBRARIES
