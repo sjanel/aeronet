@@ -129,7 +129,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
 
   // Version (allow trailing CR; parseVersion tolerates it via from_chars behavior)
   first = nextSep + 1;
-  if (!parseVersion(first, lineLast, _version)) {
+  if (!ParseVersion(first, lineLast, _version)) {
     // malformed version token
     return http::StatusCodeBadRequest;
   }

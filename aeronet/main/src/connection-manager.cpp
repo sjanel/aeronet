@@ -55,28 +55,31 @@ void HttpServer::sweepIdleConnections() {
     // For DrainThenClose mode, only close after buffers and file payload are fully drained
     if (state.canCloseConnectionForDrain()) {
       cnxIt = closeConnection(cnxIt);
+      _telemetry.counterAdd("aeronet.connections.closed_for_drain");
       continue;
-      // Otherwise, let it continue draining - writable events will flush remaining data
     }
 
     // Keep-alive inactivity enforcement only if enabled.
     // Don't close if there's an active file send - those can block waiting for socket to be writable.
     if (_config.enableKeepAlive && !state.fileSend.active && (now - state.lastActivity) > _config.keepAliveTimeout) {
       cnxIt = closeConnection(cnxIt);
+      _telemetry.counterAdd("aeronet.connections.closed_for_keep_alive");
       continue;
     }
     // Header read timeout: active if headerStart set and duration exceeded and no full request parsed yet.
     if (_config.headerReadTimeout.count() > 0 && state.headerStart.time_since_epoch().count() != 0 &&
         (now - state.headerStart) > _config.headerReadTimeout) {
+      emitSimpleError(cnxIt, http::StatusCodeRequestTimeout);
       cnxIt = closeConnection(cnxIt);
+      _telemetry.counterAdd("aeronet.connections.closed_for_header_read_timeout");
       continue;
     }
     // TLS handshake timeout (if enabled). Applies only while handshake pending.
     if constexpr (aeronet::openSslEnabled()) {
-      if (_config.tlsHandshakeTimeout.count() > 0 && _config.tls.enabled &&
+      if (_config.tls.handshakeTimeout.count() > 0 && _config.tls.enabled &&
           state.handshakeStart.time_since_epoch().count() != 0 && !state.tlsEstablished &&
           !state.transport->handshakeDone()) {
-        if (now - state.handshakeStart > _config.tlsHandshakeTimeout) {
+        if (now - state.handshakeStart > _config.tls.handshakeTimeout) {
           cnxIt = closeConnection(cnxIt);
           continue;
         }
@@ -194,7 +197,7 @@ void HttpServer::acceptNewConnections() {
         // If TLS handshake still pending, treat a transport Error as transient and retry later.
         if (want == TransportHint::Error) {
           if (pCnx != nullptr && pCnx->transport && !pCnx->transport->handshakeDone()) {
-            log::warn("Transient transport error during TLS handshake on fd # {}; will retry", cnxFd);
+            log::debug("Transient transport error during TLS handshake on fd # {}; will retry", cnxFd);
             // Yield and let event loop drive readiness notifications; do not close yet.
             break;
           }  // Emit richer diagnostics to aid debugging TLS handshake / transport failures.
@@ -354,6 +357,7 @@ void HttpServer::handleReadableClient(int fd) {
     // (heuristic: no full request parsed and buffer not empty) and duration exceeded -> close.
     if (_config.headerReadTimeout.count() > 0 && state.headerStart.time_since_epoch().count() != 0) {
       if (std::chrono::steady_clock::now() - state.headerStart > _config.headerReadTimeout) {
+        emitSimpleError(cnxIt, http::StatusCodeRequestTimeout);
         state.requestImmediateClose();
         break;
       }

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <sys/socket.h>
 
 #include <chrono>
 #include <cstddef>
@@ -33,6 +34,7 @@ namespace {
 // This avoids flakiness when the whole test suite is executed in parallel.
 test::TestServer ts(HttpServerConfig{}, RouterConfig{}, std::chrono::milliseconds{5});
 auto port = ts.port();
+
 }  // namespace
 
 TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
@@ -126,32 +128,63 @@ TEST(HttpHeadersCustom, StreamingCaseInsensitiveContentTypeAndEncodingSuppressio
   EXPECT_TRUE(resp.contains(std::string(50, 'Z'))) << "Body appears compressed when it should not";
 }
 
-TEST(HttpHeaderTimeout, SlowHeadersConnectionClosed) {
-  static constexpr std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
+namespace {
 
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withHeaderReadTimeout(readTimeout); });
+struct HeaderReadTimeoutScope {
+  explicit HeaderReadTimeoutScope(std::chrono::milliseconds timeout) {
+    ts.postConfigUpdate([timeout](HttpServerConfig& cfg) { cfg.withHeaderReadTimeout(timeout); });
+  }
+
+  HeaderReadTimeoutScope(const HeaderReadTimeoutScope&) = delete;
+  HeaderReadTimeoutScope& operator=(const HeaderReadTimeoutScope&) = delete;
+  HeaderReadTimeoutScope(HeaderReadTimeoutScope&&) = delete;
+  HeaderReadTimeoutScope& operator=(HeaderReadTimeoutScope&&) = delete;
+
+  ~HeaderReadTimeoutScope() {
+    ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withHeaderReadTimeout(std::chrono::milliseconds{0}); });
+  }
+};
+
+}  // namespace
+
+TEST(HttpHeaderTimeout, Emits408WhenHeadersCompletedAfterDeadline) {
+  static constexpr std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
+  HeaderReadTimeoutScope headerTimeout(readTimeout);
 
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("hi"); });
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   test::ClientConnection cnx(ts.port());
   int fd = cnx.fd();
   ASSERT_GE(fd, 0) << "connect failed";
-  // Send only method token slowly using test helpers
-  std::string_view part1 = "GET /";  // incomplete, no version yet
-  test::sendAll(fd, part1, std::chrono::milliseconds{500});
-  std::this_thread::sleep_for(readTimeout + std::chrono::milliseconds{5});
-  // Attempt to finish request
-  std::string_view rest = " HTTP/1.1\r\nHost: x\r\n\r\n";
-  test::sendAll(fd, rest, std::chrono::milliseconds{500});
-  // kernel may still accept bytes, server should close shortly after detecting timeout
+  // Send an incomplete request line and let it stall past the timeout.
+  test::sendAll(fd, "GET /", std::chrono::milliseconds{100});
+  std::this_thread::sleep_for(readTimeout + std::chrono::milliseconds{10});
+  // Try to finish the request; the server should already consider it timed out and reply with 408.
+  static constexpr std::string_view rest = " HTTP/1.1\r\nHost: x\r\n\r\n";
+  (void)::send(fd, rest.data(), rest.size(), MSG_NOSIGNAL);
 
-  // Attempt to read response; expect either empty (no response) or nothing meaningful (no 200 OK)
-  std::this_thread::sleep_for(std::chrono::milliseconds(40));
-  std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{100});
-  if (!resp.empty()) {
-    // Should not have produced a 200 OK response because headers were never completed before timeout
-    EXPECT_FALSE(resp.contains("200 OK")) << resp;
-  }
+  std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{300});
+  ASSERT_FALSE(resp.empty());
+  EXPECT_TRUE(resp.contains("HTTP/1.1 408")) << resp;
+  EXPECT_TRUE(resp.contains("Connection: close")) << resp;
+}
+
+TEST(HttpHeaderTimeout, Emits408WhenHeadersNeverComplete) {
+  static constexpr std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
+  HeaderReadTimeoutScope headerTimeout(readTimeout);
+
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("hi"); });
+  test::ClientConnection cnx(ts.port());
+  int fd = cnx.fd();
+  ASSERT_GE(fd, 0) << "connect failed";
+
+  test::sendAll(fd, "POST ", std::chrono::milliseconds{100});
+  std::this_thread::sleep_for(readTimeout + std::chrono::milliseconds{20});
+
+  std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{300});
+  ASSERT_FALSE(resp.empty());
+  EXPECT_TRUE(resp.contains("HTTP/1.1 408")) << resp;
+  EXPECT_TRUE(resp.contains("Connection: close")) << resp;
 }
 
 namespace {

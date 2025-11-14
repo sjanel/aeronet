@@ -171,3 +171,10 @@ add_unit_test(
     LIBRARIES
     aeronet_objects
 )
+
+add_unit_test(
+    tls-config_test
+    test/tls-config_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
