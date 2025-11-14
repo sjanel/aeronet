@@ -270,7 +270,8 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& r
         if (compressionConfig.addVaryHeader) {
           resp.header(http::Vary, http::AcceptEncoding);
         }
-        resp.body(out);
+        // Keep the original content type
+        resp.setBodyInternal(out);
       }
     }
   }
