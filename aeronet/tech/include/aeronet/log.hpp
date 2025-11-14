@@ -14,7 +14,6 @@
 #include <format>
 #include <iostream>
 #include <ostream>
-#include <string>
 #include <string_view>
 
 #include "aeronet/timedef.hpp"
@@ -51,28 +50,24 @@ inline void set_level(level::level_enum lvl) { current_level() = lvl; }
 inline level::level_enum get_level() { return current_level(); }
 
 namespace detail {
-template <typename... Args>
-std::string run_format(std::string_view fmt, Args &&...args) {
-  if constexpr (sizeof...(Args) == 0) {
-    return std::string(fmt);
-  } else {
-    return std::vformat(fmt, std::make_format_args(args...));
-  }
-}
 
-inline void emit_line(const char *lvlTag, bool isErr, std::string_view msg) {
-  auto &os = isErr ? std::cerr : std::cout;
+inline void emit_prefix(const char *lvlTag) {
   char timeBuf[25];
   *TimeToStringISO8601UTCWithMs(SysClock::now(), timeBuf) = '\0';
-  os << '[' << timeBuf << "] [" << lvlTag << "] " << msg << '\n';
+  std::cout << '[' << timeBuf << "] [" << lvlTag << "] ";
 }
+
 }  // namespace detail
 
 template <typename... Args>
 void log(level::level_enum level, std::string_view fmt, Args &&...args) {
   if (static_cast<int>(get_level()) <= static_cast<int>(level)) {
-    detail::emit_line(kLevelNames[static_cast<int>(level)], false,
-                      detail::run_format(fmt, std::forward<Args>(args)...));
+    detail::emit_prefix(kLevelNames[static_cast<int>(level)]);
+    if constexpr (sizeof...(Args) == 0) {
+      std::cout << fmt << '\n';
+    } else {
+      std::cout << std::vformat(fmt, std::make_format_args(args...)) << '\n';
+    }
   }
 }
 
