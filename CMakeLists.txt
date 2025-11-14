@@ -15,6 +15,7 @@ else()
   message(WARNING "VERSION file not found; defaulting to version ${AERONET_PROJECT_VERSION}")
 endif()
 project(aeronet VERSION ${AERONET_PROJECT_VERSION} LANGUAGES CXX)
+set(AERONET_PROJECT_VERSION ${PROJECT_VERSION} CACHE INTERNAL "aeronet project version")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
