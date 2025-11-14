@@ -132,6 +132,51 @@ TEST(HttpCompression, NoAcceptEncodingHeaderStillCompressesDefault) {
   EXPECT_EQ(it->second, "br");
 }
 
+TEST(HttpCompression, PreservesUserContentTypeWhenCompressing) {
+  static_assert(brotliEnabled() || zlibEnabled(), "At least one compression encoder must be available");
+  if constexpr (!brotliEnabled() && !zlibEnabled()) {
+    GTEST_SKIP();
+  }
+
+  const std::string customType = "application/vnd.acme.resource+json";
+  std::string acceptEncoding;
+  std::string expectedEncoding;
+  if constexpr (brotliEnabled()) {
+    expectedEncoding = "br";
+    acceptEncoding = "br";
+    ts.postConfigUpdate([](HttpServerConfig &cfg) {
+      cfg.compression.minBytes = 32;
+      cfg.compression.preferredFormats = {Encoding::br};
+    });
+  } else if constexpr (zlibEnabled()) {
+    expectedEncoding = "gzip";
+    acceptEncoding = "gzip";
+    ts.postConfigUpdate([](HttpServerConfig &cfg) {
+      cfg.compression.minBytes = 32;
+      cfg.compression.preferredFormats = {Encoding::gzip};
+    });
+  }
+
+  std::string payload(160, 'R');
+  ts.router().setDefault([payload, customType](const HttpRequest &) {
+    HttpResponse respObj;
+    respObj.body(payload, customType);
+    return respObj;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/ctype", {{"Accept-Encoding", acceptEncoding}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+
+  auto itccc = resp.headers.find("Content-Type");
+  ASSERT_NE(itccc, resp.headers.end());
+  EXPECT_EQ(itccc->second, customType);
+
+  auto it = resp.headers.find("Content-Encoding");
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, expectedEncoding);
+  EXPECT_LT(resp.body.size(), payload.size());
+}
+
 TEST(HttpCompression, IdentityForbiddenNoAlternativesReturns406) {
   if constexpr (!brotliEnabled()) {
     GTEST_SKIP();
