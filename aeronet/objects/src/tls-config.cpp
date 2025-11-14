@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "aeronet/log.hpp"
+#include "aeronet/major-minor-version.hpp"
 
 namespace aeronet {
 
@@ -65,6 +66,16 @@ void TLSConfig::validate() const {
                           [](std::string_view proto) { return std::cmp_less(kMaxAlpnProtocolLength, proto.size()); })) {
     throw std::invalid_argument("ALPN protocol entry exceeds maximum length");
   }
+}
+
+TLSConfig& TLSConfig::withTlsMinVersion(std::string_view ver) {
+  ParseVersion(ver.data(), ver.data() + ver.size(), minVersion);
+  return *this;
+}
+
+TLSConfig& TLSConfig::withTlsMaxVersion(std::string_view ver) {
+  ParseVersion(ver.data(), ver.data() + ver.size(), maxVersion);
+  return *this;
 }
 
 }  // namespace aeronet

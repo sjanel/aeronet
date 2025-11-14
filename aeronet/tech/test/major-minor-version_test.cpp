@@ -16,7 +16,7 @@ using HttpVer = MajorMinorVersion<kHttpPrefix, uint8_t>;
 TEST(MajorMinorVersion, ParseValid) {
   HttpVer vers{};
   const char *str = "HTTP/1.1";
-  EXPECT_TRUE(parseVersion<kHttpPrefix>(str, str + std::strlen(str), vers));
+  EXPECT_TRUE(ParseVersion<kHttpPrefix>(str, str + std::strlen(str), vers));
   EXPECT_EQ(vers.major, 1);
   EXPECT_EQ(vers.minor, 1);
 }
@@ -24,16 +24,16 @@ TEST(MajorMinorVersion, ParseValid) {
 TEST(MajorMinorVersion, ParseInvalidPrefix) {
   HttpVer vers{};
   const char *str = "NOTHTTP/1.1";
-  EXPECT_FALSE(parseVersion<kHttpPrefix>(str, str + std::strlen(str), vers));
+  EXPECT_FALSE(ParseVersion<kHttpPrefix>(str, str + std::strlen(str), vers));
 }
 
 TEST(MajorMinorVersion, ParseInvalidFormat) {
   HttpVer vers{};
   const char *s1 = "HTTP/1";  // missing minor
-  EXPECT_FALSE(parseVersion<kHttpPrefix>(s1, s1 + std::strlen(s1), vers));
+  EXPECT_FALSE(ParseVersion<kHttpPrefix>(s1, s1 + std::strlen(s1), vers));
 
   const char *s2 = "HTTP/x.y";  // non-numeric
-  EXPECT_FALSE(parseVersion<kHttpPrefix>(s2, s2 + std::strlen(s2), vers));
+  EXPECT_FALSE(ParseVersion<kHttpPrefix>(s2, s2 + std::strlen(s2), vers));
 }
 
 TEST(MajorMinorVersion, StrAndCompare) {

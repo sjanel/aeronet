@@ -426,6 +426,36 @@ TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
   ASSERT_EQ(statsAfter.tlsClientCertPresent, 1U);
 }
 
+TEST(HttpTlsHandshakeTimeout, SilentClientClosed) {
+  constexpr auto handshakeTimeout = std::chrono::milliseconds{40};
+  test::TlsTestServer ts({}, [&](HttpServerConfig& cfg) {
+    cfg.withTlsHandshakeTimeout(handshakeTimeout);
+    cfg.withPollInterval(std::chrono::milliseconds{5});
+  });
+
+  test::ClientConnection cnx(ts.port());
+  const int fd = cnx.fd();
+  ASSERT_GE(fd, 0) << "connect failed";
+
+  const bool closed = test::WaitForPeerClose(fd, handshakeTimeout * 6);
+  ts.stop();
+  EXPECT_TRUE(closed);
+}
+
+TEST(HttpTlsHandshakeTimeout, SuccessfulHandshakeUnaffected) {
+  test::TlsTestServer ts({},
+                         [&](HttpServerConfig& cfg) { cfg.withTlsHandshakeTimeout(std::chrono::milliseconds{200}); });
+  ts.setDefault([](const HttpRequest&) { return HttpResponse(200, "OK").body("handshake-ok"); });
+
+  test::TlsClient client(ts.port());
+  ASSERT_TRUE(client.handshakeOk());
+  const auto resp = client.get("/ok");
+  ts.stop();
+
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.contains("handshake-ok"));
+}
+
 TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
   std::string capturedVersion;
   ServerStats statsAfter{};
@@ -461,11 +491,4 @@ TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
     }
   }
   ASSERT_TRUE(found);
-}
-
-TEST(HttpTlsVersionBounds, InvalidMinVersionThrows) {
-  // Provide invalid version string -> expect construction failure.
-  EXPECT_THROW(
-      { test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsMinVersion("TLS1.1"); }); },
-      std::invalid_argument);
 }

@@ -43,7 +43,7 @@ struct MajorMinorVersion {
 // Parse a textual version token (e.g. "HTTP/1.1") into Version.
 // Returns true on success; false if format invalid.
 template <const char *Prefix, class VersionInt>
-bool parseVersion(const char *first, const char *last, MajorMinorVersion<Prefix, VersionInt> &out) {
+bool ParseVersion(const char *first, const char *last, MajorMinorVersion<Prefix, VersionInt> &out) {
   using T = MajorMinorVersion<Prefix, VersionInt>;
   if (std::cmp_less(last - first, T::kMinStrLen) || std::memcmp(first, T::kPrefix.data(), T::kPrefix.size()) != 0) {
     return false;

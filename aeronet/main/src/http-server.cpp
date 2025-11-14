@@ -1056,6 +1056,8 @@ void ApplyPendingUpdates(std::mutex& mutex, auto& vec, std::atomic<bool>& flag, 
 void HttpServer::applyConfigUpdates() {
   ApplyPendingUpdates(_updateLock, _pendingConfigUpdates, _hasPendingConfigUpdates, _config, "config");
 
+  _config.validate();
+
   _encodingSelector = EncodingSelector(_config.compression);
   _eventLoop.updatePollTimeout(_config.pollInterval);
 }

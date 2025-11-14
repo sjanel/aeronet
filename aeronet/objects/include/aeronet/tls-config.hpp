@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -56,6 +57,11 @@ class TLSConfig {
   [[nodiscard]] std::string_view cipherList() const noexcept { return _tlsStrings[4]; }
   [[nodiscard]] auto cipherListCstrView() const noexcept { return _tlsStrings.makeNullTerminated(4); }
 
+  TLSConfig& withTlsHandshakeTimeout(std::chrono::milliseconds timeout) {
+    handshakeTimeout = timeout;
+    return *this;
+  }
+
   TLSConfig& withCertFile(std::string_view certFile) {
     _tlsStrings.set(0, certFile);
     return *this;
@@ -80,6 +86,10 @@ class TLSConfig {
     _tlsStrings.set(4, cipherList);
     return *this;
   }
+
+  TLSConfig& withTlsMinVersion(std::string_view ver);
+
+  TLSConfig& withTlsMaxVersion(std::string_view ver);
 
   // Set (overwrite) ALPN protocol preference list. Order matters; first matching protocol is selected.
   template <std::ranges::input_range R>
@@ -118,6 +128,9 @@ class TLSConfig {
   [[nodiscard]] StringViewRange trustedClientCertsPem() const noexcept {
     return {_trustedClientCertsPem.begin(), _trustedClientCertsPem.end()};
   }
+
+  // Protective timeout for TLS handshakes (time from accept to handshake completion). 0 => disabled.
+  std::chrono::milliseconds handshakeTimeout{std::chrono::milliseconds{0}};
 
   bool enabled{false};            // Master TLS enable/disable switch
   bool requestClientCert{false};  // Request (but not require) a client certificate

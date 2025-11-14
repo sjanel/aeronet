@@ -99,7 +99,7 @@ struct HttpServerConfig {
   // ===========================================
   // Maximum duration allowed to fully receive the HTTP request headers (request line + headers + CRLFCRLF)
   // from the moment the first byte of the request is read on a connection. If exceeded before the header
-  // terminator is observed the server closes the connection (optionally could emit 408 in future). A value
+  // terminator is observed the server closes the connection and emits a 408 Request Timeout. A value
   // of 0 disables this protective timeout. Default: disabled.
   std::chrono::milliseconds headerReadTimeout{std::chrono::milliseconds{0}};
 
@@ -107,9 +107,6 @@ struct HttpServerConfig {
   // TLS configuration
   // =================
   TLSConfig tls;
-
-  // Protective timeout for TLS handshakes (time from accept to handshake completion). 0 => disabled.
-  std::chrono::milliseconds tlsHandshakeTimeout{std::chrono::milliseconds{0}};
 
   // OpenTelemetry configuration
   OtelConfig otel;
