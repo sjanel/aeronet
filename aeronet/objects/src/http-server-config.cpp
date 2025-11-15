@@ -40,6 +40,11 @@ HttpServerConfig& HttpServerConfig::withKeepAliveMode(bool on) {
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withTcpNoDelay(bool on) {
+  this->tcpNoDelay = on;
+  return *this;
+}
+
 HttpServerConfig& HttpServerConfig::withMaxHeaderBytes(std::size_t maxHeaderBytes) {
   this->maxHeaderBytes = maxHeaderBytes;
   return *this;

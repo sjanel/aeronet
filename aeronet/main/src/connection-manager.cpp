@@ -1,4 +1,6 @@
 #include <asm-generic/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 
 #include <algorithm>
@@ -97,6 +99,14 @@ void HttpServer::acceptNewConnections() {
       break;
     }
     int cnxFd = cnx.fd();
+    if (_config.tcpNoDelay) {
+      static constexpr int enable = 1;
+      if (::setsockopt(cnxFd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) != 0) {
+        auto err = errno;
+        log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={} ({})", cnxFd, err, std::strerror(err));
+        _telemetry.counterAdd("aeronet.connections.tcp_nodelay_failed", 1UL);
+      }
+    }
     if (!_eventLoop.add(EventLoop::EventFd{cnxFd, EventIn | EventEt})) {
       auto savedErr = errno;
       log::error("EventLoop add client failed fd # {} err={}: {}", cnxFd, savedErr, std::strerror(savedErr));
