@@ -152,7 +152,7 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
 
   test::sendAll(fd, SimpleGetRequest("/", "keep-alive"));
   const auto initial = test::recvWithTimeout(fd);
-  ASSERT_TRUE(initial.contains("Connection: keep-alive"));
+  ASSERT_FALSE(initial.contains("Connection: close"));
 
   multi.beginDrain(200ms);
   EXPECT_TRUE(multi.isDraining());

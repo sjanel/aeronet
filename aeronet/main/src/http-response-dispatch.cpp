@@ -276,7 +276,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& r
     }
   }
 
-  queuePreparedResponse(cnxIt, resp.finalizeAndStealData(_request.version(), SysClock::now(), keepAlive,
+  queuePreparedResponse(cnxIt, resp.finalizeAndStealData(_request.version(), SysClock::now(), !keepAlive,
                                                          _config.globalHeaders, isHead, _config.minCapturedBodySize));
 
   state.inBuffer.erase_front(consumedBytes);
