@@ -153,7 +153,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
     if (lineLast == first) {
       break;
     }
-    auto [nameView, valueView] = http::parseHeaderLine(first, lineLast);
+    auto [nameView, valueView] = http::ParseHeaderLine(first, lineLast);
     if (nameView.empty()) {
       return http::StatusCodeBadRequest;
     }

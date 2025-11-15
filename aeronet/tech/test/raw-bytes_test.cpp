@@ -12,6 +12,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/internal/raw-bytes-base.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet {

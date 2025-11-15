@@ -3,9 +3,12 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "aeronet/log.hpp"
 

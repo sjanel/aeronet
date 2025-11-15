@@ -154,7 +154,7 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
     constexpr std::size_t kChunkSize = static_cast<std::size_t>(64) * 1024ULL;
     std::size_t oldSize = buffer.size();
 
-    buffer.ensureAvailableCapacity(kChunkSize);
+    buffer.ensureAvailableCapacityExponential(kChunkSize);
     for (;;) {
       ssize_t recvBytes = ::recv(fd, buffer.data() + oldSize, kChunkSize, 0);  // blocking
       if (recvBytes > 0) {
@@ -232,7 +232,7 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
         std::size_t chunkSize = std::min<std::size_t>(static_cast<std::size_t>(64) * 1024ULL, remaining);
         std::size_t oldBodySize = buffer.size();
 
-        buffer.ensureAvailableCapacity(chunkSize);
+        buffer.ensureAvailableCapacityExponential(chunkSize);
 
         for (;;) {
           ssize_t recvBytes = ::recv(fd, buffer.data() + oldBodySize, chunkSize, 0);
@@ -261,7 +261,7 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
           std::size_t oldSize = buffer.size();
           static constexpr std::size_t kChunkSize = static_cast<std::size_t>(64) * 1024ULL;
 
-          buffer.ensureAvailableCapacity(kChunkSize);
+          buffer.ensureAvailableCapacityExponential(kChunkSize);
           for (;;) {
             ssize_t r = ::recv(fd, buffer.data() + oldSize, kChunkSize, 0);
             if (r > 0) {

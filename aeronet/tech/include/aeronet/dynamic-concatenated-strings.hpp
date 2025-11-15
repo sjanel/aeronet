@@ -39,7 +39,7 @@ class DynamicConcatenatedStrings {
     if (std::cmp_greater(str.size(), std::numeric_limits<SizeType>::max() - _buf.size() - kSep.size())) {
       throw std::length_error("DynamicConcatenatedStrings: appended string size exceeds SizeType limit");
     }
-    _buf.ensureAvailableCapacity(static_cast<size_type>(str.size() + kSep.size()));
+    _buf.ensureAvailableCapacityExponential(static_cast<size_type>(str.size() + kSep.size()));
     _buf.unchecked_append(str);
     _buf.unchecked_append(kSep);
   }
