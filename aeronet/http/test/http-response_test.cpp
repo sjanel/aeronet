@@ -11,11 +11,11 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "aeronet/file.hpp"
+#include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-response-data.hpp"
@@ -674,15 +674,6 @@ ParsedResponse parseResponse(std::string_view full) {
   return pr;
 }
 
-std::string ToLowerKey(std::string_view input) {
-  std::string lowered;
-  lowered.reserve(input.size());
-  for (char ch : input) {
-    lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-  }
-  return lowered;
-}
-
 const std::pair<std::string, std::string>* FindHeaderCaseInsensitive(const ParsedResponse& pr, std::string_view name) {
   for (const auto& headerPair : pr.headers) {
     if (CaseInsensitiveEqual(headerPair.first, name)) {
@@ -692,16 +683,15 @@ const std::pair<std::string, std::string>* FindHeaderCaseInsensitive(const Parse
   return nullptr;
 }
 
-std::unordered_map<std::string, std::string> ExpectedGlobalHeaderValues(const HttpResponse& resp,
-                                                                        std::span<const http::Header> globalHeaders) {
-  std::unordered_map<std::string, std::string> expected;
+auto ExpectedGlobalHeaderValues(const HttpResponse& resp, std::span<const http::Header> globalHeaders) {
+  flat_hash_map<std::string, std::string, CaseInsensitiveHashFunc, CaseInsensitiveEqualFunc> expected;
   expected.reserve(globalHeaders.size());
   for (const auto& gh : globalHeaders) {
     auto opt = resp.headerValue(gh.name);
-    if (opt.has_value()) {
-      expected.emplace(ToLowerKey(gh.name), std::string(*opt));
+    if (opt) {
+      expected.emplace(gh.name, *opt);
     } else {
-      expected.emplace(ToLowerKey(gh.name), gh.value);
+      expected.emplace(gh.name, gh.value);
     }
   }
   return expected;
@@ -746,8 +736,7 @@ TEST_F(HttpResponseTest, RandomGlobalHeadersApplyOnce) {
     for (const auto& gh : globalHeaders) {
       const auto* actual = FindHeaderCaseInsensitive(parsed, gh.name);
       ASSERT_NE(actual, nullptr) << "Missing global header: " << gh.name << " in response\n" << serialized;
-      const auto key = ToLowerKey(gh.name);
-      auto expIt = expected.find(key);
+      auto expIt = expected.find(gh.name);
       ASSERT_NE(expIt, expected.end());
       EXPECT_EQ(actual->second, expIt->second) << "Header mismatch for " << gh.name << " in response\n" << serialized;
 
@@ -781,8 +770,7 @@ TEST_F(HttpResponseTest, GlobalHeadersBeyondInlineBitmap) {
   for (const auto& gh : globalHeaders) {
     const auto* actual = FindHeaderCaseInsensitive(parsed, gh.name);
     ASSERT_NE(actual, nullptr) << "Missing global header " << gh.name;
-    const auto key = ToLowerKey(gh.name);
-    auto expIt = expected.find(key);
+    auto expIt = expected.find(gh.name);
     ASSERT_NE(expIt, expected.end());
     EXPECT_EQ(actual->second, expIt->second);
     const auto occurrences = std::count_if(parsed.headers.begin(), parsed.headers.end(),
@@ -949,8 +937,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
     for (const auto& gh : fuzzGlobalHeaders) {
       const auto* actual = FindHeaderCaseInsensitive(pr, gh.name);
       ASSERT_NE(actual, nullptr) << "Missing fuzz global header " << gh.name;
-      auto key = ToLowerKey(gh.name);
-      auto expIt = expectedGlobals.find(key);
+      auto expIt = expectedGlobals.find(gh.name);
       ASSERT_NE(expIt, expectedGlobals.end());
       EXPECT_EQ(actual->second, expIt->second);
     }
@@ -1025,7 +1012,7 @@ TEST(HttpResponseTrailers, CapturedBodyString) {
   EXPECT_NO_THROW(resp.addTrailer("X-Custom", "value"));
 }
 
-// Test trailer with captured body (std::vector<char>)
+// Test trailer with captured body (vector<char>)
 TEST(HttpResponseTrailers, CapturedBodyVector) {
   HttpResponse resp(http::StatusCodeOK);
   std::vector<char> vec = {'h', 'e', 'l', 'l', 'o'};
