@@ -280,8 +280,7 @@ class HttpResponse {
   HttpResponse& body(std::string body, std::string_view contentType = http::ContentTypeTextPlain) & {
     setBodyInternal(std::string_view{});
     setContentTypeHeader(contentType, body.empty());
-    _payloadVariant = HttpPayload(std::move(body));
-    _payloadKind = PayloadKind::Captured;
+    setCapturedPayload(std::move(body));
     return *this;
   }
 
@@ -291,8 +290,7 @@ class HttpResponse {
   HttpResponse&& body(std::string body, std::string_view contentType = http::ContentTypeTextPlain) && {
     setBodyInternal(std::string_view{});
     setContentTypeHeader(contentType, body.empty());
-    _payloadVariant = HttpPayload(std::move(body));
-    _payloadKind = PayloadKind::Captured;
+    setCapturedPayload(std::move(body));
     return std::move(*this);
   }
 
@@ -302,8 +300,7 @@ class HttpResponse {
   HttpResponse& body(std::vector<char> body, std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
     setBodyInternal(std::string_view{});
     setContentTypeHeader(contentType, body.empty());
-    _payloadVariant = HttpPayload(std::move(body));
-    _payloadKind = PayloadKind::Captured;
+    setCapturedPayload(std::move(body));
     return *this;
   }
 
@@ -314,8 +311,7 @@ class HttpResponse {
                       std::string_view contentType = http::ContentTypeApplicationOctetStream) && {
     setBodyInternal(std::string_view{});
     setContentTypeHeader(contentType, body.empty());
-    _payloadVariant = HttpPayload(std::move(body));
-    _payloadKind = PayloadKind::Captured;
+    setCapturedPayload(std::move(body));
     return std::move(*this);
   }
 
@@ -326,8 +322,7 @@ class HttpResponse {
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
     setBodyInternal(std::string_view{});
     setContentTypeHeader(contentType, body.empty());
-    _payloadVariant = HttpPayload(std::move(body));
-    _payloadKind = PayloadKind::Captured;
+    setCapturedPayload(std::move(body));
     return *this;
   }
 
@@ -338,8 +333,7 @@ class HttpResponse {
                       std::string_view contentType = http::ContentTypeApplicationOctetStream) && {
     setBodyInternal(std::string_view{});
     setContentTypeHeader(contentType, body.empty());
-    _payloadVariant = HttpPayload(std::move(body));
-    _payloadKind = PayloadKind::Captured;
+    setCapturedPayload(std::move(body));
     return std::move(*this);
   }
 
@@ -350,8 +344,7 @@ class HttpResponse {
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
     setBodyInternal(std::string_view{});
     setContentTypeHeader(contentType, size == 0);
-    _payloadVariant = HttpPayload(std::move(body), size);
-    _payloadKind = PayloadKind::Captured;
+    setCapturedPayload(std::move(body), size);
     return *this;
   }
 
@@ -362,8 +355,7 @@ class HttpResponse {
                       std::string_view contentType = http::ContentTypeApplicationOctetStream) && {
     setBodyInternal(std::string_view{});
     setContentTypeHeader(contentType, size == 0);
-    _payloadVariant = HttpPayload(std::move(body), size);
-    _payloadKind = PayloadKind::Captured;
+    setCapturedPayload(std::move(body), size);
     return std::move(*this);
   }
 
@@ -374,8 +366,7 @@ class HttpResponse {
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
     setBodyInternal(std::string_view{});
     setContentTypeHeader(contentType, size == 0);
-    _payloadVariant = HttpPayload(std::move(body), size);
-    _payloadKind = PayloadKind::Captured;
+    setCapturedPayload(std::move(body), size);
     return *this;
   }
 
@@ -386,8 +377,7 @@ class HttpResponse {
                       std::string_view contentType = http::ContentTypeApplicationOctetStream) && {
     setBodyInternal(std::string_view{});
     setContentTypeHeader(contentType, size == 0);
-    _payloadVariant = HttpPayload(std::move(body), size);
-    _payloadKind = PayloadKind::Captured;
+    setCapturedPayload(std::move(body), size);
     return std::move(*this);
   }
 
@@ -490,14 +480,14 @@ class HttpResponse {
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse& addHeader(std::string_view key, std::string_view value) & {
     assert(!http::IsReservedResponseHeader(key));
-    appendHeaderUnchecked(key, value);
+    appendHeaderInternal(key, value);
     return *this;
   }
 
   // Convenient overload adding a header to a numeric value.
   HttpResponse& addHeader(std::string_view key, std::integral auto value) & {
     assert(!http::IsReservedResponseHeader(key));
-    appendHeaderUnchecked(key, std::string_view(IntegralToCharVector(value)));
+    appendHeaderInternal(key, std::string_view(IntegralToCharVector(value)));
     return *this;
   }
 
@@ -508,14 +498,14 @@ class HttpResponse {
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse&& addHeader(std::string_view key, std::string_view value) && {
     assert(!http::IsReservedResponseHeader(key));
-    appendHeaderUnchecked(key, value);
+    appendHeaderInternal(key, value);
     return std::move(*this);
   }
 
   // Convenient overload adding a header to a numeric value.
   HttpResponse&& addHeader(std::string_view key, std::integral auto value) && {
     assert(!http::IsReservedResponseHeader(key));
-    appendHeaderUnchecked(key, std::string_view(IntegralToCharVector(value)));
+    appendHeaderInternal(key, std::string_view(IntegralToCharVector(value)));
     return std::move(*this);
   }
 
@@ -621,6 +611,26 @@ class HttpResponse {
   friend class HttpResponseTest;
   friend class HttpResponseWriter;  // streaming writer needs access to finalize
 
+  void setCapturedPayload(auto payload) {
+    if (payload.empty()) {
+      _payloadVariant = {};
+      _payloadKind = PayloadKind::Inline;
+    } else {
+      _payloadVariant = HttpPayload(std::move(payload));
+      _payloadKind = PayloadKind::Captured;
+    }
+  }
+
+  void setCapturedPayload(auto payload, std::size_t size) {
+    if (size == 0) {
+      _payloadVariant = {};
+      _payloadKind = PayloadKind::Inline;
+    } else {
+      _payloadVariant = HttpPayload(std::move(payload), size);
+      _payloadKind = PayloadKind::Captured;
+    }
+  }
+
   [[nodiscard]] std::size_t reasonLen() const noexcept {
     if (_data[kReasonBeg] == '\n') {
       return 0UL;
@@ -659,9 +669,10 @@ class HttpResponse {
 
   void removeContentTypeHeader();
 
-  void appendHeaderUnchecked(std::string_view key, std::string_view value);
+  void appendHeaderInternal(std::string_view key, std::string_view value);
 
-  void appendDateUnchecked(SysTimePoint tp);
+  HttpPayload* finalizeHeadersBody(SysTimePoint tp, bool isHeadMethod, bool keepAlive,
+                                   std::span<const http::Header> globalHeaders, std::size_t minCapturedBodySize);
 
   void appendTrailer(std::string_view name, std::string_view value);
 
@@ -686,11 +697,13 @@ class HttpResponse {
                                         std::size_t minCapturedBodySize);
 
   HttpPayload* externPayloadPtr() noexcept { return std::get_if<HttpPayload>(&_payloadVariant); }
+
   [[nodiscard]] const HttpPayload* externPayloadPtr() const noexcept {
     return std::get_if<HttpPayload>(&_payloadVariant);
   }
 
   FilePayload* filePayloadPtr() noexcept { return std::get_if<FilePayload>(&_payloadVariant); }
+
   [[nodiscard]] const FilePayload* filePayloadPtr() const noexcept {
     return std::get_if<FilePayload>(&_payloadVariant);
   }

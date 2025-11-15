@@ -11,16 +11,17 @@
 #include <iterator>
 #include <memory>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <utility>
-#include <vector>
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 

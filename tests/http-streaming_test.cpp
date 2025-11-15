@@ -12,6 +12,8 @@
 #include <utility>
 
 #include "aeronet/compression-config.hpp"
+#include "aeronet/encoding.hpp"
+#include "aeronet/features.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
@@ -628,4 +630,37 @@ TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
   // Body is chunked: <5 CRLF small CRLF> <hex CRLF largePayload CRLF> 0 CRLF CRLF.
   // We only count 'x' in the large payload; small chunk contains none.
   ASSERT_EQ(kLargeSize, static_cast<size_t>(std::count(body.begin(), body.end(), 'x')));
+}
+
+TEST(HttpStreaming, CaseInsensitiveContentTypeAndEncodingSuppression) {
+  if constexpr (!zlibEnabled()) {
+    GTEST_SKIP();
+  }
+  // Set up server with compression enabled; provide mixed-case Content-Type and Content-Encoding headers via writer.
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.compression.minBytes = 1;
+    cfg.compression.preferredFormats.assign(1U, Encoding::gzip);
+  });
+  std::string payload(128, 'Z');
+  ts.router().setDefault([payload](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(200);
+    writer.header("cOnTeNt-TyPe", "text/plain");    // mixed case
+    writer.header("cOnTeNt-EnCoDiNg", "identity");  // should suppress auto compression
+    writer.writeBody(payload.substr(0, 40));
+    writer.writeBody(payload.substr(40));
+    writer.end();
+  });
+  test::ClientConnection cc(ts.port());
+  int fd = cc.fd();
+  std::string req =
+      "GET /h HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
+  // Ensure our original casing appears exactly and no differently cased duplicate exists.
+  ASSERT_TRUE(resp.contains("cOnTeNt-TyPe: text/plain")) << resp;
+  ASSERT_TRUE(resp.contains("cOnTeNt-EnCoDiNg: identity")) << resp;
+  // Should not see an added normalized Content-Type from default path.
+  EXPECT_FALSE(resp.contains("Content-Type: text/plain")) << resp;
+  // Body should be identity (contains long run of 'Z').
+  EXPECT_TRUE(resp.contains(std::string(50, 'Z'))) << "Body appears compressed when it should not";
 }

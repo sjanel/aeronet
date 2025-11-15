@@ -52,6 +52,20 @@ TEST(HttpServerConfigTest, CompressionConfig) {
 #endif
 }
 
+TEST(HttpServerConfigTest, MaxPerEventReadBytesMustMatchChunkSize) {
+  HttpServerConfig cfg;
+  cfg.withReadChunkStrategy(1024, 4096);  // initial chunk 1kB
+
+  cfg.withMaxPerEventReadBytes(0);
+  EXPECT_NO_THROW(cfg.validate());
+
+  cfg.withMaxPerEventReadBytes(1024);
+  EXPECT_NO_THROW(cfg.validate());
+
+  cfg.withMaxPerEventReadBytes(512);
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
 #if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
 TEST(HttpServerConfigTest, WithTlsKtlsModeEnablesTls) {
   HttpServerConfig config;

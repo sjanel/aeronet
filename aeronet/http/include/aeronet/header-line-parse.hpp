@@ -8,7 +8,7 @@ namespace aeronet::http {
 
 // Parse a single HTTP header line (range [lineStart, lineLast)).
 // Returns pair of (name, value) string_views, or empty name view on failure.
-inline HeaderView parseHeaderLine(const char* lineStart, const char* lineLast) {
+inline HeaderView ParseHeaderLine(const char* lineStart, const char* lineLast) {
   const auto* colonPtr = lineStart;
   while (colonPtr < lineLast && *colonPtr != ':') {
     ++colonPtr;
