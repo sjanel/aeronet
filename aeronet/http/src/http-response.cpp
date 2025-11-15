@@ -307,7 +307,7 @@ void HttpResponse::appendHeaderInternal(std::string_view key, std::string_view v
   _bodyStartPos += static_cast<uint32_t>(headerLineSize);
 }
 
-HttpPayload* HttpResponse::finalizeHeadersBody(SysTimePoint tp, bool isHeadMethod, bool keepAlive,
+HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoint tp, bool isHeadMethod, bool close,
                                                std::span<const http::Header> globalHeaders,
                                                std::size_t minCapturedBodySize) {
   static constexpr std::size_t kHeaderAdditionalSize = http::CRLF.size() + http::HeaderSep.size();
@@ -339,24 +339,28 @@ HttpPayload* HttpResponse::finalizeHeadersBody(SysTimePoint tp, bool isHeadMetho
     }
   }
 
-  const std::string_view connectionValue = keepAlive ? http::keepalive : http::close;
-
-  std::size_t totalNewHeadersSize = http::Connection.size() + connectionValue.size() + kHeaderAdditionalSize +
-                                    http::Date.size() + kRFC7231DateStrLen + kHeaderAdditionalSize;
-
+  const std::string_view connectionValue = close ? http::close : http::keepalive;
+  // HTTP/1.1 (RFC 7230 / RFC 9110) specifies that Connection: keep-alive is the default.
+  // HTTP/1.0 is the opposite - Connection: close is the default.
+  const bool addConnectionHeader = (close && version == http::HTTP_1_1) || (!close && version == http::HTTP_1_0);
   const auto bodySzStr = IntegralToCharVector(bodySz);
-
   const bool hasHeaders = _headersStartPos != 0;
+
+  std::size_t totalNewHeadersSize = http::Date.size() + kRFC7231DateStrLen + kHeaderAdditionalSize;
 
   if (!hasHeaders) {
     _headersStartPos = static_cast<decltype(_headersStartPos)>(_bodyStartPos - http::DoubleCRLF.size());
+  }
+
+  if (addConnectionHeader) {
+    totalNewHeadersSize += http::Connection.size() + connectionValue.size() + kHeaderAdditionalSize;
   }
 
   if (bodySz != 0) {
     totalNewHeadersSize += http::ContentLength.size() + bodySzStr.size() + kHeaderAdditionalSize;
   }
 
-  uint64_t globalHeadersToSkipBmp[4];  // optim - no heap alloc for up to 256 headers
+  uint64_t globalHeadersToSkipBmp[4];  // optim - no heap alloc for up to 256 global headers
 
   std::unique_ptr<uint64_t[]> bmpStorage;
   uint64_t* pBmpStart;
@@ -408,7 +412,9 @@ HttpPayload* HttpResponse::finalizeHeadersBody(SysTimePoint tp, bool isHeadMetho
     ++pos;
   }
 
-  insertPtr = WriteCRLFHeader(insertPtr, http::Connection, connectionValue);
+  if (addConnectionHeader) {
+    insertPtr = WriteCRLFHeader(insertPtr, http::Connection, connectionValue);
+  }
   insertPtr = WriteCRLFDateHeader(insertPtr, tp);
   if (bodySz != 0) {
     insertPtr = WriteCRLFHeader(insertPtr, http::ContentLength, std::string_view(bodySzStr));
@@ -489,8 +495,7 @@ void HttpResponse::appendTrailer(std::string_view name, std::string_view value) 
   std::memcpy(insertPtr, http::CRLF.data(), http::CRLF.size());
 }
 
-HttpResponse::PreparedResponse HttpResponse::finalizeAndStealData(http::Version version, SysTimePoint tp,
-                                                                  bool keepAlive,
+HttpResponse::PreparedResponse HttpResponse::finalizeAndStealData(http::Version version, SysTimePoint tp, bool close,
                                                                   std::span<const http::Header> globalHeaders,
                                                                   bool isHeadMethod, std::size_t minCapturedBodySize) {
   const auto versionStr = version.str();
@@ -502,7 +507,8 @@ HttpResponse::PreparedResponse HttpResponse::finalizeAndStealData(http::Version 
     _data[kReasonBeg - 1UL] = ' ';
   }
 
-  HttpPayload* pExternPayload = finalizeHeadersBody(tp, isHeadMethod, keepAlive, globalHeaders, minCapturedBodySize);
+  HttpPayload* pExternPayload =
+      finalizeHeadersBody(version, tp, isHeadMethod, close, globalHeaders, minCapturedBodySize);
 
   PreparedResponse prepared;
   // Move head (_data) first.

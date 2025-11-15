@@ -292,7 +292,7 @@ TEST(HttpDrain, KeepAliveConnectionsCloseAfterDrain) {
 
   test::sendAll(fd, SimpleGetRequest("/one", "keep-alive"));
   auto firstResponse = test::recvWithTimeout(fd);
-  ASSERT_TRUE(firstResponse.contains("Connection: keep-alive"));
+  ASSERT_FALSE(firstResponse.contains("Connection: close"));
 
   ts.server.beginDrain();
 

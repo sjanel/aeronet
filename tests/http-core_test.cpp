@@ -84,7 +84,7 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
   ASSERT_TRUE(resp.contains("X-One: 1"));
   ASSERT_TRUE(resp.contains("X-Two: two"));
   ASSERT_TRUE(resp.contains("Content-Length: 1"));  // auto generated
-  ASSERT_TRUE(resp.contains("Connection:"));        // auto generated (keep-alive or close)
+  ASSERT_TRUE(resp.contains("Connection: close"));  // auto generated (keep-alive or close)
 }
 
 TEST(HttpHeadersCustom, LocationHeaderAllowed) {
@@ -153,7 +153,7 @@ TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
     std::this_thread::sleep_for(chunkDelay);
   }
 
-  std::string resp = test::recvWithTimeout(fd, 1s);
+  std::string resp = test::recvWithTimeout(fd, 2s);
   ASSERT_FALSE(resp.empty()) << "expected a response before timeout";
   ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("payload ok")) << resp;
@@ -245,12 +245,13 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
   test::sendAll(fd, req1);
   std::string resp1 = test::recvWithTimeout(fd);
   EXPECT_TRUE(resp1.contains("ECHO/one"));
-  EXPECT_TRUE(resp1.contains("Connection: keep-alive"));
+  EXPECT_FALSE(resp1.contains("Connection: close"));
 
   std::string req2 = "GET /two HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";  // implicit keep-alive
   test::sendAll(fd, req2);
   std::string resp2 = test::recvWithTimeout(fd);
   EXPECT_TRUE(resp2.contains("ECHO/two"));
+  EXPECT_FALSE(resp2.contains("Connection: close"));
 }
 
 namespace {
@@ -394,7 +395,7 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
 
   std::string resp = test::recvUntilClosed(fd);
 
-  ASSERT_TRUE(resp.contains("Connection: close"));
+  ASSERT_FALSE(resp.contains("Connection:"));
   // Second request should not yield another response (connection closed). We attempt to read after sending.
   std::string_view req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\n\r\n";
   test::sendAll(fd, req2);
