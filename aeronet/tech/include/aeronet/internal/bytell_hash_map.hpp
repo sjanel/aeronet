@@ -15,8 +15,9 @@
 #include <utility>
 #include <type_traits>
 #include "flat_hash_map.hpp"
-#include <vector>
 #include <array>
+
+#include "aeronet/vector.hpp"
 
 namespace ska
 {
@@ -405,7 +406,8 @@ public:
         return end();
     }
 
-    inline iterator find(const FindKey & key)
+    template <typename K>
+    inline iterator find(const K & key)
     {
         size_t index = hash_object(key);
         size_t num_slots_minus_one = this->num_slots_minus_one;
@@ -433,7 +435,8 @@ public:
             index = hash_policy.keep_in_range(index, num_slots_minus_one);
         }
     }
-    inline const_iterator find(const FindKey & key) const
+    template <typename K>
+    inline const_iterator find(const K & key) const
     {
         return const_cast<sherwood_v8_table *>(this)->find(key);
     }
@@ -441,6 +444,17 @@ public:
     {
         return find(key) == end() ? 0 : 1;
     }
+    template <typename K>
+    size_t count(const K & key) const
+    {
+        return find(key) == end() ? 0 : 1;
+    }
+    
+    template <typename K>
+    bool contains(const K &key) const {
+        return find(key) != end();
+    }
+
     std::pair<iterator, iterator> equal_range(const FindKey & key)
     {
         iterator found = find(key);
@@ -450,6 +464,26 @@ public:
             return { found, std::next(found) };
     }
     std::pair<const_iterator, const_iterator> equal_range(const FindKey & key) const
+    {
+        const_iterator found = find(key);
+        if (found == end())
+            return { found, found };
+        else
+            return { found, std::next(found) };
+    }
+
+    template <typename K>
+    std::pair<iterator, iterator> equal_range(const K & key)
+    {
+        iterator found = find(key);
+        if (found == end())
+            return { found, found };
+        else
+            return { found, std::next(found) };
+    }
+
+    template <typename K>
+    std::pair<const_iterator, const_iterator> equal_range(const K & key) const
     {
         const_iterator found = find(key);
         if (found == end())
@@ -526,7 +560,7 @@ public:
 
     void rehash(size_t num_items)
     {
-        num_items = std::max(num_items, static_cast<size_t>(std::ceil(num_elements / static_cast<double>(_max_load_factor))));
+        num_items = std::max(num_items, static_cast<size_t>(std::ceil(static_cast<double>(num_elements) / static_cast<double>(_max_load_factor))));
         if (num_items == 0)
         {
             reset_to_empty_state();
@@ -623,7 +657,7 @@ public:
             clear();
             return { end_it.current, end_it.index };
         }
-        std::vector<std::pair<int, LinkedListIt>> depth_in_chain;
+        aeronet::vector<std::pair<int, LinkedListIt>> depth_in_chain;
         for (const_iterator it = begin_it; it != end_it; ++it)
         {
             LinkedListIt list_it(it.index, it.current);
@@ -752,7 +786,7 @@ private:
 
     size_t num_buckets_for_reserve(size_t num_elements) const
     {
-        return static_cast<size_t>(std::ceil(num_elements / static_cast<double>(_max_load_factor)));
+        return static_cast<size_t>(std::ceil(static_cast<double>(num_elements) / static_cast<double>(_max_load_factor)));
     }
     void rehash_for_other_container(const sherwood_v8_table & other)
     {
@@ -763,7 +797,7 @@ private:
         if (!num_slots_minus_one)
             return true;
         else
-            return num_elements + 1 > (num_slots_minus_one + 1) * static_cast<double>(_max_load_factor);
+            return static_cast<double>(num_elements + 1U) > static_cast<double>(num_slots_minus_one + 1U) * static_cast<double>(_max_load_factor);
     }
 
     void swap_pointers(sherwood_v8_table & other)
@@ -811,7 +845,7 @@ private:
         }
         int8_t jump_index() const
         {
-            return Constants::distance_from_metadata(metadata());
+            return static_cast<int8_t>(Constants::distance_from_metadata(metadata()));
         }
         int8_t metadata() const
         {
@@ -1073,7 +1107,7 @@ class bytell_hash_map
             H,
             detailv8::KeyOrValueHasher<K, std::pair<K, V>, H>,
             E,
-            detailv8::KeyOrValueEquality<K, std::pair<K, V>, E>,
+            detailv8::KeyOrValueEquality<std::pair<K, V>, E>,
             A,
             typename std::allocator_traits<A>::template rebind_alloc<unsigned char>,
             detailv8::CalculateBytellBlockSize<K, V>::value
@@ -1086,7 +1120,7 @@ class bytell_hash_map
         H,
         detailv8::KeyOrValueHasher<K, std::pair<K, V>, H>,
         E,
-        detailv8::KeyOrValueEquality<K, std::pair<K, V>, E>,
+        detailv8::KeyOrValueEquality<std::pair<K, V>, E>,
         A,
         typename std::allocator_traits<A>::template rebind_alloc<unsigned char>,
         detailv8::CalculateBytellBlockSize<K, V>::value

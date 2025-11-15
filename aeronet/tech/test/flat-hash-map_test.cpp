@@ -9,7 +9,7 @@
 #include <string_view>
 #include <utility>
 
-using Map = ska::flat_hash_map<std::string, int, std::hash<std::string_view>, std::equal_to<>>;
+using Map = aeronet::flat_hash_map<std::string, int, std::hash<std::string_view>, std::equal_to<>>;
 
 TEST(flat_hash_map, basic_insert_find) {
   Map map1;
