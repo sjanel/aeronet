@@ -8,14 +8,15 @@
 #include <limits>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
-#include "aeronet/raw-bytes.hpp"
+#include "aeronet/internal/raw-bytes-base.hpp"
 
 namespace aeronet {
 
 // ConcatenatedStrings stores N string parts in a single contiguous
-// RawBytes buffer. It provides access to individual parts as string_views or temporary null-terminated strings,
+// RawChars buffer. It provides access to individual parts as string_views or temporary null-terminated strings,
 // and allows replacing individual parts while keeping the rest intact.
 template <unsigned N, class SizeType = std::size_t>
 class StaticConcatenatedStrings {
@@ -183,7 +184,7 @@ class StaticConcatenatedStrings {
   }
 
   offsets_array _offsets{};
-  RawBytesImpl<char, std::string_view, size_type> _buf;
+  RawBytesBase<char, std::string_view, size_type> _buf;
 };
 
 }  // namespace aeronet

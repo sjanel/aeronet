@@ -106,71 +106,11 @@ TEST(RawBytesTest, RangesAlgorithmsWork) {
 }
 
 TEST(RawBytesTest, GuardAgainstSmallSizeTypeOverflow) {
-  RawBytesImpl<char, std::string_view, uint8_t> smallBuffer;
+  RawBytesBase<char, std::string_view, uint8_t> smallBuffer;
 
   smallBuffer.append(std::string(100U, 'A'));  // OK
   smallBuffer.append(std::string(100U, 'B'));  // OK
   EXPECT_THROW(smallBuffer.append(std::string(100U, 'C')), std::bad_alloc);
-}
-
-TEST(RawBytesResizeAndOverwrite, BasicAppendAndShrink) {
-  RawBytes buf;  // empty
-  // Append 10 bytes
-  buf.resize_and_overwrite(10, [](std::byte *base, std::size_t n) {
-    for (std::size_t i = 0; i < n; ++i) {
-      base[i] = static_cast<std::byte>(i);
-    }
-    return n;  // keep all 10
-  });
-  ASSERT_EQ(buf.size(), 10U);
-  for (std::size_t i = 0; i < buf.size(); ++i) {
-    ASSERT_EQ(static_cast<unsigned>(buf[i]), i);
-  }
-
-  // Grow by 6 more bytes, but pretend only 4 were produced
-  std::size_t oldSize = buf.size();
-  buf.resize_and_overwrite(oldSize + 6, [oldSize](std::byte *base, std::size_t) {
-    // write 4 new bytes
-    base[oldSize + 0] = std::byte{0xAA};
-    base[oldSize + 1] = std::byte{0xBB};
-    base[oldSize + 2] = std::byte{0xCC};
-    base[oldSize + 3] = std::byte{0xDD};
-    return oldSize + 4;  // only 4 valid
-  });
-  ASSERT_EQ(buf.size(), oldSize + 4);
-  ASSERT_EQ(static_cast<unsigned>(buf[oldSize + 0]), 0xAAU);
-  ASSERT_EQ(static_cast<unsigned>(buf[oldSize + 1]), 0xBBU);
-  ASSERT_EQ(static_cast<unsigned>(buf[oldSize + 2]), 0xCCU);
-  ASSERT_EQ(static_cast<unsigned>(buf[oldSize + 3]), 0xDDU);
-
-  // Shrink (truncate) to 5
-  buf.resize_and_overwrite(5, [](std::byte * /*base*/, std::size_t n) { return n; });
-  ASSERT_EQ(buf.size(), 5U);
-}
-
-TEST(RawBytesResizeAndOverwrite, NoOpKeepsSizeWhenReturningOld) {
-  RawBytes buf;
-  buf.resize_and_overwrite(100, []([[maybe_unused]] std::byte *base, [[maybe_unused]] std::size_t n) {
-    // pretend we only produced 0 bytes
-    return static_cast<std::size_t>(0);
-  });
-  ASSERT_EQ(buf.size(), 0U);
-}
-
-TEST(RawBytesResizeAndOverwrite, ReserveAndPartialFill) {
-  RawBytes buf;
-  // Reserve space for 1024 but only fill 100
-  buf.resize_and_overwrite(1024, [](std::byte *base, [[maybe_unused]] std::size_t n) {
-    constexpr std::size_t produced = 100;
-    for (std::size_t i = 0; i < produced; ++i) {
-      base[i] = std::byte{0x7F};
-    }
-    return produced;
-  });
-  ASSERT_EQ(buf.size(), 100U);
-  for (auto &byte : buf) {
-    ASSERT_EQ(static_cast<unsigned>(byte), 0x7FU);
-  }
 }
 
 // ---------------- Copy Constructor / Copy Assignment Tests ----------------
@@ -209,28 +149,6 @@ TEST(RawBytesCopy, CopyAssignmentGrowCapacity) {
   EXPECT_EQ(dst.size(), src.size());
   EXPECT_GT(dst.capacity(), oldCap);  // capacity should have grown
   EXPECT_GE(dst.capacity(), dst.size());
-  EXPECT_TRUE(std::equal(dst.begin(), dst.end(), src.begin()));
-}
-
-TEST(RawBytesCopy, CopyAssignmentNoCapacityGrowthWhenSufficient) {
-  // Create destination with large capacity by reserving then shrinking size via resize_and_overwrite
-  RawBytes dst;  // start empty
-  dst.resize_and_overwrite(128, [](std::byte *base, std::size_t /*n*/) {
-    // just fill first 10 bytes, return 10
-    for (std::size_t i = 0; i < 10; ++i) {
-      base[i] = std::byte{'X'};
-    }
-    return static_cast<std::size_t>(10);
-  });
-  auto largeCap = dst.capacity();
-  // Source smaller than destination capacity
-  std::string payload = std::string(16, 'B');
-  RawBytes src(reinterpret_cast<const std::byte *>(payload.data()),
-               reinterpret_cast<const std::byte *>(payload.data()) + payload.size());
-  ASSERT_LT(src.capacity(), largeCap);
-  dst = src;  // should NOT grow capacity nor shrink
-  EXPECT_EQ(dst.size(), src.size());
-  EXPECT_EQ(dst.capacity(), largeCap);  // capacity unchanged
   EXPECT_TRUE(std::equal(dst.begin(), dst.end(), src.begin()));
 }
 

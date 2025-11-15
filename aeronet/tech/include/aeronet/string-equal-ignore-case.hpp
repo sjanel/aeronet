@@ -9,13 +9,14 @@
 namespace aeronet {
 
 constexpr bool CaseInsensitiveEqual(std::string_view lhs, std::string_view rhs) {
-  if (lhs.size() != rhs.size()) {
+  const auto lhsSize = lhs.size();
+  if (lhsSize != rhs.size()) {
     return false;
   }
 
   const char* pLhs = lhs.data();
   const char* pRhs = rhs.data();
-  const char* end = pLhs + lhs.size();
+  const char* end = pLhs + lhsSize;
 
   for (; pLhs != end; ++pLhs, ++pRhs) {
     if (tolower(*pLhs) != tolower(*pRhs)) {
@@ -34,8 +35,8 @@ constexpr bool CaseInsensitiveLess(std::string_view lhs, std::string_view rhs) {
   const char* pRhs = rhs.data();
 
   for (std::size_t i = 0; i < minSize; ++i) {
-    auto lc = tolower(pLhs[i]);
-    auto rc = tolower(pRhs[i]);
+    const auto lc = tolower(pLhs[i]);
+    const auto rc = tolower(pRhs[i]);
     if (lc != rc) {
       return lc < rc;
     }
