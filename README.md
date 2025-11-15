@@ -11,10 +11,10 @@
 ## In a nutshell
 
 - **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths, horizontal scaling with port reuse
-- **Modular & opt‑in**: enable only the features you need (compression, TLS, logging, opentelemetry) via build flags
-- **Ergonomic**: ease of use, RAII listener setup, no hidden global state, no complex macros
-- **Configurable**: fully configurable with reasonable defaults
-- **Cloud native**: Built-in Kubernetes-style health & readiness probes, opentelemetry support (metrics & tracing), perfect for micro-services
+- **Modular & opt‑in**: enable only the features you need (compression, TLS, logging, opentelemetry) at compile time
+- **Ergonomic**: ease of use, RAII listener setup, no hidden global state, no macros
+- **Configurable**: fully configurable with reasonable defaults (principle of least surprise)
+- **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing), perfect for micro-services
 
 ## Minimal Examples
 
@@ -33,7 +33,7 @@ int main() {
     return HttpResponse(200).body("hello from aeronet\n");
   });
   HttpServer server(HttpServerConfig{}, std::move(router));
-  server.run();
+  server.run(); // blocking. Use start() for non-blocking
 }
 ```
 
@@ -57,6 +57,7 @@ Minimal server examples for typical use cases are provided in [examples](example
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
+
 ./build/examples/aeronet-minimal 8080   # or omit 8080 for ephemeral
 ```
 
@@ -68,7 +69,6 @@ curl -i http://localhost:8080/hello
 HTTP/1.1 200
 Content-Type: text/plain
 Content-Length: 151
-Connection: keep-alive
 Date: Wed, 12 Nov 2025 18:56:52 GMT
 Server: aeronet
 

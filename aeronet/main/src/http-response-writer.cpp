@@ -127,7 +127,7 @@ void HttpResponseWriter::ensureHeadersSent() {
   auto cnxIt = _server->_connStates.find(_fd);
   if (cnxIt == _server->_connStates.end() ||
       !_server->queuePreparedResponse(
-          cnxIt, _fixedResponse.finalizeAndStealData(http::HTTP_1_1, SysClock::now(), !_requestConnClose,
+          cnxIt, _fixedResponse.finalizeAndStealData(http::HTTP_1_1, SysClock::now(), _requestConnClose,
                                                      _server->config().globalHeaders, _head,
                                                      _server->config().minCapturedBodySize))) {
     _state = HttpResponseWriter::State::Failed;

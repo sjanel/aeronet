@@ -671,7 +671,7 @@ class HttpResponse {
 
   void appendHeaderInternal(std::string_view key, std::string_view value);
 
-  HttpPayload* finalizeHeadersBody(SysTimePoint tp, bool isHeadMethod, bool keepAlive,
+  HttpPayload* finalizeHeadersBody(http::Version version, SysTimePoint tp, bool isHeadMethod, bool close,
                                    std::span<const http::Header> globalHeaders, std::size_t minCapturedBodySize);
 
   void appendTrailer(std::string_view name, std::string_view value);
@@ -692,7 +692,7 @@ class HttpResponse {
   // IMPORTANT: This method finalizes the response by appending reserved headers,
   // and returns the internal buffers stolen from this HttpResponse instance.
   // So this instance must not be used anymore after this call.
-  PreparedResponse finalizeAndStealData(http::Version version, SysTimePoint tp, bool keepAlive,
+  PreparedResponse finalizeAndStealData(http::Version version, SysTimePoint tp, bool close,
                                         std::span<const http::Header> globalHeaders, bool isHeadMethod,
                                         std::size_t minCapturedBodySize);
 
