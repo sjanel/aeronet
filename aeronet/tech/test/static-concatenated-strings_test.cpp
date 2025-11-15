@@ -36,10 +36,10 @@ TEST(ConcatenatedStrings, LongStringsAreHandled) {
   std::string alpn(1000, 'A');
   std::string cipher(500, 'B');
   std::string version(200, 'C');
-  StaticConcatenatedStrings<3, uint16_t> info({alpn, cipher, version});
-  EXPECT_EQ(info[0], std::string_view(alpn));
-  EXPECT_EQ(info[1], std::string_view(cipher));
-  EXPECT_EQ(info[2], std::string_view(version));
+  StaticConcatenatedStrings<3, uint32_t> info({alpn, cipher, version});
+  EXPECT_EQ(info[0], alpn);
+  EXPECT_EQ(info[1], cipher);
+  EXPECT_EQ(info[2], version);
 }
 
 TEST(ConcatenatedStrings, GuardAgainstOverflowConstruction) {
@@ -91,7 +91,7 @@ TEST(ConcatenatedStrings, SetShorter) {
 }
 
 TEST(ConcatenatedStrings, SetEqualSize) {
-  StaticConcatenatedStrings<3, uint16_t> cs({"one", "two", "three"});
+  StaticConcatenatedStrings<3, uint8_t> cs({"one", "two", "three"});
   // Replace last part with a same-size string
   cs.set(2, std::string_view("XXX"));
   EXPECT_EQ(cs[0], "one");
@@ -115,7 +115,7 @@ TEST(ConcatenatedStrings, SetFirstGrowAndShrink) {
 }
 
 TEST(ConcatenatedStrings, SetMiddleMultipleTimes) {
-  StaticConcatenatedStrings<4, uint16_t> cs({"a", "bb", "ccc", "dddd"});
+  StaticConcatenatedStrings<4, uint8_t> cs({"a", "bb", "ccc", "dddd"});
   // grow middle part (index 1)
   cs.set(1, std::string_view("BBBBBBBBBB"));
   EXPECT_EQ(cs[0], "a");
@@ -134,7 +134,7 @@ TEST(ConcatenatedStrings, SetMiddleMultipleTimes) {
 }
 
 TEST(ConcatenatedStrings, SetLastGrowAndShrink) {
-  StaticConcatenatedStrings<3, uint16_t> cs({"X", "YY", "ZZZ"});
+  StaticConcatenatedStrings<3, uint8_t> cs({"X", "YY", "ZZZ"});
   cs.set(2, std::string_view("LLLLLLLLLLLL"));
   EXPECT_EQ(cs[0], "X");
   EXPECT_EQ(cs[1], "YY");
