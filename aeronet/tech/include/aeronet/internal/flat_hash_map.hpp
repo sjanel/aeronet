@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <iterator>
 #include <utility>
+#include <type_traits>
 
 #ifdef _MSC_VER
 #define SKA_NOINLINE(...) __declspec(noinline) __VA_ARGS__
@@ -105,8 +106,15 @@ struct KeyOrValueHasher : functor_storage<size_t, hasher>
     {
         return static_cast<const hasher_storage &>(*this)(value.first);
     }
+    template <typename U>
+        requires(!std::is_same_v<std::decay_t<U>, key_type> && !std::is_same_v<std::decay_t<U>, value_type> &&
+                !std::is_convertible_v<const U &, key_type>)
+    auto operator()(const U &other) const noexcept(noexcept(std::declval<const hasher_storage &>()(other)))
+        -> decltype(std::declval<const hasher_storage &>()(other)) {
+        return static_cast<const hasher_storage &>(*this)(other);
+    }
 };
-template<typename key_type, typename value_type, typename key_equal>
+template<typename value_type, typename key_equal>
 struct KeyOrValueEquality : functor_storage<bool, key_equal>
 {
     typedef functor_storage<bool, key_equal> equality_storage;
@@ -115,14 +123,17 @@ struct KeyOrValueEquality : functor_storage<bool, key_equal>
         : equality_storage(equality)
     {
     }
+    template <typename key_type>
     bool operator()(const key_type & lhs, const key_type & rhs)
     {
         return static_cast<equality_storage &>(*this)(lhs, rhs);
     }
+    template <typename key_type>
     bool operator()(const key_type & lhs, const value_type & rhs)
     {
         return static_cast<equality_storage &>(*this)(lhs, rhs.first);
     }
+    template <typename key_type>
     bool operator()(const value_type & lhs, const key_type & rhs)
     {
         return static_cast<equality_storage &>(*this)(lhs.first, rhs);
@@ -131,12 +142,12 @@ struct KeyOrValueEquality : functor_storage<bool, key_equal>
     {
         return static_cast<equality_storage &>(*this)(lhs.first, rhs.first);
     }
-    template<typename F, typename S>
+    template<typename key_type, typename F, typename S>
     bool operator()(const key_type & lhs, const std::pair<F, S> & rhs)
     {
         return static_cast<equality_storage &>(*this)(lhs, rhs.first);
     }
-    template<typename F, typename S>
+    template<typename key_type, typename F, typename S>
     bool operator()(const std::pair<F, S> & lhs, const key_type & rhs)
     {
         return static_cast<equality_storage &>(*this)(lhs.first, rhs);
@@ -527,11 +538,11 @@ public:
     }
     iterator end()
     {
-        return { entries + static_cast<ptrdiff_t>(num_slots_minus_one + max_lookups) };
+        return { entries + static_cast<ptrdiff_t>(num_slots_minus_one + static_cast<size_t>(max_lookups)) };
     }
     const_iterator end() const
     {
-        return { entries + static_cast<ptrdiff_t>(num_slots_minus_one + max_lookups) };
+        return { entries + static_cast<ptrdiff_t>(num_slots_minus_one + static_cast<size_t>(max_lookups)) };
     }
     const_iterator cend() const
     {
@@ -553,10 +564,39 @@ public:
     {
         return const_cast<sherwood_v3_table *>(this)->find(key);
     }
+    template <typename K>
+    iterator find(const K & key)
+    {
+        size_t index = hash_policy.index_for_hash(hash_object(key), num_slots_minus_one);
+        EntryPointer it = entries + ptrdiff_t(index);
+        for (int8_t distance = 0; it->distance_from_desired >= distance; ++distance, ++it)
+        {
+            if (compares_equal(key, it->value))
+                return { it };
+        }
+        return end();
+    }
+    template <typename K>
+    const_iterator find(const K &key) const {
+        return const_cast<sherwood_v3_table *>(this)->find(key);
+    }
     size_t count(const FindKey & key) const
     {
         return find(key) == end() ? 0 : 1;
     }
+    template <typename K>
+    size_t count(const K & key) const
+    {
+        return find(key) == end() ? 0 : 1;
+    }
+
+    bool contains(const FindKey &key) const { return find(key) != end(); }
+    
+    template <typename K>
+    bool contains(const K &key) const {
+        return find(key) != end();
+    }
+
     std::pair<iterator, iterator> equal_range(const FindKey & key)
     {
         iterator found = find(key);
@@ -566,6 +606,24 @@ public:
             return { found, std::next(found) };
     }
     std::pair<const_iterator, const_iterator> equal_range(const FindKey & key) const
+    {
+        const_iterator found = find(key);
+        if (found == end())
+            return { found, found };
+        else
+            return { found, std::next(found) };
+    }
+    template <typename K>
+    std::pair<iterator, iterator> equal_range(const K & key)
+    {
+        iterator found = find(key);
+        if (found == end())
+            return { found, found };
+        else
+            return { found, std::next(found) };
+    }
+    template <typename K>
+    std::pair<const_iterator, const_iterator> equal_range(const K & key) const
     {
         const_iterator found = find(key);
         if (found == end())
@@ -625,7 +683,7 @@ public:
 
     void rehash(size_t num_buckets)
     {
-        num_buckets = std::max(num_buckets, static_cast<size_t>(std::ceil(num_elements / static_cast<double>(_max_load_factor))));
+        num_buckets = std::max(num_buckets, static_cast<size_t>(std::ceil(static_cast<double>(num_elements) / static_cast<double>(_max_load_factor))));
         if (num_buckets == 0)
         {
             reset_to_empty_state();
@@ -635,8 +693,8 @@ public:
         if (num_buckets == bucket_count())
             return;
         int8_t new_max_lookups = compute_max_lookups(num_buckets);
-        EntryPointer new_buckets(AllocatorTraits::allocate(*this, num_buckets + new_max_lookups));
-        EntryPointer special_end_item = new_buckets + static_cast<ptrdiff_t>(num_buckets + new_max_lookups - 1);
+        EntryPointer new_buckets(AllocatorTraits::allocate(*this, num_buckets + static_cast<size_t>(new_max_lookups)));
+        EntryPointer special_end_item = new_buckets + static_cast<ptrdiff_t>(num_buckets + static_cast<size_t>(new_max_lookups) - 1UL);
         for (EntryPointer it = new_buckets; it != special_end_item; ++it)
             it->distance_from_desired = -1;
         special_end_item->distance_from_desired = Entry::special_end_value;
@@ -647,7 +705,7 @@ public:
         int8_t old_max_lookups = max_lookups;
         max_lookups = new_max_lookups;
         num_elements = 0;
-        for (EntryPointer it = new_buckets, end = it + static_cast<ptrdiff_t>(num_buckets + old_max_lookups); it != end; ++it)
+        for (EntryPointer it = new_buckets, end = it + static_cast<ptrdiff_t>(num_buckets + static_cast<size_t>(old_max_lookups)); it != end; ++it)
         {
             if (it->has_value())
             {
@@ -723,7 +781,7 @@ public:
 
     void clear()
     {
-        for (EntryPointer it = entries, end = it + static_cast<ptrdiff_t>(num_slots_minus_one + max_lookups); it != end; ++it)
+        for (EntryPointer it = entries, end = it + static_cast<ptrdiff_t>(num_slots_minus_one + static_cast<size_t>(max_lookups)); it != end; ++it)
         {
             if (it->has_value())
                 it->destroy_value();
@@ -804,7 +862,7 @@ private:
 
     size_t num_buckets_for_reserve(size_t num_elements) const
     {
-        return static_cast<size_t>(std::ceil(num_elements / std::min(0.5, static_cast<double>(_max_load_factor))));
+        return static_cast<size_t>(std::ceil(static_cast<double>(num_elements) / std::min(0.5, static_cast<double>(_max_load_factor))));
     }
     void rehash_for_other_container(const sherwood_v3_table & other)
     {
@@ -826,7 +884,7 @@ private:
     SKA_NOINLINE(std::pair<iterator, bool>) emplace_new_key(int8_t distance_from_desired, EntryPointer current_entry, Key && key, Args &&... args)
     {
         using std::swap;
-        if (num_slots_minus_one == 0 || distance_from_desired == max_lookups || num_elements + 1 > (num_slots_minus_one + 1) * static_cast<double>(_max_load_factor))
+        if (num_slots_minus_one == 0 || distance_from_desired == max_lookups || static_cast<double>(num_elements + 1) > static_cast<double>(num_slots_minus_one + 1) * static_cast<double>(_max_load_factor))
         {
             grow();
             return emplace(std::forward<Key>(key), std::forward<Args>(args)...);
@@ -877,7 +935,7 @@ private:
     {
         if (begin != Entry::empty_default_table())
         {
-            AllocatorTraits::deallocate(*this, begin, num_slots_minus_one + max_lookups + 1);
+            AllocatorTraits::deallocate(*this, begin, num_slots_minus_one + static_cast<size_t>(max_lookups) + 1);
         }
     }
 
@@ -1305,7 +1363,7 @@ class flat_hash_map
             H,
             detailv3::KeyOrValueHasher<K, std::pair<K, V>, H>,
             E,
-            detailv3::KeyOrValueEquality<K, std::pair<K, V>, E>,
+            detailv3::KeyOrValueEquality<std::pair<K, V>, E>,
             A,
             typename std::allocator_traits<A>::template rebind_alloc<detailv3::sherwood_v3_entry<std::pair<K, V>>>
         >
@@ -1317,7 +1375,7 @@ class flat_hash_map
         H,
         detailv3::KeyOrValueHasher<K, std::pair<K, V>, H>,
         E,
-        detailv3::KeyOrValueEquality<K, std::pair<K, V>, E>,
+        detailv3::KeyOrValueEquality<std::pair<K, V>, E>,
         A,
         typename std::allocator_traits<A>::template rebind_alloc<detailv3::sherwood_v3_entry<std::pair<K, V>>>
     >;
