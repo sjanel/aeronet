@@ -441,7 +441,9 @@ public:
     }
     ~sherwood_v3_table()
     {
-        clear();
+        if constexpr (!std::is_trivially_destructible_v<value_type>) {
+            clear();
+        }
         deallocate_data(entries, num_slots_minus_one, max_lookups);
     }
 
