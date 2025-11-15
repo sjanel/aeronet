@@ -3,9 +3,13 @@
 #include <cassert>
 #include <cstddef>
 #include <iterator>
+#include <limits>
+#include <stdexcept>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 
-#include "aeronet/raw-bytes.hpp"
+#include "aeronet/internal/raw-bytes-base.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet {
@@ -13,12 +17,14 @@ namespace aeronet {
 template <const char* Sep, bool ContainsCaseInsensitive = false, class SizeType = std::size_t>
 class DynamicConcatenatedStrings {
  private:
+  static_assert(std::is_unsigned_v<SizeType>);
+
   static constexpr char kNullChar = '\0';
   static constexpr std::string_view kSep = Sep[0] == '\0' ? std::string_view(&kNullChar, 1UL) : std::string_view(Sep);
 
  public:
   using size_type = SizeType;
-  using BufferType = RawBytesImpl<char, std::string_view, SizeType>;
+  using BufferType = RawBytesBase<char, std::string_view, SizeType>;
 
   DynamicConcatenatedStrings() noexcept = default;
 
@@ -27,7 +33,12 @@ class DynamicConcatenatedStrings {
   // Append a new string part.
   // The string must not contain the separator character.
   void append(std::string_view str) {
-    assert(!str.contains(kSep));
+    if (str.contains(kSep)) {
+      throw std::invalid_argument("DynamicConcatenatedStrings: appended string contains separator");
+    }
+    if (std::cmp_greater(str.size(), std::numeric_limits<SizeType>::max() - _buf.size() - kSep.size())) {
+      throw std::length_error("DynamicConcatenatedStrings: appended string size exceeds SizeType limit");
+    }
     _buf.ensureAvailableCapacity(static_cast<size_type>(str.size() + kSep.size()));
     _buf.unchecked_append(str);
     _buf.unchecked_append(kSep);
@@ -43,10 +54,8 @@ class DynamicConcatenatedStrings {
         if (CaseInsensitiveEqual(currentPart, part)) {
           return true;
         }
-      } else {
-        if (currentPart == part) {
-          return true;
-        }
+      } else if (currentPart == part) {
+        return true;
       }
       buf.remove_prefix(nextSep + kSep.size());
     }
