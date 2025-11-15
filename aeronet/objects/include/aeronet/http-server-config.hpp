@@ -32,6 +32,13 @@ struct HttpServerConfig {
   // or kernel does not support it (failure is logged, not fatal). Disabled by default.
   bool reusePort{false};
 
+  // TCP_NODELAY is a socket option that disables the Nagle algorithm, a TCP congestion control technique that buffers
+  // small packets to combine them into a single larger segment. By setting TCP_NODELAY, applications can force the
+  // kernel to send data immediately, reducing latency in applications that require low latency and send small packets
+  // frequently, such as interactive services or request-response protocols. This favors lower latency over network
+  // efficiency, which is good for some use cases but can lead to more network overhead if overused. Default: false.
+  bool tcpNoDelay{false};
+
   // ===========================================
   // Keep-Alive / connection lifecycle controls
   // ===========================================
@@ -189,6 +196,9 @@ struct HttpServerConfig {
 
   // Toggle persistent connections
   HttpServerConfig& withKeepAliveMode(bool on = true);
+
+  // Toggle TCP_NODELAY (disable the Nagle algorithm). Default: false.
+  HttpServerConfig& withTcpNoDelay(bool on = true);
 
   // Adjust header size ceiling
   HttpServerConfig& withMaxHeaderBytes(std::size_t maxHeaderBytes);

@@ -64,6 +64,33 @@ struct MaxPerEventReadBytesScope {
   std::size_t _previous;
 };
 
+struct TcpNoDelayScope {
+  explicit TcpNoDelayScope(bool enabled) : _previous(ts.server.config().tcpNoDelay) {
+    ts.postConfigUpdate([enabled](HttpServerConfig& cfg) { cfg.withTcpNoDelay(enabled); });
+  }
+  TcpNoDelayScope(const TcpNoDelayScope&) = delete;
+  TcpNoDelayScope& operator=(const TcpNoDelayScope&) = delete;
+  TcpNoDelayScope(TcpNoDelayScope&&) = delete;
+  TcpNoDelayScope& operator=(TcpNoDelayScope&&) = delete;
+
+  ~TcpNoDelayScope() {
+    ts.postConfigUpdate([prev = _previous](HttpServerConfig& cfg) { cfg.withTcpNoDelay(prev); });
+  }
+
+ private:
+  bool _previous;
+};
+
+std::string httpGet(uint16_t port, std::string_view target) {
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = target;
+  opt.connection = "close";
+  opt.headers.emplace_back("X-Test", "abc123");
+  auto resp = test::request(port, opt);
+  return resp.value_or("");
+}
+
 }  // namespace
 
 TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
@@ -159,6 +186,15 @@ TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
   ASSERT_TRUE(resp.contains("payload ok")) << resp;
 }
 
+TEST(HttpServerConfig, TcpNoDelayEnablesSimpleGet) {
+  TcpNoDelayScope scope(true);
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("tcp ok"); });
+  std::string resp = httpGet(ts.port(), "/tcp");
+  ASSERT_FALSE(resp.empty());
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  ASSERT_TRUE(resp.contains("tcp ok")) << resp;
+}
+
 TEST(HttpHeaderTimeout, Emits408WhenHeadersCompletedAfterDeadline) {
   static constexpr std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
   HeaderReadTimeoutScope headerTimeout(readTimeout);
@@ -198,18 +234,6 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersNeverComplete) {
   EXPECT_TRUE(resp.contains("HTTP/1.1 408")) << resp;
   EXPECT_TRUE(resp.contains("Connection: close")) << resp;
 }
-
-namespace {
-std::string httpGet(uint16_t port, std::string_view target) {
-  test::RequestOptions opt;
-  opt.method = "GET";
-  opt.target = target;
-  opt.connection = "close";
-  opt.headers.emplace_back("X-Test", "abc123");
-  auto resp = test::request(port, opt);
-  return resp.value_or("");
-}
-}  // namespace
 
 TEST(HttpBasic, SimpleGet) {
   ts.router().setDefault([](const HttpRequest& req) {

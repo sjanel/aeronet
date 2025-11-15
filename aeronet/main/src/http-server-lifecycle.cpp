@@ -1,5 +1,6 @@
 #include <asm-generic/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 
 #include <atomic>
@@ -245,32 +246,29 @@ void HttpServer::init() {
 #endif
   }
   static constexpr int enable = 1;
-  auto errc = ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
-  if (errc < 0) {
+  if (::setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) == -1) {
     throw_errno("setsockopt(SO_REUSEADDR) failed");
   }
-  if (_config.reusePort) {
-    errc = ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));
-    if (errc < 0) {
-      throw_errno("setsockopt(SO_REUSEPORT) failed");
-    }
+  if (_config.reusePort && ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) == -1) {
+    throw_errno("setsockopt(SO_REUSEPORT) failed");
+  }
+  if (_config.tcpNoDelay && ::setsockopt(listenFd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) == -1) {
+    throw_errno("setsockopt(TCP_NODELAY) failed");
   }
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
   addr.sin_port = htons(_config.port);
-  errc = ::bind(listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-  if (errc < 0) {
+  if (::bind(listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == -1) {
     throw_errno("bind failed");
   }
-  if (::listen(listenFd, SOMAXCONN) < 0) {
+  if (::listen(listenFd, SOMAXCONN) == -1) {
     throw_errno("listen failed");
   }
   if (_config.port == 0) {
     sockaddr_in actual{};
     socklen_t alen = sizeof(actual);
-    errc = ::getsockname(listenFd, reinterpret_cast<sockaddr*>(&actual), &alen);
-    if (errc == -1) {
+    if (::getsockname(listenFd, reinterpret_cast<sockaddr*>(&actual), &alen) == -1) {
       throw_errno("getsockname failed");
     }
     _config.port = ntohs(actual.sin_port);

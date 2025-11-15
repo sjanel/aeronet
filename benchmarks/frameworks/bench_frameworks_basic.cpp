@@ -68,6 +68,7 @@ struct AeronetServerRunner {
           cfg.maxRequestsPerConnection = 1000000;  // allow plenty of persistent reuse for benchmarks
           cfg.maxHeaderBytes = 256UL * 1024;       // allow large headers for benchmarks
           cfg.maxBodyBytes = 1UL << 25;
+          cfg.tcpNoDelay = true;
           return cfg;
         }()) {
     log::set_level(log::level::err);
