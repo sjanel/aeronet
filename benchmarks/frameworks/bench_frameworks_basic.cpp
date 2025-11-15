@@ -97,7 +97,7 @@ struct AeronetServerRunner {
       return resp;
     });
     server.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 
   [[nodiscard]] uint16_t port() const { return server.port(); }
@@ -155,7 +155,7 @@ struct DrogonServerWrapper {
     th = std::thread([] { drogon::app().run(); });  // This initializes internal managers properly
 
     // Give it a moment to start
-    std::this_thread::sleep_for(300ms);
+    std::this_thread::sleep_for(100ms);
   }
 
   ~DrogonServerWrapper() {

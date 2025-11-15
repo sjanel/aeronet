@@ -153,25 +153,22 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
   while (std::chrono::steady_clock::now() < deadline) {
     constexpr std::size_t kChunkSize = static_cast<std::size_t>(64) * 1024ULL;
     std::size_t oldSize = buffer.size();
-    std::size_t written = 0;
-    buffer.resize_and_overwrite(oldSize + kChunkSize, [&](char *data, [[maybe_unused]] std::size_t newCap) {
-      for (;;) {
-        ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);  // blocking
-        if (recvBytes > 0) {
-          written = static_cast<std::size_t>(recvBytes);
-          return oldSize + written;
-        }
-        if (recvBytes == -1 && errno == EINTR) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(1));
-          continue;  // retry
-        }
-        aeronet::log::debug("connection closed before headers: {}", std::strerror(errno));
-        return oldSize;  // no growth, indicates close / other error
+
+    buffer.ensureAvailableCapacity(kChunkSize);
+    for (;;) {
+      ssize_t recvBytes = ::recv(fd, buffer.data() + oldSize, kChunkSize, 0);  // blocking
+      if (recvBytes > 0) {
+        buffer.addSize(static_cast<std::size_t>(recvBytes));
+        break;
       }
-    });
-    if (buffer.size() == oldSize) {  // no progress
+      if (recvBytes == -1 && errno == EINTR) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        continue;  // retry
+      }
+      aeronet::log::debug("connection closed before headers: {}", std::strerror(errno));
       return std::nullopt;
     }
+
     auto crlrRg = std::ranges::search(buffer, aeronet::http::DoubleCRLF);
     if (crlrRg.empty()) {
       continue;
@@ -234,25 +231,23 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
       while (remaining > 0 && std::chrono::steady_clock::now() < deadline) {
         std::size_t chunkSize = std::min<std::size_t>(static_cast<std::size_t>(64) * 1024ULL, remaining);
         std::size_t oldBodySize = buffer.size();
-        std::size_t bodyWritten = 0;
-        buffer.resize_and_overwrite(oldBodySize + chunkSize, [&](char *data, std::size_t /*nc*/) {
-          for (;;) {
-            ssize_t recvBytes = ::recv(fd, data + oldBodySize, chunkSize, 0);
-            if (recvBytes > 0) {
-              bodyWritten = static_cast<std::size_t>(recvBytes);
-              return oldBodySize + bodyWritten;
-            }
-            if (recvBytes == -1 && errno == EINTR) {
-              continue;  // retry
-            }
-            return oldBodySize;  // rollback
+
+        buffer.ensureAvailableCapacity(chunkSize);
+
+        for (;;) {
+          ssize_t recvBytes = ::recv(fd, buffer.data() + oldBodySize, chunkSize, 0);
+          if (recvBytes > 0) {
+            buffer.addSize(static_cast<std::size_t>(recvBytes));
+            break;
           }
-        });
-        if (bodyWritten == 0) {
+          if (recvBytes == -1 && errno == EINTR) {
+            continue;  // retry
+          }
           aeronet::log::debug("body truncated: wanted {}, have {}", contentLength, contentLength - remaining);
           std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          break;
         }
-        remaining -= bodyWritten;
+        remaining -= buffer.size() - oldBodySize;
       }
       if (remaining == 0) {
         return contentLength;
@@ -264,21 +259,18 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
       auto readMore = [&](std::size_t want) {
         while (buffer.size() < want && std::chrono::steady_clock::now() < deadline) {
           std::size_t oldSize = buffer.size();
-          std::size_t got = 0;
-          buffer.resize_and_overwrite(oldSize + 65536, [&](char *data, std::size_t /*newCap*/) {
-            for (;;) {
-              ssize_t r = ::recv(fd, data + oldSize, 65536, 0);
-              if (r > 0) {
-                got = static_cast<std::size_t>(r);
-                return oldSize + got;
-              }
-              if (r == -1 && errno == EINTR) {
-                continue;
-              }
-              return oldSize;  // no growth
+          static constexpr std::size_t kChunkSize = static_cast<std::size_t>(64) * 1024ULL;
+
+          buffer.ensureAvailableCapacity(kChunkSize);
+          for (;;) {
+            ssize_t r = ::recv(fd, buffer.data() + oldSize, kChunkSize, 0);
+            if (r > 0) {
+              buffer.addSize(static_cast<std::size_t>(r));
+              break;
             }
-          });
-          if (got == 0) {
+            if (r == -1 && errno == EINTR) {
+              continue;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
           }
         }

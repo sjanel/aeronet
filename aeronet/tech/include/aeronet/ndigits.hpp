@@ -54,8 +54,7 @@ constexpr int ndigits(std::signed_integral auto n) noexcept {
   }
 
   else {
-    // Note: below ugly template lambda can be replaced with 'static_assert(false);' in C++23
-    []<bool flag = false>() { static_assert(flag, "unknown digits10 value"); }();
+    static_assert(false);
   }
 }
 
@@ -90,8 +89,7 @@ constexpr int ndigits(std::unsigned_integral auto n) noexcept {
   }
 
   else {
-    // Note: below ugly template lambda can be replaced with 'static_assert(false);' in C++23
-    []<bool flag = false>() { static_assert(flag, "unknown digits10 value"); }();
+    static_assert(false);
   }
 }
 
