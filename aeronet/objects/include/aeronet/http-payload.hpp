@@ -160,7 +160,7 @@ class HttpPayload {
         _data);
   }
 
-  void ensureAvailableCapacity(std::size_t capa) {
+  void ensureAvailableCapacityExponential(std::size_t capa) {
     std::visit(
         [this, capa](auto& val) -> void {
           using T = std::decay_t<decltype(val)>;
@@ -170,7 +170,7 @@ class HttpPayload {
                                std::is_same_v<T, std::vector<std::byte>>) {
             val.reserve(val.size() + capa);
           } else if constexpr (std::is_same_v<T, RawChars>) {
-            val.ensureAvailableCapacity(capa);
+            val.ensureAvailableCapacityExponential(capa);
           } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
             // switch to RawChars to simplify appending
             RawChars rawChars(val.second + capa);
@@ -183,7 +183,7 @@ class HttpPayload {
         _data);
   }
 
-  // Should only be called after ensureAvailableCapacity (capacity should be at least size() + sz)
+  // Should only be called after ensureAvailableCapacityExponential (capacity should be at least size() + sz)
   void addSize(std::size_t sz) {
     std::visit(
         [sz](auto& val) -> void {

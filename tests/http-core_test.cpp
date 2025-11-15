@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <sys/socket.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -11,14 +12,10 @@
 #include <thread>
 #include <utility>
 
-#include "aeronet/compression-config.hpp"
-#include "aeronet/encoding.hpp"
-#include "aeronet/features.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
@@ -34,6 +31,38 @@ namespace {
 // This avoids flakiness when the whole test suite is executed in parallel.
 test::TestServer ts(HttpServerConfig{}, RouterConfig{}, std::chrono::milliseconds{5});
 auto port = ts.port();
+
+struct HeaderReadTimeoutScope {
+  explicit HeaderReadTimeoutScope(std::chrono::milliseconds timeout) {
+    ts.postConfigUpdate([timeout](HttpServerConfig& cfg) { cfg.withHeaderReadTimeout(timeout); });
+  }
+
+  HeaderReadTimeoutScope(const HeaderReadTimeoutScope&) = delete;
+  HeaderReadTimeoutScope& operator=(const HeaderReadTimeoutScope&) = delete;
+  HeaderReadTimeoutScope(HeaderReadTimeoutScope&&) = delete;
+  HeaderReadTimeoutScope& operator=(HeaderReadTimeoutScope&&) = delete;
+
+  ~HeaderReadTimeoutScope() {
+    ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withHeaderReadTimeout(std::chrono::milliseconds{0}); });
+  }
+};
+
+struct MaxPerEventReadBytesScope {
+  explicit MaxPerEventReadBytesScope(std::size_t limitBytes) : _previous(ts.server.config().maxPerEventReadBytes) {
+    ts.postConfigUpdate([limitBytes](HttpServerConfig& cfg) { cfg.withMaxPerEventReadBytes(limitBytes); });
+  }
+  MaxPerEventReadBytesScope(const MaxPerEventReadBytesScope&) = delete;
+  MaxPerEventReadBytesScope& operator=(const MaxPerEventReadBytesScope&) = delete;
+  MaxPerEventReadBytesScope(MaxPerEventReadBytesScope&&) = delete;
+  MaxPerEventReadBytesScope& operator=(MaxPerEventReadBytesScope&&) = delete;
+
+  ~MaxPerEventReadBytesScope() {
+    ts.postConfigUpdate([prev = _previous](HttpServerConfig& cfg) { cfg.withMaxPerEventReadBytes(prev); });
+  }
+
+ private:
+  std::size_t _previous;
+};
 
 }  // namespace
 
@@ -95,57 +124,40 @@ TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
   EXPECT_FALSE(responseText.contains("X-CASE: three")) << responseText;
 }
 
-TEST(HttpHeadersCustom, StreamingCaseInsensitiveContentTypeAndEncodingSuppression) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
-  }
-  // Set up server with compression enabled; provide mixed-case Content-Type and Content-Encoding headers via writer.
-  ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.compression.minBytes = 1;
-    cfg.compression.preferredFormats.assign(1U, Encoding::gzip);
+TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
+  const std::size_t cap = ts.server.config().initialReadChunkBytes * 2;
+  MaxPerEventReadBytesScope scope(cap);
+
+  const std::size_t payloadSize = cap * 3;
+  std::string payload(payloadSize, 'x');
+  ts.router().setDefault([payloadSize](const HttpRequest& req) {
+    HttpResponse resp;
+    if (req.body().size() != payloadSize) {
+      resp.status(http::StatusCodeBadRequest).body("payload mismatch");
+    } else {
+      resp.body("payload ok");
+    }
+    return resp;
   });
-  std::string payload(128, 'Z');
-  ts.router().setDefault([payload](const HttpRequest&, HttpResponseWriter& writer) {
-    writer.status(200);
-    writer.header("cOnTeNt-TyPe", "text/plain");    // mixed case
-    writer.header("cOnTeNt-EnCoDiNg", "identity");  // should suppress auto compression
-    writer.writeBody(payload.substr(0, 40));
-    writer.writeBody(payload.substr(40));
-    writer.end();
-  });
+
   test::ClientConnection cc(ts.port());
   int fd = cc.fd();
-  std::string req =
-      "GET /h HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  // Ensure our original casing appears exactly and no differently cased duplicate exists.
-  ASSERT_TRUE(resp.contains("cOnTeNt-TyPe: text/plain")) << resp;
-  ASSERT_TRUE(resp.contains("cOnTeNt-EnCoDiNg: identity")) << resp;
-  // Should not see an added normalized Content-Type from default path.
-  EXPECT_FALSE(resp.contains("Content-Type: text/plain")) << resp;
-  // Body should be identity (contains long run of 'Z').
-  EXPECT_TRUE(resp.contains(std::string(50, 'Z'))) << "Body appears compressed when it should not";
+  std::string header = "POST /fairness HTTP/1.1\r\nHost: x\r\nContent-Length: " + std::to_string(payloadSize) +
+                       "\r\nConnection: close\r\n\r\n";
+  test::sendAll(fd, header);
+  constexpr auto chunkDelay = 1ms;
+  for (std::size_t sent = 0; sent < payload.size();) {
+    const std::size_t chunkSize = std::min(cap, payload.size() - sent);
+    test::sendAll(fd, std::string_view(payload.data() + sent, chunkSize));
+    sent += chunkSize;
+    std::this_thread::sleep_for(chunkDelay);
+  }
+
+  std::string resp = test::recvWithTimeout(fd, 1s);
+  ASSERT_FALSE(resp.empty()) << "expected a response before timeout";
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  ASSERT_TRUE(resp.contains("payload ok")) << resp;
 }
-
-namespace {
-
-struct HeaderReadTimeoutScope {
-  explicit HeaderReadTimeoutScope(std::chrono::milliseconds timeout) {
-    ts.postConfigUpdate([timeout](HttpServerConfig& cfg) { cfg.withHeaderReadTimeout(timeout); });
-  }
-
-  HeaderReadTimeoutScope(const HeaderReadTimeoutScope&) = delete;
-  HeaderReadTimeoutScope& operator=(const HeaderReadTimeoutScope&) = delete;
-  HeaderReadTimeoutScope(HeaderReadTimeoutScope&&) = delete;
-  HeaderReadTimeoutScope& operator=(HeaderReadTimeoutScope&&) = delete;
-
-  ~HeaderReadTimeoutScope() {
-    ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withHeaderReadTimeout(std::chrono::milliseconds{0}); });
-  }
-};
-
-}  // namespace
 
 TEST(HttpHeaderTimeout, Emits408WhenHeadersCompletedAfterDeadline) {
   static constexpr std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};

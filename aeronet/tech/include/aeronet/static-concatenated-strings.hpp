@@ -86,8 +86,8 @@ class StaticConcatenatedStrings {
 
     if (newSize > oldSize) {
       const auto delta = static_cast<size_type>(newSize - oldSize);
-      _buf.ensureAvailableCapacity(delta);
-      // pointers may have changed after ensureAvailableCapacity
+      _buf.ensureAvailableCapacityExponential(delta);
+      // pointers may have changed after ensureAvailableCapacityExponential
       data = _buf.data();
       // move tail to the right
       std::memmove(data + oldEndPos + delta, data + oldEndPos, static_cast<std::size_t>(tailSize));

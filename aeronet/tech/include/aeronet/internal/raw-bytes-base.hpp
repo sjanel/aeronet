@@ -80,8 +80,9 @@ class RawBytesBase {
 
   void reserve(size_type newCapacity);
 
-  // Growth is exponential.
   void ensureAvailableCapacity(size_type availableCapacity);
+
+  void ensureAvailableCapacityExponential(size_type availableCapacity);
 
   [[nodiscard]] pointer data() noexcept { return _buf; }
   [[nodiscard]] const_pointer data() const noexcept { return _buf; }

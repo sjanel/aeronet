@@ -44,7 +44,7 @@ std::string_view ZstdEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
   ZSTD_inBuffer inBuf{chunk.data(), chunk.size(), 0};
   const auto mode = chunk.empty() ? ZSTD_e_end : ZSTD_e_continue;
   while (true) {
-    _buf.ensureAvailableCapacity(encoderChunkSize);
+    _buf.ensureAvailableCapacityExponential(encoderChunkSize);
     outBuf.dst = _buf.data() + outBuf.pos;
     outBuf.size = _buf.capacity() - outBuf.pos;
 
@@ -87,7 +87,7 @@ std::string_view ZstdEncoder::encodeFull(std::size_t encoderChunkSize, std::stri
       break;
     }
     if (outBuf.pos == outBuf.size) {
-      _buf.ensureAvailableCapacity(encoderChunkSize);
+      _buf.ensureAvailableCapacityExponential(encoderChunkSize);
       outBuf.dst = _buf.data() + outBuf.pos;
       outBuf.size = _buf.capacity() - outBuf.pos;
     }
