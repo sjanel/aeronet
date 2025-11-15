@@ -7,7 +7,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <future>
+#include <memory>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -18,6 +20,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/test_util.hpp"
 
 using namespace aeronet;

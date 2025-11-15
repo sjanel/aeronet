@@ -151,9 +151,8 @@ struct HttpServerConfig {
   std::size_t bodyReadChunkBytes{8192};
   std::size_t maxPerEventReadBytes{0};
 
-  // Will add all the headers defined here in all server responses, when not present.
-  // If the client sets a header present in this list, the client value will be kept.
-  // Defaults to a list of one entry "Server: aeronet"
+  // Will add all the headers defined here in all server responses, if not explicitly set by the user for a given
+  // response. Defaults to a list of one entry "Server: aeronet"
   std::vector<http::Header> globalHeaders{{"Server", "aeronet"}};
 
   // Enable TRACE method handling (echo) on the server. Disabled by default for safety.

@@ -18,7 +18,7 @@
 namespace aeronet {
 
 ITransport::TransportResult ConnectionState::transportRead(std::size_t chunkSize) {
-  inBuffer.ensureAvailableCapacity(chunkSize);
+  inBuffer.ensureAvailableCapacityExponential(chunkSize);
 
   const auto result = transport->read(inBuffer.data() + inBuffer.size(), chunkSize);
   inBuffer.addSize(result.bytesProcessed);
@@ -50,7 +50,7 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
   off_t off = static_cast<off_t>(fileSend.offset);
   ssize_t bytes;
   if (tlsFlow) {
-    tunnelOrFileBuffer.ensureAvailableCapacity(maxBytes);
+    tunnelOrFileBuffer.ensureAvailableCapacityExponential(maxBytes);
     bytes = ::pread(fileSend.file.fd(), tunnelOrFileBuffer.data(), maxBytes, static_cast<off_t>(fileSend.offset));
   } else {
     bytes = ::sendfile(clientFd, fileSend.file.fd(), &off, maxBytes);

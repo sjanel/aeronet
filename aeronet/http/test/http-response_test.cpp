@@ -2,12 +2,16 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -17,6 +21,7 @@
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/timedef.hpp"
@@ -30,24 +35,44 @@ class HttpResponseTest : public ::testing::Test {
   static constexpr bool isHeadMethod = false;
   static constexpr std::size_t minCapturedBodySize = 4096;
 
-  static HttpResponse::PreparedResponse finalizePrepared(HttpResponse &&resp, bool head = isHeadMethod,
+  static HttpResponse::PreparedResponse finalizePrepared(HttpResponse&& resp, bool head = isHeadMethod,
                                                          bool keepAliveFlag = keepAlive) {
-    std::vector<http::Header> globalHeaders;
+    return finalizePrepared(std::move(resp), {}, head, keepAliveFlag);
+  }
+
+  static HttpResponse::PreparedResponse finalizePrepared(HttpResponse&& resp,
+                                                         std::span<const http::Header> globalHeaders,
+                                                         bool head = isHeadMethod, bool keepAliveFlag = keepAlive) {
     return resp.finalizeAndStealData(http::HTTP_1_1, tp, keepAliveFlag, globalHeaders, head, minCapturedBodySize);
   }
 
-  static HttpResponseData finalize(HttpResponse &&resp) {
+  static HttpResponseData finalize(HttpResponse&& resp) {
     auto prepared = finalizePrepared(std::move(resp));
     EXPECT_EQ(prepared.fileLength, 0U);
     return std::move(prepared.data);
   }
 
-  static const File *file(const HttpResponse::PreparedResponse &prepared) {
+  static HttpResponseData finalize(HttpResponse&& resp, std::span<const http::Header> globalHeaders,
+                                   bool head = isHeadMethod, bool keepAliveFlag = keepAlive) {
+    auto prepared = finalizePrepared(std::move(resp), globalHeaders, head, keepAliveFlag);
+    EXPECT_EQ(prepared.fileLength, 0U);
+    return std::move(prepared.data);
+  }
+
+  static const File* file(const HttpResponse::PreparedResponse& prepared) {
     return prepared.file ? &prepared.file : nullptr;
   }
 
-  static std::string concatenated(HttpResponse &&resp) {
+  static std::string concatenated(HttpResponse&& resp) {
     HttpResponseData httpResponseData = finalize(std::move(resp));
+    std::string out(httpResponseData.firstBuffer());
+    out.append(httpResponseData.secondBuffer());
+    return out;
+  }
+
+  static std::string concatenated(HttpResponse&& resp, std::span<const http::Header> globalHeaders,
+                                  bool head = isHeadMethod, bool keepAliveFlag = keepAlive) {
+    HttpResponseData httpResponseData = finalize(std::move(resp), globalHeaders, head, keepAliveFlag);
     std::string out(httpResponseData.firstBuffer());
     out.append(httpResponseData.secondBuffer());
     return out;
@@ -159,11 +184,9 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithBody) {
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
-  EXPECT_EQ(
-      full,
-      "HTTP/1.1 404 Not Found\r\nContent-Type: MySpecialContentType\r\nContent-Length: 5\r\nConnection: close\r\nDate: "
-      "Thu, 01 Jan 1970 00:00:00 "
-      "GMT\r\n\r\nHello");
+  EXPECT_EQ(full,
+            "HTTP/1.1 404 Not Found\r\nContent-Type: MySpecialContentType\r\nConnection: close\r\nDate: "
+            "Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 5\r\n\r\nHello");
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
@@ -174,8 +197,8 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
   auto full = concatenated(std::move(resp));
 
   EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\nDate: Thu, 01 "
-            "Jan 1970 00:00:00 GMT\r\n\r\nHello");
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\nDate: Thu, 01 "
+            "Jan 1970 00:00:00 GMT\r\nContent-Length: 5\r\n\r\nHello");
 }
 
 TEST_F(HttpResponseTest, AllowsDuplicates) {
@@ -267,14 +290,14 @@ TEST_F(HttpResponseTest, ReplaceDifferentSizes) {
 // --- New test: body() called with a std::string_view referencing internal buffer memory
 // This exercises the safety logic in mutateBody that detects when the source view
 // points inside the existing buffer and may become invalid after a reallocation.
-// Prior to the fix, this scenario could read from stale memory if ensureAvailableCapacity
+// Prior to the fix, this scenario could read from stale memory if ensureAvailableCapacityExponential
 // triggered a reallocation.
 TEST_F(HttpResponseTest, BodyAssignFromInternalReasonTriggersReallocSafe) {
   // Choose a non-empty reason so we have internal bytes to reference.
   HttpResponse resp(http::StatusCodeOK, "INTERNAL-REASON");
   std::string_view src = resp.reason();  // points into resp's internal buffer
   EXPECT_EQ(src, "INTERNAL-REASON");
-  // Body currently empty -> diff = src.size() => ensureAvailableCapacity likely reallocates
+  // Body currently empty -> diff = src.size() => ensureAvailableCapacityExponential likely reallocates
   resp.body(src);       // must be safe even if reallocation occurs
   src = resp.reason();  // reset reason after realloc
   EXPECT_EQ(src, "INTERNAL-REASON");
@@ -359,9 +382,8 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
   resp.header("X-Val", "ABCDEFGHIJ");  // grow header value
   auto full = concatenated(std::move(resp));
   EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Val: ABCDEFGHIJ\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: "
-            "close\r\nDate: Thu, 01 Jan 1970 "
-            "00:00:00 GMT\r\n\r\nHello");
+            "HTTP/1.1 200 OK\r\nX-Val: ABCDEFGHIJ\r\nContent-Type: text/plain\r\nConnection: "
+            "close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 5\r\n\r\nHello");
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
@@ -371,9 +393,8 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
   resp.header("X-Val", "S");  // shrink header value
   auto full = concatenated(std::move(resp));
   EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Val: S\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: "
-            "close\r\nDate: Thu, 01 Jan 1970 00:00:00 "
-            "GMT\r\n\r\nWorldWide");
+            "HTTP/1.1 200 OK\r\nX-Val: S\r\nContent-Type: text/plain\r\nConnection: "
+            "close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 9\r\n\r\nWorldWide");
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
@@ -383,9 +404,19 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
   resp.header("X-Val", "0123456789");  // same length replacement
   auto full = concatenated(std::move(resp));
   EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Val: 0123456789\r\nContent-Type: text/plain\r\nContent-Length: 4\r\nConnection: "
-            "close\r\nDate: Thu, 01 Jan 1970 "
-            "00:00:00 GMT\r\n\r\nData");
+            "HTTP/1.1 200 OK\r\nX-Val: 0123456789\r\nContent-Type: text/plain\r\nConnection: "
+            "close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 4\r\n\r\nData");
+}
+
+TEST_F(HttpResponseTest, GlobalHeadersShouldNotOverrideUserHeaders) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.header("X-Global", "UserValue");
+  std::vector<http::Header> globalHeaders = {{"X-Global", "GlobalValue"}, {"X-Another", "AnotherValue"}};
+  resp.reason("Some Reason");
+  auto full = concatenated(std::move(resp), globalHeaders);
+  EXPECT_EQ(full,
+            "HTTP/1.1 200 Some Reason\r\nX-Global: UserValue\r\nX-Another: AnotherValue\r\nConnection: close\r\nDate: "
+            "Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
@@ -395,9 +426,8 @@ TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
   resp.header("x-val", "0123456789");  // same length replacement
   auto full = concatenated(std::move(resp));
   EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Val: 0123456789\r\nContent-Type: text/plain\r\nContent-Length: 4\r\nConnection: "
-            "close\r\nDate: Thu, 01 Jan 1970 "
-            "00:00:00 GMT\r\n\r\nData");
+            "HTTP/1.1 200 OK\r\nX-Val: 0123456789\r\nContent-Type: text/plain\r\nConnection: "
+            "close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 4\r\n\r\nData");
 }
 
 TEST_F(HttpResponseTest, HeaderGetterAfterSet) {
@@ -480,9 +510,8 @@ TEST_F(HttpResponseTest, RepeatedGrowShrinkCycles) {
   resp.body("END");
   auto full = concatenated(std::move(resp));
   std::string expected =
-      "HTTP/1.1 200\r\nX-Static: STATIC\r\nX-Cycle: Z\r\nContent-Type: text/plain\r\nContent-Length: 3\r\nConnection: "
-      "close\r\nDate: "
-      "Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\nEND";
+      "HTTP/1.1 200\r\nX-Static: STATIC\r\nX-Cycle: Z\r\nContent-Type: text/plain\r\nConnection: "
+      "close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 3\r\n\r\nEND";
   EXPECT_EQ(full, expected);
 }
 
@@ -597,7 +626,7 @@ ParsedResponse parseResponse(std::string_view full) {
   // If Content-Length header present, body length is known; otherwise body is the remainder
   std::size_t contentLen = 0;
   bool hasContentLen = false;
-  for (auto &hdr : pr.headers) {
+  for (auto& hdr : pr.headers) {
     if (hdr.first == http::ContentLength) {
       contentLen = StringToIntegral<std::size_t>(hdr.second);
       hasContentLen = true;
@@ -644,7 +673,123 @@ ParsedResponse parseResponse(std::string_view full) {
   }
   return pr;
 }
+
+std::string ToLowerKey(std::string_view input) {
+  std::string lowered;
+  lowered.reserve(input.size());
+  for (char ch : input) {
+    lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+  return lowered;
+}
+
+const std::pair<std::string, std::string>* FindHeaderCaseInsensitive(const ParsedResponse& pr, std::string_view name) {
+  for (const auto& headerPair : pr.headers) {
+    if (CaseInsensitiveEqual(headerPair.first, name)) {
+      return &headerPair;
+    }
+  }
+  return nullptr;
+}
+
+std::unordered_map<std::string, std::string> ExpectedGlobalHeaderValues(const HttpResponse& resp,
+                                                                        std::span<const http::Header> globalHeaders) {
+  std::unordered_map<std::string, std::string> expected;
+  expected.reserve(globalHeaders.size());
+  for (const auto& gh : globalHeaders) {
+    auto opt = resp.headerValue(gh.name);
+    if (opt.has_value()) {
+      expected.emplace(ToLowerKey(gh.name), std::string(*opt));
+    } else {
+      expected.emplace(ToLowerKey(gh.name), gh.value);
+    }
+  }
+  return expected;
+}
 }  // namespace
+
+TEST_F(HttpResponseTest, RandomGlobalHeadersApplyOnce) {
+  constexpr int kCases = 64;
+  std::mt19937 rng(20251115);
+  std::uniform_int_distribution<int> globalCountDist(0, 64);
+  std::uniform_int_distribution<int> valueLenDist(1, 24);
+  std::bernoulli_distribution userOverrideDist(0.35);
+
+  auto makeValue = [&](int len) {
+    std::string value;
+    value.reserve(static_cast<std::size_t>(len));
+    for (int i = 0; i < len; ++i) {
+      value.push_back(static_cast<char>('A' + (rng() % 26)));
+    }
+    return value;
+  };
+
+  for (int iter = 0; iter < kCases; ++iter) {
+    HttpResponse resp(http::StatusCodeOK);
+    resp.body("payload-" + std::to_string(iter));
+    std::vector<http::Header> globalHeaders;
+    const int headerCount = globalCountDist(rng);
+    globalHeaders.reserve(static_cast<std::size_t>(headerCount));
+    for (int headerIdx = 0; headerIdx < headerCount; ++headerIdx) {
+      std::string name = "X-Global-" + std::to_string(iter) + "-" + std::to_string(headerIdx);
+      std::string value = makeValue(valueLenDist(rng));
+      globalHeaders.push_back({name, value});
+      if (userOverrideDist(rng)) {
+        resp.header(name, "user-" + value);
+      }
+    }
+
+    auto expected = ExpectedGlobalHeaderValues(resp, globalHeaders);
+    auto serialized = concatenated(std::move(resp), globalHeaders);
+    ParsedResponse parsed = parseResponse(serialized);
+
+    for (const auto& gh : globalHeaders) {
+      const auto* actual = FindHeaderCaseInsensitive(parsed, gh.name);
+      ASSERT_NE(actual, nullptr) << "Missing global header: " << gh.name << " in response\n" << serialized;
+      const auto key = ToLowerKey(gh.name);
+      auto expIt = expected.find(key);
+      ASSERT_NE(expIt, expected.end());
+      EXPECT_EQ(actual->second, expIt->second) << "Header mismatch for " << gh.name << " in response\n" << serialized;
+
+      const auto occurrences = std::count_if(parsed.headers.begin(), parsed.headers.end(),
+                                             [&](const auto& hdr) { return CaseInsensitiveEqual(hdr.first, gh.name); });
+      EXPECT_EQ(occurrences, 1) << "Duplicate copies of global header '" << gh.name << "'";
+    }
+  }
+}
+
+TEST_F(HttpResponseTest, GlobalHeadersBeyondInlineBitmap) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.addHeader("X-Seed", "local-value");
+  resp.body("payload");
+
+  constexpr int kGlobalHeaders = 300;  // > 256 to exceed inline bitmap storage
+  std::vector<http::Header> globalHeaders;
+  globalHeaders.reserve(kGlobalHeaders);
+  for (int headerIdx = 0; headerIdx < kGlobalHeaders; ++headerIdx) {
+    globalHeaders.push_back({"X-Bulk-" + std::to_string(headerIdx), "Value-" + std::to_string(headerIdx)});
+  }
+  // Force overlap with a couple of entries (exercise dynamic bitmap skip path)
+  resp.header(globalHeaders[42].name, "UserOverride-42");
+  resp.header(globalHeaders[199].name, "UserOverride-199");
+
+  auto expected = ExpectedGlobalHeaderValues(resp, globalHeaders);
+  auto serialized = concatenated(std::move(resp), globalHeaders);
+  ParsedResponse parsed = parseResponse(serialized);
+
+  ASSERT_GE(parsed.headers.size(), static_cast<std::size_t>(kGlobalHeaders));
+  for (const auto& gh : globalHeaders) {
+    const auto* actual = FindHeaderCaseInsensitive(parsed, gh.name);
+    ASSERT_NE(actual, nullptr) << "Missing global header " << gh.name;
+    const auto key = ToLowerKey(gh.name);
+    auto expIt = expected.find(key);
+    ASSERT_NE(expIt, expected.end());
+    EXPECT_EQ(actual->second, expIt->second);
+    const auto occurrences = std::count_if(parsed.headers.begin(), parsed.headers.end(),
+                                           [&](const auto& hdr) { return CaseInsensitiveEqual(hdr.first, gh.name); });
+    EXPECT_EQ(occurrences, 1) << "Header " << gh.name << " appeared " << occurrences << " times";
+  }
+}
 
 TEST_F(HttpResponseTest, FuzzStructuralValidation) {
   static constexpr int kNbHttpResponses = 60;
@@ -654,6 +799,9 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
   std::uniform_int_distribution<int> opDist(0, 5);
   std::uniform_int_distribution<int> smallLen(0, 12);
   std::uniform_int_distribution<int> midLen(0, 24);
+  std::uniform_int_distribution<int> globalHeaderCountDist(0, 32);
+  std::uniform_int_distribution<int> globalValueLenDist(1, 20);
+  std::uniform_int_distribution<int> reuseGlobalNameDist(0, 3);
   auto makeValue = [&](int length) {
     std::string value;
     value.reserve(static_cast<std::size_t>(length));
@@ -672,6 +820,14 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
   };
   for (int caseIndex = 0; caseIndex < kNbHttpResponses; ++caseIndex) {
     HttpResponse resp;
+    std::vector<http::Header> fuzzGlobalHeaders;
+    const int fuzzGlobalCount = globalHeaderCountDist(rng);
+    fuzzGlobalHeaders.reserve(static_cast<std::size_t>(fuzzGlobalCount));
+    for (int globalIdx = 0; globalIdx < fuzzGlobalCount; ++globalIdx) {
+      std::string name = "X-Fuzz-Global-" + std::to_string(caseIndex) + "-" + std::to_string(globalIdx);
+      std::string value = makeValue(globalValueLenDist(rng));
+      fuzzGlobalHeaders.push_back({std::move(name), std::move(value)});
+    }
     std::string lastReason;
     std::string lastBody;
     std::string lastHeaderKey;
@@ -682,11 +838,17 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
       switch (opDist(rng)) {
         case 0:
           lastHeaderKey = "X-" + std::to_string(step);
+          if (!fuzzGlobalHeaders.empty() && reuseGlobalNameDist(rng) == 0) {
+            lastHeaderKey = fuzzGlobalHeaders[static_cast<std::size_t>(rng() % fuzzGlobalHeaders.size())].name;
+          }
           lastHeaderValue = makeValue(smallLen(rng));
           resp.addHeader(lastHeaderKey, lastHeaderValue);
           break;
         case 1:
           lastHeaderKey = "U-" + std::to_string(step % 5);
+          if (!fuzzGlobalHeaders.empty() && reuseGlobalNameDist(rng) == 0) {
+            lastHeaderKey = fuzzGlobalHeaders[static_cast<std::size_t>(rng() % fuzzGlobalHeaders.size())].name;
+          }
           lastHeaderValue = makeValue(midLen(rng));
           resp.header(lastHeaderKey, lastHeaderValue);
           break;
@@ -731,14 +893,16 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
     EXPECT_EQ(resp.reason(), std::string_view(lastReason));
     EXPECT_EQ(resp.body(), std::string_view(lastBody));
 
-    auto full = concatenated(std::move(resp));
+    auto expectedGlobals = ExpectedGlobalHeaderValues(resp, fuzzGlobalHeaders);
+
+    auto full = concatenated(std::move(resp), fuzzGlobalHeaders);
     ParsedResponse pr = parseResponse(full);
 
     int dateCount = 0;
     int connCount = 0;
     int clCount = 0;
     std::size_t clVal = 0;
-    for (auto &headerPair : pr.headers) {
+    for (auto& headerPair : pr.headers) {
       if (headerPair.first == http::Date) {
         ++dateCount;
       } else if (headerPair.first == http::Connection) {
@@ -760,12 +924,16 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
         return;  // stop early to inspect this failing case
       }
       EXPECT_EQ(clVal, pr.body.size());
+      ASSERT_GE(pr.headers.size(), 3U);
+      EXPECT_EQ(pr.headers[pr.headers.size() - 3].first, http::Connection);
+      EXPECT_EQ(pr.headers[pr.headers.size() - 2].first, http::Date);
+      EXPECT_EQ(pr.headers[pr.headers.size() - 1].first, http::ContentLength);
     } else {
       EXPECT_EQ(clCount, 0);
+      ASSERT_GE(pr.headers.size(), 2U);
+      EXPECT_EQ(pr.headers[pr.headers.size() - 2].first, http::Connection);
+      EXPECT_EQ(pr.headers[pr.headers.size() - 1].first, http::Date);
     }
-    ASSERT_GE(pr.headers.size(), 2U);
-    EXPECT_EQ(pr.headers[pr.headers.size() - 2].first, http::Connection);
-    EXPECT_EQ(pr.headers[pr.headers.size() - 1].first, http::Date);
 
     if (!lastHeaderKey.empty()) {
       std::string needle = lastHeaderKey;
@@ -776,6 +944,15 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
       std::string needle = lastTrailerKey;
       needle.append(http::HeaderSep).append(lastTrailerValue);
       EXPECT_TRUE(full.contains(needle)) << "Missing last trailer '" << needle << "' in: " << full;
+    }
+
+    for (const auto& gh : fuzzGlobalHeaders) {
+      const auto* actual = FindHeaderCaseInsensitive(pr, gh.name);
+      ASSERT_NE(actual, nullptr) << "Missing fuzz global header " << gh.name;
+      auto key = ToLowerKey(gh.name);
+      auto expIt = expectedGlobals.find(key);
+      ASSERT_NE(expIt, expectedGlobals.end());
+      EXPECT_EQ(actual->second, expIt->second);
     }
   }
 }

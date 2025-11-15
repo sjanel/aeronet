@@ -60,7 +60,7 @@ std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
   _zs._stream.avail_in = static_cast<uInt>(chunk.size());
   auto flush = chunk.empty() ? Z_FINISH : Z_NO_FLUSH;
   do {
-    _buf.ensureAvailableCapacity(encoderChunkSize);
+    _buf.ensureAvailableCapacityExponential(encoderChunkSize);
     _zs._stream.next_out = reinterpret_cast<unsigned char*>(_buf.data() + _buf.size());
     _zs._stream.avail_out = static_cast<decltype(_zs._stream.avail_out)>(encoderChunkSize);
     const auto ret = deflate(&_zs._stream, flush);
@@ -86,7 +86,7 @@ std::string_view ZlibEncoder::compressAll(std::size_t encoderChunkSize, std::str
   zs._stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in.data()));
   zs._stream.avail_in = static_cast<uInt>(in.size());
   do {
-    _buf.ensureAvailableCapacity(encoderChunkSize);
+    _buf.ensureAvailableCapacityExponential(encoderChunkSize);
     zs._stream.next_out = reinterpret_cast<unsigned char*>(_buf.data() + _buf.size());
     zs._stream.avail_out = static_cast<decltype(zs._stream.avail_out)>(encoderChunkSize);
     auto rc = deflate(&zs._stream, Z_FINISH);

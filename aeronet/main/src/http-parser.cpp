@@ -187,7 +187,7 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, s
           break;  // No more lines
         }
 
-        auto [trailerNameView, trailerValue] = http::parseHeaderLine(trailerData, lineEnd);
+        auto [trailerNameView, trailerValue] = http::ParseHeaderLine(trailerData, lineEnd);
         if (trailerNameView.empty()) {
           break;  // Malformed (shouldn't happen after first-pass validation)
         }

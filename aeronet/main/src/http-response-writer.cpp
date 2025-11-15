@@ -54,7 +54,7 @@ void HttpResponseWriter::status(http::StatusCode code, std::string_view reason) 
   if (_state != State::Opened) {
     return;
   }
-  _fixedResponse.status(code).reason(reason);
+  _fixedResponse.status(code, reason);
 }
 
 void HttpResponseWriter::addHeader(std::string_view name, std::string_view value) {
@@ -246,11 +246,11 @@ void HttpResponseWriter::addTrailer(std::string_view name, std::string_view valu
   const std::size_t lineSize = name.size() + http::HeaderSep.size() + value.size() + http::CRLF.size();
 
   if (_trailers.empty()) {
-    _trailers.ensureAvailableCapacity(lineSize + 1UL + http::DoubleCRLF.size());
+    _trailers.ensureAvailableCapacityExponential(lineSize + 1UL + http::DoubleCRLF.size());
     _trailers.unchecked_push_back('0');
     _trailers.unchecked_append(http::CRLF);
   } else {
-    _trailers.ensureAvailableCapacity(lineSize);
+    _trailers.ensureAvailableCapacityExponential(lineSize);
   }
 
   WriteHeaderCRLF(_trailers.data() + _trailers.size(), name, value);
