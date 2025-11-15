@@ -43,7 +43,7 @@ class HttpResponseTest : public ::testing::Test {
   static HttpResponse::PreparedResponse finalizePrepared(HttpResponse&& resp,
                                                          std::span<const http::Header> globalHeaders,
                                                          bool head = isHeadMethod, bool keepAliveFlag = keepAlive) {
-    return resp.finalizeAndStealData(http::HTTP_1_1, tp, keepAliveFlag, globalHeaders, head, minCapturedBodySize);
+    return resp.finalizeAndStealData(http::HTTP_1_1, tp, !keepAliveFlag, globalHeaders, head, minCapturedBodySize);
   }
 
   static HttpResponseData finalize(HttpResponse&& resp) {
@@ -130,7 +130,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithHeaders) {
   HttpResponse resp(200, "OK");
   resp.addHeader("X-Header", "Value");
-  resp.status(404).reason("Not Found");
+  resp.status(404, "Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
@@ -153,9 +153,9 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyAddReasonWithHeaders) {
-  HttpResponse resp(200, "");
+  HttpResponse resp(200);
   resp.addHeader("X-Header", "Value");
-  resp.status(404).reason("Not Found");
+  resp.status(404, "Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
