@@ -97,12 +97,6 @@ constexpr size_t sherwood_v8_constants<T>::jump_distances[num_jump_distances];
 template<typename T, uint8_t BlockSize>
 struct sherwood_v8_block
 {
-    sherwood_v8_block()
-    {
-    }
-    ~sherwood_v8_block()
-    {
-    }
     int8_t control_bytes[BlockSize];
     union
     {
@@ -111,13 +105,14 @@ struct sherwood_v8_block
 
     static sherwood_v8_block * empty_block()
     {
-        static std::array<int8_t, BlockSize> empty_bytes = []
-        {
-            std::array<int8_t, BlockSize> result;
-            result.fill(sherwood_v8_constants<>::magic_for_empty);
-            return result;
+        alignas(sherwood_v8_block) static std::array<std::byte, sizeof(sherwood_v8_block)> storage{};
+        static const bool initialized = [] {
+            auto *block = reinterpret_cast<sherwood_v8_block *>(storage.data());
+            block->fill_control_bytes(sherwood_v8_constants<>::magic_for_empty);
+            return true;
         }();
-        return reinterpret_cast<sherwood_v8_block *>(&empty_bytes);
+        (void)initialized;
+        return reinterpret_cast<sherwood_v8_block *>(storage.data());
     }
 
     int first_empty_index() const
@@ -293,7 +288,9 @@ public:
     }
     ~sherwood_v8_table()
     {
-        clear();
+        if constexpr (!std::is_trivially_destructible_v<value_type>) {
+            clear();
+        }
         deallocate_data(entries, num_slots_minus_one);
     }
 
@@ -572,14 +569,12 @@ public:
         size_t num_blocks = num_items / BlockSize;
         if (num_items % BlockSize)
             ++num_blocks;
-        size_t memory_requirement = calculate_memory_requirement(num_blocks);
-        unsigned char * new_memory = &*AllocatorTraits::allocate(*this, memory_requirement);
+        const size_t total_blocks = num_blocks + 1;  // include sentinel block
+        BlockPointer new_buckets = AllocatorTraits::allocate(*this, total_blocks);
 
-        BlockPointer new_buckets = reinterpret_cast<BlockPointer>(new_memory);
-
-        BlockPointer special_end_item = new_buckets + num_blocks;
-        for (BlockPointer it = new_buckets; it <= special_end_item; ++it)
+        for (BlockPointer it = new_buckets, end = new_buckets + total_blocks; it != end; ++it) {
             it->fill_control_bytes(Constants::magic_for_empty);
+        }
         using std::swap;
         swap(entries, new_buckets);
         swap(num_slots_minus_one, num_items);
@@ -1006,25 +1001,18 @@ private:
         rehash(std::max(size_t(10), 2 * bucket_count()));
     }
 
-    size_t calculate_memory_requirement(size_t num_blocks)
-    {
-        size_t memory_required = sizeof(BlockType) * num_blocks;
-        memory_required += BlockSize; // for metadata of past-the-end pointer
-        return memory_required;
-    }
-
     void deallocate_data(BlockPointer begin, size_t num_slots_minus_one)
     {
         if (begin == BlockType::empty_block())
             return;
 
-        ++num_slots_minus_one;
-        size_t num_blocks = num_slots_minus_one / BlockSize;
-        if (num_slots_minus_one % BlockSize)
+        const size_t num_slots = num_slots_minus_one + 1;
+        size_t num_blocks = num_slots / BlockSize;
+        if (num_slots % BlockSize)
             ++num_blocks;
-        size_t memory = calculate_memory_requirement(num_blocks);
-        unsigned char * as_byte_pointer = reinterpret_cast<unsigned char *>(begin);
-        AllocatorTraits::deallocate(*this, typename AllocatorTraits::pointer(as_byte_pointer), memory);
+        // Account for sentinel block used for the metadata past-the-end pointer.
+        ++num_blocks;
+        AllocatorTraits::deallocate(*this, begin, num_blocks);
     }
 
     void reset_to_empty_state()
@@ -1058,17 +1046,11 @@ private:
 
         operator iterator()
         {
-            if (it->control_bytes[index % BlockSize] == Constants::magic_for_empty)
-                return ++iterator{it, index};
-            else
-                return { it, index };
+            return ++iterator{it, index};
         }
         operator const_iterator()
         {
-            if (it->control_bytes[index % BlockSize] == Constants::magic_for_empty)
-                return ++iterator{it, index};
-            else
-                return { it, index };
+            return ++iterator{it, index};
         }
     };
 };
@@ -1109,7 +1091,7 @@ class bytell_hash_map
             E,
             detailv8::KeyOrValueEquality<std::pair<K, V>, E>,
             A,
-            typename std::allocator_traits<A>::template rebind_alloc<unsigned char>,
+            typename std::allocator_traits<A>::template rebind_alloc<detailv8::sherwood_v8_block<std::pair<K, V>, detailv8::CalculateBytellBlockSize<K, V>::value>>,
             detailv8::CalculateBytellBlockSize<K, V>::value
         >
 {
@@ -1122,7 +1104,7 @@ class bytell_hash_map
         E,
         detailv8::KeyOrValueEquality<std::pair<K, V>, E>,
         A,
-        typename std::allocator_traits<A>::template rebind_alloc<unsigned char>,
+        typename std::allocator_traits<A>::template rebind_alloc<detailv8::sherwood_v8_block<std::pair<K, V>, detailv8::CalculateBytellBlockSize<K, V>::value>>,
         detailv8::CalculateBytellBlockSize<K, V>::value
     >;
 public:
@@ -1230,7 +1212,7 @@ class bytell_hash_set
             E,
             detailv8::functor_storage<bool, E>,
             A,
-            typename std::allocator_traits<A>::template rebind_alloc<unsigned char>,
+            typename std::allocator_traits<A>::template rebind_alloc<detailv8::sherwood_v8_block<T, detailv8::CalculateBytellBlockSize<T>::value>>,
             detailv8::CalculateBytellBlockSize<T>::value
         >
 {
@@ -1243,7 +1225,7 @@ class bytell_hash_set
         E,
         detailv8::functor_storage<bool, E>,
         A,
-        typename std::allocator_traits<A>::template rebind_alloc<unsigned char>,
+        typename std::allocator_traits<A>::template rebind_alloc<detailv8::sherwood_v8_block<T, detailv8::CalculateBytellBlockSize<T>::value>>,
         detailv8::CalculateBytellBlockSize<T>::value
     >;
 public:
