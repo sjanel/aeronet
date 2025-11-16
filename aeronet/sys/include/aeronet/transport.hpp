@@ -4,8 +4,6 @@
 #include <cstdint>
 #include <string_view>
 
-#include "aeronet/http-response-data.hpp"
-
 namespace aeronet {
 
 // Indicates what the transport layer needs to proceed after a non-blocking I/O operation returns EAGAIN/WANT.
@@ -36,7 +34,7 @@ class ITransport {
 
   // Non-blocking write. Returns bytes written (>0), 0 no progress (treat like EAGAIN), -1 fatal error.
   // want: indicates whether socket needs to be readable or writable for operation to proceed.
-  TransportResult write(const HttpResponseData& httpResponseData) {
+  TransportResult write(std::string_view firstBuf, std::string_view secondBuf) {
     // First attempt to write the response head. Only if the head was fully
     // written do we proceed to write the body. This is important for TLS
     // transports where a write call may succeed and report a positive
@@ -44,18 +42,18 @@ class ITransport {
     // requested buffer. In that partial-write case we must not start
     // sending the body bytes before the remaining head bytes have been
     // flushed, otherwise the client will see a corrupted/invalid response.
-    TransportResult result = write(httpResponseData.firstBuffer());
+    TransportResult result = write(firstBuf);
     if (result.want != TransportHint::None) {
       // Transport indicated it needs readiness or error — caller will retry.
       return result;
     }
 
     // Only continue to body if the head was fully consumed.
-    if (result.bytesProcessed < httpResponseData.firstBuffer().size()) {
+    if (result.bytesProcessed < firstBuf.size()) {
       return result;
     }
 
-    auto bodyData = httpResponseData.secondBuffer();
+    auto bodyData = secondBuf;
     if (!bodyData.empty()) {
       const auto [bytesWritten, want] = write(bodyData);
       result.bytesProcessed += bytesWritten;

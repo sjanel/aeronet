@@ -10,10 +10,12 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/dogstatsd.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/otel-config.hpp"
+#include "aeronet/telemetry-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "dogstatsd-metrics.hpp"
 
 // Detect SDK and processor support
 #if __has_include( \
@@ -124,6 +126,8 @@ class OtelSpan final : public Span {
 // TelemetryContext implementation details
 class TelemetryContextImpl {
  public:
+  explicit TelemetryContextImpl(const aeronet::TelemetryConfig& cfg) : _dogstatsd(cfg) {}
+
   opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider> _tracerProvider;
   opentelemetry::nostd::shared_ptr<opentelemetry::trace::Tracer> _tracer;
 
@@ -134,13 +138,14 @@ class TelemetryContextImpl {
       _counters;
 #endif
 
+  detail::DogStatsdMetrics _dogstatsd;
   bool _initialized = false;
 };
 
 TelemetryContext::TelemetryContext() noexcept = default;
 
-TelemetryContext::TelemetryContext(const aeronet::OtelConfig& cfg) : _impl(std::make_unique<TelemetryContextImpl>()) {
-  if (!cfg.enabled) {
+TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) : _impl(std::make_unique<TelemetryContextImpl>(cfg)) {
+  if (!cfg.otelEnabled) {
     log::trace("Telemetry disabled in config");
     return;
   }
@@ -148,9 +153,9 @@ TelemetryContext::TelemetryContext(const aeronet::OtelConfig& cfg) : _impl(std::
   // Build trace exporter
 #ifdef AERONET_HAVE_OTLP_HTTP
   opentelemetry::exporter::otlp::OtlpHttpExporterOptions opts;
-  if (!cfg.endpoint.empty()) {
-    opts.url = cfg.endpoint;
-    log::info("Initializing OTLP HTTP trace exporter with endpoint: {}", cfg.endpoint);
+  if (!cfg.endpoint().empty()) {
+    opts.url = cfg.endpoint();
+    log::info("Initializing OTLP HTTP trace exporter with endpoint: {}", cfg.endpoint());
   }
   auto exporter = std::unique_ptr<opentelemetry::sdk::trace::SpanExporter>(
       new opentelemetry::exporter::otlp::OtlpHttpExporter(opts));
@@ -188,10 +193,10 @@ TelemetryContext::TelemetryContext(const aeronet::OtelConfig& cfg) : _impl(std::
   // Initialize metrics provider if SDK available
 #if defined(AERONET_HAVE_METRICS_SDK) && defined(AERONET_HAVE_OTLP_METRICS)
   opentelemetry::exporter::otlp::OtlpHttpMetricExporterOptions metric_opts;
-  if (!cfg.endpoint.empty()) {
+  if (!cfg.endpoint().empty()) {
     // Convert trace endpoint to metrics endpoint
     // OTLP trace: /v1/traces, metrics: /v1/metrics
-    std::string endpoint = cfg.endpoint;
+    std::string endpoint(cfg.endpoint());
     auto tracesPos = endpoint.find("/v1/traces");
     if (tracesPos != std::string::npos) {
       endpoint.replace(tracesPos, 10, "/v1/metrics");
@@ -241,13 +246,7 @@ TelemetryContext::~TelemetryContext() {
   if (_impl && _impl->_initialized) {
 #ifdef AERONET_HAVE_METRICS_SDK
     if (_impl->_meterProvider) {
-      try {
-        _impl->_meterProvider->Shutdown();
-      } catch (const std::exception& ex) {
-        log::error("Error shutting down MeterProvider: {}", ex.what());
-      } catch (...) {
-        log::error("Error shutting down MeterProvider: unknown error");
-      }
+      _impl->_meterProvider->Shutdown();
     }
 #endif
     // TracerProvider shutdown is handled by SDK
@@ -257,7 +256,7 @@ TelemetryContext::~TelemetryContext() {
 TelemetryContext::TelemetryContext(TelemetryContext&&) noexcept = default;
 TelemetryContext& TelemetryContext::operator=(TelemetryContext&&) noexcept = default;
 
-SpanPtr TelemetryContext::createSpan(std::string_view name) noexcept {
+SpanPtr TelemetryContext::createSpan(std::string_view name) const noexcept {
   if (!_impl || !_impl->_initialized || !_impl->_tracer) {
     return nullptr;
   }
@@ -278,28 +277,34 @@ SpanPtr TelemetryContext::createSpan(std::string_view name) noexcept {
   }
 }
 
-void TelemetryContext::counterAdd([[maybe_unused]] std::string_view name, [[maybe_unused]] uint64_t delta) noexcept {
+void TelemetryContext::counterAdd([[maybe_unused]] std::string_view name,
+                                  [[maybe_unused]] uint64_t delta) const noexcept {
 #ifdef AERONET_HAVE_METRICS_SDK
-  if (!_impl || !_impl->_initialized || !_impl->_meter) {
-    return;
-  }
-
-  try {
-    // Create a synchronous counter (accumulated total, monotonic)
-    // Note: In OpenTelemetry metrics API, counters should be created once and cached.
-    auto [it, inserted] = _impl->_counters.emplace(name, nullptr);
-    if (inserted) {
-      // First time - create the counter
-      it->second = _impl->_meter->CreateUInt64Counter(opentelemetry::nostd::string_view(name.data(), name.size()),
-                                                      "Total count", "1");
+  if (_impl && _impl->_initialized && _impl->_meter) {
+    try {
+      auto [it, inserted] = _impl->_counters.emplace(name, nullptr);
+      if (inserted) {
+        it->second = _impl->_meter->CreateUInt64Counter(opentelemetry::nostd::string_view(name.data(), name.size()),
+                                                        "Total count", "1");
+      }
+      it->second->Add(delta);
+    } catch (const std::exception& ex) {
+      log::error("Failed to add counter '{}': {}", name, ex.what());
+    } catch (...) {
+      log::error("Failed to add counter '{}': unknown error", name);
     }
-    it->second->Add(delta);
-  } catch (const std::exception& ex) {
-    log::error("Failed to add counter '{}': {}", name, ex.what());
-  } catch (...) {
-    log::error("Failed to add counter '{}': unknown error", name);
   }
 #endif
+  if (_impl) {
+    _impl->_dogstatsd.increment(name, delta);
+  }
+}
+
+const DogStatsD* TelemetryContext::dogstatsdClient() const noexcept {
+  if (_impl) {
+    return &_impl->_dogstatsd.dogstatsdClient();
+  }
+  return nullptr;
 }
 
 #endif  // AERONET_HAVE_OTEL_SDK

@@ -27,7 +27,7 @@ add_project_library(aeronet_objects
 )
 
 target_link_libraries(aeronet_objects
-    PUBLIC aeronet_tech
+    PUBLIC aeronet_tech aeronet_sys
 )
 
 target_include_directories(aeronet_objects
@@ -170,6 +170,7 @@ add_unit_test(
     test/opentelemetry-integration_test.cpp
     LIBRARIES
     aeronet_objects
+    aeronet_test_support
 )
 
 add_unit_test(

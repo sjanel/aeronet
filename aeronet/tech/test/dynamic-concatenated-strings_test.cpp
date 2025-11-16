@@ -29,6 +29,7 @@ TEST(DynamicConcatenatedStringsTest, ContainsCaseInsensitive) {
   DynamicConcatenatedStrings<sep, true> pool;
   pool.append("AbC");
   pool.append("DeF");
+  EXPECT_EQ(pool.size(), 2U);
   EXPECT_TRUE(pool.contains("abc"));
   EXPECT_TRUE(pool.contains("DEF"));
   EXPECT_FALSE(pool.contains("ghi"));
@@ -48,32 +49,6 @@ TEST(DynamicConcatenatedStringsTest, NoSepModeBehavesLikeBuffer) {
   expected.push_back('y');
   EXPECT_EQ(pool.fullString(), std::string_view(expected));
   EXPECT_EQ(pool.fullSize(), expected.size());
-  EXPECT_EQ(pool.size(), 2U);  // with no sep, size counts entries since append still increments
-}
-
-TEST(DynamicConcatenatedStringsTest, CaptureAndClear) {
-  static constexpr char sep[] = "; ";
-  DynamicConcatenatedStrings<sep, false> pool;
-  pool.append("a");
-  pool.append("b");
-  auto captured = pool.captureFullString();
-  EXPECT_EQ(std::string_view(captured.data(), captured.size()), std::string_view("a; b"));
-  EXPECT_TRUE(pool.empty());
-}
-
-TEST(DynamicConcatenatedStringsTest, FullStringAndCaptureKeepLastSep) {
-  static constexpr char sep[] = ", ";
-  DynamicConcatenatedStrings<sep, false> pool;
-  pool.append("one");
-  pool.append("two");
-  // keep the trailing separator
-  auto fullKeep = pool.fullString(/*removeLastSep=*/false);
-  EXPECT_EQ(fullKeep, std::string_view("one, two, "));
-  EXPECT_EQ(pool.fullSize(/*removeLastSep=*/false), fullKeep.size());
-
-  // capture without removing last sep should return the buffer with trailing sep
-  auto captured = pool.captureFullString(/*removeLastSep=*/false);
-  EXPECT_EQ(std::string_view(captured.data(), captured.size()), std::string_view("one, two, "));
 }
 
 TEST(DynamicConcatenatedStringsTest, NoSepKeepLastSepIncludesNul) {
@@ -82,7 +57,7 @@ TEST(DynamicConcatenatedStringsTest, NoSepKeepLastSepIncludesNul) {
   pool.append("x");
   pool.append("y");
   // when asked to keep the last separator, the returned buffer includes the trailing NUL
-  auto fullKeep = pool.fullString(/*removeLastSep=*/false);
+  auto fullKeep = pool.fullStringWithLastSep();
   // build expected: 'x' '\0' 'y' '\0'
   std::string expected;
   expected.push_back('x');
@@ -90,7 +65,7 @@ TEST(DynamicConcatenatedStringsTest, NoSepKeepLastSepIncludesNul) {
   expected.push_back('y');
   expected.push_back('\0');
   EXPECT_EQ(fullKeep, std::string_view(expected));
-  EXPECT_EQ(pool.fullSize(/*removeLastSep=*/false), expected.size());
+  EXPECT_EQ(pool.fullSizeWithLastSep(), expected.size());
 }
 
 TEST(DynamicConcatenatedStringsTest, IteratorEmptyAndSingle) {
@@ -147,6 +122,34 @@ TEST(DynamicConcatenatedStringsTest, IteratorCaseInsensitive) {
   EXPECT_EQ(parts[0], std::string_view("AbC"));
   EXPECT_EQ(parts[1], std::string_view("DeF"));
   EXPECT_TRUE(pool.contains("abc"));
+}
+
+TEST(DynamicConcatenatedStringsTest, SizeEmptySingleMultipleClear) {
+  static constexpr char sep[] = ", ";
+  DynamicConcatenatedStrings<sep, false> pool;
+  using size_type_t = typename DynamicConcatenatedStrings<sep, false>::size_type;
+  EXPECT_EQ(pool.size(), size_type_t{0});
+
+  pool.append("one");
+  EXPECT_EQ(pool.size(), size_type_t{1});
+
+  pool.append("two");
+  pool.append("three");
+  EXPECT_EQ(pool.size(), size_type_t{3});
+
+  pool.clear();
+  EXPECT_EQ(pool.size(), size_type_t{0});
+}
+
+TEST(DynamicConcatenatedStringsTest, SizeNoSepMode) {
+  static constexpr char nos[] = "\0";
+  DynamicConcatenatedStrings<nos, false> pool;
+  using nos_size_type_t = typename DynamicConcatenatedStrings<nos, false>::size_type;
+  EXPECT_EQ(pool.size(), nos_size_type_t{0});
+  pool.append("a");
+  EXPECT_EQ(pool.size(), nos_size_type_t{1});
+  pool.append("b");
+  EXPECT_EQ(pool.size(), nos_size_type_t{2});
 }
 
 }  // namespace aeronet
