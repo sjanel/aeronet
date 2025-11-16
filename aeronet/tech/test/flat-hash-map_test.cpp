@@ -4,9 +4,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iterator>
+#include <memory>
 #include <random>
 #include <string>
 #include <string_view>
@@ -262,7 +264,7 @@ TEST(flat_hash_map, fuzz_against_unordered_map) {
       case 13: {
         float lf = loadFactorDist(rng);
         map1.max_load_factor(lf);
-        auto desiredBuckets = reference.size() + static_cast<size_t>(reference.size() / 2) + 1;
+        auto desiredBuckets = reference.size() + static_cast<std::size_t>(reference.size() / 2) + 1;
         map1.rehash(desiredBuckets);
         break;
       }

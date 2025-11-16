@@ -33,9 +33,7 @@ class DynamicConcatenatedStrings {
   // Append a new string part.
   // The string must not contain the separator character.
   void append(std::string_view str) {
-    if (str.contains(kSep)) {
-      throw std::invalid_argument("DynamicConcatenatedStrings: appended string contains separator");
-    }
+    assert(!str.contains(kSep));
     if (std::cmp_greater(str.size(), std::numeric_limits<SizeType>::max() - _buf.size() - kSep.size())) {
       throw std::length_error("DynamicConcatenatedStrings: appended string size exceeds SizeType limit");
     }
@@ -47,19 +45,23 @@ class DynamicConcatenatedStrings {
   // Check whether a given part is already contained.
   [[nodiscard]] bool contains(std::string_view part) const noexcept {
     std::string_view buf = _buf;
-    while (!buf.empty()) {
-      const auto nextSep = buf.find(kSep);
-      std::string_view currentPart{buf.substr(0, nextSep)};
-      if constexpr (ContainsCaseInsensitive) {
+    if constexpr (ContainsCaseInsensitive) {
+      while (!buf.empty()) {
+        const auto nextSep = buf.find(kSep);
+        std::string_view currentPart{buf.substr(0, nextSep)};
         if (CaseInsensitiveEqual(currentPart, part)) {
           return true;
         }
-      } else if (currentPart == part) {
-        return true;
+        buf.remove_prefix(nextSep + kSep.size());
       }
-      buf.remove_prefix(nextSep + kSep.size());
+      return false;
+    } else {
+      const auto pos = buf.find(part);
+      if (pos == std::string_view::npos || buf.substr(pos + part.size(), kSep.size()) != kSep) {
+        return false;
+      }
+      return pos == 0 || buf.substr(pos - kSep.size(), kSep.size()) == kSep;
     }
-    return false;
   }
 
   // Non-allocating forward iterator over the concatenated parts. Yields std::string_view for each part.
@@ -73,8 +75,8 @@ class DynamicConcatenatedStrings {
 
     iterator() noexcept = default;
 
-    reference operator*() const noexcept { return _cur; }
-    pointer operator->() const noexcept { return &_cur; }
+    auto operator*() const noexcept { return _cur; }
+    auto operator->() const noexcept { return &_cur; }
 
     iterator& operator++() noexcept {
       advance();
@@ -82,9 +84,9 @@ class DynamicConcatenatedStrings {
     }
 
     iterator operator++(int) noexcept {
-      iterator temp = *this;
+      iterator tmp = *this;
       advance();
-      return temp;
+      return tmp;
     }
 
     bool operator==(const iterator&) const noexcept = default;
@@ -96,18 +98,13 @@ class DynamicConcatenatedStrings {
 
     void advance(bool init = false) noexcept {
       if ((init && _cur.empty()) || _cur.end() + kSep.size() == _end) {
-        _cur = std::string_view{};
+        _cur = {};
         _end = nullptr;
         return;
       }
       for (const char* endPtr = init ? _cur.begin() : _cur.end() + kSep.size(); endPtr != _end; ++endPtr) {
         if (std::string_view(endPtr, kSep.size()) == kSep) {
-          if (init) {
-            _cur = std::string_view(_cur.begin(), endPtr);
-          } else {
-            _cur = std::string_view(_cur.end() + kSep.size(), endPtr);
-          }
-
+          _cur = std::string_view(init ? _cur.begin() : _cur.end() + kSep.size(), endPtr);
           return;
         }
       }
@@ -122,22 +119,22 @@ class DynamicConcatenatedStrings {
   [[nodiscard]] iterator end() const noexcept { return {}; }
 
   // Get the full concatenated string
-  [[nodiscard]] std::string_view fullString(bool removeLastSep = true) const noexcept {
-    std::string_view ret(_buf.data(), _buf.size());
-    if (removeLastSep && !_buf.empty()) {
-      ret.remove_suffix(kSep.size());
-    }
-    return ret;
+  // So if there are N elements, it will be size of all elements plus (N-1) * sep.size()
+  [[nodiscard]] std::string_view fullString() const noexcept { return {_buf.data(), fullSize()}; }
+
+  // Get the full concatenated string
+  // Includes the last separator (so N elements + N separators)
+  [[nodiscard]] std::string_view fullStringWithLastSep() const noexcept { return {_buf.data(), fullSizeWithLastSep()}; }
+
+  // Get the full size of the concatenated string without the last separator
+  // So if there are N elements, it will be size of all elements plus (N-1) * sep.size()
+  [[nodiscard]] size_type fullSize() const noexcept {
+    return _buf.size() == 0 ? 0 : (_buf.size() - static_cast<size_type>(kSep.size()));
   }
 
   // Get the full size of the concatenated string
-  [[nodiscard]] size_type fullSize(bool removeLastSep = true) const noexcept {
-    size_type ret = _buf.size();
-    if (removeLastSep && !_buf.empty()) {
-      ret -= kSep.size();
-    }
-    return ret;
-  }
+  // Includes the last separator (so N elements + N separators)
+  [[nodiscard]] size_type fullSizeWithLastSep() const noexcept { return _buf.size(); }
 
   // Check if there are no concatenated strings
   [[nodiscard]] bool empty() const noexcept { return _buf.empty(); }
@@ -145,28 +142,19 @@ class DynamicConcatenatedStrings {
   // Clear all concatenated strings
   void clear() noexcept { _buf.clear(); }
 
-  // Get the current capacity of the internal buffer
-  [[nodiscard]] size_type capacity() const noexcept { return _buf.capacity(); }
-
-  // Get the number of concatenated strings.
-  // To get the full size of the concatenated string, use fullSize().
+  // Get the number of concatenated strings
+  // The complexity is linear in the number of concatenated strings.
   [[nodiscard]] size_type size() const noexcept {
     size_type count = 0;
-    for (std::string_view buf = _buf; !buf.empty(); ++count) {
-      const auto nextSep = buf.find(kSep);
-      buf.remove_prefix(nextSep + kSep.size());
+    std::string_view buf = _buf;
+    for (std::string_view::size_type pos = 0; pos < buf.size(); ++count) {
+      pos = buf.find(kSep, pos) + kSep.size();
     }
     return count;
   }
 
-  // Capture the full concatenated string buffer (moves it out).
-  [[nodiscard]] BufferType captureFullString(bool removeLastSep = true) noexcept {
-    auto ret = std::move(_buf);
-    if (removeLastSep && !ret.empty()) {
-      ret.setSize(ret.size() - kSep.size());
-    }
-    return ret;
-  }
+  // Get the current capacity of the internal buffer
+  [[nodiscard]] size_type capacity() const noexcept { return _buf.capacity(); }
 
   bool operator==(const DynamicConcatenatedStrings& other) const noexcept = default;
 

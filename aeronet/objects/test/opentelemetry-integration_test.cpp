@@ -1,7 +1,17 @@
 #include <gtest/gtest.h>
 
+#include <cstdio>
+#include <ctime>
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/socket.h>
+#include <sys/un.h>
+#endif
+
+#include "aeronet/base-fd.hpp"
 #include "aeronet/features.hpp"
-#include "aeronet/otel-config.hpp"
+#include "aeronet/telemetry-config.hpp"
+#include "aeronet/temp-file.hpp"
+#include "aeronet/test_util.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #ifndef AERONET_ENABLE_OPENTELEMETRY
 #include <stdexcept>
@@ -18,11 +28,11 @@ TEST(OpenTelemetryIntegration, Lifecycle) {
   tracing::TelemetryContext telemetry;
 
   // Initialize with valid config
-  OtelConfig cfg;
-  cfg.enabled = kDefaultEnabled;
-  cfg.endpoint = "http://localhost:4318/v1/traces";
-  cfg.serviceName = "aeronet-integration-test";
-  cfg.sampleRate = 1.0;
+  TelemetryConfig cfg;
+  cfg.otelEnabled = kDefaultEnabled;
+  cfg.withEndpoint("http://localhost:4318/v1/traces");
+  cfg.withServiceName("aeronet-integration-test");
+  cfg.withSampleRate(1.0);
 
   telemetry = tracing::TelemetryContext(cfg);
 }
@@ -35,10 +45,10 @@ TEST(OpenTelemetryIntegration, CountersOperations) {
   telemetry.counterAdd("test.counter", 5U);
 
   // Initialize
-  OtelConfig cfg;
-  cfg.enabled = kDefaultEnabled;
-  cfg.endpoint = "http://localhost:4318/v1/metrics";
-  cfg.serviceName = "aeronet-test";
+  TelemetryConfig cfg;
+  cfg.otelEnabled = kDefaultEnabled;
+  cfg.withEndpoint("http://localhost:4318/v1/metrics");
+  cfg.withServiceName("aeronet-test");
 
   telemetry = tracing::TelemetryContext(cfg);
 
@@ -55,17 +65,17 @@ TEST(OpenTelemetryIntegration, SpanOperations) {
   EXPECT_EQ(span1, nullptr);
 
   // Initialize
-  OtelConfig cfg;
-  cfg.enabled = kDefaultEnabled;
-  cfg.endpoint = "http://localhost:4318/v1/traces";
-  cfg.serviceName = "aeronet-test";
-  cfg.sampleRate = 1.0;
+  TelemetryConfig cfg;
+  cfg.otelEnabled = kDefaultEnabled;
+  cfg.withEndpoint("http://localhost:4318/v1/traces");
+  cfg.withServiceName("aeronet-test");
+  cfg.withSampleRate(1.0);
 
   telemetry = tracing::TelemetryContext(cfg);
 
   auto span2 = telemetry.createSpan("test-span-2");
 
-  if (cfg.enabled) {
+  if (cfg.otelEnabled) {
     ASSERT_NE(span2, nullptr);
 
     span2->setAttribute("test.key", "test.value");
@@ -81,15 +91,15 @@ TEST(OpenTelemetryIntegration, IndependentContexts) {
   tracing::TelemetryContext telemetry1;
   tracing::TelemetryContext telemetry2;
 
-  OtelConfig cfg1;
-  cfg1.enabled = kDefaultEnabled;
-  cfg1.endpoint = "http://localhost:4318/v1/traces";
-  cfg1.serviceName = "service-1";
+  TelemetryConfig cfg1;
+  cfg1.otelEnabled = kDefaultEnabled;
+  cfg1.withEndpoint("http://localhost:4318/v1/traces");
+  cfg1.withServiceName("service-1");
 
-  OtelConfig cfg2;
-  cfg2.enabled = kDefaultEnabled;
-  cfg2.endpoint = "http://localhost:4319/v1/traces";  // Different port
-  cfg2.serviceName = "service-2";
+  TelemetryConfig cfg2;
+  cfg2.otelEnabled = kDefaultEnabled;
+  cfg2.withEndpoint("http://localhost:4319/v1/traces");  // Different port
+  cfg2.withServiceName("service-2");
 
   telemetry1 = tracing::TelemetryContext(cfg1);
   telemetry2 = tracing::TelemetryContext(cfg2);
@@ -114,8 +124,8 @@ TEST(OpenTelemetryIntegration, IndependentContexts) {
 TEST(OpenTelemetryIntegration, Disabled) {
   tracing::TelemetryContext telemetry;
 
-  OtelConfig cfg;
-  cfg.enabled = false;  // Explicitly disabled
+  TelemetryConfig cfg;
+  cfg.otelEnabled = false;  // Explicitly disabled
 
   telemetry = tracing::TelemetryContext(cfg);
 
@@ -124,11 +134,48 @@ TEST(OpenTelemetryIntegration, Disabled) {
   EXPECT_EQ(span, nullptr);
 }
 
+#if defined(__unix__) || defined(__APPLE__)
+TEST(OpenTelemetryIntegration, DogStatsDMetricsEmission) {
+  // Create an isolated temporary directory and use a socket path inside it.
+  aeronet::test::ScopedTempDir tmpDir("aeronet-dsd-dir-");
+  const auto socketPath = tmpDir.dirPath() / "aeronet-dsd.sock";
+
+  aeronet::BaseFd serverFd(::socket(AF_UNIX, SOCK_DGRAM, 0));
+  ASSERT_TRUE(serverFd);
+
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", socketPath.c_str());
+  ASSERT_EQ(::bind(serverFd.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
+
+  // Use test helper to set a receive timeout on the socket.
+  aeronet::test::setRecvTimeout(serverFd.fd(), std::chrono::seconds{1});
+
+  TelemetryConfig cfg;
+  cfg.otelEnabled = false;
+  cfg.dogStatsDEnabled = true;
+  cfg.withDogStatsdSocketPath(socketPath.string());
+  cfg.withDogStatsdNamespace("aeronet");
+  cfg.withServiceName("test-service");
+  // Ensure default tags (service:) are appended to the dogstatsd tags
+  cfg.validate();
+
+  tracing::TelemetryContext telemetry(cfg);
+  telemetry.counterAdd("test.metric", 7);
+
+  // Use test util's recvWithTimeout which handles non-blocking reads and timeouts.
+  auto payload = aeronet::test::recvWithTimeout(serverFd.fd(), std::chrono::seconds{1});
+  ASSERT_FALSE(payload.empty());
+  EXPECT_TRUE(payload.contains("aeronet.test.metric:7|c"));
+  EXPECT_TRUE(payload.contains("service:test-service"));
+}
+#endif
+
 #ifndef AERONET_ENABLE_OPENTELEMETRY
 
 TEST(OpenTelemetryIntegration, ShouldThrowIfDisabledAndAsked) {
-  OtelConfig cfg;
-  cfg.enabled = true;
+  TelemetryConfig cfg;
+  cfg.otelEnabled = true;
 
   // Should always return false when OpenTelemetry is disabled at compile-time
   EXPECT_THROW(tracing::TelemetryContext{cfg}, std::invalid_argument);

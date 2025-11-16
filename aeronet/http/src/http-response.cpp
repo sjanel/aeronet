@@ -1,26 +1,26 @@
 #include "aeronet/http-response.hpp"
 
 #include <algorithm>
+#include <bitset>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <memory>
 #include <optional>
 #include <ranges>
-#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
 #include <variant>
 
+#include "aeronet/concatenated-headers.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-header.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
@@ -308,7 +308,7 @@ void HttpResponse::appendHeaderInternal(std::string_view key, std::string_view v
 }
 
 HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoint tp, bool isHeadMethod, bool close,
-                                               std::span<const http::Header> globalHeaders,
+                                               const ConcatenatedHeaders& globalHeaders,
                                                std::size_t minCapturedBodySize) {
   static constexpr std::size_t kHeaderAdditionalSize = http::CRLF.size() + http::HeaderSep.size();
 
@@ -360,25 +360,18 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
     totalNewHeadersSize += http::ContentLength.size() + bodySzStr.size() + kHeaderAdditionalSize;
   }
 
-  uint64_t globalHeadersToSkipBmp[4];  // optim - no heap alloc for up to 256 global headers
+  std::bitset<HttpServerConfig::kMaxGlobalHeaders> globalHeadersToSkipBmp;
 
-  std::unique_ptr<uint64_t[]> bmpStorage;
-  uint64_t* pBmpStart;
-  if (hasHeaders && globalHeaders.size() > sizeof(globalHeadersToSkipBmp) * 8UL) {
-    bmpStorage = std::make_unique<uint64_t[]>((globalHeaders.size() + 63UL) / 64UL);
-    pBmpStart = bmpStorage.get();
-  } else {
-    pBmpStart = globalHeadersToSkipBmp;
-    std::memset(pBmpStart, 0, sizeof(globalHeadersToSkipBmp));
-  }
-
-  uint64_t pos = 0;
-  for (const auto& [key, val] : globalHeaders) {
+  std::size_t pos = 0;
+  bool writeAllGlobalHeaders = true;
+  for (std::string_view headerKeyVal : globalHeaders) {
+    std::string_view key = headerKeyVal.substr(0, headerKeyVal.find(':'));
     if (hasHeaders && headerValue(key)) {
       // Header already present, skip it
-      pBmpStart[pos / 64UL] |= (1UL << (pos % 64UL));
+      globalHeadersToSkipBmp.set(pos);
+      writeAllGlobalHeaders = false;
     } else {
-      totalNewHeadersSize += key.size() + val.size() + kHeaderAdditionalSize;
+      totalNewHeadersSize += headerKeyVal.size() + http::CRLF.size();
     }
 
     ++pos;
@@ -404,12 +397,24 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
 
   std::memmove(insertPtr + totalNewHeadersSize, insertPtr, http::DoubleCRLF.size() + internalBodyAndTrailersLen());
 
-  pos = 0;
-  for (const auto& [key, val] : globalHeaders) {
-    if (!hasHeaders || (pBmpStart[pos / 64UL] & (1UL << (pos % 64UL))) == 0) {
-      insertPtr = WriteCRLFHeader(insertPtr, key, val);
+  if (!globalHeaders.empty()) {
+    if (writeAllGlobalHeaders) {
+      // Optim: single memcpy for all global headers
+      std::memcpy(insertPtr, http::CRLF.data(), http::CRLF.size());
+      const auto allGlobalHeaders = globalHeaders.fullString();
+      std::memcpy(insertPtr + http::CRLF.size(), allGlobalHeaders.data(), allGlobalHeaders.size());
+      insertPtr += allGlobalHeaders.size() + http::CRLF.size();
+    } else {
+      pos = 0;
+      for (std::string_view headerKeyVal : globalHeaders) {
+        if (!globalHeadersToSkipBmp.test(pos)) {
+          std::memcpy(insertPtr, http::CRLF.data(), http::CRLF.size());
+          std::memcpy(insertPtr + http::CRLF.size(), headerKeyVal.data(), headerKeyVal.size());
+          insertPtr += headerKeyVal.size() + http::CRLF.size();
+        }
+        ++pos;
+      }
     }
-    ++pos;
   }
 
   if (addConnectionHeader) {
@@ -496,7 +501,7 @@ void HttpResponse::appendTrailer(std::string_view name, std::string_view value) 
 }
 
 HttpResponse::PreparedResponse HttpResponse::finalizeAndStealData(http::Version version, SysTimePoint tp, bool close,
-                                                                  std::span<const http::Header> globalHeaders,
+                                                                  const ConcatenatedHeaders& globalHeaders,
                                                                   bool isHeadMethod, std::size_t minCapturedBodySize) {
   const auto versionStr = version.str();
   std::memcpy(_data.data(), versionStr.data(), versionStr.size());

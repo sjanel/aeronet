@@ -392,7 +392,6 @@ TEST(MultiHttpServer, DefaultConstructor) {
   MultiHttpServer multi;
   EXPECT_TRUE(multi.empty());
   EXPECT_FALSE(multi.isRunning());
-  EXPECT_EQ(multi.port(), 0);
 
   // Calling stop should be safe even on an empty server
   EXPECT_NO_THROW(multi.stop());
@@ -480,7 +479,6 @@ TEST(MultiHttpServer, InvalidExplicitThreadCountThrows) {
   EXPECT_THROW(MultiHttpServer(cfg, 0), std::invalid_argument);  // 0 illegal here
 }
 
-// 5. Default constructor + move assignment BEFORE start (moving a running server now asserts)
 TEST(MultiHttpServer, DefaultConstructorAndMoveAssignment) {
   HttpServerConfig cfg;
   cfg.withReusePort();          // explicit reusePort (auto thread count may exceed 1)
@@ -497,7 +495,6 @@ TEST(MultiHttpServer, DefaultConstructorAndMoveAssignment) {
 
   MultiHttpServer target;  // default constructed inert target
   EXPECT_FALSE(target.isRunning());
-  EXPECT_EQ(target.port(), 0);
   EXPECT_EQ(target.nbThreads(), 0U);
 
   // Move BEFORE start

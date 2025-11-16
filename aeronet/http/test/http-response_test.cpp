@@ -14,11 +14,13 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/concatenated-headers.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-response-data.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -40,8 +42,7 @@ class HttpResponseTest : public ::testing::Test {
     return finalizePrepared(std::move(resp), {}, head, keepAliveFlag);
   }
 
-  static HttpResponse::PreparedResponse finalizePrepared(HttpResponse&& resp,
-                                                         std::span<const http::Header> globalHeaders,
+  static HttpResponse::PreparedResponse finalizePrepared(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders,
                                                          bool head = isHeadMethod, bool keepAliveFlag = keepAlive) {
     return resp.finalizeAndStealData(http::HTTP_1_1, tp, !keepAliveFlag, globalHeaders, head, minCapturedBodySize);
   }
@@ -52,7 +53,7 @@ class HttpResponseTest : public ::testing::Test {
     return std::move(prepared.data);
   }
 
-  static HttpResponseData finalize(HttpResponse&& resp, std::span<const http::Header> globalHeaders,
+  static HttpResponseData finalize(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders,
                                    bool head = isHeadMethod, bool keepAliveFlag = keepAlive) {
     auto prepared = finalizePrepared(std::move(resp), globalHeaders, head, keepAliveFlag);
     EXPECT_EQ(prepared.fileLength, 0U);
@@ -70,7 +71,7 @@ class HttpResponseTest : public ::testing::Test {
     return out;
   }
 
-  static std::string concatenated(HttpResponse&& resp, std::span<const http::Header> globalHeaders,
+  static std::string concatenated(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders,
                                   bool head = isHeadMethod, bool keepAliveFlag = keepAlive) {
     HttpResponseData httpResponseData = finalize(std::move(resp), globalHeaders, head, keepAliveFlag);
     std::string out(httpResponseData.firstBuffer());
@@ -411,7 +412,9 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
 TEST_F(HttpResponseTest, GlobalHeadersShouldNotOverrideUserHeaders) {
   HttpResponse resp(http::StatusCodeOK, "OK");
   resp.header("X-Global", "UserValue");
-  std::vector<http::Header> globalHeaders = {{"X-Global", "GlobalValue"}, {"X-Another", "AnotherValue"}};
+  ConcatenatedHeaders globalHeaders;
+  globalHeaders.append("X-Global: GlobalValue");
+  globalHeaders.append("X-Another: AnotherValue");
   resp.reason("Some Reason");
   auto full = concatenated(std::move(resp), globalHeaders);
   EXPECT_EQ(full,
@@ -683,15 +686,16 @@ const std::pair<std::string, std::string>* FindHeaderCaseInsensitive(const Parse
   return nullptr;
 }
 
-auto ExpectedGlobalHeaderValues(const HttpResponse& resp, std::span<const http::Header> globalHeaders) {
+auto ExpectedGlobalHeaderValues(const HttpResponse& resp, const ConcatenatedHeaders& globalHeaders) {
   flat_hash_map<std::string, std::string, CaseInsensitiveHashFunc, CaseInsensitiveEqualFunc> expected;
-  expected.reserve(globalHeaders.size());
-  for (const auto& gh : globalHeaders) {
-    auto opt = resp.headerValue(gh.name);
+  for (std::string_view gh : globalHeaders) {
+    std::string_view name = gh.substr(0, gh.find(": "));
+    std::string_view value = gh.substr(gh.find(": ") + 2);
+    auto opt = resp.headerValue(name);
     if (opt) {
-      expected.emplace(gh.name, *opt);
+      expected.emplace(std::string(name), *opt);
     } else {
-      expected.emplace(gh.name, gh.value);
+      expected.emplace(std::string(name), std::string(value));
     }
   }
   return expected;
@@ -717,13 +721,15 @@ TEST_F(HttpResponseTest, RandomGlobalHeadersApplyOnce) {
   for (int iter = 0; iter < kCases; ++iter) {
     HttpResponse resp(http::StatusCodeOK);
     resp.body("payload-" + std::to_string(iter));
-    std::vector<http::Header> globalHeaders;
+    ConcatenatedHeaders globalHeaders;
     const int headerCount = globalCountDist(rng);
-    globalHeaders.reserve(static_cast<std::size_t>(headerCount));
     for (int headerIdx = 0; headerIdx < headerCount; ++headerIdx) {
       std::string name = "X-Global-" + std::to_string(iter) + "-" + std::to_string(headerIdx);
       std::string value = makeValue(valueLenDist(rng));
-      globalHeaders.push_back({name, value});
+      std::string header = name;
+      header += http::HeaderSep;
+      header += value;
+      globalHeaders.append(header);
       if (userOverrideDist(rng)) {
         resp.header(name, "user-" + value);
       }
@@ -733,49 +739,66 @@ TEST_F(HttpResponseTest, RandomGlobalHeadersApplyOnce) {
     auto serialized = concatenated(std::move(resp), globalHeaders);
     ParsedResponse parsed = parseResponse(serialized);
 
-    for (const auto& gh : globalHeaders) {
-      const auto* actual = FindHeaderCaseInsensitive(parsed, gh.name);
-      ASSERT_NE(actual, nullptr) << "Missing global header: " << gh.name << " in response\n" << serialized;
-      auto expIt = expected.find(gh.name);
+    for (std::string_view gh : globalHeaders) {
+      // gh is a string_view of the form "Name: Value". Extract the name for comparisons.
+      const auto sep = gh.find(http::HeaderSep);
+      ASSERT_NE(sep, std::string_view::npos);
+      std::string_view name = gh.substr(0, sep);
+      const auto* actual = FindHeaderCaseInsensitive(parsed, name);
+      ASSERT_NE(actual, nullptr) << "Missing global header: " << name << " in response\n" << serialized;
+      auto expIt = expected.find(name);
       ASSERT_NE(expIt, expected.end());
-      EXPECT_EQ(actual->second, expIt->second) << "Header mismatch for " << gh.name << " in response\n" << serialized;
+      EXPECT_EQ(actual->second, expIt->second) << "Header mismatch for " << name << " in response\n" << serialized;
 
       const auto occurrences = std::count_if(parsed.headers.begin(), parsed.headers.end(),
-                                             [&](const auto& hdr) { return CaseInsensitiveEqual(hdr.first, gh.name); });
-      EXPECT_EQ(occurrences, 1) << "Duplicate copies of global header '" << gh.name << "'";
+                                             [&](const auto& hdr) { return CaseInsensitiveEqual(hdr.first, name); });
+      EXPECT_EQ(occurrences, 1) << "Duplicate copies of global header '" << name << "'";
     }
   }
 }
 
-TEST_F(HttpResponseTest, GlobalHeadersBeyondInlineBitmap) {
+TEST_F(HttpResponseTest, ALotOfGlobalHeaders) {
   HttpResponse resp(http::StatusCodeOK);
   resp.addHeader("X-Seed", "local-value");
   resp.body("payload");
 
-  constexpr int kGlobalHeaders = 300;  // > 256 to exceed inline bitmap storage
-  std::vector<http::Header> globalHeaders;
-  globalHeaders.reserve(kGlobalHeaders);
+  constexpr int kGlobalHeaders = HttpServerConfig::kMaxGlobalHeaders;
+  // Build concatenated global headers but keep an indexed vector for targeted overrides below.
+  std::vector<http::Header> headerVec;
+  headerVec.reserve(kGlobalHeaders);
+  aeronet::ConcatenatedHeaders globalHeaders;
   for (int headerIdx = 0; headerIdx < kGlobalHeaders; ++headerIdx) {
-    globalHeaders.push_back({"X-Bulk-" + std::to_string(headerIdx), "Value-" + std::to_string(headerIdx)});
+    std::string name = "X-Bulk-" + std::to_string(headerIdx);
+    std::string value = "Value-" + std::to_string(headerIdx);
+    headerVec.push_back({name, value});
+    std::string header;
+    header.reserve(name.size() + 2 + value.size());
+    header.append(name);
+    header.append(": ");
+    header.append(value);
+    globalHeaders.append(header);
   }
   // Force overlap with a couple of entries (exercise dynamic bitmap skip path)
-  resp.header(globalHeaders[42].name, "UserOverride-42");
-  resp.header(globalHeaders[199].name, "UserOverride-199");
+  resp.header(headerVec[42].name, "UserOverride-42");
+  resp.header(headerVec[199].name, "UserOverride-199");
 
   auto expected = ExpectedGlobalHeaderValues(resp, globalHeaders);
   auto serialized = concatenated(std::move(resp), globalHeaders);
   ParsedResponse parsed = parseResponse(serialized);
 
   ASSERT_GE(parsed.headers.size(), static_cast<std::size_t>(kGlobalHeaders));
-  for (const auto& gh : globalHeaders) {
-    const auto* actual = FindHeaderCaseInsensitive(parsed, gh.name);
-    ASSERT_NE(actual, nullptr) << "Missing global header " << gh.name;
-    auto expIt = expected.find(gh.name);
+  for (std::string_view gh : globalHeaders) {
+    const auto sep = gh.find(": ");
+    ASSERT_NE(sep, std::string_view::npos);
+    std::string_view name = gh.substr(0, sep);
+    const auto* actual = FindHeaderCaseInsensitive(parsed, name);
+    ASSERT_NE(actual, nullptr) << "Missing global header " << name;
+    auto expIt = expected.find(name);
     ASSERT_NE(expIt, expected.end());
     EXPECT_EQ(actual->second, expIt->second);
     const auto occurrences = std::count_if(parsed.headers.begin(), parsed.headers.end(),
-                                           [&](const auto& hdr) { return CaseInsensitiveEqual(hdr.first, gh.name); });
-    EXPECT_EQ(occurrences, 1) << "Header " << gh.name << " appeared " << occurrences << " times";
+                                           [&](const auto& hdr) { return CaseInsensitiveEqual(hdr.first, name); });
+    EXPECT_EQ(occurrences, 1) << "Header " << name << " appeared " << occurrences << " times";
   }
 }
 
@@ -808,13 +831,20 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
   };
   for (int caseIndex = 0; caseIndex < kNbHttpResponses; ++caseIndex) {
     HttpResponse resp;
-    std::vector<http::Header> fuzzGlobalHeaders;
+    aeronet::ConcatenatedHeaders fuzzGlobalHeaders;
+    std::vector<http::Header> fuzzHeaderVec;
     const int fuzzGlobalCount = globalHeaderCountDist(rng);
-    fuzzGlobalHeaders.reserve(static_cast<std::size_t>(fuzzGlobalCount));
+    fuzzHeaderVec.reserve(static_cast<std::size_t>(fuzzGlobalCount));
     for (int globalIdx = 0; globalIdx < fuzzGlobalCount; ++globalIdx) {
       std::string name = "X-Fuzz-Global-" + std::to_string(caseIndex) + "-" + std::to_string(globalIdx);
       std::string value = makeValue(globalValueLenDist(rng));
-      fuzzGlobalHeaders.push_back({std::move(name), std::move(value)});
+      fuzzHeaderVec.push_back({name, value});
+      std::string hdr;
+      hdr.reserve(name.size() + 2 + value.size());
+      hdr.append(name);
+      hdr.append(": ");
+      hdr.append(value);
+      fuzzGlobalHeaders.append(hdr);
     }
     std::string lastReason;
     std::string lastBody;
@@ -826,16 +856,16 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
       switch (opDist(rng)) {
         case 0:
           lastHeaderKey = "X-" + std::to_string(step);
-          if (!fuzzGlobalHeaders.empty() && reuseGlobalNameDist(rng) == 0) {
-            lastHeaderKey = fuzzGlobalHeaders[static_cast<std::size_t>(rng() % fuzzGlobalHeaders.size())].name;
+          if (!fuzzHeaderVec.empty() && reuseGlobalNameDist(rng) == 0) {
+            lastHeaderKey = fuzzHeaderVec[static_cast<std::size_t>(rng() % fuzzHeaderVec.size())].name;
           }
           lastHeaderValue = makeValue(smallLen(rng));
           resp.addHeader(lastHeaderKey, lastHeaderValue);
           break;
         case 1:
           lastHeaderKey = "U-" + std::to_string(step % 5);
-          if (!fuzzGlobalHeaders.empty() && reuseGlobalNameDist(rng) == 0) {
-            lastHeaderKey = fuzzGlobalHeaders[static_cast<std::size_t>(rng() % fuzzGlobalHeaders.size())].name;
+          if (!fuzzHeaderVec.empty() && reuseGlobalNameDist(rng) == 0) {
+            lastHeaderKey = fuzzHeaderVec[static_cast<std::size_t>(rng() % fuzzHeaderVec.size())].name;
           }
           lastHeaderValue = makeValue(midLen(rng));
           resp.header(lastHeaderKey, lastHeaderValue);
@@ -935,9 +965,12 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
     }
 
     for (const auto& gh : fuzzGlobalHeaders) {
-      const auto* actual = FindHeaderCaseInsensitive(pr, gh.name);
-      ASSERT_NE(actual, nullptr) << "Missing fuzz global header " << gh.name;
-      auto expIt = expectedGlobals.find(gh.name);
+      const auto sep = gh.find(": ");
+      ASSERT_NE(sep, std::string_view::npos);
+      std::string_view name = gh.substr(0, sep);
+      const auto* actual = FindHeaderCaseInsensitive(pr, name);
+      ASSERT_NE(actual, nullptr) << "Missing fuzz global header " << name;
+      auto expIt = expectedGlobals.find(name);
       ASSERT_NE(expIt, expectedGlobals.end());
       EXPECT_EQ(actual->second, expIt->second);
     }

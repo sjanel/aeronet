@@ -168,7 +168,8 @@ if(AERONET_ENABLE_OPENTELEMETRY)
     set(WITH_BENCHMARKS OFF CACHE BOOL "" FORCE)
     set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(WITH_FUNC_TESTS OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(opentelemetry_cpp)
+    
+    list(APPEND fetchContentPackagesToMakeAvailable opentelemetry_cpp)
   endif()
 endif()
 

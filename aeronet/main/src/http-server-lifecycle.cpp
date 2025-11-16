@@ -80,7 +80,7 @@ HttpServer::HttpServer(HttpServerConfig config, RouterConfig routerConfig)
       _eventLoop(_config.pollInterval),
       _router(std::move(routerConfig)),
       _encodingSelector(_config.compression),
-      _telemetry(_config.otel) {
+      _telemetry(_config.telemetry) {
   init();
 }
 
@@ -90,7 +90,7 @@ HttpServer::HttpServer(HttpServerConfig cfg, Router router)
       _eventLoop(_config.pollInterval),
       _router(std::move(router)),
       _encodingSelector(_config.compression),
-      _telemetry(_config.otel) {
+      _telemetry(_config.telemetry) {
   init();
 }
 

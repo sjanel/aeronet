@@ -16,7 +16,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
-#
+
 #include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
@@ -37,7 +37,7 @@
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
-#include "aeronet/otel-config.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
@@ -45,6 +45,8 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/stringconv.hpp"
+#include "aeronet/telemetry-config.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 
@@ -81,11 +83,11 @@ struct ImmutableConfigSnapshot {
   uint16_t port;
   bool reusePort;
   TLSConfig tls;
-  OtelConfig otel;
+  TelemetryConfig telemetry;
 };
 
 ImmutableConfigSnapshot CaptureImmutable(const HttpServerConfig& cfg) {
-  return {cfg.port, cfg.reusePort, cfg.tls, cfg.otel};
+  return {cfg.port, cfg.reusePort, cfg.tls, cfg.telemetry};
 }
 
 void RestoreImmutable(HttpServerConfig& cfg, ImmutableConfigSnapshot snapshot) {
@@ -101,9 +103,9 @@ void RestoreImmutable(HttpServerConfig& cfg, ImmutableConfigSnapshot snapshot) {
     cfg.tls = std::move(snapshot.tls);
     log::warn("Attempted to modify immutable HttpServerConfig.tls at runtime; change ignored");
   }
-  if (cfg.otel != snapshot.otel) {
-    cfg.otel = std::move(snapshot.otel);
-    log::warn("Attempted to modify immutable HttpServerConfig.otel at runtime; change ignored");
+  if (cfg.telemetry != snapshot.telemetry) {
+    cfg.telemetry = std::move(snapshot.telemetry);
+    log::warn("Attempted to modify immutable HttpServerConfig.telemetry at runtime; change ignored");
   }
 }
 
@@ -801,12 +803,12 @@ void HttpServer::maybeEnableKtlsSend(ConnectionState& state, TlsTransport& trans
       break;
     case TlsTransport::KtlsEnableResult::Status::Failed: {
       ++_stats.ktlsSendEnableFallbacks;
-      std::string reason;
+      RawChars reason;
       if (result.sysError != 0) {
-        reason.append("errno=")
-            .append(std::to_string(result.sysError))
-            .append(" ")
-            .append(std::strerror(result.sysError));
+        reason.append("errno=");
+        reason.append(std::string_view(IntegralToCharVector(result.sysError)));
+        reason.push_back(' ');
+        reason.append(std::strerror(result.sysError));
       }
       if (result.sslError != 0) {
         char errBuf[256];
@@ -814,18 +816,20 @@ void HttpServer::maybeEnableKtlsSend(ConnectionState& state, TlsTransport& trans
         if (!reason.empty()) {
           reason.append("; ");
         }
-        reason.append("ssl=").append(errBuf);
+        reason.append("ssl=");
+        reason.append(errBuf);
       }
       if (force) {
         ++_stats.ktlsSendForcedShutdowns;
         log::error("KTLS send enable failed for fd # {} (forced mode) reason={}", fd,
-                   reason.empty() ? "unknown" : reason.c_str());
+                   reason.empty() ? std::string_view("unknown") : reason);
         state.requestImmediateClose();
       } else if (warnOnFailure) {
         log::warn("KTLS send enable failed for fd # {} (falling back) reason={}", fd,
-                  reason.empty() ? "unknown" : reason.c_str());
+                  reason.empty() ? std::string_view("unknown") : reason);
       } else {
-        log::debug("KTLS send enable failed for fd # {} reason={}", fd, reason.empty() ? "unknown" : reason.c_str());
+        log::debug("KTLS send enable failed for fd # {} reason={}", fd,
+                   reason.empty() ? std::string_view("unknown") : reason);
       }
       break;
     }
@@ -874,16 +878,12 @@ ServerStats HttpServer::stats() const {
   return statsOut;
 }
 
-void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, bool immediate,
+void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, bool immediate,
                                  std::string_view reason) {
-  if (reason.empty()) {
-    reason = http::reasonPhraseFor(code);
-  }
-
-  queueData(cnxIt, BuildSimpleError(code, _config.globalHeaders, reason));
+  queueData(cnxIt, HttpResponseData(BuildSimpleError(statusCode, _config.globalHeaders, reason)));
 
   try {
-    _parserErrCb(code);
+    _parserErrCb(statusCode);
   } catch (const std::exception& ex) {
     // Swallow exceptions from user callback to avoid destabilizing the server
     log::error("Exception raised in user callback: {}", ex.what());
@@ -894,7 +894,7 @@ void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, b
     cnxIt->second.requestDrainAndClose();
   }
 
-  _request.end(code);
+  _request.end(statusCode);
 }
 
 void HttpServer::registerBuiltInProbes() {

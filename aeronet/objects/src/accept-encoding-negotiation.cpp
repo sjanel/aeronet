@@ -27,7 +27,7 @@ namespace {
 
 constexpr std::string_view kWhitespace = " \t";
 
-constexpr bool encodingEnabled(Encoding enc) {
+constexpr bool IsEncodingEnabled(Encoding enc) {
   switch (enc) {
     case Encoding::br:
       return brotliEnabled();
@@ -118,7 +118,7 @@ void EncodingSelector::initDefault() noexcept {
   std::ranges::iota(_serverPrefIndex, 0);
   for (std::underlying_type_t<Encoding> pos = 0; pos < kNbContentEncodings; ++pos) {
     auto enc = static_cast<Encoding>(pos);
-    if (encodingEnabled(enc)) {
+    if (IsEncodingEnabled(enc)) {
       _preferenceOrdered.push_back(enc);
     }
   }
@@ -131,7 +131,7 @@ EncodingSelector::EncodingSelector(const CompressionConfig &compressionConfig) {
     std::ranges::fill(_serverPrefIndex, -1);
     int8_t next = 0;
     for (Encoding enc : compressionConfig.preferredFormats) {
-      if (!encodingEnabled(enc)) {
+      if (!IsEncodingEnabled(enc)) {
         continue;
       }
       auto idx = static_cast<std::underlying_type_t<Encoding>>(enc);
@@ -189,7 +189,8 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
       if ((seenMask & (1 << pos)) != 0) {
         continue;  // already captured earliest occurrence
       }
-      if (CaseInsensitiveEqual(name, kSupportedEncodings[pos].name) && encodingEnabled(kSupportedEncodings[pos].enc)) {
+      if (CaseInsensitiveEqual(name, kSupportedEncodings[pos].name) &&
+          IsEncodingEnabled(kSupportedEncodings[pos].enc)) {
         knownEncodings.emplace_back(kSupportedEncodings[pos].name, quality);
         seenMask |= static_cast<SeenBmp>(1 << pos);
         break;
@@ -220,7 +221,7 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
   // and pick highest q; ties resolved by lower preference index instead of client header order.
   for (const auto &pt : knownEncodings) {
     for (const auto &kSupportedEncoding : kSupportedEncodings) {
-      if (CaseInsensitiveEqual(pt.name, kSupportedEncoding.name) && encodingEnabled(kSupportedEncoding.enc)) {
+      if (CaseInsensitiveEqual(pt.name, kSupportedEncoding.name) && IsEncodingEnabled(kSupportedEncoding.enc)) {
         auto idx = static_cast<int>(kSupportedEncoding.enc);
         consider(kSupportedEncoding.enc, pt.quality, _serverPrefIndex[idx]);
         break;

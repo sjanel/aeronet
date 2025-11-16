@@ -6,13 +6,15 @@
 #include <cstdint>
 #include <initializer_list>
 #include <ranges>
-#include <string>
+#include <span>
 #include <string_view>
-#include <vector>
+#include <utility>
 
 #include "aeronet/builtin-probes-config.hpp"
+#include "aeronet/concatenated-headers.hpp"
+#include "aeronet/concatenated-strings.hpp"
 #include "aeronet/http-header.hpp"
-#include "aeronet/otel-config.hpp"
+#include "aeronet/telemetry-config.hpp"
 #include "compression-config.hpp"
 #include "decompression-config.hpp"
 #include "tls-config.hpp"
@@ -115,8 +117,8 @@ struct HttpServerConfig {
   // =================
   TLSConfig tls;
 
-  // OpenTelemetry configuration
-  OtelConfig otel;
+  // Telemetry configuration (OpenTelemetry tracing + DogStatsD metrics)
+  TelemetryConfig telemetry;
 
   // ===========================================
   // Response compression configuration
@@ -158,9 +160,14 @@ struct HttpServerConfig {
   std::size_t bodyReadChunkBytes{8192};
   std::size_t maxPerEventReadBytes{0};
 
+  // Hard limit to avoid pathological cases with excessive global headers, which would bloat response size
+  // and waste CPU serializing them.
+  static constexpr uint32_t kMaxGlobalHeaders = 256;
+
   // Will add all the headers defined here in all server responses, if not explicitly set by the user for a given
-  // response. Defaults to a list of one entry "Server: aeronet"
-  std::vector<http::Header> globalHeaders{{"Server", "aeronet"}};
+  // response. Defaults to a list of one entry "Server: aeronet".
+  // The maximum number of global headers is 256.
+  ConcatenatedHeaders globalHeaders;
 
   // Enable TRACE method handling (echo) on the server. Disabled by default for safety.
   enum class TraceMethodPolicy : std::uint8_t {
@@ -177,17 +184,20 @@ struct HttpServerConfig {
   // ===========================================
   BuiltinProbesConfig builtinProbes;
 
-  // Optional allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT to any
-  // resolved host is allowed. When non-empty, the target host must exactly match one of these entries.
-  std::vector<std::string> connectAllowlist;
-
-  // Validates config. Throws std::invalid_argument if it is not valid.
-  void validate() const;
+  // Validates and (possibly) finalize config. Throws std::invalid_argument if it is not valid.
+  void validate();
 
  private:
   TLSConfig& ensureTls();
 
+  SmallConcatenatedStringsCaseInsensitive _connectAllowlist;
+
  public:
+  // Optional allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT to any
+  // resolved host is allowed. When non-empty, the target host must exactly match one of these entries. The matching is
+  // case-insensitive for hostnames.
+  [[nodiscard]] const SmallConcatenatedStringsCaseInsensitive& connectAllowlist() const { return _connectAllowlist; }
+
   // Set explicit listening port (0 = ephemeral)
   HttpServerConfig& withPort(uint16_t port);
 
@@ -224,18 +234,19 @@ struct HttpServerConfig {
   // Set slow header read timeout (0=off)
   HttpServerConfig& withHeaderReadTimeout(std::chrono::milliseconds timeout);
 
+  // Optional allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT to any
+  // resolved host is allowed. When non-empty, the target host must exactly match one of these entries.
+  // The matching is case-insensitive for hostnames.
   // Set CONNECT allowlist (replaces any existing entries). An empty list allows all targets.
   template <class InputIt>
   HttpServerConfig& withConnectAllowlist(InputIt first, InputIt last) {
-    connectAllowlist.clear();
+    _connectAllowlist.clear();
     for (auto it = first; it != last; ++it) {
-      connectAllowlist.emplace_back(*it);
+      _connectAllowlist.append(*it);
     }
     return *this;
   }
 
-  // Accept any string-like source (const char*, std::string, std::string_view) for certificate & key file paths.
-  // We intentionally copy here because configuration happens once at startup; micro-optimizing moves is unnecessary.
   HttpServerConfig& withTlsCertKey(std::string_view certFile, std::string_view keyFile);
 
   HttpServerConfig& withTlsCipherList(std::string_view cipherList);
@@ -297,8 +308,11 @@ struct HttpServerConfig {
 
   HttpServerConfig& withMergeUnknownRequestHeaders(bool on = true);
 
-  // Set the OpenTelemetry configuration for this server instance
-  HttpServerConfig& withOtelConfig(OtelConfig cfg);
+  // Set the telemetry configuration for this server instance
+  HttpServerConfig& withTelemetryConfig(TelemetryConfig cfg);
+
+  // Backward-compatible alias. Prefer withTelemetryConfig().
+  HttpServerConfig& withOtelConfig(TelemetryConfig cfg) { return withTelemetryConfig(std::move(cfg)); }
 
   // Configure adaptive read chunk sizing (two tier). Returns *this.
   HttpServerConfig& withReadChunkStrategy(std::size_t initialBytes, std::size_t bodyBytes);
@@ -307,10 +321,10 @@ struct HttpServerConfig {
   HttpServerConfig& withMaxPerEventReadBytes(std::size_t capBytes);
 
   // Replace the global response headers list
-  HttpServerConfig& withGlobalHeaders(std::vector<http::Header> headers);
+  HttpServerConfig& withGlobalHeaders(std::span<const http::Header> headers);
 
   // Convenience: add a single global header entry (appended)
-  HttpServerConfig& withGlobalHeader(http::Header header);
+  HttpServerConfig& withGlobalHeader(const http::Header& header);
 
   // Set TRACE handling policy. Default: Disabled.
   HttpServerConfig& withTracePolicy(TraceMethodPolicy policy);
