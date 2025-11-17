@@ -146,8 +146,8 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
       const std::string_view portStr(target.data() + colonPos + 1, static_cast<size_t>(target.size() - colonPos - 1));
 
       // Enforce CONNECT allowlist if present
-      if (!_config.connectAllowlist.empty() &&
-          std::ranges::find(_config.connectAllowlist, host) == _config.connectAllowlist.end()) {
+      const auto& connectAllowList = _config.connectAllowlist();
+      if (!connectAllowList.empty() && !connectAllowList.contains(host)) {
         emitSimpleError(cnxIt, http::StatusCodeForbidden, true, "CONNECT target not allowed");
         return LoopAction::Break;
       }
@@ -217,6 +217,41 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
   return LoopAction::Nothing;
 }
 
+void HttpServer::tryCompressResponse(HttpResponse& resp) {
+  const std::string_view body = resp.body();
+  const CompressionConfig& compressionConfig = _config.compression;
+  if (body.size() < compressionConfig.minBytes) {
+    return;
+  }
+  std::string_view encHeader = _request.headerValueOrEmpty(http::AcceptEncoding);
+  auto [encoding, reject] = _encodingSelector.negotiateAcceptEncoding(encHeader);
+  // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
+  // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
+  if (reject) {
+    resp.status(http::StatusCodeNotAcceptable, http::ReasonNotAcceptable)
+        .body("No acceptable content-coding available");
+  }
+  if (encoding == Encoding::none) {
+    return;
+  }
+
+  if (!compressionConfig.contentTypeAllowlist.empty()) {
+    std::string_view contentType = _request.headerValueOrEmpty(http::ContentType);
+    if (!compressionConfig.contentTypeAllowlist.contains(contentType)) {
+      return;
+    }
+  }
+
+  auto& encoder = _encoders[static_cast<size_t>(encoding)];
+  auto out = encoder->encodeFull(compressionConfig.encoderChunkSize, body);
+  resp.header(http::ContentEncoding, GetEncodingStr(encoding));
+  if (compressionConfig.addVaryHeader) {
+    resp.header(http::Vary, http::AcceptEncoding);
+  }
+  // Keep the original content type
+  resp.setBodyInternal(out);
+}
+
 void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
                                          const CorsPolicy* pCorsPolicy) {
   if (pCorsPolicy != nullptr) {
@@ -241,39 +276,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& r
 
   bool isHead = (_request.method() == http::Method::HEAD);
   if (!isHead && !resp.userProvidedContentEncoding()) {
-    const CompressionConfig& compressionConfig = _config.compression;
-    std::string_view encHeader = _request.headerValueOrEmpty(http::AcceptEncoding);
-    auto [encoding, reject] = _encodingSelector.negotiateAcceptEncoding(encHeader);
-    // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
-    // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
-    if (reject) {
-      resp.status(http::StatusCodeNotAcceptable, http::ReasonNotAcceptable)
-          .body("No acceptable content-coding available");
-    }
-    // Apply size threshold for non-streaming (buffered) responses: if body below minBytes skip compression.
-    else if (encoding != Encoding::none && resp.body().size() < compressionConfig.minBytes) {
-      encoding = Encoding::none;
-    }
-    // Approximate allowlist check
-    if (encoding != Encoding::none && !compressionConfig.contentTypeAllowlist.empty()) {
-      std::string_view contentType = _request.headerValueOrEmpty(http::ContentType);
-      if (std::ranges::none_of(compressionConfig.contentTypeAllowlist,
-                               [contentType](std::string_view str) { return contentType.starts_with(str); })) {
-        encoding = Encoding::none;
-      }
-    }
-    if (encoding != Encoding::none) {
-      auto& encoder = _encoders[static_cast<size_t>(encoding)];
-      if (encoder) {
-        auto out = encoder->encodeFull(compressionConfig.encoderChunkSize, resp.body());
-        resp.header(http::ContentEncoding, GetEncodingStr(encoding));
-        if (compressionConfig.addVaryHeader) {
-          resp.header(http::Vary, http::AcceptEncoding);
-        }
-        // Keep the original content type
-        resp.setBodyInternal(out);
-      }
-    }
+    tryCompressResponse(resp);
   }
 
   queuePreparedResponse(cnxIt, resp.finalizeAndStealData(_request.version(), SysClock::now(), !keepAlive,

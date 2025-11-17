@@ -4,30 +4,41 @@
 
 #include <stdexcept>
 
+#include "aeronet/http-header.hpp"
 #include "aeronet/tls-config.hpp"
 
 namespace aeronet {
 
-TEST(HttpServerConfigTest, HeaderKey) {
+TEST(HttpServerConfigTest, HeaderKey1) {
   HttpServerConfig config;
-  config.globalHeaders.clear();
-  config.globalHeaders.emplace_back("X-Valid", "value");   // valid
-  config.globalHeaders.emplace_back("X-Custom", "value");  // valid
+  config.withGlobalHeader(http::Header{"X-Valid", "value"});
+  config.withGlobalHeader(http::Header{"X-Custom", "value"});
+
   EXPECT_NO_THROW(config.validate());
+}
 
-  config.globalHeaders.emplace_back("", "value");  // empty key
+TEST(HttpServerConfigTest, HeaderKey2) {
+  HttpServerConfig config;
+  config.withGlobalHeader(http::Header{"", "value"});
+
   EXPECT_THROW(config.validate(), std::invalid_argument);
-  config.globalHeaders.pop_back();
+}
 
-  config.globalHeaders.emplace_back("Invalid Char!", "value");  // invalid char '!'
+TEST(HttpServerConfigTest, HeaderKey3) {
+  HttpServerConfig config;
+  config.withGlobalHeader(http::Header{"Invalid Char!", "value"});  // invalid char '!'
   EXPECT_THROW(config.validate(), std::invalid_argument);
-  config.globalHeaders.pop_back();
+}
 
-  config.globalHeaders.emplace_back("Another@Invalid", "value");  // invalid char '@'
+TEST(HttpServerConfigTest, HeaderKey4) {
+  HttpServerConfig config;
+  config.withGlobalHeader(http::Header{"Another@Invalid", "value"});  // invalid char '@'
   EXPECT_THROW(config.validate(), std::invalid_argument);
-  config.globalHeaders.pop_back();
+}
 
-  config.globalHeaders.emplace_back("X-Valid-Again", "value");  // valid again
+TEST(HttpServerConfigTest, HeaderKey5) {
+  HttpServerConfig config;
+  config.withGlobalHeader(http::Header{"X-Valid-Again", "value"});  // valid again
   EXPECT_NO_THROW(config.validate());
 }
 

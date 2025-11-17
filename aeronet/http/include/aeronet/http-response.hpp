@@ -14,6 +14,7 @@
 #include <variant>
 #include <vector>
 
+#include "aeronet/concatenated-headers.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
@@ -672,7 +673,7 @@ class HttpResponse {
   void appendHeaderInternal(std::string_view key, std::string_view value);
 
   HttpPayload* finalizeHeadersBody(http::Version version, SysTimePoint tp, bool isHeadMethod, bool close,
-                                   std::span<const http::Header> globalHeaders, std::size_t minCapturedBodySize);
+                                   const ConcatenatedHeaders& globalHeaders, std::size_t minCapturedBodySize);
 
   void appendTrailer(std::string_view name, std::string_view value);
 
@@ -693,7 +694,7 @@ class HttpResponse {
   // and returns the internal buffers stolen from this HttpResponse instance.
   // So this instance must not be used anymore after this call.
   PreparedResponse finalizeAndStealData(http::Version version, SysTimePoint tp, bool close,
-                                        std::span<const http::Header> globalHeaders, bool isHeadMethod,
+                                        const ConcatenatedHeaders& globalHeaders, bool isHeadMethod,
                                         std::size_t minCapturedBodySize);
 
   HttpPayload* externPayloadPtr() noexcept { return std::get_if<HttpPayload>(&_payloadVariant); }

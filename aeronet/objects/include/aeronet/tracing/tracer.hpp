@@ -5,7 +5,8 @@
 #include <string_view>
 #include <utility>
 
-#include "aeronet/otel-config.hpp"
+#include "aeronet/dogstatsd.hpp"
+#include "aeronet/telemetry-config.hpp"
 
 namespace aeronet::tracing {
 
@@ -16,8 +17,11 @@ namespace aeronet::tracing {
 
 struct Span {
   virtual ~Span() = default;
+
   virtual void setAttribute([[maybe_unused]] std::string_view key, [[maybe_unused]] int64_t val) noexcept {}
+
   virtual void setAttribute([[maybe_unused]] std::string_view key, [[maybe_unused]] std::string_view val) noexcept {}
+
   virtual void end() noexcept {}
 };
 
@@ -51,7 +55,7 @@ class TelemetryContext {
  public:
   TelemetryContext() noexcept;
 
-  explicit TelemetryContext(const aeronet::OtelConfig &cfg);
+  explicit TelemetryContext(const aeronet::TelemetryConfig &cfg);
 
   // Non-copyable, movable
   TelemetryContext(const TelemetryContext &) = delete;
@@ -62,10 +66,14 @@ class TelemetryContext {
   ~TelemetryContext();
 
   // Create a span with given name. Returns nullptr if tracing disabled/failed.
-  SpanPtr createSpan(std::string_view name) noexcept;
+  [[nodiscard]] SpanPtr createSpan(std::string_view name) const noexcept;
 
   // Increment a counter by delta. No-op if metrics disabled/failed.
-  void counterAdd(std::string_view name, uint64_t delta = 1UL) noexcept;
+  void counterAdd(std::string_view name, uint64_t delta = 1UL) const noexcept;
+
+  // Access underlying DogStatsD client, or nullptr if not enabled.
+  // You can use it to emit custom DogStatsD metrics.
+  [[nodiscard]] const DogStatsD *dogstatsdClient() const noexcept;
 
  private:
   std::unique_ptr<TelemetryContextImpl> _impl;

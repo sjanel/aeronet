@@ -834,9 +834,11 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     }
 
     if (!requestedTrailingSlash) {
-      std::string location(requestPath);
-      if (!location.empty() && !location.ends_with('/')) {
-        location.push_back('/');
+      const std::size_t appendSlash = !requestPath.empty() && !requestPath.ends_with('/') ? 1UL : 0UL;
+      RawChars location(requestPath.size() + appendSlash);
+      location.unchecked_append(requestPath);
+      if (appendSlash != 0) {
+        location.unchecked_push_back('/');
       }
       HttpResponse resp(http::StatusCodeMovedPermanently, http::MovedPermanently);
       resp.location(location);

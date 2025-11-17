@@ -356,7 +356,14 @@ class HttpServer {
   // thread that called run()/runUntil().
   [[nodiscard]] bool isRunning() const { return _lifecycle.isRunning(); }
 
+  // Returns true if the server is in draining mode (no new connections accepted, existing keep-alive
+  // connections closed after current response), false otherwise.
   [[nodiscard]] bool isDraining() const { return _lifecycle.isDraining(); }
+
+  // Access the telemetry context for custom tracing/spans.
+  // The returned reference is valid for the lifetime of the HttpServer instance,
+  // but is invalidated if the server is moved.
+  [[nodiscard]] const tracing::TelemetryContext& telemetryContext() const noexcept { return _telemetry; }
 
   // Retrieve current server statistics snapshot.
   [[nodiscard]] ServerStats stats() const;
@@ -415,7 +422,7 @@ class HttpServer {
   void applyResponseMiddleware(HttpResponse& response, std::span<const ResponseMiddleware> routeChain, bool streaming);
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // If immediate=true the connection will be closed without waiting for buffered writes to drain.
-  void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode code, bool immediate = false,
+  void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, bool immediate = false,
                        std::string_view reason = {});
   // Outbound write helpers
   bool queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::PreparedResponse prepared);
@@ -427,6 +434,8 @@ class HttpServer {
   bool flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt);
 
   void handleWritableClient(int fd);
+
+  void tryCompressResponse(HttpResponse& resp);
 
   ConnectionMapIt closeConnection(ConnectionMapIt cnxIt);
 

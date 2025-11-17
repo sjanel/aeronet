@@ -2,7 +2,6 @@
 
 #include <type_traits>
 
-#include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/multi-http-server.hpp"
 
@@ -15,7 +14,4 @@ TEST(CompileTimeTraits, StaticChecks) {
   static_assert(std::is_nothrow_default_constructible_v<aeronet::MultiHttpServer>);
   static_assert(std::is_move_constructible_v<aeronet::MultiHttpServer>);
   static_assert(std::is_move_assignable_v<aeronet::MultiHttpServer>);
-
-  // HttpServerConfig should be an aggregate for convenient initialization by callers.
-  static_assert(std::is_aggregate_v<aeronet::HttpServerConfig>);
 }

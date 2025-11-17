@@ -12,7 +12,9 @@ class BuiltinProbesConfig {
   void validate() const;
 
   [[nodiscard]] std::string_view livenessPath() const noexcept { return _paths[0]; }
+
   [[nodiscard]] std::string_view readinessPath() const noexcept { return _paths[1]; }
+
   [[nodiscard]] std::string_view startupPath() const noexcept { return _paths[2]; }
 
   BuiltinProbesConfig& withLivenessPath(std::string_view path) {

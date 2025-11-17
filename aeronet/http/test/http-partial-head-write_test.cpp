@@ -50,7 +50,7 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
                                     HttpPayload(std::string("hello world")));
 
   // First write will write partial head only
-  const auto [w1, want1] = plainWriteTransport.write(httpResponseData);
+  const auto [w1, want1] = plainWriteTransport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
   EXPECT_GT(w1, 0U);
   // After first partial write, transport must not have body bytes in output
   std::string_view s1 = plainWriteTransport.out();
@@ -59,7 +59,7 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
   // Simulate caller retrying: write remaining head then body
   // We expect the remaining head + body to be appended on further writes
   httpResponseData.addOffset(static_cast<std::size_t>(w1));
-  const auto [w2, want2] = plainWriteTransport.write(httpResponseData);
+  const auto [w2, want2] = plainWriteTransport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
   EXPECT_GT(w2, 0U);
   std::string_view s2 = plainWriteTransport.out();
   // Body must now be present
@@ -72,13 +72,13 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadTls) {
   HttpResponseData httpResponseData("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n",
                                     HttpPayload(std::string("hello world")));
 
-  const auto [w1, want1] = partialWriteTransport.write(httpResponseData);
+  const auto [w1, want1] = partialWriteTransport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
   EXPECT_GT(w1, 0U);
   std::string_view s1 = partialWriteTransport.out();
   EXPECT_FALSE(s1.contains("hello world"));
 
   httpResponseData.addOffset(static_cast<std::size_t>(w1));
-  const auto [w2, want2] = partialWriteTransport.write(httpResponseData);
+  const auto [w2, want2] = partialWriteTransport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
   EXPECT_GT(w2, 0U);
   std::string_view s2 = partialWriteTransport.out();
   EXPECT_TRUE(s2.contains("hello world"));
