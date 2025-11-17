@@ -457,6 +457,8 @@ class HttpServer {
 
   void registerBuiltInProbes();
 
+  void createEncoders();
+
   void submitRouterUpdate(std::function<void(Router&)> updater,
                           std::shared_ptr<std::promise<std::exception_ptr>> completion);
 
@@ -508,9 +510,9 @@ class HttpServer {
 
   ConnectionMap _connStates;
 
-  // Pre-allocated encoders (one per supported format) constructed once at server creation.
+  // Pre-allocated encoders (one per supported format), -1 to remove identity which is last (no encoding).
   // Index corresponds to static_cast<size_t>(Encoding).
-  std::array<std::unique_ptr<Encoder>, kNbContentEncodings> _encoders;
+  std::array<std::unique_ptr<Encoder>, kNbContentEncodings - 1> _encoders;
   EncodingSelector _encodingSelector;
 
   ParserErrorCallback _parserErrCb = []([[maybe_unused]] http::StatusCode) {};

@@ -554,10 +554,8 @@ class HttpResponse {
   // If the header is not found, returns an empty string_view.
   // To distinguish between missing and present-but-empty header values, use headerValue().
   [[nodiscard]] std::string_view headerValueOrEmpty(std::string_view key) const noexcept {
-    if (const auto optValue = headerValue(key); optValue) {
-      return *optValue;
-    }
-    return {};
+    const auto optValue = headerValue(key);
+    return optValue ? *optValue : std::string_view{};
   }
 
   // Retrieves the value of the first occurrence of the given header key (case-insensitive search per RFC 7230).
@@ -571,6 +569,15 @@ class HttpResponse {
   //   Content-Encoding: identity
   // or an empty value ("\r\nContent-Encoding: \r\n") though the former is preferred.
   [[nodiscard]] bool userProvidedContentEncoding() const noexcept { return _userProvidedContentEncoding; }
+
+  // Get a view of the current trailers stored in this HttpResponse, starting at the first
+  // trailer key (if any).
+  // Each trailer line is formatted as: name + ": " + value + CRLF.
+  // If no trailers are present, it returns an empty view.
+  [[nodiscard]] std::string_view trailers() const noexcept {
+    const auto* pExternPayload = externPayloadPtr();
+    return pExternPayload != nullptr ? externalTrailers(*pExternPayload) : internalTrailers();
+  }
 
   // Adds a trailer header to be sent after the response body (RFC 7230 §4.1.2).
   //
@@ -632,26 +639,13 @@ class HttpResponse {
     }
   }
 
-  [[nodiscard]] std::size_t reasonLen() const noexcept {
-    if (_data[kReasonBeg] == '\n') {
-      return 0UL;
-    }
-    if (_headersStartPos != 0) {
-      return _headersStartPos - kReasonBeg;
-    }
-    return _bodyStartPos - kReasonBeg - http::DoubleCRLF.size();
-  }
+  [[nodiscard]] std::size_t reasonLen() const noexcept;
 
-  [[nodiscard]] std::size_t bodyLen() const noexcept {
-    if (const FilePayload* pFilePayload = filePayloadPtr(); pFilePayload != nullptr) {
-      return static_cast<std::size_t>(pFilePayload->length);
-    }
-    if (_trailerPos != 0) {
-      return _trailerPos;
-    }
-    const HttpPayload* pExternPayload = externPayloadPtr();
-    return pExternPayload != nullptr ? pExternPayload->size() : internalBodyAndTrailersLen();
-  }
+  [[nodiscard]] std::string_view internalTrailers() const noexcept;
+
+  [[nodiscard]] std::string_view externalTrailers(const HttpPayload& data) const noexcept;
+
+  [[nodiscard]] std::size_t bodyLen() const noexcept;
 
   [[nodiscard]] std::size_t internalBodyAndTrailersLen() const noexcept { return _data.size() - _bodyStartPos; }
 

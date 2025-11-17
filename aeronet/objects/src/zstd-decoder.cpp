@@ -63,7 +63,7 @@ bool ZstdDecoder::Decompress(std::string_view input, std::size_t maxDecompressed
 
   while (inBuf.pos < inBuf.size) {
     out.ensureAvailableCapacityExponential(decoderChunkSize);
-    ZSTD_outBuffer output{out.data() + out.size(), out.capacity() - out.size(), 0};
+    ZSTD_outBuffer output{out.data() + out.size(), out.availableCapacity(), 0};
     const std::size_t ret = ZSTD_decompressStream(ss._stream, &output, &inBuf);
     if (ZSTD_isError(ret) != 0U) {
       log::error("ZstdDecoder::Decompress - ZSTD_decompressStream failed with error {}", ret);
