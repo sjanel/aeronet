@@ -4,6 +4,8 @@
 #include <memory>
 #include <string_view>
 
+#include "aeronet/raw-chars.hpp"
+
 // =============================================================================
 // aeronet Encoding Abstraction
 // =============================================================================
@@ -31,21 +33,10 @@
 // Thread Safety: Both Encoder and created EncoderContext instances are not thread-safe. Each context
 // must be confined to a single response lifecycle within a single thread.
 //
-// Error Handling: Implementations may throw on initialization or fatal internal codec errors. Identity
-// variants never throw.
+// Error Handling: Implementations may throw on initialization or fatal internal codec errors.
 //
 // Extension Points: Adding a new codec only requires providing a subclass of Encoder + a matching
 // EncoderContext implementation.
-//
-// Minimal Example (Streaming):
-//   auto ctx = encoder.makeContext();
-//   for(auto chunk : chunks){ auto out = ctx->encode(chunk,false); if(!out.empty()) queue(out); }
-//   auto last = ctx->encode({}, true); if(!last.empty()) queue(last);
-//
-// Minimal Example (One-shot):
-//   auto out = encoder.encode(fullBody);
-//   queue(out);
-//
 // =============================================================================
 
 namespace aeronet {
@@ -61,29 +52,14 @@ class EncoderContext {
 class Encoder {
  public:
   virtual ~Encoder() = default;
+
   // One-shot full-buffer compression (no streaming state). Implementations may reuse an internal buffer.
-  virtual std::string_view encodeFull(std::size_t encoderChunkSize, std::string_view full) = 0;
+  // The encoder will append compressed data to the provided 'buf' RawChars instance.
+  // 'extraCapacity': additional capacity to ensure in 'buf' before encoding (to avoid multiple reallocations).
+  virtual void encodeFull(std::size_t extraCapacity, std::string_view data, RawChars &buf) = 0;
 
   // Create a streaming context. Each context is independent.
   virtual std::unique_ptr<EncoderContext> makeContext() = 0;
-};
-
-// Identity / pass‑through encoder. Does not own a buffer and returns input
-// directly (except when finish && data.empty() -> returns empty view).
-class IdentityEncoderContext : public EncoderContext {
- public:
-  std::string_view encodeChunk([[maybe_unused]] std::size_t encoderChunkSize, std::string_view data) override {
-    return data;
-  }
-};
-
-class IdentityEncoder : public Encoder {
- public:
-  std::string_view encodeFull([[maybe_unused]] std::size_t encoderChunkSize, std::string_view full) override {
-    return full;
-  }
-
-  std::unique_ptr<EncoderContext> makeContext() override { return std::make_unique<IdentityEncoderContext>(); }
 };
 
 }  // namespace aeronet
