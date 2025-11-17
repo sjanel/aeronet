@@ -1,10 +1,10 @@
 #include "aeronet/router.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
-#include <string>
 #include <string_view>
 #include <utility>
 
@@ -13,7 +13,9 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/stringconv.hpp"
 
 namespace aeronet {
 
@@ -22,15 +24,11 @@ namespace {
 constexpr std::string_view kEscapedOpenBrace = "{{";
 constexpr std::string_view kEscapedCloseBrace = "}}";
 
-bool ShouldNormalize(RouterConfig::TrailingSlashPolicy policy, auto& path) noexcept {
+bool ShouldNormalize(RouterConfig::TrailingSlashPolicy policy, std::string_view& path) noexcept {
   const bool pathHasTrailingSlash = path.size() > 1U && path.back() == '/';
   if (pathHasTrailingSlash && (policy == RouterConfig::TrailingSlashPolicy::Normalize ||
                                policy == RouterConfig::TrailingSlashPolicy::Redirect)) {
-    if constexpr (std::is_same_v<decltype(path), std::string&>) {
-      path.pop_back();
-    } else {
-      path.remove_suffix(1U);
-    }
+    path.remove_suffix(1U);
   }
   return pathHasTrailingSlash;
 }
@@ -122,24 +120,24 @@ void Router::setDefault(StreamingHandler handler) {
   }
 }
 
-Router::PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string path, RequestHandler handler) {
-  return setPathInternal(methods, std::move(path), std::move(handler), StreamingHandler{});
+Router::PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string_view path, RequestHandler handler) {
+  return setPathInternal(methods, path, std::move(handler), StreamingHandler{});
 }
 
-Router::PathHandlerEntry& Router::setPath(http::Method method, std::string path, RequestHandler handler) {
-  return setPathInternal(static_cast<http::MethodBmp>(method), std::move(path), std::move(handler), StreamingHandler{});
+Router::PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, RequestHandler handler) {
+  return setPathInternal(static_cast<http::MethodBmp>(method), path, std::move(handler), StreamingHandler{});
 }
 
-Router::PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string path, StreamingHandler handler) {
-  return setPathInternal(methods, std::move(path), RequestHandler{}, std::move(handler));
+Router::PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string_view path, StreamingHandler handler) {
+  return setPathInternal(methods, path, RequestHandler{}, std::move(handler));
 }
 
-Router::PathHandlerEntry& Router::setPath(http::Method method, std::string path, StreamingHandler handler) {
-  return setPathInternal(static_cast<http::MethodBmp>(method), std::move(path), RequestHandler{}, std::move(handler));
+Router::PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, StreamingHandler handler) {
+  return setPathInternal(static_cast<http::MethodBmp>(method), path, RequestHandler{}, std::move(handler));
 }
 
-Router::PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string path, RequestHandler handler,
-                                                  StreamingHandler streaming) {
+Router::PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_view path,
+                                                  RequestHandler handler, StreamingHandler streaming) {
   if (!handler && !streaming) {
     throw std::invalid_argument("setPath requires a handler");
   }
@@ -186,7 +184,7 @@ Router::PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::
 
   // If this is a literal-only route, also store it in the fast-path map for O(1) lookup
   if (isLiteralOnly) {
-    _literalOnlyRoutes[path] = node;
+    _literalOnlyRoutes[SmallRawChars(path)] = node;
   }
 
   return targetEntry;
@@ -473,11 +471,14 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
 
   setMatchedHandler(method, *entryPtr, result);
 
-  const auto paramCount = std::min(_matchStateBuffer.size(), route->paramNames.size());
+  assert(std::cmp_equal(route->paramNames.size(), _matchStateBuffer.size()));
 
   _pathParamCaptureBuffer.clear();
-  for (uint32_t paramPos = 0; paramPos < paramCount; ++paramPos) {
-    _pathParamCaptureBuffer.emplace_back(route->paramNames[paramPos], _matchStateBuffer[paramPos]);
+
+  uint32_t paramPos = 0;
+  for (std::string_view param : route->paramNames) {
+    _pathParamCaptureBuffer.emplace_back(param, _matchStateBuffer[paramPos]);
+    ++paramPos;
   }
 
   result.pathParams = _pathParamCaptureBuffer;
@@ -522,6 +523,7 @@ Router::CompiledRoute Router::CompilePattern(std::string_view path) {
   bool sawUnnamed = false;
 
   std::size_t pos = 1U;
+  uint32_t paramIdx = 0;
   while (pos < path.size()) {
     const std::size_t nextSlash = path.find('/', pos);
     const std::string_view segment =
@@ -596,11 +598,13 @@ Router::CompiledRoute Router::CompilePattern(std::string_view path) {
       const std::string_view paramName = segment.substr(i + 1U, closePos - i - 1U);
       if (paramName.empty()) {
         sawUnnamed = true;
-        route.paramNames.emplace_back(std::to_string(route.paramNames.size()));
+        route.paramNames.append(std::string_view(IntegralToCharVector(paramIdx)));
       } else {
         sawNamed = true;
-        route.paramNames.emplace_back(paramName);
+        route.paramNames.append(paramName);
       }
+
+      ++paramIdx;
 
       i = closePos + 1U;
     }
@@ -628,13 +632,6 @@ Router::CompiledRoute Router::CompilePattern(std::string_view path) {
 
   if (sawNamed && sawUnnamed) {
     throw std::invalid_argument("Cannot mix named and unnamed parameters in a single path pattern");
-  }
-
-  if (!sawNamed) {
-    // Ensure generated index names are stable (already generated sequentially)
-    for (uint32_t i = 0; i < route.paramNames.size(); ++i) {
-      route.paramNames[i] = std::to_string(i);
-    }
   }
 
   return route;

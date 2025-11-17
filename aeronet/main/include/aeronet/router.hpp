@@ -1,12 +1,13 @@
 #pragma once
 
+#include <amc/type_traits.hpp>
 #include <array>
 #include <cstdint>
 #include <functional>
 #include <span>
-#include <string>
 #include <string_view>
 
+#include "aeronet/concatenated-strings.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-method.hpp"
@@ -148,26 +149,26 @@ class Router {
   // final segment of the pattern and does not produce path-parameter captures.
   // Returns the PathHandlerEntry allowing further configuration (e.g. per-route CORS policy).
   // The returned reference is valid until the next call to setPath.
-  PathHandlerEntry& setPath(http::MethodBmp methods, std::string path, RequestHandler handler);
+  PathHandlerEntry& setPath(http::MethodBmp methods, std::string_view path, RequestHandler handler);
 
   // Register a handler for a specific absolute path and a unique allowed HTTP method.
   // See the multi-method overload for details on pattern syntax and capture semantics.
   // Returns the PathHandlerEntry allowing further configuration (e.g. per-route CORS policy).
   // The returned reference is valid until the next call to setPath.
-  PathHandlerEntry& setPath(http::Method method, std::string path, RequestHandler handler);
+  PathHandlerEntry& setPath(http::Method method, std::string_view path, RequestHandler handler);
 
   // Register a streaming handler for the provided path and methods. See setPath overloads
   // for general behavior notes. Streaming handlers receive an HttpResponseWriter and may
   // emit response bytes incrementally.
   // Returns the PathHandlerEntry allowing further configuration (e.g. per-route CORS policy).
   // The returned reference is valid until the next call to setPath.
-  PathHandlerEntry& setPath(http::MethodBmp methods, std::string path, StreamingHandler handler);
+  PathHandlerEntry& setPath(http::MethodBmp methods, std::string_view path, StreamingHandler handler);
 
   // Register a streaming handler for the provided path and single method. See the multi-method
   // overload for details on pattern syntax, parameter limits, and wildcard rules.
   // Returns the PathHandlerEntry allowing further configuration (e.g. per-route CORS policy).
   // The returned reference is valid until the next call to setPath.
-  PathHandlerEntry& setPath(http::Method method, std::string path, StreamingHandler handler);
+  PathHandlerEntry& setPath(http::Method method, std::string_view path, StreamingHandler handler);
 
   struct PathParamCapture {
     std::string_view key;
@@ -242,11 +243,11 @@ class Router {
   struct SegmentPart {
     enum class Kind : std::uint8_t { Literal, Param };
 
+    [[nodiscard]] Kind kind() const noexcept { return literal.empty() ? Kind::Param : Kind::Literal; }
+
     bool operator==(const SegmentPart&) const noexcept = default;
 
-    using trivially_relocatable = std::true_type;
-
-    [[nodiscard]] Kind kind() const noexcept { return literal.empty() ? Kind::Param : Kind::Literal; }
+    using trivially_relocatable = amc::is_trivially_relocatable<SmallRawChars>::type;
 
     SmallRawChars literal;  // non empty when Kind::Literal
   };
@@ -254,11 +255,11 @@ class Router {
   struct CompiledSegment {
     enum class Type : std::uint8_t { Literal, Pattern };
 
+    [[nodiscard]] Type type() const noexcept { return literal.empty() ? Type::Pattern : Type::Literal; }
+
     bool operator==(const CompiledSegment&) const noexcept = default;
 
     using trivially_relocatable = std::true_type;
-
-    [[nodiscard]] Type type() const noexcept { return literal.empty() ? Type::Pattern : Type::Literal; }
 
     SmallRawChars literal;      // non empty when Type::Literal
     vector<SegmentPart> parts;  // used when Type::Pattern
@@ -268,7 +269,7 @@ class Router {
     using trivially_relocatable = std::true_type;
 
     vector<CompiledSegment> segments;
-    vector<std::string> paramNames;
+    SmallConcatenatedStrings paramNames;
     bool hasWildcard{false};
     bool hasNoSlashRegistered{false};
     bool hasWithSlashRegistered{false};
@@ -283,7 +284,7 @@ class Router {
     RouteNode* child{nullptr};
   };
 
-  using RouteNodeMap = flat_hash_map<std::string, RouteNode*, std::hash<std::string_view>, std::equal_to<>>;
+  using RouteNodeMap = flat_hash_map<SmallRawChars, RouteNode*, std::hash<std::string_view>, std::equal_to<>>;
 
   struct RouteNode {
     RouteNodeMap literalChildren;
@@ -295,7 +296,7 @@ class Router {
     CompiledRoute* route{nullptr};
   };
 
-  PathHandlerEntry& setPathInternal(http::MethodBmp methods, std::string path, RequestHandler handler,
+  PathHandlerEntry& setPathInternal(http::MethodBmp methods, std::string_view path, RequestHandler handler,
                                     StreamingHandler streaming);
 
   static CompiledRoute CompilePattern(std::string_view path);

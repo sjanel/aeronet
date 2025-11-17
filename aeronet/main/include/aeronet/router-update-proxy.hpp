@@ -113,10 +113,10 @@ class RouterUpdateProxy {
    * This operation is dispatched to the server event-loop and applied there.
    * Returns a PathEntryProxy for further per-path configuration.
    *
-   * See also: Router::setPath(http::Method, std::string, Router::RequestHandler)
+   * See also: Router::setPath(http::Method, std::string_view, Router::RequestHandler)
    */
-  PathEntryProxy setPath(http::Method method, std::string path, Router::RequestHandler handler) {
-    return setPathImpl(method, std::move(path), std::move(handler));
+  PathEntryProxy setPath(http::Method method, std::string_view path, Router::RequestHandler handler) {
+    return setPathImpl(method, path, std::move(handler));
   }
 
   /**
@@ -124,10 +124,10 @@ class RouterUpdateProxy {
    * This operation is dispatched to the server event-loop and applied there.
    * Returns a PathEntryProxy for further per-path configuration.
    *
-   * See also: Router::setPath(http::MethodBmp, std::string, Router::RequestHandler)
+   * See also: Router::setPath(http::MethodBmp, std::string_view, Router::RequestHandler)
    */
-  PathEntryProxy setPath(http::MethodBmp methods, std::string path, Router::RequestHandler handler) {
-    return setPathImpl(methods, std::move(path), std::move(handler));
+  PathEntryProxy setPath(http::MethodBmp methods, std::string_view path, Router::RequestHandler handler) {
+    return setPathImpl(methods, path, std::move(handler));
   }
 
   /**
@@ -135,10 +135,10 @@ class RouterUpdateProxy {
    * This operation is dispatched to the server event-loop and applied there.
    * Returns a PathEntryProxy for further per-path configuration.
    *
-   * See also: Router::setPath(http::Method, std::string, Router::StreamingHandler)
+   * See also: Router::setPath(http::Method, std::string_view, Router::StreamingHandler)
    */
-  PathEntryProxy setPath(http::Method method, std::string path, Router::StreamingHandler handler) {
-    return setPathImpl(method, std::move(path), std::move(handler));
+  PathEntryProxy setPath(http::Method method, std::string_view path, Router::StreamingHandler handler) {
+    return setPathImpl(method, path, std::move(handler));
   }
 
   /**
@@ -146,10 +146,10 @@ class RouterUpdateProxy {
    * This operation is dispatched to the server event-loop and applied there.
    * Returns a PathEntryProxy for further per-path configuration.
    *
-   * See also: Router::setPath(http::MethodBmp, std::string, Router::StreamingHandler)
+   * See also: Router::setPath(http::MethodBmp, std::string_view, Router::StreamingHandler)
    */
-  PathEntryProxy setPath(http::MethodBmp methods, std::string path, Router::StreamingHandler handler) {
-    return setPathImpl(methods, std::move(path), std::move(handler));
+  PathEntryProxy setPath(http::MethodBmp methods, std::string_view path, Router::StreamingHandler handler) {
+    return setPathImpl(methods, path, std::move(handler));
   }
 
  private:
@@ -172,11 +172,14 @@ class RouterUpdateProxy {
    * is forwarded to Router::setPath.
    */
   template <typename MethodTag, typename Handler>
-  PathEntryProxy setPathImpl(MethodTag method, std::string path, Handler handler) {
+  PathEntryProxy setPathImpl(MethodTag method, std::string_view path, Handler handler) {
     auto entryPtr = std::make_shared<Router::PathHandlerEntry*>(nullptr);
     auto dispatcher = _dispatcher;
-    (*dispatcher)([entryPtr, method, path = std::move(path), handler = std::move(handler)](Router& router) mutable {
-      auto& entry = router.setPath(method, std::move(path), std::move(handler));
+    // Make an owning copy of `path` for the posted callback. The dispatcher may
+    // execute the lambda asynchronously on the server thread, so a
+    // std::string_view would dangle if the caller's storage is destroyed.
+    (*dispatcher)([entryPtr, method, path = std::string(path), handler = std::move(handler)](Router& router) mutable {
+      auto& entry = router.setPath(method, path, std::move(handler));
       *entryPtr = &entry;
     });
     return {std::move(dispatcher), std::move(entryPtr)};
