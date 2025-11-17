@@ -465,19 +465,16 @@ TEST(RouterTest, CompilePatternErrorsAndEscapes) {
   Router router;
 
   // Path must begin with '/'
-  EXPECT_THROW(
-      router.setPath(http::Method::GET, std::string{"no-slash"}, [](const HttpRequest &) { return HttpResponse(200); }),
-      std::invalid_argument);
+  EXPECT_THROW(router.setPath(http::Method::GET, "no-slash", [](const HttpRequest &) { return HttpResponse(200); }),
+               std::invalid_argument);
 
   // Empty segment
-  EXPECT_THROW(
-      router.setPath(http::Method::GET, std::string{"/a//b"}, [](const HttpRequest &) { return HttpResponse(200); }),
-      std::invalid_argument);
+  EXPECT_THROW(router.setPath(http::Method::GET, "/a//b", [](const HttpRequest &) { return HttpResponse(200); }),
+               std::invalid_argument);
 
   // Unterminated brace
-  EXPECT_THROW(
-      router.setPath(http::Method::GET, std::string{"/u{bad"}, [](const HttpRequest &) { return HttpResponse(200); }),
-      std::invalid_argument);
+  EXPECT_THROW(router.setPath(http::Method::GET, "/u{bad", [](const HttpRequest &) { return HttpResponse(200); }),
+               std::invalid_argument);
 
   // Escaped braces should be accepted literally
   router.setPath(http::Method::GET, "/literal/{{}}/end", [](const HttpRequest &) { return HttpResponse(200); });

@@ -158,6 +158,8 @@ class DynamicConcatenatedStrings {
 
   bool operator==(const DynamicConcatenatedStrings& other) const noexcept = default;
 
+  using trivially_relocatable = std::true_type;
+
  private:
   BufferType _buf;
 };

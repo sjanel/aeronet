@@ -160,6 +160,8 @@ class StaticConcatenatedStrings {
 
   bool operator==(const StaticConcatenatedStrings<N, size_type> &) const noexcept = default;
 
+  using trivially_relocatable = std::true_type;
+
  private:
   auto *begPtr(size_type idx) noexcept {
     return _buf.data() +
