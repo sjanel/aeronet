@@ -1,5 +1,6 @@
 #include "aeronet/raw-bytes.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -85,8 +86,8 @@ RawBytesBase<T, ViewType, SizeType> &RawBytesBase<T, ViewType, SizeType>::operat
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType> &RawBytesBase<T, ViewType, SizeType>::operator=(const RawBytesBase &rhs) {
   if (this != &rhs) {
-    if (capacity() < rhs.capacity()) {
-      ensureAvailableCapacity(static_cast<size_type>(rhs.capacity() - capacity()));
+    if (size() < rhs.size()) {
+      ensureAvailableCapacity(rhs.size() - size());
     }
     _size = rhs.size();
     if (!empty()) {
@@ -104,6 +105,7 @@ RawBytesBase<T, ViewType, SizeType>::~RawBytesBase() {
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::unchecked_append(const_pointer first, const_pointer last) {
   if (first != last) {
+    assert(first < last);
     const std::size_t sz = static_cast<std::size_t>(last - first);
     std::memcpy(_buf + _size, first, sz);
     _size += static_cast<size_type>(sz);
@@ -112,7 +114,6 @@ void RawBytesBase<T, ViewType, SizeType>::unchecked_append(const_pointer first, 
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::append(const_pointer first, const_pointer last) {
-  assert(first <= last);
   ensureAvailableCapacityExponential(SafeCast<size_type>(last - first));
   unchecked_append(first, last);
 }
@@ -167,19 +168,14 @@ void RawBytesBase<T, ViewType, SizeType>::addSize(size_type delta) {
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::reserveExponential(size_type newCapacity) {
   if (_capacity < newCapacity) {
-    if constexpr (sizeof(uintmax_t) > sizeof(size_type)) {
+    if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
       // prevent overflow when doubling capacity
       static constexpr uintmax_t kMaxCapacity = static_cast<uintmax_t>(std::numeric_limits<size_type>::max());
       if ((static_cast<uintmax_t>(_capacity) * 2UL) + 1UL > kMaxCapacity) {
         throw std::bad_alloc();
       }
     }
-    const auto doubledCapacity = static_cast<size_type>((_capacity * size_type{2}) + size_type{1});
-    // NOLINTNEXTLINE(readability-use-std-min-max) to avoid include of <algorithm> which is a big include
-    if (newCapacity < doubledCapacity) {
-      newCapacity = doubledCapacity;
-    }
-    reallocUp(newCapacity);
+    reallocUp(std::max(newCapacity, static_cast<size_type>((_capacity * 2U) + 1U)));
   }
 }
 
@@ -215,6 +211,7 @@ void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacityExponential(siz
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::swap(RawBytesBase &rhs) noexcept {
   using std::swap;
+
   swap(_buf, rhs._buf);
   swap(_size, rhs._size);
   swap(_capacity, rhs._capacity);

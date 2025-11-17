@@ -7,6 +7,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 
