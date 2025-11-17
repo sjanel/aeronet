@@ -235,7 +235,9 @@ void Router::AssignHandlers(RouteNode& node, http::MethodBmp methods, RequestHan
         throw std::logic_error("Cannot register normal handler: streaming handler already present for path+method");
       }
       if (entry.normalHandlers[methodIdx]) {
-        log::warn("Overwriting existing path handler");
+        log::warn("Overwriting existing path handler for {} {}",
+                  http::toMethodStr(static_cast<http::Method>(1U << methodIdx)),
+                  std::string_view(node.patternString()));
       }
       if (pSharedRequest == nullptr) {
         // We use at most once requestHandler, we then copy it to other methods
@@ -250,7 +252,9 @@ void Router::AssignHandlers(RouteNode& node, http::MethodBmp methods, RequestHan
         throw std::logic_error("Cannot register streaming handler: normal handler already present for path+method");
       }
       if (entry.streamingHandlers[methodIdx]) {
-        log::warn("Overwriting existing streaming path handler");
+        log::warn("Overwriting existing streaming path handler for {} {}",
+                  http::toMethodStr(static_cast<http::Method>(1U << methodIdx)),
+                  std::string_view(node.patternString()));
       }
       if (pSharedStreaming == nullptr) {
         // NOLINTNEXTLINE(bugprone-use-after-move)
@@ -341,6 +345,35 @@ bool Router::matchWithWildcard(const RouteNode& node, bool requestHasTrailingSla
   }
   matchedNode = wildcardNode;
   return true;
+}
+
+SmallRawChars Router::RouteNode::patternString() const {
+  SmallRawChars out;
+  if (route == nullptr) {
+    out.append("<unknown-path>");
+    return out;
+  }
+  out.push_back('/');
+  for (const auto& seg : route->segments) {
+    if (seg.literal.empty()) {
+      if (!out.empty() && out[out.size() - 1U] != '/') {
+        out.push_back('/');
+      }
+      out.append("{param}");
+    } else {
+      if (!out.empty() && out[out.size() - 1U] != '/') {
+        out.push_back('/');
+      }
+      out.append(seg.literal);
+    }
+  }
+  if (route->hasWildcard) {
+    if (!out.empty() && out[out.size() - 1U] != '/') {
+      out.push_back('/');
+    }
+    out.append("*");
+  }
+  return out;
 }
 
 bool Router::matchImpl(bool requestHasTrailingSlash, const RouteNode*& matchedNode) {
