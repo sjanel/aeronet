@@ -137,6 +137,15 @@ add_unit_test(
     aeronet_tech
 )
 
+if(AERONET_ENABLE_BROTLI)
+    add_unit_test(
+        brotli-encoder-decoder_test
+        test/brotli-encoder-decoder_test.cpp
+        LIBRARIES
+        aeronet_objects
+    )
+endif()
+
 add_unit_test(
     http-payload_test
     test/http-payload_test.cpp
@@ -179,3 +188,21 @@ add_unit_test(
     LIBRARIES
     aeronet_objects
 )
+
+if(AERONET_ENABLE_ZLIB)
+    add_unit_test(
+        zlib-encoder-decoder_test
+        test/zlib-encoder-decoder_test.cpp
+        LIBRARIES
+        aeronet_objects
+    )
+endif()
+
+if(AERONET_ENABLE_ZSTD)
+    add_unit_test(
+        zstd-encoder-decoder_test
+        test/zstd-encoder-decoder_test.cpp
+        LIBRARIES
+        aeronet_objects
+    )
+endif()

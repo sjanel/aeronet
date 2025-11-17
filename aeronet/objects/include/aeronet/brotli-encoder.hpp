@@ -29,7 +29,7 @@ class BrotliEncoder : public Encoder {
   explicit BrotliEncoder(const CompressionConfig &cfg, std::size_t initialCapacity = 4096UL)
       : _buf(initialCapacity), _quality(cfg.brotli.quality), _window(cfg.brotli.window) {}
 
-  std::string_view encodeFull(std::size_t encoderChunkSize, std::string_view full) override;
+  void encodeFull(std::size_t extraCapacity, std::string_view data, RawChars &buf) override;
 
   std::unique_ptr<EncoderContext> makeContext() override {
     return std::make_unique<BrotliEncoderContext>(_buf, _quality, _window);

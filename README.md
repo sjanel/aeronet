@@ -6,21 +6,22 @@
 [![Packaging](https://github.com/sjanel/aeronet/actions/workflows/packaging.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/packaging.yml)
 [![clang-format](https://github.com/sjanel/aeronet/actions/workflows/clang-format-check.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/clang-format-check.yml)
 
+## Why aeronet?
+
 **aeronet** is a modern, fast, modular and ergonomic HTTP/1.1 C++ **server library** for **Linux** focused on predictable performance, explicit control and minimal dependencies.
 
-## In a nutshell
-
-- **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths, horizontal scaling with port reuse
-- **Modular & opt‑in**: enable only the features you need (compression, TLS, logging, opentelemetry) at compile time
-- **Ergonomic**: ease of use, RAII listener setup, no hidden global state, no macros
-- **Configurable**: fully configurable with reasonable defaults (principle of least surprise)
+- **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths and minimal copies, horizontal scaling with port reuse
+- **Modular & opt‑in**: enable only the features you need at compile time to minimize binary size and dependencies
+- **Ergonomic**: easy API, automatic features (encoding, telemetry), RAII listener setup with sync / async server lifetime control, no hidden global state, no macros
+- **Configurable**: extensive dynamic configuration with reasonable defaults (principle of least surprise)
+- **Standards compliant**: Compression, Streaming, Trailers, TLS, CORS, Range Requests, Conditional Requests, Static files, Percent Decoding, etc.
 - **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing), perfect for micro-services
 
 ## Minimal Examples
 
 Spin up a basic HTTP/1.1 server that responds on `/hello` in just a few lines. If you pass `0` as the port (or omit it), the kernel picks an ephemeral port which you can query immediately.
 
-### HTTP response
+### Immediate response
 
 ```cpp
 #include <aeronet/aeronet.hpp>

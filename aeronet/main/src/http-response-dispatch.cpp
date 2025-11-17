@@ -242,14 +242,61 @@ void HttpServer::tryCompressResponse(HttpResponse& resp) {
     }
   }
 
-  auto& encoder = _encoders[static_cast<size_t>(encoding)];
-  auto out = encoder->encodeFull(compressionConfig.encoderChunkSize, body);
-  resp.header(http::ContentEncoding, GetEncodingStr(encoding));
+  // We will compress the response body.
+  // Depending on where the body is stored, the compression will be made at the final destination of the emitted data
+
+  // First, write the needed headers.
+  // We can use addHeader for Content-Encoding instead of header because at this point,
+  // we know that the user did not provide content encoding.
+  resp.addHeader(http::ContentEncoding, GetEncodingStr(encoding));
   if (compressionConfig.addVaryHeader) {
     resp.header(http::Vary, http::AcceptEncoding);
   }
-  // Keep the original content type
-  resp.setBodyInternal(out);
+
+  auto& encoder = _encoders[static_cast<std::size_t>(encoding)];
+  auto* pExternPayload = resp.externPayloadPtr();
+  // If the external payload exists, we can compress directly into the HttpResponse internal buffer.
+  // We don't need to care about the trailers because, if present, they are necessarily appended to the body buffer.
+  if (pExternPayload != nullptr) {
+    // compress only the body portion of the external payload (do NOT compress trailers).
+    // Determine body length inside external payload. If _trailerPos!=0 it marks the start of trailers
+    // relative to the body start inside the external payload; otherwise the entire payload is body.
+    const auto externView = pExternPayload->view();
+    const auto externTrailers = resp.externalTrailers(*pExternPayload);
+    const std::string_view externBody(externView.data(), externView.size() - externTrailers.size());
+    const auto oldSize = resp._data.size();
+
+    encoder->encodeFull(externTrailers.size(), externBody, resp._data);
+
+    const std::size_t compressedBodyLen = resp._data.size() - oldSize;
+
+    // If there are trailers in the external payload, append them (uncompressed) to the inline buffer
+    // and update _trailerPos to point to the start of trailers relative to the (now-compressed) body.
+    if (!externTrailers.empty()) {
+      resp._data.append(externTrailers);
+      resp._trailerPos = compressedBodyLen;  // trailers now start at compressedBodyLen relative to body
+    }
+
+    // Mark as inline and drop the external payload
+    resp._payloadKind = HttpResponse::PayloadKind::Inline;
+    resp._payloadVariant = {};
+  } else {
+    // compress from inline body to external buffer
+    const auto internalTrailers = resp.internalTrailers();
+    RawChars out;
+    encoder->encodeFull(internalTrailers.size(), resp.body(), out);
+
+    if (resp._trailerPos != 0) {
+      resp._trailerPos = out.size();
+      out.append(internalTrailers);
+    }
+
+    // If there are trailers appended to the inline buffer, copy them into the captured payload (uncompressed)
+    // so they are not lost when we remove the internal body+trailers from _data.
+    // Keep the original content type: remove inline body+trailers from internal buffer
+    resp._data.setSize(resp._data.size() - resp.internalBodyAndTrailersLen());
+    resp.setCapturedPayload(std::move(out));
+  }
 }
 
 void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,

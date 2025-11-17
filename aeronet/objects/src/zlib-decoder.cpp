@@ -41,7 +41,7 @@ bool ZlibDecoder::Decompress(std::string_view input, bool isGzip, std::size_t ma
 
   while (true) {
     out.ensureAvailableCapacityExponential(decoderChunkSize);
-    strm._strm.avail_out = static_cast<uInt>(out.capacity() - out.size());
+    strm._strm.avail_out = static_cast<uInt>(out.availableCapacity());
     strm._strm.next_out = reinterpret_cast<unsigned char *>(out.data() + out.size());
 
     const auto ret = inflate(&strm._strm, 0);

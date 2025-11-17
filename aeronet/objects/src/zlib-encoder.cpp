@@ -79,26 +79,28 @@ std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
   return _buf;
 }
 
-std::string_view ZlibEncoder::compressAll(std::size_t encoderChunkSize, std::string_view in) {
+void ZlibEncoder::encodeFull(std::size_t extraCapacity, std::string_view data, RawChars& buf) {
   details::ZStreamRAII zs(_variant, _level);
 
-  _buf.clear();
-  zs._stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in.data()));
-  zs._stream.avail_in = static_cast<uInt>(in.size());
-  do {
-    _buf.ensureAvailableCapacityExponential(encoderChunkSize);
-    zs._stream.next_out = reinterpret_cast<unsigned char*>(_buf.data() + _buf.size());
-    zs._stream.avail_out = static_cast<decltype(zs._stream.avail_out)>(encoderChunkSize);
-    auto rc = deflate(&zs._stream, Z_FINISH);
-    if (rc == Z_STREAM_ERROR) {
-      throw std::runtime_error("Zlib error during one-shot compression");
-    }
-    _buf.addSize(encoderChunkSize - zs._stream.avail_out);
-    if (rc == Z_STREAM_END) {
-      break;
-    }
-  } while (zs._stream.avail_out == 0 || zs._stream.avail_in > 0);
-  return _buf;
+  zs._stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
+  zs._stream.avail_in = static_cast<uInt>(data.size());
+
+  std::size_t maxCompressedSize = static_cast<std::size_t>(deflateBound(&zs._stream, static_cast<uLong>(data.size())));
+
+  buf.ensureAvailableCapacity(maxCompressedSize + extraCapacity);
+
+  std::size_t availableCapacity = buf.availableCapacity();
+
+  zs._stream.next_out = reinterpret_cast<unsigned char*>(buf.data() + buf.size());
+  zs._stream.avail_out = static_cast<decltype(zs._stream.avail_out)>(availableCapacity);
+
+  const auto rc = deflate(&zs._stream, Z_FINISH);
+  if (rc != Z_STREAM_END) {
+    throw std::runtime_error(std::format("Error {} during {} compression", rc,
+                                         _variant == details::ZStreamRAII::Variant::gzip ? "gzip" : "deflate"));
+  }
+
+  buf.addSize(availableCapacity - zs._stream.avail_out);
 }
 
 }  // namespace aeronet
