@@ -1648,17 +1648,20 @@ Key design principles:
 - Explicit lifecycle: Telemetry instance tied to server lifetime
 - Error transparency: All telemetry failures logged via `log::error()` (no silent no-ops)
 
-Configuration via `HttpServerConfig::otel`:
+Configuration via `HttpServerConfig::telemetry`:
 
 ```cpp
 HttpServerConfig cfg;
-cfg.withOtelConfig(OtelConfig{
-  .enabled = true,
-  .endpoint = "http://localhost:4318",  // OTLP HTTP endpoint base URL
-  .serviceName = "my-service",
-  .sampleRate = 1.0  // trace sampling rate (0.0 to 1.0)
-});
+cfg.withTelemetryConfig(TelemetryConfig{}
+                            .withEndpoint("http://localhost:4318")  // OTLP HTTP endpoint base URL
+                            .withServiceName("my-service")
+                            .withSampleRate(1.0)  // trace sampling rate (0.0 to 1.0)
+                            .enableDogStatsDMetrics());  // Optional DogStatsD emission
 ```
+
+`dogStatsDEnabled` convenience flag plus socket/tag helpers so lightweight DogStatsD
+metrics (Unix Domain Socket) can be emitted even when OpenTelemetry support is compiled out. Covered by
+`objects/test/opentelemetry-integration_test.cpp`.
 
 ### Built-in Instrumentation (phase 1)
 
@@ -1679,7 +1682,9 @@ Automatic (no handler code changes):
 - `aeronet.bytes.read` – bytes read from clients
 - `aeronet.bytes.written` – bytes written to clients
 
-All instrumentation is fully async (OTLP HTTP exporter) with configurable endpoints and sample rates.
+All instrumentation is fully async (OTLP HTTP exporter) with configurable endpoints and sample rates. When
+`dogStatsDEnabled` is enabled, Aeronet also emits counter metrics over DogStatsD/UDS even if the build
+does not include OpenTelemetry.
 
 ### Testing & Observability
 

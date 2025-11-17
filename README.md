@@ -656,12 +656,11 @@ using namespace aeronet;
 int main() {
   HttpServerConfig cfg;
   cfg.withPort(8080)
-     .withOtelConfig(OtelConfig{
-       .enabled = true,
-       .endpoint = "http://localhost:4318",  // OTLP HTTP endpoint
-       .serviceName = "my-service",
-       .sampleRate = 1.0  // 100% sampling for traces
-     });
+     .withTelemetryConfig(TelemetryConfig{}
+                              .withEndpoint("http://localhost:4318")  // OTLP HTTP endpoint
+                              .withServiceName("my-service")
+                              .withSampleRate(1.0)  // 100% sampling for traces
+                              .enableDogStatsDMetrics());  // Optional DogStatsD metrics via UDS
   
   HttpServer server(cfg);
   // Telemetry is automatically initialized when server.init() is called

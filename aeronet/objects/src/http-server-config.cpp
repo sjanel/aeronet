@@ -4,18 +4,20 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/otel-config.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/tchars.hpp"
+#include "aeronet/telemetry-config.hpp"
 #include "aeronet/tls-config.hpp"
 
 namespace aeronet {
@@ -171,9 +173,9 @@ HttpServerConfig& HttpServerConfig::withMergeUnknownRequestHeaders(bool on) {
   return *this;
 }
 
-// Set the OpenTelemetry configuration for this server instance
-HttpServerConfig& HttpServerConfig::withOtelConfig(OtelConfig cfg) {
-  otel = std::move(cfg);
+// Set the telemetry configuration for this server instance
+HttpServerConfig& HttpServerConfig::withTelemetryConfig(TelemetryConfig cfg) {
+  telemetry = std::move(cfg);
   return *this;
 }
 
@@ -195,13 +197,26 @@ HttpServerConfig& HttpServerConfig::withMinCapturedBodySize(std::size_t bytes) {
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withGlobalHeaders(std::vector<http::Header> headers) {
-  globalHeaders = std::move(headers);
+HttpServerConfig& HttpServerConfig::withGlobalHeaders(std::span<const http::Header> headers) {
+  if (headers.size() > kMaxGlobalHeaders) {
+    throw std::invalid_argument("too many global headers");
+  }
+  RawChars data;
+  for (const auto& header : headers) {
+    data.assign(header.name);
+    data.append(http::HeaderSep);
+    data.append(header.value);
+    globalHeaders.append(data);
+  }
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withGlobalHeader(http::Header header) {
-  globalHeaders.emplace_back(std::move(header));
+HttpServerConfig& HttpServerConfig::withGlobalHeader(const http::Header& header) {
+  RawChars data(header.name.size() + http::HeaderSep.size() + header.value.size());
+  data.unchecked_append(header.name);
+  data.unchecked_append(http::HeaderSep);
+  data.unchecked_append(header.value);
+  globalHeaders.append(data);
   return *this;
 }
 
@@ -222,31 +237,48 @@ HttpServerConfig& HttpServerConfig::enableBuiltinProbes(bool on) {
   return *this;
 }
 
-void HttpServerConfig::validate() const {
+void HttpServerConfig::validate() {
   compression.validate();
   decompression.validate();
 
   if (maxPerEventReadBytes != 0 && maxPerEventReadBytes < initialReadChunkBytes) {
-    // Normalize: cap cannot be smaller than a single chunk; promote to chunk size.
-    // (Since config is const here we cannot mutate; just throw to surface mistake.)
     throw std::invalid_argument("maxPerEventReadBytes must be 0 or >= initialReadChunkBytes");
   }
-  for (const auto& [headerKey, headerValue] : globalHeaders) {
+
+  if (globalHeaders.empty()) {
+    globalHeaders.append("Server: aeronet");
+  } else if (globalHeaders.size() > kMaxGlobalHeaders) {
+    throw std::invalid_argument("too many global headers");
+  }
+
+  for (std::string_view headerKeyValue : globalHeaders) {
+    auto colonPos = headerKeyValue.find(':');
+    if (colonPos == std::string_view::npos) {
+      throw std::invalid_argument("header missing ':' separator in global headers");
+    }
+
+    std::string_view headerKey = headerKeyValue.substr(0, colonPos);
+    std::string_view headerValue = headerKeyValue.substr(colonPos + 1);
+
     if (http::IsReservedResponseHeader(headerKey)) {
       log::critical("'{}' is a reserved header", headerKey);
       throw std::invalid_argument("attempt to set reserved header");
     }
+
+    // A header key cannot have a space
     if (headerKey.empty() || std::ranges::any_of(headerKey, [](char ch) { return !is_tchar(ch); })) {
       log::critical("header '{}' is invalid", headerKey);
       throw std::invalid_argument("header has invalid key");
     }
+
     // basic sanity on header value
     if (std::ranges::any_of(headerValue, [](unsigned char ch) { return ch <= 0x1F || ch == 0x7F; })) {
       log::critical("header '{}' has invalid value characters", headerKey);
       throw std::invalid_argument("header has invalid value");
     }
   }
-  otel.validate();
+
+  telemetry.validate();
   tls.validate();
   builtinProbes.validate();
 

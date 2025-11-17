@@ -37,7 +37,7 @@ ITransport::TransportResult ConnectionState::transportWrite(std::string_view dat
 }
 
 ITransport::TransportResult ConnectionState::transportWrite(const HttpResponseData& httpResponseData) {
-  const auto res = transport->write(httpResponseData);
+  const auto res = transport->write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
   if (!tlsEstablished && transport->handshakeDone()) {
     tlsEstablished = true;
   }

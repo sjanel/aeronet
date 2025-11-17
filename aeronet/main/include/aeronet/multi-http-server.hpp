@@ -109,17 +109,7 @@ class MultiHttpServer {
   // Variant of MultiHttpServer(HttpServerConfig, Router, uint32_t) with a default constructed router.
   explicit MultiHttpServer(HttpServerConfig cfg) : MultiHttpServer(std::move(cfg), Router()) {}
 
-  // MultiHttpServer is moveable. Rationale:
-  //   - Threads capture ONLY raw pointers to stable HttpServer elements stored inside the
-  //     _servers std::vector. A move of std::vector transfers ownership of the underlying buffer
-  //     without relocating elements (no per-element move), so the addresses remain valid.
-  //   - The std::jthread objects are likewise moved; their destructor (join) will occur when the
-  //     destination MultiHttpServer is destroyed or stop() is called there.
-  //   - The moved-from instance becomes empty (no threads, no servers) and its destructor does
-  //     nothing.
-  // Constraints:
-  //   - Still non-copyable.
-  //   - Move assignment will stop() an already-running target before adopting new threads.
+  // MultiHttpServer is moveable
   MultiHttpServer(const MultiHttpServer&) = delete;
   MultiHttpServer(MultiHttpServer&& other) noexcept;
   MultiHttpServer& operator=(const MultiHttpServer&) = delete;
@@ -223,6 +213,9 @@ class MultiHttpServer {
   void beginDrain(std::chrono::milliseconds maxWait = std::chrono::milliseconds{0}) noexcept;
 
   // Checks if this instance is empty (ie: it contains no server instances and should not be configured).
+  // This can only happen in two cases:
+  //   - Default constructed MultiHttpServer.
+  //   - Moved-from MultiHttpServer.
   [[nodiscard]] bool empty() const noexcept { return _servers.empty(); }
 
   // isRunning(): true after successful start() and before stop() completion.
@@ -234,11 +227,19 @@ class MultiHttpServer {
   // isDraining(): true if all underlying servers are currently draining.
   [[nodiscard]] bool isDraining() const;
 
+  // Access the telemetry context for custom tracing/spans.
+  // The returned reference is valid for the lifetime of the MultiHttpServer instance,
+  // but is invalidated if the server is moved.
+  // Precondition: empty() is false, otherwise undefined behavior.
+  [[nodiscard]] const tracing::TelemetryContext& telemetryContext() const noexcept {
+    return _servers[0].telemetryContext();
+  }
+
   // port(): The resolved listening port shared by all underlying servers.
   // If the port was ephemeral (0) at construction time, this returns the concrete port chosen by
   // the first server.
-  // Returns 0 if the instance is empty (holding no servers)
-  [[nodiscard]] uint16_t port() const { return empty() ? 0 : _servers[0].port(); }
+  // Precondition: empty() is false, otherwise undefined behavior.
+  [[nodiscard]] uint16_t port() const { return _servers[0].port(); }
 
   // nbThreads(): Number of underlying HttpServer instances (and threads) configured.
   [[nodiscard]] uint32_t nbThreads() const { return _servers.capacity(); }
@@ -271,7 +272,9 @@ class MultiHttpServer {
   void canSetCallbacks() const;
 
   void rebuildServers();
+
   [[nodiscard]] vector<HttpServer*> collectServerPointers();
+
   void runBlocking(std::function<bool()> predicate, std::string_view modeLabel);
 
   [[nodiscard]] AsyncHandle startDetachedInternal(std::function<bool()> extraStopCondition, bool monitorPredicateAsync);

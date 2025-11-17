@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -108,10 +109,9 @@ TEST(HttpContentLength, ExplicitTooLarge413) {
 
 TEST(HttpContentLength, GlobalHeaders) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.globalHeaders.clear();
-    cfg.globalHeaders.emplace_back("X-Global", "gvalue");
-    cfg.globalHeaders.emplace_back("X-Another", "anothervalue");
-    cfg.globalHeaders.emplace_back("X-Custom", "global");
+    cfg.withGlobalHeader(http::Header{"X-Global", "gvalue"});
+    cfg.withGlobalHeader(http::Header{"X-Another", "anothervalue"});
+    cfg.withGlobalHeader(http::Header{"X-Custom", "global"});
   });
   ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;

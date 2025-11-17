@@ -2,9 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <string>
-#include <vector>
 
+#include "aeronet/concatenated-strings.hpp"
 #include "aeronet/fixedcapacityvector.hpp"
 #include "encoding.hpp"
 
@@ -83,7 +82,7 @@ struct CompressionConfig {
 
   // Simple allowlist of content-types (prefix match) eligible for compression. If empty, any content type will be
   // eligible for compression.
-  std::vector<std::string> contentTypeAllowlist;
+  SmallConcatenatedStringsCaseInsensitive contentTypeAllowlist;
 
   // Chunk size of buffer growths during compression.
   // Prefer a large size if you expect big payloads in average, prefer a small size if you want to limit memory

@@ -180,8 +180,8 @@ TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
     std::this_thread::sleep_for(chunkDelay);
   }
 
-  std::string resp = test::recvWithTimeout(fd, 2s);
-  ASSERT_FALSE(resp.empty()) << "expected a response before timeout";
+  std::string resp = test::recvUntilClosed(fd);
+  ASSERT_FALSE(resp.empty()) << "expected a response";
   ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("payload ok")) << resp;
 }

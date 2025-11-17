@@ -7,20 +7,15 @@
 #include <ranges>
 #include <string_view>
 
-#include "aeronet/dynamic-concatenated-strings.hpp"
+#include "aeronet/concatenated-strings.hpp"
 #include "aeronet/major-minor-version.hpp"
 #include "aeronet/static-concatenated-strings.hpp"
 
 namespace aeronet {
 
 class TLSConfig {
- private:
-  static constexpr char kNullCharSep[] = {'\0'};
-
-  using NullSeparatedStrings = DynamicConcatenatedStrings<kNullCharSep, false, uint32_t>;
-
  public:
-  using StringViewRange = std::ranges::subrange<NullSeparatedStrings::iterator>;
+  using StringViewRange = std::ranges::subrange<SmallConcatenatedStrings::iterator>;
 
   // RFC 7301 (ALPN) protocol identifier length is encoded in a single octet => maximum 255 bytes.
   // OpenSSL lacks a stable public constant for this; we define it here to avoid magic numbers.
@@ -157,9 +152,10 @@ class TLSConfig {
   // cipher list string
   StaticConcatenatedStrings<5, uint32_t> _tlsStrings;  // Stored TLS-related strings
 
-  NullSeparatedStrings _alpnProtocols;
+  SmallConcatenatedStrings _alpnProtocols;
+
   // Additional trusted client root / leaf certs (PEM, stored as NUL-separated entries)
-  NullSeparatedStrings _trustedClientCertsPem;
+  SmallConcatenatedStrings _trustedClientCertsPem;
 };
 
 }  // namespace aeronet

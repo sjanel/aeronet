@@ -4,7 +4,8 @@
 #include <cstdint>
 #include <string_view>
 
-#include "aeronet/dynamic-concatenated-strings.hpp"
+#include "aeronet/concatenated-header-values.hpp"
+#include "aeronet/concatenated-strings.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -90,12 +91,9 @@ class CorsPolicy {
 
   [[nodiscard]] http::MethodBmp effectiveAllowedMethods(http::MethodBmp routeMethods) const noexcept;
 
-  static constexpr const char kHeaderValueSep[] = ", ";
-  static constexpr char kNullCharSep[] = {'\0'};
-
-  DynamicConcatenatedStrings<kNullCharSep, true, uint32_t> _allowedOrigins;
-  DynamicConcatenatedStrings<kHeaderValueSep, true, uint32_t> _allowedRequestHeaders;
-  DynamicConcatenatedStrings<kHeaderValueSep, true, uint32_t> _exposedHeaders;
+  SmallConcatenatedStringsCaseInsensitive _allowedOrigins;
+  ConcatenatedHeaderValues _allowedRequestHeaders;
+  ConcatenatedHeaderValues _exposedHeaders;
   std::chrono::seconds _maxAge{-1};
   http::MethodBmp _allowedMethods{http::Method::GET | http::Method::HEAD | http::Method::POST};
   OriginMode _originMode{OriginMode::Any};
