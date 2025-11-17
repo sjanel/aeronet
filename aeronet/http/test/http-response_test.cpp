@@ -1086,4 +1086,62 @@ TEST(HttpResponseTrailers, BodyAfterTrailerThrows) {
   EXPECT_THROW(resp.body(std::string_view("later2")), std::logic_error);
 }
 
+// -----------------------------------------------------------------------------
+// Tests for trailers() retrieval (response-side)
+// -----------------------------------------------------------------------------
+
+TEST_F(HttpResponseTest, TrailersNoBody) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.addHeader("X-Test", "val");
+  // No trailers added -> empty view
+  EXPECT_TRUE(resp.trailers().empty());
+  // body remains accessible and unchanged
+  EXPECT_EQ(resp.body(), std::string_view());
+}
+
+TEST_F(HttpResponseTest, TrailersInline_NoTrailers) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("inline-body");
+  // No trailers added -> empty view
+  auto tv = resp.trailers();
+  EXPECT_TRUE(tv.empty());
+  // body remains accessible and unchanged
+  EXPECT_EQ(resp.body(), std::string_view("inline-body"));
+}
+
+TEST_F(HttpResponseTest, TrailersInline_WithTrailers) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("inline-body");
+  resp.addTrailer("X-First", "one");
+  resp.addTrailer("X-Second", "two");
+  auto tv = resp.trailers();
+  EXPECT_FALSE(tv.empty());
+  // trailers are stored as header lines terminated by CRLF
+  EXPECT_TRUE(tv.contains("X-First: one\r\n"));
+  EXPECT_TRUE(tv.contains("X-Second: two\r\n"));
+  EXPECT_TRUE(tv.ends_with(http::CRLF));
+  // body() should not include trailers
+  EXPECT_EQ(resp.body(), std::string_view("inline-body"));
+}
+
+TEST_F(HttpResponseTest, TrailersCaptured_NoTrailers) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::string("captured-body-content"));
+  auto tv = resp.trailers();
+  EXPECT_TRUE(tv.empty());
+  EXPECT_EQ(resp.body(), std::string_view("captured-body-content"));
+}
+
+TEST_F(HttpResponseTest, TrailersCaptured_WithTrailers) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::string("captured-body"));
+  resp.addTrailer("X-Custom", "val");
+  auto tv = resp.trailers();
+  EXPECT_FALSE(tv.empty());
+  EXPECT_TRUE(tv.contains("X-Custom: val\r\n"));
+  EXPECT_TRUE(tv.ends_with(http::CRLF));
+  // body() must remain the original captured body (trailers excluded)
+  EXPECT_EQ(resp.body(), std::string_view("captured-body"));
+}
+
 }  // namespace aeronet

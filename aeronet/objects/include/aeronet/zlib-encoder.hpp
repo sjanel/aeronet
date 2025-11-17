@@ -50,17 +50,13 @@ class ZlibEncoder : public Encoder {
                        std::size_t initialCapacity = 4096UL)
       : _buf(initialCapacity), _level(cfg.zlib.level), _variant(variant) {}
 
-  std::string_view encodeFull(std::size_t encoderChunkSize, std::string_view in) override {
-    return compressAll(encoderChunkSize, in);
-  }
+  void encodeFull(std::size_t extraCapacity, std::string_view data, RawChars& buf) override;
 
   std::unique_ptr<EncoderContext> makeContext() override {
     return std::make_unique<ZlibEncoderContext>(_variant, _buf, _level);
   }
 
  private:
-  std::string_view compressAll(std::size_t encoderChunkSize, std::string_view in);
-
   RawChars _buf;  // shared output buffer reused (single-thread guarantee)
   int8_t _level;
   details::ZStreamRAII::Variant _variant;

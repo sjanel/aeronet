@@ -76,6 +76,8 @@ class RawBytesBase {
 
   [[nodiscard]] size_type capacity() const noexcept { return _capacity; }
 
+  [[nodiscard]] size_type availableCapacity() const noexcept { return _capacity - _size; }
+
   void reserveExponential(size_type newCapacity);
 
   void reserve(size_type newCapacity);

@@ -18,6 +18,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -35,46 +36,44 @@ using namespace aeronet;
 
 namespace {
 
-[[maybe_unused]] constexpr std::size_t kChunkSize = 256;  // small chunk size to ensure chunk loop is properly tested
-
-std::string gzipCompress([[maybe_unused]] std::string_view input) {
+RawChars gzipCompress([[maybe_unused]] std::string_view input, [[maybe_unused]] std::size_t extraCapacity = 0) {
+  RawChars buf;
 #ifdef AERONET_ENABLE_ZLIB
   CompressionConfig cc;  // defaults; level taken from cfg.zlib.level
   ZlibEncoder encoder(details::ZStreamRAII::Variant::gzip, cc);
-  return std::string(encoder.encodeFull(kChunkSize, input));
-#else
-  return {};
+  encoder.encodeFull(extraCapacity, input, buf);
 #endif
+  return buf;
 }
 
-std::string deflateCompress([[maybe_unused]] std::string_view input) {
+RawChars deflateCompress([[maybe_unused]] std::string_view input, [[maybe_unused]] std::size_t extraCapacity = 0) {
+  RawChars buf;
 #ifdef AERONET_ENABLE_ZLIB
   CompressionConfig cc;
   ZlibEncoder encoder(details::ZStreamRAII::Variant::deflate, cc);
-  return std::string(encoder.encodeFull(kChunkSize, input));
-#else
-  return {};
+  encoder.encodeFull(extraCapacity, input, buf);
 #endif
+  return buf;
 }
 
-std::string zstdCompress([[maybe_unused]] std::string_view input) {
+RawChars zstdCompress([[maybe_unused]] std::string_view input, [[maybe_unused]] std::size_t extraCapacity = 0) {
+  RawChars buf;
 #ifdef AERONET_ENABLE_ZSTD
   CompressionConfig cc;  // zstd tuning from default config
   ZstdEncoder zencoder(cc);
-  return std::string(zencoder.encodeFull(kChunkSize, input));
-#else
-  return {};
+  zencoder.encodeFull(extraCapacity, input, buf);
 #endif
+  return buf;
 }
 
-std::string brotliCompress([[maybe_unused]] std::string_view input) {
+RawChars brotliCompress([[maybe_unused]] std::string_view input, [[maybe_unused]] std::size_t extraCapacity = 0) {
+  RawChars buf;
 #ifdef AERONET_ENABLE_BROTLI
   CompressionConfig cc;  // defaults; quality/window from cfg.brotli
   BrotliEncoder encoder(cc);
-  return std::string(encoder.encodeFull(kChunkSize, input));
-#else
-  return {};
+  encoder.encodeFull(extraCapacity, input, buf);
 #endif
+  return buf;
 }
 
 struct ClientRawResponse {
@@ -324,7 +323,7 @@ TEST(HttpRequestDecompression, DisabledFeaturePassThrough) {
   auto resp = rawPost(ts.port(), "/ds", {{"Content-Encoding", "gzip"}}, gz);
   EXPECT_EQ(resp.status, 200);
   // Response body should match original compressed payload, not decompressed plain text.
-  EXPECT_EQ(resp.body, gz);
+  EXPECT_EQ(resp.body, std::string_view(gz));
   EXPECT_NE(resp.body, plain);
 }
 
@@ -448,7 +447,7 @@ TEST(HttpRequestDecompression, UnknownCodingWithSpacesRejected) {
     if constexpr (zlibEnabled()) {
       return gzipCompress(plain);
     }
-    return plain;
+    return RawChars(plain);
   }();
   if constexpr (brotliEnabled()) {
     auto resp = rawPost(ts.port(), "/ubr", {{"Content-Encoding", "gzip,  snappy"}}, gz);
@@ -483,7 +482,8 @@ TEST(HttpRequestDecompression, CorruptedGzipTruncatedTail) {
   auto full = gzipCompress(plain);
   ASSERT_GT(full.size(), 12U);
   // Remove trailing bytes (part of CRC/ISIZE) to induce inflate failure.
-  auto truncated = full.substr(0, full.size() - 6);
+  auto full_sv = std::string_view(full);
+  auto truncated = full_sv.substr(0, full_sv.size() - 6);
   auto resp = rawPost(ts.port(), "/cgzip", {{"Content-Encoding", "gzip"}}, truncated);
   EXPECT_EQ(resp.status, 400) << "Expected 400 for truncated gzip frame";
 }
@@ -502,7 +502,8 @@ TEST(HttpRequestDecompression, CorruptedZstdBadMagic) {
   });
   auto full = zstdCompress(plain);
   ASSERT_GE(full.size(), 4U);  // need room for magic number
-  std::string corrupted = full;
+  auto full_sv = std::string_view(full);
+  std::string corrupted(full_sv);
   // Flip all bits of first byte of magic number via unsigned char to avoid -Wconversion warning
   {
     unsigned char* bytePtr = reinterpret_cast<unsigned char*>(corrupted.data());
@@ -526,7 +527,8 @@ TEST(HttpRequestDecompression, CorruptedBrotliTruncated) {
   });
   auto full = brotliCompress(plain);
   ASSERT_GT(full.size(), 8U);
-  auto truncated = full.substr(0, full.size() - 4);
+  auto full_sv = std::string_view(full);
+  auto truncated = full_sv.substr(0, full_sv.size() - 4);
   auto resp = rawPost(ts.port(), "/cbr", {{"Content-Encoding", "br"}}, truncated);
   EXPECT_EQ(resp.status, 400) << "Expected 400 for truncated brotli stream";
 }

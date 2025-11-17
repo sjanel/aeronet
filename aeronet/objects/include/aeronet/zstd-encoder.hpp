@@ -25,7 +25,8 @@ struct ZstdContextRAII {
 
 class ZstdEncoderContext : public EncoderContext {
  public:
-  ZstdEncoderContext(RawChars& sharedBuf, const CompressionConfig::Zstd& cfg);
+  ZstdEncoderContext(RawChars& sharedBuf, const CompressionConfig::Zstd& cfg)
+      : _buf(sharedBuf), _zs(cfg.compressionLevel, cfg.windowLog) {}
 
   std::string_view encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) override;
 
@@ -38,15 +39,16 @@ class ZstdEncoderContext : public EncoderContext {
 class ZstdEncoder : public Encoder {
  public:
   explicit ZstdEncoder(const CompressionConfig& cfg, std::size_t initialCapacity = 4096UL)
-      : _buf(initialCapacity), _cfg(cfg.zstd) {}
+      : _buf(initialCapacity), _cfg(cfg.zstd), _zs(_cfg.compressionLevel, _cfg.windowLog) {}
 
-  std::string_view encodeFull(std::size_t encoderChunkSize, std::string_view full) override;
+  void encodeFull(std::size_t extraCapacity, std::string_view data, RawChars& buf) override;
 
   std::unique_ptr<EncoderContext> makeContext() override { return std::make_unique<ZstdEncoderContext>(_buf, _cfg); }
 
  private:
   RawChars _buf;
   CompressionConfig::Zstd _cfg;
+  details::ZstdContextRAII _zs;
 };
 
 }  // namespace aeronet

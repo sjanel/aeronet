@@ -22,11 +22,15 @@
 #include "aeronet/errno_throw.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/socket.hpp"
@@ -132,9 +136,7 @@ HttpServer::HttpServer(HttpServer&& other)
   other._lifecycle.reset();
 
   // Because probe handlers may capture 'this', they need to be re-registered on the moved-to instance
-  if (_config.builtinProbes.enabled) {
-    registerBuiltInProbes();
-  }
+  registerBuiltInProbes();
 }
 
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
@@ -177,9 +179,7 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.exchange(false), std::memory_order_acq_rel);
 
     // Because probe handlers may capture 'this', they need to be re-registered on the moved-to instance
-    if (_config.builtinProbes.enabled) {
-      registerBuiltInProbes();
-    }
+    registerBuiltInProbes();
   }
 
   other._lifecycle.reset();
@@ -277,23 +277,10 @@ void HttpServer::init() {
   _eventLoop.addOrThrow(EventLoop::EventFd{_lifecycle.wakeupFd.fd(), EventIn});
 
   // Register builtin probes handlers if enabled in config
-  if (_config.builtinProbes.enabled) {
-    registerBuiltInProbes();
-  }
+  registerBuiltInProbes();
 
   // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
-#ifdef AERONET_ENABLE_ZLIB
-  _encoders[static_cast<std::size_t>(Encoding::gzip)] =
-      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::gzip, _config.compression);
-  _encoders[static_cast<std::size_t>(Encoding::deflate)] =
-      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::deflate, _config.compression);
-#endif
-#ifdef AERONET_ENABLE_ZSTD
-  _encoders[static_cast<std::size_t>(Encoding::zstd)] = std::make_unique<ZstdEncoder>(_config.compression);
-#endif
-#ifdef AERONET_ENABLE_BROTLI
-  _encoders[static_cast<std::size_t>(Encoding::br)] = std::make_unique<BrotliEncoder>(_config.compression);
-#endif
+  createEncoders();
 }
 
 void HttpServer::prepareRun() {
@@ -401,6 +388,55 @@ void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
   log::info("Initiating graceful drain (connections={})", _connStates.size());
   _lifecycle.enterDraining(deadline, hasDeadline);
   closeListener();
+}
+
+void HttpServer::registerBuiltInProbes() {
+  if (!_config.builtinProbes.enabled) {
+    return;
+  }
+
+  // liveness: lightweight, should not depend on external systems
+  _router.setPath(http::Method::GET, _config.builtinProbes.livenessPath(),
+                  [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("OK\n"); });
+
+  // readiness: reflects lifecycle.ready
+  _router.setPath(http::Method::GET, _config.builtinProbes.readinessPath(), [this](const HttpRequest&) {
+    HttpResponse resp(http::StatusCodeOK);
+    if (_lifecycle.ready.load(std::memory_order_relaxed)) {
+      resp.body("OK\n");
+    } else {
+      resp.status(http::StatusCodeServiceUnavailable);
+      resp.body("Not Ready\n");
+    }
+    return resp;
+  });
+
+  // startup: reflects lifecycle.started
+  _router.setPath(http::Method::GET, _config.builtinProbes.startupPath(), [this](const HttpRequest&) {
+    HttpResponse resp(http::StatusCodeOK);
+    if (_lifecycle.started.load(std::memory_order_relaxed)) {
+      resp.body("OK\n");
+    } else {
+      resp.status(http::StatusCodeServiceUnavailable);
+      resp.body("Starting\n");
+    }
+    return resp;
+  });
+}
+
+void HttpServer::createEncoders() {
+#ifdef AERONET_ENABLE_ZLIB
+  _encoders[static_cast<std::size_t>(Encoding::gzip)] =
+      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::gzip, _config.compression);
+  _encoders[static_cast<std::size_t>(Encoding::deflate)] =
+      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::deflate, _config.compression);
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+  _encoders[static_cast<std::size_t>(Encoding::zstd)] = std::make_unique<ZstdEncoder>(_config.compression);
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+  _encoders[static_cast<std::size_t>(Encoding::br)] = std::make_unique<BrotliEncoder>(_config.compression);
+#endif
 }
 
 }  // namespace aeronet

@@ -177,6 +177,130 @@ TEST(HttpCompression, PreservesUserContentTypeWhenCompressing) {
   EXPECT_LT(resp.body.size(), payload.size());
 }
 
+TEST(HttpCompression, InlineBodyCompressionMovesToCapturedPayload) {
+#if !defined(AERONET_ENABLE_BROTLI) && !defined(AERONET_ENABLE_ZLIB)
+  GTEST_SKIP();
+#endif
+
+  std::string expectedEncoding;
+  std::string acceptEncoding;
+
+#if defined(AERONET_ENABLE_BROTLI)
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 64;
+    cfg.compression.preferredFormats = {Encoding::br};
+  });
+  expectedEncoding = "br";
+  acceptEncoding = "br";
+#elif defined(AERONET_ENABLE_ZLIB)
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 64;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+  expectedEncoding = "gzip";
+  acceptEncoding = "gzip";
+#endif
+
+  const std::string customType = "application/x-inline";
+  std::string inlinePayload(512, 'I');
+  ts.router().setDefault([inlinePayload, customType](const HttpRequest &) {
+    HttpResponse respObj;
+    std::string_view inlineView(inlinePayload);
+    respObj.body(inlineView, customType);  // forces inline buffer storage (no captured payload)
+    return respObj;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/inline", {{"Accept-Encoding", acceptEncoding}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  auto it = resp.headers.find("Content-Encoding");
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, expectedEncoding);
+
+  auto itType = resp.headers.find("Content-Type");
+  ASSERT_NE(itType, resp.headers.end());
+  EXPECT_EQ(itType->second, customType);
+
+  EXPECT_LT(resp.body.size(), inlinePayload.size());
+#if !defined(AERONET_ENABLE_BROTLI) && defined(AERONET_ENABLE_ZLIB)
+  EXPECT_TRUE(HasGzipMagic(resp.body));
+#endif
+}
+
+// Compression with captured body and trailers: ensure trailers are transmitted after compressed payload
+TEST(HttpCompression, CapturedBodyWithTrailers) {
+  // prefer any available encoder; minBytes small so compression activates
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 8;
+#if defined(AERONET_ENABLE_ZSTD)
+    cfg.compression.preferredFormats = {Encoding::zstd};
+#elif defined(AERONET_ENABLE_BROTLI)
+    cfg.compression.preferredFormats = {Encoding::br};
+#elif defined(AERONET_ENABLE_ZLIB)
+    cfg.compression.preferredFormats = {Encoding::gzip};
+#endif
+  });
+
+  std::string payload(256, 'P');
+  ts.router().setDefault([payload](const HttpRequest &) {
+    HttpResponse respObj;
+    // supply body as captured payload directly (simulate handler that sets captured payload)
+    respObj.body(payload);
+    // add trailers after body
+    respObj.addTrailer("X-Checksum", "cksum");
+    respObj.addTrailer("X-Extra", "val");
+    return respObj;
+  });
+
+  test::ClientConnection sock(ts.port());
+  int fd = sock.fd();
+  std::string req =
+      "GET /captured-trailers HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Connection: close\r\n"
+      "Accept-Encoding: *\r\n"
+      "\r\n";
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
+  EXPECT_TRUE(resp.find("X-Checksum: cksum") != std::string::npos);
+  EXPECT_TRUE(resp.find("X-Extra: val") != std::string::npos);
+}
+
+// Compression for inline body where compression moves body to captured payload, with trailers added
+TEST(HttpCompression, InlineBodyWithTrailers) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 16;
+#if defined(AERONET_ENABLE_ZSTD)
+    cfg.compression.preferredFormats = {Encoding::zstd};
+#elif defined(AERONET_ENABLE_BROTLI)
+    cfg.compression.preferredFormats = {Encoding::br};
+#elif defined(AERONET_ENABLE_ZLIB)
+    cfg.compression.preferredFormats = {Encoding::gzip};
+#endif
+  });
+
+  std::string inlinePayload(256, 'L');
+  ts.router().setDefault([inlinePayload](const HttpRequest &) {
+    HttpResponse respObj;
+    // create inline body (string_view) to force inline storage
+    respObj.body(std::string_view(inlinePayload));
+    // trailers must be added after body
+    respObj.addTrailer("X-Inline", "ok");
+    return respObj;
+  });
+
+  test::ClientConnection sock(ts.port());
+  int fd = sock.fd();
+  std::string req =
+      "GET /inline-trailers HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Connection: close\r\n"
+      "Accept-Encoding: *\r\n"
+      "\r\n";
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
+  EXPECT_TRUE(resp.find("X-Inline: ok") != std::string::npos);
+}
+
 TEST(HttpCompression, IdentityForbiddenNoAlternativesReturns406) {
   if constexpr (!brotliEnabled()) {
     GTEST_SKIP();

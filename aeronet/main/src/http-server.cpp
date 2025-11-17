@@ -896,36 +896,6 @@ void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusC
   _request.end(statusCode);
 }
 
-void HttpServer::registerBuiltInProbes() {
-  // liveness: lightweight, should not depend on external systems
-  _router.setPath(http::Method::GET, _config.builtinProbes.livenessPath(),
-                  [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("OK\n"); });
-
-  // readiness: reflects lifecycle.ready
-  _router.setPath(http::Method::GET, _config.builtinProbes.readinessPath(), [this](const HttpRequest&) {
-    HttpResponse resp(http::StatusCodeOK);
-    if (_lifecycle.ready.load(std::memory_order_relaxed)) {
-      resp.body("OK\n");
-    } else {
-      resp.status(http::StatusCodeServiceUnavailable);
-      resp.body("Not Ready\n");
-    }
-    return resp;
-  });
-
-  // startup: reflects lifecycle.started
-  _router.setPath(http::Method::GET, _config.builtinProbes.startupPath(), [this](const HttpRequest&) {
-    HttpResponse resp(http::StatusCodeOK);
-    if (_lifecycle.started.load(std::memory_order_relaxed)) {
-      resp.body("OK\n");
-    } else {
-      resp.status(http::StatusCodeServiceUnavailable);
-      resp.body("Starting\n");
-    }
-    return resp;
-  });
-}
-
 bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, ConnectionState& state, const CorsPolicy* pCorsPolicy,
                                     bool& found100Continue) {
   const std::string_view expectHeader = _request.headerValueOrEmpty(http::Expect);
@@ -1057,8 +1027,11 @@ void HttpServer::applyConfigUpdates() {
 
   _config.validate();
 
+  // Reinitialize components dependent on config values.
   _encodingSelector = EncodingSelector(_config.compression);
   _eventLoop.updatePollTimeout(_config.pollInterval);
+  registerBuiltInProbes();
+  createEncoders();
 }
 
 void HttpServer::applyRouterUpdates() {

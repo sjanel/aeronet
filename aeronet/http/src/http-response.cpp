@@ -52,6 +52,36 @@ HttpResponse::HttpResponse(std::size_t initialCapacity, http::StatusCode code, s
   _data.setSize(_bodyStartPos);
 }
 
+std::size_t HttpResponse::reasonLen() const noexcept {
+  if (_data[kReasonBeg] == '\n') {
+    return 0UL;
+  }
+  if (_headersStartPos != 0) {
+    return _headersStartPos - kReasonBeg;
+  }
+  return _bodyStartPos - kReasonBeg - http::DoubleCRLF.size();
+}
+
+std::size_t HttpResponse::bodyLen() const noexcept {
+  if (const FilePayload* pFilePayload = filePayloadPtr(); pFilePayload != nullptr) {
+    return static_cast<std::size_t>(pFilePayload->length);
+  }
+  if (_trailerPos != 0) {
+    return _trailerPos;
+  }
+  const HttpPayload* pExternPayload = externPayloadPtr();
+  return pExternPayload != nullptr ? pExternPayload->size() : internalBodyAndTrailersLen();
+}
+
+std::string_view HttpResponse::internalTrailers() const noexcept {
+  return {_trailerPos != 0 ? (_data.begin() + _bodyStartPos + _trailerPos) : _data.end(), _data.end()};
+}
+
+std::string_view HttpResponse::externalTrailers(const HttpPayload& data) const noexcept {
+  auto bodyAndTrailers = data.view();
+  return {_trailerPos != 0 ? (bodyAndTrailers.begin() + _trailerPos) : bodyAndTrailers.end(), bodyAndTrailers.end()};
+}
+
 void HttpResponse::setReason(std::string_view newReason) {
   static constexpr std::string_view::size_type kMaxReasonLength = 1024;
   if (newReason.size() > kMaxReasonLength) {
@@ -489,15 +519,7 @@ void HttpResponse::appendTrailer(std::string_view name, std::string_view value) 
     _data.addSize(lineSize);
   }
 
-  std::memcpy(insertPtr, name.data(), name.size());
-  insertPtr += name.size();
-  std::memcpy(insertPtr, http::HeaderSep.data(), http::HeaderSep.size());
-  insertPtr += http::HeaderSep.size();
-  if (!value.empty()) {
-    std::memcpy(insertPtr, value.data(), value.size());
-    insertPtr += value.size();
-  }
-  std::memcpy(insertPtr, http::CRLF.data(), http::CRLF.size());
+  WriteHeaderCRLF(insertPtr, name, value);
 }
 
 HttpResponse::PreparedResponse HttpResponse::finalizeAndStealData(http::Version version, SysTimePoint tp, bool close,

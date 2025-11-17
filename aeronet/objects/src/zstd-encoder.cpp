@@ -5,7 +5,6 @@
 #include <stdexcept>
 #include <string_view>
 
-#include "aeronet/compression-config.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
@@ -31,9 +30,6 @@ ZstdContextRAII::ZstdContextRAII(int level, int windowLog) : ctx(ZSTD_createCCtx
   }
 }
 }  // namespace details
-
-ZstdEncoderContext::ZstdEncoderContext(RawChars& sharedBuf, const CompressionConfig::Zstd& cfg)
-    : _buf(sharedBuf), _zs(cfg.compressionLevel, cfg.windowLog) {}
 
 std::string_view ZstdEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) {
   _buf.clear();
@@ -69,35 +65,20 @@ std::string_view ZstdEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
   return _buf;
 }
 
-std::string_view ZstdEncoder::encodeFull(std::size_t encoderChunkSize, std::string_view full) {
-  _buf.clear();
-  details::ZstdContextRAII ctxRAII(_cfg.compressionLevel, _cfg.windowLog);
-  ZSTD_outBuffer outBuf{_buf.data(), _buf.capacity(), 0};
-  ZSTD_inBuffer inBuf{full.data(), full.size(), 0};
+void ZstdEncoder::encodeFull(std::size_t extraCapacity, std::string_view data, RawChars& buf) {
+  const auto oldSize = buf.size();
+  const auto maxCompressedSize = ZSTD_compressBound(data.size());
 
-  ZSTD_EndDirective op = ZSTD_e_continue;
+  buf.ensureAvailableCapacity(maxCompressedSize + extraCapacity);
 
-  while (true) {
-    std::size_t ret = ZSTD_compressStream2(ctxRAII.ctx.get(), &outBuf, &inBuf, op);
+  const auto dstCapacity = buf.availableCapacity();
 
-    if (ZSTD_isError(ret) != 0U) {
-      throw std::runtime_error(std::format("zstd compressStream2 error: {}", ZSTD_getErrorName(ret)));
-    }
-    if (op == ZSTD_e_end && ret == 0) {
-      break;
-    }
-    if (outBuf.pos == outBuf.size) {
-      _buf.ensureAvailableCapacityExponential(encoderChunkSize);
-      outBuf.dst = _buf.data() + outBuf.pos;
-      outBuf.size = _buf.capacity() - outBuf.pos;
-    }
-    if (op == ZSTD_e_continue && inBuf.pos == inBuf.size) {
-      op = ZSTD_e_end;
-    }
+  const auto written = ZSTD_compress2(_zs.ctx.get(), buf.data() + oldSize, dstCapacity, data.data(), data.size());
+  if (ZSTD_isError(written) != 0U) {
+    throw std::runtime_error(std::format("zstd compress2 error: {}", ZSTD_getErrorName(written)));
   }
 
-  _buf.setSize(outBuf.pos);
-  return _buf;
+  buf.addSize(written);
 }
 
 }  // namespace aeronet

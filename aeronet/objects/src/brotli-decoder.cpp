@@ -36,7 +36,7 @@ bool BrotliDecoder::Decompress(std::string_view input, std::size_t maxDecompress
   while (true) {
     out.ensureAvailableCapacityExponential(decoderChunkSize);
     uint8_t *nextOut = reinterpret_cast<uint8_t *>(out.data() + out.size());
-    std::size_t availOut = out.capacity() - out.size();
+    std::size_t availOut = out.availableCapacity();
 
     auto res = BrotliDecoderDecompressStream(state._state, &availIn, &nextIn, &availOut, &nextOut, nullptr);
     out.setSize(out.capacity() - availOut);

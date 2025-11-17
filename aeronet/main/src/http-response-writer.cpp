@@ -39,7 +39,6 @@ HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, bool headRequest
       _head(headRequest),
       _requestConnClose(requestConnClose),
       _compressionFormat(compressionFormat),
-      _activeEncoderCtx(std::make_unique<IdentityEncoderContext>()),
       _pCorsPolicy(pCorsPolicy),
       _routeResponseMiddleware(routeResponseMiddleware) {}
 
@@ -210,7 +209,9 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
 
   ensureHeadersSent();
 
-  data = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, data);
+  if (_activeEncoderCtx) {
+    data = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, data);
+  }
 
   if (chunked()) {
     emitChunk(data);
@@ -372,8 +373,9 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
   _activeEncoderCtx = encoderPtr->makeContext();
   _compressionActivated = true;
   // Set Content-Encoding prior to emitting headers.
+  // We can use addHeader instead of header because at this point the user has not set it.
   if (_state != HttpResponseWriter::State::HeadersSent) {
-    _fixedResponse.setHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
+    _fixedResponse.addHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
     if (_server->_config.compression.addVaryHeader) {
       _fixedResponse.setHeader(http::Vary, http::AcceptEncoding);
     }
