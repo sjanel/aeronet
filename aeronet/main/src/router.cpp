@@ -227,7 +227,7 @@ void Router::AssignHandlers(RouteNode& node, http::MethodBmp methods, RequestHan
   const StreamingHandler* pSharedStreaming = nullptr;
 
   for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
-    if (!http::isMethodSet(methods, methodIdx)) {
+    if (!http::IsMethodSet(methods, methodIdx)) {
       continue;
     }
     if (hasNormalHandler) {
@@ -235,8 +235,7 @@ void Router::AssignHandlers(RouteNode& node, http::MethodBmp methods, RequestHan
         throw std::logic_error("Cannot register normal handler: streaming handler already present for path+method");
       }
       if (entry.normalHandlers[methodIdx]) {
-        log::warn("Overwriting existing path handler for {} {}",
-                  http::toMethodStr(static_cast<http::Method>(1U << methodIdx)),
+        log::warn("Overwriting existing path handler for {} {}", http::MethodIdxToStr(http::MethodFromIdx(methodIdx)),
                   std::string_view(node.patternString()));
       }
       if (pSharedRequest == nullptr) {
@@ -253,8 +252,7 @@ void Router::AssignHandlers(RouteNode& node, http::MethodBmp methods, RequestHan
       }
       if (entry.streamingHandlers[methodIdx]) {
         log::warn("Overwriting existing streaming path handler for {} {}",
-                  http::toMethodStr(static_cast<http::Method>(1U << methodIdx)),
-                  std::string_view(node.patternString()));
+                  http::MethodIdxToStr(http::MethodFromIdx(methodIdx)), std::string_view(node.patternString()));
       }
       if (pSharedStreaming == nullptr) {
         // NOLINTNEXTLINE(bugprone-use-after-move)
@@ -325,11 +323,8 @@ bool Router::matchPatternSegment(const CompiledSegment& segmentPattern, std::str
 
 bool Router::matchWithWildcard(const RouteNode& node, bool requestHasTrailingSlash,
                                const RouteNode*& matchedNode) const {
-  if (node.wildcardChild == nullptr) {
-    return false;
-  }
   const RouteNode* wildcardNode = node.wildcardChild;
-  if (wildcardNode->route == nullptr) {
+  if (wildcardNode == nullptr || wildcardNode->route == nullptr) {
     return false;
   }
   if (_config.trailingSlashPolicy == RouterConfig::TrailingSlashPolicy::Strict) {
@@ -337,10 +332,8 @@ bool Router::matchWithWildcard(const RouteNode& node, bool requestHasTrailingSla
       if (!wildcardNode->route->hasWithSlashRegistered) {
         return false;
       }
-    } else {
-      if (!wildcardNode->route->hasNoSlashRegistered) {
-        return false;
-      }
+    } else if (!wildcardNode->route->hasNoSlashRegistered) {
+      return false;
     }
   }
   matchedNode = wildcardNode;
@@ -350,28 +343,20 @@ bool Router::matchWithWildcard(const RouteNode& node, bool requestHasTrailingSla
 SmallRawChars Router::RouteNode::patternString() const {
   SmallRawChars out;
   if (route == nullptr) {
-    out.append("<unknown-path>");
+    out.append("<empty>");
     return out;
   }
-  out.push_back('/');
+
+  out.reserve((route->segments.size() * 6U) + (route->hasWildcard ? 2U : 1U));
   for (const auto& seg : route->segments) {
-    if (seg.literal.empty()) {
-      if (!out.empty() && out[out.size() - 1U] != '/') {
-        out.push_back('/');
-      }
-      out.append("{param}");
-    } else {
-      if (!out.empty() && out[out.size() - 1U] != '/') {
-        out.push_back('/');
-      }
-      out.append(seg.literal);
-    }
+    out.push_back('/');
+    out.append(seg.literal.empty() ? std::string_view("{param}") : seg.literal);
   }
   if (route->hasWildcard) {
-    if (!out.empty() && out[out.size() - 1U] != '/') {
-      out.push_back('/');
-    }
+    out.push_back('/');
     out.append("*");
+  } else if (out.empty()) {
+    out.push_back('/');
   }
   return out;
 }
@@ -384,9 +369,8 @@ bool Router::matchImpl(bool requestHasTrailingSlash, const RouteNode*& matchedNo
   _matchStateBuffer.clear();
   _stackBuffer.clear();
 
-  _stackBuffer.emplace_back(_pRootRouteNode, 0, 0, 0);
-
-  while (!_stackBuffer.empty()) {
+  // DFS
+  for (_stackBuffer.emplace_back(_pRootRouteNode, 0, 0, 0); !_stackBuffer.empty();) {
     StackFrame frame = std::move(_stackBuffer.back());
     _stackBuffer.pop_back();
 
@@ -442,7 +426,7 @@ bool Router::matchImpl(bool requestHasTrailingSlash, const RouteNode*& matchedNo
         continue;
       }
       // This edge didn't match, push frame back to try next edge
-      _stackBuffer.push_back(frame);
+      _stackBuffer.push_back(std::move(frame));
       continue;
     }
 
@@ -715,10 +699,10 @@ const Router::PathHandlerEntry* Router::computePathHandlerEntry(
 }
 
 void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entry, RoutingResult& result) const {
-  auto methodIdx = toMethodIdx(method);
+  auto methodIdx = MethodToIdx(method);
   if (method == http::Method::HEAD) {
-    static constexpr auto kHeadIdx = toMethodIdx(http::Method::HEAD);
-    static constexpr auto kGetIdx = toMethodIdx(http::Method::GET);
+    static constexpr auto kHeadIdx = MethodToIdx(http::Method::HEAD);
+    static constexpr auto kGetIdx = MethodToIdx(http::Method::GET);
     if (!entry.normalHandlers[kHeadIdx] && !entry.streamingHandlers[kHeadIdx]) {
       if (entry.normalHandlers[kGetIdx] || entry.streamingHandlers[kGetIdx]) {
         method = http::Method::GET;
@@ -727,9 +711,9 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
     }
   }
 
-  if (entry.streamingHandlers[methodIdx] && http::isMethodSet(entry.streamingMethodBmp, method)) {
+  if (entry.streamingHandlers[methodIdx] && http::IsMethodSet(entry.streamingMethodBmp, method)) {
     result.pStreamingHandler = &entry.streamingHandlers[methodIdx];
-  } else if (entry.normalHandlers[methodIdx] && http::isMethodSet(entry.normalMethodBmp, method)) {
+  } else if (entry.normalHandlers[methodIdx] && http::IsMethodSet(entry.normalMethodBmp, method)) {
     result.pRequestHandler = &entry.normalHandlers[methodIdx];
   } else {
     result.methodNotAllowed = true;

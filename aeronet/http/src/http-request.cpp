@@ -22,6 +22,7 @@
 #include "aeronet/toupperlower.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/url-decode.hpp"
+#include "http-method-parse.hpp"
 
 namespace aeronet {
 
@@ -103,7 +104,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
   }
 
   // Method
-  auto optMethod = http::toMethodEnum(std::string_view(first, nextSep));
+  auto optMethod = http::MethodStrToOptEnum(std::string_view(first, nextSep));
   if (!optMethod) {
     return http::StatusCodeNotImplemented;
   }
@@ -172,7 +173,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
   }
 
   if (traceSpan) {
-    traceSpan->setAttribute("http.method", http::toMethodStr(_method));
+    traceSpan->setAttribute("http.method", http::MethodIdxToStr(_method));
     traceSpan->setAttribute("http.target", _path);
     traceSpan->setAttribute("http.scheme", "http");
 

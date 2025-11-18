@@ -64,9 +64,7 @@ constexpr bool StartsWithCaseInsensitive(std::string_view value, std::string_vie
 struct CaseInsensitiveHashFunc {
   constexpr std::size_t operator()(std::string_view str) const noexcept {
     std::size_t hash = 0;
-    const char* beg = str.data();
-    const char* end = beg + str.size();
-    for (; beg != end; ++beg) {
+    for (const char *beg = str.data(), *end = beg + str.size(); beg != end; ++beg) {
       hash ^= static_cast<std::size_t>(tolower(*beg)) + static_cast<std::size_t>(0x9e3779b97f4a7c15ULL) + (hash << 6) +
               (hash >> 2);
     }

@@ -39,6 +39,7 @@ Legend: [x] implemented, [ ] planned / not yet.
 - [x] Header field parsing (no folding / continuations)
 - [x] Case-insensitive header lookup helper
 - [x] Router path matching and allowed-method computation
+- [x] Method token parsing / matching is case-insensitive (incoming method tokens like `GET`, `get`, `GeT` are accepted and normalized)
 - [x] Pipelined sequential requests (no parallel handler execution)
 
 Where to look: see the "Core parsing & connection handling" and router sections below for details.

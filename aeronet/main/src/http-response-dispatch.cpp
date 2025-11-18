@@ -42,13 +42,13 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
       const auto buildAllowHeader = [](http::MethodBmp mask) {
         SmallRawChars allowValue;
         for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
-          if (!http::isMethodSet(mask, methodIdx)) {
+          if (!http::IsMethodSet(mask, methodIdx)) {
             continue;
           }
           if (!allowValue.empty()) {
             allowValue.push_back(',');
           }
-          allowValue.append(http::toMethodStr(http::fromMethodIdx(methodIdx)));
+          allowValue.append(http::MethodIdxToStr(http::MethodFromIdx(methodIdx)));
         }
         return allowValue;
       };

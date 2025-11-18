@@ -36,6 +36,13 @@ add_unit_test(
 )
 
 add_unit_test(
+    http-method_test
+    test/http-method_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+add_unit_test(
     http-partial-head-write_test
     test/http-partial-head-write_test.cpp
     LIBRARIES

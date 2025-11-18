@@ -14,6 +14,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "http-method-parse.hpp"
 
 namespace aeronet {
 namespace {
@@ -180,13 +181,13 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequest& reque
   if (effectiveMethods != 0) {
     FixedCapacityVector<char, http::kAllMethodsStrLen + static_cast<uint32_t>((http::kNbMethods - 1U) * 2U)> value;
     for (http::MethodIdx idx = 0; idx < http::kNbMethods; ++idx) {
-      const auto method = http::fromMethodIdx(idx);
-      if (http::isMethodSet(effectiveMethods, method)) {
+      const auto method = http::MethodFromIdx(idx);
+      if (http::IsMethodSet(effectiveMethods, method)) {
         if (!value.empty()) {
           value.push_back(',');
           value.push_back(' ');
         }
-        value.append_range(http::toMethodStr(method));
+        value.append_range(http::MethodIdxToStr(method));
       }
     }
     response.header(http::AccessControlAllowMethods, std::string_view(value));
@@ -233,8 +234,8 @@ bool CorsPolicy::methodAllowed(std::string_view methodToken, http::MethodBmp rou
   if (effectiveMask == 0) {
     return false;
   }
-  if (const auto method = http::toMethodEnum(methodToken); method.has_value()) {
-    return http::isMethodSet(effectiveMask, *method);
+  if (const auto method = http::MethodStrToOptEnum(methodToken); method.has_value()) {
+    return http::IsMethodSet(effectiveMask, *method);
   }
   return false;
 }
