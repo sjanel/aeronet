@@ -656,7 +656,7 @@ tracing::SpanRAII HttpServer::startMiddlewareSpan(MiddlewareMetrics::Phase phase
                                isGlobal ? std::string_view("global") : std::string_view("route"));
   spanScope.span->setAttribute("aeronet.middleware.index", static_cast<int64_t>(index));
   spanScope.span->setAttribute("aeronet.middleware.streaming", streaming ? int64_t{1} : int64_t{0});
-  spanScope.span->setAttribute("http.method", http::MethodIdxToStr(_request.method()));
+  spanScope.span->setAttribute("http.method", http::MethodToStr(_request.method()));
   spanScope.span->setAttribute("http.target", _request.path());
   return spanScope;
 }
