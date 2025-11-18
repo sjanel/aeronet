@@ -31,13 +31,18 @@ constexpr char ReqHeaderValueSeparator(std::string_view headerName, bool mergeAl
   static constexpr Entry kEntries[] = {
       {"Accept", ','},
       {"Accept-Charset", ','},
+      {"Accept-Datetime", ','},
       {"Accept-Encoding", ','},
       {"Accept-Language", ','},
       {"Authorization", 'O'},
       {"Cache-Control", ','},
       {"Connection", ','},
       {"Content-Length", '\0'},
+      {"Content-MD5", '\0'},
+      {"Content-Transfer-Encoding", '\0'},
+      {"Content-Type", 'O'},
       {"Cookie", ';'},
+      {"DNT", ','},
       {"Expect", ','},
       {"Forwarded", ','},
       {"From", 'O'},
@@ -48,29 +53,33 @@ constexpr char ReqHeaderValueSeparator(std::string_view headerName, bool mergeAl
       {"If-Range", 'O'},
       {"If-Unmodified-Since", 'O'},
       {"Max-Forwards", 'O'},
+      {"Origin", ','},
       {"Pragma", ','},
+      {"Prefer", ','},
       {"Proxy-Authorization", 'O'},
       {"Range", 'O'},
       {"Referer", 'O'},
+      {"Save-Data", ','},
+      {"Sec-Fetch-Dest", ','},
+      {"Sec-Fetch-Mode", ','},
+      {"Sec-Fetch-Site", ','},
+      {"Sec-Fetch-User", ','},
+      {"Sec-WebSocket-Extensions", ','},
+      {"Sec-WebSocket-Protocol", ','},
       {"TE", ','},
       {"Trailer", ','},
       {"Transfer-Encoding", ','},
       {"Upgrade", ','},
+      {"Upgrade-Insecure-Requests", '\0'},
       {"User-Agent", ' '},
+      {"Vary", ','},
       {"Via", ','},
       {"Warning", ','},
   };
 
-  // Compile-time ordering validation using adjacent_find to detect any non-strictly-increasing pair.
-  // Predicate returns true when ordering is violated (i.e. a >= b in case-insensitive ordering), so kSorted is true
-  // only if no such adjacent pair exists.
-  static constexpr bool kSorted = []() {
-    return std::ranges::adjacent_find(
-               kEntries, [](const auto& lhs, const auto& rhs) { return !CaseInsensitiveLess(lhs, rhs); },
-               &Entry::name) == std::end(kEntries);
-  }();
-
-  static_assert(kSorted, "mergeable header table must be sorted case-insensitively");
+  // The table must be ordered because we use std::ranges::partition_point
+  static_assert(std::ranges::is_sorted(kEntries, CaseInsensitiveLess, &Entry::name),
+                "mergeable header table must be sorted case-insensitively");
 
   const auto it = std::ranges::partition_point(
       kEntries, [headerName](const Entry& entry) { return CaseInsensitiveLess(entry.name, headerName); });

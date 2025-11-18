@@ -223,7 +223,7 @@ void HttpServer::tryCompressResponse(HttpResponse& resp) {
   if (body.size() < compressionConfig.minBytes) {
     return;
   }
-  std::string_view encHeader = _request.headerValueOrEmpty(http::AcceptEncoding);
+  const std::string_view encHeader = _request.headerValueOrEmpty(http::AcceptEncoding);
   auto [encoding, reject] = _encodingSelector.negotiateAcceptEncoding(encHeader);
   // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
   // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
@@ -235,11 +235,15 @@ void HttpServer::tryCompressResponse(HttpResponse& resp) {
     return;
   }
 
-  if (!compressionConfig.contentTypeAllowlist.empty()) {
+  if (!compressionConfig.contentTypeAllowList.empty()) {
     std::string_view contentType = _request.headerValueOrEmpty(http::ContentType);
-    if (!compressionConfig.contentTypeAllowlist.contains(contentType)) {
+    if (!compressionConfig.contentTypeAllowList.contains(contentType)) {
       return;
     }
+  }
+
+  if (resp.headerValue(http::ContentEncoding)) {
+    return;
   }
 
   // We will compress the response body.
@@ -250,7 +254,9 @@ void HttpServer::tryCompressResponse(HttpResponse& resp) {
   // we know that the user did not provide content encoding.
   resp.addHeader(http::ContentEncoding, GetEncodingStr(encoding));
   if (compressionConfig.addVaryHeader) {
-    resp.header(http::Vary, http::AcceptEncoding);
+    // Use appendHeaderValue so we preserve any existing Vary values and append
+    // Accept-Encoding (comma-separated) when appropriate.
+    resp.appendHeaderValue(http::Vary, http::AcceptEncoding);
   }
 
   auto& encoder = _encoders[static_cast<std::size_t>(encoding)];
@@ -278,7 +284,6 @@ void HttpServer::tryCompressResponse(HttpResponse& resp) {
     }
 
     // Mark as inline and drop the external payload
-    resp._payloadKind = HttpResponse::PayloadKind::Inline;
     resp._payloadVariant = {};
   } else {
     // compress from inline body to external buffer
@@ -322,7 +327,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& r
   }
 
   bool isHead = (_request.method() == http::Method::HEAD);
-  if (!isHead && !resp.userProvidedContentEncoding()) {
+  if (!isHead) {
     tryCompressResponse(resp);
   }
 
