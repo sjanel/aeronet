@@ -485,7 +485,7 @@ TEST(HttpMethodParsing, AcceptsCaseInsensitiveMethodTokens) {
   ts.router().setDefault([](const HttpRequest& req) {
     HttpResponse resp;
     // Echo the canonical method name (parser maps mixed-case to enum).
-    resp.body(std::string("method=") + std::string(http::MethodIdxToStr(req.method())));
+    resp.body(std::string("method=") + std::string(http::MethodToStr(req.method())));
     return resp;
   });
 

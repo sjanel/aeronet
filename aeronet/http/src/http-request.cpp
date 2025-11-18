@@ -173,7 +173,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
   }
 
   if (traceSpan) {
-    traceSpan->setAttribute("http.method", http::MethodIdxToStr(_method));
+    traceSpan->setAttribute("http.method", http::MethodToStr(_method));
     traceSpan->setAttribute("http.target", _path);
     traceSpan->setAttribute("http.scheme", "http");
 

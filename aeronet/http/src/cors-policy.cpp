@@ -187,7 +187,7 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequest& reque
           value.push_back(',');
           value.push_back(' ');
         }
-        value.append_range(http::MethodIdxToStr(method));
+        value.append_range(http::MethodToStr(method));
       }
     }
     response.header(http::AccessControlAllowMethods, std::string_view(value));
