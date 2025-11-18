@@ -287,6 +287,10 @@ class Router {
   using RouteNodeMap = flat_hash_map<SmallRawChars, RouteNode*, std::hash<std::string_view>, std::equal_to<>>;
 
   struct RouteNode {
+    // Return a human-readable pattern string reconstructed from the compiled route
+    // e.g. "/users/{param}/files/*" or "<unknown-path>" when no route present.
+    [[nodiscard]] SmallRawChars patternString() const;
+
     RouteNodeMap literalChildren;
     vector<DynamicEdge> dynamicChildren;
     RouteNode* wildcardChild{nullptr};
