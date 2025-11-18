@@ -103,6 +103,7 @@ HttpServer::HttpServer(HttpServer&& other)
     : _stats(std::exchange(other._stats, {})),
       _config(std::move(other._config)),
       _listenSocket(std::move(other._listenSocket)),
+      _isInMultiHttpServer(other._isInMultiHttpServer),
       _eventLoop(std::move(other._eventLoop)),
       _lifecycle(std::move(other._lifecycle)),
       _router(std::move(other._router)),
@@ -134,9 +135,6 @@ HttpServer::HttpServer(HttpServer&& other)
   _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_acq_rel);
   _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.exchange(false), std::memory_order_acq_rel);
   other._lifecycle.reset();
-
-  // Because probe handlers may capture 'this', they need to be re-registered on the moved-to instance
-  registerBuiltInProbes();
 }
 
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
@@ -151,6 +149,7 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _stats = std::exchange(other._stats, {});
     _config = std::move(other._config);
     _listenSocket = std::move(other._listenSocket);
+    _isInMultiHttpServer = other._isInMultiHttpServer;
     _eventLoop = std::move(other._eventLoop);
     _lifecycle = std::move(other._lifecycle);
     _router = std::move(other._router);
@@ -178,11 +177,8 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_acq_rel);
     _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.exchange(false), std::memory_order_acq_rel);
 
-    // Because probe handlers may capture 'this', they need to be re-registered on the moved-to instance
-    registerBuiltInProbes();
+    other._lifecycle.reset();
   }
-
-  other._lifecycle.reset();
   return *this;
 }
 
@@ -276,9 +272,6 @@ void HttpServer::init() {
   _eventLoop.addOrThrow(EventLoop::EventFd{listenFd, EventIn});
   _eventLoop.addOrThrow(EventLoop::EventFd{_lifecycle.wakeupFd.fd(), EventIn});
 
-  // Register builtin probes handlers if enabled in config
-  registerBuiltInProbes();
-
   // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
   createEncoders();
 }
@@ -290,7 +283,13 @@ void HttpServer::prepareRun() {
   if (!_listenSocket) {
     init();
   }
-  log::info("Server running on port :{}", port());
+  if (!_isInMultiHttpServer) {
+    // In MultiHttpServer, logging is done at that level instead.
+    log::info("Server running on port :{}", port());
+  }
+
+  // Register builtin probes handlers if enabled in config
+  registerBuiltInProbes();
 }
 
 void HttpServer::run() {
@@ -385,7 +384,10 @@ void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
     return;
   }
 
-  log::info("Initiating graceful drain (connections={})", _connStates.size());
+  if (!_connStates.empty()) {
+    log::info("Initiating graceful drain (connections={})", _connStates.size());
+  }
+
   _lifecycle.enterDraining(deadline, hasDeadline);
   closeListener();
 }

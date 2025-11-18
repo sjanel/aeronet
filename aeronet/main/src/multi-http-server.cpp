@@ -45,6 +45,7 @@ MultiHttpServer::AsyncHandle::AsyncHandle(AsyncHandle&& other) noexcept
 MultiHttpServer::AsyncHandle& MultiHttpServer::AsyncHandle::operator=(AsyncHandle&& other) noexcept {
   if (this != &other) {
     stop();
+
     _threads = std::move(other._threads);
     _error = std::move(other._error);
     _stopRequested = std::move(other._stopRequested);
@@ -98,7 +99,6 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router, uint32_t t
     throw std::invalid_argument("MultiHttpServer: reusePort must be set for multi thread MultiHttpServer");
   }
 
-  // Create the HttpServer (and ensure port resolution if given port is 0)
   _servers.reserve(static_cast<decltype(_servers)::size_type>(threadCount));
 
   // Construct first server. If port was ephemeral (0), HttpServer constructor resolves it synchronously.
@@ -144,9 +144,11 @@ MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
 
 MultiHttpServer::~MultiHttpServer() {
   stop();
+
   if (auto cb = _lastHandleStopFn.lock()) {
     *cb = []() {};
   }
+
   if (_serversAlive) {
     _serversAlive->store(false, std::memory_order_release);
   }
@@ -244,73 +246,6 @@ bool MultiHttpServer::isDraining() const {
   return std::ranges::any_of(_servers, [](const HttpServer& server) { return server.isDraining(); });
 }
 
-MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
-  AggregatedStats agg;
-  agg.per.reserve(_servers.size());
-  for (auto& server : _servers) {
-    auto st = server.stats();
-    agg.total.totalBytesQueued += st.totalBytesQueued;
-    agg.total.totalBytesWrittenImmediate += st.totalBytesWrittenImmediate;
-    agg.total.totalBytesWrittenFlush += st.totalBytesWrittenFlush;
-    agg.total.deferredWriteEvents += st.deferredWriteEvents;
-    agg.total.flushCycles += st.flushCycles;
-    agg.total.epollModFailures += st.epollModFailures;
-    agg.total.maxConnectionOutboundBuffer =
-        std::max(agg.total.maxConnectionOutboundBuffer, st.maxConnectionOutboundBuffer);
-    agg.total.totalRequestsServed += st.totalRequestsServed;
-#ifdef AERONET_ENABLE_OPENSSL
-    agg.total.tlsHandshakesSucceeded += st.tlsHandshakesSucceeded;
-    agg.total.tlsClientCertPresent += st.tlsClientCertPresent;
-    agg.total.tlsAlpnStrictMismatches += st.tlsAlpnStrictMismatches;
-    for (const auto& kv : st.tlsAlpnDistribution) {
-      bool found = false;
-      for (auto& existing : agg.total.tlsAlpnDistribution) {
-        if (existing.first == kv.first) {
-          existing.second += kv.second;
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        agg.total.tlsAlpnDistribution.push_back(kv);
-      }
-    }
-    for (const auto& kv : st.tlsVersionCounts) {
-      bool found = false;
-      for (auto& existing : agg.total.tlsVersionCounts) {
-        if (existing.first == kv.first) {
-          existing.second += kv.second;
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        agg.total.tlsVersionCounts.push_back(kv);
-      }
-    }
-    for (const auto& [newKey, newVal] : st.tlsCipherCounts) {
-      bool found = false;
-      for (auto& existing : agg.total.tlsCipherCounts) {
-        if (existing.first == newKey) {
-          existing.second += newVal;
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        agg.total.tlsCipherCounts.emplace_back(newKey, newVal);
-      }
-    }
-    agg.total.tlsHandshakeDurationCount += st.tlsHandshakeDurationCount;
-    agg.total.tlsHandshakeDurationTotalNs += st.tlsHandshakeDurationTotalNs;
-    agg.total.tlsHandshakeDurationMaxNs = std::max(agg.total.tlsHandshakeDurationMaxNs, st.tlsHandshakeDurationMaxNs);
-#endif
-    agg.per.push_back(std::move(st));
-  }
-  log::trace("Aggregated stats across {} server instance(s)", agg.per.size());
-  return agg;
-}
-
 void MultiHttpServer::postConfigUpdate(const std::function<void(HttpServerConfig&)>& updater) {
   for (auto& server : _servers) {
     server.postConfigUpdate(updater);
@@ -344,17 +279,17 @@ void MultiHttpServer::rebuildServers() {
     return;
   }
 
-  if (_servers.size() > 1) {
-    _servers.erase(std::next(_servers.begin()), _servers.end());
-  }
+  _servers.erase(std::next(_servers.begin()), _servers.end());
 
   HttpServer& firstServer = _servers.front();
+  firstServer._isInMultiHttpServer = true;
   while (_servers.size() < _servers.capacity()) {
     auto& server = _servers.emplace_back(firstServer.config(), firstServer._router);
     server.setParserErrorCallback(firstServer._parserErrCb);
     server.setMetricsCallback(firstServer._metricsCb);
     server.setExpectationHandler(firstServer._expectationHandler);
     server.setMiddlewareMetricsCallback(firstServer._middlewareMetricsCb);
+    server._isInMultiHttpServer = true;
   }
 }
 
@@ -553,6 +488,73 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
   // but the handle owns the threads now.
   // Share the _stopRequested pointer so both MultiHttpServer and AsyncHandle can control stopping.
   return {std::move(_threads), errorPtr, _stopRequested, std::move(stopCallback)};
+}
+
+MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
+  AggregatedStats agg;
+  agg.per.reserve(_servers.size());
+  for (auto& server : _servers) {
+    auto st = server.stats();
+    agg.total.totalBytesQueued += st.totalBytesQueued;
+    agg.total.totalBytesWrittenImmediate += st.totalBytesWrittenImmediate;
+    agg.total.totalBytesWrittenFlush += st.totalBytesWrittenFlush;
+    agg.total.deferredWriteEvents += st.deferredWriteEvents;
+    agg.total.flushCycles += st.flushCycles;
+    agg.total.epollModFailures += st.epollModFailures;
+    agg.total.maxConnectionOutboundBuffer =
+        std::max(agg.total.maxConnectionOutboundBuffer, st.maxConnectionOutboundBuffer);
+    agg.total.totalRequestsServed += st.totalRequestsServed;
+#ifdef AERONET_ENABLE_OPENSSL
+    agg.total.tlsHandshakesSucceeded += st.tlsHandshakesSucceeded;
+    agg.total.tlsClientCertPresent += st.tlsClientCertPresent;
+    agg.total.tlsAlpnStrictMismatches += st.tlsAlpnStrictMismatches;
+    for (const auto& kv : st.tlsAlpnDistribution) {
+      bool found = false;
+      for (auto& existing : agg.total.tlsAlpnDistribution) {
+        if (existing.first == kv.first) {
+          existing.second += kv.second;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        agg.total.tlsAlpnDistribution.push_back(kv);
+      }
+    }
+    for (const auto& kv : st.tlsVersionCounts) {
+      bool found = false;
+      for (auto& existing : agg.total.tlsVersionCounts) {
+        if (existing.first == kv.first) {
+          existing.second += kv.second;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        agg.total.tlsVersionCounts.push_back(kv);
+      }
+    }
+    for (const auto& [newKey, newVal] : st.tlsCipherCounts) {
+      bool found = false;
+      for (auto& existing : agg.total.tlsCipherCounts) {
+        if (existing.first == newKey) {
+          existing.second += newVal;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        agg.total.tlsCipherCounts.emplace_back(newKey, newVal);
+      }
+    }
+    agg.total.tlsHandshakeDurationCount += st.tlsHandshakeDurationCount;
+    agg.total.tlsHandshakeDurationTotalNs += st.tlsHandshakeDurationTotalNs;
+    agg.total.tlsHandshakeDurationMaxNs = std::max(agg.total.tlsHandshakeDurationMaxNs, st.tlsHandshakeDurationMaxNs);
+#endif
+    agg.per.push_back(std::move(st));
+  }
+  log::trace("Aggregated stats across {} server instance(s)", agg.per.size());
+  return agg;
 }
 
 }  // namespace aeronet
