@@ -25,7 +25,7 @@ int main(int argc, char **argv) {
     std::string body("Hello from aeronet minimal server! You requested ");
     body += req.path();
     body.push_back('\n');
-    body += "Method: " + std::string(aeronet::http::toMethodStr(req.method())) + "\n";
+    body += "Method: " + std::string(aeronet::http::MethodIdxToStr(req.method())) + "\n";
     body += "Version: ";
     body.append(std::string_view(req.version().str()));
     body.push_back('\n');

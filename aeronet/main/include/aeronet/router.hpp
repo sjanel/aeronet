@@ -288,7 +288,7 @@ class Router {
 
   struct RouteNode {
     // Return a human-readable pattern string reconstructed from the compiled route
-    // e.g. "/users/{param}/files/*" or "<unknown-path>" when no route present.
+    // e.g. "/users/{param}/files/*" or "<empty>" when no route present.
     [[nodiscard]] SmallRawChars patternString() const;
 
     RouteNodeMap literalChildren;
