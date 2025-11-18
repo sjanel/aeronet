@@ -31,7 +31,7 @@ TEST(HttpRouting, BasicPathDispatch) {
   ts.router().setPath(http::Method::GET, "/hello",
                       [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("world"); });
   ts.router().setPath(http::Method::GET | http::Method::POST, "/multi", [](const HttpRequest& req) {
-    return HttpResponse(http::StatusCodeOK, "OK").body(std::string(http::toMethodStr(req.method())) + "!");
+    return HttpResponse(http::StatusCodeOK, "OK").body(std::string(http::MethodIdxToStr(req.method())) + "!");
   });
 
   test::RequestOptions getHello;

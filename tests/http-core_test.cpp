@@ -479,3 +479,29 @@ TEST(HttpMalformed, BadChunkExtensionHex) {
   // Expect no 200 OK; either empty (waiting for more) or eventually 413/400 once completed; we at least assert not 200
   ASSERT_FALSE(resp.contains("200 OK"));
 }
+
+TEST(HttpMethodParsing, AcceptsCaseInsensitiveMethodTokens) {
+  // Ensure the server accepts method tokens in mixed case (robustness per RFC 9110 §2.5).
+  ts.router().setDefault([](const HttpRequest& req) {
+    HttpResponse resp;
+    // Echo the canonical method name (parser maps mixed-case to enum).
+    resp.body(std::string("method=") + std::string(http::MethodIdxToStr(req.method())));
+    return resp;
+  });
+
+  // Representative variants for common methods.
+  std::vector<std::pair<std::string, std::string>> cases = {
+      {"GET /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "GET"},
+      {"get /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "GET"},
+      {"GeT /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "GET"},
+      {"POST /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "POST"},
+      {"pOsT /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "POST"},
+  };
+
+  for (const auto& pair : cases) {
+    std::string resp = sendRaw(port, pair.first);
+    // Response should be 200 and include the method echoed in the body.
+    EXPECT_TRUE(resp.find("HTTP/1.1 200") != std::string::npos) << "Resp=" << resp;
+    EXPECT_TRUE(resp.find(std::string("method=") + pair.second) != std::string::npos) << "Resp=" << resp;
+  }
+}
