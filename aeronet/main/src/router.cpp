@@ -227,7 +227,7 @@ void Router::AssignHandlers(RouteNode& node, http::MethodBmp methods, RequestHan
   const StreamingHandler* pSharedStreaming = nullptr;
 
   for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
-    if (!http::IsMethodSet(methods, methodIdx)) {
+    if (!http::IsMethodIdxSet(methods, methodIdx)) {
       continue;
     }
     if (hasNormalHandler) {
@@ -235,7 +235,7 @@ void Router::AssignHandlers(RouteNode& node, http::MethodBmp methods, RequestHan
         throw std::logic_error("Cannot register normal handler: streaming handler already present for path+method");
       }
       if (entry.normalHandlers[methodIdx]) {
-        log::warn("Overwriting existing path handler for {} {}", http::MethodIdxToStr(http::MethodFromIdx(methodIdx)),
+        log::warn("Overwriting existing path handler for {} {}", http::MethodIdxToStr(methodIdx),
                   std::string_view(node.patternString()));
       }
       if (pSharedRequest == nullptr) {
@@ -251,8 +251,8 @@ void Router::AssignHandlers(RouteNode& node, http::MethodBmp methods, RequestHan
         throw std::logic_error("Cannot register streaming handler: normal handler already present for path+method");
       }
       if (entry.streamingHandlers[methodIdx]) {
-        log::warn("Overwriting existing streaming path handler for {} {}",
-                  http::MethodIdxToStr(http::MethodFromIdx(methodIdx)), std::string_view(node.patternString()));
+        log::warn("Overwriting existing streaming path handler for {} {}", http::MethodIdxToStr(methodIdx),
+                  std::string_view(node.patternString()));
       }
       if (pSharedStreaming == nullptr) {
         // NOLINTNEXTLINE(bugprone-use-after-move)
