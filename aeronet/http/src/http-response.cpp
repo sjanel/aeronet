@@ -8,7 +8,6 @@
 #include <cstring>
 #include <limits>
 #include <optional>
-#include <ranges>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -24,11 +23,11 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/tchars.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
+#include "aeronet/toupperlower.hpp"
 
 namespace aeronet {
 
@@ -71,6 +70,11 @@ std::size_t HttpResponse::bodyLen() const noexcept {
   }
   const HttpPayload* pExternPayload = externPayloadPtr();
   return pExternPayload != nullptr ? pExternPayload->size() : internalBodyAndTrailersLen();
+}
+
+void HttpResponse::setStatusCode(http::StatusCode statusCode) noexcept {
+  assert(statusCode >= 100 && statusCode < 1000);
+  write3(_data.data() + kStatusCodeBeg, statusCode);
 }
 
 std::string_view HttpResponse::internalTrailers() const noexcept {
@@ -117,9 +121,7 @@ void HttpResponse::setReason(std::string_view newReason) {
 
 void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue, bool onlyIfNew) {
   assert(!newKey.empty() && std::ranges::all_of(newKey, [](char ch) { return is_tchar(ch); }));
-  if (CaseInsensitiveEqual(newKey, http::ContentEncoding)) {
-    _userProvidedContentEncoding = true;
-  }
+
   if (_headersStartPos == 0) {
     appendHeaderInternal(newKey, newValue);
     return;
@@ -161,48 +163,33 @@ void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
 
 void HttpResponse::setContentTypeHeader(std::string_view contentTypeValue, bool isEmpty) {
   if (isEmpty) {
-    removeContentTypeHeader();
+    eraseHeader(http::ContentType);
   } else {
     setHeader(http::ContentType, contentTypeValue);
   }
 }
 
-void HttpResponse::removeContentTypeHeader() {
-  if (_headersStartPos == 0) {
+void HttpResponse::eraseHeader(std::string_view key) {
+  auto optHeaderValue = headerValue(key);
+  if (!optHeaderValue) {
     return;
   }
-  auto begSearch = _data.data() + _headersStartPos + http::CRLF.size();
-  auto endSearch = _data.data() + _bodyStartPos - http::DoubleCRLF.size();
-  auto foundIt = std::search(begSearch, endSearch, http::ContentType.begin(), http::ContentType.end());
-  if (foundIt != endSearch) {
-    /*
-    \r\nHost: example.com
-    \r\nContent-Type: text/plain
-    \r\nContent-Encoding: gzip
-    \r\n\r\n
-    */
-    // Found the header, now remove it. First, locate the end of the header value:
-    auto lineEndIt = std::search(foundIt + http::ContentType.size() + http::HeaderSep.size(), _data.end(),
-                                 http::CRLF.begin(), http::CRLF.end());
-    assert(lineEndIt != _data.end());
 
-    std::memmove(foundIt - http::CRLF.size(), lineEndIt, static_cast<std::size_t>(_data.end() - lineEndIt));
+  const char* valueEnd = optHeaderValue->end();
+  char* keyBeg = _data.data() + (optHeaderValue->data() - _data.data()) - static_cast<std::ptrdiff_t>(key.size()) -
+                 http::HeaderSep.size();
 
-    const std::size_t contentTypeHeaderFullLen = static_cast<std::size_t>(lineEndIt - foundIt) + http::CRLF.size();
+  std::memmove(keyBeg - http::CRLF.size(), valueEnd, static_cast<std::size_t>(_data.end() - valueEnd));
 
-    /*
-    \r\nContent-Type: text/plain
-    \r\n\r\n
-    */
+  const std::size_t headerLineLen = static_cast<std::size_t>(valueEnd - keyBeg) + http::CRLF.size();
 
-    // If content type header was the only header, we need to reset _headersStartPos to 0
-    if (static_cast<std::size_t>(endSearch - begSearch) + http::CRLF.size() == contentTypeHeaderFullLen) {
-      _headersStartPos = 0;
-    }
-
-    _bodyStartPos -= static_cast<decltype(_bodyStartPos)>(contentTypeHeaderFullLen);
-    _data.setSize(_data.size() - contentTypeHeaderFullLen);
+  // If removed header was the only header, we need to reset _headersStartPos to 0
+  if (_headersStartPos + headerLineLen + http::DoubleCRLF.size() == _bodyStartPos) {
+    _headersStartPos = 0;
   }
+
+  _bodyStartPos -= static_cast<decltype(_bodyStartPos)>(headerLineLen);
+  _data.setSize(_data.size() - headerLineLen);
 }
 
 void HttpResponse::setBodyInternal(std::string_view newBody) {
@@ -232,7 +219,6 @@ void HttpResponse::setBodyInternal(std::string_view newBody) {
   }
   // Clear payload variant at the end because newBody may point to its internal memory.
   _payloadVariant = {};
-  _payloadKind = PayloadKind::Inline;
 }
 
 HttpResponse& HttpResponse::file(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType) & {
@@ -256,7 +242,6 @@ HttpResponse& HttpResponse::file(File fileObj, std::size_t offset, std::size_t l
     setHeader(http::ContentType, contentType);
   }
   setBodyInternal(std::string_view());
-  _payloadKind = PayloadKind::File;
   _payloadVariant.emplace<FilePayload>(std::move(fileObj), offset, resolvedLength);
   return *this;
 }
@@ -281,44 +266,44 @@ std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) 
   if (_headersStartPos == 0) {
     return ret;
   }
-  auto haystack = std::ranges::subrange(_data.data() + _headersStartPos + http::CRLF.size(),
-                                        _data.data() + _bodyStartPos - http::CRLF.size());
 
-  while (!haystack.empty()) {
-    // At this point haystack is pointing to the beginning of a header, immediately after a CRLF.
-    // For instance: 'Content-Encoding: gzip\r\n'
-    // Per design, we enforce the header separator to be exactly http::HeaderSep
-    auto nextHeaderSepRg = std::ranges::search(haystack, http::HeaderSep);
-    if (nextHeaderSepRg.empty()) {
-      return ret;
-    }
-    std::string_view oldHeaderKey(haystack.begin(), nextHeaderSepRg.begin());
+  const char* headersBeg = _data.data() + _headersStartPos + http::CRLF.size();
+  const char* headersEnd = _data.data() + _bodyStartPos - http::CRLF.size();
+  const char* endKey = key.end();
 
-    // move haystack to beginning of old header value
-    haystack = std::ranges::subrange(nextHeaderSepRg.end(), haystack.end());
-
-    const auto nextCRLFRg = std::ranges::search(haystack, http::CRLF);
-    if (nextCRLFRg.empty()) {
-      return ret;
+  while (headersBeg != headersEnd) {
+    // Perform an inplace case-insensitive 'starts_with' algorithm
+    const char* begKey = key.begin();
+    bool icharsDiffer = false;
+    for (; *headersBeg != ':' && begKey != endKey; ++headersBeg, ++begKey) {
+      if (tolower(*headersBeg) != tolower(*begKey)) {
+        icharsDiffer = true;
+        break;
+      }
     }
 
-    // move haystack to next header
-    haystack = std::ranges::subrange(nextCRLFRg.end(), haystack.end());
+    const char* nextCRLF =
+        std::search(headersBeg + http::CRLF.size(), headersEnd, http::CRLF.begin(), http::CRLF.end());
 
-    if (CaseInsensitiveEqual(oldHeaderKey, key)) {
-      // Same header
-      ret = {nextHeaderSepRg.end(), nextCRLFRg.begin()};
-      break;
+    if (icharsDiffer || *headersBeg != ':' || begKey != endKey) {
+      // Not the header we are looking for
+      // move headersBeg to next header
+      if (nextCRLF == headersEnd) {
+        return ret;
+      }
+      headersBeg = nextCRLF + http::CRLF.size();
+      continue;
     }
+
+    ret = {headersBeg + http::CRLF.size(), nextCRLF};
+    break;
   }
   return ret;
 }
 
 void HttpResponse::appendHeaderInternal(std::string_view key, std::string_view value) {
   assert(!key.empty() && std::ranges::all_of(key, [](char ch) { return is_tchar(ch); }));
-  if (CaseInsensitiveEqual(key, http::ContentEncoding)) {
-    _userProvidedContentEncoding = true;
-  }
+
   if (_headersStartPos == 0) {
     _headersStartPos = static_cast<decltype(_headersStartPos)>(_bodyStartPos - http::DoubleCRLF.size());
   }
@@ -337,6 +322,48 @@ void HttpResponse::appendHeaderInternal(std::string_view key, std::string_view v
   _bodyStartPos += static_cast<uint32_t>(headerLineSize);
 }
 
+void HttpResponse::appendHeaderValueInternal(std::string_view key, std::string_view value, std::string_view separator) {
+  assert(!key.empty() && std::ranges::all_of(key, [](char ch) { return is_tchar(ch); }));
+
+  if (_headersStartPos == 0) {
+    appendHeaderInternal(key, value);
+    return;
+  }
+
+  auto optValue = headerValue(key);
+  if (!optValue) {
+    appendHeaderInternal(key, value);
+    return;
+  }
+
+  const std::size_t extraLen = separator.size() + value.size();
+  if (extraLen == 0) {
+    return;
+  }
+
+  const auto valuePos = static_cast<std::size_t>(optValue->data() - _data.data());
+  const auto insertOffset = valuePos + optValue->size();
+  const std::size_t tailLen = _data.size() - insertOffset;
+
+  _data.ensureAvailableCapacityExponential(extraLen);
+
+  char* insertPtr = _data.data() + insertOffset;
+
+  std::memmove(insertPtr + extraLen, insertPtr, tailLen);
+
+  char* out = insertPtr;
+  if (!separator.empty()) {
+    std::memcpy(out, separator.data(), separator.size());
+    out += separator.size();
+  }
+  if (!value.empty()) {
+    std::memcpy(out, value.data(), value.size());
+  }
+
+  _data.addSize(extraLen);
+  _bodyStartPos = static_cast<uint32_t>(_bodyStartPos + extraLen);
+}
+
 HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoint tp, bool isHeadMethod, bool close,
                                                const ConcatenatedHeaders& globalHeaders,
                                                std::size_t minCapturedBodySize) {
@@ -352,11 +379,10 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
     moveBodyInline = false;
 
     // erase body and trailers (but keep headers, especially Content-Length / Content-Type)
-    if (_payloadKind == PayloadKind::Inline) {
+    if (isInlineBody()) {
       _data.setSize(_data.size() - bodySz - _trailerPos);
     } else {
       _payloadVariant = {};
-      _payloadKind = PayloadKind::Inline;
       pExternPayload = nullptr;
     }
 
@@ -461,7 +487,6 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
   if (moveBodyInline) {
     std::memcpy(_data.data() + _bodyStartPos, externBodyAndTrailers.data(), externBodyAndTrailers.size());
     _payloadVariant = {};
-    _payloadKind = PayloadKind::Inline;
     pExternPayload = nullptr;
   }
 
@@ -487,7 +512,7 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
 
 void HttpResponse::appendTrailer(std::string_view name, std::string_view value) {
   assert(!name.empty() && std::ranges::all_of(name, [](char ch) { return is_tchar(ch); }));
-  if (_payloadKind == PayloadKind::File) {
+  if (isFileBody()) {
     throw std::logic_error("Cannot add trailers when response body uses sendfile");
   }
   if (bodyLen() == 0) {
