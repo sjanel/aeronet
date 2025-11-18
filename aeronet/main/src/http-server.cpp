@@ -673,6 +673,7 @@ void HttpServer::eventLoop() {
     applyRouterUpdates();
   }
 
+  // Poll for events
   int ready = _eventLoop.poll([this](EventLoop::EventFd eventFd) {
     if (eventFd.fd == _listenSocket.fd()) {
       if (_lifecycle.acceptingConnections()) {
@@ -717,25 +718,18 @@ void HttpServer::eventLoop() {
   const auto now = std::chrono::steady_clock::now();
   const bool noConnections = _connStates.empty();
 
-  if (_lifecycle.isStopping()) {
+  if (_lifecycle.isStopping() || (_lifecycle.isDraining() && noConnections)) {
     closeAllConnections(true);
     _lifecycle.reset();
-    log::info("Server stopped");
-    return;
-  }
-
-  if (_lifecycle.isDraining()) {
+    if (!_isInMultiHttpServer) {
+      log::info("Server stopped");
+    }
+  } else if (_lifecycle.isDraining()) {
     if (_lifecycle.hasDeadline() && now >= _lifecycle.deadline()) {
       log::warn("Drain deadline reached with {} active connection(s); forcing close", _connStates.size());
       closeAllConnections(true);
       _lifecycle.reset();
       log::info("Server drained after deadline");
-      return;
-    }
-    if (noConnections) {
-      _lifecycle.reset();
-      log::info("Server drained gracefully");
-      return;
     }
   } else if (SignalHandler::IsStopRequested()) {
     beginDrain(SignalHandler::GetMaxDrainPeriod());

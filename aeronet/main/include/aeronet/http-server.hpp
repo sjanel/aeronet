@@ -502,6 +502,7 @@ class HttpServer {
   Socket _listenSocket;  // listening socket
   std::atomic<bool> _hasPendingConfigUpdates{false};
   std::atomic<bool> _hasPendingRouterUpdates{false};
+  bool _isInMultiHttpServer{false};
   EventLoop _eventLoop;  // epoll-based event loop
 
   internal::Lifecycle _lifecycle;
