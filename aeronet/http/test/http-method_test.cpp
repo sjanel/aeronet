@@ -11,13 +11,13 @@
 
 namespace {
 
-using aeronet::http::IsMethodSet;
+using aeronet::http::IsMethodIdxSet;
 using aeronet::http::Method;
 using aeronet::http::MethodBmp;
 using aeronet::http::MethodFromIdx;
-using aeronet::http::MethodIdxToStr;
 using aeronet::http::MethodStrToOptEnum;
 using aeronet::http::MethodToIdx;
+using aeronet::http::MethodToStr;
 
 struct MethodCase {
   Method method;
@@ -60,7 +60,7 @@ TEST(HttpMethod, MethodIdxRoundTrip) {
   for (const auto& methodCase : kMethodCases) {
     const auto idx = MethodToIdx(methodCase.method);
     EXPECT_EQ(MethodFromIdx(idx), methodCase.method);
-    EXPECT_EQ(MethodIdxToStr(methodCase.method), methodCase.token);
+    EXPECT_EQ(MethodToStr(methodCase.method), methodCase.token);
   }
 }
 
@@ -72,7 +72,7 @@ TEST(HttpMethod, MethodBitmapOperatorsAndQueries) {
 
   for (const auto& methodCase : kMethodCases) {
     EXPECT_TRUE(IsMethodSet(mask, methodCase.method));
-    EXPECT_TRUE(IsMethodSet(mask, MethodToIdx(methodCase.method)));
+    EXPECT_TRUE(IsMethodIdxSet(mask, MethodToIdx(methodCase.method)));
   }
 
   const auto traceMask = static_cast<MethodBmp>(Method::TRACE);

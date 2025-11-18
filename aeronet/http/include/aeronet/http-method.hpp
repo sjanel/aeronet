@@ -4,11 +4,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
-#include <type_traits>
 
 namespace aeronet::http {
 
-enum class Method : uint16_t {
+using MethodBmp = uint16_t;
+
+enum class Method : MethodBmp {
   GET = 1 << 0,
   HEAD = 1 << 1,
   POST = 1 << 2,
@@ -20,25 +21,17 @@ enum class Method : uint16_t {
   PATCH = 1 << 8
 };
 
-using MethodIdx = std::underlying_type_t<Method>;
+using MethodIdx = uint8_t;
+
 inline constexpr MethodIdx kNbMethods = 9;
 
-using MethodBmp = uint16_t;
-
 constexpr MethodBmp operator|(Method lhs, Method rhs) noexcept {
-  using T = std::underlying_type_t<Method>;
-  return static_cast<MethodBmp>(static_cast<T>(lhs) | static_cast<T>(rhs));
+  return static_cast<MethodBmp>(lhs) | static_cast<MethodBmp>(rhs);
 }
 
-constexpr MethodBmp operator|(MethodBmp lhs, Method rhs) noexcept {
-  using T = std::underlying_type_t<Method>;
-  return static_cast<MethodBmp>(static_cast<T>(lhs) | static_cast<T>(rhs));
-}
+constexpr MethodBmp operator|(MethodBmp lhs, Method rhs) noexcept { return lhs | static_cast<MethodBmp>(rhs); }
 
-constexpr MethodBmp operator|(Method lhs, MethodBmp rhs) noexcept {
-  using T = std::underlying_type_t<Method>;
-  return static_cast<MethodBmp>(static_cast<T>(lhs) | static_cast<T>(rhs));
-}
+constexpr MethodBmp operator|(Method lhs, MethodBmp rhs) noexcept { return static_cast<MethodBmp>(lhs) | rhs; }
 
 static_assert(kNbMethods <= sizeof(MethodBmp) * 8,
               "MethodBmp type too small to hold all methods; increase size or change type");
@@ -46,12 +39,10 @@ static_assert(kNbMethods <= sizeof(MethodBmp) * 8,
 // Check if a method is allowed by mask.
 constexpr bool IsMethodSet(MethodBmp mask, Method method) { return (mask & static_cast<MethodBmp>(method)) != 0U; }
 
-constexpr bool IsMethodSet(MethodBmp mask, MethodIdx methodIdx) {
-  return (mask & (1U << static_cast<MethodBmp>(methodIdx))) != 0U;
-}
+constexpr bool IsMethodIdxSet(MethodBmp mask, MethodIdx methodIdx) { return (mask & (1U << methodIdx)) != 0U; }
 
 constexpr MethodIdx MethodToIdx(Method method) {
-  return static_cast<MethodIdx>(std::countr_zero(static_cast<MethodIdx>(method)));
+  return static_cast<MethodIdx>(std::countr_zero(static_cast<MethodBmp>(method)));
 }
 
 constexpr Method MethodFromIdx(MethodIdx methodIdx) { return static_cast<http::Method>(1U << methodIdx); }
@@ -59,12 +50,14 @@ constexpr Method MethodFromIdx(MethodIdx methodIdx) { return static_cast<http::M
 inline constexpr std::string_view kMethodStrings[] = {"GET",     "HEAD",    "POST",  "PUT",  "DELETE",
                                                       "CONNECT", "OPTIONS", "TRACE", "PATCH"};
 
-constexpr std::string_view MethodIdxToStr(Method methodIdx) { return kMethodStrings[MethodToIdx(methodIdx)]; }
+constexpr std::string_view MethodIdxToStr(MethodIdx methodIdx) { return kMethodStrings[methodIdx]; }
+
+constexpr std::string_view MethodToStr(Method method) { return MethodIdxToStr(MethodToIdx(method)); }
 
 inline constexpr std::size_t kAllMethodsStrLen = []() {
   std::size_t len = 0;
   for (MethodIdx methodIdx = 0; methodIdx < kNbMethods; ++methodIdx) {
-    len += MethodIdxToStr(MethodFromIdx(methodIdx)).size();
+    len += MethodIdxToStr(methodIdx).size();
   }
   return len;
 }();

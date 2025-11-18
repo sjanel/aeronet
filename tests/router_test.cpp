@@ -518,8 +518,8 @@ TEST(RouterTest, AllowedMethodsAndGlobalFallback) {
                         [](const HttpRequest &) { return HttpResponse(); });
 
   auto allowed = routerAllowed.allowedMethods("/combo2");
-  EXPECT_TRUE(http::IsMethodSet(allowed, MethodToIdx(http::Method::GET)));
-  EXPECT_TRUE(http::IsMethodSet(allowed, MethodToIdx(http::Method::POST)));
+  EXPECT_TRUE(http::IsMethodIdxSet(allowed, MethodToIdx(http::Method::GET)));
+  EXPECT_TRUE(http::IsMethodIdxSet(allowed, MethodToIdx(http::Method::POST)));
 
   // Path not registered -> all methods allowed because global handler present
   auto allAllowed = routerAllowed.allowedMethods("/nope");
