@@ -739,7 +739,7 @@ The final `0\r\n` is the zero-length chunk indicating end of body, followed by t
 
 - Trailers are buffered in their own buffer
 - Buffer size is reserved upfront when emitting the final chunk
-- Final chunk string is moved into HttpBody for efficient transmission
+- Final chunk string is moved into HttpPayload for efficient transmission
 
 #### Trailer Validation
 

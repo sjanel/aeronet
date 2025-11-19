@@ -27,20 +27,20 @@ class HttpPayload {
  public:
   HttpPayload() noexcept = default;
 
-  // Constructs a HttpBody by taking ownership of the given std::string.
+  // Constructs a HttpPayload by taking ownership of the given std::string.
   explicit HttpPayload(std::string str) noexcept : _data(std::move(str)) {}
 
-  // Constructs a HttpBody by taking ownership of the given std::vector<char>.
+  // Constructs a HttpPayload by taking ownership of the given std::vector<char>.
   explicit HttpPayload(std::vector<char> vec) noexcept : _data(std::move(vec)) {}
 
-  // Constructs a HttpBody by taking ownership of the given std::vector<std::byte>.
+  // Constructs a HttpPayload by taking ownership of the given std::vector<std::byte>.
   explicit HttpPayload(std::vector<std::byte> vec) noexcept : _data(std::move(vec)) {}
 
-  // Constructs a HttpBody by taking ownership of the given buffer.
+  // Constructs a HttpPayload by taking ownership of the given buffer.
   explicit HttpPayload(std::unique_ptr<char[]> buf, std::size_t size) noexcept
       : _data(CharBuffer{std::move(buf), size}) {}
 
-  // Constructs a HttpBody by taking ownership of the given buffer.
+  // Constructs a HttpPayload by taking ownership of the given buffer.
   explicit HttpPayload(std::unique_ptr<std::byte[]> buf, std::size_t size) noexcept
       : _data(BytesBuffer{std::move(buf), size}) {}
 
@@ -168,16 +168,20 @@ class HttpPayload {
             _data = RawChars(capa);
           } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
                                std::is_same_v<T, std::vector<std::byte>>) {
-            val.reserve(val.size() + capa);
+            auto neededCapa = val.size() + capa;
+            if (val.capacity() < neededCapa) {
+              const auto doubledCapa = val.capacity() * 2U;
+              if (neededCapa < doubledCapa) {
+                neededCapa = doubledCapa;
+              }
+              val.reserve(neededCapa);
+            }
           } else if constexpr (std::is_same_v<T, RawChars>) {
             val.ensureAvailableCapacityExponential(capa);
           } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
             // switch to RawChars to simplify appending
-            RawChars rawChars(val.second + capa);
-
-            rawChars.unchecked_append(reinterpret_cast<const char*>(val.first.get()), val.second);
-
-            _data = std::move(rawChars);
+            auto beg = reinterpret_cast<const char*>(val.first.get());
+            _data = RawChars(beg, beg + val.second);
           }
         },
         _data);
@@ -189,16 +193,16 @@ class HttpPayload {
         [sz](auto& val) -> void {
           using T = std::decay_t<decltype(val)>;
           if constexpr (std::is_same_v<T, std::monostate>) {
-            throw std::runtime_error("Cannot call addSize on a monostate");
+            throw std::logic_error("Cannot call addSize on a monostate");
           } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
                                std::is_same_v<T, std::vector<std::byte>>) {
             val.resize(val.size() + sz);
           } else if constexpr (std::is_same_v<T, RawChars>) {
             val.addSize(sz);
           } else if constexpr (std::is_same_v<T, CharBuffer>) {
-            throw std::runtime_error("Cannot call addSize on a CharBuffer");
+            throw std::logic_error("Cannot call addSize on a CharBuffer");
           } else if constexpr (std::is_same_v<T, BytesBuffer>) {
-            throw std::runtime_error("Cannot call addSize on a BytesBuffer");
+            throw std::logic_error("Cannot call addSize on a BytesBuffer");
           }
         },
         _data);
