@@ -14,6 +14,7 @@
 
 #include "aeronet/internal/raw-bytes-base.hpp"
 #include "aeronet/vector.hpp"
+#include "gtest/gtest.h"
 
 namespace aeronet {
 
@@ -231,6 +232,12 @@ TEST(RawBytesEqual, EqualityEmpty) {
   buf1.push_back(static_cast<std::byte>('a'));
   EXPECT_NE(buf1, buf2);
   EXPECT_NE(buf2, buf1);
+}
+
+TEST(RawBytes, InvalidSetSize) {
+  RawBytes buf(42);
+
+  EXPECT_DEBUG_DEATH(buf.setSize(43), "");  // larger than capacity
 }
 
 }  // namespace aeronet

@@ -80,6 +80,7 @@ option(AERONET_SPDLOG_USE_STD_FORMAT "Use std::format instead of fmt::format in 
 # Linting
 option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" ${ASAN_DEFAULT})
 option(AERONET_ENABLE_CLANG_TIDY "Enable clang-tidy analysis" OFF)
+option(AERONET_ENABLE_WARNINGS "Enable extra compiler warnings" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 if(AERONET_ENABLE_CCACHE)

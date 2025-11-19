@@ -3,6 +3,7 @@
 ![aeronet Logo](resources/logo.png)
 
 [![CI](https://github.com/sjanel/aeronet/actions/workflows/ci.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/sjanel/aeronet/branch/main/graph/badge.svg)](https://codecov.io/gh/sjanel/aeronet)
 [![Packaging](https://github.com/sjanel/aeronet/actions/workflows/packaging.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/packaging.yml)
 [![clang-format](https://github.com/sjanel/aeronet/actions/workflows/clang-format-check.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/clang-format-check.yml)
 
