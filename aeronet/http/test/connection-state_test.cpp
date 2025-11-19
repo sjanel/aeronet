@@ -1,3 +1,5 @@
+#include "aeronet/connection-state.hpp"
+
 #include <asm-generic/socket.h>
 #include <fcntl.h>
 #include <gtest/gtest.h>
@@ -12,7 +14,6 @@
 #include <utility>
 
 #include "aeronet/base-fd.hpp"
-#include "aeronet/connection-state.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/transport.hpp"
@@ -47,6 +48,18 @@ TEST(ConnectionStateSendfileTest, KernelSendfileSuccess) {
   EXPECT_EQ(rd, static_cast<ssize_t>(res.bytesDone));
 }
 
+TEST(ConnectionStateSendfileTest, TransportFileInvalidFd) {
+  ConnectionState state;
+  state.fileSend.file = File();
+  state.fileSend.offset = 0;
+  state.fileSend.remaining = 1024;
+  state.fileSend.active = true;
+
+  auto res = state.transportFile(-1, /*tlsFlow=*/false);
+  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::Error);
+  EXPECT_EQ(res.bytesDone, 0);
+}
+
 TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
@@ -65,9 +78,9 @@ TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
 
   // Make client socket non-blocking and intentionally small send buffer so the kernel
   // send buffer fills quickly and sendfile returns EAGAIN.
-  int flags = fcntl(sv[0], F_GETFL, 0);
+  int flags = ::fcntl(sv[0], F_GETFL, 0);
   ASSERT_GE(flags, 0);
-  ASSERT_EQ(fcntl(sv[0], F_SETFL, flags | O_NONBLOCK), 0);
+  ASSERT_EQ(::fcntl(sv[0], F_SETFL, flags | O_NONBLOCK), 0);
 
   int sndbuf = 1024;  // small
   ASSERT_EQ(setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)), 0);
