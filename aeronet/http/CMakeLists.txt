@@ -15,10 +15,11 @@ target_include_directories(aeronet_http
 )
 
 add_unit_test(
-    connection-state-sendfile_test
-    test/connection-state-sendfile_test.cpp
+    connection-state_test
+    test/connection-state_test.cpp
     LIBRARIES
-    aeronet_http aeronet_test_support
+    aeronet_http
+    aeronet_test_support
 )
 
 add_unit_test(
