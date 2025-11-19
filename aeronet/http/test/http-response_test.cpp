@@ -27,6 +27,7 @@
 #include "aeronet/stringconv.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/timedef.hpp"
+#include "gtest/gtest.h"
 
 namespace aeronet {
 
@@ -90,6 +91,8 @@ TEST_F(HttpResponseTest, StatusOnly) {
 
   EXPECT_EQ(full, "HTTP/1.1 404\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
+
+TEST_F(HttpResponseTest, BadStatusCode) { EXPECT_DEBUG_DEATH(HttpResponse(1000), ""); }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
   HttpResponse resp(http::StatusCodeOK, "OK");

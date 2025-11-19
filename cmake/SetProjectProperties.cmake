@@ -7,7 +7,7 @@ function(set_project_properties name)
   target_compile_definitions(${name} PUBLIC "AERONET_VERSION_STR=\"${AERONET_PROJECT_VERSION}\"")
 
   # Warning levels
-  if(PROJECT_IS_TOP_LEVEL)
+  if(AERONET_ENABLE_WARNINGS)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
       # Basic warnings
       if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")

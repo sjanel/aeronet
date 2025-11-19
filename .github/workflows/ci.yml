@@ -122,3 +122,102 @@ jobs:
           path: install
           if-no-files-found: ignore
           retention-days: 7
+
+  coverage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      BUILD_DIR: build-coverage
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install coverage toolchain and dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build gcc-13 g++-13 \
+            libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev \
+            libprotobuf-dev protobuf-compiler python3-pip
+          python3 -m pip install --upgrade pip
+          python3 -m pip install gcovr
+
+      - name: Configure compilers
+        run: |
+          echo "CC=gcc-13" >> $GITHUB_ENV
+          echo "CXX=g++-13" >> $GITHUB_ENV
+
+      - name: Configure with coverage flags
+        run: |
+          cmake -S . -B ${BUILD_DIR} -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DAERONET_BUILD_TESTS=ON \
+            -DAERONET_BUILD_EXAMPLES=OFF \
+            -DAERONET_BUILD_BENCHMARKS=OFF \
+            -DAERONET_ENABLE_ASAN=OFF \
+            -DAERONET_ENABLE_CLANG_TIDY=OFF \
+            -DAERONET_ENABLE_SPDLOG=ON \
+            -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_KTLS=ON \
+            -DAERONET_ENABLE_BROTLI=ON \
+            -DAERONET_ENABLE_ZLIB=ON \
+            -DAERONET_ENABLE_ZSTD=ON \
+            -DAERONET_ENABLE_OPENTELEMETRY=ON \
+            -DCMAKE_C_FLAGS="--coverage -fno-inline -fno-inline-functions" \
+            -DCMAKE_CXX_FLAGS="--coverage -fno-inline -fno-inline-functions" \
+            -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+
+      - name: Build (coverage)
+        run: cmake --build ${BUILD_DIR} --parallel
+
+      - name: Run unit tests (coverage)
+        run: ctest --test-dir ${BUILD_DIR} --output-on-failure
+
+      - name: Generate coverage reports
+        run: |
+          # Generate XML (Cobertura) report
+          gcovr --root . --object-directory build-coverage \
+            --filter 'aeronet/' \
+            --exclude '.*CompilerId.*' \
+            --exclude '.*_test\.cpp$' \
+            --exclude 'build-coverage/_deps' \
+            --gcov-ignore-errors=no_working_dir_found \
+            --gcov-ignore-errors=source_not_found \
+            --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
+            --txt-metric branch \
+            --xml --xml-pretty \
+            --output build-coverage/coverage.xml \
+            --print-summary
+
+          # Generate HTML detailed report
+          gcovr --root . --object-directory build-coverage \
+            --filter 'aeronet/' \
+            --exclude '.*CompilerId.*' \
+            --exclude '.*_test\.cpp$' \
+            --exclude 'build-coverage/_deps' \
+            --gcov-ignore-errors=no_working_dir_found \
+            --gcov-ignore-errors=source_not_found \
+            --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
+            --txt-metric branch \
+            --html-details \
+            --output build-coverage/coverage.html
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          files: build-coverage/coverage.xml
+          flags: unittests
+          name: aeronet-unit-tests
+          fail_ci_if_error: true
+          disable_search: true
+          verbose: true
+          
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: coverage-report
+          path: |
+            build-coverage/coverage.xml
+            build-coverage/coverage.html
