@@ -35,3 +35,10 @@ add_unit_test(
     aeronet_sys
     aeronet_test_support
 )
+
+add_unit_test(
+    socket_test
+    test/socket_test.cpp
+    LIBRARIES
+    aeronet_sys
+)
