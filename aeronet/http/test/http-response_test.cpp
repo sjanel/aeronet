@@ -398,6 +398,48 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
             "close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 9\r\n\r\nWorldWide");
 }
 
+TEST_F(HttpResponseTest, AppendHeaderValueAppendsToExistingHeader) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.header("X-Custom", "value1");
+  resp.appendHeaderValue("X-Custom", "value2");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-Custom: value1, value2\r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, AppendHeaderValueCreatesHeaderWhenMissing) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.appendHeaderValue("X-Missing", "v1");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-Missing: v1\r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, AppendHeaderValueHonorsCustomSeparator) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.header("X-List", "first");
+  resp.appendHeaderValue("X-List", "second", "; ");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-List: first; second\r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, AppendHeaderValueSupportsNumericOverload) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.header("X-Numeric", "1");
+  resp.appendHeaderValue("X-Numeric", 42, "|");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-Numeric: 1|42\r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, AppendHeaderValueKeepsBodyIntact) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.header("X-Trace", "alpha");
+  resp.body("payload");
+  resp.appendHeaderValue("X-Trace", "beta");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-Trace: alpha, beta\r\n")) << full;
+  EXPECT_TRUE(full.ends_with("payload")) << full;
+  EXPECT_TRUE(full.contains("Content-Length: 7\r\n")) << full;
+}
+
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
   HttpResponse resp(http::StatusCodeOK, "OK");
   resp.header("X-Val", "LEN10VALUE");  // length 10
@@ -1142,6 +1184,49 @@ TEST_F(HttpResponseTest, TrailersCaptured_WithTrailers) {
   EXPECT_TRUE(tv.ends_with(http::CRLF));
   // body() must remain the original captured body (trailers excluded)
   EXPECT_EQ(resp.body(), std::string_view("captured-body"));
+}
+
+TEST(HttpResponseAppendHeaderValue, AppendsToEmptyHeader) {
+  HttpResponse resp;
+  resp.appendHeaderValue("X-Test", "alpha");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "alpha");
+}
+
+TEST(HttpResponseAppendHeaderValue, AppendsWithDefaultSeparator) {
+  HttpResponse resp;
+  resp.header("X-Test", "one");
+  resp.appendHeaderValue("X-Test", "two");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "one, two");
+}
+
+TEST(HttpResponseAppendHeaderValue, AppendsWithCustomSeparator) {
+  HttpResponse resp;
+  resp.header("X-Test", "first");
+  resp.appendHeaderValue("X-Test", "second", "; ");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "first; second");
+}
+
+TEST(HttpResponseAppendHeaderValue, NumericOverloadAndSubsequentAppend) {
+  HttpResponse resp;
+  resp.appendHeaderValue("X-Num", 123);
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Num"), "123");
+
+  resp.appendHeaderValue("X-Num", 456);
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Num"), "123, 456");
+}
+
+TEST(HttpResponseAppendHeaderValue, CaseInsensitiveKeyMatch) {
+  HttpResponse resp;
+  resp.header("x-TeSt", "lower");
+  resp.appendHeaderValue("X-TEST", "upper");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-test"), "lower, upper");
+}
+
+TEST(HttpResponseAppendHeaderValue, VaryMergesAcceptEncoding) {
+  HttpResponse resp;
+  resp.header("Vary", "Origin");
+  resp.appendHeaderValue("Vary", "Accept-Encoding");
+  EXPECT_EQ(resp.headerValueOrEmpty("Vary"), "Origin, Accept-Encoding");
 }
 
 }  // namespace aeronet

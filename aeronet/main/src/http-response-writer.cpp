@@ -26,6 +26,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/timedef.hpp"
 
@@ -60,12 +61,18 @@ void HttpResponseWriter::addHeader(std::string_view name, std::string_view value
   if (_state != State::Opened) {
     return;
   }
+  if (CaseInsensitiveEqual(http::ContentEncoding, name)) {
+    _contentEncodingHeaderPresent = true;
+  }
   _fixedResponse.addHeader(name, value);
 }
 
 void HttpResponseWriter::header(std::string_view name, std::string_view value) {
   if (_state != State::Opened) {
     return;
+  }
+  if (CaseInsensitiveEqual(http::ContentEncoding, name)) {
+    _contentEncodingHeaderPresent = true;
   }
   _fixedResponse.header(name, value);
 }
@@ -107,7 +114,7 @@ void HttpResponseWriter::ensureHeadersSent() {
   if (_compressionActivated && _compressionFormat != Encoding::none) {
     _fixedResponse.setHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
     if (_server->_config.compression.addVaryHeader) {
-      _fixedResponse.setHeader(http::Vary, http::AcceptEncoding);
+      _fixedResponse.appendHeaderValue(http::Vary, http::AcceptEncoding);
     }
   }
   if (!_responseMiddlewareApplied) {
@@ -202,8 +209,9 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
   // to send or (b) decide to emit identity data (on end()). This allows us to include the Content-Encoding header
   // reliably when compression triggers mid-stream.
   const auto& compressionConfig = _server->_config.compression;
-  if (_compressionFormat != Encoding::none && !_fixedResponse.userProvidedContentEncoding() && !_compressionActivated &&
-      _preCompressBuffer.size() < compressionConfig.minBytes) {
+
+  if (_compressionFormat != Encoding::none && !_compressionActivated &&
+      _preCompressBuffer.size() < compressionConfig.minBytes && !_contentEncodingHeaderPresent) {
     return accumulateInPreCompressBuffer(data);
   }
 
@@ -377,7 +385,7 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
   if (_state != HttpResponseWriter::State::HeadersSent) {
     _fixedResponse.addHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
     if (_server->_config.compression.addVaryHeader) {
-      _fixedResponse.setHeader(http::Vary, http::AcceptEncoding);
+      _fixedResponse.appendHeaderValue(http::Vary, http::AcceptEncoding);
     }
   }
   ensureHeadersSent();
