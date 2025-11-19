@@ -198,6 +198,43 @@ TEST(HttpStreaming, HeadSuppressedBody) {
   ASSERT_TRUE(resp.contains("Content-Length: 0\r\n"));
 }
 
+#ifdef AERONET_ENABLE_ZLIB
+TEST(HttpStreamingCompression, StreamingWriterAppendsVaryAcceptEncoding) {
+  CompressionConfig compression;
+  compression.minBytes = 8;
+  compression.preferredFormats.clear();
+  compression.preferredFormats.push_back(Encoding::gzip);
+  compression.addVaryHeader = true;
+
+  HttpServerConfig cfg;
+  cfg.withCompression(compression);
+
+  test::TestServer compressionServer(cfg);
+  compressionServer.router().setPath(http::Method::GET, "/vary-writer",
+                                     [](const HttpRequest&, HttpResponseWriter& writer) {
+                                       writer.status(http::StatusCodeOK);
+                                       writer.header("Vary", "Origin");
+                                       writer.contentType("text/plain");
+                                       writer.writeBody(std::string(64, 'a'));
+                                       writer.end();
+                                     });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/vary-writer";
+  opt.headers = {{"Accept-Encoding", "gzip"}};
+
+  const auto raw = test::requestOrThrow(compressionServer.port(), opt);
+  const auto parsed = test::parseResponseOrThrow(raw);
+
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+  auto varyIt = parsed.headers.find("Vary");
+  ASSERT_NE(varyIt, parsed.headers.end());
+  EXPECT_TRUE(varyIt->second.contains("Origin"));
+  EXPECT_TRUE(varyIt->second.contains("Accept-Encoding"));
+}
+#endif
+
 // Coverage goals:
 // 1. setHeader emits custom headers.
 // 2. Multiple calls with unique names all appear.
@@ -533,7 +570,7 @@ TEST(HttpStreamingHeadContentLength, StreamingLateContentLengthIgnoredStaysChunk
   ASSERT_TRUE(getResp.contains("part2"));
 }
 
-#if AERONET_ENABLE_ZLIB
+#ifdef AERONET_ENABLE_ZLIB
 TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDiscouragedButHonored) {
   // We intentionally (mis)use contentLength with auto compression; library will not adjust size.
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
