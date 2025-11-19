@@ -1,6 +1,8 @@
 # aeronet
 
-![aeronet Logo](resources/logo.png)
+<p align="center">
+  <img src="resources/logo-blue-violet.png" alt="aeronet" width="360" />
+</p>
 
 [![CI](https://github.com/sjanel/aeronet/actions/workflows/ci.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/sjanel/aeronet/branch/main/graph/badge.svg)](https://codecov.io/gh/sjanel/aeronet)
