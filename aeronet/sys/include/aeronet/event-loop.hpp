@@ -67,6 +67,7 @@ class EventLoop {
   [[nodiscard]] bool mod(EventFd event) const;
 
   // Delete fd from epoll monitoring.
+  // Log on error.
   void del(int fd) const;
 
   // Polls for ready events up to the poll timeout. On success returns number of ready fds.

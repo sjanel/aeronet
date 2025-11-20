@@ -12,9 +12,9 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/config.hpp"
 #include "aeronet/internal/raw-bytes-base.hpp"
 #include "aeronet/vector.hpp"
-#include "gtest/gtest.h"
 
 namespace aeronet {
 
@@ -37,6 +37,15 @@ TEST(RawBytesTest, DefaultConstructor) {
   EXPECT_EQ(buf.size(), 0);
   EXPECT_TRUE(buf.empty());
   EXPECT_EQ(buf.data(), nullptr);
+  EXPECT_EQ(buf.begin(), buf.end());
+  EXPECT_EQ(buf.data(), buf.data() + buf.size());
+}
+
+TEST(RawBytesTest, ConstructorZeroCapacity) {
+  RawBytes buf(0);
+  EXPECT_EQ(buf.size(), 0);
+  EXPECT_TRUE(buf.empty());
+  EXPECT_NE(buf.data(), nullptr);  // malloc(0) may return non-null
   EXPECT_EQ(buf.begin(), buf.end());
   EXPECT_EQ(buf.data(), buf.data() + buf.size());
 }
@@ -226,7 +235,7 @@ TEST(RawBytesEqual, EqualityOperatorNominal) {
 
 TEST(RawBytesEqual, EqualityEmpty) {
   RawBytes buf1;
-  RawBytes buf2;
+  RawBytes buf2(std::span<const std::byte>{});
   EXPECT_EQ(buf1, buf2);
 
   buf1.push_back(static_cast<std::byte>('a'));
@@ -234,10 +243,78 @@ TEST(RawBytesEqual, EqualityEmpty) {
   EXPECT_NE(buf2, buf1);
 }
 
+TEST(RawBytes, CopyFromEmpty) {
+  RawBytes buf(10);
+  RawBytes buf2{std::span<const std::byte>{}};
+  buf = buf2;
+  EXPECT_EQ(buf.size(), 0U);
+  EXPECT_EQ(buf.capacity(), 10);
+}
+
 TEST(RawBytes, InvalidSetSize) {
   RawBytes buf(42);
 
   EXPECT_DEBUG_DEATH(buf.setSize(43), "");  // larger than capacity
+}
+
+TEST(RawBytes, AppendEmpty) {
+  RawBytes buf(10);
+
+  auto ptr = buf.data();
+  buf.append(ptr, ptr);  // OK: zero-length append
+  EXPECT_EQ(buf.size(), 0U);
+}
+
+TEST(RawBytes, UnreasonableReserve) {
+  using TinyRawBytes = RawBytesBase<char, std::string_view, std::uint8_t>;
+  TinyRawBytes buf(150);
+
+  buf.append(std::string(150, 'A'));  // OK
+  EXPECT_THROW(buf.reserveExponential(151), std::bad_alloc);
+  EXPECT_THROW(TinyRawBytes(std::string(300, 'B')), std::length_error);
+}
+
+#ifndef NDEBUG
+TEST(RawBytes, Asserts) {
+  RawBytes buf(10);
+
+  EXPECT_DEBUG_DEATH(buf.erase_front(1), "");
+  EXPECT_DEBUG_DEATH(buf.setSize(11), "");
+  EXPECT_DEBUG_DEATH(buf.addSize(11), "");
+}
+#endif
+
+TEST(RawBytes, Assign) {
+  RawBytes buf;
+
+  buf.assign(reinterpret_cast<const std::byte *>("abcdef"), 6);
+  EXPECT_EQ(buf.size(), 6U);
+  EXPECT_EQ(std::memcmp(buf.data(), "abcdef", 6), 0);
+
+  buf.assign(std::span<const std::byte>(reinterpret_cast<const std::byte *>("ghijkl"), 6));
+  EXPECT_EQ(buf.size(), 6U);
+  EXPECT_EQ(std::memcmp(buf.data(), "ghijkl", 6), 0);
+
+  buf.assign(reinterpret_cast<const std::byte *>("mnopqr"), reinterpret_cast<const std::byte *>("mnopqr") + 6);
+  EXPECT_EQ(buf.size(), 6U);
+  EXPECT_EQ(std::memcmp(buf.data(), "mnopqr", 6), 0);
+}
+
+TEST(RawBytes, UnreasanableMalloc) {
+  // AddressSanitizer imposes a maximum allocation size and will abort the
+  // process instead of allowing malloc to return null for extremely large
+  // allocation requests. In that environment the test cannot observe
+  // std::bad_alloc. Detect ASan at compile time and skip the test with a
+  // helpful message.
+#ifdef AERONET_ASAN_ENABLED
+  GTEST_SKIP() << "ASan blocks huge allocations. To run this test, either build without ASan or run the test with\n"
+               << "ASAN_OPTIONS=allocator_may_return_null=1 ./build/aeronet/tech/raw-bytes_test "
+                  "--gtest_filter=RawBytes.UnreasanableMalloc";
+#else
+  EXPECT_THROW(RawBytes(1UL << 45), std::bad_alloc);
+  RawBytes buf(10);
+  EXPECT_THROW(buf.reserve(1UL << 45), std::bad_alloc);
+#endif
 }
 
 }  // namespace aeronet
