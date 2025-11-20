@@ -643,8 +643,7 @@ void HttpServer::emitMiddlewareMetrics(MiddlewareMetrics::Phase phase, bool isGl
 
 tracing::SpanRAII HttpServer::startMiddlewareSpan(MiddlewareMetrics::Phase phase, bool isGlobal, uint32_t index,
                                                   bool streaming) {
-  auto spanPtr = _telemetry.createSpan("http.middleware");
-  tracing::SpanRAII spanScope(std::move(spanPtr));
+  tracing::SpanRAII spanScope(_telemetry.createSpan("http.middleware"));
   if (!spanScope.span) {
     return spanScope;
   }

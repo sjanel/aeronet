@@ -44,4 +44,26 @@ TEST(StringToIntegral, NegativeValue) {
   EXPECT_EQ(StringToIntegral<int64_t>("-9105470"), -9105470);
 }
 
+TEST(StringToIntegral, InvalidValue) {
+  EXPECT_THROW(StringToIntegral<int32_t>(""), std::invalid_argument);
+  EXPECT_THROW(StringToIntegral<int32_t>("--45"), std::invalid_argument);
+  EXPECT_THROW(StringToIntegral<int32_t>("+-23"), std::invalid_argument);
+  EXPECT_THROW(StringToIntegral<int32_t>("abc"), std::invalid_argument);
+}
+
+TEST(StringToIntegral, OutOfRange) {
+  EXPECT_THROW(StringToIntegral<int8_t>("128"), std::invalid_argument);
+  EXPECT_THROW(StringToIntegral<int8_t>("-129"), std::invalid_argument);
+  EXPECT_THROW(StringToIntegral<uint8_t>("-1"), std::invalid_argument);
+  EXPECT_THROW(StringToIntegral<uint32_t>("4294967296"), std::invalid_argument);
+}
+
+TEST(StringToIntegral, IncorrectBufferLength) {
+  const char *str = "12345";
+  EXPECT_EQ(StringToIntegral<int32_t>(str, 5), 12345);
+  EXPECT_EQ(StringToIntegral<int32_t>(str, 3), 123);
+  EXPECT_EQ(StringToIntegral<int32_t>(str, 1), 1);
+  EXPECT_EQ(StringToIntegral<int32_t>(str, 2), 12);
+}
+
 }  // namespace aeronet

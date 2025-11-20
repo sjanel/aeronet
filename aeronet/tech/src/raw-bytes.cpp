@@ -50,7 +50,6 @@ RawBytesBase<T, ViewType, SizeType>::RawBytesBase(ViewType data) : RawBytesBase(
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const_pointer first, const_pointer last)
     : RawBytesBase(SafeCast<size_type>(last - first)) {
-  assert(first <= last);
   if (first != last) {
     std::memcpy(_buf, first, _capacity);
     _size = _capacity;
