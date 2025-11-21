@@ -18,11 +18,11 @@ namespace aeronet::tracing {
 struct Span {
   virtual ~Span() = default;
 
-  virtual void setAttribute([[maybe_unused]] std::string_view key, [[maybe_unused]] int64_t val) noexcept {}
+  virtual void setAttribute([[maybe_unused]] std::string_view key, [[maybe_unused]] int64_t val) noexcept = 0;
 
-  virtual void setAttribute([[maybe_unused]] std::string_view key, [[maybe_unused]] std::string_view val) noexcept {}
+  virtual void setAttribute([[maybe_unused]] std::string_view key, [[maybe_unused]] std::string_view val) noexcept = 0;
 
-  virtual void end() noexcept {}
+  virtual void end() noexcept = 0;
 };
 
 using SpanPtr = std::unique_ptr<Span>;
