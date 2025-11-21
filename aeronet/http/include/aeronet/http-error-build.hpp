@@ -8,6 +8,6 @@
 
 namespace aeronet {
 
-RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& globalHeaders, std::string_view reason);
+RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& globalHeaders, std::string_view body);
 
 }  // namespace aeronet

@@ -315,6 +315,44 @@ TEST(AcceptEncodingNegotiationTest, IdentityExplicitHigherQChosenIfHigherQ) {
   EXPECT_FALSE(resultIdentityHigh.reject);
 }
 
+TEST(AcceptEncodingNegotiationTest, IdentityPreferredInConfigWins) {
+  // If the server preference explicitly contains identity (none), it should be
+  // selected when q values allow it even if other encodings are present.
+  CompressionConfig cfg;
+  cfg.preferredFormats.push_back(Encoding::none);
+  cfg.preferredFormats.push_back(Encoding::gzip);
+  auto sel = EncodingSelector(cfg);
+  // Client prefers gzip slightly more, so gzip should be chosen despite server listing
+  // identity first in its preference list.
+  auto res = sel.negotiateAcceptEncoding("gzip;q=0.8, identity;q=0.7");
+#ifdef AERONET_ENABLE_ZLIB
+  EXPECT_EQ(res.encoding, Encoding::gzip);
+#else
+  EXPECT_EQ(res.encoding, Encoding::none);
+#endif
+}
+
+TEST(AcceptEncodingNegotiationTest, IdentityPreferredButForbiddenSetsReject) {
+  CompressionConfig cfg;
+  cfg.preferredFormats.push_back(Encoding::none);
+  cfg.preferredFormats.push_back(Encoding::gzip);
+  auto sel = EncodingSelector(cfg);
+  // If identity explicitly has q=0 and no alternatives acceptable, negotiation should set reject
+  auto res = sel.negotiateAcceptEncoding("identity;q=0, gzip;q=0");
+  EXPECT_EQ(res.encoding, Encoding::none);
+  EXPECT_TRUE(res.reject);
+}
+
+TEST(AcceptEncodingNegotiationTest, IdentityPreferredAndChosenWhenHigherQ) {
+  CompressionConfig cfg;
+  cfg.preferredFormats.push_back(Encoding::none);
+  cfg.preferredFormats.push_back(Encoding::gzip);
+  auto sel = EncodingSelector(cfg);
+  // If identity has a higher q than gzip, identity should be selected per client preference.
+  auto res = sel.negotiateAcceptEncoding("identity;q=0.95, gzip;q=0.8");
+  EXPECT_EQ(res.encoding, Encoding::none);
+}
+
 TEST(AcceptEncodingNegotiationTest, AllCompressionQZeroFallsBackToIdentity) {
 #ifdef AERONET_ENABLE_ZLIB
   auto sel = makeSelector({Encoding::gzip, Encoding::deflate});

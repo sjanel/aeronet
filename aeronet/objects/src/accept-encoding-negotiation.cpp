@@ -39,8 +39,9 @@ constexpr bool IsEncodingEnabled(Encoding enc) {
       return zlibEnabled();
     case Encoding::none:
       return true;
+    default:
+      std::unreachable();
   }
-  return false;
 }
 
 constexpr std::string_view trim(std::string_view sv) {
