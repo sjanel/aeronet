@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -71,6 +72,19 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
   EXPECT_GT(nb, 0);
   // The EventLoop should have grown capacity at least to hold 'kExtra' events
   EXPECT_GE(loop.capacity(), 4U);
+
+  // test errors
+
+  // invalid callback (null)
+  EXPECT_THROW(loop.poll(nullptr), std::bad_function_call);
+
+  loop.del(readEnd.fd());  // valid del
+  loop.del(readEnd.fd());  // invalid del; should log but not throw
+
+  EXPECT_TRUE(loop.add(EventLoop::EventFd{readEnd.fd(), EventIn}));  // valid add
+  EXPECT_FALSE(loop.add(EventLoop::EventFd{-1, EventIn}));           // invalid add; should log and return false
+
+  EXPECT_FALSE(loop.mod(EventLoop::EventFd{-1, EventIn}));  // invalid mod; should log and return false
 }
 
 TEST(EventLoopTest, MoveConstructorAndAssignment) {
@@ -84,6 +98,12 @@ TEST(EventLoopTest, MoveConstructorAndAssignment) {
   EventLoop loopC;
   loopC = std::move(loopB);
   EXPECT_GE(loopC.capacity(), 1U);
+}
+
+TEST(EventLoopTest, ConstructZeroCapacityShouldBePromoted) {
+  EventLoop loopA(std::chrono::milliseconds(10), 0, 0);
+
+  loopA = EventLoop(std::chrono::milliseconds(10), 0, 128);
 }
 
 TEST(EventLoopTest, NoShrinkPolicy) {
@@ -123,4 +143,8 @@ TEST(EventLoopTest, NoShrinkPolicy) {
     (void)pollCount;  // ignore returned ready count; we care about capacity
     EXPECT_GE(loop.capacity(), capacityAfterGrow);
   }
+}
+
+TEST(EventLoopTest, InvalidEpollFlags) {
+  EXPECT_THROW(EventLoop({}, std::numeric_limits<int>::max(), 0), std::runtime_error);
 }

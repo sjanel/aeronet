@@ -9,7 +9,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
-#include <limits>
 #include <new>
 #include <stdexcept>
 #include <type_traits>
@@ -25,15 +24,6 @@ namespace aeronet {
 
 namespace {
 
-int ComputeEpollTimeoutMs(SysDuration timeout) {
-  const auto timeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
-  if (std::cmp_less(std::numeric_limits<int>::max(), timeoutMs)) {
-    log::warn("Timeout value is too large, clamping to max int");
-    return std::numeric_limits<int>::max();
-  }
-  return static_cast<int>(timeoutMs);
-}
-
 static_assert(std::is_trivially_copyable_v<epoll_event>,
               "epoll_event must be trivially copyable for malloc / realloc usage");
 
@@ -45,7 +35,7 @@ static_assert(EventEt == EPOLLET, "EventEt value mismatch");
 
 EventLoop::EventLoop(SysDuration pollTimeout, int epollFlags, uint32_t initialCapacity)
     : _nbAllocatedEvents(std::max(1U, initialCapacity)),
-      _pollTimeoutMs(ComputeEpollTimeoutMs(pollTimeout)),
+      _pollTimeoutMs(static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(pollTimeout).count())),
       _baseFd(::epoll_create1(epollFlags)),
       _pEvents(std::malloc(_nbAllocatedEvents * sizeof(epoll_event))) {
   if (_pEvents == nullptr) {
@@ -54,6 +44,7 @@ EventLoop::EventLoop(SysDuration pollTimeout, int epollFlags, uint32_t initialCa
   if (!_baseFd) {
     auto err = errno;
     log::error("epoll_create1 failed (flags={}, errno={}, msg={})", epollFlags, err, std::strerror(err));
+    std::free(_pEvents);
     throw std::runtime_error("epoll_create1 failed");
   }
   if (initialCapacity == 0) {
@@ -148,6 +139,8 @@ int EventLoop::poll(const std::function<void(EventFd)>& cb) {
   return nbReadyFds;
 }
 
-void EventLoop::updatePollTimeout(SysDuration pollTimeout) { _pollTimeoutMs = ComputeEpollTimeoutMs(pollTimeout); }
+void EventLoop::updatePollTimeout(SysDuration pollTimeout) {
+  _pollTimeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(pollTimeout).count());
+}
 
 }  // namespace aeronet

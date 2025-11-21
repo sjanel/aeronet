@@ -245,6 +245,11 @@ void HttpServerConfig::validate() {
     throw std::invalid_argument("maxPerEventReadBytes must be 0 or >= initialReadChunkBytes");
   }
 
+  if (std::cmp_less(std::numeric_limits<int>::max(),
+                    std::chrono::duration_cast<std::chrono::milliseconds>(pollInterval).count())) {
+    throw std::invalid_argument("Poll interval value is too large");
+  }
+
   if (globalHeaders.empty()) {
     globalHeaders.append("Server: aeronet");
   } else if (globalHeaders.size() > kMaxGlobalHeaders) {

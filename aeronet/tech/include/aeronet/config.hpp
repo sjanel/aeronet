@@ -63,3 +63,13 @@
 #else
 #error "Unknown compiler. Only clang, gcc and MSVC are supported."
 #endif
+
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define AERONET_ASAN_ENABLED 1
+#endif
+#endif
+
+#if defined(__SANITIZE_ADDRESS__)
+#define AERONET_ASAN_ENABLED 1
+#endif

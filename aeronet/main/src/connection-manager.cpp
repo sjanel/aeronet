@@ -116,11 +116,11 @@ void HttpServer::acceptNewConnections() {
 
     auto [cnxIt, inserted] = _connStates.emplace(std::move(cnx), ConnectionState{});
     if (!inserted) {
-      // This should not happen, if it does, it's probably a bug in the library of a very weird usage of HttpServer.
+      // This should not happen, if it does, it's probably a bug in the library or a very weird usage of HttpServer.
       log::error("Internal error: accepted connection fd # {} already present in connection map", cnxFd);
       // Close the newly accepted connection immediately to avoid fd leak.
       _eventLoop.del(cnxFd);
-      _telemetry.counterAdd("aeronet.connections.duplicate_accept", 1UL);
+      _telemetry.counterAdd("aeronet.connections.errors.duplicate_accept", 1UL);
 
       assert(false);
       continue;
