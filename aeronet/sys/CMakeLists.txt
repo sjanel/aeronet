@@ -1,6 +1,6 @@
 aux_source_directory(src/ AERONET_SYS_SRC_LIST)
 
-add_project_library(aeronet_sys
+AeronetAddProjectLibrary(aeronet_sys
     ${AERONET_SYS_SRC_LIST}
 )
 
@@ -14,21 +14,21 @@ target_include_directories(aeronet_sys
         $<INSTALL_INTERFACE:include>
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     base-fd_test
     test/base-fd_test.cpp
     LIBRARIES
     aeronet_sys
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     event-loop_test
     test/event-loop_test.cpp
     LIBRARIES
     aeronet_sys
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     file_test
     test/file_test.cpp
     LIBRARIES
@@ -36,7 +36,7 @@ add_unit_test(
     aeronet_test_support
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     socket_test
     test/socket_test.cpp
     LIBRARIES
