@@ -1,6 +1,6 @@
 aux_source_directory(src AERONET_TLS_SRC_LIST)
 
-add_project_library(aeronet_tls
+AeronetAddProjectLibrary(aeronet_tls
     ${AERONET_TLS_SRC_LIST}
 )
 

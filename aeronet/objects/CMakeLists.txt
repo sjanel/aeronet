@@ -22,7 +22,7 @@ if(NOT AERONET_ENABLE_BROTLI)
   list(REMOVE_ITEM AERONET_OBJECTS_SRC src/brotli-decoder.cpp)
 endif()
 
-add_project_library(aeronet_objects
+AeronetAddProjectLibrary(aeronet_objects
     ${AERONET_OBJECTS_SRC}
 )
 
@@ -123,14 +123,14 @@ if(AERONET_ENABLE_OPENTELEMETRY)
     endif()
 endif()
 
-add_unit_test(
+AeronetAddUnitTest(
     accept-encoding-negotiation_test
     test/accept-encoding-negotiation_test.cpp
     LIBRARIES
     aeronet_objects
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     aeronet-version_test
     test/aeronet-version_test.cpp
     LIBRARIES
@@ -138,7 +138,7 @@ add_unit_test(
 )
 
 if(AERONET_ENABLE_BROTLI)
-    add_unit_test(
+    AeronetAddUnitTest(
         brotli-encoder-decoder_test
         test/brotli-encoder-decoder_test.cpp
         LIBRARIES
@@ -146,35 +146,35 @@ if(AERONET_ENABLE_BROTLI)
     )
 endif()
 
-add_unit_test(
+AeronetAddUnitTest(
     http-payload_test
     test/http-payload_test.cpp
     LIBRARIES
     aeronet_tech
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     http-server-config_test
     test/http-server-config_test.cpp
     LIBRARIES
     aeronet_objects
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     extra-config-validations_test
     test/extra-config-validations_test.cpp
     LIBRARIES
     aeronet_objects
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     server-stats_test
     test/server-stats_test.cpp
     LIBRARIES
     aeronet_objects
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     opentelemetry-integration_test
     test/opentelemetry-integration_test.cpp
     LIBRARIES
@@ -182,7 +182,7 @@ add_unit_test(
     aeronet_test_support
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     tls-config_test
     test/tls-config_test.cpp
     LIBRARIES
@@ -190,7 +190,7 @@ add_unit_test(
 )
 
 if(AERONET_ENABLE_ZLIB)
-    add_unit_test(
+    AeronetAddUnitTest(
         zlib-encoder-decoder_test
         test/zlib-encoder-decoder_test.cpp
         LIBRARIES
@@ -199,7 +199,7 @@ if(AERONET_ENABLE_ZLIB)
 endif()
 
 if(AERONET_ENABLE_ZSTD)
-    add_unit_test(
+    AeronetAddUnitTest(
         zstd-encoder-decoder_test
         test/zstd-encoder-decoder_test.cpp
         LIBRARIES

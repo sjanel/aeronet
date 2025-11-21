@@ -1,19 +1,19 @@
-add_project_executable(aeronet-minimal minimal.cpp)
+AeronetAddProjectExecutable(aeronet-minimal minimal.cpp)
 target_link_libraries(aeronet-minimal PRIVATE aeronet)
 
-add_project_executable(aeronet-multi multi.cpp)
+AeronetAddProjectExecutable(aeronet-multi multi.cpp)
 target_link_libraries(aeronet-multi PRIVATE aeronet)
 
-add_project_executable(aeronet-async-handle async-handle.cpp)
+AeronetAddProjectExecutable(aeronet-async-handle async-handle.cpp)
 target_link_libraries(aeronet-async-handle PRIVATE aeronet)
 
-add_project_executable(aeronet-sendfile sendfile.cpp)
+AeronetAddProjectExecutable(aeronet-sendfile sendfile.cpp)
 target_link_libraries(aeronet-sendfile PRIVATE aeronet)
 
-add_project_executable(aeronet-static-example static-file.cpp)
+AeronetAddProjectExecutable(aeronet-static-example static-file.cpp)
 target_link_libraries(aeronet-static-example PRIVATE aeronet)
 
 if (AERONET_ENABLE_OPENSSL AND AERONET_ENABLE_KTLS)
-	add_project_executable(aeronet-tls-ktls tls-ktls.cpp)
+	AeronetAddProjectExecutable(aeronet-tls-ktls tls-ktls.cpp)
 	target_link_libraries(aeronet-tls-ktls PRIVATE aeronet)
 endif()

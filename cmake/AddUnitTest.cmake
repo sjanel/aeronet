@@ -1,17 +1,17 @@
 #[[ Create an executable
 Syntax:
-add_exe(<name> src1 [src2 ...] [LIBRARIES lib1 lib2 ...] [DEFINITIONS def1 def2])
+AeronetAddExecutable(<name> src1 [src2 ...] [LIBRARIES lib1 lib2 ...] [DEFINITIONS def1 def2])
 will compile an executable named <name> from source files src1 src2...
 with pre-processor definitions def1 def2 (-Ddef1 -Ddef2 ... will be added to compile command)
 and link against lib1 lib2 ...and libm
 
 Examples:
-add_exe(myexe src1.cpp)
-add_exe(myexe src1.cpp
+AeronetAddExecutable(myexe src1.cpp)
+AeronetAddExecutable(myexe src1.cpp
    LIBRARIES ${CMAKE_SOURCE_DIR}/myLib
    DEFINITIONS UNIT_TEST)
 #]]
-function(add_exe name)
+function(AeronetAddExecutable name)
   set(cur_var "sources")
   set(exe_sources "")
   set(exe_libraries "")
@@ -33,7 +33,7 @@ function(add_exe name)
     endif()
   endforeach()
 
-  add_project_executable(${name} ${exe_sources})
+  AeronetAddProjectExecutable(${name} ${exe_sources})
   set_target_properties(${name} PROPERTIES
     BUILD_RPATH "${runtime_path}")
   target_link_libraries(${name} PRIVATE ${exe_libraries})
@@ -43,22 +43,22 @@ endfunction()
 
 #[[ Create a unit test
 Syntax:
-add_unit_test(<name> src1 [src2 ...] [LIBRARIES lib1 lib2 ...] [DEFINITIONS def1 def2])
+AeronetAddUnitTest(<name> src1 [src2 ...] [LIBRARIES lib1 lib2 ...] [DEFINITIONS def1 def2])
 will compile an unit test named <name> from source files src1 src2...
 with pre-processor definitions def1 def2 (-Ddef1 -Ddef2 ... will be added to compile command)
 and link against lib1 lib2 ... and libm
 
 Examples:
-add_unit_test(myexe src1.cpp)
-add_unit_test(myexe src1.cpp DEFINITIONS UNIT_TEST)
+AeronetAddUnitTest(myexe src1.cpp)
+AeronetAddUnitTest(myexe src1.cpp DEFINITIONS UNIT_TEST)
 #]]
-function(add_unit_test name)
+function(AeronetAddUnitTest name)
   set(oneValueArgs)
   set(multiValueArgs)
   cmake_parse_arguments(PARSE_ARGV 1 MY "${options}" "${oneValueArgs}" "${multiValueArgs}")
 
   if(AERONET_BUILD_TESTS)
-    add_exe(${name} ${MY_UNPARSED_ARGUMENTS})
+    AeronetAddExecutable(${name} ${MY_UNPARSED_ARGUMENTS})
     target_link_libraries(${name} PRIVATE GTest::gtest GTest::gmock GTest::gmock_main)
 
     target_include_directories(${name} PRIVATE include)

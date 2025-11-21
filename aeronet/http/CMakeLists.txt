@@ -1,6 +1,6 @@
 aux_source_directory(src/ AERONET_HTTP_SRC_LIST)
 
-add_project_library(aeronet_http
+AeronetAddProjectLibrary(aeronet_http
     ${AERONET_HTTP_SRC_LIST}
 )
 
@@ -14,7 +14,7 @@ target_include_directories(aeronet_http
         $<INSTALL_INTERFACE:include>
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     connection-state_test
     test/connection-state_test.cpp
     LIBRARIES
@@ -22,56 +22,56 @@ add_unit_test(
     aeronet_test_support
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     cors-policy_test
     test/cors-policy_test.cpp
     LIBRARIES
     aeronet_http
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     http-error-build_test
     test/http-error-build_test.cpp
     LIBRARIES
     aeronet_http
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     http-method_test
     test/http-method_test.cpp
     LIBRARIES
     aeronet_http
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     http-partial-head-write_test
     test/http-partial-head-write_test.cpp
     LIBRARIES
     aeronet_http
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     http-response_test
     test/http-response_test.cpp
     LIBRARIES
     aeronet_http aeronet_sys aeronet_test_support
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     http-request_test
     test/http-request_test.cpp
     LIBRARIES
     aeronet_http
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     mergeable-headers_test
     test/mergeable-headers_test.cpp
     LIBRARIES
     aeronet_tech
 )
 
-add_unit_test(
+AeronetAddUnitTest(
     static-file-handler_test
     test/static-file-handler_test.cpp
     LIBRARIES

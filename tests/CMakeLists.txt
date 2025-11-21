@@ -1,6 +1,6 @@
 function(aeronet_http_test NAME)
 	set(TGT ${NAME}_test)
-	add_project_executable(${TGT} ${TGT}.cpp)
+	AeronetAddProjectExecutable(${TGT} ${TGT}.cpp)
 	target_link_libraries(${TGT} PRIVATE aeronet aeronet_test_support GTest::gtest GTest::gmock GTest::gmock_main)
 	add_test(NAME ${TGT} COMMAND ${TGT})
 endfunction()

@@ -1,6 +1,6 @@
 aux_source_directory(src AERONET_SRC_LIST)
 
-add_project_library(aeronet
+AeronetAddProjectLibrary(aeronet
     ${AERONET_SRC_LIST}
 )
 
