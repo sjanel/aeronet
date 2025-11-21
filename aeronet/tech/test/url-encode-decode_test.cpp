@@ -175,4 +175,34 @@ TEST(UrlEncodeDecode, InPlaceUTF8) {
   EXPECT_EQ(std::string_view(copy.data(), last), std::string_view(original));
 }
 
+TEST(UrlEncodeDecode, EncodeUppercaseHexAndNonAscii) {
+  // Ensure non-ASCII bytes and low-value bytes are percent-encoded using
+  // uppercase hex digits and that unreserved characters remain unchanged.
+  std::string input;
+  input.push_back(static_cast<char>(0xFF));  // should encode as %FF
+  input.push_back(static_cast<char>(0x01));  // should encode as %01
+  input.push_back('A');                      // unreserved
+
+  auto encoded = encodeString(input, IsUnreserved{});
+  EXPECT_NE(encoded.find("%FF"), std::string::npos);
+  EXPECT_NE(encoded.find("%01"), std::string::npos);
+  EXPECT_EQ(encoded.back(), 'A');
+}
+
+TEST(UrlEncodeDecode, URLEncodedSizeMatchesOutput) {
+  // Build a mixed input and verify URLEncodedSize equals the produced length
+  // from URLEncode for a variety of bytes.
+  std::string sample;
+  // include a few representative bytes: alnum, space, reserved, non-ascii
+  sample.push_back('x');
+  sample.push_back(' ');
+  sample.push_back('/');
+  sample.push_back(static_cast<char>(0x80));
+  sample.push_back('~');
+
+  const std::size_t expectedSize = URLEncodedSize(sample, IsUnreserved{});
+  auto out = encodeString(sample, IsUnreserved{});
+  EXPECT_EQ(out.size(), expectedSize);
+}
+
 }  // namespace aeronet

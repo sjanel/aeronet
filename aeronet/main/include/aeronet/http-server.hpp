@@ -423,7 +423,7 @@ class HttpServer {
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // If immediate=true the connection will be closed without waiting for buffered writes to drain.
   void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, bool immediate = false,
-                       std::string_view reason = {});
+                       std::string_view body = {});
   // Outbound write helpers
   bool queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::PreparedResponse prepared);
   bool queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData, std::uint64_t extraQueuedBytes = 0);
