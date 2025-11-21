@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <new>
 #include <stdexcept>
 #include <string_view>
 
@@ -14,14 +15,12 @@ namespace aeronet {
 BrotliEncoderContext::BrotliEncoderContext(RawChars &sharedBuf, int quality, int window)
     : _state(BrotliEncoderCreateInstance(nullptr, nullptr, nullptr), &BrotliEncoderDestroyInstance), _buf(sharedBuf) {
   if (!_state) {
-    throw std::runtime_error("BrotliEncoderCreateInstance failed");
+    throw std::bad_alloc();
   }
-  if (quality >= 0 &&
-      BrotliEncoderSetParameter(_state.get(), BROTLI_PARAM_QUALITY, static_cast<uint32_t>(quality)) == BROTLI_FALSE) {
+  if (BrotliEncoderSetParameter(_state.get(), BROTLI_PARAM_QUALITY, static_cast<uint32_t>(quality)) == BROTLI_FALSE) {
     throw std::invalid_argument("Brotli set quality failed");
   }
-  if (window > 0 &&
-      BrotliEncoderSetParameter(_state.get(), BROTLI_PARAM_LGWIN, static_cast<uint32_t>(window)) == BROTLI_FALSE) {
+  if (BrotliEncoderSetParameter(_state.get(), BROTLI_PARAM_LGWIN, static_cast<uint32_t>(window)) == BROTLI_FALSE) {
     throw std::invalid_argument("Brotli set window failed");
   }
 }
