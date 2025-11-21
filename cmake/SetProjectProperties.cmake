@@ -1,4 +1,4 @@
-function(set_project_properties name)
+function(AeronetSetProjectProperties name)
 
   # Export the version string to consumers. Use a PUBLIC compile definition so
   # installed/exported targets provide AERONET_VERSION_STR to downstream
@@ -141,16 +141,16 @@ function(set_project_properties name)
   endif()
 endfunction()
 
-function(add_project_executable name)
+function(AeronetAddProjectExecutable name)
   add_executable(${name} ${ARGN})
-  set_project_properties(${name})
+  AeronetSetProjectProperties(${name})
 endfunction()
 
-function(add_project_library name)
+function(AeronetAddProjectLibrary name)
   if(AERONET_BUILD_SHARED)
     add_library(${name} SHARED ${ARGN})
   else()
     add_library(${name} STATIC ${ARGN})
   endif()
-  set_project_properties(${name})
+  AeronetSetProjectProperties(${name})
 endfunction()

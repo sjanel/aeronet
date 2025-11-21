@@ -88,16 +88,16 @@ else()
 endif()
 
 # Helper to create a benchmark executable with common properties.
-# Usage: add_project_benchmark(<target> <sources...>)
-function(add_project_benchmark target)
+# Usage: AeronetAddProjectBenchmark(<target> <sources...>)
+function(AeronetAddProjectBenchmark target)
   if(ARGC LESS 2)
-    message(FATAL_ERROR "add_project_benchmark requires at least target and one source")
+    message(FATAL_ERROR "AeronetAddProjectBenchmark requires at least target and one source")
   endif()
   # Collect sources (all remaining args)
   set(sources ${ARGN})
 
   # Create the executable using the project's helper macro
-  add_project_executable(${target} ${sources})
+  AeronetAddProjectExecutable(${target} ${sources})
   target_link_libraries(${target} PRIVATE aeronet aeronet_test_support benchmark::benchmark)
   set_target_properties(${target} PROPERTIES FOLDER "benchmarks")
 
@@ -110,14 +110,14 @@ endfunction()
 
 
 # Internal microbenchmarks (Google Benchmark main contained in bench_request_parse.cpp)
-add_project_benchmark(aeronet-bench-internal ${AERONET_BENCH_INTERNAL_SOURCES})
+AeronetAddProjectBenchmark(aeronet-bench-internal ${AERONET_BENCH_INTERNAL_SOURCES})
 
 # Throughput benchmark (simple skeleton; not using Google Benchmark intentionally)
-add_project_benchmark(aeronet-bench-throughput ${AERONET_BENCH_ROOT}/e2e/bench_throughput_local.cpp)
+AeronetAddProjectBenchmark(aeronet-bench-throughput ${AERONET_BENCH_ROOT}/e2e/bench_throughput_local.cpp)
 
 # Comparative framework benchmark (aeronet vs optional drogon/oatpp)
 set(AERONET_BENCH_FRAMEWORKS_SOURCES ${AERONET_BENCH_ROOT}/frameworks/bench_frameworks_basic.cpp)
-add_project_benchmark(aeronet-bench-frameworks ${AERONET_BENCH_FRAMEWORKS_SOURCES})
+AeronetAddProjectBenchmark(aeronet-bench-frameworks ${AERONET_BENCH_FRAMEWORKS_SOURCES})
 target_include_directories(aeronet-bench-frameworks PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 
 if(AERONET_BENCH_ENABLE_HTTPLIB AND DEFINED cpp_httplib_SOURCE_DIR)
