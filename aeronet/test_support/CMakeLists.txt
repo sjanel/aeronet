@@ -5,7 +5,7 @@ if(NOT AERONET_ENABLE_OPENSSL)
   list(REMOVE_ITEM AERONET_TEST_SUPPORT_SRC_LIST src/test_tls_helper.cpp)
 endif()
 
-add_project_library(aeronet_test_support
+AeronetAddProjectLibrary(aeronet_test_support
     ${AERONET_TEST_SUPPORT_SRC_LIST}
 )
 
