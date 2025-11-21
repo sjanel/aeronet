@@ -72,6 +72,40 @@ namespace aeronet::tracing {
 
 #ifdef AERONET_HAVE_OTEL_SDK
 
+namespace {
+
+// Iterate over stored HTTP headers as (name, value) pairs; the callback receives string_view references.
+template <class Fn>
+void forEachHttpHeader(const TelemetryConfig& cfg, Fn&& fn) {
+  for (auto header : cfg.httpHeadersRange()) {
+    const auto colonPos = header.find(':');
+    if (colonPos == std::string_view::npos) {
+      continue;
+    }
+    auto name = header.substr(0, colonPos);
+    auto value = header.substr(colonPos + 1);
+    while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
+      value.remove_prefix(1);
+    }
+    if (name.empty()) {
+      continue;
+    }
+    std::forward<Fn>(fn)(name, value);
+  }
+}
+
+#if defined(AERONET_HAVE_OTLP_HTTP) || defined(AERONET_HAVE_OTLP_METRICS)
+opentelemetry::exporter::otlp::OtlpHeaders buildOtlpHeaders(const TelemetryConfig& cfg) {
+  opentelemetry::exporter::otlp::OtlpHeaders headers;
+  forEachHttpHeader(cfg, [&](std::string_view name, std::string_view value) {
+    headers.emplace(std::string(name), std::string(value));
+  });
+  return headers;
+}
+#endif
+
+}  // namespace
+
 // OpenTelemetry Span implementation
 class OtelSpan final : public Span {
  public:
@@ -150,6 +184,10 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) : _impl(std::make
     return;
   }
 
+#if defined(AERONET_HAVE_OTLP_HTTP) || defined(AERONET_HAVE_OTLP_METRICS)
+  const auto telemetryHeaders = buildOtlpHeaders(cfg);
+#endif
+
   // Build trace exporter
 #ifdef AERONET_HAVE_OTLP_HTTP
   opentelemetry::exporter::otlp::OtlpHttpExporterOptions opts;
@@ -157,6 +195,7 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) : _impl(std::make
     opts.url = cfg.endpoint();
     log::info("Initializing OTLP HTTP trace exporter with endpoint: {}", cfg.endpoint());
   }
+  opts.http_headers = telemetryHeaders;
   auto exporter = std::unique_ptr<opentelemetry::sdk::trace::SpanExporter>(
       new opentelemetry::exporter::otlp::OtlpHttpExporter(opts));
 #elifdef AERONET_HAVE_OSTREAM_EXPORTER
@@ -208,6 +247,8 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) : _impl(std::make
     log::info("Initializing OTLP HTTP metrics exporter with endpoint: {}", endpoint);
     metric_opts.url = std::move(endpoint);
   }
+
+  metric_opts.http_headers = telemetryHeaders;
 
   auto metric_exporter = std::unique_ptr<opentelemetry::sdk::metrics::PushMetricExporter>(
       new opentelemetry::exporter::otlp::OtlpHttpMetricExporter(metric_opts));

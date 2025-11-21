@@ -871,8 +871,8 @@ ServerStats HttpServer::stats() const {
 }
 
 void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, bool immediate,
-                                 std::string_view reason) {
-  queueData(cnxIt, HttpResponseData(BuildSimpleError(statusCode, _config.globalHeaders, reason)));
+                                 std::string_view body) {
+  queueData(cnxIt, HttpResponseData(BuildSimpleError(statusCode, _config.globalHeaders, body)));
 
   try {
     _parserErrCb(statusCode);

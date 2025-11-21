@@ -150,8 +150,8 @@ if(AERONET_ENABLE_OPENTELEMETRY)
 
     FetchContent_Declare(
       opentelemetry_cpp
-      URL https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v1.23.0.tar.gz
-      URL_HASH SHA256=148ef298a4ef9e016228d53d7208ab9359d4fdf87f55649d60d07ffacc093b33
+      URL https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v1.24.0.tar.gz
+      URL_HASH SHA256=7b8e966affca1daf1906272f4d983631cad85fb6ea60fb6f55dcd1811a730604
     )
     # Configure opentelemetry-cpp to enable OTLP HTTP exporter and a curl http client.
     # CRITICAL: Use nostd (WITH_STL=OFF) to ensure consistent ABI across all opentelemetry types.

@@ -263,6 +263,9 @@ TEST(RawBytes, AppendEmpty) {
   auto ptr = buf.data();
   buf.append(ptr, ptr);  // OK: zero-length append
   EXPECT_EQ(buf.size(), 0U);
+
+  buf.unchecked_append(ptr, ptr);  // OK: zero-length unchecked append
+  EXPECT_EQ(buf.size(), 0U);
 }
 
 TEST(RawBytes, UnreasonableReserve) {
@@ -271,6 +274,7 @@ TEST(RawBytes, UnreasonableReserve) {
 
   buf.append(std::string(150, 'A'));  // OK
   EXPECT_THROW(buf.reserveExponential(151), std::bad_alloc);
+  EXPECT_THROW(buf.ensureAvailableCapacity(151), std::bad_alloc);
   EXPECT_THROW(TinyRawBytes(std::string(300, 'B')), std::length_error);
 }
 
