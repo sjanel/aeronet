@@ -36,3 +36,7 @@ aeronet_http_test(http-trailers)
 aeronet_http_test(http-url-decoding)
 aeronet_http_test(multi-http-server)
 aeronet_http_test(router)
+
+if(AERONET_ENABLE_OPENTELEMETRY)
+	aeronet_http_test(opentelemetry-e2e)
+endif()

@@ -21,6 +21,7 @@
 #if __has_include( \
     <opentelemetry/sdk/trace/tracer_provider.h>) && __has_include(<opentelemetry/sdk/trace/simple_processor.h>)
 #define AERONET_HAVE_OTEL_SDK 1
+#include <opentelemetry/sdk/resource/resource.h>
 #include <opentelemetry/sdk/trace/simple_processor.h>
 #include <opentelemetry/sdk/trace/tracer_provider.h>
 #include <opentelemetry/trace/span.h>
@@ -103,6 +104,13 @@ opentelemetry::exporter::otlp::OtlpHeaders buildOtlpHeaders(const TelemetryConfi
   return headers;
 }
 #endif
+
+opentelemetry::sdk::resource::Resource buildTelemetryResource(const TelemetryConfig& cfg) {
+  if (cfg.serviceName().empty()) {
+    return opentelemetry::sdk::resource::Resource::Create({});
+  }
+  return opentelemetry::sdk::resource::Resource::Create({{"service.name", std::string(cfg.serviceName())}});
+}
 
 }  // namespace
 
@@ -187,6 +195,7 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) : _impl(std::make
 #if defined(AERONET_HAVE_OTLP_HTTP) || defined(AERONET_HAVE_OTLP_METRICS)
   const auto telemetryHeaders = buildOtlpHeaders(cfg);
 #endif
+  const auto telemetryResource = buildTelemetryResource(cfg);
 
   // Build trace exporter
 #ifdef AERONET_HAVE_OTLP_HTTP
@@ -215,11 +224,11 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) : _impl(std::make
   auto sampler = std::unique_ptr<opentelemetry::sdk::trace::Sampler>(
       new opentelemetry::sdk::trace::TraceIdRatioBasedSampler(cfg.sampleRate));
 
-  impl_->tracerProvider_ = opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider>(
-      new opentelemetry::sdk::trace::TracerProvider(std::move(processor), std::move(sampler)));
+  _impl->_tracerProvider = opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider>(
+      new opentelemetry::sdk::trace::TracerProvider(std::move(processor), telemetryResource, std::move(sampler)));
 #else
   _impl->_tracerProvider = opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider>(
-      new opentelemetry::sdk::trace::TracerProvider(std::move(processor)));
+      new opentelemetry::sdk::trace::TracerProvider(std::move(processor), telemetryResource));
 #endif
 
   // Get tracer from this provider (NOT from global)
@@ -261,7 +270,8 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) : _impl(std::make
       new opentelemetry::sdk::metrics::PeriodicExportingMetricReader(std::move(metric_exporter), reader_opts));
 
   // Create MeterProvider - keep it in this instance, NO global singleton
-  _impl->_meterProvider = std::make_shared<opentelemetry::sdk::metrics::MeterProvider>();
+  _impl->_meterProvider = std::make_shared<opentelemetry::sdk::metrics::MeterProvider>(
+      std::make_unique<opentelemetry::sdk::metrics::ViewRegistry>(), telemetryResource);
 
   // Add the metric reader to the provider
   _impl->_meterProvider->AddMetricReader(metric_reader);
@@ -276,7 +286,7 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) : _impl(std::make
   }
 
 #else
-  log::info("Metrics SDK not available - metrics disabled");
+  log::warn("Metrics SDK not available - metrics disabled");
 #endif
 
   _impl->_initialized = true;
