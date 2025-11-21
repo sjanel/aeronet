@@ -21,8 +21,9 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorOnly) {
     EXPECT_TRUE(full.rfind(expected, 0) == 0) << "Response did not start with '" << expected << "':\n" << full;
 
     // Check required headers exist
-    EXPECT_TRUE(full.contains("Content-Length: 0\r\n")) << full;
+    EXPECT_TRUE(full.contains("Content-Length: 3\r\n")) << full;
     EXPECT_TRUE(full.contains("Connection: close\r\n")) << full;
+    EXPECT_TRUE(full.ends_with("\r\n\r\nErr")) << full;
 
     // Date header should be present and of RFC7231 length (29 chars after 'Date: ')
     auto datePos = full.find("Date: ");
@@ -57,4 +58,32 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorUsesDefaultReasonWhenEmpty) {
         std::string("HTTP/1.1 ") + std::to_string(code) + " " + std::string(http::reasonPhraseFor(code));
     EXPECT_TRUE(full.rfind(expected, 0) == 0) << "Response did not start with '" << expected << "':\n" << full;
   }
+}
+
+TEST(HttpErrorBuildTest, BuildSimpleErrorWithEmptyBody) {
+  // When body is empty, Content-Length should be 0 and no body data should be present
+  auto data = BuildSimpleError(http::StatusCode{404}, {}, "");
+  std::string_view full(data);
+
+  EXPECT_TRUE(full.contains("Content-Length: 0\r\n")) << full;
+  EXPECT_TRUE(full.ends_with("\r\n\r\n")) << full;
+}
+
+TEST(HttpErrorBuildTest, BuildSimpleErrorWithLargeBody) {
+  // Test with a larger body to ensure Content-Length is computed correctly
+  std::string largeBody(1024, 'A');  // 1 KB body of 'A's
+  auto data = BuildSimpleError(http::StatusCode{413}, {}, largeBody);
+  std::string_view full(data);
+
+  EXPECT_TRUE(full.contains("Content-Length: 1024\r\n")) << full;
+  EXPECT_TRUE(full.ends_with("\r\n\r\n" + largeBody)) << full;
+}
+
+TEST(HttpErrorBuildTest, InvalidStatusCodeCaughtInDebug) {
+#ifndef NDEBUG
+  // In debug builds, an invalid status code should trigger an assertion failure
+  EXPECT_DEATH({ BuildSimpleError(static_cast<http::StatusCode>(99), {}, "Bad"); }, "");  // status < 100
+
+  EXPECT_DEATH({ BuildSimpleError(static_cast<http::StatusCode>(1000), {}, "Bad"); }, "");  // status >= 1000
+#endif
 }
