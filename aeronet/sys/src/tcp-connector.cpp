@@ -46,7 +46,7 @@ ConnectResult ConnectTCP(char* buf, std::string_view host, std::string_view port
   ConnectResult connectResult;
 
   if (gai != 0 || res == nullptr) {
-    // avoid depending on a logging helper here; getaddrinfo error is enough
+    log::error("ConnectTCP: getaddrinfo('{}', '{}') failed: {}", host, port, gai_strerror(gai));
     connectResult.failure = true;
     return connectResult;
   }
@@ -56,10 +56,12 @@ ConnectResult ConnectTCP(char* buf, std::string_view host, std::string_view port
 
     connectResult.cnx = Connection(BaseFd(::socket(rp->ai_family, socktype, rp->ai_protocol)));
     if (!connectResult.cnx) {
-      int saved = errno;
+      const int saved = errno;
+      log::error(
+          "ConnectTCP: socket() failed for addrinfo entry (family={}, socktype={}, protocol={}): errno={}, msg={}",
+          rp->ai_family, rp->ai_socktype, rp->ai_protocol, saved, std::strerror(saved));
       if (saved == EMFILE || saved == ENFILE) {
-        connectResult.failure = true;
-        return connectResult;
+        break;  // no point in continuing
       }
       continue;
     }
@@ -71,25 +73,22 @@ ConnectResult ConnectTCP(char* buf, std::string_view host, std::string_view port
 
     const int connectErr = errno;
     // Non-blocking connect started -> completion will be signalled via poll/epoll
-    if (connectErr == EINPROGRESS) {
-      connectResult.connectPending = true;
-      return connectResult;
+    switch (connectErr) {
+      case EINPROGRESS:
+        [[fallthrough]];
+      case EALREADY:
+        // EALREADY: a previous non-blocking connect is already in progress on this socket
+        connectResult.connectPending = true;
+        return connectResult;
+      case EINTR:
+        // EINTR: interrupted system call; treat as transient and try next address
+        continue;
+      default:
+        log::error(
+            "ConnectTCP: connect() failed for addrinfo entry (family={}, socktype={}, protocol={}): errno={}, msg={}",
+            rp->ai_family, rp->ai_socktype, rp->ai_protocol, connectErr, std::strerror(connectErr));
+        break;
     }
-    // EALREADY: a previous non-blocking connect is already in progress on this socket
-    if (connectErr == EALREADY) {
-      connectResult.connectPending = true;
-      return connectResult;
-    }
-    // EISCONN: socket is already connected
-    if (connectErr == EISCONN) {
-      return connectResult;
-    }
-    // EINTR: interrupted system call; treat as transient and try next address
-    if (connectErr == EINTR) {
-      continue;
-    }
-    log::warn("ConnectTCP: connect() failed for addrinfo entry (family={}, socktype={}, protocol={}): errno={}, msg={}",
-              rp->ai_family, rp->ai_socktype, rp->ai_protocol, connectErr, std::strerror(connectErr));
   }
   connectResult.failure = true;
   return connectResult;

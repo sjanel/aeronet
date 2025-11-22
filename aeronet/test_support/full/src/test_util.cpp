@@ -3,7 +3,7 @@
 #include <asm-generic/socket.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/time.h>
+#include <sys/time.h>  // NOLINT(misc-include-cleaner) used by timeval
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -527,6 +527,7 @@ ParsedResponse parseResponseOrThrow(std::string_view raw) {
 
 void setRecvTimeout(int fd, SysDuration timeout) {
   const int timeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count());
+  // NOLINTNEXTLINE(misc-include-cleaner) from <sys/time.h>
   struct timeval tv{timeoutMs / 1000, static_cast<long>((timeoutMs % 1000) * 1000)};
   if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == -1) {
     throw_errno("Error from setRecvTimeout");

@@ -1,19 +1,236 @@
 #include "aeronet/event-loop.hpp"
 
+#include <dlfcn.h>
 #include <gtest/gtest.h>
+#include <sys/epoll.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cerrno>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <functional>
+#include <initializer_list>
 #include <limits>
+#include <new>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/event.hpp"
+#include "aeronet/sys_test_support.hpp"
 
 using namespace aeronet;
+namespace test_support = aeronet::sys::test_support;
+
+#ifdef __GLIBC__
+extern "C" void* __libc_malloc(size_t) noexcept;          // NOLINT(bugprone-reserved-identifier)
+extern "C" void* __libc_realloc(void*, size_t) noexcept;  // NOLINT(bugprone-reserved-identifier)
+#endif
+
+namespace {
+
+struct EpollCreateAction {
+  bool fail{false};
+  int err{0};
+};
+
+struct EpollWaitAction {
+  enum class Kind : std::uint8_t { Events, Error };
+  Kind kind{Kind::Events};
+  int result{0};
+  int err{0};
+  std::vector<epoll_event> events;
+};
+
+test_support::ActionQueue<EpollCreateAction> gCreateActions;
+test_support::ActionQueue<EpollWaitAction> gWaitActions;
+
+void ResetEpollHooks() {
+  gCreateActions.reset();
+  gWaitActions.reset();
+  test_support::FailNextMalloc(0);
+  test_support::FailNextRealloc(0);
+}
+
+void SetEpollCreateActions(std::initializer_list<EpollCreateAction> actions) { gCreateActions.setActions(actions); }
+
+void SetEpollWaitActions(std::vector<EpollWaitAction> actions) { gWaitActions.setActions(std::move(actions)); }
+
+void FailNextMalloc(int count = 1) { test_support::FailNextMalloc(count); }
+
+void FailNextRealloc(int count = 1) { test_support::FailNextRealloc(count); }
+
+class EventLoopHookGuard {
+ public:
+  EventLoopHookGuard() = default;
+  EventLoopHookGuard(const EventLoopHookGuard&) = delete;
+  EventLoopHookGuard& operator=(const EventLoopHookGuard&) = delete;
+  ~EventLoopHookGuard() { ResetEpollHooks(); }
+};
+
+[[nodiscard]] EpollCreateAction EpollCreateFail(int err) { return EpollCreateAction{true, err}; }
+
+[[nodiscard]] EpollWaitAction WaitReturn(int readyCount, std::vector<epoll_event> events) {
+  EpollWaitAction action;
+  action.kind = EpollWaitAction::Kind::Events;
+  action.result = readyCount;
+  action.events = std::move(events);
+  return action;
+}
+
+[[nodiscard]] EpollWaitAction WaitError(int err) {
+  EpollWaitAction action;
+  action.kind = EpollWaitAction::Kind::Error;
+  action.err = err;
+  return action;
+}
+
+epoll_event MakeEvent(int fd, uint32_t mask) {
+  epoll_event ev{};
+  ev.events = mask;
+  ev.data.fd = fd;
+  return ev;
+}
+
+void CopyEvents(const EpollWaitAction& action, epoll_event* events, int maxevents) {
+  const std::size_t limit = std::min(static_cast<std::size_t>(action.result), static_cast<std::size_t>(maxevents));
+  for (std::size_t i = 0; i < limit && i < action.events.size(); ++i) {
+    events[i] = action.events[i];
+  }
+}
+
+// Disable overriding malloc/realloc for Clang builds instrumented with
+// AddressSanitizer. Clang's ASAN runtime may call allocation functions very
+// early during initialization; providing our own overrides can break ASAN.
+#if defined(__clang__) && defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define WANT_MALLOC_OVERRIDES 0
+#else
+#define WANT_MALLOC_OVERRIDES 1
+#endif
+#else
+#define WANT_MALLOC_OVERRIDES 1
+#endif
+
+#if WANT_MALLOC_OVERRIDES
+void* CallRealMalloc(size_t size) {
+  using MallocFn = void* (*)(size_t);
+  static MallocFn fn = nullptr;
+  static volatile int resolving = 0;
+  if (fn != nullptr) {
+    return fn(size);
+  }
+  // Try to become the resolver using an atomic CAS builtin (no libc calls)
+  if (!__sync_bool_compare_and_swap(&resolving, 0, 1)) {
+    // Another resolver in progress; fall back to direct libc symbol to avoid
+    // calling dlsym while it's being resolved.
+#ifdef __GLIBC__
+    return __libc_malloc(size);
+#else
+    while (fn == nullptr) {
+      __asm__ __volatile__("pause");
+    }
+    return fn(size);
+#endif
+  }
+
+  // We are the resolver. Resolve the next-in-chain allocator via RTLD_NEXT.
+  fn = test_support::ResolveNext<MallocFn>("malloc");
+  __sync_synchronize();
+  resolving = 0;
+  return fn(size);
+}
+
+void* CallRealRealloc(void* ptr, size_t size) {
+  using ReallocFn = void* (*)(void*, size_t);
+  static ReallocFn fn = nullptr;
+  static volatile int resolving = 0;
+  if (fn != nullptr) {
+    return fn(ptr, size);
+  }
+  if (!__sync_bool_compare_and_swap(&resolving, 0, 1)) {
+#ifdef __GLIBC__
+    return __libc_realloc(ptr, size);
+#else
+    while (fn == nullptr) {
+      __asm__ __volatile__("pause");
+    }
+    return fn(ptr, size);
+#endif
+  }
+
+  fn = test_support::ResolveNext<ReallocFn>("realloc");
+  __sync_synchronize();
+  resolving = 0;
+  return fn(ptr, size);
+}
+#endif  // WANT_MALLOC_OVERRIDES
+
+// Note: we intentionally do NOT override `free` to avoid interfering with
+// runtime loader and sanitizer internals which may call `free` during
+// dlsym/dlerror initialization. Only `malloc`/`realloc` are overridden for
+// deterministic failure injection in tests.
+
+}  // namespace
+
+// Provide malloc/realloc overrides only when allowed. On Clang+ASAN we skip
+// overrides to avoid AddressSanitizer runtime initialization problems.
+#if WANT_MALLOC_OVERRIDES
+extern "C" void* malloc(size_t size) {
+  if (test_support::ShouldFailMalloc()) {
+    errno = ENOMEM;
+    return nullptr;
+  }
+  return CallRealMalloc(size);
+}
+
+extern "C" void* realloc(void* ptr, size_t size) {
+  if (test_support::ShouldFailRealloc()) {
+    errno = ENOMEM;
+    return nullptr;
+  }
+  return CallRealRealloc(ptr, size);
+}
+
+// free is intentionally left un-overridden.
+#endif  // WANT_MALLOC_OVERRIDES
+
+extern "C" int epoll_create1(int flags) {
+  using EpollCreateFn = int (*)(int);
+  static EpollCreateFn real_epoll_create1 = reinterpret_cast<EpollCreateFn>(dlsym(RTLD_NEXT, "epoll_create1"));
+  if (real_epoll_create1 == nullptr) {
+    std::abort();
+  }
+  const auto action = gCreateActions.pop();
+  if (action.has_value() && action->fail) {
+    errno = action->err;
+    return -1;
+  }
+  return real_epoll_create1(flags);
+}
+
+extern "C" int epoll_wait(int epfd, epoll_event* events, int maxevents, int timeout) {
+  using EpollWaitFn = int (*)(int, epoll_event*, int, int);
+  static EpollWaitFn real_epoll_wait = reinterpret_cast<EpollWaitFn>(dlsym(RTLD_NEXT, "epoll_wait"));
+  if (real_epoll_wait == nullptr) {
+    std::abort();
+  }
+  const auto action = gWaitActions.pop();
+  if (action.has_value()) {
+    if (action->kind == EpollWaitAction::Kind::Error) {
+      errno = action->err;
+      return -1;
+    }
+    CopyEvents(*action, events, maxevents);
+    return action->result;
+  }
+  return real_epoll_wait(epfd, events, maxevents, timeout);
+}
 
 TEST(EventLoopTest, BasicPollAndGrowth) {
   // Short timeout so poll returns quickly if something goes wrong
@@ -148,4 +365,73 @@ TEST(EventLoopTest, NoShrinkPolicy) {
 
 TEST(EventLoopTest, InvalidEpollFlags) {
   EXPECT_THROW(EventLoop({}, std::numeric_limits<int>::max(), 0), std::runtime_error);
+}
+
+TEST(EventLoopTest, ConstructorThrowsWhenEpollCreateFails) {
+  EventLoopHookGuard guard;
+  SetEpollCreateActions({EpollCreateFail(EMFILE)});
+  EXPECT_THROW(EventLoop(std::chrono::milliseconds(5)), std::runtime_error);
+}
+
+TEST(EventLoopTest, ConstructorThrowsWhenAllocationFails) {
+  EventLoopHookGuard guard;
+  if (!WANT_MALLOC_OVERRIDES) {
+    GTEST_SKIP() << "malloc overrides disabled on this toolchain; skipping";
+  }
+  FailNextMalloc();
+  EXPECT_THROW(EventLoop(std::chrono::milliseconds(5)), std::bad_alloc);
+}
+
+TEST(EventLoopTest, PollReturnsZeroWhenInterrupted) {
+  EventLoopHookGuard guard;
+  SetEpollWaitActions({WaitError(EINTR)});
+  EventLoop loop(std::chrono::milliseconds(5));
+  const int rc = loop.poll([](EventLoop::EventFd) { FAIL() << "callback should not run"; });
+  EXPECT_EQ(0, rc);
+}
+
+TEST(EventLoopTest, PollReturnsMinusOneOnFatalError) {
+  EventLoopHookGuard guard;
+  SetEpollWaitActions({WaitError(EIO)});
+  EventLoop loop(std::chrono::milliseconds(5));
+  const int rc = loop.poll([](EventLoop::EventFd) { FAIL() << "callback should not run"; });
+  EXPECT_EQ(-1, rc);
+}
+
+TEST(EventLoopTest, PollKeepsCapacityWhenReallocFails) {
+  EventLoopHookGuard guard;
+  EventLoop loop(std::chrono::milliseconds(5), 0, 2);
+  const auto initialCapacity = loop.capacity();
+  std::vector<epoll_event> events;
+  events.reserve(initialCapacity);
+  for (uint32_t i = 0; i < initialCapacity; ++i) {
+    events.push_back(MakeEvent(static_cast<int>(i), EventIn));
+  }
+  SetEpollWaitActions({WaitReturn(static_cast<int>(initialCapacity), std::move(events))});
+  if (!WANT_MALLOC_OVERRIDES) {
+    GTEST_SKIP() << "realloc overrides disabled on this toolchain; skipping";
+  }
+  FailNextRealloc();
+
+  int callbacks = 0;
+  const int rc = loop.poll([&](EventLoop::EventFd) { ++callbacks; });
+  EXPECT_EQ(static_cast<int>(initialCapacity), rc);
+  EXPECT_EQ(callbacks, rc);
+  EXPECT_EQ(loop.capacity(), initialCapacity);
+}
+
+TEST(EventLoopTest, PollDoublesCapacityWhenReallocSucceeds) {
+  EventLoopHookGuard guard;
+  EventLoop loop(std::chrono::milliseconds(5), 0, 2);
+  const auto initialCapacity = loop.capacity();
+  std::vector<epoll_event> events;
+  events.reserve(initialCapacity);
+  for (uint32_t i = 0; i < initialCapacity; ++i) {
+    events.push_back(MakeEvent(static_cast<int>(i), EventIn));
+  }
+  SetEpollWaitActions({WaitReturn(static_cast<int>(initialCapacity), std::move(events))});
+
+  const int rc = loop.poll([](EventLoop::EventFd) {});
+  EXPECT_EQ(static_cast<int>(initialCapacity), rc);
+  EXPECT_EQ(loop.capacity(), initialCapacity * 2);
 }

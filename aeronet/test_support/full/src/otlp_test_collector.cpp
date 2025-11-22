@@ -3,7 +3,6 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
-#include <sys/poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -158,11 +157,11 @@ bool OtlpTestCollector::acceptOnce() {
   if (!_listen) {
     return false;
   }
-  pollfd pfd{};
+  pollfd pfd{};  // NOLINT(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
   pfd.fd = _listen.fd();
-  pfd.events = POLLIN;
+  pfd.events = POLLIN;  // NOLINT(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
   constexpr int kPollMs = 25;
-  const int ready = ::poll(&pfd, 1, kPollMs);
+  const int ready = ::poll(&pfd, 1, kPollMs);  // NOLINT(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
   if (ready <= 0) {
     return false;
   }

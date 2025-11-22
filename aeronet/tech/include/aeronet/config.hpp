@@ -35,7 +35,7 @@
 #define AERONET_NOINLINE __declspec(noinline)
 // MSVC does not implement P2647R1 yet
 #define AERONET_STATIC_CONSTEXPR_IN_CONSTEXPR_FUNC constexpr
-#elif defined(__GNUC__)
+#elifdef __GNUC__
 #define AERONET_ALWAYS_INLINE inline __attribute__((__always_inline__))
 #define AERONET_NOINLINE __attribute__((__noinline__))
 #define AERONET_STATIC_CONSTEXPR_IN_CONSTEXPR_FUNC static constexpr
@@ -53,7 +53,7 @@
 #define AERONET_COMPILER_NAME "clang"
 #define AERONET_COMPILER_VERSION \
   AERONET_COMPILER_NAME " " AERONET_VER_STRING(__clang_major__, __clang_minor__, __clang_patchlevel__)
-#elif defined(__GNUC__)
+#elifdef __GNUC__
 #define AERONET_COMPILER_NAME "g++"
 #define AERONET_COMPILER_VERSION \
   AERONET_COMPILER_NAME " " AERONET_VER_STRING(__GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__)
