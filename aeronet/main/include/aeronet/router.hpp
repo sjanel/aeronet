@@ -319,6 +319,7 @@ class Router {
 
   bool matchWithWildcard(const RouteNode& node, bool requestHasTrailingSlash, const RouteNode*& matchedNode) const;
 
+  // prerequisite: path should not be empty
   void splitPathSegments(std::string_view path);
 
   const PathHandlerEntry* computePathHandlerEntry(const RouteNode& matchedNode, bool pathHasTrailingSlash,

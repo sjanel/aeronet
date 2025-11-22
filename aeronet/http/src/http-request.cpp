@@ -121,7 +121,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
     _decodedQueryParams = {};
   }
   const char* pathLast = url::DecodeInPlace(first, questionMark);
-  if (pathLast == nullptr) {
+  if (pathLast == nullptr || first == pathLast) {
     return http::StatusCodeBadRequest;
   }
   _path = std::string_view(first, pathLast);

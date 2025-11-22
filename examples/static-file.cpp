@@ -1,6 +1,4 @@
 #include <aeronet/aeronet.hpp>
-#include <aeronet/static-file-handler.hpp>
-#include <atomic>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
@@ -9,11 +7,6 @@
 #include <iostream>
 #include <string>
 #include <utility>
-
-namespace {
-std::atomic_bool gStop{false};
-void handleSigint([[maybe_unused]] int signum) { gStop.store(true); }
-}  // namespace
 
 int main(int argc, char** argv) {
   uint16_t port = 0;
@@ -25,20 +18,23 @@ int main(int argc, char** argv) {
     root = argv[2];
   }
 
+  aeronet::SignalHandler::Enable();
+
   try {
     aeronet::HttpServerConfig cfg;
     cfg.withPort(port);
 
-    aeronet::HttpServer server(std::move(cfg));
-
     // Serve files rooted at `root` using the StaticFileHandler
     aeronet::StaticFileConfig staticCfg;
     staticCfg.enableDirectoryIndex = true;  // render HTML listings when index.html is missing
-    server.router().setDefault(aeronet::StaticFileHandler(root, std::move(staticCfg)));
 
-    std::signal(SIGINT, handleSigint);
+    aeronet::Router router;
+    router.setDefault(aeronet::StaticFileHandler(root, std::move(staticCfg)));
+
+    aeronet::HttpServer server(std::move(cfg), std::move(router));
+
     std::cout << "Starting static file example on port: " << server.port() << " serving root: " << root << '\n';
-    server.runUntil([]() { return gStop.load(); });
+    server.run();
   } catch (const std::exception& ex) {
     std::cerr << "Error: " << ex.what() << '\n';
     return EXIT_FAILURE;
