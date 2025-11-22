@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cctype>
+#include <cstddef>
 #include <string>
 #include <string_view>
 
@@ -91,16 +92,13 @@ TEST(HttpMethod, AllMethodsStringLengthMatchesSum) {
 TEST(HttpMethodParse, ParsesTokensCaseInsensitive) {
   for (const auto& methodCase : kMethodCases) {
     const auto canonical = MethodStrToOptEnum(methodCase.token);
-    ASSERT_TRUE(canonical.has_value());
-    EXPECT_EQ(*canonical, methodCase.method);
+    EXPECT_EQ(canonical.value_or(static_cast<aeronet::http::Method>(1 << 15)), methodCase.method);
 
     const auto lower = MethodStrToOptEnum(ToLower(methodCase.token));
-    ASSERT_TRUE(lower.has_value());
-    EXPECT_EQ(*lower, methodCase.method);
+    EXPECT_EQ(lower.value_or(static_cast<aeronet::http::Method>(1 << 15)), methodCase.method);
 
     const auto mixed = MethodStrToOptEnum(AlternateCase(methodCase.token));
-    ASSERT_TRUE(mixed.has_value());
-    EXPECT_EQ(*mixed, methodCase.method);
+    EXPECT_EQ(mixed.value_or(static_cast<aeronet::http::Method>(1 << 15)), methodCase.method);
   }
 }
 
@@ -109,4 +107,26 @@ TEST(HttpMethodParse, RejectsInvalidTokens) {
   for (auto token : invalid) {
     EXPECT_FALSE(MethodStrToOptEnum(token).has_value()) << token;
   }
+}
+
+TEST(HttpMethodParse, RejectsNearMissTokensWithSameLength) {
+  static constexpr std::string_view nearMiss[]{
+      "GXT",      // size 3, same prefix as GET but mismatched letters
+      "P0T",      // size 3, same first letter as PUT
+      "HEAe",     // size 4, starts with H but not HEAD
+      "P0ST",     // size 4, corrupted POST
+      "TEST",     // size 4, starts with T but not TEST
+      "TRACX",    // size 5, close to TRACE
+      "PATCX",    // size 5, starts with P but not PATCH
+      "SALUT",    // size 6, invalid method of correct length
+      "CONNECX",  // size 7, starts with C but not CONNECT
+      "OPTIONX",  // size 7, starts with O but not OPTIONS
+      "APTIONS"   // size 7 does not start with C or O
+  };
+
+  for (auto token : nearMiss) {
+    EXPECT_FALSE(MethodStrToOptEnum(token).has_value()) << token;
+  }
+
+  EXPECT_FALSE(MethodStrToOptEnum("UNKNOWN").has_value());  // length 7 default branch
 }

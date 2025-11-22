@@ -27,7 +27,6 @@
 #include "aeronet/stringconv.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/timedef.hpp"
-#include "gtest/gtest.h"
 
 namespace aeronet {
 

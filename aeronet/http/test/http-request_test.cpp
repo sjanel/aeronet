@@ -54,14 +54,41 @@ class HttpRequestTest : public ::testing::Test {
     }
   }
 
+  void rehash(std::size_t capacity) { req._headers.rehash(capacity); }
+
+  void shrink_to_fit() { req.shrink_to_fit(); }
+
   HttpRequest req;
   ConnectionState cs;
 };
 
-TEST_F(HttpRequestTest, InvalidRequest) {
-  EXPECT_EQ(reqSet(BuildRaw("GET", "/", "HTTP")), http::StatusCodeBadRequest);
+TEST_F(HttpRequestTest, NotEnoughDataNoEndOfHeaders) {
   EXPECT_EQ(reqSet(BuildRaw("GET", "/", "HTTP/1.1", "Server: aeronet", false)), 0);
 }
+
+TEST_F(HttpRequestTest, InvalidHttpVersion) {
+  EXPECT_EQ(reqSet(BuildRaw("GET", "/", "HTTP")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /path HTTP1.1\r\n\r\n")), http::StatusCodeBadRequest);
+}
+
+TEST_F(HttpRequestTest, InvalidHeaderKey) {
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n:value\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n  :value\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nHeaderKey :value\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n\tHeaderKey:value\r\n")), http::StatusCodeBadRequest);
+}
+
+TEST_F(HttpRequestTest, InvalidHeaderKeyValueSeparator) {
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nKey;Value\r\n")), http::StatusCodeBadRequest);
+}
+
+TEST_F(HttpRequestTest, NoCRLF) { EXPECT_EQ(reqSet(RawChars("GET")), 0); }
+
+TEST_F(HttpRequestTest, InvalidMethod) {
+  EXPECT_EQ(reqSet(RawChars("GETA / HTTP/1.1\r\n\r\n")), http::StatusCodeNotImplemented);
+}
+
+TEST_F(HttpRequestTest, NotEnoughDataOnlyFirstLine) { EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n")), 0); }
 
 TEST_F(HttpRequestTest, ParseBasicPathAndVersion) {
   auto st = reqSet(BuildRaw("GET", "/abc", "HTTP/1.1"));
@@ -181,6 +208,36 @@ TEST_F(HttpRequestTest, MergeConsecutiveHeaders) {
   ASSERT_EQ(st, http::StatusCodeOK);
 
   checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
+}
+
+TEST_F(HttpRequestTest, ShrinkToFit) {
+  auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
+                      "X-Test: Value\r\n"
+                      "Cookie:  cookie1 \r\n"
+                      "X-Spaces:    abc \t  \r\n"
+                      "Cookie:\r\n"
+                      "Cookie:cookie2\r\n"
+                      "Cookie:cookie3\r\n"
+                      "X-Spaces:    de \t  \r\n"
+                      "content-length: 0\r\n"
+                      "X-Spaces:fgh \t  \r\n"
+                      "Cookie: cookie4\r\n");
+
+  rehash(100);
+
+  const auto originalLoadfactor = req.headers().load_factor();
+
+  auto st = reqSet(std::move(raw));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  shrink_to_fit();
+
+  checkHeaders({{"X-Test", "Value"},
+                {"Cookie", "cookie1;cookie2;cookie3;cookie4"},
+                {"X-Spaces", "abc,de,fgh"},
+                {"Content-Length", "0"}});
+
+  EXPECT_LT(originalLoadfactor, req.headers().load_factor());
 }
 
 TEST_F(HttpRequestTest, MergeConsecutiveHeadersWithSpaces) {

@@ -185,14 +185,14 @@ TEST(HttpCompression, InlineBodyCompressionMovesToCapturedPayload) {
   std::string expectedEncoding;
   std::string acceptEncoding;
 
-#if defined(AERONET_ENABLE_BROTLI)
+#ifdef AERONET_ENABLE_BROTLI
   ts.postConfigUpdate([](HttpServerConfig &cfg) {
     cfg.compression.minBytes = 64;
     cfg.compression.preferredFormats = {Encoding::br};
   });
   expectedEncoding = "br";
   acceptEncoding = "br";
-#elif defined(AERONET_ENABLE_ZLIB)
+#elifdef AERONET_ENABLE_ZLIB
   ts.postConfigUpdate([](HttpServerConfig &cfg) {
     cfg.compression.minBytes = 64;
     cfg.compression.preferredFormats = {Encoding::gzip};
@@ -231,11 +231,11 @@ TEST(HttpCompression, CapturedBodyWithTrailers) {
   // prefer any available encoder; minBytes small so compression activates
   ts.postConfigUpdate([](HttpServerConfig &cfg) {
     cfg.compression.minBytes = 8;
-#if defined(AERONET_ENABLE_ZSTD)
+#ifdef AERONET_ENABLE_ZSTD
     cfg.compression.preferredFormats = {Encoding::zstd};
-#elif defined(AERONET_ENABLE_BROTLI)
+#elifdef AERONET_ENABLE_BROTLI
     cfg.compression.preferredFormats = {Encoding::br};
-#elif defined(AERONET_ENABLE_ZLIB)
+#elifdef AERONET_ENABLE_ZLIB
     cfg.compression.preferredFormats = {Encoding::gzip};
 #endif
   });
@@ -269,11 +269,11 @@ TEST(HttpCompression, CapturedBodyWithTrailers) {
 TEST(HttpCompression, InlineBodyWithTrailers) {
   ts.postConfigUpdate([](HttpServerConfig &cfg) {
     cfg.compression.minBytes = 16;
-#if defined(AERONET_ENABLE_ZSTD)
+#ifdef AERONET_ENABLE_ZSTD
     cfg.compression.preferredFormats = {Encoding::zstd};
-#elif defined(AERONET_ENABLE_BROTLI)
+#elifdef AERONET_ENABLE_BROTLI
     cfg.compression.preferredFormats = {Encoding::br};
-#elif defined(AERONET_ENABLE_ZLIB)
+#elifdef AERONET_ENABLE_ZLIB
     cfg.compression.preferredFormats = {Encoding::gzip};
 #endif
   });

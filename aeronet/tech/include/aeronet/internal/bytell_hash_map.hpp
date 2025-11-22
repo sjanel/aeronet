@@ -756,7 +756,7 @@ public:
     }
     float load_factor() const
     {
-        return static_cast<double>(num_elements) / (num_slots_minus_one + 1);
+        return static_cast<float>(static_cast<double>(num_elements) / static_cast<double>(num_slots_minus_one + 1));
     }
     void max_load_factor(float value)
     {
