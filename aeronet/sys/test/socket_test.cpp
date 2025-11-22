@@ -1,10 +1,7 @@
 #include "aeronet/socket.hpp"
 
 #include <gtest/gtest.h>
-#include <linux/memfd.h>
-#include <sys/socket.h>
-#include <sys/syscall.h>
-#include <unistd.h>
+#include <sys/socket.h>  // NOLINT(misc-include-cleaner) used by socket class
 
 #include <cerrno>
 #include <cstdlib>

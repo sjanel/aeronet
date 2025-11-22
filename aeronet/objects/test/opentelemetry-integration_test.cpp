@@ -39,9 +39,9 @@ class ScopedEnvVar {
     }
 #else
     if (value != nullptr) {
-      ::setenv(name, value, 1);
+      ::setenv(name, value, 1);  // NOLINT(misc-include-cleaner) cstdlib header
     } else {
-      ::unsetenv(name);
+      ::unsetenv(name);  // NOLINT(misc-include-cleaner) cstdlib header
     }
 #endif
   }
@@ -55,9 +55,9 @@ class ScopedEnvVar {
     }
 #else
     if (_hadOld) {
-      ::setenv(_name.c_str(), _old.c_str(), 1);
+      ::setenv(_name.c_str(), _old.c_str(), 1);  // NOLINT(misc-include-cleaner) cstdlib header
     } else {
-      ::unsetenv(_name.c_str());
+      ::unsetenv(_name.c_str());  // NOLINT(misc-include-cleaner) cstdlib header
     }
 #endif
   }

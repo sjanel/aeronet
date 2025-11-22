@@ -1,5 +1,5 @@
 #include <asm-generic/socket.h>
-#include <netinet/in.h>
+#include <netinet/in.h>  //NOLINT(misc-include-cleaner) used by socket options
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 

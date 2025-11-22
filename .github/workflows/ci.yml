@@ -178,6 +178,7 @@ jobs:
           # Generate XML (Cobertura) report
           gcovr --root . --object-directory build-coverage \
             --filter 'aeronet/' \
+            --exclude 'aeronet/test_support' \
             --exclude '.*CompilerId.*' \
             --exclude '.*_test\.cpp$' \
             --exclude 'build-coverage/_deps' \
@@ -192,6 +193,7 @@ jobs:
           # Generate HTML detailed report
           gcovr --root . --object-directory build-coverage \
             --filter 'aeronet/' \
+            --exclude 'aeronet/test_support' \
             --exclude '.*CompilerId.*' \
             --exclude '.*_test\.cpp$' \
             --exclude 'build-coverage/_deps' \
@@ -326,3 +328,45 @@ jobs:
 
           run_server_and_curl tls "https://127.0.0.1:18443/" -k -- \
             "${EXAMPLE_DIR}/aeronet-tls-ktls" ${BUILD_DIR}/certs/server.crt ${BUILD_DIR}/certs/server.key 18443
+
+  alpine-musl-debug:
+    name: Alpine (musl) Debug build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup latest Alpine Linux
+        uses: jirutka/setup-alpine@v1
+
+      - name: Run script inside Alpine chroot as root
+        run: |
+          set -euo pipefail
+          
+          cat /etc/alpine-release
+          
+          apk update
+          apk add --no-cache build-base cmake ninja git bash python3 linux-headers \
+            openssl-dev zlib-dev zstd-dev brotli-dev curl-dev protobuf-dev musl-dev
+        shell: alpine.sh --root {0}
+
+      - name: Run script inside Alpine chroot as the default user (unprivileged)
+        run: |
+          cmake -S . -B build-alpine -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DAERONET_BUILD_TESTS=ON \
+            -DAERONET_BUILD_EXAMPLES=ON \
+            -DAERONET_BUILD_BENCHMARKS=OFF \
+            -DAERONET_ENABLE_ASAN=OFF \
+            -DAERONET_ENABLE_SPDLOG=ON \
+            -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_KTLS=ON \
+            -DAERONET_ENABLE_BROTLI=ON \
+            -DAERONET_ENABLE_ZLIB=ON \
+            -DAERONET_ENABLE_ZSTD=ON \
+            -DAERONET_ENABLE_OPENTELEMETRY=ON
+
+          cmake --build build-alpine --parallel
+
+          ctest --test-dir build-alpine --output-on-failure --repeat until-fail:3 --timeout 100
+        shell: alpine.sh {0}

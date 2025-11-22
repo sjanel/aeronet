@@ -19,6 +19,23 @@ AeronetAddUnitTest(
     test/base-fd_test.cpp
     LIBRARIES
     aeronet_sys
+    aeronet_basic_test_support
+)
+
+AeronetAddUnitTest(
+    connection_test
+    test/connection_test.cpp
+    LIBRARIES
+    aeronet_sys
+    aeronet_basic_test_support
+)
+
+AeronetAddUnitTest(
+    event-fd_test
+    test/event-fd_test.cpp
+    LIBRARIES
+    aeronet_sys
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(
@@ -26,6 +43,7 @@ AeronetAddUnitTest(
     test/event-loop_test.cpp
     LIBRARIES
     aeronet_sys
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(
@@ -33,12 +51,26 @@ AeronetAddUnitTest(
     test/file_test.cpp
     LIBRARIES
     aeronet_sys
-    aeronet_test_support
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(
     socket_test
     test/socket_test.cpp
+    LIBRARIES
+    aeronet_sys
+)
+
+AeronetAddUnitTest(
+    tcp-connector_test
+    test/tcp-connector_test.cpp
+    LIBRARIES
+    aeronet_sys
+)
+
+AeronetAddUnitTest(
+    transport_test
+    test/transport_test.cpp
     LIBRARIES
     aeronet_sys
 )

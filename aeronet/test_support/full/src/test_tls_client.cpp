@@ -9,7 +9,6 @@
 #include <openssl/types.h>
 #include <openssl/x509.h>
 #include <poll.h>
-#include <sys/poll.h>
 
 #include <cerrno>
 #include <chrono>
@@ -66,6 +65,7 @@ bool TlsClient::writeAll(std::string_view data) {
     int err = ::SSL_get_error(_ssl.get(), written);
     if (err == SSL_ERROR_WANT_READ) {
       // SSL needs to read before it can write (e.g., renegotiation)
+      // NOLINTNEXTLINE(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
       if (!waitForSocketReady(POLLIN, std::chrono::seconds(30))) {
         return false;
       }
@@ -73,6 +73,7 @@ bool TlsClient::writeAll(std::string_view data) {
     }
     if (err == SSL_ERROR_WANT_WRITE) {
       // SSL needs socket to be writable
+      // NOLINTNEXTLINE(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
       if (!waitForSocketReady(POLLOUT, std::chrono::seconds(30))) {
         return false;
       }
@@ -146,12 +147,14 @@ bool TlsClient::waitForSocketReady(short events, Duration timeout) {
     return false;
   }
 
+  // NOLINTNEXTLINE(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
   struct pollfd pfd;
   pfd.fd = fd;
   pfd.events = events;
   pfd.revents = 0;
 
   auto timeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
+  // NOLINTNEXTLINE(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
   int ret = ::poll(&pfd, 1, static_cast<int>(timeoutMs));
 
   if (ret < 0) {
