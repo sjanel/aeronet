@@ -231,6 +231,14 @@ TEST(RouterTest, SupportsLiteralAndParamMixWithinSegment) {
   EXPECT_EQ(res.pathParams[1].value, "123");
 }
 
+TEST(RouterTest, EmptyPathInvalid) {
+  Router router;
+  EXPECT_THROW(router.setPath(http::Method::GET, "", [](const HttpRequest &) { return HttpResponse(200); }),
+               std::invalid_argument);
+  EXPECT_THROW((void)router.match(http::Method::GET, ""), std::invalid_argument);
+  EXPECT_THROW((void)router.allowedMethods(""), std::invalid_argument);
+}
+
 TEST(RouterTest, WildcardMatchesRemainingSegments) {
   Router router;
   router.setPath(http::Method::GET, "/static/*", [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
