@@ -88,6 +88,10 @@ if(AERONET_ENABLE_OPENTELEMETRY)
         endif()
         if(TARGET opentelemetry_proto)
             target_link_libraries(aeronet_objects PRIVATE opentelemetry_proto)
+            get_target_property(_otel_proto_includes opentelemetry_proto INTERFACE_INCLUDE_DIRECTORIES)
+            if(_otel_proto_includes)
+                target_include_directories(aeronet_objects PUBLIC ${_otel_proto_includes})
+            endif()
         endif()
         
         # SDK support libraries
