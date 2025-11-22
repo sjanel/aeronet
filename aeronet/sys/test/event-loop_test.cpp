@@ -6,6 +6,7 @@
 #include <chrono>
 #include <functional>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 

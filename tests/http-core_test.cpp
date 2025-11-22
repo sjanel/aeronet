@@ -11,8 +11,10 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"

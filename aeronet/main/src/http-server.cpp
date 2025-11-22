@@ -240,8 +240,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     const auto statusCode =
         _request.initTrySetHead(state, _tmpBuffer, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders,
                                 _telemetry.createSpan("http.request"));
-    if (statusCode == 0) {
-      // need more data
+    if (statusCode == HttpRequest::kStatusNeedMoreData) {
       break;
     }
 

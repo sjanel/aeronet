@@ -1,9 +1,9 @@
 #include "aeronet/otlp_test_collector.hpp"
 
-#include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <sys/poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -12,10 +12,15 @@
 #include <chrono>
 #include <cstddef>
 #include <cstring>
+#include <exception>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <thread>
 #include <utility>
+#include <vector>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/errno_throw.hpp"
@@ -228,7 +233,7 @@ void OtlpTestCollector::handleClient(int clientFd) {
 
 void OtlpTestCollector::recordRequest(CapturedOtlpRequest req) {
   {
-    std::lock_guard lk(_mutex);
+    std::scoped_lock lk(_mutex);
     _requests.emplace_back(std::move(req));
   }
   _cv.notify_one();
@@ -250,7 +255,7 @@ CapturedOtlpRequest OtlpTestCollector::waitForRequest(std::chrono::milliseconds 
 
 std::vector<CapturedOtlpRequest> OtlpTestCollector::drain() {
   std::vector<CapturedOtlpRequest> out;
-  std::lock_guard lk(_mutex);
+  std::scoped_lock lk(_mutex);
   while (!_requests.empty()) {
     out.emplace_back(std::move(_requests.front()));
     _requests.pop_front();

@@ -1,6 +1,7 @@
 #include "aeronet/brotli-encoder.hpp"
 
 #include <brotli/encode.h>
+#include <brotli/types.h>
 
 #include <cstddef>
 #include <cstdint>

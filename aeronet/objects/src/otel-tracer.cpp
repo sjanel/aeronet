@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -41,6 +42,7 @@
 #if __has_include( \
     <opentelemetry/exporters/otlp/otlp_http_exporter.h>) && __has_include(<opentelemetry/ext/http/client/http_client.h>)
 #define AERONET_HAVE_OTLP_HTTP 1
+#include <opentelemetry/exporters/otlp/otlp_environment.h>
 #include <opentelemetry/exporters/otlp/otlp_http_exporter.h>
 #include <opentelemetry/exporters/otlp/otlp_http_exporter_options.h>
 #include <opentelemetry/sdk/trace/exporter.h>
@@ -58,6 +60,7 @@
 #include <opentelemetry/sdk/metrics/meter_provider.h>
 #include <opentelemetry/sdk/metrics/metric_reader.h>
 #include <opentelemetry/sdk/metrics/push_metric_exporter.h>
+#include <opentelemetry/sdk/metrics/view/view_registry.h>
 #endif
 
 // Detect OTLP metrics exporter
@@ -76,8 +79,7 @@ namespace aeronet::tracing {
 namespace {
 
 // Iterate over stored HTTP headers as (name, value) pairs; the callback receives string_view references.
-template <class Fn>
-void forEachHttpHeader(const TelemetryConfig& cfg, Fn&& fn) {
+void ForEachHttpHeader(const TelemetryConfig& cfg, const std::function<void(std::string_view, std::string_view)>& fn) {
   for (auto header : cfg.httpHeadersRange()) {
     const auto colonPos = header.find(':');
     if (colonPos == std::string_view::npos) {
@@ -91,14 +93,14 @@ void forEachHttpHeader(const TelemetryConfig& cfg, Fn&& fn) {
     if (name.empty()) {
       continue;
     }
-    std::forward<Fn>(fn)(name, value);
+    fn(name, value);
   }
 }
 
 #if defined(AERONET_HAVE_OTLP_HTTP) || defined(AERONET_HAVE_OTLP_METRICS)
 opentelemetry::exporter::otlp::OtlpHeaders buildOtlpHeaders(const TelemetryConfig& cfg) {
   opentelemetry::exporter::otlp::OtlpHeaders headers;
-  forEachHttpHeader(cfg, [&](std::string_view name, std::string_view value) {
+  ForEachHttpHeader(cfg, [&](std::string_view name, std::string_view value) {
     headers.emplace(std::string(name), std::string(value));
   });
   return headers;
