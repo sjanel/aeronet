@@ -119,10 +119,19 @@ if(AERONET_ENABLE_OPENTELEMETRY)
     # Require libcurl and protobuf development files. These are heavy native
     # dependencies and should be provided by the system package manager when
     # AERONET_ENABLE_OPENTELEMETRY=ON is used.
-    find_package(CURL QUIET)
-    find_package(Protobuf QUIET)
+    # Try Config-mode first (vcpkg/packaged CMake configs), fall back to module-mode
+    find_package(CURL CONFIG QUIET)
     if(NOT CURL_FOUND)
-      message(FATAL_ERROR "AERONET_ENABLE_OPENTELEMETRY=ON requires libcurl development files to build the OTLP HTTP exporter. Install libcurl (e.g. libcurl4-openssl-dev) or set AERONET_ENABLE_OPENTELEMETRY=OFF.")
+      find_package(CURL QUIET)
+    endif()
+    # Protobuf: prefer CONFIG-mode but accept module-mode as well
+    find_package(Protobuf CONFIG QUIET)
+    if(NOT Protobuf_FOUND)
+      find_package(Protobuf QUIET)
+    endif()
+
+    if(NOT CURL_FOUND)
+      message(FATAL_ERROR "AERONET_ENABLE_OPENTELEMETRY=ON requires libcurl development files to build the OTLP HTTP exporter. Install libcurl (e.g. libcurl4-openssl-dev or curl-dev) or set AERONET_ENABLE_OPENTELEMETRY=OFF.")
     endif()
     if(NOT Protobuf_FOUND)
       message(FATAL_ERROR "AERONET_ENABLE_OPENTELEMETRY=ON requires protobuf development files (libprotobuf & protoc). Install protobuf (e.g. libprotobuf-dev and protobuf-compiler) or set AERONET_ENABLE_OPENTELEMETRY=OFF.\n\nNote: fetching opentelemetry-cpp will also attempt to fetch/build protobuf which may fail in disconnected environments. Using system protobuf avoids that and reduces build-time fetches.")

@@ -1,28 +1,63 @@
 #include "aeronet/base-fd.hpp"
 
+#include <dlfcn.h>
 #include <gtest/gtest.h>
-#include <linux/memfd.h>
-#include <sys/syscall.h>
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
-#include <stdexcept>
-#include <string>
-#include <string_view>
+#include <initializer_list>
+#include <utility>
+
+#include "aeronet/sys_test_support.hpp"
 
 using namespace aeronet;
+namespace test_support = aeronet::sys::test_support;
 
 namespace {
-int CreateMemfd(std::string_view name) {
-  const std::string nameStr(name);
-  int retfd = static_cast<int>(::syscall(SYS_memfd_create, nameStr.c_str(), MFD_CLOEXEC));
-  if (retfd < 0) {
-    throw std::runtime_error("memfd_create failed: " + std::string(std::strerror(errno)));
-  }
-  return retfd;
+struct CloseAction {
+  enum class Kind : std::uint8_t { Error };
+  Kind kind{Kind::Error};
+  int err{0};
+};
+
+[[nodiscard]] CloseAction CloseErr(int err) { return CloseAction{CloseAction::Kind::Error, err}; }
+
+test_support::KeyedActionQueue<int, CloseAction> gCloseOverrides;
+
+void SetCloseErrorSequence(int fd, std::initializer_list<CloseAction> actions) {
+  gCloseOverrides.setActions(fd, actions);
 }
+
+class CloseOverrideGuard : public test_support::QueueResetGuard<test_support::KeyedActionQueue<int, CloseAction>> {
+ public:
+  CloseOverrideGuard() : QueueResetGuard(gCloseOverrides) {}
+};
+
+using CloseFn = int (*)(int);
+
+CloseFn GetRealClose() {
+  static CloseFn real_close = reinterpret_cast<CloseFn>(dlsym(RTLD_NEXT, "close"));
+  if (real_close == nullptr) {
+    std::abort();
+  }
+  return real_close;
+}
+
+int CallRealClose(int fd) { return GetRealClose()(fd); }
+
 }  // namespace
+
+extern "C" int close(int fd) {
+  const auto action = gCloseOverrides.pop(fd);
+  if (action.has_value() && action->kind == CloseAction::Kind::Error) {
+    errno = action->err;
+    return -1;
+  }
+  return GetRealClose()(fd);
+}
 
 TEST(BaseFd, ReleaseMakesObjectClosedAndReturnsFd) {
   int fds[2];
@@ -51,7 +86,7 @@ TEST(BaseFd, ReleaseOnClosedReturnsClosedSentinel) {
 }
 
 TEST(BaseFd, BoolOperatorAndReleaseIntegration) {
-  const int fd = CreateMemfd("aeronet-memfd-bool");
+  const int fd = test_support::CreateMemfd("aeronet-memfd-bool");
   ASSERT_GE(fd, 0);
 
   BaseFd fdOwner3(fd);
@@ -63,10 +98,47 @@ TEST(BaseFd, BoolOperatorAndReleaseIntegration) {
 }
 
 TEST(BaseFd, DestroyShouldLogIfFdAlreadyClosed) {
-  const int fd = CreateMemfd("aeronet-memfd-bool");
+  const int fd = test_support::CreateMemfd("aeronet-memfd-bool");
   ASSERT_GE(fd, 0);
 
   BaseFd fdOwner(fd);
 
   ::close(fd);  // close before destruction to simulate double-close
+}
+
+TEST(BaseFd, MoveAssignSelfNoOpLeavesFdIntact) {
+  const int fd = test_support::CreateMemfd("aeronet-memfd-self-move");
+  ASSERT_GE(fd, 0);
+
+  BaseFd fdOwner(fd);
+  auto& alias = fdOwner;
+  fdOwner = std::move(alias);
+  EXPECT_TRUE(fdOwner);
+  fdOwner.close();
+}
+
+TEST(BaseFd, CloseRetriesAfterEintr) {
+  CloseOverrideGuard guard;
+  const int fd = test_support::CreateMemfd("aeronet-memfd-eintr");
+  ASSERT_GE(fd, 0);
+
+  SetCloseErrorSequence(fd, {CloseErr(EINTR)});
+
+  BaseFd fdOwner(fd);
+  fdOwner.close();
+  EXPECT_FALSE(fdOwner);
+}
+
+TEST(BaseFd, CloseLogsOtherErrorsButMarksClosed) {
+  CloseOverrideGuard guard;
+  const int fd = test_support::CreateMemfd("aeronet-memfd-error");
+  ASSERT_GE(fd, 0);
+
+  SetCloseErrorSequence(fd, {CloseErr(EBADF)});
+
+  BaseFd fdOwner(fd);
+  fdOwner.close();
+  EXPECT_FALSE(fdOwner);
+
+  ASSERT_EQ(0, CallRealClose(fd));
 }

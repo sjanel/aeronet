@@ -101,6 +101,7 @@ ScopedTempFile::ScopedTempFile(const ScopedTempDir &dir, std::string_view conten
   // template so we get an atomic create+open and avoid races.
   std::string tmpl = _dir.string() + "/aeronet_temp_XXXXXX";
 
+  // NOLINTNEXTLINE(misc-include-cleaner)
   BaseFd raii(::mkstemp(tmpl.data()));
   int fd = raii.fd();
   if (fd == -1) {
