@@ -23,6 +23,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/simple-charconv.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/tchars.hpp"
 #include "aeronet/timedef.hpp"

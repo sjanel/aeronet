@@ -30,6 +30,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    header-line-parse_test
+    test/header-line-parse_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+AeronetAddUnitTest(
     http-error-build_test
     test/http-error-build_test.cpp
     LIBRARIES

@@ -5,13 +5,16 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <new>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 
+// NOLINTNEXTLINE(misc-include-cleaner)
 #include "aeronet/config.hpp"
 #include "aeronet/internal/raw-bytes-base.hpp"
 #include "aeronet/vector.hpp"

@@ -167,6 +167,8 @@ class HttpRequest {
   friend class StaticFileHandlerTest;
   friend class CorsPolicyHarness;
 
+  static constexpr http::StatusCode kStatusNeedMoreData = static_cast<http::StatusCode>(0);
+
   HttpRequest() noexcept = default;
 
   [[nodiscard]] bool wantClose() const;
