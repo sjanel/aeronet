@@ -132,8 +132,8 @@ HttpServer::HttpServer(HttpServer&& other)
     throw std::logic_error("Cannot move-construct a running HttpServer");
   }
   // transfer pending updates state; mutex remains with each instance (do not move mutex)
-  _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_acq_rel);
-  _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.exchange(false), std::memory_order_acq_rel);
+  _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_release);
+  _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.exchange(false), std::memory_order_release);
   other._lifecycle.reset();
 }
 
@@ -174,8 +174,8 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
 #endif
 
     // transfer pending updates state; keep mutex per-instance
-    _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_acq_rel);
-    _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.exchange(false), std::memory_order_acq_rel);
+    _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_release);
+    _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.exchange(false), std::memory_order_release);
 
     other._lifecycle.reset();
   }
