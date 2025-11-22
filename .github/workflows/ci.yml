@@ -89,7 +89,7 @@ jobs:
       - name: Run unit tests
         run: |
           NUM_PROC=$(nproc)
-          # Use half the CPUs for parallelism, but at least 1. Keep this explicit for readability.
+          # Use half the CPUs for parallelism, but at least 1
           JOBS=$(( (NUM_PROC / 2) > 0 ? (NUM_PROC / 2) : 1 ))
           echo "Running ctest with -j=${JOBS} (NUM_PROC=${NUM_PROC})"
           ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 100 -j ${JOBS}
@@ -136,16 +136,11 @@ jobs:
       - name: Install coverage toolchain and dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build gcc-13 g++-13 \
+          sudo apt-get install -y ninja-build build-essential \
             libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev \
             libprotobuf-dev protobuf-compiler python3-pip
           python3 -m pip install --upgrade pip
           python3 -m pip install gcovr
-
-      - name: Configure compilers
-        run: |
-          echo "CC=gcc-13" >> $GITHUB_ENV
-          echo "CXX=g++-13" >> $GITHUB_ENV
 
       - name: Configure with coverage flags
         run: |
@@ -171,7 +166,12 @@ jobs:
         run: cmake --build ${BUILD_DIR} --parallel
 
       - name: Run unit tests (coverage)
-        run: ctest --test-dir ${BUILD_DIR} --output-on-failure
+        run: |
+          NUM_PROC=$(nproc)
+          # Use half the CPUs for parallelism, but at least 1
+          JOBS=$(( (NUM_PROC / 2) > 0 ? (NUM_PROC / 2) : 1 ))
+          echo "Running ctest with -j=${JOBS} (NUM_PROC=${NUM_PROC})"
+          ctest --test-dir ${BUILD_DIR} --repeat until-fail:3 --output-on-failure --timeout 100 -j ${JOBS}
 
       - name: Generate coverage reports
         run: |

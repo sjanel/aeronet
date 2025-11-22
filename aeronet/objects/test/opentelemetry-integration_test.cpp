@@ -7,7 +7,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
-#if defined(__unix__) || defined(__APPLE__)
+#ifdef __unix__
 #include <sys/socket.h>
 #include <sys/un.h>
 #endif
@@ -31,7 +31,7 @@ class ScopedEnvVar {
       _hadOld = true;
       _old = prev;
     }
-#if defined(_WIN32)
+#ifdef _WIN32
     if (value != nullptr) {
       _putenv_s(name, value);
     } else {
@@ -47,7 +47,7 @@ class ScopedEnvVar {
   }
 
   ~ScopedEnvVar() {
-#if defined(_WIN32)
+#ifdef _WIN32
     if (_hadOld) {
       _putenv_s(_name.c_str(), _old.c_str());
     } else {
@@ -239,7 +239,7 @@ TEST(OpenTelemetryIntegration, Disabled) {
   EXPECT_EQ(span, nullptr);
 }
 
-#if defined(__unix__) || defined(__APPLE__)
+#ifdef __unix__
 TEST(OpenTelemetryIntegration, DogStatsDMetricsEmission) {
   // Create an isolated temporary directory and use a socket path inside it.
   aeronet::test::ScopedTempDir tmpDir("aeronet-dsd-dir-");

@@ -9,6 +9,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/simple-charconv.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"

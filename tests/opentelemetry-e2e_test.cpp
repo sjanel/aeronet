@@ -1,19 +1,20 @@
 #include <gtest/gtest.h>
 #include <opentelemetry/proto/collector/metrics/v1/metrics_service.pb.h>
 #include <opentelemetry/proto/collector/trace/v1/trace_service.pb.h>
+#include <opentelemetry/proto/metrics/v1/metrics.pb.h>
 
 #include <chrono>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "aeronet/features.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/otlp_test_collector.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/telemetry-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -22,7 +23,7 @@ using namespace aeronet;
 
 namespace {
 
-bool spansContainHttpRequest(const ::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest& proto) {
+bool SpansContainHttpRequest(const ::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest& proto) {
   for (const auto& resourceSpan : proto.resource_spans()) {
     for (const auto& scopeSpan : resourceSpan.scope_spans()) {
       for (const auto& span : scopeSpan.spans()) {
@@ -35,7 +36,7 @@ bool spansContainHttpRequest(const ::opentelemetry::proto::collector::trace::v1:
   return false;
 }
 
-bool resourceContainsService(const ::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest& proto,
+bool ResourceContainsService(const ::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest& proto,
                              std::string_view serviceName) {
   for (const auto& resourceSpan : proto.resource_spans()) {
     for (const auto& attr : resourceSpan.resource().attributes()) {
@@ -47,7 +48,7 @@ bool resourceContainsService(const ::opentelemetry::proto::collector::trace::v1:
   return false;
 }
 
-bool metricsContainCounter(const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& proto,
+bool MetricsContainCounter(const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& proto,
                            std::string_view metricName) {
   using ::opentelemetry::proto::metrics::v1::NumberDataPoint;
   for (const auto& resourceMetric : proto.resource_metrics()) {
@@ -123,10 +124,12 @@ TEST(OpenTelemetryEndToEnd, EmitsTracesAndMetrics) {
 
   ::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest traceProto;
   ASSERT_TRUE(traceProto.ParseFromString(traceReq->body));
-  EXPECT_TRUE(spansContainHttpRequest(traceProto));
-  EXPECT_TRUE(resourceContainsService(traceProto, "aeronet-e2e"));
+  EXPECT_TRUE(SpansContainHttpRequest(traceProto));
+  EXPECT_TRUE(ResourceContainsService(traceProto, "aeronet-e2e"));
 
   ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest metricsProto;
   ASSERT_TRUE(metricsProto.ParseFromString(metricsReq->body));
-  EXPECT_TRUE(metricsContainCounter(metricsProto, "aeronet.connections.accepted"));
+  EXPECT_TRUE(MetricsContainCounter(metricsProto, "aeronet.connections.accepted"));
+
+  EXPECT_TRUE(collector.drain().empty());  // No extra requests
 }

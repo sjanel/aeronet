@@ -13,6 +13,7 @@
 #include "aeronet/header-line-parse.hpp"
 #include "aeronet/header-merge.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -91,8 +92,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
 
   auto* lineLast = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
   if (lineLast == last) {
-    // not enough data
-    return 0;
+    return kStatusNeedMoreData;
   }
   if (std::cmp_less(lineLast - first, http::kHttpReqLineMinLen - http::CRLF.size())) {
     return http::StatusCodeBadRequest;
@@ -104,7 +104,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
   }
 
   // Method
-  auto optMethod = http::MethodStrToOptEnum(std::string_view(first, nextSep));
+  const auto optMethod = http::MethodStrToOptEnum(std::string_view(first, nextSep));
   if (!optMethod) {
     return http::StatusCodeNotImplemented;
   }
@@ -113,16 +113,14 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
   // Path
   first = nextSep + 1;
   nextSep = std::find(first, lineLast, ' ');
-  auto* questionMark = std::find(first, nextSep, '?');
-  char* pathLast;
+  char* questionMark = std::find(first, nextSep, '?');
   if (questionMark != nextSep) {
-    auto paramsEnd = url::DecodeQueryParamsInPlace(questionMark + 1, nextSep);
+    const char* paramsEnd = url::DecodeQueryParamsInPlace(questionMark + 1, nextSep);
     _decodedQueryParams = std::string_view(questionMark + 1, paramsEnd);
-    pathLast = url::DecodeInPlace(first, questionMark);
   } else {
     _decodedQueryParams = {};
-    pathLast = url::DecodeInPlace(first, nextSep);
   }
+  const char* pathLast = url::DecodeInPlace(first, questionMark);
   if (pathLast == nullptr) {
     return http::StatusCodeBadRequest;
   }
@@ -140,22 +138,27 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
 
   // Headers
   auto* headersFirst = lineLast + http::CRLF.size();
+  if (headersFirst == last) {
+    // need more data - the headers are not complete yet
+    return kStatusNeedMoreData;
+  }
 
   _headers.clear();
   for (first = headersFirst; first < last; first = lineLast + http::CRLF.size()) {
     lineLast = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
-    if (lineLast == last) {  // need more data for complete header line
-      return 0;
+    if (lineLast == last) {
+      // need more data - the headers are not complete yet
+      return kStatusNeedMoreData;
+    }
+    if (lineLast == first) {
+      // we are pointing to a CRLF (empty line) - end of headers
+      break;
     }
     if (std::cmp_less(maxHeadersBytes, static_cast<std::size_t>(lineLast - headersFirst) + http::CRLF.size())) {
       return http::StatusCodeRequestHeaderFieldsTooLarge;
     }
-    // Detect blank line signaling end of headers.
-    if (lineLast == first) {
-      break;
-    }
-    auto [nameView, valueView] = http::ParseHeaderLine(first, lineLast);
-    if (nameView.empty()) {
+    const auto [nameView, valueView] = http::ParseHeaderLine(first, lineLast);
+    if (nameView.empty() || std::ranges::any_of(nameView, [](char ch) { return http::IsHeaderWhitespace(ch); })) {
       return http::StatusCodeBadRequest;
     }
 
@@ -166,11 +169,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
     }
   }
 
-  // Parsed double CRLF
-  if (std::cmp_less(last - first, http::CRLF.size())) {
-    // not enough data
-    return 0;
-  }
+  // At this point, we have a complete request head, and we point to a CRLF.
 
   if (traceSpan) {
     traceSpan->setAttribute("http.method", http::MethodToStr(_method));
@@ -184,10 +183,6 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
   }
 
   _traceSpan = std::move(traceSpan);
-
-  if (std::memcmp(first, http::CRLF.data(), http::CRLF.size()) != 0) {
-    return http::StatusCodeBadRequest;
-  }
   _flatHeaders = std::string_view(headersFirst, first + http::CRLF.size());
 
   // Propagate negotiated ALPN (if any) from connection state into per-request object.
