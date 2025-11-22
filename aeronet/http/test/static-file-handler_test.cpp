@@ -1,12 +1,19 @@
 #include "aeronet/static-file-handler.hpp"
 
 #include <gtest/gtest.h>
+#include <unistd.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <ios>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -332,6 +339,10 @@ TEST_F(StaticFileHandlerTest, DirectoryListingUsesCustomRenderer) {
 TEST_F(StaticFileHandlerTest, DirectoryListingFailsWhenDirectoryUnreadable) {
   const auto dirPath = tmpDir.dirPath() / "sealed";
   std::filesystem::create_directory(dirPath);
+
+  if (geteuid() == 0) {
+    GTEST_SKIP() << "Running as root; unreadable-directory semantics unreliable in containers";
+  }
 
   StaticFileConfig cfg;
   cfg.enableDirectoryIndex = true;
