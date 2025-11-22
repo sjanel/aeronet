@@ -1,5 +1,4 @@
 #include <aeronet/aeronet.hpp>
-#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -7,7 +6,6 @@
 #include <exception>
 #include <iostream>
 #include <string>
-#include <thread>
 #include <utility>
 
 #include "aeronet/log.hpp"
