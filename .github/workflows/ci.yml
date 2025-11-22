@@ -221,3 +221,108 @@ jobs:
           path: |
             build-coverage/coverage.xml
             build-coverage/coverage.html
+
+  examples-smoke:
+    runs-on: ubuntu-latest
+    env:
+      BUILD_DIR: build-examples
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install example dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libjsoncpp-dev uuid-dev \
+            libssl-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
+
+      - name: Configure examples build
+        run: |
+          cmake -S . -B ${BUILD_DIR} -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DAERONET_BUILD_EXAMPLES=ON \
+            -DAERONET_BUILD_TESTS=OFF \
+            -DAERONET_BUILD_BENCHMARKS=OFF \
+            -DAERONET_ENABLE_ASAN=OFF \
+            -DAERONET_ENABLE_SPDLOG=OFF \
+            -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_KTLS=ON \
+            -DAERONET_ENABLE_BROTLI=OFF \
+            -DAERONET_ENABLE_ZLIB=OFF \
+            -DAERONET_ENABLE_ZSTD=OFF \
+            -DAERONET_ENABLE_OPENTELEMETRY=OFF
+
+      - name: Build examples
+        run: cmake --build ${BUILD_DIR} --parallel --target aeronet-minimal aeronet-multi aeronet-sendfile aeronet-static-example aeronet-tls-ktls
+
+      - name: Generate TLS certificate for ktls example
+        run: |
+          mkdir -p ${BUILD_DIR}/certs
+          openssl req -x509 -nodes -newkey rsa:2048 \
+            -keyout ${BUILD_DIR}/certs/server.key \
+            -out ${BUILD_DIR}/certs/server.crt \
+            -days 1 -subj "/CN=localhost"
+
+      - name: Smoke test examples
+        env:
+          EXAMPLE_DIR: ${{ env.BUILD_DIR }}/examples
+        run: |
+          set -euo pipefail
+
+          run_server_and_curl() {
+            local label="$1"; shift
+            local url="$1"; shift
+            local curl_opts=()
+            while [[ $# -gt 0 ]]; do
+              if [[ "$1" == "--" ]]; then
+                shift
+                break
+              fi
+              curl_opts+=("$1")
+              shift
+            done
+            local logfile="${BUILD_DIR}/${label}.log"
+            local cmd=("$@")
+            echo "::group::example-${label}"
+            "${cmd[@]}" >"$logfile" 2>&1 &
+            local pid=$!
+            local success=0
+            for attempt in {1..30}; do
+              if curl -fsS "${curl_opts[@]}" "$url" >/tmp/aeronet-${label}.out; then
+                cat /tmp/aeronet-${label}.out
+                success=1
+                break
+              fi
+              if ! kill -0 "$pid" 2>/dev/null; then
+                echo "${label} exited before responding" >&2
+                break
+              fi
+              sleep 0.5
+            done
+            kill -INT "$pid" 2>/dev/null || true
+            wait "$pid" || true
+            if [[ $success -ne 1 ]]; then
+              echo "--- ${label} logs ---" >&2
+              cat "$logfile" >&2 || true
+              exit 1
+            fi
+            echo "Logs stored in $logfile"
+            echo "::endgroup::"
+          }
+
+          run_server_and_curl minimal "http://127.0.0.1:18080/hello" -- \
+            "${EXAMPLE_DIR}/aeronet-minimal" 18080
+
+          run_server_and_curl multi "http://127.0.0.1:18081/test" -- \
+            "${EXAMPLE_DIR}/aeronet-multi" 18081 2
+
+          tmp_file="${BUILD_DIR}/sendfile.txt"
+          echo "Hello sendfile example" >"${tmp_file}"
+          run_server_and_curl sendfile "http://127.0.0.1:18082/static" -- \
+            "${EXAMPLE_DIR}/aeronet-sendfile" 18082 "${tmp_file}"
+
+          run_server_and_curl static "http://127.0.0.1:18083/" -- \
+            "${EXAMPLE_DIR}/aeronet-static-example" 18083 .
+
+          run_server_and_curl tls "https://127.0.0.1:18443/" -k -- \
+            "${EXAMPLE_DIR}/aeronet-tls-ktls" ${BUILD_DIR}/certs/server.crt ${BUILD_DIR}/certs/server.key 18443

@@ -339,10 +339,8 @@ struct DirectoryListingResult {
       // we have a container of limit + 1 elements, with the last one maybe unsorted.
       // We need to find the correct insert place of last element, and rotate the elements to keep the vector sorted.
       auto lb = std::ranges::lower_bound(result.entries.begin(), result.entries.end() - 1, result.entries.back(), comp);
-      if (lb != result.entries.end() - 1) {
-        // We need to rotate +1 (to the right) the range [lb, end)]
-        std::rotate(lb, result.entries.end() - 1, result.entries.end());
-      }
+      // We need to rotate +1 (to the right) the range [lb, end)]
+      std::rotate(lb, result.entries.end() - 1, result.entries.end());
       result.entries.pop_back();
 
       result.truncated = true;
