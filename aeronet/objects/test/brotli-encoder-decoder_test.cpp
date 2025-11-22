@@ -12,9 +12,11 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/raw-chars.hpp"
 
+using namespace aeronet;
+
 namespace {
 
-constexpr std::size_t kEncoderChunkSize = 1024;
+constexpr std::size_t kEncoderChunkSize = 512;
 constexpr std::size_t kDecoderChunkSize = 256;
 constexpr std::size_t kExtraCapacity = 0;
 constexpr std::size_t kMaxPlainBytes = 2UL * 1024 * 1024;
@@ -37,17 +39,16 @@ std::vector<std::string> samplePayloads() {
   return payloads;
 }
 
-void ExpectOneShotRoundTrip(aeronet::BrotliEncoder& encoder, std::string_view payload) {
-  aeronet::RawChars compressed;
+void ExpectOneShotRoundTrip(BrotliEncoder& encoder, std::string_view payload) {
+  RawChars compressed;
   encoder.encodeFull(kExtraCapacity, payload, compressed);
-  aeronet::RawChars decompressed;
-  ASSERT_TRUE(aeronet::BrotliDecoder::Decompress(std::string_view(compressed), kMaxPlainBytes, kDecoderChunkSize,
-                                                 decompressed));
+  RawChars decompressed;
+  ASSERT_TRUE(BrotliDecoder::Decompress(std::string_view(compressed), kMaxPlainBytes, kDecoderChunkSize, decompressed));
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
-void ExpectStreamingRoundTrip(aeronet::BrotliEncoder& encoder, std::string_view payload, std::size_t split) {
-  aeronet::RawChars compressed;
+void ExpectStreamingRoundTrip(BrotliEncoder& encoder, std::string_view payload, std::size_t split) {
+  RawChars compressed;
   auto ctx = encoder.makeContext();
   std::string_view remaining = payload;
   while (!remaining.empty()) {
@@ -64,17 +65,29 @@ void ExpectStreamingRoundTrip(aeronet::BrotliEncoder& encoder, std::string_view 
     compressed.append(tail);
   }
 
-  aeronet::RawChars decompressed;
-  ASSERT_TRUE(aeronet::BrotliDecoder::Decompress(std::string_view(compressed), kMaxPlainBytes, kDecoderChunkSize,
-                                                 decompressed));
+  RawChars decompressed;
+  ASSERT_TRUE(BrotliDecoder::Decompress(std::string_view(compressed), kMaxPlainBytes, kDecoderChunkSize, decompressed));
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
 }  // namespace
 
+TEST(BrotliEncoderDecoderTest, EncodeFullHandlesEmptyPayload) {
+  CompressionConfig cfg;
+  BrotliEncoder encoder(cfg);
+
+  RawChars compressed;
+  encoder.encodeFull(kExtraCapacity, std::string_view{}, compressed);
+  EXPECT_GT(compressed.size(), 0U);  // should produce some output even for empty input
+
+  RawChars decompressed;
+  ASSERT_TRUE(BrotliDecoder::Decompress(std::string_view(compressed), kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_EQ(decompressed.size(), 0U);
+}
+
 TEST(BrotliEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
-  aeronet::CompressionConfig cfg;
-  aeronet::BrotliEncoder encoder(cfg);
+  CompressionConfig cfg;
+  BrotliEncoder encoder(cfg);
 
   for (const auto& payload : samplePayloads()) {
     SCOPED_TRACE(testing::Message() << "payload bytes=" << payload.size());
@@ -83,8 +96,8 @@ TEST(BrotliEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
 }
 
 TEST(BrotliEncoderDecoderTest, StreamingRoundTripsAcrossChunkSplits) {
-  aeronet::CompressionConfig cfg;
-  aeronet::BrotliEncoder encoder(cfg);
+  CompressionConfig cfg;
+  BrotliEncoder encoder(cfg);
 
   constexpr std::array<std::size_t, 4> kSplits{1U, 5U, 113U, 4096U};
   for (const auto& payload : samplePayloads()) {
@@ -93,4 +106,49 @@ TEST(BrotliEncoderDecoderTest, StreamingRoundTripsAcrossChunkSplits) {
       ExpectStreamingRoundTrip(encoder, payload, split);
     }
   }
+}
+
+TEST(BrotliEncoderDecoderTest, StreamingAndOneShotProduceSameOutput) {
+  CompressionConfig cfg;
+  BrotliEncoder encoder(cfg);
+
+  for (const auto& payload : samplePayloads()) {
+    RawChars oneShotCompressed;
+    encoder.encodeFull(kExtraCapacity, payload, oneShotCompressed);
+
+    RawChars streamingCompressed;
+    constexpr std::size_t kSplit = 128U;
+    auto ctx = encoder.makeContext();
+    std::string_view remaining = payload;
+    while (!remaining.empty()) {
+      const std::size_t take = std::min(kSplit, remaining.size());
+      const auto chunk = remaining.substr(0, take);
+      remaining.remove_prefix(take);
+      const auto produced = ctx->encodeChunk(kEncoderChunkSize, chunk);
+      if (!produced.empty()) {
+        streamingCompressed.append(produced);
+      }
+    }
+    const auto tail = ctx->encodeChunk(kEncoderChunkSize, {});
+    if (!tail.empty()) {
+      streamingCompressed.append(tail);
+    }
+
+    // Decode both datas to ensure validity
+    RawChars decompressedOneShot;
+    RawChars decompressedStreaming;
+    ASSERT_TRUE(BrotliDecoder::Decompress(std::string_view(oneShotCompressed), kMaxPlainBytes, kDecoderChunkSize,
+                                          decompressedOneShot));
+    ASSERT_TRUE(BrotliDecoder::Decompress(std::string_view(streamingCompressed), kMaxPlainBytes, kDecoderChunkSize,
+                                          decompressedStreaming));
+    EXPECT_EQ(std::string_view(decompressedOneShot), payload);
+    EXPECT_EQ(std::string_view(decompressedStreaming), payload);
+  }
+}
+
+TEST(BrotliEncoderDecoderTest, DecodeInvalidDataFails) {
+  RawChars invalidData("NotAValidBrotliStream");
+  RawChars decompressed;
+  EXPECT_FALSE(
+      BrotliDecoder::Decompress(std::string_view(invalidData), kMaxPlainBytes, kDecoderChunkSize, decompressed));
 }

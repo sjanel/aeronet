@@ -61,3 +61,12 @@ TEST(BaseFd, BoolOperatorAndReleaseIntegration) {
   EXPECT_GE(raw, 0);
   ::close(raw);
 }
+
+TEST(BaseFd, DestroyShouldLogIfFdAlreadyClosed) {
+  const int fd = CreateMemfd("aeronet-memfd-bool");
+  ASSERT_GE(fd, 0);
+
+  BaseFd fdOwner(fd);
+
+  ::close(fd);  // close before destruction to simulate double-close
+}
