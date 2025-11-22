@@ -190,11 +190,11 @@ a.dir::after{content:"/";}
 
 struct DirectoryListingEntry {
   std::string name;
+  std::filesystem::directory_entry entry;
   bool isDirectory{false};
   bool sizeKnown{false};
   std::uintmax_t sizeBytes{0};
   SysTimePoint lastModified{kInvalidTimePoint};
-  std::filesystem::directory_entry entry;
 };
 
 RawChars RenderDefaultDirectoryListing(std::string_view requestPath, std::span<const DirectoryListingEntry> entries,
@@ -213,11 +213,9 @@ RawChars RenderDefaultDirectoryListing(std::string_view requestPath, std::span<c
       "</h1>\n<table>\n<thead><tr><th>Name</th><th class=\"size\">Size</th><th class=\"modified\">Last "
       "Modified</th></tr></thead>\n<tbody>\n");
 
-  if (!requestPath.empty()) {
-    body.append(
-        "<tr><td class=\"name\"><a href=\"../\" class=\"dir\">..</a></td><td class=\"size\">-</td><td "
-        "class=\"modified\">-</td></tr>\n");
-  }
+  body.append(
+      "<tr><td class=\"name\"><a href=\"../\" class=\"dir\">..</a></td><td class=\"size\">-</td><td "
+      "class=\"modified\">-</td></tr>\n");
 
   for (const auto& entry : entries) {
     const bool isDir = entry.isDirectory;
@@ -273,8 +271,7 @@ struct DirectoryListingResult {
 [[nodiscard]] DirectoryListingResult CollectDirectoryListing(const std::filesystem::path& directory,
                                                              const StaticFileConfig& config) {
   DirectoryListingResult result;
-  const std::size_t limit =
-      config.maxEntriesToList == 0U ? std::numeric_limits<std::size_t>::max() : config.maxEntriesToList;
+  const std::size_t limit = config.maxEntriesToList;
 
   std::error_code ec;
   std::filesystem::directory_iterator iter(directory, ec);
@@ -283,24 +280,29 @@ struct DirectoryListingResult {
     return result;
   }
 
+  const auto comp = [](const DirectoryListingEntry& lhs, const DirectoryListingEntry& rhs) {
+    // Directories first
+    if (lhs.isDirectory != rhs.isDirectory) {
+      return lhs.isDirectory && !rhs.isDirectory;
+    }
+    return lhs.name < rhs.name;
+  };
+
   const std::filesystem::directory_iterator end;
 
   while (!ec && iter != end) {
     const std::filesystem::directory_entry current = *iter;
     iter.increment(ec);
     if (ec) {
-      log::warn("Failed to advance directory iterator for '{}': {}", directory.c_str(), ec.message());
+      log::error("Failed to advance directory iterator for '{}': {}", directory.c_str(), ec.message());
     }
-    const bool hasMore = !ec && iter != end;
 
     std::string name = current.path().filename().string();
     if (!config.showHiddenFiles && IsHiddenName(name)) {
       continue;
     }
 
-    DirectoryListingEntry& info = result.entries.emplace_back();
-    info.name = std::move(name);
-    info.entry = current;
+    DirectoryListingEntry& info = result.entries.emplace_back(std::move(name), current);
 
     std::error_code stepEc;
     const auto entryStatus = current.symlink_status(stepEc);
@@ -328,9 +330,22 @@ struct DirectoryListingResult {
       info.lastModified = std::chrono::clock_cast<SysClock>(writeTime);
     }
 
-    if (limit != std::numeric_limits<std::size_t>::max() && result.entries.size() >= limit) {
-      result.truncated = hasMore;
-      break;
+    // Order of directory exploration is file system dependent.
+    // So we start to keep an up to date ordered list of elements once it reaches the limit so that the list stays
+    // consistent across file systems.
+    if (result.entries.size() == limit) {
+      std::ranges::sort(result.entries, comp);
+    } else if (result.entries.size() > limit) {
+      // we have a container of limit + 1 elements, with the last one maybe unsorted.
+      // We need to find the correct insert place of last element, and rotate the elements to keep the vector sorted.
+      auto lb = std::ranges::lower_bound(result.entries.begin(), result.entries.end() - 1, result.entries.back(), comp);
+      if (lb != result.entries.end() - 1) {
+        // We need to rotate +1 (to the right) the range [lb, end)]
+        std::rotate(lb, result.entries.end() - 1, result.entries.end());
+      }
+      result.entries.pop_back();
+
+      result.truncated = true;
     }
   }
 
@@ -340,13 +355,11 @@ struct DirectoryListingResult {
 
   result.isValid = true;
 
-  std::ranges::sort(result.entries, [](const DirectoryListingEntry& lhs, const DirectoryListingEntry& rhs) {
-    // Directories first
-    if (lhs.isDirectory != rhs.isDirectory) {
-      return lhs.isDirectory && !rhs.isDirectory;
-    }
-    return lhs.name < rhs.name;
-  });
+  if (result.entries.size() < limit) {
+    // If it is at the limit, it's already sorted.
+    std::ranges::sort(result.entries, comp);
+  }
+
   return result;
 }
 
@@ -741,13 +754,10 @@ StaticFileHandler::StaticFileHandler(std::filesystem::path rootDirectory, Static
 
 bool StaticFileHandler::resolveTarget(const HttpRequest& request, std::filesystem::path& resolvedPath) const {
   std::string_view rawPath = request.path();
-  if (rawPath.empty()) {
-    rawPath = "/";
-  }
-  const bool requestedTrailingSlash = rawPath.ends_with('/');
-  if (rawPath.front() == '/') {
-    rawPath.remove_prefix(1);
-  }
+  const bool requestedTrailingSlash = rawPath.back() == '/';
+
+  rawPath.remove_prefix(1);
+
   std::filesystem::path relative;
   while (!rawPath.empty()) {
     const auto slashPos = rawPath.find('/');
@@ -810,12 +820,8 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     return resp;
   }
 
-  std::string_view requestPath = request.path();
-  if (requestPath.empty()) {
-    requestPath = "/";
-  }
-
-  const bool requestedTrailingSlash = requestPath.ends_with('/');
+  const std::string_view requestPath = request.path();
+  const bool requestedTrailingSlash = requestPath.back() == '/';
 
   std::filesystem::path targetPath;
   if (!resolveTarget(request, targetPath)) {
@@ -834,7 +840,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     }
 
     if (!requestedTrailingSlash) {
-      const std::size_t appendSlash = !requestPath.empty() && !requestPath.ends_with('/') ? 1UL : 0UL;
+      const std::size_t appendSlash = requestedTrailingSlash ? 0UL : 1UL;
       RawChars location(requestPath.size() + appendSlash);
       location.unchecked_append(requestPath);
       if (appendSlash != 0) {
@@ -969,21 +975,19 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     AddLastModifiedHeader(resp, lastModified);
   }
 
-  bool contentTypeSet = false;
+  std::string resolvedContentType;
+  std::string_view contentTypeForFile;
   if (_config.contentTypeResolver) {
     auto resolved = _config.contentTypeResolver(targetPath.generic_string());
     if (!resolved.empty()) {
-      resp.header(http::ContentType, std::move(resolved));
-      contentTypeSet = true;
+      resolvedContentType = std::move(resolved);
+      contentTypeForFile = resolvedContentType;
     }
   }
 
-  if (!contentTypeSet) {
-    if (_config.defaultContentType().empty()) {
-      resp.header(http::ContentType, http::ContentTypeApplicationOctetStream);
-    } else {
-      resp.header(http::ContentType, _config.defaultContentType());
-    }
+  if (contentTypeForFile.empty()) {
+    contentTypeForFile =
+        _config.defaultContentType().empty() ? http::ContentTypeApplicationOctetStream : _config.defaultContentType();
   }
 
   if (rangeSelection.state == RangeSelection::State::Valid) {
@@ -991,11 +995,11 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     const auto rangeHeader = BuildRangeHeader(rangeSelection.offset, rangeSelection.length, fileSize);
     resp.addHeader(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
     resp.file(std::move(file), static_cast<std::size_t>(rangeSelection.offset),
-              static_cast<std::size_t>(rangeSelection.length));
+              static_cast<std::size_t>(rangeSelection.length), contentTypeForFile);
     return resp;
   }
 
-  resp.file(std::move(file));
+  resp.file(std::move(file), contentTypeForFile);
   return resp;
 }
 

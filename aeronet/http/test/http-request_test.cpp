@@ -88,6 +88,11 @@ TEST_F(HttpRequestTest, InvalidMethod) {
   EXPECT_EQ(reqSet(RawChars("GETA / HTTP/1.1\r\n\r\n")), http::StatusCodeNotImplemented);
 }
 
+TEST_F(HttpRequestTest, InvalidPath) {
+  EXPECT_EQ(reqSet(RawChars("GET   HTTP/1.1\r\n\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET ?a=b HTTP/1.1\r\n\r\n")), http::StatusCodeBadRequest);
+}
+
 TEST_F(HttpRequestTest, NotEnoughDataOnlyFirstLine) { EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n")), 0); }
 
 TEST_F(HttpRequestTest, ParseBasicPathAndVersion) {

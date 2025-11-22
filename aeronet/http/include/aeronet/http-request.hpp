@@ -50,6 +50,7 @@ class HttpRequest {
   [[nodiscard]] http::Method method() const noexcept { return _method; }
 
   // The URL decoded path (the target without the query params string).
+  // It cannot be empty.
   // Example:
   //  GET /path               -> '/path'
   //  GET /path?key=val       -> '/path'

@@ -116,6 +116,18 @@ TEST_F(HttpTrailingSlash, StrictPolicyDifferent) {
   ASSERT_TRUE(resp.contains("404"));
 }
 
+TEST_F(HttpTrailingSlash, NormalizeSingleSlash) {
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Normalize);
+  ts.router().setPath(http::Method::GET, "/", [](const HttpRequest&) { return HttpResponse().body("beta"); });
+  auto resp = rawRequest(ts.port(), "/");
+  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.contains("beta"));
+
+  resp = rawRequest(ts.port(), "//");
+  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.contains("beta"));
+}
+
 TEST_F(HttpTrailingSlash, NormalizePolicyStrips) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Normalize);
   ts.router().setPath(http::Method::GET, "/beta", [](const HttpRequest&) { return HttpResponse().body("beta"); });
