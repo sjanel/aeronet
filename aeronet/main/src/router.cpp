@@ -24,8 +24,12 @@ namespace {
 constexpr std::string_view kEscapedOpenBrace = "{{";
 constexpr std::string_view kEscapedCloseBrace = "}}";
 
-bool ShouldNormalize(RouterConfig::TrailingSlashPolicy policy, std::string_view& path) noexcept {
-  const bool pathHasTrailingSlash = path.size() > 1U && path.back() == '/';
+bool ShouldNormalize(RouterConfig::TrailingSlashPolicy policy, std::string_view& path) {
+  const auto sz = path.size();
+  if (sz == 0) {
+    throw std::invalid_argument("Path cannot be empty");
+  }
+  const bool pathHasTrailingSlash = sz > 1U && path.back() == '/';
   if (pathHasTrailingSlash && (policy == RouterConfig::TrailingSlashPolicy::Normalize ||
                                policy == RouterConfig::TrailingSlashPolicy::Redirect)) {
     path.remove_suffix(1U);
@@ -84,9 +88,6 @@ void Router::addResponseMiddleware(ResponseMiddleware middleware) {
 
 void Router::splitPathSegments(std::string_view path) {
   _segmentBuffer.clear();
-  if (path.empty()) {
-    return;
-  }
 
   std::size_t pos = path.front() == '/' ? 1U : 0U;
   if (pos >= path.size()) {
@@ -531,7 +532,7 @@ http::MethodBmp Router::allowedMethods(std::string_view path) {
 }
 
 Router::CompiledRoute Router::CompilePattern(std::string_view path) {
-  if (path.empty() || path.front() != '/') {
+  if (path.front() != '/') {
     throw std::invalid_argument("Router paths must begin with '/'");
   }
 
@@ -539,9 +540,8 @@ Router::CompiledRoute Router::CompilePattern(std::string_view path) {
   bool sawNamed = false;
   bool sawUnnamed = false;
 
-  std::size_t pos = 1U;
   uint32_t paramIdx = 0;
-  while (pos < path.size()) {
+  for (std::size_t pos = 1U; pos < path.size();) {
     const std::size_t nextSlash = path.find('/', pos);
     const std::string_view segment =
         nextSlash == std::string_view::npos ? path.substr(pos) : path.substr(pos, nextSlash - pos);
