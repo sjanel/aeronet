@@ -1,5 +1,4 @@
 #include <aeronet/aeronet.hpp>
-#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
@@ -14,7 +13,7 @@ int main(int argc, char **argv) {
   }
 
   // Enable signal handler for graceful shutdown on Ctrl+C
-  aeronet::SignalHandler::Enable(std::chrono::milliseconds{5000});
+  aeronet::SignalHandler::Enable();
 
   aeronet::Router router;
 
