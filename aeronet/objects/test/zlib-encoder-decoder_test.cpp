@@ -12,6 +12,8 @@
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
 
+using namespace aeronet;
+
 namespace {
 
 constexpr std::size_t kEncoderChunkSize = 1536;
@@ -37,28 +39,27 @@ std::vector<std::string> samplePayloads() {
   return payloads;
 }
 
-const char* variantName(aeronet::details::ZStreamRAII::Variant variant) {
-  return variant == aeronet::details::ZStreamRAII::Variant::gzip ? "gzip" : "deflate";
+const char* variantName(details::ZStreamRAII::Variant variant) {
+  return variant == details::ZStreamRAII::Variant::gzip ? "gzip" : "deflate";
 }
 
-void ExpectOneShotRoundTrip(aeronet::details::ZStreamRAII::Variant variant, std::string_view payload) {
-  aeronet::CompressionConfig cfg;
-  aeronet::ZlibEncoder encoder(variant, cfg);
-  aeronet::RawChars compressed;
+void ExpectOneShotRoundTrip(details::ZStreamRAII::Variant variant, std::string_view payload) {
+  CompressionConfig cfg;
+  ZlibEncoder encoder(variant, cfg);
+  RawChars compressed;
   encoder.encodeFull(kExtraCapacity, payload, compressed);
 
-  const bool isGzip = variant == aeronet::details::ZStreamRAII::Variant::gzip;
-  aeronet::RawChars decompressed;
-  ASSERT_TRUE(aeronet::ZlibDecoder::Decompress(std::string_view(compressed), isGzip, kMaxPlainBytes, kDecoderChunkSize,
-                                               decompressed));
+  const bool isGzip = variant == details::ZStreamRAII::Variant::gzip;
+  RawChars decompressed;
+  ASSERT_TRUE(
+      ZlibDecoder::Decompress(std::string_view(compressed), isGzip, kMaxPlainBytes, kDecoderChunkSize, decompressed));
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
-void ExpectStreamingRoundTrip(aeronet::details::ZStreamRAII::Variant variant, std::string_view payload,
-                              std::size_t split) {
-  aeronet::CompressionConfig cfg;
-  aeronet::ZlibEncoder encoder(variant, cfg);
-  aeronet::RawChars compressed;
+void ExpectStreamingRoundTrip(details::ZStreamRAII::Variant variant, std::string_view payload, std::size_t split) {
+  CompressionConfig cfg;
+  ZlibEncoder encoder(variant, cfg);
+  RawChars compressed;
   auto ctx = encoder.makeContext();
   std::string_view remaining = payload;
   while (!remaining.empty()) {
@@ -75,20 +76,62 @@ void ExpectStreamingRoundTrip(aeronet::details::ZStreamRAII::Variant variant, st
     compressed.append(tail);
   }
 
-  const bool isGzip = variant == aeronet::details::ZStreamRAII::Variant::gzip;
-  aeronet::RawChars decompressed;
-  ASSERT_TRUE(aeronet::ZlibDecoder::Decompress(std::string_view(compressed), isGzip, kMaxPlainBytes, kDecoderChunkSize,
-                                               decompressed));
+  const bool isGzip = variant == details::ZStreamRAII::Variant::gzip;
+  RawChars decompressed;
+  ASSERT_TRUE(
+      ZlibDecoder::Decompress(std::string_view(compressed), isGzip, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_EQ(std::string_view(decompressed), payload);
+}
+
+RawChars BuildStreamingCompressed(details::ZStreamRAII::Variant variant, std::string_view payload) {
+  CompressionConfig cfg;
+  ZlibEncoder encoder(variant, cfg);
+  RawChars compressed;
+  auto ctx = encoder.makeContext();
+  std::string_view remaining = payload;
+  while (!remaining.empty()) {
+    const std::size_t take = std::min<std::size_t>(remaining.size(), 4096U);
+    const auto chunk = remaining.substr(0, take);
+    remaining.remove_prefix(take);
+    const auto produced = ctx->encodeChunk(kEncoderChunkSize, chunk);
+    if (!produced.empty()) {
+      compressed.append(produced);
+    }
+  }
+  const auto tail = ctx->encodeChunk(kEncoderChunkSize, {});
+  if (!tail.empty()) {
+    compressed.append(tail);
+  }
+  return compressed;
+}
+
+void ExpectStreamingDecoderRoundTrip(details::ZStreamRAII::Variant variant, std::string_view payload,
+                                     std::size_t split) {
+  const auto compressed = BuildStreamingCompressed(variant, payload);
+  ZlibDecoder decoder(variant == details::ZStreamRAII::Variant::gzip);
+  auto ctx = decoder.makeContext();
+  ASSERT_TRUE(ctx);
+  RawChars decompressed;
+  std::string_view view(compressed);
+  std::size_t offset = 0;
+  while (offset < view.size()) {
+    const std::size_t take = std::min(split, view.size() - offset);
+    const std::string_view chunk = view.substr(offset, take);
+    offset += take;
+    const bool finalChunk = offset >= view.size();
+    ASSERT_TRUE(ctx->decompressChunk(chunk, finalChunk, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  }
+  ASSERT_TRUE(ctx->decompressChunk({}, true, kMaxPlainBytes, kDecoderChunkSize, decompressed));
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
 }  // namespace
 
-class ZlibEncoderDecoderTest : public ::testing::TestWithParam<aeronet::details::ZStreamRAII::Variant> {};
+class ZlibEncoderDecoderTest : public ::testing::TestWithParam<details::ZStreamRAII::Variant> {};
 
 INSTANTIATE_TEST_SUITE_P(Variants, ZlibEncoderDecoderTest,
-                         ::testing::Values(aeronet::details::ZStreamRAII::Variant::gzip,
-                                           aeronet::details::ZStreamRAII::Variant::deflate));
+                         ::testing::Values(details::ZStreamRAII::Variant::gzip,
+                                           details::ZStreamRAII::Variant::deflate));
 
 TEST_P(ZlibEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
   const auto variant = GetParam();
@@ -100,12 +143,24 @@ TEST_P(ZlibEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
 
 TEST_P(ZlibEncoderDecoderTest, StreamingRoundTripsAcrossChunkSplits) {
   const auto variant = GetParam();
-  constexpr std::array<std::size_t, 4> kSplits{1U, 9U, 257U, 4096U};
+  static constexpr std::array kSplits{1ULL, 9ULL, 257ULL, 4096ULL, 10000ULL};
   for (const auto& payload : samplePayloads()) {
     for (const auto split : kSplits) {
       SCOPED_TRACE(testing::Message() << variantName(variant) << " payload bytes=" << payload.size()
                                       << " split=" << split);
       ExpectStreamingRoundTrip(variant, payload, split);
+    }
+  }
+}
+
+TEST_P(ZlibEncoderDecoderTest, StreamingDecoderHandlesChunkSplits) {
+  const auto variant = GetParam();
+  static constexpr std::array<std::size_t, 4> kDecodeSplits{1U, 7U, 257U, 4096U};
+  for (const auto& payload : samplePayloads()) {
+    for (const auto split : kDecodeSplits) {
+      SCOPED_TRACE(testing::Message() << variantName(variant) << " payload bytes=" << payload.size()
+                                      << " decode split=" << split);
+      ExpectStreamingDecoderRoundTrip(variant, payload, split);
     }
   }
 }

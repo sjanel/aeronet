@@ -49,7 +49,7 @@ void ExpectOneShotRoundTrip(std::string_view payload) {
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
-void ExpectStreamingRoundTrip(std::string_view payload, std::size_t split) {
+aeronet::RawChars BuildStreamingCompressed(std::string_view payload, std::size_t split) {
   aeronet::CompressionConfig cfg;
   aeronet::ZstdEncoder encoder(cfg);
   aeronet::RawChars compressed;
@@ -68,10 +68,33 @@ void ExpectStreamingRoundTrip(std::string_view payload, std::size_t split) {
   if (!tail.empty()) {
     compressed.append(tail);
   }
+  return compressed;
+}
 
+void ExpectStreamingRoundTrip(std::string_view payload, std::size_t split) {
+  const auto compressed = BuildStreamingCompressed(payload, split);
   aeronet::RawChars decompressed;
   ASSERT_TRUE(
       aeronet::ZstdDecoder::Decompress(std::string_view(compressed), kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_EQ(std::string_view(decompressed), payload);
+}
+
+void ExpectStreamingDecoderRoundTrip(std::string_view payload, std::size_t split) {
+  const auto compressed = BuildStreamingCompressed(payload, 4096U);
+  aeronet::ZstdDecoder decoder;
+  auto ctx = decoder.makeContext();
+  ASSERT_TRUE(ctx);
+  aeronet::RawChars decompressed;
+  std::string_view view(compressed);
+  std::size_t offset = 0;
+  while (offset < view.size()) {
+    const std::size_t take = std::min(split, view.size() - offset);
+    const std::string_view chunk = view.substr(offset, take);
+    offset += take;
+    const bool finalChunk = offset >= view.size();
+    ASSERT_TRUE(ctx->decompressChunk(chunk, finalChunk, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  }
+  ASSERT_TRUE(ctx->decompressChunk({}, true, kMaxPlainBytes, kDecoderChunkSize, decompressed));
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
@@ -85,11 +108,21 @@ TEST(ZstdEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
 }
 
 TEST(ZstdEncoderDecoderTest, StreamingRoundTripsAcrossChunkSplits) {
-  constexpr std::array<std::size_t, 4> kSplits{1U, 7U, 257U, 8192U};
+  static constexpr std::array kSplits{1ULL, 7ULL, 257ULL, 8192ULL, 10000ULL};
   for (const auto& payload : samplePayloads()) {
     for (const auto split : kSplits) {
       SCOPED_TRACE(testing::Message() << "payload bytes=" << payload.size() << " split=" << split);
       ExpectStreamingRoundTrip(payload, split);
+    }
+  }
+}
+
+TEST(ZstdEncoderDecoderTest, StreamingDecoderHandlesChunkSplits) {
+  static constexpr std::array<std::size_t, 4> kDecodeSplits{1U, 7U, 257U, 4096U};
+  for (const auto& payload : samplePayloads()) {
+    for (const auto split : kDecodeSplits) {
+      SCOPED_TRACE(testing::Message() << "payload bytes=" << payload.size() << " decode split=" << split);
+      ExpectStreamingDecoderRoundTrip(payload, split);
     }
   }
 }
