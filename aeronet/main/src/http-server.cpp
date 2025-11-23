@@ -1,14 +1,17 @@
 #include "aeronet/http-server.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <exception>
 #include <functional>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -19,6 +22,7 @@
 #include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
+#include "aeronet/decoder.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
@@ -419,10 +423,49 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
     return false;
   }
 
+  const std::size_t maxPlainBytes =
+      cfg.maxDecompressedBytes == 0 ? std::numeric_limits<std::size_t>::max() : cfg.maxDecompressedBytes;
+
+  bool useStreamingDecode = false;
+  if (cfg.streamingActivationContentLength > 0) {
+    if (auto contentLen = _request.headerValue(http::ContentLength); contentLen && !contentLen->empty()) {
+      std::size_t declaredLen = 0;
+      const auto [ptr, err] = std::from_chars(contentLen->data(), contentLen->data() + contentLen->size(), declaredLen);
+      if (err == std::errc() && ptr == contentLen->data() + contentLen->size()) {
+        useStreamingDecode = declaredLen >= cfg.streamingActivationContentLength;
+      }
+    }
+  }
+
   // We'll alternate between bodyAndTrailersBuffer (source) and _tmpBuffer (target) each stage.
   std::string_view src = _request.body();
   RawChars* dst = &_tmpBuffer;
   ConnectionState& state = cnxIt->second;
+
+  auto runDecoder = [&](Decoder& decoder) -> bool {
+    if (!useStreamingDecode) {
+      return decoder.decompressFull(src, maxPlainBytes, cfg.decoderChunkSize, *dst);
+    }
+    auto ctx = decoder.makeContext();
+    if (!ctx) {
+      return false;
+    }
+    if (src.empty()) {
+      return ctx->decompressChunk(std::string_view{}, true, maxPlainBytes, cfg.decoderChunkSize, *dst);
+    }
+    std::size_t processed = 0;
+    while (processed < src.size()) {
+      const std::size_t remaining = src.size() - processed;
+      const std::size_t chunkLen = std::min(cfg.decoderChunkSize, remaining);
+      std::string_view chunk(src.data() + processed, chunkLen);
+      processed += chunkLen;
+      const bool lastChunk = processed == src.size();
+      if (!ctx->decompressChunk(chunk, lastChunk, maxPlainBytes, cfg.decoderChunkSize, *dst)) {
+        return false;
+      }
+    }
+    return true;
+  };
 
   // Decode in reverse order.
   const char* first = encHeader.data();
@@ -453,24 +496,28 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
 
     std::string_view encoding(encodingFirst, encodingLast);
     dst->clear();
-    bool stageOk;
+    bool stageOk = false;
     if (CaseInsensitiveEqual(encoding, http::identity)) {
       last = comma;
       continue;  // no-op layer
 #ifdef AERONET_ENABLE_ZLIB
       // NOLINTNEXTLINE(readability-else-after-return)
     } else if (CaseInsensitiveEqual(encoding, http::gzip)) {
-      stageOk = ZlibDecoder::Decompress(src, true, cfg.maxDecompressedBytes, cfg.decoderChunkSize, *dst);
+      ZlibDecoder decoder(/*isGzip=*/true);
+      stageOk = runDecoder(decoder);
     } else if (CaseInsensitiveEqual(encoding, http::deflate)) {
-      stageOk = ZlibDecoder::Decompress(src, false, cfg.maxDecompressedBytes, cfg.decoderChunkSize, *dst);
+      ZlibDecoder decoder(/*isGzip=*/false);
+      stageOk = runDecoder(decoder);
 #endif
 #ifdef AERONET_ENABLE_ZSTD
     } else if (CaseInsensitiveEqual(encoding, http::zstd)) {
-      stageOk = ZstdDecoder::Decompress(src, cfg.maxDecompressedBytes, cfg.decoderChunkSize, *dst);
+      ZstdDecoder decoder;
+      stageOk = runDecoder(decoder);
 #endif
 #ifdef AERONET_ENABLE_BROTLI
     } else if (CaseInsensitiveEqual(encoding, http::br)) {
-      stageOk = BrotliDecoder::Decompress(src, cfg.maxDecompressedBytes, cfg.decoderChunkSize, *dst);
+      BrotliDecoder decoder;
+      stageOk = runDecoder(decoder);
 #endif
     } else {
       emitSimpleError(cnxIt, http::StatusCodeUnsupportedMediaType, true, "Unsupported Content-Encoding");
