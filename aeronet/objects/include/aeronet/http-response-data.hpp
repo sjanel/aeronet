@@ -57,6 +57,11 @@ class HttpResponseData {
     _offset = 0;
   }
 
+  void shrink_to_fit() {
+    _headAndOptionalBody.shrink_to_fit();
+    _capturedBody.shrink_to_fit();
+  }
+
  private:
   RawChars _headAndOptionalBody;
   HttpPayload _capturedBody;

@@ -58,6 +58,16 @@ class HttpRequestTest : public ::testing::Test {
 
   void shrink_to_fit() { req.shrink_to_fit(); }
 
+  // Helpers that exercise private internals via friendship with HttpRequest.
+  void setBodyAccessAggregated() { req._bodyAccessMode = HttpRequest::BodyAccessMode::Aggregated; }
+  void setBodyAccessStreamingWithBridgeNoHasMore() {
+    req._bodyAccessMode = HttpRequest::BodyAccessMode::Streaming;
+    static HttpRequest::BodyAccessBridge bridge;
+    bridge.readChunk = [](HttpRequest &, void *, std::size_t) -> std::string_view { return {}; };
+    bridge.hasMore = nullptr;
+    req._bodyAccessBridge = &bridge;
+  }
+
   HttpRequest req;
   ConnectionState cs;
 };
@@ -416,6 +426,22 @@ TEST_F(HttpRequestTest, AuthorizationOverrideCaseInsensitive) {
                             "AUTHORIZATION: Bearer Second\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
   EXPECT_EQ(req.headerValueOrEmpty("Authorization"), "Bearer Second");
+}
+
+TEST_F(HttpRequestTest, HasMoreBodyReturnsFalseWhenAggregated) {
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  setBodyAccessAggregated();
+  EXPECT_FALSE(req.hasMoreBody());
+}
+
+TEST_F(HttpRequestTest, HasMoreBodyReturnsFalseWhenBridgeHasNoHasMore) {
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  setBodyAccessStreamingWithBridgeNoHasMore();
+  EXPECT_FALSE(req.hasMoreBody());
 }
 
 TEST_F(HttpRequestTest, RangeOverrideKeepsLast) {

@@ -107,14 +107,14 @@ HttpServer::HttpServer(HttpServer&& other)
       _eventLoop(std::move(other._eventLoop)),
       _lifecycle(std::move(other._lifecycle)),
       _router(std::move(other._router)),
-      _connStates(std::move(other._connStates)),
+      _activeConnectionsMap(std::move(other._activeConnectionsMap)),
+      _cachedConnections(std::move(other._cachedConnections)),
       _encoders(std::move(other._encoders)),
       _encodingSelector(std::move(other._encodingSelector)),
       _parserErrCb(std::move(other._parserErrCb)),
       _metricsCb(std::move(other._metricsCb)),
       _middlewareMetricsCb(std::move(other._middlewareMetricsCb)),
       _expectationHandler(std::move(other._expectationHandler)),
-      _request(std::move(other._request)),
       _tmpBuffer(std::move(other._tmpBuffer)),
       _pendingConfigUpdates(std::move(other._pendingConfigUpdates)),
       _pendingRouterUpdates(std::move(other._pendingRouterUpdates)),
@@ -153,14 +153,14 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _eventLoop = std::move(other._eventLoop);
     _lifecycle = std::move(other._lifecycle);
     _router = std::move(other._router);
-    _connStates = std::move(other._connStates);
+    _activeConnectionsMap = std::move(other._activeConnectionsMap);
+    _cachedConnections = std::move(other._cachedConnections);
     _encoders = std::move(other._encoders);
     _encodingSelector = std::move(other._encodingSelector);
     _parserErrCb = std::move(other._parserErrCb);
     _metricsCb = std::move(other._metricsCb);
     _middlewareMetricsCb = std::move(other._middlewareMetricsCb);
     _expectationHandler = std::move(other._expectationHandler);
-    _request = std::move(other._request);
     _tmpBuffer = std::move(other._tmpBuffer);
     _pendingConfigUpdates = std::move(other._pendingConfigUpdates);
     _pendingRouterUpdates = std::move(other._pendingRouterUpdates);
@@ -366,6 +366,7 @@ void HttpServer::stop() noexcept {
     _internalHandle->stop();
     _internalHandle.reset();
   }
+  log::debug("Stopped server");
 }
 
 void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
@@ -384,8 +385,8 @@ void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
     return;
   }
 
-  if (!_connStates.empty()) {
-    log::info("Initiating graceful drain (connections={})", _connStates.size());
+  if (!_activeConnectionsMap.empty()) {
+    log::info("Initiating graceful drain (connections={})", _activeConnectionsMap.size());
   }
 
   _lifecycle.enterDraining(deadline, hasDeadline);

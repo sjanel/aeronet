@@ -427,16 +427,18 @@ TEST(HttpProbes, StartupAndReadinessTransitions) {
   // probe may either return an explicit 503 or the client helper may fail to
   // connect (empty string) depending on timing. Retry for a short window to make
   // this assertion stable on CI where timing varies.
-  std::string readyAfterDrain;
+  bool hasFailed = false;
   const auto deadline = std::chrono::steady_clock::now() + 200ms;
   while (std::chrono::steady_clock::now() < deadline) {
-    readyAfterDrain = test::simpleGet(ts.port(), "/readyz");
-    if (readyAfterDrain.empty() || readyAfterDrain.contains("503")) {
+    try {
+      test::simpleGet(ts.port(), "/readyz");
+    } catch (const std::runtime_error&) {
+      hasFailed = true;
       break;
     }
     std::this_thread::sleep_for(2ms);
   }
-  EXPECT_TRUE(readyAfterDrain.empty() || readyAfterDrain.contains("503"));
+  EXPECT_TRUE(hasFailed);
 }
 
 TEST(HttpProbes, OverridePaths) {

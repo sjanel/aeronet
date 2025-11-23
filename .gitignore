@@ -1,34 +1,8 @@
 build**
-*.o
-*.obj
-*.a
-*.so*
-*.dylib
-.cache/
-.ccls-cache/
-compile_commands.json
-
-# CMake cache and generated files
-CMakeCache.txt
-CMakeFiles/
-cmake-install.cmake
-Makefile
-Testing/
-CTestTestfile.cmake
-CMakeUserPresets.json
+.cache
 
 # IDE / editor
 .idea/
 .vscode/
 
-# Coverage / profiling
-*.gcda
-*.gcno
-*.profraw
-*.profdata
-
-# Logs / misc
-*.log
-
-vcpkg
 .venv

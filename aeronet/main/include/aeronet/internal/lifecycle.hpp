@@ -20,7 +20,7 @@ struct Lifecycle {
   Lifecycle(Lifecycle&& other) noexcept
       : drainDeadline(std::exchange(other.drainDeadline, {})),
         wakeupFd(std::move(other.wakeupFd)),
-        state(std::exchange(other.state, State::Idle)),
+        state(other.state.exchange(State::Idle, std::memory_order_relaxed)),
         drainDeadlineEnabled(std::exchange(other.drainDeadlineEnabled, false)),
         started(other.started.load(std::memory_order_relaxed)),
         ready(other.ready.load(std::memory_order_relaxed)) {}
@@ -31,7 +31,7 @@ struct Lifecycle {
     if (this != &other) {
       drainDeadline = std::exchange(other.drainDeadline, {});
       wakeupFd = std::move(other.wakeupFd);
-      state = std::exchange(other.state, State::Idle);
+      state.store(other.state.exchange(State::Idle, std::memory_order_relaxed), std::memory_order_relaxed);
       drainDeadlineEnabled = std::exchange(other.drainDeadlineEnabled, false);
       started.store(other.started.load(std::memory_order_relaxed));
       ready.store(other.ready.load(std::memory_order_relaxed));
@@ -43,14 +43,14 @@ struct Lifecycle {
 
   void reset() noexcept {
     drainDeadline = {};
-    state = State::Idle;
+    state.store(State::Idle, std::memory_order_relaxed);
     drainDeadlineEnabled = false;
     started.store(false, std::memory_order_relaxed);
     ready.store(false, std::memory_order_relaxed);
   }
 
   void enterRunning() noexcept {
-    state = State::Running;
+    state.store(State::Running, std::memory_order_relaxed);
     drainDeadlineEnabled = false;
     // Mark probes as started and ready before entering running state
     started.store(true, std::memory_order_relaxed);
@@ -58,7 +58,7 @@ struct Lifecycle {
   }
 
   void enterStopping() noexcept {
-    state = State::Stopping;
+    state.store(State::Stopping, std::memory_order_relaxed);
     drainDeadlineEnabled = false;
   }
 
@@ -66,7 +66,7 @@ struct Lifecycle {
     ready.store(false, std::memory_order_relaxed);
 
     drainDeadline = deadline;
-    state = State::Draining;
+    state.store(State::Draining, std::memory_order_relaxed);
     drainDeadlineEnabled = enabled;
   }
 
@@ -78,19 +78,21 @@ struct Lifecycle {
     wakeupFd.send();
   }
 
-  [[nodiscard]] bool isIdle() const noexcept { return state == State::Idle; }
-  [[nodiscard]] bool isRunning() const noexcept { return state == State::Running; }
-  [[nodiscard]] bool isDraining() const noexcept { return state == State::Draining; }
-  [[nodiscard]] bool isStopping() const noexcept { return state == State::Stopping; }
-  [[nodiscard]] bool isActive() const noexcept { return state != State::Idle; }
-  [[nodiscard]] bool acceptingConnections() const noexcept { return state == State::Running; }
+  [[nodiscard]] bool isIdle() const noexcept { return state.load(std::memory_order_relaxed) == State::Idle; }
+  [[nodiscard]] bool isRunning() const noexcept { return state.load(std::memory_order_relaxed) == State::Running; }
+  [[nodiscard]] bool isDraining() const noexcept { return state.load(std::memory_order_relaxed) == State::Draining; }
+  [[nodiscard]] bool isStopping() const noexcept { return state.load(std::memory_order_relaxed) == State::Stopping; }
+  [[nodiscard]] bool isActive() const noexcept { return state.load(std::memory_order_relaxed) != State::Idle; }
+  [[nodiscard]] bool acceptingConnections() const noexcept {
+    return state.load(std::memory_order_relaxed) == State::Running;
+  }
   [[nodiscard]] bool hasDeadline() const noexcept { return drainDeadlineEnabled; }
   [[nodiscard]] std::chrono::steady_clock::time_point deadline() const noexcept { return drainDeadline; }
 
   std::chrono::steady_clock::time_point drainDeadline;
   // Wakeup fd (eventfd) used to interrupt epoll_wait promptly when stop() is invoked from another thread.
   EventFd wakeupFd;
-  State state{State::Idle};
+  std::atomic<State> state{State::Idle};
   bool drainDeadlineEnabled{false};
 
   // Probe flags

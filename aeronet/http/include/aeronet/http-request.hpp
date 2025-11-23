@@ -1,11 +1,12 @@
 #pragma once
 
 #include <chrono>
+#include <coroutine>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string_view>
 
-#include "aeronet/connection-state.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -15,8 +16,43 @@
 
 namespace aeronet {
 
+struct ConnectionState;
+
 class HttpRequest {
  public:
+  static constexpr std::size_t kDefaultReadBodyChunk = 4096;
+
+  class BodyChunkAwaitable {
+   public:
+    BodyChunkAwaitable(HttpRequest& request, std::size_t maxBytes) noexcept : _request(request), _maxBytes(maxBytes) {}
+
+    [[nodiscard]] bool await_ready() const noexcept { return _request.isBodyReady(); }
+    void await_suspend([[maybe_unused]] std::coroutine_handle<> coroutine) const noexcept {
+      _request.markAwaitingBody();
+    }
+
+    [[nodiscard]] std::string_view await_resume() { return _request.readBody(_maxBytes); }
+
+   private:
+    HttpRequest& _request;
+    std::size_t _maxBytes;
+  };
+
+  class BodyAggregateAwaitable {
+   public:
+    explicit BodyAggregateAwaitable(HttpRequest& request) noexcept : _request(request) {}
+
+    [[nodiscard]] bool await_ready() const noexcept { return _request.isBodyReady(); }
+    void await_suspend([[maybe_unused]] std::coroutine_handle<> coroutine) const noexcept {
+      _request.markAwaitingBody();
+    }
+
+    [[nodiscard]] std::string_view await_resume() { return _request.body(); }
+
+   private:
+    HttpRequest& _request;
+  };
+
   // Returns the (possibly merged) HTTP header value for the given key or an empty string_view if absent.
   // Semantics / behavior:
   //   * Lookup is case-insensitive (RFC 7230 token rules).
@@ -128,7 +164,32 @@ class HttpRequest {
   [[nodiscard]] QueryParamRange queryParams() const noexcept { return QueryParamRange(_decodedQueryParams); }
 
   // Get the (already received) body of the request.
-  [[nodiscard]] std::string_view body() const noexcept { return _body; }
+  // Throws if readBody() was previously called on this request.
+  [[nodiscard]] std::string_view body() const;
+
+  // Awaitable helper returning the fully buffered body. Currently completes synchronously but exposes an
+  // awaitable interface so coroutine-based handlers can share the same API surface as future streaming support.
+  [[nodiscard]] BodyAggregateAwaitable bodyAwaitable() { return BodyAggregateAwaitable(*this); }
+
+  // Streaming accessor for the decoded request body. Returns a view that remains valid until the next readBody()
+  // invocation or until the handler returns. Once an empty view is returned, the body (and any trailers) have been
+  // fully consumed and subsequent calls will continue returning empty.
+  // Throws if body() was previously called on this request.
+  [[nodiscard]] std::string_view readBody(std::size_t maxBytes = kDefaultReadBodyChunk);
+
+  // Awaitable helper for streaming body reads. Suspends cooperatively once real async body pipelines are wired; for
+  // now it completes synchronously while providing a coroutine-friendly API surface.
+  [[nodiscard]] BodyChunkAwaitable readBodyAsync(std::size_t maxBytes = kDefaultReadBodyChunk) {
+    return {*this, maxBytes};
+  }
+
+  // Indicates whether additional body data remains to be read via readBody().
+  [[nodiscard]] bool hasMoreBody() const;
+
+  // Indicates whether the body is ready to be read (either fully buffered or streaming bridge established).
+  [[nodiscard]] bool isBodyReady() const noexcept {
+    return _bodyAccessBridge != nullptr || _bodyAccessMode == BodyAccessMode::Aggregated;
+  }
 
   // Returns a map-like, case-insensitive view over trailer headers received after a chunked body (RFC 7230 §4.1.2).
   // Characteristics:
@@ -162,11 +223,16 @@ class HttpRequest {
   // Timestamp when request parsing began.
   [[nodiscard]] std::chrono::steady_clock::time_point reqStart() const noexcept { return _reqStart; }
 
+  // Size of the request head span.
+  // This is the sum of the lengths of the request line and all headers including CRLFs.
+  [[nodiscard]] std::size_t headSpanSize() const noexcept { return _headSpanSize; }
+
  private:
   friend class HttpServer;
   friend class HttpRequestTest;
   friend class StaticFileHandlerTest;
   friend class CorsPolicyHarness;
+  friend struct ConnectionState;
 
   static constexpr http::StatusCode kStatusNeedMoreData = static_cast<http::StatusCode>(0);
 
@@ -180,12 +246,25 @@ class HttpRequest {
   http::StatusCode initTrySetHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
                                   bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan);
 
+  void pinHeadStorage(ConnectionState& state);
+
   void shrink_to_fit();
 
   void end(http::StatusCode respStatusCode);
 
-  http::Version _version;
-  http::Method _method;
+  void markAwaitingBody() const noexcept;
+
+  enum class BodyAccessMode : uint8_t { Undecided, Streaming, Aggregated };
+  struct BodyAccessBridge {
+    using AggregateFn = std::string_view (*)(HttpRequest&, void* context);
+    using ReadChunkFn = std::string_view (*)(HttpRequest&, void* context, std::size_t maxBytes);
+    using HasMoreFn = bool (*)(const HttpRequest&, void* context);
+
+    AggregateFn aggregate{nullptr};
+    ReadChunkFn readChunk{nullptr};
+    HasMoreFn hasMore{nullptr};
+  };
+
   std::string_view _path;
   std::string_view _flatHeaders;
 
@@ -196,13 +275,23 @@ class HttpRequest {
   // Raw query component (excluding '?') retained as-is; per-key/value decoding happens on iteration.
   // Lifetime: valid only during handler invocation (points into connection buffer / in-place decode area).
   std::string_view _decodedQueryParams;
+
   std::string_view _body;
+  std::string_view _activeStreamingChunk;
+  const BodyAccessBridge* _bodyAccessBridge{nullptr};
+  void* _bodyAccessContext{nullptr};
+  ConnectionState* _ownerState{nullptr};
   std::string_view _alpnProtocol;  // Selected ALPN protocol (if any) for this connection, empty if none/unsupported
   std::string_view _tlsCipher;     // Negotiated cipher suite (empty if not TLS)
   std::string_view _tlsVersion;    // Negotiated TLS protocol version (e.g. TLSv1.3) empty if not TLS
 
   std::chrono::steady_clock::time_point _reqStart;
+  std::size_t _headSpanSize{0};
   tracing::SpanPtr _traceSpan;
+  http::Version _version;
+  http::Method _method;
+  BodyAccessMode _bodyAccessMode{BodyAccessMode::Undecided};
+  bool _headPinned{false};
 };
 
 }  // namespace aeronet

@@ -129,6 +129,7 @@ TEST(HttpRequestDecompression, SingleGzip) {
   std::string plain = "HelloCompressedWorld";
   ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
+    EXPECT_FALSE(req.headerValue(http::ContentEncoding));
     HttpResponse resp;
     resp.body("OK");
     return resp;
@@ -143,14 +144,21 @@ TEST(HttpRequestDecompression, SingleDeflate) {
     GTEST_SKIP();
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = std::string(10000, 'A');
-  ts.router().setDefault([plain](const HttpRequest& req) {
+  const std::string plain(10000, 'A');
+  const auto comp = deflateCompress(plain);
+  const std::size_t compressedSize = comp.size();
+
+  ts.router().setDefault([plain, compressedSize](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
+    EXPECT_FALSE(req.headerValue(http::ContentEncoding));
+    EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodingHeaderName), "deflate");
+    EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodedLengthHeaderName), std::to_string(compressedSize));
+    // TODO: fix ContentLength for decompressed inbound bodies and activate check below
+    // EXPECT_EQ(req.body().size(), StringToIntegral<std::size_t>(req.headerValueOrEmpty(http::ContentLength)));
     HttpResponse resp;
     resp.body("Z");
     return resp;
   });
-  auto comp = deflateCompress(plain);
   auto resp = rawPost(ts.port(), "/d", {{"Content-Encoding", "deflate"}}, comp);
   EXPECT_EQ(resp.status, 200);
 }
@@ -163,6 +171,7 @@ TEST(HttpRequestDecompression, SingleZstd) {
   std::string plain = std::string(10000, 'Z');
   ts.router().setDefault([plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
+    EXPECT_FALSE(req.headerValue(http::ContentEncoding));
     HttpResponse resp;
     resp.body("S");
     return resp;

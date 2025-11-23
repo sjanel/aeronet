@@ -17,7 +17,6 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/connection.hpp"
 #include "aeronet/event.hpp"
-#include "aeronet/features.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -45,8 +44,8 @@ void HttpServer::sweepIdleConnections() {
   // needs a periodic check because a client might send a partial request line then stall; no
   // further EPOLLIN events will arrive to trigger enforcement in handleReadableClient().
   auto now = std::chrono::steady_clock::now();
-  for (auto cnxIt = _connStates.begin(); cnxIt != _connStates.end();) {
-    ConnectionState& state = cnxIt->second;
+  for (auto cnxIt = _activeConnectionsMap.begin(); cnxIt != _activeConnectionsMap.end();) {
+    ConnectionState& state = *cnxIt->second;
 
     // Close immediately if requested
     if (state.isImmediateCloseRequested()) {
@@ -69,26 +68,43 @@ void HttpServer::sweepIdleConnections() {
       continue;
     }
     // Header read timeout: active if headerStart set and duration exceeded and no full request parsed yet.
-    if (_config.headerReadTimeout.count() > 0 && state.headerStart.time_since_epoch().count() != 0 &&
-        (now - state.headerStart) > _config.headerReadTimeout) {
-      emitSimpleError(cnxIt, http::StatusCodeRequestTimeout);
+    if (_config.headerReadTimeout.count() > 0 && state.headerStartTp.time_since_epoch().count() != 0 &&
+        (now - state.headerStartTp) > _config.headerReadTimeout) {
+      emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, false, {});
       cnxIt = closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_header_read_timeout");
       continue;
     }
+    // Body read timeout: triggered when the handler is waiting for missing body bytes.
+    if (_config.bodyReadTimeout.count() > 0 && state.waitingForBody &&
+        state.bodyLastActivity.time_since_epoch().count() != 0 &&
+        (now - state.bodyLastActivity) > _config.bodyReadTimeout) {
+      emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, false, {});
+      cnxIt = closeConnection(cnxIt);
+      _telemetry.counterAdd("aeronet.connections.closed_for_body_read_timeout");
+      continue;
+    }
     // TLS handshake timeout (if enabled). Applies only while handshake pending.
-    if constexpr (aeronet::openSslEnabled()) {
-      if (_config.tls.handshakeTimeout.count() > 0 && _config.tls.enabled &&
-          state.handshakeStart.time_since_epoch().count() != 0 && !state.tlsEstablished &&
-          !state.transport->handshakeDone()) {
-        if (now - state.handshakeStart > _config.tls.handshakeTimeout) {
-          cnxIt = closeConnection(cnxIt);
-          continue;
-        }
+#ifdef AERONET_ENABLE_OPENSSL
+    if (_config.tls.handshakeTimeout.count() > 0 && _config.tls.enabled &&
+        state.handshakeStart.time_since_epoch().count() != 0 && !state.tlsEstablished &&
+        !state.transport->handshakeDone()) {
+      if (now - state.handshakeStart > _config.tls.handshakeTimeout) {
+        cnxIt = closeConnection(cnxIt);
+        continue;
       }
     }
+#endif
     ++cnxIt;
   }
+
+  // Clean up cached closed connections older than timeout
+  // The connections are ordered by increasing lastActivity time, so we can stop at the first
+  // one that is still within the timeout.
+  const auto deadline = std::chrono::steady_clock::now() - _config.cachedConnectionsTimeout;
+  const auto cutOffIt = std::ranges::partition_point(
+      _cachedConnections, [deadline](const auto& ptr) { return ptr->lastActivity < deadline; });
+  _cachedConnections.erase(_cachedConnections.begin(), cutOffIt);
 }
 
 void HttpServer::acceptNewConnections() {
@@ -114,7 +130,7 @@ void HttpServer::acceptNewConnections() {
       continue;
     }
 
-    auto [cnxIt, inserted] = _connStates.emplace(std::move(cnx), ConnectionState{});
+    auto [cnxIt, inserted] = _activeConnectionsMap.emplace(std::move(cnx), getNewConnectionState());
     if (!inserted) {
       // This should not happen, if it does, it's probably a bug in the library or a very weird usage of HttpServer.
       log::error("Internal error: accepted connection fd # {} already present in connection map", cnxFd);
@@ -129,7 +145,7 @@ void HttpServer::acceptNewConnections() {
     // Track new connection acceptance
     _telemetry.counterAdd("aeronet.connections.accepted", 1UL);
 
-    ConnectionState& state = cnxIt->second;
+    ConnectionState& state = *cnxIt->second;
 #ifdef AERONET_ENABLE_OPENSSL
     if (_tlsCtxHolder) {
       SSL_CTX* ctx = reinterpret_cast<SSL_CTX*>(_tlsCtxHolder->raw());
@@ -161,7 +177,7 @@ void HttpServer::acceptNewConnections() {
       // (heuristic: headerStart set OR buffer missing CRLFCRLF), use initialReadChunkBytes; otherwise use
       // bodyReadChunkBytes.
       std::size_t chunkSize = _config.bodyReadChunkBytes;
-      if (pCnx->headerStart.time_since_epoch().count() != 0 ||
+      if (pCnx->headerStartTp.time_since_epoch().count() != 0 ||
           std::ranges::search(pCnx->inBuffer, http::DoubleCRLF).empty()) {
         chunkSize = _config.initialReadChunkBytes;
       }
@@ -201,6 +217,9 @@ void HttpServer::acceptNewConnections() {
           pCnx = nullptr;
           break;
         }
+      }
+      if (pCnx->waitingForBody && bytesRead > 0) {
+        pCnx->bodyLastActivity = std::chrono::steady_clock::now();
       }
       // Close only on fatal transport error or an orderly EOF (bytesRead==0 with no 'want' hint).
       if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
@@ -265,25 +284,39 @@ HttpServer::ConnectionMapIt HttpServer::closeConnection(ConnectionMapIt cnxIt) {
 
   _eventLoop.del(cfd);
 
+  auto& asyncState = cnxIt->second->asyncState;
+  if (asyncState.active || asyncState.handle) {
+    asyncState.clear();
+  }
+
   // Best-effort graceful TLS shutdown
 #ifdef AERONET_ENABLE_OPENSSL
   if (_config.tls.enabled) {
-    if (auto* tlsTr = dynamic_cast<TlsTransport*>(cnxIt->second.transport.get())) {
+    if (auto* tlsTr = dynamic_cast<TlsTransport*>(cnxIt->second->transport.get())) {
       tlsTr->shutdown();
     }
     // Propagate ALPN mismatch counter from external struct
     _tlsMetrics.alpnStrictMismatches = _tlsMetricsExternal.alpnStrictMismatches;  // capture latest
   }
 #endif
-  return _connStates.erase(cnxIt);
+
+  // Move ConnectionState to cache for potential reuse
+  if (_config.cachedConnectionsTimeout.count() > 0) {
+    auto statePtr = std::move(cnxIt->second);
+    statePtr->lastActivity = std::chrono::steady_clock::now();
+
+    _cachedConnections.push_back(std::move(statePtr));
+  }
+
+  return _activeConnectionsMap.erase(cnxIt);
 }
 
 void HttpServer::handleReadableClient(int fd) {
-  auto cnxIt = _connStates.find(fd);
-  if (cnxIt == _connStates.end()) {
+  auto cnxIt = _activeConnectionsMap.find(fd);
+  if (cnxIt == _activeConnectionsMap.end()) {
     return;
   }
-  ConnectionState& state = cnxIt->second;
+  ConnectionState& state = *cnxIt->second;
   state.lastActivity = std::chrono::steady_clock::now();
 
   // If there's buffered outbound data, try to flush it FIRST. This handles the case where
@@ -307,7 +340,7 @@ void HttpServer::handleReadableClient(int fd) {
   std::size_t bytesReadThisEvent = 0;
   while (true) {
     std::size_t chunkSize = _config.bodyReadChunkBytes;
-    if (state.headerStart.time_since_epoch().count() != 0 ||
+    if (state.headerStartTp.time_since_epoch().count() != 0 ||
         std::ranges::search(state.inBuffer, http::DoubleCRLF).empty()) {
       chunkSize = _config.initialReadChunkBytes;
     }
@@ -339,6 +372,9 @@ void HttpServer::handleReadableClient(int fd) {
       }
 #endif
     }
+    if (state.waitingForBody && count > 0) {
+      state.bodyLastActivity = std::chrono::steady_clock::now();
+    }
     if (want != TransportHint::None) {
       // Non-fatal: transport needs the socket to be readable or writable before proceeding.
       if (want == TransportHint::WriteReady && !state.waitingWritable) {
@@ -365,9 +401,9 @@ void HttpServer::handleReadableClient(int fd) {
     }
     // Header read timeout enforcement: if headers of current pending request are not complete yet
     // (heuristic: no full request parsed and buffer not empty) and duration exceeded -> close.
-    if (_config.headerReadTimeout.count() > 0 && state.headerStart.time_since_epoch().count() != 0) {
-      if (std::chrono::steady_clock::now() - state.headerStart > _config.headerReadTimeout) {
-        emitSimpleError(cnxIt, http::StatusCodeRequestTimeout);
+    if (_config.headerReadTimeout.count() > 0 && state.headerStartTp.time_since_epoch().count() != 0) {
+      if (std::chrono::steady_clock::now() - state.headerStartTp > _config.headerReadTimeout) {
+        emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, false, {});
         state.requestImmediateClose();
         break;
       }
@@ -383,12 +419,12 @@ void HttpServer::handleReadableClient(int fd) {
 }
 
 void HttpServer::handleWritableClient(int fd) {
-  const auto cnxIt = _connStates.find(fd);
-  if (cnxIt == _connStates.end()) {
+  const auto cnxIt = _activeConnectionsMap.find(fd);
+  if (cnxIt == _activeConnectionsMap.end()) {
     log::error("Received an invalid fd # {} from the event loop (or already removed?)", fd);
     return;
   }
-  ConnectionState& state = cnxIt->second;
+  ConnectionState& state = *cnxIt->second;
   // If this connection was created for an upstream non-blocking connect, and connect is pending,
   // check SO_ERROR to determine whether connect completed successfully or failed.
   if (state.connectPending) {
@@ -398,8 +434,8 @@ void HttpServer::handleWritableClient(int fd) {
       state.connectPending = false;
       if (soerr != 0) {
         // Upstream connect failed. Attempt to notify the client side (peerFd) with 502 and close both.
-        const auto peerIt = _connStates.find(state.peerFd);
-        if (peerIt != _connStates.end()) {
+        const auto peerIt = _activeConnectionsMap.find(state.peerFd);
+        if (peerIt != _activeConnectionsMap.end()) {
           emitSimpleError(peerIt, http::StatusCodeBadGateway, true, "Upstream connect failed");
         } else {
           log::error("Unable to notify client of upstream connect failure: peer fd # {} not found", state.peerFd);
@@ -434,7 +470,7 @@ void HttpServer::handleWritableClient(int fd) {
 }
 
 void HttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
-  ConnectionState& state = cnxIt->second;
+  ConnectionState& state = *cnxIt->second;
   std::size_t bytesReadThisEvent = 0;
   while (true) {
     std::size_t chunk = _config.bodyReadChunkBytes;
@@ -457,12 +493,12 @@ void HttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
   if (state.inBuffer.empty()) {
     return;
   }
-  auto peerIt = _connStates.find(state.peerFd);
-  if (peerIt == _connStates.end()) {
+  auto peerIt = _activeConnectionsMap.find(state.peerFd);
+  if (peerIt == _activeConnectionsMap.end()) {
     closeConnection(cnxIt);
     return;
   }
-  ConnectionState& peer = peerIt->second;
+  ConnectionState& peer = *peerIt->second;
   const auto [written, want] = peer.transportWrite(state.inBuffer);
   if (want == TransportHint::Error) {
     // Fatal transport error while forwarding to peer: close both sides.
