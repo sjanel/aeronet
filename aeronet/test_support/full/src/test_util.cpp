@@ -241,25 +241,30 @@ std::pair<Socket, uint16_t> startEchoServer() {
 }
 
 namespace {
-void connectLoop(int fd, auto port, std::chrono::milliseconds timeout) {
+Socket connectLoop(auto port, std::chrono::milliseconds timeout) {
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
   for (const auto deadline = std::chrono::steady_clock::now() + timeout; std::chrono::steady_clock::now() < deadline;
        std::this_thread::sleep_for(std::chrono::milliseconds{1})) {
+    Socket sock(SOCK_STREAM);
+    int fd = sock.fd();
+
     if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
-      return;
+      return sock;
     }
+
     log::debug("connect failed for fd # {}: {}", fd, std::strerror(errno));
   }
-  log::error("Error from ::connect for fd # {}: {}", fd, std::strerror(errno));
+  log::error("Error from ::connect for: {}", std::strerror(errno));
+  return Socket{};
 }
 }  // namespace
 
-ClientConnection::ClientConnection(uint16_t port, std::chrono::milliseconds timeout) : _socket(SOCK_STREAM) {
-  connectLoop(_socket.fd(), port, timeout);
-}
+ClientConnection::ClientConnection(uint16_t port, std::chrono::milliseconds timeout)
+    : _socket(connectLoop(port, timeout)) {}
 
 int countOccurrences(std::string_view haystack, std::string_view needle) {
   if (needle.empty()) {
@@ -285,17 +290,13 @@ bool noBodyAfterHeaders(std::string_view raw) {
 std::string simpleGet(uint16_t port, std::string_view path) {
   ClientConnection cnx(port);
   if (cnx.fd() < 0) {
-    return {};
+    throw std::runtime_error("simpleGet: failed to connect");
   }
   std::string req;
   req.reserve(64 + path.size());
   req.append("GET ").append(path).append(" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close");
   req.append(http::DoubleCRLF);
-  try {
-    sendAll(cnx.fd(), req);
-  } catch (const std::runtime_error &err) {
-    return {};
-  }
+  sendAll(cnx.fd(), req);
   return recvUntilClosed(cnx.fd());
 }
 
@@ -544,7 +545,18 @@ std::string buildRequest(const RequestOptions &opt) {
     req.append(header.first).append(http::HeaderSep).append(header.second).append(http::CRLF);
   }
   if (!opt.body.empty()) {
-    req.append("Content-Length: ").append(std::to_string(opt.body.size())).append(http::CRLF);
+    bool haveCL = false;
+    for (auto &header : opt.headers) {
+      if (header.first.size() == sizeof("Content-Length") - 1 &&
+          std::equal(header.first.begin(), header.first.end(), "Content-Length",
+                     [](char chA, char chB) { return aeronet::tolower(chA) == aeronet::tolower(chB); })) {
+        haveCL = true;
+        break;
+      }
+    }
+    if (!haveCL) {
+      req.append("Content-Length: ").append(std::to_string(opt.body.size())).append(http::CRLF);
+    }
   }
   req.append(http::CRLF);
   req.append(opt.body);

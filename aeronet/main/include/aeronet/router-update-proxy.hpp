@@ -7,6 +7,8 @@
 
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/path-handler-entry.hpp"
+#include "aeronet/path-handlers.hpp"
 #include "aeronet/router.hpp"
 
 namespace aeronet {
@@ -37,13 +39,13 @@ class RouterUpdateProxy {
   }
 
   /** Set the default fixed-response handler. See Router::setDefault(RequestHandler) */
-  RouterUpdateProxy& setDefault(Router::RequestHandler handler) {
+  RouterUpdateProxy& setDefault(RequestHandler handler) {
     (*_dispatcher)([handler = std::move(handler)](Router& router) mutable { router.setDefault(std::move(handler)); });
     return *this;
   }
 
   /** Set the default streaming handler. See Router::setDefault(StreamingHandler) */
-  RouterUpdateProxy& setDefault(Router::StreamingHandler handler) {
+  RouterUpdateProxy& setDefault(StreamingHandler handler) {
     (*_dispatcher)([handler = std::move(handler)](Router& router) mutable { router.setDefault(std::move(handler)); });
     return *this;
   }
@@ -70,10 +72,10 @@ class RouterUpdateProxy {
    */
   class PathEntryProxy {
    public:
-    PathEntryProxy(std::shared_ptr<Dispatcher> dispatcher, std::shared_ptr<Router::PathHandlerEntry*> entryPtr)
+    PathEntryProxy(std::shared_ptr<Dispatcher> dispatcher, std::shared_ptr<PathHandlerEntry*> entryPtr)
         : _dispatcher(std::move(dispatcher)), _entryPtr(std::move(entryPtr)) {}
 
-    /** Install per-path request middleware. See Router::PathHandlerEntry::before */
+    /** Install per-path request middleware. See PathHandlerEntry::before */
     PathEntryProxy& before(RequestMiddleware middleware) {
       (*_dispatcher)([entryPtr = _entryPtr, middleware = std::move(middleware)](Router&) mutable {
         if (auto* entry = *entryPtr) {
@@ -83,7 +85,7 @@ class RouterUpdateProxy {
       return *this;
     }
 
-    /** Install per-path response middleware. See Router::PathHandlerEntry::after */
+    /** Install per-path response middleware. See PathHandlerEntry::after */
     PathEntryProxy& after(ResponseMiddleware middleware) {
       (*_dispatcher)([entryPtr = _entryPtr, middleware = std::move(middleware)](Router&) mutable {
         if (auto* entry = *entryPtr) {
@@ -93,7 +95,7 @@ class RouterUpdateProxy {
       return *this;
     }
 
-    /** Set CORS policy for the registered path. See Router::PathHandlerEntry::cors */
+    /** Set CORS policy for the registered path. See PathHandlerEntry::cors */
     PathEntryProxy& cors(CorsPolicy policy) {
       (*_dispatcher)([entryPtr = _entryPtr, policy = std::move(policy)](Router&) mutable {
         if (auto* entry = *entryPtr) {
@@ -105,7 +107,7 @@ class RouterUpdateProxy {
 
    private:
     std::shared_ptr<Dispatcher> _dispatcher;
-    std::shared_ptr<Router::PathHandlerEntry*> _entryPtr;
+    std::shared_ptr<PathHandlerEntry*> _entryPtr;
   };
 
   /**
@@ -115,7 +117,7 @@ class RouterUpdateProxy {
    *
    * See also: Router::setPath(http::Method, std::string_view, Router::RequestHandler)
    */
-  PathEntryProxy setPath(http::Method method, std::string_view path, Router::RequestHandler handler) {
+  PathEntryProxy setPath(http::Method method, std::string_view path, RequestHandler handler) {
     return setPathImpl(method, path, std::move(handler));
   }
 
@@ -124,9 +126,9 @@ class RouterUpdateProxy {
    * This operation is dispatched to the server event-loop and applied there.
    * Returns a PathEntryProxy for further per-path configuration.
    *
-   * See also: Router::setPath(http::MethodBmp, std::string_view, Router::RequestHandler)
+   * See also: Router::setPath(http::MethodBmp, std::string_view, RequestHandler)
    */
-  PathEntryProxy setPath(http::MethodBmp methods, std::string_view path, Router::RequestHandler handler) {
+  PathEntryProxy setPath(http::MethodBmp methods, std::string_view path, RequestHandler handler) {
     return setPathImpl(methods, path, std::move(handler));
   }
 
@@ -135,9 +137,9 @@ class RouterUpdateProxy {
    * This operation is dispatched to the server event-loop and applied there.
    * Returns a PathEntryProxy for further per-path configuration.
    *
-   * See also: Router::setPath(http::Method, std::string_view, Router::StreamingHandler)
+   * See also: Router::setPath(http::Method, std::string_view, StreamingHandler)
    */
-  PathEntryProxy setPath(http::Method method, std::string_view path, Router::StreamingHandler handler) {
+  PathEntryProxy setPath(http::Method method, std::string_view path, StreamingHandler handler) {
     return setPathImpl(method, path, std::move(handler));
   }
 
@@ -146,9 +148,31 @@ class RouterUpdateProxy {
    * This operation is dispatched to the server event-loop and applied there.
    * Returns a PathEntryProxy for further per-path configuration.
    *
-   * See also: Router::setPath(http::MethodBmp, std::string_view, Router::StreamingHandler)
+   * See also: Router::setPath(http::MethodBmp, std::string_view, StreamingHandler)
    */
-  PathEntryProxy setPath(http::MethodBmp methods, std::string_view path, Router::StreamingHandler handler) {
+  PathEntryProxy setPath(http::MethodBmp methods, std::string_view path, StreamingHandler handler) {
+    return setPathImpl(methods, path, std::move(handler));
+  }
+
+  /**
+   * Register an async handler for a single HTTP method and path.
+   * This operation is dispatched to the server event-loop and applied there.
+   * Returns a PathEntryProxy for further per-path configuration.
+   *
+   * See also: Router::setPath(http::Method, std::string_view, AsyncRequestHandler)
+   */
+  PathEntryProxy setPath(http::Method method, std::string_view path, AsyncRequestHandler handler) {
+    return setPathImpl(method, path, std::move(handler));
+  }
+
+  /**
+   * Register an async handler for a bitmap of HTTP methods and a path.
+   * This operation is dispatched to the server event-loop and applied there.
+   * Returns a PathEntryProxy for further per-path configuration.
+   *
+   * See also: Router::setPath(http::MethodBmp, std::string_view, AsyncRequestHandler)
+   */
+  PathEntryProxy setPath(http::MethodBmp methods, std::string_view path, AsyncRequestHandler handler) {
     return setPathImpl(methods, path, std::move(handler));
   }
 
@@ -173,7 +197,7 @@ class RouterUpdateProxy {
    */
   template <typename MethodTag, typename Handler>
   PathEntryProxy setPathImpl(MethodTag method, std::string_view path, Handler handler) {
-    auto entryPtr = std::make_shared<Router::PathHandlerEntry*>(nullptr);
+    auto entryPtr = std::make_shared<PathHandlerEntry*>(nullptr);
     auto dispatcher = _dispatcher;
     // Make an owning copy of `path` for the posted callback. The dispatcher may
     // execute the lambda asynchronously on the server thread, so a

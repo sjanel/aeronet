@@ -222,6 +222,19 @@ class HttpPayload {
         _data);
   }
 
+  void shrink_to_fit() {
+    std::visit(
+        [](auto& val) -> void {
+          using T = std::decay_t<decltype(val)>;
+          if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
+                        std::is_same_v<T, std::vector<std::byte>> || std::is_same_v<T, RawChars>) {
+            val.shrink_to_fit();
+          }
+          // do not do anything if CharBuffer or BytesBuffer, it does not provide such functionality
+        },
+        _data);
+  }
+
  private:
   std::variant<std::monostate, std::string, std::vector<char>, std::vector<std::byte>, CharBuffer, BytesBuffer,
                RawChars>

@@ -1,11 +1,13 @@
 #include "aeronet/http-request.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -20,7 +22,6 @@
 #include "aeronet/major-minor-version.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
-#include "aeronet/toupperlower.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/url-decode.hpp"
 #include "http-method-parse.hpp"
@@ -62,20 +63,43 @@ std::optional<std::string_view> HttpRequest::headerValue(std::string_view header
   return {};
 }
 
-bool HttpRequest::wantClose() const {
-  std::string_view connectionValue = headerValueOrEmpty(http::Connection);
-  if (connectionValue.size() == http::close.size()) {
-    for (std::size_t iChar = 0; iChar < http::close.size(); ++iChar) {
-      const char lhs = tolower(connectionValue[iChar]);
-      const char rhs = static_cast<char>(http::close[iChar]);
-      if (lhs != rhs) {
-        return false;
-      }
-    }
-    return true;
+std::string_view HttpRequest::body() const {
+  if (_bodyAccessMode == BodyAccessMode::Streaming) {
+    throw std::logic_error("Cannot call body() after readBody() on the same request");
   }
-  return false;
+  // Not the cleanest, but it should appear as const from the caller.
+  auto& self = *const_cast<HttpRequest*>(this);
+  self._bodyAccessMode = BodyAccessMode::Aggregated;
+  if (self._bodyAccessBridge != nullptr && self._bodyAccessBridge->aggregate != nullptr) {
+    self._body = self._bodyAccessBridge->aggregate(self, self._bodyAccessContext);
+  }
+  return _body;
 }
+
+std::string_view HttpRequest::readBody(std::size_t maxBytes) {
+  if (_bodyAccessMode == BodyAccessMode::Aggregated) {
+    throw std::logic_error("Cannot call readBody() after body() on the same request");
+  }
+  _bodyAccessMode = BodyAccessMode::Streaming;
+  if (_bodyAccessBridge == nullptr || _bodyAccessBridge->readChunk == nullptr) {
+    _activeStreamingChunk = {};
+  } else {
+    _activeStreamingChunk = _bodyAccessBridge->readChunk(*this, _bodyAccessContext, maxBytes);
+  }
+  return _activeStreamingChunk;
+}
+
+bool HttpRequest::hasMoreBody() const {
+  if (_bodyAccessMode == BodyAccessMode::Aggregated) {
+    return false;
+  }
+  if (_bodyAccessBridge == nullptr || _bodyAccessBridge->hasMore == nullptr) {
+    return false;
+  }
+  return _bodyAccessBridge->hasMore(*this, _bodyAccessContext);
+}
+
+bool HttpRequest::wantClose() const { return CaseInsensitiveEqual(headerValueOrEmpty(http::Connection), http::close); }
 
 bool HttpRequest::hasExpectContinue() const noexcept {
   return version() == http::HTTP_1_1 && CaseInsensitiveEqual(headerValueOrEmpty(http::Expect), http::h100_continue);
@@ -85,6 +109,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
                                              bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan) {
   auto* first = state.inBuffer.data();
   auto* last = first + state.inBuffer.size();
+  _headPinned = false;
 
   _reqStart = std::chrono::steady_clock::now();
 
@@ -184,6 +209,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
 
   _traceSpan = std::move(traceSpan);
   _flatHeaders = std::string_view(headersFirst, first + http::CRLF.size());
+  _headSpanSize = static_cast<std::size_t>(_flatHeaders.data() + _flatHeaders.size() - state.inBuffer.data());
 
   // Propagate negotiated ALPN (if any) from connection state into per-request object.
   _alpnProtocol = state.tlsInfo.selectedAlpn();
@@ -191,10 +217,54 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
   _tlsVersion = state.tlsInfo.negotiatedVersion();
 
   _body = {};
+  _activeStreamingChunk = {};
+  _bodyAccessMode = BodyAccessMode::Undecided;
+  _bodyAccessBridge = nullptr;
+  _bodyAccessContext = nullptr;
   _trailers.clear();
   _pathParams.clear();
 
   return http::StatusCodeOK;
+}
+
+void HttpRequest::pinHeadStorage(ConnectionState& state) {
+  if (_headPinned || _headSpanSize == 0) {
+    return;
+  }
+  const char* oldBase = state.inBuffer.data();
+  RawChars& storage = state.headBuffer;
+  storage.assign(oldBase, oldBase + _headSpanSize);
+  const char* newBase = storage.data();
+  const char* oldLimit = oldBase + _headSpanSize;
+
+  auto remap = [&](std::string_view view) -> std::string_view {
+    if (view.empty()) {
+      return view;
+    }
+    const char* begin = view.data();
+    if (begin < oldBase || begin >= oldLimit) {
+      return view;
+    }
+    const auto offset = static_cast<std::size_t>(begin - oldBase);
+    return {newBase + offset, view.size()};
+  };
+
+  _path = remap(_path);
+  _decodedQueryParams = remap(_decodedQueryParams);
+  _flatHeaders = remap(_flatHeaders);
+
+  auto remapMap = [&](auto& map) {
+    for (auto& entry : map) {
+      entry.first = remap(entry.first);
+      entry.second = remap(entry.second);
+    }
+  };
+
+  remapMap(_headers);
+  remapMap(_trailers);
+  remapMap(_pathParams);
+
+  _headPinned = true;
 }
 
 void HttpRequest::shrink_to_fit() {
@@ -215,6 +285,11 @@ void HttpRequest::end(http::StatusCode respStatusCode) {
     _traceSpan->end();
     _traceSpan.reset();
   }
+}
+
+void HttpRequest::markAwaitingBody() const noexcept {
+  assert(_ownerState->asyncState.active);
+  _ownerState->asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::WaitingForBody;
 }
 
 }  // namespace aeronet

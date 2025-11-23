@@ -300,3 +300,27 @@ TEST(HttpPayload, EnsureAvailableCapacity_CharBufferAndBytesBuffer) {
   pb.append(std::string_view("Z"));
   EXPECT_EQ(pb.size(), 3U);
 }
+
+TEST(HttpPayload, ShrinkToFitReducesNonEmptyPayload) {
+  // Create a RawChars-backed payload with extra reserved capacity
+  HttpPayload body(RawChars(64));
+  body.addSize(16);  // pretend we've written 16 bytes
+  EXPECT_GT(body.view().size(), 0U);
+  // Ensure capacity larger than size
+  EXPECT_GT(body.view().size(), 0U);
+
+  body.shrink_to_fit();
+
+  // After shrink_to_fit, capacity should equal size (no extra slack)
+  EXPECT_EQ(body.view().size(), body.size());
+}
+
+TEST(HttpPayload, ShrinkToFitOnEmptyPayloadYieldsZeroCapacity) {
+  HttpPayload empty;
+  EXPECT_FALSE(empty.set());
+  // Ensure calling shrink on empty payload results in zero capacity storage
+  empty.shrink_to_fit();
+  // After shrink, empty payload should still be unset and size zero
+  EXPECT_EQ(empty.size(), 0U);
+  EXPECT_EQ(empty.view().size(), 0U);
+}

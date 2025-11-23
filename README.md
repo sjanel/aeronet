@@ -26,6 +26,8 @@ Spin up a basic HTTP/1.1 server that responds on `/hello` in just a few lines. I
 
 ### Immediate response
 
+Return a complete `HttpResponse` from the handler:
+
 ```cpp
 #include <aeronet/aeronet.hpp>
 
@@ -33,8 +35,8 @@ using namespace aeronet;
 
 int main() {
   Router router;
-  router.setPath(http::Method::GET, "/hello", [](const HttpRequest&) {
-    return HttpResponse(200).body("hello from aeronet\n");
+  router.setPath(http::Method::GET, "/hello", [](const HttpRequest& req) {
+    return HttpResponse(200).header("X-Req-Body", req.body()).body("hello from aeronet\n");
   });
   HttpServer server(HttpServerConfig{}, std::move(router));
   server.run(); // blocking. Use start() for non-blocking
@@ -43,9 +45,12 @@ int main() {
 
 ### Streaming response
 
+For a large response body, respond with multiple body chunks using `HttpResponseWriter`:
+
 ```cpp
-router.setDefault([](const HttpRequest&, HttpResponseWriter& w){
+router.setDefault([](const HttpRequest& req, HttpResponseWriter& w){
   w.status(200);
+  w.header("X-Req-Path", req.path());
   w.contentType("text/plain");
   for (int i = 0; i < 10; ++i) {
     w.writeBody(std::string(50,'x')); // write by chunks
@@ -53,6 +58,22 @@ router.setDefault([](const HttpRequest&, HttpResponseWriter& w){
   w.end();
 });
 ```
+
+### Async handler (Coroutines)
+
+For a (possible) large request body or an asynchronous operation, use an async handler returning `RequestTask<HttpResponse>`:
+
+```cpp
+router.setPath(http::Method::GET, "/async", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+  // Suspend execution without blocking the thread
+  auto result = co_await someAsyncOperation();
+  co_return HttpResponse(200).body(result);
+});
+```
+
+Async handlers are invoked as soon as the request head is parsed, even if the body is still streaming in.
+Call `co_await req.bodyAwaitable()` (or the chunked helpers) before touching the body to wait for the buffered payload.
+When a route uses an async handler, request middleware may observe an empty body/trailer map because aggregation now happens in parallel with handler execution; apply validation inside the coroutine if the middleware needs the payload.
 
 ## Quick Start with provided examples
 

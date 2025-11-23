@@ -77,6 +77,12 @@ void MultiHttpServer::AsyncHandle::stop() noexcept {
       thread.join();
     }
   }
+
+  // Release the shared stop callback so any weak_ptr held by the MultiHttpServer
+  // instance can expire when the caller has stopped the AsyncHandle. Clear the
+  // local thread vector to reflect there are no active background threads.
+  _onStop.reset();
+  _threads.clear();
 }
 
 void MultiHttpServer::AsyncHandle::rethrowIfError() {
@@ -264,9 +270,8 @@ void MultiHttpServer::postRouterUpdate(std::function<void(Router&)> updater) {
 }
 
 void MultiHttpServer::canSetCallbacks() const {
-  if (!_threads.empty()) {
-    // Only disallow mutations while the server farm is actively running. After stop() (threads cleared)
-    // handlers and callbacks may be adjusted prior to a restart.
+  if (isRunning()) {
+    // Only disallow mutations while the server farm is actively running
     throw std::logic_error("Cannot mutate configuration while running (stop() first)");
   }
   if (_servers.empty()) {

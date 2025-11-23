@@ -36,7 +36,8 @@ namespace aeronet {
 
 HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt, std::size_t consumedBytes,
                                                          const CorsPolicy* pCorsPolicy) {
-  switch (_request.method()) {
+  HttpRequest& request = cnxIt->second->request;
+  switch (request.method()) {
     case http::Method::OPTIONS: {
       // OPTIONS * request (target="*") should return an Allow header listing supported methods.
       const auto buildAllowHeader = [](http::MethodBmp mask) {
@@ -53,7 +54,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
         return allowValue;
       };
 
-      if (_request.path() == "*") {
+      if (request.path() == "*") {
         HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
         const http::MethodBmp allowed = _router.allowedMethods("*");
         auto allowVal = buildAllowHeader(allowed);
@@ -64,9 +65,9 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
         return LoopAction::Continue;
       }
 
-      const auto routeMethods = _router.allowedMethods(_request.path());
+      const auto routeMethods = _router.allowedMethods(request.path());
       if (pCorsPolicy != nullptr) {
-        auto preflight = pCorsPolicy->handlePreflight(_request, routeMethods);
+        auto preflight = pCorsPolicy->handlePreflight(request, routeMethods);
         switch (preflight.status) {
           case CorsPolicy::PreflightResult::Status::NotPreflight:
             break;
@@ -110,7 +111,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
           break;
         case HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly:
           // If this request arrived over TLS, disallow TRACE
-          allowTrace = _request.tlsVersion().empty();
+          allowTrace = request.tlsVersion().empty();
           break;
         case HttpServerConfig::TraceMethodPolicy::Disabled:
         default:
@@ -119,7 +120,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
       }
       if (allowTrace) {
         // Reconstruct the request head from HttpRequest
-        std::string_view reqDataEchoed(cnxIt->second.inBuffer.data(), consumedBytes);
+        std::string_view reqDataEchoed(cnxIt->second->inBuffer.data(), consumedBytes);
 
         HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
         resp.body(reqDataEchoed, http::ContentTypeMessageHttp);
@@ -135,8 +136,8 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
     case http::Method::CONNECT: {
       // CONNECT: establish a TCP tunnel to target (host:port). On success reply 200 and
       // proxy bytes bidirectionally between client and upstream.
-      // Parse authority form in _request.path() (host:port)
-      const std::string_view target = _request.path();
+      // Parse authority form in request.path() (host:port)
+      const std::string_view target = request.path();
       const auto colonPos = target.find(':');
       if (colonPos == std::string_view::npos) {
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Malformed CONNECT target");
@@ -155,7 +156,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
       // Use helper to resolve and initiate a non-blocking connect. The helper
       // returns a ConnectResult with an owned BaseFd and flags indicating
       // whether the connect is pending or failed.
-      ConnectResult cres = ConnectTCP(cnxIt->second.inBuffer.data(), host, portStr);
+      ConnectResult cres = ConnectTCP(cnxIt->second->inBuffer.data(), host, portStr);
       if (cres.failure) {
         emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Unable to resolve CONNECT target");
         return LoopAction::Break;
@@ -173,7 +174,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
       // caller's iterator; save the client's fd and re-resolve the client iterator
       // after emplacing.
       const int clientFd = cnxIt->first.fd();
-      auto [upIt, inserted] = _connStates.emplace(std::move(cres.cnx), ConnectionState{});
+      auto [upIt, inserted] = _activeConnectionsMap.emplace(std::move(cres.cnx), getNewConnectionState());
       if (!inserted) {
         log::error("TCP connection ConnectionState fd # {} already exists, should not happen", upstreamFd);
         _eventLoop.del(upstreamFd);
@@ -182,7 +183,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
         return LoopAction::Break;
       }
       // Set upstream transport to plain (no TLS)
-      upIt->second.transport = std::make_unique<PlainTransport>(upstreamFd);
+      upIt->second->transport = std::make_unique<PlainTransport>(upstreamFd);
 
       // If the connector indicated the connect is still in progress on this
       // non-blocking socket, mark state so the event loop's writable handler
@@ -191,8 +192,8 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
 
       // Reply 200 Connection Established to client
       // Since cnxIt is passed by reference we will update it here so the caller need not re-find.
-      cnxIt = _connStates.find(clientFd);
-      if (cnxIt == _connStates.end()) {
+      cnxIt = _activeConnectionsMap.find(clientFd);
+      if (cnxIt == _activeConnectionsMap.end()) {
         throw std::runtime_error("Should not happen - Client connection vanished after upstream insertion");
       }
 
@@ -200,15 +201,15 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
                               pCorsPolicy);
 
       // Enter tunneling mode: link peer fds
-      cnxIt->second.peerFd = upstreamFd;
-      upIt->second.peerFd = cnxIt->first.fd();
-      upIt->second.connectPending = cres.connectPending;
+      cnxIt->second->peerFd = upstreamFd;
+      upIt->second->peerFd = cnxIt->first.fd();
+      upIt->second->connectPending = cres.connectPending;
 
       // From now on, both connections bypass HTTP parsing; we simply proxy bytes. We'll rely on handleReadableClient
       // to read from each side and forward to the other by writing into the peer's transport directly.
       // Erase any partially parsed buffers for the client (we already replied)
-      cnxIt->second.inBuffer.clear();
-      upIt->second.inBuffer.clear();
+      cnxIt->second->inBuffer.clear();
+      upIt->second->inBuffer.clear();
       return LoopAction::Continue;
     }
     default:
@@ -217,13 +218,13 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
   return LoopAction::Nothing;
 }
 
-void HttpServer::tryCompressResponse(HttpResponse& resp) {
+void HttpServer::tryCompressResponse(const HttpRequest& request, HttpResponse& resp) {
   const std::string_view body = resp.body();
   const CompressionConfig& compressionConfig = _config.compression;
   if (body.size() < compressionConfig.minBytes) {
     return;
   }
-  const std::string_view encHeader = _request.headerValueOrEmpty(http::AcceptEncoding);
+  const std::string_view encHeader = request.headerValueOrEmpty(http::AcceptEncoding);
   auto [encoding, reject] = _encodingSelector.negotiateAcceptEncoding(encHeader);
   // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
   // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
@@ -236,7 +237,7 @@ void HttpServer::tryCompressResponse(HttpResponse& resp) {
   }
 
   if (!compressionConfig.contentTypeAllowList.empty()) {
-    std::string_view contentType = _request.headerValueOrEmpty(http::ContentType);
+    std::string_view contentType = request.headerValueOrEmpty(http::ContentType);
     if (!compressionConfig.contentTypeAllowList.contains(contentType)) {
       return;
     }
@@ -306,32 +307,36 @@ void HttpServer::tryCompressResponse(HttpResponse& resp) {
 
 void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
                                          const CorsPolicy* pCorsPolicy) {
-  if (pCorsPolicy != nullptr) {
-    (void)pCorsPolicy->applyToResponse(_request, resp);
-  }
-
   const auto respStatusCode = resp.status();
 
-  ConnectionState& state = cnxIt->second;
+  ConnectionState& state = *cnxIt->second;
+  HttpRequest& request = state.request;
+  request._ownerState = nullptr;
+  if (pCorsPolicy != nullptr) {
+    (void)pCorsPolicy->applyToResponse(request, resp);
+  }
+
   ++state.requestsServed;
+  ++_stats.totalRequestsServed;
+
   bool keepAlive =
       _config.enableKeepAlive && state.requestsServed < _config.maxRequestsPerConnection && _lifecycle.isRunning();
   if (keepAlive) {
-    std::string_view connVal = _request.headerValueOrEmpty(http::Connection);
+    std::string_view connVal = request.headerValueOrEmpty(http::Connection);
     if (connVal.empty()) {
       // Default is keep-alive for HTTP/1.1, close for HTTP/1.0
-      keepAlive = _request.version() == http::HTTP_1_1;
+      keepAlive = request.version() == http::HTTP_1_1;
     } else if (CaseInsensitiveEqual(connVal, http::close)) {
       keepAlive = false;
     }
   }
 
-  bool isHead = (_request.method() == http::Method::HEAD);
+  bool isHead = (request.method() == http::Method::HEAD);
   if (!isHead) {
-    tryCompressResponse(resp);
+    tryCompressResponse(request, resp);
   }
 
-  queuePreparedResponse(cnxIt, resp.finalizeAndStealData(_request.version(), SysClock::now(), !keepAlive,
+  queuePreparedResponse(cnxIt, resp.finalizeAndStealData(request.version(), SysClock::now(), !keepAlive,
                                                          _config.globalHeaders, isHead, _config.minCapturedBodySize));
 
   state.inBuffer.erase_front(consumedBytes);
@@ -339,11 +344,11 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& r
     state.requestDrainAndClose();
   }
   if (_metricsCb) {
-    emitRequestMetrics(respStatusCode, _request.body().size(), state.requestsServed > 0);
+    emitRequestMetrics(request, respStatusCode, request.body().size(), state.requestsServed > 0);
   }
 
   // End the span after response is finalized
-  _request.end(respStatusCode);
+  request.end(respStatusCode);
 }
 
 bool HttpServer::queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::PreparedResponse prepared) {
@@ -355,7 +360,7 @@ bool HttpServer::queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::Prep
   }
 
   if (hasFile) {
-    ConnectionState& state = cnxIt->second;
+    ConnectionState& state = *cnxIt->second;
     state.fileSend.file = std::move(prepared.file);
     state.fileSend.offset = prepared.fileOffset;
     state.fileSend.remaining = prepared.fileLength;
@@ -374,7 +379,7 @@ bool HttpServer::queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::Prep
 }
 
 bool HttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData, std::uint64_t extraQueuedBytes) {
-  ConnectionState& state = cnxIt->second;
+  ConnectionState& state = *cnxIt->second;
 
   const auto bufferedSz = httpResponseData.remainingSize();
 
@@ -426,7 +431,7 @@ bool HttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseD
 void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   ++_stats.flushCycles;
   TransportHint want = TransportHint::None;
-  ConnectionState& state = cnxIt->second;
+  ConnectionState& state = *cnxIt->second;
   const int fd = cnxIt->first.fd();
   while (!state.outBuffer.empty()) {
     const auto [written, stepWant] = state.transportWrite(state.outBuffer);
@@ -488,7 +493,7 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
 }
 
 bool HttpServer::flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt) {
-  ConnectionState& state = cnxIt->second;
+  ConnectionState& state = *cnxIt->second;
   if (state.tunnelOrFileBuffer.empty()) {
     return false;
   }
@@ -535,7 +540,7 @@ bool HttpServer::flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt) {
 }
 
 void HttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
-  ConnectionState& state = cnxIt->second;
+  ConnectionState& state = *cnxIt->second;
   if (!state.fileSend.active) {
     return;
   }

@@ -4,8 +4,8 @@
 #include <atomic>
 #include <cassert>
 #include <cerrno>
-#include <charconv>
 #include <chrono>
+#include <coroutine>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -40,7 +40,9 @@
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/path-handlers.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/request-task.hpp"
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
@@ -206,16 +208,17 @@ void RecordModFailure(auto cnxIt, uint32_t events, const char* ctx, auto& stats)
     log::error("epoll_ctl MOD failed (ctx={}, fd # {}, events=0x{:x}, errno={}, msg={})", ctx, cnxIt->first.fd(),
                events, errCode, std::strerror(errCode));
   }
-  cnxIt->second.requestDrainAndClose();
+  cnxIt->second->requestDrainAndClose();
 }
 }  // namespace
 
 bool HttpServer::enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) {
   static constexpr EventBmp kEvents = EventIn | EventOut | EventEt;
+  ConnectionState* state = cnxIt->second.get();
 
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) {
-    if (!cnxIt->second.waitingWritable) {
-      cnxIt->second.waitingWritable = true;
+    if (!state->waitingWritable) {
+      state->waitingWritable = true;
       ++_stats.deferredWriteEvents;
     }
     return true;
@@ -226,8 +229,9 @@ bool HttpServer::enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) 
 
 bool HttpServer::disableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) {
   static constexpr EventBmp kEvents = EventIn | EventEt;
+  ConnectionState* state = cnxIt->second.get();
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) {
-    cnxIt->second.waitingWritable = false;
+    state->waitingWritable = false;
     return true;
   }
   RecordModFailure(cnxIt, kEvents, ctx, _stats);
@@ -235,27 +239,27 @@ bool HttpServer::disableWritableInterest(ConnectionMapIt cnxIt, const char* ctx)
 }
 
 bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
-  ConnectionState& state = cnxIt->second;
+  ConnectionState& state = *cnxIt->second;
+  if (state.asyncState.active) {
+    handleAsyncBodyProgress(cnxIt);
+    return state.isAnyCloseRequested();
+  }
+  HttpRequest& request = state.request;
+  request._ownerState = &state;
   do {
     // If we don't yet have a full request line (no '\n' observed) wait for more data
     if (state.inBuffer.size() < http::kHttpReqLineMinLen) {
       break;  // need more bytes for at least the request line
     }
     const auto statusCode =
-        _request.initTrySetHead(state, _tmpBuffer, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders,
-                                _telemetry.createSpan("http.request"));
+        request.initTrySetHead(state, _tmpBuffer, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders,
+                               _telemetry.createSpan("http.request"));
     if (statusCode == HttpRequest::kStatusNeedMoreData) {
       break;
     }
 
-    static constexpr uint64_t kShrinkRequestNnRequestPeriod = 10000;
-
-    if (++_stats.totalRequestsServed % kShrinkRequestNnRequestPeriod == 0) {
-      _request.shrink_to_fit();
-    }
-
     if (statusCode != http::StatusCodeOK) {
-      emitSimpleError(cnxIt, statusCode, true);
+      emitSimpleError(cnxIt, statusCode, true, {});
 
       // We break unconditionally; the connection
       // will be torn down after any queued error bytes are flushed. No partial recovery is
@@ -265,13 +269,13 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
 
     // A full request head (and body, if present) will now be processed; reset headerStart to signal
     // that the header timeout should track the next pending request only.
-    state.headerStart = {};
+    state.headerStartTp = {};
     bool isChunked = false;
     bool hasTransferEncoding = false;
-    const std::string_view transferEncoding = _request.headerValueOrEmpty(http::TransferEncoding);
+    const std::string_view transferEncoding = request.headerValueOrEmpty(http::TransferEncoding);
     if (!transferEncoding.empty()) {
       hasTransferEncoding = true;
-      if (_request.version() == http::HTTP_1_0) {
+      if (request.version() == http::HTTP_1_0) {
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Transfer-Encoding not allowed in HTTP/1.0");
         break;
       }
@@ -283,7 +287,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       }
     }
 
-    const std::string_view contentLength = _request.headerValueOrEmpty(http::ContentLength);
+    const std::string_view contentLength = request.headerValueOrEmpty(http::ContentLength);
     const bool hasContentLength = !contentLength.empty();
     if (hasContentLength && hasTransferEncoding) {
       emitSimpleError(cnxIt, http::StatusCodeBadRequest, true,
@@ -291,24 +295,42 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       break;
     }
 
-    const Router::RoutingResult routingResult = _router.match(_request.method(), _request.path());
+    // Route matching
+    const Router::RoutingResult routingResult = _router.match(request.method(), request.path());
     const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
 
     // Handle Expect header tokens beyond the built-in 100-continue.
     // RFC: if any expectation token is not understood and not handled, respond 417.
-    const std::string_view expectHeader = _request.headerValueOrEmpty(http::Expect);
+    const std::string_view expectHeader = request.headerValueOrEmpty(http::Expect);
     bool found100Continue = false;
-    if (!expectHeader.empty() && handleExpectHeader(cnxIt, state, pCorsPolicy, found100Continue)) {
+    if (!expectHeader.empty() && handleExpectHeader(cnxIt, pCorsPolicy, found100Continue)) {
       break;  // stop processing this request (response queued)
     }
-    const bool expectContinue = found100Continue || _request.hasExpectContinue();
+    const bool expectContinue = found100Continue || request.hasExpectContinue();
     std::size_t consumedBytes = 0;
-    if (!decodeBodyIfReady(cnxIt, isChunked, expectContinue, consumedBytes)) {
-      break;  // need more bytes or error
+    const BodyDecodeStatus decodeStatus = decodeBodyIfReady(cnxIt, isChunked, expectContinue, consumedBytes);
+    if (decodeStatus == BodyDecodeStatus::Error) {
+      break;
     }
-    // Inbound request decompression (Content-Encoding). Performed after body aggregation but before dispatch.
-    if (!_request.body().empty() && !maybeDecompressRequestBody(cnxIt)) {
-      break;  // error already emitted; close or wait handled inside
+    const bool bodyReady = decodeStatus == BodyDecodeStatus::Ready;
+    if (!bodyReady) {
+      if (_config.bodyReadTimeout.count() > 0) {
+        state.waitingForBody = true;
+        state.bodyLastActivity = std::chrono::steady_clock::now();
+      }
+    } else {
+      if (_config.bodyReadTimeout.count() > 0) {
+        state.waitingForBody = false;
+        state.bodyLastActivity = {};
+      }
+      if (!request._body.empty() && !maybeDecompressRequestBody(cnxIt)) {
+        break;
+      }
+      state.installAggregatedBodyBridge();
+    }
+
+    if (!bodyReady && routingResult.asyncRequestHandler() == nullptr) {
+      break;
     }
 
     // Handle OPTIONS and TRACE per RFC 7231 §4.3
@@ -323,51 +345,70 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     }
 
     // Set path params map view
-    _request._pathParams.clear();
+    request._pathParams.clear();
     for (const auto& capture : routingResult.pathParams) {
-      _request._pathParams.emplace(capture.key, capture.value);
+      request._pathParams.emplace(capture.key, capture.value);
     }
 
     auto requestMiddlewareRange = routingResult.requestMiddlewareRange;
     auto responseMiddlewareRange = routingResult.responseMiddlewareRange;
 
     auto sendResponse = [this, responseMiddlewareRange, cnxIt, consumedBytes, pCorsPolicy](HttpResponse&& resp) {
-      applyResponseMiddleware(resp, responseMiddlewareRange, false);
+      applyResponseMiddleware(cnxIt->second->request, resp, responseMiddlewareRange, false);
       finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
     };
 
-    const bool isStreaming = routingResult.pStreamingHandler != nullptr;
+    auto corsRejected = [&]() {
+      if (pCorsPolicy == nullptr) {
+        return false;
+      }
+      HttpResponse corsProbe;
+      if (pCorsPolicy->applyToResponse(request, corsProbe) == CorsPolicy::ApplyStatus::OriginDenied) {
+        sendResponse(std::move(corsProbe));
+        return true;
+      }
+      return false;
+    };
+
+    const bool isStreaming = routingResult.streamingHandler() != nullptr;
 
     HttpResponse middlewareResponse;
     const auto globalPreChain = _router.globalRequestMiddleware();
-    bool shortCircuited = runPreChain(isStreaming, globalPreChain, middlewareResponse, true);
+    bool shortCircuited = runPreChain(request, isStreaming, globalPreChain, middlewareResponse, true);
     if (!shortCircuited) {
-      shortCircuited = runPreChain(isStreaming, requestMiddlewareRange, middlewareResponse, false);
+      shortCircuited = runPreChain(request, isStreaming, requestMiddlewareRange, middlewareResponse, false);
     }
     if (shortCircuited) {
       sendResponse(std::move(middlewareResponse));
       continue;
     }
 
-    if (routingResult.pStreamingHandler != nullptr) {
-      const bool streamingClose = callStreamingHandler(*routingResult.pStreamingHandler, cnxIt, consumedBytes,
+    if (routingResult.streamingHandler() != nullptr) {
+      const bool streamingClose = callStreamingHandler(*routingResult.streamingHandler(), cnxIt, consumedBytes,
                                                        pCorsPolicy, responseMiddlewareRange);
       if (streamingClose) {
         break;
       }
-    } else if (routingResult.pRequestHandler != nullptr) {
-      if (pCorsPolicy != nullptr) {
-        HttpResponse corsProbe;
-        if (pCorsPolicy->applyToResponse(_request, corsProbe) == CorsPolicy::ApplyStatus::OriginDenied) {
-          sendResponse(std::move(corsProbe));
-          continue;
-        }
+    } else if (routingResult.asyncRequestHandler() != nullptr) {
+      if (corsRejected()) {
+        continue;
+      }
+
+      const bool handlerActive =
+          dispatchAsyncHandler(cnxIt, *routingResult.asyncRequestHandler(), bodyReady, isChunked, expectContinue,
+                               consumedBytes, pCorsPolicy, responseMiddlewareRange);
+      if (handlerActive) {
+        return state.isAnyCloseRequested();
+      }
+    } else if (routingResult.requestHandler() != nullptr) {
+      if (corsRejected()) {
+        continue;
       }
 
       // normal handler
       try {
         // Use RVO on the HttpResponse in the nominal case
-        sendResponse((*routingResult.pRequestHandler)(_request));
+        sendResponse((*routingResult.requestHandler())(request));
       } catch (const std::exception& ex) {
         log::error("Exception in path handler: {}", ex.what());
         HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
@@ -385,11 +426,11 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
         // Emit 301 redirect to canonical form.
         resp.status(http::StatusCodeMovedPermanently, http::MovedPermanently).body("Redirecting");
         if (routingResult.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
-          _tmpBuffer.assign(_request.path());
+          _tmpBuffer.assign(request.path());
           _tmpBuffer.push_back('/');
           resp.location(_tmpBuffer);
         } else {
-          resp.location(_request.path().substr(0, _request.path().size() - 1));
+          resp.location(request.path().substr(0, request.path().size() - 1));
         }
 
         consumedBytes = 0;  // already advanced
@@ -406,70 +447,78 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
 }
 
 bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
-  const auto& cfg = _config.decompression;
-  std::string_view encHeader = _request.headerValueOrEmpty(http::ContentEncoding);
-  if (encHeader.empty() || CaseInsensitiveEqual(encHeader, http::identity)) {
+  ConnectionState& state = *cnxIt->second;
+  HttpRequest& request = state.request;
+  const auto& decompressionConfig = _config.decompression;
+  auto& headersMap = request._headers;
+  const auto encodingHeaderIt = headersMap.find(http::ContentEncoding);
+  if (encodingHeaderIt == headersMap.end() || CaseInsensitiveEqual(encodingHeaderIt->second, http::identity)) {
     return true;  // nothing to do
   }
-  if (!cfg.enable) {
+  if (!decompressionConfig.enable) {
     // Pass-through mode: leave compressed body & header intact; user code must decode manually
     // if it cares. We intentionally skip size / ratio guards in this mode to avoid surprising
     // rejections when opting out. Global body size limits have already been enforced.
     return true;
   }
-  const std::size_t originalCompressedSize = _request.body().size();
-  if (cfg.maxCompressedBytes != 0 && originalCompressedSize > cfg.maxCompressedBytes) {
-    emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
+  const std::size_t originalCompressedSize = request.body().size();
+  if (decompressionConfig.maxCompressedBytes != 0 && originalCompressedSize > decompressionConfig.maxCompressedBytes) {
+    emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true, {});
     return false;
   }
 
-  const std::size_t maxPlainBytes =
-      cfg.maxDecompressedBytes == 0 ? std::numeric_limits<std::size_t>::max() : cfg.maxDecompressedBytes;
+  const std::string_view encodingStr = encodingHeaderIt->second;
+
+  const std::size_t maxPlainBytes = decompressionConfig.maxDecompressedBytes == 0
+                                        ? std::numeric_limits<std::size_t>::max()
+                                        : decompressionConfig.maxDecompressedBytes;
 
   bool useStreamingDecode = false;
-  if (cfg.streamingActivationContentLength > 0) {
-    if (auto contentLen = _request.headerValue(http::ContentLength); contentLen && !contentLen->empty()) {
-      std::size_t declaredLen = 0;
-      const auto [ptr, err] = std::from_chars(contentLen->data(), contentLen->data() + contentLen->size(), declaredLen);
-      if (err == std::errc() && ptr == contentLen->data() + contentLen->size()) {
-        useStreamingDecode = declaredLen >= cfg.streamingActivationContentLength;
-      }
-    }
+  std::size_t declaredLen = 0;
+  const auto contentLenIt = headersMap.find(http::ContentLength);
+  if (decompressionConfig.streamingActivationContentLength > 0 && contentLenIt != headersMap.end()) {
+    // If Content-Length is present it has already been validated previously, so it should be valid.
+    // It is not present in chunked requests.
+    // TODO: is it possible to have originalCompressedSize != declaredLen here?
+    const std::string_view contentLenValue = contentLenIt->second;
+    declaredLen = StringToIntegral<std::size_t>(contentLenValue);
+    useStreamingDecode = declaredLen >= decompressionConfig.streamingActivationContentLength;
   }
 
   // We'll alternate between bodyAndTrailersBuffer (source) and _tmpBuffer (target) each stage.
-  std::string_view src = _request.body();
+  std::string_view src = request.body();
   RawChars* dst = &_tmpBuffer;
-  ConnectionState& state = cnxIt->second;
 
-  auto runDecoder = [&](Decoder& decoder) -> bool {
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
+  const auto runDecoder = [&](Decoder& decoder) -> bool {
     if (!useStreamingDecode) {
-      return decoder.decompressFull(src, maxPlainBytes, cfg.decoderChunkSize, *dst);
+      return decoder.decompressFull(src, maxPlainBytes, decompressionConfig.decoderChunkSize, *dst);
     }
     auto ctx = decoder.makeContext();
     if (!ctx) {
       return false;
     }
     if (src.empty()) {
-      return ctx->decompressChunk(std::string_view{}, true, maxPlainBytes, cfg.decoderChunkSize, *dst);
+      return ctx->decompressChunk(std::string_view{}, true, maxPlainBytes, decompressionConfig.decoderChunkSize, *dst);
     }
     std::size_t processed = 0;
     while (processed < src.size()) {
       const std::size_t remaining = src.size() - processed;
-      const std::size_t chunkLen = std::min(cfg.decoderChunkSize, remaining);
+      const std::size_t chunkLen = std::min(decompressionConfig.decoderChunkSize, remaining);
       std::string_view chunk(src.data() + processed, chunkLen);
       processed += chunkLen;
       const bool lastChunk = processed == src.size();
-      if (!ctx->decompressChunk(chunk, lastChunk, maxPlainBytes, cfg.decoderChunkSize, *dst)) {
+      if (!ctx->decompressChunk(chunk, lastChunk, maxPlainBytes, decompressionConfig.decoderChunkSize, *dst)) {
         return false;
       }
     }
     return true;
   };
+#endif
 
   // Decode in reverse order.
-  const char* first = encHeader.data();
-  const char* last = first + encHeader.size();
+  const char* first = encodingStr.data();
+  const char* last = first + encodingStr.size();
   while (first < last) {
     const char* encodingLast = last;
     while (encodingLast != first && (*encodingLast == ' ' || *encodingLast == '\t')) {
@@ -528,9 +577,9 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
       return false;
     }
     // Expansion guard after each stage (defensive against nested bombs).
-    if (cfg.maxExpansionRatio > 0.0 && originalCompressedSize > 0) {
+    if (decompressionConfig.maxExpansionRatio > 0.0 && originalCompressedSize > 0) {
       double ratio = static_cast<double>(dst->size()) / static_cast<double>(originalCompressedSize);
-      if (ratio > cfg.maxExpansionRatio) {
+      if (ratio > decompressionConfig.maxExpansionRatio) {
         emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true, "Decompression expansion too large");
         return false;
       }
@@ -549,42 +598,51 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
   }
 
   // Final decompressed data now resides in *src after last swap.
-  _request._body = src;
+  request._body = src;
   // Strip Content-Encoding header so user handlers observe a canonical, already-decoded body.
   // Rationale: After automatic request decompression the original header no longer reflects
   // the semantics of req.body() (which now holds the decoded representation). Exposing the stale
   // header risks double-decoding attempts or confusion about body length. The original compressed
   // size can be reintroduced later via RequestMetrics enrichment.
-  _request._headers.erase(http::ContentEncoding);
+  // TODO: Change Content-Length to reflect decompressed size
+  const std::string_view originalContentLenStr = contentLenIt != headersMap.end() ? contentLenIt->second : "";
+
+  headersMap.erase(encodingHeaderIt);
+  headersMap.insert_or_assign(http::OriginalEncodingHeaderName, encodingStr);
+  if (!originalContentLenStr.empty()) {
+    headersMap.insert_or_assign(http::OriginalEncodedLengthHeaderName, originalContentLenStr);
+  }
+
   return true;
 }
 
 bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionMapIt cnxIt,
                                       std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
                                       std::span<const ResponseMiddleware> postMiddleware) {
-  bool wantClose = _request.wantClose();
-  bool isHead = _request.method() == http::Method::HEAD;
+  HttpRequest& request = cnxIt->second->request;
+  bool wantClose = request.wantClose();
+  bool isHead = request.method() == http::Method::HEAD;
   Encoding compressionFormat = Encoding::none;
-  ConnectionState& state = cnxIt->second;
+  ConnectionState& state = *cnxIt->second;
 
   // Determine active CORS policy (route-specific if provided, otherwise global)
   if (pCorsPolicy != nullptr) {
     HttpResponse corsProbe;
-    if (pCorsPolicy->applyToResponse(_request, corsProbe) == CorsPolicy::ApplyStatus::OriginDenied) {
-      applyResponseMiddleware(corsProbe, postMiddleware, false);
+    if (pCorsPolicy->applyToResponse(request, corsProbe) == CorsPolicy::ApplyStatus::OriginDenied) {
+      applyResponseMiddleware(request, corsProbe, postMiddleware, false);
       finalizeAndSendResponse(cnxIt, std::move(corsProbe), consumedBytes, pCorsPolicy);
       return state.isAnyCloseRequested();
     }
   }
 
   if (!isHead) {
-    auto encHeader = _request.headerValueOrEmpty(http::AcceptEncoding);
+    auto encHeader = request.headerValueOrEmpty(http::AcceptEncoding);
     auto negotiated = _encodingSelector.negotiateAcceptEncoding(encHeader);
     if (negotiated.reject) {
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
       HttpResponse resp(http::StatusCodeNotAcceptable, http::ReasonNotAcceptable);
       resp.body("No acceptable content-coding available");
-      applyResponseMiddleware(resp, postMiddleware, false);
+      applyResponseMiddleware(request, resp, postMiddleware, false);
       finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
       return state.isAnyCloseRequested();
     }
@@ -592,10 +650,10 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   }
 
   // Pass the resolved activeCors pointer to the streaming writer so it can apply headers lazily
-  HttpResponseWriter writer(*this, cnxIt->first.fd(), isHead, wantClose, compressionFormat, pCorsPolicy,
+  HttpResponseWriter writer(*this, cnxIt->first.fd(), request, isHead, wantClose, compressionFormat, pCorsPolicy,
                             postMiddleware);
   try {
-    streamingHandler(_request, writer);
+    streamingHandler(request, writer);
   } catch (const std::exception& ex) {
     log::error("Exception in streaming handler: {}", ex.what());
   } catch (...) {
@@ -606,9 +664,10 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   }
 
   ++state.requestsServed;
+  ++_stats.totalRequestsServed;
   state.inBuffer.erase_front(consumedBytes);
 
-  const bool shouldClose = !_config.enableKeepAlive || _request.version() != http::HTTP_1_1 || wantClose ||
+  const bool shouldClose = !_config.enableKeepAlive || request.version() != http::HTTP_1_1 || wantClose ||
                            state.requestsServed + 1 >= _config.maxRequestsPerConnection ||
                            state.isAnyCloseRequested() || _lifecycle.isDraining() || _lifecycle.isStopping();
   if (shouldClose) {
@@ -616,36 +675,222 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   }
 
   if (_metricsCb) {
-    emitRequestMetrics(http::StatusCodeOK, _request.body().size(), state.requestsServed > 1);
+    emitRequestMetrics(request, http::StatusCodeOK, request.body().size(), state.requestsServed > 1);
   }
 
   return shouldClose;
 }
 
-void HttpServer::emitRequestMetrics(http::StatusCode status, std::size_t bytesIn, bool reusedConnection) {
+bool HttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady,
+                                      bool isChunked, bool expectContinue, std::size_t consumedBytes,
+                                      const CorsPolicy* pCorsPolicy,
+                                      std::span<const ResponseMiddleware> responseMiddleware) {
+  ConnectionState& state = *cnxIt->second;
+  auto failFast = [&](std::string_view message) {
+    if (!bodyReady) {
+      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true, message);
+      return;
+    }
+    HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
+    resp.body(message);
+    applyResponseMiddleware(state.request, resp, responseMiddleware, false);
+    finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
+  };
+
+  RequestTask<HttpResponse> task;
+  try {
+    task = handler(state.request);
+  } catch (const std::exception& ex) {
+    log::error("Exception while creating async handler task: {}", ex.what());
+    failFast(ex.what());
+    return false;
+  } catch (...) {
+    log::error("Unknown exception while creating async handler task");
+    failFast("Unknown error");
+    return false;
+  }
+
+  if (!task.valid()) {
+    log::error("Async path handler returned an invalid RequestTask for path {}", state.request.path());
+    failFast("Async handler inactive");
+    return false;
+  }
+
+  auto handle = task.release();
+  if (!handle) {
+    log::error("Async path handler returned a null coroutine for path {}", state.request.path());
+    failFast("Async handler inactive");
+    return false;
+  }
+
+  auto& asyncState = state.asyncState;
+
+  asyncState.active = true;
+  asyncState.handle = handle;
+  asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::None;
+  asyncState.needsBody = !bodyReady;
+  asyncState.responsePending = false;
+  asyncState.isChunked = isChunked;
+  asyncState.expectContinue = expectContinue;
+  asyncState.consumedBytes = bodyReady ? consumedBytes : 0;
+  asyncState.corsPolicy = pCorsPolicy;
+  asyncState.responseMiddleware = responseMiddleware.data();
+  asyncState.responseMiddlewareCount = responseMiddleware.size();
+  asyncState.pendingResponse = HttpResponse{};
+
+  if (asyncState.needsBody) {
+    state.request.pinHeadStorage(state);
+  }
+
+  resumeAsyncHandler(cnxIt);
+  return asyncState.active;
+}
+
+void HttpServer::resumeAsyncHandler(ConnectionMapIt cnxIt) {
+  ConnectionState& state = *cnxIt->second;
+  auto& async = state.asyncState;
+  if (!async.active || !async.handle) {
+    return;
+  }
+
+  while (async.handle && !async.handle.done()) {
+    async.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::None;
+    async.handle.resume();
+    if (async.awaitReason != ConnectionState::AsyncHandlerState::AwaitReason::None) {
+      return;
+    }
+  }
+
+  if (async.handle && async.handle.done()) {
+    onAsyncHandlerCompleted(cnxIt);
+  }
+}
+
+void HttpServer::handleAsyncBodyProgress(ConnectionMapIt cnxIt) {
+  ConnectionState& state = *cnxIt->second;
+  auto& async = state.asyncState;
+  if (!async.active) {
+    return;
+  }
+
+  if (async.needsBody) {
+    std::size_t consumedBytes = 0;
+    const BodyDecodeStatus status = decodeBodyIfReady(cnxIt, async.isChunked, async.expectContinue, consumedBytes);
+    if (status == BodyDecodeStatus::Error) {
+      state.asyncState.clear();
+      return;
+    }
+    if (status == BodyDecodeStatus::NeedMore) {
+      return;
+    }
+
+    async.needsBody = false;
+    async.consumedBytes = consumedBytes;
+    if (!state.request._body.empty() && !maybeDecompressRequestBody(cnxIt)) {
+      state.asyncState.clear();
+      return;
+    }
+    state.installAggregatedBodyBridge();
+    if (_config.bodyReadTimeout.count() > 0) {
+      state.waitingForBody = false;
+      state.bodyLastActivity = {};
+    }
+
+    if (async.awaitReason == ConnectionState::AsyncHandlerState::AwaitReason::WaitingForBody) {
+      async.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::None;
+      resumeAsyncHandler(cnxIt);
+      return;
+    }
+  }
+
+  if (async.responsePending) {
+    tryFlushPendingAsyncResponse(cnxIt);
+  }
+}
+
+void HttpServer::onAsyncHandlerCompleted(ConnectionMapIt cnxIt) {
+  ConnectionState& state = *cnxIt->second;
+  auto& async = state.asyncState;
+  if (!async.handle) {
+    return;
+  }
+
+  auto typedHandle =
+      std::coroutine_handle<RequestTask<HttpResponse>::promise_type>::from_address(async.handle.address());
+  HttpResponse resp;
+  bool fromException = false;
+  try {
+    resp = std::move(typedHandle.promise().consume_result());
+  } catch (const std::exception& ex) {
+    fromException = true;
+    log::error("Exception in async path handler: {}", ex.what());
+    resp = HttpResponse(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
+    resp.body(ex.what());
+  } catch (...) {
+    fromException = true;
+    log::error("Unknown exception in async path handler");
+    resp = HttpResponse(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
+    resp.body("Unknown error");
+  }
+  typedHandle.destroy();
+  async.handle = {};
+
+  if (async.needsBody) {
+    async.responsePending = true;
+    async.pendingResponse = std::move(resp);
+    if (fromException) {
+      // Body will still be drained before response is flushed; nothing else to do here.
+    }
+    return;
+  }
+
+  auto middlewareSpan = std::span<const ResponseMiddleware>(
+      static_cast<const ResponseMiddleware*>(async.responseMiddleware), async.responseMiddlewareCount);
+  applyResponseMiddleware(state.request, resp, middlewareSpan, false);
+  finalizeAndSendResponse(cnxIt, std::move(resp), async.consumedBytes, async.corsPolicy);
+  state.asyncState.clear();
+}
+
+bool HttpServer::tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt) {
+  ConnectionState& state = *cnxIt->second;
+  auto& async = state.asyncState;
+  if (!async.responsePending || async.needsBody) {
+    return false;
+  }
+
+  auto middlewareSpan = std::span<const ResponseMiddleware>(
+      static_cast<const ResponseMiddleware*>(async.responseMiddleware), async.responseMiddlewareCount);
+  applyResponseMiddleware(state.request, async.pendingResponse, middlewareSpan, false);
+  finalizeAndSendResponse(cnxIt, std::move(async.pendingResponse), async.consumedBytes, async.corsPolicy);
+  state.asyncState.clear();
+  return true;
+}
+
+void HttpServer::emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
+                                    bool reusedConnection) {
   if (!_metricsCb) {
     return;
   }
   RequestMetrics metrics;
-  metrics.method = _request.method();
-  metrics.path = _request.path();
   metrics.status = status;
   metrics.bytesIn = bytesIn;
   metrics.reusedConnection = reusedConnection;
-  metrics.duration = std::chrono::steady_clock::now() - _request.reqStart();
+  metrics.method = request.method();
+  metrics.path = request.path();
+  metrics.duration = std::chrono::steady_clock::now() - request.reqStart();
   _metricsCb(metrics);
 }
 
-void HttpServer::applyResponseMiddleware(HttpResponse& response, std::span<const ResponseMiddleware> routeChain,
-                                         bool streaming) {
+void HttpServer::applyResponseMiddleware(const HttpRequest& request, HttpResponse& response,
+                                         std::span<const ResponseMiddleware> routeChain, bool streaming) {
   auto runChain = [&](std::span<const ResponseMiddleware> postMiddleware, bool isGlobal) {
     for (uint32_t hookIdx = 0; hookIdx < postMiddleware.size(); ++hookIdx) {
       const auto& middleware = postMiddleware[hookIdx];
-      auto spanScope = startMiddlewareSpan(MiddlewareMetrics::Phase::Post, isGlobal, hookIdx, streaming);
+      auto spanScope = startMiddlewareSpan(request, MiddlewareMetrics::Phase::Post, isGlobal, hookIdx, streaming);
       const auto start = std::chrono::steady_clock::now();
       bool threwEx = false;
       try {
-        middleware(_request, response);
+        middleware(request, response);
       } catch (const std::exception& ex) {
         threwEx = true;
         log::error("Exception in {} response middleware: {}", isGlobal ? "global" : "route", ex.what());
@@ -660,16 +905,17 @@ void HttpServer::applyResponseMiddleware(HttpResponse& response, std::span<const
         spanScope.span->setAttribute("aeronet.middleware.short_circuit", int64_t{0});
         spanScope.span->setAttribute("aeronet.middleware.duration_ns", static_cast<int64_t>(duration.count()));
       }
-      emitMiddlewareMetrics(MiddlewareMetrics::Phase::Post, isGlobal, hookIdx, static_cast<uint64_t>(duration.count()),
-                            false, threwEx, streaming);
+      emitMiddlewareMetrics(request, MiddlewareMetrics::Phase::Post, isGlobal, hookIdx,
+                            static_cast<uint64_t>(duration.count()), false, threwEx, streaming);
     }
   };
   runChain(routeChain, false);
   runChain(_router.globalResponseMiddleware(), true);
 }
 
-void HttpServer::emitMiddlewareMetrics(MiddlewareMetrics::Phase phase, bool isGlobal, uint32_t index,
-                                       uint64_t durationNs, bool shortCircuited, bool threw, bool streaming) {
+void HttpServer::emitMiddlewareMetrics(const HttpRequest& request, MiddlewareMetrics::Phase phase, bool isGlobal,
+                                       uint32_t index, uint64_t durationNs, bool shortCircuited, bool threw,
+                                       bool streaming) {
   if (!_middlewareMetricsCb) {
     return;
   }
@@ -682,13 +928,14 @@ void HttpServer::emitMiddlewareMetrics(MiddlewareMetrics::Phase phase, bool isGl
   metrics.streaming = streaming;
   metrics.index = index;
   metrics.durationNs = durationNs;
-  metrics.method = _request.method();
-  metrics.requestPath = _request.path();
+  metrics.method = request.method();
+  metrics.requestPath = request.path();
+
   _middlewareMetricsCb(metrics);
 }
 
-tracing::SpanRAII HttpServer::startMiddlewareSpan(MiddlewareMetrics::Phase phase, bool isGlobal, uint32_t index,
-                                                  bool streaming) {
+tracing::SpanRAII HttpServer::startMiddlewareSpan(const HttpRequest& request, MiddlewareMetrics::Phase phase,
+                                                  bool isGlobal, uint32_t index, bool streaming) {
   tracing::SpanRAII spanScope(_telemetry.createSpan("http.middleware"));
   if (!spanScope.span) {
     return spanScope;
@@ -701,8 +948,8 @@ tracing::SpanRAII HttpServer::startMiddlewareSpan(MiddlewareMetrics::Phase phase
                                isGlobal ? std::string_view("global") : std::string_view("route"));
   spanScope.span->setAttribute("aeronet.middleware.index", static_cast<int64_t>(index));
   spanScope.span->setAttribute("aeronet.middleware.streaming", streaming ? int64_t{1} : int64_t{0});
-  spanScope.span->setAttribute("http.method", http::MethodToStr(_request.method()));
-  spanScope.span->setAttribute("http.target", _request.path());
+  spanScope.span->setAttribute("http.method", http::MethodToStr(request.method()));
+  spanScope.span->setAttribute("http.target", request.path());
   return spanScope;
 }
 
@@ -748,10 +995,10 @@ void HttpServer::eventLoop() {
     // ready == 0: timeout. Retry pending writes to handle edge-triggered epoll timing issues.
     // With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before
     // epoll_ctl(EPOLL_CTL_MOD), we miss the edge. Periodic retries ensure we eventually resume.
-    for (auto it = _connStates.begin(); it != _connStates.end();) {
-      if (it->second.fileSend.active && it->second.waitingWritable) {
+    for (auto it = _activeConnectionsMap.begin(); it != _activeConnectionsMap.end();) {
+      if (it->second->fileSend.active && it->second->waitingWritable) {
         flushFilePayload(it);
-        if (it->second.isImmediateCloseRequested()) {
+        if (it->second->isImmediateCloseRequested()) {
           it = closeConnection(it);
           continue;
         }
@@ -761,7 +1008,7 @@ void HttpServer::eventLoop() {
   }
 
   const auto now = std::chrono::steady_clock::now();
-  const bool noConnections = _connStates.empty();
+  const bool noConnections = _activeConnectionsMap.empty();
 
   if (_lifecycle.isStopping() || (_lifecycle.isDraining() && noConnections)) {
     closeAllConnections(true);
@@ -771,7 +1018,7 @@ void HttpServer::eventLoop() {
     }
   } else if (_lifecycle.isDraining()) {
     if (_lifecycle.hasDeadline() && now >= _lifecycle.deadline()) {
-      log::warn("Drain deadline reached with {} active connection(s); forcing close", _connStates.size());
+      log::warn("Drain deadline reached with {} active connection(s); forcing close", _activeConnectionsMap.size());
       closeAllConnections(true);
       _lifecycle.reset();
       log::info("Server drained after deadline");
@@ -791,11 +1038,11 @@ void HttpServer::closeListener() noexcept {
 }
 
 void HttpServer::closeAllConnections(bool immediate) {
-  for (auto it = _connStates.begin(); it != _connStates.end();) {
+  for (auto it = _activeConnectionsMap.begin(); it != _activeConnectionsMap.end();) {
     if (immediate) {
       it = closeConnection(it);
     } else {
-      it->second.requestDrainAndClose();
+      it->second->requestDrainAndClose();
       ++it;
     }
   }
@@ -927,19 +1174,18 @@ void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusC
     log::error("Exception raised in user callback: {}", ex.what());
   }
   if (immediate) {
-    cnxIt->second.requestImmediateClose();
+    cnxIt->second->requestImmediateClose();
   } else {
-    cnxIt->second.requestDrainAndClose();
+    cnxIt->second->requestDrainAndClose();
   }
 
-  _request.end(statusCode);
+  cnxIt->second->request.end(statusCode);
 }
 
-bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, ConnectionState& state, const CorsPolicy* pCorsPolicy,
-                                    bool& found100Continue) {
-  const std::string_view expectHeader = _request.headerValueOrEmpty(http::Expect);
-  const std::size_t headerEnd =
-      static_cast<std::size_t>(_request._flatHeaders.data() + _request._flatHeaders.size() - state.inBuffer.data());
+bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, const CorsPolicy* pCorsPolicy, bool& found100Continue) {
+  HttpRequest& request = cnxIt->second->request;
+  const std::string_view expectHeader = request.headerValueOrEmpty(http::Expect);
+  const std::size_t headerEnd = request.headSpanSize();
   // Parse comma-separated tokens (trim spaces/tabs). Case-insensitive comparison for 100-continue.
   // headerEnd = offset from connection buffer start to end of headers
   for (const char *cur = expectHeader.data(), *end = cur + expectHeader.size(); cur < end; ++cur) {
@@ -972,14 +1218,14 @@ bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, ConnectionState& stat
     }
     if (!_expectationHandler) {
       // No handler and not 100-continue -> RFC says respond 417
-      emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, true);
+      emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, true, {});
       return true;
     }
     try {
-      auto expectationResult = _expectationHandler(_request, token);
+      auto expectationResult = _expectationHandler(request, token);
       switch (expectationResult.kind) {
         case ExpectationResultKind::Reject:
-          emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, true);
+          emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, true, {});
           return true;
         case ExpectationResultKind::Interim: {
           // Emit an interim response immediately. Common case: 102 "Processing"
@@ -1026,11 +1272,11 @@ bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, ConnectionState& stat
       }
     } catch (const std::exception& ex) {
       log::error("Exception in ExpectationHandler: {}", ex.what());
-      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true);
+      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true, {});
       return true;
     } catch (...) {
       log::error("Unknown exception in ExpectationHandler");
-      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true);
+      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true, {});
       return true;
     }
   }
@@ -1077,16 +1323,16 @@ void HttpServer::applyRouterUpdates() {
   ApplyPendingUpdates(_updateLock, _pendingRouterUpdates, _hasPendingRouterUpdates, _router, "router");
 }
 
-bool HttpServer::runPreChain(bool willStream, std::span<const RequestMiddleware> chain, HttpResponse& out,
-                             bool isGlobal) {
+bool HttpServer::runPreChain(HttpRequest& request, bool willStream, std::span<const RequestMiddleware> chain,
+                             HttpResponse& out, bool isGlobal) {
   for (uint32_t idx = 0; idx < chain.size(); ++idx) {
     const auto& middleware = chain[idx];
     const auto start = std::chrono::steady_clock::now();
-    auto spanScope = startMiddlewareSpan(MiddlewareMetrics::Phase::Pre, isGlobal, idx, willStream);
+    auto spanScope = startMiddlewareSpan(request, MiddlewareMetrics::Phase::Pre, isGlobal, idx, willStream);
     MiddlewareResult decision;
     bool threwEx = true;
     try {
-      decision = middleware(_request);
+      decision = middleware(request);
       threwEx = false;
     } catch (const std::exception& ex) {
       log::error("Exception while applying pre middleware: {}", ex.what());
@@ -1102,14 +1348,29 @@ bool HttpServer::runPreChain(bool willStream, std::span<const RequestMiddleware>
       spanScope.span->setAttribute("aeronet.middleware.short_circuit", shortCircuited ? int64_t{1} : int64_t{0});
       spanScope.span->setAttribute("aeronet.middleware.duration_ns", static_cast<int64_t>(duration.count()));
     }
-    emitMiddlewareMetrics(MiddlewareMetrics::Phase::Pre, isGlobal, idx, static_cast<uint64_t>(duration.count()),
-                          shortCircuited, false, willStream);
+    emitMiddlewareMetrics(request, MiddlewareMetrics::Phase::Pre, isGlobal, idx,
+                          static_cast<uint64_t>(duration.count()), shortCircuited, false, willStream);
     if (shortCircuited) {
       out = std::move(decision).takeResponse();
       return true;
     }
   }
   return false;
+}
+
+std::unique_ptr<ConnectionState> HttpServer::getNewConnectionState() {
+  if (!_cachedConnections.empty()) {
+    // Reuse a cached ConnectionState object
+    auto statePtr = std::move(_cachedConnections.back());
+    if (statePtr->lastActivity + _config.cachedConnectionsTimeout > std::chrono::steady_clock::now()) {
+      _cachedConnections.pop_back();
+      statePtr->clear();
+      return statePtr;
+    }
+    // all connections are older than timeout, clear cache
+    _cachedConnections.clear();
+  }
+  return std::make_unique<ConnectionState>();
 }
 
 }  // namespace aeronet

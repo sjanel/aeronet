@@ -71,6 +71,10 @@ inline constexpr std::string_view AccessControlAllowPrivateNetwork = "Access-Con
 inline constexpr std::string_view AccessControlRequestMethod = "Access-Control-Request-Method";
 inline constexpr std::string_view AccessControlRequestHeaders = "Access-Control-Request-Headers";
 
+// Special aeronet headers
+inline constexpr std::string_view OriginalEncodingHeaderName = "X-Aeronet-Original-Encoding";
+inline constexpr std::string_view OriginalEncodedLengthHeaderName = "X-Aeronet-Original-Encoded-Length";
+
 inline constexpr std::string_view HeaderSep = ": ";
 inline constexpr std::string_view CRLF = "\r\n";
 inline constexpr std::string_view DoubleCRLF = "\r\n\r\n";

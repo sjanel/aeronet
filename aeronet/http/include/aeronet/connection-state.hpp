@@ -1,18 +1,23 @@
 #pragma once
 
 #include <chrono>
+#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string_view>
 
 #include "aeronet/file.hpp"
+#include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tls-info.hpp"
 #include "aeronet/transport.hpp"
 
 namespace aeronet {
+
+class CorsPolicy;
 
 struct ConnectionState {
   [[nodiscard]] bool isImmediateCloseRequested() const noexcept { return closeMode == CloseMode::Immediate; }
@@ -68,17 +73,39 @@ struct ConnectionState {
   //   structured result so callers can decide on logging/closing/enabling writable interest.
   FileResult transportFile(int clientFd, bool tlsFlow);
 
+  // Helper to set up request body streaming bridges for aggregated body reading.
+  void installAggregatedBodyBridge();
+
+  // Reset the connection state usable for a new connection without freeing allocated buffers.
+  void clear();
+
+  // Attempt to reduce memory usage by shrinking internal buffers to fit their current content.
+  void shrink_to_fit();
+
+  struct AggregatedBodyStreamContext {
+    std::string_view body;
+    std::size_t offset{0};
+  };
+
   // Buffer used for tunneling raw bytes when peer is not writable, or for send file buffer (they are both mutually
   // exclusive).
   RawChars tunnelOrFileBuffer;
-  RawChars inBuffer;                      // accumulated input raw data
-  RawChars bodyAndTrailersBuffer;         // decoded body + optional trailer headers (RFC 7230 §4.1.2)
+  // accumulated input raw data
+  RawChars inBuffer;
+  // decoded body + optional trailer headers (RFC 7230 §4.1.2)
+  RawChars bodyAndTrailersBuffer;
+  // stable storage for the current request head when async body progress is needed
+  RawChars headBuffer;
+  // per-connection request object reused across dispatches
+  HttpRequest request;
+  AggregatedBodyStreamContext bodyStreamContext;
   HttpResponseData outBuffer;             // pending outbound data not yet written
   std::unique_ptr<ITransport> transport;  // set after accept (plain or TLS)
   std::chrono::steady_clock::time_point lastActivity{std::chrono::steady_clock::now()};
   // Timestamp of first byte of the current pending request headers (buffer not yet containing full CRLFCRLF).
   // Reset when a complete request head is parsed. If std::chrono::steady_clock::time_point{} (epoch) -> inactive.
-  std::chrono::steady_clock::time_point headerStart;  // default epoch value means no header timing active
+  std::chrono::steady_clock::time_point headerStartTp;     // default epoch value means no header timing active
+  std::chrono::steady_clock::time_point bodyLastActivity;  // timestamp of last body progress while waiting
   // Tunnel support: when a connection is acting as a tunnel endpoint, peerFd holds the
   // file descriptor of the other side (upstream or client).
   int peerFd{-1};
@@ -96,12 +123,14 @@ struct ConnectionState {
   bool ktlsSendAttempted{false};
   bool ktlsSendEnabled{false};
 #endif
+  bool waitingForBody{false};  // true when awaiting missing body bytes (bodyReadTimeout enforcement)
   // Tunnel state: true when peerFd != -1. Use accessor isTunneling() to query.
   // True when a non-blocking connect() was issued and completion is pending (EPOLLOUT will signal).
   bool connectPending{false};
   TLSInfo tlsInfo;
+#ifdef AERONET_ENABLE_OPENSSL
   std::chrono::steady_clock::time_point handshakeStart;  // TLS handshake start time (steady clock)
-
+#endif
   struct FileSendState {
     File file;
     bool active{false};
@@ -111,6 +140,27 @@ struct ConnectionState {
   };
 
   FileSendState fileSend;
+
+  struct AsyncHandlerState {
+    AsyncHandlerState() = default;
+
+    enum class AwaitReason : uint8_t { None, WaitingForBody };
+
+    void clear();
+
+    std::coroutine_handle<> handle;
+    AwaitReason awaitReason{AwaitReason::None};
+    bool active{false};
+    bool needsBody{false};
+    bool responsePending{false};
+    bool isChunked{false};
+    bool expectContinue{false};
+    std::size_t consumedBytes{0};
+    const CorsPolicy* corsPolicy{nullptr};
+    const void* responseMiddleware{nullptr};
+    std::size_t responseMiddlewareCount{0};
+    HttpResponse pendingResponse;
+  } asyncState;
 };
 
 }  // namespace aeronet
