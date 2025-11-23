@@ -346,6 +346,67 @@ TEST(HttpRequestDecompression, ExpansionRatioGuard) {
   EXPECT_EQ(resp.status, 413);
 }
 
+TEST(HttpRequestDecompression, StreamingThresholdGzipLargeBody) {
+  if constexpr (!zlibEnabled()) {
+    GTEST_SKIP();
+  }
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.decompression = {};
+    cfg.decompression.streamingActivationContentLength = 32;
+    cfg.decompression.decoderChunkSize = 16;
+  });
+  std::string plain(4096, 'S');
+  ts.router().setDefault([plain](const HttpRequest& req) {
+    EXPECT_EQ(req.body(), plain);
+    HttpResponse resp;
+    resp.body("streamed");
+    return resp;
+  });
+  auto gz = gzipCompress(plain);
+  ASSERT_GT(gz.size(), 32U);
+  auto resp = rawPost(ts.port(), "/stream_gzip", {{"Content-Encoding", "gzip"}}, gz);
+  EXPECT_EQ(resp.status, 200);
+}
+
+TEST(HttpRequestDecompression, StreamingRatioGuard) {
+  if constexpr (!zlibEnabled()) {
+    GTEST_SKIP();
+  }
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.decompression = {};
+    cfg.decompression.maxExpansionRatio = 1.5;
+    cfg.decompression.maxDecompressedBytes = 200000;
+    cfg.decompression.streamingActivationContentLength = 1;
+  });
+  std::string large(120000, 'R');
+  auto gz = gzipCompress(large);
+  ASSERT_LT(gz.size(), large.size() / 2);
+  auto resp = rawPost(ts.port(), "/stream_ratio", {{"Content-Encoding", "gzip"}}, gz);
+  EXPECT_EQ(resp.status, http::StatusCodePayloadTooLarge);
+}
+
+TEST(HttpRequestDecompression, StreamingMultiStageGzipZstd) {
+  if constexpr (!(zlibEnabled() && zstdEnabled())) {
+    GTEST_SKIP();
+  }
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.decompression = {};
+    cfg.decompression.streamingActivationContentLength = 1;
+    cfg.decompression.decoderChunkSize = 32;
+  });
+  std::string plain(6000, 'T');
+  ts.router().setDefault([plain](const HttpRequest& req) {
+    EXPECT_EQ(req.body(), plain);
+    HttpResponse resp;
+    resp.body("chain");
+    return resp;
+  });
+  auto gz = gzipCompress(plain);
+  auto zstd = zstdCompress(gz);
+  auto resp = rawPost(ts.port(), "/stream_chain", {{"Content-Encoding", "gzip, zstd"}}, zstd);
+  EXPECT_EQ(resp.status, 200);
+}
+
 // ---------------- Additional whitespace / casing / edge chain tests ----------------
 
 TEST(HttpRequestDecompression, MultiZstdGzipMultiSpaces) {

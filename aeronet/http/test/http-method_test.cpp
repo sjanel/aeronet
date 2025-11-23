@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "../src/http-method-parse.hpp"
+#include "aeronet/toupperlower.hpp"
 
 namespace {
 
@@ -39,8 +40,7 @@ std::string ToLower(std::string_view token) {
   std::string lower;
   lower.reserve(token.size());
   for (char ch : token) {
-    const unsigned char uch = static_cast<unsigned char>(ch);
-    lower.push_back(static_cast<char>(std::tolower(uch)));
+    lower.push_back(aeronet::tolower(ch));
   }
   return lower;
 }
@@ -49,8 +49,8 @@ std::string AlternateCase(std::string_view token) {
   std::string mixed;
   mixed.reserve(token.size());
   for (std::size_t i = 0; i < token.size(); ++i) {
-    const unsigned char ch = static_cast<unsigned char>(token[i]);
-    mixed.push_back(i % 2 == 0 ? static_cast<char>(std::tolower(ch)) : static_cast<char>(std::toupper(ch)));
+    const char ch = token[i];
+    mixed.push_back(i % 2 == 0 ? aeronet::tolower(ch) : aeronet::toupper(ch));
   }
   return mixed;
 }
