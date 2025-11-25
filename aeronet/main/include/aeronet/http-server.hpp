@@ -29,6 +29,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/lifecycle.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/path-handlers.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
@@ -62,10 +63,6 @@ class CorsPolicy;
 //    thread, enabling simple sequential ::write / ::writev without partial-write state tracking.
 class HttpServer {
  public:
-  using RequestHandler = std::function<HttpResponse(const HttpRequest&)>;
-
-  using StreamingHandler = std::function<void(const HttpRequest&, HttpResponseWriter&)>;
-
   using ParserErrorCallback = std::function<void(http::StatusCode)>;
 
   struct RequestMetrics {
@@ -263,8 +260,9 @@ class HttpServer {
   // may block waiting for new events when idle. The predicate is evaluated after processing any ready events and
   // before the next epoll_wait call. A very small checkPeriod will evaluate the predicate more frequently, but at the
   // cost of additional wake‑ups when idle.
-  // Like run() but exits when the user-supplied predicate returns true (checked once per loop iteration) or stop()
-  // is invoked / signal received. Poll sleep upper bound is HttpServerConfig::pollInterval.
+  // Like run() (so method is blocking for the current thread) but exits when the user-supplied predicate returns true
+  // (checked once per loop iteration) or stop() is invoked / signal received. Poll sleep upper bound is
+  // HttpServerConfig::pollInterval.
   void runUntil(const std::function<bool()>& predicate);
 
   // start():
@@ -392,7 +390,7 @@ class HttpServer {
   friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
   friend class MultiHttpServer;
 
-  using ConnectionMap = flat_hash_map<Connection, ConnectionState, std::hash<int>, std::equal_to<>>;
+  using ConnectionMap = flat_hash_map<Connection, std::unique_ptr<ConnectionState>, std::hash<int>, std::equal_to<>>;
 
   using ConnectionMapIt = ConnectionMap::iterator;
 
@@ -407,19 +405,23 @@ class HttpServer {
   void handleReadableClient(int fd);
   bool processRequestsOnConnection(ConnectionMapIt cnxIt);
   // Split helpers
-  bool decodeBodyIfReady(ConnectionMapIt cnxIt, bool isChunked, bool expectContinue, std::size_t& consumedBytes);
-  bool decodeFixedLengthBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
-  bool decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
+  enum class BodyDecodeStatus : uint8_t { Ready, NeedMore, Error };
+
+  BodyDecodeStatus decodeBodyIfReady(ConnectionMapIt cnxIt, bool isChunked, bool expectContinue,
+                                     std::size_t& consumedBytes);
+  BodyDecodeStatus decodeFixedLengthBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
+  BodyDecodeStatus decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
   bool maybeDecompressRequestBody(ConnectionMapIt cnxIt);
   void finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
                                const CorsPolicy* pCorsPolicy);
   // Handle Expect header tokens other than the built-in 100-continue.
   // Returns true if processing should stop for this request (response already queued/sent).
-  bool handleExpectHeader(ConnectionMapIt cnxIt, ConnectionState& state, const CorsPolicy* pCorsPolicy,
-                          bool& found100Continue);
+  bool handleExpectHeader(ConnectionMapIt cnxIt, const CorsPolicy* pCorsPolicy, bool& found100Continue);
   // Helper to populate and invoke the metrics callback for a completed request.
-  void emitRequestMetrics(http::StatusCode status, std::size_t bytesIn, bool reusedConnection);
-  void applyResponseMiddleware(HttpResponse& response, std::span<const ResponseMiddleware> routeChain, bool streaming);
+  void emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
+                          bool reusedConnection);
+  void applyResponseMiddleware(const HttpRequest& request, HttpResponse& response,
+                               std::span<const ResponseMiddleware> routeChain, bool streaming);
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // If immediate=true the connection will be closed without waiting for buffered writes to drain.
   void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, bool immediate = false,
@@ -435,7 +437,7 @@ class HttpServer {
 
   void handleWritableClient(int fd);
 
-  void tryCompressResponse(HttpResponse& resp);
+  void tryCompressResponse(const HttpRequest& request, HttpResponse& resp);
 
   ConnectionMapIt closeConnection(ConnectionMapIt cnxIt);
 
@@ -472,13 +474,24 @@ class HttpServer {
   bool enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx);
   bool disableWritableInterest(ConnectionMapIt cnxIt, const char* ctx);
 
-  void emitMiddlewareMetrics(MiddlewareMetrics::Phase phase, bool isGlobal, uint32_t index, uint64_t durationNs,
-                             bool shortCircuited, bool threw, bool streaming);
+  void emitMiddlewareMetrics(const HttpRequest& request, MiddlewareMetrics::Phase phase, bool isGlobal, uint32_t index,
+                             uint64_t durationNs, bool shortCircuited, bool threw, bool streaming);
 
-  [[nodiscard]] tracing::SpanRAII startMiddlewareSpan(MiddlewareMetrics::Phase phase, bool isGlobal, uint32_t index,
-                                                      bool streaming);
+  [[nodiscard]] tracing::SpanRAII startMiddlewareSpan(const HttpRequest& request, MiddlewareMetrics::Phase phase,
+                                                      bool isGlobal, uint32_t index, bool streaming);
 
-  bool runPreChain(bool willStream, std::span<const RequestMiddleware> chain, HttpResponse& out, bool isGlobal);
+  bool runPreChain(HttpRequest& request, bool willStream, std::span<const RequestMiddleware> chain, HttpResponse& out,
+                   bool isGlobal);
+
+  bool dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady, bool isChunked,
+                            bool expectContinue, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
+                            std::span<const ResponseMiddleware> responseMiddleware);
+  void resumeAsyncHandler(ConnectionMapIt cnxIt);
+  void handleAsyncBodyProgress(ConnectionMapIt cnxIt);
+  void onAsyncHandlerCompleted(ConnectionMapIt cnxIt);
+  bool tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt);
+
+  std::unique_ptr<ConnectionState> getNewConnectionState();
 
   struct StatsInternal {
     uint64_t totalBytesQueued{0};
@@ -509,7 +522,8 @@ class HttpServer {
 
   Router _router;
 
-  ConnectionMap _connStates;
+  ConnectionMap _activeConnectionsMap;
+  vector<std::unique_ptr<ConnectionState>> _cachedConnections;  // cache of closed ConnectionState objects for reuse
 
   // Pre-allocated encoders (one per supported format), -1 to remove identity which is last (no encoding).
   // Index corresponds to static_cast<size_t>(Encoding).
@@ -520,8 +534,7 @@ class HttpServer {
   MetricsCallback _metricsCb;
   MiddlewareMetricsCallback _middlewareMetricsCb;
   ExpectationHandler _expectationHandler;
-  HttpRequest _request;  // to keep allocated memory
-  RawChars _tmpBuffer;   // can be used for any kind of temporary buffer
+  RawChars _tmpBuffer;  // can be used for any kind of temporary buffer
 
   using ConfigUpdateVector = vector<std::function<void(HttpServerConfig&)>>;
   using RouterUpdateVector = vector<std::function<void(Router&)>>;

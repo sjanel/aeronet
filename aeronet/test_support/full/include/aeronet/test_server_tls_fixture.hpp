@@ -7,8 +7,8 @@
 #include <utility>
 
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/path-handlers.hpp"
 #include "aeronet/router-config.hpp"
-#include "aeronet/router.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_tls_helper.hpp"
 
@@ -53,8 +53,8 @@ struct TlsTestServer {
   // Forward selected HttpServer APIs for convenience to reduce nested server.server noise.
   RouterUpdateProxy router() { return server.router(); }
 
-  void setDefault(Router::RequestHandler handler) { router().setDefault(std::move(handler)); }
-  void setDefault(Router::StreamingHandler handler) { router().setDefault(std::move(handler)); }
+  void setDefault(RequestHandler handler) { router().setDefault(std::move(handler)); }
+  void setDefault(StreamingHandler handler) { router().setDefault(std::move(handler)); }
 
   template <typename ErrCb>
   void setParserErrorCallback(ErrCb&& cb) {

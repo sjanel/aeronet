@@ -324,4 +324,39 @@ TEST(RawBytes, UnreasanableMalloc) {
 #endif
 }
 
+TEST(RawBytes, ShrinkToFit) {
+  RawBytes buf;
+
+  EXPECT_EQ(buf.size(), 0U);
+  EXPECT_EQ(buf.capacity(), 0U);
+  buf.shrink_to_fit();
+  EXPECT_EQ(buf.size(), 0U);
+  EXPECT_EQ(buf.capacity(), 0U);
+
+  buf.assign(reinterpret_cast<const std::byte *>("abcdefghij"), 10);
+
+  buf.ensureAvailableCapacityExponential(100);
+
+  auto oldCap = buf.capacity();
+  EXPECT_GT(oldCap, 10U);
+
+  buf.shrink_to_fit();
+  EXPECT_EQ(buf.size(), 10U);
+  EXPECT_EQ(buf.capacity(), 10U);
+  EXPECT_EQ(std::memcmp(buf.data(), "abcdefghij", 10), 0);
+
+  // Shrink when size == capacity is no-op
+  buf.shrink_to_fit();
+  EXPECT_EQ(buf.size(), 10U);
+  EXPECT_EQ(buf.capacity(), 10U);
+  EXPECT_EQ(std::memcmp(buf.data(), "abcdefghij", 10), 0);
+
+  buf.clear();
+  EXPECT_EQ(buf.size(), 0U);
+  EXPECT_GT(buf.capacity(), 0);
+  buf.shrink_to_fit();
+  EXPECT_EQ(buf.size(), 0U);
+  EXPECT_EQ(buf.capacity(), 0U);
+}
+
 }  // namespace aeronet

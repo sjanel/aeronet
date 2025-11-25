@@ -56,6 +56,10 @@ struct HttpServerConfig {
   // sent). Once exceeded the server proactively closes the connection. Default: 5000 ms.
   std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
 
+  // Duration to keep closed ConnectionState objects in the cache for potential reuse, to avoid reallocating memory
+  // on new incoming connections. Default: 60 seconds.
+  std::chrono::seconds cachedConnectionsTimeout{std::chrono::seconds{60}};
+
   // ============================
   // Request parsing & body limits
   // ============================
@@ -67,6 +71,12 @@ struct HttpServerConfig {
   // this limit result in a 413 (Payload Too Large) style error (currently 400/413 depending on path) and closure.
   // Default: 256 MiB.
   std::size_t maxBodyBytes{1 << 28};  // 256 MiB
+
+  // Threshold (bytes) that determines when HttpServer should invoke handlers before the full body payload is
+  // received, allowing HttpRequest::readBody() to stream data from the socket. When 0 (default) the server keeps the
+  // legacy behavior of buffering the entire body before handler dispatch. Applies to both Content-Length and chunked
+  // bodies; when chunked encoding is used, any non-zero threshold enables streaming.
+  std::size_t streamingActivationContentLength{0};
 
   // For requests with a captured body, HttpResponse will concatenate the captured body contents with the head in the
   // same buffer if their size is below this threshold. This can be efficient for small bodies because it
@@ -111,6 +121,11 @@ struct HttpServerConfig {
   // terminator is observed the server closes the connection and emits a 408 Request Timeout. A value
   // of 0 disables this protective timeout. Default: disabled.
   std::chrono::milliseconds headerReadTimeout{std::chrono::milliseconds{0}};
+
+  // Maximum time spent waiting for additional body bytes once a handler blocks on HttpRequest::body() or
+  // HttpRequest::readBody(). Applies after headers are parsed and guards against slowloris-style uploads.
+  // The timer resets whenever progress is made (bytes consumed). A value of 0 disables the timeout.
+  std::chrono::milliseconds bodyReadTimeout{std::chrono::milliseconds{0}};
 
   // =================
   // TLS configuration
@@ -216,6 +231,9 @@ struct HttpServerConfig {
   // Adjust body size limit
   HttpServerConfig& withMaxBodyBytes(std::size_t maxBodyBytes);
 
+  // Switch to streaming body delivery when Content-Length >= threshold (0=disabled).
+  HttpServerConfig& withStreamingActivationContentLength(std::size_t threshold);
+
   // Adjust threshold (bytes) under which captured body contents are appended inline with the head.
   HttpServerConfig& withMinCapturedBodySize(std::size_t bytes);
 
@@ -228,11 +246,17 @@ struct HttpServerConfig {
   // Adjust idle keep-alive timeout
   HttpServerConfig& withKeepAliveTimeout(std::chrono::milliseconds timeout);
 
+  // Adjust duration to keep closed ConnectionState objects in the cache for potential reuse
+  HttpServerConfig& withCloseCachedConnectionsTimeout(std::chrono::seconds timeout);
+
   // Adjust event loop max idle wait
   HttpServerConfig& withPollInterval(std::chrono::milliseconds interval);
 
   // Set slow header read timeout (0=off)
   HttpServerConfig& withHeaderReadTimeout(std::chrono::milliseconds timeout);
+
+  // Set blocking body read timeout (0=off)
+  HttpServerConfig& withBodyReadTimeout(std::chrono::milliseconds timeout);
 
   // Optional allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT to any
   // resolved host is allowed. When non-empty, the target host must exactly match one of these entries.

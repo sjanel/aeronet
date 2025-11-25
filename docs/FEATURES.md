@@ -981,7 +981,7 @@ for (auto [k,v] : req.queryParams()) { /* use k,v */ }
 ## Middleware Pipeline
 
 - **Global hooks** – use `Router::addRequestMiddleware` and `Router::addResponseMiddleware` (or the convenience `HttpServer::add*` wrappers) to install request/response middleware that runs for every request.
-- **Per-route hooks** – `Router::PathHandlerEntry::before(RequestMiddleware)` and `::after(ResponseMiddleware)` scope middleware to a specific path registration.
+- **Per-route hooks** – `PathHandlerEntry::before(RequestMiddleware)` and `::after(ResponseMiddleware)` scope middleware to a specific path registration.
 - **Execution order** – `global pre → route pre → handler → route post → global post`. When a route does not match (404/405/redirect), only the global hooks run; per-route chains are skipped.
 - **Short-circuiting** – returning `MiddlewareResult::ShortCircuit(HttpResponse)` from any pre middleware skips the remaining pre chain and the handler. The produced response is still passed through the post chain so that shared concerns (headers, logging, metrics) execute uniformly.
 - **Threading** – middleware executes on the server's event loop thread; avoid blocking work inside hooks.
@@ -992,7 +992,73 @@ for (auto [k,v] : req.queryParams()) { /* use k,v */ }
 - Automatic CORS headers are applied after middleware adjustments, mirroring buffered responses.
 - Synthetic responses generated before the handler (CORS denials, 406 content-coding fallback, pre-chain short-circuits) still traverse the post middleware chain.
 
-### Example
+### Coroutine Handlers (Async)
+
+**aeronet** supports C++20 coroutines for request handling, allowing you to write asynchronous code that looks synchronous. This is particularly useful when your handler needs to perform asynchronous operations (like database queries, upstream HTTP requests, or timers) without blocking the event loop thread.
+
+#### Key Concepts
+
+- **Signature**: Handlers return `RequestTask<HttpResponse>` instead of `HttpResponse`.
+- **Registration**: Use `Router::setPath` just like normal handlers. The router automatically detects the return type.
+- **Execution**: The coroutine is started immediately on the event loop. When it `co_await`s, it suspends, returning control to the event loop. When the awaited operation completes, the coroutine resumes.
+- **Middleware**: Fully supported. Request middleware runs before the coroutine starts. Response middleware runs after the coroutine `co_return`s the response.
+- **CORS**: Fully supported. CORS checks happen before the coroutine starts.
+- **Early Dispatch**: Async handlers are invoked as soon as the request head is parsed, even if the body is still uploading. Call `co_await req.bodyAwaitable()` (or the chunk helpers) before touching the body. Because of this, request middleware on async routes should not rely on the body or trailers being populated—they will become available only after the coroutine awaits them.
+
+#### Async Handler Example
+
+```cpp
+#include <aeronet/aeronet.hpp>
+
+using namespace aeronet;
+
+// A hypothetical async database client
+RequestTask<User> getUserAsync(int id);
+
+int main() {
+  Router router;
+
+  // Register an async handler
+  router.setPath(http::Method::GET, "/users/{id}", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+    // 1. Parse parameters (synchronous)
+    int userId = std::stoi(std::string(req.pathParams().at("id")));
+
+    // 2. Suspend while fetching data (non-blocking)
+    // The event loop is free to handle other requests while we wait.
+    User user = co_await getUserAsync(userId);
+
+    // 3. Resume and build response
+    co_return HttpResponse(200).body(user.toJson());
+  });
+
+  // Async body reading
+  router.setPath(http::Method::POST, "/upload", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+    // Wait for the full body to be received
+    std::string_view body = co_await req.bodyAwaitable();
+    
+    co_return HttpResponse(200).body("Received " + std::to_string(body.size()) + " bytes");
+  });
+
+  HttpServer server(HttpServerConfig{}, std::move(router));
+  server.run();
+}
+```
+
+#### Awaitables
+
+You can `co_await` any type that satisfies the C++ coroutine awaitable concept.
+**aeronet** provides built-in awaitables:
+
+- `req.bodyAwaitable()`: Suspends until the full request body is available (buffered).
+- `req.readBodyAsync(maxBytes)`: (Future) Suspends until a chunk of body data is available.
+
+#### Implementation Details
+
+- **Return Type**: `RequestTask<T>` is a lightweight task object. For handlers, `T` must be `HttpResponse`.
+- **Exception Handling**: Exceptions thrown within the coroutine (before the first suspension or after resumption) are caught by the server infrastructure and result in a 500 Internal Server Error, just like synchronous handlers.
+- **Thread Safety**: The coroutine resumes on the same thread (the event loop). You don't need locks to access server state, but you must ensure your async operations (like the DB client in the example) are thread-safe or properly synchronized if they use other threads.
+
+### Middleware Example
 
 ```cpp
 Router router;

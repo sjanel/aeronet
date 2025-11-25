@@ -11,6 +11,7 @@
 #include <cstring>
 #include <string_view>
 
+#include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/transport.hpp"
@@ -22,8 +23,8 @@ ITransport::TransportResult ConnectionState::transportRead(std::size_t chunkSize
 
   const auto result = transport->read(inBuffer.data() + inBuffer.size(), chunkSize);
   inBuffer.addSize(result.bytesProcessed);
-  if (headerStart.time_since_epoch().count() == 0) {
-    headerStart = std::chrono::steady_clock::now();
+  if (headerStartTp.time_since_epoch().count() == 0) {
+    headerStartTp = std::chrono::steady_clock::now();
   }
   return result;
 }
@@ -106,6 +107,101 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
     }
   }
   return res;
+}
+
+namespace {
+std::string_view AggregateBufferedBody([[maybe_unused]] HttpRequest& request, void* context) {
+  const auto* ctx = static_cast<const ConnectionState::AggregatedBodyStreamContext*>(context);
+  if (ctx == nullptr) {
+    return {};
+  }
+  return ctx->body;
+}
+
+std::string_view ReadBufferedBody([[maybe_unused]] HttpRequest& request, void* context, std::size_t maxBytes) {
+  if (maxBytes == 0) {
+    return {};
+  }
+  auto* ctx = static_cast<ConnectionState::AggregatedBodyStreamContext*>(context);
+  if (ctx == nullptr || ctx->offset >= ctx->body.size()) {
+    return {};
+  }
+  const std::size_t remaining = ctx->body.size() - ctx->offset;
+  const std::size_t len = std::min(maxBytes, remaining);
+  std::string_view chunk(ctx->body.data() + ctx->offset, len);
+  ctx->offset += len;
+  return chunk;
+}
+
+bool HasMoreBufferedBody([[maybe_unused]] const HttpRequest& request, void* context) {
+  const auto* ctx = static_cast<const ConnectionState::AggregatedBodyStreamContext*>(context);
+  if (ctx == nullptr) {
+    return false;
+  }
+  return ctx->offset < ctx->body.size();
+}
+}  // namespace
+
+void ConnectionState::installAggregatedBodyBridge() {
+  if (request._bodyAccessBridge != nullptr) {
+    return;
+  }
+  static constexpr HttpRequest::BodyAccessBridge kAggregatedBodyBridge{&AggregateBufferedBody, &ReadBufferedBody,
+                                                                       &HasMoreBufferedBody};
+  bodyStreamContext.body = request._body;
+  bodyStreamContext.offset = 0;
+  request._bodyAccessBridge = &kAggregatedBodyBridge;
+  request._bodyAccessContext = &bodyStreamContext;
+}
+
+void ConnectionState::clear() {
+  tunnelOrFileBuffer.clear();
+  inBuffer.clear();
+  bodyAndTrailersBuffer.clear();
+  headBuffer.clear();
+  // no need to clear request, it's built from scratch from initTrySetHead
+  bodyStreamContext = {};
+  outBuffer.clear();
+  transport.reset();
+  lastActivity = std::chrono::steady_clock::now();
+  headerStartTp = {};
+  bodyLastActivity = {};
+  peerFd = -1;
+  requestsServed = 0;
+  trailerStartPos = 0;
+  closeMode = CloseMode::None;
+  waitingWritable = false;
+  tlsEstablished = false;
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+  ktlsSendAttempted = false;
+  ktlsSendEnabled = false;
+#endif
+  waitingForBody = false;
+  connectPending = false;
+  tlsInfo = {};
+#ifdef AERONET_ENABLE_OPENSSL
+  handshakeStart = {};
+#endif
+  fileSend = {};
+
+  asyncState.clear();
+}
+
+void ConnectionState::shrink_to_fit() {
+  tunnelOrFileBuffer.shrink_to_fit();
+  inBuffer.shrink_to_fit();
+  bodyAndTrailersBuffer.shrink_to_fit();
+  headBuffer.shrink_to_fit();
+  request.shrink_to_fit();
+  outBuffer.shrink_to_fit();
+}
+
+void ConnectionState::AsyncHandlerState::clear() {
+  if (handle) {
+    handle.destroy();
+    handle = {};
+  }
+  *this = {};
 }
 
 }  // namespace aeronet

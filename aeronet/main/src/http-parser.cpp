@@ -20,8 +20,8 @@
 
 namespace aeronet {
 
-bool HttpServer::decodeBodyIfReady(ConnectionMapIt cnxIt, bool isChunked, bool expectContinue,
-                                   std::size_t& consumedBytes) {
+HttpServer::BodyDecodeStatus HttpServer::decodeBodyIfReady(ConnectionMapIt cnxIt, bool isChunked, bool expectContinue,
+                                                           std::size_t& consumedBytes) {
   consumedBytes = 0;
   if (isChunked) {
     return decodeChunkedBody(cnxIt, expectContinue, consumedBytes);
@@ -29,51 +29,53 @@ bool HttpServer::decodeBodyIfReady(ConnectionMapIt cnxIt, bool isChunked, bool e
   return decodeFixedLengthBody(cnxIt, expectContinue, consumedBytes);
 }
 
-bool HttpServer::decodeFixedLengthBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes) {
-  std::string_view lenViewAll = _request.headerValueOrEmpty(http::ContentLength);
+HttpServer::BodyDecodeStatus HttpServer::decodeFixedLengthBody(ConnectionMapIt cnxIt, bool expectContinue,
+                                                               std::size_t& consumedBytes) {
+  ConnectionState& state = *cnxIt->second;
+  HttpRequest& request = state.request;
+  std::string_view lenViewAll = request.headerValueOrEmpty(http::ContentLength);
   bool hasCL = !lenViewAll.empty();
-  ConnectionState& state = cnxIt->second;
-  std::size_t headerEnd =
-      static_cast<std::size_t>(_request._flatHeaders.data() + _request._flatHeaders.size() - state.inBuffer.data());
+  const std::size_t headerEnd = request.headSpanSize();
   if (!hasCL) {
     // No Content-Length and not chunked: treat as no body (common for GET/HEAD). Ready immediately.
     // TODO: we should reject the query if body is non empty and ContentLength not specified
     if (state.inBuffer.size() >= headerEnd) {
-      _request._body = std::string_view{};
+      request._body = std::string_view{};
       consumedBytes = headerEnd;
-      return true;
+      return BodyDecodeStatus::Ready;
     }
-    return false;
+    return BodyDecodeStatus::NeedMore;
   }
   std::size_t declaredContentLen = 0;
   auto [ptr, err] = std::from_chars(lenViewAll.data(), lenViewAll.data() + lenViewAll.size(), declaredContentLen);
   if (err != std::errc() || ptr != lenViewAll.data() + lenViewAll.size()) {
     emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Invalid Content-Length");
-    return false;
+    return BodyDecodeStatus::Error;
   }
   if (declaredContentLen > _config.maxBodyBytes) {
-    emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
-    return false;
+    emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true, {});
+    return BodyDecodeStatus::Error;
   }
   if (expectContinue && declaredContentLen > 0) {
     queueData(cnxIt, HttpResponseData(http::HTTP11_100_CONTINUE));
   }
   std::size_t totalNeeded = headerEnd + declaredContentLen;
   if (state.inBuffer.size() < totalNeeded) {
-    return false;  // need more bytes
+    return BodyDecodeStatus::NeedMore;  // need more bytes
   }
-  _request._body = {state.inBuffer.data() + headerEnd, declaredContentLen};
+  request._body = {state.inBuffer.data() + headerEnd, declaredContentLen};
   consumedBytes = totalNeeded;
-  return true;
+  return BodyDecodeStatus::Ready;
 }
 
-bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes) {
-  ConnectionState& state = cnxIt->second;
+HttpServer::BodyDecodeStatus HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue,
+                                                           std::size_t& consumedBytes) {
+  ConnectionState& state = *cnxIt->second;
+  HttpRequest& request = state.request;
   if (expectContinue) {
     queueData(cnxIt, HttpResponseData(http::HTTP11_100_CONTINUE));
   }
-  std::size_t pos =
-      static_cast<std::size_t>(_request._flatHeaders.data() + _request._flatHeaders.size() - state.inBuffer.data());
+  std::size_t pos = request.headSpanSize();
   RawChars& bodyAndTrailers = state.bodyAndTrailersBuffer;
   bodyAndTrailers.clear();
   state.trailerStartPos = 0;
@@ -82,7 +84,7 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, s
     auto last = state.inBuffer.end();
     auto lineEnd = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
     if (lineEnd == last) {
-      return false;
+      return BodyDecodeStatus::NeedMore;
     }
     auto sizeLineEnd = std::find(first, lineEnd, ';');  // ignore chunk extensions per RFC 7230 section 4.1.1
     std::size_t chunkSize = 0;
@@ -99,11 +101,11 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, s
     }
     pos = static_cast<std::size_t>(lineEnd - state.inBuffer.data()) + http::CRLF.size();
     if (chunkSize > _config.maxBodyBytes) {
-      emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
-      return false;
+      emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true, {});
+      return BodyDecodeStatus::Error;
     }
     if (state.inBuffer.size() < pos + chunkSize + http::CRLF.size()) {
-      return false;
+      return BodyDecodeStatus::NeedMore;
     }
 
     if (chunkSize == 0) {
@@ -115,7 +117,7 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, s
 
       // First, check if we have at least the immediate terminating CRLF
       if (state.inBuffer.size() < pos + http::CRLF.size()) {
-        return false;
+        return BodyDecodeStatus::NeedMore;
       }
 
       // Check if trailers are present (not immediate CRLF)
@@ -136,14 +138,14 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, s
         auto lineEndIt =
             std::search(state.inBuffer.begin() + tempPos, state.inBuffer.end(), http::CRLF.begin(), http::CRLF.end());
         if (lineEndIt == state.inBuffer.end()) {
-          return false;
+          return BodyDecodeStatus::NeedMore;
         }
 
         // Check total trailer size limit
         std::size_t trailerSize = static_cast<std::size_t>((state.inBuffer.data() + tempPos) - trailerStart);
         if (trailerSize > _config.maxHeaderBytes) {
-          emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, true);
-          return false;
+          emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, true, {});
+          return BodyDecodeStatus::Error;
         }
 
         auto* lineStart = state.inBuffer.data() + tempPos;
@@ -158,15 +160,15 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, s
         // Parse trailer field: name:value
         auto* colonPtr = std::find(lineStart, lineLast, ':');
         if (colonPtr == lineLast) {
-          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true);
-          return false;
+          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, {});
+          return BodyDecodeStatus::Error;
         }
 
         // Check forbidden headers
         std::string_view trailerNameCheck(lineStart, colonPtr);
         if (http::IsForbiddenTrailerHeader(trailerNameCheck)) {
-          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true);
-          return false;
+          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, {});
+          return BodyDecodeStatus::Error;
         }
 
         tempPos = static_cast<std::size_t>(lineEndIt - state.inBuffer.data()) + http::CRLF.size();
@@ -193,10 +195,10 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, s
         }
 
         // Store trailer using the in-place merge helper so semantics/pointer updates match request parsing.
-        if (!http::AddOrMergeHeaderInPlace(_request._trailers, trailerNameView, trailerValue, _tmpBuffer,
+        if (!http::AddOrMergeHeaderInPlace(request._trailers, trailerNameView, trailerValue, _tmpBuffer,
                                            bodyAndTrailers.data(), trailerData, _config.mergeUnknownRequestHeaders)) {
-          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true);
-          return false;
+          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, {});
+          return BodyDecodeStatus::Error;
         }
 
         trailerData = lineEnd + http::CRLF.size();
@@ -208,20 +210,20 @@ bool HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, s
     }
     bodyAndTrailers.append(state.inBuffer.data() + pos, std::min(chunkSize, state.inBuffer.size() - pos));
     if (bodyAndTrailers.size() > _config.maxBodyBytes) {
-      emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
-      return false;
+      emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true, {});
+      return BodyDecodeStatus::Error;
     }
     pos += chunkSize;
     if (std::memcmp(state.inBuffer.data() + pos, http::CRLF.data(), http::CRLF.size()) != 0) {
-      return false;
+      return BodyDecodeStatus::NeedMore;
     }
     pos += http::CRLF.size();
   }
   // Body is everything before trailerStartPos (or entire buffer if no trailers)
   std::size_t bodyLen = (state.trailerStartPos > 0) ? state.trailerStartPos : bodyAndTrailers.size();
-  _request._body = std::string_view(bodyAndTrailers.data(), bodyLen);
+  request._body = std::string_view(bodyAndTrailers.data(), bodyLen);
   consumedBytes = pos;
-  return true;
+  return BodyDecodeStatus::Ready;
 }
 
 }  // namespace aeronet

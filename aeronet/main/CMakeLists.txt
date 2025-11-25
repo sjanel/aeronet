@@ -34,3 +34,17 @@ target_link_libraries(aeronet
 if(AERONET_ENABLE_OPENSSL)
     target_link_libraries(aeronet PUBLIC aeronet_tls)
 endif()
+
+AeronetAddUnitTest(
+    path-handler-entry_test
+    test/path-handler-entry_test.cpp
+    LIBRARIES
+    aeronet
+)
+
+AeronetAddUnitTest(
+    router_test
+    test/router_test.cpp
+    LIBRARIES
+    aeronet
+)

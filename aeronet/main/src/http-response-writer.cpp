@@ -32,10 +32,11 @@
 
 namespace aeronet {
 
-HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, bool headRequest, bool requestConnClose,
-                                       Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
+HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, const HttpRequest& request, bool headRequest,
+                                       bool requestConnClose, Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
                                        std::span<const ResponseMiddleware> routeResponseMiddleware)
     : _server(&srv),
+      _request(&request),
       _fd(fd),
       _head(headRequest),
       _requestConnClose(requestConnClose),
@@ -118,7 +119,7 @@ void HttpResponseWriter::ensureHeadersSent() {
     }
   }
   if (!_responseMiddlewareApplied) {
-    _server->applyResponseMiddleware(_fixedResponse, _routeResponseMiddleware, true);
+    _server->applyResponseMiddleware(*_request, _fixedResponse, _routeResponseMiddleware, true);
     _responseMiddlewareApplied = true;
   }
 
@@ -126,12 +127,12 @@ void HttpResponseWriter::ensureHeadersSent() {
   // compression (threshold reached) to avoid mislabeling identity bodies when size < threshold.
   // Do not attempt to add Connection/Date here; finalize handles them (adds Date, Connection based on keepAlive flag).
   if (_pCorsPolicy != nullptr) {
-    (void)_pCorsPolicy->applyToResponse(_server->_request, _fixedResponse);
+    (void)_pCorsPolicy->applyToResponse(*_request, _fixedResponse);
     _pCorsPolicy = nullptr;
   }
 
-  auto cnxIt = _server->_connStates.find(_fd);
-  if (cnxIt == _server->_connStates.end() ||
+  auto cnxIt = _server->_activeConnectionsMap.find(_fd);
+  if (cnxIt == _server->_activeConnectionsMap.end() ||
       !_server->queuePreparedResponse(
           cnxIt, _fixedResponse.finalizeAndStealData(http::HTTP_1_1, SysClock::now(), _requestConnClose,
                                                      _server->config().globalHeaders, _head,
@@ -338,11 +339,11 @@ void HttpResponseWriter::end() {
 
 bool HttpResponseWriter::enqueue(HttpResponseData httpResponseData) {
   // Access the connection state to determine backpressure / closure.
-  auto cnxIt = _server->_connStates.find(_fd);
-  if (cnxIt == _server->_connStates.end()) {
+  auto cnxIt = _server->_activeConnectionsMap.find(_fd);
+  if (cnxIt == _server->_activeConnectionsMap.end()) {
     return false;
   }
-  return _server->queueData(cnxIt, std::move(httpResponseData)) && !cnxIt->second.isAnyCloseRequested();
+  return _server->queueData(cnxIt, std::move(httpResponseData)) && !cnxIt->second->isAnyCloseRequested();
 }
 
 bool HttpResponseWriter::file(File fileObj, std::uint64_t offset, std::uint64_t length, std::string_view contentType) {

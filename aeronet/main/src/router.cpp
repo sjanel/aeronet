@@ -13,6 +13,8 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/path-handler-entry.hpp"
+#include "aeronet/path-handlers.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/stringconv.hpp"
@@ -39,26 +41,15 @@ bool ShouldNormalize(RouterConfig::TrailingSlashPolicy policy, std::string_view&
 
 }  // namespace
 
-Router::PathHandlerEntry& Router::PathHandlerEntry::cors(CorsPolicy corsPolicy) {
-  this->corsPolicy = std::move(corsPolicy);
-  return *this;
-}
-
-Router::PathHandlerEntry& Router::PathHandlerEntry::before(RequestMiddleware middleware) {
-  preMiddleware.emplace_back(std::move(middleware));
-  return *this;
-}
-
-Router::PathHandlerEntry& Router::PathHandlerEntry::after(ResponseMiddleware middleware) {
-  postMiddleware.emplace_back(std::move(middleware));
-  return *this;
-}
-
 Router::Router(RouterConfig config) : _config(std::move(config)) {}
+
+Router::Router(Router&&) noexcept = default;
+Router& Router::operator=(Router&&) noexcept = default;
 
 Router::Router(const Router& other)
     : _config(other._config),
       _handler(other._handler),
+      _asyncHandler(other._asyncHandler),
       _streamingHandler(other._streamingHandler),
       _globalPreMiddleware(other._globalPreMiddleware),
       _globalPostMiddleware(other._globalPostMiddleware) {
@@ -69,6 +60,7 @@ Router& Router::operator=(const Router& other) {
   if (this != &other) {
     _config = other._config;
     _handler = other._handler;
+    _asyncHandler = other._asyncHandler;
     _streamingHandler = other._streamingHandler;
     _globalPreMiddleware = other._globalPreMiddleware;
     _globalPostMiddleware = other._globalPostMiddleware;
@@ -77,6 +69,8 @@ Router& Router::operator=(const Router& other) {
   }
   return *this;
 }
+
+Router::~Router() = default;
 
 void Router::addRequestMiddleware(RequestMiddleware middleware) {
   _globalPreMiddleware.emplace_back(std::move(middleware));
@@ -113,6 +107,8 @@ void Router::setDefault(RequestHandler handler) {
   }
 }
 
+void Router::setDefault(AsyncRequestHandler handler) { _asyncHandler = std::move(handler); }
+
 void Router::setDefault(StreamingHandler handler) {
   _streamingHandler = std::move(handler);
   if (_handler) {
@@ -121,25 +117,35 @@ void Router::setDefault(StreamingHandler handler) {
   }
 }
 
-Router::PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string_view path, RequestHandler handler) {
-  return setPathInternal(methods, path, std::move(handler), StreamingHandler{});
+PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string_view path, RequestHandler handler) {
+  return setPathInternal(methods, path, std::move(handler), {}, {});
 }
 
-Router::PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, RequestHandler handler) {
-  return setPathInternal(static_cast<http::MethodBmp>(method), path, std::move(handler), StreamingHandler{});
+PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, RequestHandler handler) {
+  return setPathInternal(static_cast<http::MethodBmp>(method), path, std::move(handler), {}, {});
 }
 
-Router::PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string_view path, StreamingHandler handler) {
-  return setPathInternal(methods, path, RequestHandler{}, std::move(handler));
+PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string_view path, StreamingHandler handler) {
+  return setPathInternal(methods, path, {}, std::move(handler), {});
 }
 
-Router::PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, StreamingHandler handler) {
-  return setPathInternal(static_cast<http::MethodBmp>(method), path, RequestHandler{}, std::move(handler));
+PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, StreamingHandler handler) {
+  return setPathInternal(static_cast<http::MethodBmp>(method), path, {}, std::move(handler), {});
 }
 
-Router::PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_view path,
-                                                  RequestHandler handler, StreamingHandler streaming) {
-  if (!handler && !streaming) {
+PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string_view path, AsyncRequestHandler handler) {
+  return setPathInternal(methods, path, {}, {}, std::move(handler));
+}
+
+PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, AsyncRequestHandler handler) {
+  return setPathInternal(static_cast<http::MethodBmp>(method), path, {}, {}, std::move(handler));
+}
+
+PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_view path, RequestHandler handler,
+                                          StreamingHandler streaming, AsyncRequestHandler async) {
+  const int nbHandlers = static_cast<int>(static_cast<bool>(handler)) + static_cast<int>(static_cast<bool>(streaming)) +
+                         static_cast<int>(static_cast<bool>(async));
+  if (nbHandlers != 1) {
     throw std::invalid_argument("setPath requires a handler");
   }
 
@@ -178,7 +184,11 @@ Router::PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::
   }
 
   ensureRouteMetadata(*node, std::move(compiled));
-  AssignHandlers(*node, methods, std::move(handler), std::move(streaming), pathHasTrailingSlash);
+  if (async) {
+    AssignAsyncHandlers(*node, methods, std::move(async), pathHasTrailingSlash);
+  } else {
+    AssignHandlers(*node, methods, std::move(handler), std::move(streaming), pathHasTrailingSlash);
+  }
 
   // Store per-path CorsPolicy if provided into the handler entry matching trailing slash variant
   PathHandlerEntry& targetEntry = pathHasTrailingSlash ? node->handlersWithSlash : node->handlersNoSlash;
@@ -218,52 +228,29 @@ void Router::AssignHandlers(RouteNode& node, http::MethodBmp methods, RequestHan
   const bool hasNormalHandler = static_cast<bool>(requestHandler);
   const bool hasStreamingHandler = static_cast<bool>(streamingHandler);
 
+  if ((entry.normalMethodBmp & methods) != 0) {
+    log::warn("Overwriting existing path handler for {}", std::string_view(node.patternString()));
+  }
+  if ((entry.streamingMethodBmp & methods) != 0) {
+    log::warn("Overwriting existing streaming path handler for {}", std::string_view(node.patternString()));
+  }
+
   if (hasNormalHandler) {
-    entry.normalMethodBmp |= methods;
+    entry.assignNormalHandler(methods, std::move(requestHandler));
   } else if (hasStreamingHandler) {
-    entry.streamingMethodBmp |= methods;
+    entry.assignStreamingHandler(methods, std::move(streamingHandler));
+  }
+}
+
+void Router::AssignAsyncHandlers(RouteNode& node, http::MethodBmp methods, AsyncRequestHandler handler,
+                                 bool registeredWithTrailingSlash) {
+  PathHandlerEntry& entry = registeredWithTrailingSlash ? node.handlersWithSlash : node.handlersNoSlash;
+
+  if ((entry.asyncMethodBmp & methods) != 0) {
+    log::warn("Overwriting existing async path handler for {}", std::string_view(node.patternString()));
   }
 
-  const RequestHandler* pSharedRequest = nullptr;
-  const StreamingHandler* pSharedStreaming = nullptr;
-
-  for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
-    if (!http::IsMethodIdxSet(methods, methodIdx)) {
-      continue;
-    }
-    if (hasNormalHandler) {
-      if (entry.streamingHandlers[methodIdx]) {
-        throw std::logic_error("Cannot register normal handler: streaming handler already present for path+method");
-      }
-      if (entry.normalHandlers[methodIdx]) {
-        log::warn("Overwriting existing path handler for {} {}", http::MethodIdxToStr(methodIdx),
-                  std::string_view(node.patternString()));
-      }
-      if (pSharedRequest == nullptr) {
-        // We use at most once requestHandler, we then copy it to other methods
-        // NOLINTNEXTLINE(bugprone-use-after-move)
-        entry.normalHandlers[methodIdx] = std::move(requestHandler);
-        pSharedRequest = &entry.normalHandlers[methodIdx];
-      } else {
-        entry.normalHandlers[methodIdx] = *pSharedRequest;
-      }
-    } else {
-      if (entry.normalHandlers[methodIdx]) {
-        throw std::logic_error("Cannot register streaming handler: normal handler already present for path+method");
-      }
-      if (entry.streamingHandlers[methodIdx]) {
-        log::warn("Overwriting existing streaming path handler for {} {}", http::MethodIdxToStr(methodIdx),
-                  std::string_view(node.patternString()));
-      }
-      if (pSharedStreaming == nullptr) {
-        // NOLINTNEXTLINE(bugprone-use-after-move)
-        entry.streamingHandlers[methodIdx] = std::move(streamingHandler);
-        pSharedStreaming = &entry.streamingHandlers[methodIdx];
-      } else {
-        entry.streamingHandlers[methodIdx] = *pSharedStreaming;
-      }
-    }
-  }
+  entry.assignAsyncHandler(methods, std::move(handler));
 }
 
 void Router::ensureRouteMetadata(RouteNode& node, CompiledRoute&& route) {
@@ -471,9 +458,11 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
 
   if (!matched || pMatchedNode == nullptr) {
     if (_streamingHandler) {
-      result.pStreamingHandler = &_streamingHandler;
+      result.setStreamingHandler(&_streamingHandler);
+    } else if (_asyncHandler) {
+      result.setAsyncRequestHandler(&_asyncHandler);
     } else if (_handler) {
-      result.pRequestHandler = &_handler;
+      result.setRequestHandler(&_handler);
     }
     return result;
   }
@@ -511,7 +500,7 @@ http::MethodBmp Router::allowedMethods(std::string_view path) {
   if (const auto it = _literalOnlyRoutes.find(path); it != _literalOnlyRoutes.end()) {
     const RouteNode* matchedNode = it->second;
     const auto& entry = pathHasTrailingSlash ? matchedNode->handlersWithSlash : matchedNode->handlersNoSlash;
-    return static_cast<http::MethodBmp>(entry.normalMethodBmp | entry.streamingMethodBmp);
+    return static_cast<http::MethodBmp>(entry.normalMethodBmp | entry.streamingMethodBmp | entry.asyncMethodBmp);
   }
 
   // Slow path: split segments and match patterns via trie
@@ -521,10 +510,10 @@ http::MethodBmp Router::allowedMethods(std::string_view path) {
   const bool matched = matchImpl(pathHasTrailingSlash, matchedNode);
   if (matched && matchedNode != nullptr) {
     const auto& entry = pathHasTrailingSlash ? matchedNode->handlersWithSlash : matchedNode->handlersNoSlash;
-    return static_cast<http::MethodBmp>(entry.normalMethodBmp | entry.streamingMethodBmp);
+    return static_cast<http::MethodBmp>(entry.normalMethodBmp | entry.streamingMethodBmp | entry.asyncMethodBmp);
   }
 
-  if (_streamingHandler || _handler) {
+  if (_streamingHandler || _handler || _asyncHandler) {
     static constexpr http::MethodBmp kAllMethods = (1U << http::kNbMethods) - 1U;
     return kAllMethods;
   }
@@ -654,9 +643,8 @@ Router::CompiledRoute Router::CompilePattern(std::string_view path) {
   return route;
 }
 
-const Router::PathHandlerEntry* Router::computePathHandlerEntry(
-    const RouteNode& matchedNode, bool pathHasTrailingSlash,
-    RoutingResult::RedirectSlashMode& redirectSlashMode) const {
+const PathHandlerEntry* Router::computePathHandlerEntry(const RouteNode& matchedNode, bool pathHasTrailingSlash,
+                                                        RoutingResult::RedirectSlashMode& redirectSlashMode) const {
   switch (_config.trailingSlashPolicy) {
     case RouterConfig::TrailingSlashPolicy::Strict:
       return pathHasTrailingSlash ? &matchedNode.handlersWithSlash : &matchedNode.handlersNoSlash;
@@ -666,7 +654,8 @@ const Router::PathHandlerEntry* Router::computePathHandlerEntry(
       const auto& matchedSlash = pathHasTrailingSlash ? matchedNode.handlersWithSlash : matchedNode.handlersNoSlash;
       const auto& matchedNoSlash = pathHasTrailingSlash ? matchedNode.handlersNoSlash : matchedNode.handlersWithSlash;
 
-      if ((matchedSlash.normalMethodBmp != 0U) || (matchedSlash.streamingMethodBmp != 0U)) {
+      if ((matchedSlash.normalMethodBmp != 0U) || (matchedSlash.streamingMethodBmp != 0U) ||
+          (matchedSlash.asyncMethodBmp != 0U)) {
         return &matchedSlash;
       }
       return &matchedNoSlash;
@@ -675,20 +664,24 @@ const Router::PathHandlerEntry* Router::computePathHandlerEntry(
       // If only the opposite-slashed variant is registered, tell the caller to redirect.
       if (pathHasTrailingSlash) {
         if ((matchedNode.handlersWithSlash.normalMethodBmp != 0U) ||
-            (matchedNode.handlersWithSlash.streamingMethodBmp != 0U)) {
+            (matchedNode.handlersWithSlash.streamingMethodBmp != 0U) ||
+            (matchedNode.handlersWithSlash.asyncMethodBmp != 0U)) {
           return &matchedNode.handlersWithSlash;
         }
         if ((matchedNode.handlersNoSlash.normalMethodBmp != 0U) ||
-            (matchedNode.handlersNoSlash.streamingMethodBmp != 0U)) {
+            (matchedNode.handlersNoSlash.streamingMethodBmp != 0U) ||
+            (matchedNode.handlersNoSlash.asyncMethodBmp != 0U)) {
           redirectSlashMode = RoutingResult::RedirectSlashMode::RemoveSlash;
         }
       } else {
         if ((matchedNode.handlersNoSlash.normalMethodBmp != 0U) ||
-            (matchedNode.handlersNoSlash.streamingMethodBmp != 0U)) {
+            (matchedNode.handlersNoSlash.streamingMethodBmp != 0U) ||
+            (matchedNode.handlersNoSlash.asyncMethodBmp != 0U)) {
           return &matchedNode.handlersNoSlash;
         }
         if ((matchedNode.handlersWithSlash.normalMethodBmp != 0U) ||
-            (matchedNode.handlersWithSlash.streamingMethodBmp != 0U)) {
+            (matchedNode.handlersWithSlash.streamingMethodBmp != 0U) ||
+            (matchedNode.handlersWithSlash.asyncMethodBmp != 0U)) {
           redirectSlashMode = RoutingResult::RedirectSlashMode::AddSlash;
         }
       }
@@ -700,21 +693,24 @@ const Router::PathHandlerEntry* Router::computePathHandlerEntry(
 
 void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entry, RoutingResult& result) const {
   auto methodIdx = MethodToIdx(method);
+
   if (method == http::Method::HEAD) {
-    static constexpr auto kHeadIdx = MethodToIdx(http::Method::HEAD);
-    static constexpr auto kGetIdx = MethodToIdx(http::Method::GET);
-    if (!entry.normalHandlers[kHeadIdx] && !entry.streamingHandlers[kHeadIdx]) {
-      if (entry.normalHandlers[kGetIdx] || entry.streamingHandlers[kGetIdx]) {
+    static constexpr http::MethodIdx kGetIdx = MethodToIdx(http::Method::GET);
+    static constexpr http::MethodIdx kHeadIdx = MethodToIdx(http::Method::HEAD);
+    if (!entry.hasNormalHandler(kHeadIdx) && !entry.hasStreamingHandler(kHeadIdx) && !entry.hasAsyncHandler(kHeadIdx)) {
+      if (entry.hasNormalHandler(kGetIdx) || entry.hasStreamingHandler(kGetIdx) || entry.hasAsyncHandler(kGetIdx)) {
         method = http::Method::GET;
         methodIdx = kGetIdx;
       }
     }
   }
 
-  if (entry.streamingHandlers[methodIdx] && http::IsMethodSet(entry.streamingMethodBmp, method)) {
-    result.pStreamingHandler = &entry.streamingHandlers[methodIdx];
-  } else if (entry.normalHandlers[methodIdx] && http::IsMethodSet(entry.normalMethodBmp, method)) {
-    result.pRequestHandler = &entry.normalHandlers[methodIdx];
+  if (entry.hasStreamingHandler(methodIdx) && http::IsMethodSet(entry.streamingMethodBmp, method)) {
+    result.setStreamingHandler(entry.streamingHandlerPtr(methodIdx));
+  } else if (entry.hasAsyncHandler(methodIdx) && http::IsMethodSet(entry.asyncMethodBmp, method)) {
+    result.setAsyncRequestHandler(entry.asyncHandlerPtr(methodIdx));
+  } else if (entry.hasNormalHandler(methodIdx) && http::IsMethodSet(entry.normalMethodBmp, method)) {
+    result.setRequestHandler(entry.requestHandlerPtr(methodIdx));
   } else {
     result.methodNotAllowed = true;
   }
@@ -878,6 +874,7 @@ void Router::cloneNodesFrom(const Router& other) {
 
 void Router::clear() noexcept {
   _handler = {};
+  _asyncHandler = {};
   _streamingHandler = {};
   _globalPreMiddleware.clear();
   _globalPostMiddleware.clear();

@@ -1,9 +1,13 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -16,6 +20,7 @@
 #include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/request-task.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -25,7 +30,38 @@ using namespace aeronet;
 
 namespace {
 test::TestServer ts(HttpServerConfig{});
-}
+
+struct BodyReadTimeoutScope {
+  explicit BodyReadTimeoutScope(std::chrono::milliseconds timeout) {
+    ts.postConfigUpdate([timeout](HttpServerConfig& cfg) { cfg.withBodyReadTimeout(timeout); });
+  }
+  BodyReadTimeoutScope(const BodyReadTimeoutScope&) = delete;
+  BodyReadTimeoutScope& operator=(const BodyReadTimeoutScope&) = delete;
+  BodyReadTimeoutScope(BodyReadTimeoutScope&&) = delete;
+  BodyReadTimeoutScope& operator=(BodyReadTimeoutScope&&) = delete;
+  ~BodyReadTimeoutScope() {
+    ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withBodyReadTimeout(std::chrono::milliseconds{0}); });
+  }
+};
+
+struct PollIntervalScope {
+  explicit PollIntervalScope(std::chrono::milliseconds interval) : _previous(ts.server.config().pollInterval) {
+    ts.postConfigUpdate([interval](HttpServerConfig& cfg) { cfg.withPollInterval(interval); });
+  }
+  PollIntervalScope(const PollIntervalScope&) = delete;
+  PollIntervalScope& operator=(const PollIntervalScope&) = delete;
+  PollIntervalScope(PollIntervalScope&&) = delete;
+  PollIntervalScope& operator=(PollIntervalScope&&) = delete;
+  ~PollIntervalScope() {
+    ts.postConfigUpdate([prev = _previous](HttpServerConfig& cfg) { cfg.withPollInterval(prev); });
+  }
+
+ private:
+  std::chrono::milliseconds _previous;
+};
+
+constexpr std::size_t kAsyncLargePayload = 16 << 20;
+}  // namespace
 
 TEST(HttpRouting, BasicPathDispatch) {
   ts.router().setPath(http::Method::GET, "/hello",
@@ -58,6 +94,18 @@ TEST(HttpRouting, BasicPathDispatch) {
   auto resp4 = test::requestOrThrow(ts.port(), postMulti);
   EXPECT_TRUE(resp4.contains("200 OK"));
   EXPECT_TRUE(resp4.contains("POST!"));
+}
+
+TEST(HttpRouting, AsyncHandlerDispatch) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/async-route", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+    std::string payload("async:");
+    payload.append(req.path());
+    co_return HttpResponse(http::StatusCodeOK, http::ReasonOK).body(std::move(payload));
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/async-route");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.contains("async:/async-route")) << response;
 }
 
 TEST(HttpRouting, GlobalFallbackWithPathHandlers) {
@@ -372,7 +420,7 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
     requestPaths.emplace_back(metrics.requestPath);
   });
 
-  auto router = ts.resetRouterAndGet();
+  RouterUpdateProxy router = ts.resetRouterAndGet();
   router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
   router.addResponseMiddleware([](const HttpRequest&, HttpResponse&) {});
 
@@ -438,7 +486,7 @@ TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
     captured.push_back(metrics);
   });
 
-  auto router = ts.resetRouterAndGet();
+  RouterUpdateProxy router = ts.resetRouterAndGet();
   router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
   router.addResponseMiddleware([](const HttpRequest&, HttpResponse&) {});
 
@@ -499,7 +547,7 @@ TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
     requestPaths.emplace_back(metrics.requestPath);
   });
 
-  auto router = ts.resetRouterAndGet();
+  RouterUpdateProxy router = ts.resetRouterAndGet();
   router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
   router.addResponseMiddleware([](const HttpRequest&, HttpResponse&) {});
 
@@ -556,4 +604,181 @@ TEST(HttpMiddleware, RouterOwnsGlobalMiddleware) {
   EXPECT_TRUE(response.contains("X-Router-Post: ok")) << response;
   EXPECT_TRUE(preSeen.load(std::memory_order_relaxed));
   EXPECT_TRUE(postSeen.load(std::memory_order_relaxed));
+}
+
+TEST(HttpRouting, AsyncBodyReadTimeout) {
+  RouterUpdateProxy router = ts.resetRouterAndGet();
+  std::atomic_bool handlerInvoked{false};
+  router.setPath(http::Method::POST, "/async-timeout", [&](HttpRequest&) -> RequestTask<HttpResponse> {
+    handlerInvoked.store(true, std::memory_order_relaxed);
+    co_return HttpResponse(http::StatusCodeOK).body("should-not-run");
+  });
+
+  constexpr auto readTimeout = std::chrono::milliseconds{50};
+  BodyReadTimeoutScope timeout(readTimeout);
+  PollIntervalScope pollInterval(std::chrono::milliseconds{5});
+
+  test::ClientConnection cnx(ts.port());
+  int fd = cnx.fd();
+  ASSERT_GE(fd, 0);
+  static constexpr std::string_view request =
+      "POST /async-timeout HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 4\r\nConnection: close\r\n\r\n";
+  test::sendAll(fd, request);
+  std::this_thread::sleep_for(readTimeout + std::chrono::milliseconds{20});
+
+  std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  ASSERT_FALSE(resp.empty());
+  EXPECT_TRUE(resp.contains("HTTP/1.1 408")) << resp;
+  EXPECT_TRUE(resp.contains("Connection: close")) << resp;
+  EXPECT_TRUE(handlerInvoked.load(std::memory_order_relaxed));
+}
+
+TEST(HttpRouting, AsyncLargeResponseChunks) {
+  RouterUpdateProxy router = ts.resetRouterAndGet();
+  router.setPath(http::Method::GET, "/async-large", [](HttpRequest&) -> RequestTask<HttpResponse> {
+    std::string body(kAsyncLargePayload, 'x');
+    co_return HttpResponse(http::StatusCodeOK, http::ReasonOK).body(std::move(body));
+  });
+
+  test::RequestOptions opts;
+  opts.method = "GET";
+  opts.target = "/async-large";
+  opts.headers.emplace_back("Connection", "close");
+  opts.maxResponseBytes = kAsyncLargePayload + 1024;
+
+  auto raw = test::requestOrThrow(ts.port(), opts);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(parsed.body.size(), kAsyncLargePayload);
+}
+
+TEST(HttpRouting, AsyncReadBodyBeforeBodyThrows) {
+  RouterUpdateProxy router = ts.resetRouterAndGet();
+  std::atomic_bool sawException{false};
+  router.setPath(http::Method::POST, "/async-read-before-body", [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+    [[maybe_unused]] auto chunk = req.readBody();
+    (void)chunk;
+    try {
+      [[maybe_unused]] auto aggregated = req.body();
+      (void)aggregated;
+    } catch (const std::logic_error&) {
+      sawException.store(true, std::memory_order_relaxed);
+    }
+    co_return HttpResponse(http::StatusCodeOK).body("ok");
+  });
+
+  test::RequestOptions opts;
+  opts.method = "POST";
+  opts.target = "/async-read-before-body";
+  opts.headers.emplace_back("Connection", "close");
+  opts.body = "abc";
+
+  auto resp = test::requestOrThrow(ts.port(), opts);
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(sawException.load(std::memory_order_relaxed));
+}
+
+TEST(HttpRouting, AsyncBodyBeforeReadBodyThrows) {
+  RouterUpdateProxy router = ts.resetRouterAndGet();
+  std::atomic_bool sawException{false};
+  router.setPath(http::Method::POST, "/async-body-before-read", [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+    [[maybe_unused]] auto aggregated = req.body();
+    (void)aggregated;
+    try {
+      [[maybe_unused]] auto chunk = req.readBody();
+      (void)chunk;
+    } catch (const std::logic_error&) {
+      sawException.store(true, std::memory_order_relaxed);
+    }
+    co_return HttpResponse(http::StatusCodeOK).body("ok");
+  });
+
+  test::RequestOptions opts;
+  opts.method = "POST";
+  opts.target = "/async-body-before-read";
+  opts.headers.emplace_back("Connection", "close");
+  opts.body = "xyz";
+
+  auto resp = test::requestOrThrow(ts.port(), opts);
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(sawException.load(std::memory_order_relaxed));
+}
+
+TEST(HttpRouting, AsyncIdentityContentLengthReadBodyStreams) {
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/identity-stream-cl",
+                                 [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                   std::string collected;
+                                   while (req.hasMoreBody()) {
+                                     auto chunk = req.readBody(3);
+                                     EXPECT_FALSE(chunk.empty());
+                                     collected.append(chunk);
+                                   }
+                                   EXPECT_FALSE(req.hasMoreBody());
+                                   co_return HttpResponse(http::StatusCodeOK).body(collected);
+                                 });
+
+  test::RequestOptions opts;
+  opts.method = "POST";
+  opts.target = "/identity-stream-cl";
+  opts.headers.emplace_back("Connection", "close");
+  opts.body = "stream-this-body";
+
+  auto resp = test::requestOrThrow(ts.port(), opts);
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("stream-this-body")) << resp;
+}
+
+TEST(HttpRouting, AsyncIdentityChunkedReadBodyStreams) {
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/identity-stream-chunked",
+                                 [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                   std::string collected;
+                                   while (req.hasMoreBody()) {
+                                     auto chunk = req.readBody(4);
+                                     EXPECT_FALSE(chunk.empty());
+                                     collected.append(chunk);
+                                   }
+                                   co_return HttpResponse(http::StatusCodeOK).body(collected);
+                                 });
+
+  test::ClientConnection client(ts.port());
+  const std::string request =
+      "POST /identity-stream-chunked HTTP/1.1\r\n"
+      "Host: 127.0.0.1\r\n"
+      "Transfer-Encoding: chunked\r\n"
+      "Connection: close\r\n"
+      "\r\n"
+      "5\r\nfirst\r\n"
+      "8\r\n-second!\r\n"
+      "0\r\n\r\n";
+  test::sendAll(client.fd(), request);
+  const std::string response = test::recvUntilClosed(client.fd());
+  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.contains("first-second!")) << response;
+}
+
+TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete) {
+  std::atomic_bool handlerStarted{false};
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/async-early",
+                                 [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                   handlerStarted.store(true, std::memory_order_release);
+                                   std::string_view body = co_await req.bodyAwaitable();
+                                   co_return HttpResponse(http::StatusCodeOK).body(body);
+                                 });
+
+  test::ClientConnection client(ts.port());
+  const std::string headers =
+      "POST /async-early HTTP/1.1\r\n"
+      "Host: 127.0.0.1\r\n"
+      "Content-Length: 10\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+  test::sendAll(client.fd(), headers);
+  test::sendAll(client.fd(), "12345");
+  std::this_thread::sleep_for(std::chrono::milliseconds{50});
+  EXPECT_TRUE(handlerStarted.load(std::memory_order_acquire));
+
+  test::sendAll(client.fd(), "67890");
+  const std::string response = test::recvUntilClosed(client.fd());
+  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.contains("1234567890")) << response;
 }
