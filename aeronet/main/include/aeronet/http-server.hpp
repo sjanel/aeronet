@@ -48,6 +48,8 @@
 
 namespace aeronet {
 
+class ServerLifecycleTracker;
+
 class HttpResponseWriter;
 class CorsPolicy;
 
@@ -399,8 +401,7 @@ class HttpServer {
 
   void eventLoop();
   void sweepIdleConnections();
-  void applyConfigUpdates();
-  void applyRouterUpdates();
+  void applyPendingUpdates();
   void acceptNewConnections();
   void handleReadableClient(int fd);
   bool processRequestsOnConnection(ConnectionMapIt cnxIt);
@@ -553,6 +554,8 @@ class HttpServer {
   // When start() is called, the handle is stored here and the server takes ownership.
   // When startDetached() is called, the handle is returned to the caller.
   std::optional<AsyncHandle> _internalHandle;
+
+  std::weak_ptr<ServerLifecycleTracker> _lifecycleTracker;
 
 #ifdef AERONET_ENABLE_OPENSSL
   // TlsContext lifetime & pointer stability:
