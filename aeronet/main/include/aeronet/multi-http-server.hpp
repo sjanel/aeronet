@@ -8,12 +8,12 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
-#include <thread>
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/server-lifecycle-tracker.hpp"
 #include "aeronet/server-stats.hpp"
 #include "aeronet/vector.hpp"
 
@@ -41,6 +41,8 @@ class MultiHttpServer {
   //   // ... do work while servers run in background ...
   //   handle.stop();  // or let handle destructor auto-stop
   //   handle.rethrowIfError();  // check for exceptions from any event loop
+  struct HandleCompletion;
+
   class AsyncHandle {
    public:
     AsyncHandle(const AsyncHandle&) = delete;
@@ -66,14 +68,19 @@ class MultiHttpServer {
    private:
     friend class MultiHttpServer;
 
-    AsyncHandle(vector<std::jthread> threads, std::shared_ptr<std::exception_ptr> error,
-                std::shared_ptr<std::atomic<bool>> stopRequested, std::shared_ptr<std::function<void()>> onStop);
+    AsyncHandle(vector<HttpServer::AsyncHandle> serverHandles, std::shared_ptr<std::atomic<bool>> stopRequested,
+                std::shared_ptr<std::function<void()>> onStop, std::shared_ptr<HandleCompletion> completion,
+                std::shared_ptr<ServerLifecycleTracker> lifecycleTracker, std::shared_ptr<void> stopTokenBinding);
 
-    vector<std::jthread> _threads;
-    std::shared_ptr<std::exception_ptr> _error;         // shared for lambda capture
+    vector<HttpServer::AsyncHandle> _serverHandles;
     std::shared_ptr<std::atomic<bool>> _stopRequested;  // shared with server logic
     std::shared_ptr<std::function<void()>> _onStop;
+    std::shared_ptr<HandleCompletion> _completion;
+    std::shared_ptr<ServerLifecycleTracker> _lifecycleTracker;
+    std::shared_ptr<void> _stopTokenBinding;
     std::atomic<bool> _stopCalled{false};
+
+    void notifyCompletion() noexcept;
   };
 
   // Construct a MultiHttpServer that does nothing.
@@ -207,7 +214,7 @@ class MultiHttpServer {
   // startDetachedWithStopToken():
   //   Launch the event loops and stop them when either the returned AsyncHandle is stopped or the provided
   //   std::stop_token is triggered. Handy for integrating with cooperative cancellation infrastructure.
-  [[nodiscard]] AsyncHandle startDetachedWithStopToken(std::stop_token token);
+  [[nodiscard]] AsyncHandle startDetachedWithStopToken(const std::stop_token& token);
 
   // beginDrain(): forward graceful drain to every underlying HttpServer.
   void beginDrain(std::chrono::milliseconds maxWait = std::chrono::milliseconds{0}) noexcept;
@@ -222,9 +229,7 @@ class MultiHttpServer {
   //   Reflects the high-level lifecycle, not the liveness of each individual thread (a thread
   //   may have terminated due to an exception while isRunning() is still true). Use stats() or
   //   external health checks for deeper diagnostics.
-  [[nodiscard]] bool isRunning() const {
-    return _internalHandle.has_value() || !_threads.empty() || !_lastHandleStopFn.expired();
-  }
+  [[nodiscard]] bool isRunning() const { return _internalHandle.has_value() || !_lastHandleStopFn.expired(); }
 
   // isDraining(): true if all underlying servers are currently draining.
   [[nodiscard]] bool isDraining() const;
@@ -279,25 +284,27 @@ class MultiHttpServer {
 
   void runBlocking(std::function<bool()> predicate, std::string_view modeLabel);
 
-  [[nodiscard]] AsyncHandle startDetachedInternal(std::function<bool()> extraStopCondition, bool monitorPredicateAsync);
+  [[nodiscard]] AsyncHandle startDetachedInternal(std::function<bool()> extraStopCondition,
+                                                  const std::stop_token& externalStopToken);
 
   // single-writer (controller thread), multi-reader (worker threads)
   // It is useful to avoid freezes when stop() before the server thread has entered the main loop after start.
   // Shared ownership allows both MultiHttpServer and AsyncHandle to control stopping.
   std::shared_ptr<std::atomic<bool>> _stopRequested{std::make_shared<std::atomic<bool>>(false)};
+  std::shared_ptr<ServerLifecycleTracker> _lifecycleTracker{std::make_shared<ServerLifecycleTracker>()};
 
   // IMPORTANT LIFETIME NOTE:
   // Each server thread captures a raw pointer to its corresponding HttpServer element stored in _servers.
   // We must therefore ensure that the pointed-to HttpServer objects remain alive until after the jthreads join.
   // Destruction order is reverse of declaration order, so declare 'servers' BEFORE 'threads'.
-  vector<HttpServer> _servers;    // created on start()
-  vector<std::jthread> _threads;  // run server.run()
+  vector<HttpServer> _servers;  // created on start()
 
   // Internal handle for simple start() API - managed by the server itself.
   // When start() is called, the handle is stored here and the server takes ownership.
   // When startDetached() is called, the handle is returned to the caller.
   std::optional<AsyncHandle> _internalHandle;
   std::weak_ptr<std::function<void()>> _lastHandleStopFn;
+  std::weak_ptr<HandleCompletion> _lastHandleCompletion;
   std::shared_ptr<std::atomic<bool>> _serversAlive{std::make_shared<std::atomic<bool>>(true)};
 };
 
