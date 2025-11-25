@@ -4,12 +4,13 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
-#include <cstddef>
+#include <condition_variable>
 #include <cstdint>
-#include <exception>
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -21,37 +22,66 @@
 #include "aeronet/log.hpp"
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/server-lifecycle-tracker.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet {
 
-MultiHttpServer::AsyncHandle::AsyncHandle(vector<std::jthread> threads, std::shared_ptr<std::exception_ptr> error,
+struct MultiHttpServer::HandleCompletion {
+  void notify() {
+    {
+      std::scoped_lock lock(mutex);
+      if (completed) {
+        return;
+      }
+      completed = true;
+    }
+    cv.notify_all();
+  }
+
+  void wait() {
+    std::unique_lock lock(mutex);
+    cv.wait(lock, [this] { return completed; });
+  }
+
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool completed{false};
+};
+
+MultiHttpServer::AsyncHandle::AsyncHandle(vector<HttpServer::AsyncHandle> serverHandles,
                                           std::shared_ptr<std::atomic<bool>> stopRequested,
-                                          std::shared_ptr<std::function<void()>> onStop)
-    : _threads(std::move(threads)),
-      _error(std::move(error)),
+                                          std::shared_ptr<std::function<void()>> onStop,
+                                          std::shared_ptr<HandleCompletion> completion,
+                                          std::shared_ptr<ServerLifecycleTracker> lifecycleTracker,
+                                          std::shared_ptr<void> stopTokenBinding)
+    : _serverHandles(std::move(serverHandles)),
       _stopRequested(std::move(stopRequested)),
-      _onStop(std::move(onStop)) {}
+      _onStop(std::move(onStop)),
+      _completion(std::move(completion)),
+      _lifecycleTracker(std::move(lifecycleTracker)),
+      _stopTokenBinding(std::move(stopTokenBinding)) {}
 
 MultiHttpServer::AsyncHandle::AsyncHandle(AsyncHandle&& other) noexcept
-    : _threads(std::move(other._threads)),
-      _error(std::move(other._error)),
+    : _serverHandles(std::move(other._serverHandles)),
       _stopRequested(std::move(other._stopRequested)),
       _onStop(std::move(other._onStop)),
-      _stopCalled(other._stopCalled.load(std::memory_order_relaxed)) {
-  other._stopCalled.store(true, std::memory_order_relaxed);
-}
+      _completion(std::move(other._completion)),
+      _lifecycleTracker(std::move(other._lifecycleTracker)),
+      _stopTokenBinding(std::move(other._stopTokenBinding)),
+      _stopCalled(other._stopCalled.exchange(true, std::memory_order_relaxed)) {}
 
 MultiHttpServer::AsyncHandle& MultiHttpServer::AsyncHandle::operator=(AsyncHandle&& other) noexcept {
   if (this != &other) {
     stop();
 
-    _threads = std::move(other._threads);
-    _error = std::move(other._error);
+    _serverHandles = std::move(other._serverHandles);
     _stopRequested = std::move(other._stopRequested);
     _onStop = std::move(other._onStop);
-    _stopCalled.store(other._stopCalled.load(std::memory_order_relaxed), std::memory_order_relaxed);
-    other._stopCalled.store(true, std::memory_order_relaxed);
+    _completion = std::move(other._completion);
+    _lifecycleTracker = std::move(other._lifecycleTracker);
+    _stopTokenBinding = std::move(other._stopTokenBinding);
+    _stopCalled.store(other._stopCalled.exchange(true, std::memory_order_relaxed), std::memory_order_relaxed);
   }
   return *this;
 }
@@ -65,34 +95,42 @@ void MultiHttpServer::AsyncHandle::stop() noexcept {
 
   if (_stopRequested) {
     _stopRequested->store(true, std::memory_order_relaxed);
+    if (_lifecycleTracker) {
+      _lifecycleTracker->notifyStopRequested();
+    }
   }
 
   if (_onStop && *_onStop) {
     (*_onStop)();
   }
 
-  for (auto& thread : _threads) {
-    if (thread.joinable()) {
-      thread.request_stop();
-      thread.join();
-    }
+  for (auto& handle : _serverHandles) {
+    handle.stop();
   }
 
   // Release the shared stop callback so any weak_ptr held by the MultiHttpServer
   // instance can expire when the caller has stopped the AsyncHandle. Clear the
   // local thread vector to reflect there are no active background threads.
   _onStop.reset();
-  _threads.clear();
+  _serverHandles.clear();
+  notifyCompletion();
 }
 
 void MultiHttpServer::AsyncHandle::rethrowIfError() {
-  if (_error && *_error) {
-    std::rethrow_exception(*_error);
+  for (auto& handle : _serverHandles) {
+    handle.rethrowIfError();
+  }
+}
+
+void MultiHttpServer::AsyncHandle::notifyCompletion() noexcept {
+  if (_completion) {
+    _completion->notify();
+    _completion.reset();
   }
 }
 
 bool MultiHttpServer::AsyncHandle::started() const noexcept {
-  return std::ranges::any_of(_threads, [](const std::jthread& thread) { return thread.joinable(); });
+  return std::ranges::any_of(_serverHandles, [](const auto& handle) { return handle.started(); });
 }
 
 MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router, uint32_t threadCount)
@@ -109,7 +147,7 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router, uint32_t t
 
   // Construct first server. If port was ephemeral (0), HttpServer constructor resolves it synchronously.
   // We move the base config into the first server then copy back the resolved version (with concrete port).
-  _servers.emplace_back(std::move(cfg), std::move(router));
+  _servers.emplace_back(std::move(cfg), std::move(router))._lifecycleTracker = _lifecycleTracker;
 }
 
 MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
@@ -127,11 +165,16 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
 
 MultiHttpServer::MultiHttpServer(MultiHttpServer&& other) noexcept
     : _stopRequested(std::move(other._stopRequested)),
+      _lifecycleTracker(std::move(other._lifecycleTracker)),
       _servers(std::move(other._servers)),
-      _threads(std::move(other._threads)),
       _internalHandle(std::move(other._internalHandle)),
       _lastHandleStopFn(std::move(other._lastHandleStopFn)),
-      _serversAlive(std::move(other._serversAlive)) {}
+      _lastHandleCompletion(std::move(other._lastHandleCompletion)),
+      _serversAlive(std::move(other._serversAlive)) {
+  for (auto& server : _servers) {
+    server._lifecycleTracker = _lifecycleTracker;
+  }
+}
 
 MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
   if (this != &other) {
@@ -139,11 +182,16 @@ MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
     stop();
 
     _stopRequested = std::move(other._stopRequested);
+    _lifecycleTracker = std::move(other._lifecycleTracker);
     _servers = std::move(other._servers);
-    _threads = std::move(other._threads);
     _internalHandle = std::move(other._internalHandle);
     _lastHandleStopFn = std::move(other._lastHandleStopFn);
+    _lastHandleCompletion = std::move(other._lastHandleCompletion);
     _serversAlive = std::move(other._serversAlive);
+
+    for (auto& server : _servers) {
+      server._lifecycleTracker = _lifecycleTracker;
+    }
   }
   return *this;
 }
@@ -213,35 +261,39 @@ void MultiHttpServer::stop() noexcept {
     return;
   }
   _stopRequested->store(true, std::memory_order_relaxed);
+  if (_lifecycleTracker) {
+    _lifecycleTracker->notifyStopRequested();
+  }
   log::debug("MultiHttpServer stopping (instances={})", _servers.size());
   std::ranges::for_each(_servers, [](HttpServer& server) { server.stop(); });
 
   // Stop internal handle if start() was used (non-blocking API)
-  if (_internalHandle.has_value()) {
+  if (_internalHandle) {
     _internalHandle->stop();
     _internalHandle.reset();
   }
 
-  // Note: Thread joining is now handled by AsyncHandle destructor if startDetached() was called.
-  // If run() was called, threads are already joined by the time we get here.
-
-  // Only after all threads have joined, clean up servers
-  _servers.erase(std::next(_servers.begin()), _servers.end());
+  if (auto completion = _lastHandleCompletion.lock()) {
+    completion->wait();
+  }
   log::info("MultiHttpServer stopped");
 }
 
 void MultiHttpServer::start() { _internalHandle.emplace(startDetached()); }
 
 MultiHttpServer::AsyncHandle MultiHttpServer::startDetached() {
-  return startDetachedInternal([] { return false; }, false);
+  return startDetachedInternal([] { return false; }, {});
 }
 
 MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedAndStopWhen(std::function<bool()> predicate) {
-  return startDetachedInternal(std::move(predicate), true);
+  return startDetachedInternal(std::move(predicate), {});
 }
 
-MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedWithStopToken(std::stop_token token) {
-  return startDetachedInternal([token = std::move(token)]() mutable { return token.stop_requested(); }, true);
+MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedWithStopToken(const std::stop_token& token) {
+  if (!token.stop_possible()) {
+    return startDetachedInternal([] { return false; }, {});
+  }
+  return startDetachedInternal([tokenCopy = token]() { return tokenCopy.stop_requested(); }, token);
 }
 
 void MultiHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
@@ -253,16 +305,16 @@ bool MultiHttpServer::isDraining() const {
 }
 
 void MultiHttpServer::postConfigUpdate(const std::function<void(HttpServerConfig&)>& updater) {
-  for (auto& server : _servers) {
-    server.postConfigUpdate(updater);
+  if (empty()) {
+    throw std::logic_error("Cannot post a config update on an empty MultiHttpServer");
   }
+  std::ranges::for_each(_servers, [&updater](HttpServer& server) { server.postConfigUpdate(updater); });
 }
 
 void MultiHttpServer::postRouterUpdate(std::function<void(Router&)> updater) {
   if (empty()) {
     throw std::logic_error("Cannot post a router update on an empty MultiHttpServer");
   }
-
   auto sharedUpdater = std::make_shared<std::function<void(Router&)>>(std::move(updater));
   for (auto& server : _servers) {
     server.postRouterUpdate([sharedUpdater](Router& router) { (*sharedUpdater)(router); });
@@ -281,104 +333,82 @@ void MultiHttpServer::canSetCallbacks() const {
 
 void MultiHttpServer::rebuildServers() {
   if (_servers.empty()) {
-    return;
+    throw std::logic_error("Cannot rebuild servers on an empty MultiHttpServer");
   }
 
-  _servers.erase(std::next(_servers.begin()), _servers.end());
+  auto& firstServer = _servers.front();
 
-  HttpServer& firstServer = _servers.front();
-  firstServer._isInMultiHttpServer = true;
-  while (_servers.size() < _servers.capacity()) {
-    auto& server = _servers.emplace_back(firstServer.config(), firstServer._router);
-    server.setParserErrorCallback(firstServer._parserErrCb);
-    server.setMetricsCallback(firstServer._metricsCb);
-    server.setExpectationHandler(firstServer._expectationHandler);
-    server.setMiddlewareMetricsCallback(firstServer._middlewareMetricsCb);
+  firstServer.applyPendingUpdates();
+
+  HttpServerConfig config = std::move(firstServer._config);
+  Router router = std::move(firstServer._router);
+  auto parserErrCb = std::move(firstServer._parserErrCb);
+  auto metricsCb = std::move(firstServer._metricsCb);
+  auto expectationHandler = std::move(firstServer._expectationHandler);
+  auto middlewareMetricsCb = std::move(firstServer._middlewareMetricsCb);
+
+  const auto targetCount = _servers.capacity();
+  vector<HttpServer> newServers;
+  newServers.reserve(targetCount);
+
+  while (newServers.size() < targetCount) {
+    // TODO: authorize copy of HttpServer instead to simplify this code ?
+    auto& server = newServers.emplace_back(config, router);
+    server.setParserErrorCallback(parserErrCb);
+    server.setMetricsCallback(metricsCb);
+    server.setExpectationHandler(expectationHandler);
+    server.setMiddlewareMetricsCallback(middlewareMetricsCb);
     server._isInMultiHttpServer = true;
+    server._lifecycleTracker = _lifecycleTracker;
   }
+
+  _servers = std::move(newServers);
 }
 
 vector<HttpServer*> MultiHttpServer::collectServerPointers() {
   vector<HttpServer*> serverPtrs;
   serverPtrs.reserve(_servers.size());
-  for (auto& server : _servers) {
-    serverPtrs.push_back(&server);
-  }
+  std::ranges::transform(_servers, std::back_inserter(serverPtrs), [](HttpServer& server) { return &server; });
   return serverPtrs;
 }
 
 void MultiHttpServer::runBlocking(std::function<bool()> predicate, std::string_view modeLabel) {
   if (_servers.empty()) {
-    return;
+    throw std::logic_error("Cannot run an empty MultiHttpServer");
   }
 
-  if (!_threads.empty()) {
+  if (isRunning()) {
     throw std::logic_error("MultiHttpServer already started");
   }
 
-  rebuildServers();
+  // Use a local AsyncHandle to manage the servers.
+  // We do NOT store it in _internalHandle to avoid race conditions with stop().
+  // stop() will signal _stopRequested and wait for us via _lastHandleStopFn.
+  AsyncHandle handle = startDetachedInternal(std::move(predicate), {});
 
-  _stopRequested->store(false, std::memory_order_relaxed);
+  log::info("MultiHttpServer {}{}started (blocking) with {} thread(s) on port :{}", modeLabel,
+            modeLabel.empty() ? "" : " ", _servers.size(), port());
 
-  log::debug("MultiHttpServer {}{}starting with {} thread(s) on port :{}", modeLabel, modeLabel.empty() ? "" : " ",
-             _servers.size(), port());
-
-  _threads.reserve(static_cast<decltype(_threads)::size_type>(_servers.size()));
-
-  if (!predicate) {
-    for (std::size_t threadPos = 0; threadPos < _servers.size(); ++threadPos) {
-      HttpServer* srvPtr = &_servers[static_cast<vector<HttpServer>::size_type>(threadPos)];
-      std::atomic<bool>* stopRequested = _stopRequested.get();
-      _threads.emplace_back([stopRequested, srvPtr, threadPos]() {
-        try {
-          srvPtr->runUntil([stopRequested]() { return stopRequested->load(std::memory_order_relaxed); });
-        } catch (const std::exception& ex) {
-          log::error("Server thread {} terminated with exception: {}", threadPos, ex.what());
-        } catch (...) {
-          log::error("Server thread {} terminated with unknown exception", threadPos);
-        }
-      });
-    }
-  } else {
-    auto sharedPredicate = std::move(predicate);
-    for (std::size_t threadPos = 0; threadPos < _servers.size(); ++threadPos) {
-      HttpServer* srvPtr = &_servers[static_cast<vector<HttpServer>::size_type>(threadPos)];
-      std::atomic<bool>* stopRequested = _stopRequested.get();
-      auto threadPredicate = sharedPredicate;
-      _threads.emplace_back([stopRequested, srvPtr, threadPos, threadPredicate]() {
-        try {
-          srvPtr->runUntil([stopRequested, threadPredicate]() {
-            if (stopRequested->load(std::memory_order_relaxed)) {
-              return true;
-            }
-            if (threadPredicate && threadPredicate()) {
-              stopRequested->store(true, std::memory_order_relaxed);
-              return true;
-            }
-            return false;
-          });
-        } catch (const std::exception& ex) {
-          log::error("Server thread {} terminated with exception: {}", threadPos, ex.what());
-        } catch (...) {
-          log::error("Server thread {} terminated with unknown exception", threadPos);
-        }
-      });
+  if (_lifecycleTracker) {
+    const bool started = _lifecycleTracker->waitUntilAnyRunning(*_stopRequested);
+    if (!_stopRequested->load(std::memory_order_relaxed) && started) {
+      _lifecycleTracker->waitUntilAllStopped(*_stopRequested);
     }
   }
 
-  log::info("MultiHttpServer {}{}started with {} thread(s) on port :{}", modeLabel, modeLabel.empty() ? "" : " ",
-            _servers.size(), port());
-
-  _threads.clear();
-
-  _servers.erase(std::next(_servers.begin()), _servers.end());
   log::info("MultiHttpServer {}{}stopped", modeLabel, modeLabel.empty() ? "" : " ");
+
+  // handle goes out of scope here, stopping and joining all threads.
 }
 
 MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::function<bool()> extraStopCondition,
-                                                                    bool monitorPredicateAsync) {
+                                                                    const std::stop_token& externalStopToken) {
   if (isRunning()) {
     throw std::logic_error("MultiHttpServer already started");
+  }
+
+  if (_lifecycleTracker) {
+    _lifecycleTracker->clear();
   }
 
   // Create the remaining servers.
@@ -389,76 +419,49 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
 
   log::debug("MultiHttpServer starting with {} thread(s) on port :{}", _servers.size(), port());
 
-  // Note: reserve is important here to guarantee pointer stability
-  const auto expectedThreadCount = static_cast<decltype(_threads)::size_type>(_servers.size()) +
-                                   static_cast<decltype(_threads)::size_type>(monitorPredicateAsync ? 1U : 0U);
-  _threads.reserve(expectedThreadCount);
-
-  // Shared exception pointer to capture the first error from any thread
-  auto errorPtr = std::make_shared<std::exception_ptr>();
-  auto errorCaptured = std::make_shared<std::atomic<bool>>(false);
+  vector<HttpServer::AsyncHandle> serverHandles;
+  serverHandles.reserve(_servers.size());
 
   if (!extraStopCondition) {
     extraStopCondition = [] { return false; };
   }
 
   auto serverPtrs = collectServerPointers();
+  auto lifecycleTracker = _lifecycleTracker;
 
   auto serversAlive = _serversAlive;
   auto stopCallback =
       std::make_shared<std::function<void()>>([serverPtrs = std::move(serverPtrs), serversAlive]() noexcept {
-        if (!serversAlive || !serversAlive->load(std::memory_order_acquire)) {
-          return;
-        }
-        for (HttpServer* srv : serverPtrs) {
-          srv->stop();
+        if (serversAlive && serversAlive->load(std::memory_order_acquire)) {
+          std::ranges::for_each(serverPtrs, [](HttpServer* srv) { srv->stop(); });
         }
       });
 
   _lastHandleStopFn = stopCallback;
+  auto handleCompletion = std::make_shared<HandleCompletion>();
+  _lastHandleCompletion = handleCompletion;
 
-  if (monitorPredicateAsync) {
-    auto monitorExtraStop = extraStopCondition;
-    auto monitorStopRequested = _stopRequested;
-    _threads.emplace_back([monitorStopRequested, monitorExtraStop, stopCallback, errorPtr, errorCaptured]() {
-      try {
-        while (!monitorStopRequested->load(std::memory_order_relaxed)) {
-          if (monitorExtraStop()) {
-            const bool alreadySet = monitorStopRequested->exchange(true, std::memory_order_acq_rel);
-            if (!alreadySet && stopCallback && *stopCallback) {
-              (*stopCallback)();
-            }
-            break;
-          }
-          std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-      } catch (...) {
-        bool expected = false;
-        if (errorCaptured->compare_exchange_strong(expected, true)) {
-          *errorPtr = std::current_exception();
-          try {
-            std::rethrow_exception(std::current_exception());
-          } catch (const std::exception& ex) {
-            log::error("Predicate monitor terminated with exception: {}", ex.what());
-          } catch (...) {
-            log::error("Predicate monitor terminated with unknown exception");
-          }
-        }
+  std::shared_ptr<void> externalStopBinding;
+  if (externalStopToken.stop_possible()) {
+    auto stopAction = [stopRequested = _stopRequested, stopCallback, lifecycleTracker]() {
+      const bool alreadySet = stopRequested->exchange(true, std::memory_order_acq_rel);
+      if (!alreadySet && stopCallback && *stopCallback) {
+        (*stopCallback)();
       }
-    });
+      if (lifecycleTracker) {
+        lifecycleTracker->notifyStopRequested();
+      }
+    };
+    externalStopBinding =
+        std::make_shared<std::stop_callback<decltype(stopAction)>>(externalStopToken, std::move(stopAction));
   }
 
   // Launch threads (each captures a stable pointer to its HttpServer element).
-  for (std::size_t threadPos = 0; threadPos < _servers.size(); ++threadPos) {
-    // srvPtr and stopRequested should remain constant through the whole run duration.
-    // If the MultiHttpServer has been moved, the unique_ptr and vector containers ensure that these pointers stay
-    // valid.
-    HttpServer* srvPtr = &_servers[static_cast<vector<HttpServer>::size_type>(threadPos)];
+  for (auto& server : _servers) {
     std::atomic<bool>* stopRequested = _stopRequested.get();
     auto threadExtraStop = extraStopCondition;
-    _threads.emplace_back([stopRequested, srvPtr, threadPos, errorPtr, errorCaptured, threadExtraStop, stopCallback]() {
-      try {
-        srvPtr->runUntil([stopRequested, threadExtraStop, stopCallback]() {
+    serverHandles.push_back(
+        server.startDetachedAndStopWhen([stopRequested, threadExtraStop, stopCallback, lifecycleTracker]() {
           if (stopRequested->load(std::memory_order_relaxed)) {
             return true;
           }
@@ -466,39 +469,28 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
             const bool alreadySet = stopRequested->exchange(true, std::memory_order_acq_rel);
             if (!alreadySet && stopCallback && *stopCallback) {
               (*stopCallback)();
+              if (lifecycleTracker) {
+                lifecycleTracker->notifyStopRequested();
+              }
             }
             return true;
           }
           return false;
-        });
-      } catch (...) {
-        // Capture first exception only
-        bool expected = false;
-        if (errorCaptured->compare_exchange_strong(expected, true)) {
-          *errorPtr = std::current_exception();
-          try {
-            std::rethrow_exception(std::current_exception());
-          } catch (const std::exception& ex) {
-            log::error("Server thread {} terminated with exception: {}", threadPos, ex.what());
-          } catch (...) {
-            log::error("Server thread {} terminated with unknown exception", threadPos);
-          }
-        }
-      }
-    });
+        }));
   }
   log::info("MultiHttpServer started with {} thread(s) on port :{}", _servers.size(), port());
 
   // Move threads into the handle - this clears _threads so isRunning() will return false
   // but the handle owns the threads now.
   // Share the _stopRequested pointer so both MultiHttpServer and AsyncHandle can control stopping.
-  return {std::move(_threads), errorPtr, _stopRequested, std::move(stopCallback)};
+  return {std::move(serverHandles),    _stopRequested,    std::move(stopCallback),
+          std::move(handleCompletion), _lifecycleTracker, std::move(externalStopBinding)};
 }
 
 MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
   AggregatedStats agg;
   agg.per.reserve(_servers.size());
-  for (auto& server : _servers) {
+  for (const auto& server : _servers) {
     auto st = server.stats();
     agg.total.totalBytesQueued += st.totalBytesQueued;
     agg.total.totalBytesWrittenImmediate += st.totalBytesWrittenImmediate;
@@ -514,41 +506,29 @@ MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
     agg.total.tlsClientCertPresent += st.tlsClientCertPresent;
     agg.total.tlsAlpnStrictMismatches += st.tlsAlpnStrictMismatches;
     for (const auto& kv : st.tlsAlpnDistribution) {
-      bool found = false;
-      for (auto& existing : agg.total.tlsAlpnDistribution) {
-        if (existing.first == kv.first) {
-          existing.second += kv.second;
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
+      auto it = std::ranges::find_if(agg.total.tlsAlpnDistribution,
+                                     [&kv](const auto& existing) { return existing.first == kv.first; });
+      if (it != agg.total.tlsAlpnDistribution.end()) {
+        it->second += kv.second;
+      } else {
         agg.total.tlsAlpnDistribution.push_back(kv);
       }
     }
     for (const auto& kv : st.tlsVersionCounts) {
-      bool found = false;
-      for (auto& existing : agg.total.tlsVersionCounts) {
-        if (existing.first == kv.first) {
-          existing.second += kv.second;
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
+      auto it = std::ranges::find_if(agg.total.tlsVersionCounts,
+                                     [&kv](const auto& existing) { return existing.first == kv.first; });
+      if (it != agg.total.tlsVersionCounts.end()) {
+        it->second += kv.second;
+      } else {
         agg.total.tlsVersionCounts.push_back(kv);
       }
     }
     for (const auto& [newKey, newVal] : st.tlsCipherCounts) {
-      bool found = false;
-      for (auto& existing : agg.total.tlsCipherCounts) {
-        if (existing.first == newKey) {
-          existing.second += newVal;
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
+      auto it = std::ranges::find_if(agg.total.tlsCipherCounts,
+                                     [&newKey](const auto& existing) { return existing.first == newKey; });
+      if (it != agg.total.tlsCipherCounts.end()) {
+        it->second += newVal;
+      } else {
         agg.total.tlsCipherCounts.emplace_back(newKey, newVal);
       }
     }

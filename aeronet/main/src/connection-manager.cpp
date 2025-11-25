@@ -91,6 +91,7 @@ void HttpServer::sweepIdleConnections() {
         !state.transport->handshakeDone()) {
       if (now - state.handshakeStart > _config.tls.handshakeTimeout) {
         cnxIt = closeConnection(cnxIt);
+        _telemetry.counterAdd("aeronet.connections.closed_for_handshake_timeout");
         continue;
       }
     }
@@ -120,13 +121,13 @@ void HttpServer::acceptNewConnections() {
       if (::setsockopt(cnxFd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) != 0) {
         auto err = errno;
         log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={} ({})", cnxFd, err, std::strerror(err));
-        _telemetry.counterAdd("aeronet.connections.tcp_nodelay_failed", 1UL);
+        _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
       }
     }
     if (!_eventLoop.add(EventLoop::EventFd{cnxFd, EventIn | EventEt})) {
       auto savedErr = errno;
       log::error("EventLoop add client failed fd # {} err={}: {}", cnxFd, savedErr, std::strerror(savedErr));
-      _telemetry.counterAdd("aeronet.connections.add_event_failed", 1UL);
+      _telemetry.counterAdd("aeronet.connections.errors.add_event_failed", 1UL);
       continue;
     }
 

@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -21,9 +22,15 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
 #include "aeronet/test_util.hpp"
+
+#ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/test_tls_client.hpp"
+#include "aeronet/test_tls_helper.hpp"
+#endif
 
 using namespace aeronet;
 using namespace std::chrono_literals;
@@ -51,14 +58,21 @@ TEST(MultiHttpServer, EmptyChecks) {
   MultiHttpServer multi;
   EXPECT_TRUE(multi.empty());
   EXPECT_THROW(multi.router(), std::logic_error);
-
+  EXPECT_THROW(multi.run(), std::logic_error);
+  EXPECT_THROW(multi.start(), std::logic_error);
   EXPECT_FALSE(multi.isRunning());
+  EXPECT_FALSE(multi.isDraining());
+  EXPECT_EQ(multi.nbThreads(), 0);
 
   // Calling stop should be safe even on an empty server
   EXPECT_NO_THROW(multi.stop());
 
   EXPECT_THROW(multi.postRouterUpdate({}), std::logic_error);
+  EXPECT_THROW(multi.postConfigUpdate({}), std::logic_error);
+
   EXPECT_THROW(multi.setParserErrorCallback({}), std::logic_error);
+  EXPECT_THROW(multi.setMetricsCallback({}), std::logic_error);
+  EXPECT_THROW(multi.setExpectationHandler({}), std::logic_error);
 }
 
 TEST(MultiHttpServer, BasicStartAndServe) {
@@ -87,6 +101,36 @@ TEST(MultiHttpServer, BasicStartAndServe) {
   handle.stop();
   handle.rethrowIfError();
 }
+
+#ifdef AERONET_ENABLE_OPENSSL
+TEST(MultiHttpServer, StatsAggregatesTlsAlpnDistribution) {
+  auto [certPem, keyPem] = test::makeEphemeralCertKey();
+  HttpServerConfig cfg;
+  cfg.withReusePort();
+  cfg.withTlsCertKeyMemory(certPem, keyPem);
+  cfg.withTlsAlpnProtocols({"http/1.1"});
+  MultiHttpServer multi(cfg, 1);
+  multi.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("TLS");
+    return resp;
+  });
+  auto handle = multi.startDetachedAndStopWhen({});
+  test::TlsClient::Options opts;
+  opts.alpn = {"http/1.1"};
+  test::TlsClient client(multi.port(), opts);
+  ASSERT_TRUE(client.handshakeOk());
+  auto response = client.get("/alpn");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  auto stats = multi.stats();
+  auto it =
+      std::ranges::find_if(stats.total.tlsAlpnDistribution, [](const auto& kv) { return kv.first == "http/1.1"; });
+  ASSERT_NE(it, stats.total.tlsAlpnDistribution.end());
+  EXPECT_GT(it->second, 0U);
+  handle.stop();
+  handle.rethrowIfError();
+}
+#endif
 
 // This test only validates that two servers can bind the same port with SO_REUSEPORT enabled
 // and accept at least one connection each. It does not attempt to assert load distribution.
@@ -198,7 +242,7 @@ TEST(MultiHttpServer, RapidStartStopCycles) {
   cfg.withReusePort();
   // Keep cycles modest to avoid lengthening normal test runtime too much; adjust if needed.
   MultiHttpServer multi(cfg);
-  for (int statePos = 0; statePos < 200; ++statePos) {
+  for (int statePos = 0; statePos < 100; ++statePos) {
     multi.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
       HttpResponse resp;
       resp.body("S");
@@ -242,13 +286,14 @@ TEST(MultiHttpServer, StartDetachedStopsWhenPredicateFires) {
 
   auto port = multi.port();
   ASSERT_GT(port, 0);
-  std::this_thread::sleep_for(10ms);
   auto resp = test::simpleGet(port, "/predicate");
   EXPECT_TRUE(resp.contains("Predicate"));
 
+  const int nbAttempts = static_cast<int>(cfg.pollInterval / std::chrono::milliseconds(1)) + 1;
+
   state->stop.store(true, std::memory_order_relaxed);
-  for (int attempt = 0; attempt < 50 && !state->observed.load(std::memory_order_relaxed); ++attempt) {
-    std::this_thread::sleep_for(5ms);
+  for (int attempt = 0; attempt < nbAttempts && !state->observed.load(std::memory_order_relaxed); ++attempt) {
+    std::this_thread::sleep_for(1ms);
   }
 
   EXPECT_TRUE(state->observed.load(std::memory_order_relaxed));
@@ -297,8 +342,7 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
 TEST(MultiHttpServer, MoveThenRestartDifferentConfig) {
   HttpServerConfig cfg;
   cfg.withReusePort();
-  static constexpr std::chrono::milliseconds kPollInterval{2ms};
-  cfg.withPollInterval(kPollInterval);
+  cfg.withPollInterval(std::chrono::milliseconds{1});
   MultiHttpServer multi(cfg, 1);
   multi.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
@@ -308,7 +352,7 @@ TEST(MultiHttpServer, MoveThenRestartDifferentConfig) {
 
   auto port = multi.port();
 
-  auto handle1 = multi.startDetached();
+  auto handle = multi.startDetached();
 
   static constexpr std::size_t kBodySize = 512;
 
@@ -323,23 +367,26 @@ TEST(MultiHttpServer, MoveThenRestartDifferentConfig) {
   EXPECT_TRUE(resp1.contains("HTTP/1.1 200"));
 
   multi.postConfigUpdate([](HttpServerConfig& serverCfg) { serverCfg.maxBodyBytes = kBodySize - 1; });
+
+  std::this_thread::sleep_for(2ms);  // allow config to propagate
+
   auto firstPort = multi.port();
   ASSERT_GT(firstPort, 0);
-  handle1.stop();
-  handle1.rethrowIfError();
+  handle.stop();
+  EXPECT_FALSE(multi.isRunning());
+  handle.rethrowIfError();
 
-  // make sure all servers have fully stopped (should be more than kPollInterval)
-  std::this_thread::sleep_for(2 * kPollInterval + 1ms);
   // Direct access not exposed; emulate by move-assigning a new wrapper then restarting (validates restart still works
   // after move too).
   MultiHttpServer moved(std::move(multi));
+
   // We can't directly change baseConfig; for this focused test we'll just check that keeping existing port works.
   moved.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
-    resp.body(std::string(512, 'Y'));
+    resp.body("R2");
     return resp;
   });
-  auto handle2 = moved.startDetached();
+  handle = moved.startDetached();
   auto secondPort = moved.port();
 
   std::string resp2 = test::sendAndCollect(secondPort, req);
@@ -347,8 +394,8 @@ TEST(MultiHttpServer, MoveThenRestartDifferentConfig) {
   EXPECT_TRUE(resp2.contains("HTTP/1.1 413 Payload Too Large"));
 
   EXPECT_EQ(firstPort, secondPort);  // Documented default behavior (same port unless baseConfig mutated externally)
-  handle2.stop();
-  handle2.rethrowIfError();
+  handle.stop();
+  handle.rethrowIfError();
 }
 
 TEST(MultiHttpServer, MoveWhileRunning) {
@@ -440,9 +487,9 @@ TEST(MultiHttpServer, AsyncHandleMoveConstructorAndAssignment) {
   std::this_thread::sleep_for(5ms);
 
   // Move-construct from hA -> hB
-  auto hB = std::move(hA);  // NOLINT(bugprone-use-after-move)
+  auto hB = std::move(hA);
   EXPECT_TRUE(hB.started());
-  EXPECT_FALSE(hA.started());
+  EXPECT_FALSE(hA.started());  // NOLINT(bugprone-use-after-move)
 
   // Start another server to provide a second handle for move-assignment
   HttpServerConfig cfgB;
@@ -458,9 +505,9 @@ TEST(MultiHttpServer, AsyncHandleMoveConstructorAndAssignment) {
   std::this_thread::sleep_for(5ms);
 
   // Move-assign hB into hC
-  hC = std::move(hB);  // NOLINT(bugprone-use-after-move)
+  hC = std::move(hB);
   // After move assignment, source is moved-from
-  EXPECT_FALSE(hB.started());
+  EXPECT_FALSE(hB.started());  // NOLINT(bugprone-use-after-move)
   // Destination now should be running
   EXPECT_TRUE(hC.started());
 
@@ -692,9 +739,13 @@ TEST(MultiHttpServer, BlockingRunMethod) {
   ASSERT_GT(port, 0);
 
   // Launch run() in a background thread since it blocks
-  std::thread serverThread([&multi]() {
+  std::jthread serverThread([&multi]() {
     multi.run();  // This will block until servers complete
   });
+
+  std::this_thread::sleep_for(10ms);  // Give server time to start
+
+  EXPECT_THROW(multi.run(), std::logic_error);  // already running
 
   // Verify servers are running and responsive
   auto resp1 = test::simpleGet(port, "/test");
@@ -710,7 +761,7 @@ TEST(MultiHttpServer, BlockingRunMethod) {
 
 TEST(MultiHttpServer, RunStopAndRestart) {
   // Test that run() properly cleans up and allows restart
-  MultiHttpServer multi(HttpServerConfig{}.withReusePort(), 2);
+  MultiHttpServer multi(HttpServerConfig{}.withReusePort().withPollInterval(std::chrono::milliseconds{1}), 2);
   multi.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.body("First");
@@ -727,12 +778,6 @@ TEST(MultiHttpServer, RunStopAndRestart) {
   auto resp1 = test::simpleGet(port, "/");
   EXPECT_TRUE(resp1.contains("First"));
 
-  multi.beginDrain(100ms);
-  handle.stop();
-
-  EXPECT_FALSE(multi.isRunning());
-  handle.rethrowIfError();
-
   // Update handler for second run
   multi.postRouterUpdate([](Router& router) {
     router.setDefault([](const HttpRequest&) {
@@ -742,10 +787,19 @@ TEST(MultiHttpServer, RunStopAndRestart) {
     });
   });
 
+  std::this_thread::sleep_for(2ms);  // allow update to propagate
+
+  multi.beginDrain(100ms);
+  handle.stop();
+
+  EXPECT_FALSE(multi.isRunning());
+  handle.rethrowIfError();
+
   // Second run cycle
   handle = multi.startDetached();
 
   auto resp2 = test::simpleGet(port, "/");
+  EXPECT_FALSE(resp2.contains("First"));
   EXPECT_TRUE(resp2.contains("Second"));
 
   multi.beginDrain(100ms);
@@ -764,7 +818,14 @@ TEST(MultiHttpServer, RunUntilStopsWhenPredicateFires) {
   });
 
   std::atomic<bool> done = false;
-  std::thread runner([&multi, &done]() { multi.runUntil([&done]() { return done.load(std::memory_order_relaxed); }); });
+  std::jthread runner([&multi, &done](std::stop_token st) {
+    multi.runUntil([&done, &st]() { return done.load(std::memory_order_relaxed) || st.stop_requested(); });
+  });
+
+  // Wait for the server to be running to avoid race condition where rebuildServers destroys the listener
+  while (!multi.isRunning()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
 
   auto port = multi.port();
   ASSERT_GT(port, 0);
@@ -812,7 +873,7 @@ TEST(MultiHttpServer, StartDetachedWithStopTokenStopsOnRequest) {
       stopObserved = true;
       break;
     }
-    std::this_thread::sleep_for(10ms);
+    std::this_thread::sleep_for(1ms);
   }
   EXPECT_TRUE(stopObserved) << "MultiHttpServer should stop responding once the stop token fires";
 

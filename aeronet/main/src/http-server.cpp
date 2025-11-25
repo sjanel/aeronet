@@ -958,12 +958,7 @@ void HttpServer::eventLoop() {
 
   // Apply any pending config updates posted from other threads. Fast-path: check
   // atomic flag before taking the lock to avoid contention in the nominal case.
-  if (_hasPendingConfigUpdates.load(std::memory_order_acquire)) {
-    applyConfigUpdates();
-  }
-  if (_hasPendingRouterUpdates.load(std::memory_order_acquire)) {
-    applyRouterUpdates();
-  }
+  applyPendingUpdates();
 
   // Poll for events
   int ready = _eventLoop.poll([this](EventLoop::EventFd eventFd) {
@@ -1307,20 +1302,21 @@ void ApplyPendingUpdates(std::mutex& mutex, auto& vec, std::atomic<bool>& flag, 
 
 }  // namespace
 
-void HttpServer::applyConfigUpdates() {
-  ApplyPendingUpdates(_updateLock, _pendingConfigUpdates, _hasPendingConfigUpdates, _config, "config");
+void HttpServer::applyPendingUpdates() {
+  if (_hasPendingConfigUpdates.load(std::memory_order_acquire)) {
+    ApplyPendingUpdates(_updateLock, _pendingConfigUpdates, _hasPendingConfigUpdates, _config, "config");
 
-  _config.validate();
+    _config.validate();
 
-  // Reinitialize components dependent on config values.
-  _encodingSelector = EncodingSelector(_config.compression);
-  _eventLoop.updatePollTimeout(_config.pollInterval);
-  registerBuiltInProbes();
-  createEncoders();
-}
-
-void HttpServer::applyRouterUpdates() {
-  ApplyPendingUpdates(_updateLock, _pendingRouterUpdates, _hasPendingRouterUpdates, _router, "router");
+    // Reinitialize components dependent on config values.
+    _encodingSelector = EncodingSelector(_config.compression);
+    _eventLoop.updatePollTimeout(_config.pollInterval);
+    registerBuiltInProbes();
+    createEncoders();
+  }
+  if (_hasPendingRouterUpdates.load(std::memory_order_acquire)) {
+    ApplyPendingUpdates(_updateLock, _pendingRouterUpdates, _hasPendingRouterUpdates, _router, "router");
+  }
 }
 
 bool HttpServer::runPreChain(HttpRequest& request, bool willStream, std::span<const RequestMiddleware> chain,
@@ -1365,6 +1361,7 @@ std::unique_ptr<ConnectionState> HttpServer::getNewConnectionState() {
     if (statePtr->lastActivity + _config.cachedConnectionsTimeout > std::chrono::steady_clock::now()) {
       _cachedConnections.pop_back();
       statePtr->clear();
+      _telemetry.counterAdd("aeronet.connections.reused_from_cache", 1UL);
       return statePtr;
     }
     // all connections are older than timeout, clear cache
