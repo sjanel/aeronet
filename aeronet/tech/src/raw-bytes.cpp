@@ -186,6 +186,24 @@ void RawBytesBase<T, ViewType, SizeType>::reserve(size_type newCapacity) {
 }
 
 template <class T, class ViewType, class SizeType>
+void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() {
+  if (_size < _capacity) {
+    if (_size == 0) {
+      std::free(_buf);
+      _buf = nullptr;
+      _capacity = 0;
+
+    } else {
+      pointer newBuf = static_cast<pointer>(std::realloc(_buf, _size));
+      if (newBuf != nullptr) {
+        _buf = newBuf;
+        _capacity = _size;
+      }
+    }
+  }
+}
+
+template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacity(size_type availableCapacity) {
   if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
     static constexpr uintmax_t kMaxCapacity = static_cast<uintmax_t>(std::numeric_limits<size_type>::max());

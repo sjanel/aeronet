@@ -226,6 +226,7 @@ jobs:
 
   examples-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       BUILD_DIR: build-examples
     steps:
@@ -255,7 +256,15 @@ jobs:
             -DAERONET_ENABLE_OPENTELEMETRY=OFF
 
       - name: Build examples
-        run: cmake --build ${BUILD_DIR} --parallel --target aeronet-minimal aeronet-multi aeronet-sendfile aeronet-static-example aeronet-tls-ktls
+        run: |
+          cmake --build ${BUILD_DIR} --parallel --target \
+          aeronet-async-handle \
+          aeronet-async-handlers \
+          aeronet-minimal \
+          aeronet-multi \
+          aeronet-sendfile \
+          aeronet-static-example \
+          aeronet-tls-ktls
 
       - name: Generate TLS certificate for ktls example
         run: |
@@ -312,20 +321,26 @@ jobs:
             echo "::endgroup::"
           }
 
-          run_server_and_curl minimal "http://127.0.0.1:18080/hello" -- \
-            "${EXAMPLE_DIR}/aeronet-minimal" 18080
+          run_server_and_curl async-handle "http://127.0.0.1:18080/hello" -- \
+            "${EXAMPLE_DIR}/aeronet-async-handle" 18080
 
-          run_server_and_curl multi "http://127.0.0.1:18081/test" -- \
-            "${EXAMPLE_DIR}/aeronet-multi" 18081 2
+          run_server_and_curl async-handlers "http://127.0.0.1:18081/async" -- \
+            "${EXAMPLE_DIR}/aeronet-async-handlers" 18081
+
+          run_server_and_curl minimal "http://127.0.0.1:18082/hello" -- \
+            "${EXAMPLE_DIR}/aeronet-minimal" 18082
+
+          run_server_and_curl multi "http://127.0.0.1:18083/test" -- \
+            "${EXAMPLE_DIR}/aeronet-multi" 18083 2
 
           tmp_file="${BUILD_DIR}/sendfile.txt"
           echo "Hello sendfile example" >"${tmp_file}"
-          run_server_and_curl sendfile "http://127.0.0.1:18082/static" -- \
-            "${EXAMPLE_DIR}/aeronet-sendfile" 18082 "${tmp_file}"
+          run_server_and_curl sendfile "http://127.0.0.1:18084/static" -- \
+            "${EXAMPLE_DIR}/aeronet-sendfile" 18084 "${tmp_file}"
 
-          run_server_and_curl static "http://127.0.0.1:18083/" -- \
-            "${EXAMPLE_DIR}/aeronet-static-example" 18083 .
-
+          run_server_and_curl static "http://127.0.0.1:18085/" -- \
+            "${EXAMPLE_DIR}/aeronet-static-example" 18085 .
+            
           run_server_and_curl tls "https://127.0.0.1:18443/" -k -- \
             "${EXAMPLE_DIR}/aeronet-tls-ktls" ${BUILD_DIR}/certs/server.crt ${BUILD_DIR}/certs/server.key 18443
 

@@ -222,7 +222,9 @@ class MultiHttpServer {
   //   Reflects the high-level lifecycle, not the liveness of each individual thread (a thread
   //   may have terminated due to an exception while isRunning() is still true). Use stats() or
   //   external health checks for deeper diagnostics.
-  [[nodiscard]] bool isRunning() const { return _internalHandle.has_value() || !_threads.empty(); }
+  [[nodiscard]] bool isRunning() const {
+    return _internalHandle.has_value() || !_threads.empty() || !_lastHandleStopFn.expired();
+  }
 
   // isDraining(): true if all underlying servers are currently draining.
   [[nodiscard]] bool isDraining() const;

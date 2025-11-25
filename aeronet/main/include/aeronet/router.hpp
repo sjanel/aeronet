@@ -1,71 +1,30 @@
 #pragma once
 
 #include <amc/type_traits.hpp>
-#include <array>
 #include <cstdint>
 #include <functional>
 #include <span>
 #include <string_view>
+#include <type_traits>
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
-#include "aeronet/http-response-writer.hpp"
-#include "aeronet/http-response.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/object-pool.hpp"
+#include "aeronet/path-handler-entry.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet {
 
-class HttpServer;
-
 class Router {
  public:
-  // Classic request handler type: receives a const HttpRequest& and returns an HttpResponse.
-  using RequestHandler = std::function<HttpResponse(const HttpRequest&)>;
-
-  // Streaming request handler type: receives a const HttpRequest& and an HttpResponseWriter&
-  // Use it for large or long-lived responses where sending partial data before completion is beneficial.
-  using StreamingHandler = std::function<void(const HttpRequest&, HttpResponseWriter&)>;
-
   using RequestMiddlewareRange = std::span<const RequestMiddleware>;
 
   using ResponseMiddlewareRange = std::span<const ResponseMiddleware>;
-
-  // Object that stores handlers and options for a specific group of paths.
-  class PathHandlerEntry {
-   public:
-    // Attach given corsPolicy to the path handler entry.
-    PathHandlerEntry& cors(CorsPolicy corsPolicy);
-
-    // Register middleware executed before the route handler. The middleware may mutate
-    // the request and short-circuit the chain by returning a response.
-    PathHandlerEntry& before(RequestMiddleware middleware);
-
-    // Register middleware executed after the route handler produces a response. The middleware
-    // can amend headers or body before the response is finalized.
-    PathHandlerEntry& after(ResponseMiddleware middleware);
-
-   private:
-    friend class Router;
-    friend class HttpServer;
-
-    PathHandlerEntry() noexcept = default;
-
-    http::MethodBmp normalMethodBmp{};
-    http::MethodBmp streamingMethodBmp{};
-    std::array<RequestHandler, http::kNbMethods> normalHandlers{};
-    std::array<StreamingHandler, http::kNbMethods> streamingHandlers{};
-    // Optional per-route CorsPolicy stored by value. If set, match() will return a pointer to it.
-    CorsPolicy corsPolicy;
-    vector<RequestMiddleware> preMiddleware;
-    vector<ResponseMiddleware> postMiddleware;
-  };
 
   // Creates an empty Router with a 'Normalize' trailing policy.
   //
@@ -101,10 +60,10 @@ class Router {
 
   // Move operations transfer ownership of the router state.
   // The Router being moved from should not be used except for destruction or assignment.
-  Router(Router&&) noexcept = default;
-  Router& operator=(Router&&) noexcept = default;
+  Router(Router&&) noexcept;
+  Router& operator=(Router&&) noexcept;
 
-  ~Router() = default;
+  ~Router();
 
   // Register a global (fallback) request handler invoked when no path-specific handler
   // matches. The handler receives a const HttpRequest& and returns an HttpResponse by value.
@@ -122,6 +81,7 @@ class Router {
   //   - Keep handlers lightweight; long-running operations should be dispatched to worker
   //     threads to avoid blocking the event loop.
   void setDefault(RequestHandler handler);
+  void setDefault(AsyncRequestHandler handler);
 
   // Register a global streaming handler that can produce responses incrementally via
   // HttpResponseWriter. Use streaming handlers for large or long-lived responses where
@@ -170,6 +130,15 @@ class Router {
   // The returned reference is valid until the next call to setPath.
   PathHandlerEntry& setPath(http::Method method, std::string_view path, StreamingHandler handler);
 
+  // Register an async-friendly handler (produces a RequestTask) for the provided method bitmap.
+  // The handler runs inside the event loop and may `co_await` I/O-friendly awaitables (e.g.
+  // HttpRequest::bodyAwaitable()).
+  PathHandlerEntry& setPath(http::MethodBmp methods, std::string_view path, AsyncRequestHandler handler);
+
+  // Register an async-friendly handler for a single HTTP method. HEAD requests automatically fallback to the GET
+  // async handler following the standard HEAD→GET semantics.
+  PathHandlerEntry& setPath(http::Method method, std::string_view path, AsyncRequestHandler handler);
+
   struct PathParamCapture {
     std::string_view key;
     std::string_view value;
@@ -182,9 +151,47 @@ class Router {
       RemoveSlash  // Indicates that a redirection to remove a trailing slash is needed
     };
 
-    // Only one of them will be non null if found
-    const RequestHandler* pRequestHandler{nullptr};
-    const StreamingHandler* pStreamingHandler{nullptr};
+    enum class HandlerKind : uint8_t { None, Request, Streaming, Async };
+
+    [[nodiscard]] const RequestHandler* requestHandler() const {
+      return handlerKind == HandlerKind::Request ? handler.request : nullptr;
+    }
+    [[nodiscard]] const StreamingHandler* streamingHandler() const {
+      return handlerKind == HandlerKind::Streaming ? handler.streaming : nullptr;
+    }
+    [[nodiscard]] const AsyncRequestHandler* asyncRequestHandler() const {
+      return handlerKind == HandlerKind::Async ? handler.async : nullptr;
+    }
+    [[nodiscard]] bool hasHandler() const { return handlerKind != HandlerKind::None; }
+
+    void setRequestHandler(const RequestHandler* ptr) {
+      handlerKind = HandlerKind::Request;
+      handler.request = ptr;
+    }
+
+    void setStreamingHandler(const StreamingHandler* ptr) {
+      handlerKind = HandlerKind::Streaming;
+      handler.streaming = ptr;
+    }
+
+    void setAsyncRequestHandler(const AsyncRequestHandler* ptr) {
+      handlerKind = HandlerKind::Async;
+      handler.async = ptr;
+    }
+
+    void resetHandler() {
+      handlerKind = HandlerKind::None;
+      handler.request = nullptr;
+    }
+
+    union HandlerPointer {
+      HandlerPointer() noexcept : request(nullptr) {}
+      const RequestHandler* request;
+      const StreamingHandler* streaming;
+      const AsyncRequestHandler* async;
+    } handler;
+
+    HandlerKind handlerKind{HandlerKind::None};
 
     RedirectSlashMode redirectPathIndicator{RedirectSlashMode::None};
 
@@ -301,7 +308,7 @@ class Router {
   };
 
   PathHandlerEntry& setPathInternal(http::MethodBmp methods, std::string_view path, RequestHandler handler,
-                                    StreamingHandler streaming);
+                                    StreamingHandler streaming, AsyncRequestHandler async);
 
   static CompiledRoute CompilePattern(std::string_view path);
 
@@ -310,6 +317,8 @@ class Router {
 
   static void AssignHandlers(RouteNode& node, http::MethodBmp methods, RequestHandler requestHandler,
                              StreamingHandler streamingHandler, bool registeredWithTrailingSlash);
+  static void AssignAsyncHandlers(RouteNode& node, http::MethodBmp methods, AsyncRequestHandler handler,
+                                  bool registeredWithTrailingSlash);
 
   void ensureRouteMetadata(RouteNode& node, CompiledRoute&& route);
 
@@ -339,6 +348,7 @@ class Router {
   RouterConfig _config;
 
   RequestHandler _handler;
+  AsyncRequestHandler _asyncHandler;
   StreamingHandler _streamingHandler;
 
   vector<RequestMiddleware> _globalPreMiddleware;

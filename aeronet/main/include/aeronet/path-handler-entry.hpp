@@ -1,0 +1,94 @@
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <type_traits>
+
+#include "aeronet/cors-policy.hpp"
+#include "aeronet/http-method.hpp"
+#include "aeronet/middleware.hpp"
+#include "aeronet/path-handlers.hpp"
+#include "aeronet/vector.hpp"
+
+namespace aeronet {
+
+// Object that stores handlers and options for a specific group of paths.
+class PathHandlerEntry {
+ public:
+  PathHandlerEntry(const PathHandlerEntry& rhs);
+  PathHandlerEntry(PathHandlerEntry&& rhs) noexcept;
+
+  PathHandlerEntry& operator=(const PathHandlerEntry& rhs);
+  PathHandlerEntry& operator=(PathHandlerEntry&& rhs) noexcept;
+
+  ~PathHandlerEntry();
+
+  // Attach given corsPolicy to the path handler entry.
+  PathHandlerEntry& cors(CorsPolicy corsPolicy);
+
+  // Register middleware executed before the route handler. The middleware may mutate
+  // the request and short-circuit the chain by returning a response.
+  PathHandlerEntry& before(RequestMiddleware middleware);
+
+  // Register middleware executed after the route handler produces a response. The middleware
+  // can amend headers or body before the response is finalized.
+  PathHandlerEntry& after(ResponseMiddleware middleware);
+
+ private:
+  friend class Router;
+  friend class HttpServer;
+  friend class PathHandlerEntryTest;
+
+  struct HandlerStorage {
+    static_assert(sizeof(RequestHandler) == sizeof(AsyncRequestHandler));
+    static_assert(sizeof(RequestHandler) == sizeof(StreamingHandler));
+
+    static_assert(std::alignment_of_v<RequestHandler> == std::alignment_of_v<AsyncRequestHandler>);
+    static_assert(std::alignment_of_v<RequestHandler> == std::alignment_of_v<StreamingHandler>);
+
+    alignas(RequestHandler) std::byte normalHandlerStorage[sizeof(RequestHandler)];
+  };
+
+  PathHandlerEntry() noexcept = default;
+
+  void assignNormalHandler(http::MethodBmp methodBmp, RequestHandler handler);
+  void assignAsyncHandler(http::MethodBmp methodBmp, AsyncRequestHandler handler);
+  void assignStreamingHandler(http::MethodBmp methodBmp, StreamingHandler handler);
+
+  [[nodiscard]] bool hasNormalHandler(http::MethodIdx methodIdx) const {
+    return http::IsMethodIdxSet(normalMethodBmp, methodIdx);
+  }
+
+  [[nodiscard]] bool hasAsyncHandler(http::MethodIdx methodIdx) const {
+    return http::IsMethodIdxSet(asyncMethodBmp, methodIdx);
+  }
+
+  [[nodiscard]] bool hasStreamingHandler(http::MethodIdx methodIdx) const {
+    return http::IsMethodIdxSet(streamingMethodBmp, methodIdx);
+  }
+
+  [[nodiscard]] const RequestHandler* requestHandlerPtr(http::MethodIdx methodIdx) const {
+    return &reinterpret_cast<const RequestHandler&>(handlers[methodIdx]);
+  }
+
+  [[nodiscard]] const StreamingHandler* streamingHandlerPtr(http::MethodIdx methodIdx) const {
+    return &reinterpret_cast<const StreamingHandler&>(handlers[methodIdx]);
+  }
+
+  [[nodiscard]] const AsyncRequestHandler* asyncHandlerPtr(http::MethodIdx methodIdx) const {
+    return &reinterpret_cast<const AsyncRequestHandler&>(handlers[methodIdx]);
+  }
+
+  void destroyIdx(http::MethodIdx methodIdx);
+
+  http::MethodBmp normalMethodBmp{};
+  http::MethodBmp streamingMethodBmp{};
+  http::MethodBmp asyncMethodBmp{};
+  std::array<HandlerStorage, http::kNbMethods> handlers;
+  // Optional per-route CorsPolicy stored by value. If set, match() will return a pointer to it.
+  CorsPolicy corsPolicy;
+  vector<RequestMiddleware> preMiddleware;
+  vector<ResponseMiddleware> postMiddleware;
+};
+
+}  // namespace aeronet

@@ -19,6 +19,7 @@
 namespace aeronet {
 
 class HttpServer;
+class HttpRequest;
 class CorsPolicy;
 
 class HttpResponseWriter {
@@ -182,8 +183,9 @@ class HttpResponseWriter {
  private:
   friend class HttpServer;
 
-  HttpResponseWriter(HttpServer& srv, int fd, bool headRequest, bool requestConnClose, Encoding compressionFormat,
-                     const CorsPolicy* pCorsPolicy, std::span<const ResponseMiddleware> routeResponseMiddleware);
+  HttpResponseWriter(HttpServer& srv, int fd, const HttpRequest& request, bool headRequest, bool requestConnClose,
+                     Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
+                     std::span<const ResponseMiddleware> routeResponseMiddleware);
 
   void ensureHeadersSent();
   void emitChunk(std::string_view data);
@@ -196,6 +198,7 @@ class HttpResponseWriter {
   [[nodiscard]] bool chunked() const { return _declaredLength == 0 && !_head; }
 
   HttpServer* _server{nullptr};
+  const HttpRequest* _request{nullptr};
   int _fd{-1};
   bool _head{false};
   // Combine transient booleans into a single state machine to reduce memory and

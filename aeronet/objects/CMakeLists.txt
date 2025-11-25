@@ -151,6 +151,14 @@ if(AERONET_ENABLE_BROTLI)
 endif()
 
 AeronetAddUnitTest(
+    builtin-probes-config_test
+    test/builtin-probes-config_test.cpp
+    src/builtin-probes-config.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     http-payload_test
     test/http-payload_test.cpp
     LIBRARIES

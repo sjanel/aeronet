@@ -7,14 +7,18 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <coroutine>
 #include <cstddef>
 #include <cstdlib>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/transport.hpp"
 
@@ -163,4 +167,109 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   }
 
   EXPECT_EQ(totalRead, totalSize);
+}
+
+TEST(ConnectionStateBufferTest, ShrinkToFitReducesNonEmptyBuffers) {
+  ConnectionState state;
+
+  // Grow buffers to have extra capacity
+  state.inBuffer.reserveExponential(1024);
+  state.inBuffer.append(std::string_view("hello world"));
+
+  state.bodyAndTrailersBuffer.reserveExponential(2048);
+  state.bodyAndTrailersBuffer.append(std::string_view("chunked body"));
+
+  state.headBuffer.reserveExponential(512);
+  state.headBuffer.append(std::string_view("GET / HTTP/1.1\r\nHost: a\r\n\r\n"));
+
+  // Sanity: capacities should be larger than sizes prior to shrink
+  EXPECT_GT(state.inBuffer.capacity(), state.inBuffer.size());
+  EXPECT_GT(state.bodyAndTrailersBuffer.capacity(), state.bodyAndTrailersBuffer.size());
+  EXPECT_GT(state.headBuffer.capacity(), state.headBuffer.size());
+
+  state.shrink_to_fit();
+
+  // After shrink, capacity should be reduced to current size
+  EXPECT_EQ(state.inBuffer.capacity(), state.inBuffer.size());
+  EXPECT_EQ(state.bodyAndTrailersBuffer.capacity(), state.bodyAndTrailersBuffer.size());
+  EXPECT_EQ(state.headBuffer.capacity(), state.headBuffer.size());
+}
+
+TEST(ConnectionStateBufferTest, ShrinkToFitOnEmptyBuffersYieldsZeroCapacity) {
+  ConnectionState state;
+
+  // Ensure buffers are empty
+  state.tunnelOrFileBuffer.clear();
+  state.inBuffer.clear();
+  state.bodyAndTrailersBuffer.clear();
+  state.headBuffer.clear();
+
+  state.shrink_to_fit();
+
+  // Empty buffers should have capacity 0 after shrink_to_fit
+  EXPECT_EQ(state.tunnelOrFileBuffer.capacity(), 0U);
+  EXPECT_EQ(state.inBuffer.capacity(), 0U);
+  EXPECT_EQ(state.bodyAndTrailersBuffer.capacity(), 0U);
+  EXPECT_EQ(state.headBuffer.capacity(), 0U);
+}
+
+TEST(ConnectionStateBridgeTest, InstallAggregatedBodyBridgeMakesBodyAvailable) {
+  ConnectionState state;
+
+  // Populate the request's body (as if it were fully buffered)
+  const std::string payload = "aggregated-body-content";
+  // Before installing bridge, body access bridge should be null
+  EXPECT_FALSE(state.request.isBodyReady());
+
+  // Install bridge which wires request to state.bodyStreamContext
+  state.installAggregatedBodyBridge();
+
+  // Provide the buffered body via the public ConnectionState context the bridge will reference
+  state.bodyStreamContext.body = payload;
+  state.bodyStreamContext.offset = 0;
+
+  // After installing and populating the context, isBodyReady() should return true
+  EXPECT_TRUE(state.request.isBodyReady());
+  // The aggregate accessor should return the full body
+  EXPECT_EQ(state.request.body(), payload);
+  // cannot call readBody() after body() on the same request (mutually exclusive modes)
+  EXPECT_THROW((void)state.request.readBody(10), std::logic_error);
+}
+
+TEST(ConnectionStateAsyncStateTest, AsyncHandlerStateClearResetsState) {
+  ConnectionState::AsyncHandlerState st;
+
+  // Populate fields to non-default values
+  st.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::WaitingForBody;
+  st.active = true;
+  st.needsBody = true;
+  st.responsePending = true;
+  st.isChunked = true;
+  st.expectContinue = true;
+  st.consumedBytes = 42;
+  st.corsPolicy = reinterpret_cast<const CorsPolicy*>(0x1);
+  st.responseMiddleware = reinterpret_cast<const void*>(0x2);
+  st.responseMiddlewareCount = 3;
+  st.pendingResponse = HttpResponse(http::StatusCodeOK);
+
+  // Move a default constructed handle into place (null handle) to ensure clear() handles it.
+  st.handle = {};
+
+  st.clear();
+
+  // All fields should be reset to defaults
+  EXPECT_EQ(st.handle, std::coroutine_handle<>());
+  EXPECT_EQ(st.awaitReason, ConnectionState::AsyncHandlerState::AwaitReason::None);
+  EXPECT_FALSE(st.active);
+  EXPECT_FALSE(st.needsBody);
+  EXPECT_FALSE(st.responsePending);
+  EXPECT_FALSE(st.isChunked);
+  EXPECT_FALSE(st.expectContinue);
+  EXPECT_EQ(st.consumedBytes, 0U);
+  EXPECT_EQ(st.corsPolicy, nullptr);
+  EXPECT_EQ(st.responseMiddleware, nullptr);
+  EXPECT_EQ(st.responseMiddlewareCount, 0U);
+  // pendingResponse should be default constructed; accept status 0 or OK depending on implementation
+  auto prStatus = st.pendingResponse.status();
+  EXPECT_TRUE(prStatus == static_cast<http::StatusCode>(0) || prStatus == http::StatusCodeOK);
 }

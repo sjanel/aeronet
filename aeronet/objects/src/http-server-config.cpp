@@ -58,6 +58,11 @@ HttpServerConfig& HttpServerConfig::withMaxBodyBytes(std::size_t maxBodyBytes) {
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withStreamingActivationContentLength(std::size_t threshold) {
+  this->streamingActivationContentLength = threshold;
+  return *this;
+}
+
 HttpServerConfig& HttpServerConfig::withMaxOutboundBufferBytes(std::size_t maxOutbound) {
   this->maxOutboundBufferBytes = maxOutbound;
   return *this;
@@ -73,6 +78,11 @@ HttpServerConfig& HttpServerConfig::withKeepAliveTimeout(std::chrono::millisecon
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withCloseCachedConnectionsTimeout(std::chrono::seconds timeout) {
+  this->cachedConnectionsTimeout = timeout;
+  return *this;
+}
+
 HttpServerConfig& HttpServerConfig::withPollInterval(std::chrono::milliseconds interval) {
   this->pollInterval = interval;
   return *this;
@@ -80,6 +90,11 @@ HttpServerConfig& HttpServerConfig::withPollInterval(std::chrono::milliseconds i
 
 HttpServerConfig& HttpServerConfig::withHeaderReadTimeout(std::chrono::milliseconds timeout) {
   this->headerReadTimeout = timeout;
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::withBodyReadTimeout(std::chrono::milliseconds timeout) {
+  this->bodyReadTimeout = timeout;
   return *this;
 }
 
@@ -295,6 +310,9 @@ void HttpServerConfig::validate() {
   if (maxBodyBytes == 0) {
     throw std::invalid_argument("maxBodyBytes must be > 0");
   }
+  if (streamingActivationContentLength > maxBodyBytes) {
+    throw std::invalid_argument("streamingActivationContentLength must be <= maxBodyBytes");
+  }
   if (keepAliveTimeout.count() < 0) {
     throw std::invalid_argument("keepAliveTimeout must be non-negative");
   }
@@ -303,6 +321,9 @@ void HttpServerConfig::validate() {
   }
   if (headerReadTimeout.count() < 0) {
     throw std::invalid_argument("headerReadTimeout must be non-negative");
+  }
+  if (bodyReadTimeout.count() < 0) {
+    throw std::invalid_argument("bodyReadTimeout must be non-negative");
   }
   if (std::cmp_less(maxOutboundBufferBytes, 1024)) {
     throw std::invalid_argument("maxOutboundBufferBytes must be >= 1024");

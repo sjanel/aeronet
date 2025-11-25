@@ -1,6 +1,7 @@
 #include <aeronet/aeronet.hpp>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <string>
@@ -15,24 +16,24 @@ int main(int argc, char** argv) {
     port = static_cast<uint16_t>(std::stoi(argv[1]));
   }
 
+  SignalHandler::Enable();
+
   try {
     // Create server with router
     Router router;
     router.setDefault(
-        [](const HttpRequest&) { return HttpResponse(200, "OK").body("Hello from HttpServer with AsyncHandle!\n"); });
+        [](const HttpRequest&) { return HttpResponse(200).body("Hello from HttpServer with AsyncHandle!\n"); });
 
-    HttpServerConfig config;
-    config.withPort(port);
-    HttpServer server(std::move(config), std::move(router));
+    HttpServer server(HttpServerConfig{}.withPort(port), std::move(router));
 
     // Start server in background (non-blocking) - returns AsyncHandle
     auto handle = server.startDetached();
 
     std::cout << "Server listening on port " << server.port() << '\n';
     std::cout << "Server running in background...\n";
-    std::cout << "Sleeping for 10 seconds while serving...\n";
+    std::cout << "Sleeping for 5 seconds while serving...\n";
 
-    std::this_thread::sleep_for(std::chrono::seconds(10));
+    std::this_thread::sleep_for(std::chrono::seconds(5));
 
     // Stop the server explicitly (or let handle destructor do it automatically)
     handle.stop();
@@ -42,8 +43,8 @@ int main(int argc, char** argv) {
     std::cout << "Server stopped cleanly.\n";
   } catch (const std::exception& e) {
     std::cerr << "Server encountered error: " << e.what() << '\n';
-    return 1;
+    return EXIT_FAILURE;
   }
 
-  return 0;
+  return EXIT_SUCCESS;
 }

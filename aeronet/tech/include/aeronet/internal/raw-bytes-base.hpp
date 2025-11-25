@@ -82,6 +82,8 @@ class RawBytesBase {
 
   void reserve(size_type newCapacity);
 
+  void shrink_to_fit();
+
   void ensureAvailableCapacity(size_type availableCapacity);
 
   void ensureAvailableCapacityExponential(size_type availableCapacity);
