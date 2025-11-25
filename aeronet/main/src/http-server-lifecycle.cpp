@@ -33,6 +33,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/server-lifecycle-tracker.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/tls-config.hpp"
@@ -58,7 +59,30 @@ namespace aeronet {
 
 namespace {
 constexpr int kListenSocketType = SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC;
-}
+
+class LifecycleTrackerGuard {
+ public:
+  explicit LifecycleTrackerGuard(std::weak_ptr<ServerLifecycleTracker> tracker) : _tracker(std::move(tracker)) {
+    if (auto locked = _tracker.lock()) {
+      locked->notifyServerRunning();
+    }
+  }
+
+  ~LifecycleTrackerGuard() {
+    if (auto locked = _tracker.lock()) {
+      locked->notifyServerStopped();
+    }
+  }
+
+  LifecycleTrackerGuard(const LifecycleTrackerGuard&) = delete;
+  LifecycleTrackerGuard& operator=(const LifecycleTrackerGuard&) = delete;
+  LifecycleTrackerGuard(LifecycleTrackerGuard&&) = delete;
+  LifecycleTrackerGuard& operator=(LifecycleTrackerGuard&&) = delete;
+
+ private:
+  std::weak_ptr<ServerLifecycleTracker> _tracker;
+};
+}  // namespace
 
 HttpServer::AsyncHandle::AsyncHandle(std::jthread thread, std::shared_ptr<std::exception_ptr> error)
     : _thread(std::move(thread)), _error(std::move(error)) {}
@@ -119,7 +143,8 @@ HttpServer::HttpServer(HttpServer&& other)
       _pendingConfigUpdates(std::move(other._pendingConfigUpdates)),
       _pendingRouterUpdates(std::move(other._pendingRouterUpdates)),
       _telemetry(std::move(other._telemetry)),
-      _internalHandle(std::move(other._internalHandle))
+      _internalHandle(std::move(other._internalHandle)),
+      _lifecycleTracker(std::move(other._lifecycleTracker))
 #ifdef AERONET_ENABLE_OPENSSL
       ,
       _tlsCtxHolder(std::move(other._tlsCtxHolder)),
@@ -131,6 +156,7 @@ HttpServer::HttpServer(HttpServer&& other)
   if (!_lifecycle.isIdle()) {
     throw std::logic_error("Cannot move-construct a running HttpServer");
   }
+
   // transfer pending updates state; mutex remains with each instance (do not move mutex)
   _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_release);
   _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.exchange(false), std::memory_order_release);
@@ -166,13 +192,13 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
     _pendingRouterUpdates = std::move(other._pendingRouterUpdates);
     _telemetry = std::move(other._telemetry);
     _internalHandle = std::move(other._internalHandle);
+    _lifecycleTracker = std::move(other._lifecycleTracker);
 
 #ifdef AERONET_ENABLE_OPENSSL
     _tlsCtxHolder = std::move(other._tlsCtxHolder);
     _tlsMetrics = std::move(other._tlsMetrics);
     _tlsMetricsExternal = std::exchange(other._tlsMetricsExternal, {});
 #endif
-
     // transfer pending updates state; keep mutex per-instance
     _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_release);
     _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.exchange(false), std::memory_order_release);
@@ -295,6 +321,7 @@ void HttpServer::prepareRun() {
 void HttpServer::run() {
   prepareRun();
   _lifecycle.enterRunning();
+  LifecycleTrackerGuard trackerGuard(_lifecycleTracker);
   while (_lifecycle.isActive()) {
     eventLoop();
   }
@@ -304,6 +331,7 @@ void HttpServer::run() {
 void HttpServer::runUntil(const std::function<bool()>& predicate) {
   prepareRun();
   _lifecycle.enterRunning();
+  LifecycleTrackerGuard trackerGuard(_lifecycleTracker);
   while (_lifecycle.isActive() && !predicate()) {
     eventLoop();
   }
