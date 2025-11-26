@@ -359,4 +359,63 @@ TEST(RawBytes, ShrinkToFit) {
   EXPECT_EQ(buf.capacity(), 0U);
 }
 
+TEST(RawBytes, EraseFrontSetSizeAndAddSize) {
+  RawBytes buf;
+  buf.assign(reinterpret_cast<const std::byte *>("abcdefgh"), 8);
+  buf.erase_front(3);
+  ASSERT_EQ(buf.size(), 5U);
+  EXPECT_EQ(std::memcmp(buf.data(), "defgh", 5), 0);
+
+  buf.ensureAvailableCapacityExponential(10);
+  buf.setSize(2);
+  EXPECT_EQ(buf.size(), 2U);
+
+  const char tail[] = "XYZ";
+  std::memcpy(buf.data() + buf.size(), tail, sizeof(tail) - 1);
+  buf.addSize(3);
+  EXPECT_EQ(buf.size(), 5U);
+  EXPECT_EQ(std::memcmp(buf.data(), "deXYZ", 5), 0);
+}
+
+TEST(RawBytes, SwapAndSpanConstructor) {
+  auto initial = toCharVec("payload");
+  std::span<const std::byte> spanView(initial.data(), initial.size());
+  RawBytes fromSpan(spanView);
+
+  RawBytes other(reinterpret_cast<const std::byte *>("swap"), reinterpret_cast<const std::byte *>("swap") + 4);
+  fromSpan.swap(other);
+
+  EXPECT_EQ(fromSpan.size(), 4U);
+  EXPECT_EQ(std::memcmp(fromSpan.data(), "swap", 4), 0);
+  EXPECT_EQ(other.size(), spanView.size());
+  EXPECT_EQ(std::memcmp(other.data(), "payload", spanView.size()), 0);
+}
+
+TEST(RawBytes, TinyRawBytesConstructorsAndAssign) {
+  using TinyRawBytes = RawBytesBase<char, std::string_view, std::uint8_t>;
+  const char rawData[] = "tiny";
+  TinyRawBytes fromPointers(rawData, rawData + 4);
+  EXPECT_EQ(fromPointers.size(), 4U);
+
+  TinyRawBytes fromView(std::string_view("mini"));
+  EXPECT_EQ(fromView.size(), 4U);
+
+  TinyRawBytes assigned;
+  assigned.assign(rawData, static_cast<std::uint8_t>(4));
+  EXPECT_EQ(assigned.size(), 4U);
+
+  assigned.assign(std::string_view("xyz"));
+  EXPECT_EQ(assigned.size(), 3U);
+
+  assigned.assign(rawData + 2, rawData + 4);
+  EXPECT_EQ(assigned.size(), 2U);
+
+  assigned.push_back('!');
+  EXPECT_EQ(assigned.size(), 3U);
+
+  assigned.erase_front(1);
+  EXPECT_EQ(assigned.size(), 2U);
+  EXPECT_EQ(std::string_view(assigned.begin(), assigned.size()), std::string_view("y!"));
+}
+
 }  // namespace aeronet

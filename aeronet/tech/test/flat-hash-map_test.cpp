@@ -16,6 +16,8 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/string-equal-ignore-case.hpp"
+
 using Map = aeronet::flat_hash_map<std::string, int, std::hash<std::string_view>, std::equal_to<>>;
 
 TEST(flat_hash_map, basic_insert_find) {
@@ -398,4 +400,60 @@ TEST(flat_hash_map, bracket_operator_default_constructs_values_once) {
   auto &ref = map["new_key"];
   EXPECT_EQ(CountingValue::defaultConstructionCount, 2);
   EXPECT_EQ(ref.payload, 0);
+}
+
+TEST(flat_hash_map, case_insensitive_contains_variants) {
+  aeronet::flat_hash_map<std::string, std::string, aeronet::CaseInsensitiveHashFunc, aeronet::CaseInsensitiveEqualFunc>
+      headers;
+  headers["Content-Type"] = "text/html";
+  headers["ACCEPT"] = "*/*";
+  headers["X-Trace-Request-ID"] = "r-123";
+  headers["X-SUPER-LONG-FLAG-TEST-KEYZZ"] = "1";  // 28 characters to trigger distinct contains instantiation
+  headers["HostName"] = "example.com";
+
+  std::string_view lowerType = "content-type";
+  EXPECT_EQ(headers.find(lowerType)->second, "text/html");
+
+  const char sixLetters[] = "accept";  // length 6 literal
+  EXPECT_TRUE(headers.contains(sixLetters));
+
+  const char eightLetters[] = "hostname";  // length 8 literal
+  EXPECT_TRUE(headers.contains(eightLetters));
+
+  const char eighteenChars[] = "x-trace-request-id";  // length 18 literal
+  EXPECT_TRUE(headers.contains(eighteenChars));
+
+  const char twentyEightChars[] = "x-super-long-flag-test-keyzz";  // length 28 literal
+  EXPECT_TRUE(headers.contains(twentyEightChars));
+
+  EXPECT_FALSE(headers.contains("missing-header"));
+
+  aeronet::flat_hash_map<std::string, std::string, aeronet::CaseInsensitiveHashFunc, aeronet::CaseInsensitiveEqualFunc>
+      copy = headers;
+  EXPECT_EQ(headers, copy);
+}
+
+TEST(flat_hash_map, emplace_default_and_insert_or_assign_hint) {
+  Map map1;
+  auto [emptyIt, emptyInserted] = map1.emplace();
+  ASSERT_TRUE(emptyInserted);
+  EXPECT_TRUE(emptyIt->first.empty());
+  EXPECT_EQ(emptyIt->second, 0);
+
+  auto hintedIt = map1.insert_or_assign(map1.cbegin(), "gamma", 7);
+  EXPECT_EQ(hintedIt->first, "gamma");
+  EXPECT_EQ(hintedIt->second, 7);
+
+  std::string deltaKey = "delta";
+  auto hintedRvalue = map1.insert_or_assign(map1.cbegin(), std::move(deltaKey), 11);
+  EXPECT_EQ(hintedRvalue->first, "delta");
+  EXPECT_EQ(hintedRvalue->second, 11);
+
+  ASSERT_EQ(map1.count("gamma"), 1U);
+  ASSERT_EQ(map1.count("delta"), 1U);
+
+  auto eraseBegin = map1.begin();
+  auto eraseEnd = map1.end();
+  map1.erase(eraseBegin, eraseEnd);
+  EXPECT_TRUE(map1.empty());
 }
