@@ -153,8 +153,7 @@ TEST(HttpRequestDecompression, SingleDeflate) {
     EXPECT_FALSE(req.headerValue(http::ContentEncoding));
     EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodingHeaderName), "deflate");
     EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodedLengthHeaderName), std::to_string(compressedSize));
-    // TODO: fix ContentLength for decompressed inbound bodies and activate check below
-    // EXPECT_EQ(req.body().size(), StringToIntegral<std::size_t>(req.headerValueOrEmpty(http::ContentLength)));
+    EXPECT_EQ(req.body().size(), StringToIntegral<std::size_t>(req.headerValueOrEmpty(http::ContentLength)));
     HttpResponse resp;
     resp.body("Z");
     return resp;

@@ -266,7 +266,6 @@ class HttpRequest {
   };
 
   std::string_view _path;
-  std::string_view _flatHeaders;
 
   HeadersViewMap _headers;
   HeadersViewMap _trailers;  // Trailer headers (RFC 7230 §4.1.2) from chunked requests
