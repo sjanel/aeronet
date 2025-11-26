@@ -208,8 +208,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
   }
 
   _traceSpan = std::move(traceSpan);
-  _flatHeaders = std::string_view(headersFirst, first + http::CRLF.size());
-  _headSpanSize = static_cast<std::size_t>(_flatHeaders.data() + _flatHeaders.size() - state.inBuffer.data());
+  _headSpanSize = static_cast<std::size_t>(first + http::CRLF.size() - state.inBuffer.data());
 
   // Propagate negotiated ALPN (if any) from connection state into per-request object.
   _alpnProtocol = state.tlsInfo.selectedAlpn();
@@ -251,7 +250,6 @@ void HttpRequest::pinHeadStorage(ConnectionState& state) {
 
   _path = remap(_path);
   _decodedQueryParams = remap(_decodedQueryParams);
-  _flatHeaders = remap(_flatHeaders);
 
   auto remapMap = [&](auto& map) {
     for (auto& entry : map) {
