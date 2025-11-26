@@ -72,12 +72,6 @@ struct HttpServerConfig {
   // Default: 256 MiB.
   std::size_t maxBodyBytes{1 << 28};  // 256 MiB
 
-  // Threshold (bytes) that determines when HttpServer should invoke handlers before the full body payload is
-  // received, allowing HttpRequest::readBody() to stream data from the socket. When 0 (default) the server keeps the
-  // legacy behavior of buffering the entire body before handler dispatch. Applies to both Content-Length and chunked
-  // bodies; when chunked encoding is used, any non-zero threshold enables streaming.
-  std::size_t streamingActivationContentLength{0};
-
   // For requests with a captured body, HttpResponse will concatenate the captured body contents with the head in the
   // same buffer if their size is below this threshold. This can be efficient for small bodies because it
   // improves cache locality and will probably save one system socket call. Larger bodies will be kept separate.
@@ -230,9 +224,6 @@ struct HttpServerConfig {
 
   // Adjust body size limit
   HttpServerConfig& withMaxBodyBytes(std::size_t maxBodyBytes);
-
-  // Switch to streaming body delivery when Content-Length >= threshold (0=disabled).
-  HttpServerConfig& withStreamingActivationContentLength(std::size_t threshold);
 
   // Adjust threshold (bytes) under which captured body contents are appended inline with the head.
   HttpServerConfig& withMinCapturedBodySize(std::size_t bytes);
