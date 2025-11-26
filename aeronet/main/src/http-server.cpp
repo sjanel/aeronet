@@ -985,7 +985,7 @@ void HttpServer::eventLoop() {
   } else if (ready < 0) {
     _telemetry.counterAdd("aeronet.events.errors", 1);
     log::error("eventLoop.poll failed: {}", std::strerror(errno));
-    _lifecycle.enterStopping();
+    _lifecycle.exchangeStopping();
   } else {
     // ready == 0: timeout. Retry pending writes to handle edge-triggered epoll timing issues.
     // With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before
