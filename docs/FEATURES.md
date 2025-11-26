@@ -274,17 +274,17 @@ Short examples:
 
 ```cpp
 // Move a std::string into the response
-std::string big = generate_large_payload();
-return HttpResponse(200, "OK").body(std::move(big), "application/octet-stream");
+std::string big /* = generate_large_string() */;
+HttpResponse(200, "OK").body(std::move(big), "application/octet-stream");
 
 // Move a vector<char>
-std::vector<char> v = read_file_bytes(path);
-return HttpResponse(200, "OK").body(std::move(v), "application/octet-stream");
+std::vector<char> v /* = read_file_bytes(path) */;
+HttpResponse(200, "OK").body(std::move(v), "application/octet-stream");
 
 // Move a unique_ptr<char[]> for raw blob ownership
-std::unique_ptr<char[]> blob = load_blob();
-std::size_t blobSize = /* known size */;
-return HttpResponse(200, "OK").body(std::move(blob), blobSize, "application/octet-stream");
+std::unique_ptr<char[]> blob /* = load_blob() */;
+std::size_t blobSize /* = known size */;
+HttpResponse(200, "OK").body(std::move(blob), blobSize, "application/octet-stream");
 ```
 
 These patterns hand ownership to the server without duplicating the payload, enabling efficient zero-copy handoff
@@ -338,8 +338,10 @@ Edge cases & notes:
 Minimal example (manual gzip):
 
 ```cpp
-router.setDefault([](const HttpRequest&, HttpResponseWriter& w){
-  w.status(http::StatusOK);
+std::string preCompressedHelloGzipBytes /* = gzip-compressed "Hello, World!" */;
+Router router;
+router.setDefault([&](const HttpRequest&, HttpResponseWriter& w){
+  w.status(http::StatusCodeOK);
   w.contentType(http::ContentTypeTextPlain);
   w.contentEncoding("gzip");            // suppress auto compression
   w.writeBody(preCompressedHelloGzipBytes);  // already gzip-compressed data
@@ -350,7 +352,9 @@ router.setDefault([](const HttpRequest&, HttpResponseWriter& w){
 To “force identity” even if thresholds would normally trigger compression:
 
 ```cpp
-router.setDefault([](const HttpRequest&, HttpResponseWriter& w){
+std::string largePlainBuffer(10 * 1024 * 1024, 'A'); // 10 MiB of 'A's
+Router router;
+router.setDefault([&](const HttpRequest&, HttpResponseWriter& w){
   w.contentEncoding("identity"); // blocks auto compression
   w.writeBody(largePlainBuffer);
   w.end();
@@ -444,8 +448,11 @@ Breaches ⇒ 413. Malformed ⇒ 400. Unknown coding ⇒ 415. Disabled feature pa
 Example:
 
 ```cpp
-RequestDecompressionConfig dc; dc.enable = true; dc.maxDecompressedBytes = 8*1024*1024;
-HttpServerConfig cfg; cfg.withRequestDecompression(dc);
+DecompressionConfig dc;
+dc.enable = true;
+dc.maxDecompressedBytes = 8*1024*1024;
+HttpServerConfig cfg;
+cfg.withRequestDecompression(dc);
 ```
 
 ### Detailed Behavior (Inbound Decompression)
@@ -468,7 +475,7 @@ Implemented capabilities (independent from outbound compression):
 Configuration:
 
 ```cpp
-RequestDecompressionConfig cfg; cfg.enable = true;
+DecompressionConfig cfg; cfg.enable = true;
 cfg.maxCompressedBytes = 0;        // 0 => unlimited (still bounded by global body limit)
 cfg.maxDecompressedBytes = 0;      // 0 => unlimited
 cfg.maxExpansionRatio = 0.0;       // 0 => disabled ratio guard
@@ -502,7 +509,7 @@ Content-Encoding: br                  -> 415 (if brotli disabled)
 Typical handler setup:
 
 ```cpp
-HttpServerConfig serverCfg; serverCfg.withRequestDecompression(RequestDecompressionConfig{});
+HttpServerConfig serverCfg; serverCfg.withRequestDecompression(DecompressionConfig{});
 Router router;
 router.setDefault([](const HttpRequest& req){
   return HttpResponse(200, "OK").body(std::string(req.body()));
@@ -513,7 +520,7 @@ HttpServer server(std::move(serverCfg), std::move(router));
 Streaming example (switch to inflaters when compressed payloads reach 1 MiB):
 
 ```cpp
-RequestDecompressionConfig big;
+DecompressionConfig big;
 big.streamingActivationContentLength = 1024 * 1024;
 big.decoderChunkSize = 32 * 1024;  // keep each streaming slice manageable
 HttpServerConfig cfg; cfg.withRequestDecompression(big);
@@ -590,9 +597,10 @@ Attempting to send forbidden headers as trailers results in **400 Bad Request**.
 #### Trailer API
 
 ```cpp
+Router router;
 router.setPath(http::Method::GET, "/upload", [](const HttpRequest& req) {
   // Access request body
-  std::string body = req.body();
+  std::string_view body = req.body();
   
   // Access trailer headers (if any)
   auto checksum = req.trailers().find("X-Checksum");
@@ -673,6 +681,7 @@ aeronet supports sending HTTP trailers in responses, allowing metadata to be tra
 For fixed/buffered responses, use `HttpResponse::addTrailer()`:
 
 ```cpp
+Router router;
 router.setPath(http::Method::GET, "/data", [](const HttpRequest& req) {
   HttpResponse resp(200);
   resp.body("response data");
@@ -701,7 +710,8 @@ router.setPath(http::Method::GET, "/data", [](const HttpRequest& req) {
 **Method chaining**:
 
 ```cpp
-return HttpResponse(200)
+HttpResponse(200)
+    .header("X-Custom", "value")
     .body("data")
     .addTrailer("X-Checksum", "xyz")
     .addTrailer("X-Signature", "sig123");
@@ -712,6 +722,7 @@ return HttpResponse(200)
 For chunked/streaming responses, use `HttpResponseWriter::addTrailer()`:
 
 ```cpp
+Router router;
 router.setPath(http::Method::GET, "/stream",
     [](const HttpRequest& req, HttpResponseWriter& w) {
   w.status(200);
@@ -840,11 +851,13 @@ This drain lifecycle allows supervisors to quiesce traffic (e.g., removing an in
 ```cpp
 #include <aeronet/aeronet.hpp>
 
-// Install process-wide signal handlers for SIGINT/SIGTERM
-aeronet::SignalHandler::Enable(std::chrono::milliseconds{5000});  // 5s max drain
+using namespace aeronet;
 
-aeronet::HttpServer server1(cfg1);
-aeronet::HttpServer server2(cfg2);
+// Install process-wide signal handlers for SIGINT/SIGTERM
+SignalHandler::Enable(std::chrono::milliseconds{5000});  // 5s max drain
+
+HttpServer server1(HttpServerConfig{});
+HttpServer server2(HttpServerConfig{});
 // Both servers will automatically call beginDrain(5s) when SIGINT/SIGTERM is received
 ```
 
@@ -975,7 +988,11 @@ By default, it contains a `Server: aeronet` header unless you explicitly clear i
 Example:
 
 ```cpp
-for (auto [k,v] : req.queryParams()) { /* use k,v */ }
+Router router;
+router.setPath(http::Method::GET, "/users/{id}", [](const HttpRequest& req) {
+  for (auto [k, v] : req.queryParams()) { /* use k,v */ }
+  return HttpResponse(200);
+});
 ```
 
 ## Middleware Pipeline
@@ -1008,12 +1025,23 @@ for (auto [k,v] : req.queryParams()) { /* use k,v */ }
 #### Async Handler Example
 
 ```cpp
-#include <aeronet/aeronet.hpp>
-
 using namespace aeronet;
 
+struct User { int id; /* ... */ };
+
 // A hypothetical async database client
-RequestTask<User> getUserAsync(int id);
+// Minimal awaitable used for the demo: provides the three awaiter
+// methods so it can be consumed with `co_await` inside an async handler.
+struct GetUserAwaitable {
+  int id;
+  bool await_ready() const noexcept { return false; }
+  void await_suspend(std::coroutine_handle<> handle) noexcept { handle.resume(); }
+  User await_resume() const noexcept { return User{id}; }
+};
+
+GetUserAwaitable getUserAsync(int id) {
+  return GetUserAwaitable{id};
+}
 
 int main() {
   Router router;
@@ -1028,7 +1056,7 @@ int main() {
     User user = co_await getUserAsync(userId);
 
     // 3. Resume and build response
-    co_return HttpResponse(200).body(user.toJson());
+    co_return HttpResponse(200).body(std::to_string(userId));
   });
 
   // Async body reading
@@ -1061,10 +1089,12 @@ You can `co_await` any type that satisfies the C++ coroutine awaitable concept.
 ### Middleware Example
 
 ```cpp
+auto isAuthenticated = [](const HttpRequest &req) { return true; };  // user-defined
+
 Router router;
-router.addRequestMiddleware([](HttpRequest& req) {
+router.addRequestMiddleware([isAuthenticated](HttpRequest& req) {
   if (!isAuthenticated(req)) {  // user-defined helper
-    HttpResponse resp(http::StatusCodeUnauthorized, http::ReasonUnauthorized);
+    HttpResponse resp(http::StatusCodeUnauthorized);
     resp.body("auth required");
     return MiddlewareResult::ShortCircuit(std::move(resp));
   }
@@ -1075,14 +1105,16 @@ router.addResponseMiddleware([](const HttpRequest&, HttpResponse& resp) {
   resp.header("X-Powered-By", "aeronet");
 });
 
-auto& entry = router.setPath(http::Method::GET, "/metrics", [](const HttpRequest&) {
+auto renderMetrics = []() { return std::string{}; };  // user-defined
+
+auto& entry = router.setPath(http::Method::GET, "/metrics", [renderMetrics](const HttpRequest&) {
   HttpResponse resp;
   resp.body(renderMetrics());  // user-defined helper
   return resp;
 });
 
 entry.before([](HttpRequest& req) {
-  tagRequest(req, "metrics");  // user-defined helper
+  // tagRequest(req, "metrics");  // user-defined helper
   return MiddlewareResult::Continue();
 });
 
@@ -1140,7 +1172,8 @@ Tests: `tests/http_routing_test.cpp`.
 Usage:
 
 ```cpp
-HttpServerConfig cfg; cfg.withTrailingSlashPolicy(HttpServerConfig::TrailingSlashPolicy::Redirect);
+RouterConfig routerConfig;
+routerConfig.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Redirect);
 ```
 
 Rationale: Normalize avoids duplicate handler registration while preserving SEO-friendly consistent canonical paths; Redirect enforces consistent public URLs; Strict maximizes explicitness (APIs where `/v1/resource` vs `/v1/resource/` semantics differ).
@@ -1195,6 +1228,7 @@ Rationale: Normalize avoids duplicate handler registration while preserving SEO-
   - Example:
 
 ```cpp
+Router router;
 router.setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const HttpRequest& req) {
   auto params = req.pathParams();
   auto it = params.find("id");
@@ -1209,7 +1243,10 @@ router.setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const HttpReque
 - Unnamed capture example (keys are "0", "1", ...):
 
 ```cpp
-router.setPath(http::Method::GET, "/files/{}/chunk/{}", handler);
+Router router;
+router.setPath(http::Method::GET, "/files/{}/chunk/{}", [](const HttpRequest&) {
+  return HttpResponse(200, "OK");
+});
 // In handler: req.pathParams().at("0"), req.pathParams().at("1")
 ```
 
@@ -1255,7 +1292,8 @@ Manages N reactors via `SO_REUSEPORT`.
 ```cpp
 Router router;
 router.setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("hi\n"); });
-HttpServerConfig cfg; cfg.port=0; cfg.reusePort=true;
+HttpServerConfig cfg;
+cfg.reusePort = true;
 MultiHttpServer multi(cfg, std::move(router), 4);
 // Use `start()` as a void convenience which manages an internal handle. Use `startDetached()` if you need
 // an `AsyncHandle` to control or inspect the background threads explicitly.
@@ -1366,13 +1404,16 @@ Optional (`AERONET_ENABLE_OPENSSL`). Provides termination, optional / required m
 ### TLS Configuration Example
 
 ```cpp
-HttpServerConfig cfg; cfg.withPort(8443)
-  .withTlsCertKeyMemory(certPem, keyPem)
-  .withTlsAlpnProtocols({"http/1.1"})
-  .withTlsAlpnMustMatch(true)
-  .withTlsMinVersion("TLS1.2")
-  .withTlsMaxVersion("TLS1.3")
-  .withTlsHandshakeTimeout(std::chrono::milliseconds(750));
+HttpServerConfig cfg;
+std::string certPem /* = R"(-----BEGIN CERTIFICATE----- */;
+std::string keyPem  /* = R"(-----BEGIN PRIVATE KEY-----*/;
+cfg.withPort(8443)
+   .withTlsCertKeyMemory(certPem, keyPem)
+   .withTlsAlpnProtocols({"http/1.1"})
+   .withTlsAlpnMustMatch(true)
+   .withTlsMinVersion("TLS1.2")
+   .withTlsMaxVersion("TLS1.3")
+   .withTlsHandshakeTimeout(std::chrono::milliseconds(750));
 HttpServer server(cfg);
 ```
 
@@ -1409,8 +1450,8 @@ the aggregate bytes transferred via kernel TLS sendfile. Logs capture the reason
 ```cpp
 HttpServerConfig cfg;
 cfg.withPort(8443)
-  .withTlsCertKey("/path/to/fullchain.pem", "/path/to/privkey.pem")
-  .withTlsKtlsMode(TLSConfig::KtlsMode::Auto);  // or Enabled / Forced / Disabled
+   .withTlsCertKey("/path/to/fullchain.pem", "/path/to/privkey.pem")
+   .withTlsKtlsMode(TLSConfig::KtlsMode::Auto);  // or Enabled / Forced / Disabled
 HttpServer server(cfg);
 ```
 
@@ -1526,8 +1567,8 @@ Example:
 ```cpp
 Router router;
 router.setDefault([](const HttpRequest&, HttpResponseWriter& w){
-  w.setStatus(200, "OK");
-  w.setHeader("Content-Type", "text/plain");
+  w.status(200, "OK");
+  w.header("Content-Type", "text/plain");
   for (int i=0;i<5;++i) {
     if (!w.writeBody("chunk-" + std::to_string(i) + "\n")) break;
   }
@@ -1583,7 +1624,7 @@ semantics. The handler is designed to plug into the existing routing API: it is 
 Example usage:
 
 ```cpp
-#include <aeronet/static-file-handler.hpp>
+#include <aeronet/aeronet.hpp>
 
 using namespace aeronet;
 
@@ -1595,7 +1636,7 @@ int main() {
   staticFileConfig.enableRange = true;
   staticFileConfig.addEtag = true;
   staticFileConfig.enableDirectoryIndex = true;  // fallback to HTML listings when index.html is absent
-  staticFileConfig.defaultIndex = "index.html";
+  staticFileConfig.withDefaultIndex("index.html");
 
   Router router;
   StaticFileHandler assets("/var/www/html", std::move(staticFileConfig));
@@ -1651,15 +1692,16 @@ Conflict rules:
 Example precedence illustration:
 
 ```cpp
+Router router;
 router.setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("GLOBAL"); });
 router.setDefault([](const HttpRequest&, HttpResponseWriter& w){ 
-  w.setStatus(200,"OK");
+  w.status(200,"OK");
   w.contentType("text/plain");
   w.writeBody("STREAMFALLBACK"); 
   w.end(); 
 });
 router.setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& w){ 
-  w.setStatus(200,"OK"); 
+  w.status(200,"OK"); 
   w.contentType("text/plain"); 
   w.writeBody("PS"); 
   w.end(); 
@@ -1679,13 +1721,14 @@ Testing: `tests/http_streaming_test.cpp` covers precedence, conflicts, HEAD supp
 ### Accessing TLS Metrics
 
 ```cpp
+HttpServer server;
 auto st = server.stats();
-std::print("handshakes={} clientCerts={} alpnStrictMismatches={}\n",
-           st.tlsHandshakesSucceeded,
-           st.tlsClientCertPresent,
-           st.tlsAlpnStrictMismatches);
-for (auto& [proto,count] : st.tlsAlpnDistribution) {
-  std::print("ALPN {} -> {}\n", proto, count);
+log::info("handshakes={} clientCerts={} alpnStrictMismatches={}\n",
+          st.tlsHandshakesSucceeded,
+          st.tlsClientCertPresent,
+          st.tlsAlpnStrictMismatches);
+for (const auto& [proto,count] : st.tlsAlpnDistribution) {
+  log::info("ALPN {} -> {}\n", proto, count);
 }
 ```
 
@@ -1714,7 +1757,7 @@ Design goals: keep logging off the hot path when disabled, avoid mandatory third
 Usage example (fallback or spdlog):
 
 ```cpp
-aeronet::log::info("server listening on {}", server.port());
+log::info("server listening on {}", 8080);
 ```
 
 ## OpenTelemetry Integration
@@ -1827,7 +1870,7 @@ service:
 3. **Method & header control:**
    - `allowMethods(Method bitmask)` — configures which HTTP methods are allowed for the route
    - `allowRequestHeader(name)` / `allowRequestHeaders({...})` — controls which custom headers clients can send
-   - `exposeHeaders({...})` — controls which response headers are exposed to client JavaScript
+   - `exposeHeader(...)` — controls which response headers are exposed to client JavaScript
 
 4. **Preflight caching:**
    - `maxAge(duration)` sets `Access-Control-Max-Age` to reduce preflight requests
@@ -1849,7 +1892,8 @@ policy.allowOrigin("https://app.example.com")
       .allowMethods(http::Method::GET | http::Method::POST | http::Method::PUT)
       .allowRequestHeader("Authorization")
       .allowRequestHeader("X-Custom-Header")
-      .exposeHeaders({"X-Total-Count", "X-Page-Size"})
+      .exposeHeader("X-Total-Count")
+      .exposeHeader("X-Page-Size")
       .allowCredentials(true)
       .maxAge(std::chrono::hours{1});
 ```
@@ -1861,14 +1905,17 @@ All configuration methods return `CorsPolicy&` for fluent chaining.
 **Per-route policy:**
 
 ```cpp
+CorsPolicy policy;
+Router router;
 router.setPath(http::Method::GET | http::Method::POST, "/api/data", 
-               [](const HttpRequest& req) { ... })
+               [](const HttpRequest& req) { return HttpResponse(200); })
       .cors(std::move(policy));
 ```
 
 **Default policy for all routes:**
 
 ```cpp
+CorsPolicy policy;
 RouterConfig routerConfig;
 routerConfig.withDefaultCorsPolicy(std::move(policy));
 HttpServer server(HttpServerConfig{}, routerConfig);
@@ -1938,12 +1985,16 @@ CorsPolicy apiCors;
 apiCors.allowOrigin("https://app.example.com")
        .allowOrigin("https://mobile.example.com")
        .allowMethods(http::Method::GET | http::Method::POST | http::Method::PUT | http::Method::DELETE)
-       .allowRequestHeaders({"Authorization", "Content-Type", "X-Request-ID"})
-       .exposeHeaders({"X-Total-Count", "X-RateLimit-Remaining"})
+       .allowRequestHeader("Authorization")
+       .allowRequestHeader("Content-Type")
+       .exposeHeader("X-Total-Count")
+       .exposeHeader("X-RateLimit-Remaining")
        .allowCredentials(true)
        .maxAge(std::chrono::hours{24});
 
-router.setPath(http::Method::GET | http::Method::POST, "/api/*", apiHandler)
+Router router;
+router.setPath(http::Method::GET | http::Method::POST, "/api/*", 
+               [](const HttpRequest& req) { return HttpResponse(200); })
       .cors(std::move(apiCors));
 ```
 
