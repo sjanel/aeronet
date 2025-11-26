@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cassert>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <coroutine>
 #include <cstdint>
@@ -470,6 +471,7 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
   const std::string_view encodingStr = encodingHeaderIt->second;
 
   // We'll alternate between bodyAndTrailersBuffer (source) and _tmpBuffer (target) each stage.
+  // TODO: if there are trailers, they will be erased if there is a two step decompression (e.g. gzip + zstd).
   std::string_view src = request.body();
   RawChars* dst = &_tmpBuffer;
 
@@ -593,22 +595,27 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
   }
 
   if (src.data() == _tmpBuffer.data()) {
-    // make sure we use bodyAndTrailersBuffer to "free" usage of _tmpBuffer for other things
+    // make sure we use bodyAndTrailersBuffer to store the body.
     _tmpBuffer.swap(state.bodyAndTrailersBuffer);
-    src = state.bodyAndTrailersBuffer;
   }
+
+  // Append to the buffer the new Content-Length value (decompressed size). It is not seen by the body.
+  RawChars& buf = state.bodyAndTrailersBuffer;
+  const std::size_t decompressedSizeNbChars = static_cast<std::size_t>(nchars(src.size()));
+  buf.ensureAvailableCapacity(decompressedSizeNbChars);
+  src = state.bodyAndTrailersBuffer;
+  std::string_view decompressedSizeStr(buf.end(), decompressedSizeNbChars);
+  std::to_chars(buf.end(), buf.end() + decompressedSizeNbChars, src.size());
+  buf.addSize(decompressedSizeNbChars);
 
   // Final decompressed data now resides in *src after last swap.
   request._body = src;
+
   // Strip Content-Encoding header so user handlers observe a canonical, already-decoded body.
-  // Rationale: After automatic request decompression the original header no longer reflects
-  // the semantics of req.body() (which now holds the decoded representation). Exposing the stale
-  // header risks double-decoding attempts or confusion about body length. The original compressed
-  // size can be reintroduced later via RequestMetrics enrichment.
-  // TODO: Change Content-Length to reflect decompressed size
   const std::string_view originalContentLenStr = contentLenIt != headersMap.end() ? contentLenIt->second : "";
 
   headersMap.erase(encodingHeaderIt);
+  headersMap.insert_or_assign(http::ContentLength, decompressedSizeStr);
   headersMap.insert_or_assign(http::OriginalEncodingHeaderName, encodingStr);
   if (!originalContentLenStr.empty()) {
     headersMap.insert_or_assign(http::OriginalEncodedLengthHeaderName, originalContentLenStr);
