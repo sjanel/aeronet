@@ -21,6 +21,7 @@
 #include "aeronet/encoder.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/flat-hash-map.hpp"
+#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
@@ -420,6 +421,7 @@ class HttpServer {
                                      std::size_t& consumedBytes);
   BodyDecodeStatus decodeFixedLengthBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
   BodyDecodeStatus decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
+  bool parseHeadersUnchecked(HeadersViewMap& headersMap, char* bufferBeg, char* first, char* last);
   bool maybeDecompressRequestBody(ConnectionMapIt cnxIt);
   void finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
                                const CorsPolicy* pCorsPolicy);

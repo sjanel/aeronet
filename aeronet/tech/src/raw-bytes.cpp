@@ -125,7 +125,7 @@ void RawBytesBase<T, ViewType, SizeType>::push_back(value_type byte) {
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::assign(const_pointer data, size_type size) {
-  reserveExponential(size);
+  reserve(size);
   if (size != 0) {
     std::memcpy(_buf, data, size);
   }

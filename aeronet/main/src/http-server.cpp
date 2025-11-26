@@ -484,13 +484,13 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
 
   bool useStreamingDecode = false;
   std::size_t declaredLen = 0;
-  if (decompressionConfig.streamingActivationContentLength > 0 && contentLenIt != headersMap.end()) {
+  if (decompressionConfig.streamingDecompressionThresholdBytes > 0 && contentLenIt != headersMap.end()) {
     // If Content-Length is present it has already been validated previously, so it should be valid.
     // It is not present in chunked requests.
     // TODO: is it possible to have originalCompressedSize != declaredLen here?
     const std::string_view contentLenValue = contentLenIt->second;
     declaredLen = StringToIntegral<std::size_t>(contentLenValue);
-    useStreamingDecode = declaredLen >= decompressionConfig.streamingActivationContentLength;
+    useStreamingDecode = declaredLen >= decompressionConfig.streamingDecompressionThresholdBytes;
   }
 
   const auto runDecoder = [&](Decoder& decoder) -> bool {
@@ -518,6 +518,17 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
     return true;
   };
 #endif
+
+  // If we have trailers, we need to exclude them in the decompression process, and avoid them
+  // being overriden during the decompression swaps.
+  RawChars trailers;
+  const std::size_t trailersSize =
+      state.trailerStartPos > 0 ? state.bodyAndTrailersBuffer.size() - state.trailerStartPos : 0;
+  if (trailersSize > 0) {
+    // We need to save trailers in another buffer as its data will be
+    // overridden during decompression swaps (they are stored at the end of bodyAndTrailersBuffer).
+    trailers.assign(state.bodyAndTrailersBuffer.data() + state.trailerStartPos, trailersSize);
+  }
 
   // Decode in reverse order.
   const char* first = encodingStr.data();
@@ -595,20 +606,31 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
   }
 
   if (src.data() == _tmpBuffer.data()) {
-    // make sure we use bodyAndTrailersBuffer to store the body.
+    // make sure we use bodyAndTrailersBuffer and not _tmpBuffer to store the body.
     _tmpBuffer.swap(state.bodyAndTrailersBuffer);
   }
+  RawChars& buf = state.bodyAndTrailersBuffer;
 
   // Append to the buffer the new Content-Length value (decompressed size). It is not seen by the body.
-  RawChars& buf = state.bodyAndTrailersBuffer;
   const std::size_t decompressedSizeNbChars = static_cast<std::size_t>(nchars(src.size()));
-  buf.ensureAvailableCapacity(decompressedSizeNbChars);
+  // Unique memory reallocation so that std::string_views that will be pointing to it are not invalidated later.
+  buf.ensureAvailableCapacity(trailers.size() + decompressedSizeNbChars);
+
   src = state.bodyAndTrailersBuffer;
+  if (!trailers.empty()) {
+    state.trailerStartPos = buf.size();
+    // Append trailers data to the end of the buffer.
+    buf.unchecked_append(trailers);
+    // Re-parse trailers in the trailers map now that they are at the end of the buffer.
+    parseHeadersUnchecked(request._trailers, buf.data(), buf.data() + state.trailerStartPos, buf.end());
+  }
+
   std::string_view decompressedSizeStr(buf.end(), decompressedSizeNbChars);
+  // This to_chars cannot fail as we have reserved enough space.
   std::to_chars(buf.end(), buf.end() + decompressedSizeNbChars, src.size());
   buf.addSize(decompressedSizeNbChars);
 
-  // Final decompressed data now resides in *src after last swap.
+  // Final decompressed data now resides in src after last swap.
   request._body = src;
 
   // Strip Content-Encoding header so user handlers observe a canonical, already-decoded body.

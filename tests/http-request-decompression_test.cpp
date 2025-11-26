@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -360,7 +361,7 @@ TEST(HttpRequestDecompression, StreamingThresholdGzipLargeBody) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.decompression = {};
-    cfg.decompression.streamingActivationContentLength = 32;
+    cfg.decompression.streamingDecompressionThresholdBytes = 32;
     cfg.decompression.decoderChunkSize = 16;
   });
   std::string plain(4096, 'S');
@@ -376,6 +377,109 @@ TEST(HttpRequestDecompression, StreamingThresholdGzipLargeBody) {
   EXPECT_EQ(resp.status, 200);
 }
 
+TEST(HttpRequestDecompression, GzipLargeBodyWithTrailers) {
+  if constexpr (!zlibEnabled()) {
+    GTEST_SKIP();
+  }
+
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+
+  std::string plain(100, 'L');
+  auto gz = gzipCompress(plain);
+
+  ts.router().setDefault([plain](const HttpRequest& req) {
+    EXPECT_EQ(req.body(), plain);
+    // Expect two trailers preserved
+    EXPECT_EQ(req.trailers().size(), 2U);
+    auto it = req.trailers().find("X-Checksum");
+    EXPECT_NE(it, req.trailers().end());
+    if (it != req.trailers().end()) {
+      EXPECT_EQ(it->second, "abc123");
+    }
+    auto it2 = req.trailers().find("X-Note");
+    EXPECT_NE(it2, req.trailers().end());
+    if (it2 != req.trailers().end()) {
+      EXPECT_EQ(it2->second, "final");
+    }
+    return HttpResponse(http::StatusCodeOK).body("GzipLargeBodyWithTrailers OK");
+  });
+
+  test::ClientConnection sock(ts.port());
+  int fd = sock.fd();
+
+  // Build a single-chunk chunked request where the chunk payload is the
+  // gzip-compressed bytes. Then append trailers after the terminating 0 chunk.
+  std::ostringstream hdr;
+  hdr << "POST /trail_gzip_large HTTP/1.1\r\n";
+  hdr << "Host: example.com\r\n";
+  hdr << "Transfer-Encoding: chunked\r\n";
+  hdr << "Content-Encoding: gzip\r\n";
+  hdr << "Connection: close\r\n";
+  hdr << "\r\n";
+  // chunk size in hex
+  hdr << std::hex << gz.size() << "\r\n";
+
+  std::string req = hdr.str();
+  req.append(std::string_view(gz));
+  req += "\r\n0\r\nX-Checksum: abc123\r\nX-Note: final\r\n\r\n";
+
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
+  ASSERT_TRUE(resp.contains("GzipLargeBodyWithTrailers OK"));
+}
+
+TEST(HttpRequestDecompression, GzipZstdLargeBodyWithTrailers) {
+  if constexpr (!zlibEnabled() || !zstdEnabled()) {
+    GTEST_SKIP();
+  }
+
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+
+  std::string plain(1000, 'L');
+  auto gz = gzipCompress(plain);
+  auto zstd = zstdCompress(gz);
+
+  ts.router().setDefault([plain](const HttpRequest& req) {
+    EXPECT_EQ(req.body(), plain);
+    // Expect two trailers preserved
+    EXPECT_EQ(req.trailers().size(), 2U);
+    auto it = req.trailers().find("X-Checksum");
+    EXPECT_NE(it, req.trailers().end());
+    if (it != req.trailers().end()) {
+      EXPECT_EQ(it->second, "abc123");
+    }
+    auto it2 = req.trailers().find("X-Note");
+    EXPECT_NE(it2, req.trailers().end());
+    if (it2 != req.trailers().end()) {
+      EXPECT_EQ(it2->second, "final");
+    }
+    return HttpResponse(http::StatusCodeOK).body("GzipZstdLargeBodyWithTrailers OK");
+  });
+
+  test::ClientConnection sock(ts.port());
+  int fd = sock.fd();
+
+  // Build a single-chunk chunked request where the chunk payload is the
+  // gzip-compressed bytes. Then append trailers after the terminating 0 chunk.
+  std::ostringstream hdr;
+  hdr << "POST /trail_gzip_large HTTP/1.1\r\n";
+  hdr << "Host: example.com\r\n";
+  hdr << "Transfer-Encoding: chunked\r\n";
+  hdr << "Content-Encoding: gzip, zstd\r\n";
+  hdr << "Connection: close\r\n";
+  hdr << "\r\n";
+  // chunk size in hex
+  hdr << std::hex << zstd.size() << "\r\n";
+
+  std::string req = hdr.str();
+  req.append(std::string_view(zstd));
+  req += "\r\n0\r\nX-Checksum: abc123\r\nX-Note: final\r\n\r\n";
+
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
+  ASSERT_TRUE(resp.contains("GzipZstdLargeBodyWithTrailers OK"));
+}
+
 TEST(HttpRequestDecompression, StreamingRatioGuard) {
   if constexpr (!zlibEnabled()) {
     GTEST_SKIP();
@@ -384,7 +488,7 @@ TEST(HttpRequestDecompression, StreamingRatioGuard) {
     cfg.decompression = {};
     cfg.decompression.maxExpansionRatio = 1.5;
     cfg.decompression.maxDecompressedBytes = 200000;
-    cfg.decompression.streamingActivationContentLength = 1;
+    cfg.decompression.streamingDecompressionThresholdBytes = 1;
   });
   std::string large(120000, 'R');
   auto gz = gzipCompress(large);
@@ -399,7 +503,7 @@ TEST(HttpRequestDecompression, StreamingMultiStageGzipZstd) {
   }
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.decompression = {};
-    cfg.decompression.streamingActivationContentLength = 1;
+    cfg.decompression.streamingDecompressionThresholdBytes = 1;
     cfg.decompression.decoderChunkSize = 32;
   });
   std::string plain(6000, 'T');
