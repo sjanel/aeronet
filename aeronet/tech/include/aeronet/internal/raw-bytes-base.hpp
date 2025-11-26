@@ -57,7 +57,6 @@ class RawBytesBase {
 
   void push_back(value_type byte);
 
-  // Growth is exponential.
   void assign(const_pointer data, size_type size);
 
   void assign(ViewType data);

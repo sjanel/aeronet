@@ -173,12 +173,12 @@ TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
   std::string header = "POST /fairness HTTP/1.1\r\nHost: x\r\nContent-Length: " + std::to_string(payloadSize) +
                        "\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, header);
-  const auto chunkDelay = ts.server.config().pollInterval + 1ms;
+  const auto chunkDelay = ts.server.config().pollInterval + 10ms;
   for (std::size_t sent = 0; sent < payload.size();) {
+    std::this_thread::sleep_for(chunkDelay);
     const std::size_t chunkSize = std::min(cap, payload.size() - sent);
     test::sendAll(fd, std::string_view(payload.data() + sent, chunkSize));
     sent += chunkSize;
-    std::this_thread::sleep_for(chunkDelay);
   }
 
   std::string resp = test::recvUntilClosed(fd);

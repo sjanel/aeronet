@@ -441,7 +441,7 @@ Supported: `gzip`, `deflate`, `zstd`, `br`, `identity` (skip). Order: decode rev
 | `maxCompressedBytes` | Cap on original compressed size (0 = unlimited) |
 | `maxDecompressedBytes` | Cap on expanded size (0 = unlimited) |
 | `maxExpansionRatio` | Per-layer `(expanded / originalTotalCompressed)` bound (0 = disabled) |
-| `streamingActivationContentLength` | Enable streaming inflaters when `Content-Length >= threshold` (0 = disabled) |
+| `streamingDecompressionThresholdBytes` | Enable streaming inflaters when `Content-Length >= threshold` (0 = disabled) |
 
 Breaches ⇒ 413. Malformed ⇒ 400. Unknown coding ⇒ 415. Disabled feature passes body through.
 
@@ -479,11 +479,11 @@ DecompressionConfig cfg; cfg.enable = true;
 cfg.maxCompressedBytes = 0;        // 0 => unlimited (still bounded by global body limit)
 cfg.maxDecompressedBytes = 0;      // 0 => unlimited
 cfg.maxExpansionRatio = 0.0;       // 0 => disabled ratio guard
-cfg.streamingActivationContentLength = 512 * 1024;  // switch to streaming inflaters when CL >= 512 KiB
+cfg.streamingDecompressionThresholdBytes = 512 * 1024;  // switch to streaming inflaters when CL >= 512 KiB
 HttpServerConfig scfg; scfg.withRequestDecompression(cfg);
 ```
 
-When `streamingActivationContentLength` is non-zero, aeronet automatically routes large encoded payloads through
+When `streamingDecompressionThresholdBytes` is non-zero, aeronet automatically routes large encoded payloads through
 streaming decoder contexts (per codec) instead of materializing every intermediate stage at once. Each stage consumes the
 compressed data in `decoderChunkSize` slices and appends the decoded bytes to the alternating buffers already used for
 the aggregated path, so handlers still see a single contiguous `req.body()`.
@@ -521,7 +521,7 @@ Streaming example (switch to inflaters when compressed payloads reach 1 MiB):
 
 ```cpp
 DecompressionConfig big;
-big.streamingActivationContentLength = 1024 * 1024;
+big.streamingDecompressionThresholdBytes = 1024 * 1024;
 big.decoderChunkSize = 32 * 1024;  // keep each streaming slice manageable
 HttpServerConfig cfg; cfg.withRequestDecompression(big);
 ```
