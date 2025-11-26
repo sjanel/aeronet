@@ -502,7 +502,37 @@ TEST(HttpMethodParsing, AcceptsCaseInsensitiveMethodTokens) {
   for (const auto& pair : cases) {
     std::string resp = sendRaw(port, pair.first);
     // Response should be 200 and include the method echoed in the body.
-    EXPECT_TRUE(resp.find("HTTP/1.1 200") != std::string::npos) << "Resp=" << resp;
-    EXPECT_TRUE(resp.find(std::string("method=") + pair.second) != std::string::npos) << "Resp=" << resp;
+    EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << "Resp=" << resp;
+    EXPECT_TRUE(resp.contains(std::string("method=") + pair.second)) << "Resp=" << resp;
   }
+}
+
+TEST(HttpServerCopy, CopyConstruct) {
+  // Copy-constructing from a stopped server should duplicate configuration/router but not runtime state.
+  HttpServerConfig cfg;
+  cfg.withReusePort();
+
+  Router router;
+  router.setDefault([](const HttpRequest& req) {
+    HttpResponse resp;
+    resp.body(std::string("ORIG:") + std::string(req.path()));
+    return resp;
+  });
+
+  HttpServer origin(cfg, std::move(router));
+
+  auto origPort = origin.port();
+
+  // Copy construct while stopped is fine.
+  HttpServer copy(origin);
+
+  origin.stop();  // ensure we stop listener on the original server to avoid queries reaching this server
+
+  copy.start();
+
+  // Start the copy in background and exercise the handler on the original port.
+  std::string resp = test::simpleGet(origPort, "/copy");
+  ASSERT_TRUE(resp.contains("ORIG:/copy"));
+
+  EXPECT_THROW(HttpServer{copy}, std::logic_error) << "Copy-constructing from a running server should throw";
 }
