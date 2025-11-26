@@ -35,8 +35,9 @@ struct DecompressionConfig {
   std::size_t decoderChunkSize{32UL * 1024UL};
 
   // When Content-Length is greater or equal to this threshold (bytes), inbound decompression switches to streaming
-  // contexts to avoid allocating full intermediate buffers for very large payloads. 0 => always use aggregated mode.
-  std::size_t streamingActivationContentLength{0};
+  // contexts to avoid allocating full intermediate buffers for large payloads. 0 => always use aggregated mode.
+  // Defaults to 16 MiB.
+  std::size_t streamingDecompressionThresholdBytes{1 << 24};
 
   // Ratio guard: if decompressed_size > compressed_size * maxExpansionRatio the request is
   // rejected (413) even if maxDecompressedBytes is not exceeded. This quickly rejects "compression

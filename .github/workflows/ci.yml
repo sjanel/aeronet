@@ -22,7 +22,7 @@ jobs:
       WITH_BENCHMARKS: ${{ matrix.build == 'Release' && 'ON' || 'OFF' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Release dependencies
         if: ${{ matrix.build == 'Release' }}
@@ -131,7 +131,7 @@ jobs:
       BUILD_DIR: build-coverage
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install coverage toolchain and dependencies
         run: |
@@ -231,7 +231,7 @@ jobs:
       BUILD_DIR: build-examples
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install example dependencies
         run: |
@@ -359,7 +359,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Setup latest Alpine Linux
         uses: jirutka/setup-alpine@v1

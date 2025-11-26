@@ -58,11 +58,6 @@ HttpServerConfig& HttpServerConfig::withMaxBodyBytes(std::size_t maxBodyBytes) {
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withStreamingActivationContentLength(std::size_t threshold) {
-  this->streamingActivationContentLength = threshold;
-  return *this;
-}
-
 HttpServerConfig& HttpServerConfig::withMaxOutboundBufferBytes(std::size_t maxOutbound) {
   this->maxOutboundBufferBytes = maxOutbound;
   return *this;
@@ -217,7 +212,7 @@ HttpServerConfig& HttpServerConfig::withGlobalHeaders(std::span<const http::Head
   if (headers.size() > kMaxGlobalHeaders) {
     throw std::invalid_argument("too many global headers");
   }
-  RawChars data;
+  RawChars data(32UL);
   for (const auto& header : headers) {
     data.assign(header.name);
     data.append(http::HeaderSep);
@@ -309,9 +304,6 @@ void HttpServerConfig::validate() {
   }
   if (maxBodyBytes == 0) {
     throw std::invalid_argument("maxBodyBytes must be > 0");
-  }
-  if (streamingActivationContentLength > maxBodyBytes) {
-    throw std::invalid_argument("streamingActivationContentLength must be <= maxBodyBytes");
   }
   if (keepAliveTimeout.count() < 0) {
     throw std::invalid_argument("keepAliveTimeout must be non-negative");

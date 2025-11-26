@@ -10,6 +10,7 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/header-line-parse.hpp"
 #include "aeronet/header-merge.hpp"
+#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-request.hpp"
@@ -145,7 +146,7 @@ HttpServer::BodyDecodeStatus HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt
         // Check total trailer size limit
         std::size_t trailerSize = static_cast<std::size_t>((state.inBuffer.data() + tempPos) - trailerStart);
         if (trailerSize > _config.maxHeaderBytes) {
-          emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, true, {});
+          emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, true);
           return BodyDecodeStatus::Error;
         }
 
@@ -161,14 +162,14 @@ HttpServer::BodyDecodeStatus HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt
         // Parse trailer field: name:value
         auto* colonPtr = std::find(lineStart, lineLast, ':');
         if (colonPtr == lineLast) {
-          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, {});
+          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true);
           return BodyDecodeStatus::Error;
         }
 
         // Check forbidden headers
         std::string_view trailerNameCheck(lineStart, colonPtr);
         if (http::IsForbiddenTrailerHeader(trailerNameCheck)) {
-          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, {});
+          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true);
           return BodyDecodeStatus::Error;
         }
 
@@ -180,29 +181,12 @@ HttpServer::BodyDecodeStatus HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt
       bodyAndTrailers.append(trailerStart, trailerDataSize);
 
       // Second pass: parse trailers from copied data in bodyAndTrailers
-      char* trailerData = bodyAndTrailers.data() + state.trailerStartPos;
+      char* trailerDataBeg = bodyAndTrailers.data() + state.trailerStartPos;
       char* trailerDataEnd = bodyAndTrailers.data() + bodyAndTrailers.size();
 
-      while (trailerData < trailerDataEnd) {
-        // Find line end
-        char* lineEnd = std::search(trailerData, trailerDataEnd, http::CRLF.begin(), http::CRLF.end());
-        if (lineEnd == trailerDataEnd) {
-          break;  // No more lines
-        }
-
-        auto [trailerNameView, trailerValue] = http::ParseHeaderLine(trailerData, lineEnd);
-        if (trailerNameView.empty()) {
-          break;  // Malformed (shouldn't happen after first-pass validation)
-        }
-
-        // Store trailer using the in-place merge helper so semantics/pointer updates match request parsing.
-        if (!http::AddOrMergeHeaderInPlace(request._trailers, trailerNameView, trailerValue, _tmpBuffer,
-                                           bodyAndTrailers.data(), trailerData, _config.mergeUnknownRequestHeaders)) {
-          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, {});
-          return BodyDecodeStatus::Error;
-        }
-
-        trailerData = lineEnd + http::CRLF.size();
+      if (!parseHeadersUnchecked(request._trailers, bodyAndTrailers.data(), trailerDataBeg, trailerDataEnd)) {
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true);
+        return BodyDecodeStatus::Error;
       }
 
       pos = trailerEndPos;
@@ -225,6 +209,29 @@ HttpServer::BodyDecodeStatus HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt
   request._body = std::string_view(bodyAndTrailers.data(), bodyLen);
   consumedBytes = pos;
   return BodyDecodeStatus::Ready;
+}
+
+bool HttpServer::parseHeadersUnchecked(HeadersViewMap& headersMap, char* bufferBeg, char* first, char* last) {
+  headersMap.clear();
+  while (first < last) {
+    // Find line end
+    char* lineEnd = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
+    if (lineEnd == last) {
+      break;  // No more lines
+    }
+
+    // No check is made on header line format here
+    const auto [headerName, headerValue] = http::ParseHeaderLine(first, lineEnd);
+
+    // Store trailer using the in-place merge helper so semantics/pointer updates match request parsing.
+    if (!http::AddOrMergeHeaderInPlace(headersMap, headerName, headerValue, _tmpBuffer, bufferBeg, first,
+                                       _config.mergeUnknownRequestHeaders)) {
+      return false;
+    }
+
+    first = lineEnd + http::CRLF.size();
+  }
+  return true;
 }
 
 }  // namespace aeronet

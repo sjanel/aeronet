@@ -232,7 +232,8 @@ void HttpRequest::pinHeadStorage(ConnectionState& state) {
   }
   const char* oldBase = state.inBuffer.data();
   RawChars& storage = state.headBuffer;
-  storage.assign(oldBase, oldBase + _headSpanSize);
+  storage.clear();
+  storage.append(oldBase, oldBase + _headSpanSize);
   const char* newBase = storage.data();
   const char* oldLimit = oldBase + _headSpanSize;
 
