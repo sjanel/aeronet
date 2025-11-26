@@ -46,6 +46,7 @@ HttpServer::BodyDecodeStatus HttpServer::decodeFixedLengthBody(ConnectionMapIt c
     }
     return BodyDecodeStatus::NeedMore;
   }
+  // Note: in HTTP/1.1, there cannot be trailers for non-chunked bodies.
   std::size_t declaredContentLen = 0;
   auto [ptr, err] = std::from_chars(lenViewAll.data(), lenViewAll.data() + lenViewAll.size(), declaredContentLen);
   if (err != std::errc() || ptr != lenViewAll.data() + lenViewAll.size()) {
@@ -210,7 +211,7 @@ HttpServer::BodyDecodeStatus HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt
     }
     bodyAndTrailers.append(state.inBuffer.data() + pos, std::min(chunkSize, state.inBuffer.size() - pos));
     if (bodyAndTrailers.size() > _config.maxBodyBytes) {
-      emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true, {});
+      emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
       return BodyDecodeStatus::Error;
     }
     pos += chunkSize;
