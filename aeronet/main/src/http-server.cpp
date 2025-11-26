@@ -469,13 +469,19 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
 
   const std::string_view encodingStr = encodingHeaderIt->second;
 
+  // We'll alternate between bodyAndTrailersBuffer (source) and _tmpBuffer (target) each stage.
+  std::string_view src = request.body();
+  RawChars* dst = &_tmpBuffer;
+
+  const auto contentLenIt = headersMap.find(http::ContentLength);
+
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
   const std::size_t maxPlainBytes = decompressionConfig.maxDecompressedBytes == 0
                                         ? std::numeric_limits<std::size_t>::max()
                                         : decompressionConfig.maxDecompressedBytes;
 
   bool useStreamingDecode = false;
   std::size_t declaredLen = 0;
-  const auto contentLenIt = headersMap.find(http::ContentLength);
   if (decompressionConfig.streamingActivationContentLength > 0 && contentLenIt != headersMap.end()) {
     // If Content-Length is present it has already been validated previously, so it should be valid.
     // It is not present in chunked requests.
@@ -485,11 +491,6 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
     useStreamingDecode = declaredLen >= decompressionConfig.streamingActivationContentLength;
   }
 
-  // We'll alternate between bodyAndTrailersBuffer (source) and _tmpBuffer (target) each stage.
-  std::string_view src = request.body();
-  RawChars* dst = &_tmpBuffer;
-
-#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
   const auto runDecoder = [&](Decoder& decoder) -> bool {
     if (!useStreamingDecode) {
       return decoder.decompressFull(src, maxPlainBytes, decompressionConfig.decoderChunkSize, *dst);

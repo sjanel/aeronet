@@ -226,7 +226,7 @@ jobs:
 
   examples-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       BUILD_DIR: build-examples
     steps:
@@ -247,17 +247,18 @@ jobs:
             -DAERONET_BUILD_TESTS=OFF \
             -DAERONET_BUILD_BENCHMARKS=OFF \
             -DAERONET_ENABLE_ASAN=OFF \
-            -DAERONET_ENABLE_SPDLOG=OFF \
+            -DAERONET_ENABLE_SPDLOG=ON \
             -DAERONET_ENABLE_OPENSSL=ON \
             -DAERONET_ENABLE_KTLS=ON \
-            -DAERONET_ENABLE_BROTLI=OFF \
-            -DAERONET_ENABLE_ZLIB=OFF \
-            -DAERONET_ENABLE_ZSTD=OFF \
-            -DAERONET_ENABLE_OPENTELEMETRY=OFF
+            -DAERONET_ENABLE_BROTLI=ON \
+            -DAERONET_ENABLE_ZLIB=ON \
+            -DAERONET_ENABLE_ZSTD=ON \
+            -DAERONET_ENABLE_OPENTELEMETRY=ON
 
       - name: Build examples
         run: |
           cmake --build ${BUILD_DIR} --parallel --target \
+          aeronet \
           aeronet-async-handle \
           aeronet-async-handlers \
           aeronet-minimal \
@@ -343,6 +344,15 @@ jobs:
             
           run_server_and_curl tls "https://127.0.0.1:18443/" -k -- \
             "${EXAMPLE_DIR}/aeronet-tls-ktls" ${BUILD_DIR}/certs/server.crt ${BUILD_DIR}/certs/server.key 18443
+
+      - name: Verify markdown C/C++ examples (compile & link)
+        run: |
+          set -euo pipefail
+          echo "Running markdown examples verifier against README.md and FEATURES.md"
+          NUM_PROC=$(nproc)
+          # Use half the CPUs for parallelism, but at least 1
+          JOBS=$(( ((NUM_PROC + 1) / 2) ))
+          scripts/verify-md-code.py -j ${JOBS} --link --build-dir ${BUILD_DIR} README.md docs/FEATURES.md
 
   alpine-musl-debug:
     name: Alpine (musl) Debug build
