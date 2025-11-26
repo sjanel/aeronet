@@ -1,10 +1,5 @@
 #pragma once
 
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -47,17 +42,10 @@ class TestHttpServer : public HttpServer {
 struct TestServer {
   explicit TestServer(aeronet::HttpServerConfig cfg, aeronet::RouterConfig routerCfg = {},
                       std::chrono::milliseconds pollPeriod = std::chrono::milliseconds{5})
-      : server(std::move(cfg.withPollInterval(pollPeriod)), std::move(routerCfg)),
-        loopThread([this] { server.runUntil([&] { return stopFlag.load(); }); }) {
+      : server(std::move(cfg.withPollInterval(pollPeriod)), std::move(routerCfg)) {
+    server.start();
     waitReady(std::chrono::milliseconds{500});
   }
-
-  TestServer(const TestServer&) = delete;
-  TestServer(TestServer&&) noexcept = delete;
-  TestServer& operator=(const TestServer&) = delete;
-  TestServer& operator=(TestServer&&) noexcept = delete;
-
-  ~TestServer() { stop(); }
 
   [[nodiscard]] uint16_t port() const { return server.port(); }
 
@@ -79,11 +67,7 @@ struct TestServer {
   }
 
   // Cooperative stop; safe to call multiple times.
-  void stop() {
-    if (!stopFlag.exchange(true)) {
-      server.stop();
-    }
-  }
+  void stop() { server.stop(); }
 
   void resetRouter(std::function<void(Router&)> initializer = {}) {
     postRouterUpdate([init = std::move(initializer)](Router& router) mutable {
@@ -125,9 +109,6 @@ struct TestServer {
     // simply confirms the OS accepted it. We retry briefly to absorb transient startup latency.
     ClientConnection cnx(port(), timeout);
   }
-
-  std::jthread loopThread;  // auto-join on destruction
-  std::atomic_bool stopFlag{false};
 };
 
 }  // namespace aeronet::test

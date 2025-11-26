@@ -10,6 +10,7 @@
 namespace aeronet::internal {
 
 struct Lifecycle {
+  // TODO: Stopping state is not really needed, could be merged with Draining
   enum class State : uint8_t { Idle, Running, Draining, Stopping };
 
   Lifecycle() = default;
@@ -57,9 +58,15 @@ struct Lifecycle {
     ready.store(true, std::memory_order_relaxed);
   }
 
-  void enterStopping() noexcept {
-    state.store(State::Stopping, std::memory_order_relaxed);
-    drainDeadlineEnabled = false;
+  // Atomically set state to Stopping only if current state is Running.
+  // Returns the previous state.
+  State exchangeStopping() noexcept {
+    State expected = State::Running;
+    // Use strong compare_exchange to change Running -> Stopping atomically.
+    if (state.compare_exchange_strong(expected, State::Stopping, std::memory_order_relaxed)) {
+      drainDeadlineEnabled = false;
+    }
+    return expected;
   }
 
   void enterDraining(std::chrono::steady_clock::time_point deadline, bool enabled) noexcept {

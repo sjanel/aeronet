@@ -340,26 +340,12 @@ void MultiHttpServer::rebuildServers() {
 
   firstServer.applyPendingUpdates();
 
-  HttpServerConfig config = std::move(firstServer._config);
-  Router router = std::move(firstServer._router);
-  auto parserErrCb = std::move(firstServer._parserErrCb);
-  auto metricsCb = std::move(firstServer._metricsCb);
-  auto expectationHandler = std::move(firstServer._expectationHandler);
-  auto middlewareMetricsCb = std::move(firstServer._middlewareMetricsCb);
-
   const auto targetCount = _servers.capacity();
   vector<HttpServer> newServers;
   newServers.reserve(targetCount);
 
   while (newServers.size() < targetCount) {
-    // TODO: authorize copy of HttpServer instead to simplify this code ?
-    auto& server = newServers.emplace_back(config, router);
-    server.setParserErrorCallback(parserErrCb);
-    server.setMetricsCallback(metricsCb);
-    server.setExpectationHandler(expectationHandler);
-    server.setMiddlewareMetricsCallback(middlewareMetricsCb);
-    server._isInMultiHttpServer = true;
-    server._lifecycleTracker = _lifecycleTracker;
+    newServers.emplace_back(firstServer)._lifecycleTracker = _lifecycleTracker;
   }
 
   _servers = std::move(newServers);
