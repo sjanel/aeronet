@@ -48,6 +48,7 @@ int main() {
 For a large response body, respond with multiple body chunks using `HttpResponseWriter`:
 
 ```cpp
+Router router;
 router.setDefault([](const HttpRequest& req, HttpResponseWriter& w){
   w.status(200);
   w.header("X-Req-Path", req.path());
@@ -64,11 +65,23 @@ router.setDefault([](const HttpRequest& req, HttpResponseWriter& w){
 For a (possible) large request body or an asynchronous operation, use an async handler returning `RequestTask<HttpResponse>`:
 
 ```cpp
-router.setPath(http::Method::GET, "/async", [](HttpRequest& req) -> RequestTask<HttpResponse> {
-  // Suspend execution without blocking the thread
-  auto result = co_await someAsyncOperation();
-  co_return HttpResponse(200).body(result);
-});
+// Minimal awaitable used for the README demo so `co_await someAsyncOperation()` compiles.
+struct SomeAsyncAwaitable {
+  bool await_ready() const noexcept { return false; }
+  void await_suspend(std::coroutine_handle<> h) noexcept { h.resume(); }
+  std::string await_resume() const noexcept { return std::string("Hello from coroutine!"); }
+};
+
+SomeAsyncAwaitable someAsyncOperation() { return {}; }
+
+int main() {
+  Router router;
+  router.setPath(http::Method::GET, "/async", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+    // Suspend execution without blocking the thread
+    auto result = co_await someAsyncOperation();
+    co_return HttpResponse(200).body(result);
+  });
+}
 ```
 
 Async handlers are invoked as soon as the request head is parsed, even if the body is still streaming in.
@@ -221,7 +234,7 @@ int main() {
   router.setDefault([](const HttpRequest&){ return HttpResponse(200, "OK").body("hi"); });
   HttpServer srv(HttpServerConfig{}, std::move(router));
   // Launch in background thread and capture lifetime handle
-  auto handle = srv.start();
+  auto handle = srv.startDetached();
   // main thread free to do orchestration / other work
   std::this_thread::sleep_for(std::chrono::seconds(2));
   handle.stop();
@@ -245,6 +258,7 @@ Stop-token form (std::stop_token):
 // If you already manage a std::stop_source you can pass its token directly
 // to let the caller control the server lifetime via cooperative cancellation.
 std::stop_source src;
+HttpServer srv(HttpServerConfig{});
 auto handle = srv.startDetachedWithStopToken(src.get_token());
 // later
 src.request_stop();
@@ -271,7 +285,6 @@ Example:
 
 ```cpp
 #include <aeronet/aeronet.hpp>
-#include <print>
 using namespace aeronet;
 
 int main() {
@@ -286,7 +299,7 @@ int main() {
   // ... run until external signal, or call stop() ...
   std::this_thread::sleep_for(std::chrono::seconds(30));
   auto agg = multi.stats();
-  std::print("instances={} queued={}\n", agg.per.size(), agg.total.totalBytesQueued);
+  log::info("instances={} queued={}\n", agg.per.size(), agg.total.totalBytesQueued);
 }
 ```
 
@@ -302,10 +315,11 @@ Additional notes:
 Stats aggregation example:
 
 ```cpp
+MultiHttpServer multi(HttpServerConfig{}, Router{}, 4);
 auto st = multi.stats();
 for (size_t i = 0; i < st.per.size(); ++i) {
   const auto& s = st.per[i];
-  std::print("[srv{}] queued={} imm={} flush={}\n", i,
+  log::info("[srv{}] queued={} imm={} flush={}\n", i,
              s.totalBytesQueued,
              s.totalBytesWrittenImmediate,
              s.totalBytesWrittenFlush);
@@ -348,14 +362,12 @@ Blocking semantics summary:
 `aeronet` provides a global signal handler mechanism for graceful shutdown of **all** running servers:
 
 ```cpp
-#include <aeronet/aeronet.hpp>
-
 // Install signal handlers for SIGINT/SIGTERM (typically in main before starting servers)
 std::chrono::milliseconds maxDrainPeriod{5000}; // 5s max drain
 aeronet::SignalHandler::Enable(maxDrainPeriod);
 
 // All HttpServer instances regularly check for stop requests in their event loops
-HttpServer server(cfg);
+HttpServer server(HttpServerConfig{});
 server.run();  // Will drain and stop when SIGINT/SIGTERM received
 ```
 
@@ -769,7 +781,7 @@ router.setPath(http::Method::GET | http::Method::PUT, "/hello", [](const HttpReq
   return HttpResponse(200, "OK").body("world");
 });
 router.setPath(http::Method::POST, "/echo", [](const HttpRequest& req){
-  return HttpResponse(200, "OK").body(req.body);
+  return HttpResponse(200, "OK").body(req.body());
 });
 // Add another method later (merges method mask, replaces handler)
 router.setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
@@ -802,6 +814,7 @@ Use these to gauge backpressure behavior and tune `maxOutboundBufferBytes`. When
 You can install a lightweight per-request metrics callback capturing basic timing and size information:
 
 ```cpp
+HttpServer server;
 server.setMetricsCallback([](const HttpServer::RequestMetrics& m){
   // Export to stats sink / log
   // m.method, m.target, m.status, m.bytesIn, m.bytesOut (currently 0 for fixed responses), m.duration, m.reusedConnection
