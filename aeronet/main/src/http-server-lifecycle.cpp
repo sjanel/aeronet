@@ -122,6 +122,32 @@ HttpServer::HttpServer(HttpServerConfig cfg, Router router)
   init();
 }
 
+HttpServer::HttpServer(const HttpServer& other)
+    : _config(other._config),
+      _listenSocket(kListenSocketType),
+      _isInMultiHttpServer(other._isInMultiHttpServer),
+      _eventLoop(_config.pollInterval),
+      _router(other._router),
+      _encodingSelector(_config.compression),
+      _parserErrCb(other._parserErrCb),
+      _metricsCb(other._metricsCb),
+      _middlewareMetricsCb(other._middlewareMetricsCb),
+      _expectationHandler(other._expectationHandler),
+      _pendingConfigUpdates(other._pendingConfigUpdates),
+      _pendingRouterUpdates(other._pendingRouterUpdates),
+      _telemetry(_config.telemetry) {
+  if (!other._lifecycle.isIdle()) {
+    throw std::logic_error("Cannot copy-construct from a running HttpServer");
+  }
+
+  _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.load(std::memory_order_relaxed),
+                                 std::memory_order_relaxed);
+  _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.load(std::memory_order_relaxed),
+                                 std::memory_order_relaxed);
+
+  init();
+}
+
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
 HttpServer::HttpServer(HttpServer&& other)
     : _stats(std::exchange(other._stats, {})),
@@ -151,7 +177,6 @@ HttpServer::HttpServer(HttpServer&& other)
       _tlsMetrics(std::move(other._tlsMetrics)),
       _tlsMetricsExternal(std::exchange(other._tlsMetricsExternal, {}))
 #endif
-
 {
   if (!_lifecycle.isIdle()) {
     throw std::logic_error("Cannot move-construct a running HttpServer");
@@ -382,19 +407,18 @@ HttpServer::AsyncHandle HttpServer::startDetachedWithStopToken(std::stop_token t
 }
 
 void HttpServer::stop() noexcept {
-  if (!_lifecycle.isActive()) {
-    return;
-  }
-  log::debug("Stopping server");
-  _lifecycle.enterStopping();
   closeListener();
+  if (_lifecycle.exchangeStopping() == internal::Lifecycle::State::Running) {
+    log::debug("Stopping server");
 
-  // Stop internal handle if start() was used (non-blocking API)
-  if (_internalHandle.has_value()) {
-    _internalHandle->stop();
-    _internalHandle.reset();
+    // Stop internal handle if start() was used (non-blocking API)
+    if (_internalHandle) {
+      _internalHandle->stop();
+      _internalHandle.reset();
+    }
+    _lifecycle.reset();
+    log::debug("Stopped server");
   }
-  log::debug("Stopped server");
 }
 
 void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {

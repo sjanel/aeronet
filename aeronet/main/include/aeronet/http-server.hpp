@@ -178,6 +178,14 @@ class HttpServer {
   // and using the provided Router for request routing (can be configured after construction before run).
   HttpServer(HttpServerConfig cfg, Router router);
 
+  // A HttpServer is copyable - but only from a non-running instance.
+  // The copy will duplicate the configuration and router state, but not
+  // any active connections or runtime state.
+  HttpServer(const HttpServer&);
+
+  // HttpServer is not copy-assignable.
+  HttpServer& operator=(const HttpServer&) = delete;
+
   // Move semantics & constraints:
   // -----------------------------
   // A HttpServer can be moved ONLY when it is not running. Attempting to move (construct or assign from) a
@@ -203,8 +211,6 @@ class HttpServer {
   //    HttpServer s(cfg);
   //    std::jthread t([&]{ s.run(); });
   //    HttpServer moved(std::move(s)); // throws
-  HttpServer(const HttpServer&) = delete;
-  HttpServer& operator=(const HttpServer&) = delete;
   HttpServer(HttpServer&& other);             // NOLINT(performance-noexcept-move-constructor)
   HttpServer& operator=(HttpServer&& other);  // NOLINT(performance-noexcept-move-constructor)
 
@@ -322,6 +328,8 @@ class HttpServer {
   // existing established connections are not force‑closed – they simply stop being serviced once the loop exits.
   // Usually called from a different thread than the one that started the server, this method is not blocking,
   // so the server might not be immediately stopped once the method returns to the caller.
+  // Note that you can also call stop on a server that listens on a port without being running - in this case, it will
+  // close the listening socket.
   //
   // Idempotency:
   //   - Repeated calls are harmless. Calling after the server already stopped has no effect.
