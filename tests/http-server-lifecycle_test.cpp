@@ -26,10 +26,18 @@ using namespace std::chrono_literals;
 
 namespace aeronet {
 
+TEST(HttpServer, DefaultConstructor) {
+  HttpServer server;
+  EXPECT_EQ(server.port(), 0);
+  server.beginDrain();  // should do nothing
+  EXPECT_FALSE(server.isDraining());
+  EXPECT_FALSE(server.isRunning());
+  server.setExpectationHandler({});
+}
+
 TEST(HttpServerMove, MoveConstructAndServe) {
   std::atomic_bool stop{false};
-  HttpServer original(HttpServerConfig{});
-  auto port = original.port();
+  HttpServer original;
   original.router().setDefault([](const HttpRequest& req) {
     HttpResponse resp;
     resp.body(std::string("ORIG:") + std::string(req.path()));
@@ -41,7 +49,8 @@ TEST(HttpServerMove, MoveConstructAndServe) {
 
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  std::string resp = test::simpleGet(port, "/mv");
+
+  std::string resp = test::simpleGet(moved.port(), "/mv");
 
   stop.store(true);
 
@@ -321,6 +330,7 @@ TEST(HttpDrain, DeadlineForcesIdleConnectionsToClose) {
   const int fd = idle.fd();
 
   ASSERT_TRUE(WaitForServerRunning(ts.server, 200ms));
+  ts.server.beginDrain(std::chrono::milliseconds{500});
   ts.server.beginDrain(std::chrono::milliseconds{50});
   ASSERT_TRUE(ts.server.isDraining());
 
@@ -420,7 +430,8 @@ TEST(HttpProbes, StartupAndReadinessTransitions) {
   auto liveResp = test::simpleGet(ts.port(), "/livez");
   EXPECT_TRUE(liveResp.contains("200"));
 
-  ts.server.beginDrain();
+  ts.server.beginDrain(500ms);
+  ts.server.beginDrain(SignalHandler::GetMaxDrainPeriod());
 
   // Rather than a single fixed sleep which can occasionally race with the server's
   // internal drain transition, poll briefly for the expected states. The readiness

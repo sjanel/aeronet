@@ -600,6 +600,9 @@ TEST(MultiHttpServer, AggregatedStatsJsonAndSetters) {
   }
 
   // Validate callbacks were invoked at least once where applicable
+  for (int attempts = 0; attempts < 50 && errorsCount.load(std::memory_order_relaxed) == 0; ++attempts) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
   EXPECT_EQ(errorsCount.load(std::memory_order_relaxed), 1);
   EXPECT_EQ(metricsCbCount.load(std::memory_order_relaxed), 1);
   EXPECT_EQ(middlewareCbCount.load(std::memory_order_relaxed), 1);

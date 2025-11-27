@@ -17,7 +17,7 @@
 namespace aeronet {
 
 RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& globalHeaders, std::string_view body) {
-  std::string_view reason = http::reasonPhraseFor(status);
+  std::string_view reason = http::ReasonPhraseFor(status);
 
   assert(status >= 100 && status < 1000);
 

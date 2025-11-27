@@ -24,3 +24,11 @@ target_link_libraries(aeronet_tls
         aeronet_objects
         aeronet_tech
 )
+
+AeronetAddUnitTest(
+    tls-components_test
+    test/tls-components_test.cpp
+    LIBRARIES
+    aeronet_tls
+    aeronet_test_support
+)

@@ -41,6 +41,7 @@
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/nchars.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/request-task.hpp"
@@ -1192,12 +1193,15 @@ void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusC
                                  std::string_view body) {
   queueData(cnxIt, HttpResponseData(BuildSimpleError(statusCode, _config.globalHeaders, body)));
 
-  try {
-    _parserErrCb(statusCode);
-  } catch (const std::exception& ex) {
-    // Swallow exceptions from user callback to avoid destabilizing the server
-    log::error("Exception raised in user callback: {}", ex.what());
+  if (_parserErrCb) {
+    try {
+      _parserErrCb(statusCode);
+    } catch (const std::exception& ex) {
+      // Swallow exceptions from user callback to avoid destabilizing the server
+      log::error("Exception raised in user callback: {}", ex.what());
+    }
   }
+
   if (immediate) {
     cnxIt->second->requestImmediateClose();
   } else {
