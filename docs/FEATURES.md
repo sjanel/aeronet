@@ -2000,6 +2000,6 @@ router.setPath(http::Method::GET | http::Method::POST, "/api/*",
 
 ## Future Expansions
 
-Planned / potential: trailers, streaming inbound decompression, encoder pooling, compression ratio metrics, TLS hot reload & SNI, richer logging & metrics, additional OpenTelemetry instrumentation (histograms, gauges).
+Planned / potential: TLS hot reload & SNI, richer logging & metrics, additional OpenTelemetry instrumentation (histograms, gauges).
 
 - [ ] Additional OpenTelemetry instrumentation (histograms, gauges)
