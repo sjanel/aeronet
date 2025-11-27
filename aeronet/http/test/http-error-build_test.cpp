@@ -55,7 +55,7 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorUsesDefaultReasonWhenEmpty) {
     auto data = BuildSimpleError(code, {}, "");
     std::string_view full(data);
     std::string expected =
-        std::string("HTTP/1.1 ") + std::to_string(code) + " " + std::string(http::reasonPhraseFor(code));
+        std::string("HTTP/1.1 ") + std::to_string(code) + " " + std::string(http::ReasonPhraseFor(code));
     EXPECT_TRUE(full.rfind(expected, 0) == 0) << "Response did not start with '" << expected << "':\n" << full;
   }
 }

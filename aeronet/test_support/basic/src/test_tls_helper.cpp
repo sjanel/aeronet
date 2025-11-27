@@ -9,6 +9,7 @@
 #include <openssl/x509.h>
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -27,7 +28,9 @@ std::pair<std::string, std::string> makeEphemeralCertKey(const char* commonName,
   }
   EVP_PKEY_CTX_free(kctx);
 
-  X509* x509 = X509_new();
+  std::unique_ptr<X509, decltype(&X509_free)> x509Ptr(X509_new(), &X509_free);
+
+  X509* x509 = x509Ptr.get();
   if (x509 == nullptr) {
     EVP_PKEY_free(pkey);
     return {"", ""};
@@ -42,7 +45,6 @@ std::pair<std::string, std::string> makeEphemeralCertKey(const char* commonName,
   X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(commonName), -1, -1, 0);
   X509_set_issuer_name(x509, name);
   if (X509_sign(x509, pkey, EVP_sha256()) <= 0) {
-    X509_free(x509);
     EVP_PKEY_free(pkey);
     return {"", ""};
   }
@@ -71,7 +73,6 @@ std::pair<std::string, std::string> makeEphemeralCertKey(const char* commonName,
       BIO_free(bio);
     }
   }
-  X509_free(x509);
   EVP_PKEY_free(pkey);
   return {certPem, keyPem};
 }

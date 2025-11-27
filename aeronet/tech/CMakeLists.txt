@@ -17,6 +17,18 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    flat-hash-map_test
+    test/flat-hash-map_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
+    http-constants_test
+    test/http-constants_test.cpp
+)
+
+AeronetAddUnitTest(
     ipow_test
     test/ipow_test.cpp
 )
@@ -93,13 +105,6 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     tchars_test
     test/tchars_test.cpp
-)
-
-AeronetAddUnitTest(
-    flat-hash-map_test
-    test/flat-hash-map_test.cpp
-    LIBRARIES
-    aeronet_tech
 )
 
 AeronetAddUnitTest(

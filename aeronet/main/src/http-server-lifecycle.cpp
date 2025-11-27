@@ -109,7 +109,7 @@ HttpServer::HttpServer(HttpServerConfig config, RouterConfig routerConfig)
       _router(std::move(routerConfig)),
       _encodingSelector(_config.compression),
       _telemetry(_config.telemetry) {
-  init();
+  initListener();
 }
 
 HttpServer::HttpServer(HttpServerConfig cfg, Router router)
@@ -119,7 +119,7 @@ HttpServer::HttpServer(HttpServerConfig cfg, Router router)
       _router(std::move(router)),
       _encodingSelector(_config.compression),
       _telemetry(_config.telemetry) {
-  init();
+  initListener();
 }
 
 HttpServer::HttpServer(const HttpServer& other)
@@ -145,7 +145,7 @@ HttpServer::HttpServer(const HttpServer& other)
   _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.load(std::memory_order_relaxed),
                                  std::memory_order_relaxed);
 
-  init();
+  initListener();
 }
 
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
@@ -272,7 +272,7 @@ HttpServer::~HttpServer() { stop(); }
 //   - In a nominal environment using an ephemeral port (cfg.port == 0), the probability of an exception is ~0 unless
 //     the process hits fd limits or severe memory pressure. Fixed ports may legitimately throw due to EADDRINUSE.
 //   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
-void HttpServer::init() {
+void HttpServer::initListener() {
   _config.validate();
 
   if (!_listenSocket) {
@@ -332,7 +332,7 @@ void HttpServer::prepareRun() {
     throw std::logic_error("Server is already running");
   }
   if (!_listenSocket) {
-    init();
+    initListener();
   }
   if (!_isInMultiHttpServer) {
     // In MultiHttpServer, logging is done at that level instead.
