@@ -2,7 +2,6 @@
 
 #include <sys/socket.h>
 
-#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -12,7 +11,6 @@
 #include <optional>
 #include <random>
 #include <string>
-#include <thread>
 
 #include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/http-constants.hpp"
@@ -127,205 +125,198 @@ inline void forEachHeader(std::string_view hdrBlock, Fn &&cb) {
   }
 }
 
-// Simplified blocking implementation: issue request, block until headers, then read body per Content-Length.
-// This intentionally forgoes adaptive/non-blocking complexity to reduce flakiness.
+// Blocking recv helper - returns bytes read, 0 on close, -1 on timeout.
+inline ssize_t blockingRecv(int fd, char *buf, std::size_t len, std::chrono::steady_clock::time_point deadline) {
+  while (std::chrono::steady_clock::now() < deadline) {
+    ssize_t nb = ::recv(fd, buf, len, 0);
+    if (nb > 0) {
+      return nb;
+    }
+    if (nb == 0) {
+      return 0;  // connection closed
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    return 0;  // error treated as close
+  }
+  return -1;  // timeout
+}
+
+// Parse Content-Length value starting at pos in headers. Returns (value, success).
+inline std::pair<std::size_t, bool> parseContentLength(std::string_view headers, std::size_t pos) {
+  // Skip "Content-Length:" prefix
+  pos += 15;
+  // Skip whitespace
+  while (pos < headers.size() && (headers[pos] == ' ' || headers[pos] == '\t')) {
+    ++pos;
+  }
+  std::size_t val = 0;
+  bool found = false;
+  while (pos < headers.size() && headers[pos] >= '0' && headers[pos] <= '9') {
+    val = (val * 10) + static_cast<std::size_t>(headers[pos] - '0');
+    found = true;
+    ++pos;
+    if (val > (1ULL << 30)) {
+      break;  // cap 1GB
+    }
+  }
+  return {val, found};
+}
+
+// Check if headers contain chunked transfer encoding.
+inline bool isChunkedEncoding(std::string_view headers) {
+  auto pos = headers.find("Transfer-Encoding:");
+  if (pos == std::string_view::npos) {
+    pos = headers.find("transfer-encoding:");
+  }
+  if (pos == std::string_view::npos) {
+    return false;
+  }
+  auto lineEnd = headers.find('\r', pos);
+  std::string_view val = headers.substr(pos, lineEnd == std::string_view::npos ? headers.size() - pos : lineEnd - pos);
+  return val.contains("chunked");
+}
+
+// Issue HTTP request and return response body size. Optimized for benchmark hot path.
 inline std::optional<std::size_t> requestBodySize(std::string_view method, std::string_view path, int fd,
                                                   std::size_t requestedSize, bool keepAlive) {
-  std::string req(method);
-  req.push_back(' ');
+  // Build request with minimal allocations
+  std::string req;
+  req.reserve(method.size() + path.size() + 80);
+  req.append(method);
+  req += ' ';
   req.append(path);
-  req.append("?size=");
-  req.append(std::to_string(requestedSize));
-  req.append(" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: ");
-  req.append(keepAlive ? aeronet::http::keepalive : aeronet::http::close);
-  req.append(aeronet::http::DoubleCRLF);
+  req += "?size=";
+  req += std::to_string(requestedSize);
+  req += " HTTP/1.1\r\nHost: h\r\nConnection: ";
+  req += keepAlive ? aeronet::http::keepalive : aeronet::http::close;
+  req += aeronet::http::DoubleCRLF;
 
   aeronet::test::sendAll(fd, req);
 
-  // Extend deadline for benchmarks that request very large bodies over fresh TCP connections.
-  // Keep tests / CI responsive while avoiding spurious timeouts for multi-megabyte responses.
-  constexpr auto kGlobalDeadline = std::chrono::seconds(30);
-  const auto deadline = std::chrono::steady_clock::now() + kGlobalDeadline;
-  aeronet::RawChars buffer;
-  std::size_t contentLength = 0;
-  bool haveCL = false;
-  // 1. Read headers
-  while (std::chrono::steady_clock::now() < deadline) {
-    constexpr std::size_t kChunkSize = static_cast<std::size_t>(64) * 1024ULL;
-    std::size_t oldSize = buffer.size();
+  static constexpr auto kTimeout = std::chrono::seconds(30);
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  static constexpr std::size_t kBufSize = 64ULL * 1024ULL;
 
-    buffer.ensureAvailableCapacityExponential(kChunkSize);
-    for (;;) {
-      ssize_t recvBytes = ::recv(fd, buffer.data() + oldSize, kChunkSize, 0);  // blocking
-      if (recvBytes > 0) {
-        buffer.addSize(static_cast<std::size_t>(recvBytes));
-        break;
+  aeronet::RawChars buf(kBufSize);
+
+  // --- Phase 1: Read until we have complete headers ---
+  const char *headerEnd = nullptr;
+  while (headerEnd == nullptr) {
+    ssize_t nb = blockingRecv(fd, buf.end(), buf.availableCapacity(), deadline);
+    if (nb <= 0) {
+      return std::nullopt;
+    }
+    buf.addSize(static_cast<std::size_t>(nb));
+
+    // Search for header terminator
+    std::string_view data(buf.data(), buf.size());
+    auto pos = data.find(aeronet::http::DoubleCRLF);
+    if (pos != std::string_view::npos) {
+      headerEnd = buf.data() + pos + aeronet::http::DoubleCRLF.size();
+    } else {
+      buf.ensureAvailableCapacityExponential(kBufSize);
+    }
+  }
+
+  std::string_view headers(buf.data(), static_cast<std::size_t>(headerEnd - buf.data()));
+  std::size_t bodyOffset = static_cast<std::size_t>(headerEnd - buf.data());
+
+  // --- Phase 2: Determine transfer mode and content length ---
+  auto clPos = headers.find("Content-Length:");
+  if (clPos == std::string_view::npos) {
+    clPos = headers.find("content-length:");
+  }
+
+  bool chunked = (clPos == std::string_view::npos) && isChunkedEncoding(headers);
+  if (clPos == std::string_view::npos && !chunked) {
+    aeronet::log::error("No Content-Length or chunked encoding");
+    return std::nullopt;
+  }
+
+  // --- Phase 3a: Content-Length mode ---
+  if (!chunked) {
+    auto [contentLength, ok] = parseContentLength(headers, clPos);
+    if (!ok) {
+      aeronet::log::error("Failed to parse Content-Length");
+      return std::nullopt;
+    }
+    if (contentLength == 0) {
+      return 0;
+    }
+
+    std::size_t haveBody = buf.size() - bodyOffset;
+    while (haveBody < contentLength) {
+      buf.ensureAvailableCapacityExponential(kBufSize);
+      ssize_t nb = blockingRecv(fd, buf.end(), buf.availableCapacity(), deadline);
+      if (nb <= 0) {
+        return std::nullopt;
       }
-      if (recvBytes == -1 && errno == EINTR) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        continue;  // retry
+      buf.addSize(static_cast<std::size_t>(nb));
+      haveBody = buf.size() - bodyOffset;
+    }
+    return contentLength;
+  }
+
+  // --- Phase 3b: Chunked mode ---
+  std::size_t totalBody = 0;
+  std::size_t pos = bodyOffset;
+
+  auto ensureBytes = [&](std::size_t need) -> bool {
+    while (buf.size() < need) {
+      buf.ensureAvailableCapacityExponential(kBufSize);
+      ssize_t nb = blockingRecv(fd, buf.end(), buf.availableCapacity(), deadline);
+      if (nb <= 0) {
+        return false;
       }
-      aeronet::log::debug("connection closed before headers: {}", std::strerror(errno));
+      buf.addSize(static_cast<std::size_t>(nb));
+    }
+    return true;
+  };
+
+  for (;;) {
+    // Find chunk size line
+    if (!ensureBytes(pos + 8)) {
       return std::nullopt;
     }
 
-    auto crlrRg = std::ranges::search(buffer, aeronet::http::DoubleCRLF);
-    if (crlrRg.empty()) {
-      continue;
-    }
-    std::string_view headers(buffer.data(), crlrRg.data() + aeronet::http::DoubleCRLF.size());
-    auto clPos = headers.find("Content-Length:");
-    if (clPos == std::string_view::npos) {
-      clPos = headers.find("content-length:");
-    }
-    bool isChunked = false;
-    if (clPos == std::string_view::npos) {
-      // Check for Transfer-Encoding: chunked (case-insensitive search)
-      auto tePos = headers.find("Transfer-Encoding:");
-      if (tePos == std::string_view::npos) {
-        tePos = headers.find("transfer-encoding:");
-      }
-      if (tePos != std::string_view::npos) {
-        // crude check for the token 'chunked' after the header name
-        auto teEnd = headers.find('\r', tePos);
-        if (teEnd == std::string_view::npos) {
-          teEnd = headers.size();
-        }
-        std::string_view teVal = headers.substr(tePos, teEnd - tePos);
-        if (teVal.find("chunked") != std::string_view::npos || teVal.find("CHUNKED") != std::string_view::npos) {
-          isChunked = true;
-        }
-      }
-      if (!isChunked) {
-        aeronet::log::error("Content-Length missing");
+    const char *lineStart = buf.data() + pos;
+    const char *crlfPos = nullptr;
+    while (crlfPos == nullptr) {
+      std::string_view remaining(buf.data() + pos, buf.size() - pos);
+      auto idx = remaining.find(aeronet::http::CRLF);
+      if (idx != std::string_view::npos) {
+        crlfPos = buf.data() + pos + idx;
+      } else if (!ensureBytes(buf.size() + 32)) {
         return std::nullopt;
       }
     }
-    clPos += sizeof("Content-Length:") - 1;
-    while (clPos < headers.size() && (headers[clPos] == ' ' || headers[clPos] == '\t')) {
-      ++clPos;
-    }
-    while (clPos < headers.size() && headers[clPos] >= '0' && headers[clPos] <= '9') {
-      contentLength = (contentLength * 10) + static_cast<std::size_t>(headers[clPos] - '0');
-      haveCL = true;
-      ++clPos;
-      if (contentLength > (1U << 30)) {
-        break;  // cap 1GB
+
+    // Parse hex chunk size
+    std::size_t chunkSz = 0;
+    for (const char *pc = lineStart; pc < crlfPos; ++pc) {
+      int digit = aeronet::from_hex_digit(*pc);
+      if (digit < 0) {
+        break;
       }
+      chunkSz = (chunkSz << 4) | static_cast<std::size_t>(digit);
     }
-    if (!haveCL) {
-      aeronet::log::error("failed to parse Content-Length");
+
+    pos = static_cast<std::size_t>(crlfPos - buf.data()) + 2;  // past CRLF
+
+    if (chunkSz == 0) {
+      return totalBody;  // final chunk
+    }
+
+    // Ensure chunk data + trailing CRLF
+    if (!ensureBytes(pos + chunkSz + 2)) {
       return std::nullopt;
     }
-    std::size_t bodyOffset = static_cast<std::size_t>(crlrRg.data() - buffer.data()) + aeronet::http::DoubleCRLF.size();
-    std::size_t haveBody = buffer.size() - bodyOffset;
-    if (!isChunked) {
-      if (contentLength == 0) {
-        return 0U;
-      }
-      if (haveBody >= contentLength) {
-        return contentLength;
-      }
-      // 2. Read remaining body for Content-Length
-      std::size_t remaining = contentLength - haveBody;
-      while (remaining > 0 && std::chrono::steady_clock::now() < deadline) {
-        std::size_t chunkSize = std::min<std::size_t>(static_cast<std::size_t>(64) * 1024ULL, remaining);
-        std::size_t oldBodySize = buffer.size();
 
-        buffer.ensureAvailableCapacityExponential(chunkSize);
-
-        for (;;) {
-          ssize_t recvBytes = ::recv(fd, buffer.data() + oldBodySize, chunkSize, 0);
-          if (recvBytes > 0) {
-            buffer.addSize(static_cast<std::size_t>(recvBytes));
-            break;
-          }
-          if (recvBytes == -1 && errno == EINTR) {
-            continue;  // retry
-          }
-          aeronet::log::debug("body truncated: wanted {}, have {}", contentLength, contentLength - remaining);
-          std::this_thread::sleep_for(std::chrono::milliseconds(1));
-          break;
-        }
-        remaining -= buffer.size() - oldBodySize;
-      }
-      if (remaining == 0) {
-        return contentLength;
-      }
-    } else {
-      // Chunked transfer decoding: read chunks until a 0-sized chunk is seen.
-      std::size_t totalBody = 0;
-      std::size_t curPos = bodyOffset;
-      auto readMore = [&](std::size_t want) {
-        while (buffer.size() < want && std::chrono::steady_clock::now() < deadline) {
-          std::size_t oldSize = buffer.size();
-          static constexpr std::size_t kChunkSize = static_cast<std::size_t>(64) * 1024ULL;
-
-          buffer.ensureAvailableCapacityExponential(kChunkSize);
-          for (;;) {
-            ssize_t r = ::recv(fd, buffer.data() + oldSize, kChunkSize, 0);
-            if (r > 0) {
-              buffer.addSize(static_cast<std::size_t>(r));
-              break;
-            }
-            if (r == -1 && errno == EINTR) {
-              continue;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-          }
-        }
-      };
-      for (;;) {
-        // Ensure we have at least a line for the chunk size
-        readMore(curPos + 32);
-        // find CRLF
-        auto lineEnd = std::string_view(buffer.data() + curPos, buffer.size() - curPos);
-        auto posCr = lineEnd.find(aeronet::http::CRLF);
-        while (posCr == std::string_view::npos && std::chrono::steady_clock::now() < deadline) {
-          readMore(buffer.size() + 32);
-          lineEnd = std::string_view(buffer.data() + curPos, buffer.size() - curPos);
-          posCr = lineEnd.find(aeronet::http::CRLF);
-        }
-        if (posCr == std::string_view::npos) {
-          aeronet::log::error("timeout reading chunk size");
-          return std::nullopt;
-        }
-        std::string_view sizeLine(buffer.data() + curPos, posCr);
-        // parse hex chunk size using shared helper
-        std::size_t chunkSz = 0;
-        for (char ch : sizeLine) {
-          int digit = aeronet::from_hex_digit(ch);
-          if (digit < 0) {
-            break;  // ignore chunk extensions or invalid digits
-          }
-          chunkSz = (chunkSz << 4) + static_cast<std::size_t>(digit);
-        }
-        curPos += posCr + 2;  // skip CRLF
-        // Ensure we have the whole chunk (chunkSz bytes + CRLF)
-        readMore(curPos + chunkSz + 2);
-        if (buffer.size() < curPos + chunkSz + 2) {
-          aeronet::log::error("timeout reading chunk payload");
-          return std::nullopt;
-        }
-        totalBody += chunkSz;
-        curPos += chunkSz;
-        // expect CRLF after chunk
-        if (curPos + aeronet::http::CRLF.size() > buffer.size() ||
-            !std::equal(aeronet::http::CRLF.begin(), aeronet::http::CRLF.end(), buffer.begin() + curPos)) {
-          aeronet::log::error("malformed chunked encoding");
-          return std::nullopt;
-        }
-        curPos += aeronet::http::CRLF.size();
-        if (chunkSz == 0) {
-          return totalBody;
-        }
-      }
-    }
-    aeronet::log::error("timeout reading body");
-    return std::nullopt;
+    totalBody += chunkSz;
+    pos += chunkSz + 2;  // skip data + CRLF
   }
-  aeronet::log::error("timeout waiting for headers ({}s cap)", kGlobalDeadline.count());
-  return std::nullopt;
 }
 
 }  // namespace benchutil
