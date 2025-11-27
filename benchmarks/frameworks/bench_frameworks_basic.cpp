@@ -557,7 +557,12 @@ void BodyMinMaxNoReuse(benchmark::State &state, std::string_view name, Server &s
 // 1) No connection reuse: establish a fresh TCP connection for every request.
 //    This highlights accept + handshake + kernel scheduling overhead vs pure keep-alive.
 void AeronetBodyMinMaxNoReuse(benchmark::State &state) {
-  AeronetServerRunner server;  // single server instance
+  // Construct the server once and reuse it across multiple benchmark invocations.
+  // Google Benchmark may run the same benchmark function multiple times (warmup,
+  // measurement repeats, etc.), which previously caused the server to be
+  // started/stopped repeatedly. Making the server static keeps it running for
+  // the whole process lifetime and avoids the observed start/stop logs.
+  static AeronetServerRunner server;
   BodyMinMaxNoReuse(state, "aeronet", server);
 }
 
@@ -574,14 +579,14 @@ void DrogonBodyMinMaxNoReuse(benchmark::State &state) {
 #ifdef AERONET_BENCH_ENABLE_OATPP
 // Oatpp: no connection reuse variant (fresh TCP connection each request)
 void OatppBodyMinMaxNoReuse(benchmark::State &state) {
-  OatppServerWrapper server;  // local server instance
+  static OatppServerWrapper server;  // local server instance
   BodyMinMaxNoReuse(state, "oatpp", server);
 }
 #endif
 
 #ifdef AERONET_BENCH_ENABLE_HTTPLIB
 void HttplibBodyMinMaxNoReuse(benchmark::State &state) {
-  HttplibServerWrapper server;
+  static HttplibServerWrapper server;
   BodyMinMaxNoReuse(state, "httplib", server);
 }
 #endif
