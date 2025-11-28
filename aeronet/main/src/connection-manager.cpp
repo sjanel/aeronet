@@ -62,14 +62,14 @@ void HttpServer::sweepIdleConnections() {
 
     // Keep-alive inactivity enforcement only if enabled.
     // Don't close if there's an active file send - those can block waiting for socket to be writable.
-    if (_config.enableKeepAlive && !state.fileSend.active && (now - state.lastActivity) > _config.keepAliveTimeout) {
+    if (_config.enableKeepAlive && !state.fileSend.active && now > state.lastActivity + _config.keepAliveTimeout) {
       cnxIt = closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_keep_alive");
       continue;
     }
     // Header read timeout: active if headerStart set and duration exceeded and no full request parsed yet.
     if (_config.headerReadTimeout.count() > 0 && state.headerStartTp.time_since_epoch().count() != 0 &&
-        (now - state.headerStartTp) > _config.headerReadTimeout) {
+        now > state.headerStartTp + _config.headerReadTimeout) {
       emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, false, {});
       cnxIt = closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_header_read_timeout");
@@ -78,7 +78,7 @@ void HttpServer::sweepIdleConnections() {
     // Body read timeout: triggered when the handler is waiting for missing body bytes.
     if (_config.bodyReadTimeout.count() > 0 && state.waitingForBody &&
         state.bodyLastActivity.time_since_epoch().count() != 0 &&
-        (now - state.bodyLastActivity) > _config.bodyReadTimeout) {
+        now > state.bodyLastActivity + _config.bodyReadTimeout) {
       emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, false, {});
       cnxIt = closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_body_read_timeout");
@@ -89,7 +89,7 @@ void HttpServer::sweepIdleConnections() {
     if (_config.tls.handshakeTimeout.count() > 0 && _config.tls.enabled &&
         state.handshakeStart.time_since_epoch().count() != 0 && !state.tlsEstablished &&
         !state.transport->handshakeDone()) {
-      if (now - state.handshakeStart > _config.tls.handshakeTimeout) {
+      if (now > state.handshakeStart + _config.tls.handshakeTimeout) {
         cnxIt = closeConnection(cnxIt);
         _telemetry.counterAdd("aeronet.connections.closed_for_handshake_timeout");
         continue;

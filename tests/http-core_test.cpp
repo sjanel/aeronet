@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <regex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -20,6 +21,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 

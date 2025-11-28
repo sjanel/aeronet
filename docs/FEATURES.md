@@ -205,7 +205,7 @@ Notes and implementation details
 
 - [x] Single-thread event loop (one server instance)
 - [x] Horizontal scaling via SO_REUSEPORT (multi-reactor)
-- [x] Multi-instance orchestration wrapper (`MultiHttpServer`) (explicit `reusePort=true` for >1 threads; aggregated stats; resolved port immediately after construction)
+- [x] Multi-instance orchestration wrapper (`MultiHttpServer`) (forces `reusePort=true` for >1 threads; aggregated stats; resolved port immediately after construction)
 - [x] writev scatter-gather for response header + body
 - [x] Outbound write buffering with EPOLLOUT-driven backpressure
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
@@ -1307,6 +1307,22 @@ multi.start();
 multi.stop();
 multi.start();
 ```
+
+### Port reuse semantics
+
+The library interprets this boolean slightly differently depending on whether you use a single `HttpServer` or the `MultiHttpServer` wrapper to make the behaviour both safe and intuitive:
+
+- Single `HttpServer`:
+  - `reusePort = false` creates the listening socket without that reuse option.
+  - `reusePort = true` requests the kernel-level reuse option (platform dependent: SO_REUSEPORT/SO_REUSEADDR) when creating the listening socket for that server instance.
+
+- `MultiHttpServer` (multi-reactor wrapper):
+  - `reusePort = false` (recommended for explicit ports): the first server binds the explicit port exclusively (no reuse option) temporarily to ensure the process obtains the port and avoid accidentally binding to an unrelated process. Once the exclusive bind succeeds, subsequent internal sibling servers created by `MultiHttpServer` will be started to reuse that resolved port internally for multi-reactor operation. This gives a safe default for explicit ports while still providing multi-reactor scaling inside the process.
+  - `reusePort = true`: no check about possible existing listener on the system on the given port is made. The first server will set the reuse option and all servers created for the `MultiHttpServer` will use socket reuse. This enables binding by other co-located processes as well as in-process siblings.
+
+Note: ephemeral ports (`port == 0`) preserve prior behaviour: the first server discovers the kernel-assigned ephemeral port and subsequent siblings bind to that resolved port using reuse semantics so `MultiHttpServer` keeps working with ephemeral port allocation.
+
+To sum-up, for most cases you will prefer `reusePort = false` (which is the default) to avoid accidental port conflicts with other processes and keep your own server instances listening for trafic, while still getting multi-reactor scaling internally. Use `reusePort = true` only when you explicitly want to share the port with other processes or have specific reuse semantics in mind.
 
 ## Built-in Kubernetes-style probes
 
