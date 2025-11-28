@@ -138,9 +138,7 @@ inline constexpr std::string_view ContentTypeApplicationOctetStream = "applicati
 inline constexpr std::string_view ContentTypeMessageHttp = "message/http";
 
 // Return the canonical reason phrase for a subset of status codes we care about.
-// If an unmapped status is provided, returns an empty string_view, letting callers
-// decide whether to supply a custom phrase.
-constexpr std::string_view reasonPhraseFor(http::StatusCode status) noexcept {
+constexpr std::string_view ReasonPhraseFor(http::StatusCode status) noexcept {
   switch (status) {
     case StatusCodeOK:
       return ReasonOK;
@@ -169,7 +167,7 @@ constexpr std::string_view reasonPhraseFor(http::StatusCode status) noexcept {
     case StatusCodeHTTPVersionNotSupported:
       return ReasonHTTPVersionNotSupported;
     default:
-      return ReasonNotImplemented;
+      return {};
   }
 }
 

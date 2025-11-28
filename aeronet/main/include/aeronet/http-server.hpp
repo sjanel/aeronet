@@ -161,10 +161,8 @@ class HttpServer {
     std::shared_ptr<std::exception_ptr> _error;  // shared for lambda capture
   };
 
-  // Construct a void HttpServer, that will not serve anything.
-  // Useful only to make it default constructible for temporary purposes (for instance to move assign to it later on),
-  // but do not attempt to use a default constructed server, it will not bind to any socket.
-  // It's NOT equivalent to HttpServer(HttpServerConfig{}) - the default constructed server is not usable.
+  // Construct an HttpServer with a default configuration that does not immediately starts listening.
+  // As a consequence, the ephemeral port is NOT allocated at this time and port() will return 0.
   HttpServer() noexcept = default;
 
   // Construct a server bound and listening immediately according to given configuration.
@@ -405,7 +403,7 @@ class HttpServer {
 
   using ConnectionMapIt = ConnectionMap::iterator;
 
-  void init();
+  void initListener();
   void prepareRun();
 
   void eventLoop();
@@ -541,7 +539,7 @@ class HttpServer {
   std::array<std::unique_ptr<Encoder>, kNbContentEncodings - 1> _encoders;
   EncodingSelector _encodingSelector;
 
-  ParserErrorCallback _parserErrCb = []([[maybe_unused]] http::StatusCode) {};
+  ParserErrorCallback _parserErrCb;
   MetricsCallback _metricsCb;
   MiddlewareMetricsCallback _middlewareMetricsCb;
   ExpectationHandler _expectationHandler;

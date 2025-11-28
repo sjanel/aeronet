@@ -32,8 +32,11 @@ TEST(MajorMinorVersion, ParseInvalidFormat) {
   const char *s1 = "HTTP/1";  // missing minor
   EXPECT_FALSE(ParseVersion<kHttpPrefix>(s1, s1 + std::strlen(s1), vers));
 
-  const char *s2 = "HTTP/x.y";  // non-numeric
+  const char *s2 = "HTTP/114";  // no dot
   EXPECT_FALSE(ParseVersion<kHttpPrefix>(s2, s2 + std::strlen(s2), vers));
+
+  const char *s3 = "HTTP/x.y";  // non-numeric
+  EXPECT_FALSE(ParseVersion<kHttpPrefix>(s3, s3 + std::strlen(s3), vers));
 }
 
 TEST(MajorMinorVersion, StrAndCompare) {

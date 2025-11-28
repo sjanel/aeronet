@@ -272,13 +272,15 @@ TEST(RawBytes, AppendEmpty) {
 }
 
 TEST(RawBytes, UnreasonableReserve) {
-  using TinyRawBytes = RawBytesBase<char, std::string_view, std::uint8_t>;
-  TinyRawBytes buf(150);
+  using TinyRawChars = RawBytesBase<char, std::string_view, std::uint8_t>;
+  TinyRawChars buf(150);
 
   buf.append(std::string(150, 'A'));  // OK
   EXPECT_THROW(buf.reserveExponential(151), std::bad_alloc);
   EXPECT_THROW(buf.ensureAvailableCapacity(151), std::bad_alloc);
-  EXPECT_THROW(TinyRawBytes(std::string(300, 'B')), std::length_error);
+  std::string big(300, 'B');
+  EXPECT_THROW(TinyRawChars{big}, std::length_error);
+  EXPECT_THROW(TinyRawChars(big.data(), big.data() + big.size()), std::length_error);
 }
 
 #ifndef NDEBUG
