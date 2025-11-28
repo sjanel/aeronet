@@ -137,7 +137,13 @@ bool MultiHttpServer::AsyncHandle::started() const noexcept {
 MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router, uint32_t threadCount)
     : _stopRequested(std::make_shared<std::atomic<bool>>(false)) {
   if (threadCount == 0) {
-    throw std::invalid_argument("MultiHttpServer: threadCount must be >= 1");
+    threadCount = std::thread::hardware_concurrency();
+    if (threadCount == 0) {
+      threadCount = 1;
+      log::warn("Unable to detect the number of available processors for MultiHttpServer - defaults to {}",
+                threadCount);
+    }
+    log::debug("MultiHttpServer auto-thread constructor detected hw_concurrency={}", threadCount);
   }
 
   _servers.reserve(static_cast<decltype(_servers)::size_type>(threadCount));
@@ -163,17 +169,6 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router, uint32_t t
   firstServer._lifecycleTracker = _lifecycleTracker;
   firstServer._isInMultiHttpServer = true;
 }
-
-MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
-    : MultiHttpServer(std::move(cfg), std::move(router), []() {
-        auto hc = std::thread::hardware_concurrency();
-        if (hc == 0) {
-          hc = 1;
-          log::warn("Unable to detect the number of available processors for MultiHttpServer - defaults to {}", hc);
-        }
-        log::debug("MultiHttpServer auto-thread constructor detected hw_concurrency={}", hc);
-        return static_cast<uint32_t>(hc);
-      }()) {}
 
 MultiHttpServer::MultiHttpServer(const MultiHttpServer& other)
     : _stopRequested(std::make_shared<std::atomic<bool>>(false)),
@@ -411,9 +406,6 @@ void MultiHttpServer::runBlocking(std::function<bool()> predicate, std::string_v
   // We do NOT store it in _internalHandle to avoid race conditions with stop().
   // stop() will signal _stopRequested and wait for us via _lastHandleStopFn.
   AsyncHandle handle = startDetachedInternal(std::move(predicate), {});
-
-  log::info("MultiHttpServer {}{}started (blocking) with {} thread(s) on port :{}", modeLabel,
-            modeLabel.empty() ? "" : " ", _servers.size(), port());
 
   const bool started = _lifecycleTracker->waitUntilAnyRunning(*_stopRequested);
   if (!_stopRequested->load(std::memory_order_relaxed) && started) {
