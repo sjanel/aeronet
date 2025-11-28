@@ -50,8 +50,9 @@ std::string SimpleGetRequest(std::string_view target, std::string_view connectio
 }  // namespace
 
 TEST(MultiHttpServer, ConstructorChecks) {
+  EXPECT_THROW(MultiHttpServer(HttpServerConfig{}, 0), std::invalid_argument);  // 0 illegal here
   EXPECT_THROW(MultiHttpServer(HttpServerConfig{}.withReusePort(), 0), std::invalid_argument);
-  EXPECT_THROW(MultiHttpServer(HttpServerConfig{}.withReusePort(false), 4), std::invalid_argument);
+  EXPECT_NO_THROW(MultiHttpServer(HttpServerConfig{}.withReusePort(false), 4));
 }
 
 TEST(MultiHttpServer, EmptyChecks) {
@@ -337,6 +338,91 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
   EXPECT_TRUE(r2.body.contains("Phase2"));
   handle2.stop();
   handle2.rethrowIfError();
+}
+
+TEST(MultiHttpServerCopy, CopyConstructWhileStopped) {
+  HttpServerConfig cfg;
+  cfg.withReusePort();
+  MultiHttpServer original(cfg, 2);
+  original.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("COPY-CONST");
+    return resp;
+  });
+
+  const auto expectedThreads = original.nbThreads();
+  const auto expectedPort = original.port();
+
+  MultiHttpServer clone(original);
+  original.stop();
+
+  EXPECT_EQ(clone.nbThreads(), expectedThreads);
+  EXPECT_EQ(clone.port(), expectedPort);
+
+  auto handle = clone.startDetached();
+  auto resp = test::simpleGet(clone.port(), "/copy-construct");
+  EXPECT_TRUE(resp.contains("COPY-CONST"));
+  handle.stop();
+  handle.rethrowIfError();
+}
+
+TEST(MultiHttpServerCopy, CopyAssignWhileStopped) {
+  HttpServerConfig cfg;
+  cfg.withReusePort();
+  MultiHttpServer assigned;
+  {
+    MultiHttpServer source(cfg, 2);
+    source.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
+      HttpResponse resp;
+      resp.body("COPY-ASSIGN");
+      return resp;
+    });
+    assigned = source;
+  }
+
+  EXPECT_FALSE(assigned.empty());
+  EXPECT_EQ(assigned.nbThreads(), 2U);
+
+  auto handle = assigned.startDetached();
+  auto resp = test::simpleGet(assigned.port(), "/copy-assign");
+  EXPECT_TRUE(resp.contains("COPY-ASSIGN"));
+  handle.stop();
+  handle.rethrowIfError();
+}
+
+TEST(MultiHttpServerCopy, CopyConstructWhileRunningThrows) {
+  HttpServerConfig cfg;
+  cfg.withReusePort();
+  MultiHttpServer original(cfg, 2);
+  original.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("RUN");
+    return resp;
+  });
+
+  auto handle = original.startDetached();
+  ASSERT_TRUE(handle.started());
+  EXPECT_THROW({ MultiHttpServer copy(original); }, std::logic_error);
+  handle.stop();
+  handle.rethrowIfError();
+}
+
+TEST(MultiHttpServerCopy, CopyAssignWhileRunningThrows) {
+  HttpServerConfig cfg;
+  cfg.withReusePort();
+  MultiHttpServer target(cfg, 2);
+  MultiHttpServer source(cfg, 2);
+  source.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("RUN");
+    return resp;
+  });
+
+  auto handle = source.startDetached();
+  ASSERT_TRUE(handle.started());
+  EXPECT_THROW({ target = source; }, std::logic_error);
+  handle.stop();
+  handle.rethrowIfError();
 }
 
 TEST(MultiHttpServer, MoveThenRestartDifferentConfig) {
@@ -645,7 +731,6 @@ TEST(MultiHttpServer, AutoThreadCountConstructor) {
 // 2. Explicit thread-count constructor
 TEST(MultiHttpServer, ExplicitThreadCountConstructor) {
   HttpServerConfig cfg;
-  cfg.reusePort = true;  // explicit reusePort
   const uint32_t threads = 2;
   MultiHttpServer multi(cfg, threads);
   EXPECT_GT(multi.port(), 0);  // resolved during construction
@@ -688,11 +773,6 @@ TEST(MultiHttpServer, MoveConstruction) {
   EXPECT_TRUE(resp.contains("Move"));
   handle.stop();
   handle.rethrowIfError();
-}
-
-TEST(MultiHttpServer, InvalidExplicitThreadCountThrows) {
-  HttpServerConfig cfg;
-  EXPECT_THROW(MultiHttpServer(cfg, 0), std::invalid_argument);  // 0 illegal here
 }
 
 TEST(MultiHttpServer, DefaultConstructorAndMoveAssignment) {

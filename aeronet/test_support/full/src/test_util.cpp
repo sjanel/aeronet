@@ -289,7 +289,7 @@ bool noBodyAfterHeaders(std::string_view raw) {
 
 std::string simpleGet(uint16_t port, std::string_view path) {
   ClientConnection cnx(port);
-  if (cnx.fd() < 0) {
+  if (cnx.fd() == -1) {
     throw std::runtime_error("simpleGet: failed to connect");
   }
   std::string req;

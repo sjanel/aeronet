@@ -198,16 +198,17 @@ The non-blocking APIs launch the event loop in the background. Use `start()` whe
 
 Key characteristics:
 
-- It is a **RAII** class - and actually `aeronet` library as a whole does not have any singleton for a cleaner & expected design, so all resources linked to the `HttpServer` are tied (and will be released with) it.
-- It is **not copyable**, but it is **moveable** if and only if it is **not running**.
+- It is a **RAII** class - and actually `aeronet` library as a whole does not have any singleton for a cleaner & expected design (except for signal handlers, but it's because signals themselves are global), so all resources linked to the `HttpServer` are tied (and will be released with) it.
+- It is **copyable** and **moveable** if and only if it is **not running**.
 **Warning!** Unlike most C++ objects, the move operations are not `noexcept` to make sure that client does not move a running server (it would throw in that case, and only in that case). Moving a non-running `HttpServer` is, however, perfectly safe and `noexcept` in practice.
-- It is **restartable**, you can call `start()` after a `stop()`. You can modify the routing configuration before the new `start()`.
+- It is **restartable**, you can call `start()` after a `stop()`.
+- You can modify most of its **configuration safely at runtime** via `postConfigUpdate()` and `postRouterUpdate()`.
 - Graceful draining is available via `beginDrain(std::chrono::milliseconds maxWait = 0)`: it stops accepting new connections, lets in-flight responses finish with `Connection: close`, and optionally enforces a deadline before forcing the remaining connections to close.
 - It is also [trivially relocatable](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p1144r10.html), although I doubt it will be very useful for this type.
 
 ##### Configuration
 
-Most configuration is applied per **server instance**.
+All configuration of the `HttpServer` is applied per **server instance** (the server **owns** its configuration).
 
 `HttpServer` takes a `HttpServerConfig` by value at construction, which allows full control over the server parameters (port, timeouts, limits, TLS setup, compression options, etc). Once constructed, some fields can be updated, even while the server is running thanks to `postConfigUpdate` method.
 
@@ -274,12 +275,13 @@ Notes:
 
 Instead of manually creating N threads and N `HttpServer` instances, you can use `MultiHttpServer` to spin up a "farm" of identical servers with same routing configuration, on the same port. It:
 
-- Accepts a base `HttpServerConfig` (set `port=0` for ephemeral bind; the chosen port is propagated to all instances)
+- Accepts a base `HttpServerConfig` (set `port=0` for ephemeral bind; the same chosen port is propagated to all instances)
 - Forces `reusePort=true` automatically when thread count > 1
 - Replicates either a global handler or all registered path handlers across each underlying server (even after in-flight updates)
 - Exposes `stats()` returning both per-instance and aggregated totals (sums; `maxConnectionOutboundBuffer` is a max)
-- Manages lifecycle with internal `std::jthread`s; `stop()` requests shutdown of every instance
 - Provides the resolved listening `port()` directly after construction (even for ephemeral port 0 requests)
+- Provides the same lifecycle APIs as `HttpServer`: blocking `run()` / `runUntil(pred)`, non-blocking `start()` / `startDetached()`, `stop()`, `beginDrain()`, etc.
+- Like `HttpServer`, `MultiHttpServer` is copyable and moveable when not running, and restartable after stop.
 
 Example:
 
@@ -288,13 +290,11 @@ Example:
 using namespace aeronet;
 
 int main() {
-  HttpServerConfig cfg; 
-  cfg.reusePort = true; // ephemeral, auto-propagated
   Router router;
   router.setDefault([](const HttpRequest& req){
     return HttpResponse(200).body("hello\n");
   });
-  MultiHttpServer multi(std::move(cfg), std::move(router), 4); // 4 underlying event loops
+  MultiHttpServer multi(HttpServerConfig{}, std::move(router), 4); // 4 underlying event loops
   multi.start();
   // ... run until external signal, or call stop() ...
   std::this_thread::sleep_for(std::chrono::seconds(30));

@@ -140,7 +140,9 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router, uint32_t t
   }
   // Prepare base config: if multiple threads, enforce reusePort.
   if (threadCount > 1 && !cfg.reusePort) {
-    throw std::invalid_argument("MultiHttpServer: reusePort must be set for multi thread MultiHttpServer");
+    cfg.reusePort = true;
+    log::info("MultiHttpServer: reusePort automatically enabled for multi-threaded server (threadCount={})",
+              threadCount);
   }
 
   _servers.reserve(static_cast<decltype(_servers)::size_type>(threadCount));
@@ -162,6 +164,21 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
             log::debug("MultiHttpServer auto-thread constructor detected hw_concurrency={}", hc);
             return static_cast<uint32_t>(hc);
           }()) {}
+
+MultiHttpServer::MultiHttpServer(const MultiHttpServer& other)
+    : _stopRequested(std::make_shared<std::atomic<bool>>(false)),
+      _lifecycleTracker(std::make_shared<ServerLifecycleTracker>()),
+      _serversAlive(std::make_shared<std::atomic<bool>>(true)) {
+  if (other.isRunning()) {
+    throw std::logic_error("Cannot copy-construct a running MultiHttpServer");
+  }
+
+  _servers.reserve(other._servers.capacity());
+  for (const auto& server : other._servers) {
+    auto& cloned = _servers.emplace_back(server);
+    cloned._lifecycleTracker = _lifecycleTracker;
+  }
+}
 
 MultiHttpServer::MultiHttpServer(MultiHttpServer&& other) noexcept
     : _stopRequested(std::move(other._stopRequested)),
@@ -192,6 +209,21 @@ MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
     for (auto& server : _servers) {
       server._lifecycleTracker = _lifecycleTracker;
     }
+  }
+  return *this;
+}
+
+MultiHttpServer& MultiHttpServer::operator=(const MultiHttpServer& other) {
+  if (this != &other) {
+    if (other.isRunning()) {
+      throw std::logic_error("Cannot copy-assign a running MultiHttpServer");
+    }
+
+    stop();
+
+    MultiHttpServer copy(other);
+    using std::swap;
+    swap(*this, copy);
   }
   return *this;
 }
