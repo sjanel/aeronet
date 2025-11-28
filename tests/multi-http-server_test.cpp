@@ -51,8 +51,8 @@ std::string SimpleGetRequest(std::string_view target, std::string_view connectio
 }  // namespace
 
 TEST(MultiHttpServer, ConstructorChecks) {
-  EXPECT_THROW(MultiHttpServer(HttpServerConfig{}, 0), std::invalid_argument);  // 0 illegal here
-  EXPECT_THROW(MultiHttpServer(HttpServerConfig{}.withReusePort(), 0), std::invalid_argument);
+  EXPECT_NO_THROW(MultiHttpServer(HttpServerConfig{}, 0));
+  EXPECT_NO_THROW(MultiHttpServer(HttpServerConfig{}.withReusePort(), 0));
   EXPECT_NO_THROW(MultiHttpServer(HttpServerConfig{}.withReusePort(false), 4));
 }
 

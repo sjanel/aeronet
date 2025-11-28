@@ -94,12 +94,12 @@ class MultiHttpServer {
   //                  ephemeral port is chosen by the first server; that resolved port is then
   //                  propagated to all subsequent servers so the entire group listens on the same
   //                  concrete port.
-  //   threadCount  - Number of HttpServer instances (and dedicated threads) to launch. Must be >= 1.
+  //   threadCount  - Number of HttpServer instances (and dedicated threads) to launch.
+  //                  if 0, attempt to guess from the underlying hardware concurrency.
   //                  Each instance owns an independent epoll/event loop and shares the listening
   //                  port via SO_REUSEPORT (automatically enabled if threadCount > 1).
   // Behavior:
   //   - Does NOT start the servers, you need to call start() or run() family of methods to launch them.
-  //   - Validates threadCount and throws std::invalid_argument if < 1.
   //   - The object itself is NOT thread-safe; expect single-threaded orchestration.
   MultiHttpServer(HttpServerConfig cfg, Router router, uint32_t threadCount);
 
@@ -111,7 +111,7 @@ class MultiHttpServer {
   // Construct a MultiHttpServer wrapper, with the number of available processors as number of threads (if detection is
   // possible). You can verify how many threads were chosen after construction of this instance thanks to nbThreads()
   // method.
-  MultiHttpServer(HttpServerConfig cfg, Router router);
+  MultiHttpServer(HttpServerConfig cfg, Router router) : MultiHttpServer(std::move(cfg), std::move(router), 0) {}
 
   // Variant of MultiHttpServer(HttpServerConfig, Router) with a default constructed router.
   explicit MultiHttpServer(HttpServerConfig cfg) : MultiHttpServer(std::move(cfg), Router()) {}
