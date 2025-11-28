@@ -111,7 +111,7 @@ CapturedOtlpRequest parseHeadAndBody(std::string_view request, std::string_view 
 }
 }  // namespace
 
-OtlpTestCollector::OtlpTestCollector() : _listen(SOCK_STREAM) {
+OtlpTestCollector::OtlpTestCollector() : _listen(Socket::Type::Stream) {
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);

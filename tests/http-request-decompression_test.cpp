@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <ios>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -21,6 +22,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/stringconv.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #ifdef AERONET_ENABLE_ZLIB

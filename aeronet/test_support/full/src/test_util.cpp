@@ -198,7 +198,7 @@ std::string sendAndCollect(uint16_t port, std::string_view raw) {
 }
 
 std::pair<Socket, uint16_t> startEchoServer() {
-  Socket listenSock(SOCK_STREAM);
+  Socket listenSock(Socket::Type::Stream);
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -249,7 +249,7 @@ Socket connectLoop(auto port, std::chrono::milliseconds timeout) {
 
   for (const auto deadline = std::chrono::steady_clock::now() + timeout; std::chrono::steady_clock::now() < deadline;
        std::this_thread::sleep_for(std::chrono::milliseconds{1})) {
-    Socket sock(SOCK_STREAM);
+    Socket sock(Socket::Type::Stream);
     int fd = sock.fd();
 
     if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
@@ -682,7 +682,7 @@ std::string requestOrThrow(uint16_t port, const RequestOptions &opt) {
 }
 
 bool AttemptConnect(uint16_t port) {
-  Socket sock(SOCK_STREAM);
+  Socket sock(Socket::Type::Stream);
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);

@@ -13,6 +13,7 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 
@@ -402,7 +403,7 @@ TEST(MultiHttpServerCopy, CopyConstructWhileRunningThrows) {
 
   auto handle = original.startDetached();
   ASSERT_TRUE(handle.started());
-  EXPECT_THROW({ MultiHttpServer copy(original); }, std::logic_error);
+  EXPECT_THROW({ (void)MultiHttpServer(original); }, std::logic_error);
   handle.stop();
   handle.rethrowIfError();
 }
@@ -730,9 +731,8 @@ TEST(MultiHttpServer, AutoThreadCountConstructor) {
 
 // 2. Explicit thread-count constructor
 TEST(MultiHttpServer, ExplicitThreadCountConstructor) {
-  HttpServerConfig cfg;
-  const uint32_t threads = 2;
-  MultiHttpServer multi(cfg, threads);
+  static constexpr uint32_t threads = 2;
+  MultiHttpServer multi(HttpServerConfig{}, threads);
   EXPECT_GT(multi.port(), 0);  // resolved during construction
   EXPECT_EQ(multi.nbThreads(), threads);
   multi.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
@@ -753,7 +753,6 @@ TEST(MultiHttpServer, ExplicitThreadCountConstructor) {
 // 3. Move construction (move underlying servers ownership)
 TEST(MultiHttpServer, MoveConstruction) {
   HttpServerConfig cfg;
-  cfg.withReusePort();            // auto thread count may be >1; explicit reusePort required
   MultiHttpServer original(cfg);  // auto threads
   EXPECT_GT(original.port(), 0);  // resolved at construction
   original.router().setDefault([](const HttpRequest&) {
@@ -777,7 +776,7 @@ TEST(MultiHttpServer, MoveConstruction) {
 
 TEST(MultiHttpServer, DefaultConstructorAndMoveAssignment) {
   HttpServerConfig cfg;
-  cfg.withReusePort();          // explicit reusePort (auto thread count may exceed 1)
+  cfg.withReusePort();
   MultiHttpServer source(cfg);  // not started yet
   EXPECT_GT(source.port(), 0);
   source.router().setDefault([](const HttpRequest&) {
@@ -962,4 +961,27 @@ TEST(MultiHttpServer, StartDetachedWithStopTokenStopsOnRequest) {
 
   handle.stop();
   handle.rethrowIfError();
+}
+
+TEST(MultiHttpServer, ExplicitPortWithNoReusePortShouldCheckPortAvailability) {
+  HttpServerConfig cfg;
+  cfg.withReusePort(false);
+
+  MultiHttpServer firstServer(cfg, 2);
+
+  auto port = firstServer.port();
+  ASSERT_GT(port, 0);
+
+  cfg.withPort(port);   // set explicit port already in use by firstServer
+  cfg.withReusePort();  // enable reusePort for second attempt
+
+  EXPECT_NO_THROW(MultiHttpServer(cfg, 2));  // should succeed due to reusePort true
+
+  cfg.withReusePort(false);  // disable reusePort again
+
+  // Now, attempt to create another MultiHttpServer on the same port without reusePort
+  // -> it should throw due to port being in use by firstServer
+  EXPECT_THROW(MultiHttpServer(cfg, 2), std::system_error);
+
+  firstServer.stop();
 }

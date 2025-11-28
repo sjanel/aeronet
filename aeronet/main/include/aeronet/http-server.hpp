@@ -180,12 +180,12 @@ class HttpServer {
   // A HttpServer is copyable - but only from a non-running instance.
   // The copy will duplicate the configuration and router state, but not
   // any active connections or runtime state.
-  HttpServer(const HttpServer&);
+  HttpServer(const HttpServer& other);
 
   // Copy-assignment mirrors the copy-constructor semantics: the source must be fully stopped while the
   // destination is stopped (stop() is invoked internally before applying the copy). Attempts to copy-assign
   // from a running instance throw std::logic_error to avoid duplicating live event loops / sockets.
-  HttpServer& operator=(const HttpServer&);
+  HttpServer& operator=(const HttpServer& other);
 
   // Move semantics & constraints:
   // -----------------------------

@@ -62,7 +62,7 @@ extern "C" int accept4(int __fd, struct sockaddr* __addr, socklen_t* __addr_len,
 TEST(ConnectionTest, AcceptWouldBlockYieldsEmptyConnection) {
   AcceptHookGuard guard;
   SetAcceptActionSequence({AcceptErr(EAGAIN)});
-  Socket listener(SOCK_STREAM);
+  Socket listener(Socket::Type::Stream);
 
   Connection conn(listener);
   EXPECT_FALSE(conn);
@@ -71,7 +71,7 @@ TEST(ConnectionTest, AcceptWouldBlockYieldsEmptyConnection) {
 TEST(ConnectionTest, AcceptFatalErrorYieldsFailure) {
   AcceptHookGuard guard;
   SetAcceptActionSequence({AcceptErr(EPERM)});
-  Socket listener(SOCK_STREAM);
+  Socket listener(Socket::Type::Stream);
 
   Connection conn(listener);
   EXPECT_FALSE(conn);
@@ -83,7 +83,7 @@ TEST(ConnectionTest, AcceptSuccessAdoptsFd) {
   ASSERT_GE(fakeFd, 0);
   SetAcceptActionSequence({AcceptFd(fakeFd)});
 
-  Socket listener(SOCK_STREAM);
+  Socket listener(Socket::Type::Stream);
   Connection conn(listener);
   ASSERT_TRUE(conn);
   EXPECT_EQ(conn.fd(), fakeFd);
@@ -98,7 +98,7 @@ TEST(ConnectionTest, Equality) {
   ASSERT_GE(fakeFd2, 0);
   SetAcceptActionSequence({AcceptFd(fakeFd1), AcceptFd(fakeFd1), AcceptFd(fakeFd2)});
 
-  Socket listener(SOCK_STREAM);
+  Socket listener(Socket::Type::Stream);
   Connection conn1(listener);
   Connection conn2(listener);
   Connection conn3(listener);

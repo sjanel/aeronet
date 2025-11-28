@@ -26,7 +26,7 @@ Spin up a basic HTTP/1.1 server that responds on `/hello` in just a few lines. I
 
 ### Immediate response
 
-Return a complete `HttpResponse` from the handler:
+Return a complete, immediate `HttpResponse` from the handler:
 
 ```cpp
 #include <aeronet/aeronet.hpp>
@@ -158,7 +158,7 @@ If you are evaluating the library, the feature highlights above plus the minimal
 |---------|-------|
 | Epoll edge-triggered loop | One thread per `HttpServer`; writev used for header+body scatter-gather |
 | `SO_REUSEPORT` scaling | Horizontal multi-reactor capability |
-| Multi-instance wrapper | `MultiHttpServer` orchestrates N reactors, aggregates stats (explicit `reusePort=true` required for >1 threads; port resolved at construction) |
+| Multi-instance wrapper | `MultiHttpServer` orchestrates N reactors (N threads) |
 | Async server methods | `start()` (void convenience) and `startDetached()` (returns `AsyncHandle`) |
 | Move semantics | Transfer listening socket & loop state safely |
 | Restarts | `HttpServer` and `MultiHttpServer` can be started again after stop |
