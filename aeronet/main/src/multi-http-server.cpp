@@ -17,6 +17,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/errno_throw.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"
 #include "aeronet/log.hpp"
@@ -138,32 +139,41 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router, uint32_t t
   if (threadCount == 0) {
     throw std::invalid_argument("MultiHttpServer: threadCount must be >= 1");
   }
-  // Prepare base config: if multiple threads, enforce reusePort.
-  if (threadCount > 1 && !cfg.reusePort) {
-    cfg.reusePort = true;
-    log::info("MultiHttpServer: reusePort automatically enabled for multi-threaded server (threadCount={})",
-              threadCount);
-  }
 
   _servers.reserve(static_cast<decltype(_servers)::size_type>(threadCount));
 
-  // Construct first server. If port was ephemeral (0), HttpServer constructor resolves it synchronously.
-  // We move the base config into the first server then copy back the resolved version (with concrete port).
-  _servers.emplace_back(std::move(cfg), std::move(router))._lifecycleTracker = _lifecycleTracker;
+  if (threadCount > 1U && !cfg.reusePort) {
+    if (cfg.port != 0) {
+      // User wants to ensure that the given port will be exclusively used by this MultiHttpServer.
+      // We need reusePort to be enabled for multiple threads to bind to the same port, but we can
+      // verify that no other process is using the port by attempting to bind once here.
+      // If the port is already in use, this will throw.
+      if (!Socket{Socket::Type::StreamNonBlock}.tryBind(cfg.reusePort, cfg.tcpNoDelay, cfg.port)) {
+        throw_errno("bind failed on this port - already in use");
+      }
+      // immediately close the socket again to free the port for the actual servers below.
+    }
+
+    cfg.reusePort = true;  // enforce reusePort for multi-threaded servers
+    log::debug("MultiHttpServer: Enabling reusePort for multi-threaded server");
+  }
+
+  auto& firstServer = _servers.emplace_back(std::move(cfg), std::move(router));
+
+  firstServer._lifecycleTracker = _lifecycleTracker;
+  firstServer._isInMultiHttpServer = true;
 }
 
 MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
-    : MultiHttpServer(
-          HttpServerConfig(std::move(cfg)),  // make a copy for base storage
-          std::move(router), []() {
-            auto hc = std::thread::hardware_concurrency();
-            if (hc == 0) {
-              hc = 1;
-              log::warn("Unable to detect the number of available processors for MultiHttpServer - defaults to {}", hc);
-            }
-            log::debug("MultiHttpServer auto-thread constructor detected hw_concurrency={}", hc);
-            return static_cast<uint32_t>(hc);
-          }()) {}
+    : MultiHttpServer(std::move(cfg), std::move(router), []() {
+        auto hc = std::thread::hardware_concurrency();
+        if (hc == 0) {
+          hc = 1;
+          log::warn("Unable to detect the number of available processors for MultiHttpServer - defaults to {}", hc);
+        }
+        log::debug("MultiHttpServer auto-thread constructor detected hw_concurrency={}", hc);
+        return static_cast<uint32_t>(hc);
+      }()) {}
 
 MultiHttpServer::MultiHttpServer(const MultiHttpServer& other)
     : _stopRequested(std::make_shared<std::atomic<bool>>(false)),
@@ -293,9 +303,8 @@ void MultiHttpServer::stop() noexcept {
     return;
   }
   _stopRequested->store(true, std::memory_order_relaxed);
-  if (_lifecycleTracker) {
-    _lifecycleTracker->notifyStopRequested();
-  }
+  _lifecycleTracker->notifyStopRequested();
+
   log::debug("MultiHttpServer stopping (instances={})", _servers.size());
   std::ranges::for_each(_servers, [](HttpServer& server) { server.stop(); });
 
@@ -363,7 +372,7 @@ void MultiHttpServer::canSetCallbacks() const {
   }
 }
 
-void MultiHttpServer::rebuildServers() {
+void MultiHttpServer::ensureNextServersBuilt() {
   if (_servers.empty()) {
     throw std::logic_error("Cannot rebuild servers on an empty MultiHttpServer");
   }
@@ -373,14 +382,13 @@ void MultiHttpServer::rebuildServers() {
   firstServer.applyPendingUpdates();
 
   const auto targetCount = _servers.capacity();
-  vector<HttpServer> newServers;
-  newServers.reserve(targetCount);
 
-  while (newServers.size() < targetCount) {
-    newServers.emplace_back(firstServer)._lifecycleTracker = _lifecycleTracker;
+  _servers.resize(1UL);
+
+  while (_servers.size() < targetCount) {
+    auto& nextServer = _servers.emplace_back(firstServer);
+    nextServer._lifecycleTracker = _lifecycleTracker;
   }
-
-  _servers = std::move(newServers);
 }
 
 vector<HttpServer*> MultiHttpServer::collectServerPointers() {
@@ -407,11 +415,9 @@ void MultiHttpServer::runBlocking(std::function<bool()> predicate, std::string_v
   log::info("MultiHttpServer {}{}started (blocking) with {} thread(s) on port :{}", modeLabel,
             modeLabel.empty() ? "" : " ", _servers.size(), port());
 
-  if (_lifecycleTracker) {
-    const bool started = _lifecycleTracker->waitUntilAnyRunning(*_stopRequested);
-    if (!_stopRequested->load(std::memory_order_relaxed) && started) {
-      _lifecycleTracker->waitUntilAllStopped(*_stopRequested);
-    }
+  const bool started = _lifecycleTracker->waitUntilAnyRunning(*_stopRequested);
+  if (!_stopRequested->load(std::memory_order_relaxed) && started) {
+    _lifecycleTracker->waitUntilAllStopped(*_stopRequested);
   }
 
   log::info("MultiHttpServer {}{}stopped", modeLabel, modeLabel.empty() ? "" : " ");
@@ -421,17 +427,17 @@ void MultiHttpServer::runBlocking(std::function<bool()> predicate, std::string_v
 
 MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::function<bool()> extraStopCondition,
                                                                     const std::stop_token& externalStopToken) {
+  if (_servers.empty()) {
+    throw std::logic_error("Cannot start an empty MultiHttpServer");
+  }
   if (isRunning()) {
     throw std::logic_error("MultiHttpServer already started");
   }
 
-  if (_lifecycleTracker) {
-    _lifecycleTracker->clear();
-  }
+  _lifecycleTracker->clear();
 
   // Create the remaining servers.
-  // firstServer reference is stable within the loop, because we have called reserved in the constructor.
-  rebuildServers();
+  ensureNextServersBuilt();
 
   _stopRequested->store(false, std::memory_order_relaxed);
 
