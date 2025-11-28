@@ -89,3 +89,24 @@ TEST(ConnectionTest, AcceptSuccessAdoptsFd) {
   EXPECT_EQ(conn.fd(), fakeFd);
   conn.close();
 }
+
+TEST(ConnectionTest, Equality) {
+  AcceptHookGuard guard;
+  const int fakeFd1 = test_support::CreateMemfd("aeronet-accept-1");
+  const int fakeFd2 = test_support::CreateMemfd("aeronet-accept-2");
+  ASSERT_GE(fakeFd1, 0);
+  ASSERT_GE(fakeFd2, 0);
+  SetAcceptActionSequence({AcceptFd(fakeFd1), AcceptFd(fakeFd1), AcceptFd(fakeFd2)});
+
+  Socket listener(SOCK_STREAM);
+  Connection conn1(listener);
+  Connection conn2(listener);
+  Connection conn3(listener);
+
+  ASSERT_TRUE(conn1);
+  ASSERT_TRUE(conn2);
+  ASSERT_TRUE(conn3);
+
+  EXPECT_EQ(conn1, conn2);
+  EXPECT_NE(conn1, conn3);
+}

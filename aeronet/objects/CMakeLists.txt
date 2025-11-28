@@ -159,6 +159,21 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    compression-config_test
+    test/compression-config_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
+
+AeronetAddUnitTest(
+    dogstatsd_test
+    test/dogstatsd_test.cpp
+    src/dogstatsd.cpp
+    LIBRARIES
+    aeronet_sys
+)
+
+AeronetAddUnitTest(
     http-payload_test
     test/http-payload_test.cpp
     LIBRARIES

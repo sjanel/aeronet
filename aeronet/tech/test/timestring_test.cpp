@@ -245,6 +245,26 @@ TEST_F(StringToTimeISO8601UTCTest, ThrowsOnEmptyString) {
   EXPECT_THROW(StringToTimeISO8601UTC(""), std::invalid_argument);
 }
 
+TEST_F(StringToTimeISO8601UTCTest, ThrowsOnInvalidMonth) {
+  EXPECT_THROW(StringToTimeISO8601UTC("2025-13-01T12:34:56Z"), std::invalid_argument);
+}
+
+TEST_F(StringToTimeISO8601UTCTest, ThrowsOnInvalidDay) {
+  EXPECT_THROW(StringToTimeISO8601UTC("2025-11-32T12:34:56Z"), std::invalid_argument);
+}
+
+TEST_F(StringToTimeISO8601UTCTest, ThrowsOnInvalidHour) {
+  EXPECT_THROW(StringToTimeISO8601UTC("2025-11-14T25:34:56Z"), std::invalid_argument);
+}
+
+TEST_F(StringToTimeISO8601UTCTest, ThrowsOnInvalidMinute) {
+  EXPECT_THROW(StringToTimeISO8601UTC("2025-11-14T12:60:56Z"), std::invalid_argument);
+}
+
+TEST_F(StringToTimeISO8601UTCTest, ThrowsOnInvalidSecond) {
+  EXPECT_THROW(StringToTimeISO8601UTC("2025-11-14T12:34:61Z"), std::invalid_argument);
+}
+
 // ------------------------ Sub-second edge cases ------------------------
 TEST_F(StringToTimeISO8601UTCTest, Handles1DigitSubsecond) {
   auto tp = StringToTimeISO8601UTC("2025-08-14T12:34:56.1Z");
