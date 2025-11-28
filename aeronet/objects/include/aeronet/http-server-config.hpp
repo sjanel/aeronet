@@ -29,9 +29,11 @@ struct HttpServerConfig {
   // you can retrieve the effective port via HttpServer::port().
   uint16_t port{0};
 
-  // If true, enables SO_REUSEPORT allowing multiple independent HttpServer instances (usually one per thread)
-  // to bind the same (non-ephemeral) port for load distribution by the kernel. Harmless if the platform
-  // or kernel does not support it (failure is logged, not fatal). Disabled by default.
+  // If true, enables SO_REUSEPORT allowing multiple independent server instances to bind the same port
+  // for load distribution by the kernel.
+  // Note that for MultiHttpServer, if false it will check port availability only if given port is not ephemeral
+  // and if the server is multi-threaded at construction time. Indeed, by design, MultiHttpServer will force reuse port
+  // for all its internal servers when threadCount > 1. Default: false.
   bool reusePort{false};
 
   // TCP_NODELAY is a socket option that disables the Nagle algorithm, a TCP congestion control technique that buffers

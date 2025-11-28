@@ -899,17 +899,16 @@ bool HttpServer::tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt) {
 
 void HttpServer::emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
                                     bool reusedConnection) {
-  if (!_metricsCb) {
-    return;
+  if (_metricsCb) {
+    RequestMetrics metrics;
+    metrics.status = status;
+    metrics.bytesIn = bytesIn;
+    metrics.reusedConnection = reusedConnection;
+    metrics.method = request.method();
+    metrics.path = request.path();
+    metrics.duration = std::chrono::steady_clock::now() - request.reqStart();
+    _metricsCb(metrics);
   }
-  RequestMetrics metrics;
-  metrics.status = status;
-  metrics.bytesIn = bytesIn;
-  metrics.reusedConnection = reusedConnection;
-  metrics.method = request.method();
-  metrics.path = request.path();
-  metrics.duration = std::chrono::steady_clock::now() - request.reqStart();
-  _metricsCb(metrics);
 }
 
 void HttpServer::applyResponseMiddleware(const HttpRequest& request, HttpResponse& response,
@@ -947,40 +946,38 @@ void HttpServer::applyResponseMiddleware(const HttpRequest& request, HttpRespons
 void HttpServer::emitMiddlewareMetrics(const HttpRequest& request, MiddlewareMetrics::Phase phase, bool isGlobal,
                                        uint32_t index, uint64_t durationNs, bool shortCircuited, bool threw,
                                        bool streaming) {
-  if (!_middlewareMetricsCb) {
-    return;
+  if (_middlewareMetricsCb) {
+    MiddlewareMetrics metrics;
+    metrics.phase = phase;
+    metrics.isGlobal = isGlobal;
+    metrics.shortCircuited = shortCircuited;
+    metrics.threw = threw;
+    metrics.streaming = streaming;
+    metrics.index = index;
+    metrics.durationNs = durationNs;
+    metrics.method = request.method();
+    metrics.requestPath = request.path();
+
+    _middlewareMetricsCb(metrics);
   }
-
-  MiddlewareMetrics metrics;
-  metrics.phase = phase;
-  metrics.isGlobal = isGlobal;
-  metrics.shortCircuited = shortCircuited;
-  metrics.threw = threw;
-  metrics.streaming = streaming;
-  metrics.index = index;
-  metrics.durationNs = durationNs;
-  metrics.method = request.method();
-  metrics.requestPath = request.path();
-
-  _middlewareMetricsCb(metrics);
 }
 
 tracing::SpanRAII HttpServer::startMiddlewareSpan(const HttpRequest& request, MiddlewareMetrics::Phase phase,
                                                   bool isGlobal, uint32_t index, bool streaming) {
   tracing::SpanRAII spanScope(_telemetry.createSpan("http.middleware"));
-  if (!spanScope.span) {
-    return spanScope;
+
+  if (spanScope.span) {
+    spanScope.span->setAttribute("aeronet.middleware.phase", phase == MiddlewareMetrics::Phase::Pre
+                                                                 ? std::string_view("request")
+                                                                 : std::string_view("response"));
+    spanScope.span->setAttribute("aeronet.middleware.scope",
+                                 isGlobal ? std::string_view("global") : std::string_view("route"));
+    spanScope.span->setAttribute("aeronet.middleware.index", static_cast<int64_t>(index));
+    spanScope.span->setAttribute("aeronet.middleware.streaming", streaming ? int64_t{1} : int64_t{0});
+    spanScope.span->setAttribute("http.method", http::MethodToStr(request.method()));
+    spanScope.span->setAttribute("http.target", request.path());
   }
 
-  spanScope.span->setAttribute("aeronet.middleware.phase", phase == MiddlewareMetrics::Phase::Pre
-                                                               ? std::string_view("request")
-                                                               : std::string_view("response"));
-  spanScope.span->setAttribute("aeronet.middleware.scope",
-                               isGlobal ? std::string_view("global") : std::string_view("route"));
-  spanScope.span->setAttribute("aeronet.middleware.index", static_cast<int64_t>(index));
-  spanScope.span->setAttribute("aeronet.middleware.streaming", streaming ? int64_t{1} : int64_t{0});
-  spanScope.span->setAttribute("http.method", http::MethodToStr(request.method()));
-  spanScope.span->setAttribute("http.target", request.path());
   return spanScope;
 }
 

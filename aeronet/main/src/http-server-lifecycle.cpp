@@ -1,8 +1,3 @@
-#include <asm-generic/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <sys/socket.h>
-
 #include <atomic>
 #include <cassert>
 #include <cerrno>
@@ -19,7 +14,6 @@
 
 #include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/encoding.hpp"
-#include "aeronet/errno_throw.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/http-method.hpp"
@@ -58,7 +52,6 @@
 namespace aeronet {
 
 namespace {
-constexpr int kListenSocketType = SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC;
 
 class LifecycleTrackerGuard {
  public:
@@ -104,7 +97,7 @@ void HttpServer::AsyncHandle::rethrowIfError() {
 
 HttpServer::HttpServer(HttpServerConfig config, RouterConfig routerConfig)
     : _config(std::move(config)),
-      _listenSocket(kListenSocketType),
+      _listenSocket(Socket::Type::StreamNonBlock),
       _eventLoop(_config.pollInterval),
       _router(std::move(routerConfig)),
       _encodingSelector(_config.compression),
@@ -114,7 +107,7 @@ HttpServer::HttpServer(HttpServerConfig config, RouterConfig routerConfig)
 
 HttpServer::HttpServer(HttpServerConfig cfg, Router router)
     : _config(std::move(cfg)),
-      _listenSocket(kListenSocketType),
+      _listenSocket(Socket::Type::StreamNonBlock),
       _eventLoop(_config.pollInterval),
       _router(std::move(router)),
       _encodingSelector(_config.compression),
@@ -124,7 +117,7 @@ HttpServer::HttpServer(HttpServerConfig cfg, Router router)
 
 HttpServer::HttpServer(const HttpServer& other)
     : _config(other._config),
-      _listenSocket(kListenSocketType),
+      _listenSocket(Socket::Type::StreamNonBlock),
       _isInMultiHttpServer(other._isInMultiHttpServer),
       _eventLoop(_config.pollInterval),
       _router(other._router),
@@ -297,11 +290,9 @@ void HttpServer::initListener() {
   _config.validate();
 
   if (!_listenSocket) {
-    _listenSocket = Socket(kListenSocketType);
+    _listenSocket = Socket(Socket::Type::StreamNonBlock);
     _eventLoop = EventLoop(_config.pollInterval);
   }
-
-  const int listenFd = _listenSocket.fd();
 
   // Initialize TLS context if requested (OpenSSL build).
   if (_config.tls.enabled) {
@@ -313,35 +304,10 @@ void HttpServer::initListener() {
     throw std::invalid_argument("aeronet built without OpenSSL support but TLS configuration provided");
 #endif
   }
-  static constexpr int enable = 1;
-  if (::setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) == -1) {
-    throw_errno("setsockopt(SO_REUSEADDR) failed");
-  }
-  if (_config.reusePort && ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) == -1) {
-    throw_errno("setsockopt(SO_REUSEPORT) failed");
-  }
-  if (_config.tcpNoDelay && ::setsockopt(listenFd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) == -1) {
-    throw_errno("setsockopt(TCP_NODELAY) failed");
-  }
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  addr.sin_port = htons(_config.port);
-  if (::bind(listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == -1) {
-    throw_errno("bind failed");
-  }
-  if (::listen(listenFd, SOMAXCONN) == -1) {
-    throw_errno("listen failed");
-  }
-  if (_config.port == 0) {
-    sockaddr_in actual{};
-    socklen_t alen = sizeof(actual);
-    if (::getsockname(listenFd, reinterpret_cast<sockaddr*>(&actual), &alen) == -1) {
-      throw_errno("getsockname failed");
-    }
-    _config.port = ntohs(actual.sin_port);
-  }
-  _eventLoop.addOrThrow(EventLoop::EventFd{listenFd, EventIn});
+
+  _listenSocket.bindAndListen(_config.reusePort, _config.tcpNoDelay, _config.port);
+
+  _eventLoop.addOrThrow(EventLoop::EventFd{_listenSocket.fd(), EventIn});
   _eventLoop.addOrThrow(EventLoop::EventFd{_lifecycle.wakeupFd.fd(), EventIn});
 
   // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.

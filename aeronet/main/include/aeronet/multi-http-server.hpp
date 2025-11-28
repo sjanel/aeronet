@@ -113,7 +113,7 @@ class MultiHttpServer {
   // method.
   MultiHttpServer(HttpServerConfig cfg, Router router);
 
-  // Variant of MultiHttpServer(HttpServerConfig, Router, uint32_t) with a default constructed router.
+  // Variant of MultiHttpServer(HttpServerConfig, Router) with a default constructed router.
   explicit MultiHttpServer(HttpServerConfig cfg) : MultiHttpServer(std::move(cfg), Router()) {}
 
   // MultiHttpServer is copyable as long as the source is fully stopped. Copies rebuild fresh HttpServer instances
@@ -279,7 +279,7 @@ class MultiHttpServer {
  private:
   void canSetCallbacks() const;
 
-  void rebuildServers();
+  void ensureNextServersBuilt();
 
   [[nodiscard]] vector<HttpServer*> collectServerPointers();
 
