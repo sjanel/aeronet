@@ -48,7 +48,10 @@ TEST(HttpServerMove, MoveConstructAndServe) {
   HttpServer moved(std::move(original));
 
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  while (moved.port() == 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
 
   std::string resp = test::simpleGet(moved.port(), "/mv");
 
@@ -253,6 +256,59 @@ bool WaitForServerRunning(HttpServer& server, std::chrono::milliseconds timeout)
 }
 
 }  // namespace
+
+TEST(HttpServerCopy, CopyAssignWhileStopped) {
+  HttpServer destination(HttpServerConfig{}.withReusePort());
+  destination.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("DEST");
+    return resp;
+  });
+
+  uint16_t copiedPort = 0;
+  {
+    HttpServer source(HttpServerConfig{}.withReusePort());
+    source.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
+      HttpResponse resp;
+      resp.body("COPY");
+      return resp;
+    });
+    copiedPort = source.port();
+    destination = source;
+    EXPECT_EQ(destination.port(), copiedPort);
+  }
+
+  std::atomic_bool stop{false};
+  std::jthread worker([&] { destination.runUntil([&] { return stop.load(); }); });
+  ASSERT_TRUE(WaitForServerRunning(destination, 200ms));
+
+  auto resp = test::simpleGet(destination.port(), "/cpy");
+  EXPECT_TRUE(resp.contains("COPY"));
+
+  stop.store(true);
+  worker.join();
+}
+
+TEST(HttpServerCopy, CopyAssignWhileRunningThrows) {
+  HttpServerConfig cfg;
+  cfg.withReusePort();
+  HttpServer running(cfg);
+  running.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
+    HttpResponse resp;
+    resp.body("RUN");
+    return resp;
+  });
+
+  HttpServer target(cfg);
+
+  std::jthread worker([&] { running.run(); });
+  ASSERT_TRUE(WaitForServerRunning(running, 200ms));
+
+  EXPECT_THROW({ target = running; }, std::logic_error);
+
+  running.stop();
+  worker.join();
+}
 
 TEST(HttpDrain, StopsNewConnections) {
   HttpServerConfig cfg;

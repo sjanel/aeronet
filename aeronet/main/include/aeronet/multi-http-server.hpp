@@ -116,10 +116,11 @@ class MultiHttpServer {
   // Variant of MultiHttpServer(HttpServerConfig, Router, uint32_t) with a default constructed router.
   explicit MultiHttpServer(HttpServerConfig cfg) : MultiHttpServer(std::move(cfg), Router()) {}
 
-  // MultiHttpServer is moveable
-  MultiHttpServer(const MultiHttpServer&) = delete;
+  // MultiHttpServer is copyable as long as the source is fully stopped. Copies rebuild fresh HttpServer instances
+  // with the same configuration but do not share lifecycle trackers or stop tokens with the source.
+  MultiHttpServer(const MultiHttpServer&);
   MultiHttpServer(MultiHttpServer&& other) noexcept;
-  MultiHttpServer& operator=(const MultiHttpServer&) = delete;
+  MultiHttpServer& operator=(const MultiHttpServer&);
   MultiHttpServer& operator=(MultiHttpServer&& other) noexcept;
 
   ~MultiHttpServer();

@@ -1274,6 +1274,12 @@ Removed experimental factory: a previous non-throwing `tryCreate` was dropped to
 
 Design trade-offs: Constructor may throw on errors (bind failure, TLS init failure if configured). This is intentional to surface unrecoverable configuration issues early.
 
+### Copy semantics (HttpServer & MultiHttpServer)
+
+- `HttpServer` supports copy construction and copy assignment while the source instance is fully stopped. Copy assignment automatically calls `stop()` on the destination before duplicating sockets and router state; attempting to copy from a running instance throws `std::logic_error` to avoid duplicating active event loops. When copying bound sockets, ensure the original server either relinquishes the port (call `stop()` or destroy the instance) or has `reusePort=true` so the new copy can bind successfully.
+- `MultiHttpServer` mirrors the same rule: copies are only allowed from a stopped source. Copy construction and assignment rebuild fresh `HttpServer` instances carrying the same port, router, and thread count while wiring them to a new lifecycle tracker. Running sources throw `std::logic_error` to prevent duplicating active thread pools.
+- Tests: see `tests/http-server-lifecycle_test.cpp` (`HttpServerCopy.*`) and `tests/multi-http-server_test.cpp` (`MultiHttpServerCopy.*`).
+
 ## MultiHttpServer lifecycle
 
 Manages N reactors via `SO_REUSEPORT`.
