@@ -19,6 +19,7 @@ class BaseFd {
   [[nodiscard]] int fd() const noexcept { return _fd; }
 
   // Truthy check so users can write: if (baseFd) { ... }
+  // Returns true if the underlying fd is valid (not closed).
   explicit operator bool() const noexcept { return _fd != kClosedFd; }
 
   // Release ownership of the underlying fd without closing it.
@@ -32,6 +33,7 @@ class BaseFd {
   // Idempotent: multiple calls after first successful/failed close are no-ops.
   void close() noexcept;
 
+  // Equality comparison - simply compare the underlying fd integer.
   bool operator==(const BaseFd &) const noexcept = default;
 
  private:

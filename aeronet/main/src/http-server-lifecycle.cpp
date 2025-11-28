@@ -148,6 +148,27 @@ HttpServer::HttpServer(const HttpServer& other)
   initListener();
 }
 
+HttpServer& HttpServer::operator=(const HttpServer& other) {
+  if (this != &other) {
+    if (!other._lifecycle.isIdle()) {
+      throw std::logic_error("Cannot copy-assign from a running HttpServer");
+    }
+
+    stop();
+
+    const bool wasInMulti = _isInMultiHttpServer;
+    auto lifecycleTracker = _lifecycleTracker;
+
+    HttpServer copy(other);
+    using std::swap;
+    swap(*this, copy);
+
+    _isInMultiHttpServer = wasInMulti;
+    _lifecycleTracker = std::move(lifecycleTracker);
+  }
+  return *this;
+}
+
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
 HttpServer::HttpServer(HttpServer&& other)
     : _stats(std::exchange(other._stats, {})),
