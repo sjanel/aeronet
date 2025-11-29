@@ -122,6 +122,7 @@ The following focused docs expand each area without cluttering the high‑level 
 - [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
 - [Static File Handler & Range Requests](docs/FEATURES.md#static-file-handler-rfc-7233--rfc-7232)
 - [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
+- [Multipart/form-data utilities](docs/FEATURES.md#multipartform-data-utilities-rfc-7578)
 - [Connection Close Semantics](docs/FEATURES.md#connection-close-semantics)
 - [Reserved & Managed Headers](docs/FEATURES.md#reserved--managed-response-headers)
 - [Query String & Parameter Decoding](docs/FEATURES.md#query-string--parameters)

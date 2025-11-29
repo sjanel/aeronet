@@ -116,12 +116,15 @@ TEST(HttpStreaming, ChunkedSimple) {
   ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
     writer.status(200);
     writer.contentType("text/plain");
+    writer.addHeader("X-Custom", "value");
     writer.writeBody("hello ");
     writer.writeBody("world");
     writer.end();
+    writer.end();  // second end() should be no-op
   });
   std::string resp = blockingFetch(port, "GET", "/stream");
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.contains("X-Custom: value\r\n"));
   // Should contain chunk sizes in hex (6 and 5) and terminating 0 chunk.
   ASSERT_TRUE(resp.contains("6\r\nhello "));
   ASSERT_TRUE(resp.contains("5\r\nworld"));

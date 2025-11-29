@@ -79,6 +79,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    multipart-form-data_test
+    test/multipart-form-data_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+AeronetAddUnitTest(
     static-file-handler_test
     test/static-file-handler_test.cpp
     LIBRARIES
