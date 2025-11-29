@@ -64,10 +64,11 @@
 #include "aeronet/request-task.hpp"          // IWYU pragma: export
 
 // HTTP protocol enums & helpers
-#include "aeronet/http-constants.hpp"    // IWYU pragma: export
-#include "aeronet/http-method.hpp"       // IWYU pragma: export
-#include "aeronet/http-status-code.hpp"  // IWYU pragma: export
-#include "aeronet/http-version.hpp"      // IWYU pragma: export
+#include "aeronet/http-constants.hpp"       // IWYU pragma: export
+#include "aeronet/http-method.hpp"          // IWYU pragma: export
+#include "aeronet/http-status-code.hpp"     // IWYU pragma: export
+#include "aeronet/http-version.hpp"         // IWYU pragma: export
+#include "aeronet/multipart-form-data.hpp"  // IWYU pragma: export
 
 // Stats / metrics surface
 #include "aeronet/server-stats.hpp"  // IWYU pragma: export

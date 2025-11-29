@@ -63,7 +63,7 @@ Where to look: see the "CONNECT (HTTP tunneling)" subsection and the Connection 
 - [x] Trailer header exposure (incoming chunked trailers)
 - [x] Outbound trailer headers (response trailers for both buffered and streaming responses)
 - [x] Content-Encoding request body decompression (gzip, deflate, zstd, multi-layer, identity skip, safety limits)
-- [ ] Multipart/form-data convenience utilities
+- [x] Multipart/form-data convenience utilities
 - [x] Forbidden trailer headers rejected for incoming chunked trailers (security)
 
 Where to look: see "Inbound Request Decompression (Config Details)" for decompression behavior and the parser docs for chunked/CL handling.
@@ -431,6 +431,67 @@ router.setDefault([](const HttpRequest&) {
 
 HttpServer server(cfg, std::move(router));
 ```
+
+## Multipart/form-data utilities (RFC 7578)
+
+`MultipartFormData` parses aggregated `multipart/form-data`
+payloads with zero-copy `std::string_view` slices referencing the original request buffer. Use it after calling
+`req.body()` / `co_await req.bodyAwaitable()` so the full payload is buffered.
+
+### Basic usage
+
+```cpp
+Router router;
+router.setPath(http::Method::POST, "/upload", [](const HttpRequest& req) {
+  const auto body = req.body();
+  const auto contentType = req.headerValueOrEmpty(http::ContentType);
+
+  MultipartFormData form(contentType, body);
+  if (!form.valid()) {
+    std::string body("invalid multipart payload: ");
+    body += form.invalidReason();
+    return HttpResponse(400).body(std::move(body));
+  }
+
+  if (const auto* note = form.part("description")) {
+    log::info("desc={} bytes", note->value.size());
+  }
+
+  if (const auto* file = form.part("file")) {
+    if (file->filename) {
+      // user helper
+      // PersistFile(*file->filename, file->value);
+    }
+  }
+
+  return HttpResponse(204);
+});
+```
+
+Each `Part` exposes `name`, optional `filename`/`contentType`, the raw `value`, and a span of headers (use
+`headers()` or `headerValueOrEmpty()`). `part("field")` returns the first match, while `parts("field")` gathers duplicates.
+
+### Options & limits
+
+`MultipartFormDataOptions` protects against abusive payloads:
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `maxParts` | 128 | Rejects payloads containing more than this many parts (0 disables the check). |
+| `maxHeadersPerPart` | 32 | Caps the number of header lines per part. |
+| `maxPartSizeBytes` | 32 MiB | Rejects an individual part when its body would exceed this size (0 disables the check). |
+
+Malformed payloads (missing boundary markers, absent `Content-Disposition`, exceeded limits) leave
+`MultipartFormData::valid()` set to `false` and produce no parts. The parser never throws for content/limit issues, so
+handlers should check `valid()` and return an appropriate 4xx response (or log/recover) when it is `false`.
+
+Current behavior:
+
+- Accepts quoted boundary attributes (`boundary="Aa--123"`).
+- Understands the simple `filename*=` syntax (RFC 5987) by returning the substring after the second `'` (percent decoding
+  can be layered on top if needed).
+- Requires CRLF-delimited MIME boundaries (per RFC 7578).
+- Optimized for aggregated bodies; streaming multipart parsing is a future roadmap item.
 
 ## Inbound Request Decompression (Config Details)
 

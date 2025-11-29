@@ -37,6 +37,7 @@ inline constexpr std::string_view Connection = "Connection";
 inline constexpr std::string_view TransferEncoding = "Transfer-Encoding";
 inline constexpr std::string_view ContentLength = "Content-Length";
 inline constexpr std::string_view ContentType = "Content-Type";
+inline constexpr std::string_view ContentDisposition = "Content-Disposition";
 inline constexpr std::string_view ContentEncoding = "Content-Encoding";
 inline constexpr std::string_view AcceptEncoding = "Accept-Encoding";
 inline constexpr std::string_view UserAgent = "User-Agent";
