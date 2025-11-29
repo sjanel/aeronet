@@ -166,6 +166,12 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    decompression-config_test
+    src/decompression-config.cpp
+    test/decompression-config_test.cpp
+)
+
+AeronetAddUnitTest(
     dogstatsd_test
     test/dogstatsd_test.cpp
     src/dogstatsd.cpp
@@ -199,6 +205,14 @@ AeronetAddUnitTest(
     test/server-stats_test.cpp
     LIBRARIES
     aeronet_objects
+)
+
+AeronetAddUnitTest(
+    static-file-config_test
+    src/static-file-config.cpp
+    test/static-file-config_test.cpp
+    LIBRARIES
+    aeronet_tech
 )
 
 AeronetAddUnitTest(
