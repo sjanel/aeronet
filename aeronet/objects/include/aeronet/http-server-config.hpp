@@ -52,7 +52,7 @@ struct HttpServerConfig {
   bool enableKeepAlive{true};
 
   // Maximum number of HTTP requests to serve over a single persistent connection before forcing close.
-  uint32_t maxRequestsPerConnection{100};
+  uint32_t maxRequestsPerConnection{100000};
 
   // Idle timeout for keep-alive connections (duration to wait for next request after previous response is fully
   // sent). Once exceeded the server proactively closes the connection. Default: 5000 ms.
