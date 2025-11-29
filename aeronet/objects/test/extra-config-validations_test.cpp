@@ -2,6 +2,7 @@
 
 #include <stdexcept>
 
+#include "aeronet/decompression-config.hpp"
 #include "aeronet/http-server-config.hpp"
 
 namespace aeronet {
@@ -23,11 +24,13 @@ TEST(ExtraConfigValidations, TlsAlpnMustMatch) {
 
 TEST(ExtraConfigValidations, DecompressionChecks) {
   HttpServerConfig cfg;
-  cfg.decompression.decoderChunkSize = 0;
+  DecompressionConfig decompressionConfig;
+  decompressionConfig.decoderChunkSize = 0;
+  cfg.withRequestDecompression(decompressionConfig);
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
-  cfg.decompression.decoderChunkSize = 1024;
-  cfg.decompression.maxDecompressedBytes = 512;
-  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+  decompressionConfig.decoderChunkSize = 1024;
+  decompressionConfig.maxDecompressedBytes = 512;
+  EXPECT_THROW(decompressionConfig.validate(), std::invalid_argument);
 }
 
 TEST(ExtraConfigValidations, HeaderBodyLimits) {
