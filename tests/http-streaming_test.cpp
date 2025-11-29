@@ -283,7 +283,7 @@ TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
 }
 
 TEST(HttpServerMixed, MixedPerPathHandlers) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = false; });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withKeepAliveMode(false); });
 
   // path /mix : GET streaming, POST normal
   ts.router().setPath(http::Method::GET, "/mix", [](const HttpRequest& /*unused*/, HttpResponseWriter& writer) {
@@ -643,7 +643,7 @@ TEST(StreamingBackpressure, LargeBodyQueues) {
 TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
   constexpr std::size_t kLargeSize = 5000;
 
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.minCapturedBodySize = kLargeSize - 1U; });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMinCapturedBodySize(kLargeSize - 1U); });
 
   std::string large(kLargeSize, 'x');
   ts.router().setDefault([&](const HttpRequest&, HttpResponseWriter& writer) {

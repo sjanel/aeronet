@@ -45,7 +45,10 @@ TEST(HttpTlsAlpnMismatch, HandshakeFailsWhenNoCommonProtocolAndMustMatch) {
   bool failed = false;
   ServerStats statsAfter{};
   {
-    test::TlsTestServer ts({"http/1.1", "h2"}, [](HttpServerConfig& cfg) { cfg.withTlsAlpnMustMatch(true); });
+    test::TlsTestServer ts({"http/1.1", "h2"}, [](HttpServerConfig& cfg) {
+      cfg.withTlsAlpnMustMatch(true);
+      cfg.withTlsHandshakeLogging(true);
+    });
     auto port = ts.port();
     ts.setDefault([](const HttpRequest& req) {
       return HttpResponse(http::StatusCodeOK)
@@ -118,11 +121,11 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
   HttpServerConfig cfg;
   cfg.withTlsCertKeyMemory(pair.first, pair.second);
   cfg.withTlsAlpnProtocols({"h2", "http/1.1"});  // offer both; client will request http/1.1 only
+  cfg.withTlsRequireClientCert(false);           // no client cert for this test
 
   HttpServer original(cfg);
   original.router().setDefault([](const HttpRequest& req) {
     return HttpResponse(http::StatusCodeOK, "OK")
-
         .body(std::string("MOVEALPN:") + (req.alpnProtocol().empty() ? "-" : std::string(req.alpnProtocol())));
   });
 

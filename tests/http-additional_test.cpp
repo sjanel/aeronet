@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include "aeronet/http-constants.hpp"
@@ -435,4 +437,37 @@ TEST(HttpHead, MaxRequestsApplied) {
   ASSERT_EQ(3, statusCount) << resp;
   // HEAD responses must not include body; ensure no accidental body token present
   ASSERT_FALSE(resp.contains("IGNORED"));
+}
+
+TEST(HttpServer, CachedConnectionsTimeout) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withKeepAliveMode(false);
+    cfg.withCloseCachedConnectionsTimeout({});
+  });
+  auto port = ts.port();
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
+    HttpResponse resp;
+    resp.body("OK");
+    return resp;
+  });
+
+  const std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";
+
+  for (int reqPos = 0; reqPos < 10; ++reqPos) {
+    test::ClientConnection clientConnection(port);
+    int fd = clientConnection.fd();
+    ASSERT_GE(fd, 0);
+    test::sendAll(fd, req);
+    std::string firstResp = test::recvWithTimeout(fd);
+    ASSERT_TRUE(firstResp.contains("HTTP/1.1 200")) << firstResp;
+  }
+
+  std::this_thread::sleep_for(5ms);
+
+  test::ClientConnection clientConnection(port);
+  int fd = clientConnection.fd();
+  test::sendAll(fd, req);
+  std::string secondResp = test::recvWithTimeout(fd);
+  // Expect no data (connection should be closed)
+  ASSERT_TRUE(secondResp.contains("HTTP/1.1 200")) << secondResp;
 }

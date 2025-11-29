@@ -5,6 +5,9 @@
 namespace aeronet {
 
 void DecompressionConfig::validate() const {
+  if (!enable) {
+    return;
+  }
   if (decoderChunkSize == 0) {
     throw std::invalid_argument("decoderChunkSize must be > 0");
   }
