@@ -31,8 +31,8 @@ TEST(HttpTlsBasic, LargePayload) {
   std::string largeBody(1 << 24, 'a');
   // Prepare config with in-memory self-signed cert/key
   test::TlsTestServer ts({"http/1.1"}, [&](HttpServerConfig& cfg) {
-    cfg.maxOutboundBufferBytes = largeBody.size() + 512;  // +512 for headers
-    cfg.keepAliveTimeout = std::chrono::hours(1);
+    cfg.withMaxOutboundBufferBytes(largeBody.size() + 512);  // +512 for headers
+    cfg.withKeepAliveTimeout(std::chrono::hours(1));
   });
   ts.setDefault([&largeBody]([[maybe_unused]] const HttpRequest& req) {
     return HttpResponse(http::StatusCodeOK, "OK").body(largeBody);
