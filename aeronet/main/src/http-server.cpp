@@ -7,6 +7,7 @@
 #include <charconv>
 #include <chrono>
 #include <coroutine>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -43,6 +44,7 @@
 #include "aeronet/middleware.hpp"
 #include "aeronet/nchars.hpp"
 #include "aeronet/path-handlers.hpp"
+#include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/request-task.hpp"
 #include "aeronet/router-update-proxy.hpp"
@@ -56,6 +58,10 @@
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "aeronet/upgrade-handler.hpp"
+#include "aeronet/vector.hpp"
+#include "aeronet/websocket-endpoint.hpp"
+#include "aeronet/websocket-handler.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/err.h>
@@ -240,6 +246,83 @@ bool HttpServer::disableWritableInterest(ConnectionMapIt cnxIt, const char* ctx)
   return false;
 }
 
+bool HttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
+  ConnectionState& state = *cnxIt->second;
+
+  // If we have a protocol handler installed (e.g., WebSocket), use it
+  if (state.protocolHandler != nullptr) {
+    return processWebSocketInput(cnxIt);
+  }
+
+  // Default to HTTP/1.1 request processing
+  return processRequestsOnConnection(cnxIt);
+}
+
+bool HttpServer::processWebSocketInput(ConnectionMapIt cnxIt) {
+  ConnectionState& state = *cnxIt->second;
+
+  if (!state.protocolHandler) {
+    log::error("processWebSocketInput called without protocol handler");
+    state.requestImmediateClose();
+    return true;
+  }
+
+  // Convert input buffer to span of bytes
+  std::span<const std::byte> inputData(reinterpret_cast<const std::byte*>(state.inBuffer.data()),
+                                       state.inBuffer.size());
+
+  if (inputData.empty()) {
+    return state.isAnyCloseRequested();
+  }
+
+  // Process input through the protocol handler
+  const auto result = state.protocolHandler->processInput(inputData, state);
+
+  // Consume processed bytes from input buffer
+  if (result.bytesConsumed > 0) {
+    state.inBuffer.erase_front(result.bytesConsumed);
+  }
+
+  // Queue any pending output from the handler
+  if (state.protocolHandler->hasPendingOutput()) {
+    auto pendingOutput = state.protocolHandler->getPendingOutput();
+    if (!pendingOutput.empty()) {
+      RawChars outputData;
+      outputData.append(reinterpret_cast<const char*>(pendingOutput.data()), pendingOutput.size());
+      state.outBuffer.append(HttpResponseData(std::move(outputData)));
+      state.protocolHandler->onOutputWritten(pendingOutput.size());
+      flushOutbound(cnxIt);
+    }
+  }
+
+  // Handle result
+  switch (result.action) {
+    case ProtocolProcessResult::Action::Continue:
+    case ProtocolProcessResult::Action::ResponseReady:
+      // More data needed or processing can continue
+      // ResponseReady was already handled above via getPendingOutput
+      break;
+
+    case ProtocolProcessResult::Action::Upgrade:
+      // Should not happen for WebSocket handler
+      log::warn("Unexpected upgrade action from WebSocket handler");
+      break;
+
+    case ProtocolProcessResult::Action::Close:
+      // Protocol wants to close gracefully (e.g., close handshake complete)
+      state.requestDrainAndClose();
+      break;
+
+    case ProtocolProcessResult::Action::CloseImmediate:
+      // Protocol error - close immediately
+      log::warn("WebSocket protocol error");
+      state.requestImmediateClose();
+      break;
+  }
+
+  return state.isAnyCloseRequested();
+}
+
 bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   if (state.asyncState.active) {
@@ -300,6 +383,68 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
     // Route matching
     const Router::RoutingResult routingResult = _router.match(request.method(), request.path());
     const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
+
+    // Check for WebSocket upgrade request
+    if (routingResult.pWebSocketEndpoint != nullptr && request.method() == http::Method::GET) {
+      const auto& endpoint = *routingResult.pWebSocketEndpoint;
+
+      // Build upgrade config from endpoint settings
+      WebSocketUpgradeConfig upgradeConfig;
+      vector<std::string_view> protocolViews;
+      protocolViews.reserve(static_cast<decltype(protocolViews)::size_type>(endpoint.supportedProtocols.size()));
+      for (const auto& proto : endpoint.supportedProtocols) {
+        protocolViews.push_back(proto);
+      }
+      upgradeConfig.supportedProtocols = protocolViews;
+      upgradeConfig.enableCompression = endpoint.enableCompression;
+      upgradeConfig.deflateConfig = endpoint.config.deflateConfig;
+
+      const auto upgradeValidation = upgrade::ValidateWebSocketUpgrade(request, upgradeConfig);
+      if (upgradeValidation.valid) {
+        // Generate and send 101 Switching Protocols response
+        RawChars upgradeResponse = upgrade::BuildWebSocketUpgradeResponse(upgradeValidation);
+        const std::size_t consumedBytes = request.headSpanSize();
+        state.inBuffer.erase_front(consumedBytes);
+
+        // Create WebSocket handler using the endpoint's factory or default
+        std::unique_ptr<websocket::WebSocketHandler> wsHandler;
+        if (endpoint.factory) {
+          wsHandler = endpoint.factory(request);
+          // If factory doesn't set compression, we need to potentially upgrade it
+          if (!wsHandler->hasCompression() && upgradeValidation.deflateParams.has_value()) {
+            // Factory didn't configure compression but it was negotiated - recreate handler
+            auto config = wsHandler->config();
+            wsHandler = std::make_unique<websocket::WebSocketHandler>(config, websocket::WebSocketCallbacks{},
+                                                                      upgradeValidation.deflateParams);
+          }
+        } else {
+          auto config = endpoint.config;
+          config.isServerSide = true;
+          wsHandler = std::make_unique<websocket::WebSocketHandler>(config, websocket::WebSocketCallbacks{},
+                                                                    upgradeValidation.deflateParams);
+        }
+
+        // Install the protocol handler
+        state.protocolHandler = std::move(wsHandler);
+        state.protocol = ProtocolType::WebSocket;
+
+        // Queue the upgrade response
+        state.outBuffer.append(HttpResponseData(std::move(upgradeResponse)));
+        flushOutbound(cnxIt);
+
+        ++state.requestsServed;
+        ++_stats.totalRequestsServed;
+
+        // Return - the connection is now a WebSocket and will be handled differently
+        return false;
+      }
+      // If upgrade validation failed but route has WebSocket endpoint, return 400
+      if (upgrade::DetectUpgradeTarget(request) == ProtocolType::WebSocket) {
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, upgradeValidation.errorMessage);
+        break;
+      }
+      // Otherwise, fall through to normal request handling (if there's a regular handler)
+    }
 
     // Handle Expect header tokens beyond the built-in 100-continue.
     // RFC: if any expectation token is not understood and not handled, respond 417.

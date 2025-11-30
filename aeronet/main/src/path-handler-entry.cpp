@@ -8,6 +8,7 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
+#include "aeronet/websocket-endpoint.hpp"
 
 namespace aeronet {
 
@@ -15,6 +16,7 @@ PathHandlerEntry::PathHandlerEntry(const PathHandlerEntry& rhs)
     : normalMethodBmp(rhs.normalMethodBmp),
       streamingMethodBmp(rhs.streamingMethodBmp),
       asyncMethodBmp(rhs.asyncMethodBmp),
+      websocketEndpoint(rhs.websocketEndpoint ? std::make_unique<WebSocketEndpoint>(*rhs.websocketEndpoint) : nullptr),
       corsPolicy(rhs.corsPolicy),
       preMiddleware(rhs.preMiddleware),
       postMiddleware(rhs.postMiddleware) {
@@ -36,7 +38,8 @@ PathHandlerEntry::PathHandlerEntry(const PathHandlerEntry& rhs)
 }
 
 PathHandlerEntry::PathHandlerEntry(PathHandlerEntry&& rhs) noexcept
-    : corsPolicy(std::move(rhs.corsPolicy)),
+    : websocketEndpoint(std::move(rhs.websocketEndpoint)),
+      corsPolicy(std::move(rhs.corsPolicy)),
       preMiddleware(std::move(rhs.preMiddleware)),
       postMiddleware(std::move(rhs.postMiddleware)) {
   for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
@@ -62,6 +65,7 @@ PathHandlerEntry::PathHandlerEntry(PathHandlerEntry&& rhs) noexcept
 
 PathHandlerEntry& PathHandlerEntry::operator=(const PathHandlerEntry& rhs) {
   if (&rhs != this) {
+    websocketEndpoint = rhs.websocketEndpoint ? std::make_unique<WebSocketEndpoint>(*rhs.websocketEndpoint) : nullptr;
     corsPolicy = rhs.corsPolicy;
     preMiddleware = rhs.preMiddleware;
     postMiddleware = rhs.postMiddleware;
@@ -105,6 +109,7 @@ PathHandlerEntry& PathHandlerEntry::operator=(const PathHandlerEntry& rhs) {
 
 PathHandlerEntry& PathHandlerEntry::operator=(PathHandlerEntry&& rhs) noexcept {
   if (&rhs != this) {
+    websocketEndpoint = std::move(rhs.websocketEndpoint);
     corsPolicy = std::move(rhs.corsPolicy);
     preMiddleware = std::move(rhs.preMiddleware);
     postMiddleware = std::move(rhs.postMiddleware);
@@ -279,6 +284,14 @@ void PathHandlerEntry::destroyIdx(http::MethodIdx methodIdx) {
     std::destroy_at(&reinterpret_cast<AsyncRequestHandler&>(storage));
   } else if (http::IsMethodIdxSet(streamingMethodBmp, methodIdx)) {
     std::destroy_at(&reinterpret_cast<StreamingHandler&>(storage));
+  }
+}
+
+void PathHandlerEntry::assignWebSocketEndpoint(WebSocketEndpoint endpoint) {
+  if (websocketEndpoint) {
+    *websocketEndpoint = std::move(endpoint);
+  } else {
+    websocketEndpoint = std::make_unique<WebSocketEndpoint>(std::move(endpoint));
   }
 }
 

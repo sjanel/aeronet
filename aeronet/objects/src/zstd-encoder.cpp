@@ -41,6 +41,7 @@ std::string_view ZstdEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
   const auto mode = chunk.empty() ? ZSTD_e_end : ZSTD_e_continue;
   while (true) {
     _buf.ensureAvailableCapacityExponential(encoderChunkSize);
+
     outBuf.dst = _buf.data() + outBuf.pos;
     outBuf.size = _buf.capacity() - outBuf.pos;
 

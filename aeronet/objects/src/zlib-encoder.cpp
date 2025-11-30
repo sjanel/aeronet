@@ -9,46 +9,13 @@
 #include <format>
 #include <stdexcept>
 #include <string_view>
-#include <utility>
 
-#include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/zlib-stream-raii.hpp"
 
 namespace aeronet {
 
-namespace {
-constexpr int ComputeWindowBits(details::ZStreamRAII::Variant variant) {
-  switch (variant) {
-    case details::ZStreamRAII::Variant::gzip:
-      return 15 + 16;
-    case details::ZStreamRAII::Variant::deflate:
-      return 15;
-    default:
-      std::unreachable();
-  }
-}
-}  // namespace
-
-namespace details {
-
-ZStreamRAII::ZStreamRAII(Variant variant, int8_t level) {
-  const auto ret = deflateInit2(&_stream, level, Z_DEFLATED, ComputeWindowBits(variant), 8, Z_DEFAULT_STRATEGY);
-  if (ret != Z_OK) {
-    throw std::runtime_error(std::format("Unable to initialize zlib compression - error {}", ret));
-  }
-}
-
-ZStreamRAII::~ZStreamRAII() {
-  if (_stream.state != nullptr) {
-    const auto ret = deflateEnd(&_stream);
-    if (ret != Z_OK) {
-      log::error("zlib: deflateEnd (one-shot) returned {} (ignored)", ret);
-    }
-  }
-}
-}  // namespace details
-
-ZlibEncoderContext::ZlibEncoderContext(details::ZStreamRAII::Variant variant, RawChars& sharedBuf, int8_t level)
+ZlibEncoderContext::ZlibEncoderContext(ZStreamRAII::Variant variant, RawChars& sharedBuf, int8_t level)
     : _buf(sharedBuf), _zs(variant, level) {}
 
 std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) {
@@ -56,23 +23,31 @@ std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
   if (_finished) {
     return _buf;
   }
-  _zs._stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(chunk.data()));
-  _zs._stream.avail_in = static_cast<uInt>(chunk.size());
+
+  _zs.stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(chunk.data()));
+  _zs.stream.avail_in = static_cast<uInt>(chunk.size());
+
   auto flush = chunk.empty() ? Z_FINISH : Z_NO_FLUSH;
   do {
     _buf.ensureAvailableCapacityExponential(encoderChunkSize);
-    _zs._stream.next_out = reinterpret_cast<unsigned char*>(_buf.data() + _buf.size());
-    _zs._stream.avail_out = static_cast<decltype(_zs._stream.avail_out)>(encoderChunkSize);
-    const auto ret = deflate(&_zs._stream, flush);
+
+    const auto availableCapacity = _buf.availableCapacity();
+
+    _zs.stream.next_out = reinterpret_cast<unsigned char*>(_buf.data() + _buf.size());
+    _zs.stream.avail_out = static_cast<decltype(_zs.stream.avail_out)>(availableCapacity);
+
+    const auto ret = deflate(&_zs.stream, flush);
     if (ret == Z_STREAM_ERROR) {
       throw std::runtime_error(std::format("Zlib streaming error {}", ret));
     }
-    _buf.addSize(encoderChunkSize - _zs._stream.avail_out);
+
+    _buf.addSize(availableCapacity - _zs.stream.avail_out);
+
     if (ret == Z_STREAM_END) {
       _finished = true;
       break;
     }
-  } while (_zs._stream.avail_out == 0 || _zs._stream.avail_in > 0);
+  } while (_zs.stream.avail_out == 0 || _zs.stream.avail_in > 0);
   if (chunk.empty()) {
     _finished = true;
   }
@@ -80,27 +55,29 @@ std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
 }
 
 void ZlibEncoder::encodeFull(std::size_t extraCapacity, std::string_view data, RawChars& buf) {
-  details::ZStreamRAII zs(_variant, _level);
+  ZStreamRAII zs(_variant, _level);
 
-  zs._stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
-  zs._stream.avail_in = static_cast<uInt>(data.size());
+  auto& zstream = zs.stream;
 
-  std::size_t maxCompressedSize = static_cast<std::size_t>(deflateBound(&zs._stream, static_cast<uLong>(data.size())));
+  zstream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
+  zstream.avail_in = static_cast<uInt>(data.size());
+
+  std::size_t maxCompressedSize = static_cast<std::size_t>(deflateBound(&zstream, static_cast<uLong>(data.size())));
 
   buf.ensureAvailableCapacity(maxCompressedSize + extraCapacity);
 
   std::size_t availableCapacity = buf.availableCapacity();
 
-  zs._stream.next_out = reinterpret_cast<unsigned char*>(buf.data() + buf.size());
-  zs._stream.avail_out = static_cast<decltype(zs._stream.avail_out)>(availableCapacity);
+  zstream.next_out = reinterpret_cast<unsigned char*>(buf.data() + buf.size());
+  zstream.avail_out = static_cast<decltype(zstream.avail_out)>(availableCapacity);
 
-  const auto rc = deflate(&zs._stream, Z_FINISH);
+  const auto rc = deflate(&zstream, Z_FINISH);
   if (rc != Z_STREAM_END) {
-    throw std::runtime_error(std::format("Error {} during {} compression", rc,
-                                         _variant == details::ZStreamRAII::Variant::gzip ? "gzip" : "deflate"));
+    throw std::runtime_error(
+        std::format("Error {} during {} compression", rc, _variant == ZStreamRAII::Variant::gzip ? "gzip" : "deflate"));
   }
 
-  buf.addSize(availableCapacity - zs._stream.avail_out);
+  buf.addSize(availableCapacity - zstream.avail_out);
 }
 
 }  // namespace aeronet
