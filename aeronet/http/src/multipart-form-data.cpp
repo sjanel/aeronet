@@ -11,30 +11,13 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/string-trim.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet {
 namespace {
 
 constexpr std::string_view kMultipartMediaType{"multipart/form-data"};
-
-std::string_view Trim(std::string_view value) {
-  auto begin = value.begin();
-  auto end = value.end();
-  while (begin != end && (*begin == ' ' || *begin == '\t')) {
-    ++begin;
-  }
-  while (begin != end) {
-    auto last = end;
-    --last;
-    if (*last == ' ' || *last == '\t') {
-      end = last;
-    } else {
-      break;
-    }
-  }
-  return value.substr(static_cast<std::size_t>(begin - value.begin()), static_cast<std::size_t>(end - begin));
-}
 
 std::string_view StripQuotes(std::string_view value) {
   if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
@@ -51,7 +34,7 @@ struct ContentDispositionInfo {
 };
 
 ContentDispositionInfo ParseContentDisposition(std::string_view headerValue) {
-  std::string_view trimmed = Trim(headerValue);
+  std::string_view trimmed = TrimOws(headerValue);
   ContentDispositionInfo ret;
 
   if (trimmed.empty()) {
@@ -65,7 +48,7 @@ ContentDispositionInfo ParseContentDisposition(std::string_view headerValue) {
   while (!trimmed.empty()) {
     auto semicolon = trimmed.find(';');
     std::string_view token = semicolon == std::string_view::npos ? trimmed : trimmed.substr(0, semicolon);
-    token = Trim(token);
+    token = TrimOws(token);
     if (token.empty()) {
       // Empty token (e.g., consecutive semicolons) is malformed
       ret.invalidReason = "multipart part invalid Content-Disposition parameter";
@@ -77,8 +60,8 @@ ContentDispositionInfo ParseContentDisposition(std::string_view headerValue) {
     } else {
       auto eq = token.find('=');
       if (eq != std::string_view::npos) {
-        std::string_view key = Trim(token.substr(0, eq));
-        std::string_view value = Trim(token.substr(eq + 1));
+        std::string_view key = TrimOws(token.substr(0, eq));
+        std::string_view value = TrimOws(token.substr(eq + 1));
 
         value = StripQuotes(value);
         if (CaseInsensitiveEqual(key, "name")) {
@@ -128,7 +111,7 @@ std::string_view ExtractBoundary(std::string_view contentType) {
 
   auto semicolon = contentType.find(';');
   auto typeToken = semicolon == std::string_view::npos ? contentType : contentType.substr(0, semicolon);
-  if (!CaseInsensitiveEqual(Trim(typeToken), kMultipartMediaType)) {
+  if (!CaseInsensitiveEqual(TrimOws(typeToken), kMultipartMediaType)) {
     return {};
   }
 
@@ -144,8 +127,8 @@ std::string_view ExtractBoundary(std::string_view contentType) {
     auto chunk = next == std::string_view::npos ? params : params.substr(0, next);
     auto eq = chunk.find('=');
     if (eq != std::string_view::npos) {
-      auto key = Trim(chunk.substr(0, eq));
-      auto value = Trim(chunk.substr(eq + 1));
+      auto key = TrimOws(chunk.substr(0, eq));
+      auto value = TrimOws(chunk.substr(eq + 1));
       if (CaseInsensitiveEqual(key, "boundary")) {
         return StripQuotes(value);
       }
@@ -164,11 +147,11 @@ std::string_view AppendHeader(std::string_view line, const MultipartFormDataOpti
   if (colon == std::string_view::npos) {
     return "multipart part header missing colon";
   }
-  auto name = Trim(line.substr(0, colon));
+  auto name = TrimOws(line.substr(0, colon));
   if (name.empty()) {
     return "multipart part header missing name";
   }
-  auto value = Trim(line.substr(colon + 1));
+  auto value = TrimOws(line.substr(colon + 1));
   if (options.maxHeadersPerPart != 0 && headerCount >= options.maxHeadersPerPart) {
     return "multipart part exceeds header limit";
   }
