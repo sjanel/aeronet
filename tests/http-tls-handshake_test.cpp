@@ -348,6 +348,68 @@ TEST(HttpTlsMtlsMetrics, ClientCertPresenceIncrementsMetric) {
   }
 }
 
+TEST(HttpTlsSniCertificates, ExactHostPicksAlternateCertificate) {
+  auto defaultPair = test::makeEphemeralCertKey();
+  auto sniPair = test::makeEphemeralCertKey();
+
+  HttpServerConfig cfg;
+  cfg.withTlsCertKeyMemory(defaultPair.first, defaultPair.second);
+  cfg.withTlsAlpnProtocols({"http/1.1"});
+  cfg.tls.withTlsSniCertificateMemory("api.example.test", sniPair.first, sniPair.second);
+
+  test::TestServer server(cfg, RouterConfig{}, std::chrono::milliseconds{50});
+  server.router().setDefault([](const HttpRequest&) { return HttpResponse(200, "OK").body("SNI-EXACT"); });
+
+  test::TlsClient::Options sniOpts;
+  sniOpts.verifyPeer = true;
+  sniOpts.alpn = {"http/1.1"};
+  sniOpts.serverName = "api.example.test";
+  sniOpts.trustedServerCertPem = sniPair.first;
+  test::TlsClient sniClient(server.port(), sniOpts);
+  ASSERT_TRUE(sniClient.handshakeOk());
+  auto resp = sniClient.get("/sni", {});
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.contains("SNI-EXACT"));
+
+  test::TlsClient::Options fallbackOpts = sniOpts;
+  fallbackOpts.serverName.clear();
+  test::TlsClient fallbackClient(server.port(), fallbackOpts);
+  ASSERT_FALSE(fallbackClient.handshakeOk());
+
+  server.stop();
+}
+
+TEST(HttpTlsSniCertificates, WildcardHostCaseInsensitiveMatch) {
+  auto defaultPair = test::makeEphemeralCertKey();
+  auto wildcardPair = test::makeEphemeralCertKey();
+
+  HttpServerConfig cfg;
+  cfg.withTlsCertKeyMemory(defaultPair.first, defaultPair.second);
+  cfg.withTlsAlpnProtocols({"http/1.1"});
+  cfg.tls.withTlsSniCertificateMemory("*.svc.test", wildcardPair.first, wildcardPair.second);
+
+  test::TestServer server(cfg, RouterConfig{}, std::chrono::milliseconds{50});
+  server.router().setDefault([](const HttpRequest&) { return HttpResponse(200, "OK").body("SNI-WILDCARD"); });
+
+  test::TlsClient::Options wildcardOpts;
+  wildcardOpts.verifyPeer = true;
+  wildcardOpts.alpn = {"http/1.1"};
+  wildcardOpts.serverName = "API.SVC.TEST";  // uppercase to exercise normalization
+  wildcardOpts.trustedServerCertPem = wildcardPair.first;
+  test::TlsClient wildcardClient(server.port(), wildcardOpts);
+  ASSERT_TRUE(wildcardClient.handshakeOk());
+  auto resp = wildcardClient.get("/wild", {});
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.contains("SNI-WILDCARD"));
+
+  test::TlsClient::Options missingOpts = wildcardOpts;
+  missingOpts.serverName = "svc.test";  // no subdomain => should fall back to default cert
+  test::TlsClient missingClient(server.port(), missingOpts);
+  ASSERT_FALSE(missingClient.handshakeOk());
+
+  server.stop();
+}
+
 namespace {
 // Large response GET using TlsClient (simplified replacement).
 std::string tlsGetLarge(auto port) {

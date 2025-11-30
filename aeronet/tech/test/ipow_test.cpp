@@ -10,6 +10,10 @@ TEST(MathHelpers, PowerPositiveBase) {
   EXPECT_EQ(ipow(1, 0), 1);
   EXPECT_EQ(ipow(1, 23), 1);
   EXPECT_EQ(ipow(1, 24), 1);
+  EXPECT_EQ(ipow(2, 24), 16777216);
+  EXPECT_EQ(ipow(2, 63), 0);
+  EXPECT_EQ(ipow(1, 100), 1);
+  EXPECT_EQ(ipow(2, 100), 0);  // overflow case
   EXPECT_EQ(ipow(3, 2), 9);
   EXPECT_EQ(ipow(4, 3), 64);
   EXPECT_EQ(ipow(17, 5), 1419857);
@@ -25,6 +29,8 @@ TEST(MathHelpers, PowerNegativeBase) {
   EXPECT_EQ(ipow(-1, 3), -1);
   EXPECT_EQ(ipow(-1, 32), 1);
   EXPECT_EQ(ipow(-1, 33), -1);
+  EXPECT_EQ(ipow(-1, 100), 1);
+  EXPECT_EQ(ipow(-1, 101), -1);
   EXPECT_EQ(ipow(-2, 1), -2);
   EXPECT_EQ(ipow(-3, 3), -27);
   EXPECT_EQ(ipow(-23, 13), -504036361936467383LL);

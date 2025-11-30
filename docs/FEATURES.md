@@ -1479,7 +1479,7 @@ Optional (`AERONET_ENABLE_OPENSSL`). Provides termination, optional / required m
 | Handshake duration metrics | ✅ | Count / total ns / max ns |
 | JSON stats export | ✅ | `serverStatsToJson()` includes TLS metrics |
 | No process‑global mutable TLS state | ✅ | All metrics per server instance |
-| Session resumption (tickets) | ⏳ | Server-side TLS session ticket support with planned key lifecycle/rotation. |
+| Session resumption (tickets) | ✅ | Server-side TLS session ticket support with automatic key rotation. |
 | SNI multi-cert routing | ⏳ | Serve different certs per SNI name (mapping & routing rules). |
 | Hot cert/key reload (atomic swap) | ⏳ | Atomic in-memory cert/key swap to avoid restarts. |
 | OCSP stapling / revocation checks | ⏳ | OCSP staple responses & revocation checking with caching. |
@@ -1589,7 +1589,94 @@ Testing guidance:
 - Use `withTlsCertKeyMemory` with ephemeral self-signed test certificates (see test helper) to avoid filesystem dependencies.
 - For ALPN strict tests, provide a protocol set that intentionally does not match to exercise mismatch counter.
 
-Roadmap (see also table above): session resumption, SNI routing, hot reload of cert/key, OCSP / revocation checks.
+Roadmap (see also table above): SNI routing, hot reload of cert/key, OCSP / revocation checks.
+
+### TLS Session Tickets
+
+Session tickets allow TLS session resumption without server-side session caches, enabling faster subsequent handshakes (0-RTT negotiation). aeronet provides automatic key management with configurable rotation.
+
+#### Session Ticket Concepts
+
+- **Session Tickets**: Encrypted session state sent to the client, allowing resumption without a full handshake.
+- **Ticket Encryption Keys**: 48-byte keys (16B key name + 16B AES key + 16B HMAC key) used to encrypt/decrypt tickets.
+- **Key Rotation**: Automatic rotation prevents stale keys from being used indefinitely.
+
+#### Configuration Options
+
+| Method | Purpose |
+|--------|---------|
+| `withTlsSessionTickets(true)` | Enable session tickets (default: disabled) |
+| `withTlsSessionTicketLifetime(duration)` | Key rotation interval (default: 1 hour) |
+| `withTlsSessionTicketMaxKeys(n)` | Maximum keys in rotation (default: 3) |
+| `withTlsSessionTicketKey(key)` | Load a static 48-byte key (disables rotation) |
+
+#### Automatic Key Rotation
+
+When enabled without a static key, `aeronet` generates cryptographically random keys and rotates them automatically:
+
+```cpp
+HttpServerConfig cfg;
+cfg.withPort(8443)
+   .withTlsCertKey("cert.pem", "key.pem");
+cfg.tls.withTlsSessionTickets(true)
+       .withTlsSessionTicketLifetime(std::chrono::hours{2})
+       .withTlsSessionTicketMaxKeys(4);
+
+HttpServer server(std::move(cfg));
+```
+
+This configuration:
+
+- Generates new keys every 2 hours
+- Keeps up to 4 keys for decrypting older tickets during rotation
+- Automatically purges keys beyond the maximum
+
+#### Static Key Loading
+
+For deployments requiring key consistency across restarts or multiple server instances, load a static key:
+
+```cpp
+// 48-byte key: 16B name + 16B AES + 16B HMAC
+TLSConfig::SessionTicketKey keyData{};
+
+// populate keyData securely (e.g., from a secrets manager)
+
+HttpServerConfig cfg;
+cfg.withPort(8443)
+   .withTlsCertKey("cert.pem", "key.pem");
+cfg.tls.withTlsSessionTicketKey(keyData);  // Enables tickets + loads key
+
+HttpServer server(std::move(cfg));
+```
+
+When a static key is provided:
+
+- Session tickets are automatically enabled
+- Key rotation is disabled (only the static key is used)
+- The same key can be shared across server instances for distributed session resumption
+
+#### Security Considerations
+
+- **Key Size**: Each key is exactly 48 bytes (`TLSConfig::kSessionTicketKeySize`).
+- **Key Generation**: Uses `RAND_bytes()` for cryptographically secure random generation.
+- **Key Storage**: Static keys should be stored securely (e.g., secrets manager, encrypted storage).
+- **Rotation**: Regular rotation limits the impact of key compromise; shorter lifetimes = better security.
+- **OpenSSL 3.0+**: Uses modern EVP_MAC API for HMAC operations.
+
+#### Testing Session Tickets
+
+Verify session resumption with OpenSSL's `s_client`:
+
+```bash
+# First connection (full handshake)
+openssl s_client -connect localhost:8443 -sess_out session.pem
+
+# Second connection (resumed)
+openssl s_client -connect localhost:8443 -sess_in session.pem
+# Look for "Reused, TLSv1.3" in output
+```
+
+See `examples/tls-session-tickets.cpp` for a complete working example.
 
 ---
 

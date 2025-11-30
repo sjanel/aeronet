@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "aeronet/base-fd.hpp"
-#include "aeronet/errno_throw.hpp"
+#include "aeronet/errno-throw.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/test_util.hpp"

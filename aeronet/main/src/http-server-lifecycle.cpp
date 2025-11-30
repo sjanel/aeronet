@@ -8,7 +8,6 @@
 #include <memory>
 #include <stdexcept>
 #include <stop_token>
-#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -152,9 +151,7 @@ HttpServer& HttpServer::operator=(const HttpServer& other) {
     const bool wasInMulti = _isInMultiHttpServer;
     auto lifecycleTracker = _lifecycleTracker;
 
-    HttpServer copy(other);
-    using std::swap;
-    swap(*this, copy);
+    *this = HttpServer(other);
 
     _isInMultiHttpServer = wasInMulti;
     _lifecycleTracker = std::move(lifecycleTracker);

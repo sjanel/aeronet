@@ -28,10 +28,12 @@ namespace aeronet::test {
 class TlsClient {
  public:
   struct Options {
-    std::vector<std::string> alpn;  // e.g. {"http/1.1"}
-    bool verifyPeer{false};         // off for self-signed tests
-    std::string clientCertPem;      // optional client cert (mTLS)
-    std::string clientKeyPem;       // optional client key (mTLS)
+    std::vector<std::string> alpn;     // e.g. {"http/1.1"}
+    bool verifyPeer{false};            // off for self-signed tests
+    std::string clientCertPem;         // optional client cert (mTLS)
+    std::string clientKeyPem;          // optional client key (mTLS)
+    std::string trustedServerCertPem;  // optional PEM added to trust store when verifyPeer=true
+    std::string serverName;            // optional SNI/Host name override
   };
 
   // Constructor without custom options.
@@ -67,6 +69,7 @@ class TlsClient {
   void init();
 
   void loadClientCertKey(SSL_CTX* ctx);
+  void loadTrustedServerCert(SSL_CTX* ctx);
 
   // Wait for socket to be ready for reading or writing.
   // events: POLLIN for readable, POLLOUT for writable

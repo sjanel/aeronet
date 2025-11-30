@@ -8,6 +8,7 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-server.hpp"

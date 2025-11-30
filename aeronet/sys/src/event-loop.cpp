@@ -15,7 +15,7 @@
 #include <utility>
 
 #include "aeronet/base-fd.hpp"
-#include "aeronet/errno_throw.hpp"
+#include "aeronet/errno-throw.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/timedef.hpp"

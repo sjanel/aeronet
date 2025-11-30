@@ -1,10 +1,16 @@
 #include <gtest/gtest.h>
+#include <openssl/evp.h>
+#include <openssl/types.h>
 
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
+#include <cstring>
+#include <memory>
+#include <span>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include "aeronet/compression-config.hpp"
@@ -23,6 +29,7 @@
 #include "aeronet/test_tls_client.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/tls-config.hpp"
+#include "aeronet/tls-ticket-key-store.hpp"
 
 using namespace aeronet;
 using namespace std::chrono_literals;
@@ -219,6 +226,81 @@ TEST(HttpTlsStreamingBackpressure, LargeChunksTls) {
   ASSERT_FALSE(raw.empty());
   // Response should contain a sizable body; simple sanity: expect more than one chunk size marker or body length
   EXPECT_GT(raw.size(), kChunkSize * static_cast<std::size_t>(kNbChunks));
+}
+
+namespace {
+struct EvpMacCtxDeleter {
+  void operator()(EVP_MAC_CTX* ctx) const {
+    if (ctx != nullptr) {
+      ::EVP_MAC_CTX_free(ctx);
+    }
+  }
+};
+using EvpMacCtxPtr = std::unique_ptr<EVP_MAC_CTX, EvpMacCtxDeleter>;
+
+EvpMacCtxPtr createMacContext() {
+  EVP_MAC* mac = ::EVP_MAC_fetch(nullptr, "HMAC", nullptr);
+  if (mac == nullptr) {
+    return nullptr;
+  }
+  EVP_MAC_CTX* ctx = ::EVP_MAC_CTX_new(mac);
+  ::EVP_MAC_free(mac);
+  return EvpMacCtxPtr(ctx);
+}
+}  // namespace
+
+TEST(HttpTlsSessionTickets, StaticKeyStoreEncryptsAndDecrypts) {
+  TlsTicketKeyStore store(std::chrono::seconds(3600), 4);
+  TLSConfig::SessionTicketKey material{};
+  for (std::size_t i = 0; i < material.size(); ++i) {
+    material[i] = static_cast<std::byte>(i);
+  }
+  store.loadStaticKeys(std::span<const TLSConfig::SessionTicketKey>{&material, 1});
+
+  unsigned char name[16]{};
+  unsigned char iv[EVP_MAX_IV_LENGTH]{};
+  std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)> encCtx{::EVP_CIPHER_CTX_new(),
+                                                                           &::EVP_CIPHER_CTX_free};
+  EvpMacCtxPtr encMac = createMacContext();
+  ASSERT_NE(encCtx.get(), nullptr);
+  ASSERT_NE(encMac.get(), nullptr);
+  ASSERT_EQ(store.processTicket(name, iv, EVP_MAX_IV_LENGTH, encCtx.get(), encMac.get(), 1), 1);
+
+  std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)> decCtx{::EVP_CIPHER_CTX_new(),
+                                                                           &::EVP_CIPHER_CTX_free};
+  EvpMacCtxPtr decMac = createMacContext();
+  ASSERT_NE(decCtx.get(), nullptr);
+  ASSERT_NE(decMac.get(), nullptr);
+  ASSERT_EQ(store.processTicket(name, iv, EVP_MAX_IV_LENGTH, decCtx.get(), decMac.get(), 0), 1);
+}
+
+TEST(HttpTlsSessionTickets, AutoRotationRefreshesPrimaryKeyAndRejectsUnknown) {
+  TlsTicketKeyStore store(std::chrono::seconds(1), 2);
+
+  auto issue = [&](unsigned char (&out)[16]) {
+    unsigned char iv[EVP_MAX_IV_LENGTH]{};
+    std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)> ctx{::EVP_CIPHER_CTX_new(),
+                                                                          &::EVP_CIPHER_CTX_free};
+    EvpMacCtxPtr mctx = createMacContext();
+    ASSERT_NE(ctx.get(), nullptr);
+    ASSERT_NE(mctx.get(), nullptr);
+    ASSERT_EQ(store.processTicket(out, iv, EVP_MAX_IV_LENGTH, ctx.get(), mctx.get(), 1), 1);
+  };
+
+  unsigned char first[16]{};
+  issue(first);
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  unsigned char second[16]{};
+  issue(second);
+  EXPECT_NE(std::memcmp(first, second, sizeof(first)), 0);
+
+  unsigned char bogus[16]{};
+  unsigned char iv[EVP_MAX_IV_LENGTH]{};
+  std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)> ctx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
+  EvpMacCtxPtr mctx = createMacContext();
+  ASSERT_NE(ctx.get(), nullptr);
+  ASSERT_NE(mctx.get(), nullptr);
+  EXPECT_EQ(store.processTicket(bogus, iv, EVP_MAX_IV_LENGTH, ctx.get(), mctx.get(), 0), 0);
 }
 
 #ifdef AERONET_ENABLE_KTLS
