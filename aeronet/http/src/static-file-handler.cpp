@@ -18,7 +18,6 @@
 #include <system_error>
 #include <utility>
 
-#include "aeronet/cctype.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
@@ -30,6 +29,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/static-file-config.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
@@ -361,18 +361,6 @@ struct DirectoryListingResult {
   return result;
 }
 
-[[nodiscard]] std::string_view Trim(std::string_view value) {
-  auto beg = value.begin();
-  auto end = value.end();
-  while (beg != end && isspace(*beg)) {
-    ++beg;
-  }
-  while (beg != end && isspace(*(end - 1))) {
-    --end;
-  }
-  return {beg, end};
-}
-
 // Helper to append a Last-Modified header using a transient stack buffer. The HttpResponse copies
 // the header value synchronously, so using a local char buffer is safe and avoids an extra std::string.
 void AddLastModifiedHeader(HttpResponse& resp, SysTimePoint tp) {
@@ -444,7 +432,7 @@ struct RangeSelection {
 inline constexpr std::uint64_t kInvalidUint64 = std::numeric_limits<std::uint64_t>::max();
 
 std::uint64_t ParseUint(std::string_view token) {
-  token = Trim(token);
+  token = TrimOws(token);
   if (token.empty()) {
     return kInvalidUint64;
   }
@@ -473,14 +461,14 @@ RangeSelection ParseRange(std::string_view raw, std::uint64_t fileSize) {
   if (raw.empty()) {
     return result;
   }
-  raw = Trim(raw);
+  raw = TrimOws(raw);
   static constexpr std::string_view kBytesEqual = "bytes=";
   if (!StartsWithCaseInsensitive(raw, kBytesEqual)) {
     result.state = RangeSelection::State::Invalid;
     return result;
   }
   raw.remove_prefix(kBytesEqual.size());
-  raw = Trim(raw);
+  raw = TrimOws(raw);
   if (raw.empty()) {
     result.state = RangeSelection::State::Invalid;
     return result;
@@ -494,8 +482,8 @@ RangeSelection ParseRange(std::string_view raw, std::uint64_t fileSize) {
     result.state = RangeSelection::State::Invalid;
     return result;
   }
-  auto firstPart = Trim(raw.substr(0, dashPos));
-  auto secondPart = Trim(raw.substr(dashPos + 1));
+  auto firstPart = TrimOws(raw.substr(0, dashPos));
+  auto secondPart = TrimOws(raw.substr(dashPos + 1));
 
   if (fileSize == 0) {
     result.state = RangeSelection::State::Unsatisfiable;
@@ -550,7 +538,7 @@ RangeSelection ParseRange(std::string_view raw, std::uint64_t fileSize) {
 }
 
 bool EtagTokenMatches(std::string_view token, std::string_view etag) {
-  token = Trim(token);
+  token = TrimOws(token);
   if (token.empty()) {
     return false;
   }
@@ -565,7 +553,7 @@ bool EtagTokenMatches(std::string_view token, std::string_view etag) {
 }
 
 bool EtagListMatches(std::string_view headerValue, std::string_view etag) {
-  headerValue = Trim(headerValue);
+  headerValue = TrimOws(headerValue);
   if (headerValue == "*") {
     return true;
   }
@@ -653,7 +641,7 @@ ConditionalOutcome EvaluateConditionals(const HttpRequest& request, bool isGetOr
 }
 
 bool IfRangeAllowsPartial(std::string_view value, std::string_view etag, SysTimePoint lastModified) {
-  value = Trim(value);
+  value = TrimOws(value);
   if (value.empty()) {
     return false;
   }

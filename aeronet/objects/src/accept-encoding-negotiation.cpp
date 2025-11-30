@@ -21,6 +21,7 @@
 #include "aeronet/fixedcapacityvector.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/string-trim.hpp"
 
 namespace aeronet {
 namespace {
@@ -44,16 +45,6 @@ constexpr bool IsEncodingEnabled(Encoding enc) {
   }
 }
 
-constexpr std::string_view Trim(std::string_view sv) {
-  while (!sv.empty() && kWhitespace.find(sv.front()) != std::string_view::npos) {
-    sv.remove_prefix(1);
-  }
-  while (!sv.empty() && kWhitespace.find(sv.back()) != std::string_view::npos) {
-    sv.remove_suffix(1);
-  }
-  return sv;
-}
-
 // Parse q-value within a token (portion including parameters); never throws.
 double ParseQ(std::string_view token) {
   auto scPos = token.find(';');
@@ -62,7 +53,7 @@ double ParseQ(std::string_view token) {
   }
   std::string_view params = token.substr(scPos + 1);
   while (!params.empty()) {
-    params = Trim(params);
+    params = TrimOws(params);
     auto nextSemi = params.find(';');
     std::string_view param = nextSemi == std::string_view::npos ? params : params.substr(0, nextSemi);
     if (nextSemi == std::string_view::npos) {
@@ -174,12 +165,12 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
   double identityQ = 0.0;
   for (auto part : acceptEncoding | std::views::split(',')) {
     std::string_view raw{&*part.begin(), static_cast<std::size_t>(std::ranges::distance(part))};
-    raw = Trim(raw);
+    raw = TrimOws(raw);
     if (raw.empty()) {
       continue;
     }
     auto sc = raw.find(';');
-    std::string_view name = Trim(sc == std::string_view::npos ? raw : raw.substr(0, sc));
+    std::string_view name = TrimOws(sc == std::string_view::npos ? raw : raw.substr(0, sc));
     double quality = ParseQ(raw);
     if (CaseInsensitiveEqual(name, "*")) {
       sawWildcard = true;
