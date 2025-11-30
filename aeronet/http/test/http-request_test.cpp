@@ -2,8 +2,12 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <initializer_list>
+#include <random>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -49,7 +53,7 @@ class HttpRequestTest : public ::testing::Test {
   }
 
   void checkHeaders(std::initializer_list<http::HeaderView> headers) {
-    for (const auto &[key, val] : headers) {
+    for (const auto& [key, val] : headers) {
       EXPECT_EQ(req.headerValueOrEmpty(key), val);
     }
   }
@@ -63,9 +67,20 @@ class HttpRequestTest : public ::testing::Test {
   void setBodyAccessStreamingWithBridgeNoHasMore() {
     req._bodyAccessMode = HttpRequest::BodyAccessMode::Streaming;
     static HttpRequest::BodyAccessBridge bridge;
-    bridge.readChunk = [](HttpRequest &, void *, std::size_t) -> std::string_view { return {}; };
+    bridge.readChunk = [](HttpRequest&, void*, std::size_t) -> std::string_view { return {}; };
     bridge.hasMore = nullptr;
     req._bodyAccessBridge = &bridge;
+  }
+
+  // Feed raw bytes to HttpRequest parser and ensure no crash/UB
+  void fuzzHttpRequestParsing(const RawChars& input, bool mergeUnknownHeaders = true) {
+    // Parse with various max header sizes
+    for (std::size_t maxSize : {64UL, 256UL, 1024UL, 8192UL}) {
+      cs.inBuffer = input;  // reset
+      [[maybe_unused]] auto status = reqSet(input, mergeUnknownHeaders, maxSize);
+      // We don't care about the result - just that we don't crash
+      (void)status;
+    }
   }
 
   HttpRequest req;
@@ -463,6 +478,350 @@ TEST_F(HttpRequestTest, DuplicateHostProduces400) {
   // BuildRaw already injects one Host header; we append another duplicate -> 400
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1", "Host: other\r\n"));
   EXPECT_EQ(st, http::StatusCodeBadRequest);
+}
+
+namespace {
+
+// Deterministic PRNG for reproducibility
+class FuzzRng {
+ public:
+  explicit FuzzRng(uint64_t seed) : _gen(seed) {}
+
+  uint8_t byte() { return static_cast<uint8_t>(_dist(_gen)); }
+
+  uint32_t u32() { return static_cast<uint32_t>(_dist(_gen)) | (static_cast<uint32_t>(_dist(_gen)) << 8); }
+
+  std::size_t range(std::size_t lo, std::size_t hi) {
+    if (lo >= hi) {
+      return lo;
+    }
+    return lo + (u32() % (hi - lo));
+  }
+
+  bool coin() { return (byte() & 1) != 0; }
+
+ private:
+  std::mt19937_64 _gen;
+  std::uniform_int_distribution<uint16_t> _dist{0, 255};
+};
+
+// Generate a random buffer of given size
+RawChars RandomBuffer(FuzzRng& rng, std::size_t size) {
+  RawChars buf;
+  buf.reserve(size);
+  for (std::size_t ii = 0; ii < size; ++ii) {
+    buf.push_back(static_cast<char>(rng.byte()));
+  }
+  return buf;
+}
+
+// Generate semi-valid HTTP request-like data
+RawChars SemiValidRequest(FuzzRng& rng) {
+  static constexpr std::array kMethods = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE"};
+  static constexpr std::array kVersions = {"HTTP/1.0", "HTTP/1.1", "HTTP/2.0", "HTTP/0.9", "HTXP/1.1"};
+
+  RawChars buf;
+
+  // Method
+  if (rng.coin()) {
+    buf.append(kMethods[rng.range(0, kMethods.size())]);
+  } else {
+    // Random method-like token
+    std::size_t len = rng.range(1, 10);
+    for (std::size_t ii = 0; ii < len; ++ii) {
+      buf.push_back(static_cast<char>('A' + rng.range(0, 26)));
+    }
+  }
+  buf.push_back(' ');
+
+  // Path
+  buf.push_back('/');
+  std::size_t pathLen = rng.range(0, 50);
+  for (std::size_t ii = 0; ii < pathLen; ++ii) {
+    uint8_t choice = static_cast<uint8_t>(rng.range(0, 10));
+    if (choice < 5) {
+      buf.push_back(static_cast<char>('a' + rng.range(0, 26)));
+    } else if (choice < 7) {
+      buf.push_back('/');
+    } else if (choice < 9) {
+      buf.push_back('%');
+      buf.push_back(static_cast<char>('0' + rng.range(0, 10)));
+      buf.push_back(static_cast<char>('0' + rng.range(0, 10)));
+    } else {
+      buf.push_back(static_cast<char>(rng.byte()));
+    }
+  }
+
+  // Query string (sometimes)
+  if (rng.coin()) {
+    buf.push_back('?');
+    std::size_t queryLen = rng.range(0, 30);
+    for (std::size_t ii = 0; ii < queryLen; ++ii) {
+      uint8_t choice = static_cast<uint8_t>(rng.range(0, 5));
+      if (choice == 0) {
+        buf.push_back('=');
+      } else if (choice == 1) {
+        buf.push_back('&');
+      } else if (choice == 2) {
+        buf.push_back('+');
+      } else {
+        buf.push_back(static_cast<char>('a' + rng.range(0, 26)));
+      }
+    }
+  }
+
+  buf.push_back(' ');
+
+  // Version
+  if (rng.coin()) {
+    buf.append(kVersions[rng.range(0, kVersions.size())]);
+  } else {
+    std::size_t len = rng.range(0, 15);
+    for (std::size_t ii = 0; ii < len; ++ii) {
+      buf.push_back(static_cast<char>(rng.byte()));
+    }
+  }
+  buf.append(http::CRLF);
+
+  // Headers
+  std::size_t numHeaders = rng.range(0, 10);
+  for (std::size_t hh = 0; hh < numHeaders; ++hh) {
+    // Header name
+    std::size_t nameLen = rng.range(1, 20);
+    for (std::size_t ii = 0; ii < nameLen; ++ii) {
+      if (rng.coin()) {
+        buf.push_back(static_cast<char>('A' + rng.range(0, 26)));
+      } else {
+        buf.push_back(static_cast<char>('a' + rng.range(0, 26)));
+      }
+    }
+
+    // Separator (sometimes malformed)
+    if (rng.range(0, 10) < 8) {
+      buf.push_back(':');
+      if (rng.coin()) {
+        buf.push_back(' ');
+      }
+    } else {
+      // Malformed separator
+      buf.push_back(static_cast<char>(rng.byte()));
+    }
+
+    // Header value
+    std::size_t valLen = rng.range(0, 50);
+    for (std::size_t ii = 0; ii < valLen; ++ii) {
+      char ch = static_cast<char>(rng.byte());
+      // Avoid embedding CRLF in values (unless we want to test header injection)
+      if (ch == '\r' || ch == '\n') {
+        ch = ' ';
+      }
+      buf.push_back(ch);
+    }
+    buf.append(http::CRLF);
+  }
+
+  // Terminal CRLF (sometimes missing)
+  if (rng.range(0, 10) < 8) {
+    buf.append(http::CRLF);
+  }
+
+  return buf;
+}
+
+}  // namespace
+
+// Fuzz test with purely random bytes
+TEST_F(HttpRequestTest, RandomBytes) {
+  constexpr std::size_t kIterations = 10000;
+  constexpr std::size_t kMaxSize = 1024;
+
+  for (std::size_t seed = 0; seed < kIterations; ++seed) {
+    FuzzRng rng(seed);
+    std::size_t size = rng.range(0, kMaxSize);
+    RawChars input = RandomBuffer(rng, size);
+    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(input));
+  }
+}
+
+// Fuzz test with semi-valid HTTP request structure
+TEST_F(HttpRequestTest, SemiValidRequests) {
+  constexpr std::size_t kIterations = 10000;
+
+  for (std::size_t seed = 0; seed < kIterations; ++seed) {
+    FuzzRng rng(seed + 1000000);  // Different seed range
+    RawChars input = SemiValidRequest(rng);
+    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(input));
+  }
+}
+
+// Fuzz test with mutation of valid requests
+TEST_F(HttpRequestTest, MutatedValidRequests) {
+  constexpr std::size_t kIterations = 5000;
+
+  // Base valid requests to mutate
+  static const std::array<std::string_view, 5> kBaseRequests = {
+      "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "POST /api/data HTTP/1.1\r\nHost: api.example.com\r\nContent-Length: 0\r\n\r\n",
+      "PUT /resource HTTP/1.0\r\nHost: host\r\nContent-Type: application/json\r\n\r\n",
+      "DELETE /item/123 HTTP/1.1\r\nHost: h\r\nAuthorization: Bearer token\r\n\r\n",
+      "GET /path?key=value&foo=bar HTTP/1.1\r\nHost: h\r\nAccept: */*\r\n\r\n",
+  };
+
+  for (std::size_t seed = 0; seed < kIterations; ++seed) {
+    FuzzRng rng(seed + 2000000);
+
+    // Pick a base request
+    std::string_view base = kBaseRequests[rng.range(0, kBaseRequests.size())];
+    std::string input(base);
+
+    // Apply mutations
+    std::size_t numMutations = rng.range(1, 10);
+    for (std::size_t mm = 0; mm < numMutations && !input.empty(); ++mm) {
+      std::size_t mutationType = rng.range(0, 5);
+      std::size_t pos = rng.range(0, input.size());
+
+      switch (mutationType) {
+        case 0:  // Flip a byte
+          input[pos] = static_cast<char>(input[pos] ^ static_cast<char>(rng.byte()));
+          break;
+        case 1:  // Insert random byte
+          input.insert(pos, 1, static_cast<char>(rng.byte()));
+          break;
+        case 2:  // Delete a byte
+          if (!input.empty()) {
+            input.erase(pos, 1);
+          }
+          break;
+        case 3:  // Replace with random bytes
+          if (pos + 3 <= input.size()) {
+            input[pos] = static_cast<char>(rng.byte());
+            input[pos + 1] = static_cast<char>(rng.byte());
+            input[pos + 2] = static_cast<char>(rng.byte());
+          }
+          break;
+        case 4:  // Duplicate a section
+          if (pos + 5 <= input.size()) {
+            std::string section = input.substr(pos, 5);
+            input.insert(pos, section);
+          }
+          break;
+        default:
+          break;
+      }
+    }
+
+    RawChars rawInput;
+    rawInput.append(input);
+    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(rawInput));
+  }
+}
+
+// Fuzz test with edge case patterns
+TEST_F(HttpRequestTest, EdgeCasePatterns) {
+  // Collection of edge case inputs
+  static const std::array<std::string_view, 16> kEdgeCases = {
+      "",                                                                     // Empty
+      "\r\n",                                                                 // Just CRLF
+      "\r\n\r\n",                                                             // Double CRLF
+      "GET",                                                                  // Incomplete
+      "GET ",                                                                 // Method only
+      "GET /",                                                                // No version
+      "GET / HTTP/1.1",                                                       // No CRLF
+      "GET / HTTP/1.1\r\n",                                                   // No headers end
+      "GET / HTTP/1.1\r\n\r\n",                                               // Minimal valid
+      "GET / HTTP/1.1\r\nHost:\r\n\r\n",                                      // Empty header value
+      "GET / HTTP/1.1\r\n: value\r\n\r\n",                                    // Empty header name
+      "GET / HTTP/1.1\r\nKey\r\n\r\n",                                        // Missing colon
+      "GET /%%%%%%%% HTTP/1.1\r\nHost: h\r\n\r\n",                            // Percent hell
+      "GET / HTTP/1.1\r\nHost: h\r\nHost: h2\r\n\r\n",                        // Duplicate Host
+      "GET / HTTP/1.1\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n",     // Duplicate CL
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA / HTTP/1.1\r\nHost: h\r\n\r\n",  // Long method
+  };
+
+  for (const auto& input : kEdgeCases) {
+    RawChars buf;
+    buf.append(input);
+    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(buf));
+  }
+
+  // Also fuzz with merge disabled
+  for (const auto& input : kEdgeCases) {
+    RawChars buf;
+    buf.append(input);
+    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(buf, false));
+  }
+}
+
+// Fuzz test with long headers/paths
+TEST_F(HttpRequestTest, LongInputs) {
+  // Long header name
+  {
+    std::string longName(1000, 'A');
+    std::string req = "GET / HTTP/1.1\r\n" + longName + ": v\r\n\r\n";
+    RawChars buf;
+    buf.append(req);
+    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(buf));
+  }
+
+  // Long header value
+  {
+    std::string longVal(10000, 'B');
+    std::string req = "GET / HTTP/1.1\r\nX: " + longVal + "\r\n\r\n";
+    RawChars buf;
+    buf.append(req);
+    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(buf));
+  }
+
+  // Long path
+  {
+    std::string longPath(5000, 'x');
+    std::string req = "GET /" + longPath + " HTTP/1.1\r\nHost: h\r\n\r\n";
+    RawChars buf;
+    buf.append(req);
+    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(buf));
+  }
+}
+
+// Fuzz test specifically targeting header parsing
+TEST_F(HttpRequestTest, HeaderParsingStress) {
+  constexpr std::size_t kIterations = 5000;
+
+  for (std::size_t seed = 0; seed < kIterations; ++seed) {
+    FuzzRng rng(seed + 3000000);
+
+    RawChars input;
+    input.append("GET / HTTP/1.1\r\n");
+
+    // Generate many headers
+    std::size_t numHeaders = rng.range(0, 100);
+    for (std::size_t hh = 0; hh < numHeaders; ++hh) {
+      // Sometimes use known header names
+      if (rng.coin()) {
+        static constexpr std::array kKnownHeaders = {
+            "Host",           "Content-Length", "Content-Type",  "Accept",     "User-Agent",        "Authorization",
+            "Cookie",         "Set-Cookie",     "Cache-Control", "Connection", "Transfer-Encoding", "Accept-Encoding",
+            "Accept-Language"};
+        input.append(kKnownHeaders[rng.range(0, kKnownHeaders.size())]);
+      } else {
+        std::size_t nameLen = rng.range(1, 30);
+        for (std::size_t ii = 0; ii < nameLen; ++ii) {
+          input.push_back(static_cast<char>('a' + rng.range(0, 26)));
+        }
+      }
+      input.append(": ");
+
+      // Value
+      std::size_t valLen = rng.range(0, 100);
+      for (std::size_t ii = 0; ii < valLen; ++ii) {
+        char ch = static_cast<char>(rng.range(32, 127));  // Printable ASCII
+        input.push_back(ch);
+      }
+      input.append(http::CRLF);
+    }
+    input.append(http::CRLF);
+
+    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(input));
+  }
 }
 
 }  // namespace aeronet
