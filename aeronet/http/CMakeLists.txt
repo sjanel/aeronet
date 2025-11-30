@@ -65,6 +65,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    http-response-fuzz_test
+    test/http-response-fuzz_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+AeronetAddUnitTest(
     http-request_test
     test/http-request_test.cpp
     LIBRARIES
