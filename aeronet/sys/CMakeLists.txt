@@ -31,6 +31,12 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    errno-throw_test
+    test/errno-throw_test.cpp
+)
+
+
+AeronetAddUnitTest(
     event-fd_test
     test/event-fd_test.cpp
     LIBRARIES

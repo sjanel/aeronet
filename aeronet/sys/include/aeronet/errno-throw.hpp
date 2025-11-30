@@ -2,7 +2,6 @@
 
 #include <cerrno>
 #include <format>
-#include <string>
 #include <string_view>
 #include <system_error>
 
@@ -16,8 +15,7 @@ template <typename... Args>
   std::error_code ec(savedErr, std::generic_category());
   // std::format may throw std::format_error; allow it to propagate — it's acceptable
   // because this is typically called during unrecoverable system failures.
-  const std::string msg = std::vformat(fmt, std::make_format_args(std::forward<Args>(args)...));
-  throw std::system_error(ec, msg);
+  throw std::system_error(ec, std::vformat(fmt, std::make_format_args(std::forward<Args>(args)...)));
 }
 
 }  // namespace aeronet
