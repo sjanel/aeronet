@@ -16,6 +16,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/websocket-endpoint.hpp"
 
 using namespace aeronet;
 
@@ -751,4 +752,25 @@ TEST(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
       EXPECT_EQ(called[idx], 1) << "Handler not invoked for index " << idx << " policy=" << static_cast<int>(policy);
     }
   }
+}
+
+TEST(RouterTest, RegisterAndMatchWebSocketEndpoint) {
+  Router router;
+
+  WebSocketEndpoint wsEndpoint;
+
+  wsEndpoint.config.maxMessageSize = 1024;
+
+  // Register a WebSocket endpoint
+  router.setWebSocket("/ws", std::move(wsEndpoint));
+
+  // Match with GET should succeed and have the endpoint
+  auto resGet = router.match(http::Method::GET, "/ws");
+  EXPECT_NE(resGet.pWebSocketEndpoint, nullptr);
+  EXPECT_FALSE(resGet.methodNotAllowed);
+
+  // Match with POST should not have the endpoint
+  auto resPost = router.match(http::Method::POST, "/ws");
+  EXPECT_NE(resPost.pWebSocketEndpoint, nullptr);  // endpoint is still exposed
+  EXPECT_TRUE(resPost.methodNotAllowed);           // but method is not allowed
 }

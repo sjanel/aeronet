@@ -10,6 +10,13 @@ target_include_directories(aeronet_tech
 )
 
 AeronetAddUnitTest(
+    base64_test
+    test/base64_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     dynamic-concatenated-strings_test
     test/dynamic-concatenated-strings_test.cpp
     LIBRARIES
@@ -58,6 +65,18 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_tech
 )
+
+AeronetAddUnitTest(
+    sha1_test
+    test/sha1_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+if(AERONET_ENABLE_OPENSSL AND AERONET_BUILD_TESTS)
+    find_package(OpenSSL REQUIRED)
+    target_link_libraries(sha1_test PRIVATE OpenSSL::Crypto)
+endif()
 
 AeronetAddUnitTest(
     simple-charconv_test

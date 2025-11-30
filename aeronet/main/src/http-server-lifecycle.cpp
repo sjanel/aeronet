@@ -38,6 +38,7 @@
 
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-encoder.hpp"
+#include "aeronet/zlib-stream-raii.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_ZSTD
@@ -466,9 +467,9 @@ void HttpServer::registerBuiltInProbes() {
 void HttpServer::createEncoders() {
 #ifdef AERONET_ENABLE_ZLIB
   _encoders[static_cast<std::size_t>(Encoding::gzip)] =
-      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::gzip, _config.compression);
+      std::make_unique<ZlibEncoder>(ZStreamRAII::Variant::gzip, _config.compression);
   _encoders[static_cast<std::size_t>(Encoding::deflate)] =
-      std::make_unique<ZlibEncoder>(details::ZStreamRAII::Variant::deflate, _config.compression);
+      std::make_unique<ZlibEncoder>(ZStreamRAII::Variant::deflate, _config.compression);
 #endif
 #ifdef AERONET_ENABLE_ZSTD
   _encoders[static_cast<std::size_t>(Encoding::zstd)] = std::make_unique<ZstdEncoder>(_config.compression);

@@ -266,7 +266,8 @@ jobs:
           aeronet-sendfile \
           aeronet-static-example \
           aeronet-tls-ktls \
-          aeronet-tls-session-tickets
+          aeronet-tls-session-tickets \
+          aeronet-websocket-echo
 
       - name: Generate TLS certificate for ktls example
         run: |
@@ -348,6 +349,9 @@ jobs:
 
           run_server_and_curl tls-session-tickets "https://127.0.0.1:18444/" -k -- \
             "${EXAMPLE_DIR}/aeronet-tls-session-tickets" ${BUILD_DIR}/certs/server.crt ${BUILD_DIR}/certs/server.key 18444
+
+          run_server_and_curl websocket-echo "http://127.0.0.1:18086/" -- \
+            "${EXAMPLE_DIR}/aeronet-websocket-echo" 18086
 
       - name: Verify markdown C/C++ examples (compile & link)
         run: |

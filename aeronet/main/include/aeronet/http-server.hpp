@@ -413,7 +413,15 @@ class HttpServer {
   void applyPendingUpdates();
   void acceptNewConnections();
   void handleReadableClient(int fd);
+  // Dispatches input to appropriate handler based on protocol.
+  // For HTTP/1.1, calls processRequestsOnConnection.
+  // For WebSocket, routes through the protocol handler.
+  // Returns true if the connection should be closed.
+  bool processConnectionInput(ConnectionMapIt cnxIt);
   bool processRequestsOnConnection(ConnectionMapIt cnxIt);
+  // Process WebSocket data through the protocol handler.
+  // Returns true if the connection should be closed.
+  bool processWebSocketInput(ConnectionMapIt cnxIt);
   // Split helpers
   enum class BodyDecodeStatus : uint8_t { Ready, NeedMore, Error };
 

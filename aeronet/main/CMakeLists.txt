@@ -48,3 +48,10 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet
 )
+
+AeronetAddUnitTest(
+    websocket-endpoint_test
+    test/websocket-endpoint_test.cpp
+    LIBRARIES
+    aeronet
+)
