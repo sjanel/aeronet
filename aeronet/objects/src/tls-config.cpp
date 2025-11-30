@@ -1,14 +1,28 @@
 #include "aeronet/tls-config.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/log.hpp"
 #include "aeronet/major-minor-version.hpp"
+#include "aeronet/toupperlower.hpp"
 
 namespace aeronet {
+
+namespace {
+std::string NormalizeHostname(std::string_view host) {
+  std::string normalized(host);
+  for (char& ch : normalized) {
+    ch = tolower(ch);
+  }
+  return normalized;
+}
+
+}  // namespace
 
 void TLSConfig::validate() const {
   if (!enabled) {
@@ -66,6 +80,16 @@ void TLSConfig::validate() const {
                           [](std::string_view proto) { return std::cmp_less(kMaxAlpnProtocolLength, proto.size()); })) {
     throw std::invalid_argument("ALPN protocol entry exceeds maximum length");
   }
+
+  if (sessionTickets.maxKeys == 0) {
+    throw std::invalid_argument("Session ticket maxKeys must be greater than zero");
+  }
+  if (!sessionTickets.enabled && !_staticTicketKeys.empty()) {
+    throw std::invalid_argument("Session ticket keys configured but tickets disabled");
+  }
+  if (handshakeRateLimitPerSecond == 0 && handshakeRateLimitBurst != 0) {
+    throw std::invalid_argument("TLS handshake rate limit burst set but rate is zero");
+  }
 }
 
 TLSConfig& TLSConfig::withTlsMinVersion(std::string_view ver) {
@@ -75,6 +99,49 @@ TLSConfig& TLSConfig::withTlsMinVersion(std::string_view ver) {
 
 TLSConfig& TLSConfig::withTlsMaxVersion(std::string_view ver) {
   ParseVersion(ver.data(), ver.data() + ver.size(), maxVersion);
+  return *this;
+}
+
+namespace {
+bool ValidateSniCertificateParameters(std::string_view pattern, std::string_view cert, std::string_view key) {
+  if (pattern.empty()) {
+    throw std::invalid_argument("SNI certificate pattern must be non-empty");
+  }
+  if (cert.empty() || key.empty()) {
+    throw std::invalid_argument("SNI certificate and key must be non-empty");
+  }
+  bool isWildcard = pattern.starts_with("*.");
+  if (isWildcard && pattern.size() == 2) {
+    throw std::invalid_argument("Wildcard SNI certificate patterns must start with '*.'");
+  }
+  return isWildcard;
+}
+}  // namespace
+
+TLSConfig& TLSConfig::withTlsSniCertificateFiles(std::string_view hostname, std::string_view certPath,
+                                                 std::string_view keyPath) {
+  bool isWildcard = ValidateSniCertificateParameters(hostname, certPath, keyPath);
+  SniCertificate& entry = _sniCertificates.emplace_back();
+  entry.setPattern(NormalizeHostname(hostname));
+  entry.isWildcard = isWildcard;
+  entry.setCertFile(certPath);
+  entry.setKeyFile(keyPath);
+  return *this;
+}
+
+TLSConfig& TLSConfig::withTlsSniCertificateMemory(std::string_view hostname, std::string_view certPem,
+                                                  std::string_view keyPem) {
+  bool isWildcard = ValidateSniCertificateParameters(hostname, certPem, keyPem);
+  SniCertificate& entry = _sniCertificates.emplace_back();
+  entry.setPattern(NormalizeHostname(hostname));
+  entry.isWildcard = isWildcard;
+  entry.setCertPem(certPem);
+  entry.setKeyPem(keyPem);
+  return *this;
+}
+
+TLSConfig& TLSConfig::clearTlsSniCertificates() {
+  _sniCertificates.clear();
   return *this;
 }
 

@@ -11,7 +11,7 @@
 #include <stdexcept>
 
 #include "aeronet/base-fd.hpp"
-#include "aeronet/errno_throw.hpp"
+#include "aeronet/errno-throw.hpp"
 #include "aeronet/log.hpp"
 
 namespace aeronet {

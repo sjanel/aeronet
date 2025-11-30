@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "aeronet/base-fd.hpp"
-#include "aeronet/errno_throw.hpp"
+#include "aeronet/errno-throw.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"

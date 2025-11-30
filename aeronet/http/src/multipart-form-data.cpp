@@ -2,11 +2,16 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
+#include <functional>
 #include <iterator>
+#include <optional>
+#include <span>
 #include <string_view>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 namespace {
