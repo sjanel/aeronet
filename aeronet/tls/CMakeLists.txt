@@ -32,3 +32,13 @@ AeronetAddUnitTest(
     aeronet_tls
     aeronet_test_support
 )
+
+AeronetAddUnitTest(
+    tls-ticket-key-store_test
+    src/tls-ticket-key-store.cpp
+    test/tls-ticket-key-store_test.cpp
+    LIBRARIES
+    aeronet_objects
+    OpenSSL::SSL
+    OpenSSL::Crypto
+)

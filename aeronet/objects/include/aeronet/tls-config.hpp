@@ -1,15 +1,18 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <ranges>
+#include <span>
 #include <string_view>
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/major-minor-version.hpp"
 #include "aeronet/static-concatenated-strings.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 
@@ -20,15 +23,56 @@ class TLSConfig {
   // RFC 7301 (ALPN) protocol identifier length is encoded in a single octet => maximum 255 bytes.
   // OpenSSL lacks a stable public constant for this; we define it here to avoid magic numbers.
   static constexpr std::size_t kMaxAlpnProtocolLength = 255;
+  static constexpr std::size_t kSessionTicketKeySize = 48;
 
   static constexpr char kTlsVersionPrefix[] = "TLS";
 
   using Version = MajorMinorVersion<kTlsVersionPrefix>;
 
   enum class KtlsMode : std::uint8_t { Disabled, Auto, Enabled, Forced };
+  enum class CipherPolicy : std::uint8_t { Default, Modern, Compatibility, Legacy };
+
+  using SessionTicketKey = std::array<std::byte, kSessionTicketKeySize>;
 
   static constexpr Version TLS_1_2 = Version{1, 2};
   static constexpr Version TLS_1_3 = Version{1, 3};
+
+  struct SessionTicketsConfig {
+    bool operator==(const SessionTicketsConfig&) const noexcept = default;
+
+    bool enabled{false};
+    std::uint32_t maxKeys{2};
+    std::chrono::seconds lifetime{std::chrono::hours{24}};
+  } sessionTickets;
+
+  struct SniCertificate {
+    [[nodiscard]] std::string_view pattern() const noexcept { return _strings[0]; }
+    void setPattern(std::string_view value) { _strings.set(0, value); }
+
+    [[nodiscard]] std::string_view certFile() const noexcept { return _strings[1]; }
+    [[nodiscard]] auto certFileCstrView() const noexcept { return _strings.makeNullTerminated(1); }
+    void setCertFile(std::string_view value) { _strings.set(1, value); }
+
+    [[nodiscard]] std::string_view keyFile() const noexcept { return _strings[2]; }
+    [[nodiscard]] auto keyFileCstrView() const noexcept { return _strings.makeNullTerminated(2); }
+    void setKeyFile(std::string_view value) { _strings.set(2, value); }
+
+    [[nodiscard]] std::string_view certPem() const noexcept { return _strings[3]; }
+    void setCertPem(std::string_view value) { _strings.set(3, value); }
+
+    [[nodiscard]] std::string_view keyPem() const noexcept { return _strings[4]; }
+    void setKeyPem(std::string_view value) { _strings.set(4, value); }
+
+    [[nodiscard]] bool hasFiles() const noexcept { return !certFile().empty() || !keyFile().empty(); }
+    [[nodiscard]] bool hasPem() const noexcept { return !certPem().empty() || !keyPem().empty(); }
+
+    bool operator==(const SniCertificate&) const noexcept = default;
+
+    bool isWildcard{false};
+
+   private:
+    StaticConcatenatedStrings<5, uint32_t> _strings;
+  };
 
   void validate() const;
 
@@ -82,9 +126,51 @@ class TLSConfig {
     return *this;
   }
 
+  TLSConfig& withTlsCipherPolicy(CipherPolicy policy) {
+    cipherPolicy = policy;
+    return *this;
+  }
+
   TLSConfig& withTlsMinVersion(std::string_view ver);
 
   TLSConfig& withTlsMaxVersion(std::string_view ver);
+
+  TLSConfig& withTlsDisableCompression(bool disable = true) {
+    disableCompression = disable;
+    return *this;
+  }
+
+  TLSConfig& withTlsSessionTickets(bool on = true) {
+    sessionTickets.enabled = on;
+    return *this;
+  }
+
+  TLSConfig& withTlsSessionTicketLifetime(std::chrono::seconds lifetime) {
+    sessionTickets.lifetime = lifetime;
+    return *this;
+  }
+
+  TLSConfig& withTlsSessionTicketMaxKeys(std::uint32_t slots) {
+    sessionTickets.maxKeys = slots;
+    return *this;
+  }
+
+  TLSConfig& withTlsSessionTicketKey(SessionTicketKey keyMaterial) {
+    _staticTicketKeys.push_back(std::move(keyMaterial));
+    sessionTickets.enabled = true;
+    return *this;
+  }
+
+  TLSConfig& clearTlsSessionTicketKeys() {
+    _staticTicketKeys.clear();
+    return *this;
+  }
+
+  TLSConfig& withTlsSniCertificateFiles(std::string_view hostname, std::string_view certPath, std::string_view keyPath);
+
+  TLSConfig& withTlsSniCertificateMemory(std::string_view hostname, std::string_view certPem, std::string_view keyPem);
+
+  TLSConfig& clearTlsSniCertificates();
 
   // Set (overwrite) ALPN protocol preference list. Order matters; first matching protocol is selected.
   template <std::ranges::input_range R>
@@ -105,6 +191,17 @@ class TLSConfig {
 
   TLSConfig& withKtlsMode(KtlsMode mode) {
     ktlsMode = mode;
+    return *this;
+  }
+
+  TLSConfig& withTlsHandshakeConcurrencyLimit(std::uint32_t maxConcurrent) {
+    maxConcurrentHandshakes = maxConcurrent;
+    return *this;
+  }
+
+  TLSConfig& withTlsHandshakeRateLimit(std::uint32_t perSecond, std::uint32_t burst) {
+    handshakeRateLimitPerSecond = perSecond;
+    handshakeRateLimitBurst = burst;
     return *this;
   }
 
@@ -132,6 +229,8 @@ class TLSConfig {
   bool requireClientCert{false};  // Require + verify client certificate (strict mTLS). Implies requestClientCert.
   bool alpnMustMatch{false};      // If true and client offers no overlapping ALPN protocol, fail handshake.
   bool logHandshake{false};       // If true, emit log line on TLS handshake completion (ALPN, cipher, version, peer CN)
+  bool disableCompression{true};  // Disable TLS-level compression (CRIME mitigation)
+  CipherPolicy cipherPolicy{CipherPolicy::Default};
 
   KtlsMode ktlsMode{
 #ifdef AERONET_ENABLE_KTLS
@@ -145,6 +244,10 @@ class TLSConfig {
   Version minVersion;  // If set, enforce minimum TLS protocol version.
   Version maxVersion;  // If set, enforce maximum TLS protocol version.
 
+  std::uint32_t maxConcurrentHandshakes{0};
+  std::uint32_t handshakeRateLimitPerSecond{0};
+  std::uint32_t handshakeRateLimitBurst{0};
+
   bool operator==(const TLSConfig&) const noexcept = default;
 
  private:
@@ -156,6 +259,14 @@ class TLSConfig {
 
   // Additional trusted client root / leaf certs (PEM, stored as NUL-separated entries)
   SmallConcatenatedStrings _trustedClientCertsPem;
+
+  vector<SniCertificate> _sniCertificates;
+  vector<SessionTicketKey> _staticTicketKeys;
+
+ public:
+  [[nodiscard]] std::span<const SniCertificate> sniCertificates() const noexcept { return _sniCertificates; }
+
+  [[nodiscard]] std::span<const SessionTicketKey> sessionTicketKeys() const noexcept { return _staticTicketKeys; }
 };
 
 }  // namespace aeronet

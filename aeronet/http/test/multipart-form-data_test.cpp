@@ -4,6 +4,7 @@
 
 #include <initializer_list>
 #include <string>
+#include <string_view>
 
 namespace aeronet {
 namespace {
@@ -59,9 +60,9 @@ TEST(MultipartFormDataTest, ParsesTextAndFileParts) {
   const auto& filePart = form.parts()[1];
   EXPECT_EQ(filePart.name, "file");
   ASSERT_TRUE(filePart.filename.has_value());
-  EXPECT_EQ(*filePart.filename, "hello.txt");
+  EXPECT_EQ(filePart.filename.value_or(std::string_view{}), "hello.txt");
   ASSERT_TRUE(filePart.contentType.has_value());
-  EXPECT_EQ(*filePart.contentType, "text/plain");
+  EXPECT_EQ(filePart.contentType.value_or(std::string_view{}), "text/plain");
   EXPECT_EQ(filePart.value, "file-content");
   EXPECT_EQ(filePart.headerValueOrEmpty("Content-Type"), "text/plain");
 }
@@ -90,7 +91,7 @@ TEST(MultipartFormDataTest, QuotedBoundaryAndLookupByName) {
 
   auto allAlpha = form.parts("alpha");
   ASSERT_EQ(allAlpha.size(), 2);
-  EXPECT_EQ(allAlpha[1].get().filename.value(), "b.txt");
+  EXPECT_EQ(allAlpha[1].get().filename.value_or(std::string_view{}), "b.txt");
 }
 
 TEST(MultipartFormDataTest, PartLookupGracefullyHandlesMissingNames) {
@@ -131,9 +132,9 @@ TEST(MultipartFormDataTest, FilenameStarParameterIsHandled) {
   ASSERT_EQ(form.parts().size(), 1);
   const auto& part = form.parts()[0];
   ASSERT_TRUE(part.filename.has_value());
-  EXPECT_EQ(part.filename.value(), "sample.bin");
+  EXPECT_EQ(part.filename.value_or(std::string_view{}), "sample.bin");
   ASSERT_TRUE(part.contentType.has_value());
-  EXPECT_EQ(part.contentType.value(), "application/octet-stream");
+  EXPECT_EQ(part.contentType.value_or(std::string_view{}), "application/octet-stream");
 }
 
 TEST(MultipartFormDataTest, MissingBoundaryMakesFormInvalid) {

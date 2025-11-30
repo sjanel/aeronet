@@ -7,16 +7,18 @@
 #include <string>
 #include <string_view>
 
+namespace aeronet {
+
 TEST(HttpTlsVersionBounds, InvalidMinVersionThrows) {
   // Provide unsupported version token -> validate() should throw
-  aeronet::TLSConfig cfg;
+  TLSConfig cfg;
   cfg.enabled = true;
   cfg.withTlsMinVersion("TLS1.1");
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
 TEST(HttpTlsVersionBounds, ValidMinVersion) {
-  aeronet::TLSConfig cfg;
+  TLSConfig cfg;
   cfg.enabled = true;
   cfg.withTlsMinVersion("TLS1.2");
   cfg.withKeyPem("-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n");
@@ -24,8 +26,82 @@ TEST(HttpTlsVersionBounds, ValidMinVersion) {
   EXPECT_NO_THROW(cfg.validate());
 }
 
+TEST(TLSConfigValidate, SessionTicketKeysConfiguredButTicketsDisabledThrows) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withKeyPem("-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n");
+  cfg.withCertPem("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n");
+  cfg.withTlsSessionTicketKey(TLSConfig::SessionTicketKey{});
+  cfg.sessionTickets.enabled = false;
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+TEST(TLSConfigValidate, HandshakeRateLimitBurstWithoutRateThrows) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withKeyPem("-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n");
+  cfg.withCertPem("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n");
+  cfg.handshakeRateLimitPerSecond = 0;
+  cfg.handshakeRateLimitBurst = 10;
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+TEST(TLSConfigValidate, SniCertificatePatternNonEmpty) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withKeyPem("-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n");
+  cfg.withCertPem("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n");
+  EXPECT_THROW(cfg.withTlsSniCertificateMemory("", "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n",
+                                               "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n"),
+               std::invalid_argument);
+}
+
+TEST(TLSConfigValidate, InvalidWildcard) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withKeyPem("-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n");
+  cfg.withCertPem("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n");
+  EXPECT_THROW(cfg.withTlsSniCertificateMemory("*.", "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n",
+                                               "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n"),
+               std::invalid_argument);
+}
+
+TEST(TLSConfig, SessionTicketsConfigEquality) {
+  TLSConfig::SessionTicketsConfig cfg1;
+  cfg1.enabled = true;
+  cfg1.lifetime = std::chrono::seconds(7200);
+  cfg1.maxKeys = 5;
+
+  TLSConfig::SessionTicketsConfig cfg2;
+  cfg2.enabled = true;
+  cfg2.lifetime = std::chrono::seconds(7200);
+  cfg2.maxKeys = 5;
+
+  EXPECT_EQ(cfg1, cfg2);
+
+  cfg2.maxKeys = 10;
+  EXPECT_NE(cfg1, cfg2);
+}
+
+TEST(TLSConfig, SniCertificateEquality) {
+  TLSConfig::SniCertificate cert1;
+  cert1.setPattern("example.com");
+  cert1.isWildcard = false;
+  cert1.setCertPem("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n");
+  cert1.setKeyPem("-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n");
+  TLSConfig::SniCertificate cert2;
+  cert2.setPattern("example.com");
+  cert2.isWildcard = false;
+  cert2.setCertPem("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n");
+  cert2.setKeyPem("-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n");
+  EXPECT_EQ(cert1, cert2);
+
+  cert2.setKeyPem("-----BEGIN PRIVATE KEY-----\nDIFFERENT\n-----END PRIVATE KEY-----\n");
+  EXPECT_NE(cert1, cert2);
+}
+
 TEST(TLSConfigValidate, RequiresCertAndKeyWhenEnabled) {
-  aeronet::TLSConfig cfg;
+  TLSConfig cfg;
   cfg.enabled = true;
   // neither cert nor key -> error
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
@@ -35,13 +111,13 @@ TEST(TLSConfigValidate, RequiresCertAndKeyWhenEnabled) {
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 
   // only key provided
-  aeronet::TLSConfig cfg2;
+  TLSConfig cfg2;
   cfg2.enabled = true;
   cfg2.withKeyPem("-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n");
   EXPECT_THROW(cfg2.validate(), std::invalid_argument);
 
   // both present -> ok
-  aeronet::TLSConfig cfg3;
+  TLSConfig cfg3;
   cfg3.enabled = true;
   cfg3.withCertPem("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n");
   cfg3.withKeyPem("-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n");
@@ -49,7 +125,7 @@ TEST(TLSConfigValidate, RequiresCertAndKeyWhenEnabled) {
 }
 
 TEST(TLSConfigValidate, RequireClientCertNeedsTrustedCerts) {
-  aeronet::TLSConfig cfg;
+  TLSConfig cfg;
   cfg.enabled = true;
   cfg.withCertPem("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n");
   cfg.withKeyPem("-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n");
@@ -63,7 +139,7 @@ TEST(TLSConfigValidate, RequireClientCertNeedsTrustedCerts) {
 }
 
 TEST(TLSConfigValidate, AlpnMustMatchRequiresProtocols) {
-  aeronet::TLSConfig cfg;
+  TLSConfig cfg;
   cfg.enabled = true;
   cfg.withCertPem("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n");
   cfg.withKeyPem("-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n");
@@ -77,7 +153,7 @@ TEST(TLSConfigValidate, AlpnMustMatchRequiresProtocols) {
 }
 
 TEST(TLSConfigValidate, AlpnProtocolEntriesNonEmptyAndWithinLimit) {
-  aeronet::TLSConfig cfg;
+  TLSConfig cfg;
   cfg.enabled = true;
   cfg.withCertPem("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n");
   cfg.withKeyPem("-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n");
@@ -87,7 +163,7 @@ TEST(TLSConfigValidate, AlpnProtocolEntriesNonEmptyAndWithinLimit) {
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 
   // too-long entry -> invalid
-  std::string longProto(aeronet::TLSConfig::kMaxAlpnProtocolLength + 1, 'x');
+  std::string longProto(TLSConfig::kMaxAlpnProtocolLength + 1, 'x');
   cfg.withTlsAlpnProtocols(std::initializer_list<std::string_view>{longProto});
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 
@@ -97,7 +173,7 @@ TEST(TLSConfigValidate, AlpnProtocolEntriesNonEmptyAndWithinLimit) {
 }
 
 TEST(TLSConfigValidate, MinMaxVersionValidation) {
-  aeronet::TLSConfig cfg;
+  TLSConfig cfg;
   cfg.enabled = true;
   cfg.withCertPem("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n");
   cfg.withKeyPem("-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n");
@@ -113,16 +189,18 @@ TEST(TLSConfigValidate, MinMaxVersionValidation) {
 }
 
 TEST(TLSConfigValidate, KtlsModeBuildGuard) {
-  aeronet::TLSConfig cfg;
+  TLSConfig cfg;
   cfg.enabled = true;
   cfg.withCertPem("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n");
   cfg.withKeyPem("-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n");
 
 #ifndef AERONET_ENABLE_KTLS
-  cfg.withKtlsMode(aeronet::TLSConfig::KtlsMode::Auto);
+  cfg.withKtlsMode(TLSConfig::KtlsMode::Auto);
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 #else
-  cfg.withKtlsMode(aeronet::TLSConfig::KtlsMode::Auto);
+  cfg.withKtlsMode(TLSConfig::KtlsMode::Auto);
   EXPECT_NO_THROW(cfg.validate());
 #endif
 }
+
+}  // namespace aeronet

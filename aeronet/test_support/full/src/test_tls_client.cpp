@@ -6,8 +6,10 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
+#include <openssl/tls1.h>
 #include <openssl/types.h>
 #include <openssl/x509.h>
+#include <openssl/x509_vfy.h>
 #include <poll.h>
 
 #include <cerrno>
@@ -193,7 +195,12 @@ void TlsClient::init() {
   if (!localCtx) {
     return;
   }
-  if (!_opts.verifyPeer) {
+  if (_opts.verifyPeer) {
+    ::SSL_CTX_set_verify(localCtx.get(), SSL_VERIFY_PEER, nullptr);
+    if (!_opts.trustedServerCertPem.empty()) {
+      loadTrustedServerCert(localCtx.get());
+    }
+  } else {
     ::SSL_CTX_set_verify(localCtx.get(), SSL_VERIFY_NONE, nullptr);
   }
   if (!_opts.clientCertPem.empty() && !_opts.clientKeyPem.empty()) {
@@ -219,6 +226,9 @@ void TlsClient::init() {
     throw std::runtime_error("Unable to allocate SSL");
   }
   ::SSL_set_fd(localSsl.get(), fd);
+  if (!_opts.serverName.empty()) {
+    ::SSL_set_tlsext_host_name(localSsl.get(), _opts.serverName.c_str());
+  }
 
   // Move ownership first so we can use waitForSocketReady
   _ctx = std::move(localCtx);
@@ -292,6 +302,25 @@ void TlsClient::loadClientCertKey(SSL_CTX* ctx) {
     ::SSL_CTX_use_certificate(ctx, cert.get());
     ::SSL_CTX_use_PrivateKey(ctx, pkey.get());
   }
+}
+
+void TlsClient::loadTrustedServerCert(SSL_CTX* ctx) {
+  aeronet::BioPtr caBio(
+      BIO_new_mem_buf(_opts.trustedServerCertPem.data(), static_cast<int>(_opts.trustedServerCertPem.size())),
+      ::BIO_free);
+  if (!caBio) {
+    return;
+  }
+  aeronet::X509Ptr ca(PEM_read_bio_X509(caBio.get(), nullptr, nullptr, nullptr), ::X509_free);
+  if (!ca) {
+    return;
+  }
+  auto* store = ::SSL_CTX_get_cert_store(ctx);
+  if (store == nullptr) {
+    return;
+  }
+  // Ignore duplicate insertion errors (multiple tests may reuse same PEM)
+  ::X509_STORE_add_cert(store, ca.get());
 }
 
 }  // namespace aeronet::test

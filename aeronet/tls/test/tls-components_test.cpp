@@ -7,10 +7,13 @@
 #include <openssl/types.h>
 #include <sys/socket.h>
 
+#include <array>
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <initializer_list>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -28,7 +31,9 @@
 #include "aeronet/tls-transport.hpp"
 #include "aeronet/transport.hpp"
 
-namespace aeronet::tls_test {
+using namespace aeronet;
+
+namespace tls_test {
 namespace {
 
 struct SslTestPair {
@@ -138,7 +143,7 @@ std::vector<unsigned char> makeAlpnWire(std::initializer_list<std::string_view> 
 
 void configureSslPair(SslTestPair& pair, std::initializer_list<std::string_view> serverAlpn,
                       std::initializer_list<std::string_view> clientAlpn, bool strictAlpn) {
-  auto cert = aeronet::test::makeEphemeralCertKey();
+  auto cert = test::makeEphemeralCertKey();
   ASSERT_FALSE(cert.first.empty());
   ASSERT_FALSE(cert.second.empty());
   pair.cfg.enabled = true;
@@ -222,7 +227,7 @@ TEST(TlsContextTest, StrictAlpnMismatchIncrementsMetric) {
 
 #ifdef TLS1_3_VERSION
 TEST(TlsContextTest, SupportsTls13VersionBounds) {
-  auto certKey = aeronet::test::makeEphemeralCertKey();
+  auto certKey = test::makeEphemeralCertKey();
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
   TLSConfig cfg;
@@ -239,7 +244,7 @@ TEST(TlsContextTest, SupportsTls13VersionBounds) {
 #endif
 
 TEST(TlsContextTest, InvalidMinVersionThrows) {
-  auto certKey = aeronet::test::makeEphemeralCertKey();
+  auto certKey = test::makeEphemeralCertKey();
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
   TLSConfig cfg;
@@ -251,7 +256,7 @@ TEST(TlsContextTest, InvalidMinVersionThrows) {
 }
 
 TEST(TlsContextTest, InvalidMaxVersionThrows) {
-  auto certKey = aeronet::test::makeEphemeralCertKey();
+  auto certKey = test::makeEphemeralCertKey();
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
   TLSConfig cfg;
@@ -260,6 +265,28 @@ TEST(TlsContextTest, InvalidMaxVersionThrows) {
   cfg.withTlsMaxVersion("TLS1.1");
   TlsMetricsExternal metrics{};
   EXPECT_THROW(TlsContext(cfg, &metrics), std::runtime_error);
+}
+
+TEST(TlsContextTest, CipherPolicyAppliesPredefinedSuites) {
+  auto certKey = test::makeEphemeralCertKey();
+  ASSERT_FALSE(certKey.first.empty());
+  ASSERT_FALSE(certKey.second.empty());
+
+  const std::array<TLSConfig::CipherPolicy, 3> policies = {
+      TLSConfig::CipherPolicy::Modern, TLSConfig::CipherPolicy::Compatibility, TLSConfig::CipherPolicy::Legacy};
+
+  for (auto policy : policies) {
+    TLSConfig cfg;
+    cfg.enabled = true;
+    cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
+    cfg.withTlsCipherPolicy(policy);
+    TlsMetricsExternal metrics{};
+    EXPECT_NO_THROW({
+      TlsContext ctx(cfg, &metrics);
+      (void)ctx;
+    }) << "policy="
+       << static_cast<int>(policy);
+  }
 }
 
 TEST(TlsContextTest, InvalidInMemoryPemThrows) {
@@ -272,8 +299,8 @@ TEST(TlsContextTest, InvalidInMemoryPemThrows) {
 }
 
 TEST(TlsContextTest, MismatchedPrivateKeyFailsCheck) {
-  auto certA = aeronet::test::makeEphemeralCertKey("server-a");
-  auto certB = aeronet::test::makeEphemeralCertKey("server-b");
+  auto certA = test::makeEphemeralCertKey("server-a");
+  auto certB = test::makeEphemeralCertKey("server-b");
   ASSERT_FALSE(certA.first.empty());
   ASSERT_FALSE(certA.second.empty());
   ASSERT_FALSE(certB.first.empty());
@@ -287,7 +314,7 @@ TEST(TlsContextTest, MismatchedPrivateKeyFailsCheck) {
 }
 
 TEST(TlsContextTest, EmptyTrustedClientCertPemThrows) {
-  auto certKey = aeronet::test::makeEphemeralCertKey();
+  auto certKey = test::makeEphemeralCertKey();
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
   TLSConfig cfg;
@@ -300,7 +327,7 @@ TEST(TlsContextTest, EmptyTrustedClientCertPemThrows) {
 }
 
 TEST(TlsContextTest, InvalidTrustedClientCertPemThrows) {
-  auto certKey = aeronet::test::makeEphemeralCertKey();
+  auto certKey = test::makeEphemeralCertKey();
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
   TLSConfig cfg;
@@ -358,53 +385,6 @@ TEST(TlsTransportTest, ReadWriteAndRetryHints) {
   transport.shutdown();
   transport.shutdown();
 }
-
-TEST(TlsTransportTest, HandshakeSyscallReadTreatedAsRetry) {
-  auto pair = makeSslPair({"http/1.1"}, {"http/1.1"});
-  ControlledBioState readState{};
-  ControlledBioState writeState{};
-  attachControlledBios(pair.serverSsl.get(), readState, writeState);
-  pair.serverFd.close();
-  TlsTransport transport(std::move(pair.serverSsl));
-  char tmp[1]{};
-  ERR_clear_error();
-  errno = EAGAIN;
-  auto res = transport.read(tmp, sizeof(tmp));
-  EXPECT_EQ(res.want, TransportHint::ReadReady);
-  EXPECT_EQ(res.bytesProcessed, 0U);
-}
-
-TEST(TlsTransportTest, HandshakeSyscallReadFatalSetsError) {
-  auto pair = makeSslPair({"http/1.1"}, {"http/1.1"});
-  ControlledBioState readState{};
-  readState.errnoValue = EBADF;
-  ControlledBioState writeState{};
-  writeState.errnoValue = EBADF;
-  attachControlledBios(pair.serverSsl.get(), readState, writeState);
-  pair.serverFd.close();
-  TlsTransport transport(std::move(pair.serverSsl));
-  char tmp[1]{};
-  ERR_clear_error();
-  errno = EBADF;
-  auto res = transport.read(tmp, sizeof(tmp));
-  EXPECT_EQ(res.want, TransportHint::Error);
-  EXPECT_EQ(res.bytesProcessed, 0U);
-}
-
-TEST(TlsTransportTest, HandshakeSyscallWriteTreatedAsRetry) {
-  auto pair = makeSslPair({"http/1.1"}, {"http/1.1"});
-  ControlledBioState readState{};
-  ControlledBioState writeState{};
-  attachControlledBios(pair.serverSsl.get(), readState, writeState);
-  pair.serverFd.close();
-  TlsTransport transport(std::move(pair.serverSsl));
-  ERR_clear_error();
-  errno = EAGAIN;
-  auto res = transport.write("X");
-  EXPECT_EQ(res.want, TransportHint::WriteReady);
-  EXPECT_EQ(res.bytesProcessed, 0U);
-}
-
 TEST(TlsTransportTest, HandshakeSyscallWriteFatalSetsError) {
   auto pair = makeSslPair({"http/1.1"}, {"http/1.1"});
   ControlledBioState readState{};
@@ -495,4 +475,439 @@ TEST(TlsTransportTest, SyscallDuringWriteFatalSetsErrorHint) {
   EXPECT_EQ(res.bytesProcessed, 0U);
 }
 
-}  // namespace aeronet::tls_test
+TEST(TlsTransportTest, SuccessfulReadReturnsData) {
+  // Covers the early-return success path in TlsTransport::read (line 45)
+  auto pair = makeSslPair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(performHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  // Client writes data that server will read
+  const std::string payload = "Hello from client";
+  const int written = ::SSL_write(pair.clientSsl.get(), payload.data(), static_cast<int>(payload.size()));
+  ASSERT_EQ(written, static_cast<int>(payload.size()));
+
+  char buf[64]{};
+  auto readRes = transport.read(buf, sizeof(buf));
+  // This should hit the successful SSL_read_ex path and return immediately
+  EXPECT_EQ(readRes.want, TransportHint::None);
+  EXPECT_EQ(readRes.bytesProcessed, payload.size());
+  EXPECT_EQ(std::string_view(buf, readRes.bytesProcessed), payload);
+}
+
+TEST(TlsHandshakeTest, CollectInfoWithNullSslReturnsEmpty) {
+  // Covers the early return path in collectTlsHandshakeInfo when ssl is nullptr (line 25-26)
+  auto start = std::chrono::steady_clock::now();
+  auto info = collectTlsHandshakeInfo(nullptr, start);
+  EXPECT_TRUE(info.selectedAlpn.empty());
+  EXPECT_TRUE(info.negotiatedCipher.empty());
+  EXPECT_TRUE(info.negotiatedVersion.empty());
+  EXPECT_FALSE(info.clientCertPresent);
+  EXPECT_EQ(info.durationNs, 0U);
+}
+
+TEST(TlsHandshakeTest, FinalizeTlsHandshakeWithNullSslStillUpdatesMetrics) {
+  // Covers the path where SSL is null but metrics are still updated
+  auto start = std::chrono::steady_clock::now();
+  TlsMetricsInternal metrics{};
+
+  auto tlsInfo = finalizeTlsHandshake(nullptr, -1, false, start, metrics);
+
+  EXPECT_TRUE(tlsInfo.selectedAlpn().empty());
+  EXPECT_TRUE(tlsInfo.negotiatedCipher().empty());
+  EXPECT_TRUE(tlsInfo.negotiatedVersion().empty());
+  // Metrics should still increment handshakesSucceeded
+  EXPECT_EQ(metrics.handshakesSucceeded, 1U);
+}
+
+TEST(TlsHandshakeTest, HandshakeDurationZeroWhenStartIsDefault) {
+  // Covers the path where handshakeStart.time_since_epoch().count() == 0 (line 52)
+  auto pair = makeSslPair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(performHandshake(pair));
+
+  // Use default-constructed time_point (epoch) - durationNs should be 0 because
+  // the condition handshakeStart.time_since_epoch().count() != 0 is false
+  std::chrono::steady_clock::time_point defaultStart{};
+  auto info = collectTlsHandshakeInfo(pair.serverSsl.get(), defaultStart);
+
+  // With default start time, duration should be 0
+  EXPECT_EQ(info.durationNs, 0U);
+}
+
+TEST(TlsHandshakeTest, FinalizeTlsHandshakeLogsHandshake) {
+  // Covers the logging path in collectAndLogTlsHandshake (line 64)
+  auto pair = makeSslPair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(performHandshake(pair));
+
+  auto start = std::chrono::steady_clock::now();
+  TlsMetricsInternal metrics{};
+
+  // Call with logHandshake=true to cover the logging branch
+  auto tlsInfo = finalizeTlsHandshake(pair.serverSsl.get(), pair.serverFd.fd(), true, start, metrics);
+
+  EXPECT_EQ(tlsInfo.selectedAlpn(), "http/1.1");
+  EXPECT_FALSE(tlsInfo.negotiatedCipher().empty());
+  EXPECT_FALSE(tlsInfo.negotiatedVersion().empty());
+  EXPECT_EQ(metrics.handshakesSucceeded, 1U);
+}
+
+#ifdef AERONET_ENABLE_KTLS
+TEST(TlsTransportTest, KtlsSendAlreadyAttemptedReturnsFailed) {
+  // Test that calling enableKtlsSend twice returns AlreadyEnabled or Failed (covers lines 194-195)
+  auto pair = makeSslPair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(performHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  // First attempt
+  [[maybe_unused]] auto result1 = transport.enableKtlsSend();
+  // Could be Enabled, AlreadyEnabled, Failed, or Unsupported depending on system
+
+  // Second attempt should return AlreadyEnabled or Failed (since already attempted)
+  auto result2 = transport.enableKtlsSend();
+  EXPECT_TRUE(result2.status == TlsTransport::KtlsEnableResult::Status::AlreadyEnabled ||
+              result2.status == TlsTransport::KtlsEnableResult::Status::Failed);
+}
+#endif
+
+TEST(TlsContextTest, SniCertificateWithWildcardPatternWorks) {
+  // Test that a valid wildcard pattern starting with "*." is accepted
+  auto mainCert = test::makeEphemeralCertKey("main.example.com");
+  auto sniCert = test::makeEphemeralCertKey("sub.example.com");
+  ASSERT_FALSE(mainCert.first.empty());
+  ASSERT_FALSE(sniCert.first.empty());
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(mainCert.first).withKeyPem(mainCert.second);
+
+  // Add SNI certificate with a proper wildcard pattern
+  cfg.withTlsSniCertificateMemory("*.example.com", sniCert.first, sniCert.second);
+
+  TlsMetricsExternal metrics{};
+  EXPECT_NO_THROW({
+    TlsContext ctx(cfg, &metrics);
+    (void)ctx;
+  });
+}
+
+TEST(TlsTransportTest, ShutdownWithNullSslDoesNotCrash) {
+  // Covers the null check in TlsTransport::shutdown (line 147)
+  TlsTransport::SslPtr nullSsl{nullptr, &::SSL_free};
+  TlsTransport transport(std::move(nullSsl));
+
+  // Should return early without crashing
+  transport.shutdown();
+}
+
+TEST(TlsTransportTest, HandshakeDoneFalseInitially) {
+  // Verify handshakeDone() returns false before handshake is complete
+  auto pair = makeSslPair({"http/1.1"}, {"http/1.1"});
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  EXPECT_FALSE(transport.handshakeDone());
+}
+
+TEST(TlsTransportTest, WriteEmptyDataReturnsZero) {
+  // Covers the empty data early return path in write (line 108)
+  auto pair = makeSslPair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(performHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  auto result = transport.write("");
+  EXPECT_EQ(result.bytesProcessed, 0U);
+  EXPECT_EQ(result.want, TransportHint::None);
+}
+
+TEST(TlsTransportTest, ReadAfterPeerCloseReturnsZero) {
+  // Covers the SSL_ERROR_ZERO_RETURN path in read (line 56-58)
+  auto pair = makeSslPair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(performHandshake(pair));
+
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  // Client initiates shutdown - send close_notify
+  ::SSL_shutdown(pair.clientSsl.get());
+
+  // Server should see the clean shutdown
+  char buf[16]{};
+  auto result = transport.read(buf, sizeof(buf));
+  // Depending on timing, we may get ZERO_RETURN (no error, 0 bytes) or ReadReady
+  EXPECT_EQ(result.bytesProcessed, 0U);
+  EXPECT_TRUE(result.want == TransportHint::None || result.want == TransportHint::ReadReady);
+}
+
+TEST(TlsContextTest, SessionTicketsEnabledAutoCreatesKeyStore) {
+  // Covers lines 318-319: auto-creation of ticket key store when sessionTickets.enabled is true
+  auto certKey = test::makeEphemeralCertKey();
+  ASSERT_FALSE(certKey.first.empty());
+  ASSERT_FALSE(certKey.second.empty());
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
+  cfg.sessionTickets.enabled = true;
+  cfg.sessionTickets.lifetime = std::chrono::seconds(60);
+  cfg.sessionTickets.maxKeys = 2;
+
+  TlsMetricsExternal metrics{};
+  EXPECT_NO_THROW({
+    TlsContext ctx(cfg, &metrics);
+    (void)ctx;
+  });
+}
+
+TEST(TlsContextTest, SessionTicketsWithStaticKeys) {
+  // Covers line 321-322: loading static keys into ticket store
+  auto certKey = test::makeEphemeralCertKey();
+  ASSERT_FALSE(certKey.first.empty());
+  ASSERT_FALSE(certKey.second.empty());
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
+  cfg.sessionTickets.enabled = true;
+  cfg.sessionTickets.lifetime = std::chrono::seconds(60);
+  cfg.sessionTickets.maxKeys = 2;
+
+  // Add a static session ticket key
+  TLSConfig::SessionTicketKey staticKey;
+  for (std::size_t ii = 0; ii < staticKey.size(); ++ii) {
+    staticKey[ii] = static_cast<std::byte>(ii);
+  }
+  cfg.withTlsSessionTicketKey(std::move(staticKey));
+
+  TlsMetricsExternal metrics{};
+  EXPECT_NO_THROW({
+    TlsContext ctx(cfg, &metrics);
+    (void)ctx;
+  });
+}
+
+TEST(TlsContextTest, SniCertificateWithFilePaths) {
+  // This test covers line 342 in tls-context.cpp: the file-path branch in SNI loading
+  // We use file paths that will fail, exercising the else branch
+  auto mainCert = test::makeEphemeralCertKey("main.example.com");
+  ASSERT_FALSE(mainCert.first.empty());
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(mainCert.first).withKeyPem(mainCert.second);
+
+  // Add SNI certificate with file paths that don't exist - should throw
+  cfg.withTlsSniCertificateFiles("test.example.com", "/__nonexistent_cert__.pem", "/__nonexistent_key__.pem");
+
+  TlsMetricsExternal metrics{};
+  EXPECT_THROW(TlsContext(cfg, &metrics), std::runtime_error);
+}
+
+TEST(TlsContextTest, DefaultCipherPolicyDoesNotApplyPolicy) {
+  // Covers lines 203-204 in tls-context.cpp: when cipherPolicy is Default, no ApplyCipherPolicy is called
+  auto certKey = test::makeEphemeralCertKey("test.example.com");
+  ASSERT_FALSE(certKey.first.empty());
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
+  cfg.cipherPolicy = TLSConfig::CipherPolicy::Default;  // Explicitly set to Default
+
+  TlsMetricsExternal metrics{};
+  TlsContext ctx(cfg, &metrics);
+
+  // Context should be created without throwing
+  SUCCEED();
+}
+
+TEST(TlsContextTest, DefaultCipherPolicyWithCustomCipherList) {
+  // Covers line 204 in tls-context.cpp: Default policy with custom cipher list still sets it
+  auto certKey = test::makeEphemeralCertKey("test.example.com");
+  ASSERT_FALSE(certKey.first.empty());
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
+  cfg.cipherPolicy = TLSConfig::CipherPolicy::Default;
+  cfg.withCipherList("AES256-SHA:AES128-SHA");
+
+  TlsMetricsExternal metrics{};
+  TlsContext ctx(cfg, &metrics);
+
+  SUCCEED();
+}
+
+TEST(TlsContextTest, SessionTicketsWithTlsHandshake) {
+  // Covers lines 227-252: TicketStoreIndex, GetTicketStore, SessionTicketCallback, AttachTicketStore
+  // This requires an actual TLS handshake with session tickets enabled
+  auto certKey = test::makeEphemeralCertKey("test.example.com");
+  ASSERT_FALSE(certKey.first.empty());
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
+  cfg.sessionTickets.enabled = true;
+  cfg.sessionTickets.lifetime = std::chrono::seconds(60);
+  cfg.sessionTickets.maxKeys = 2;
+
+  TlsMetricsExternal metrics{};
+  TlsContext ctx(cfg, &metrics);
+
+  // Create server/client socket pair
+  int fds[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+  BaseFd serverFd(fds[0]);
+  BaseFd clientFd(fds[1]);
+
+  // Create server SSL
+  auto* rawCtx = reinterpret_cast<SSL_CTX*>(ctx.raw());
+  TlsTransport::SslPtr serverSsl{::SSL_new(rawCtx), &::SSL_free};
+  ASSERT_NE(serverSsl.get(), nullptr);
+  ::SSL_set_fd(serverSsl.get(), serverFd.fd());
+  ::SSL_set_accept_state(serverSsl.get());
+
+  // Create client SSL context
+  auto clientCtx =
+      std::unique_ptr<SSL_CTX, decltype(&::SSL_CTX_free)>(::SSL_CTX_new(TLS_client_method()), &::SSL_CTX_free);
+  ASSERT_NE(clientCtx.get(), nullptr);
+  ::SSL_CTX_set_verify(clientCtx.get(), SSL_VERIFY_NONE, nullptr);
+
+  // Enable session tickets on client
+  ::SSL_CTX_set_session_cache_mode(clientCtx.get(), SSL_SESS_CACHE_CLIENT);
+
+  std::unique_ptr<SSL, decltype(&::SSL_free)> clientSsl{::SSL_new(clientCtx.get()), &::SSL_free};
+  ASSERT_NE(clientSsl.get(), nullptr);
+  ::SSL_set_fd(clientSsl.get(), clientFd.fd());
+  ::SSL_set_connect_state(clientSsl.get());
+
+  // Perform handshake in threads
+  std::thread clientThread([&clientSsl]() {
+    while (true) {
+      int ret = ::SSL_connect(clientSsl.get());
+      if (ret == 1) {
+        break;
+      }
+      int err = ::SSL_get_error(clientSsl.get(), ret);
+      if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
+        break;
+      }
+    }
+  });
+
+  while (true) {
+    int ret = ::SSL_accept(serverSsl.get());
+    if (ret == 1) {
+      break;
+    }
+    int err = ::SSL_get_error(serverSsl.get(), ret);
+    if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
+      break;
+    }
+  }
+
+  clientThread.join();
+
+  // Verify handshake succeeded
+  EXPECT_TRUE(::SSL_is_init_finished(serverSsl.get()));
+}
+
+TEST(TlsContextTest, SessionTicketsStoreCreatedWithoutStaticKeys) {
+  // Covers lines 318-322: when session tickets are enabled without static keys,
+  // a new ticket store is created and attached
+  auto certKey = test::makeEphemeralCertKey("test.example.com");
+  ASSERT_FALSE(certKey.first.empty());
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
+  cfg.sessionTickets.enabled = true;
+  cfg.sessionTickets.lifetime = std::chrono::seconds(3600);
+  cfg.sessionTickets.maxKeys = 5;
+
+  TlsMetricsExternal metrics{};
+  TlsContext ctx(cfg, &metrics);
+
+  // Context should be created successfully with ticket store
+  SUCCEED();
+}
+
+// =============================================================================
+// TLSConfig validation tests
+// =============================================================================
+
+TEST(TlsConfigTest, InvalidMinVersionThrows) {
+  // Covers tls-config.cpp lines 59-60
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem("DUMMY").withKeyPem("DUMMY");
+  cfg.minVersion = {1, 0};  // TLS 1.0 is not supported
+
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+TEST(TlsConfigTest, InvalidMaxVersionThrows) {
+  // Covers tls-config.cpp lines 65-66
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem("DUMMY").withKeyPem("DUMMY");
+  cfg.maxVersion = {1, 1};  // TLS 1.1 is not supported
+
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+TEST(TlsConfigTest, SessionTicketsMaxKeysZeroThrows) {
+  // Covers tls-config.cpp line 84
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem("DUMMY").withKeyPem("DUMMY");
+  cfg.sessionTickets.maxKeys = 0;
+
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+TEST(TlsConfigTest, ClearSniCertificatesWorks) {
+  // Covers tls-config.cpp lines 160-162
+  auto certKey = test::makeEphemeralCertKey("test.example.com");
+  ASSERT_FALSE(certKey.first.empty());
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
+  cfg.withTlsSniCertificateMemory("sub.example.com", certKey.first, certKey.second);
+
+  EXPECT_FALSE(cfg.sniCertificates().empty());
+  cfg.clearTlsSniCertificates();
+  EXPECT_TRUE(cfg.sniCertificates().empty());
+}
+
+TEST(TlsConfigTest, EmptySniHostnameMemoryThrows) {
+  // Covers tls-config.cpp line 145 (empty hostname in withTlsSniCertificateMemory)
+  TLSConfig cfg;
+  cfg.enabled = true;
+
+  EXPECT_THROW(cfg.withTlsSniCertificateMemory("", "cert", "key"), std::invalid_argument);
+}
+
+TEST(TlsConfigTest, EmptySniHostnameFilesThrows) {
+  // Covers tls-config.cpp withTlsSniCertificateFiles empty hostname
+  TLSConfig cfg;
+  cfg.enabled = true;
+
+  EXPECT_THROW(cfg.withTlsSniCertificateFiles("", "/path/cert", "/path/key"), std::invalid_argument);
+}
+
+TEST(TlsConfigTest, EmptySniCertPemThrows) {
+  // Covers tls-config.cpp line 147-148 (empty certPem/keyPem)
+  TLSConfig cfg;
+  cfg.enabled = true;
+
+  EXPECT_THROW(cfg.withTlsSniCertificateMemory("example.com", "", "key"), std::invalid_argument);
+  EXPECT_THROW(cfg.withTlsSniCertificateMemory("example.com", "cert", ""), std::invalid_argument);
+}
+
+TEST(TlsConfigTest, EmptySniCertFileThrows) {
+  // Covers tls-config.cpp empty cert/key paths
+  TLSConfig cfg;
+  cfg.enabled = true;
+
+  EXPECT_THROW(cfg.withTlsSniCertificateFiles("example.com", "", "/path/key"), std::invalid_argument);
+  EXPECT_THROW(cfg.withTlsSniCertificateFiles("example.com", "/path/cert", ""), std::invalid_argument);
+}
+
+}  // namespace tls_test

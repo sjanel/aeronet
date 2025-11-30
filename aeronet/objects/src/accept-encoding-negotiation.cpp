@@ -44,7 +44,7 @@ constexpr bool IsEncodingEnabled(Encoding enc) {
   }
 }
 
-constexpr std::string_view trim(std::string_view sv) {
+constexpr std::string_view Trim(std::string_view sv) {
   while (!sv.empty() && kWhitespace.find(sv.front()) != std::string_view::npos) {
     sv.remove_prefix(1);
   }
@@ -55,14 +55,14 @@ constexpr std::string_view trim(std::string_view sv) {
 }
 
 // Parse q-value within a token (portion including parameters); never throws.
-double parseQ(std::string_view token) {
+double ParseQ(std::string_view token) {
   auto scPos = token.find(';');
   if (scPos == std::string_view::npos) {
     return 1.0;
   }
   std::string_view params = token.substr(scPos + 1);
   while (!params.empty()) {
-    params = trim(params);
+    params = Trim(params);
     auto nextSemi = params.find(';');
     std::string_view param = nextSemi == std::string_view::npos ? params : params.substr(0, nextSemi);
     if (nextSemi == std::string_view::npos) {
@@ -107,7 +107,7 @@ struct Sup {
 };
 
 template <std::size_t... I>
-consteval auto makeSupported(std::index_sequence<I...> /*unused*/) {
+consteval auto MakeSupported(std::index_sequence<I...> /*unused*/) {
   return std::array<Sup, sizeof...(I)>{{{GetEncodingStr(static_cast<Encoding>(I)), static_cast<Encoding>(I)}...}};
 }
 
@@ -153,7 +153,7 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
     return ret;
   }
 
-  static constexpr auto kSupportedEncodings = makeSupported(std::make_index_sequence<kNbContentEncodings>{});
+  static constexpr auto kSupportedEncodings = MakeSupported(std::make_index_sequence<kNbContentEncodings>{});
 
   struct ParsedToken {
     std::string_view name;
@@ -174,13 +174,13 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
   double identityQ = 0.0;
   for (auto part : acceptEncoding | std::views::split(',')) {
     std::string_view raw{&*part.begin(), static_cast<std::size_t>(std::ranges::distance(part))};
-    raw = trim(raw);
+    raw = Trim(raw);
     if (raw.empty()) {
       continue;
     }
     auto sc = raw.find(';');
-    std::string_view name = trim(sc == std::string_view::npos ? raw : raw.substr(0, sc));
-    double quality = parseQ(raw);
+    std::string_view name = Trim(sc == std::string_view::npos ? raw : raw.substr(0, sc));
+    double quality = ParseQ(raw);
     if (CaseInsensitiveEqual(name, "*")) {
       sawWildcard = true;
       wildcardQ = quality;

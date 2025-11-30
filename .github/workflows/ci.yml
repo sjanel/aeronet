@@ -265,7 +265,8 @@ jobs:
           aeronet-multi \
           aeronet-sendfile \
           aeronet-static-example \
-          aeronet-tls-ktls
+          aeronet-tls-ktls \
+          aeronet-tls-session-tickets
 
       - name: Generate TLS certificate for ktls example
         run: |
@@ -344,6 +345,9 @@ jobs:
             
           run_server_and_curl tls "https://127.0.0.1:18443/" -k -- \
             "${EXAMPLE_DIR}/aeronet-tls-ktls" ${BUILD_DIR}/certs/server.crt ${BUILD_DIR}/certs/server.key 18443
+
+          run_server_and_curl tls-session-tickets "https://127.0.0.1:18444/" -k -- \
+            "${EXAMPLE_DIR}/aeronet-tls-session-tickets" ${BUILD_DIR}/certs/server.crt ${BUILD_DIR}/certs/server.key 18444
 
       - name: Verify markdown C/C++ examples (compile & link)
         run: |
