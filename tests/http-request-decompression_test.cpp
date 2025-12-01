@@ -407,7 +407,7 @@ TEST(HttpRequestDecompression, GzipLargeBodyWithTrailers) {
     if (it2 != req.trailers().end()) {
       EXPECT_EQ(it2->second, "final");
     }
-    return HttpResponse(http::StatusCodeOK).body("GzipLargeBodyWithTrailers OK");
+    return HttpResponse("GzipLargeBodyWithTrailers OK");
   });
 
   test::ClientConnection sock(ts.port());
@@ -459,7 +459,7 @@ TEST(HttpRequestDecompression, GzipZstdLargeBodyWithTrailers) {
     if (it2 != req.trailers().end()) {
       EXPECT_EQ(it2->second, "final");
     }
-    return HttpResponse(http::StatusCodeOK).body("GzipZstdLargeBodyWithTrailers OK");
+    return HttpResponse("GzipZstdLargeBodyWithTrailers OK");
   });
 
   test::ClientConnection sock(ts.port());

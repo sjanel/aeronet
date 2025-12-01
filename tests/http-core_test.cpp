@@ -191,7 +191,7 @@ TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
 
 TEST(HttpServerConfig, TcpNoDelayEnablesSimpleGet) {
   TcpNoDelayScope scope(true);
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("tcp ok"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("tcp ok"); });
   std::string resp = httpGet(ts.port(), "/tcp");
   ASSERT_FALSE(resp.empty());
   ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;

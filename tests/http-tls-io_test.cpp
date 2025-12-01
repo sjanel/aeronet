@@ -307,7 +307,7 @@ TEST(HttpTlsSessionTickets, AutoRotationRefreshesPrimaryKeyAndRejectsUnknown) {
 TEST(HttpTlsKtlsMode, EnabledModeTracksStats) {
   test::TlsTestServer ts({"http/1.1"},
                          [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled); });
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ktls"); });
+  ts.setDefault([](const HttpRequest&) { return HttpResponse("ktls"); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());

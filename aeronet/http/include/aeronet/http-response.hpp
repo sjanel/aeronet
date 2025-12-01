@@ -137,6 +137,12 @@ class HttpResponse {
   // The capacity will hold at least the status line and the headers, and possibly the inlined body.
   HttpResponse(std::size_t initialCapacity, http::StatusCode code, std::string_view reason = {});
 
+  // Constructs an HttpResponse with a 200 status code, empty reason phrase and given body.
+  // The body is copied into the internal buffer, and the content type header is set if the body is not empty.
+  // If the body is large, prefer the capture by value of body() overloads to avoid a copy (and possibly an allocation).
+  // The content type defaults to "text/plain"
+  explicit HttpResponse(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain);
+
   // Replaces the status code. Must be a 3 digits integer (undefined behavior otherwise).
   HttpResponse& status(http::StatusCode statusCode) & noexcept {
     setStatusCode(statusCode);

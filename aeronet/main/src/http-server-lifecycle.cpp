@@ -437,7 +437,7 @@ void HttpServer::registerBuiltInProbes() {
 
   // liveness: lightweight, should not depend on external systems
   _router.setPath(http::Method::GET, _config.builtinProbes.livenessPath(),
-                  [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("OK\n"); });
+                  [](const HttpRequest&) { return HttpResponse("OK\n"); });
 
   // readiness: reflects lifecycle.ready
   _router.setPath(http::Method::GET, _config.builtinProbes.readinessPath(), [this](const HttpRequest&) {
