@@ -182,10 +182,6 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const HttpRequest& request, con
 
   // Compute Sec-WebSocket-Accept
   result.secWebSocketAccept = ComputeWebSocketAccept(key);
-  if (result.secWebSocketAccept[0] == '\0') {
-    result.errorMessage = "Failed to compute Sec-WebSocket-Accept (SHA-1 not available)";
-    return result;
-  }
 
   // Parse and negotiate Sec-WebSocket-Protocol
   const auto protocolHeader = request.headerValue(websocket::SecWebSocketProtocol);
