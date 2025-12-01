@@ -214,17 +214,20 @@ SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
       !isdigit(ptr[23]) || !isdigit(ptr[24])) {
     return ret;
   }
-  if (ptr[26] != 'G' || ptr[27] != 'M' || ptr[28] != 'T') {
+
+  static constexpr uint16_t kGMTRep = read3("GMT");
+
+  if (read3(ptr + 26) != kGMTRep) {
     return ret;
   }
 
-  static constexpr std::string_view kMonths[]{"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  static constexpr uint16_t kMonthsRep[]{
+      read3("Jan"), read3("Feb"), read3("Mar"), read3("Apr"), read3("May"), read3("Jun"),
+      read3("Jul"), read3("Aug"), read3("Sep"), read3("Oct"), read3("Nov"), read3("Dec"),
+  };
 
-  const std::string_view monthToken(ptr + 8, 3);
-
-  const auto monthIt = std::ranges::find(kMonths, monthToken);
-  if (monthIt == std::end(kMonths)) {
+  const auto monthIt = std::ranges::find(kMonthsRep, read3(ptr + 8));
+  if (monthIt == std::end(kMonthsRep)) {
     return ret;
   }
 
@@ -234,20 +237,19 @@ SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
   const int minuteValue = read2(ptr + 20);
   const int secondValue = read2(ptr + 23);
 
-  if (dayValue <= 0 || hourValue < 0 || hourValue > 23 || minuteValue < 0 || minuteValue > 59 || secondValue < 0 ||
-      secondValue > 60) {
+  if (dayValue == 0 || hourValue > 23 || minuteValue > 59 || secondValue > 60) {
     return ret;
   }
 
   const std::chrono::year yearField{yearValue};
   // monthIt is a 0-based index into kMonths (0 == Jan). std::chrono::month is 1-based, so add 1.
-  const std::chrono::month monthField{static_cast<unsigned>(monthIt - std::begin(kMonths)) + 1};
+  const std::chrono::month monthField{static_cast<unsigned>(monthIt - std::begin(kMonthsRep)) + 1};
   const std::chrono::day dayField{static_cast<unsigned>(dayValue)};
   const std::chrono::year_month_day ymd{yearField, monthField, dayField};
   // Verify the weekday token (e.g. "Sun") matches the resolved date
-  static constexpr std::string_view kWeekdays[]{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-  const std::string_view weekdayToken(ptr, 3);
-  const auto weekdayIt = std::ranges::find(kWeekdays, weekdayToken);
+  static constexpr uint16_t kWeekdays[]{read3("Sun"), read3("Mon"), read3("Tue"), read3("Wed"),
+                                        read3("Thu"), read3("Fri"), read3("Sat")};
+  const auto weekdayIt = std::ranges::find(kWeekdays, read3(ptr));
   if (weekdayIt == std::end(kWeekdays)) {
     return ret;
   }
