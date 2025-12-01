@@ -617,7 +617,6 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
   const std::string_view encodingStr = encodingHeaderIt->second;
 
   // We'll alternate between bodyAndTrailersBuffer (source) and _tmpBuffer (target) each stage.
-  // TODO: if there are trailers, they will be erased if there is a two step decompression (e.g. gzip + zstd).
   std::string_view src = request.body();
   RawChars* dst = &_tmpBuffer;
 

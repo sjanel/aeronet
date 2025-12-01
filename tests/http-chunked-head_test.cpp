@@ -38,9 +38,8 @@ TEST(HttpChunked, DecodeBasic) {
 }
 
 TEST(HttpHead, NoBodyReturned) {
-  ts.router().setDefault([](const HttpRequest& req) {
-    return HttpResponse(http::StatusCodeOK).body(std::string("DATA-") + std::string(req.path()));
-  });
+  ts.router().setDefault(
+      [](const HttpRequest& req) { return HttpResponse(std::string("DATA-") + std::string(req.path())); });
   test::ClientConnection cnx(port);
   int fd = cnx.fd();
   std::string req = "HEAD /head HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
@@ -57,7 +56,7 @@ TEST(HttpHead, NoBodyReturned) {
 
 TEST(HttpExpect, ContinueFlow) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(5); });
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(http::StatusCodeOK).body(req.body()); });
+  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
   test::ClientConnection cnx(port);
   auto fd = cnx.fd();
   std::string headers =
@@ -80,7 +79,7 @@ TEST(HttpChunked, RejectTooLarge) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.withMaxBodyBytes(4);  // very small limit
   });
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(http::StatusCodeOK).body(req.body()); });
+  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
   test::ClientConnection cnx(port);
   int fd = cnx.fd();
   // Single 5-byte chunk exceeds limit 4

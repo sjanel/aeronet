@@ -84,7 +84,7 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
 
 // Fuzz-ish incremental chunk framing with random chunk sizes & boundaries.
 TEST(HttpParserErrors, ChunkIncrementalFuzz) {
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(http::StatusCodeOK).body(req.body()); });
+  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
 
   std::mt19937 rng(12345);
   std::uniform_int_distribution<int> sizeDist(1, 15);

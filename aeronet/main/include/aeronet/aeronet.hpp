@@ -29,7 +29,7 @@
 //    int main() {
 //      Router router;
 //      router.setDefault([](const HttpRequest& req){
-//         return HttpResponse(200, "OK").contentType("text/plain").body("hi\n");
+//         return HttpResponse(200, "OK").body("hi\n");
 //      });
 //      HttpServer server(HttpServerConfig{}.withPort(0), std::move(router));
 //      server.run();
