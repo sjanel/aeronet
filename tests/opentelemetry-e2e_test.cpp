@@ -95,7 +95,7 @@ TEST(OpenTelemetryEndToEnd, EmitsTracesAndMetrics) {
   serverCfg.enableKeepAlive = false;
 
   test::TestServer server(serverCfg);
-  server.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("otel-ok"); });
+  server.router().setDefault([](const HttpRequest&) { return HttpResponse("otel-ok"); });
 
   const auto response = test::simpleGet(server.port(), "/otel");
   ASSERT_FALSE(response.empty());

@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
 
   // Add a simple HTTP endpoint for testing
   router.setPath(http::Method::GET, "/", [](const HttpRequest& /*req*/) {
-    return HttpResponse(200).body(R"html(
+    return HttpResponse(R"html(
 <!DOCTYPE html>
 <html>
 <head><title>WebSocket Echo</title></head>
@@ -60,7 +60,7 @@ function log(s) { document.getElementById('log').textContent += s + '\n'; }
 </body>
 </html>
 )html",
-                                  "text/html");
+                        "text/html");
   });
 
   // Configure WebSocket callbacks

@@ -493,7 +493,7 @@ TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
   std::atomic_bool handlerInvoked{false};
   auto entry = router.setPath(http::Method::GET, "/mw-short-metrics", [&](const HttpRequest&) {
     handlerInvoked.store(true, std::memory_order_relaxed);
-    return HttpResponse(http::StatusCodeOK).body("should-not-run");
+    return HttpResponse("should-not-run");
   });
 
   entry.before([](HttpRequest&) {

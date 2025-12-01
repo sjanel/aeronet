@@ -91,6 +91,34 @@ TEST_F(HttpResponseTest, StatusOnly) {
   EXPECT_EQ(full, "HTTP/1.1 404\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
+TEST_F(HttpResponseTest, ConstructorWithBody) {
+  HttpResponse resp("Hello, World!");
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_EQ(resp.reason(), "");
+  EXPECT_EQ(resp.body(), "Hello, World!");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/plain");
+
+  const auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+  EXPECT_TRUE(full.contains("Content-Type: text/plain\r\n"));
+  EXPECT_TRUE(full.contains("Content-Length: 13\r\n"));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
+}
+
+TEST_F(HttpResponseTest, ConstructorWithBodyContentTypeOnly) {
+  HttpResponse resp("Hello, World!", "text/my-text");
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_EQ(resp.reason(), "");
+  EXPECT_EQ(resp.body(), "Hello, World!");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/my-text");
+
+  const auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+  EXPECT_TRUE(full.contains("Content-Type: text/my-text\r\n"));
+  EXPECT_TRUE(full.contains("Content-Length: 13\r\n"));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
+}
+
 TEST_F(HttpResponseTest, BadStatusCode) { EXPECT_DEBUG_DEATH(HttpResponse(1000), ""); }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {

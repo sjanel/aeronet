@@ -84,8 +84,7 @@ class HttpCorsIntegration : public ::testing::Test {
 };
 
 TEST_F(HttpCorsIntegration, PreflightUsesRouterAllowedMethods) {
-  ts.router().setPath(http::Method::GET, "/data",
-                      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); });
+  ts.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) { return HttpResponse("ok"); });
 
   test::RequestOptions opt;
   opt.method = "OPTIONS";
@@ -144,8 +143,7 @@ TEST_F(HttpCorsIntegration, PreflightOriginDeniedReturns403) {
 }
 
 TEST_F(HttpCorsIntegration, ActualRequestIncludesAllowOriginHeader) {
-  ts.router().setPath(http::Method::GET, "/data",
-                      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); });
+  ts.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) { return HttpResponse("ok"); });
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -259,8 +257,7 @@ TEST_F(HttpCorsIntegration, PerRouteCorsPolicyOverridesDefault_ActualAndPrefligh
   per.allowOrigin("https://per.example").allowMethods(http::Method::GET).allowAnyRequestHeaders();
 
   ts.router()
-      .setPath(http::Method::GET, "/per",
-               [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); })
+      .setPath(http::Method::GET, "/per", [](const HttpRequest&) { return HttpResponse("ok"); })
       .cors(std::move(per));
 
   // Actual request with allowed per-route origin
@@ -304,8 +301,7 @@ TEST(HttpCorsDetailed, PreflightWithCredentialsEmitsMirroredOriginAndCredentials
 
   ts.router() = Router{routerCfg};
 
-  ts.router().setPath(http::Method::GET, "/data",
-                      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); });
+  ts.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) { return HttpResponse("ok"); });
 
   test::RequestOptions opt;
   opt.method = "OPTIONS";
@@ -332,8 +328,7 @@ TEST(HttpCorsDetailed, ActualRequestWithCredentialsEmitsCredentials) {
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
   ts.router() = Router{routerCfg};
-  ts.router().setPath(http::Method::GET, "/data",
-                      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); });
+  ts.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) { return HttpResponse("ok"); });
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -360,8 +355,7 @@ TEST(HttpCorsDetailed, PreflightExposeHeadersAndMaxAge) {
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
   ts.router() = Router{routerCfg};
-  ts.router().setPath(http::Method::GET, "/data",
-                      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); });
+  ts.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) { return HttpResponse("ok"); });
 
   test::RequestOptions opt;
   opt.method = "OPTIONS";
@@ -388,8 +382,7 @@ TEST(HttpCorsDetailed, PreflightPrivateNetworkHeader) {
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
   ts.router() = Router{routerCfg};
-  ts.router().setPath(http::Method::GET, "/data",
-                      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); });
+  ts.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) { return HttpResponse("ok"); });
 
   test::RequestOptions opt;
   opt.method = "OPTIONS";
@@ -464,8 +457,7 @@ TEST(HttpCorsDetailed, VaryIncludesOriginWhenMirroring) {
     routerCfg.withDefaultCorsPolicy(std::move(policy));
 
     ts.router() = Router{routerCfg};
-    ts.router().setPath(http::Method::GET, "/data",
-                        [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); });
+    ts.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) { return HttpResponse("ok"); });
 
     test::RequestOptions opt;
     opt.method = "GET";
@@ -547,8 +539,7 @@ TEST(HttpCorsDetailed, MultipleAllowedOriginsMirrorCorrectOne) {
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
   ts.router() = Router{routerCfg};
-  ts.router().setPath(http::Method::GET, "/data",
-                      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("ok"); });
+  ts.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) { return HttpResponse("ok"); });
 
   test::RequestOptions opt;
   opt.method = "GET";

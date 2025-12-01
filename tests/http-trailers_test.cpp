@@ -32,7 +32,7 @@ TEST(HttpTrailers, BasicTrailer) {
     if (it != req.trailers().end()) {
       EXPECT_EQ(it->second, "abc123");
     }
-    return HttpResponse(http::StatusCodeOK).body("OK");
+    return HttpResponse("OK");
   });
 
   test::ClientConnection sock(port);
@@ -78,7 +78,7 @@ TEST(HttpTrailers, MultipleTrailers) {
       EXPECT_EQ(custom->second, "value123");
     }
 
-    return HttpResponse(http::StatusCodeOK).body("OK");
+    return HttpResponse("OK");
   });
 
   test::ClientConnection sock(port);
@@ -106,7 +106,7 @@ TEST(HttpTrailers, NoTrailers) {
   ts.router().setDefault([](const HttpRequest& req) {
     EXPECT_EQ(req.body(), "data");
     EXPECT_TRUE(req.trailers().empty());
-    return HttpResponse(http::StatusCodeOK).body("OK");
+    return HttpResponse("OK");
   });
 
   test::ClientConnection sock(port);
@@ -134,7 +134,7 @@ TEST(HttpTrailers, TrailerWhitespaceTrim) {
     if (trailer != req.trailers().end()) {
       EXPECT_EQ(trailer->second, "trimmed");  // should be trimmed
     }
-    return HttpResponse(http::StatusCodeOK).body("OK");
+    return HttpResponse("OK");
   });
 
   test::ClientConnection sock(port);
@@ -157,7 +157,7 @@ TEST(HttpTrailers, TrailerWhitespaceTrim) {
 
 // Forbidden trailer: Transfer-Encoding
 TEST(HttpTrailers, ForbiddenTrailerTransferEncoding) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("FAIL"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -178,7 +178,7 @@ TEST(HttpTrailers, ForbiddenTrailerTransferEncoding) {
 
 // Forbidden trailer: Content-Length
 TEST(HttpTrailers, ForbiddenTrailerContentLength) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("FAIL"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -199,7 +199,7 @@ TEST(HttpTrailers, ForbiddenTrailerContentLength) {
 
 // Forbidden trailer: Host
 TEST(HttpTrailers, ForbiddenTrailerHost) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("FAIL"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -220,7 +220,7 @@ TEST(HttpTrailers, ForbiddenTrailerHost) {
 
 // Forbidden trailer: Authorization
 TEST(HttpTrailers, ForbiddenTrailerAuthorization) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("FAIL"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -244,7 +244,7 @@ TEST(HttpTrailers, TrailerSizeLimit) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.withMaxHeaderBytes(200);  // match header limit
   });
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("FAIL"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -275,7 +275,7 @@ TEST(HttpTrailers, TrailerEmptyValue) {
     if (trailer != req.trailers().end()) {
       EXPECT_TRUE(trailer->second.empty());
     }
-    return HttpResponse(http::StatusCodeOK).body("OK");
+    return HttpResponse("OK");
   });
 
   test::ClientConnection sock(port);
@@ -311,7 +311,7 @@ TEST(HttpTrailers, TrailerCaseInsensitive) {
     if (lower != req.trailers().end()) {
       EXPECT_EQ(lower->second, "test123");
     }
-    return HttpResponse(http::StatusCodeOK).body("OK");
+    return HttpResponse("OK");
   });
 
   test::ClientConnection sock(port);
@@ -341,7 +341,7 @@ TEST(HttpTrailers, DuplicateMergeTrailers) {
     if (it != req.trailers().end()) {
       EXPECT_EQ(it->second, "text/html,application/json");
     }
-    return HttpResponse(http::StatusCodeOK).body("OK");
+    return HttpResponse("OK");
   });
 
   test::ClientConnection sock(port);
@@ -372,7 +372,7 @@ TEST(HttpTrailers, DuplicateOverrideTrailers) {
       // 'From' has override semantics in ReqHeaderValueSeparator, keep the last occurrence
       EXPECT_EQ(it->second, "b@example.com");
     }
-    return HttpResponse(http::StatusCodeOK).body("OK");
+    return HttpResponse("OK");
   });
 
   test::ClientConnection sock(port);
@@ -399,7 +399,7 @@ TEST(HttpTrailers, UnknownHeaderNoMergeTrailers) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMergeUnknownRequestHeaders(false); });
 
   // "Handler should not be called when unknown-header duplicates are forbidden"
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("FAIL"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -421,7 +421,7 @@ TEST(HttpTrailers, UnknownHeaderNoMergeTrailers) {
 
 // Malformed trailer (no colon)
 TEST(HttpTrailers, MalformedTrailerNoColon) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("FAIL"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   int fd = sock.fd();
@@ -445,7 +445,7 @@ TEST(HttpTrailers, NonChunkedNoTrailers) {
   ts.router().setDefault([](const HttpRequest& req) {
     EXPECT_EQ(req.body(), "test");
     EXPECT_TRUE(req.trailers().empty());
-    return HttpResponse(http::StatusCodeOK).body("OK");
+    return HttpResponse("OK");
   });
 
   test::ClientConnection sock(port);
