@@ -52,6 +52,11 @@ HttpResponse::HttpResponse(std::size_t initialCapacity, http::StatusCode code, s
   _data.setSize(_bodyStartPos);
 }
 
+HttpResponse::HttpResponse(std::string_view body, std::string_view contentType)
+    : HttpResponse(HttpResponseInitialSize() + body.size(), http::StatusCodeOK, {}) {
+  this->body(body, contentType);
+}
+
 std::size_t HttpResponse::reasonLen() const noexcept {
   if (_data[kReasonBeg] == '\n') {
     return 0UL;
