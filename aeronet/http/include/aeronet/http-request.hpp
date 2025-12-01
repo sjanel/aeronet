@@ -232,6 +232,7 @@ class HttpRequest {
   friend class HttpRequestTest;
   friend class StaticFileHandlerTest;
   friend class CorsPolicyHarness;
+  friend class UpgradeHandlerHarness;
   friend struct ConnectionState;
 
   static constexpr http::StatusCode kStatusNeedMoreData = static_cast<http::StatusCode>(0);

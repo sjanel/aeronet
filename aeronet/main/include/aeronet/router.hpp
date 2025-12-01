@@ -17,6 +17,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/vector.hpp"
+#include "aeronet/websocket-endpoint.hpp"
 
 namespace aeronet {
 
@@ -139,6 +140,17 @@ class Router {
   // async handler following the standard HEAD→GET semantics.
   PathHandlerEntry& setPath(http::Method method, std::string_view path, AsyncRequestHandler handler);
 
+  // Register a WebSocket endpoint for the provided path.
+  //
+  // WebSocket endpoints handle upgrade requests (GET with Upgrade: websocket headers).
+  // The endpoint's factory function creates a new WebSocketHandler for each connection.
+  //
+  // Path patterns work the same as other handlers (e.g. /chat/{room}).
+  //
+  // Returns the PathHandlerEntry allowing further configuration (e.g. per-route CORS policy).
+  // The returned reference is valid until the next call to setPath or setWebSocket.
+  PathHandlerEntry& setWebSocket(std::string_view path, WebSocketEndpoint endpoint);
+
   struct PathParamCapture {
     std::string_view key;
     std::string_view value;
@@ -203,6 +215,9 @@ class Router {
 
     // If set, points to the per-route CorsPolicy stored in the matched route entry; nullptr if none.
     const CorsPolicy* pCorsPolicy{nullptr};
+
+    // If set, points to the WebSocket endpoint for this route; nullptr if not a WebSocket route.
+    const WebSocketEndpoint* pWebSocketEndpoint{nullptr};
 
     // The ordered range of RequestMiddleware to be applied.
     RequestMiddlewareRange requestMiddlewareRange;

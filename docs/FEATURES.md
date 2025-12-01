@@ -26,6 +26,7 @@ Single consolidated reference for **aeronet** features.
 1. [Logging](#logging)
 1. [OpenTelemetry Integration](#opentelemetry-integration)
 1. [Access-Control (CORS) Helpers](#access-control-cors-helpers)
+1. [WebSocket (RFC 6455)](#websocket-rfc-6455)
 1. [Future Expansions](#future-expansions)
 1. [Large-body optimization](#large-body-optimization)
 
@@ -2167,6 +2168,211 @@ router.setPath(http::Method::GET | http::Method::POST, "/api/*",
                [](const HttpRequest& req) { return HttpResponse(200); })
       .cors(std::move(apiCors));
 ```
+
+## WebSocket (RFC 6455)
+
+`aeronet` supports WebSocket connections via the HTTP upgrade mechanism per [RFC 6455](https://tools.ietf.org/html/rfc6455).
+WebSocket enables full-duplex, bidirectional communication between client and server over a single TCP connection.
+
+### Features
+
+- [x] HTTP/1.1 WebSocket upgrade handshake validation
+- [x] Sec-WebSocket-Key / Sec-WebSocket-Accept computation
+- [x] Text and Binary frame types
+- [x] Continuation frames for message fragmentation
+- [x] Control frames: Ping, Pong, Close
+- [x] Close handshake with status codes and reasons
+- [x] Frame masking (required for client-to-server, rejected if missing)
+- [x] Configurable maximum message size
+- [x] Protocol subprotocol negotiation (Sec-WebSocket-Protocol)
+- [x] permessage-deflate compression (RFC 7692)
+- [x] Close timeout with automatic force-close
+
+### Quick Example
+
+Register a WebSocket endpoint using `Router::setWebSocket()`:
+
+```cpp
+#include <aeronet/aeronet.hpp>
+#include <iostream>
+#include <span>
+
+using namespace aeronet;
+using namespace aeronet::websocket;
+
+int main() {
+  Router router;
+
+  // Register WebSocket endpoint with factory for echo functionality
+  router.setWebSocket("/ws", WebSocketEndpoint::WithFactory([](const HttpRequest& /*req*/) {
+    auto handler = std::make_unique<WebSocketHandler>();
+
+    // Capture raw pointer before moving handler
+    WebSocketHandler* handlerPtr = handler.get();
+
+    handler->setCallbacks(websocket::WebSocketCallbacks{
+        .onMessage =
+            [handlerPtr](std::span<const std::byte> payload, bool isBinary) {
+              // Echo back the message
+              if (isBinary) {
+                handlerPtr->sendBinary(payload);
+              } else {
+                handlerPtr->sendText({reinterpret_cast<const char*>(payload.data()), payload.size()});
+              }
+            },
+        .onClose =
+            [](CloseCode code, std::string_view reason) {
+              std::cout << "Connection closed: " << static_cast<uint16_t>(code)
+                        << " - " << reason << "\n";
+            },
+    });
+
+    return handler;
+  }));
+
+  HttpServer server(HttpServerConfig{}.withPort(8080), std::move(router));
+  server.run();
+}
+```
+
+For simpler use cases where you don't need to send messages from callbacks:
+
+```cpp
+Router router;
+// Simple logging endpoint (no echo, just log incoming messages)
+router.setWebSocket("/log", WebSocketEndpoint::WithCallbacks(websocket::WebSocketCallbacks{
+    .onMessage = [](std::span<const std::byte> payload, bool isBinary) {
+      // Handle message
+    },
+}));
+```
+
+### Upgrade Handshake
+
+When a client sends a WebSocket upgrade request:
+
+```http
+GET /ws HTTP/1.1
+Host: localhost:8080
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+```
+
+aeronet validates:
+
+1. HTTP method is GET
+2. `Upgrade: websocket` header present
+3. `Connection: Upgrade` header present
+4. `Sec-WebSocket-Version: 13` header present
+5. Valid `Sec-WebSocket-Key` (24-character base64 string)
+
+On success, the server responds with 101 Switching Protocols and transitions the connection to WebSocket mode.
+
+### Frame Types
+
+| Opcode | Type | Description |
+|--------|------|-------------|
+| 0x0 | Continuation | Continuation of a fragmented message |
+| 0x1 | Text | UTF-8 text message |
+| 0x2 | Binary | Binary message |
+| 0x8 | Close | Connection close request |
+| 0x9 | Ping | Heartbeat request |
+| 0xA | Pong | Heartbeat response |
+
+### Close Codes
+
+Common WebSocket close status codes:
+
+| Code | Name | Description |
+|------|------|-------------|
+| 1000 | Normal | Normal closure |
+| 1001 | GoingAway | Endpoint going away (e.g., server shutdown) |
+| 1002 | ProtocolError | Protocol error detected |
+| 1003 | UnsupportedData | Received unsupported data type |
+| 1005 | NoStatusReceived | No status code in close frame |
+| 1006 | AbnormalClosure | Connection closed abnormally |
+| 1007 | InvalidPayload | Invalid frame payload data |
+| 1008 | PolicyViolation | Policy violation |
+| 1009 | MessageTooBig | Message too large |
+| 1011 | InternalError | Server encountered an error |
+
+### WebSocket Configuration
+
+WebSocket behavior can be configured via `WebSocketConfig`:
+
+```cpp
+websocket::WebSocketConfig config;
+config.maxMessageSize = 16 * 1024 * 1024;  // 16 MB max message
+config.maxFrameSize = 1024 * 1024;          // 1 MB max frame
+config.closeTimeout = std::chrono::seconds(5);  // 5 second close timeout
+
+// Use config with callbacks
+Router router;
+router.setWebSocket("/ws", WebSocketEndpoint::WithConfigAndCallbacks(config, websocket::WebSocketCallbacks{}));
+```
+
+#### Close Timeout
+
+When a close frame is sent, the connection enters the `CloseSent` state and waits for the peer's close response. If the peer doesn't respond within `closeTimeout`, you can force-close the connection:
+
+```cpp
+websocket::WebSocketHandler handler;
+if (handler.hasCloseTimedOut()) {
+  handler.forceCloseOnTimeout();  // Transitions to Closed state
+}
+```
+
+### permessage-deflate Compression (RFC 7692)
+
+`aeronet` supports WebSocket compression via the `permessage-deflate` extension per [RFC 7692](https://tools.ietf.org/html/rfc7692). This significantly reduces bandwidth for text-heavy payloads.
+
+#### Enabling Compression
+
+Compression is automatically negotiated during the WebSocket handshake when the client offers `Sec-WebSocket-Extensions: permessage-deflate`. Configure compression behavior via `DeflateConfig`:
+
+```cpp
+websocket::DeflateConfig deflateConfig;
+deflateConfig.serverMaxWindowBits = 15;          // Server LZ77 window size (9-15)
+deflateConfig.clientMaxWindowBits = 15;          // Client LZ77 window size (9-15)
+deflateConfig.serverNoContextTakeover = false;   // Reuse compression context
+deflateConfig.clientNoContextTakeover = false;   // Reuse decompression context
+deflateConfig.minCompressSize = 64;              // Don't compress messages < 64 bytes
+deflateConfig.compressionLevel = 6;              // zlib compression level (1-9)
+
+websocket::WebSocketConfig config;
+config.deflateConfig = deflateConfig;
+
+Router router;
+router.setWebSocket("/ws", 
+                    WebSocketEndpoint::WithConfigAndCallbacks(config,
+                                                              websocket::WebSocketCallbacks{
+                                                                .onMessage =
+                                                                    [](std::span<const std::byte> payload, bool isBinary) {
+                                                                      // TODO: handle message
+                                                                    },
+                                                                .onPing = {},
+                                                                .onPong = {},
+                                                                .onClose = {},
+                                                                .onError = {},
+                                                              }));
+```
+
+#### Negotiation Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `server_max_window_bits` | Maximum LZ77 window size (log2) the server will use |
+| `client_max_window_bits` | Maximum LZ77 window size (log2) the client will use |
+| `server_no_context_takeover` | Server resets compression context after each message |
+| `client_no_context_takeover` | Client resets compression context after each message |
+
+When negotiation succeeds, messages are automatically compressed/decompressed transparently—callbacks receive uncompressed payloads.
+
+### Thread Safety
+
+WebSocket handlers run on the same reactor thread as HTTP handlers. The `WebSocketHandler` pointer captured in callbacks is valid only during callback execution. For async operations, capture handler data (not the handler pointer) and use thread-safe mechanisms to communicate back.
 
 ## Future Expansions
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string_view>
 #include <type_traits>
 
 namespace aeronet {
@@ -103,7 +104,11 @@ class RawBytesBase {
   value_type &operator[](size_type pos) { return _buf[pos]; }
   value_type operator[](size_type pos) const { return _buf[pos]; }
 
-  operator ViewType() const noexcept { return {_buf, _size}; }
+  template <class V = ViewType>
+    requires std::same_as<V, std::string_view>
+  operator ViewType() const noexcept {
+    return {_buf, _size};
+  }
 
   bool operator==(const RawBytesBase &rhs) const noexcept;
 

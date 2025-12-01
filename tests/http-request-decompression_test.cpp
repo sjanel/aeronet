@@ -25,12 +25,16 @@
 #include "aeronet/stringconv.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-encoder.hpp"
+#include "aeronet/zlib-stream-raii.hpp"
 #endif
+
 #ifdef AERONET_ENABLE_ZSTD
 #include "aeronet/zstd-encoder.hpp"
 #endif
+
 #ifdef AERONET_ENABLE_BROTLI
 #include "aeronet/brotli-encoder.hpp"
 #endif
@@ -43,7 +47,7 @@ RawChars gzipCompress([[maybe_unused]] std::string_view input, [[maybe_unused]] 
   RawChars buf;
 #ifdef AERONET_ENABLE_ZLIB
   CompressionConfig cc;  // defaults; level taken from cfg.zlib.level
-  ZlibEncoder encoder(details::ZStreamRAII::Variant::gzip, cc);
+  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, cc);
   encoder.encodeFull(extraCapacity, input, buf);
 #endif
   return buf;
@@ -53,7 +57,7 @@ RawChars deflateCompress([[maybe_unused]] std::string_view input, [[maybe_unused
   RawChars buf;
 #ifdef AERONET_ENABLE_ZLIB
   CompressionConfig cc;
-  ZlibEncoder encoder(details::ZStreamRAII::Variant::deflate, cc);
+  ZlibEncoder encoder(ZStreamRAII::Variant::deflate, cc);
   encoder.encodeFull(extraCapacity, input, buf);
 #endif
   return buf;

@@ -11,6 +11,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
+#include "aeronet/zlib-stream-raii.hpp"
 
 using namespace aeronet;
 
@@ -39,24 +40,24 @@ std::vector<std::string> samplePayloads() {
   return payloads;
 }
 
-const char* variantName(details::ZStreamRAII::Variant variant) {
-  return variant == details::ZStreamRAII::Variant::gzip ? "gzip" : "deflate";
+const char* variantName(ZStreamRAII::Variant variant) {
+  return variant == ZStreamRAII::Variant::gzip ? "gzip" : "deflate";
 }
 
-void ExpectOneShotRoundTrip(details::ZStreamRAII::Variant variant, std::string_view payload) {
+void ExpectOneShotRoundTrip(ZStreamRAII::Variant variant, std::string_view payload) {
   CompressionConfig cfg;
   ZlibEncoder encoder(variant, cfg);
   RawChars compressed;
   encoder.encodeFull(kExtraCapacity, payload, compressed);
 
-  const bool isGzip = variant == details::ZStreamRAII::Variant::gzip;
+  const bool isGzip = variant == ZStreamRAII::Variant::gzip;
   RawChars decompressed;
   ASSERT_TRUE(
       ZlibDecoder::Decompress(std::string_view(compressed), isGzip, kMaxPlainBytes, kDecoderChunkSize, decompressed));
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
-void ExpectStreamingRoundTrip(details::ZStreamRAII::Variant variant, std::string_view payload, std::size_t split) {
+void ExpectStreamingRoundTrip(ZStreamRAII::Variant variant, std::string_view payload, std::size_t split) {
   CompressionConfig cfg;
   ZlibEncoder encoder(variant, cfg);
   RawChars compressed;
@@ -76,14 +77,14 @@ void ExpectStreamingRoundTrip(details::ZStreamRAII::Variant variant, std::string
     compressed.append(tail);
   }
 
-  const bool isGzip = variant == details::ZStreamRAII::Variant::gzip;
+  const bool isGzip = variant == ZStreamRAII::Variant::gzip;
   RawChars decompressed;
   ASSERT_TRUE(
       ZlibDecoder::Decompress(std::string_view(compressed), isGzip, kMaxPlainBytes, kDecoderChunkSize, decompressed));
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
-RawChars BuildStreamingCompressed(details::ZStreamRAII::Variant variant, std::string_view payload) {
+RawChars BuildStreamingCompressed(ZStreamRAII::Variant variant, std::string_view payload) {
   CompressionConfig cfg;
   ZlibEncoder encoder(variant, cfg);
   RawChars compressed;
@@ -105,10 +106,9 @@ RawChars BuildStreamingCompressed(details::ZStreamRAII::Variant variant, std::st
   return compressed;
 }
 
-void ExpectStreamingDecoderRoundTrip(details::ZStreamRAII::Variant variant, std::string_view payload,
-                                     std::size_t split) {
+void ExpectStreamingDecoderRoundTrip(ZStreamRAII::Variant variant, std::string_view payload, std::size_t split) {
   const auto compressed = BuildStreamingCompressed(variant, payload);
-  ZlibDecoder decoder(variant == details::ZStreamRAII::Variant::gzip);
+  ZlibDecoder decoder(variant == ZStreamRAII::Variant::gzip);
   auto ctx = decoder.makeContext();
   ASSERT_TRUE(ctx);
   RawChars decompressed;
@@ -127,11 +127,10 @@ void ExpectStreamingDecoderRoundTrip(details::ZStreamRAII::Variant variant, std:
 
 }  // namespace
 
-class ZlibEncoderDecoderTest : public ::testing::TestWithParam<details::ZStreamRAII::Variant> {};
+class ZlibEncoderDecoderTest : public ::testing::TestWithParam<ZStreamRAII::Variant> {};
 
 INSTANTIATE_TEST_SUITE_P(Variants, ZlibEncoderDecoderTest,
-                         ::testing::Values(details::ZStreamRAII::Variant::gzip,
-                                           details::ZStreamRAII::Variant::deflate));
+                         ::testing::Values(ZStreamRAII::Variant::gzip, ZStreamRAII::Variant::deflate));
 
 TEST_P(ZlibEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
   const auto variant = GetParam();

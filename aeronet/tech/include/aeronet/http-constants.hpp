@@ -117,6 +117,7 @@ inline constexpr std::string_view h100_continue = "100-continue";  // value of E
 inline constexpr std::string_view HTTP11_100_CONTINUE = "HTTP/1.1 100 Continue\r\n\r\n";
 
 // Reason Phrases (only those we currently emit explicitly)
+inline constexpr std::string_view ReasonSwitchingProtocols = "Switching Protocols";              // 101
 inline constexpr std::string_view ReasonOK = "OK";                                               // 200
 inline constexpr std::string_view MovedPermanently = "Moved Permanently";                        // 301
 inline constexpr std::string_view ReasonBadRequest = "Bad Request";                              // 400
@@ -141,6 +142,8 @@ inline constexpr std::string_view ContentTypeMessageHttp = "message/http";
 // Return the canonical reason phrase for a subset of status codes we care about.
 constexpr std::string_view ReasonPhraseFor(http::StatusCode status) noexcept {
   switch (status) {
+    case StatusCodeSwitchingProtocols:
+      return ReasonSwitchingProtocols;
     case StatusCodeOK:
       return ReasonOK;
     case StatusCodeMovedPermanently:
