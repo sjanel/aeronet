@@ -133,16 +133,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install coverage toolchain and dependencies
+      - name: Install coverage toolchain and dependencies (LLVM)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential \
+          sudo apt-get install -y ninja-build build-essential python3-pip \
             libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev \
-            libprotobuf-dev protobuf-compiler python3-pip
-          python3 -m pip install --upgrade pip
-          python3 -m pip install gcovr
+            libprotobuf-dev protobuf-compiler wget
+          # Install a recent LLVM toolchain (required for llvm-profdata/llvm-cov)
+          wget --retry-connrefused --waitretry=5 --tries=5 https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21
+          sudo apt-get install -y clang-21 lldb-21 lld-21 llvm-21 llvm-21-tools
 
-      - name: Configure with coverage flags
+      - name: Configure with Clang source-based coverage flags
         run: |
           cmake -S . -B ${BUILD_DIR} -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
@@ -158,9 +161,11 @@ jobs:
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
             -DAERONET_ENABLE_OPENTELEMETRY=ON \
-            -DCMAKE_C_FLAGS="--coverage -fno-inline -fno-inline-functions" \
-            -DCMAKE_CXX_FLAGS="--coverage -fno-inline -fno-inline-functions" \
-            -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+            -DCMAKE_C_COMPILER=clang-21 \
+            -DCMAKE_CXX_COMPILER=clang++-21 \
+            -DCMAKE_C_FLAGS="-fprofile-instr-generate -fcoverage-mapping -O0" \
+            -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping -O0" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
 
       - name: Build (coverage)
         run: cmake --build ${BUILD_DIR} --parallel
@@ -168,61 +173,59 @@ jobs:
       - name: Run unit tests (coverage)
         run: |
           NUM_PROC=$(nproc)
-          # Use half the CPUs for parallelism, but at least 1
           JOBS=$(( (NUM_PROC / 2) > 0 ? (NUM_PROC / 2) : 1 ))
           echo "Running ctest with -j=${JOBS} (NUM_PROC=${NUM_PROC})"
+          # Use LLVM profile file per-process. Pattern will create one .profraw per test process
+          export LLVM_PROFILE_FILE="${{ github.workspace }}/coverage-%p.profraw"
           ctest --test-dir ${BUILD_DIR} --repeat until-fail:3 --output-on-failure --timeout 100 -j ${JOBS}
 
-      - name: Generate coverage reports
+      - name: Merge profile data and generate coverage reports
         run: |
-          # Generate XML (Cobertura) report
-          gcovr --root . --object-directory build-coverage \
-            --filter 'aeronet/' \
-            --exclude 'aeronet/test_support' \
-            --exclude '.*CompilerId.*' \
-            --exclude '.*_test\.cpp$' \
-            --exclude 'build-coverage/_deps' \
-            --gcov-ignore-errors=no_working_dir_found \
-            --gcov-ignore-errors=source_not_found \
-            --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
-            --txt-metric branch \
-            --xml --xml-pretty \
-            --output build-coverage/coverage.xml \
-            --print-summary
+          set -euo pipefail
+          cd ${BUILD_DIR}
 
-          # Generate HTML detailed report
-          gcovr --root . --object-directory build-coverage \
-            --filter 'aeronet/' \
-            --exclude 'aeronet/test_support' \
-            --exclude '.*CompilerId.*' \
-            --exclude '.*_test\.cpp$' \
-            --exclude 'build-coverage/_deps' \
-            --gcov-ignore-errors=no_working_dir_found \
-            --gcov-ignore-errors=source_not_found \
-            --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
-            --txt-metric branch \
-            --html-details \
-            --output build-coverage/coverage.html
+          # Merge all profraw files into a single profdata
+          llvm-profdata-21 merge -sparse ../coverage-*.profraw -o coverage.profdata
+
+          # Find all test binaries to use as coverage objects
+          BINARIES=$(find aeronet -type f -executable -name "*_test" | head -1)
+          OBJECTS=$(find aeronet -type f -executable -name "*_test" | tail -n+2 | sed 's/^/-object /' | tr '\n' ' ')
+
+          # Ignore patterns: test files, test_support, CompilerId, _deps, and generated protobuf
+          IGNORE='(_test\.cpp$|test_support|CompilerId|_deps|generated/)'
+
+          # Generate lcov report for Codecov
+          llvm-cov-21 export --format=lcov \
+            --instr-profile=coverage.profdata \
+            --ignore-filename-regex="$IGNORE" \
+            $BINARIES $OBJECTS > coverage.lcov
+
+          # Generate HTML report
+          llvm-cov-21 show --format=html \
+            --instr-profile=coverage.profdata \
+            --ignore-filename-regex="$IGNORE" \
+            --output-dir=coverage-report \
+            $BINARIES $OBJECTS
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
-          files: build-coverage/coverage.xml
+          files: build-coverage/coverage.lcov
           flags: unittests
           name: aeronet-unit-tests
           fail_ci_if_error: true
           disable_search: true
           verbose: true
-          
-      - name: Upload coverage artifact
+
+      - name: Upload coverage artifact (HTML + lcov)
         uses: actions/upload-artifact@v5
         with:
           name: coverage-report
           path: |
-            build-coverage/coverage.xml
-            build-coverage/coverage.html
+            build-coverage/coverage.lcov
+            build-coverage/coverage-report
 
   examples-smoke:
     runs-on: ubuntu-latest
