@@ -109,6 +109,24 @@ TEST(PathHandlerEntryTest, MoveAssignmentTransfersStreamingHandlers) {
   EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Streaming);
 }
 
+TEST(PathHandlerEntryTest, SeveralStreamingAssignments) {
+  Router router;
+  router.setPath(http::Method::GET | http::Method::POST | http::Method::PUT, "/streaming", MakeStreamingHandler());
+
+  EXPECT_NE(router.match(http::Method::GET, "/streaming").streamingHandler(), nullptr);
+  EXPECT_EQ(router.match(http::Method::PATCH, "/streaming").streamingHandler(), nullptr);
+
+  router.setPath(http::Method::POST | http::Method::PUT | http::Method::PATCH | http::Method::HEAD, "/streaming",
+                 MakeStreamingHandler());
+  EXPECT_NE(router.match(http::Method::PATCH, "/streaming").streamingHandler(), nullptr);
+  EXPECT_NE(router.match(http::Method::GET, "/streaming").streamingHandler(), nullptr);
+
+  EXPECT_NE(router.match(http::Method::PUT, "/streaming").streamingHandler(), nullptr);
+  EXPECT_EQ(router.match(http::Method::CONNECT, "/streaming").streamingHandler(), nullptr);
+
+  EXPECT_EQ(router.match(http::Method::GET, "/streaming2").streamingHandler(), nullptr);
+}
+
 TEST(PathHandlerEntryTest, MoveAssignmentConstructsNewAsyncHandler) {
   Router source;
   auto& sourceEntry = source.setPath(http::Method::PATCH, "/move-async-src", MakeAsyncHandler());

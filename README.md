@@ -11,7 +11,7 @@
 
 ## Why aeronet?
 
-**aeronet** is a modern, fast, modular and ergonomic HTTP/1.1 C++ **server library** for **Linux** focused on predictable performance, explicit control and minimal dependencies.
+**aeronet** is a modern, fast, modular and ergonomic HTTP / WebSocket C++ **server library** for **Linux** focused on predictable performance, explicit control and minimal dependencies.
 
 - **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths and minimal copies, horizontal scaling with port reuse
 - **Modular & opt‑in**: enable only the features you need at compile time to minimize binary size and dependencies
@@ -22,7 +22,7 @@
 
 ## Minimal Examples
 
-Spin up a basic HTTP/1.1 server that responds on `/hello` in just a few lines. If you pass `0` as the port (or omit it), the kernel picks an ephemeral port which you can query immediately.
+Spin up a basic HTTP server that responds on `/hello` in just a few lines. If you pass `0` as the port (or omit it), the kernel picks an ephemeral port which you can query immediately.
 
 ### Immediate response
 
@@ -119,6 +119,7 @@ The following focused docs expand each area without cluttering the high‑level 
 
 - [Feature reference (FEATURES)](docs/FEATURES.md)
 
+- [WebSocket](docs/FEATURES.md#websocket-rfc-6455)
 - [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
 - [Static File Handler & Range Requests](docs/FEATURES.md#static-file-handler-rfc-7233--rfc-7232)
 - [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
@@ -148,6 +149,7 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Metrics hook | ✔ (alpha) | Per‑request basic stats |
 | Logging | ✔ (flag) | spdlog optional |
 | Duplicate header policy | ✔ | Deterministic, security‑minded |
+| WebSocket | ✔ | RFC 6455 compliant, text/binary frames, ping/pong, close handshake |
 | Trailers exposure | ✔ | RFC 7230 §4.1.2 chunked trailer headers |
 | Middleware helpers | ✔ | Global + per-route request/response hooks (streaming-aware) |
 | Streaming inbound decompression | ✔ | Auto-switches to streaming inflaters once Content-Length exceeds configured threshold |

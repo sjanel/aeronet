@@ -18,9 +18,9 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/stringconv.hpp"
+#include "aeronet/websocket-endpoint.hpp"
 
 namespace aeronet {
-
 namespace {
 
 constexpr std::string_view kEscapedOpenBrace = "{{";
@@ -139,6 +139,54 @@ PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string_view path
 
 PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, AsyncRequestHandler handler) {
   return setPathInternal(static_cast<http::MethodBmp>(method), path, {}, {}, std::move(handler));
+}
+
+PathHandlerEntry& Router::setWebSocket(std::string_view path, WebSocketEndpoint endpoint) {
+  const bool pathHasTrailingSlash = ShouldNormalize(_config.trailingSlashPolicy, path);
+
+  CompiledRoute compiled = CompilePattern(path);
+  if (pathHasTrailingSlash) {
+    compiled.hasWithSlashRegistered = true;
+  } else {
+    compiled.hasNoSlashRegistered = true;
+  }
+
+  // Check if this is a literal-only route (no patterns, no wildcard) for fast-path optimization
+  const bool isLiteralOnly = compiled.paramNames.empty() && !compiled.hasWildcard;
+
+  if (_pRootRouteNode == nullptr) {
+    _pRootRouteNode = _nodePool.allocateAndConstruct();
+  }
+
+  // Insert into trie for pattern matching
+  RouteNode* node = _pRootRouteNode;
+  for (const auto& segment : compiled.segments) {
+    if (segment.type() == CompiledSegment::Type::Literal) {
+      node = ensureLiteralChild(*node, segment.literal);
+    } else {
+      node = ensureDynamicChild(*node, segment);
+    }
+  }
+
+  if (compiled.hasWildcard) {
+    if (node->wildcardChild == nullptr) {
+      node->wildcardChild = _nodePool.allocateAndConstruct();
+    }
+    node = node->wildcardChild;
+  }
+
+  ensureRouteMetadata(*node, std::move(compiled));
+
+  // Store the WebSocket endpoint into the handler entry matching trailing slash variant
+  PathHandlerEntry& targetEntry = pathHasTrailingSlash ? node->handlersWithSlash : node->handlersNoSlash;
+  targetEntry.assignWebSocketEndpoint(std::move(endpoint));
+
+  // If this is a literal-only route, also store it in the fast-path map for O(1) lookup
+  if (isLiteralOnly) {
+    _literalOnlyRoutes[SmallRawChars(path)] = node;
+  }
+
+  return targetEntry;
 }
 
 PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_view path, RequestHandler handler,
@@ -654,8 +702,7 @@ const PathHandlerEntry* Router::computePathHandlerEntry(const RouteNode& matched
       const auto& matchedSlash = pathHasTrailingSlash ? matchedNode.handlersWithSlash : matchedNode.handlersNoSlash;
       const auto& matchedNoSlash = pathHasTrailingSlash ? matchedNode.handlersNoSlash : matchedNode.handlersWithSlash;
 
-      if ((matchedSlash.normalMethodBmp != 0U) || (matchedSlash.streamingMethodBmp != 0U) ||
-          (matchedSlash.asyncMethodBmp != 0U)) {
+      if (matchedSlash.hasAnyHandler()) {
         return &matchedSlash;
       }
       return &matchedNoSlash;
@@ -663,25 +710,17 @@ const PathHandlerEntry* Router::computePathHandlerEntry(const RouteNode& matched
     case RouterConfig::TrailingSlashPolicy::Redirect:
       // If only the opposite-slashed variant is registered, tell the caller to redirect.
       if (pathHasTrailingSlash) {
-        if ((matchedNode.handlersWithSlash.normalMethodBmp != 0U) ||
-            (matchedNode.handlersWithSlash.streamingMethodBmp != 0U) ||
-            (matchedNode.handlersWithSlash.asyncMethodBmp != 0U)) {
+        if (matchedNode.handlersWithSlash.hasAnyHandler()) {
           return &matchedNode.handlersWithSlash;
         }
-        if ((matchedNode.handlersNoSlash.normalMethodBmp != 0U) ||
-            (matchedNode.handlersNoSlash.streamingMethodBmp != 0U) ||
-            (matchedNode.handlersNoSlash.asyncMethodBmp != 0U)) {
+        if (matchedNode.handlersNoSlash.hasAnyHandler()) {
           redirectSlashMode = RoutingResult::RedirectSlashMode::RemoveSlash;
         }
       } else {
-        if ((matchedNode.handlersNoSlash.normalMethodBmp != 0U) ||
-            (matchedNode.handlersNoSlash.streamingMethodBmp != 0U) ||
-            (matchedNode.handlersNoSlash.asyncMethodBmp != 0U)) {
+        if (matchedNode.handlersNoSlash.hasAnyHandler()) {
           return &matchedNode.handlersNoSlash;
         }
-        if ((matchedNode.handlersWithSlash.normalMethodBmp != 0U) ||
-            (matchedNode.handlersWithSlash.streamingMethodBmp != 0U) ||
-            (matchedNode.handlersWithSlash.asyncMethodBmp != 0U)) {
+        if (matchedNode.handlersWithSlash.hasAnyHandler()) {
           redirectSlashMode = RoutingResult::RedirectSlashMode::AddSlash;
         }
       }
@@ -711,6 +750,9 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
     result.setAsyncRequestHandler(entry.asyncHandlerPtr(methodIdx));
   } else if (entry.hasNormalHandler(methodIdx) && http::IsMethodSet(entry.normalMethodBmp, method)) {
     result.setRequestHandler(entry.requestHandlerPtr(methodIdx));
+  } else if (entry.hasWebSocketEndpoint() && method == http::Method::GET) {
+    // WebSocket endpoint on GET - handler will be determined by upgrade validation
+    // Don't mark as methodNotAllowed; let the WebSocket upgrade code handle it
   } else {
     result.methodNotAllowed = true;
   }
@@ -720,6 +762,11 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
     result.pCorsPolicy = &entry.corsPolicy;
   } else if (_config.defaultCorsPolicy.active()) {
     result.pCorsPolicy = &_config.defaultCorsPolicy;
+  }
+
+  // Expose WebSocket endpoint if present
+  if (entry.hasWebSocketEndpoint()) {
+    result.pWebSocketEndpoint = entry.webSocketEndpointPtr();
   }
 
   result.requestMiddlewareRange = entry.preMiddleware;

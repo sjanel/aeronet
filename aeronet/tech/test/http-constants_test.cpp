@@ -7,6 +7,7 @@
 namespace aeronet::http {
 
 TEST(HttpConstantsTest, DefaultReasonPhrase) {
+  EXPECT_EQ(ReasonPhraseFor(StatusCodeSwitchingProtocols), "Switching Protocols");
   EXPECT_EQ(ReasonPhraseFor(StatusCodeOK), "OK");
   EXPECT_EQ(ReasonPhraseFor(StatusCodeMovedPermanently), "Moved Permanently");
   EXPECT_EQ(ReasonPhraseFor(StatusCodeNotFound), "Not Found");

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <memory>
 #include <type_traits>
 
 #include "aeronet/cors-policy.hpp"
@@ -9,6 +10,7 @@
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/vector.hpp"
+#include "aeronet/websocket-endpoint.hpp"
 
 namespace aeronet {
 
@@ -79,12 +81,25 @@ class PathHandlerEntry {
     return &reinterpret_cast<const AsyncRequestHandler&>(handlers[methodIdx]);
   }
 
+  void assignWebSocketEndpoint(WebSocketEndpoint endpoint);
+
+  [[nodiscard]] bool hasWebSocketEndpoint() const { return websocketEndpoint != nullptr; }
+
+  [[nodiscard]] const WebSocketEndpoint* webSocketEndpointPtr() const { return websocketEndpoint.get(); }
+
+  /// Check if this entry has any handlers (HTTP or WebSocket).
+  [[nodiscard]] bool hasAnyHandler() const {
+    return normalMethodBmp != 0U || streamingMethodBmp != 0U || asyncMethodBmp != 0U || hasWebSocketEndpoint();
+  }
+
   void destroyIdx(http::MethodIdx methodIdx);
 
   http::MethodBmp normalMethodBmp{};
   http::MethodBmp streamingMethodBmp{};
   http::MethodBmp asyncMethodBmp{};
   std::array<HandlerStorage, http::kNbMethods> handlers;
+  // Optional WebSocket endpoint for this route. If set, upgrade requests are handled here.
+  std::unique_ptr<WebSocketEndpoint> websocketEndpoint;
   // Optional per-route CorsPolicy stored by value. If set, match() will return a pointer to it.
   CorsPolicy corsPolicy;
   vector<RequestMiddleware> preMiddleware;

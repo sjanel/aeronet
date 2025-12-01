@@ -390,14 +390,16 @@ void HttpServer::handleReadableClient(int fd) {
     bytesReadThisEvent += static_cast<std::size_t>(count);
     if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
       // Reached per-event fairness cap; parse what we have then yield.
-      processRequestsOnConnection(cnxIt);
+      if (processConnectionInput(cnxIt)) {
+        break;
+      }
       break;
     }
     if (state.inBuffer.size() > _config.maxHeaderBytes + _config.maxBodyBytes) {
       state.requestImmediateClose();
       break;
     }
-    if (processRequestsOnConnection(cnxIt)) {
+    if (processConnectionInput(cnxIt)) {
       break;
     }
     // Header read timeout enforcement: if headers of current pending request are not complete yet

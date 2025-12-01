@@ -11,6 +11,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tls-info.hpp"
 #include "aeronet/transport.hpp"
@@ -127,6 +128,10 @@ struct ConnectionState {
   // Tunnel state: true when peerFd != -1. Use accessor isTunneling() to query.
   // True when a non-blocking connect() was issued and completion is pending (EPOLLOUT will signal).
   bool connectPending{false};
+
+  // Current protocol type. Http11 by default, changes after successful upgrade.
+  ProtocolType protocol{ProtocolType::Http11};
+
   TLSInfo tlsInfo;
 #ifdef AERONET_ENABLE_OPENSSL
   std::chrono::steady_clock::time_point handshakeStart;  // TLS handshake start time (steady clock)
@@ -140,6 +145,11 @@ struct ConnectionState {
   };
 
   FileSendState fileSend;
+
+  // Protocol handler for upgraded connections (WebSocket, HTTP/2).
+  // nullptr when using default HTTP/1.1 processing (most connections).
+  // When set, the server routes data through this handler instead of HTTP parsing.
+  std::unique_ptr<IProtocolHandler> protocolHandler;
 
   struct AsyncHandlerState {
     AsyncHandlerState() = default;
