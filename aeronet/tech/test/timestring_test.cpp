@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "aeronet/timedef.hpp"
 
@@ -97,6 +98,10 @@ TEST(TimeStringIso8601UTCTest, RoundTripConversion) {
   char buf2[24];
   char* end2 = TimeToStringISO8601UTCWithMs(tp2, buf2);
   EXPECT_EQ(std::string_view(buf2, static_cast<std::size_t>(end2 - buf2)), iso);
+}
+
+TEST(TimeString, NoSubSecondsWithDot) {
+  EXPECT_EQ(StringToTimeISO8601UTC("2025-08-14T12:34:56.Z"), StringToTimeISO8601UTC("2025-08-14T12:34:56Z"));
 }
 
 class StringToTimeISO8601UTCTest : public ::testing::Test {};
@@ -368,6 +373,11 @@ TEST_F(StringToTimeISO8601UTCTest, Handles10DigitSubsecondWithZonedTimeMinus) {
   EXPECT_EQ(duration_cast<nanoseconds>(dur).count() % 10000000000, 350819188);
 }
 
+TEST(TimeString, InvalidTimeWindow) {
+  EXPECT_THROW(ParseTimeWindow("202"), std::invalid_argument);
+  EXPECT_THROW(ParseTimeWindow("2025--26"), std::invalid_argument);
+}
+
 TEST(TimeString, ParseTimeWindowTest) {
   using ymd = std::chrono::year_month_day;
   using sys_days = std::chrono::sys_days;
@@ -426,7 +436,22 @@ TEST(TimeStringRFC7231Test, RoundTrip) {
   SysTimePoint tp = sys_days{year{2025} / 8 / 14} + hours{12} + minutes{34} + seconds{56};
   char buf[64];
   char* end = TimeToStringRFC7231(tp, buf);
-  std::string_view sv(buf, static_cast<std::size_t>(end - buf));
+  std::string_view sv(buf, end);
+  auto parsed = TryParseTimeRFC7231(sv);
+  EXPECT_NE(parsed, kInvalidTimePoint);
+  EXPECT_EQ(time_point_cast<seconds>(parsed), time_point_cast<seconds>(tp));
+}
+
+TEST(TimeStringRFC7231Test, RoundTripWithSpaces) {
+  using namespace std::chrono;
+  SysTimePoint tp = sys_days{year{2025} / 8 / 14} + hours{12} + minutes{34} + seconds{56};
+  char buf[64];
+  buf[0] = ' ';
+  buf[1] = '\t';
+  char* end = TimeToStringRFC7231(tp, buf + 2);  // introduce leading spaces
+  *end = ' ';
+  ++end;  // trailing space
+  std::string_view sv(buf, end);
   auto parsed = TryParseTimeRFC7231(sv);
   EXPECT_NE(parsed, kInvalidTimePoint);
   EXPECT_EQ(time_point_cast<seconds>(parsed), time_point_cast<seconds>(tp));
@@ -456,6 +481,56 @@ TEST(TimeStringRFC7231Test, RejectsWrongWeekday) {
 TEST(TimeStringRFC7231Test, RejectsBadMonth) {
   auto parsed = TryParseTimeRFC7231("Sun, 06 Foo 1994 08:49:37 GMT");
   EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, OnlySpaces) {
+  auto parsed = TryParseTimeRFC7231("  \t \t\t");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, InvalidSeparators1) {
+  auto parsed = TryParseTimeRFC7231("Mon. 01 Dec 2025 08:49:37 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, InvalidSeparators2) {
+  auto parsed = TryParseTimeRFC7231("Mon,|01 Dec 2025 08:49:37 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, InvalidSeparators3) {
+  auto parsed = TryParseTimeRFC7231("Mon, 01[Dec 2025 08:49:37 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, InvalidSeparators4) {
+  auto parsed = TryParseTimeRFC7231("Mon, 01 Dec,2025 08:49:37 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, InvalidSeparators5) {
+  auto parsed = TryParseTimeRFC7231("Mon, 01 Dec 2025j08:49:37 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, InvalidSeparators6) {
+  auto parsed = TryParseTimeRFC7231("Mon, 01 Dec 2025 08;49:37 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, InvalidSeparators7) {
+  auto parsed = TryParseTimeRFC7231("Mon, 01 Dec 2025 08:49'37 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, InvalidSeparators8) {
+  auto parsed = TryParseTimeRFC7231("Mon, 01 Dec 2025 08:49:37-GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, ValidSeparators) {
+  auto parsed = TryParseTimeRFC7231("Mon, 01 Dec 2025 08:49:37 GMT");
+  EXPECT_NE(parsed, kInvalidTimePoint);
 }
 
 TEST(TimeStringRFC7231Test, RejectsShortString) {
@@ -572,6 +647,95 @@ TEST(TimeToStringRFC7231Test, MondayWeekdayShiftLogic) {
                     std::chrono::minutes{0} + std::chrono::seconds{0};
   char* end = TimeToStringRFC7231(tp, buf);
   EXPECT_EQ(std::string_view(buf, static_cast<std::size_t>(end - buf)), "Mon, 04 Aug 2025 12:00:00 GMT");
+}
+
+// ---------------------------------------------------------------------------
+// More negative RFC7231 parsing tests covering explicit invalid ranges
+// ---------------------------------------------------------------------------
+
+TEST(TimeStringRFC7231Test, RejectsNonPositiveDay) {
+  // day == 0
+  auto parsed = TryParseTimeRFC7231("Sun, 00 Nov 1994 08:49:37 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, RejectsHourOutOfRange) {
+  // hour > 23
+  auto parsed = TryParseTimeRFC7231("Sun, 06 Nov 1994 24:00:00 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, RejectsMinuteOutOfRange) {
+  // minute > 59
+  auto parsed = TryParseTimeRFC7231("Sun, 06 Nov 1994 08:60:00 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, RejectsSecondOutOfRange) {
+  // second > 60 (only 60 allowed for leap second)
+  auto parsed = TryParseTimeRFC7231("Sun, 06 Nov 1994 08:59:61 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, RejectsUnknownWeekdayToken) {
+  // weekday token not one of Sun..Sat
+  auto parsed = TryParseTimeRFC7231("Xxx, 06 Nov 1994 08:49:37 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+TEST(TimeStringRFC7231Test, RejectsInvalidCalendarDate) {
+  // e.g., February 30 is not a valid calendar date -> ymd.ok() == false
+  auto parsed = TryParseTimeRFC7231("Sun, 30 Feb 1994 08:49:37 GMT");
+  EXPECT_EQ(parsed, kInvalidTimePoint);
+}
+
+// ---------------------------------------------------------------------------
+// Additional RFC7231 parsing negative tests for invalid digit locations and GMT
+// ---------------------------------------------------------------------------
+
+TEST(TimeStringRFC7231Test, RejectsInvalidDigitsAtSpecificPositions) {
+  // Construct a valid base string and then mutate single digit positions
+  const char* base = "Sun, 06 Nov 1994 08:49:37 GMT";
+  std::string str(base);
+
+  ASSERT_NE(TryParseTimeRFC7231(str), kInvalidTimePoint);  // Sanity check: base string is valid
+
+  // Positions that the parser expects digits (0-based index into the string):
+  // ptr[5], ptr[6] -> day digits ("06")
+  // ptr[12..15] -> year digits ("1994")
+  // ptr[17..18] -> hour digits ("08")
+  // ptr[20..21] -> minute digits ("49")
+  // ptr[23..24] -> second digits ("37")
+  std::vector<size_t> digitPositions = {5, 6, 12, 13, 14, 15, 17, 18, 20, 21, 23, 24};
+
+  for (size_t pos : digitPositions) {
+    std::string ts = str;
+    // Replace a digit with a letter to force failure
+    ts[pos] = 'X';
+    auto parsed = TryParseTimeRFC7231(ts);
+    EXPECT_EQ(parsed, kInvalidTimePoint) << "Expected failure when mutating position " << pos << " in '" << ts << "'";
+  }
+}
+
+TEST(TimeStringRFC7231Test, RejectsNonGMTTimezone) {
+  // Any timezone other than the literal "GMT" at ptr[26..28] should be rejected
+  const char* base = "Sun, 06 Nov 1994 08:49:37 GMT";
+  std::string str(base);
+
+  ASSERT_NE(TryParseTimeRFC7231(str), kInvalidTimePoint);  // Sanity check: base string is valid
+
+  // Try a few alternatives that are commonly seen but should be rejected by TryParseTimeRFC7231
+  std::vector<std::string> badTz = {"UTC", "G M", "gmt", "GXT", "XYZ", "GM"};
+  for (auto& tz : badTz) {
+    std::string ts = str;
+    // Overwrite the final 3 chars with tz (truncate/pad as necessary)
+    for (size_t i = 0; i < 3; ++i) {
+      ts[26 + i] = (i < tz.size()) ? tz[i] : ' ';
+    }
+    auto parsed = TryParseTimeRFC7231(ts);
+    EXPECT_EQ(parsed, kInvalidTimePoint) << "Expected rejection for timezone variant '" << tz << "' (string: '" << ts
+                                         << "')";
+  }
 }
 
 }  // namespace aeronet
