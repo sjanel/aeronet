@@ -20,7 +20,7 @@ std::span<const std::byte> sv_bytes(std::string_view sv) noexcept {
   return std::as_bytes(std::span<const char>(sv.data(), sv.size()));
 }
 
-std::span<const std::byte> buf_bytes(const aeronet::RawBytes &buf) noexcept { return {buf.data(), buf.size()}; }
+std::span<const std::byte> buf_bytes(const RawBytes &buf) noexcept { return {buf.data(), buf.size()}; }
 #endif
 }  // namespace
 // ============================================================================
@@ -315,12 +315,12 @@ TEST(WebSocketDeflateTest, CompressDecompress_RoundTrip) {
   auto inputSpan = sv_bytes(original);
 
   // Compress
-  aeronet::RawBytes compressed;
+  RawBytes compressed;
   ASSERT_TRUE(ctx.compress(inputSpan, compressed));
   EXPECT_GT(compressed.size(), 0UL);
 
   // Decompress
-  aeronet::RawBytes decompressed;
+  RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
   ASSERT_TRUE(ctx.decompress(compressedSpan, decompressed));
 
@@ -343,14 +343,14 @@ TEST(WebSocketDeflateTest, CompressDecompress_LargeData) {
   auto inputSpan = sv_bytes(original);
 
   // Compress
-  aeronet::RawBytes compressed;
+  RawBytes compressed;
   ASSERT_TRUE(ctx.compress(inputSpan, compressed));
 
   // Should achieve compression
   EXPECT_LT(compressed.size(), original.size());
 
   // Decompress
-  aeronet::RawBytes decompressed;
+  RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
   ASSERT_TRUE(ctx.decompress(compressedSpan, decompressed));
 
@@ -365,10 +365,10 @@ TEST(WebSocketDeflateTest, CompressDecompress_EmptyData) {
 
   auto inputSpan = sv_bytes(std::string_view());
 
-  aeronet::RawBytes compressed;
+  RawBytes compressed;
   EXPECT_TRUE(ctx.compress(inputSpan, compressed));
 
-  aeronet::RawBytes decompressed;
+  RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
   EXPECT_TRUE(ctx.decompress(compressedSpan, decompressed));
   EXPECT_TRUE(decompressed.empty());
@@ -396,13 +396,14 @@ TEST(WebSocketDeflateTest, DecompressSizeLimit) {
   auto inputSpan = sv_bytes(original);
 
   // Compress
-  aeronet::RawBytes compressed;
+  RawBytes compressed;
   ASSERT_TRUE(ctx.compress(inputSpan, compressed));
 
   // Try to decompress with a small limit
-  aeronet::RawBytes decompressed;
+  RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
   EXPECT_FALSE(ctx.decompress(compressedSpan, decompressed, 100));  // 100 byte limit
+  EXPECT_EQ(ctx.lastError(), "Decompressed size exceeds maximum");
 }
 
 // Additional coverage tests
@@ -415,10 +416,10 @@ TEST(WebSocketDeflateTest, CompressDecompress_ClientSide) {
   const std::string original = "Client-side compression test message.";
   auto inputSpan = sv_bytes(original);
 
-  aeronet::RawBytes compressed;
+  RawBytes compressed;
   ASSERT_TRUE(ctx.compress(inputSpan, compressed));
 
-  aeronet::RawBytes decompressed;
+  RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
   ASSERT_TRUE(ctx.decompress(compressedSpan, decompressed));
 
@@ -439,13 +440,13 @@ TEST(WebSocketDeflateTest, CompressDecompress_WithNoContextTakeover) {
   auto input1 = sv_bytes(msg1);
   auto input2 = sv_bytes(msg2);
 
-  aeronet::RawBytes compressed1;
-  aeronet::RawBytes compressed2;
+  RawBytes compressed1;
+  RawBytes compressed2;
   ASSERT_TRUE(ctx.compress(input1, compressed1));
   ASSERT_TRUE(ctx.compress(input2, compressed2));
 
-  aeronet::RawBytes decompressed1;
-  aeronet::RawBytes decompressed2;
+  RawBytes decompressed1;
+  RawBytes decompressed2;
   ASSERT_TRUE(ctx.decompress(buf_bytes(compressed1), decompressed1));
   ASSERT_TRUE(ctx.decompress(buf_bytes(compressed2), decompressed2));
 
@@ -463,10 +464,10 @@ TEST(WebSocketDeflateTest, CompressDecompress_ReducedWindowBits) {
   const std::string original = "Test with reduced window bits setting.";
   auto inputSpan = sv_bytes(original);
 
-  aeronet::RawBytes compressed;
+  RawBytes compressed;
   ASSERT_TRUE(ctx.compress(inputSpan, compressed));
 
-  aeronet::RawBytes decompressed;
+  RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
   ASSERT_TRUE(ctx.decompress(compressedSpan, decompressed));
 
@@ -482,10 +483,10 @@ TEST(WebSocketDeflateTest, CompressDecompress_DifferentCompressionLevel) {
   const std::string original = "Test with high compression level for maximum ratio.";
   auto inputSpan = sv_bytes(original);
 
-  aeronet::RawBytes compressed;
+  RawBytes compressed;
   ASSERT_TRUE(ctx.compress(inputSpan, compressed));
 
-  aeronet::RawBytes decompressed;
+  RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
   ASSERT_TRUE(ctx.decompress(compressedSpan, decompressed));
 
@@ -511,11 +512,11 @@ TEST(WebSocketDeflateTest, DecompressZeroSizeLimit) {
   const std::string original = "Test message for unlimited decompression.";
   auto inputSpan = sv_bytes(original);
 
-  aeronet::RawBytes compressed;
+  RawBytes compressed;
   ASSERT_TRUE(ctx.compress(inputSpan, compressed));
 
   // Zero limit means unlimited
-  aeronet::RawBytes decompressed;
+  RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
   EXPECT_TRUE(ctx.decompress(compressedSpan, decompressed, 0));
   EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed.data()), decompressed.size()), original);
