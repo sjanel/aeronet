@@ -81,12 +81,6 @@ void ApplyMask(std::span<std::byte> data, std::span<const std::byte, kMaskingKey
 void BuildFrame(RawBytes& output, Opcode opcode, std::span<const std::byte> payload, bool fin = true, bool mask = false,
                 MaskingKey maskingKey = {}, bool rsv1 = false);
 
-/// Convenience overload for text payloads.
-inline void BuildFrame(RawBytes& output, Opcode opcode, std::string_view payload, bool fin = true, bool mask = false,
-                       MaskingKey maskingKey = {}, bool rsv1 = false) {
-  BuildFrame(output, opcode, std::as_bytes(std::span(payload)), fin, mask, maskingKey, rsv1);
-}
-
 /// Build a Close frame with an optional status code and reason.
 ///
 /// @param output     Output buffer to append the frame to

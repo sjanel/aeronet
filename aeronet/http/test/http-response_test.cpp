@@ -80,6 +80,101 @@ class HttpResponseTest : public ::testing::Test {
   }
 };
 
+TEST_F(HttpResponseTest, StatusFromRvalue) {
+  auto resp = HttpResponse(http::StatusCodeOK).status(404);
+  EXPECT_EQ(resp.status(), 404);
+}
+
+TEST_F(HttpResponseTest, BodyFromSpanBytesLValue) {
+  std::vector<std::byte> bodyBytes = {std::byte{'H'}, std::byte{'e'}, std::byte{'l'}, std::byte{'l'}, std::byte{'o'}};
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::span<const std::byte>(bodyBytes));
+  EXPECT_EQ(resp.body(), "Hello");
+}
+
+TEST_F(HttpResponseTest, BodyFromSpanBytesRValue) {
+  auto resp = HttpResponse(http::StatusCodeOK)
+                  .body(std::span<const std::byte>(std::vector<std::byte>{
+                      std::byte{'W'}, std::byte{'o'}, std::byte{'r'}, std::byte{'l'}, std::byte{'d'}}));
+  EXPECT_EQ(resp.body(), "World");
+}
+
+TEST_F(HttpResponseTest, BodyFromConstCharStar) {
+  const char* bodyCStr = "Hello, C-String!";
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(bodyCStr);
+  EXPECT_EQ(resp.body(), "Hello, C-String!");
+
+  const char* nullPtr = nullptr;
+
+  auto resp2 = HttpResponse(http::StatusCodeOK).body(nullPtr);
+  EXPECT_EQ(resp2.body(), "");
+}
+
+TEST_F(HttpResponseTest, BodyFromVectorBytes) {
+  std::vector<std::byte> bodyBytes = {std::byte{'B'}, std::byte{'y'}, std::byte{'t'}, std::byte{'e'}, std::byte{'s'}};
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::move(bodyBytes));
+  EXPECT_EQ(resp.body(), "Bytes");
+}
+
+TEST_F(HttpResponseTest, BodyFromVectorBytesRValue) {
+  auto resp = HttpResponse(http::StatusCodeOK)
+                  .body(std::vector<std::byte>{std::byte{'R'}, std::byte{'V'}, std::byte{'a'}, std::byte{'l'},
+                                               std::byte{'u'}, std::byte{'e'}});
+  EXPECT_EQ(resp.body(), "RValue");
+}
+
+TEST_F(HttpResponseTest, BodyFromVectorChar) {
+  std::vector<char> bodyChars = {'C', '+', '+'};
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::move(bodyChars));
+  EXPECT_EQ(resp.body(), "C++");
+}
+
+TEST_F(HttpResponseTest, BodyFromVectorCharRValue) {
+  auto resp = HttpResponse(http::StatusCodeOK).body(std::vector<char>{'R', 'V', 'a', 'l', 'u', 'e'});
+  EXPECT_EQ(resp.body(), "RValue");
+}
+
+TEST_F(HttpResponseTest, BodyFromUniquePtrChar) {
+  const char text[] = "UniquePtrChar";
+  auto bodyPtr = std::make_unique<char[]>(sizeof(text));
+  std::copy(std::begin(text), std::end(text), bodyPtr.get());
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::move(bodyPtr), sizeof(text) - 1);
+  EXPECT_EQ(resp.body(), "UniquePtrChar");
+}
+
+TEST_F(HttpResponseTest, BodyFromUniquePtrCharRValue) {
+  const char text[] = "UniquePtrCharRValue";
+  auto bodyPtr = std::make_unique<char[]>(sizeof(text));
+  std::copy(std::begin(text), std::end(text), bodyPtr.get());
+  auto resp = HttpResponse(http::StatusCodeOK).body(std::move(bodyPtr), sizeof(text) - 1);
+  EXPECT_EQ(resp.body(), "UniquePtrCharRValue");
+}
+
+TEST_F(HttpResponseTest, BodyFromUniquePtrByte) {
+  const char text[] = "UniquePtrByte";
+  auto bodyPtr = std::make_unique<std::byte[]>(sizeof(text));
+  for (std::size_t i = 0; i < sizeof(text); ++i) {
+    bodyPtr[i] = static_cast<std::byte>(text[i]);
+  }
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::move(bodyPtr), sizeof(text) - 1);
+  EXPECT_EQ(resp.body(), "UniquePtrByte");
+}
+
+TEST_F(HttpResponseTest, BodyFromUniquePtrByteRValue) {
+  const char text[] = "UniquePtrByteRValue";
+  auto bodyPtr = std::make_unique<std::byte[]>(sizeof(text));
+  for (std::size_t i = 0; i < sizeof(text); ++i) {
+    bodyPtr[i] = static_cast<std::byte>(text[i]);
+  }
+  auto resp = HttpResponse(http::StatusCodeOK).body(std::move(bodyPtr), sizeof(text) - 1);
+  EXPECT_EQ(resp.body(), "UniquePtrByteRValue");
+}
+
 TEST_F(HttpResponseTest, StatusOnly) {
   HttpResponse resp(http::StatusCodeOK);
   EXPECT_EQ(200, resp.status());
@@ -160,19 +255,18 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithHeaders) {
   HttpResponse resp(200, "OK");
-  resp.addHeader("X-Header", "Value");
+  resp.addHeader("X-Header", 127);
   resp.status(404, "Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
   EXPECT_EQ(
       full,
-      "HTTP/1.1 404 Not Found\r\nX-Header: Value\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+      "HTTP/1.1 404 Not Found\r\nX-Header: 127\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
-  HttpResponse resp(404, "Not Found");
-  resp.addHeader("X-Header-1", "Value1");
+  auto resp = HttpResponse(404, "Not Found").addHeader("X-Header-1", "Value1");
   resp.addHeader("X-Header-2", "Value2");
   resp.status(200).reason("OK");
   EXPECT_EQ(resp.reason(), "OK");
@@ -184,15 +278,14 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyAddReasonWithHeaders) {
-  HttpResponse resp(200);
-  resp.addHeader("X-Header", "Value");
+  auto resp = HttpResponse(200).addHeader("X-Header", 127);
   resp.status(404, "Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
   EXPECT_EQ(
       full,
-      "HTTP/1.1 404 Not Found\r\nX-Header: Value\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+      "HTTP/1.1 404 Not Found\r\nX-Header: 127\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyRemoveReasonWithHeaders) {
@@ -258,8 +351,7 @@ TEST_F(HttpResponseTest, SendFilePayload) {
   ASSERT_TRUE(file);
   const auto sz = file.size();
 
-  HttpResponse resp(http::StatusCodeOK, "OK");
-  resp.file(std::move(file));
+  auto resp = HttpResponse(http::StatusCodeOK, "OK").file(std::move(file));
 
   auto prepared = finalizePrepared(std::move(resp));
   EXPECT_EQ(prepared.fileLength, sz);
@@ -268,6 +360,47 @@ TEST_F(HttpResponseTest, SendFilePayload) {
 
   std::string headers(prepared.data.firstBuffer());
   EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz)));
+  EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
+}
+
+TEST_F(HttpResponseTest, SendFilePayloadOffsetLength) {
+  constexpr std::string_view kPayload = "static file payload";
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+  const auto sz = file.size();
+
+  auto resp = HttpResponse(http::StatusCodeOK, "OK").file(std::move(file), 2, sz - 4);
+
+  auto prepared = finalizePrepared(std::move(resp));
+  EXPECT_EQ(prepared.fileLength, sz - 4);
+  EXPECT_TRUE(prepared.file);
+  EXPECT_EQ(prepared.file.size(), sz);
+
+  std::string headers(prepared.data.firstBuffer());
+  EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz - 4)));
+  EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
+}
+
+TEST_F(HttpResponseTest, SendFilePayloadOffsetLengthRvalue) {
+  constexpr std::string_view kPayload = "static file payload";
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+  const auto sz = file.size();
+
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.file(std::move(file), 3, sz - 6);
+
+  auto prepared = finalizePrepared(std::move(resp));
+  EXPECT_EQ(prepared.fileLength, sz - 6);
+  EXPECT_TRUE(prepared.file);
+  EXPECT_EQ(prepared.file.size(), sz);
+
+  std::string headers(prepared.data.firstBuffer());
+  EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz - 6)));
   EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
 }
 
@@ -406,6 +539,45 @@ TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
 
 // --- New tests: header replacement while a body is present ---
 
+TEST_F(HttpResponseTest, LocationHeader) {
+  HttpResponse resp(http::StatusCodeFound, "Found");
+  resp.location("http://example.com/new-location");
+  resp.body("Redirecting...");
+  auto full = concatenated(std::move(resp));
+  EXPECT_EQ(
+      full,
+      "HTTP/1.1 302 Found\r\nLocation: http://example.com/new-location\r\nContent-Type: text/plain\r\nConnection: "
+      "close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 14\r\n\r\nRedirecting...");
+}
+
+TEST_F(HttpResponseTest, LocationHeaderRValue) {
+  auto resp = HttpResponse(http::StatusCodeFound, "Found")
+                  .location("https://another.example.com/redirect-here")
+                  .body("Please wait...");
+  auto full = concatenated(std::move(resp));
+  EXPECT_EQ(full,
+            "HTTP/1.1 302 Found\r\nLocation: https://another.example.com/redirect-here\r\nContent-Type: text/plain\r\n"
+            "Connection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 14\r\n\r\nPlease wait...");
+}
+
+TEST_F(HttpResponseTest, ContentEncodingHeader) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.contentEncoding("gzip");
+  resp.body("CompressedData");
+  auto full = concatenated(std::move(resp));
+  EXPECT_EQ(full,
+            "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: text/plain\r\nConnection: close\r\nDate: "
+            "Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 14\r\n\r\nCompressedData");
+}
+
+TEST_F(HttpResponseTest, ContentEncodingHeaderRValue) {
+  auto resp = HttpResponse(http::StatusCodeOK, "OK").contentEncoding("deflate").body("DeflatedData");
+  auto full = concatenated(std::move(resp));
+  EXPECT_EQ(full,
+            "HTTP/1.1 200 OK\r\nContent-Encoding: deflate\r\nContent-Type: text/plain\r\nConnection: close\r\nDate: "
+            "Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 12\r\n\r\nDeflatedData");
+}
+
 TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
   HttpResponse resp(http::StatusCodeOK, "OK");
   resp.header("X-Val", "AA");
@@ -418,8 +590,7 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
-  resp.header("X-Val", "SOME-LONG-VALUE");
+  auto resp = HttpResponse(http::StatusCodeOK, "OK").header("X-Val", "SOME-LONG-VALUE");
   resp.body("WorldWide");     // length 9
   resp.header("X-Val", "S");  // shrink header value
   auto full = concatenated(std::move(resp));
@@ -429,16 +600,14 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueAppendsToExistingHeader) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
-  resp.header("X-Custom", "value1");
+  auto resp = HttpResponse(http::StatusCodeOK, "OK").header("X-Custom", "value1");
   resp.appendHeaderValue("X-Custom", "value2");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.contains("X-Custom: value1, value2\r\n")) << full;
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueCreatesHeaderWhenMissing) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
-  resp.appendHeaderValue("X-Missing", "v1");
+  auto resp = HttpResponse(http::StatusCodeOK, "OK").appendHeaderValue("X-Missing", "v1");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.contains("X-Missing: v1\r\n")) << full;
 }
@@ -556,6 +725,39 @@ TEST_F(HttpResponseTest, InterleavedReasonAndHeaderMutations) {
   auto full = concatenated(std::move(resp));
   EXPECT_EQ(full,
             "HTTP/1.1 200\r\nX-A: S\r\nX-B: 2\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+}
+
+TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentType) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.body("Non-empty body");
+  EXPECT_EQ(resp.body(), "Non-empty body");
+  EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
+  resp.body(std::string());  // set empty body
+  EXPECT_EQ(resp.body(), "");
+  EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
+  auto full = concatenated(std::move(resp));
+  EXPECT_EQ(full,
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
+            "00:00:00 GMT\r\n\r\n");
+}
+
+TEST_F(HttpResponseTest, SetCapturedBodyEmptyFromUniquePtrShouldResetBodyAndRemoveContentType) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  static constexpr const char text[] = "UniquePtrBody";
+  auto bodyPtr = std::make_unique<std::byte[]>(sizeof(text) - 1);
+  for (size_t i = 0; i < sizeof(text) - 1; ++i) {
+    bodyPtr[i] = static_cast<std::byte>(text[i]);
+  }
+  resp.body(std::move(bodyPtr), sizeof(text) - 1);
+  EXPECT_EQ(resp.body(), "UniquePtrBody");
+  EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
+  resp.body(std::make_unique<char[]>(0), 0);  // set empty body
+  EXPECT_EQ(resp.body(), "");
+  EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
+  auto full = concatenated(std::move(resp));
+  EXPECT_EQ(full,
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
+            "00:00:00 GMT\r\n\r\n");
 }
 
 // ---------------- Additional Stress / Fuzz Tests ----------------
