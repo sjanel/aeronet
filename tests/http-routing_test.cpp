@@ -271,9 +271,7 @@ TEST(HttpMiddleware, GlobalRequestShortCircuit) {
 
   ts.resetRouterAndGet().setDefault([&](const HttpRequest&) {
     handlerCalled.store(true, std::memory_order_relaxed);
-    HttpResponse resp;
-    resp.body("handler");
-    return resp;
+    return HttpResponse("handler");
   });
 
   ts.router().addResponseMiddleware(
@@ -285,7 +283,9 @@ TEST(HttpMiddleware, GlobalRequestShortCircuit) {
       resp.body("short-circuited");
       return MiddlewareResult::ShortCircuit(std::move(resp));
     }
-    return MiddlewareResult::Continue();
+    auto cont = MiddlewareResult::Continue();
+    EXPECT_TRUE(cont.shouldContinue());
+    return cont;
   });
 
   const std::string response = test::simpleGet(ts.port(), "/mw-short");
@@ -293,6 +293,11 @@ TEST(HttpMiddleware, GlobalRequestShortCircuit) {
   EXPECT_TRUE(response.contains("short-circuited")) << response;
   EXPECT_TRUE(response.contains("X-Global-Middleware: applied")) << response;
   EXPECT_FALSE(handlerCalled.load(std::memory_order_relaxed));
+
+  const std::string response2 = test::simpleGet(ts.port(), "/other-path");
+  EXPECT_TRUE(response2.contains("HTTP/1.1 200")) << response2;
+  EXPECT_TRUE(response2.contains("handler")) << response2;
+  EXPECT_TRUE(handlerCalled.load(std::memory_order_relaxed));
 }
 
 TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
@@ -734,7 +739,9 @@ TEST(HttpRouting, AsyncReadBodyAsyncStreams) {
                                    std::string collected;
                                    while (req.hasMoreBody()) {
                                      std::string_view chunk = co_await req.readBodyAsync();
-                                     if (chunk.empty()) break;
+                                     if (chunk.empty()) {
+                                       break;
+                                     }
                                      collected.append(chunk);
                                    }
                                    co_return HttpResponse(http::StatusCodeOK).body(collected);
