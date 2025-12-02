@@ -34,7 +34,12 @@ TEST(StringToIntegral, PositiveValue) {
   EXPECT_EQ(StringToIntegral<uint32_t>("9105470"), 9105470);
 
   EXPECT_EQ(StringToIntegral<uint32_t>("10YT"), 10);
+  EXPECT_EQ(StringToIntegral<int>("11YT"), 11);
+  EXPECT_EQ(StringToIntegral<long>("126YT"), 126);
+  EXPECT_EQ(StringToIntegral<unsigned char>("37YT"), 37);
+  EXPECT_EQ(StringToIntegral<unsigned long>("98YT"), 98);
   EXPECT_THROW(StringToIntegral<uint32_t>("f45"), std::invalid_argument);
+  EXPECT_THROW(StringToIntegral<unsigned long>("f45"), std::invalid_argument);
 }
 
 TEST(StringToIntegral, NegativeValue) {
@@ -42,13 +47,14 @@ TEST(StringToIntegral, NegativeValue) {
   EXPECT_EQ(StringToIntegral<int64_t>("-00"), 0);
   EXPECT_EQ(StringToIntegral<int64_t>("-036"), -36);
   EXPECT_EQ(StringToIntegral<int64_t>("-9105470"), -9105470);
+  EXPECT_EQ(StringToIntegral<char>("-10YT"), -10);
 }
 
 TEST(StringToIntegral, InvalidValue) {
   EXPECT_THROW(StringToIntegral<int32_t>(""), std::invalid_argument);
   EXPECT_THROW(StringToIntegral<int32_t>("--45"), std::invalid_argument);
   EXPECT_THROW(StringToIntegral<int32_t>("+-23"), std::invalid_argument);
-  EXPECT_THROW(StringToIntegral<int32_t>("abc"), std::invalid_argument);
+  EXPECT_THROW(StringToIntegral<long>("abc"), std::invalid_argument);
 }
 
 TEST(StringToIntegral, OutOfRange) {
