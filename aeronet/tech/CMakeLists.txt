@@ -17,6 +17,16 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    cctype_test
+    test/cctype_test.cpp
+)
+
+AeronetAddUnitTest(
+    char-hexadecimal-converter_test
+    test/char-hexadecimal-converter_test.cpp
+)
+
+AeronetAddUnitTest(
     dynamic-concatenated-strings_test
     test/dynamic-concatenated-strings_test.cpp
     LIBRARIES

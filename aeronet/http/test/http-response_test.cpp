@@ -742,7 +742,7 @@ TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentType
 }
 
 TEST_F(HttpResponseTest, SetCapturedBodyEmptyFromUniquePtrShouldResetBodyAndRemoveContentType) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK, "Longer Reason");
   static constexpr const char text[] = "UniquePtrBody";
   auto bodyPtr = std::make_unique<std::byte[]>(sizeof(text) - 1);
   for (size_t i = 0; i < sizeof(text) - 1; ++i) {
@@ -756,7 +756,7 @@ TEST_F(HttpResponseTest, SetCapturedBodyEmptyFromUniquePtrShouldResetBodyAndRemo
   EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
   auto full = concatenated(std::move(resp));
   EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
+            "HTTP/1.1 200 Longer Reason\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
             "00:00:00 GMT\r\n\r\n");
 }
 
