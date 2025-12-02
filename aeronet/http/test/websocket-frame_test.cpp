@@ -725,6 +725,24 @@ TEST_F(WebSocketFrameTest, IsControlFrameValues) {
   EXPECT_TRUE(IsControlFrame(Opcode::Pong));
 }
 
+TEST_F(WebSocketFrameTest, IsDataFrameValues) {
+  EXPECT_TRUE(IsDataFrame(Opcode::Continuation));
+  EXPECT_TRUE(IsDataFrame(Opcode::Text));
+  EXPECT_TRUE(IsDataFrame(Opcode::Binary));
+  EXPECT_FALSE(IsDataFrame(Opcode::Close));
+  EXPECT_FALSE(IsDataFrame(Opcode::Ping));
+  EXPECT_FALSE(IsDataFrame(Opcode::Pong));
+}
+
+TEST_F(WebSocketFrameTest, IsValidWireCloseCode) {
+  EXPECT_TRUE(IsValidWireCloseCode(static_cast<uint16_t>(CloseCode::Normal)));
+  EXPECT_TRUE(IsValidWireCloseCode(static_cast<uint16_t>(CloseCode::GoingAway)));
+  EXPECT_TRUE(IsValidWireCloseCode(static_cast<uint16_t>(CloseCode::ProtocolError)));
+  EXPECT_TRUE(IsValidWireCloseCode(static_cast<uint16_t>(CloseCode::UnsupportedData)));
+  EXPECT_FALSE(IsValidWireCloseCode(static_cast<uint16_t>(CloseCode::NoStatusReceived)));
+  EXPECT_FALSE(IsValidWireCloseCode(static_cast<uint16_t>(9999)));
+}
+
 // ============================================================================
 // RSV bits validation tests
 // ============================================================================
