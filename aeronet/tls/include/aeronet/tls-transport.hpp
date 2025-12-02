@@ -38,8 +38,6 @@ class TlsTransport : public ITransport {
     unsigned long sslError{0};
   };
 
-  [[nodiscard]] bool ktlsSendEnabled() const noexcept { return _ktlsSendEnabled; }
-
   KtlsEnableResult enableKtlsSend();
 #endif
 

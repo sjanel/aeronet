@@ -728,6 +728,29 @@ TEST(HttpRouting, AsyncIdentityContentLengthReadBodyStreams) {
   EXPECT_TRUE(resp.contains("stream-this-body")) << resp;
 }
 
+TEST(HttpRouting, AsyncReadBodyAsyncStreams) {
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/async-readbody-async",
+                                 [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                   std::string collected;
+                                   while (req.hasMoreBody()) {
+                                     std::string_view chunk = co_await req.readBodyAsync();
+                                     if (chunk.empty()) break;
+                                     collected.append(chunk);
+                                   }
+                                   co_return HttpResponse(http::StatusCodeOK).body(collected);
+                                 });
+
+  test::RequestOptions opts;
+  opts.method = "POST";
+  opts.target = "/async-readbody-async";
+  opts.headers.emplace_back("Connection", "close");
+  opts.body = "chunked-async-body-data";
+
+  auto resp = test::requestOrThrow(ts.port(), opts);
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.find("chunked-async-body-data") != std::string::npos) << resp;
+}
+
 TEST(HttpRouting, AsyncIdentityChunkedReadBodyStreams) {
   ts.resetRouterAndGet().setPath(http::Method::POST, "/identity-stream-chunked",
                                  [&](HttpRequest& req) -> RequestTask<HttpResponse> {

@@ -1,5 +1,7 @@
 #include "aeronet/static-string-view-helpers.hpp"
 
+#include <gtest/gtest.h>
+
 #include <string_view>
 
 namespace aeronet {
@@ -60,5 +62,25 @@ struct test6 {
 static_assert(IntToStringView_v<0> == "0");
 static_assert(IntToStringView_v<37> == "37");
 static_assert(IntToStringView_v<-1273006> == "-1273006");
+
+// Runtime helpers to force materialization for coverage tools.
+inline constexpr std::string_view kRT_A = "hello";
+inline constexpr std::string_view kRT_B = " world";
+
+TEST(StaticStringViewHelpersRuntime, Materialize) {
+  using namespace aeronet;
+
+  using J = JoinStringView<kRT_A, kRT_B>;
+
+  // Force runtime reads of the joined c_str storage
+  volatile const char* p = J::c_str;
+  EXPECT_EQ(p[0], 'h');
+  EXPECT_EQ(p[5], ' ');
+  EXPECT_EQ(p[10], 'd');
+
+  // Force runtime reads of IntToStringView storage
+  volatile const char* p2 = IntToStringView<37>::value.data();
+  EXPECT_EQ(p2[0], '3');
+}
 
 }  // namespace aeronet

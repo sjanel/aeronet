@@ -237,32 +237,7 @@ struct HashPolicySelector<T, void_t<typename T::hash_policy>>
     typedef typename T::hash_policy type;
 };
 
-
 }
-
-struct power_of_two_hash_policy
-{
-    size_t index_for_hash(size_t hash, size_t num_slots_minus_one) const
-    {
-        return hash & num_slots_minus_one;
-    }
-    size_t keep_in_range(size_t index, size_t num_slots_minus_one) const
-    {
-        return index_for_hash(index, num_slots_minus_one);
-    }
-    int8_t next_size_over(size_t & size) const
-    {
-        size = detailv3::next_power_of_two(size);
-        return 0;
-    }
-    void commit(int8_t)
-    {
-    }
-    void reset()
-    {
-    }
-
-};
 
 struct fibonacci_hash_policy
 {
@@ -291,13 +266,6 @@ struct fibonacci_hash_policy
 
 private:
     int8_t shift = 63;
-};
-
-
-template<typename T>
-struct power_of_two_std_hash : std::hash<T>
-{
-    typedef ska::power_of_two_hash_policy hash_policy;
 };
 
 } // end namespace ska
