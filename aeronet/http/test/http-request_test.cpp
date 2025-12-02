@@ -72,6 +72,55 @@ class HttpRequestTest : public ::testing::Test {
     req._bodyAccessBridge = &bridge;
   }
 
+  // Test helpers that require friend access to HttpRequest private members
+  struct FakeSpan : public tracing::Span {
+    static inline int64_t lastStatusCode = -1;
+    static inline long lastDurationUs = -1;
+    static inline bool ended = false;
+
+    void setAttribute(std::string_view key, int64_t val) noexcept override {
+      if (key == "http.status_code") {
+        lastStatusCode = val;
+      } else if (key == "http.duration_us") {
+        lastDurationUs = static_cast<long>(val);
+      }
+    }
+
+    void setAttribute(std::string_view, std::string_view) noexcept override {}
+
+    void end() noexcept override { ended = true; }
+  };
+
+  static std::string_view bridgeReadChunk(HttpRequest& /*req*/, void* /*ctx*/, std::size_t /*maxBytes*/) {
+    return {"chunk-data"};
+  }
+
+  static bool bridgeHasMore(const HttpRequest& /*req*/, void* /*ctx*/) { return true; }
+
+  static std::string_view bridgeAggregate(HttpRequest& /*req*/, void* /*ctx*/) { return {"full-body"}; }
+
+  // Helpers that perform operations requiring friendship (call private members on req)
+  void installStreamingBridge() {
+    static HttpRequest::BodyAccessBridge bridge;
+    bridge.readChunk = bridgeReadChunk;
+    bridge.hasMore = bridgeHasMore;
+    req._bodyAccessBridge = &bridge;
+  }
+
+  void installAggregateBridge() {
+    static HttpRequest::BodyAccessBridge bridge;
+    bridge.aggregate = bridgeAggregate;
+    req._bodyAccessBridge = &bridge;
+  }
+
+  void callPinHeadStorage() { req.pinHeadStorage(cs); }
+
+  [[nodiscard]] bool callWantClose() const { return req.wantClose(); }
+
+  void attachSpan(tracing::SpanPtr span) { req._traceSpan = std::move(span); }
+
+  void callEnd(http::StatusCode sc) { req.end(sc); }
+
   // Feed raw bytes to HttpRequest parser and ensure no crash/UB
   void fuzzHttpRequestParsing(const RawChars& input, bool mergeUnknownHeaders = true) {
     // Parse with various max header sizes
@@ -457,6 +506,131 @@ TEST_F(HttpRequestTest, HasMoreBodyReturnsFalseWhenBridgeHasNoHasMore) {
 
   setBodyAccessStreamingWithBridgeNoHasMore();
   EXPECT_FALSE(req.hasMoreBody());
+}
+
+TEST_F(HttpRequestTest, BodyAfterReadBodyThrows) {
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  // Simulate streaming read first
+  installStreamingBridge();
+
+  // call readBody -> switches to Streaming
+  auto chunk = req.readBody();
+  EXPECT_EQ(chunk, "chunk-data");
+
+  // calling body() after readBody() should throw
+  EXPECT_THROW({ (void)req.body(); }, std::logic_error);
+}
+
+TEST_F(HttpRequestTest, ReadBodyAfterBodyThrows) {
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  // Simulate aggregate bridge
+  installAggregateBridge();
+
+  // call body() -> switches to Aggregated
+  auto full = req.body();
+  EXPECT_EQ(full, "full-body");
+
+  // calling readBody after body() should throw
+  EXPECT_THROW({ (void)req.readBody(); }, std::logic_error);
+}
+
+TEST_F(HttpRequestTest, ReadBodyWithBridgeReturnsChunk) {
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  installStreamingBridge();
+
+  auto chunk = req.readBody(64);
+  EXPECT_EQ(chunk, "chunk-data");
+}
+
+TEST_F(HttpRequestTest, HasMoreBodyWithBridgeTrue) {
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  installStreamingBridge();
+
+  EXPECT_TRUE(req.hasMoreBody());
+}
+
+TEST_F(HttpRequestTest, BodyWithAggregateBridgeReturnsFullBody) {
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  installAggregateBridge();
+
+  auto full = req.body();
+  EXPECT_EQ(full, "full-body");
+}
+
+TEST_F(HttpRequestTest, PinHeadStorageRemapsViews) {
+  // Build raw request with a header value we can inspect pointer for
+  RawChars raw = BuildRaw("GET", "/p", "HTTP/1.1", "X-Custom: original_value\r\n");
+  auto st = reqSet(std::move(raw));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  // capture original view pointer into connection inBuffer
+  auto hostView = req.headerValueOrEmpty("X-Custom");
+  const char* originalPtr = hostView.data();
+
+  // now pin head storage which moves data into state.headBuffer
+  callPinHeadStorage();
+
+  // after pinning, header view should point into headBuffer (ownerState.headBuffer)
+  auto pinned = req.headerValueOrEmpty("X-Custom");
+  const char* pinnedPtr = pinned.data();
+
+  ASSERT_NE(originalPtr, pinnedPtr);
+  // pinned pointer should be within headBuffer data range
+  const char* hb = cs.headBuffer.data();
+  EXPECT_GE(pinnedPtr, hb);
+  EXPECT_LT(pinnedPtr, hb + static_cast<std::ptrdiff_t>(cs.headBuffer.size()));
+}
+
+TEST_F(HttpRequestTest, WantCloseAndHasExpectContinue) {
+  {  // Connection: close
+    auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1", "Connection: close\r\n"));
+    ASSERT_EQ(st, http::StatusCodeOK);
+    EXPECT_TRUE(callWantClose());
+    EXPECT_FALSE(req.hasExpectContinue());
+  }
+  {  // Expect: 100-continue on HTTP/1.1
+    auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1", "Expect: 100-continue\r\n"));
+    ASSERT_EQ(st, http::StatusCodeOK);
+    EXPECT_FALSE(callWantClose());
+    EXPECT_TRUE(req.hasExpectContinue());
+  }
+  {  // Expect header on HTTP/1.0 should be ignored
+    auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.0", "Expect: 100-continue\r\n"));
+    ASSERT_EQ(st, http::StatusCodeOK);
+    EXPECT_FALSE(req.hasExpectContinue());
+  }
+}
+
+TEST_F(HttpRequestTest, EndSetsSpanAttributesAndEnds) {
+  // Reset fake span static state
+  FakeSpan::lastStatusCode = -1;
+  FakeSpan::lastDurationUs = -1;
+  FakeSpan::ended = false;
+
+  auto spanPtr = std::make_unique<FakeSpan>();
+  auto raw = BuildRaw("GET", "/p", "HTTP/1.1", "");
+  auto st = reqSet(std::move(raw), true);
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  // attach fake span to request
+  attachSpan(std::move(spanPtr));
+
+  // call end with specific status code
+  callEnd(http::StatusCodeNotFound);
+
+  EXPECT_EQ(FakeSpan::lastStatusCode, static_cast<int64_t>(http::StatusCodeNotFound));
+  EXPECT_GT(FakeSpan::lastDurationUs, -1);
+  EXPECT_TRUE(FakeSpan::ended);
 }
 
 TEST_F(HttpRequestTest, RangeOverrideKeepsLast) {

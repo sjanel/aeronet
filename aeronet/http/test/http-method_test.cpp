@@ -65,6 +65,27 @@ TEST(HttpMethod, MethodIdxRoundTrip) {
   }
 }
 
+TEST(HttpMethod, OperatorBitOr) {
+  MethodBmp combined = Method::GET | Method::POST | Method::TRACE;
+  EXPECT_TRUE(IsMethodSet(combined, Method::GET));
+  EXPECT_TRUE(IsMethodSet(combined, Method::POST));
+  EXPECT_TRUE(IsMethodSet(combined, Method::TRACE));
+  EXPECT_FALSE(IsMethodSet(combined, Method::PUT));
+  EXPECT_FALSE(IsMethodSet(combined, Method::DELETE));
+  EXPECT_FALSE(IsMethodSet(combined, Method::CONNECT));
+  EXPECT_FALSE(IsMethodSet(combined, Method::OPTIONS));
+  EXPECT_FALSE(IsMethodSet(combined, Method::HEAD));
+  EXPECT_FALSE(IsMethodSet(combined, Method::PATCH));
+
+  auto result = Method::CONNECT | combined;
+  EXPECT_TRUE(IsMethodSet(result, Method::CONNECT));
+  EXPECT_TRUE(IsMethodSet(result, Method::GET));
+  EXPECT_TRUE(IsMethodSet(result, Method::POST));
+  EXPECT_TRUE(IsMethodSet(result, Method::TRACE));
+  EXPECT_FALSE(IsMethodSet(result, Method::PUT));
+  EXPECT_FALSE(IsMethodSet(result, Method::DELETE));
+}
+
 TEST(HttpMethod, MethodBitmapOperatorsAndQueries) {
   MethodBmp mask = 0;
   for (const auto& methodCase : kMethodCases) {
