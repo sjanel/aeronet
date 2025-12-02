@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <memory>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -201,6 +202,71 @@ TEST(ObjectPoolTest, FuzzAllocFreeCycles) {
   }
 
   EXPECT_EQ(pool.size(), 0U);
+}
+
+TEST(ObjectPoolTest, FuzzThrowingConstructor) {
+  // deterministic RNGs used by the throwing constructor (globals to avoid
+  // static members in a local class)
+  std::mt19937_64 rng(424242);
+  std::uniform_int_distribution<int> dist(0, 99);
+
+  struct ProbThrow {
+    ProbThrow(std::mt19937_64 &rng, std::uniform_int_distribution<int> &dist) {
+      const int rnd = dist(rng);
+      // ~5% chance to throw
+      if (rnd < 5) {
+        throw std::runtime_error("ctor failed (fuzz)");
+      }
+      value = std::make_unique<int>(42);
+    }
+    std::unique_ptr<int> value;
+  };
+
+  ObjectPool<ProbThrow> pool;
+  constexpr int cycles = 3000;
+  std::vector<ProbThrow *> live;
+  live.reserve(1024);
+
+  std::uniform_int_distribution<int> op(0, 10);
+
+  int throws = 0;
+
+  for (int i = 0; i < cycles; ++i) {
+    int choice = op(rng);
+    if (choice == 0 && !live.empty()) {
+      std::uniform_int_distribution<std::size_t> idx(0, live.size() - 1);
+      std::size_t index = idx(rng);
+      // destroy via pool and remove from live list
+      ProbThrow *ptr = live[index];
+      pool.destroyAndRelease(ptr);
+      live.erase(live.begin() + static_cast<std::vector<ProbThrow *>::difference_type>(index));
+    } else {
+      try {
+        ProbThrow *ptr = pool.allocateAndConstruct(rng, dist);
+        ASSERT_NE(ptr, nullptr);
+        live.push_back(ptr);
+      } catch (const std::runtime_error &) {
+        // basic guarantee: pool.size() must not have increased
+        ++throws;
+        // after a throw, verify all live objects still hold valid values
+        for (const ProbThrow *pp : live) {
+          ASSERT_NE(pp, nullptr);
+          ASSERT_NE(pp->value.get(), nullptr);
+          EXPECT_EQ(*(pp->value), 42);
+        }
+      }
+    }
+  }
+
+  // ensure at least some throws occurred (probabilistic but highly likely)
+  EXPECT_GT(throws, 0);
+
+  const auto nbToRemove = pool.size() / 2;
+  for (std::size_t i = 0; i < nbToRemove; ++i) {
+    pool.destroyAndRelease(live.back());
+    live.pop_back();
+  }
+  EXPECT_EQ(pool.size(), live.size());
 }
 
 TEST(ObjectPoolTest, StringStress) {
