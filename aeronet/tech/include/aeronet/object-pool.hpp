@@ -53,7 +53,7 @@ struct Slot {
 
   T *ptr() noexcept { return std::launder(reinterpret_cast<T *>(storage)); }
 
-  bool isConstructed;
+  bool isConstructed = false;
   alignas(kStorageAlign) std::byte storage[kStorageSize];
 };
 
