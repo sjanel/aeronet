@@ -23,11 +23,11 @@ class MiddlewareResult {
   explicit MiddlewareResult(HttpResponse response) noexcept
       : _decision(Decision::ShortCircuit), _response(std::move(response)) {}
 
-  static MiddlewareResult Continue() noexcept { return MiddlewareResult(Decision::Continue); }
+  // Returns a MiddlewareResult indicating to continue processing.
+  static MiddlewareResult Continue() noexcept { return {}; }
 
-  static MiddlewareResult ShortCircuit(HttpResponse response) noexcept {
-    return {Decision::ShortCircuit, std::move(response)};
-  }
+  // Returns a MiddlewareResult indicating to short-circuit with the given response.
+  static MiddlewareResult ShortCircuit(HttpResponse response) noexcept { return MiddlewareResult{std::move(response)}; }
 
   [[nodiscard]] bool shouldContinue() const noexcept { return _decision == Decision::Continue; }
 
@@ -36,11 +36,6 @@ class MiddlewareResult {
   [[nodiscard]] HttpResponse&& takeResponse() && noexcept { return std::move(_response); }
 
  private:
-  explicit MiddlewareResult(Decision decision) noexcept : _decision(decision) {}
-
-  MiddlewareResult(Decision decision, HttpResponse response) noexcept
-      : _decision(decision), _response(std::move(response)) {}
-
   Decision _decision{Decision::Continue};
   HttpResponse _response;
 };

@@ -46,6 +46,7 @@ HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, const HttpReques
 
 void HttpResponseWriter::status(http::StatusCode code) {
   if (_state != State::Opened) {
+    log::warn("Streaming: cannot set status after headers sent");
     return;
   }
   _fixedResponse.status(code);
@@ -53,6 +54,7 @@ void HttpResponseWriter::status(http::StatusCode code) {
 
 void HttpResponseWriter::status(http::StatusCode code, std::string_view reason) {
   if (_state != State::Opened) {
+    log::warn("Streaming: cannot set status after headers sent");
     return;
   }
   _fixedResponse.status(code, reason);
@@ -60,6 +62,7 @@ void HttpResponseWriter::status(http::StatusCode code, std::string_view reason) 
 
 void HttpResponseWriter::addHeader(std::string_view name, std::string_view value) {
   if (_state != State::Opened) {
+    log::warn("Streaming: cannot add header after headers sent");
     return;
   }
   if (CaseInsensitiveEqual(http::ContentEncoding, name)) {
@@ -70,6 +73,7 @@ void HttpResponseWriter::addHeader(std::string_view name, std::string_view value
 
 void HttpResponseWriter::header(std::string_view name, std::string_view value) {
   if (_state != State::Opened) {
+    log::warn("Streaming: cannot add header after headers sent");
     return;
   }
   if (CaseInsensitiveEqual(http::ContentEncoding, name)) {
