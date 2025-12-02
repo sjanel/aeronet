@@ -715,7 +715,6 @@ class HttpResponse {
   }
 
   [[nodiscard]] bool isInlineBody() const noexcept { return _payloadVariant.index() == 0; }
-  [[nodiscard]] bool isExternalBody() const noexcept { return _payloadVariant.index() == 1; }
   [[nodiscard]] bool isFileBody() const noexcept { return _payloadVariant.index() == 2; }
 
   RawChars _data;

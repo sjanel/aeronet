@@ -23,6 +23,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/raw-bytes.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/temp-file.hpp"
@@ -727,12 +728,54 @@ TEST_F(HttpResponseTest, InterleavedReasonAndHeaderMutations) {
             "HTTP/1.1 200\r\nX-A: S\r\nX-B: 2\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
 }
 
-TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentType) {
+TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeString) {
   HttpResponse resp(http::StatusCodeOK, "OK");
   resp.body("Non-empty body");
   EXPECT_EQ(resp.body(), "Non-empty body");
   EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
   resp.body(std::string());  // set empty body
+  EXPECT_EQ(resp.body(), "");
+  EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
+  auto full = concatenated(std::move(resp));
+  EXPECT_EQ(full,
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
+            "00:00:00 GMT\r\n\r\n");
+}
+
+TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeVectorBytes) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.body("Non-empty body");
+  EXPECT_EQ(resp.body(), "Non-empty body");
+  EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
+  resp.body(std::vector<std::byte>{});  // set empty body
+  EXPECT_EQ(resp.body(), "");
+  EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
+  auto full = concatenated(std::move(resp));
+  EXPECT_EQ(full,
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
+            "00:00:00 GMT\r\n\r\n");
+}
+
+TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeRawBytes) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.body("Non-empty body");
+  EXPECT_EQ(resp.body(), "Non-empty body");
+  EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
+  resp.body(RawChars{});  // set empty body
+  EXPECT_EQ(resp.body(), "");
+  EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
+  auto full = concatenated(std::move(resp));
+  EXPECT_EQ(full,
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
+            "00:00:00 GMT\r\n\r\n");
+}
+
+TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeUniquePtrBytes) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.body("Non-empty body");
+  EXPECT_EQ(resp.body(), "Non-empty body");
+  EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
+  resp.body(std::unique_ptr<std::byte[]>(), 0);  // set empty body
   EXPECT_EQ(resp.body(), "");
   EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
   auto full = concatenated(std::move(resp));

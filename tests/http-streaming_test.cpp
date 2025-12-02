@@ -646,11 +646,15 @@ TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMinCapturedBodySize(kLargeSize - 1U); });
 
   std::string large(kLargeSize, 'x');
+  static constexpr std::byte kSmall[] = {std::byte{'s'}, std::byte{'m'}, std::byte{'a'}, std::byte{'l'},
+                                         std::byte{'l'}};
   ts.router().setDefault([&](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.writeBody("small");  // coalesced path
-    writer.writeBody(large);    // large path (multi enqueue)
+    writer.writeBody(kSmall);  // coalesced path
+    writer.writeBody(large);   // large path (multi enqueue)
     writer.end();
+    EXPECT_TRUE(writer.finished());
+    EXPECT_FALSE(writer.failed());
   });
   std::string resp = blockingFetch(port, "GET", "/adaptive");
   auto stats = ts.server.stats();
