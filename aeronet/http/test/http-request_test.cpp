@@ -6,7 +6,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <memory>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -19,6 +21,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/tracing/tracer.hpp"
 
 namespace aeronet {
 
@@ -68,7 +71,7 @@ class HttpRequestTest : public ::testing::Test {
     req._bodyAccessMode = HttpRequest::BodyAccessMode::Streaming;
     static HttpRequest::BodyAccessBridge bridge;
     bridge.readChunk = [](HttpRequest&, void*, std::size_t) -> std::string_view { return {}; };
-    bridge.hasMore = nullptr;
+    bridge.hasMore = [](const HttpRequest&, void*) -> bool { return false; };
     req._bodyAccessBridge = &bridge;
   }
 
@@ -86,7 +89,7 @@ class HttpRequestTest : public ::testing::Test {
       }
     }
 
-    void setAttribute(std::string_view, std::string_view) noexcept override {}
+    void setAttribute([[maybe_unused]] std::string_view key, [[maybe_unused]] std::string_view val) noexcept override {}
 
     void end() noexcept override { ended = true; }
   };
@@ -538,6 +541,13 @@ TEST_F(HttpRequestTest, ReadBodyAfterBodyThrows) {
   EXPECT_THROW({ (void)req.readBody(); }, std::logic_error);
 }
 
+TEST_F(HttpRequestTest, HasMoreBodyShouldBeFalseByDefault) {
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  EXPECT_FALSE(req.hasMoreBody());
+}
+
 TEST_F(HttpRequestTest, ReadBodyWithBridgeReturnsChunk) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
@@ -546,6 +556,8 @@ TEST_F(HttpRequestTest, ReadBodyWithBridgeReturnsChunk) {
 
   auto chunk = req.readBody(64);
   EXPECT_EQ(chunk, "chunk-data");
+
+  EXPECT_TRUE(req.isBodyReady());
 }
 
 TEST_F(HttpRequestTest, HasMoreBodyWithBridgeTrue) {
@@ -565,6 +577,17 @@ TEST_F(HttpRequestTest, BodyWithAggregateBridgeReturnsFullBody) {
 
   auto full = req.body();
   EXPECT_EQ(full, "full-body");
+
+  EXPECT_TRUE(req.isBodyReady());
+}
+
+TEST_F(HttpRequestTest, BodyShouldBeReadyIfBodyCalled) {
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  EXPECT_FALSE(req.isBodyReady());
+  [[maybe_unused]] auto full = req.body();
+  EXPECT_TRUE(req.isBodyReady());
 }
 
 TEST_F(HttpRequestTest, PinHeadStorageRemapsViews) {

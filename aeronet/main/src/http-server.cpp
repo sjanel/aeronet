@@ -1163,7 +1163,7 @@ void HttpServer::eventLoop() {
     // With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before
     // epoll_ctl(EPOLL_CTL_MOD), we miss the edge. Periodic retries ensure we eventually resume.
     for (auto it = _activeConnectionsMap.begin(); it != _activeConnectionsMap.end();) {
-      if (it->second->fileSend.active && it->second->waitingWritable) {
+      if (it->second->isSendingFile() && it->second->waitingWritable) {
         flushFilePayload(it);
         if (it->second->isImmediateCloseRequested()) {
           it = closeConnection(it);

@@ -76,27 +76,34 @@ std::string_view HttpRequest::body() const {
   return _body;
 }
 
+bool HttpRequest::hasMoreBody() const {
+  if (_bodyAccessMode == BodyAccessMode::Aggregated) {
+    return false;
+  }
+  if (_bodyAccessBridge == nullptr) {
+    // If an async handler started before the body was ready, the server will
+    // set asyncState.needsBody and later install the aggregated bridge when
+    // body bytes arrive. In that intermediate state, treat the request as
+    // having more body so loops using hasMoreBody()+readBodyAsync() will
+    // execute and suspend correctly.
+    if (_ownerState != nullptr) {
+      const auto& async = _ownerState->asyncState;
+      if (async.active && async.needsBody) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return _bodyAccessBridge->hasMore(*this, _bodyAccessContext);
+}
+
 std::string_view HttpRequest::readBody(std::size_t maxBytes) {
   if (_bodyAccessMode == BodyAccessMode::Aggregated) {
     throw std::logic_error("Cannot call readBody() after body() on the same request");
   }
   _bodyAccessMode = BodyAccessMode::Streaming;
-  if (_bodyAccessBridge == nullptr || _bodyAccessBridge->readChunk == nullptr) {
-    _activeStreamingChunk = {};
-  } else {
-    _activeStreamingChunk = _bodyAccessBridge->readChunk(*this, _bodyAccessContext, maxBytes);
-  }
+  _activeStreamingChunk = _bodyAccessBridge->readChunk(*this, _bodyAccessContext, maxBytes);
   return _activeStreamingChunk;
-}
-
-bool HttpRequest::hasMoreBody() const {
-  if (_bodyAccessMode == BodyAccessMode::Aggregated) {
-    return false;
-  }
-  if (_bodyAccessBridge == nullptr || _bodyAccessBridge->hasMore == nullptr) {
-    return false;
-  }
-  return _bodyAccessBridge->hasMore(*this, _bodyAccessContext);
 }
 
 bool HttpRequest::wantClose() const { return CaseInsensitiveEqual(headerValueOrEmpty(http::Connection), http::close); }

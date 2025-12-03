@@ -19,11 +19,14 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/telemetry-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/unix-dogstatsd-sink.hpp"
 
 using namespace std::chrono_literals;
 using namespace aeronet;
@@ -537,4 +540,20 @@ TEST(HttpServerCopy, CopyConstruct) {
   ASSERT_TRUE(resp.contains("ORIG:/copy"));
 
   EXPECT_THROW(HttpServer{copy}, std::logic_error) << "Copy-constructing from a running server should throw";
+}
+
+TEST(HttpServerTelemetry, CounterSentViaTelemetryContext) {
+  aeronet::test::UnixDogstatsdSink sink;
+
+  TelemetryConfig tcfg;
+  tcfg.withDogStatsdSocketPath(sink.path()).withDogStatsdNamespace("svc").enableDogStatsDMetrics(true);
+
+  HttpServerConfig cfg;
+  cfg.withTelemetryConfig(std::move(tcfg));
+
+  HttpServer server(cfg);
+
+  server.telemetryContext().counterAdd("metric", 1);
+
+  EXPECT_EQ(sink.recvMessage(), "svc.metric:1|c");
 }

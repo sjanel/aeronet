@@ -20,28 +20,11 @@ inline bool isRetry(int code) { return code == SSL_ERROR_WANT_READ || code == SS
 }  // namespace
 
 ITransport::TransportResult TlsTransport::read(char* buf, std::size_t len) {
-  TransportResult ret{0, TransportHint::None};
-
-  if (!_handshakeDone) {
-    const auto handshakeRet = ::SSL_do_handshake(_ssl.get());
-    if (handshakeRet == 1) {
-      _handshakeDone = true;
-    } else {
-      const auto err = ::SSL_get_error(_ssl.get(), handshakeRet);
-      if (isRetry(err)) {
-        ret.want = (err == SSL_ERROR_WANT_WRITE) ? TransportHint::WriteReady : TransportHint::ReadReady;
-        return ret;  // indicate would-block during handshake
-      }
-      // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
-      if (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        ret.want = TransportHint::ReadReady;  // Default to read, SSL will tell us if it needs write
-        return ret;
-      }
-      logErrorIfAny();
-      ret.want = TransportHint::Error;
-      return ret;
-    }
+  TransportResult ret{0, handshake(TransportHint::ReadReady)};
+  if (ret.want != TransportHint::None) {
+    return ret;  // indicate would-block during handshake
   }
+
   if (::SSL_read_ex(_ssl.get(), buf, len, &ret.bytesProcessed) == 1) {
     // success
     return ret;
@@ -82,27 +65,9 @@ ITransport::TransportResult TlsTransport::read(char* buf, std::size_t len) {
 }
 
 ITransport::TransportResult TlsTransport::write(std::string_view data) {
-  TransportResult ret{0, TransportHint::None};
-
-  // Ensure handshake is done
-  if (!_handshakeDone) {
-    const int handshakeRet = ::SSL_do_handshake(_ssl.get());
-    if (handshakeRet == 1) {
-      _handshakeDone = true;
-    } else {
-      const int err = ::SSL_get_error(_ssl.get(), handshakeRet);
-      if (isRetry(err)) {
-        ret.want = (err == SSL_ERROR_WANT_WRITE) ? TransportHint::WriteReady : TransportHint::ReadReady;
-        return ret;
-      }
-      // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
-      if (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        ret.want = TransportHint::WriteReady;
-        return ret;
-      }
-      ret.want = TransportHint::Error;
-      return ret;  // fatal
-    }
+  TransportResult ret{0, handshake(TransportHint::WriteReady)};
+  if (ret.want != TransportHint::None) {
+    return ret;  // indicate would-block during handshake
   }
 
   // Avoid calling OpenSSL with a zero-length buffer. Some OpenSSL builds
@@ -186,6 +151,26 @@ void TlsTransport::logErrorIfAny() const noexcept {
   }
 }
 
+TransportHint TlsTransport::handshake(TransportHint want) {
+  if (!_handshakeDone) {
+    const int handshakeRet = ::SSL_do_handshake(_ssl.get());
+    if (handshakeRet == 1) {
+      _handshakeDone = true;
+    } else {
+      const int err = ::SSL_get_error(_ssl.get(), handshakeRet);
+      if (isRetry(err)) {
+        return (err == SSL_ERROR_WANT_WRITE) ? TransportHint::WriteReady : TransportHint::ReadReady;
+      }
+      // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
+      if (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        return want;
+      }
+      return TransportHint::Error;
+    }
+  }
+  return TransportHint::None;
+}
+
 #ifdef AERONET_ENABLE_KTLS
 TlsTransport::KtlsEnableResult TlsTransport::enableKtlsSend() {
   KtlsEnableResult result{};
@@ -200,7 +185,7 @@ TlsTransport::KtlsEnableResult TlsTransport::enableKtlsSend() {
   auto* writeBio = ::SSL_get_wbio(_ssl.get());
   log::debug("enableKtlsSend: writeBio = {}", static_cast<void*>(writeBio));
   if (writeBio == nullptr) {
-    log::debug("enableKtlsSend: writeBio == nullptr -> fail");
+    log::error("enableKtlsSend: writeBio == nullptr -> fail");
     result.status = KtlsEnableResult::Status::Failed;
     return result;
   }

@@ -483,21 +483,18 @@ class HttpResponse {
   // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse& appendHeaderValue(std::string_view key, std::string_view value, std::string_view separator = ", ") & {
-    assert(!http::IsReservedResponseHeader(key));
     appendHeaderValueInternal(key, value, separator);
     return *this;
   }
 
   // Convenient overload appending a numeric value.
   HttpResponse& appendHeaderValue(std::string_view key, std::integral auto value, std::string_view separator = ", ") & {
-    assert(!http::IsReservedResponseHeader(key));
     appendHeaderValueInternal(key, std::string_view(IntegralToCharVector(value)), separator);
     return *this;
   }
 
   // Append a value to an existing header, inserting the header if it is currently missing.
   HttpResponse&& appendHeaderValue(std::string_view key, std::string_view value, std::string_view separator = ", ") && {
-    assert(!http::IsReservedResponseHeader(key));
     appendHeaderValueInternal(key, value, separator);
     return std::move(*this);
   }
@@ -505,7 +502,6 @@ class HttpResponse {
   // Convenient overload appending a numeric value.
   HttpResponse&& appendHeaderValue(std::string_view key, std::integral auto value,
                                    std::string_view separator = ", ") && {
-    assert(!http::IsReservedResponseHeader(key));
     appendHeaderValueInternal(key, std::string_view(IntegralToCharVector(value)), separator);
     return std::move(*this);
   }

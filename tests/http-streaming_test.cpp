@@ -323,7 +323,7 @@ TEST(HttpStreamingCompression, AddHeaderContentEncodingIdentityShouldNotAutomati
 
   ts.router().setPath(http::Method::GET, "/identity-no-compress", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.addHeader("Content-Encoding", "identity");
+    writer.contentEncoding("identity");
     writer.contentType("text/plain");
     writer.writeBody(std::string(64, 'a'));
     writer.end();
