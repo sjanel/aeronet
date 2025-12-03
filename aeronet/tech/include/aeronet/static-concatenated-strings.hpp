@@ -15,9 +15,13 @@
 
 namespace aeronet {
 
-// ConcatenatedStrings stores N string parts in a single contiguous
-// RawChars buffer. It provides access to individual parts as string_views or temporary null-terminated strings,
+// ConcatenatedStrings stores N string parts in a single contiguous RawChars buffer.
+// It provides access to individual parts as string_views or temporary null-terminated strings,
 // and allows replacing individual parts while keeping the rest intact.
+// Compared to its cousin DynamicConcatenatedStrings, it has a fixed number of parts (N) known at compile time,
+// which allows for O(1) access to a specific part. Setting a sub-string in the middle that is of different length
+// than the previous one requires shifting the tail of the buffer accordingly, which is O(M) with M being
+// the size of the tail.
 template <unsigned N, class SizeType = std::size_t>
 class StaticConcatenatedStrings {
   static_assert(N > 0U, "StaticConcatenatedStrings requires N > 0");
@@ -31,6 +35,8 @@ class StaticConcatenatedStrings {
   static constexpr offsets_array::size_type kParts = N;
 
   StaticConcatenatedStrings() noexcept = default;
+
+  explicit StaticConcatenatedStrings(size_type initialCapacity) : _buf(initialCapacity) {}
 
   StaticConcatenatedStrings(std::initializer_list<std::string_view> parts) {
     if (parts.size() != kParts) {

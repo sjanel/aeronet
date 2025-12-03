@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <random>
 #include <span>
 #include <stdexcept>
@@ -23,7 +24,6 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
-#include "aeronet/raw-bytes.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/temp-file.hpp"
@@ -141,7 +141,7 @@ TEST_F(HttpResponseTest, BodyFromVectorCharRValue) {
 TEST_F(HttpResponseTest, BodyFromUniquePtrChar) {
   const char text[] = "UniquePtrChar";
   auto bodyPtr = std::make_unique<char[]>(sizeof(text));
-  std::copy(std::begin(text), std::end(text), bodyPtr.get());
+  std::ranges::copy(text, bodyPtr.get());
   HttpResponse resp(http::StatusCodeOK);
   resp.body(std::move(bodyPtr), sizeof(text) - 1);
   EXPECT_EQ(resp.body(), "UniquePtrChar");
@@ -150,7 +150,7 @@ TEST_F(HttpResponseTest, BodyFromUniquePtrChar) {
 TEST_F(HttpResponseTest, BodyFromUniquePtrCharRValue) {
   const char text[] = "UniquePtrCharRValue";
   auto bodyPtr = std::make_unique<char[]>(sizeof(text));
-  std::copy(std::begin(text), std::end(text), bodyPtr.get());
+  std::ranges::copy(text, bodyPtr.get());
   auto resp = HttpResponse(http::StatusCodeOK).body(std::move(bodyPtr), sizeof(text) - 1);
   EXPECT_EQ(resp.body(), "UniquePtrCharRValue");
 }
@@ -748,20 +748,6 @@ TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentType
   EXPECT_EQ(resp.body(), "Non-empty body");
   EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
   resp.body(std::vector<std::byte>{});  // set empty body
-  EXPECT_EQ(resp.body(), "");
-  EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
-  auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
-            "00:00:00 GMT\r\n\r\n");
-}
-
-TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeRawBytes) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
-  resp.body("Non-empty body");
-  EXPECT_EQ(resp.body(), "Non-empty body");
-  EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
-  resp.body(RawChars{});  // set empty body
   EXPECT_EQ(resp.body(), "");
   EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
   auto full = concatenated(std::move(resp));
@@ -1467,6 +1453,11 @@ TEST(HttpResponseAppendHeaderValue, AppendsToEmptyHeader) {
   EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "alpha");
 }
 
+TEST(HttpResponse, AppendReservedHeaderShouldDieInDebug) {
+  HttpResponse resp;
+  EXPECT_DEBUG_DEATH(resp.appendHeaderValue(http::Connection, "some value"), "");
+}
+
 TEST(HttpResponseAppendHeaderValue, AppendsWithDefaultSeparator) {
   HttpResponse resp;
   resp.header("X-Test", "one");
@@ -1488,6 +1479,9 @@ TEST(HttpResponseAppendHeaderValue, NumericOverloadAndSubsequentAppend) {
 
   resp.appendHeaderValue("X-Num", 456);
   EXPECT_EQ(resp.headerValueOrEmpty("X-Num"), "123, 456");
+
+  resp = HttpResponse{}.appendHeaderValue("X-Num", 456);
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Num"), "456");
 }
 
 TEST(HttpResponseAppendHeaderValue, CaseInsensitiveKeyMatch) {

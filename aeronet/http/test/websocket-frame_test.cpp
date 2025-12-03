@@ -714,6 +714,7 @@ TEST_F(WebSocketFrameTest, IsReservedOpcodeValues) {
   EXPECT_FALSE(IsReservedOpcode(std::byte{8}));
   EXPECT_FALSE(IsReservedOpcode(std::byte{9}));
   EXPECT_FALSE(IsReservedOpcode(std::byte{10}));
+  EXPECT_FALSE(IsReservedOpcode(std::byte{16}));
 }
 
 TEST_F(WebSocketFrameTest, IsControlFrameValues) {
@@ -735,12 +736,15 @@ TEST_F(WebSocketFrameTest, IsDataFrameValues) {
 }
 
 TEST_F(WebSocketFrameTest, IsValidWireCloseCode) {
+  EXPECT_TRUE(IsValidWireCloseCode(static_cast<uint16_t>(CloseCode::InternalError)));
   EXPECT_TRUE(IsValidWireCloseCode(static_cast<uint16_t>(CloseCode::Normal)));
   EXPECT_TRUE(IsValidWireCloseCode(static_cast<uint16_t>(CloseCode::GoingAway)));
   EXPECT_TRUE(IsValidWireCloseCode(static_cast<uint16_t>(CloseCode::ProtocolError)));
   EXPECT_TRUE(IsValidWireCloseCode(static_cast<uint16_t>(CloseCode::UnsupportedData)));
   EXPECT_FALSE(IsValidWireCloseCode(static_cast<uint16_t>(CloseCode::NoStatusReceived)));
   EXPECT_FALSE(IsValidWireCloseCode(static_cast<uint16_t>(9999)));
+  EXPECT_FALSE(IsValidWireCloseCode(static_cast<uint16_t>(999)));
+  EXPECT_TRUE(IsValidWireCloseCode(static_cast<uint16_t>(3500)));
 }
 
 // ============================================================================

@@ -3,6 +3,7 @@
 #include <openssl/ssl.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string_view>
 
@@ -42,6 +43,8 @@ class TlsTransport : public ITransport {
 #endif
 
  private:
+  TransportHint handshake(TransportHint want);
+
   SslPtr _ssl;
   bool _handshakeDone{false};
 #ifdef AERONET_ENABLE_KTLS

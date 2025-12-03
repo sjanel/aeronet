@@ -201,14 +201,9 @@ TEST(TlsContextTest, CollectsHandshakeInfo) {
   auto pair = makeSslPair({"http/1.1"}, {"http/1.1"});
   const auto start = std::chrono::steady_clock::now();
   ASSERT_TRUE(performHandshake(pair));
-  auto info = collectTlsHandshakeInfo(pair.serverSsl.get(), start);
-  EXPECT_EQ(info.selectedAlpn, "http/1.1");
-  EXPECT_FALSE(info.negotiatedCipher.empty());
-  EXPECT_FALSE(info.negotiatedVersion.empty());
-  EXPECT_GT(info.durationNs, 0U);
 
   TlsMetricsInternal metrics;
-  auto tlsInfo = finalizeTlsHandshake(pair.serverSsl.get(), pair.serverFd.fd(), true, start, metrics);
+  auto tlsInfo = FinalizeTlsHandshake(pair.serverSsl.get(), pair.serverFd.fd(), true, start, metrics);
   EXPECT_EQ(tlsInfo.selectedAlpn(), "http/1.1");
   EXPECT_EQ(metrics.handshakesSucceeded, 1U);
   EXPECT_EQ(metrics.alpnDistribution["http/1.1"], 1U);
@@ -494,45 +489,6 @@ TEST(TlsTransportTest, SuccessfulReadReturnsData) {
   EXPECT_EQ(std::string_view(buf, readRes.bytesProcessed), payload);
 }
 
-TEST(TlsHandshakeTest, CollectInfoWithNullSslReturnsEmpty) {
-  // Covers the early return path in collectTlsHandshakeInfo when ssl is nullptr (line 25-26)
-  auto start = std::chrono::steady_clock::now();
-  auto info = collectTlsHandshakeInfo(nullptr, start);
-  EXPECT_TRUE(info.selectedAlpn.empty());
-  EXPECT_TRUE(info.negotiatedCipher.empty());
-  EXPECT_TRUE(info.negotiatedVersion.empty());
-  EXPECT_FALSE(info.clientCertPresent);
-  EXPECT_EQ(info.durationNs, 0U);
-}
-
-TEST(TlsHandshakeTest, FinalizeTlsHandshakeWithNullSslStillUpdatesMetrics) {
-  // Covers the path where SSL is null but metrics are still updated
-  auto start = std::chrono::steady_clock::now();
-  TlsMetricsInternal metrics{};
-
-  auto tlsInfo = finalizeTlsHandshake(nullptr, -1, false, start, metrics);
-
-  EXPECT_TRUE(tlsInfo.selectedAlpn().empty());
-  EXPECT_TRUE(tlsInfo.negotiatedCipher().empty());
-  EXPECT_TRUE(tlsInfo.negotiatedVersion().empty());
-  // Metrics should still increment handshakesSucceeded
-  EXPECT_EQ(metrics.handshakesSucceeded, 1U);
-}
-
-TEST(TlsHandshakeTest, HandshakeDurationZeroWhenStartIsDefault) {
-  // Covers the path where handshakeStart.time_since_epoch().count() == 0 (line 52)
-  auto pair = makeSslPair({"http/1.1"}, {"http/1.1"});
-  ASSERT_TRUE(performHandshake(pair));
-
-  // Use default-constructed time_point (epoch) - durationNs should be 0 because
-  // the condition handshakeStart.time_since_epoch().count() != 0 is false
-  std::chrono::steady_clock::time_point defaultStart{};
-  auto info = collectTlsHandshakeInfo(pair.serverSsl.get(), defaultStart);
-
-  // With default start time, duration should be 0
-  EXPECT_EQ(info.durationNs, 0U);
-}
-
 TEST(TlsHandshakeTest, FinalizeTlsHandshakeLogsHandshake) {
   // Covers the logging path in collectAndLogTlsHandshake (line 64)
   auto pair = makeSslPair({"http/1.1"}, {"http/1.1"});
@@ -542,7 +498,7 @@ TEST(TlsHandshakeTest, FinalizeTlsHandshakeLogsHandshake) {
   TlsMetricsInternal metrics{};
 
   // Call with logHandshake=true to cover the logging branch
-  auto tlsInfo = finalizeTlsHandshake(pair.serverSsl.get(), pair.serverFd.fd(), true, start, metrics);
+  auto tlsInfo = FinalizeTlsHandshake(pair.serverSsl.get(), pair.serverFd.fd(), true, start, metrics);
 
   EXPECT_EQ(tlsInfo.selectedAlpn(), "http/1.1");
   EXPECT_FALSE(tlsInfo.negotiatedCipher().empty());

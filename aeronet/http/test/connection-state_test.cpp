@@ -52,6 +52,27 @@ TEST(ConnectionStateSendfileTest, KernelSendfileSuccess) {
   EXPECT_EQ(rd, static_cast<ssize_t>(res.bytesDone));
 }
 
+TEST(ConnectionStateTest, CannotCloseIfOutBufferNotEmpty) {
+  ConnectionState state;
+  state.closeMode = ConnectionState::CloseMode::DrainThenClose;
+  state.outBuffer.append(HttpResponseData{"test"});
+  EXPECT_FALSE(state.canCloseConnectionForDrain());
+  state.outBuffer.clear();
+  state.tunnelOrFileBuffer.append("data");
+  EXPECT_FALSE(state.canCloseConnectionForDrain());
+  state.tunnelOrFileBuffer.clear();
+  EXPECT_TRUE(state.canCloseConnectionForDrain());
+}
+
+TEST(ConnectionState, RequestDrainAndCloseHasLowPriority) {
+  ConnectionState state;
+
+  state.closeMode = ConnectionState::CloseMode::Immediate;
+
+  state.requestDrainAndClose();
+  EXPECT_EQ(state.closeMode, ConnectionState::CloseMode::Immediate);
+}
+
 TEST(ConnectionStateSendfileTest, TransportFileInvalidFd) {
   ConnectionState state;
   state.fileSend.file = File();
@@ -251,9 +272,6 @@ TEST(ConnectionStateAsyncStateTest, AsyncHandlerStateClearResetsState) {
   st.responseMiddleware = reinterpret_cast<const void*>(0x2);
   st.responseMiddlewareCount = 3;
   st.pendingResponse = HttpResponse(http::StatusCodeOK);
-
-  // Move a default constructed handle into place (null handle) to ensure clear() handles it.
-  st.handle = {};
 
   st.clear();
 

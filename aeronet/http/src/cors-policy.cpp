@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string_view>
-#include <utility>
 
 #include "aeronet/fixedcapacityvector.hpp"
 #include "aeronet/http-constants.hpp"
@@ -12,38 +11,27 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/string-trim.hpp"
 #include "http-method-parse.hpp"
 
 namespace aeronet {
 namespace {
 
-[[nodiscard]] std::string_view trimView(std::string_view value) {
-  while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
-    value.remove_prefix(1);
-  }
-  while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) {
-    value.remove_suffix(1);
-  }
-  return value;
-}
-
-[[nodiscard]] std::string_view nextCsvToken(std::string_view& csv) {
+[[nodiscard]] std::string_view NextCsvToken(std::string_view& csv) {
   const auto commaPos = csv.find(',');
-  std::string_view token = commaPos == std::string_view::npos ? csv : csv.substr(0, commaPos);
+  const std::string_view token = commaPos == std::string_view::npos ? csv : csv.substr(0, commaPos);
   if (commaPos == std::string_view::npos) {
     csv = {};
   } else {
     csv.remove_prefix(commaPos + 1);
   }
-  return trimView(token);
+  return TrimOws(token);
 }
 
-[[nodiscard]] bool listContainsToken(std::string_view list, std::string_view token) {
-  std::string_view remaining = list;
-  while (!remaining.empty()) {
-    auto part = nextCsvToken(remaining);
+[[nodiscard]] bool ListContainsToken(std::string_view list, std::string_view token) {
+  while (!list.empty()) {
+    const auto part = NextCsvToken(list);
     if (!part.empty() && CaseInsensitiveEqual(part, token)) {
       return true;
     }
@@ -66,7 +54,7 @@ CorsPolicy& CorsPolicy::allowOrigin(std::string_view origin) {
   _active = true;
   _originMode = OriginMode::Enumerated;
 
-  origin = trimView(origin);
+  origin = TrimOws(origin);
   if (!origin.empty() && !_allowedOrigins.contains(origin)) {
     _allowedOrigins.append(origin);
   }
@@ -100,7 +88,7 @@ CorsPolicy& CorsPolicy::allowAnyRequestHeaders() {
 
 CorsPolicy& CorsPolicy::allowRequestHeader(std::string_view header) {
   _active = true;
-  header = trimView(header);
+  header = TrimOws(header);
   if (!header.empty() && !_allowedRequestHeaders.contains(header)) {
     _allowedRequestHeaders.append(header);
   }
@@ -109,7 +97,7 @@ CorsPolicy& CorsPolicy::allowRequestHeader(std::string_view header) {
 
 CorsPolicy& CorsPolicy::exposeHeader(std::string_view header) {
   _active = true;
-  header = trimView(header);
+  header = TrimOws(header);
   if (!header.empty() && !_exposedHeaders.contains(header)) {
     _exposedHeaders.append(header);
   }
@@ -244,22 +232,22 @@ bool CorsPolicy::requestHeadersAllowed(std::string_view headerList) const {
   if (_allowedRequestHeaders.fullString() == "*") {
     return true;
   }
-  auto remaining = trimView(headerList);
-  if (remaining.empty()) {
+  headerList = TrimOws(headerList);
+  if (headerList.empty()) {
     return _allowedRequestHeaders.empty();
   }
   if (_allowedRequestHeaders.empty()) {
     return false;
   }
-  while (!remaining.empty()) {
-    auto token = nextCsvToken(remaining);
+  do {
+    auto token = NextCsvToken(headerList);
     if (token.empty()) {
       continue;
     }
     if (!_allowedRequestHeaders.contains(token)) {
       return false;
     }
-  }
+  } while (!headerList.empty());
   return true;
 }
 
@@ -267,15 +255,13 @@ void CorsPolicy::applyResponseHeaders(HttpResponse& response, std::string_view o
   const bool mirrorOrigin = _originMode == OriginMode::Enumerated || _allowCredentials;
   if (mirrorOrigin) {
     response.header(http::AccessControlAllowOrigin, origin);
-    auto existing = response.headerValueOrEmpty(http::Vary);
-    if (existing.empty()) {
+    const auto optVary = response.headerValue(http::Vary);
+    if (optVary) {
+      if (!ListContainsToken(*optVary, http::Origin)) {
+        response.appendHeaderValue(http::Vary, http::Origin);
+      }
+    } else {
       response.addHeader(http::Vary, http::Origin);
-    } else if (!listContainsToken(existing, http::Origin)) {
-      static constexpr std::string_view kAppendedOrigin = ", Origin";
-      SmallRawChars combined(static_cast<uint32_t>(existing.size()) + kAppendedOrigin.size());
-      combined.unchecked_append(existing);
-      combined.unchecked_append(kAppendedOrigin);
-      response.header(http::Vary, std::move(combined));
     }
   } else {
     response.header(http::AccessControlAllowOrigin, "*");

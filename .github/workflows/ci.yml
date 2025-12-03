@@ -204,6 +204,7 @@ jobs:
           llvm-cov-21 show --format=html \
             --instr-profile=coverage.profdata \
             --ignore-filename-regex="$IGNORE" \
+            --show-branches=count \
             --output-dir=coverage-report \
             $BINARIES $OBJECTS
 

@@ -29,7 +29,7 @@ struct ConnectionState {
   [[nodiscard]] bool isSendingFile() const noexcept { return fileSend.active; }
 
   [[nodiscard]] bool canCloseConnectionForDrain() const noexcept {
-    return isDrainCloseRequested() && outBuffer.empty() && tunnelOrFileBuffer.empty() && !fileSend.active;
+    return isDrainCloseRequested() && outBuffer.empty() && tunnelOrFileBuffer.empty() && !isSendingFile();
   }
 
   [[nodiscard]] bool canCloseImmediately() const noexcept {

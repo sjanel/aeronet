@@ -171,10 +171,15 @@ class HttpRequest {
   // awaitable interface so coroutine-based handlers can share the same API surface as future streaming support.
   [[nodiscard]] BodyAggregateAwaitable bodyAwaitable() { return BodyAggregateAwaitable(*this); }
 
+  // Indicates whether additional body data remains to be read via readBody().
+  [[nodiscard]] bool hasMoreBody() const;
+
   // Streaming accessor for the decoded request body. Returns a view that remains valid until the next readBody()
   // invocation or until the handler returns. Once an empty view is returned, the body (and any trailers) have been
   // fully consumed and subsequent calls will continue returning empty.
-  // Throws if body() was previously called on this request.
+  // Preconditions:
+  //   - hasMoreBody() must be true, otherwise behavior is undefined
+  //   - body() must not have been called prior.
   [[nodiscard]] std::string_view readBody(std::size_t maxBytes = kDefaultReadBodyChunk);
 
   // Awaitable helper for streaming body reads. Suspends cooperatively once real async body pipelines are wired; for
@@ -182,9 +187,6 @@ class HttpRequest {
   [[nodiscard]] BodyChunkAwaitable readBodyAsync(std::size_t maxBytes = kDefaultReadBodyChunk) {
     return {*this, maxBytes};
   }
-
-  // Indicates whether additional body data remains to be read via readBody().
-  [[nodiscard]] bool hasMoreBody() const;
 
   // Indicates whether the body is ready to be read (either fully buffered or streaming bridge established).
   [[nodiscard]] bool isBodyReady() const noexcept {
