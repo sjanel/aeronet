@@ -275,7 +275,7 @@ void TlsClient::init() {
   const unsigned char* proto = nullptr;
   unsigned int protoLen = 0;
   ::SSL_get0_alpn_selected(_ssl.get(), &proto, &protoLen);
-  if (proto != nullptr && protoLen > 0) {
+  if (proto != nullptr) {
     _negotiatedAlpn.assign(reinterpret_cast<const char*>(proto), protoLen);
   }
   _handshakeOk = true;

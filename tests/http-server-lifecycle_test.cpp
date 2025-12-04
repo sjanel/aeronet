@@ -785,9 +785,16 @@ TEST(HttpServerAsyncHandle, RestartAfterStop) {
   // First run
   {
     auto handle = server.startDetached();
+
     std::this_thread::sleep_for(50ms);
     auto resp = test::simpleGet(port, "/");
     EXPECT_TRUE(resp.contains("restart"));
+
+    handle.stop();
+    auto handle2 = server.startDetached();
+    EXPECT_TRUE(handle2.started());
+
+    handle = std::move(handle2);  // test move assignment
   }
 
   std::this_thread::sleep_for(50ms);

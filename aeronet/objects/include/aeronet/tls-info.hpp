@@ -11,12 +11,18 @@ namespace aeronet {
 // negotiated ALPN protocol (if any)
 // negotiated TLS cipher suite (if TLS)
 // negotiated TLS protocol version string
+// RFC2253 formatted subject if client cert present
 class TLSInfo {
  public:
+  using Parts = StaticConcatenatedStrings<4, uint32_t>;
+
   TLSInfo() noexcept = default;
 
-  TLSInfo(std::string_view selectedAlpn, std::string_view negotiatedCipher, std::string_view negotiatedVersion)
-      : _parts({selectedAlpn, negotiatedCipher, negotiatedVersion}) {}
+  explicit TLSInfo(Parts parts) noexcept : _parts(std::move(parts)) {}
+
+  TLSInfo(std::string_view selectedAlpn, std::string_view negotiatedCipher, std::string_view negotiatedVersion,
+          std::string_view peerSubject)
+      : _parts({selectedAlpn, negotiatedCipher, negotiatedVersion, peerSubject}) {}
 
   [[nodiscard]] std::string_view selectedAlpn() const noexcept { return _parts[0]; }
 
@@ -24,8 +30,10 @@ class TLSInfo {
 
   [[nodiscard]] std::string_view negotiatedVersion() const noexcept { return _parts[2]; }
 
+  [[nodiscard]] std::string_view peerSubject() const noexcept { return _parts[3]; }
+
  private:
-  aeronet::StaticConcatenatedStrings<3, uint32_t> _parts;
+  Parts _parts;
 };
 
 }  // namespace aeronet

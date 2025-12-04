@@ -1,6 +1,7 @@
 #include "aeronet/multi-http-server.hpp"
 
 #include <gtest/gtest.h>
+#include <poll.h>
 
 #include <algorithm>
 #include <atomic>
@@ -26,7 +27,9 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
+#include "aeronet/telemetry-config.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/unix-dogstatsd-sink.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/test_tls_client.hpp"
@@ -984,4 +987,21 @@ TEST(MultiHttpServer, ExplicitPortWithNoReusePortShouldCheckPortAvailability) {
   EXPECT_THROW(MultiHttpServer(cfg, 2), std::system_error);
 
   firstServer.stop();
+}
+
+TEST(MultiHttpServerTelemetry, CounterSentViaTelemetryContext) {
+  aeronet::test::UnixDogstatsdSink sink;
+
+  TelemetryConfig tcfg;
+  tcfg.withDogStatsdSocketPath(sink.path()).withDogStatsdNamespace("svc").enableDogStatsDMetrics(true);
+
+  HttpServerConfig cfg;
+  cfg.withTelemetryConfig(std::move(tcfg));
+
+  // Create a MultiHttpServer with one underlying thread so it's valid but simple
+  MultiHttpServer multi(cfg, 1);
+
+  multi.telemetryContext().counterAdd("multi_metric", 1);
+
+  EXPECT_EQ(sink.recvMessage(), "svc.multi_metric:1|c");
 }

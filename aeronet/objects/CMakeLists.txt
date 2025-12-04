@@ -177,6 +177,14 @@ AeronetAddUnitTest(
     src/dogstatsd.cpp
     LIBRARIES
     aeronet_sys
+    aeronet_basic_test_support
+)
+
+AeronetAddUnitTest(
+    encoding_test
+    test/encoding_test.cpp
+    LIBRARIES
+    aeronet_tech
 )
 
 AeronetAddUnitTest(

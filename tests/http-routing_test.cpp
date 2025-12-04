@@ -739,9 +739,6 @@ TEST(HttpRouting, AsyncReadBodyAsyncStreams) {
                                    std::string collected;
                                    while (req.hasMoreBody()) {
                                      std::string_view chunk = co_await req.readBodyAsync();
-                                     if (chunk.empty()) {
-                                       break;
-                                     }
                                      collected.append(chunk);
                                    }
                                    co_return HttpResponse(http::StatusCodeOK).body(collected);
@@ -808,6 +805,41 @@ TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete) {
   EXPECT_TRUE(handlerStarted.load(std::memory_order_acquire));
 
   test::sendAll(client.fd(), "67890");
+  const std::string response = test::recvUntilClosed(client.fd());
+  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.contains("1234567890")) << response;
+}
+
+TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete_ReadBodyAsync) {
+  std::atomic_bool handlerStarted{false};
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/async-early-readbody",
+                                 [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                   handlerStarted.store(true, std::memory_order_release);
+                                   std::string collected;
+                                   while (req.hasMoreBody()) {
+                                     std::string_view chunk = co_await req.readBodyAsync();
+                                     collected.append(chunk);
+                                   }
+                                   co_return HttpResponse(std::move(collected));
+                                 });
+
+  test::ClientConnection client(ts.port());
+  const std::string headers =
+      "POST /async-early-readbody HTTP/1.1\r\n"
+      "Host: 127.0.0.1\r\n"
+      "Transfer-Encoding: chunked\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+  test::sendAll(client.fd(), headers);
+  test::sendAll(client.fd(), "5\r\n12345\r\n");
+
+  const auto deadLine = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+
+  while (!handlerStarted.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadLine) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+
+  test::sendAll(client.fd(), "5\r\n67890\r\n0\r\n\r\n");
   const std::string response = test::recvUntilClosed(client.fd());
   EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("1234567890")) << response;

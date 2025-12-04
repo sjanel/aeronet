@@ -301,7 +301,7 @@ void HttpServer::tryCompressResponse(const HttpRequest& request, HttpResponse& r
     // so they are not lost when we remove the internal body+trailers from _data.
     // Keep the original content type: remove inline body+trailers from internal buffer
     resp._data.setSize(resp._data.size() - resp.internalBodyAndTrailersLen());
-    resp.setCapturedPayload(std::move(out));
+    resp._payloadVariant = HttpPayload(std::move(out));
   }
 }
 
@@ -366,7 +366,7 @@ bool HttpServer::queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::Prep
     state.fileSend.remaining = prepared.fileLength;
     state.fileSend.active = state.fileSend.remaining > 0;
     state.fileSend.headersPending = !state.outBuffer.empty();
-    if (state.fileSend.active) {
+    if (state.isSendingFile()) {
       // Don't enable writable interest here - let flushFilePayload do it when it actually blocks.
       // Enabling it prematurely (when the socket is already writable) causes us to miss the edge
       // in edge-triggered epoll mode.
@@ -468,7 +468,7 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
 
   flushFilePayload(cnxIt);
   // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
-  if (state.outBuffer.empty() && !state.fileSend.active && state.waitingWritable &&
+  if (state.outBuffer.empty() && !state.isSendingFile() && state.waitingWritable &&
       (state.tlsEstablished || state.transport->handshakeDone())) {
     if (disableWritableInterest(cnxIt, "disable writable flushOutbound drop EPOLLOUT")) {
       if (state.isAnyCloseRequested()) {
@@ -478,7 +478,7 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   }
   // Clear writable interest if no buffered data and transport no longer needs write progress.
   // (We do not call handshakePending() here because ConnStateInternal does not expose it; transport has that.)
-  if (state.outBuffer.empty() && !state.fileSend.active) {
+  if (state.outBuffer.empty() && !state.isSendingFile()) {
     bool transportNeedsWrite = (!state.tlsEstablished && want == TransportHint::WriteReady);
     if (transportNeedsWrite) {
       if (!state.waitingWritable) {
@@ -541,7 +541,7 @@ bool HttpServer::flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt) {
 
 void HttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
-  if (!state.fileSend.active) {
+  if (!state.isSendingFile()) {
     return;
   }
 

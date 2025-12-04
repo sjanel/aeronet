@@ -1,9 +1,8 @@
-// Unit tests for aeronet/cctype.hpp
 #include "aeronet/cctype.hpp"
 
 #include <gtest/gtest.h>
 
-using namespace aeronet;
+namespace aeronet {
 
 // Compile-time checks for constexpr behavior
 static_assert(isdigit('0'), "digit compile-time");
@@ -56,3 +55,5 @@ TEST(Cctype, EdgeValues) {
   EXPECT_FALSE(isspace('\t' - 1));
   EXPECT_FALSE(isspace('\r' + 1));
 }
+
+}  // namespace aeronet
