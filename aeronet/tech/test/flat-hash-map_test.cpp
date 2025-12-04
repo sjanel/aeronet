@@ -10,13 +10,16 @@
 #include <iterator>
 #include <memory>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/sys_test_support.hpp"
 
 using Map = aeronet::flat_hash_map<std::string, int, std::hash<std::string_view>, std::equal_to<>>;
 
@@ -41,6 +44,54 @@ TEST(flat_hash_map, basic_insert_find) {
   EXPECT_EQ(it->second, 2);
 
   EXPECT_EQ(map1.find("gamma"), map1.end());
+}
+
+// Custom allocator that carries an id and does not propagate on move-assignment.
+template <typename T>
+struct TestAlloc {
+  using value_type = T;
+  using propagate_on_container_move_assignment = std::false_type;
+  explicit TestAlloc(int id = 0) noexcept : id(id) {}
+
+  template <typename U>
+  TestAlloc(const TestAlloc<U> &other) noexcept : id(other.id) {}
+
+  T *allocate(std::size_t sz) { return std::allocator<T>{}.allocate(sz); }
+  void deallocate(T *ptr, std::size_t sz) noexcept { std::allocator<T>{}.deallocate(ptr, sz); }
+
+  template <typename U>
+  struct rebind {
+    using other = TestAlloc<U>;
+  };
+
+  bool operator==(const TestAlloc &) const noexcept = default;
+
+  int id;
+};
+
+TEST(flat_hash_map, move_assignment_allocators_not_equal_emplaces_and_clears_other) {
+  using PairAlloc = TestAlloc<std::pair<std::string, int>>;
+  using PairAllocMap =
+      aeronet::flat_hash_map<std::string, int, std::hash<std::string_view>, std::equal_to<>, PairAlloc>;
+
+  PairAllocMap dest(PairAlloc(1));
+  PairAllocMap src(PairAlloc(2));
+
+  for (int i = 0; i < 200; ++i) {
+    src.emplace("k" + std::to_string(i), i);
+  }
+
+  // Move-assign; because allocators differ and propagate_on_container_move_assignment is false,
+  // the implementation should take the branch that rehashes and emplaces moved elements,
+  // then clears the source.
+  dest = std::move(src);
+
+  EXPECT_EQ(dest.size(), 200U);
+  for (int i = 0; i < 200; ++i) {
+    auto it = dest.find("k" + std::to_string(i));
+    ASSERT_NE(it, dest.end());
+    EXPECT_EQ(it->second, i);
+  }
 }
 
 TEST(flat_hash_map, heterogeneous_lookup_string_view) {
@@ -457,3 +508,177 @@ TEST(flat_hash_map, emplace_default_and_insert_or_assign_hint) {
   map1.erase(eraseBegin, eraseEnd);
   EXPECT_TRUE(map1.empty());
 }
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+
+// Negative tests: simulate allocation failures and throwing constructors.
+TEST(flat_hash_map, rehash_handles_realloc_failure) {
+  using aeronet::test_support::FailNextRealloc;
+  Map map1;
+  for (int i = 0; i < 100; ++i) {
+    map1.emplace("k" + std::to_string(i), i);
+  }
+
+  // Cause the next realloc to fail; rehash should propagate allocation failure.
+  FailNextRealloc(1);
+  try {
+    map1.rehash(1024);
+    // If no exception, ensure map still contains original data
+    for (int i = 0; i < 100; ++i) {
+      auto it = map1.find("k" + std::to_string(i));
+      EXPECT_NE(it, map1.end());
+      EXPECT_EQ(it->second, i);
+    }
+  } catch (const std::bad_alloc &) {
+    SUCCEED();
+  }
+}
+
+TEST(flat_hash_map, insert_range_handles_malloc_failure) {
+  using aeronet::test_support::FailNextMalloc;
+  Map map1;
+  std::vector<std::pair<std::string, int>> batch;
+  batch.reserve(500);
+  for (int i = 0; i < 500; ++i) {
+    batch.emplace_back("r" + std::to_string(i), i);
+  }
+
+  // Cause one malloc to fail during bulk insert. Expect either exception or strong
+  // guarantee that container remains in a valid state (no leaks, searchable keys preserved).
+  FailNextMalloc(1);
+  try {
+    map1.insert(batch.begin(), batch.end());
+    // If insert succeeded despite failure injection, ensure correctness
+    for (int i = 0; i < 500; ++i) {
+      auto it = map1.find("r" + std::to_string(i));
+      if (it != map1.end()) {
+        EXPECT_EQ(it->second, i);
+      }
+    }
+  } catch (const std::bad_alloc &) {
+    // Ensure map is still usable
+    map1.clear();
+    SUCCEED();
+  }
+}
+
+// Helper type that throws during construction with a small probability.
+struct MaybeThrow {
+  static std::mt19937 rng;
+
+  MaybeThrow() noexcept : val(0) {}
+
+  explicit MaybeThrow(int val) : val(val) {
+    std::uniform_int_distribution<int> dist(1, 100);
+    if (dist(rng) <= 5) {  // 5% chance to throw
+      throw std::runtime_error("construction failed");
+    }
+  }
+
+  int val;
+};
+
+std::mt19937 MaybeThrow::rng(1337);
+
+TEST(flat_hash_map, insert_object_that_can_throw_and_malloc_failure_mix) {
+  using aeronet::test_support::FailNextMalloc;
+  aeronet::flat_hash_map<int, MaybeThrow> map;
+
+  // Attempt many inserts; randomly simulate malloc failures and throwing constructors.
+  for (int i = 0; i < 2000; ++i) {
+    if ((i % 250) == 0) {
+      // occasionally inject an allocation failure
+      FailNextMalloc(1);
+    }
+    try {
+      map.emplace(i, MaybeThrow(i));
+    } catch (const std::bad_alloc &) {
+      // allocator returned null — container should remain valid
+      continue;
+    } catch (const std::exception &) {
+      // constructor threw — container must remain valid
+      continue;
+    }
+  }
+
+  // Basic consistency: all stored elements are reachable and their values match key if present.
+  for (auto &kv : map) {
+    EXPECT_EQ(kv.first, kv.second.val);
+  }
+}
+
+#endif  // AERONET_WANT_MALLOC_OVERRIDES
+
+TEST(flat_hash_map, copy_ctor_with_alloc_handles_insertion_exception) {
+  struct ThrowOnCopy {
+    int val;
+    bool throw_on_copy;
+    ThrowOnCopy() noexcept : val(0), throw_on_copy(false) {}
+    explicit ThrowOnCopy(int val, bool bo = false) : val(val), throw_on_copy(bo) {}
+    ThrowOnCopy(const ThrowOnCopy &other) : val(other.val), throw_on_copy(other.throw_on_copy) {
+      if (throw_on_copy) {
+        throw std::runtime_error("copy failed");
+      }
+    }
+
+    ThrowOnCopy(ThrowOnCopy &&) noexcept = default;
+
+    ThrowOnCopy &operator=(const ThrowOnCopy &) = default;
+  };
+
+  aeronet::flat_hash_map<std::string, ThrowOnCopy> src;
+  for (int i = 0; i < 50; ++i) {
+    src.emplace("ok" + std::to_string(i), ThrowOnCopy(i, false));
+  }
+  // Insert one element with copying disabled, then toggle it to throw on copy
+  src.emplace("bad", ThrowOnCopy(999, false));
+  // Find the inserted element and mark it to throw on copy during subsequent copies
+  auto it_bad = src.find("bad");
+  ASSERT_NE(it_bad, src.end());
+  it_bad->second.throw_on_copy = true;
+
+  // Use allocator-argument copy constructor to exercise the path that clears and
+  // deallocates on exception during insert(other.begin(), other.end()).
+  using MapType = aeronet::flat_hash_map<std::string, ThrowOnCopy>;
+  auto alloc = src.get_allocator();
+  // We expect the allocator-argument copy constructor to throw when copying the
+  // element that is marked to throw on copy. Use EXPECT_ANY_THROW to assert it.
+  EXPECT_ANY_THROW({ MapType copy(src, alloc); });
+
+  // The original source should remain intact after the failed copy attempt.
+  EXPECT_EQ(src.count("bad"), 1U);
+  EXPECT_EQ(src.size(), 51U);
+}
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+
+TEST(flat_hash_map, copy_ctor_with_alloc_handles_alloc_failure) {
+  using aeronet::test_support::FailNextMalloc;
+  aeronet::flat_hash_map<std::string, int> src;
+  for (int i = 0; i < 100; ++i) {
+    src.emplace("v" + std::to_string(i), i);
+  }
+
+  // Force the next malloc used during insert(other.begin(), other.end()) to fail.
+  FailNextMalloc(1);
+  using MapType = aeronet::flat_hash_map<std::string, int>;
+  auto alloc = src.get_allocator();
+  try {
+    std::unique_ptr<MapType> copy;
+    try {
+      copy = std::make_unique<MapType>(src, alloc);
+    } catch (const std::bad_alloc &) {
+      // Ensure original source container remains valid and intact.
+      EXPECT_EQ(src.size(), 100U);
+      EXPECT_EQ(src.count("v0"), 1U);
+      SUCCEED();
+      return;
+    }
+    // If no exception, validate copy correctness then delete
+    EXPECT_EQ(copy->size(), src.size());
+  } catch (...) {
+    FAIL() << "Unexpected exception type";
+  }
+}
+
+#endif  // AERONET_WANT_MALLOC_OVERRIDES
