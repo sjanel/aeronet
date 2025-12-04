@@ -17,6 +17,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -127,11 +128,6 @@ void HttpResponse::setReason(std::string_view newReason) {
 
 void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue, bool onlyIfNew) {
   assert(!newKey.empty() && std::ranges::all_of(newKey, [](char ch) { return is_tchar(ch); }));
-
-  if (_headersStartPos == 0) {
-    appendHeaderInternal(newKey, newValue);
-    return;
-  }
 
   auto optValue = headerValue(newKey);
   if (!optValue) {
@@ -329,12 +325,8 @@ void HttpResponse::appendHeaderInternal(std::string_view key, std::string_view v
 }
 
 void HttpResponse::appendHeaderValueInternal(std::string_view key, std::string_view value, std::string_view separator) {
+  assert(!http::IsReservedResponseHeader(key));
   assert(!key.empty() && std::ranges::all_of(key, [](char ch) { return is_tchar(ch); }));
-
-  if (_headersStartPos == 0) {
-    appendHeaderInternal(key, value);
-    return;
-  }
 
   auto optValue = headerValue(key);
   if (!optValue) {

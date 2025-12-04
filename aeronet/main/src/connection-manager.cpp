@@ -62,7 +62,7 @@ void HttpServer::sweepIdleConnections() {
 
     // Keep-alive inactivity enforcement only if enabled.
     // Don't close if there's an active file send - those can block waiting for socket to be writable.
-    if (_config.enableKeepAlive && !state.fileSend.active && now > state.lastActivity + _config.keepAliveTimeout) {
+    if (_config.enableKeepAlive && !state.isSendingFile() && now > state.lastActivity + _config.keepAliveTimeout) {
       cnxIt = closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_keep_alive");
       continue;
@@ -162,7 +162,7 @@ void HttpServer::acceptNewConnections() {
       // Enable partial writes: SSL_write will return after writing some data rather than
       // trying to write everything. This is crucial for non-blocking I/O performance.
       SSL_set_mode(sslPtr.get(), SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-      SSL_set_accept_state(sslPtr.get());
+      ::SSL_set_accept_state(sslPtr.get());
       state.transport = std::make_unique<TlsTransport>(std::move(sslPtr));
       state.handshakeStart = std::chrono::steady_clock::now();
     } else {
@@ -206,7 +206,7 @@ void HttpServer::acceptNewConnections() {
         if (_config.tls.enabled && dynamic_cast<TlsTransport*>(pCnx->transport.get()) != nullptr) {
           auto* tlsTr = static_cast<TlsTransport*>(pCnx->transport.get());
           pCnx->tlsInfo =
-              finalizeTlsHandshake(tlsTr->rawSsl(), cnxFd, _config.tls.logHandshake, pCnx->handshakeStart, _tlsMetrics);
+              FinalizeTlsHandshake(tlsTr->rawSsl(), cnxFd, _config.tls.logHandshake, pCnx->handshakeStart, _tlsMetrics);
 #ifdef AERONET_ENABLE_KTLS
           maybeEnableKtlsSend(*pCnx, *tlsTr, cnxFd);
 #endif
@@ -274,7 +274,7 @@ void HttpServer::acceptNewConnections() {
       continue;
     }
     const bool closeNow = processRequestsOnConnection(cnxIt);
-    if (closeNow && pCnx->outBuffer.empty() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->fileSend.active) {
+    if (closeNow && pCnx->outBuffer.empty() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->isSendingFile()) {
       closeConnection(cnxIt);
     }
   }
@@ -359,7 +359,7 @@ void HttpServer::handleReadableClient(int fd) {
       if (_config.tls.enabled && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
         auto* tlsTr = static_cast<TlsTransport*>(state.transport.get());
         state.tlsInfo =
-            finalizeTlsHandshake(tlsTr->rawSsl(), fd, _config.tls.logHandshake, state.handshakeStart, _tlsMetrics);
+            FinalizeTlsHandshake(tlsTr->rawSsl(), fd, _config.tls.logHandshake, state.handshakeStart, _tlsMetrics);
 #ifdef AERONET_ENABLE_KTLS
         maybeEnableKtlsSend(state, *tlsTr, fd);
 #endif

@@ -60,27 +60,27 @@ TEST(CharHexConverter, ToHexEdgeValues) {
 }
 
 TEST(CharHexConverter, FromHexDigitValidDigits) {
-  for (char c = '0'; c <= '9'; ++c) {
-    int val = from_hex_digit(c);
-    EXPECT_EQ(val, c - '0') << "char=" << c;
+  for (char ch = '0'; ch <= '9'; ++ch) {
+    int val = from_hex_digit(ch);
+    EXPECT_EQ(val, ch - '0') << "char=" << ch;
   }
 
-  for (char c = 'A'; c <= 'F'; ++c) {
-    int val = from_hex_digit(c);
-    EXPECT_EQ(val, 10 + (c - 'A')) << "char=" << c;
+  for (char ch = 'A'; ch <= 'F'; ++ch) {
+    int val = from_hex_digit(ch);
+    EXPECT_EQ(val, 10 + (ch - 'A')) << "char=" << ch;
   }
 
-  for (char c = 'a'; c <= 'f'; ++c) {
-    int val = from_hex_digit(c);
-    EXPECT_EQ(val, 10 + (c - 'a')) << "char=" << c;
+  for (char ch = 'a'; ch <= 'f'; ++ch) {
+    int val = from_hex_digit(ch);
+    EXPECT_EQ(val, 10 + (ch - 'a')) << "char=" << ch;
   }
 }
 
 TEST(CharHexConverter, FromHexDigitInvalid) {
-  const char invalids[] = {'g', 'G', '/', ':', ' ', 'z', '\0'};
-  for (char c : invalids) {
-    int val = from_hex_digit(c);
-    EXPECT_EQ(val, -1) << "char=" << c;
+  static constexpr const char invalids[] = {'g', 'G', '/', ':', ' ', 'z', '\0'};
+  for (char ch : invalids) {
+    int val = from_hex_digit(ch);
+    EXPECT_EQ(val, -1) << "char=" << ch;
   }
 }
 

@@ -142,12 +142,12 @@ std::pair<SysTimePoint, SysTimePoint> ParseTimeWindow(std::string_view str) {
 
     return {SysTimePoint(fromSysDays), SysTimePoint(toSysDays)};
   }
-  if (*ptr == '-') {
-    ++ptr;
+  if (*ptr != '-') {
+    throw std::invalid_argument("Invalid time window string - expected dash after year YYYY");
   }
 
   // month or week number
-  const auto dashPtr = std::find(ptr, endPtr, '-');
+  const auto dashPtr = std::find(++ptr, endPtr, '-');
   if (dashPtr == ptr) {
     log::critical("Invalid time window string '{}' - expected a single dash after the year YYYY", str);
     throw std::invalid_argument("Invalid time window string - unexpected dash");

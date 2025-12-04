@@ -376,6 +376,7 @@ TEST_F(StringToTimeISO8601UTCTest, Handles10DigitSubsecondWithZonedTimeMinus) {
 TEST(TimeString, InvalidTimeWindow) {
   EXPECT_THROW(ParseTimeWindow("202"), std::invalid_argument);
   EXPECT_THROW(ParseTimeWindow("2025--26"), std::invalid_argument);
+  EXPECT_THROW(ParseTimeWindow("2025|13"), std::invalid_argument);
 }
 
 TEST(TimeString, ParseTimeWindowTest) {

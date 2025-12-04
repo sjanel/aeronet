@@ -73,10 +73,10 @@ TEST(StaticStringViewHelpersRuntime, Materialize) {
   using J = JoinStringView<kRT_A, kRT_B>;
 
   // Force runtime reads of the joined c_str storage
-  volatile const char* p = J::c_str;
-  EXPECT_EQ(p[0], 'h');
-  EXPECT_EQ(p[5], ' ');
-  EXPECT_EQ(p[10], 'd');
+  volatile const char* ptr = J::c_str;
+  EXPECT_EQ(ptr[0], 'h');
+  EXPECT_EQ(ptr[5], ' ');
+  EXPECT_EQ(ptr[10], 'd');
 
   // Force runtime reads of IntToStringView storage
   volatile const char* p2 = IntToStringView<37>::value.data();

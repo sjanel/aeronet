@@ -23,13 +23,19 @@ int main(int argc, char** argv) {
   try {
     Router router;
     router.setDefault([](const HttpRequest& req) {
-      return HttpResponse(200, "OK").body(std::string("multi reactor response ") + std::string(req.path()) + '\n');
+      std::string body("multi reactor response ");
+      body.append(req.path());
+      body.push_back('\n');
+      return HttpResponse(std::move(body));
     });
 
     MultiHttpServer multi(HttpServerConfig{}.withPort(port).withReusePort(true), std::move(router),
                           static_cast<uint32_t>(threads));
 
     multi.run();
+    // print stats
+    const auto stats = multi.stats();
+    std::cout << "Stats: \n" << stats.json_str() << '\n';
   } catch (const std::exception& ex) {
     std::cerr << "Error: " << ex.what() << '\n';
     return EXIT_FAILURE;
