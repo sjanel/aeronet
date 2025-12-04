@@ -16,7 +16,7 @@
 #include "aeronet/sys_test_support.hpp"
 
 using namespace aeronet;
-namespace test_support = aeronet::sys::test_support;
+namespace test_support = aeronet::test_support;
 
 namespace {
 

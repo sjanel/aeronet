@@ -11,6 +11,12 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/sys_test_support.hpp"
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+#include <new>
+#endif
+
 namespace aeronet {
 
 namespace {
@@ -68,11 +74,17 @@ TEST(ObjectPoolTest, NonTrivialTypeConstructionAndDestroy) {
 struct Counted {
   static int constructions;
   static int destructions;
+
   Counted() : value(0) { ++constructions; }
   explicit Counted(int val) : value(val) { ++constructions; }
+
   ~Counted() { ++destructions; }
+
   Counted(const Counted &) = delete;
   Counted &operator=(const Counted &) = delete;
+
+  Counted(Counted &&) = delete;
+  Counted &operator=(Counted &&) = delete;
 
   int value;
 };
@@ -84,17 +96,24 @@ TEST(ObjectPoolTest, DestructorsCalledOnPoolDestruction) {
   Counted::constructions = 0;
   Counted::destructions = 0;
   {
-    ObjectPool<Counted> pool;
+    ObjectPool<Counted> pool(3);
     Counted *c1 = pool.allocateAndConstruct(5);
     Counted *c2 = pool.allocateAndConstruct(6);
+    Counted *c3 = pool.allocateAndConstruct(7);
     // ensure they are destroyed by pool destructor
     EXPECT_EQ(c1->value, 5);
     EXPECT_EQ(c2->value, 6);
-    EXPECT_EQ(Counted::constructions, 2);
+    EXPECT_EQ(c3->value, 7);
+    EXPECT_EQ(Counted::constructions, 3);
+    EXPECT_EQ(pool.size(), 3U);
+
+    pool.destroyAndRelease(c1);
     EXPECT_EQ(pool.size(), 2U);
+    pool.destroyAndRelease(c2);
+    EXPECT_EQ(pool.size(), 1U);
   }
   // pool destructor must have destroyed all constructed objects
-  EXPECT_EQ(Counted::destructions, 2);
+  EXPECT_EQ(Counted::destructions, 3);
 }
 
 TEST(ObjectPoolTest, DestroyReleasesObject) {
@@ -127,20 +146,38 @@ TEST(ObjectPoolTest, VariadicForwardingConstruction) {
 
 TEST(ObjectPoolTest, MovePreservesPointersAndValues) {
   ObjectPool<std::string> pool2;
-  std::string *origPtr = pool2.allocateAndConstruct("move-me");
+  std::string *origPtr = pool2.allocateAndConstruct("move-me-1");
+  std::string *origPtr2 = pool2.allocateAndConstruct("move-me-2");
   ASSERT_NE(origPtr, nullptr);
 
   ObjectPool<std::string> moved = std::move(pool2);
   // pointer value remains valid (memory not relocated)
-  EXPECT_EQ(*origPtr, "move-me");
+  EXPECT_EQ(*origPtr, "move-me-1");
+  EXPECT_EQ(*origPtr2, "move-me-2");
+  EXPECT_EQ(moved.size(), 2U);
   // we can still destroy via moved pool
   moved.destroyAndRelease(origPtr);
+  moved.destroyAndRelease(origPtr2);
   EXPECT_EQ(moved.size(), 0U);
+}
+
+TEST(ObjectPoolTest, SelfMoveAssignDoesntDoAnything) {
+  ObjectPool<std::string> pool;
+  std::string *origPtr = pool.allocateAndConstruct("self-move");
+  ASSERT_NE(origPtr, nullptr);
+
+  auto &alias = pool;
+  pool = std::move(alias);
+  // pointer value remains valid (memory not relocated)
+  EXPECT_EQ(*origPtr, "self-move");
+  EXPECT_EQ(pool.size(), 1U);
+  pool.destroyAndRelease(origPtr);
+  EXPECT_EQ(pool.size(), 0U);
 }
 
 TEST(ObjectPoolTest, BulkCreateDestroyCheckValues) {
   ObjectPool<int> pool;
-  constexpr int count = 1000;
+  static constexpr int count = 1000;
   std::vector<int *> ptrs;
   ptrs.reserve(static_cast<std::size_t>(count));
 
@@ -294,6 +331,20 @@ TEST(ObjectPoolTest, StringStress) {
   EXPECT_EQ(pool.size(), 0U);
 }
 
+TEST(ObjectPoolTest, DefaultConstructor) {
+  ObjectPool<int> pool;
+  EXPECT_EQ(pool.size(), 0U);
+  EXPECT_EQ(pool.capacity(), 0U);
+
+  int *obj = pool.allocateAndConstruct(99);
+  ASSERT_NE(obj, nullptr);
+  EXPECT_EQ(*obj, 99);
+  EXPECT_EQ(pool.size(), 1U);
+  EXPECT_GE(pool.capacity(), 1U);
+
+  pool.destroyAndRelease(obj);
+}
+
 TEST(ObjectPoolTest, ClearResetsToInitialCapacityAndAllowsReallocate) {
   constexpr std::size_t initCap = 64;
   ObjectPool<int> pool(initCap);
@@ -343,6 +394,7 @@ TEST(ObjectPoolTest, ReleaseMovesValueForTrivialType) {
 
 TEST(ObjectPoolTest, ReleaseMovesValueForNonTrivialType) {
   ObjectPool<std::string> pool;
+  EXPECT_EQ(pool.capacity(), 0);
   std::string *pStr = pool.allocateAndConstruct("hello-release");
   ASSERT_NE(pStr, nullptr);
   const auto beforeSize = pool.size();
@@ -448,5 +500,53 @@ TEST(ObjectPoolTest, ClearPreservesCapacityForString) {
   }
   EXPECT_EQ(pool.capacity(), capBefore);
 }
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+
+TEST(ObjectPoolTest, BasicExceptionGuaranteeOnBlockAllocationFailure) {
+  static constexpr std::size_t kInitialCapacity = 64;
+  ObjectPool<int> pool(kInitialCapacity);
+
+  // fill the pool to force several block allocations
+  std::vector<int *> ptrs;
+  ptrs.reserve(kInitialCapacity);
+  for (std::size_t i = 0; i < kInitialCapacity; ++i) {
+    ptrs.push_back(pool.allocateAndConstruct(i));
+  }
+
+  const auto sizeBefore = pool.size();
+  const auto capBefore = pool.capacity();
+
+  ASSERT_EQ(sizeBefore, kInitialCapacity);
+  ASSERT_EQ(capBefore, kInitialCapacity);
+
+  // next allocation should trigger a new block allocation; fail it
+  aeronet::test_support::FailNextMalloc();
+  ASSERT_THROW((void)pool.allocateAndConstruct(), std::bad_alloc);
+
+  // basic guarantee: size and capacity remain unchanged
+  EXPECT_EQ(pool.size(), sizeBefore);
+  EXPECT_EQ(pool.capacity(), capBefore);
+
+  // Check all stored pointers values remain valid
+  for (std::size_t i = 0; i < ptrs.size(); ++i) {
+    ASSERT_NE(ptrs[i], nullptr);
+    EXPECT_EQ(*ptrs[i], static_cast<int>(i));
+  }
+
+  // allocations should still work after the failed one
+  int *obj = pool.allocateAndConstruct(42);
+  ASSERT_NE(obj, nullptr);
+  EXPECT_EQ(*obj, 42);
+  EXPECT_EQ(pool.size(), sizeBefore + 1U);
+
+  // cleanup
+  pool.destroyAndRelease(obj);
+  for (auto ptr : ptrs) {
+    pool.destroyAndRelease(ptr);
+  }
+}
+
+#endif
 
 }  // namespace aeronet
