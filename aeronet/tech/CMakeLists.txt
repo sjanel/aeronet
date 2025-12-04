@@ -38,6 +38,7 @@ AeronetAddUnitTest(
     test/flat-hash-map_test.cpp
     LIBRARIES
     aeronet_tech
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(
@@ -67,6 +68,7 @@ AeronetAddUnitTest(
     test/object-pool_test.cpp
     LIBRARIES
     aeronet_tech
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(

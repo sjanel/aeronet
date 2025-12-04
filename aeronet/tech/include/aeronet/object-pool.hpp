@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cassert>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -45,7 +44,6 @@ struct Slot {
   }
 
   Slot *nextFree() const noexcept {
-    assert(!isConstructed);
     Slot *next;
     std::memcpy(&next, &storage, sizeof(Slot *));
     return next;
@@ -89,10 +87,10 @@ struct Slot<T, true> {
 template <class T>
 class ObjectPool {
  public:
-  static constexpr std::size_t kDefaultInitialCapacity = 16U;
-  static constexpr std::size_t kGrowthFactor = 2U;
-
   using size_type = std::size_t;
+
+  static constexpr size_type kDefaultInitialCapacity = 16U;
+  static constexpr size_type kGrowthFactor = 2U;
 
   // Creates an empty ObjectPool with no preallocated capacity.
   // At the first allocation, a block of default initial capacity will be allocated.
@@ -130,8 +128,7 @@ class ObjectPool {
   // The given pointer MUST be non-null and MUST be a pointer previously
   // returned by allocateAndConstruct(). Calling this method with a null
   // pointer or calling it more than once for the same object is undefined
-  // behavior (the implementation uses an assert to catch null pointers in
-  // debug builds).
+  // behavior.
   void destroyAndRelease(T *obj) noexcept;
 
   // Releases the object from the pool and returns it.
@@ -202,7 +199,7 @@ class ObjectPool {
   [[nodiscard]] static Slot *slotFromObject(T *object) noexcept {
     static_assert(std::is_standard_layout_v<Slot>);
 
-    static constexpr std::size_t kStorageOffset = offsetof(Slot, storage);
+    static constexpr size_type kStorageOffset = offsetof(Slot, storage);
 
     return reinterpret_cast<Slot *>(reinterpret_cast<std::byte *>(object) - kStorageOffset);
   }
@@ -268,8 +265,6 @@ T *ObjectPool<T>::allocateAndConstruct(Args &&...args) {
 
 template <class T>
 void ObjectPool<T>::destroyAndRelease(T *obj) noexcept {
-  assert(obj != nullptr);
-
   Slot *slot = slotFromObject(obj);
 
   slot->setFree(_freeList);
@@ -281,8 +276,6 @@ template <class T>
 T ObjectPool<T>::release(T *obj) noexcept
   requires std::is_move_constructible_v<T>
 {
-  assert(obj != nullptr);
-
   Slot *slot = slotFromObject(obj);
 
   T ret(std::move(*obj));
@@ -297,8 +290,8 @@ void ObjectPool<T>::clear() noexcept {
   _freeList = nullptr;
 
   for (Block *block = _lastBlock; block != nullptr; block = block->_prevBlock) {
-    auto nbElems = block == _lastBlock ? static_cast<std::size_t>(_nextSlot - slotBegin(block)) : block->_blockSize;
-    for (std::size_t pos = 0; pos < nbElems; ++pos) {
+    const auto nbElems = block == _lastBlock ? static_cast<size_type>(_nextSlot - slotBegin(block)) : block->_blockSize;
+    for (size_type pos = 0; pos < nbElems; ++pos) {
       Slot *slot = slotBegin(block) + pos;
       slot->setFree(_freeList);
       _freeList = slot;

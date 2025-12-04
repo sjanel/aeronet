@@ -23,7 +23,7 @@
 #include "aeronet/temp-file.hpp"
 
 using namespace aeronet;
-namespace test_support = aeronet::sys::test_support;
+namespace test_support = aeronet::test_support;
 
 using test::ScopedTempDir;
 using test::ScopedTempFile;

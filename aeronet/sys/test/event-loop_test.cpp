@@ -25,12 +25,7 @@
 #include "aeronet/sys_test_support.hpp"
 
 using namespace aeronet;
-namespace test_support = aeronet::sys::test_support;
-
-#ifdef __GLIBC__
-extern "C" void* __libc_malloc(size_t) noexcept;          // NOLINT(bugprone-reserved-identifier)
-extern "C" void* __libc_realloc(void*, size_t) noexcept;  // NOLINT(bugprone-reserved-identifier)
-#endif
+namespace test_support = aeronet::test_support;
 
 namespace {
 
@@ -60,10 +55,6 @@ void ResetEpollHooks() {
 void SetEpollCreateActions(std::initializer_list<EpollCreateAction> actions) { gCreateActions.setActions(actions); }
 
 void SetEpollWaitActions(std::vector<EpollWaitAction> actions) { gWaitActions.setActions(std::move(actions)); }
-
-void FailNextMalloc(int count = 1) { test_support::FailNextMalloc(count); }
-
-void FailNextRealloc(int count = 1) { test_support::FailNextRealloc(count); }
 
 class EventLoopHookGuard {
  public:
@@ -104,101 +95,7 @@ void CopyEvents(const EpollWaitAction& action, epoll_event* events, int maxevent
   }
 }
 
-// Disable overriding malloc/realloc for Clang builds instrumented with
-// AddressSanitizer. Clang's ASAN runtime may call allocation functions very
-// early during initialization; providing our own overrides can break ASAN.
-#if defined(__clang__) && defined(__has_feature)
-#if __has_feature(address_sanitizer)
-#define WANT_MALLOC_OVERRIDES 0
-#else
-#define WANT_MALLOC_OVERRIDES 1
-#endif
-#else
-#define WANT_MALLOC_OVERRIDES 1
-#endif
-
-#if WANT_MALLOC_OVERRIDES
-void* CallRealMalloc(size_t size) {
-  using MallocFn = void* (*)(size_t);
-  static MallocFn fn = nullptr;
-  static volatile int resolving = 0;
-  if (fn != nullptr) {
-    return fn(size);
-  }
-  // Try to become the resolver using an atomic CAS builtin (no libc calls)
-  if (!__sync_bool_compare_and_swap(&resolving, 0, 1)) {
-    // Another resolver in progress; fall back to direct libc symbol to avoid
-    // calling dlsym while it's being resolved.
-#ifdef __GLIBC__
-    return __libc_malloc(size);
-#else
-    while (fn == nullptr) {
-      __asm__ __volatile__("pause");
-    }
-    return fn(size);
-#endif
-  }
-
-  // We are the resolver. Resolve the next-in-chain allocator via RTLD_NEXT.
-  fn = test_support::ResolveNext<MallocFn>("malloc");
-  __sync_synchronize();
-  resolving = 0;
-  return fn(size);
-}
-
-void* CallRealRealloc(void* ptr, size_t size) {
-  using ReallocFn = void* (*)(void*, size_t);
-  static ReallocFn fn = nullptr;
-  static volatile int resolving = 0;
-  if (fn != nullptr) {
-    return fn(ptr, size);
-  }
-  if (!__sync_bool_compare_and_swap(&resolving, 0, 1)) {
-#ifdef __GLIBC__
-    return __libc_realloc(ptr, size);
-#else
-    while (fn == nullptr) {
-      __asm__ __volatile__("pause");
-    }
-    return fn(ptr, size);
-#endif
-  }
-
-  fn = test_support::ResolveNext<ReallocFn>("realloc");
-  __sync_synchronize();
-  resolving = 0;
-  return fn(ptr, size);
-}
-#endif  // WANT_MALLOC_OVERRIDES
-
-// Note: we intentionally do NOT override `free` to avoid interfering with
-// runtime loader and sanitizer internals which may call `free` during
-// dlsym/dlerror initialization. Only `malloc`/`realloc` are overridden for
-// deterministic failure injection in tests.
-
 }  // namespace
-
-// Provide malloc/realloc overrides only when allowed. On Clang+ASAN we skip
-// overrides to avoid AddressSanitizer runtime initialization problems.
-#if WANT_MALLOC_OVERRIDES
-extern "C" void* malloc(size_t size) {
-  if (test_support::ShouldFailMalloc()) {
-    errno = ENOMEM;
-    return nullptr;
-  }
-  return CallRealMalloc(size);
-}
-
-extern "C" void* realloc(void* ptr, size_t size) {
-  if (test_support::ShouldFailRealloc()) {
-    errno = ENOMEM;
-    return nullptr;
-  }
-  return CallRealRealloc(ptr, size);
-}
-
-// free is intentionally left un-overridden.
-#endif  // WANT_MALLOC_OVERRIDES
 
 extern "C" int epoll_create1(int flags) {
   using EpollCreateFn = int (*)(int);
@@ -375,10 +272,10 @@ TEST(EventLoopTest, ConstructorThrowsWhenEpollCreateFails) {
 
 TEST(EventLoopTest, ConstructorThrowsWhenAllocationFails) {
   EventLoopHookGuard guard;
-  if (!WANT_MALLOC_OVERRIDES) {
+  if (!AERONET_WANT_MALLOC_OVERRIDES) {
     GTEST_SKIP() << "malloc overrides disabled on this toolchain; skipping";
   }
-  FailNextMalloc();
+  test_support::FailNextMalloc();
   EXPECT_THROW(EventLoop(std::chrono::milliseconds(5)), std::bad_alloc);
 }
 
@@ -408,10 +305,10 @@ TEST(EventLoopTest, PollKeepsCapacityWhenReallocFails) {
     events.push_back(MakeEvent(static_cast<int>(i), EventIn));
   }
   SetEpollWaitActions({WaitReturn(static_cast<int>(initialCapacity), std::move(events))});
-  if (!WANT_MALLOC_OVERRIDES) {
+  if (!AERONET_WANT_MALLOC_OVERRIDES) {
     GTEST_SKIP() << "realloc overrides disabled on this toolchain; skipping";
   }
-  FailNextRealloc();
+  test_support::FailNextRealloc();
 
   int callbacks = 0;
   const int rc = loop.poll([&](EventLoop::EventFd) { ++callbacks; });

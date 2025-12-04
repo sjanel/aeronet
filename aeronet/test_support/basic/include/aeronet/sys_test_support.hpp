@@ -19,7 +19,12 @@
 #include <utility>
 #include <vector>
 
-namespace aeronet::sys::test_support {
+#ifdef __GLIBC__
+extern "C" void* __libc_malloc(size_t) noexcept;          // NOLINT(bugprone-reserved-identifier)
+extern "C" void* __libc_realloc(void*, size_t) noexcept;  // NOLINT(bugprone-reserved-identifier)
+#endif
+
+namespace aeronet::test_support {
 
 // Allocation failure injection utilities used by sys tests. Tests can call
 // `FailNextMalloc()` / `FailNextRealloc()` to cause the next N allocations
@@ -69,13 +74,117 @@ __attribute__((no_sanitize("address"))) inline void FailNextRealloc(int count = 
 // Portable resolver for RTLD_NEXT symbols. This is inline to allow inclusion
 // in test translation units. It aborts if symbol resolution fails.
 template <typename Fn>
-inline Fn ResolveNext(const char* name) {
+Fn ResolveNext(const char* name) {
   void* sym = dlsym(RTLD_NEXT, name);
   if (sym == nullptr) {
     std::abort();
   }
   return reinterpret_cast<Fn>(sym);
 }
+
+}  // namespace aeronet::test_support
+
+// Disable overriding malloc/realloc for:
+// 1. Clang builds instrumented with AddressSanitizer - Clang's ASAN runtime
+//    may call allocation functions very early during initialization.
+// 2. Non-glibc systems (like musl/Alpine) - without __libc_malloc fallback,
+//    dlsym resolution can deadlock or recurse during early initialization.
+#if defined(__clang__) && defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define AERONET_WANT_MALLOC_OVERRIDES 0
+#endif
+#endif
+
+#ifndef AERONET_WANT_MALLOC_OVERRIDES
+#ifdef __GLIBC__
+#define AERONET_WANT_MALLOC_OVERRIDES 1
+#else
+#define AERONET_WANT_MALLOC_OVERRIDES 0
+#endif
+#endif
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+void* CallRealMalloc(size_t size) {
+  using MallocFn = void* (*)(size_t);
+  static MallocFn fn = nullptr;
+  static volatile int resolving = 0;
+  if (fn != nullptr) {
+    return fn(size);
+  }
+  // Try to become the resolver using an atomic CAS builtin (no libc calls)
+  if (!__sync_bool_compare_and_swap(&resolving, 0, 1)) {
+    // Another resolver in progress; fall back to direct libc symbol to avoid
+    // calling dlsym while it's being resolved.
+#ifdef __GLIBC__
+    return __libc_malloc(size);
+#else
+    while (fn == nullptr) {
+      __asm__ __volatile__("pause");
+    }
+    return fn(size);
+#endif
+  }
+
+  // We are the resolver. Resolve the next-in-chain allocator via RTLD_NEXT.
+  fn = aeronet::test_support::ResolveNext<MallocFn>("malloc");
+  __sync_synchronize();
+  resolving = 0;
+  return fn(size);
+}
+
+void* CallRealRealloc(void* ptr, size_t size) {
+  using ReallocFn = void* (*)(void*, size_t);
+  static ReallocFn fn = nullptr;
+  static volatile int resolving = 0;
+  if (fn != nullptr) {
+    return fn(ptr, size);
+  }
+  if (!__sync_bool_compare_and_swap(&resolving, 0, 1)) {
+#ifdef __GLIBC__
+    return __libc_realloc(ptr, size);
+#else
+    while (fn == nullptr) {
+      __asm__ __volatile__("pause");
+    }
+    return fn(ptr, size);
+#endif
+  }
+
+  fn = aeronet::test_support::ResolveNext<ReallocFn>("realloc");
+  __sync_synchronize();
+  resolving = 0;
+  return fn(ptr, size);
+}
+#endif  // AERONET_WANT_MALLOC_OVERRIDES
+
+// Note: we intentionally do NOT override `free` to avoid interfering with
+// runtime loader and sanitizer internals which may call `free` during
+// dlsym/dlerror initialization. Only `malloc`/`realloc` are overridden for
+// deterministic failure injection in tests.
+
+// Provide malloc/realloc overrides only when allowed. On Clang+ASAN we skip
+// overrides to avoid AddressSanitizer runtime initialization problems.
+#if AERONET_WANT_MALLOC_OVERRIDES
+extern "C" void* malloc(size_t size) {
+  if (aeronet::test_support::ShouldFailMalloc()) {
+    errno = ENOMEM;
+    return nullptr;
+  }
+  return CallRealMalloc(size);
+}
+
+extern "C" void* realloc(void* ptr, size_t size) {
+  if (aeronet::test_support::ShouldFailRealloc()) {
+    errno = ENOMEM;
+    return nullptr;
+  }
+  return CallRealRealloc(ptr, size);
+}
+
+// free is intentionally left un-overridden.
+#endif  // AERONET_WANT_MALLOC_OVERRIDES
+
+namespace aeronet::test_support {
 
 inline int CreateMemfd(std::string_view name) {
   const std::string nameStr(name);
@@ -193,4 +302,4 @@ class QueueResetGuard {
   Queue& _queue;
 };
 
-}  // namespace aeronet::sys::test_support
+}  // namespace aeronet::test_support
