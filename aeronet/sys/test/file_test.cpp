@@ -265,3 +265,26 @@ TEST(FileTest, RestoreToStartLogsWhenLseekFails) {
   SetLseekErrors(path, {EIO});
   EXPECT_EQ(fileObj.loadAllContent(), "abc");
 }
+
+TEST(FileTest, DupCreatesIndependentDescriptor) {
+  ScopedTempDir dir("aeronet-file-dup");
+  ScopedTempFile tmp(dir, "dup-content");
+  const std::string path = tmp.filePath().string();
+
+  File original(path, File::OpenMode::ReadOnly);
+  ASSERT_TRUE(static_cast<bool>(original));
+  const auto originalSize = original.size();
+  EXPECT_EQ(original.loadAllContent(), "dup-content");
+
+  File duplicated = original.dup();
+  ASSERT_TRUE(static_cast<bool>(duplicated));
+
+  // Both should report the same size and content
+  EXPECT_EQ(duplicated.size(), originalSize);
+  EXPECT_EQ(duplicated.loadAllContent(), "dup-content");
+
+  // Destroy original and ensure duplicated still works
+  original = File();
+  ASSERT_TRUE(static_cast<bool>(duplicated));
+  EXPECT_EQ(duplicated.loadAllContent(), "dup-content");
+}
