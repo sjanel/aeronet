@@ -39,8 +39,6 @@
 namespace aeronet {
 namespace {
 
-[[nodiscard]] bool IsHiddenName(std::string_view name) { return !name.empty() && name.front() == '.'; }
-
 // Use a constexpr lookup table indexed by unsigned char for a fast, branchless test.
 // This avoids multiple comparisons and gives the compiler a chance to emit a single
 // table-lookup instruction. We use unsigned char to index the array safely.
@@ -298,7 +296,7 @@ struct DirectoryListingResult {
     }
 
     std::string name = current.path().filename().string();
-    if (!config.showHiddenFiles && IsHiddenName(name)) {
+    if (!config.showHiddenFiles && name.starts_with('.')) {
       continue;
     }
 

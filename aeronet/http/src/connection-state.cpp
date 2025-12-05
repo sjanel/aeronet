@@ -47,8 +47,10 @@ ITransport::TransportResult ConnectionState::transportWrite(const HttpResponseDa
 
 ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tlsFlow) {
   static constexpr std::size_t kSendfileChunk = 1 << 16;
+
   const std::size_t maxBytes = std::min(fileSend.remaining, kSendfileChunk);
   off_t off = static_cast<off_t>(fileSend.offset);
+
   ssize_t bytes;
   if (tlsFlow) {
     tunnelOrFileBuffer.ensureAvailableCapacityExponential(maxBytes);
@@ -58,7 +60,7 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
   }
   FileResult res{static_cast<std::size_t>(bytes), tlsFlow ? FileResult::Code::Read : FileResult::Code::Sent, tlsFlow};
 
-  if (bytes < 0) {
+  if (bytes == -1) {
     res.bytesDone = 0;
     int errnoVal = errno;
     static_assert(EAGAIN == EWOULDBLOCK, "Check logic below if EAGAIN != EWOULDBLOCK");
@@ -111,19 +113,19 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
 
 namespace {
 std::string_view AggregateBufferedBody([[maybe_unused]] HttpRequest& request, void* context) {
-  const auto* ctx = static_cast<const ConnectionState::AggregatedBodyStreamContext*>(context);
-  if (ctx == nullptr) {
+  if (context == nullptr) {
     return {};
   }
+  const auto* ctx = static_cast<const ConnectionState::AggregatedBodyStreamContext*>(context);
   return ctx->body;
 }
 
 std::string_view ReadBufferedBody([[maybe_unused]] HttpRequest& request, void* context, std::size_t maxBytes) {
-  if (maxBytes == 0) {
+  if (maxBytes == 0 || context == nullptr) {
     return {};
   }
   auto* ctx = static_cast<ConnectionState::AggregatedBodyStreamContext*>(context);
-  if (ctx == nullptr || ctx->offset >= ctx->body.size()) {
+  if (ctx->offset >= ctx->body.size()) {
     return {};
   }
   const std::size_t remaining = ctx->body.size() - ctx->offset;
@@ -134,10 +136,10 @@ std::string_view ReadBufferedBody([[maybe_unused]] HttpRequest& request, void* c
 }
 
 bool HasMoreBufferedBody([[maybe_unused]] const HttpRequest& request, void* context) {
-  const auto* ctx = static_cast<const ConnectionState::AggregatedBodyStreamContext*>(context);
-  if (ctx == nullptr) {
+  if (context == nullptr) {
     return false;
   }
+  const auto* ctx = static_cast<const ConnectionState::AggregatedBodyStreamContext*>(context);
   return ctx->offset < ctx->body.size();
 }
 }  // namespace

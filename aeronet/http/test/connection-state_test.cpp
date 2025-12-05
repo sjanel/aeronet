@@ -190,6 +190,50 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   EXPECT_EQ(totalRead, totalSize);
 }
 
+TEST(ConnectionStateSendfileTest, KernelSendfileZeroBytesWouldBlock) {
+  int sv[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+
+  ConnectionState state;
+  // Create an empty file to ensure sendfile has nothing to send
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, std::string());
+  File file(tmp.filePath().string());
+  state.fileSend.file = std::move(file);
+  state.fileSend.offset = 0;
+  // remaining == 0 -> kernel sendfile will likely return 0
+  state.fileSend.remaining = 0;
+  state.fileSend.active = true;
+
+  auto res = state.transportFile(sv[0], /*tlsFlow=*/false);
+  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::WouldBlock);
+  EXPECT_TRUE(res.enableWritable);
+}
+
+TEST(ConnectionStateSendfileTest, TlsSendfileEmptyBufferClearsActive) {
+  int sv[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+
+  ConnectionState state;
+  // Empty file to ensure pread returns 0 and no tunnel buffer is filled
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, std::string());
+  File file(tmp.filePath().string());
+  state.fileSend.file = std::move(file);
+  state.fileSend.offset = 0;
+  state.fileSend.remaining = 0;
+  state.fileSend.active = true;
+
+  // Call transportFile in TLS mode which uses pread into tunnelOrFileBuffer
+  auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
+
+  // After calling with empty file, tunnelOrFileBuffer should be empty and fileSend.active false
+  EXPECT_EQ(state.tunnelOrFileBuffer.empty(), true);
+  EXPECT_FALSE(state.fileSend.active);
+}
+
 TEST(ConnectionStateBufferTest, ShrinkToFitReducesNonEmptyBuffers) {
   ConnectionState state;
 
@@ -257,6 +301,46 @@ TEST(ConnectionStateBridgeTest, InstallAggregatedBodyBridgeMakesBodyAvailable) {
   EXPECT_THROW((void)state.request.readBody(10), std::logic_error);
 }
 
+TEST(ConnectionStateBridgeTest, InstallAggregatedBodyBridgeIdempotent) {
+  ConnectionState state;
+
+  // Calling installAggregatedBodyBridge twice should be safe (idempotent) and
+  // should not crash or change outward behavior.
+  state.installAggregatedBodyBridge();
+
+  const std::string payload1 = "first-body";
+  state.bodyStreamContext.body = payload1;
+  state.bodyStreamContext.offset = 0;
+  EXPECT_TRUE(state.request.isBodyReady());
+  EXPECT_EQ(state.request.body(), payload1);
+
+  // Modify buffer and call install again; behavior should remain stable.
+  const std::string payload2 = "second-body";
+  state.bodyStreamContext.body = payload2;
+  state.installAggregatedBodyBridge();
+  EXPECT_TRUE(state.request.isBodyReady());
+  EXPECT_EQ(state.request.body(), payload2);
+}
+
+TEST(ConnectionStateBridgeTest, AggregatedBridgeReadWithZeroMaxBytesReturnsEmpty) {
+  ConnectionState state;
+
+  // Install the aggregated bridge (this wires request to state.bodyStreamContext)
+  state.installAggregatedBodyBridge();
+
+  // Provide the buffered body via the public ConnectionState context the bridge will reference
+  const std::string payload = "aggregated-body-content";
+  state.bodyStreamContext.body = payload;
+  state.bodyStreamContext.offset = 0;
+
+  // Reading with maxBytes == 0 should return empty without advancing the offset
+  auto chunk = state.request.readBody(0);
+  EXPECT_TRUE(chunk.empty());
+  // After the zero-length read, subsequent reads with non-zero should still return data
+  auto chunk2 = state.request.readBody(8);
+  EXPECT_FALSE(chunk2.empty());
+}
+
 TEST(ConnectionStateAsyncStateTest, AsyncHandlerStateClearResetsState) {
   ConnectionState::AsyncHandlerState st;
 
@@ -290,4 +374,42 @@ TEST(ConnectionStateAsyncStateTest, AsyncHandlerStateClearResetsState) {
   // pendingResponse should be default constructed; accept status 0 or OK depending on implementation
   auto prStatus = st.pendingResponse.status();
   EXPECT_TRUE(prStatus == static_cast<http::StatusCode>(0) || prStatus == http::StatusCodeOK);
+}
+
+TEST(ConnectionStateAsyncStateTest, ClearDestroysNonNullHandle) {
+  ConnectionState state;
+
+  // Helper coroutine type that exposes a coroutine handle without destroying it.
+  struct HandleBox {
+    struct promise_type {
+      HandleBox get_return_object() { return HandleBox{std::coroutine_handle<promise_type>::from_promise(*this)}; }
+      std::suspend_always initial_suspend() noexcept { return {}; }
+      std::suspend_never final_suspend() noexcept { return {}; }
+      void return_void() {}
+      void unhandled_exception() {}
+    };
+
+    std::coroutine_handle<promise_type> h;
+    explicit HandleBox(std::coroutine_handle<promise_type> hh) : h(hh) {}
+    // Release ownership of the handle so caller can transfer it to ConnectionState
+    std::coroutine_handle<> release() {
+      auto tmp = std::coroutine_handle<>::from_address(h.address());
+      h = {};
+      return tmp;
+    }
+  };
+
+  auto make_suspended = []() -> HandleBox { co_return; };
+
+  auto box = make_suspended();
+  auto handle = box.release();
+  ASSERT_TRUE(handle);
+
+  // Move the handle into state.asyncState and ensure it's present
+  state.asyncState.handle = handle;
+  EXPECT_TRUE(static_cast<bool>(state.asyncState.handle));
+
+  // clear() should destroy the handle and set it to null
+  state.clear();
+  EXPECT_EQ(state.asyncState.handle, std::coroutine_handle<>());
 }

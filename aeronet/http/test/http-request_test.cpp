@@ -29,7 +29,7 @@ namespace {
 // Helper to build a raw HTTP request buffer we can feed into HttpRequest::setHead
 RawChars BuildRaw(std::string_view method, std::string_view target, std::string_view version = "HTTP/1.1",
                   std::string_view extraHeaders = "", bool includeFinalCRLF = true) {
-  RawChars str;
+  RawChars str(64 + extraHeaders.size());
   str.append(method);
   str.push_back(' ');
   str.append(target);
@@ -116,6 +116,21 @@ class HttpRequestTest : public ::testing::Test {
     req._bodyAccessBridge = &bridge;
   }
 
+  // Helper to set a custom BodyAccessBridge and explicitly clear the context.
+  void setCustomBridgeWithNullContext(HttpRequest::BodyAccessBridge::AggregateFn aggregate,
+                                      HttpRequest::BodyAccessBridge::ReadChunkFn readChunk,
+                                      HttpRequest::BodyAccessBridge::HasMoreFn hasMore) {
+    static HttpRequest::BodyAccessBridge sbridge;
+    sbridge.aggregate = aggregate;
+    sbridge.readChunk = readChunk;
+    sbridge.hasMore = hasMore;
+    req._bodyAccessBridge = &sbridge;
+    req._bodyAccessContext = nullptr;
+  }
+
+  // Fixture-level helper to mutate the request's private body access context
+  void setRequestBodyAccessContextToNull() { cs.request._bodyAccessContext = nullptr; }
+
   void callPinHeadStorage() { req.pinHeadStorage(cs); }
 
   [[nodiscard]] bool callWantClose() const { return req.wantClose(); }
@@ -138,6 +153,90 @@ class HttpRequestTest : public ::testing::Test {
   HttpRequest req;
   ConnectionState cs;
 };
+
+TEST_F(HttpRequestTest, ReadBodyWithZeroMaxBytesReturnsEmpty) {
+  setBodyAccessStreamingWithBridgeNoHasMore();
+  auto chunk = req.readBody(0);
+  EXPECT_TRUE(chunk.empty());
+}
+TEST_F(HttpRequestTest, BridgeWithNullContextAggregateHandledGracefully) {
+  // Aggregate accessor: null context -> empty body
+  using AggFnRaw = std::string_view (*)(HttpRequest&, void*);
+  AggFnRaw agg = +[](HttpRequest& /*r*/, void* ctx) -> std::string_view {
+    if (ctx == nullptr) {
+      return {};
+    }
+    return "full";
+  };
+
+  // For aggregate test we don't need readChunk/hasMore
+  setCustomBridgeWithNullContext(agg, /*readChunk=*/nullptr, /*hasMore=*/nullptr);
+
+  // body() with null context should not crash and should return empty
+  EXPECT_TRUE(req.body().empty());
+  // hasMoreBody should be false when aggregated
+  EXPECT_FALSE(req.hasMoreBody());
+}
+
+TEST_F(HttpRequestTest, BridgeWithNullContextStreamingHandledGracefully) {
+  // Streaming accessor: null context -> empty chunks and hasMore false
+  using ReadFnRaw = std::string_view (*)(HttpRequest&, void*, std::size_t);
+  using HasMoreFnRaw = bool (*)(const HttpRequest&, void*);
+
+  ReadFnRaw rd = +[](HttpRequest& /*r*/, void* ctx, std::size_t /*maxBytes*/) -> std::string_view {
+    if (ctx == nullptr) {
+      return {};
+    }
+    return "c";
+  };
+  HasMoreFnRaw hm = +[](const HttpRequest& /*r*/, void* ctx) -> bool { return ctx != nullptr; };
+
+  setCustomBridgeWithNullContext(nullptr, rd, hm);
+
+  // readBody should return empty for null context (streaming)
+  EXPECT_TRUE(req.readBody(4).empty());
+  EXPECT_FALSE(req.hasMoreBody());
+}
+
+TEST_F(HttpRequestTest, AggregatedBridgeNullContextAndHasMoreHandled) {
+  // Install the real aggregated bridge via ConnectionState so the bridge points
+  // at ConnectionState::bodyStreamContext functions defined in connection-state.cpp.
+  cs.installAggregatedBodyBridge();
+
+  // Force the bridge context to be null to exercise the null-context branches
+  // inside AggregateBufferedBody and HasMoreBufferedBody.
+  setRequestBodyAccessContextToNull();
+
+  // Aggregate accessor with null context should return empty and not crash.
+  EXPECT_TRUE(cs.request.body().empty());
+
+  // hasMore should return false when context is null.
+  EXPECT_FALSE(cs.request.hasMoreBody());
+}
+
+TEST_F(HttpRequestTest, AggregatedBridgeReadOffsetPastEndHandled) {
+  // Install aggregated bridge and ensure the body context is present.
+  cs.installAggregatedBodyBridge();
+
+  // Provide an empty body so offset (0) is already past/equal to size (0).
+  cs.bodyStreamContext.body = std::string_view();
+  cs.bodyStreamContext.offset = 0;
+
+  // readBody should see offset >= body.size() and return empty without crashing.
+  auto chunk = cs.request.readBody(4);
+  EXPECT_TRUE(chunk.empty());
+}
+
+TEST_F(HttpRequestTest, AggregatedBridgeHasMoreNullContextHandled) {
+  // Install aggregated bridge via ConnectionState
+  cs.installAggregatedBodyBridge();
+
+  // Ensure context is null to hit the null-context branch in HasMoreBufferedBody
+  setRequestBodyAccessContextToNull();
+
+  // hasMoreBody should return false when context is null
+  EXPECT_FALSE(cs.request.hasMoreBody());
+}
 
 TEST_F(HttpRequestTest, NotEnoughDataNoEndOfHeaders) {
   EXPECT_EQ(reqSet(BuildRaw("GET", "/", "HTTP/1.1", "Server: aeronet", false)), 0);
@@ -981,7 +1080,7 @@ TEST_F(HttpRequestTest, LongInputs) {
 
 // Fuzz test specifically targeting header parsing
 TEST_F(HttpRequestTest, HeaderParsingStress) {
-  constexpr std::size_t kIterations = 5000;
+  constexpr std::size_t kIterations = 100;
 
   for (std::size_t seed = 0; seed < kIterations; ++seed) {
     FuzzRng rng(seed + 3000000);
@@ -990,8 +1089,8 @@ TEST_F(HttpRequestTest, HeaderParsingStress) {
     input.append("GET / HTTP/1.1\r\n");
 
     // Generate many headers
-    std::size_t numHeaders = rng.range(0, 100);
-    for (std::size_t hh = 0; hh < numHeaders; ++hh) {
+    std::size_t numHeaders = rng.range(0, 300);
+    for (std::size_t headerPos = 0; headerPos < numHeaders; ++headerPos) {
       // Sometimes use known header names
       if (rng.coin()) {
         static constexpr std::array kKnownHeaders = {
@@ -1005,10 +1104,10 @@ TEST_F(HttpRequestTest, HeaderParsingStress) {
           input.push_back(static_cast<char>('a' + rng.range(0, 26)));
         }
       }
-      input.append(": ");
+      input.append(http::HeaderSep);
 
       // Value
-      std::size_t valLen = rng.range(0, 100);
+      std::size_t valLen = rng.range(0, 1000);
       for (std::size_t ii = 0; ii < valLen; ++ii) {
         char ch = static_cast<char>(rng.range(32, 127));  // Printable ASCII
         input.push_back(ch);
