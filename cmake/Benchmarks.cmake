@@ -2,6 +2,7 @@
 option(AERONET_BENCH_ENABLE_OATPP "Fetch and build oatpp for comparative benchmarks" ON)
 option(AERONET_BENCH_ENABLE_DROGON "Fetch and build drogon for comparative benchmarks" ON)
 option(AERONET_BENCH_ENABLE_HTTPLIB "Fetch and build cpp-httplib for comparative benchmarks" ON)
+option(AERONET_BENCH_ENABLE_PISTACHE "Build pistache benchmark server if pistache is found" ON)
 
 include(FetchContent)
 
@@ -174,3 +175,7 @@ add_custom_target(run-aeronet-bench-json
   COMMAND aeronet-bench-internal --benchmark_format=json > aeronet-benchmarks.json
   DEPENDS aeronet-bench-internal
   COMMENT "Running aeronet benchmarks (JSON output -> aeronet-benchmarks.json)")
+
+# Scripted server benchmarks (wrk-based external load testing)
+# These are standalone HTTP servers meant to be tested with wrk/lua scripts
+add_subdirectory(${AERONET_BENCH_ROOT}/scripted-servers ${CMAKE_BINARY_DIR}/benchmarks/scripted-servers)
