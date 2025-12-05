@@ -19,7 +19,6 @@ jobs:
 
     env:
       CMAKE_BUILD_TYPE: ${{ matrix.build }}
-      WITH_BENCHMARKS: ${{ matrix.build == 'Release' && 'ON' || 'OFF' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -71,7 +70,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
             -DAERONET_BUILD_TESTS=ON \
             -DAERONET_BUILD_EXAMPLES=ON \
-            -DAERONET_BUILD_BENCHMARKS=${WITH_BENCHMARKS} \
+            -DAERONET_BUILD_BENCHMARKS=OFF \
             -DAERONET_ENABLE_ASAN=ON \
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
             -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
@@ -122,6 +121,81 @@ jobs:
           path: install
           if-no-files-found: ignore
           retention-days: 7
+
+  benchmarks:
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc-13, clang-21]
+    runs-on: ubuntu-latest
+
+    env:
+      CMAKE_BUILD_TYPE: Release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install all dependencies with features
+        run: |
+          sudo apt-get install -y wrk libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          pip install uvicorn starlette
+
+      - name: Install GCC toolchain
+        if: ${{ startsWith(matrix.compiler, 'gcc') }}
+        run: sudo apt-get install -y ${{ matrix.compiler }}
+
+      - name: Install Clang/LLVM toolchain
+        if: ${{ startsWith(matrix.compiler, 'clang') }}
+        run: |
+            wget --retry-connrefused --waitretry=5 --tries=5 https://apt.llvm.org/llvm.sh
+            chmod +x llvm.sh
+            compiler="${{ matrix.compiler }}"
+            version="${compiler##*-}"
+            echo "Detected clang version: $version"
+            sudo ./llvm.sh "$version"
+            sudo apt-get install -y "lld-$version"
+
+      - name: Derive CC/CXX environment
+        run: |
+          compiler="${{ matrix.compiler }}"
+          echo "CC=$compiler" >> $GITHUB_ENV
+          ver="${compiler##*-}"
+          if [[ "$compiler" == gcc-* ]]; then
+            echo "CXX=g++-$ver" >> $GITHUB_ENV
+          else
+            echo "CXX=clang++-$ver" >> $GITHUB_ENV
+          fi
+          echo "Derived compilers: CC=$compiler CXX set for version $ver"
+
+      - name: Show compiler version
+        run: |
+          $CXX --version
+
+      - name: Configure (CMake)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+            -DAERONET_BUILD_TESTS=OFF \
+            -DAERONET_BUILD_EXAMPLES=OFF \
+            -DAERONET_BUILD_BENCHMARKS=ON \
+            -DAERONET_ENABLE_ASAN=OFF \
+            -DAERONET_ENABLE_CLANG_TIDY=OFF \
+            -DAERONET_ENABLE_SPDLOG=ON \
+            -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_KTLS=ON \
+            -DAERONET_ENABLE_BROTLI=ON \
+            -DAERONET_ENABLE_ZLIB=ON \
+            -DAERONET_ENABLE_ZSTD=ON \
+            -DAERONET_ENABLE_OPENTELEMETRY=OFF
+
+      - name: Build
+        run: |
+          cmake --build build --parallel
+
+      - name: Run comparative benchmarks
+        working-directory: ${{github.workspace}}/build/benchmarks/scripted-servers
+        run: |
+          ./run_benchmarks.py --duration 15s
 
   coverage:
     runs-on: ubuntu-latest

@@ -1,5 +1,12 @@
 build**
 .cache
+benchmarks/scripted-servers/undertow_server/*.jar
+benchmarks/scripted-servers/results
+benchmarks/scripted-servers/rust_server/target
+benchmarks/scripted-servers/certs
+benchmarks/scripted-servers/logs
+benchmarks/scripted-servers/go-bench-server
+**/*.class
 
 # IDE / editor
 .idea/
