@@ -155,7 +155,14 @@ if(AERONET_INSTALL)
     @ONLY
   )
 
-  install(TARGETS aeronet aeronet_http aeronet_tech aeronet_objects aeronet_sys
+  set(_AERONET_EXPORT_TARGETS aeronet aeronet_http aeronet_tech aeronet_objects aeronet_sys)
+  if(TARGET aeronet_zstd_headers)
+    list(APPEND _AERONET_EXPORT_TARGETS aeronet_zstd_headers)
+  endif()
+  if(TARGET aeronet_brotli_headers)
+    list(APPEND _AERONET_EXPORT_TARGETS aeronet_brotli_headers)
+  endif()
+  install(TARGETS ${_AERONET_EXPORT_TARGETS}
     EXPORT aeronetTargets
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
