@@ -596,9 +596,9 @@ TEST_F(StaticFileHandlerTest, ContentTypeResolverOverridesDefault) {
   }
 
   StaticFileConfig cfg;
-  cfg.contentTypeResolver = [](std::string_view path) {
+  cfg.contentTypeResolver = [](std::string_view path) -> std::string_view {
     EXPECT_TRUE(path.ends_with("resolver.txt"));
-    return std::string{"text/x-special"};
+    return "text/x-special";
   };
   StaticFileHandler handler(tmpDir.dirPath(), cfg);
 

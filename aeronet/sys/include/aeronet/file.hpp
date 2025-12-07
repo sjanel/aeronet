@@ -41,6 +41,10 @@ class File {
   // Load the entire file content into a string. Throws on error.
   [[nodiscard]] std::string loadAllContent() const;
 
+  // Duplicate the underlying file descriptor and return a new File that owns the duplicate.
+  // Returns a default-constructed (empty) File on failure.
+  [[nodiscard]] File dup() const;
+
   // Returns the probable content type based on the file extension.
   // If not found, return 'application/octet-stream'.
   [[nodiscard]] std::string_view detectedContentType() const;
@@ -52,6 +56,9 @@ class File {
   // The caller does NOT take ownership of the descriptor; the File instance remains
   // responsible for closing it (unless you explicitly adopt the fd elsewhere first).
   [[nodiscard]] int fd() const noexcept { return _fd.fd(); }
+
+  // Private constructor used to create a File instance from an existing BaseFd (takes ownership).
+  explicit File(BaseFd&& baseFd, MIMETypeIdx mimeIdx) noexcept;
 
   BaseFd _fd;
   MIMETypeIdx _mimeMappingIdx = kUnknownMIMEMappingIdx;

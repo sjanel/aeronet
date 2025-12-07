@@ -229,6 +229,9 @@ TEST(ConnectionStateSendfileTest, TlsSendfileEmptyBufferClearsActive) {
   // Call transportFile in TLS mode which uses pread into tunnelOrFileBuffer
   auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
 
+  EXPECT_EQ(res.bytesDone, 0U);
+  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::Read);
+
   // After calling with empty file, tunnelOrFileBuffer should be empty and fileSend.active false
   EXPECT_EQ(state.tunnelOrFileBuffer.empty(), true);
   EXPECT_FALSE(state.fileSend.active);
@@ -383,8 +386,8 @@ TEST(ConnectionStateAsyncStateTest, ClearDestroysNonNullHandle) {
   struct HandleBox {
     struct promise_type {
       HandleBox get_return_object() { return HandleBox{std::coroutine_handle<promise_type>::from_promise(*this)}; }
-      std::suspend_always initial_suspend() noexcept { return {}; }
-      std::suspend_never final_suspend() noexcept { return {}; }
+      static std::suspend_always initial_suspend() noexcept { return {}; }
+      static std::suspend_never final_suspend() noexcept { return {}; }
       void return_void() {}
       void unhandled_exception() {}
     };

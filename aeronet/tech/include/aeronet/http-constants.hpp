@@ -138,6 +138,8 @@ inline constexpr std::string_view ContentTypeTextHtml = "text/html";
 inline constexpr std::string_view ContentTypeApplicationJson = "application/json";
 inline constexpr std::string_view ContentTypeApplicationOctetStream = "application/octet-stream";
 inline constexpr std::string_view ContentTypeMessageHttp = "message/http";
+inline constexpr std::string_view ContentTypeTextCss = "text/css";
+inline constexpr std::string_view ContentTypeTextJavascript = "text/javascript";
 
 // Return the canonical reason phrase for a subset of status codes we care about.
 constexpr std::string_view ReasonPhraseFor(http::StatusCode status) noexcept {
