@@ -20,10 +20,6 @@ class TLSInfo {
 
   explicit TLSInfo(Parts parts) noexcept : _parts(std::move(parts)) {}
 
-  TLSInfo(std::string_view selectedAlpn, std::string_view negotiatedCipher, std::string_view negotiatedVersion,
-          std::string_view peerSubject)
-      : _parts({selectedAlpn, negotiatedCipher, negotiatedVersion, peerSubject}) {}
-
   [[nodiscard]] std::string_view selectedAlpn() const noexcept { return _parts[0]; }
 
   [[nodiscard]] std::string_view negotiatedCipher() const noexcept { return _parts[1]; }
