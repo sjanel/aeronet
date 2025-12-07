@@ -19,6 +19,7 @@
 #include <thread>
 
 #include "drogon/HttpTypes.h"
+#include "scripted-servers-helpers.hpp"
 
 namespace {
 
@@ -30,56 +31,6 @@ constexpr unsigned char toupper(unsigned char ch) {
 }
 
 constexpr char toupper(char ch) { return static_cast<char>(toupper(static_cast<unsigned char>(ch))); }
-
-// CPU-bound computation for /compute endpoint
-uint64_t Fibonacci(int n) {
-  if (n <= 1) {
-    return static_cast<uint64_t>(n);
-  }
-  uint64_t prev = 0;
-  uint64_t curr = 1;
-  for (int i = 2; i <= n; ++i) {
-    uint64_t next = prev + curr;
-    prev = curr;
-    curr = next;
-  }
-  return curr;
-}
-
-// Simple hash computation for CPU stress
-uint64_t ComputeHash(std::string_view data, int iterations) {
-  uint64_t hash = 0xcbf29ce484222325ULL;  // FNV-1a offset basis
-  for (int iter = 0; iter < iterations; ++iter) {
-    for (char signedCh : data) {
-      auto ch = static_cast<unsigned char>(signedCh);
-      hash ^= ch;
-      hash *= 0x100000001b3ULL;  // FNV-1a prime
-    }
-  }
-  return hash;
-}
-
-// Generate random string for response bodies
-std::string GenerateRandomString(std::size_t length) {
-  static constexpr char kCharset[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-  static thread_local std::mt19937_64 rng(std::random_device{}());
-  std::uniform_int_distribution<std::size_t> dist(0, sizeof(kCharset) - 2);
-
-  std::string result(length, '\0');
-  for (std::size_t pos = 0; pos < length; ++pos) {
-    result[pos] = kCharset[dist(rng)];
-  }
-  return result;
-}
-
-int GetNumThreads() {
-  const char* envThreads = std::getenv("BENCH_THREADS");
-  if (envThreads != nullptr) {
-    return std::atoi(envThreads);
-  }
-  int hwThreads = static_cast<int>(std::thread::hardware_concurrency());
-  return std::max(1, hwThreads / 2);
-}
 
 uint16_t GetPort() {
   const char* envPort = std::getenv("BENCH_PORT");
@@ -109,7 +60,7 @@ drogon::ContentType GetContentType(std::string_view path) {
 
 int main(int argc, char* argv[]) {
   uint16_t port = GetPort();
-  int numThreads = GetNumThreads();
+  int numThreads = bench::GetNumThreads();
   std::string staticDir;
   int routeCount = 0;
 
@@ -140,9 +91,9 @@ int main(int argc, char* argv[]) {
   // Configure Drogon
   app.addListener("127.0.0.1", port);
   app.setThreadNum(static_cast<std::size_t>(numThreads));
-  app.setIdleConnectionTimeout(0);               // No timeout for benchmarks
-  app.setPipeliningRequestsNumber(1000000);      // Allow many pipelined requests
-  app.setClientMaxBodySize(64UL * 1024 * 1024);  // 64MB body limit
+  app.setIdleConnectionTimeout(0);                      // No timeout for benchmarks
+  app.setPipeliningRequestsNumber(1000000000);          // Allow many pipelined requests
+  app.setClientMaxBodySize(4ULL * 1024 * 1024 * 1024);  // 4GB body limit
 
   // ============================================================
   // Endpoint 1: /ping - Minimal latency test
@@ -179,7 +130,7 @@ int main(int argc, char* argv[]) {
         resp->setStatusCode(drogon::k200OK);
 
         for (std::size_t headerPos = 0; headerPos < count; ++headerPos) {
-          resp->addHeader(std::format("X-Bench-Header-{}", headerPos), GenerateRandomString(headerSize));
+          resp->addHeader(std::format("X-Bench-Header-{}", headerPos), bench::GenerateRandomString(headerSize));
         }
         resp->setBody(std::format("Generated {} headers", count));
         callback(resp);
@@ -224,9 +175,9 @@ int main(int argc, char* argv[]) {
           hashIters = std::stoi(hashParam);
         }
 
-        uint64_t fibResult = Fibonacci(complexity);
+        uint64_t fibResult = bench::Fibonacci(complexity);
         std::string data = std::format("benchmark-data-{}", complexity);
-        uint64_t hashResult = ComputeHash(data, hashIters);
+        uint64_t hashResult = bench::ComputeHash(data, hashIters);
 
         auto resp = drogon::HttpResponse::newHttpResponse();
         resp->setStatusCode(drogon::k200OK);
@@ -303,7 +254,7 @@ int main(int argc, char* argv[]) {
 
         auto resp = drogon::HttpResponse::newHttpResponse();
         resp->setStatusCode(drogon::k200OK);
-        resp->setBody(GenerateRandomString(size));
+        resp->setBody(bench::GenerateRandomString(size));
         callback(resp);
       },
       {drogon::Get});

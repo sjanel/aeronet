@@ -11,12 +11,12 @@
 #include <filesystem>
 #include <iostream>
 #include <optional>
-#include <random>
 #include <string>
 #include <thread>
 
 #include "pistache/endpoint.h"
 #include "pistache/http.h"
+#include "scripted-servers-helpers.hpp"
 
 namespace {
 constexpr unsigned char toupper(unsigned char ch) {
@@ -33,47 +33,6 @@ int gNumThreads = 1;
 std::string gStaticDir;
 int gRouteCount = 0;
 
-// CPU-bound computation for /compute endpoint
-uint64_t Fibonacci(int nn) {
-  if (nn <= 1) {
-    return static_cast<uint64_t>(nn);
-  }
-  uint64_t prev = 0;
-  uint64_t curr = 1;
-  for (int ii = 2; ii <= nn; ++ii) {
-    uint64_t next = prev + curr;
-    prev = curr;
-    curr = next;
-  }
-  return curr;
-}
-
-// Simple hash computation for CPU stress
-uint64_t ComputeHash(const std::string& data, int iterations) {
-  uint64_t hash = 0xcbf29ce484222325ULL;  // FNV-1a offset basis
-  for (int iter = 0; iter < iterations; ++iter) {
-    for (char signedCh : data) {
-      auto ch = static_cast<unsigned char>(signedCh);
-      hash ^= ch;
-      hash *= 0x100000001b3ULL;  // FNV-1a prime
-    }
-  }
-  return hash;
-}
-
-// Generate random string for response bodies
-std::string GenerateRandomString(std::size_t length) {
-  static constexpr char kCharset[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-  static thread_local std::mt19937_64 rng(std::random_device{}());
-  std::uniform_int_distribution<std::size_t> dist(0, sizeof(kCharset) - 2);
-
-  std::string result(length, '\0');
-  for (std::size_t pos = 0; pos < length; ++pos) {
-    result[pos] = kCharset[dist(rng)];
-  }
-  return result;
-}
-
 // Parse query parameter as integer
 int GetQueryParamOr(const Pistache::Http::Request& req, const std::string& key, int defaultValue) {
   if (req.query().has(key)) {
@@ -84,15 +43,6 @@ int GetQueryParamOr(const Pistache::Http::Request& req, const std::string& key, 
     }
   }
   return defaultValue;
-}
-
-int GetNumThreads() {
-  const char* envThreads = std::getenv("BENCH_THREADS");
-  if (envThreads != nullptr) {
-    return std::atoi(envThreads);
-  }
-  int hwThreads = static_cast<int>(std::thread::hardware_concurrency());
-  return std::max(1, hwThreads / 2);
 }
 
 uint16_t GetPort() {
@@ -195,8 +145,8 @@ class BenchHandler : public Pistache::Http::Handler {
       std::size_t count = static_cast<std::size_t>(GetQueryParamOr(req, "count", 10));
       std::size_t headerSize = static_cast<std::size_t>(GetQueryParamOr(req, "size", 64));
       for (std::size_t pos = 0; pos < count; ++pos) {
-        response.headers().addRaw(
-            Pistache::Http::Header::Raw(std::format("X-Bench-Header-{}", pos), GenerateRandomString(headerSize)));
+        response.headers().addRaw(Pistache::Http::Header::Raw(std::format("X-Bench-Header-{}", pos),
+                                                              bench::GenerateRandomString(headerSize)));
       }
       response.send(Pistache::Http::Code::Ok, std::format("Generated {} headers", count));
       return;
@@ -216,9 +166,9 @@ class BenchHandler : public Pistache::Http::Handler {
     if (method == Pistache::Http::Method::Get && path == "/compute") {
       int complexity = GetQueryParamOr(req, "complexity", 30);
       int hashIters = GetQueryParamOr(req, "hash_iters", 1000);
-      uint64_t fibResult = Fibonacci(complexity);
+      uint64_t fibResult = bench::Fibonacci(complexity);
       std::string data = "benchmark-data-" + std::to_string(complexity);
-      uint64_t hashResult = ComputeHash(data, hashIters);
+      uint64_t hashResult = bench::ComputeHash(data, hashIters);
       response.headers().addRaw(Pistache::Http::Header::Raw("X-Fib-Result", std::to_string(fibResult)));
       response.headers().addRaw(Pistache::Http::Header::Raw("X-Hash-Result", std::to_string(hashResult)));
       response.send(Pistache::Http::Code::Ok, std::format("fib({})={}, hash={}", complexity, fibResult, hashResult));
@@ -249,7 +199,7 @@ class BenchHandler : public Pistache::Http::Handler {
 
     if (method == Pistache::Http::Method::Get && path == "/body") {
       std::size_t size = static_cast<std::size_t>(GetQueryParamOr(req, "size", 1024));
-      response.send(Pistache::Http::Code::Ok, GenerateRandomString(size));
+      response.send(Pistache::Http::Code::Ok, bench::GenerateRandomString(size));
       return;
     }
 
@@ -304,7 +254,7 @@ class BenchHandler : public Pistache::Http::Handler {
 
 int main(int argc, char* argv[]) {
   uint16_t port = GetPort();
-  int numThreads = GetNumThreads();
+  int numThreads = bench::GetNumThreads();
   std::string staticDir;
   int routeCount = 0;
 
@@ -339,8 +289,8 @@ int main(int argc, char* argv[]) {
 
   auto opts = Pistache::Http::Endpoint::options()
                   .threads(numThreads)
-                  .maxRequestSize(static_cast<size_t>(64 * 1024 * 1024))  // 64MB for large body tests
-                  .maxResponseSize(static_cast<size_t>(64 * 1024 * 1024));
+                  .maxRequestSize(static_cast<size_t>(4ULL * 1024 * 1024 * 1024))
+                  .maxResponseSize(static_cast<size_t>(4ULL * 1024 * 1024 * 1024));
 
   Pistache::Http::Endpoint server(addr);
   server.init(opts);

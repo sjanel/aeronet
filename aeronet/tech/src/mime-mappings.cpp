@@ -1,6 +1,7 @@
 #include "aeronet/mime-mappings.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <iterator>
 #include <limits>
 #include <string_view>
@@ -23,10 +24,10 @@ MIMETypeIdx DetermineMIMETypeIdx(std::string_view path) {
         return lhs.extension.size() < rhs.extension.size();
       })->extension.size();
 
-  if (dotPos != std::string_view::npos && (path.size() - dotPos - 1) <= kMaximumKnownExtensionSize) {
+  if (dotPos != std::string_view::npos && (path.size() - dotPos - 1U) <= kMaximumKnownExtensionSize) {
     char extBuf[kMaximumKnownExtensionSize];
     const auto endIt =
-        std::transform(path.begin() + dotPos + 1, path.end(), extBuf, [](char ch) { return tolower(ch); });
+        std::transform(path.begin() + dotPos + 1U, path.end(), extBuf, [](char ch) { return tolower(ch); });
 
     const std::string_view ext(extBuf, endIt);
     const auto it = std::ranges::lower_bound(kMIMEMappings, ext, {}, &MIMEMapping::extension);

@@ -25,6 +25,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/mime-mappings.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/static-file-config.hpp"
@@ -961,21 +962,25 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     AddLastModifiedHeader(resp, lastModified);
   }
 
+  // Resolve content type.
+  // Algorithm is:
+  // 1) If user provided a content type resolver, use that (it can still return empty to indicate no preference).
+  // 2) If that returned empty (or no content type resolver), try to determine MIME type from file extension.
+  // 3) If that also failed, use default content type from config.
   std::string_view contentTypeForFile;
   if (_config.contentTypeResolver) {
-    auto resolved = _config.contentTypeResolver(targetPathString);
-    if (!resolved.empty()) {
-      contentTypeForFile = resolved;
-    }
+    contentTypeForFile = _config.contentTypeResolver(targetPathString);
   }
 
   if (contentTypeForFile.empty()) {
-    contentTypeForFile =
-        _config.defaultContentType().empty() ? http::ContentTypeApplicationOctetStream : _config.defaultContentType();
+    contentTypeForFile = DetermineMIMETypeStr(targetPathString);
+    if (contentTypeForFile.empty()) {
+      contentTypeForFile = _config.defaultContentType();
+    }
   }
 
   if (rangeSelection.state == RangeSelection::State::Valid) {
-    resp.status(http::StatusCodePartialContent, "Partial Content");
+    resp.status(http::StatusCodePartialContent);
     const auto rangeHeader = BuildRangeHeader(rangeSelection.offset, rangeSelection.length, fileSize);
     resp.addHeader(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
     resp.file(std::move(file), static_cast<std::size_t>(rangeSelection.offset),
