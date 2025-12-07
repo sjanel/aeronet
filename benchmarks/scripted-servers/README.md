@@ -145,7 +145,7 @@ Tests static file handler with various file sizes. Requires setup first.
 
 ```bash
 # Generate test files
-./setup_bench_resources.sh
+./setup_bench_resources.py
 
 # Start server with static file directory
 ./aeronet-bench-server --static ./static &

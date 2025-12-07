@@ -100,7 +100,7 @@ jobs:
           ls -l consumer-test/build || true
 
       - name: Archive consumer binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: consumer-${{ matrix.features }}
           path: consumer-test/build/consumer-example
