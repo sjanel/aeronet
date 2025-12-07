@@ -877,7 +877,9 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     }
   }
 
-  File file(targetPath.string(), File::OpenMode::ReadOnly);
+  const std::string targetPathString = targetPath.string();
+
+  File file(targetPathString, File::OpenMode::ReadOnly);
   if (!file) {
     return MakeError(http::StatusCodeNotFound, http::NotFound);
   }
@@ -959,13 +961,11 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     AddLastModifiedHeader(resp, lastModified);
   }
 
-  std::string resolvedContentType;
   std::string_view contentTypeForFile;
   if (_config.contentTypeResolver) {
-    auto resolved = _config.contentTypeResolver(targetPath.generic_string());
+    auto resolved = _config.contentTypeResolver(targetPathString);
     if (!resolved.empty()) {
-      resolvedContentType = std::move(resolved);
-      contentTypeForFile = resolvedContentType;
+      contentTypeForFile = resolved;
     }
   }
 

@@ -8,10 +8,10 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/static-concatenated-strings.hpp"
 
 namespace aeronet {
-
 /// Configuration knobs for StaticFileHandler (serving filesystem trees).
 class StaticFileConfig {
  public:
@@ -60,7 +60,8 @@ class StaticFileConfig {
   bool showHiddenFiles{false};
 
   /// Optional callback returning Content-Type for the resolved file path.
-  std::function<std::string(std::string_view)> contentTypeResolver;
+  /// Warning: the returned string_view must be pointing to constant storage (to const char * for instance).
+  std::function<std::string_view(std::string_view)> contentTypeResolver;
 
   /// Optional callback to render directory index HTML.
   std::function<std::string(const std::filesystem::path &directory, std::span<const std::filesystem::directory_entry>)>
@@ -70,7 +71,7 @@ class StaticFileConfig {
   std::size_t maxEntriesToList = 10000;
 
  private:
-  StaticConcatenatedStrings<3, uint32_t> _staticFileStrings{"index.html", "application/octet-stream",
+  StaticConcatenatedStrings<3, uint32_t> _staticFileStrings{"index.html", http::ContentTypeApplicationOctetStream,
                                                             std::string_view()};
 };
 

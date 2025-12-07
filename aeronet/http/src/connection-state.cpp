@@ -62,7 +62,7 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
 
   if (bytes == -1) {
     res.bytesDone = 0;
-    int errnoVal = errno;
+    const int errnoVal = errno;
     static_assert(EAGAIN == EWOULDBLOCK, "Check logic below if EAGAIN != EWOULDBLOCK");
     switch (errnoVal) {
       case EWOULDBLOCK:

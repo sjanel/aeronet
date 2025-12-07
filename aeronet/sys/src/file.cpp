@@ -72,6 +72,9 @@ File::File(std::string_view path, OpenMode mode)
 File::File(const char* path, OpenMode mode)
     : _fd(CreateFileBaseFd(path, mode)), _mimeMappingIdx(DetermineMIMETypeIdx(path)) {}
 
+// Private helper: construct from existing fd (takes ownership)
+File::File(BaseFd&& baseFd, MIMETypeIdx idx) noexcept : _fd(std::move(baseFd)), _mimeMappingIdx(idx) {}
+
 std::size_t File::size() const {
   struct stat st{};
   if (_fd && ::fstat(_fd.fd(), &st) == 0) {
@@ -143,6 +146,20 @@ std::string File::loadAllContent() const {
   }
 
   return content;
+}
+
+File File::dup() const {
+  if (!_fd) {
+    return File();
+  }
+  // Duplicate file descriptor with CLOEXEC to avoid leaking across exec
+  int newfd = ::fcntl(_fd.fd(), F_DUPFD_CLOEXEC, 0);
+  if (newfd == -1) {
+    log::error("File::dup failed to dup fd {}: errno={} msg={}", _fd.fd(), errno, std::strerror(errno));
+    return File();
+  }
+  BaseFd base(newfd);
+  return File(std::move(base), _mimeMappingIdx);
 }
 
 std::string_view File::detectedContentType() const {
