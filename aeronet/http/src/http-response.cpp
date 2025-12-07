@@ -126,7 +126,7 @@ void HttpResponse::setReason(std::string_view newReason) {
   _data.addSize(static_cast<std::size_t>(diff));
 }
 
-void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue, bool onlyIfNew) {
+void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue, OnlyIfNew onlyIfNew) {
   assert(!newKey.empty() && std::ranges::all_of(newKey, [](char ch) { return is_tchar(ch); }));
 
   auto optValue = headerValue(newKey);
@@ -134,7 +134,7 @@ void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
     appendHeaderInternal(newKey, newValue);
     return;
   }
-  if (onlyIfNew) {
+  if (onlyIfNew == OnlyIfNew::Yes) {
     return;
   }
 

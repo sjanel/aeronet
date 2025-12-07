@@ -547,14 +547,14 @@ class HttpResponse {
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse& header(std::string_view key, std::string_view value) & {
     assert(!http::IsReservedResponseHeader(key));
-    setHeader(key, value, false);
+    setHeader(key, value, OnlyIfNew::No);
     return *this;
   }
 
   // Convenient overload setting a header to a numeric value.
   HttpResponse& header(std::string_view key, std::integral auto value) & {
     assert(!http::IsReservedResponseHeader(key));
-    setHeader(key, std::string_view(IntegralToCharVector(value)), false);
+    setHeader(key, std::string_view(IntegralToCharVector(value)), OnlyIfNew::No);
     return *this;
   }
 
@@ -565,14 +565,14 @@ class HttpResponse {
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse&& header(std::string_view key, std::string_view value) && {
     assert(!http::IsReservedResponseHeader(key));
-    setHeader(key, value, false);
+    setHeader(key, value, OnlyIfNew::No);
     return std::move(*this);
   }
 
   // Convenient overload setting a header to a numeric value.
   HttpResponse&& header(std::string_view key, std::integral auto value) && {
     assert(!http::IsReservedResponseHeader(key));
-    setHeader(key, std::string_view(IntegralToCharVector(value)), false);
+    setHeader(key, std::string_view(IntegralToCharVector(value)), OnlyIfNew::No);
     return std::move(*this);
   }
 
@@ -663,7 +663,9 @@ class HttpResponse {
 
   void setBodyInternal(std::string_view newBody);
 
-  void setHeader(std::string_view key, std::string_view value, bool onlyIfNew = false);
+  enum class OnlyIfNew : std::uint8_t { No, Yes };
+
+  void setHeader(std::string_view key, std::string_view value, OnlyIfNew onlyIfNew = OnlyIfNew::No);
 
   void setContentTypeHeader(std::string_view contentTypeValue, bool isEmpty);
 

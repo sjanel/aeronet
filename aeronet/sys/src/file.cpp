@@ -33,37 +33,23 @@ int Flags(File::OpenMode mode) {
   }
 }
 
-void CheckFd(std::string_view path, int& fd) {
-  if (fd < 0) {
+void CheckFd(std::string_view path, int fd) {
+  if (fd == -1) {
     log::error("Unable to open file '{}' (errno {}: {})", path, errno, std::strerror(errno));
-    fd = -1;
   }
 }
 
 int CreateFileBaseFd(std::string_view path, File::OpenMode mode) {
-  int fd = ::open(std::string(path).c_str(), Flags(mode));
+  const int fd = ::open(std::string(path).c_str(), Flags(mode));
   CheckFd(path, fd);
   return fd;
 }
 
 int CreateFileBaseFd(const char* path, File::OpenMode mode) {
-  int fd = ::open(path, Flags(mode));
+  const int fd = ::open(path, Flags(mode));
   CheckFd(path, fd);
   return fd;
 }
-
-MIMETypeIdx DetermineMIMETypeIdx(std::string_view path) {
-  const auto dotPos = path.rfind('.');
-  if (dotPos != std::string_view::npos) {
-    const std::string_view ext = path.substr(dotPos + 1);
-    const auto it = std::ranges::lower_bound(kMIMEMappings, ext, {}, &MIMEMapping::extension);
-    if (it != std::end(kMIMEMappings) && it->extension == ext) {
-      return static_cast<MIMETypeIdx>(std::distance(std::begin(kMIMEMappings), it));
-    }
-  }
-  return kUnknownMIMEMappingIdx;
-}
-
 }  // namespace
 
 File::File(std::string_view path, OpenMode mode)
@@ -115,7 +101,7 @@ std::string File::loadAllContent() const {
 
   RestoreToStart restore(_fd.fd());
 
-  constexpr std::size_t kBufSize = 8192;
+  static constexpr std::size_t kBufSize = 1 << 16;
   for (;;) {
     const std::size_t oldSize = content.size();
 
@@ -148,18 +134,17 @@ std::string File::loadAllContent() const {
   return content;
 }
 
-File File::dup() const {
+File File::duplicate() const {
   if (!_fd) {
-    return File();
+    throw std::runtime_error("File is not opened");
   }
   // Duplicate file descriptor with CLOEXEC to avoid leaking across exec
-  int newfd = ::fcntl(_fd.fd(), F_DUPFD_CLOEXEC, 0);
-  if (newfd == -1) {
-    log::error("File::dup failed to dup fd {}: errno={} msg={}", _fd.fd(), errno, std::strerror(errno));
-    return File();
+  BaseFd newFd(::fcntl(_fd.fd(), F_DUPFD_CLOEXEC, 0));
+  if (!newFd) {
+    throw std::runtime_error(
+        std::format("File::dup failed to dup fd {}: errno={} msg={}", _fd.fd(), errno, std::strerror(errno)));
   }
-  BaseFd base(newfd);
-  return File(std::move(base), _mimeMappingIdx);
+  return File(std::move(newFd), _mimeMappingIdx);
 }
 
 std::string_view File::detectedContentType() const {
