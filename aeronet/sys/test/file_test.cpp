@@ -155,6 +155,10 @@ extern "C" off_t lseek(int __fd, off_t __offset, int __whence) noexcept {
 TEST(FileTest, DefaultConstructedIsFalse) {
   File fileObj;
   EXPECT_FALSE(static_cast<bool>(fileObj));
+
+  EXPECT_THROW((void)fileObj.loadAllContent(), std::runtime_error);
+  EXPECT_THROW((void)fileObj.size(), std::runtime_error);
+  EXPECT_THROW((void)fileObj.duplicate(), std::runtime_error);
 }
 
 TEST(FileTest, SizeAndLoadAllContent) {
@@ -201,7 +205,7 @@ TEST(FileTest, DetectedContentTypeUnknownFallsBackToOctet) {
   EXPECT_EQ(fileObj.detectedContentType(), "application/octet-stream");
 }
 
-TEST(FileTest, DetectedContentTypeCaseSensitiveUppercaseFallsBack) {
+TEST(FileTest, DetectedContentTypeCaseInsensitiveExtension) {
   ScopedTempDir upperDir("aeronet-file-upper");
   const auto upperPath = upperDir.dirPath() / "UPPER.TXT";
   std::ofstream ofs3(upperPath);
@@ -210,7 +214,7 @@ TEST(FileTest, DetectedContentTypeCaseSensitiveUppercaseFallsBack) {
   File fileObj(upperPath.string(), File::OpenMode::ReadOnly);
   ASSERT_TRUE(static_cast<bool>(fileObj));
   // Current implementation does case-sensitive extension matching, so uppercase extension falls back
-  EXPECT_EQ(fileObj.detectedContentType(), "application/octet-stream");
+  EXPECT_EQ(fileObj.detectedContentType(), "text/plain");
 }
 
 TEST(FileTest, MissingFileLeavesDescriptorClosed) {
@@ -276,7 +280,7 @@ TEST(FileTest, DupCreatesIndependentDescriptor) {
   const auto originalSize = original.size();
   EXPECT_EQ(original.loadAllContent(), "dup-content");
 
-  File duplicated = original.dup();
+  File duplicated = original.duplicate();
   ASSERT_TRUE(static_cast<bool>(duplicated));
 
   // Both should report the same size and content

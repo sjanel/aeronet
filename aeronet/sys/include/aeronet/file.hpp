@@ -42,8 +42,8 @@ class File {
   [[nodiscard]] std::string loadAllContent() const;
 
   // Duplicate the underlying file descriptor and return a new File that owns the duplicate.
-  // Returns a default-constructed (empty) File on failure.
-  [[nodiscard]] File dup() const;
+  // Throws std::runtime_error on failure.
+  [[nodiscard]] File duplicate() const;
 
   // Returns the probable content type based on the file extension.
   // If not found, return 'application/octet-stream'.

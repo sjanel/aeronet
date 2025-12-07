@@ -34,19 +34,19 @@ inline constexpr MIMEMapping kMIMEMappings[] = {
     {"gz", "application/gzip"},
     {"h", "text/x-chdr"},
     {"hpp", "text/x-c++hdr"},
-    {"html", "text/html"},
     {"htm", "text/html"},
+    {"html", "text/html"},
     {"ico", "image/x-icon"},
     {"jfif", "image/jpeg"},
-    {"jpg", "image/jpeg"},
     {"jpeg", "image/jpeg"},
+    {"jpg", "image/jpeg"},
     // Per IETF RFC 9239, `text/javascript` is the recommended media type for
     // JavaScript source; `application/javascript` is now considered obsolete.
     {"js", "text/javascript"},
     {"json", "application/json"},
-    {"map", "application/json"},
     {"m4a", "audio/mp4"},
     {"m4v", "video/x-m4v"},
+    {"map", "application/json"},
     {"md", "text/markdown"},
     {"mjs", "text/javascript"},
     {"mov", "video/quicktime"},
@@ -70,7 +70,6 @@ inline constexpr MIMEMapping kMIMEMappings[] = {
     {"sh", "application/x-sh"},
     {"svg", "image/svg+xml"},
     {"tar", "application/x-tar"},
-    {"tar.gz", "application/gzip"},
     {"tgz", "application/gzip"},
     {"tif", "image/tiff"},
     {"tiff", "image/tiff"},
@@ -86,4 +85,15 @@ inline constexpr MIMEMapping kMIMEMappings[] = {
     {"xml", "application/xml"},
     {"zip", "application/zip"},
 };
+
+// Given a file path, determine the appropriate MIME type mapping index, if known.
+// This function is non-allocating, and case insensitive for the extension.
+// Otherwise, returns kUnknownMIMEMappingIdx.
+MIMETypeIdx DetermineMIMETypeIdx(std::string_view path);
+
+// Given a file path, determine the appropriate MIME type string, if known.
+// This function is non-allocating, and case insensitive for the extension.
+// Otherwise, returns an empty string_view.
+std::string_view DetermineMIMETypeStr(std::string_view path);
+
 }  // namespace aeronet
