@@ -32,7 +32,7 @@ struct TlsTestServer {
 
   static HttpServerConfig makeConfig(std::initializer_list<std::string_view> alpn, const Mutator& mut) {
     HttpServerConfig cfg;  // ephemeral port by default
-    auto pair = makeEphemeralCertKey();
+    auto pair = MakeEphemeralCertKey();
     cfg.withTlsCertKeyMemory(pair.first, pair.second);
     if (alpn.size() != 0) {
       cfg.withTlsAlpnProtocols(alpn);

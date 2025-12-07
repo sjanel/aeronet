@@ -68,8 +68,8 @@ bool MatchesSniPattern(std::string_view pattern, bool wildcard, std::string_view
 void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_view keyPem, const char* certFilePath,
                            const char* keyFilePath) {
   if (!certPem.empty() && !keyPem.empty()) {
-    auto certBio = makeMemBio(certPem.data(), static_cast<int>(certPem.size()));
-    auto keyBio = makeMemBio(keyPem.data(), static_cast<int>(keyPem.size()));
+    auto certBio = MakeMemBio(certPem.data(), static_cast<int>(certPem.size()));
+    auto keyBio = MakeMemBio(keyPem.data(), static_cast<int>(keyPem.size()));
     if (!certBio || !keyBio) {
       throw std::runtime_error("Failed to allocate BIO for in-memory cert/key");
     }
@@ -147,7 +147,7 @@ void ConfigureClientVerification(SSL_CTX* ctx, const TLSConfig& cfg) {
     if (pem.empty()) {
       throw std::runtime_error("Empty trusted client certificate PEM provided");
     }
-    auto cbio = makeMemBio(pem.data(), static_cast<int>(pem.size()));
+    auto cbio = MakeMemBio(pem.data(), static_cast<int>(pem.size()));
     if (!cbio) {
       throw std::runtime_error("Failed to alloc BIO for client trust cert");
     }
@@ -274,8 +274,8 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics,
   std::string_view certPem = cfg.certPem();
   std::string_view keyPem = cfg.keyPem();
   if (!certPem.empty() && !keyPem.empty()) {
-    auto certBio = makeMemBio(certPem.data(), static_cast<int>(certPem.size()));
-    auto keyBio = makeMemBio(keyPem.data(), static_cast<int>(keyPem.size()));
+    auto certBio = MakeMemBio(certPem.data(), static_cast<int>(certPem.size()));
+    auto keyBio = MakeMemBio(keyPem.data(), static_cast<int>(keyPem.size()));
     if (!certBio || !keyBio) {
       throw std::runtime_error("Failed to allocate BIO for in-memory cert/key");
     }

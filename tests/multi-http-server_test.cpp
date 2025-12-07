@@ -109,7 +109,7 @@ TEST(MultiHttpServer, BasicStartAndServe) {
 
 #ifdef AERONET_ENABLE_OPENSSL
 TEST(MultiHttpServer, StatsAggregatesTlsAlpnDistribution) {
-  auto [certPem, keyPem] = test::makeEphemeralCertKey();
+  auto [certPem, keyPem] = test::MakeEphemeralCertKey();
   HttpServerConfig cfg;
   cfg.withReusePort();
   cfg.withTlsCertKeyMemory(certPem, keyPem);

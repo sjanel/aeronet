@@ -53,7 +53,7 @@ TlsHandshakeResult CollectTlsHandshakeInfo(const SSL* ssl, std::chrono::steady_c
     X509Ptr peer(peerRaw, ::X509_free);
     res.clientCertPresent = true;
     if (X509_NAME* name = ::X509_get_subject_name(peer.get())) {
-      auto memBio = makeMemoryBio();
+      auto memBio = MakeMemoryBio();
       if (memBio) {
         if (::X509_NAME_print_ex(memBio.get(), name, 0, XN_FLAG_RFC2253 & ~ASN1_STRFLGS_ESC_MSB) >= 0) {
           BUF_MEM* bptr = nullptr;
