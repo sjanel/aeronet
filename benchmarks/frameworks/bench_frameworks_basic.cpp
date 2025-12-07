@@ -116,7 +116,7 @@ struct DrogonServerWrapper {
     auto &app = drogon::app();
 
     app.addListener("127.0.0.1", _port);
-    drogon::app().setPipeliningRequestsNumber(1000000);
+    drogon::app().setPipeliningRequestsNumber(1000000000);
     drogon::app().setIdleConnectionTimeout(0);
 
     // Body handler
