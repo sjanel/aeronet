@@ -114,7 +114,7 @@ void HttpResponseWriter::ensureHeadersSent() {
     _fixedResponse.setHeader(http::TransferEncoding, "chunked");
   }
   // If Content-Type has not been set, set to 'application/octet-stream' by default.
-  _fixedResponse.setHeader(http::ContentType, http::ContentTypeApplicationOctetStream, true);
+  _fixedResponse.setHeader(http::ContentType, http::ContentTypeApplicationOctetStream, HttpResponse::OnlyIfNew::Yes);
   // If compression already activated (delayed strategy) but header not sent yet, add Content-Encoding now.
   if (_compressionActivated && _compressionFormat != Encoding::none) {
     _fixedResponse.setHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));

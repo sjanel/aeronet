@@ -59,6 +59,12 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    mime-mappings_test
+    src/mime-mappings.cpp
+    test/mime-mappings_test.cpp
+)
+
+AeronetAddUnitTest(
     ndigits_test
     test/ndigits_test.cpp
 )
