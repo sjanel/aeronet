@@ -15,7 +15,7 @@
 
 namespace aeronet::test {
 
-std::pair<std::string, std::string> makeEphemeralCertKey(const char* commonName, int validSeconds) {
+std::pair<std::string, std::string> MakeEphemeralCertKey(const char* commonName, int validSeconds) {
   EVP_PKEY* pkey = nullptr;
   EVP_PKEY_CTX* kctx = EVP_PKEY_CTX_new_from_name(nullptr, "RSA", nullptr);
   if (kctx == nullptr) {
