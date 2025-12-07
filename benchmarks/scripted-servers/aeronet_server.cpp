@@ -16,56 +16,17 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 
 #include "aeronet/aeronet.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/static-file-handler.hpp"
 #include "aeronet/toupperlower.hpp"
+#include "scripted-servers-helpers.hpp"
 
 using namespace aeronet;
 
 namespace {
-
-// CPU-bound computation for /compute endpoint
-uint64_t Fibonacci(int n) {
-  if (n <= 1) {
-    return static_cast<uint64_t>(n);
-  }
-  uint64_t prev = 0;
-  uint64_t curr = 1;
-  for (int i = 2; i <= n; ++i) {
-    uint64_t next = prev + curr;
-    prev = curr;
-    curr = next;
-  }
-  return curr;
-}
-
-// Simple hash computation for CPU stress
-uint64_t ComputeHash(std::string_view data, int iterations) {
-  uint64_t hash = 0xcbf29ce484222325ULL;  // FNV-1a offset basis
-  for (int iter = 0; iter < iterations; ++iter) {
-    for (char signedCh : data) {
-      auto ch = static_cast<unsigned char>(signedCh);
-      hash ^= ch;
-      hash *= 0x100000001b3ULL;  // FNV-1a prime
-    }
-  }
-  return hash;
-}
-
-// Generate random string for response bodies
-std::string GenerateRandomString(std::size_t length) {
-  static constexpr char kCharset[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-  static thread_local std::mt19937_64 rng(std::random_device{}());
-  std::uniform_int_distribution<std::size_t> dist(0, sizeof(kCharset) - 2);
-
-  std::string result(length, '\0');
-  for (std::size_t pos = 0; pos < length; ++pos) {
-    result[pos] = kCharset[dist(rng)];
-  }
-  return result;
-}
 
 // Parse query parameter as integer
 template <typename T>
@@ -76,15 +37,6 @@ T GetQueryParamOrThrow(const HttpRequest& req, std::string_view key) {
     }
   }
   throw std::invalid_argument("Query parameter not found");
-}
-
-int GetNumThreads() {
-  const char* envThreads = std::getenv("BENCH_THREADS");
-  if (envThreads != nullptr) {
-    return std::atoi(envThreads);
-  }
-  int hwThreads = static_cast<int>(std::thread::hardware_concurrency());
-  return std::max(1, hwThreads / 2);
 }
 
 uint16_t GetPort() {
@@ -108,7 +60,7 @@ struct BenchConfig {
 BenchConfig ParseArgs(int argc, char* argv[]) {
   BenchConfig cfg;
   cfg.port = GetPort();
-  cfg.numThreads = GetNumThreads();
+  cfg.numThreads = bench::GetNumThreads();
 
   for (int argPos = 1; argPos < argc; ++argPos) {
     std::string_view arg(argv[argPos]);
@@ -156,6 +108,7 @@ int main(int argc, char* argv[]) {
   config.maxHeaderBytes = 256UL * 1024;  // 256KB headers for stress tests
   config.maxBodyBytes = 64UL << 20;      // 64MB bodies for large body tests
   config.reusePort = true;
+  config.globalHeaders.clear();
 
   // Configure TLS if enabled
   if (benchCfg.tlsEnabled) {
@@ -190,7 +143,7 @@ int main(int argc, char* argv[]) {
     }
     HttpResponse resp(200);
     for (std::size_t headerPos = 0; headerPos < count; ++headerPos) {
-      resp.addHeader(std::format("X-Bench-Header-{}", headerPos), GenerateRandomString(headerSize));
+      resp.addHeader(std::format("X-Bench-Header-{}", headerPos), bench::GenerateRandomString(headerSize));
     }
     resp.body(std::format("Generated {} headers", count));
     return resp;
@@ -228,11 +181,11 @@ int main(int argc, char* argv[]) {
     }
 
     // Fibonacci computation
-    const uint64_t fibResult = Fibonacci(complexity);
+    const uint64_t fibResult = bench::Fibonacci(complexity);
 
     // Hash computation
     const std::string data = std::format("benchmark-data-{}", complexity);
-    const uint64_t hashResult = ComputeHash(data, hashIters);
+    const uint64_t hashResult = bench::ComputeHash(data, hashIters);
 
     HttpResponse resp(200);
     resp.addHeader("X-Fib-Result", fibResult);
@@ -276,7 +229,7 @@ int main(int argc, char* argv[]) {
   // Returns body of size ?size=N bytes
   // ============================================================
   router.setPath(http::Method::GET, "/body", [](const HttpRequest& req) {
-    return HttpResponse(GenerateRandomString(GetQueryParamOrThrow<std::size_t>(req, "size")));
+    return HttpResponse(bench::GenerateRandomString(GetQueryParamOrThrow<std::size_t>(req, "size")));
   });
 
   // ============================================================
@@ -304,22 +257,6 @@ int main(int argc, char* argv[]) {
       staticCfg.addLastModified = false;
       staticCfg.addEtag = false;
       staticCfg.enableDirectoryIndex = false;
-
-      staticCfg.contentTypeResolver = [](std::string_view path) -> std::string_view {
-        if (path.ends_with(".html")) {
-          return http::ContentTypeTextHtml;
-        }
-        if (path.ends_with(".json")) {
-          return http::ContentTypeApplicationJson;
-        }
-        if (path.ends_with(".css")) {
-          return http::ContentTypeTextCss;
-        }
-        if (path.ends_with(".js")) {
-          return http::ContentTypeTextJavascript;
-        }
-        return http::ContentTypeApplicationOctetStream;
-      };
 
       router.setDefault(StaticFileHandler(std::move(staticPath), staticCfg));
 

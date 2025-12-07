@@ -20,7 +20,11 @@ class StaticFileConfig {
   /// Name of the file served when the target path resolves to a directory.
   [[nodiscard]] std::string_view defaultIndex() const noexcept { return _staticFileStrings[0]; }
 
-  /// Default MIME type when no resolver is provided.
+  /// Content-Type header value used when the following conditions are met:
+  ///  - no contentTypeResolver is provided or it returns empty (for a given path)
+  ///  - the file extension is from unknown MIME type
+  /// Default is "application/octet-stream".
+  /// It cannot be empty.
   [[nodiscard]] std::string_view defaultContentType() const noexcept { return _staticFileStrings[1]; }
 
   // Optional CSS stylesheet for directory listings.
@@ -31,6 +35,11 @@ class StaticFileConfig {
     return *this;
   }
 
+  /// Content-Type header value used when the following conditions are met:
+  ///  - no contentTypeResolver is provided or it returns empty (for a given path)
+  ///  - the file extension is from unknown MIME type
+  /// Default is "application/octet-stream".
+  /// It cannot be empty.
   StaticFileConfig &withDefaultContentType(std::string_view contentType) {
     _staticFileStrings.set(1, contentType);
     return *this;
@@ -60,7 +69,9 @@ class StaticFileConfig {
   bool showHiddenFiles{false};
 
   /// Optional callback returning Content-Type for the resolved file path.
-  /// Warning: the returned string_view must be pointing to constant storage (to const char * for instance).
+  /// Warning: the returned string_view must point to valid memory at all times (for instance to constant storage).
+  /// The callback can return an empty string_view to fallback to automatic MIME type resolution, and then to
+  /// defaultContentType() if unknown.
   std::function<std::string_view(std::string_view)> contentTypeResolver;
 
   /// Optional callback to render directory index HTML.
