@@ -192,10 +192,17 @@ jobs:
         run: |
           cmake --build build --parallel
 
-      - name: Run comparative benchmarks
+      - name: Run comparative benchmarks (main push, longer duration)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         working-directory: ${{github.workspace}}/build/benchmarks/scripted-servers
         run: |
-          ./run_benchmarks.py --duration 15s
+          ./run_benchmarks.py --duration 30s
+
+      - name: Run comparative benchmarks (branches, PRs, dispatch, shorter duration)
+        if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+        working-directory: ${{github.workspace}}/build/benchmarks/scripted-servers
+        run: |
+          ./run_benchmarks.py --warmup 3s --duration 5s
 
   coverage:
     runs-on: ubuntu-latest
