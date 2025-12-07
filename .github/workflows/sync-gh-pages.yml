@@ -1,0 +1,58 @@
+name: Sync gh-pages from main
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Prepare repo URL
+        run: |
+          echo "REPO=https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" >> $GITHUB_ENV
+
+      - name: Clone or initialize gh-pages branch
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads "$REPO" gh-pages; then
+            git clone --branch gh-pages "$REPO" /tmp/gh
+          else
+            git clone "$REPO" /tmp/gh
+            pushd /tmp/gh
+            git checkout --orphan gh-pages
+            git rm -rf . || true
+            git commit --allow-empty -m "Initialize gh-pages branch"
+            git push "$REPO" gh-pages
+            popd
+          fi
+
+      - name: Sync docs and site files to gh-pages (preserve benchmarks/)
+        run: |
+          set -euo pipefail
+          rsync -a --delete --exclude 'benchmarks' --exclude 'previews' --exclude '.git' ./docs/ /tmp/gh/ || true
+          # Copy README as index.md for basic landing
+          cp -f README.md /tmp/gh/index.md || true
+
+      - name: Commit & push changes
+        run: |
+          set -euo pipefail
+          pushd /tmp/gh
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No changes to publish"
+            exit 0
+          fi
+          git commit -m "Sync site from main: ${{ github.sha }}"
+          git push "$REPO" gh-pages
+          popd
