@@ -1,0 +1,116 @@
+name: Benchmarks Pages
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: ["completed"]
+
+jobs:
+  publish-benchmarks:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download benchmark summary artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: benchmark-summary
+          path: benchmarks/artifacts
+
+      - name: Locate artifact files
+        id: locate
+        run: |
+          set -euo pipefail
+          latest=$(find benchmarks/artifacts -name benchmark_latest.json -print -quit)
+          if [[ -z "$latest" ]]; then
+            echo "benchmark_latest.json not found" >&2
+            exit 1
+          fi
+          echo "latest=$latest" >> $GITHUB_OUTPUT
+          badge=$(find benchmarks/artifacts -name benchmark_badge.json -print -quit)
+          if [[ -n "$badge" ]]; then
+            echo "badge=$badge" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Render benchmarks HTML
+        run: |
+          python3 benchmarks/scripted-servers/render_benchmarks_html.py \
+            --input "${{ steps.locate.outputs.latest }}" \
+            --output benchmarks/benchmarks.html
+
+      - name: Stage benchmark assets
+        run: |
+          set -euo pipefail
+          mkdir -p benchmarks/publish
+          cp benchmarks/benchmarks.html benchmarks/publish/index.html
+          cp "${{ steps.locate.outputs.latest }}" benchmarks/publish/benchmark_latest.json
+          if [[ -n "${{ steps.locate.outputs.badge }}" ]]; then
+            cp "${{ steps.locate.outputs.badge }}" benchmarks/publish/benchmark_badge.json
+          fi
+
+      - name: Publish to GitHub Pages (gh-pages branch, /benchmarks)
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Prepare a temporary directory with the benchmarks HTML
+          mkdir -p /tmp/benchmarks-publish
+          cp benchmarks/publish/index.html /tmp/benchmarks-publish/index.html
+          cp benchmarks/publish/benchmark_latest.json /tmp/benchmarks-publish/benchmark_latest.json
+          if [[ -f benchmarks/publish/benchmark_badge.json ]]; then
+            cp benchmarks/publish/benchmark_badge.json /tmp/benchmarks-publish/benchmark_badge.json
+          fi
+
+          # Fetch or create gh-pages branch
+          if git ls-remote --exit-code origin gh-pages >/dev/null 2>&1; then
+            git fetch origin gh-pages:gh-pages
+          else
+            git switch --orphan gh-pages
+            rm -rf *
+            echo "<html><body><h1>aeronet benchmarks</h1></body></html>" > index.html
+            git add index.html
+            git commit -m "Initialize gh-pages"
+            git push origin gh-pages
+          fi
+
+          git switch gh-pages
+          HEAD_BRANCH="${{ github.event.workflow_run.head_branch }}"
+          SAFE_BRANCH=$(echo "$HEAD_BRANCH" | sed 's/[^A-Za-z0-9._-]/-/g')
+          if [[ -z "$SAFE_BRANCH" ]]; then
+            SAFE_BRANCH="unknown-branch"
+          fi
+
+          if [[ "$SAFE_BRANCH" == "main" ]]; then
+            TARGET_DIR="benchmarks"
+          else
+            TARGET_DIR="previews/$SAFE_BRANCH"
+          fi
+
+          mkdir -p "$TARGET_DIR"
+          cp /tmp/benchmarks-publish/index.html "$TARGET_DIR/index.html"
+          cp /tmp/benchmarks-publish/benchmark_latest.json "$TARGET_DIR/benchmark_latest.json"
+          if [[ -f /tmp/benchmarks-publish/benchmark_badge.json ]]; then
+            cp /tmp/benchmarks-publish/benchmark_badge.json "$TARGET_DIR/benchmark_badge.json"
+          fi
+
+          git add "$TARGET_DIR/index.html" "$TARGET_DIR/benchmark_latest.json"
+          if [[ -f "$TARGET_DIR/benchmark_badge.json" ]]; then
+            git add "$TARGET_DIR/benchmark_badge.json"
+          fi
+
+          if git diff --cached --quiet; then
+            echo "No changes to benchmarks page; skipping push."
+          else
+            git commit -m "Update ${TARGET_DIR} from CI run ${{ github.event.workflow_run.id }}" || true
+            git push origin gh-pages
+          fi

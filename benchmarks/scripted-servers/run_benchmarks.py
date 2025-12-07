@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import signal
@@ -332,6 +333,7 @@ class BenchmarkRunner:
     self._print_memory_table()
     self._write_memory_summary_table()
     self._write_summary_table()
+    self._write_json_summary()
     print("\nBenchmarks complete!\n")
 
   # -------------------------- Resource Preparation ------------------------ #
@@ -339,16 +341,30 @@ class BenchmarkRunner:
   def _prepare_resources_if_needed(self) -> None:
     if not (self.needs_static or self.needs_tls):
       return
-    script = None
-    for candidate in [self.script_dir / "setup_bench_resources.sh", self.repo_script_dir / "setup_bench_resources.sh"]:
+    script_cmd: Optional[List[str]] = None
+    search_roots = [self.script_dir]
+    if self.repo_script_dir not in search_roots:
+      search_roots.append(self.repo_script_dir)
+
+    for base in search_roots:
+      candidate = base / "setup_bench_resources.py"
       if candidate.is_file():
-        script = candidate
+        script_cmd = [sys.executable, str(candidate)]
         break
-    if script is None:
-      print("WARNING: setup_bench_resources.sh not found; static/tls scenarios may fail")
+
+    if script_cmd is None:
+      for base in search_roots:
+        candidate = base / "setup_bench_resources.sh"
+        if candidate.is_file():
+          script_cmd = ["bash", str(candidate)]
+          break
+
+    if script_cmd is None:
+      print("WARNING: setup_bench_resources.{py|sh} not found; static/tls scenarios may fail")
       return
+
     print("Setting up benchmark resources...")
-    subprocess.run(["bash", str(script), str(self.script_dir)], check=True)
+    subprocess.run([*script_cmd, str(self.script_dir)], check=True)
 
   # -------------------------- Server lifecycle --------------------------- #
 
@@ -582,6 +598,106 @@ class BenchmarkRunner:
           row.append(f"{format_rps(val):<14}")
         row.append(best_server or "-")
         fp.write(" | ".join(row) + "\n")
+
+  def _write_json_summary(self) -> None:
+    """Write a machine-readable JSON summary for CI publishing.
+
+    This is intended to be consumed by downstream tooling (e.g. GitHub Pages
+    or badges) without scraping the pretty-printed tables.
+    """
+    if not self.results_rps:
+      return
+
+    summary = {
+        "threads": self.threads,
+        "duration": self.duration,
+        "warmup": self.warmup,
+        "servers": self.servers_to_test,
+        "scenarios": self.scenarios_to_test,
+        "results": {},
+    }
+
+    for scenario in self.scenarios_to_test:
+      scenario_entry = {"rps": {}, "latency": {}, "transfer": {}, "winners": {}}
+      best_server = self._best_server_for_scenario(scenario)
+      if best_server is not None:
+        scenario_entry["winners"]["rps"] = best_server
+      for server in self.servers_to_test:
+        key = (server, scenario)
+        rps_val = self.results_rps.get(key)
+        lat_val = self.results_latency.get(key)
+        xfer_val = self.results_transfer.get(key)
+        if rps_val is not None:
+          scenario_entry["rps"][server] = rps_val
+        if lat_val is not None:
+          scenario_entry["latency"][server] = lat_val
+        if xfer_val is not None:
+          scenario_entry["transfer"][server] = xfer_val
+      summary["results"][scenario] = scenario_entry
+
+    json_path = self.output_dir / "benchmark_latest.json"
+    with json_path.open("w", encoding="utf-8") as jf:
+      json.dump(summary, jf, indent=2)
+
+    self._write_badge_summary(summary)
+
+  def _write_badge_summary(self, summary: Dict[str, Any]) -> None:
+    results = summary.get("results", {})
+    best_value = 0.0
+    best_scenario = None
+    for scenario, data in results.items():
+      aeronet_val = data.get("rps", {}).get("aeronet")
+      numeric = self._parse_float(aeronet_val)
+      if numeric is None:
+        continue
+      if numeric > best_value:
+        best_value = numeric
+        best_scenario = scenario
+
+    if best_scenario is None or best_value <= 0:
+      return
+
+    badge_payload = {
+        "schemaVersion": 1,
+        "label": "aeronet peak rps",
+        "message": f"{self._format_badge_value(best_value)} req/s",
+        "color": self._badge_color(best_value),
+        "labelColor": "#0f172a",
+        "namedLogo": "speedtest",
+        "cacheSeconds": 3600,
+    }
+    badge_path = self.output_dir / "benchmark_badge.json"
+    with badge_path.open("w", encoding="utf-8") as bf:
+      json.dump(badge_payload, bf, indent=2)
+
+  @staticmethod
+  def _parse_float(value: Optional[str]) -> Optional[float]:
+    if value is None:
+      return None
+    try:
+      return float(str(value).replace(",", ""))
+    except ValueError:
+      return None
+
+  @staticmethod
+  def _format_badge_value(value: float) -> str:
+    if value >= 1_000_000:
+      return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+      return f"{value / 1_000:.0f}k"
+    return f"{value:.0f}"
+
+  @staticmethod
+  def _badge_color(value: float) -> str:
+    if value >= 200_000:
+      return "brightgreen"
+    if value >= 100_000:
+      return "green"
+    if value >= 50_000:
+      return "yellowgreen"
+    if value >= 10_000:
+      return "yellow"
+    return "lightgrey"
 
   def _print_memory_table(self) -> None:
     rows = self._memory_summary_rows()

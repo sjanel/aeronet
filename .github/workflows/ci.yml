@@ -109,7 +109,7 @@ jobs:
 
       - name: Upload install dir artifact
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           # NOTE: Artifact names must be globally unique within a single workflow run.
           # The previous name omitted the build type, so Debug and Release matrix legs
@@ -192,17 +192,26 @@ jobs:
         run: |
           cmake --build build --parallel
 
-      - name: Run comparative benchmarks (main push, longer duration)
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        working-directory: ${{github.workspace}}/build/benchmarks/scripted-servers
-        run: |
-          ./run_benchmarks.py --duration 30s
-
       - name: Run comparative benchmarks (branches, PRs, dispatch, shorter duration)
         if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         working-directory: ${{github.workspace}}/build/benchmarks/scripted-servers
         run: |
           ./run_benchmarks.py --warmup 3s --duration 5s
+          
+      - name: Run comparative benchmarks (main push, longer duration)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        working-directory: ${{github.workspace}}/build/benchmarks/scripted-servers
+        run: |
+          ./run_benchmarks.py --duration 30s --threads 2
+
+      - name: Upload benchmark summary artifacts
+        if: ${{ matrix.compiler == 'gcc-13' }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: benchmark-summary
+          path: |
+            build/benchmarks/scripted-servers/results/benchmark_latest.json
+            build/benchmarks/scripted-servers/results/benchmark_badge.json
 
   coverage:
     runs-on: ubuntu-latest

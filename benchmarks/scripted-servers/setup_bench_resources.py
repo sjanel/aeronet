@@ -1,80 +1,53 @@
-#!/bin/bash
-# setup_bench_resources.sh - Generate certificates and static files for benchmarks
-#
-# Creates:
-#   - TLS certificates (self-signed, for testing only)
-#   - Static files of various sizes for file serving benchmarks
-#
-# Usage: ./setup_bench_resources.sh [output_dir]
+#!/usr/bin/env python3
+"""Generate TLS certificates and static assets for scripted benchmark scenarios."""
+from __future__ import annotations
 
-set -e
+import argparse
+import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUTPUT_DIR="${1:-$SCRIPT_DIR}"
+RESET = "\033[0m"
+GREEN = "\033[0;32m"
+YELLOW = "\033[1;33m"
+RED = "\033[0;31m"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
 
-log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+def _color(text: str, color: str) -> str:
+  return f"{color}{text}{RESET}"
 
-# ============================================================
-# TLS Certificate Generation
-# ============================================================
-generate_certificates() {
-  local cert_dir="$OUTPUT_DIR/certs"
-  
-  if [ -f "$cert_dir/server.crt" ] && [ -f "$cert_dir/server.key" ]; then
-    log_info "Certificates already exist in $cert_dir"
-    return 0
-  fi
-  
-  if ! command -v openssl &> /dev/null; then
-    log_error "openssl not found - cannot generate certificates"
-    return 1
-  fi
-  
-  log_info "Generating TLS certificates in $cert_dir..."
-  mkdir -p "$cert_dir"
-  
-  # Generate private key
-  openssl genrsa -out "$cert_dir/server.key" 2048 2>/dev/null
-  
-  # Generate self-signed certificate
-  openssl req -new -x509 \
-    -key "$cert_dir/server.key" \
-    -out "$cert_dir/server.crt" \
-    -days 365 \
-    -subj "/C=XX/ST=Benchmark/L=Benchmark/O=Benchmark/CN=localhost" \
-    2>/dev/null
-  
-  # Set permissions
-  chmod 600 "$cert_dir/server.key"
-  chmod 644 "$cert_dir/server.crt"
-  
-  log_info "Certificates generated:"
-  log_info "  Certificate: $cert_dir/server.crt"
-  log_info "  Private key: $cert_dir/server.key"
-  
-  return 0
-}
 
-# ============================================================
-# Static Files Generation
-# ============================================================
-generate_static_files() {
-  local static_dir="$OUTPUT_DIR/static"
-  
-  log_info "Generating static files in $static_dir..."
-  mkdir -p "$static_dir"
-  
-  # index.html (~1KB) - Small HTML file
-  cat > "$static_dir/index.html" << 'EOF'
-<!DOCTYPE html>
+def log_info(message: str) -> None:
+  print(f"{_color('[INFO]', GREEN)} {message}")
+
+
+def log_warn(message: str) -> None:
+  print(f"{_color('[WARN]', YELLOW)} {message}")
+
+
+def log_error(message: str) -> None:
+  print(f"{_color('[ERROR]', RED)} {message}")
+
+
+def ensure_dir(path: Path) -> None:
+  path.mkdir(parents=True, exist_ok=True)
+
+
+def format_size(num_bytes: int) -> str:
+  units = ["bytes", "KB", "MB", "GB"]
+  value = float(num_bytes)
+  for unit in units:
+    if value < 1024 or unit == units[-1]:
+      if unit == "bytes":
+        return f"{int(value)} {unit}"
+      return f"{value:.2f} {unit}"
+    value /= 1024
+  return f"{num_bytes} bytes"
+
+
+INDEX_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -104,11 +77,10 @@ generate_static_files() {
   <script src="app.js"></script>
 </body>
 </html>
-EOF
+"""
 
-  # style.css (~8KB) - Medium CSS file
-  cat > "$static_dir/style.css" << 'EOF'
-/* Benchmark Test Stylesheet */
+
+STYLE_CSS = """/* Benchmark Test Stylesheet */
 :root {
   --primary-color: #3498db;
   --secondary-color: #2ecc71;
@@ -246,11 +218,10 @@ footer {
 .btn-secondary:hover {
   background-color: var(--primary-color);
 }
-EOF
+"""
 
-  # app.js (~16KB) - Medium JavaScript file
-  cat > "$static_dir/app.js" << 'EOF'
-/**
+
+APP_JS = """/**
  * Benchmark Test Application
  * This JavaScript file is used to test static file serving performance.
  */
@@ -486,76 +457,138 @@ EOF
   window.BenchmarkStats = BenchmarkStats;
 
 })();
-EOF
+"""
 
-  # data.json (~32KB) - JSON data file
-  python3 -c "
-import json
-data = {
-    'metadata': {
-        'version': '1.0.0',
-        'generated': '2025-01-01T00:00:00Z',
-        'description': 'Benchmark test data'
-    },
-    'items': []
-}
-for i in range(200):
-    data['items'].append({
-        'id': i,
-        'name': f'Item {i}',
-        'description': f'This is a description for item {i}. It contains some text to make the JSON file larger.',
-        'value': i * 100,
-        'enabled': i % 2 == 0,
-        'tags': [f'tag{j}' for j in range(5)],
-        'nested': {
-            'level1': {
-                'level2': {
-                    'value': f'nested-value-{i}'
-                }
-            }
-        }
-    })
-print(json.dumps(data, indent=2))
-" > "$static_dir/data.json" 2>/dev/null || {
-    # Fallback if python3 is not available
-    log_warn "python3 not available, generating smaller data.json"
-    echo '{"items":[]}' > "$static_dir/data.json"
+
+def write_text_file(path: Path, content: str) -> None:
+  path.write_text(content.strip() + "\n", encoding="utf-8")
+
+
+def generate_data_json(path: Path) -> None:
+  data = {
+      "metadata": {
+          "version": "1.0.0",
+          "generated": "2025-01-01T00:00:00Z",
+          "description": "Benchmark test data",
+      },
+      "items": [],
   }
+  for i in range(200):
+    data["items"].append({
+        "id": i,
+        "name": f"Item {i}",
+        "description": f"This is a description for item {i}. It contains some text to make the JSON file larger.",
+        "value": i * 100,
+        "enabled": i % 2 == 0,
+        "tags": [f"tag{j}" for j in range(5)],
+        "nested": {"level1": {"level2": {"value": f"nested-value-{i}"}}},
+    })
+  path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-  # image.bin (~64KB) - Binary file
-  dd if=/dev/urandom of="$static_dir/image.bin" bs=1024 count=64 2>/dev/null
-  
-  log_info "Static files generated:"
-  for f in "$static_dir"/*; do
-    local size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)
-    log_info "  $(basename "$f"): $(echo "$size" | numfmt --to=iec 2>/dev/null || echo "${size} bytes")"
-  done
-  
+
+def generate_binary_blob(path: Path, size_kb: int = 64) -> None:
+  path.write_bytes(os.urandom(size_kb * 1024))
+
+
+def generate_static_files(output_dir: Path) -> bool:
+  log_info(f"Generating static files in {output_dir / 'static'}")
+  static_dir = output_dir / "static"
+  ensure_dir(static_dir)
+  try:
+    write_text_file(static_dir / "index.html", INDEX_HTML)
+    write_text_file(static_dir / "style.css", STYLE_CSS)
+    write_text_file(static_dir / "app.js", APP_JS)
+    generate_data_json(static_dir / "data.json")
+    generate_binary_blob(static_dir / "image.bin")
+  except Exception as exc:  # pragma: no cover - unexpected I/O failures
+    log_error(f"Failed to generate static files: {exc}")
+    return False
+
+  log_info("Static files generated:")
+  for entry in sorted(static_dir.iterdir()):
+    if entry.is_file():
+      size = entry.stat().st_size
+      log_info(f"  {entry.name}: {format_size(size)}")
+  return True
+
+
+def generate_certificates(output_dir: Path) -> bool:
+  cert_dir = output_dir / "certs"
+  ensure_dir(cert_dir)
+  cert_path = cert_dir / "server.crt"
+  key_path = cert_dir / "server.key"
+  if cert_path.exists() and key_path.exists():
+    log_info(f"Certificates already exist in {cert_dir}")
+    return True
+  openssl = shutil.which("openssl")
+  if not openssl:
+    log_error("openssl not found - cannot generate certificates")
+    return False
+
+  log_info(f"Generating TLS certificates in {cert_dir}...")
+  try:
+    subprocess.run([openssl, "genrsa", "-out", str(key_path), "2048"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        [
+            openssl,
+            "req",
+            "-new",
+            "-x509",
+            "-key",
+            str(key_path),
+            "-out",
+            str(cert_path),
+            "-days",
+            "365",
+            "-subj",
+            "/C=XX/ST=Benchmark/L=Benchmark/O=Benchmark/CN=localhost",
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    os.chmod(key_path, 0o600)
+    os.chmod(cert_path, 0o644)
+  except subprocess.CalledProcessError as exc:
+    log_error(f"Failed to generate certificates: {exc}")
+    return False
+
+  log_info(f"Certificates generated in {cert_dir}")
+  return True
+
+
+def parse_args() -> argparse.Namespace:
+  parser = argparse.ArgumentParser(description="Generate TLS certs and static assets for benchmarks")
+  parser.add_argument("path", nargs="?", type=Path, help="Destination directory (defaults to script directory)")
+  parser.add_argument("--output", dest="output", type=Path, help="Explicit destination directory")
+  return parser.parse_args()
+
+
+def resolve_target(args: argparse.Namespace) -> Path:
+  if args.output:
+    return args.output.resolve()
+  if args.path:
+    return args.path.resolve()
+  return Path(__file__).resolve().parent
+
+
+def main() -> int:
+  args = parse_args()
+  target = resolve_target(args)
+  ensure_dir(target)
+  log_info(f"Setting up benchmark resources in {target}")
+  cert_ok = generate_certificates(target)
+  static_ok = generate_static_files(target)
+  if cert_ok and static_ok:
+    log_info("All resources generated successfully!")
+  else:
+    log_warn("Some resources could not be generated")
+    if not cert_ok:
+      log_warn("  - Certificates: FAILED (openssl required)")
+    if not static_ok:
+      log_warn("  - Static files: FAILED")
   return 0
-}
 
-# ============================================================
-# Main
-# ============================================================
-main() {
-  log_info "Setting up benchmark resources in $OUTPUT_DIR"
-  
-  local cert_ok=0
-  local static_ok=0
-  
-  generate_certificates && cert_ok=1
-  generate_static_files && static_ok=1
-  
-  echo ""
-  if [ $cert_ok -eq 1 ] && [ $static_ok -eq 1 ]; then
-    log_info "All resources generated successfully!"
-  else
-    log_warn "Some resources could not be generated"
-    [ $cert_ok -eq 0 ] && log_warn "  - Certificates: FAILED (openssl required)"
-    [ $static_ok -eq 0 ] && log_warn "  - Static files: FAILED"
-  fi
-  
-  return 0
-}
 
-main "$@"
+if __name__ == "__main__":
+  raise SystemExit(main())
