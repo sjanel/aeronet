@@ -37,6 +37,42 @@ jobs:
             cp README.md /tmp/site/index.md
           fi
 
+      - name: Build and run benchmarks for Pages
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-pages -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DAERONET_BUILD_TESTS=OFF \
+            -DAERONET_BUILD_EXAMPLES=OFF \
+            -DAERONET_BUILD_BENCHMARKS=ON \
+            -DAERONET_ENABLE_ASAN=OFF \
+            -DAERONET_ENABLE_CLANG_TIDY=OFF \
+            -DAERONET_ENABLE_SPDLOG=ON \
+            -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_KTLS=ON \
+            -DAERONET_ENABLE_BROTLI=ON \
+            -DAERONET_ENABLE_ZLIB=ON \
+            -DAERONET_ENABLE_ZSTD=ON \
+            -DAERONET_ENABLE_OPENTELEMETRY=OFF
+
+          cmake --build build-pages --parallel
+
+          pushd build-pages/benchmarks/scripted-servers
+          ./run_benchmarks.py --duration 30s --threads 2
+          popd
+
+          # Render HTML for Pages
+          python3 benchmarks/scripted-servers/render_benchmarks_html.py \
+            --input build-pages/benchmarks/scripted-servers/results/benchmark_latest.json \
+            --output /tmp/site/benchmarks/index.html
+
+          # Copy JSON so badge and raw data are available on Pages
+          mkdir -p /tmp/site/benchmarks
+          cp build-pages/benchmarks/scripted-servers/results/benchmark_latest.json /tmp/site/benchmarks/benchmark_latest.json
+          if [[ -f build-pages/benchmarks/scripted-servers/results/benchmark_badge.json ]]; then
+            cp build-pages/benchmarks/scripted-servers/results/benchmark_badge.json /tmp/site/benchmarks/benchmark_badge.json
+          fi
+
       - name: Prepare repo URL
         run: |
           echo "REPO=https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" >> $GITHUB_ENV
