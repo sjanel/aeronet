@@ -31,8 +31,12 @@
 
 You can inspect the latest benchmark tables generated on `main` from the CI **benchmarks** job and detailed methodology here:
 
-- [Latest CI benchmarks (benchmarks job)](https://github.com/sjanel/aeronet/actions/workflows/ci.yml?query=branch%3Amain+workflow%3ACI+job%3Abenchmarks)
+- [Latest CI benchmarks (CI workflow, benchmarks job)](https://github.com/sjanel/aeronet/actions/workflows/ci.yml?query=branch%3Amain)
 - [Benchmark scenarios and methodology](docs/FEATURES.md#performance--architecture)
+
+You can browse the latest rendered benchmark tables directly on GitHub Pages:
+
+- [Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/)
 
 ## Minimal Examples
 
