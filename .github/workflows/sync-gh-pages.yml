@@ -22,6 +22,21 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
+      - name: Assemble site content from main
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/site
+          mkdir -p /tmp/site
+          if [[ -d docs ]]; then
+            rsync -a docs/ /tmp/site/docs/
+          fi
+          if [[ -d resources ]]; then
+            rsync -a resources/ /tmp/site/resources/
+          fi
+          if [[ -f README.md ]]; then
+            cp README.md /tmp/site/index.md
+          fi
+
       - name: Prepare repo URL
         run: |
           echo "REPO=https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" >> $GITHUB_ENV
@@ -41,12 +56,14 @@ jobs:
             popd
           fi
 
-      - name: Sync docs and site files to gh-pages (preserve benchmarks/)
+      - name: Sync site files to gh-pages (preserve benchmarks/ & previews/)
         run: |
           set -euo pipefail
-          rsync -a --delete --exclude 'benchmarks' --exclude 'previews' --exclude '.git' ./docs/ /tmp/gh/ || true
-          # Copy README as index.md for basic landing
-          cp -f README.md /tmp/gh/index.md || true
+          rsync -a --delete \
+            --exclude 'benchmarks' \
+            --exclude 'previews' \
+            --exclude '.git' \
+            /tmp/site/ /tmp/gh/
 
       - name: Commit & push changes
         run: |
