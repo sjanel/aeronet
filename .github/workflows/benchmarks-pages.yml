@@ -4,10 +4,21 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: ["completed"]
+  workflow_dispatch:
+    inputs:
+      run-id:
+        description: 'Optional: CI workflow run id to download artifacts from. If empty, uses the triggering workflow_run id.'
+        required: false
+        default: ''
+      head-branch:
+        description: 'Optional: branch name to use for preview path when manually dispatching.'
+        required: false
+        default: ''
 
 jobs:
   publish-benchmarks:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # Allow the job to run when triggered by a successful workflow_run or when manually dispatched
+    if: ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -20,11 +31,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Debug - show resolved run-id and artifacts
+        run: |
+          set -euo pipefail
+          RESOLVED_RUN_ID="${{ github.event.inputs.run-id != '' && github.event.inputs.run-id || github.event.workflow_run.id }}"
+          echo "Resolved RUN_ID=${RESOLVED_RUN_ID}"
+          echo "Querying artifacts for run ${RESOLVED_RUN_ID}"
+          curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${RESOLVED_RUN_ID}/artifacts" | jq . || true
+
       - name: Download benchmark summary artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v5
         with:
           name: benchmark-summary
           path: benchmarks/artifacts
+          run-id: ${{ github.event.inputs.run-id != '' && github.event.inputs.run-id || github.event.workflow_run.id }}
 
       - name: Locate artifact files
         id: locate
@@ -84,7 +105,12 @@ jobs:
           fi
 
           git switch gh-pages
-          HEAD_BRANCH="${{ github.event.workflow_run.head_branch }}"
+          # For manual dispatch, allow providing a head branch via input `head-branch`.
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${{ github.event.inputs.head-branch || '' }}" ]]; then
+            HEAD_BRANCH="${{ github.event.inputs.head-branch }}"
+          else
+            HEAD_BRANCH="${{ github.event.workflow_run.head_branch }}"
+          fi
           SAFE_BRANCH=$(echo "$HEAD_BRANCH" | sed 's/[^A-Za-z0-9._-]/-/g')
           if [[ -z "$SAFE_BRANCH" ]]; then
             SAFE_BRANCH="unknown-branch"

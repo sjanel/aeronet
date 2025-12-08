@@ -9,6 +9,7 @@ on:
 
 jobs:
   build-test:
+    name: GCC and Clang
     strategy:
       fail-fast: false
       matrix:
@@ -123,6 +124,7 @@ jobs:
           retention-days: 7
 
   benchmarks:
+    name: Benchmarks
     strategy:
       fail-fast: false
       matrix:
@@ -204,6 +206,14 @@ jobs:
         run: |
           ./run_benchmarks.py --duration 30s --threads 2
 
+      - name: Debug - announce uploaded artifacts
+        if: ${{ matrix.compiler == 'gcc-13' }}
+        run: |
+          echo "Uploader run id: $GITHUB_RUN_ID" >> $GITHUB_STEP_SUMMARY
+          echo "Listing artifacts for this run:" >> $GITHUB_STEP_SUMMARY
+          curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${GITHUB_RUN_ID}/artifacts" | jq . >> $GITHUB_STEP_SUMMARY || true
+
       - name: Upload benchmark summary artifacts
         if: ${{ matrix.compiler == 'gcc-13' }}
         uses: actions/upload-artifact@v5
@@ -214,6 +224,7 @@ jobs:
             build/benchmarks/scripted-servers/results/benchmark_badge.json
 
   coverage:
+    name: Coverage
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -319,6 +330,7 @@ jobs:
             build-coverage/coverage-report
 
   examples-smoke:
+    name: Examples and Docs
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -466,7 +478,7 @@ jobs:
       - name: Setup latest Alpine Linux
         uses: jirutka/setup-alpine@v1
 
-      - name: Run script inside Alpine chroot as root
+      - name: Install dependencies
         run: |
           set -euo pipefail
           
@@ -477,7 +489,7 @@ jobs:
             openssl-dev zlib-dev zstd-dev brotli-dev curl-dev protobuf-dev musl-dev
         shell: alpine.sh --root {0}
 
-      - name: Run script inside Alpine chroot as the default user (unprivileged)
+      - name: Configure with cmake
         run: |
           cmake -S . -B build-alpine -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
@@ -492,8 +504,14 @@ jobs:
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
             -DAERONET_ENABLE_OPENTELEMETRY=ON
+        shell: alpine.sh {0}
 
+      - name: Build
+        run: |
           cmake --build build-alpine --parallel
+        shell: alpine.sh {0}
 
+      - name: Run unit tests
+        run: |
           ctest --test-dir build-alpine --output-on-failure --repeat until-fail:3 --timeout 100
         shell: alpine.sh {0}
