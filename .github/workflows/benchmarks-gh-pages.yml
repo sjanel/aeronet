@@ -1,4 +1,4 @@
-name: Sync gh-pages from main
+name: Benchmarks and GitHub pages Sync
 
 on:
   push:
@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   sync:
+    name: Benchmarks and Pages Sync
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
