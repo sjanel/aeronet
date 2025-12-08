@@ -4,6 +4,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -143,6 +144,45 @@ class HttpResponse {
   // The content type defaults to "text/plain"
   explicit HttpResponse(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain);
 
+  // Get the current status code stored in this HttpResponse.
+  [[nodiscard]] http::StatusCode status() const noexcept {
+    return static_cast<http::StatusCode>(read3(_data.data() + kStatusCodeBeg));
+  }
+
+  // Get the current reason stored in this HttpResponse.
+  [[nodiscard]] std::string_view reason() const noexcept { return {_data.data() + kReasonBeg, reasonLen()}; }
+
+  // Retrieves the value of the first occurrence of the given header key (case-insensitive search per RFC 7230).
+  // If the header is not found, returns std::nullopt.
+  [[nodiscard]] std::optional<std::string_view> headerValue(std::string_view key) const noexcept;
+
+  // Retrieves the value of the first occurrence of the given header key (case-insensitive search per RFC 7230).
+  // If the header is not found, returns an empty string_view.
+  // To distinguish between missing and present-but-empty header values, use headerValue().
+  [[nodiscard]] std::string_view headerValueOrEmpty(std::string_view key) const noexcept {
+    const auto optValue = headerValue(key);
+    return optValue ? *optValue : std::string_view{};
+  }
+
+  // Get a view of the current body stored in this HttpResponse.
+  // If the body is not present, it returns an empty view.
+  [[nodiscard]] std::string_view body() const noexcept;
+
+  // Get the current file stored in this HttpResponse, or nullptr if no file is set.
+  [[nodiscard]] const File* file() const noexcept;
+
+  // Check if this HttpResponse has a file payload.
+  [[nodiscard]] bool hasFile() const noexcept { return isFileBody(); }
+
+  // Get a view of the current trailers stored in this HttpResponse, starting at the first
+  // trailer key (if any).
+  // Each trailer line is formatted as: name + ": " + value + CRLF.
+  // If no trailers are present, it returns an empty view.
+  [[nodiscard]] std::string_view trailers() const noexcept {
+    const auto* pExternPayload = externPayloadPtr();
+    return pExternPayload != nullptr ? externalTrailers(*pExternPayload) : internalTrailers();
+  }
+
   // Replaces the status code. Must be a 3 digits integer (undefined behavior otherwise).
   HttpResponse& status(http::StatusCode statusCode) & noexcept {
     setStatusCode(statusCode);
@@ -169,11 +209,6 @@ class HttpResponse {
     return std::move(*this);
   }
 
-  // Get the current status code stored in this HttpResponse.
-  [[nodiscard]] http::StatusCode status() const noexcept {
-    return static_cast<http::StatusCode>(read3(_data.data() + kStatusCodeBeg));
-  }
-
   // Sets or replace the reason phrase for this instance.
   // Inserting empty reason is allowed.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
@@ -190,8 +225,126 @@ class HttpResponse {
     return std::move(*this);
   }
 
-  // Get the current reason stored in this HttpResponse.
-  [[nodiscard]] std::string_view reason() const noexcept { return {_data.data() + kReasonBeg, reasonLen()}; }
+  // Inserts or replaces the Location header.
+  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  HttpResponse& location(std::string_view src) & { return header(http::Location, src); }
+
+  // Inserts or replaces the Location header.
+  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  HttpResponse&& location(std::string_view src) && {
+    header(http::Location, src);
+    return std::move(*this);
+  }
+
+  // Inserts or replaces the Content-Encoding header.
+  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  HttpResponse& contentEncoding(std::string_view src) & { return header(http::ContentEncoding, src); }
+
+  // Inserts or replaces the Content-Encoding header.
+  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  HttpResponse&& contentEncoding(std::string_view src) && {
+    header(http::ContentEncoding, src);
+    return std::move(*this);
+  }
+
+  // Append a value to an existing header, inserting the header if it is currently missing.
+  // The existing header value is expanded in-place by inserting `separator` followed by `value`.
+  // If the header does not exist yet this behaves like addHeader(key, value).
+  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
+  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  HttpResponse& appendHeaderValue(std::string_view key, std::string_view value, std::string_view separator = ", ") & {
+    appendHeaderValueInternal(key, value, separator);
+    return *this;
+  }
+
+  // Convenient overload appending a numeric value.
+  HttpResponse& appendHeaderValue(std::string_view key, std::integral auto value, std::string_view separator = ", ") & {
+    appendHeaderValueInternal(key, std::string_view(IntegralToCharVector(value)), separator);
+    return *this;
+  }
+
+  // Append a value to an existing header, inserting the header if it is currently missing.
+  HttpResponse&& appendHeaderValue(std::string_view key, std::string_view value, std::string_view separator = ", ") && {
+    appendHeaderValueInternal(key, value, separator);
+    return std::move(*this);
+  }
+
+  // Convenient overload appending a numeric value.
+  HttpResponse&& appendHeaderValue(std::string_view key, std::integral auto value,
+                                   std::string_view separator = ", ") && {
+    appendHeaderValueInternal(key, std::string_view(IntegralToCharVector(value)), separator);
+    return std::move(*this);
+  }
+
+  // Append a header line (duplicates allowed, fastest path).
+  // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
+  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
+  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  HttpResponse& addHeader(std::string_view key, std::string_view value) & {
+    assert(!http::IsReservedResponseHeader(key));
+    appendHeaderInternal(key, value);
+    return *this;
+  }
+
+  // Convenient overload adding a header whose value is numeric.
+  HttpResponse& addHeader(std::string_view key, std::integral auto value) & {
+    assert(!http::IsReservedResponseHeader(key));
+    appendHeaderInternal(key, std::string_view(IntegralToCharVector(value)));
+    return *this;
+  }
+
+  // Append a header line (duplicates allowed, fastest path).
+  // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
+  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
+  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  HttpResponse&& addHeader(std::string_view key, std::string_view value) && {
+    assert(!http::IsReservedResponseHeader(key));
+    appendHeaderInternal(key, value);
+    return std::move(*this);
+  }
+
+  // Convenient overload adding a header whose value is numeric.
+  HttpResponse&& addHeader(std::string_view key, std::integral auto value) && {
+    assert(!http::IsReservedResponseHeader(key));
+    appendHeaderInternal(key, std::string_view(IntegralToCharVector(value)));
+    return std::move(*this);
+  }
+
+  // Add or replace a header value entirely ensuring at most one instance.
+  // Performs a linear scan (slower than addHeader()) using case-insensitive comparison of header names per
+  // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
+  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
+  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  HttpResponse& header(std::string_view key, std::string_view value) & {
+    assert(!http::IsReservedResponseHeader(key));
+    setHeader(key, value, OnlyIfNew::No);
+    return *this;
+  }
+
+  // Convenient overload setting a header to a numeric value.
+  HttpResponse& header(std::string_view key, std::integral auto value) & {
+    assert(!http::IsReservedResponseHeader(key));
+    setHeader(key, std::string_view(IntegralToCharVector(value)), OnlyIfNew::No);
+    return *this;
+  }
+
+  // Add or replace a header value entirely ensuring at most one instance.
+  // Performs a linear scan (slower than addHeader()) using case-insensitive comparison of header names per
+  // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
+  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
+  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  HttpResponse&& header(std::string_view key, std::string_view value) && {
+    assert(!http::IsReservedResponseHeader(key));
+    setHeader(key, value, OnlyIfNew::No);
+    return std::move(*this);
+  }
+
+  // Convenient overload setting a header to a numeric value.
+  HttpResponse&& header(std::string_view key, std::integral auto value) && {
+    assert(!http::IsReservedResponseHeader(key));
+    setHeader(key, std::string_view(IntegralToCharVector(value)), OnlyIfNew::No);
+    return std::move(*this);
+  }
 
   // Assigns the given body to this HttpResponse.
   // Empty body is allowed.
@@ -385,6 +538,120 @@ class HttpResponse {
     return std::move(*this);
   }
 
+  // Append an inline body from a `std::string_view`.
+  // - `body` is copied into the internal inline buffer (no ownership transferred).
+  // - If `body` is empty this call appends nothing and does NOT clear any existing inline body.
+  //   To clear the body explicitly use `body("")` or one of the `body(...)` overloads with an empty value.
+  // - `contentType` is optional. If non-empty it replaces the current Content-Type header.
+  //   If empty and no Content-Type header exists yet, the header is set to
+  //   `application/octet-stream` only when the appended data is non-empty.
+  // - Safe to call multiple times; data is appended to any existing inline body.
+  // Trailers should not be added before calling this method.
+  HttpResponse& appendBody(std::string_view body, std::string_view contentType = {}) & {
+    appendBodyInternal(body, contentType);
+    return *this;
+  }
+
+  // Rvalue overload: same semantics as the lvalue overload but returns an rvalue reference
+  // to allow fluent chaining on temporaries.
+  HttpResponse&& appendBody(std::string_view body, std::string_view contentType = {}) && {
+    appendBodyInternal(body, contentType);
+    return std::move(*this);
+  }
+
+  // Append an inline body from a span of bytes.
+  // - `body` contents are copied into the internal inline buffer.
+  // - When `body` is non-empty and `contentType` is empty, the default
+  //   `application/octet-stream` content type will be set.
+  // - This overload is convenient when working with raw byte buffers.
+  // Trailers should not be added before calling this method.
+  HttpResponse& appendBody(std::span<const std::byte> body, std::string_view contentType = {}) & {
+    if (!body.empty() && contentType.empty()) {
+      contentType = http::ContentTypeApplicationOctetStream;
+    }
+    appendBodyInternal(std::string_view{reinterpret_cast<const char*>(body.data()), body.size()}, contentType);
+    return *this;
+  }
+
+  // Rvalue overload for span-based append.
+  HttpResponse&& appendBody(std::span<const std::byte> body, std::string_view contentType = {}) && {
+    if (!body.empty() && contentType.empty()) {
+      contentType = http::ContentTypeApplicationOctetStream;
+    }
+    appendBodyInternal(std::string_view{reinterpret_cast<const char*>(body.data()), body.size()}, contentType);
+    return std::move(*this);
+  }
+
+  // Append an inline body from a NUL-terminated C string (or nullptr for empty body).
+  // - If `body` is `nullptr` it is treated as an empty body.
+  // - Otherwise the C-string is copied into the inline buffer.
+  // - `contentType` follows the same rules as the `std::string_view` overload.
+  // Trailers should not be added before calling this method.
+  HttpResponse& appendBody(const char* body, std::string_view contentType = {}) & {
+    auto sv = body == nullptr ? std::string_view() : std::string_view(body);
+    appendBodyInternal(sv, contentType);
+    return *this;
+  }
+
+  // Rvalue overload for C-string append.
+  HttpResponse&& appendBody(const char* body, std::string_view contentType = {}) && {
+    auto sv = body == nullptr ? std::string_view() : std::string_view(body);
+    appendBodyInternal(sv, contentType);
+    return std::move(*this);
+  }
+
+  // Appends directly inside the body up to 'maxLen' bytes of data.
+  // 'writer' should return the actual number of bytes written (should be <= 'maxLen'),
+  // and provides as a single argument the start of the buffer where to append body data.
+  // If body was previously captured, it is erased and append with initiate a new inline body.
+  // It is undefined behavior to write more than 'maxLen' bytes of data into the writer (for one call).
+  // This is the most efficient way to set the body to the HttpResponse, as it avoids copies and limits allocations.
+  // Growing of the internal buffer is exponential.
+  // You can call appendBody several times (it will append data to existing inline body).
+  // To erase the body, call 'body' with an empty buffer.
+  // ContentType is optional - if non-empty, it replaces current body content type.
+  // Otherwise, initializes content type to 'application/octet-stream' if content tpye is not already set.
+  HttpResponse& appendBody(std::size_t maxLen, const std::function<std::size_t(std::byte*)>& writer,
+                           std::string_view contentType = {}) & {
+    appendBodyInternal(maxLen, writer, contentType);
+    return *this;
+  }
+
+  // Convenience overload accepting a writer that writes into a `char*` buffer.
+  // Mimicks the behavior of the `std::byte*` based overload, except that the default content type is
+  // 'text/plain' if the content type is not already set.
+  HttpResponse& appendBody(std::size_t maxLen, const std::function<std::size_t(char*)>& writer,
+                           std::string_view contentType = {}) & {
+    appendBodyInternal(maxLen, writer, contentType);
+    return *this;
+  }
+
+  // Appends directly inside the body up to 'maxLen' bytes of data.
+  // 'writer' should return the actual number of bytes written (should be <= 'maxLen'),
+  // and provides as a single argument the start of the buffer where to append body data.
+  // If body was previously captured, it is erased and append with initiate a new inline body.
+  // It is undefined behavior to write more than 'maxLen' bytes of data into the writer (for one call).
+  // This is the most efficient way to set the body to the HttpResponse, as it avoids copies and limits allocations.
+  // Growing of the internal buffer is exponential.
+  // You can call appendBody several times (it will append data to existing inline body).
+  // To erase the body, call 'body' with an empty buffer.
+  // ContentType is optional - if non-empty, it replaces current body content type.
+  // Otherwise, initializes content type to 'application/octet-stream' if content tpye is not already set.
+  HttpResponse&& appendBody(std::size_t maxLen, const std::function<std::size_t(std::byte*)>& writer,
+                            std::string_view contentType = {}) && {
+    appendBodyInternal(maxLen, writer, contentType);
+    return std::move(*this);
+  }
+
+  // Rvalue overload that accepts a `char*` writer.
+  // Mimicks the behavior of the `std::byte*` based overload, except that the default content type is
+  // 'text/plain' if the content type is not already set.
+  HttpResponse&& appendBody(std::size_t maxLen, const std::function<std::size_t(char*)>& writer,
+                            std::string_view contentType = {}) && {
+    appendBodyInternal(maxLen, writer, contentType);
+    return std::move(*this);
+  }
+
   // Stream the contents of an already-open file as the response body.
   // This methods takes ownership of the 'file' object into the response and sends the entire file.
   // Notes:
@@ -394,7 +661,8 @@ class HttpResponse {
   //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
   //   - Errors: filesystem read/write errors are surfaced during transmission; callers should expect the connection
   //     to be closed on fatal I/O failures.
-  //   - Content Type header: if non-empty, sets given content type value. Otherwise, attempt to guess it from the file
+  //   - Content Type header: if non-empty, sets given content type value. Otherwise, attempt to guess it from the
+  //   file
   //     object. If the MIME type is unknown, sets 'application/octet-stream' as Content type.
   HttpResponse& file(File fileObj, std::string_view contentType = {}) & {
     return file(std::move(fileObj), 0, 0, contentType);
@@ -443,158 +711,6 @@ class HttpResponse {
   HttpResponse&& file(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType = {}) && {
     file(std::move(fileObj), offset, length, contentType);
     return std::move(*this);
-  }
-
-  // Get the current file stored in this HttpResponse, or nullptr if no file is set.
-  [[nodiscard]] const File* file() const noexcept;
-
-  // Check if this HttpResponse has a file payload.
-  [[nodiscard]] bool hasFile() const noexcept { return isFileBody(); }
-
-  // Get a view of the current body stored in this HttpResponse.
-  // If the body is not present, it returns an empty view.
-  [[nodiscard]] std::string_view body() const noexcept;
-
-  // Inserts or replaces the Location header.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse& location(std::string_view src) & { return header(http::Location, src); }
-
-  // Inserts or replaces the Location header.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse&& location(std::string_view src) && {
-    header(http::Location, src);
-    return std::move(*this);
-  }
-
-  // Inserts or replaces the Content-Encoding header.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse& contentEncoding(std::string_view src) & { return header(http::ContentEncoding, src); }
-
-  // Inserts or replaces the Content-Encoding header.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse&& contentEncoding(std::string_view src) && {
-    header(http::ContentEncoding, src);
-    return std::move(*this);
-  }
-
-  // Append a value to an existing header, inserting the header if it is currently missing.
-  // The existing header value is expanded in-place by inserting `separator` followed by `value`.
-  // If the header does not exist yet this behaves like addHeader(key, value).
-  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse& appendHeaderValue(std::string_view key, std::string_view value, std::string_view separator = ", ") & {
-    appendHeaderValueInternal(key, value, separator);
-    return *this;
-  }
-
-  // Convenient overload appending a numeric value.
-  HttpResponse& appendHeaderValue(std::string_view key, std::integral auto value, std::string_view separator = ", ") & {
-    appendHeaderValueInternal(key, std::string_view(IntegralToCharVector(value)), separator);
-    return *this;
-  }
-
-  // Append a value to an existing header, inserting the header if it is currently missing.
-  HttpResponse&& appendHeaderValue(std::string_view key, std::string_view value, std::string_view separator = ", ") && {
-    appendHeaderValueInternal(key, value, separator);
-    return std::move(*this);
-  }
-
-  // Convenient overload appending a numeric value.
-  HttpResponse&& appendHeaderValue(std::string_view key, std::integral auto value,
-                                   std::string_view separator = ", ") && {
-    appendHeaderValueInternal(key, std::string_view(IntegralToCharVector(value)), separator);
-    return std::move(*this);
-  }
-
-  // Append a header line (duplicates allowed, fastest path).
-  // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
-  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse& addHeader(std::string_view key, std::string_view value) & {
-    assert(!http::IsReservedResponseHeader(key));
-    appendHeaderInternal(key, value);
-    return *this;
-  }
-
-  // Convenient overload adding a header whose value is numeric.
-  HttpResponse& addHeader(std::string_view key, std::integral auto value) & {
-    assert(!http::IsReservedResponseHeader(key));
-    appendHeaderInternal(key, std::string_view(IntegralToCharVector(value)));
-    return *this;
-  }
-
-  // Append a header line (duplicates allowed, fastest path).
-  // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
-  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse&& addHeader(std::string_view key, std::string_view value) && {
-    assert(!http::IsReservedResponseHeader(key));
-    appendHeaderInternal(key, value);
-    return std::move(*this);
-  }
-
-  // Convenient overload adding a header whose value is numeric.
-  HttpResponse&& addHeader(std::string_view key, std::integral auto value) && {
-    assert(!http::IsReservedResponseHeader(key));
-    appendHeaderInternal(key, std::string_view(IntegralToCharVector(value)));
-    return std::move(*this);
-  }
-
-  // Add or replace a header value entirely ensuring at most one instance.
-  // Performs a linear scan (slower than addHeader()) using case-insensitive comparison of header names per
-  // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
-  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse& header(std::string_view key, std::string_view value) & {
-    assert(!http::IsReservedResponseHeader(key));
-    setHeader(key, value, OnlyIfNew::No);
-    return *this;
-  }
-
-  // Convenient overload setting a header to a numeric value.
-  HttpResponse& header(std::string_view key, std::integral auto value) & {
-    assert(!http::IsReservedResponseHeader(key));
-    setHeader(key, std::string_view(IntegralToCharVector(value)), OnlyIfNew::No);
-    return *this;
-  }
-
-  // Add or replace a header value entirely ensuring at most one instance.
-  // Performs a linear scan (slower than addHeader()) using case-insensitive comparison of header names per
-  // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
-  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse&& header(std::string_view key, std::string_view value) && {
-    assert(!http::IsReservedResponseHeader(key));
-    setHeader(key, value, OnlyIfNew::No);
-    return std::move(*this);
-  }
-
-  // Convenient overload setting a header to a numeric value.
-  HttpResponse&& header(std::string_view key, std::integral auto value) && {
-    assert(!http::IsReservedResponseHeader(key));
-    setHeader(key, std::string_view(IntegralToCharVector(value)), OnlyIfNew::No);
-    return std::move(*this);
-  }
-
-  // Retrieves the value of the first occurrence of the given header key (case-insensitive search per RFC 7230).
-  // If the header is not found, returns an empty string_view.
-  // To distinguish between missing and present-but-empty header values, use headerValue().
-  [[nodiscard]] std::string_view headerValueOrEmpty(std::string_view key) const noexcept {
-    const auto optValue = headerValue(key);
-    return optValue ? *optValue : std::string_view{};
-  }
-
-  // Retrieves the value of the first occurrence of the given header key (case-insensitive search per RFC 7230).
-  // If the header is not found, returns std::nullopt.
-  [[nodiscard]] std::optional<std::string_view> headerValue(std::string_view key) const noexcept;
-
-  // Get a view of the current trailers stored in this HttpResponse, starting at the first
-  // trailer key (if any).
-  // Each trailer line is formatted as: name + ": " + value + CRLF.
-  // If no trailers are present, it returns an empty view.
-  [[nodiscard]] std::string_view trailers() const noexcept {
-    const auto* pExternPayload = externPayloadPtr();
-    return pExternPayload != nullptr ? externalTrailers(*pExternPayload) : internalTrailers();
   }
 
   // Adds a trailer header to be sent after the response body (RFC 7230 §4.1.2).
@@ -675,6 +791,14 @@ class HttpResponse {
 
   void appendHeaderValueInternal(std::string_view key, std::string_view value, std::string_view separator);
 
+  void appendBodyInternal(std::string_view data, std::string_view contentType);
+
+  void appendBodyInternal(std::size_t maxLen, const std::function<std::size_t(char*)>& writer,
+                          std::string_view contentType);
+
+  void appendBodyInternal(std::size_t maxLen, const std::function<std::size_t(std::byte*)>& writer,
+                          std::string_view contentType);
+
   HttpPayload* finalizeHeadersBody(http::Version version, SysTimePoint tp, bool isHeadMethod, bool close,
                                    const ConcatenatedHeaders& globalHeaders, std::size_t minCapturedBodySize);
 
@@ -714,6 +838,14 @@ class HttpResponse {
 
   [[nodiscard]] bool isInlineBody() const noexcept { return _payloadVariant.index() == 0; }
   [[nodiscard]] bool isFileBody() const noexcept { return _payloadVariant.index() == 2; }
+
+  void setBodyEnsureNoTrailers() const {
+    if (_trailerPos != 0) {
+      throw std::logic_error("Cannot set body after the first trailer");
+    }
+  }
+
+  void appendBodyResetContentType(std::string_view givenContentType, std::string_view defaultContentType);
 
   RawChars _data;
   uint16_t _headersStartPos{0};  // position just at the CRLF that starts the first header line

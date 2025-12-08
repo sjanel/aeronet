@@ -291,6 +291,31 @@ HttpResponse(200, "OK").body(std::move(blob), blobSize, "application/octet-strea
 These patterns hand ownership to the server without duplicating the payload, enabling efficient zero-copy handoff
 for large responses.
 
+### Appending body data
+
+The `HttpResponse::appendBody(...)` overloads allows appending additional data to an existing body.
+
+For maximum efficiency, use the overloads taking a `writer` lambda to write directly into the response's internal
+buffer without intermediate copies.
+
+Example:
+
+```cpp
+HttpResponse resp(200, "OK");
+
+// Append a simple string line
+resp.appendBody("Header line\n");
+
+// Append generated data via writer lambda for maximum efficiency
+std::size_t maxLen = 256;
+resp.appendBody(maxLen, [](char* buf) -> std::size_t {
+  // write directly into buf up to bufSize bytes
+  std::string_view data = "Body data generated on the fly...\n";
+  std::memcpy(buf, data.data(), data.size());
+  return data.size(); // return number of bytes actually written (should be less than maxLen)
+});
+```
+
 ## Compression & Negotiation
 
 Supported (build‑flag gated): gzip, deflate (zlib), zstd, brotli.
