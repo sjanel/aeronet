@@ -3,6 +3,8 @@ name: Sync gh-pages from main
 on:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 permissions:
   contents: write
@@ -10,6 +12,10 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc-13, clang-21]
     steps:
       - name: Checkout current main
         uses: actions/checkout@v6
@@ -18,9 +24,40 @@ jobs:
 
       - name: Install all dependencies with features
         run: |
-          sudo apt install -y build-essential wrk libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          sudo apt install -y wrk libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
           pip install uvicorn starlette
 
+      - name: Install GCC toolchain
+        if: ${{ startsWith(matrix.compiler, 'gcc') }}
+        run: sudo apt-get install -y ${{ matrix.compiler }}
+
+      - name: Install Clang/LLVM toolchain
+        if: ${{ startsWith(matrix.compiler, 'clang') }}
+        run: |
+            wget --retry-connrefused --waitretry=5 --tries=5 https://apt.llvm.org/llvm.sh
+            chmod +x llvm.sh
+            compiler="${{ matrix.compiler }}"
+            version="${compiler##*-}"
+            echo "Detected clang version: $version"
+            sudo ./llvm.sh "$version"
+            sudo apt-get install -y "lld-$version"
+
+      - name: Derive CC/CXX environment
+        run: |
+          compiler="${{ matrix.compiler }}"
+          echo "CC=$compiler" >> $GITHUB_ENV
+          ver="${compiler##*-}"
+          if [[ "$compiler" == gcc-* ]]; then
+            echo "CXX=g++-$ver" >> $GITHUB_ENV
+          else
+            echo "CXX=clang++-$ver" >> $GITHUB_ENV
+          fi
+          echo "Derived compilers: CC=$compiler CXX set for version $ver"
+
+      - name: Show compiler version
+        run: |
+          $CXX --version
+          
       - name: Configure git identity for runner
         run: |
           # Ensure commits performed by this workflow have an author identity
@@ -29,18 +66,11 @@ jobs:
 
       - name: Assemble site content from main
         run: |
-          set -euo pipefail
           rm -rf /tmp/site
           mkdir -p /tmp/site
-          if [[ -d docs ]]; then
-            rsync -a docs/ /tmp/site/docs/
-          fi
-          if [[ -d resources ]]; then
-            rsync -a resources/ /tmp/site/resources/
-          fi
-          if [[ -f README.md ]]; then
-            cp README.md /tmp/site/index.md
-          fi
+          rsync -a docs/ /tmp/site/docs/
+          rsync -a resources/ /tmp/site/resources/
+          cp README.md /tmp/site/index.md
 
       - name: Configure benchmark build
         run: |
@@ -63,13 +93,21 @@ jobs:
         run: |
           cmake --build build-pages --parallel
 
-      - name: Run benchmarks
+      - name: Run benchmarks (fast)
+        if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+        working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
+        run: |
+          ./run_benchmarks.py --duration 5s --threads 1 --warmup 2s
+
+      - name: Run benchmarks (long)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
         run: |
           ./run_benchmarks.py --duration 30s --threads 2
 
       - name: Render HTML for Pages
         run: |
+          rm -fr /tmp/site/benchmarks
           mkdir -p /tmp/site/benchmarks
           python3 benchmarks/scripted-servers/render_benchmarks_html.py \
             --input build-pages/benchmarks/scripted-servers/results/benchmark_latest.json \
@@ -82,12 +120,13 @@ jobs:
           fi
 
       - name: Prepare repo URL
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(matrix.compiler, 'gcc') }}
         run: |
           echo "REPO=https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" >> $GITHUB_ENV
 
       - name: Clone or initialize gh-pages branch
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(matrix.compiler, 'gcc') }}
         run: |
-          set -euo pipefail
           rm -rf /tmp/gh
           # hide ls-remote output to keep logs tidy
           if git ls-remote --exit-code --heads "$REPO" gh-pages >/dev/null 2>&1; then
@@ -101,6 +140,7 @@ jobs:
           fi
 
       - name: Sync site files to gh-pages (preserve benchmarks/ & previews/)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(matrix.compiler, 'gcc') }}
         run: |
           set -euo pipefail
           rsync -a --delete \
@@ -109,7 +149,15 @@ jobs:
             --exclude '.git' \
             /tmp/site/ /tmp/gh/ || ( echo "rsync failed" && exit 1 )
 
+      - name: Sync benchmarks to gh-pages (update benchmarks/)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(matrix.compiler, 'gcc') }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/gh/benchmarks
+          rsync -a --delete /tmp/site/benchmarks/ /tmp/gh/benchmarks/ || ( echo "rsync benchmarks failed" && exit 1 )
+
       - name: Commit & push changes
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(matrix.compiler, 'gcc') }}
         run: |
           set -euo pipefail
           git -C /tmp/gh add -A
