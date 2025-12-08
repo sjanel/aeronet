@@ -195,9 +195,7 @@ void HttpResponse::eraseHeader(std::string_view key) {
 }
 
 void HttpResponse::setBodyInternal(std::string_view newBody) {
-  if (_trailerPos != 0) {
-    throw std::logic_error("Cannot set body after the first trailer");
-  }
+  setBodyEnsureNoTrailers();
   const int64_t diff = static_cast<int64_t>(newBody.size()) - static_cast<int64_t>(internalBodyAndTrailersLen());
   if (diff > 0) {
     int64_t newBodyInternalPos = -1;
@@ -220,6 +218,60 @@ void HttpResponse::setBodyInternal(std::string_view newBody) {
     std::memcpy(_data.data() + _bodyStartPos, newBody.data(), newBody.size());
   }
   // Clear payload variant at the end because newBody may point to its internal memory.
+  _payloadVariant = {};
+}
+
+namespace {
+// Even if this space will be unused now, it will anyway still be needed for the finalization of the HttpResponse.
+constexpr std::size_t kExtraSpaceForContentTypeHeader =
+    http::CRLF.size() + http::ContentType.size() + http::HeaderSep.size();
+}  // namespace
+
+void HttpResponse::appendBodyInternal(std::string_view data, std::string_view contentType) {
+  setBodyEnsureNoTrailers();
+  if (!data.empty()) {
+    _data.ensureAvailableCapacityExponential(
+        data.size() + kExtraSpaceForContentTypeHeader +
+        std::max(http::ContentTypeApplicationOctetStream.size(), contentType.size()));
+
+    _data.unchecked_append(data);
+
+    appendBodyResetContentType(contentType, http::ContentTypeTextPlain);
+  }
+  _payloadVariant = {};
+}
+
+void HttpResponse::appendBodyInternal(std::size_t maxLen, const std::function<std::size_t(char*)>& writer,
+                                      std::string_view contentType) {
+  setBodyEnsureNoTrailers();
+
+  _data.ensureAvailableCapacityExponential(maxLen + kExtraSpaceForContentTypeHeader +
+                                           std::max(http::ContentTypeTextPlain.size(), contentType.size()));
+
+  const auto written = writer(_data.data() + _data.size());
+
+  if (written != 0) {
+    _data.addSize(written);
+
+    appendBodyResetContentType(contentType, http::ContentTypeTextPlain);
+  }
+  _payloadVariant = {};
+}
+
+void HttpResponse::appendBodyInternal(std::size_t maxLen, const std::function<std::size_t(std::byte*)>& writer,
+                                      std::string_view contentType) {
+  setBodyEnsureNoTrailers();
+  _data.ensureAvailableCapacityExponential(
+      maxLen + kExtraSpaceForContentTypeHeader +
+      std::max(http::ContentTypeApplicationOctetStream.size(), contentType.size()));
+
+  const auto written = writer(reinterpret_cast<std::byte*>(_data.data()) + _data.size());
+
+  if (written != 0) {
+    _data.addSize(written);
+
+    appendBodyResetContentType(contentType, http::ContentTypeApplicationOctetStream);
+  }
   _payloadVariant = {};
 }
 
@@ -273,7 +325,7 @@ std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) 
   const char* headersEnd = _data.data() + _bodyStartPos - http::CRLF.size();
   const char* endKey = key.end();
 
-  while (headersBeg != headersEnd) {
+  while (headersBeg < headersEnd) {
     // Perform an inplace case-insensitive 'starts_with' algorithm
     const char* begKey = key.begin();
     bool icharsDiffer = false;
@@ -287,18 +339,14 @@ std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) 
     const char* nextCRLF =
         std::search(headersBeg + http::CRLF.size(), headersEnd, http::CRLF.begin(), http::CRLF.end());
 
-    if (icharsDiffer || *headersBeg != ':' || begKey != endKey) {
-      // Not the header we are looking for
-      // move headersBeg to next header
-      if (nextCRLF == headersEnd) {
-        return ret;
-      }
-      headersBeg = nextCRLF + http::CRLF.size();
-      continue;
+    if (!icharsDiffer && *headersBeg == ':' && begKey == endKey) {
+      // Found the header we are looking for
+      ret = {headersBeg + http::CRLF.size(), nextCRLF};
+      break;
     }
 
-    ret = {headersBeg + http::CRLF.size(), nextCRLF};
-    break;
+    // Not the header we are looking for - move headersBeg to next header
+    headersBeg = nextCRLF + http::CRLF.size();
   }
   return ret;
 }
@@ -579,6 +627,15 @@ HttpResponse::PreparedResponse HttpResponse::finalizeAndStealData(http::Version 
   }
 
   return prepared;
+}
+
+void HttpResponse::appendBodyResetContentType(std::string_view givenContentType, std::string_view defaultContentType) {
+  if (givenContentType.empty()) {
+    // If we previously had a captured payload, overwrite any existing Content-Type.
+    setHeader(http::ContentType, defaultContentType, isInlineBody() ? OnlyIfNew::Yes : OnlyIfNew::No);
+  } else {
+    setHeader(http::ContentType, givenContentType, OnlyIfNew::No);
+  }
 }
 
 }  // namespace aeronet
