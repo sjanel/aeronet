@@ -6,7 +6,7 @@
 #include <openssl/ssl.h>
 #include <openssl/sslerr.h>
 #include <openssl/types.h>
-#include <openssl/x509.h>
+#include <openssl/x509_vfy.h>
 #include <sys/socket.h>
 
 #include <array>

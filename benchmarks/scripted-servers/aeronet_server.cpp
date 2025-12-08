@@ -12,7 +12,7 @@
 #include <format>
 #include <iostream>
 #include <limits>
-#include <random>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -21,6 +21,7 @@
 #include "aeronet/aeronet.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/static-file-handler.hpp"
+#include "aeronet/stringconv.hpp"
 #include "aeronet/toupperlower.hpp"
 #include "scripted-servers-helpers.hpp"
 

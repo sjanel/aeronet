@@ -14,25 +14,25 @@
 
 **aeronet** is a modern, fast, modular and ergonomic HTTP / WebSocket C++ **server library** for **Linux** focused on predictable performance, explicit control and minimal dependencies.
 
-- **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths and minimal copies, horizontal scaling with port reuse. In wrk-based CI benchmarks against several popular frameworks (C++, Rust, Java, Go and Python), aeronet ranks among the fastest implementations across multiple realistic scenarios.
+- **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths and minimal copies, horizontal scaling with port reuse. In CI benchmarks `aeronet` ranks among the [fastest tested implementations](#performance-at-a-glance) across multiple realistic scenarios.
 - **Modular & opt‑in**: enable only the features you need at compile time to minimize binary size and dependencies
-- **Ergonomic**: easy API, automatic features (encoding, telemetry), RAII listener setup with sync / async server lifetime control, no hidden global state, no macros
+- **Ergonomic**: easy API, automatic features (encoding, telemetry), RAII listener setup with sync / async server lifetime control, developer friendly with no hidden global state, no macros
 - **Configurable**: extensive dynamic configuration with reasonable defaults (principle of least surprise)
 - **Standards compliant**: Compression, Streaming, Trailers, TLS, CORS, Range Requests, Conditional Requests, Static files, Percent Decoding, etc.
-- **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing), perfect for micro-services
+- **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing), dogstatsd support, perfect for micro-services
 
 ### Performance at a glance
 
-`aeronet` is designed to be **very fast**. In our automated wrk-based benchmarks (run in CI against a fixed set of competitors such as drogon, pistache, a Rust server, Undertow, Go and Python), aeronet:
+`aeronet` is designed to be **very fast**. In our automated [wrk](https://github.com/wg/wrk)-based benchmarks against other popular frameworks (run in CI against a fixed set of competitors such as [drogon](https://github.com/drogonframework/drogon), [pistache](https://github.com/pistacheio/pistache), a Rust Axum server, Java Undertow, Go and Python), aeronet:
 
-- Achieves the **highest requests/sec** in most scenarios (headers, static, CPU-bound and mixed workloads)
+- Achieves the **highest requests/sec** in most scenarios
 - Consistently delivers **lower average latency** in those same scenarios
 - Maintains **competitive or better throughput and memory usage**
 
 You can inspect the latest benchmark tables generated on `main` from the CI **benchmarks** job and detailed methodology here:
 
 - [Latest CI benchmarks (CI workflow, benchmarks job)](https://github.com/sjanel/aeronet/actions/workflows/ci.yml?query=branch%3Amain)
-- [Benchmark scenarios and methodology](docs/FEATURES.md#performance--architecture)
+- [Benchmark scenarios and methodology](benchmarks/scripted-servers/README.md)
 
 You can browse the latest rendered benchmark tables directly on GitHub Pages:
 
@@ -63,18 +63,18 @@ int main() {
 
 ### Streaming response
 
-For a large response body, respond with multiple body chunks using `HttpResponseWriter`:
+For a large, unknown size response body, reply with multiple body chunks using `HttpResponseWriter`:
 
 ```cpp
 Router router;
-router.setDefault([](const HttpRequest& req, HttpResponseWriter& w){
-  w.status(200);
-  w.header("X-Req-Path", req.path());
-  w.contentType("text/plain");
+router.setDefault([](const HttpRequest& req, HttpResponseWriter& writer){
+  writer.status(200);
+  writer.header("X-Req-Path", req.path());
+  writer.contentType("text/plain");
   for (int i = 0; i < 10; ++i) {
-    w.writeBody(std::string(50,'x')); // write by chunks
+    writer.writeBody(std::string(50,'x')); // write by chunks
   }
-  w.end();
+  writer.end();
 });
 ```
 
