@@ -155,13 +155,11 @@ int main(int argc, char* argv[]) {
   // ============================================================
   router.setPath(http::Method::POST, "/uppercase", [](const HttpRequest& req) {
     std::string_view body = req.body();
-    std::string out;
-    out.resize_and_overwrite(body.size(), [body](char* out, std::size_t n) {
-      std::ranges::transform(body, out, [](char ch) { return toupper(ch); });
-      return n;
-    });
     HttpResponse resp(200);
-    resp.body(std::move(out));
+    resp.appendBody(body.size(), [body](char* buf) {
+      std::ranges::transform(body, buf, [](char ch) { return toupper(ch); });
+      return body.size();
+    });
     return resp;
   });
 

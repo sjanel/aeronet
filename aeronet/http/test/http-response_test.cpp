@@ -93,6 +93,225 @@ TEST_F(HttpResponseTest, BodyFromSpanBytesLValue) {
   EXPECT_EQ(resp.body(), "Hello");
 }
 
+namespace {
+constexpr auto kAppendNothing = []([[maybe_unused]] std::byte* buf) { return 0U; };
+
+constexpr auto kAppendSpace = [](std::byte* buf) {
+  *buf = std::byte{' '};
+  return 1U;
+};
+
+constexpr auto kAppendSomeData = [](std::byte* buf) {
+  static constexpr std::string_view kData = "some data";
+  std::memcpy(buf, kData.data(), kData.size());
+  return kData.size();
+};
+
+constexpr auto kAppendSomeOtherData = [](std::byte* buf) {
+  static constexpr std::string_view kData = "some other data";
+  std::memcpy(buf, kData.data(), kData.size());
+  return kData.size();
+};
+}  // namespace
+
+TEST_F(HttpResponseTest, AppendBodyFromEmpty) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.appendBody(16U, kAppendSomeData);
+  EXPECT_EQ(resp.body(), "some data");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "application/octet-stream");
+}
+
+TEST_F(HttpResponseTest, AppendBodyEmptyShouldDoNothing) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.appendBody(0U, kAppendNothing);
+  resp.appendBody(2U, kAppendNothing);
+  EXPECT_EQ(resp.body(), "");
+  EXPECT_EQ(resp.headerValue(http::ContentType), std::nullopt);
+}
+
+TEST_F(HttpResponseTest, AppendBodyAfterTrailersShouldThrow) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("some body");
+  resp.addTrailer("X-Trailer", "value");
+  EXPECT_THROW(resp.appendBody(16U, kAppendSomeData), std::logic_error);
+}
+
+TEST_F(HttpResponseTest, AppendBodyFromCapturedPayloadShouldEraseCapturedPayload) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::string{"initial body "});
+  resp.appendBody(16U, kAppendSomeData);
+  EXPECT_EQ(resp.body(), "some data");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "application/octet-stream");
+}
+
+TEST_F(HttpResponseTest, AppendBodyFromCapturedPayloadShouldEraseCapturedPayloadAndResetContentType) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::string{"initial body "});
+  resp.appendBody(16U, kAppendSomeData, "text/custom");
+  resp.appendBody(0U, kAppendNothing);
+  EXPECT_EQ(resp.body(), "some data");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/custom");
+}
+
+TEST_F(HttpResponseTest, AppendBodyFromNonEmpty) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("initial body ");
+  resp.appendBody(16U, kAppendSomeData, "text/custom");
+  EXPECT_EQ(resp.body(), "initial body some data");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/custom");
+}
+
+TEST_F(HttpResponseTest, SeveralAppendBody) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.appendBody(16U, kAppendSomeData, "some content type");
+  resp.appendBody(1U, kAppendSpace, "some content type 2");
+  resp.appendBody(16U, kAppendSomeOtherData, "text/my-content-type");
+  EXPECT_EQ(resp.body(), "some data some other data");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/my-content-type");
+}
+
+TEST_F(HttpResponseTest, AppendBodyRValue) {
+  auto resp = HttpResponse{}.appendBody(16U, kAppendSomeData);
+  EXPECT_EQ(resp.body(), "some data");
+}
+
+TEST_F(HttpResponseTest, AppendBodyRValueChaining) {
+  auto resp = HttpResponse{}
+                  .body(std::string{"initial body that should be erased"})
+                  .appendBody(16U, kAppendSomeData)
+                  .appendBody(1U, kAppendSpace)
+                  .appendBody(16U, kAppendSomeOtherData, "text/my-content-type");
+  EXPECT_EQ(resp.body(), "some data some other data");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/my-content-type");
+}
+
+TEST_F(HttpResponseTest, AppendBodyFromStringAfterTrailersIsLogicError) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("some body");
+  resp.addTrailer("X-Trailer", "value");
+  EXPECT_THROW(resp.appendBody("additional body"), std::logic_error);
+}
+
+TEST_F(HttpResponseTest, AppendBodyFromStringViewAndCStrAndSpan) {
+  // string_view
+  HttpResponse r1(http::StatusCodeOK);
+  r1.appendBody(std::string_view("hello"));
+  EXPECT_EQ(r1.body(), "hello");
+
+  // c-string nullptr should be treated as empty (no change)
+  HttpResponse r2(http::StatusCodeOK);
+  r2.body("orig");
+  r2.appendBody(static_cast<const char*>(nullptr));
+  EXPECT_EQ(r2.body(), "orig");
+
+  // c-string non-null
+  HttpResponse r3(http::StatusCodeOK);
+  r3.appendBody("abc", "text/x-test");
+  EXPECT_EQ(r3.body(), "abc");
+  EXPECT_EQ(r3.headerValue(http::ContentType), "text/x-test");
+
+  // span of bytes
+  const std::vector<std::byte> vec = {std::byte{'X'}, std::byte{'Y'}};
+  HttpResponse r4(http::StatusCodeOK);
+  r4.appendBody(std::span<const std::byte>(vec));
+  r4.appendBody(std::span<const std::byte>{}, "text/another");
+  r4.appendBody(std::span<const std::byte>{vec}, "text/another2");
+  EXPECT_EQ(r4.body(), "XYXY");
+  EXPECT_EQ(r4.headerValue(http::ContentType), "text/another2");
+}
+
+TEST_F(HttpResponseTest, AppendBodyRvalueSpanBytesDefaultContentType) {
+  const std::vector<std::byte> vec = {std::byte{'A'}, std::byte{'B'}, std::byte{'C'}};
+  auto resp = HttpResponse(http::StatusCodeOK).appendBody(std::span<const std::byte>(vec));
+  EXPECT_EQ(resp.body(), "ABC");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "application/octet-stream");
+}
+
+TEST_F(HttpResponseTest, AppendBodyRvalueSpanBytesContentType) {
+  const std::vector<std::byte> vec = {std::byte{'A'}, std::byte{'B'}, std::byte{'C'}};
+  auto resp = HttpResponse(http::StatusCodeOK)
+                  .appendBody(std::span<const std::byte>(vec))
+                  .appendBody(std::span<const std::byte>(vec), "text/type")
+                  .appendBody(std::span<const std::byte>{}, "some/type")
+                  .appendBody(std::span<const std::byte>{});
+  EXPECT_EQ(resp.body(), "ABCABC");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/type");
+}
+
+TEST_F(HttpResponseTest, AppendBodyShouldOverrideCapturedPayloadContentType) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::string{"captured body"}, "text/captured");
+  resp.appendBody(std::string_view("appended body"));
+  EXPECT_EQ(resp.body(), "appended body");
+  EXPECT_EQ(resp.headerValue(http::ContentType), http::ContentTypeTextPlain);
+}
+
+TEST_F(HttpResponseTest, AppendBodyMultipleFlavorsAndRvalueChaining) {
+  // start with a body
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("start ");
+
+  // append with string_view
+  resp.appendBody(std::string_view("middle "));
+
+  // append with span
+  const std::vector<std::byte> tail = {std::byte{'t'}, std::byte{'e'}, std::byte{'r'}};
+  resp.appendBody(std::span<const std::byte>(tail));
+
+  EXPECT_EQ(resp.body(), "start middle ter");
+
+  // rvalue chaining
+  auto chained =
+      HttpResponse(http::StatusCodeOK).appendBody(std::string_view("one")).appendBody(std::string_view("two"));
+  EXPECT_EQ(chained.body(), "onetwo");
+}
+
+TEST_F(HttpResponseTest, AppendBodyWriterZeroWritesNoHeader) {
+  HttpResponse resp(http::StatusCodeOK);
+  // writer that writes nothing
+  resp.appendBody(8U, kAppendNothing);
+  EXPECT_EQ(resp.body(), "");
+  EXPECT_EQ(resp.headerValue(http::ContentType), std::nullopt);
+}
+
+TEST_F(HttpResponseTest, AppendBodyCharPtrLvalueWriterWritesAndSetsTextPlain) {
+  // lvalue std::function<char*> writer
+  std::function<std::size_t(char*)> writer = [](char* buf) {
+    static constexpr std::string_view kData = "hello";
+    std::memcpy(buf, kData.data(), kData.size());
+    return kData.size();
+  };
+
+  HttpResponse resp(http::StatusCodeOK);
+  // Start with a captured payload to ensure append erases it and resets content-type
+  resp.body(std::string{"captured"}, "text/captured");
+  resp.appendBody(16U, writer);
+  resp.appendBody(16U, []([[maybe_unused]] char* buf) { return 0; });
+  EXPECT_EQ(resp.body(), "hello");
+  EXPECT_EQ(resp.headerValue(http::ContentType), http::ContentTypeTextPlain);
+}
+
+TEST_F(HttpResponseTest, AppendBodyCharPtrRvalueWriterCustomContentType) {
+  // rvalue lambda writer with explicit content type
+  auto resp = HttpResponse(http::StatusCodeOK)
+                  .appendBody(
+                      8U,
+                      [](char* buf) {
+                        const char ch = 'X';
+                        *buf = ch;
+                        return 1U;
+                      },
+                      "text/x-custom");
+  EXPECT_EQ(resp.body(), "X");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/x-custom");
+}
+
+TEST_F(HttpResponseTest, AppendBodyCStrRvalue) {
+  auto resp =
+      HttpResponse(http::StatusCodeOK).appendBody("Hello, C-String!").appendBody(static_cast<const char*>(nullptr));
+  EXPECT_EQ(resp.body(), "Hello, C-String!");
+}
+
 TEST_F(HttpResponseTest, BodyFromSpanBytesRValue) {
   auto resp = HttpResponse(http::StatusCodeOK)
                   .body(std::span<const std::byte>(std::vector<std::byte>{
@@ -185,6 +404,13 @@ TEST_F(HttpResponseTest, StatusOnly) {
   auto full = concatenated(std::move(resp));
 
   EXPECT_EQ(full, "HTTP/1.1 404\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+}
+
+TEST_F(HttpResponseTest, TooLongReasonShouldBeTruncated) {
+  HttpResponse resp(http::StatusCodeOK);
+  std::string longReason(70000, 'A');
+  resp.reason(longReason);
+  EXPECT_LT(resp.reason().size(), longReason.size());
 }
 
 TEST_F(HttpResponseTest, ConstructorWithBody) {
@@ -344,6 +570,24 @@ TEST_F(HttpResponseTest, ProperTermination) {
   EXPECT_EQ(full.substr(full.size() - 4), http::DoubleCRLF);
 }
 
+TEST_F(HttpResponseTest, SendFileEmptyShouldReturnNullptr) {
+  HttpResponse resp;
+  EXPECT_EQ(resp.file(), nullptr);
+}
+
+TEST_F(HttpResponseTest, CannotSendFileAfterTrailers) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.body("some body");
+  resp.addTrailer("X-trailer", "value");
+  constexpr std::string_view kPayload = "static file payload";
+
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
+  File file(tmp.filePath().string());
+
+  EXPECT_THROW(resp.file(std::move(file)), std::logic_error);
+}
+
 TEST_F(HttpResponseTest, SendFilePayload) {
   constexpr std::string_view kPayload = "static file payload";
   test::ScopedTempDir tmpDir;
@@ -362,6 +606,8 @@ TEST_F(HttpResponseTest, SendFilePayload) {
   std::string headers(prepared.data.firstBuffer());
   EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz)));
   EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
+
+  EXPECT_THROW(resp.addTrailer("X-trailer", "value");, std::logic_error);
 }
 
 TEST_F(HttpResponseTest, SendFilePayloadOffsetLength) {
@@ -423,6 +669,60 @@ TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
   std::string headers(prepared.data.firstBuffer());
   EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz)));
   EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
+}
+
+TEST_F(HttpResponseTest, CapturedBodyWithTrailersAppendsFinalCRLF) {
+  // Create a captured body larger than minCapturedBodySize (4096) so it remains external
+  std::string bigBody(5000, 'x');
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::move(bigBody));
+  resp.addTrailer("X-Custom-Trail", "trail-value");
+
+  // Finalize and inspect the serialized response which concatenates head + external payload
+  auto prepared = finalizePrepared(std::move(resp));
+  std::string tail(prepared.data.secondBuffer());
+
+  // The external payload (tail) should contain the body followed by the trailer line and a terminating CRLF
+  EXPECT_TRUE(tail.contains("X-Custom-Trail: trail-value\r\n"));
+  EXPECT_TRUE(tail.size() >= 2 && tail.substr(tail.size() - 2) == "\r\n");
+}
+
+TEST_F(HttpResponseTest, HeaderValueFindsLastHeader) {
+  HttpResponse resp(http::StatusCodeOK);
+  // Add multiple headers and ensure headerValue finds the last one when searching
+  resp.addHeader("X-A", "one");
+  resp.addHeader("X-B", "two");
+  resp.addHeader("X-C", "three");
+
+  EXPECT_EQ(resp.headerValue("X-C").value_or(""), "three");
+  EXPECT_EQ(resp.headerValue("X-D"), std::nullopt);
+}
+
+TEST_F(HttpResponseTest, FileWithClosedFileThrows) {
+  File f;  // default-constructed, closed
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_THROW(resp.file(std::move(f)), std::invalid_argument);
+}
+
+TEST_F(HttpResponseTest, FileOffsetExceedsSizeThrows) {
+  static constexpr std::string_view kPayload = "small";
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_THROW(resp.file(std::move(file), static_cast<std::size_t>(kPayload.size() + 1), 0), std::invalid_argument);
+}
+
+TEST_F(HttpResponseTest, FileOffsetPlusLengthExceedsSizeThrows) {
+  static constexpr std::string_view kPayload = "12345";
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+  HttpResponse resp(http::StatusCodeOK);
+  // offset 3, length 5 -> 8 > size(5)
+  EXPECT_THROW(resp.file(std::move(file), 3, 5), std::invalid_argument);
 }
 
 TEST_F(HttpResponseTest, SingleTerminatingCRLF) {
@@ -619,6 +919,33 @@ TEST_F(HttpResponseTest, AppendHeaderValueHonorsCustomSeparator) {
   resp.appendHeaderValue("X-List", "second", "; ");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.contains("X-List: first; second\r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, AppendHeaderValueEmptySeparator) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.header("X-List", "first");
+  resp.appendHeaderValue("X-List", "second", "");
+
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-List: firstsecond\r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, AppendHeaderValueEmptyValue) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.header("X-List", "first");
+  resp.appendHeaderValue("X-List", "", ", ");
+
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-List: first, \r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, AppendHeaderValueEmptyValueAndSeparator) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.header("X-List", "first");
+  resp.appendHeaderValue("X-List", "", "");
+
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-List: first\r\n")) << full;
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueSupportsNumericOverload) {
