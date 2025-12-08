@@ -16,6 +16,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install all dependencies with features
+        run: |
+          sudo apt install -y build-essential wrk libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          pip install uvicorn starlette
+
       - name: Configure git identity for runner
         run: |
           # Ensure commits performed by this workflow have an author identity
@@ -37,9 +42,8 @@ jobs:
             cp README.md /tmp/site/index.md
           fi
 
-      - name: Build and run benchmarks for Pages
+      - name: Configure benchmark build
         run: |
-          set -euo pipefail
           cmake -S . -B build-pages -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DAERONET_BUILD_TESTS=OFF \
@@ -55,13 +59,17 @@ jobs:
             -DAERONET_ENABLE_ZSTD=ON \
             -DAERONET_ENABLE_OPENTELEMETRY=OFF
 
+      - name: Build
+        run: |
           cmake --build build-pages --parallel
 
-          pushd build-pages/benchmarks/scripted-servers
+      - name: Run benchmarks
+        working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
+        run: |
           ./run_benchmarks.py --duration 30s --threads 2
-          popd
 
-          # Render HTML for Pages
+      - name: Render HTML for Pages
+        run: |
           python3 benchmarks/scripted-servers/render_benchmarks_html.py \
             --input build-pages/benchmarks/scripted-servers/results/benchmark_latest.json \
             --output /tmp/site/benchmarks/index.html
