@@ -9,7 +9,6 @@
 #include <memory>
 #include <span>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
 #include "aeronet/compression-config.hpp"
@@ -29,6 +28,10 @@
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/timedef.hpp"
+
+#ifndef NDEBUG
+#include <system_error>
+#endif
 
 namespace aeronet {
 

@@ -9,13 +9,18 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
 #include <iostream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "pistache/endpoint.h"
 #include "pistache/http.h"
+#include "pistache/http_defs.h"
+#include "pistache/mime.h"
+#include "pistache/net.h"
 #include "scripted-servers-helpers.hpp"
 
 namespace {

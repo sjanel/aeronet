@@ -21,6 +21,11 @@
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/sys_test_support.hpp"
 
+#ifdef AERONET_WANT_MALLOC_OVERRIDES
+#include <exception>
+#include <new>
+#endif
+
 using Map = aeronet::flat_hash_map<std::string, int, std::hash<std::string_view>, std::equal_to<>>;
 
 TEST(flat_hash_map, basic_insert_find) {

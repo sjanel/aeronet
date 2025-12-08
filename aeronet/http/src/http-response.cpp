@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -17,7 +18,6 @@
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-header.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -26,10 +26,14 @@
 #include "aeronet/log.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/stringconv.hpp"
-#include "aeronet/tchars.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
 #include "aeronet/toupperlower.hpp"
+
+#ifndef NDEBUG
+#include "aeronet/http-header.hpp"
+#include "aeronet/tchars.hpp"
+#endif
 
 namespace aeronet {
 
