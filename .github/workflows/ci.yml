@@ -206,22 +206,68 @@ jobs:
         run: |
           ./run_benchmarks.py --duration 30s --threads 2
 
-      - name: Debug - announce uploaded artifacts
-        if: ${{ matrix.compiler == 'gcc-13' }}
+      - name: Render benchmarks HTML
+        if: ${{ startsWith(matrix.compiler, 'gcc') }}
         run: |
-          echo "Uploader run id: $GITHUB_RUN_ID" >> $GITHUB_STEP_SUMMARY
-          echo "Listing artifacts for this run:" >> $GITHUB_STEP_SUMMARY
-          curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${GITHUB_RUN_ID}/artifacts" | jq . >> $GITHUB_STEP_SUMMARY || true
+          set -euo pipefail
+          python3 benchmarks/scripted-servers/render_benchmarks_html.py \
+            --input build/benchmarks/scripted-servers/results/benchmark_latest.json \
+            --output build/benchmarks/benchmarks.html
 
-      - name: Upload benchmark summary artifacts
-        if: ${{ matrix.compiler == 'gcc-13' }}
-        uses: actions/upload-artifact@v5
-        with:
-          name: benchmark-summary
-          path: |
-            build/benchmarks/scripted-servers/results/benchmark_latest.json
-            build/benchmarks/scripted-servers/results/benchmark_badge.json
+      - name: Publish benchmarks to GitHub Pages (gh-pages branch, /benchmarks)
+        if: ${{ startsWith(matrix.compiler, 'gcc') && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Prepare a temporary directory with the benchmarks HTML and JSON
+          mkdir -p /tmp/benchmarks-publish
+          cp build/benchmarks/benchmarks.html /tmp/benchmarks-publish/index.html
+          cp build/benchmarks/scripted-servers/results/benchmark_latest.json /tmp/benchmarks-publish/benchmark_latest.json
+          if [[ -f build/benchmarks/scripted-servers/results/benchmark_badge.json ]]; then
+            cp build/benchmarks/scripted-servers/results/benchmark_badge.json /tmp/benchmarks-publish/benchmark_badge.json
+          fi
+
+          # Use GITHUB_TOKEN for authenticated fetch/push to avoid 403
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          echo "Using authenticated REPO_URL"
+
+          # Fetch or create gh-pages branch
+          if git ls-remote --exit-code "$REPO_URL" gh-pages >/dev/null 2>&1; then
+            git fetch "$REPO_URL" gh-pages:gh-pages
+          else
+            git switch --orphan gh-pages
+            rm -rf *
+            echo "<html><body><h1>aeronet benchmarks</h1></body></html>" > index.html
+            git add index.html
+            git commit -m "Initialize gh-pages"
+            git push "$REPO_URL" gh-pages
+          fi
+
+          git switch gh-pages
+          TARGET_DIR="benchmarks"
+          mkdir -p "$TARGET_DIR"
+          cp /tmp/benchmarks-publish/index.html "$TARGET_DIR/index.html"
+          cp /tmp/benchmarks-publish/benchmark_latest.json "$TARGET_DIR/benchmark_latest.json"
+          if [[ -f /tmp/benchmarks-publish/benchmark_badge.json ]]; then
+            cp /tmp/benchmarks-publish/benchmark_badge.json "$TARGET_DIR/benchmark_badge.json"
+          fi
+
+          git add "$TARGET_DIR/index.html" "$TARGET_DIR/benchmark_latest.json"
+          if [[ -f "$TARGET_DIR/benchmark_badge.json" ]]; then
+            git add "$TARGET_DIR/benchmark_badge.json"
+          fi
+
+          if git diff --cached --quiet; then
+            echo "No changes to benchmarks page; skipping push."
+          else
+            git commit -m "Update ${TARGET_DIR} from CI run ${GITHUB_RUN_ID}" || true
+            git push "$REPO_URL" gh-pages
+          fi
 
   coverage:
     name: Coverage
