@@ -70,12 +70,12 @@ jobs:
 
       - name: Render HTML for Pages
         run: |
+          mkdir -p /tmp/site/benchmarks
           python3 benchmarks/scripted-servers/render_benchmarks_html.py \
             --input build-pages/benchmarks/scripted-servers/results/benchmark_latest.json \
             --output /tmp/site/benchmarks/index.html
 
           # Copy JSON so badge and raw data are available on Pages
-          mkdir -p /tmp/site/benchmarks
           cp build-pages/benchmarks/scripted-servers/results/benchmark_latest.json /tmp/site/benchmarks/benchmark_latest.json
           if [[ -f build-pages/benchmarks/scripted-servers/results/benchmark_badge.json ]]; then
             cp build-pages/benchmarks/scripted-servers/results/benchmark_badge.json /tmp/site/benchmarks/benchmark_badge.json
@@ -88,16 +88,16 @@ jobs:
       - name: Clone or initialize gh-pages branch
         run: |
           set -euo pipefail
-          if git ls-remote --exit-code --heads "$REPO" gh-pages; then
+          rm -rf /tmp/gh
+          # hide ls-remote output to keep logs tidy
+          if git ls-remote --exit-code --heads "$REPO" gh-pages >/dev/null 2>&1; then
             git clone --branch gh-pages "$REPO" /tmp/gh
           else
             git clone "$REPO" /tmp/gh
-            pushd /tmp/gh
-            git checkout --orphan gh-pages
-            git rm -rf . || true
-            git commit --allow-empty -m "Initialize gh-pages branch"
-            git push "$REPO" gh-pages
-            popd
+            git -C /tmp/gh checkout --orphan gh-pages
+            git -C /tmp/gh rm -rf . || true
+            git -C /tmp/gh commit --allow-empty -m "Initialize gh-pages branch"
+            git -C /tmp/gh push "$REPO" gh-pages
           fi
 
       - name: Sync site files to gh-pages (preserve benchmarks/ & previews/)
@@ -107,17 +107,19 @@ jobs:
             --exclude 'benchmarks' \
             --exclude 'previews' \
             --exclude '.git' \
-            /tmp/site/ /tmp/gh/
+            /tmp/site/ /tmp/gh/ || ( echo "rsync failed" && exit 1 )
 
       - name: Commit & push changes
         run: |
           set -euo pipefail
-          pushd /tmp/gh
-          git add -A
-          if git diff --staged --quiet; then
+          git -C /tmp/gh add -A
+          if git -C /tmp/gh diff --staged --quiet; then
             echo "No changes to publish"
+            # clear REPO from env to avoid accidental leakage
+            echo "REPO=" >> $GITHUB_ENV
             exit 0
           fi
-          git commit -m "Sync site from main: ${{ github.sha }}"
-          git push "$REPO" gh-pages
-          popd
+          git -C /tmp/gh commit -m "Sync site from main: ${{ github.sha }}"
+          git -C /tmp/gh push "$REPO" gh-pages
+          # clear REPO from env to avoid accidental leakage
+          echo "REPO=" >> $GITHUB_ENV
