@@ -6,7 +6,10 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <random>
 #include <span>
 #include <stdexcept>
@@ -598,6 +601,8 @@ TEST_F(HttpResponseTest, SendFilePayload) {
 
   auto resp = HttpResponse(http::StatusCodeOK, "OK").file(std::move(file));
 
+  EXPECT_THROW(resp.addTrailer("X-trailer", "value");, std::logic_error);
+
   auto prepared = finalizePrepared(std::move(resp));
   EXPECT_EQ(prepared.fileLength, sz);
   EXPECT_TRUE(prepared.file);
@@ -606,8 +611,6 @@ TEST_F(HttpResponseTest, SendFilePayload) {
   std::string headers(prepared.data.firstBuffer());
   EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz)));
   EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
-
-  EXPECT_THROW(resp.addTrailer("X-trailer", "value");, std::logic_error);
 }
 
 TEST_F(HttpResponseTest, SendFilePayloadOffsetLength) {
@@ -699,9 +702,9 @@ TEST_F(HttpResponseTest, HeaderValueFindsLastHeader) {
 }
 
 TEST_F(HttpResponseTest, FileWithClosedFileThrows) {
-  File f;  // default-constructed, closed
+  File file;  // default-constructed, closed
   HttpResponse resp(http::StatusCodeOK);
-  EXPECT_THROW(resp.file(std::move(f)), std::invalid_argument);
+  EXPECT_THROW(resp.file(std::move(file)), std::invalid_argument);
 }
 
 TEST_F(HttpResponseTest, FileOffsetExceedsSizeThrows) {

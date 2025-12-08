@@ -5,6 +5,16 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  # Weekly scheduled run on main to produce more stable benchmark results
+  schedule:
+    - cron: '0 3 * * 0'  # every Sunday at 03:00 UTC
+  # Allow manual runs via the Actions UI with an optional duration override
+  workflow_dispatch:
+    inputs:
+      bench_duration:
+        description: 'Benchmark duration (e.g. 90s)'
+        required: false
+        default: '90s'
 
 permissions:
   contents: write
@@ -100,11 +110,21 @@ jobs:
         run: |
           ./run_benchmarks.py --duration 5s --threads 1 --warmup 2s
 
-      - name: Run benchmarks (long)
+      - name: Run benchmarks (push-to-main short)
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
         run: |
           ./run_benchmarks.py --duration 30s --threads 2
+
+      - name: Run benchmarks (scheduled/manual long)
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
+        working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
+        env:
+          BENCH_DURATION: ${{ github.event.inputs.bench_duration || '90s' }}
+        run: |
+          DUR=${BENCH_DURATION:-90s}
+          echo "Running benchmarks for duration: $DUR"
+          ./run_benchmarks.py --duration "$DUR" --threads 2
 
       - name: Render HTML for Pages
         run: |

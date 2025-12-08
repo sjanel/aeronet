@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <string>
 
 using namespace aeronet;

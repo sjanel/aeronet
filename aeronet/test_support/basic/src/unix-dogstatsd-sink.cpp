@@ -60,10 +60,10 @@ std::string UnixDogstatsdSink::recvMessage(int timeoutMs) const {
   if (!_fd) {
     return {};
   }
-  pollfd pfd{};
+  pollfd pfd{};  // NOLINT(misc-include-cleaner) poll.h should be the correct header
   pfd.fd = _fd.fd();
-  pfd.events = POLLIN;
-  const int ready = ::poll(&pfd, 1, timeoutMs);
+  pfd.events = POLLIN;                           // NOLINT(misc-include-cleaner) poll.h should be the correct header
+  const int ready = ::poll(&pfd, 1, timeoutMs);  // NOLINT(misc-include-cleaner) poll.h should be the correct header
   if (ready <= 0 || (pfd.revents & POLLIN) == 0) {
     return {};
   }

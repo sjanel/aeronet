@@ -5,12 +5,11 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <iterator>
+#include <format>
 #include <stdexcept>
 #include <string>
 #include <string_view>
