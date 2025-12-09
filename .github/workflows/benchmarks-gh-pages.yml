@@ -104,27 +104,38 @@ jobs:
         run: |
           cmake --build build-pages --parallel
 
-      - name: Run benchmarks (fast)
-        if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+      - name: Run benchmarks
         working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
         run: |
-          ./run_benchmarks.py --duration 5s --threads 1 --warmup 2s
+          # Decide duration and threads based on event type and inputs.
+          # Defaults:
+          #  - pull_request / non-main push => 5s, 1 thread (fast)
+          #  - push to main => 30s, 2 threads
+          #  - schedule or workflow_dispatch => use workflow input `bench_duration` (or default 90s), 2 threads
 
-      - name: Run benchmarks (push-to-main short)
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
-        run: |
-          ./run_benchmarks.py --duration 30s --threads 2
+          EVENT_NAME=${GITHUB_EVENT_NAME:-}
+          REF=${GITHUB_REF:-}
+          WARMUP=5s
 
-      - name: Run benchmarks (scheduled/manual long)
-        if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
-        working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
-        env:
-          BENCH_DURATION: ${{ github.event.inputs.bench_duration || '90s' }}
-        run: |
-          DUR=${BENCH_DURATION:-90s}
-          echo "Running benchmarks for duration: $DUR"
-          ./run_benchmarks.py --duration "$DUR" --threads 2
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
+            DUR=30s
+            THREADS=2
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "schedule" ]; then
+            if [ -n "${{ github.event.inputs.bench_duration }}" ]; then
+              DUR="${{ github.event.inputs.bench_duration }}"
+            else
+              DUR=90s
+            fi
+            THREADS=2
+          else
+            # pull_request and non-main pushes
+            DUR=5s
+            WARMUP=2s
+            THREADS=1
+          fi
+
+          echo "Event: $EVENT_NAME ref: $REF -> running for $DUR with $THREADS threads"
+          ./run_benchmarks.py --duration "$DUR" --threads "$THREADS" --warmup "$WARMUP"
 
       - name: Render HTML for Pages
         run: |
