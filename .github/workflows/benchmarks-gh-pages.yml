@@ -141,7 +141,7 @@ jobs:
         run: |
           rm -fr /tmp/site/benchmarks
           mkdir -p /tmp/site/benchmarks
-          python3 benchmarks/scripted-servers/render_benchmarks_html.py \
+          benchmarks/scripted-servers/render_benchmarks_html.py \
             --input build-pages/benchmarks/scripted-servers/results/benchmark_latest.json \
             --output /tmp/site/benchmarks/index.html
 
@@ -152,54 +152,25 @@ jobs:
           fi
 
       - name: Prepare repo URL
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(matrix.compiler, 'gcc') }}
+        if: ${{ github.event_name != 'pull_request' && startsWith(matrix.compiler, 'gcc') }}
         run: |
           echo "REPO=https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" >> $GITHUB_ENV
 
-      - name: Clone or initialize gh-pages branch
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(matrix.compiler, 'gcc') }}
+      - name: Publish site snapshot to gh-pages
+        if: ${{ github.event_name != 'pull_request' && startsWith(matrix.compiler, 'gcc') }}
         run: |
+          set -euo pipefail
+          REPO="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+
           rm -rf /tmp/gh
-          # hide ls-remote output to keep logs tidy
-          if git ls-remote --exit-code --heads "$REPO" gh-pages >/dev/null 2>&1; then
-            git clone --branch gh-pages "$REPO" /tmp/gh
-          else
-            git clone "$REPO" /tmp/gh
-            git -C /tmp/gh checkout --orphan gh-pages
-            git -C /tmp/gh rm -rf . || true
-            git -C /tmp/gh commit --allow-empty -m "Initialize gh-pages branch"
-            git -C /tmp/gh push "$REPO" gh-pages
-          fi
+          mkdir -p /tmp/gh
 
-      - name: Sync site files to gh-pages (preserve benchmarks/ & previews/)
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(matrix.compiler, 'gcc') }}
-        run: |
-          set -euo pipefail
-          rsync -a --delete \
-            --exclude 'benchmarks' \
-            --exclude 'previews' \
-            --exclude '.git' \
-            /tmp/site/ /tmp/gh/ || ( echo "rsync failed" && exit 1 )
+          # Populate the workspace with the snapshot from /tmp/site, then initialize git
+          rsync -a --delete /tmp/site/ /tmp/gh/ || ( echo "rsync failed" && exit 1 )
 
-      - name: Sync benchmarks to gh-pages (update benchmarks/)
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(matrix.compiler, 'gcc') }}
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/gh/benchmarks
-          rsync -a --delete /tmp/site/benchmarks/ /tmp/gh/benchmarks/ || ( echo "rsync benchmarks failed" && exit 1 )
-
-      - name: Commit & push changes
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(matrix.compiler, 'gcc') }}
-        run: |
-          set -euo pipefail
-          git -C /tmp/gh add -A
-          if git -C /tmp/gh diff --staged --quiet; then
-            echo "No changes to publish"
-            # clear REPO from env to avoid accidental leakage
-            echo "REPO=" >> $GITHUB_ENV
-            exit 0
-          fi
-          git -C /tmp/gh commit -m "Sync site from main: ${{ github.sha }}"
-          git -C /tmp/gh push "$REPO" gh-pages
-          # clear REPO from env to avoid accidental leakage
-          echo "REPO=" >> $GITHUB_ENV
+          git -C /tmp/gh init
+          git -C /tmp/gh checkout -b gh-pages || true
+          git -C /tmp/gh add --all
+          git -C /tmp/gh commit --allow-empty -m "Site snapshot from ${GITHUB_SHA}"
+          # Push HEAD to gh-pages using --force-with-lease to avoid clobbering concurrent updates
+          git -C /tmp/gh push --force-with-lease "$REPO" HEAD:gh-pages
