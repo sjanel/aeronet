@@ -172,5 +172,9 @@ jobs:
           git -C /tmp/gh checkout -b gh-pages || true
           git -C /tmp/gh add --all
           git -C /tmp/gh commit --allow-empty -m "Site snapshot from ${GITHUB_SHA}"
+          # Ensure origin remote exists so lease can be compared correctly
+          git -C /tmp/gh remote add origin "$REPO" || true
+          # Try fetching remote gh-pages to populate refs for --force-with-lease; ignore failure if branch doesn't exist
+          git -C /tmp/gh fetch --no-tags --depth=1 origin gh-pages || true
           # Push HEAD to gh-pages using --force-with-lease to avoid clobbering concurrent updates
-          git -C /tmp/gh push --force-with-lease "$REPO" HEAD:gh-pages
+          git -C /tmp/gh push --force-with-lease origin HEAD:gh-pages
