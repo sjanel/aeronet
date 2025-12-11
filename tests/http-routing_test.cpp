@@ -86,7 +86,9 @@ TEST(HttpRouting, BasicPathDispatch) {
   getMissing.method = "GET";
   getMissing.target = "/missing";
   auto resp3 = test::requestOrThrow(ts.port(), getMissing);
-  EXPECT_TRUE(resp3.contains("404 Not Found"));
+  EXPECT_TRUE(resp3.contains("HTTP/1.1 404"));
+  EXPECT_TRUE(resp3.contains("<!DOCTYPE html>"));
+  EXPECT_TRUE(resp3.contains("aeronet"));
   test::RequestOptions postMulti;
   postMulti.method = "POST";
   postMulti.target = "/multi";

@@ -232,6 +232,11 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    request-task_test
+    test/request-task_test.cpp
+)
+
+AeronetAddUnitTest(
     string-trim_test
     test/string-trim_test.cpp
 )

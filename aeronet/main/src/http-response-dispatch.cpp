@@ -26,6 +26,7 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/tcp-connector.hpp"
+#include "aeronet/template-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
@@ -219,9 +220,8 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
 }
 
 void SingleHttpServer::tryCompressResponse(const HttpRequest& request, HttpResponse& resp) {
-  const std::string_view body = resp.body();
   const CompressionConfig& compressionConfig = _config.compression;
-  if (body.size() < compressionConfig.minBytes) {
+  if (resp.body().size() < compressionConfig.minBytes) {
     return;
   }
   const std::string_view encHeader = request.headerValueOrEmpty(http::AcceptEncoding);
@@ -319,6 +319,7 @@ void SingleHttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRespon
   ++state.requestsServed;
   ++_stats.totalRequestsServed;
 
+  // keep-alive logic
   bool keepAlive =
       _config.enableKeepAlive && state.requestsServed < _config.maxRequestsPerConnection && _lifecycle.isRunning();
   if (keepAlive) {
@@ -331,8 +332,11 @@ void SingleHttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRespon
     }
   }
 
-  bool isHead = (request.method() == http::Method::HEAD);
+  const bool isHead = (request.method() == http::Method::HEAD);
   if (!isHead) {
+    if (respStatusCode == http::StatusCodeNotFound && resp.body().empty()) {
+      resp.body(k404NotFoundTemplate2, http::ContentTypeTextHtml);
+    }
     tryCompressResponse(request, resp);
   }
 
@@ -396,7 +400,7 @@ bool SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpRes
       case TransportHint::WriteReady:
         [[fallthrough]];
       case TransportHint::None:
-        if (std::cmp_equal(written, bufferedSz)) {
+        if (written == bufferedSz) {
           _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
           _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
           return true;

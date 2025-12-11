@@ -781,19 +781,6 @@ bool StaticFileHandler::resolveTarget(const HttpRequest& request, std::filesyste
   return !requestedTrailingSlash;
 }
 
-namespace {
-HttpResponse MakeError(http::StatusCode code, std::string_view reason) {
-  HttpResponse resp(code, reason);
-
-  RawChars body(reason.size() + 1UL);
-  body.unchecked_append(reason);
-  body.unchecked_push_back('\n');
-
-  resp.body(std::move(body));
-  return resp;
-}
-}  // namespace
-
 HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   const bool isGet = request.method() == http::Method::GET;
   const bool isHead = request.method() == http::Method::HEAD;
@@ -810,18 +797,18 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
 
   std::filesystem::path targetPath;
   if (!resolveTarget(request, targetPath)) {
-    return MakeError(http::StatusCodeNotFound, http::NotFound);
+    return HttpResponse(http::StatusCodeNotFound);
   }
 
   std::error_code ec;
   const auto status = std::filesystem::symlink_status(targetPath, ec);
   if (ec) {
-    return MakeError(http::StatusCodeNotFound, http::NotFound);
+    return HttpResponse(http::StatusCodeNotFound);
   }
 
   if (std::filesystem::is_directory(status)) {
     if (!_config.enableDirectoryIndex) {
-      return MakeError(http::StatusCodeNotFound, http::NotFound);
+      return HttpResponse(http::StatusCodeNotFound);
     }
 
     if (!requestedTrailingSlash) {
@@ -831,7 +818,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
       if (appendSlash != 0) {
         location.unchecked_push_back('/');
       }
-      HttpResponse resp(http::StatusCodeMovedPermanently, http::MovedPermanently);
+      HttpResponse resp(http::StatusCodeMovedPermanently);
       resp.location(location);
       resp.addHeader("Cache-Control", "no-cache");
       resp.body("Moved Permanently\n");
@@ -840,10 +827,10 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
 
     auto listing = CollectDirectoryListing(targetPath, _config);
     if (!listing.isValid) {
-      return MakeError(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
+      return HttpResponse(http::StatusCodeInternalServerError);
     }
 
-    HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
+    HttpResponse resp(http::StatusCodeOK);
     resp.addHeader("Cache-Control", "no-cache");
     resp.addHeader("X-Directory-Listing-Truncated", listing.truncated ? "1" : "0");
 
@@ -862,12 +849,12 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   }
 
   if (!std::filesystem::exists(status) || !std::filesystem::is_regular_file(status)) {
-    return MakeError(http::StatusCodeNotFound, http::NotFound);
+    return HttpResponse(http::StatusCodeNotFound);
   }
 
   const auto fileSize = std::filesystem::file_size(targetPath, ec);
   if (ec) {
-    return MakeError(http::StatusCodeNotFound, http::NotFound);
+    return HttpResponse(http::StatusCodeNotFound);
   }
 
   SysTimePoint lastModified = kInvalidTimePoint;
@@ -882,7 +869,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
 
   File file(targetPathString, File::OpenMode::ReadOnly);
   if (!file) {
-    return MakeError(http::StatusCodeNotFound, http::NotFound);
+    return HttpResponse(http::StatusCodeNotFound);
   }
 
   EtagBuf etag;
@@ -897,7 +884,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   if (isConditional) {
     conditionalOutcome = EvaluateConditionals(request, isGet || isHead, etagView, lastModified);
     if (conditionalOutcome.kind == ConditionalOutcome::Kind::PreconditionFailed) {
-      HttpResponse resp(conditionalOutcome.status, "Precondition Failed");
+      HttpResponse resp(conditionalOutcome.status);
       if (!etagView.empty()) {
         resp.addHeader(http::ETag, etagView);
       }
@@ -909,7 +896,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
       return resp;
     }
     if (conditionalOutcome.kind == ConditionalOutcome::Kind::NotModified) {
-      HttpResponse resp(http::StatusCodeNotModified, "Not Modified");
+      HttpResponse resp(http::StatusCodeNotModified);
       if (!etagView.empty()) {
         resp.addHeader(http::ETag, etagView);
       }
@@ -936,7 +923,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   }
 
   if (rangeSelection.state == RangeSelection::State::Invalid) {
-    HttpResponse resp(http::StatusCodeRangeNotSatisfiable, "Range Not Satisfiable");
+    HttpResponse resp(http::StatusCodeRangeNotSatisfiable);
     const auto rangeHeader = BuildUnsatisfiedRangeHeader(fileSize);
     resp.addHeader(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
     resp.addHeader(http::AcceptRanges, "bytes");
@@ -945,7 +932,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   }
 
   if (rangeSelection.state == RangeSelection::State::Unsatisfiable) {
-    HttpResponse resp(http::StatusCodeRangeNotSatisfiable, "Range Not Satisfiable");
+    HttpResponse resp(http::StatusCodeRangeNotSatisfiable);
     const auto rangeHeader = BuildUnsatisfiedRangeHeader(fileSize);
     resp.addHeader(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
     resp.addHeader(http::AcceptRanges, "bytes");
@@ -953,7 +940,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     return resp;
   }
 
-  HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
+  HttpResponse resp(http::StatusCodeOK);
   resp.addHeader(http::AcceptRanges, "bytes");
   if (!etagView.empty()) {
     resp.addHeader(http::ETag, etagView);
@@ -980,8 +967,9 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   }
 
   if (rangeSelection.state == RangeSelection::State::Valid) {
-    resp.status(http::StatusCodePartialContent);
     const auto rangeHeader = BuildRangeHeader(rangeSelection.offset, rangeSelection.length, fileSize);
+
+    resp.status(http::StatusCodePartialContent);
     resp.addHeader(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
     resp.file(std::move(file), static_cast<std::size_t>(rangeSelection.offset),
               static_cast<std::size_t>(rangeSelection.length), contentTypeForFile);
@@ -990,6 +978,6 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
 
   resp.file(std::move(file), contentTypeForFile);
   return resp;
-}
+}  // namespace
 
 }  // namespace aeronet
