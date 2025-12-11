@@ -13,7 +13,7 @@
 
 namespace aeronet {
 
-// Thread-safe store of TLS session ticket keys shared across HttpServer instances (and
+// Thread-safe store of TLS session ticket keys shared across SingleHttpServer instances (and
 // across MultiHttpServer workers). Provides automatic rotation for randomly generated keys
 // and supports injecting deterministic key material from configuration.
 class TlsTicketKeyStore {

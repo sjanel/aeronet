@@ -19,12 +19,12 @@
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-response-data.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/timedef.hpp"
@@ -35,7 +35,7 @@
 
 namespace aeronet {
 
-HttpResponseWriter::HttpResponseWriter(HttpServer& srv, int fd, const HttpRequest& request, bool headRequest,
+HttpResponseWriter::HttpResponseWriter(SingleHttpServer& srv, int fd, const HttpRequest& request, bool headRequest,
                                        bool requestConnClose, Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
                                        std::span<const ResponseMiddleware> routeResponseMiddleware)
     : _server(&srv),

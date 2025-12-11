@@ -23,7 +23,7 @@ class Connection {
 
   bool operator==(const Connection &) const noexcept = default;
 
-  // This operator int is used in the connections map in HttpServer. This allows usage of transparent look-ups
+  // This operator int is used in the connections map in SingleHttpServer. This allows usage of transparent look-ups
   // from Fd received from the event loop.
   operator int() const noexcept { return _baseFd.fd(); }
 

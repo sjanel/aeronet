@@ -19,11 +19,11 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/tcp-connector.hpp"
 #include "aeronet/timedef.hpp"
@@ -34,8 +34,8 @@
 
 namespace aeronet {
 
-HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt, std::size_t consumedBytes,
-                                                         const CorsPolicy* pCorsPolicy) {
+SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionMapIt& cnxIt, std::size_t consumedBytes,
+                                                                     const CorsPolicy* pCorsPolicy) {
   HttpRequest& request = cnxIt->second->request;
   switch (request.method()) {
     case http::Method::OPTIONS: {
@@ -218,7 +218,7 @@ HttpServer::LoopAction HttpServer::processSpecialMethods(ConnectionMapIt& cnxIt,
   return LoopAction::Nothing;
 }
 
-void HttpServer::tryCompressResponse(const HttpRequest& request, HttpResponse& resp) {
+void SingleHttpServer::tryCompressResponse(const HttpRequest& request, HttpResponse& resp) {
   const std::string_view body = resp.body();
   const CompressionConfig& compressionConfig = _config.compression;
   if (body.size() < compressionConfig.minBytes) {
@@ -305,8 +305,8 @@ void HttpServer::tryCompressResponse(const HttpRequest& request, HttpResponse& r
   }
 }
 
-void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
-                                         const CorsPolicy* pCorsPolicy) {
+void SingleHttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
+                                               const CorsPolicy* pCorsPolicy) {
   const auto respStatusCode = resp.status();
 
   ConnectionState& state = *cnxIt->second;
@@ -322,7 +322,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& r
   bool keepAlive =
       _config.enableKeepAlive && state.requestsServed < _config.maxRequestsPerConnection && _lifecycle.isRunning();
   if (keepAlive) {
-    std::string_view connVal = request.headerValueOrEmpty(http::Connection);
+    const std::string_view connVal = request.headerValueOrEmpty(http::Connection);
     if (connVal.empty()) {
       // Default is keep-alive for HTTP/1.1, close for HTTP/1.0
       keepAlive = request.version() == http::HTTP_1_1;
@@ -351,7 +351,7 @@ void HttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& r
   request.end(respStatusCode);
 }
 
-bool HttpServer::queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::PreparedResponse prepared) {
+bool SingleHttpServer::queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::PreparedResponse prepared) {
   const bool hasFile = prepared.fileLength > 0;
   const std::uint64_t fileBytes = hasFile ? prepared.fileLength : 0;
 
@@ -378,7 +378,8 @@ bool HttpServer::queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::Prep
   return true;
 }
 
-bool HttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData, std::uint64_t extraQueuedBytes) {
+bool SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData,
+                                 std::uint64_t extraQueuedBytes) {
   ConnectionState& state = *cnxIt->second;
 
   const auto bufferedSz = httpResponseData.remainingSize();
@@ -428,7 +429,7 @@ bool HttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseD
   return true;
 }
 
-void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
+void SingleHttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   ++_stats.flushCycles;
   TransportHint want = TransportHint::None;
   ConnectionState& state = *cnxIt->second;
@@ -492,7 +493,7 @@ void HttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   }
 }
 
-bool HttpServer::flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt) {
+bool SingleHttpServer::flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   if (state.tunnelOrFileBuffer.empty()) {
     return false;
@@ -539,7 +540,7 @@ bool HttpServer::flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt) {
   }
 }
 
-void HttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
+void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   if (!state.isSendingFile()) {
     return;

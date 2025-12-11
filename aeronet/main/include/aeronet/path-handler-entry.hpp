@@ -38,7 +38,7 @@ class PathHandlerEntry {
 
  private:
   friend class Router;
-  friend class HttpServer;
+  friend class SingleHttpServer;
   friend class PathHandlerEntryTest;
 
   struct HandlerStorage {

@@ -19,11 +19,11 @@
 
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-lifecycle-tracker.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet {
@@ -50,7 +50,7 @@ struct MultiHttpServer::HandleCompletion {
   bool completed{false};
 };
 
-MultiHttpServer::AsyncHandle::AsyncHandle(vector<HttpServer::AsyncHandle> serverHandles,
+MultiHttpServer::AsyncHandle::AsyncHandle(vector<SingleHttpServer::AsyncHandle> serverHandles,
                                           std::shared_ptr<std::atomic<bool>> stopRequested,
                                           std::shared_ptr<std::function<void()>> onStop,
                                           std::shared_ptr<HandleCompletion> completion,
@@ -134,8 +134,9 @@ bool MultiHttpServer::AsyncHandle::started() const noexcept {
   return std::ranges::any_of(_serverHandles, [](const auto& handle) { return handle.started(); });
 }
 
-MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router, uint32_t threadCount)
+MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
     : _stopRequested(std::make_shared<std::atomic<bool>>(false)) {
+  auto threadCount = cfg.nbThreads;
   if (threadCount == 0) {
     threadCount = std::thread::hardware_concurrency();
     if (threadCount == 0) {
@@ -164,6 +165,7 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router, uint32_t t
     log::debug("MultiHttpServer: Enabling reusePort for multi-threaded server");
   }
 
+  cfg.nbThreads = 1;  // will be applied for each SingleHttpServer.
   auto& firstServer = _servers.emplace_back(std::move(cfg), std::move(router));
 
   firstServer._lifecycleTracker = _lifecycleTracker;
@@ -267,22 +269,22 @@ std::string MultiHttpServer::AggregatedStats::json_str() const {
   return out;
 }
 
-void MultiHttpServer::setParserErrorCallback(HttpServer::ParserErrorCallback cb) {
+void MultiHttpServer::setParserErrorCallback(SingleHttpServer::ParserErrorCallback cb) {
   canSetCallbacks();
   _servers.front().setParserErrorCallback(std::move(cb));
 }
 
-void MultiHttpServer::setMetricsCallback(HttpServer::MetricsCallback cb) {
+void MultiHttpServer::setMetricsCallback(SingleHttpServer::MetricsCallback cb) {
   canSetCallbacks();
   _servers.front().setMetricsCallback(std::move(cb));
 }
 
-void MultiHttpServer::setExpectationHandler(HttpServer::ExpectationHandler handler) {
+void MultiHttpServer::setExpectationHandler(SingleHttpServer::ExpectationHandler handler) {
   canSetCallbacks();
   _servers.front().setExpectationHandler(std::move(handler));
 }
 
-void MultiHttpServer::setMiddlewareMetricsCallback(HttpServer::MiddlewareMetricsCallback cb) {
+void MultiHttpServer::setMiddlewareMetricsCallback(SingleHttpServer::MiddlewareMetricsCallback cb) {
   canSetCallbacks();
   _servers.front().setMiddlewareMetricsCallback(std::move(cb));
 }
@@ -301,7 +303,7 @@ void MultiHttpServer::stop() noexcept {
   _lifecycleTracker->notifyStopRequested();
 
   log::debug("MultiHttpServer stopping (instances={})", _servers.size());
-  std::ranges::for_each(_servers, [](HttpServer& server) { server.stop(); });
+  std::ranges::for_each(_servers, [](SingleHttpServer& server) { server.stop(); });
 
   // Stop internal handle if start() was used (non-blocking API)
   if (_internalHandle) {
@@ -333,18 +335,18 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedWithStopToken(const s
 }
 
 void MultiHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
-  std::ranges::for_each(_servers, [maxWait](HttpServer& server) { server.beginDrain(maxWait); });
+  std::ranges::for_each(_servers, [maxWait](SingleHttpServer& server) { server.beginDrain(maxWait); });
 }
 
 bool MultiHttpServer::isDraining() const {
-  return std::ranges::any_of(_servers, [](const HttpServer& server) { return server.isDraining(); });
+  return std::ranges::any_of(_servers, [](const SingleHttpServer& server) { return server.isDraining(); });
 }
 
 void MultiHttpServer::postConfigUpdate(const std::function<void(HttpServerConfig&)>& updater) {
   if (empty()) {
     throw std::logic_error("Cannot post a config update on an empty MultiHttpServer");
   }
-  std::ranges::for_each(_servers, [&updater](HttpServer& server) { server.postConfigUpdate(updater); });
+  std::ranges::for_each(_servers, [&updater](SingleHttpServer& server) { server.postConfigUpdate(updater); });
 }
 
 void MultiHttpServer::postRouterUpdate(std::function<void(Router&)> updater) {
@@ -386,10 +388,10 @@ void MultiHttpServer::ensureNextServersBuilt() {
   }
 }
 
-vector<HttpServer*> MultiHttpServer::collectServerPointers() {
-  vector<HttpServer*> serverPtrs;
+vector<SingleHttpServer*> MultiHttpServer::collectServerPointers() {
+  vector<SingleHttpServer*> serverPtrs;
   serverPtrs.reserve(_servers.size());
-  std::ranges::transform(_servers, std::back_inserter(serverPtrs), [](HttpServer& server) { return &server; });
+  std::ranges::transform(_servers, std::back_inserter(serverPtrs), [](SingleHttpServer& server) { return &server; });
   return serverPtrs;
 }
 
@@ -435,7 +437,7 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
 
   log::debug("MultiHttpServer starting with {} thread(s) on port :{}", _servers.size(), port());
 
-  vector<HttpServer::AsyncHandle> serverHandles;
+  vector<SingleHttpServer::AsyncHandle> serverHandles;
   serverHandles.reserve(_servers.size());
 
   if (!extraStopCondition) {
@@ -449,7 +451,7 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
   auto stopCallback =
       std::make_shared<std::function<void()>>([serverPtrs = std::move(serverPtrs), serversAlive]() noexcept {
         if (serversAlive && serversAlive->load(std::memory_order_acquire)) {
-          std::ranges::for_each(serverPtrs, [](HttpServer* srv) { srv->stop(); });
+          std::ranges::for_each(serverPtrs, [](SingleHttpServer* srv) { srv->stop(); });
         }
       });
 
@@ -472,7 +474,7 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
         std::make_shared<std::stop_callback<decltype(stopAction)>>(externalStopToken, std::move(stopAction));
   }
 
-  // Launch threads (each captures a stable pointer to its HttpServer element).
+  // Launch threads (each captures a stable pointer to its SingleHttpServer element).
   for (auto& server : _servers) {
     std::atomic<bool>* stopRequested = _stopRequested.get();
     auto threadExtraStop = extraStopCondition;

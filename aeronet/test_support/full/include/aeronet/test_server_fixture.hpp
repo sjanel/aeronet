@@ -10,16 +10,16 @@
 #include <utility>
 
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "aeronet/test_util.hpp"
 
 namespace aeronet::test {
 
 // Lightweight RAII test server harness to reduce boilerplate in unit tests.
 // Responsibilities:
-//  * Construct HttpServer (binds & listens immediately)
+//  * Construct SingleHttpServer (binds & listens immediately)
 //  * Start event loop in a background jthread using runUntil(stopFlag)
 //  * Provide simple readiness wait (loopback connect) instead of arbitrary sleep_for
 //  * Stop & join automatically on destruction (idempotent)
@@ -31,12 +31,12 @@ namespace aeronet::test {
 //   <perform requests>
 //   // automatic cleanup at scope end (or call ts.stop() early)
 //
-// Thread-safety: same as underlying HttpServer (single-threaded event loop). Do not call stop() concurrently
+// Thread-safety: same as underlying SingleHttpServer (single-threaded event loop). Do not call stop() concurrently
 // from multiple threads (benign but unnecessary).
 
-class TestHttpServer : public HttpServer {
+class TestHttpServer : public SingleHttpServer {
  public:
-  using HttpServer::HttpServer;
+  using SingleHttpServer::SingleHttpServer;
 };
 
 struct TestServer {

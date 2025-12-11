@@ -28,7 +28,7 @@ class BaseFd {
 
   // Close the underlying file descriptor immediately.
   // Typically you should rely on RAII (destructor) except when you need to:
-  //  * perform an early shutdown before object lifetime ends (e.g. HttpServer::stop())
+  //  * perform an early shutdown before object lifetime ends (e.g. SingleHttpServer::stop())
   //  * observe/force close errors deterministically at a specific point
   // Idempotent: multiple calls after first successful/failed close are no-ops.
   void close() noexcept;

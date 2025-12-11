@@ -22,9 +22,9 @@ int main(int argc, char** argv) {
     // Create server with router
     Router router;
     router.setDefault(
-        [](const HttpRequest&) { return HttpResponse(200).body("Hello from HttpServer with AsyncHandle!\n"); });
+        [](const HttpRequest&) { return HttpResponse(200).body("Hello from SingleHttpServer with AsyncHandle!\n"); });
 
-    HttpServer server(HttpServerConfig{}.withPort(port), std::move(router));
+    SingleHttpServer server(HttpServerConfig{}.withPort(port), std::move(router));
 
     // Start server in background (non-blocking) - returns AsyncHandle
     auto handle = server.startDetached();

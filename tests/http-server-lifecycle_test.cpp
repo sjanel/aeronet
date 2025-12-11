@@ -18,8 +18,8 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/signal-handler.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -27,8 +27,8 @@ using namespace std::chrono_literals;
 
 namespace aeronet {
 
-TEST(HttpServer, DefaultConstructor) {
-  HttpServer server;
+TEST(SingleHttpServer, DefaultConstructor) {
+  SingleHttpServer server;
   EXPECT_EQ(server.port(), 0);
   server.beginDrain();  // should do nothing
   EXPECT_FALSE(server.isDraining());
@@ -38,7 +38,7 @@ TEST(HttpServer, DefaultConstructor) {
 
 TEST(HttpServerMove, MoveConstructAndServe) {
   std::atomic_bool stop{false};
-  HttpServer original;
+  SingleHttpServer original;
   original.router().setDefault([](const HttpRequest& req) {
     HttpResponse resp;
     resp.body(std::string("ORIG:") + std::string(req.path()));
@@ -46,7 +46,7 @@ TEST(HttpServerMove, MoveConstructAndServe) {
   });
 
   // Move construct server before running
-  HttpServer moved(std::move(original));
+  SingleHttpServer moved(std::move(original));
 
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
 
@@ -62,8 +62,8 @@ TEST(HttpServerMove, MoveConstructAndServe) {
 }
 
 TEST(HttpServerMove, MoveAssignWhileStopped) {
-  HttpServer s1(HttpServerConfig{}.withReusePort(false));
-  HttpServer s2(HttpServerConfig{}.withReusePort(false));
+  SingleHttpServer s1(HttpServerConfig{}.withReusePort(false));
+  SingleHttpServer s2(HttpServerConfig{}.withReusePort(false));
   auto port1 = s1.port();
   auto port2 = s2.port();
 
@@ -95,11 +95,11 @@ TEST(HttpServerMove, MoveAssignWhileStopped) {
 TEST(HttpServerMove, MoveConstructProbesCapturesThis) {
   std::atomic_bool stop{false};
   // Construct original with builtin probes enabled so they get registered and capture 'this'
-  HttpServer original(HttpServerConfig{}.enableBuiltinProbes(true));
+  SingleHttpServer original(HttpServerConfig{}.enableBuiltinProbes(true));
   auto port = original.port();
 
   // Move construct server before running; handlers were registered on the original and captured its 'this'
-  HttpServer moved(std::move(original));
+  SingleHttpServer moved(std::move(original));
 
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -116,7 +116,7 @@ TEST(HttpServerMove, MoveConstructProbesCapturesThis) {
 
 TEST(HttpServerMove, ReRegisterHandlersAfterMove) {
   std::atomic_bool stop{false};
-  HttpServer original(HttpServerConfig{});
+  SingleHttpServer original(HttpServerConfig{});
   auto port = original.port();
 
   // initial handler registered on original
@@ -127,7 +127,7 @@ TEST(HttpServerMove, ReRegisterHandlersAfterMove) {
   });
 
   // Move server (handlers are moved too)
-  HttpServer moved(std::move(original));
+  SingleHttpServer moved(std::move(original));
 
   // Re-register handlers on the moved instance to new behavior
   moved.router().setDefault([](const HttpRequest&) {
@@ -148,7 +148,7 @@ TEST(HttpServerMove, ReRegisterHandlersAfterMove) {
 // Disabled by default: demonstrates the hazard when a handler captures `this` and is not re-registered
 TEST(HttpServerMove, DISABLED_CapturedThisAfterMoveHazard) {
   std::atomic_bool stop{false};
-  HttpServer original(HttpServerConfig{});
+  SingleHttpServer original(HttpServerConfig{});
   auto port = original.port();
 
   // handler captures raw this pointer and returns it as string
@@ -162,7 +162,7 @@ TEST(HttpServerMove, DISABLED_CapturedThisAfterMoveHazard) {
   });
 
   // Move construct (do not re-register handler)
-  HttpServer moved(std::move(original));
+  SingleHttpServer moved(std::move(original));
 
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -175,15 +175,15 @@ TEST(HttpServerMove, DISABLED_CapturedThisAfterMoveHazard) {
   ASSERT_TRUE(resp.contains(""));
 }
 
-// Validates that moving a running HttpServer (move-construction or move-assignment) throws std::runtime_error
+// Validates that moving a running SingleHttpServer (move-construction or move-assignment) throws std::runtime_error
 // per the documented semantics (moves only allowed while stopped).
 // We cannot test with determinism the move constructor throw because we first move construct the fields before checking
 // running status, so the moved-from object may be left in a valid but stopped state.
 
-TEST(HttpServer, MoveAssignWhileRunningThrows) {
+TEST(SingleHttpServer, MoveAssignWhileRunningThrows) {
   HttpServerConfig cfg;
-  HttpServer serverA(cfg);
-  HttpServer serverB(cfg);
+  SingleHttpServer serverA(cfg);
+  SingleHttpServer serverB(cfg);
   serverA.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.body("a");
@@ -206,7 +206,7 @@ TEST(HttpServer, MoveAssignWhileRunningThrows) {
 TEST(HttpServerRestart, RestartPossible) {
   std::atomic_bool stop1{false};
   std::atomic_bool stop2{false};
-  HttpServer server(HttpServerConfig{});
+  SingleHttpServer server(HttpServerConfig{});
   auto port = server.port();
   server.router().setDefault([](const HttpRequest& req) {
     HttpResponse resp;
@@ -245,7 +245,7 @@ std::string SimpleGetRequest(std::string_view target, std::string_view connectio
   return req;
 }
 
-bool WaitForServerRunning(HttpServer& server, std::chrono::milliseconds timeout) {
+bool WaitForServerRunning(SingleHttpServer& server, std::chrono::milliseconds timeout) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(5ms);
@@ -259,7 +259,7 @@ bool WaitForServerRunning(HttpServer& server, std::chrono::milliseconds timeout)
 }  // namespace
 
 TEST(HttpServerCopy, CopyAssignWhileStopped) {
-  HttpServer destination(HttpServerConfig{}.withReusePort());
+  SingleHttpServer destination(HttpServerConfig{}.withReusePort());
   destination.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
     HttpResponse resp;
     resp.body("DEST");
@@ -268,7 +268,7 @@ TEST(HttpServerCopy, CopyAssignWhileStopped) {
 
   uint16_t copiedPort = 0;
   {
-    HttpServer source(HttpServerConfig{}.withReusePort());
+    SingleHttpServer source(HttpServerConfig{}.withReusePort());
     source.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
       HttpResponse resp;
       resp.body("COPY");
@@ -293,14 +293,14 @@ TEST(HttpServerCopy, CopyAssignWhileStopped) {
 TEST(HttpServerCopy, CopyAssignWhileRunningThrows) {
   HttpServerConfig cfg;
   cfg.withReusePort();
-  HttpServer running(cfg);
+  SingleHttpServer running(cfg);
   running.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
     HttpResponse resp;
     resp.body("RUN");
     return resp;
   });
 
-  HttpServer target(cfg);
+  SingleHttpServer target(cfg);
 
   std::jthread worker([&] { running.run(); });
   ASSERT_TRUE(WaitForServerRunning(running, 200ms));
@@ -399,7 +399,7 @@ TEST(HttpDrain, DeadlineForcesIdleConnectionsToClose) {
 TEST(HttpConfigUpdate, InlineApplyWhenStopped) {
   // Post an update while server is stopped; it should be stored and applied when
   // the event loop next runs.
-  HttpServer server(HttpServerConfig{});
+  SingleHttpServer server(HttpServerConfig{});
   server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(12345); });
 
   // Start the server briefly to allow eventLoop to run and apply pending updates.
@@ -649,11 +649,11 @@ TEST_F(SignalHandlerGlobalTest, MultiServerCoordination) {
   EXPECT_FALSE(ts2.server.isRunning());
 }
 
-// Tests for HttpServer::AsyncHandle and start() methods
+// Tests for SingleHttpServer::AsyncHandle and start() methods
 TEST(HttpServerAsyncHandle, BasicStartAndStop) {
   HttpServerConfig cfg;
   cfg.withPollInterval(1ms);
-  HttpServer server(cfg);
+  SingleHttpServer server(cfg);
   auto port = server.port();
 
   server.router().setDefault([](const HttpRequest& req) {
@@ -683,7 +683,7 @@ TEST(HttpServerAsyncHandle, BasicStartAndStop) {
 TEST(HttpServerAsyncHandle, RAIIAutoStop) {
   HttpServerConfig cfg;
   cfg.withPollInterval(1ms);
-  HttpServer server(cfg);
+  SingleHttpServer server(cfg);
   auto port = server.port();
 
   server.router().setDefault([](const HttpRequest&) { return HttpResponse(200).body("raii-test"); });
@@ -707,7 +707,7 @@ TEST(HttpServerAsyncHandle, StartAndStopWhen) {
   std::atomic<bool> done{false};
   HttpServerConfig cfg;
   cfg.withPollInterval(1ms);
-  HttpServer server(cfg);
+  SingleHttpServer server(cfg);
   auto port = server.port();
 
   server.router().setDefault([](const HttpRequest& req) { return HttpResponse(200).body(req.path()); });
@@ -731,7 +731,7 @@ TEST(HttpServerAsyncHandle, StartWithStopToken) {
   std::stop_source source;
   HttpServerConfig cfg;
   cfg.withPollInterval(1ms);
-  HttpServer server(cfg);
+  SingleHttpServer server(cfg);
   auto port = server.port();
 
   server.router().setDefault([](const HttpRequest&) { return HttpResponse(200).body("token-test"); });
@@ -754,7 +754,7 @@ TEST(HttpServerAsyncHandle, StartWithStopToken) {
 TEST(HttpServerAsyncHandle, MoveHandle) {
   HttpServerConfig cfg;
   cfg.withPollInterval(1ms);
-  HttpServer server(cfg);
+  SingleHttpServer server(cfg);
   auto port = server.port();
 
   server.router().setDefault([](const HttpRequest&) { return HttpResponse(200).body("move-test"); });
@@ -763,7 +763,7 @@ TEST(HttpServerAsyncHandle, MoveHandle) {
   std::this_thread::sleep_for(50ms);
 
   // Move construct
-  HttpServer::AsyncHandle handle2(std::move(handle1));
+  SingleHttpServer::AsyncHandle handle2(std::move(handle1));
   EXPECT_TRUE(handle2.started());
   EXPECT_FALSE(handle1.started());  // NOLINT(bugprone-use-after-move)
 
@@ -777,7 +777,7 @@ TEST(HttpServerAsyncHandle, MoveHandle) {
 TEST(HttpServerAsyncHandle, RestartAfterStop) {
   HttpServerConfig cfg;
   cfg.withPollInterval(1ms);
-  HttpServer server(cfg);
+  SingleHttpServer server(cfg);
   auto port = server.port();
 
   server.router().setDefault([](const HttpRequest&) { return HttpResponse(200).body("restart"); });

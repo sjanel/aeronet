@@ -50,7 +50,7 @@ struct TlsTestServer {
   [[nodiscard]] uint16_t port() const { return server.port(); }
   void stop() { server.stop(); }
 
-  // Forward selected HttpServer APIs for convenience to reduce nested server.server noise.
+  // Forward selected SingleHttpServer APIs for convenience to reduce nested server.server noise.
   RouterUpdateProxy router() { return server.router(); }
 
   void setDefault(RequestHandler handler) { router().setDefault(std::move(handler)); }

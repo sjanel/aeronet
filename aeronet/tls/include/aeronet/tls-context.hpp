@@ -17,7 +17,7 @@ namespace aeronet {
 
 class TlsTicketKeyStore;
 
-// Forward-declared metrics container (owned by HttpServer) used for ALPN mismatch counting during selection.
+// Forward-declared metrics container (owned by SingleHttpServer) used for ALPN mismatch counting during selection.
 struct TlsMetricsExternal {
   uint64_t alpnStrictMismatches{0};
 };

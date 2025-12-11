@@ -55,7 +55,7 @@ TEST(RouterTest, RegisterAndMatchStreamingHandler) {
   ASSERT_NE(res.streamingHandler(), nullptr);
   ASSERT_FALSE(res.methodNotAllowed);
 
-  // We cannot easily construct an HttpResponseWriter here without a real HttpServer.
+  // We cannot easily construct an HttpResponseWriter here without a real SingleHttpServer.
   // Verifying non-null streamingHandler is sufficient for the Router::match contract.
   EXPECT_FALSE(streamCalled);
 }
