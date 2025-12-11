@@ -23,7 +23,6 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
@@ -54,9 +53,9 @@ std::string SimpleGetRequest(std::string_view target, std::string_view connectio
 }  // namespace
 
 TEST(MultiHttpServer, ConstructorChecks) {
-  EXPECT_NO_THROW(MultiHttpServer(HttpServerConfig{}, 0));
-  EXPECT_NO_THROW(MultiHttpServer(HttpServerConfig{}.withReusePort(), 0));
-  EXPECT_NO_THROW(MultiHttpServer(HttpServerConfig{}.withReusePort(false), 4));
+  EXPECT_NO_THROW(MultiHttpServer(HttpServerConfig{}));
+  EXPECT_NO_THROW(MultiHttpServer(HttpServerConfig{}.withReusePort()));
+  EXPECT_NO_THROW(MultiHttpServer(HttpServerConfig{}.withReusePort(false)));
 }
 
 TEST(MultiHttpServer, EmptyChecks) {
@@ -81,8 +80,8 @@ TEST(MultiHttpServer, EmptyChecks) {
 }
 
 TEST(MultiHttpServer, BasicStartAndServe) {
-  const int threads = 3;
-  MultiHttpServer multi(HttpServerConfig{}.withReusePort(), threads);
+  const uint32_t threads = 4;
+  MultiHttpServer multi(HttpServerConfig{}.withReusePort().withNbThreads(static_cast<uint32_t>(threads)));
   multi.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
     HttpResponse resp;
     resp.body("Hello "); /* path not exposed directly */
@@ -114,7 +113,8 @@ TEST(MultiHttpServer, StatsAggregatesTlsAlpnDistribution) {
   cfg.withReusePort();
   cfg.withTlsCertKeyMemory(certPem, keyPem);
   cfg.withTlsAlpnProtocols({"http/1.1"});
-  MultiHttpServer multi(cfg, 1);
+  cfg.withNbThreads(1U);
+  MultiHttpServer multi(std::move(cfg));
   multi.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
     HttpResponse resp;
     resp.body("TLS");
@@ -141,7 +141,7 @@ TEST(MultiHttpServer, StatsAggregatesTlsAlpnDistribution) {
 // and accept at least one connection each. It does not attempt to assert load distribution.
 
 TEST(HttpMultiReusePort, TwoServersBindSamePort) {
-  HttpServer serverA(HttpServerConfig{}.withReusePort());
+  SingleHttpServer serverA(HttpServerConfig{}.withReusePort());
   serverA.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.body("A");
@@ -150,7 +150,7 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
 
   auto port = serverA.port();
 
-  HttpServer serverB(HttpServerConfig{}.withPort(port).withReusePort());
+  SingleHttpServer serverB(HttpServerConfig{}.withPort(port).withReusePort());
   serverB.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.body("B");
@@ -206,7 +206,8 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
   HttpServerConfig cfg;
   cfg.enableKeepAlive = true;
   cfg.withReusePort();
-  MultiHttpServer multi(cfg, 2);
+  cfg.withNbThreads(2U);
+  MultiHttpServer multi(std::move(cfg));
   const auto port = multi.port();
 
   multi.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
@@ -266,7 +267,8 @@ TEST(MultiHttpServer, RapidStartStopCycles) {
 TEST(MultiHttpServer, StartDetachedStopsWhenPredicateFires) {
   HttpServerConfig cfg;
   cfg.withReusePort();
-  MultiHttpServer multi(cfg, 1);
+  cfg.withNbThreads(1U);
+  MultiHttpServer multi(cfg);
   multi.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
     HttpResponse resp;
     resp.body("Predicate");
@@ -309,11 +311,12 @@ TEST(MultiHttpServer, StartDetachedStopsWhenPredicateFires) {
 }
 
 // Verifies that MultiHttpServer can be stopped and started again (restart) while reusing the same port by default.
-// HttpServer itself remains single-shot; restart creates fresh HttpServer instances internally.
+// SingleHttpServer itself remains single-shot; restart creates fresh SingleHttpServer instances internally.
 TEST(MultiHttpServer, RestartBasicSamePort) {
   HttpServerConfig cfg;
   cfg.withReusePort();
-  MultiHttpServer multi(cfg, 2);
+  cfg.withNbThreads(2U);
+  MultiHttpServer multi(cfg);
   multi.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.body("Phase1");
@@ -347,7 +350,8 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
 TEST(MultiHttpServerCopy, CopyConstructWhileStopped) {
   HttpServerConfig cfg;
   cfg.withReusePort();
-  MultiHttpServer original(cfg, 2);
+  cfg.withNbThreads(2U);
+  MultiHttpServer original(cfg);
   original.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
     HttpResponse resp;
     resp.body("COPY-CONST");
@@ -375,7 +379,8 @@ TEST(MultiHttpServerCopy, CopyAssignWhileStopped) {
   cfg.withReusePort();
   MultiHttpServer assigned;
   {
-    MultiHttpServer source(cfg, 2);
+    cfg.withNbThreads(2U);
+    MultiHttpServer source(cfg);
     source.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
       HttpResponse resp;
       resp.body("COPY-ASSIGN");
@@ -397,7 +402,8 @@ TEST(MultiHttpServerCopy, CopyAssignWhileStopped) {
 TEST(MultiHttpServerCopy, CopyConstructWhileRunningThrows) {
   HttpServerConfig cfg;
   cfg.withReusePort();
-  MultiHttpServer original(cfg, 2);
+  cfg.withNbThreads(2U);
+  MultiHttpServer original(cfg);
   original.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
     HttpResponse resp;
     resp.body("RUN");
@@ -414,8 +420,9 @@ TEST(MultiHttpServerCopy, CopyConstructWhileRunningThrows) {
 TEST(MultiHttpServerCopy, CopyAssignWhileRunningThrows) {
   HttpServerConfig cfg;
   cfg.withReusePort();
-  MultiHttpServer target(cfg, 2);
-  MultiHttpServer source(cfg, 2);
+  cfg.withNbThreads(2U);
+  MultiHttpServer target(cfg);
+  MultiHttpServer source(cfg);
   source.router().setDefault([]([[maybe_unused]] const HttpRequest&) {
     HttpResponse resp;
     resp.body("RUN");
@@ -433,7 +440,8 @@ TEST(MultiHttpServer, MoveThenRestartDifferentConfig) {
   HttpServerConfig cfg;
   cfg.withReusePort();
   cfg.withPollInterval(std::chrono::milliseconds{1});
-  MultiHttpServer multi(cfg, 1);
+  cfg.withNbThreads(1U);
+  MultiHttpServer multi(cfg);
   multi.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.body("R1");
@@ -564,7 +572,8 @@ TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
 TEST(MultiHttpServer, AsyncHandleMoveConstructorAndAssignment) {
   HttpServerConfig cfgA;
   cfgA.withReusePort();
-  MultiHttpServer multiA(cfgA, 1);
+  cfgA.withNbThreads(1U);
+  MultiHttpServer multiA(cfgA);
   multiA.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.body("MA");
@@ -584,7 +593,8 @@ TEST(MultiHttpServer, AsyncHandleMoveConstructorAndAssignment) {
   // Start another server to provide a second handle for move-assignment
   HttpServerConfig cfgB;
   cfgB.withReusePort();
-  MultiHttpServer multiB(cfgB, 1);
+  cfgB.withNbThreads(1U);
+  MultiHttpServer multiB(cfgB);
   multiB.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.body("MB");
@@ -643,26 +653,27 @@ TEST(MultiHttpServer, AggregatedStatsJsonAndSetters) {
 
   testCbHandler.after([](const HttpRequest&, HttpResponse& resp) { resp.addHeader("X-After-CB", "Yes"); });
 
-  MultiHttpServer multi(cfg, std::move(router), 8);
+  cfg.withNbThreads(8U);
+  MultiHttpServer multi(cfg, std::move(router));
 
   std::atomic<int> errorsCount{0};
   multi.setParserErrorCallback([&](http::StatusCode) { errorsCount.fetch_add(1, std::memory_order_relaxed); });
 
   std::atomic<int> metricsCbCount{0};
   multi.setMetricsCallback(
-      [&](const HttpServer::RequestMetrics&) { metricsCbCount.fetch_add(1, std::memory_order_relaxed); });
+      [&](const SingleHttpServer::RequestMetrics&) { metricsCbCount.fetch_add(1, std::memory_order_relaxed); });
 
   std::atomic<int> expectCbCount{0};
   multi.setExpectationHandler(
-      [&expectCbCount](const HttpRequest& /*req*/, std::string_view /*token*/) -> HttpServer::ExpectationResult {
+      [&expectCbCount](const HttpRequest& /*req*/, std::string_view /*token*/) -> SingleHttpServer::ExpectationResult {
         expectCbCount.fetch_add(1, std::memory_order_relaxed);
-        HttpServer::ExpectationResult expect;
-        expect.kind = HttpServer::ExpectationResultKind::Continue;
+        SingleHttpServer::ExpectationResult expect;
+        expect.kind = SingleHttpServer::ExpectationResultKind::Continue;
         return expect;
       });
 
   std::atomic<int> middlewareCbCount{0};
-  multi.setMiddlewareMetricsCallback([&](const HttpServer::MiddlewareMetrics& metrics) {
+  multi.setMiddlewareMetricsCallback([&](const SingleHttpServer::MiddlewareMetrics& metrics) {
     EXPECT_EQ(metrics.requestPath, "/test-cb");
     middlewareCbCount.fetch_add(1, std::memory_order_relaxed);
   });
@@ -707,7 +718,6 @@ TEST(MultiHttpServer, AggregatedStatsJsonAndSetters) {
   handle.rethrowIfError();
 }
 
-// 1. Auto thread-count constructor
 TEST(MultiHttpServer, AutoThreadCountConstructor) {
   HttpServerConfig cfg;
   cfg.withReusePort();  // auto thread count may be >1 -> must explicitly enable reusePort
@@ -732,28 +742,6 @@ TEST(MultiHttpServer, AutoThreadCountConstructor) {
   handle.rethrowIfError();
 }
 
-// 2. Explicit thread-count constructor
-TEST(MultiHttpServer, ExplicitThreadCountConstructor) {
-  static constexpr uint32_t threads = 2;
-  MultiHttpServer multi(HttpServerConfig{}, threads);
-  EXPECT_GT(multi.port(), 0);  // resolved during construction
-  EXPECT_EQ(multi.nbThreads(), threads);
-  multi.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
-    HttpResponse resp;
-    resp.body("Explicit");
-    return resp;
-  });
-  auto handle = multi.startDetached();
-  ASSERT_GT(multi.port(), 0);
-  auto resp = test::simpleGet(multi.port(), "/exp");
-  EXPECT_TRUE(resp.contains("Explicit"));
-  auto stats = multi.stats();
-  EXPECT_EQ(stats.per.size(), static_cast<std::size_t>(threads));
-  handle.stop();
-  handle.rethrowIfError();
-}
-
-// 3. Move construction (move underlying servers ownership)
 TEST(MultiHttpServer, MoveConstruction) {
   HttpServerConfig cfg;
   MultiHttpServer original(cfg);  // auto threads
@@ -813,7 +801,12 @@ TEST(MultiHttpServer, DefaultConstructorAndMoveAssignment) {
 
 TEST(MultiHttpServer, BlockingRunMethod) {
   // Test the blocking run() method which should start servers and block until completion
-  MultiHttpServer multi(HttpServerConfig{}.withReusePort(), 2);
+
+  HttpServerConfig _cfg;
+  _cfg.withReusePort();
+  _cfg.withNbThreads(2U);
+  MultiHttpServer multi(_cfg);
+
   multi.router().setDefault([](const HttpRequest& req) {
     HttpResponse resp;
     resp.body(std::string("Blocking:") + std::string(req.path()));
@@ -846,7 +839,12 @@ TEST(MultiHttpServer, BlockingRunMethod) {
 
 TEST(MultiHttpServer, RunStopAndRestart) {
   // Test that run() properly cleans up and allows restart
-  MultiHttpServer multi(HttpServerConfig{}.withReusePort().withPollInterval(std::chrono::milliseconds{1}), 2);
+
+  HttpServerConfig _cfg;
+  _cfg.withReusePort().withPollInterval(std::chrono::milliseconds{1});
+  _cfg.withNbThreads(2U);
+  MultiHttpServer multi(_cfg);
+
   multi.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.body("First");
@@ -895,7 +893,8 @@ TEST(MultiHttpServer, RunStopAndRestart) {
 TEST(MultiHttpServer, RunUntilStopsWhenPredicateFires) {
   HttpServerConfig cfg;
   cfg.withReusePort();
-  MultiHttpServer multi(cfg, 2);
+  cfg.withNbThreads(2U);
+  MultiHttpServer multi(cfg);
   multi.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.body("RunUntil");
@@ -927,7 +926,8 @@ TEST(MultiHttpServer, RunUntilStopsWhenPredicateFires) {
 TEST(MultiHttpServer, StartDetachedWithStopTokenStopsOnRequest) {
   HttpServerConfig cfg;
   cfg.withReusePort();
-  MultiHttpServer multi(cfg, 1);
+  cfg.withNbThreads(1U);
+  MultiHttpServer multi(cfg);
   multi.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;
     resp.body("Token");
@@ -970,7 +970,8 @@ TEST(MultiHttpServer, ExplicitPortWithNoReusePortShouldCheckPortAvailability) {
   HttpServerConfig cfg;
   cfg.withReusePort(false);
 
-  MultiHttpServer firstServer(cfg, 2);
+  cfg.withNbThreads(2U);
+  MultiHttpServer firstServer(cfg);
 
   auto port = firstServer.port();
   ASSERT_GT(port, 0);
@@ -978,13 +979,15 @@ TEST(MultiHttpServer, ExplicitPortWithNoReusePortShouldCheckPortAvailability) {
   cfg.withPort(port);   // set explicit port already in use by firstServer
   cfg.withReusePort();  // enable reusePort for second attempt
 
-  EXPECT_NO_THROW(MultiHttpServer(cfg, 2));  // should succeed due to reusePort true
+  cfg.withNbThreads(2U);
+  EXPECT_NO_THROW(MultiHttpServer{cfg});  // should succeed due to reusePort true
 
   cfg.withReusePort(false);  // disable reusePort again
 
   // Now, attempt to create another MultiHttpServer on the same port without reusePort
   // -> it should throw due to port being in use by firstServer
-  EXPECT_THROW(MultiHttpServer(cfg, 2), std::system_error);
+  cfg.withNbThreads(2U);
+  EXPECT_THROW(MultiHttpServer{cfg}, std::system_error);
 
   firstServer.stop();
 }
@@ -999,7 +1002,8 @@ TEST(MultiHttpServerTelemetry, CounterSentViaTelemetryContext) {
   cfg.withTelemetryConfig(std::move(tcfg));
 
   // Create a MultiHttpServer with one underlying thread so it's valid but simple
-  MultiHttpServer multi(cfg, 1);
+  cfg.withNbThreads(1U);
+  MultiHttpServer multi(cfg);
 
   multi.telemetryContext().counterAdd("multi_metric", 1);
 

@@ -177,7 +177,7 @@ class RouterUpdateProxy {
   }
 
  private:
-  friend class HttpServer;
+  friend class SingleHttpServer;
   friend class MultiHttpServer;
 
   /**

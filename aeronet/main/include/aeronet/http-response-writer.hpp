@@ -1,4 +1,3 @@
-// Streaming response writer for aeronet HTTP/1.1 (phase 1 skeleton)
 #pragma once
 
 #include <cstddef>
@@ -18,10 +17,15 @@
 
 namespace aeronet {
 
-class HttpServer;
+class SingleHttpServer;
 class HttpRequest;
 class CorsPolicy;
 
+// HttpResponseWriter
+//  - Used to stream HTTP responses in a backpressure-aware manner.
+//  - Not thread-safe; intended for use within streaming path handlers only.
+//  - Supports both chunked transfer encoding (default) and fixed Content-Length mode.
+//  - Supports setting status, reason, headers before any body data is sent.
 class HttpResponseWriter {
  public:
   // Replaces the status code. Must be a 3 digits integer.
@@ -181,9 +185,9 @@ class HttpResponseWriter {
   [[nodiscard]] bool failed() const { return _state == State::Failed; }
 
  private:
-  friend class HttpServer;
+  friend class SingleHttpServer;
 
-  HttpResponseWriter(HttpServer& srv, int fd, const HttpRequest& request, bool headRequest, bool requestConnClose,
+  HttpResponseWriter(SingleHttpServer& srv, int fd, const HttpRequest& request, bool headRequest, bool requestConnClose,
                      Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
                      std::span<const ResponseMiddleware> routeResponseMiddleware);
 
@@ -197,7 +201,7 @@ class HttpResponseWriter {
 
   [[nodiscard]] bool chunked() const { return _declaredLength == 0 && !_head; }
 
-  HttpServer* _server{nullptr};
+  SingleHttpServer* _server{nullptr};
   const HttpRequest* _request{nullptr};
   int _fd{-1};
   bool _head{false};

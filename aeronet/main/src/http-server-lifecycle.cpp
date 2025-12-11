@@ -20,13 +20,13 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-lifecycle-tracker.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/tls-config.hpp"
@@ -77,25 +77,25 @@ class LifecycleTrackerGuard {
 };
 }  // namespace
 
-HttpServer::AsyncHandle::AsyncHandle(std::jthread thread, std::shared_ptr<std::exception_ptr> error)
+SingleHttpServer::AsyncHandle::AsyncHandle(std::jthread thread, std::shared_ptr<std::exception_ptr> error)
     : _thread(std::move(thread)), _error(std::move(error)) {}
 
-HttpServer::AsyncHandle::~AsyncHandle() { stop(); }
+SingleHttpServer::AsyncHandle::~AsyncHandle() { stop(); }
 
-void HttpServer::AsyncHandle::stop() noexcept {
+void SingleHttpServer::AsyncHandle::stop() noexcept {
   if (_thread.joinable()) {
     _thread.request_stop();
     _thread.join();
   }
 }
 
-void HttpServer::AsyncHandle::rethrowIfError() {
+void SingleHttpServer::AsyncHandle::rethrowIfError() {
   if (_error && *_error) {
     std::rethrow_exception(*_error);
   }
 }
 
-HttpServer::HttpServer(HttpServerConfig config, RouterConfig routerConfig)
+SingleHttpServer::SingleHttpServer(HttpServerConfig config, RouterConfig routerConfig)
     : _config(std::move(config)),
       _listenSocket(Socket::Type::StreamNonBlock),
       _eventLoop(_config.pollInterval),
@@ -105,7 +105,7 @@ HttpServer::HttpServer(HttpServerConfig config, RouterConfig routerConfig)
   initListener();
 }
 
-HttpServer::HttpServer(HttpServerConfig cfg, Router router)
+SingleHttpServer::SingleHttpServer(HttpServerConfig cfg, Router router)
     : _config(std::move(cfg)),
       _listenSocket(Socket::Type::StreamNonBlock),
       _eventLoop(_config.pollInterval),
@@ -115,7 +115,7 @@ HttpServer::HttpServer(HttpServerConfig cfg, Router router)
   initListener();
 }
 
-HttpServer::HttpServer(const HttpServer& other)
+SingleHttpServer::SingleHttpServer(const SingleHttpServer& other)
     : _config(other._config),
       _listenSocket(Socket::Type::StreamNonBlock),
       _isInMultiHttpServer(other._isInMultiHttpServer),
@@ -130,7 +130,7 @@ HttpServer::HttpServer(const HttpServer& other)
       _pendingRouterUpdates(other._pendingRouterUpdates),
       _telemetry(_config.telemetry) {
   if (!other._lifecycle.isIdle()) {
-    throw std::logic_error("Cannot copy-construct from a running HttpServer");
+    throw std::logic_error("Cannot copy-construct from a running SingleHttpServer");
   }
 
   _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.load(std::memory_order_relaxed),
@@ -141,10 +141,10 @@ HttpServer::HttpServer(const HttpServer& other)
   initListener();
 }
 
-HttpServer& HttpServer::operator=(const HttpServer& other) {
+SingleHttpServer& SingleHttpServer::operator=(const SingleHttpServer& other) {
   if (this != &other) {
     if (!other._lifecycle.isIdle()) {
-      throw std::logic_error("Cannot copy-assign from a running HttpServer");
+      throw std::logic_error("Cannot copy-assign from a running SingleHttpServer");
     }
 
     stop();
@@ -152,7 +152,7 @@ HttpServer& HttpServer::operator=(const HttpServer& other) {
     const bool wasInMulti = _isInMultiHttpServer;
     auto lifecycleTracker = _lifecycleTracker;
 
-    *this = HttpServer(other);
+    *this = SingleHttpServer(other);
 
     _isInMultiHttpServer = wasInMulti;
     _lifecycleTracker = std::move(lifecycleTracker);
@@ -161,7 +161,7 @@ HttpServer& HttpServer::operator=(const HttpServer& other) {
 }
 
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
-HttpServer::HttpServer(HttpServer&& other)
+SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
     : _stats(std::exchange(other._stats, {})),
       _config(std::move(other._config)),
       _listenSocket(std::move(other._listenSocket)),
@@ -191,7 +191,7 @@ HttpServer::HttpServer(HttpServer&& other)
 #endif
 {
   if (!_lifecycle.isIdle()) {
-    throw std::logic_error("Cannot move-construct a running HttpServer");
+    throw std::logic_error("Cannot move-construct a running SingleHttpServer");
   }
 
   // transfer pending updates state; mutex remains with each instance (do not move mutex)
@@ -201,13 +201,13 @@ HttpServer::HttpServer(HttpServer&& other)
 }
 
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
-HttpServer& HttpServer::operator=(HttpServer&& other) {
+SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
   if (this != &other) {
     stop();
 
     if (!other._lifecycle.isIdle()) {
       other.stop();
-      throw std::logic_error("Cannot move-assign from a running HttpServer");
+      throw std::logic_error("Cannot move-assign from a running SingleHttpServer");
     }
     _stats = std::exchange(other._stats, {});
     _config = std::move(other._config);
@@ -245,7 +245,7 @@ HttpServer& HttpServer::operator=(HttpServer&& other) {
   return *this;
 }
 
-HttpServer::~HttpServer() { stop(); }
+SingleHttpServer::~SingleHttpServer() { stop(); }
 
 // Performs full listener initialization (RAII style) so that port() is valid immediately after construction.
 // Steps (in order) and rationale / failure characteristics:
@@ -284,7 +284,10 @@ HttpServer::~HttpServer() { stop(); }
 //   - In a nominal environment using an ephemeral port (cfg.port == 0), the probability of an exception is ~0 unless
 //     the process hits fd limits or severe memory pressure. Fixed ports may legitimately throw due to EADDRINUSE.
 //   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
-void HttpServer::initListener() {
+void SingleHttpServer::initListener() {
+  if (_config.nbThreads > 1U) {
+    throw std::invalid_argument("SingleHttpServer cannot be configured with nbThreads > 1");
+  }
   _config.validate();
 
   if (!_listenSocket) {
@@ -295,7 +298,7 @@ void HttpServer::initListener() {
   // Initialize TLS context if requested (OpenSSL build).
   if (_config.tls.enabled) {
 #ifdef AERONET_ENABLE_OPENSSL
-    // Allocate TlsContext on the heap so its address remains stable even if HttpServer is moved.
+    // Allocate TlsContext on the heap so its address remains stable even if SingleHttpServer is moved.
     // (See detailed rationale in header next to _tlsCtxHolder.)
     _tlsCtxHolder = std::make_unique<TlsContext>(_config.tls, &_tlsMetricsExternal);
 #else
@@ -312,7 +315,7 @@ void HttpServer::initListener() {
   createEncoders();
 }
 
-void HttpServer::prepareRun() {
+void SingleHttpServer::prepareRun() {
   if (_lifecycle.isActive()) {
     throw std::logic_error("Server is already running");
   }
@@ -328,7 +331,7 @@ void HttpServer::prepareRun() {
   registerBuiltInProbes();
 }
 
-void HttpServer::run() {
+void SingleHttpServer::run() {
   prepareRun();
   _lifecycle.enterRunning();
   LifecycleTrackerGuard trackerGuard(_lifecycleTracker);
@@ -338,7 +341,7 @@ void HttpServer::run() {
   _lifecycle.reset();
 }
 
-void HttpServer::runUntil(const std::function<bool()>& predicate) {
+void SingleHttpServer::runUntil(const std::function<bool()>& predicate) {
   prepareRun();
   _lifecycle.enterRunning();
   LifecycleTrackerGuard trackerGuard(_lifecycleTracker);
@@ -350,9 +353,9 @@ void HttpServer::runUntil(const std::function<bool()>& predicate) {
   }
 }
 
-void HttpServer::start() { _internalHandle.emplace(startDetached()); }
+void SingleHttpServer::start() { _internalHandle.emplace(startDetached()); }
 
-HttpServer::AsyncHandle HttpServer::startDetached() {
+SingleHttpServer::AsyncHandle SingleHttpServer::startDetached() {
   auto errorPtr = std::make_shared<std::exception_ptr>();
 
   return {std::jthread([this, errorPtr](const std::stop_token& st) {
@@ -365,7 +368,7 @@ HttpServer::AsyncHandle HttpServer::startDetached() {
           std::move(errorPtr)};
 }
 
-HttpServer::AsyncHandle HttpServer::startDetachedAndStopWhen(std::function<bool()> predicate) {
+SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedAndStopWhen(std::function<bool()> predicate) {
   auto errorPtr = std::make_shared<std::exception_ptr>();
 
   return {std::jthread([this, pred = std::move(predicate), errorPtr](const std::stop_token& st) {
@@ -378,7 +381,7 @@ HttpServer::AsyncHandle HttpServer::startDetachedAndStopWhen(std::function<bool(
           std::move(errorPtr)};
 }
 
-HttpServer::AsyncHandle HttpServer::startDetachedWithStopToken(std::stop_token token) {
+SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedWithStopToken(std::stop_token token) {
   auto errorPtr = std::make_shared<std::exception_ptr>();
 
   return {std::jthread([this, token = std::move(token), errorPtr](const std::stop_token& st) {
@@ -391,7 +394,7 @@ HttpServer::AsyncHandle HttpServer::startDetachedWithStopToken(std::stop_token t
           std::move(errorPtr)};
 }
 
-void HttpServer::stop() noexcept {
+void SingleHttpServer::stop() noexcept {
   closeListener();
   if (_lifecycle.exchangeStopping() == internal::Lifecycle::State::Running) {
     log::debug("Stopping server");
@@ -406,7 +409,7 @@ void HttpServer::stop() noexcept {
   }
 }
 
-void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
+void SingleHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
   if (!_lifecycle.isActive() || _lifecycle.isStopping()) {
     return;
   }
@@ -430,7 +433,7 @@ void HttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
   closeListener();
 }
 
-void HttpServer::registerBuiltInProbes() {
+void SingleHttpServer::registerBuiltInProbes() {
   if (!_config.builtinProbes.enabled) {
     return;
   }
@@ -464,7 +467,7 @@ void HttpServer::registerBuiltInProbes() {
   });
 }
 
-void HttpServer::createEncoders() {
+void SingleHttpServer::createEncoders() {
 #ifdef AERONET_ENABLE_ZLIB
   _encoders[static_cast<std::size_t>(Encoding::gzip)] =
       std::make_unique<ZlibEncoder>(ZStreamRAII::Variant::gzip, _config.compression);

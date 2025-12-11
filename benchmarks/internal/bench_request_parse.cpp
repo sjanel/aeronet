@@ -17,7 +17,7 @@ using namespace std::chrono_literals;  // NOLINT(misc-unused-using-decls)
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "bench_util.hpp"  // bench_util::ClientConnection / send helpers
 
 // Self-contained minimal roundtrip benchmark (loopback). Avoids depending on test utilities
@@ -28,7 +28,7 @@ class MinimalServerFixture : public benchmark::Fixture {
  protected:
   void SetUp(const benchmark::State& state [[maybe_unused]]) override {
     stopFlag.store(false, std::memory_order_relaxed);
-    server = std::make_unique<aeronet::HttpServer>(aeronet::HttpServerConfig{}.withPort(0));
+    server = std::make_unique<aeronet::SingleHttpServer>(aeronet::HttpServerConfig{}.withPort(0));
     server->router().setDefault([](const aeronet::HttpRequest&) {
       aeronet::HttpResponse resp;
       resp.body("OK");
@@ -45,7 +45,7 @@ class MinimalServerFixture : public benchmark::Fixture {
     }
     server.reset();
   }
-  std::unique_ptr<aeronet::HttpServer> server;
+  std::unique_ptr<aeronet::SingleHttpServer> server;
   std::atomic<bool> stopFlag{false};
   std::jthread loopThread;
 };

@@ -23,10 +23,21 @@ namespace aeronet {
 
 struct HttpServerConfig {
   // ============================
+  // Threading parameters
+  // ============================
+  // Number of threads to use for the server event loops.
+  // This setting is only meaningful for HttpServer (aka MultiHttpServer);
+  // SingleHttpServer always uses one thread, and will throw in case nbThreads > 1.
+  // If 0, the server will use std::thread::hardware_concurrency() for MultiHttpServer,
+  // or 1 for SingleHttpServer.
+  // Default: 0.
+  uint32_t nbThreads{0};
+
+  // ============================
   // Listener / socket parameters
   // ============================
   // TCP port to bind. 0 (default) lets the OS pick an ephemeral free port. After construction
-  // you can retrieve the effective port via HttpServer::port().
+  // you can retrieve the effective port via SingleHttpServer::port().
   uint16_t port{0};
 
   // If true, enables SO_REUSEPORT allowing multiple independent server instances to bind the same port
@@ -52,10 +63,14 @@ struct HttpServerConfig {
   bool enableKeepAlive{true};
 
   // Maximum number of HTTP requests to serve over a single persistent connection before forcing close.
+  // A high value improves connection reuse at the cost of potential resource exhaustion from slow clients.
+  // A low value limits resource usage but may increase latency due to more frequent connection establishment.
+  // Default: 100,000 requests.
   uint32_t maxRequestsPerConnection{100000};
 
   // Idle timeout for keep-alive connections (duration to wait for next request after previous response is fully
-  // sent). Once exceeded the server proactively closes the connection. Default: 5000 ms.
+  // sent). Once exceeded the server proactively closes the connection.
+  // Default: 5000 ms.
   std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
 
   // Duration to keep closed ConnectionState objects in the cache for potential reuse, to avoid reallocating memory
@@ -70,7 +85,7 @@ struct HttpServerConfig {
   std::size_t maxHeaderBytes{8192};
 
   // Maximum allowed size (in bytes) of a request body (after decoding any chunked framing). Requests exceeding
-  // this limit result in a 413 (Payload Too Large) style error (currently 400/413 depending on path) and closure.
+  // this limit result in a 413 (Payload Too Large) HTTP error and closure.
   // Default: 256 MiB.
   std::size_t maxBodyBytes{1 << 28};  // 256 MiB
 
@@ -208,6 +223,10 @@ struct HttpServerConfig {
   // resolved host is allowed. When non-empty, the target host must exactly match one of these entries. The matching is
   // case-insensitive for hostnames.
   [[nodiscard]] const SmallConcatenatedStringsCaseInsensitive& connectAllowlist() const { return _connectAllowlist; }
+
+  // Set number of threads to use for the server event loops.
+  // This setting is only meaningful for HttpServer (aka MultiHttpServer);
+  HttpServerConfig& withNbThreads(uint32_t nbThreads);
 
   // Set explicit listening port (0 = ephemeral)
   HttpServerConfig& withPort(uint16_t port);

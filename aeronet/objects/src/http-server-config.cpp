@@ -28,6 +28,11 @@ TLSConfig& HttpServerConfig::ensureTls() {
   return tls;
 }
 
+HttpServerConfig& HttpServerConfig::withNbThreads(uint32_t nbThreads) {
+  this->nbThreads = nbThreads;
+  return *this;
+}
+
 HttpServerConfig& HttpServerConfig::withPort(uint16_t port) {
   this->port = port;
   return *this;

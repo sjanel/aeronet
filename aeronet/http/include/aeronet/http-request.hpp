@@ -230,7 +230,7 @@ class HttpRequest {
   [[nodiscard]] std::size_t headSpanSize() const noexcept { return _headSpanSize; }
 
  private:
-  friend class HttpServer;
+  friend class SingleHttpServer;
   friend class HttpRequestTest;
   friend class StaticFileHandlerTest;
   friend class CorsPolicyHarness;

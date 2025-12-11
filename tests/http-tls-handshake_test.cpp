@@ -12,10 +12,10 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/server-stats.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_server_tls_fixture.hpp"
@@ -101,10 +101,10 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
   }
 }
 
-// Verifies that moving a TLS+ALPN configured HttpServer prior to running preserves
+// Verifies that moving a TLS+ALPN configured SingleHttpServer prior to running preserves
 // a valid TLS context and ALPN callback pointer. This specifically guards against
 // the prior design where TlsContext was stored by value (e.g. inside std::optional):
-// a move of HttpServer could relocate the TlsContext object while the OpenSSL
+// a move of SingleHttpServer could relocate the TlsContext object while the OpenSSL
 // SSL_CTX ALPN selection callback still held the old address -> use-after-free /
 // crash during handshake. The current design stores TlsContext behind a stable
 // std::unique_ptr, so the address observed by OpenSSL remains valid after moves.
@@ -123,14 +123,14 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
   cfg.withTlsAlpnProtocols({"h2", "http/1.1"});  // offer both; client will request http/1.1 only
   cfg.withTlsRequireClientCert(false);           // no client cert for this test
 
-  HttpServer original(cfg);
+  SingleHttpServer original(cfg);
   original.router().setDefault([](const HttpRequest& req) {
     return HttpResponse(http::StatusCodeOK, "OK")
         .body(std::string("MOVEALPN:") + (req.alpnProtocol().empty() ? "-" : std::string(req.alpnProtocol())));
   });
 
   auto port = original.port();
-  HttpServer moved(std::move(original));
+  SingleHttpServer moved(std::move(original));
 
   std::atomic_bool stop{false};
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
