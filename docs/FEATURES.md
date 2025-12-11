@@ -16,7 +16,7 @@ Single consolidated reference for **aeronet** features.
 1. [Middleware Pipeline](#middleware-pipeline)
 1. [Trailing Slash Policy](#trailing-slash-policy)
 1. [Construction Model (RAII & Ephemeral Ports)](#construction-model-raii--ephemeral-ports)
-1. [MultiHttpServer Lifecycle](#multihttpserver-lifecycle)
+1. [HttpServer Lifecycle](#httpserver-lifecycle)
 1. [Built-in Kubernetes-style probes](#built-in-kubernetes-style-probes)
 1. [TLS Features](#tls-features)
 1. [CONNECT (HTTP tunneling)](#connect-http-tunneling)
@@ -144,7 +144,7 @@ Behavior summary
   will emit `100 Continue` if the request proceeds to body reading. Detection recognizes `100-continue` even when
   it appears in a comma-separated `Expect` header list and tolerates surrounding whitespace per the RFC.
 - For expectation tokens other than `100-continue` aeronet exposes an opt-in `ExpectationHandler` API (see
-  `HttpServer::setExpectationHandler` in `http-server.hpp`). When present, the handler is invoked with the
+  `SingleHttpServer::setExpectationHandler` in `http-server.hpp`). When present, the handler is invoked with the
   parsed expectation token and may respond with one of:
   - Continue — allow normal request processing
   - Interim — emit an informational 1xx interim response (handler supplies the specific 1xx status)
@@ -161,7 +161,7 @@ Implementation notes & constraints
   an invalid interim status is treated as a server bug and the server will log an error and return **500 Internal Server
   Error** for that request (the request body will not be processed). This validation prevents sending non-1xx interim
   responses.
-- The Expect parsing and handler dispatch is implemented in `HttpServer::handleExpectHeader(...)` (internal helper).
+- The Expect parsing and handler dispatch is implemented in `SingleHttpServer::handleExpectHeader(...)` (internal helper).
 - See unit tests in `tests/http_additional_test.cpp` for example usages and behavior expectations (including mixed
   `Expect` lists containing `100-continue` and custom tokens).
 
@@ -206,7 +206,7 @@ Notes and implementation details
 
 - [x] Single-thread event loop (one server instance)
 - [x] Horizontal scaling via SO_REUSEPORT (multi-reactor)
-- [x] Multi-instance orchestration wrapper (`MultiHttpServer`) (forces `reusePort=true` for >1 threads; aggregated stats; resolved port immediately after construction)
+- [x] Multi-instance orchestration wrapper (`HttpServer` aka `MultiHttpServer`) (forces `reusePort=true` for >1 threads; aggregated stats; resolved port immediately after construction)
 - [x] writev scatter-gather for response header + body
 - [x] Outbound write buffering with EPOLLOUT-driven backpressure
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
@@ -455,7 +455,7 @@ router.setDefault([](const HttpRequest&) {
   return HttpResponse(200, "OK").body(std::string(1024,'A'));
 });
 
-HttpServer server(cfg, std::move(router));
+SingleHttpServer server(cfg, std::move(router));
 ```
 
 ## Multipart/form-data utilities (RFC 7578)
@@ -601,7 +601,7 @@ Router router;
 router.setDefault([](const HttpRequest& req){
   return HttpResponse(200, "OK").body(std::string(req.body()));
 });
-HttpServer server(std::move(serverCfg), std::move(router));
+SingleHttpServer server(std::move(serverCfg), std::move(router));
 ```
 
 Streaming example (switch to inflaters when compressed payloads reach 1 MiB):
@@ -912,7 +912,7 @@ Lifecycle: parse request → build response → determine keep-alive eligibility
 
 ### Graceful drain lifecycle
 
-`HttpServer` exposes a lifecycle state machine to coordinate shutdown:
+`SingleHttpServer` exposes a lifecycle state machine to coordinate shutdown:
 
 | State | Description | Entered via |
 |-------|-------------|-------------|
@@ -925,7 +925,7 @@ Key API points:
 
 - **`beginDrain(std::chrono::milliseconds maxWait = 0)`** stops accepting new connections, keeps existing keep-alive sessions long enough to finish their current response, and injects `Connection: close` so the client does not reuse the socket. When `maxWait` is non-zero, a deadline is armed; any connections still open when it expires are closed immediately. Calling `beginDrain()` again with a shorter timeout shrinks the deadline.
 - **`isDraining()`** reflects whether the server is currently in the draining state. `isRunning()` still reports `true` until the drain completes or a stop occurs.
-- **Wrappers** — `MultiHttpServer::beginDrain()` / `isDraining()` forward to the underlying `HttpServer` instances, enabling the same graceful drain flow when the server runs on background threads or across multiple reactors.
+- **Wrappers** — `HttpServer::beginDrain()` / `isDraining()` forward to the underlying `SingleHttpServer` instances, enabling the same graceful drain flow when the server runs on background threads or across multiple reactors.
 - Draining is restart-friendly: once all connections are gone (or the deadline forces closure) the lifecycle resets to `Idle` and the server can be started again with another `run()`.
 - `stop()` remains the immediate shutdown primitive; it transitions to `Stopping`, force-closes all connections and wakes the event loop right away.
 
@@ -933,7 +933,7 @@ This drain lifecycle allows supervisors to quiesce traffic (e.g., removing an in
 
 #### Signal-driven automatic drain
 
-`aeronet` provides a global signal handler mechanism that coordinates graceful shutdown across all `HttpServer` instances in the process:
+`aeronet` provides a global signal handler mechanism that coordinates graceful shutdown across all `SingleHttpServer` instances in the process:
 
 ```cpp
 #include <aeronet/aeronet.hpp>
@@ -943,14 +943,14 @@ using namespace aeronet;
 // Install process-wide signal handlers for SIGINT/SIGTERM
 SignalHandler::Enable(std::chrono::milliseconds{5000});  // 5s max drain
 
-HttpServer server1(HttpServerConfig{});
-HttpServer server2(HttpServerConfig{});
+SingleHttpServer server1(HttpServerConfig{});
+SingleHttpServer server2(HttpServerConfig{});
 // Both servers will automatically call beginDrain(5s) when SIGINT/SIGTERM is received
 ```
 
 Key characteristics:
 
-- **Process-wide coordination**: `SignalHandler::Enable()` installs `SIGINT` and `SIGTERM` handlers that set a global `sig_atomic_t` flag, visible to all `HttpServer` instances.
+- **Process-wide coordination**: `SignalHandler::Enable()` installs `SIGINT` and `SIGTERM` handlers that set a global `sig_atomic_t` flag, visible to all `SingleHttpServer` instances.
 - **Automatic drain**: Each server's event loop checks `SignalHandler::IsStopRequested()` at the end of every iteration (after lifecycle state checks) and calls `beginDrain(maxDrainPeriod)` if the flag is set.
 - **Thread-safe**: The signal handler only sets an atomic flag; the actual drain logic runs from each server's event loop thread.
 - **Multi-server friendly**: Unlike per-server signal handling (which has races where only the first reader consumes the signal), the global flag ensures all servers in the process see the stop request simultaneously.
@@ -990,7 +990,7 @@ The library exposes two related shutdown controls and they serve different inten
     - Call `stop()` to request immediate termination; the server will close connections promptly.
 
 - Wrapper behavior:
-  - `MultiHttpServer::beginDrain()` forward to their underlying `HttpServer` instances so the same graceful behavior is available for background or multi‑reactor setups. `stop()` continues to request immediate termination on wrappers as before.
+  - `HttpServer::beginDrain()` forward to their underlying `SingleHttpServer` instances so the same graceful behavior is available for background or multi‑reactor setups. `stop()` continues to request immediate termination on wrappers as before.
 
 Recommendation: prefer `beginDrain()` when you intend to quiesce traffic and let outstanding requests complete; use `stop()` when you require immediate termination. If you need a blocking API (wait until drain completes), add a small wait in the supervisor code that observes `isDraining()`/`isRunning()` or joins the server thread — the public API intentionally separates "request" (non‑blocking) from "wait" to keep shutdown control explicit.
 
@@ -1056,7 +1056,7 @@ Unknown headers default to comma merge. Empty values skipped when merging. Disal
 
 ### Global headers
 
-You can define global headers applied to every response of a `HttpServer` via `HttpServerConfig.globalHeaders`. These are appended after any user-set headers in a handler, so you can override them per-response if needed. Useful for consistent security headers (CSP, HSTS, etc). They will not override any header of the same name already set in a response.
+You can define global headers applied to every response of a `SingleHttpServer` via `HttpServerConfig.globalHeaders`. These are appended after any user-set headers in a handler, so you can override them per-response if needed. Useful for consistent security headers (CSP, HSTS, etc). They will not override any header of the same name already set in a response.
 
 Global headers are applied to every response including error responses generated internally by aeronet (400, 413, etc).
 
@@ -1084,7 +1084,7 @@ router.setPath(http::Method::GET, "/users/{id}", [](const HttpRequest& req) {
 
 ## Middleware Pipeline
 
-- **Global hooks** – use `Router::addRequestMiddleware` and `Router::addResponseMiddleware` (or the convenience `HttpServer::add*` wrappers) to install request/response middleware that runs for every request.
+- **Global hooks** – use `Router::addRequestMiddleware` and `Router::addResponseMiddleware` (or the convenience `SingleHttpServer::add*` wrappers) to install request/response middleware that runs for every request.
 - **Per-route hooks** – `PathHandlerEntry::before(RequestMiddleware)` and `::after(ResponseMiddleware)` scope middleware to a specific path registration.
 - **Execution order** – `global pre → route pre → handler → route post → global post`. When a route does not match (404/405/redirect), only the global hooks run; per-route chains are skipped.
 - **Short-circuiting** – returning `MiddlewareResult::ShortCircuit(HttpResponse)` from any pre middleware skips the remaining pre chain and the handler. The produced response is still passed through the post chain so that shared concerns (headers, logging, metrics) execute uniformly.
@@ -1154,10 +1154,12 @@ int main() {
     co_return HttpResponse(200).body("Received " + std::to_string(body.size()) + " bytes");
   });
 
-  HttpServer server(HttpServerConfig{}, std::move(router));
+  SingleHttpServer server(HttpServerConfig{}, std::move(router));
   server.run();
 }
 ```
+
+When a route uses an async handler, request middleware may observe an empty body/trailer map because aggregation now happens in parallel with handler execution; apply validation inside the coroutine if the middleware needs the payload.
 
 #### Awaitables
 
@@ -1209,12 +1211,12 @@ entry.after([](const HttpRequest&, HttpResponse& resp) {
   resp.header("Cache-Control", "no-store");
 });
 
-HttpServer server(HttpServerConfig{}, std::move(router));
+SingleHttpServer server(HttpServerConfig{}, std::move(router));
 ```
 
 ### Middleware Metrics Callback
 
-- `HttpServer::setMiddlewareMetricsCallback(MiddlewareMetricsCallback)` installs an opt-in hook that receives a
+- `SingleHttpServer::setMiddlewareMetricsCallback(MiddlewareMetricsCallback)` installs an opt-in hook that receives a
   `MiddlewareMetrics` record for every middleware invocation. The record captures whether the middleware belongs to the
   global or per-route chain, the execution phase (`Pre` or `Post`), the zero-based index within that chain, whether the
   middleware short-circuited request processing, threw an exception, and how long the call lasted in nanoseconds.
@@ -1310,7 +1312,7 @@ Rationale: Normalize avoids duplicate handler registration while preserving SEO-
 
 - How to retrieve path params from handlers
 
-  - When `HttpServer` dispatches to a handler, it copies routing captures into the `HttpRequest` object. Within
+  - When `SingleHttpServer` dispatches to a handler, it copies routing captures into the `HttpRequest` object. Within
     your handler you can access them via `req.pathParams()` which returns a `flat_hash_map<std::string_view, std::string_view>`.
   - Example:
 
@@ -1339,7 +1341,7 @@ router.setPath(http::Method::GET, "/files/{}/chunk/{}", [](const HttpRequest&) {
 
 ## Construction Model (RAII & Ephemeral Ports)
 
-`HttpServer` binds, configures the listening socket and registers it with epoll inside its constructor (RAII). If you request an ephemeral port (`port = 0`), the kernel-assigned port is immediately available via `server.port()` after construction (no separate setup step).
+`SingleHttpServer` binds, configures the listening socket and registers it with epoll inside its constructor (RAII). If you request an ephemeral port (`port = 0`), the kernel-assigned port is immediately available via `server.port()` after construction (no separate setup step).
 
 Why RAII:
 
@@ -1351,23 +1353,23 @@ Ephemeral pattern:
 
 ```cpp
 HttpServerConfig cfg; // port left 0 => ephemeral
-HttpServer server(cfg);
+SingleHttpServer server(cfg);
 uint16_t actual = server.port();
 ```
 
-Restart semantics: A single `HttpServer` is single-shot (cannot be restarted in place). Use `MultiHttpServer` for orchestrated restart cycles or construct a new instance. (Simpler, avoids re-binding races and epoll re-registration complexity.)
+Restart semantics: Both `SingleHttpServer` and `HttpServer` support restart via `run()` after a prior `stop()` or completed `beginDrain()`. The listening socket and reactor state are rebuilt on each `run()` call, allowing reuse of the same server object across multiple start/stop cycles.
 
 Removed experimental factory: a previous non-throwing `tryCreate` was dropped to keep API surface minimal.
 
 Design trade-offs: Constructor may throw on errors (bind failure, TLS init failure if configured). This is intentional to surface unrecoverable configuration issues early.
 
-### Copy semantics (HttpServer & MultiHttpServer)
+### Copy semantics (SingleHttpServer & MultiHttpServer)
 
-- `HttpServer` supports copy construction and copy assignment while the source instance is fully stopped. Copy assignment automatically calls `stop()` on the destination before duplicating sockets and router state; attempting to copy from a running instance throws `std::logic_error` to avoid duplicating active event loops. When copying bound sockets, ensure the original server either relinquishes the port (call `stop()` or destroy the instance) or has `reusePort=true` so the new copy can bind successfully.
-- `MultiHttpServer` mirrors the same rule: copies are only allowed from a stopped source. Copy construction and assignment rebuild fresh `HttpServer` instances carrying the same port, router, and thread count while wiring them to a new lifecycle tracker. Running sources throw `std::logic_error` to prevent duplicating active thread pools.
+- `SingleHttpServer` supports copy construction and copy assignment while the source instance is fully stopped. Copy assignment automatically calls `stop()` on the destination before duplicating sockets and router state; attempting to copy from a running instance throws `std::logic_error` to avoid duplicating active event loops. When copying bound sockets, ensure the original server either relinquishes the port (call `stop()` or destroy the instance) or has `reusePort=true` so the new copy can bind successfully.
+- `MultiHttpServer` mirrors the same rule: copies are only allowed from a stopped source. Copy construction and assignment rebuild fresh `SingleHttpServer` instances carrying the same port, router, and thread count while wiring them to a new lifecycle tracker. Running sources throw `std::logic_error` to prevent duplicating active thread pools.
 - Tests: see `tests/http-server-lifecycle_test.cpp` (`HttpServerCopy.*`) and `tests/multi-http-server_test.cpp` (`MultiHttpServerCopy.*`).
 
-## MultiHttpServer lifecycle
+## HttpServer lifecycle
 
 Manages N reactors via `SO_REUSEPORT`.
 
@@ -1380,14 +1382,14 @@ Manages N reactors via `SO_REUSEPORT`.
 - Movable even while running (vector storage stable).
 - Graceful drain propagates: `beginDrain(maxWait)` stops all accept loops, existing keep-alive connections receive `Connection: close`, and `isDraining()` reports when any underlying instance is still draining.
 
-### MultiHttpServer restart example
+### HttpServer restart example
 
 ```cpp
 Router router;
 router.setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("hi\n"); });
 HttpServerConfig cfg;
-cfg.reusePort = true;
-MultiHttpServer multi(cfg, std::move(router), 4);
+cfg.nbThreads = 4;
+HttpServer multi(cfg, std::move(router));
 // Use `start()` as a void convenience which manages an internal handle. Use `startDetached()` if you need
 // an `AsyncHandle` to control or inspect the background threads explicitly.
 multi.start();
@@ -1397,9 +1399,9 @@ multi.start();
 
 ### Port reuse semantics
 
-The library interprets this boolean slightly differently depending on whether you use a single `HttpServer` or the `MultiHttpServer` wrapper to make the behaviour both safe and intuitive:
+The library interprets this boolean slightly differently depending on whether you use a single `SingleHttpServer` or the `MultiHttpServer` wrapper to make the behaviour both safe and intuitive:
 
-- Single `HttpServer`:
+- Single `SingleHttpServer`:
   - `reusePort = false` creates the listening socket without that reuse option.
   - `reusePort = true` requests the kernel-level reuse option (platform dependent: SO_REUSEPORT/SO_REUSEADDR) when creating the listening socket for that server instance.
 
@@ -1470,7 +1472,7 @@ probesCfg.withReadinessPath("/readinessz");
 probesCfg.withStartupPath("/startupz");
 
 cfg.withBuiltinProbes(std::move(probesCfg));
-HttpServer server(std::move(cfg));
+SingleHttpServer server(std::move(cfg));
 ```
 
 ### Testing
@@ -1523,7 +1525,7 @@ cfg.withPort(8443)
    .withTlsMinVersion("TLS1.2")
    .withTlsMaxVersion("TLS1.3")
    .withTlsHandshakeTimeout(std::chrono::milliseconds(750));
-HttpServer server(cfg);
+SingleHttpServer server(cfg);
 ```
 
 Strict ALPN: if enabled and no protocol overlap, handshake aborts (connection closed, metric incremented).
@@ -1561,7 +1563,7 @@ HttpServerConfig cfg;
 cfg.withPort(8443)
    .withTlsCertKey("/path/to/fullchain.pem", "/path/to/privkey.pem")
    .withTlsKtlsMode(TLSConfig::KtlsMode::Auto);  // or Enabled / Forced / Disabled
-HttpServer server(cfg);
+SingleHttpServer server(cfg);
 ```
 
 1. Optionally consult `server.stats()` to monitor `ktlsSendEnabledConnections`, `ktlsSendEnableFallbacks`,
@@ -1648,7 +1650,7 @@ cfg.tls.withTlsSessionTickets(true)
        .withTlsSessionTicketLifetime(std::chrono::hours{2})
        .withTlsSessionTicketMaxKeys(4);
 
-HttpServer server(std::move(cfg));
+SingleHttpServer server(std::move(cfg));
 ```
 
 This configuration:
@@ -1672,7 +1674,7 @@ cfg.withPort(8443)
    .withTlsCertKey("cert.pem", "key.pem");
 cfg.tls.withTlsSessionTicketKey(keyData);  // Enables tickets + loads key
 
-HttpServer server(std::move(cfg));
+SingleHttpServer server(std::move(cfg));
 ```
 
 When a static key is provided:
@@ -1771,7 +1773,7 @@ router.setDefault([](const HttpRequest&, HttpResponseWriter& w){
   w.end();
 });
 
-HttpServer server(HttpServerConfig{}.withPort(8080), std::move(router));
+SingleHttpServer server(HttpServerConfig{}.withPort(8080), std::move(router));
 ```
 
 Testing: see `tests/http_streaming.cpp`.
@@ -1785,9 +1787,8 @@ Testing: see `tests/http_streaming.cpp`.
 
 ## Static File Handler (RFC 7233 / RFC 7232)
 
-`StaticFileHandler` provides a hardened helper for serving filesystem trees while respecting HTTP caching and range
-semantics. The handler is designed to plug into the existing routing API: it is an invocable object that accepts an
-`HttpRequest` and returns an `HttpResponse`, so it works with `HttpServer` and `MultiHttpServer` exactly like any other handler.
+`StaticFileHandler` provides a hardened helper for serving filesystem trees while respecting HTTP caching and range semantics.
+The handler is designed to plug into the existing routing API: it is an invocable object that accepts an `HttpRequest` and returns an `HttpResponse`, so it works with `SingleHttpServer` and `MultiHttpServer` exactly like any other handler.
 
 - **Zero-copy transfers**: regular GET requests use `HttpResponse::file()` so plaintext sockets reuse the kernel
   `sendfile(2)` path. TLS endpoints automatically fall back to the buffered write path that aeronet already uses for
@@ -1840,7 +1841,7 @@ int main() {
     return assets(req);
   });
 
-  HttpServer server(std::move(cfg), std::move(router));
+  SingleHttpServer server(std::move(cfg), std::move(router));
 
   server.run();
 }
@@ -1917,7 +1918,7 @@ Testing: `tests/http_streaming_test.cpp` covers precedence, conflicts, HEAD supp
 ### Accessing TLS Metrics
 
 ```cpp
-HttpServer server;
+SingleHttpServer server;
 auto st = server.stats();
 log::info("handshakes={} clientCerts={} alpnStrictMismatches={}\n",
           st.tlsHandshakesSucceeded,
@@ -1962,7 +1963,7 @@ Optional (`AERONET_ENABLE_OPENTELEMETRY`). Provides distributed tracing and metr
 
 ### Architecture
 
-**Instance-based telemetry.** Each `HttpServer` owns its own `TelemetryContext` instance. No global singletons or static state.
+**Instance-based telemetry.** Each `SingleHttpServer` owns its own `TelemetryContext` instance. No global singletons or static state.
 
 Key design principles:
 
@@ -2114,7 +2115,7 @@ router.setPath(http::Method::GET | http::Method::POST, "/api/data",
 CorsPolicy policy;
 RouterConfig routerConfig;
 routerConfig.withDefaultCorsPolicy(std::move(policy));
-HttpServer server(HttpServerConfig{}, routerConfig);
+SingleHttpServer server(HttpServerConfig{}, routerConfig);
 ```
 
 **Route-specific override:**
@@ -2255,7 +2256,7 @@ int main() {
     return handler;
   }));
 
-  HttpServer server(HttpServerConfig{}.withPort(8080), std::move(router));
+  SingleHttpServer server(HttpServerConfig{}.withPort(8080), std::move(router));
   server.run();
 }
 ```

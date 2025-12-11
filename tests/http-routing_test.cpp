@@ -17,12 +17,12 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/request-task.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -417,9 +417,9 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
 
 TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
   std::mutex metricsMutex;
-  std::vector<HttpServer::MiddlewareMetrics> captured;
+  std::vector<SingleHttpServer::MiddlewareMetrics> captured;
   std::vector<std::string> requestPaths;
-  ts.server.setMiddlewareMetricsCallback([&](const HttpServer::MiddlewareMetrics& metrics) {
+  ts.server.setMiddlewareMetricsCallback([&](const SingleHttpServer::MiddlewareMetrics& metrics) {
     std::scoped_lock lock(metricsMutex);
     captured.push_back(metrics);
     requestPaths.emplace_back(metrics.requestPath);
@@ -443,7 +443,7 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
 
   ts.server.setMiddlewareMetricsCallback({});
 
-  std::vector<HttpServer::MiddlewareMetrics> metrics;
+  std::vector<SingleHttpServer::MiddlewareMetrics> metrics;
   {
     std::scoped_lock lock(metricsMutex);
     metrics = captured;
@@ -451,7 +451,7 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
 
   ASSERT_EQ(metrics.size(), 4U);
 
-  EXPECT_EQ(metrics[0].phase, HttpServer::MiddlewareMetrics::Phase::Pre);
+  EXPECT_EQ(metrics[0].phase, SingleHttpServer::MiddlewareMetrics::Phase::Pre);
   EXPECT_TRUE(metrics[0].isGlobal);
   EXPECT_FALSE(metrics[0].shortCircuited);
   EXPECT_FALSE(metrics[0].threw);
@@ -460,7 +460,7 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
   EXPECT_EQ(metrics[0].method, http::Method::GET);
   EXPECT_EQ(requestPaths[0], "/mw-metrics");
 
-  EXPECT_EQ(metrics[1].phase, HttpServer::MiddlewareMetrics::Phase::Pre);
+  EXPECT_EQ(metrics[1].phase, SingleHttpServer::MiddlewareMetrics::Phase::Pre);
   EXPECT_FALSE(metrics[1].isGlobal);
   EXPECT_FALSE(metrics[1].shortCircuited);
   EXPECT_FALSE(metrics[1].threw);
@@ -468,14 +468,14 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
   EXPECT_EQ(metrics[1].index, 0U);
   EXPECT_EQ(requestPaths[1], "/mw-metrics");
 
-  EXPECT_EQ(metrics[2].phase, HttpServer::MiddlewareMetrics::Phase::Post);
+  EXPECT_EQ(metrics[2].phase, SingleHttpServer::MiddlewareMetrics::Phase::Post);
   EXPECT_FALSE(metrics[2].isGlobal);
   EXPECT_FALSE(metrics[2].shortCircuited);
   EXPECT_FALSE(metrics[2].threw);
   EXPECT_FALSE(metrics[2].streaming);
   EXPECT_EQ(metrics[2].index, 0U);
 
-  EXPECT_EQ(metrics[3].phase, HttpServer::MiddlewareMetrics::Phase::Post);
+  EXPECT_EQ(metrics[3].phase, SingleHttpServer::MiddlewareMetrics::Phase::Post);
   EXPECT_TRUE(metrics[3].isGlobal);
   EXPECT_FALSE(metrics[3].shortCircuited);
   EXPECT_FALSE(metrics[3].threw);
@@ -485,8 +485,8 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
 
 TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
   std::mutex metricsMutex;
-  std::vector<HttpServer::MiddlewareMetrics> captured;
-  ts.server.setMiddlewareMetricsCallback([&](const HttpServer::MiddlewareMetrics& metrics) {
+  std::vector<SingleHttpServer::MiddlewareMetrics> captured;
+  ts.server.setMiddlewareMetricsCallback([&](const SingleHttpServer::MiddlewareMetrics& metrics) {
     std::scoped_lock lock(metricsMutex);
     captured.push_back(metrics);
   });
@@ -514,29 +514,29 @@ TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
 
   ts.server.setMiddlewareMetricsCallback({});
 
-  std::vector<HttpServer::MiddlewareMetrics> metrics;
+  std::vector<SingleHttpServer::MiddlewareMetrics> metrics;
   {
     std::scoped_lock lock(metricsMutex);
     metrics = captured;
   }
 
   ASSERT_EQ(metrics.size(), 4U);
-  EXPECT_EQ(metrics[0].phase, HttpServer::MiddlewareMetrics::Phase::Pre);
+  EXPECT_EQ(metrics[0].phase, SingleHttpServer::MiddlewareMetrics::Phase::Pre);
   EXPECT_TRUE(metrics[0].isGlobal);
   EXPECT_FALSE(metrics[0].shortCircuited);
   EXPECT_FALSE(metrics[0].streaming);
 
-  EXPECT_EQ(metrics[1].phase, HttpServer::MiddlewareMetrics::Phase::Pre);
+  EXPECT_EQ(metrics[1].phase, SingleHttpServer::MiddlewareMetrics::Phase::Pre);
   EXPECT_FALSE(metrics[1].isGlobal);
   EXPECT_TRUE(metrics[1].shortCircuited);
   EXPECT_FALSE(metrics[1].streaming);
 
-  EXPECT_EQ(metrics[2].phase, HttpServer::MiddlewareMetrics::Phase::Post);
+  EXPECT_EQ(metrics[2].phase, SingleHttpServer::MiddlewareMetrics::Phase::Post);
   EXPECT_FALSE(metrics[2].isGlobal);
   EXPECT_FALSE(metrics[2].shortCircuited);
   EXPECT_FALSE(metrics[2].streaming);
 
-  EXPECT_EQ(metrics[3].phase, HttpServer::MiddlewareMetrics::Phase::Post);
+  EXPECT_EQ(metrics[3].phase, SingleHttpServer::MiddlewareMetrics::Phase::Post);
   EXPECT_TRUE(metrics[3].isGlobal);
   EXPECT_FALSE(metrics[3].shortCircuited);
   EXPECT_FALSE(metrics[3].streaming);
@@ -544,9 +544,9 @@ TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
 
 TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
   std::mutex metricsMutex;
-  std::vector<HttpServer::MiddlewareMetrics> captured;
+  std::vector<SingleHttpServer::MiddlewareMetrics> captured;
   std::vector<std::string> requestPaths;
-  ts.server.setMiddlewareMetricsCallback([&](const HttpServer::MiddlewareMetrics& metrics) {
+  ts.server.setMiddlewareMetricsCallback([&](const SingleHttpServer::MiddlewareMetrics& metrics) {
     std::scoped_lock lock(metricsMutex);
     captured.push_back(metrics);
     requestPaths.emplace_back(metrics.requestPath);
@@ -572,7 +572,7 @@ TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
 
   ts.server.setMiddlewareMetricsCallback({});
 
-  std::vector<HttpServer::MiddlewareMetrics> metrics;
+  std::vector<SingleHttpServer::MiddlewareMetrics> metrics;
   {
     std::scoped_lock lock(metricsMutex);
     metrics = captured;

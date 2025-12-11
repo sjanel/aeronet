@@ -12,9 +12,9 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -257,13 +257,13 @@ TEST(HttpExpectation, MultipleTokensWithUnknownShouldReturn417) {
 TEST(HttpExpectation, HandlerCanEmit102Interim) {
   // Register handler that emits 102 Processing for token "102-processing"
   ts.server.setExpectationHandler([](const HttpRequest& /*req*/, std::string_view token) {
-    HttpServer::ExpectationResult res;
+    SingleHttpServer::ExpectationResult res;
     if (token == "102-processing") {
-      res.kind = HttpServer::ExpectationResultKind::Interim;
+      res.kind = SingleHttpServer::ExpectationResultKind::Interim;
       res.interimStatus = 102;
       return res;
     }
-    res.kind = HttpServer::ExpectationResultKind::Continue;
+    res.kind = SingleHttpServer::ExpectationResultKind::Continue;
     return res;
   });
 
@@ -287,13 +287,13 @@ TEST(HttpExpectation, HandlerCanEmit102Interim) {
 TEST(HttpExpectation, HandlerInvalidInterimStatusReturns500) {
   // Handler emits an invalid interim status (not 1xx)
   ts.server.setExpectationHandler([](const HttpRequest& /*req*/, std::string_view token) {
-    HttpServer::ExpectationResult res;
+    SingleHttpServer::ExpectationResult res;
     if (token == "bad-interim") {
-      res.kind = HttpServer::ExpectationResultKind::Interim;
+      res.kind = SingleHttpServer::ExpectationResultKind::Interim;
       res.interimStatus = 250;  // invalid: not 1xx
       return res;
     }
-    res.kind = HttpServer::ExpectationResultKind::Continue;
+    res.kind = SingleHttpServer::ExpectationResultKind::Continue;
     return res;
   });
 
@@ -322,8 +322,8 @@ TEST(HttpExpectation, HandlerThrowsReturns500AndSkipsBody) {
     if (token == "throws") {
       throw std::runtime_error("boom");
     }
-    HttpServer::ExpectationResult res;
-    res.kind = HttpServer::ExpectationResultKind::Continue;
+    SingleHttpServer::ExpectationResult res;
+    res.kind = SingleHttpServer::ExpectationResultKind::Continue;
     return res;
   });
 
@@ -349,15 +349,15 @@ TEST(HttpExpectation, HandlerThrowsReturns500AndSkipsBody) {
 TEST(HttpExpectation, HandlerFinalResponseSkipsBody) {
   // Handler returns a final response immediately
   ts.server.setExpectationHandler([](const HttpRequest& /*req*/, std::string_view token) {
-    HttpServer::ExpectationResult res;
+    SingleHttpServer::ExpectationResult res;
     if (token == "auth-check") {
-      res.kind = HttpServer::ExpectationResultKind::FinalResponse;
+      res.kind = SingleHttpServer::ExpectationResultKind::FinalResponse;
       HttpResponse hr(403, "Forbidden");
       hr.body("nope");
       res.finalResponse = std::move(hr);
       return res;
     }
-    res.kind = HttpServer::ExpectationResultKind::Continue;
+    res.kind = SingleHttpServer::ExpectationResultKind::Continue;
     return res;
   });
 
@@ -382,12 +382,12 @@ TEST(HttpExpectation, HandlerFinalResponseSkipsBody) {
 TEST(HttpExpectation, Mixed100AndCustomWithHandlerContinue) {
   // Handler accepts custom token and returns Continue
   ts.server.setExpectationHandler([](const HttpRequest& /*req*/, std::string_view token) {
-    HttpServer::ExpectationResult res;
+    SingleHttpServer::ExpectationResult res;
     if (token == "custom-ok") {
-      res.kind = HttpServer::ExpectationResultKind::Continue;
+      res.kind = SingleHttpServer::ExpectationResultKind::Continue;
       return res;
     }
-    res.kind = HttpServer::ExpectationResultKind::Continue;
+    res.kind = SingleHttpServer::ExpectationResultKind::Continue;
     return res;
   });
 
@@ -439,7 +439,7 @@ TEST(HttpHead, MaxRequestsApplied) {
   ASSERT_FALSE(resp.contains("IGNORED"));
 }
 
-TEST(HttpServer, CachedConnectionsTimeout) {
+TEST(SingleHttpServer, CachedConnectionsTimeout) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.withKeepAliveMode(false);
     cfg.withCloseCachedConnectionsTimeout({});

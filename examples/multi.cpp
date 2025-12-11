@@ -20,17 +20,18 @@ int main(int argc, char** argv) {
 
   aeronet::SignalHandler::Enable();
 
+  Router router;
   try {
-    Router router;
     router.setDefault([](const HttpRequest& req) {
-      std::string body("multi reactor response ");
-      body.append(req.path());
-      body.push_back('\n');
-      return HttpResponse(std::move(body));
+      HttpResponse resp(200);
+      resp.appendBody("multi reactor response ");
+      resp.appendBody(req.path());
+      resp.appendBody("\n");
+      return resp;
     });
 
-    MultiHttpServer multi(HttpServerConfig{}.withPort(port).withReusePort(true), std::move(router),
-                          static_cast<uint32_t>(threads));
+    MultiHttpServer multi(HttpServerConfig{}.withPort(port).withNbThreads(static_cast<uint32_t>(threads)),
+                          std::move(router));
 
     multi.run();
     // print stats

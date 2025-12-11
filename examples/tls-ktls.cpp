@@ -29,15 +29,14 @@ int main(int argc, char** argv) {
     aeronet::Router router;
     router.setDefault([](const aeronet::HttpRequest& req) {
       aeronet::HttpResponse resp(aeronet::http::StatusCodeOK);
-      std::string body("Hello from aeronet with kernel TLS!\n");
-      body += "Path: ";
-      body += req.path();
-      body.push_back('\n');
-      resp.body(std::move(body));
+      resp.appendBody("Hello from aeronet with kernel TLS!\n");
+      resp.appendBody("Path: ");
+      resp.appendBody(req.path());
+      resp.appendBody("\n");
       return resp;
     });
 
-    aeronet::HttpServer server(std::move(cfg), std::move(router));
+    aeronet::SingleHttpServer server(std::move(cfg), std::move(router));
 
     server.run();
 

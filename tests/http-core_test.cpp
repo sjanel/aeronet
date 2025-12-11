@@ -19,10 +19,10 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -524,12 +524,12 @@ TEST(HttpServerCopy, CopyConstruct) {
     return resp;
   });
 
-  HttpServer origin(cfg, std::move(router));
+  SingleHttpServer origin(cfg, std::move(router));
 
   auto origPort = origin.port();
 
   // Copy construct while stopped is fine.
-  HttpServer copy(origin);
+  SingleHttpServer copy(origin);
 
   origin.stop();  // ensure we stop listener on the original server to avoid queries reaching this server
 
@@ -539,7 +539,7 @@ TEST(HttpServerCopy, CopyConstruct) {
   std::string resp = test::simpleGet(origPort, "/copy");
   ASSERT_TRUE(resp.contains("ORIG:/copy"));
 
-  EXPECT_THROW(HttpServer{copy}, std::logic_error) << "Copy-constructing from a running server should throw";
+  EXPECT_THROW(SingleHttpServer{copy}, std::logic_error) << "Copy-constructing from a running server should throw";
 }
 
 TEST(HttpServerTelemetry, CounterSentViaTelemetryContext) {
@@ -551,7 +551,7 @@ TEST(HttpServerTelemetry, CounterSentViaTelemetryContext) {
   HttpServerConfig cfg;
   cfg.withTelemetryConfig(std::move(tcfg));
 
-  HttpServer server(cfg);
+  SingleHttpServer server(cfg);
 
   server.telemetryContext().counterAdd("metric", 1);
 
