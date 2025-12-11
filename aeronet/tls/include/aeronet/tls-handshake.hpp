@@ -1,6 +1,6 @@
-// TLS handshake helpers (factored out of HttpServer implementation)
+// TLS handshake helpers (factored out of SingleHttpServer implementation)
 // Provides a free function to extract negotiated parameters and peer certificate subject
-// without depending on HttpServer private internals.
+// without depending on SingleHttpServer private internals.
 #pragma once
 
 #include <openssl/types.h>

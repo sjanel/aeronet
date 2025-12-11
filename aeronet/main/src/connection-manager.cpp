@@ -18,9 +18,9 @@
 #include "aeronet/connection.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "aeronet/transport.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -38,7 +38,7 @@
 
 namespace aeronet {
 
-void HttpServer::sweepIdleConnections() {
+void SingleHttpServer::sweepIdleConnections() {
   // Periodic maintenance of live connections: applies keep-alive timeout (if enabled) and
   // header read timeout (always, regardless of keep-alive enablement). The header read timeout
   // needs a periodic check because a client might send a partial request line then stall; no
@@ -108,7 +108,7 @@ void HttpServer::sweepIdleConnections() {
   _cachedConnections.erase(_cachedConnections.begin(), cutOffIt);
 }
 
-void HttpServer::acceptNewConnections() {
+void SingleHttpServer::acceptNewConnections() {
   while (true) {
     Connection cnx(_listenSocket);
     if (!cnx) {
@@ -133,7 +133,8 @@ void HttpServer::acceptNewConnections() {
 
     auto [cnxIt, inserted] = _activeConnectionsMap.emplace(std::move(cnx), getNewConnectionState());
     if (!inserted) {
-      // This should not happen, if it does, it's probably a bug in the library or a very weird usage of HttpServer.
+      // This should not happen, if it does, it's probably a bug in the library or a very weird usage of
+      // SingleHttpServer.
       log::error("Internal error: accepted connection fd # {} already present in connection map", cnxFd);
       // Close the newly accepted connection immediately to avoid fd leak.
       _eventLoop.del(cnxFd);
@@ -280,7 +281,7 @@ void HttpServer::acceptNewConnections() {
   }
 }
 
-HttpServer::ConnectionMapIt HttpServer::closeConnection(ConnectionMapIt cnxIt) {
+SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMapIt cnxIt) {
   const int cfd = cnxIt->first.fd();
 
   _eventLoop.del(cfd);
@@ -312,7 +313,7 @@ HttpServer::ConnectionMapIt HttpServer::closeConnection(ConnectionMapIt cnxIt) {
   return _activeConnectionsMap.erase(cnxIt);
 }
 
-void HttpServer::handleReadableClient(int fd) {
+void SingleHttpServer::handleReadableClient(int fd) {
   auto cnxIt = _activeConnectionsMap.find(fd);
   if (cnxIt == _activeConnectionsMap.end()) {
     return;
@@ -421,7 +422,7 @@ void HttpServer::handleReadableClient(int fd) {
   }
 }
 
-void HttpServer::handleWritableClient(int fd) {
+void SingleHttpServer::handleWritableClient(int fd) {
   const auto cnxIt = _activeConnectionsMap.find(fd);
   if (cnxIt == _activeConnectionsMap.end()) {
     log::error("Received an invalid fd # {} from the event loop (or already removed?)", fd);
@@ -472,7 +473,7 @@ void HttpServer::handleWritableClient(int fd) {
   }
 }
 
-void HttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
+void SingleHttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   std::size_t bytesReadThisEvent = 0;
   while (true) {

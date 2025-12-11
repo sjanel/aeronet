@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
                    writer.end();
                  });
 
-  aeronet::HttpServer srv(aeronet::HttpServerConfig{}.withPort(port), std::move(router));
+  aeronet::SingleHttpServer srv(aeronet::HttpServerConfig{}.withPort(port), std::move(router));
 
   std::cout << "Serving on port " << srv.port() << " - GET /static or /stream to fetch file: " << path << "\n";
   srv.run();

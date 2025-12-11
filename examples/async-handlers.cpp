@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
     co_return HttpResponse(200).body(msg);
   });
 
-  HttpServer server(HttpServerConfig{}.withPort(port), std::move(router));
+  SingleHttpServer server(HttpServerConfig{}.withPort(port), std::move(router));
 
   std::cout << "Listening on port " << server.port() << "\n";
   std::cout << "Try:\n";

@@ -15,14 +15,15 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/single-http-server.hpp"
 
 namespace aeronet {
 
-HttpServer::BodyDecodeStatus HttpServer::decodeBodyIfReady(ConnectionMapIt cnxIt, bool isChunked, bool expectContinue,
-                                                           std::size_t& consumedBytes) {
+SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeBodyIfReady(ConnectionMapIt cnxIt, bool isChunked,
+                                                                       bool expectContinue,
+                                                                       std::size_t& consumedBytes) {
   consumedBytes = 0;
   if (isChunked) {
     return decodeChunkedBody(cnxIt, expectContinue, consumedBytes);
@@ -30,8 +31,8 @@ HttpServer::BodyDecodeStatus HttpServer::decodeBodyIfReady(ConnectionMapIt cnxIt
   return decodeFixedLengthBody(cnxIt, expectContinue, consumedBytes);
 }
 
-HttpServer::BodyDecodeStatus HttpServer::decodeFixedLengthBody(ConnectionMapIt cnxIt, bool expectContinue,
-                                                               std::size_t& consumedBytes) {
+SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(ConnectionMapIt cnxIt, bool expectContinue,
+                                                                           std::size_t& consumedBytes) {
   ConnectionState& state = *cnxIt->second;
   HttpRequest& request = state.request;
   std::string_view lenViewAll = request.headerValueOrEmpty(http::ContentLength);
@@ -70,8 +71,8 @@ HttpServer::BodyDecodeStatus HttpServer::decodeFixedLengthBody(ConnectionMapIt c
   return BodyDecodeStatus::Ready;
 }
 
-HttpServer::BodyDecodeStatus HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue,
-                                                           std::size_t& consumedBytes) {
+SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue,
+                                                                       std::size_t& consumedBytes) {
   ConnectionState& state = *cnxIt->second;
   HttpRequest& request = state.request;
   if (expectContinue) {
@@ -211,7 +212,7 @@ HttpServer::BodyDecodeStatus HttpServer::decodeChunkedBody(ConnectionMapIt cnxIt
   return BodyDecodeStatus::Ready;
 }
 
-bool HttpServer::parseHeadersUnchecked(HeadersViewMap& headersMap, char* bufferBeg, char* first, char* last) {
+bool SingleHttpServer::parseHeadersUnchecked(HeadersViewMap& headersMap, char* bufferBeg, char* first, char* last) {
   headersMap.clear();
   while (first < last) {
     // Find line end

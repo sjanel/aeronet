@@ -21,8 +21,8 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-server.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/test_util.hpp"
 #include "bench_util.hpp"
@@ -60,7 +60,7 @@ inline constexpr int kMaxConnectionRetries = 5;
 benchutil::PregenPool g_stringPool;
 
 struct AeronetServerRunner {
-  HttpServer server;
+  SingleHttpServer server;
 
   AeronetServerRunner()
       : server([]() {

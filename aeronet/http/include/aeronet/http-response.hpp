@@ -743,7 +743,7 @@ class HttpResponse {
   }
 
  private:
-  friend class HttpServer;
+  friend class SingleHttpServer;
   friend class HttpResponseTest;
   friend class HttpResponseWriter;  // streaming writer needs access to finalize
 

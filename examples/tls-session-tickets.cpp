@@ -79,22 +79,19 @@ int main(int argc, char** argv) {
 
     aeronet::Router router;
     router.setDefault([](const aeronet::HttpRequest& req) {
-      aeronet::HttpResponse resp(aeronet::http::StatusCodeOK);
-      std::string body("Hello from aeronet with TLS session tickets!\n");
-      body += "Path: ";
-      body += req.path();
-      body.push_back('\n');
-      body += "TLS Version: ";
-      body += req.tlsVersion();
-      body.push_back('\n');
-      body += "Cipher: ";
-      body += req.tlsCipher();
-      body.push_back('\n');
-      resp.body(std::move(body));
+      aeronet::HttpResponse resp(256U, aeronet::http::StatusCodeOK);
+      resp.appendBody("Hello from aeronet with TLS session tickets!\n");
+      resp.appendBody("Path: ");
+      resp.appendBody(req.path());
+      resp.appendBody("\nTLS Version: ");
+      resp.appendBody(req.tlsVersion());
+      resp.appendBody("\nCipher: ");
+      resp.appendBody(req.tlsCipher());
+      resp.appendBody("\n");
       return resp;
     });
 
-    aeronet::HttpServer server(std::move(cfg), std::move(router));
+    aeronet::SingleHttpServer server(std::move(cfg), std::move(router));
 
     std::cout << "Server listening on port " << port << "\n";
     std::cout << "\nTest session resumption:\n";

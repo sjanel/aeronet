@@ -138,7 +138,7 @@ function log(s) { document.getElementById('log').textContent += s + '\n'; }
     HttpServerConfig config;
     config.withPort(port);
 
-    HttpServer server(config, std::move(router));
+    SingleHttpServer server(config, std::move(router));
 
     std::cout << "WebSocket echo server listening on port " << server.port() << "\n";
     std::cout << "  HTTP page:     http://localhost:" << server.port() << "/\n";

@@ -31,7 +31,7 @@ int main(int argc, char** argv) {
     aeronet::Router router;
     router.setDefault(aeronet::StaticFileHandler(root, std::move(staticCfg)));
 
-    aeronet::HttpServer server(std::move(cfg), std::move(router));
+    aeronet::SingleHttpServer server(std::move(cfg), std::move(router));
 
     std::cout << "Starting static file example on port: " << server.port() << " serving root: " << root << '\n';
     server.run();

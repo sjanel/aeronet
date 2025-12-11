@@ -1,4 +1,4 @@
-#include "aeronet/http-server.hpp"
+#include "aeronet/single-http-server.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -124,7 +124,7 @@ void RestoreImmutable(HttpServerConfig& cfg, ImmutableConfigSnapshot snapshot) {
 
 }  // namespace
 
-RouterUpdateProxy HttpServer::router() {
+RouterUpdateProxy SingleHttpServer::router() {
   return {[this](std::function<void(Router&)> updater) {
             auto completion = std::make_shared<std::promise<std::exception_ptr>>();
             auto future = completion->get_future();
@@ -136,13 +136,13 @@ RouterUpdateProxy HttpServer::router() {
           [this]() -> Router& { return _router; }};
 }
 
-void HttpServer::setParserErrorCallback(ParserErrorCallback cb) { _parserErrCb = std::move(cb); }
+void SingleHttpServer::setParserErrorCallback(ParserErrorCallback cb) { _parserErrCb = std::move(cb); }
 
-void HttpServer::setMetricsCallback(MetricsCallback cb) { _metricsCb = std::move(cb); }
+void SingleHttpServer::setMetricsCallback(MetricsCallback cb) { _metricsCb = std::move(cb); }
 
-void HttpServer::setExpectationHandler(ExpectationHandler handler) { _expectationHandler = std::move(handler); }
+void SingleHttpServer::setExpectationHandler(ExpectationHandler handler) { _expectationHandler = std::move(handler); }
 
-void HttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater) {
+void SingleHttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater) {
   // Capture snapshot of immutable fields before queuing the update
   auto configSnapshot = CaptureImmutable(_config);
 
@@ -166,10 +166,12 @@ void HttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater
   _lifecycle.wakeupFd.send();
 }
 
-void HttpServer::postRouterUpdate(std::function<void(Router&)> updater) { submitRouterUpdate(std::move(updater), {}); }
+void SingleHttpServer::postRouterUpdate(std::function<void(Router&)> updater) {
+  submitRouterUpdate(std::move(updater), {});
+}
 
-void HttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
-                                    std::shared_ptr<std::promise<std::exception_ptr>> completion) {
+void SingleHttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
+                                          std::shared_ptr<std::promise<std::exception_ptr>> completion) {
   auto wrappedUpdater = [fn = std::move(updater), completionPtr = std::move(completion)](Router& router) mutable {
     try {
       fn(router);
@@ -220,7 +222,7 @@ void RecordModFailure(auto cnxIt, uint32_t events, const char* ctx, auto& stats)
 }
 }  // namespace
 
-bool HttpServer::enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) {
+bool SingleHttpServer::enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) {
   static constexpr EventBmp kEvents = EventIn | EventOut | EventEt;
   ConnectionState* state = cnxIt->second.get();
 
@@ -235,7 +237,7 @@ bool HttpServer::enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) 
   return false;
 }
 
-bool HttpServer::disableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) {
+bool SingleHttpServer::disableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) {
   static constexpr EventBmp kEvents = EventIn | EventEt;
   ConnectionState* state = cnxIt->second.get();
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) {
@@ -246,7 +248,7 @@ bool HttpServer::disableWritableInterest(ConnectionMapIt cnxIt, const char* ctx)
   return false;
 }
 
-bool HttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
+bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
 
   // If we have a protocol handler installed (e.g., WebSocket), use it
@@ -258,7 +260,7 @@ bool HttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
   return processRequestsOnConnection(cnxIt);
 }
 
-bool HttpServer::processWebSocketInput(ConnectionMapIt cnxIt) {
+bool SingleHttpServer::processWebSocketInput(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
 
   if (!state.protocolHandler) {
@@ -323,7 +325,7 @@ bool HttpServer::processWebSocketInput(ConnectionMapIt cnxIt) {
   return state.isAnyCloseRequested();
 }
 
-bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
+bool SingleHttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   if (state.asyncState.active) {
     handleAsyncBodyProgress(cnxIt);
@@ -593,7 +595,7 @@ bool HttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
   return state.isAnyCloseRequested();
 }
 
-bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
+bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   HttpRequest& request = state.request;
   const auto& decompressionConfig = _config.decompression;
@@ -791,9 +793,9 @@ bool HttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
   return true;
 }
 
-bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionMapIt cnxIt,
-                                      std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
-                                      std::span<const ResponseMiddleware> postMiddleware) {
+bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionMapIt cnxIt,
+                                            std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
+                                            std::span<const ResponseMiddleware> postMiddleware) {
   HttpRequest& request = cnxIt->second->request;
   bool wantClose = request.wantClose();
   bool isHead = request.method() == http::Method::HEAD;
@@ -856,10 +858,10 @@ bool HttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, 
   return shouldClose;
 }
 
-bool HttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady,
-                                      bool isChunked, bool expectContinue, std::size_t consumedBytes,
-                                      const CorsPolicy* pCorsPolicy,
-                                      std::span<const ResponseMiddleware> responseMiddleware) {
+bool SingleHttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady,
+                                            bool isChunked, bool expectContinue, std::size_t consumedBytes,
+                                            const CorsPolicy* pCorsPolicy,
+                                            std::span<const ResponseMiddleware> responseMiddleware) {
   ConnectionState& state = *cnxIt->second;
   auto failFast = [&](std::string_view message) {
     if (!bodyReady) {
@@ -921,7 +923,7 @@ bool HttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRequestH
   return asyncState.active;
 }
 
-void HttpServer::resumeAsyncHandler(ConnectionMapIt cnxIt) {
+void SingleHttpServer::resumeAsyncHandler(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   auto& async = state.asyncState;
   if (!async.active || !async.handle) {
@@ -941,7 +943,7 @@ void HttpServer::resumeAsyncHandler(ConnectionMapIt cnxIt) {
   }
 }
 
-void HttpServer::handleAsyncBodyProgress(ConnectionMapIt cnxIt) {
+void SingleHttpServer::handleAsyncBodyProgress(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   auto& async = state.asyncState;
   if (!async.active) {
@@ -983,7 +985,7 @@ void HttpServer::handleAsyncBodyProgress(ConnectionMapIt cnxIt) {
   }
 }
 
-void HttpServer::onAsyncHandlerCompleted(ConnectionMapIt cnxIt) {
+void SingleHttpServer::onAsyncHandlerCompleted(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   auto& async = state.asyncState;
   if (!async.handle) {
@@ -1026,7 +1028,7 @@ void HttpServer::onAsyncHandlerCompleted(ConnectionMapIt cnxIt) {
   state.asyncState.clear();
 }
 
-bool HttpServer::tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt) {
+bool SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   auto& async = state.asyncState;
   if (!async.responsePending || async.needsBody) {
@@ -1041,8 +1043,8 @@ bool HttpServer::tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt) {
   return true;
 }
 
-void HttpServer::emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
-                                    bool reusedConnection) {
+void SingleHttpServer::emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
+                                          bool reusedConnection) {
   if (_metricsCb) {
     RequestMetrics metrics;
     metrics.status = status;
@@ -1055,8 +1057,8 @@ void HttpServer::emitRequestMetrics(const HttpRequest& request, http::StatusCode
   }
 }
 
-void HttpServer::applyResponseMiddleware(const HttpRequest& request, HttpResponse& response,
-                                         std::span<const ResponseMiddleware> routeChain, bool streaming) {
+void SingleHttpServer::applyResponseMiddleware(const HttpRequest& request, HttpResponse& response,
+                                               std::span<const ResponseMiddleware> routeChain, bool streaming) {
   auto runChain = [&](std::span<const ResponseMiddleware> postMiddleware, bool isGlobal) {
     for (uint32_t hookIdx = 0; hookIdx < postMiddleware.size(); ++hookIdx) {
       const auto& middleware = postMiddleware[hookIdx];
@@ -1087,9 +1089,9 @@ void HttpServer::applyResponseMiddleware(const HttpRequest& request, HttpRespons
   runChain(_router.globalResponseMiddleware(), true);
 }
 
-void HttpServer::emitMiddlewareMetrics(const HttpRequest& request, MiddlewareMetrics::Phase phase, bool isGlobal,
-                                       uint32_t index, uint64_t durationNs, bool shortCircuited, bool threw,
-                                       bool streaming) {
+void SingleHttpServer::emitMiddlewareMetrics(const HttpRequest& request, MiddlewareMetrics::Phase phase, bool isGlobal,
+                                             uint32_t index, uint64_t durationNs, bool shortCircuited, bool threw,
+                                             bool streaming) {
   if (_middlewareMetricsCb) {
     MiddlewareMetrics metrics;
     metrics.phase = phase;
@@ -1106,8 +1108,8 @@ void HttpServer::emitMiddlewareMetrics(const HttpRequest& request, MiddlewareMet
   }
 }
 
-tracing::SpanRAII HttpServer::startMiddlewareSpan(const HttpRequest& request, MiddlewareMetrics::Phase phase,
-                                                  bool isGlobal, uint32_t index, bool streaming) {
+tracing::SpanRAII SingleHttpServer::startMiddlewareSpan(const HttpRequest& request, MiddlewareMetrics::Phase phase,
+                                                        bool isGlobal, uint32_t index, bool streaming) {
   tracing::SpanRAII spanScope(_telemetry.createSpan("http.middleware"));
 
   if (spanScope.span) {
@@ -1125,7 +1127,7 @@ tracing::SpanRAII HttpServer::startMiddlewareSpan(const HttpRequest& request, Mi
   return spanScope;
 }
 
-void HttpServer::eventLoop() {
+void SingleHttpServer::eventLoop() {
   sweepIdleConnections();
 
   // Apply any pending config updates posted from other threads. Fast-path: check
@@ -1195,7 +1197,7 @@ void HttpServer::eventLoop() {
   }
 }
 
-void HttpServer::closeListener() noexcept {
+void SingleHttpServer::closeListener() noexcept {
   if (_listenSocket) {
     _eventLoop.del(_listenSocket.fd());
     _listenSocket.close();
@@ -1204,7 +1206,7 @@ void HttpServer::closeListener() noexcept {
   }
 }
 
-void HttpServer::closeAllConnections(bool immediate) {
+void SingleHttpServer::closeAllConnections(bool immediate) {
   for (auto it = _activeConnectionsMap.begin(); it != _activeConnectionsMap.end();) {
     if (immediate) {
       it = closeConnection(it);
@@ -1216,7 +1218,7 @@ void HttpServer::closeAllConnections(bool immediate) {
 }
 
 #if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
-void HttpServer::maybeEnableKtlsSend(ConnectionState& state, TlsTransport& transport, int fd) {
+void SingleHttpServer::maybeEnableKtlsSend(ConnectionState& state, TlsTransport& transport, int fd) {
   if (state.ktlsSendAttempted || _config.tls.ktlsMode == TLSConfig::KtlsMode::Disabled) {
     state.ktlsSendAttempted = true;
     return;
@@ -1291,7 +1293,7 @@ void HttpServer::maybeEnableKtlsSend(ConnectionState& state, TlsTransport& trans
 }
 #endif
 
-ServerStats HttpServer::stats() const {
+ServerStats SingleHttpServer::stats() const {
   ServerStats statsOut;
   statsOut.totalBytesQueued = _stats.totalBytesQueued;
   statsOut.totalBytesWrittenImmediate = _stats.totalBytesWrittenImmediate;
@@ -1330,8 +1332,8 @@ ServerStats HttpServer::stats() const {
   return statsOut;
 }
 
-void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, bool immediate,
-                                 std::string_view body) {
+void SingleHttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, bool immediate,
+                                       std::string_view body) {
   queueData(cnxIt, HttpResponseData(BuildSimpleError(statusCode, _config.globalHeaders, body)));
 
   if (_parserErrCb) {
@@ -1352,7 +1354,8 @@ void HttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusC
   cnxIt->second->request.end(statusCode);
 }
 
-bool HttpServer::handleExpectHeader(ConnectionMapIt cnxIt, const CorsPolicy* pCorsPolicy, bool& found100Continue) {
+bool SingleHttpServer::handleExpectHeader(ConnectionMapIt cnxIt, const CorsPolicy* pCorsPolicy,
+                                          bool& found100Continue) {
   HttpRequest& request = cnxIt->second->request;
   const std::string_view expectHeader = request.headerValueOrEmpty(http::Expect);
   const std::size_t headerEnd = request.headSpanSize();
@@ -1477,7 +1480,7 @@ void ApplyPendingUpdates(std::mutex& mutex, auto& vec, std::atomic<bool>& flag, 
 
 }  // namespace
 
-void HttpServer::applyPendingUpdates() {
+void SingleHttpServer::applyPendingUpdates() {
   if (_hasPendingConfigUpdates.load(std::memory_order_acquire)) {
     ApplyPendingUpdates(_updateLock, _pendingConfigUpdates, _hasPendingConfigUpdates, _config, "config");
 
@@ -1494,8 +1497,8 @@ void HttpServer::applyPendingUpdates() {
   }
 }
 
-bool HttpServer::runPreChain(HttpRequest& request, bool willStream, std::span<const RequestMiddleware> chain,
-                             HttpResponse& out, bool isGlobal) {
+bool SingleHttpServer::runPreChain(HttpRequest& request, bool willStream, std::span<const RequestMiddleware> chain,
+                                   HttpResponse& out, bool isGlobal) {
   for (uint32_t idx = 0; idx < chain.size(); ++idx) {
     const auto& middleware = chain[idx];
     const auto start = std::chrono::steady_clock::now();
@@ -1529,7 +1532,7 @@ bool HttpServer::runPreChain(HttpRequest& request, bool willStream, std::span<co
   return false;
 }
 
-std::unique_ptr<ConnectionState> HttpServer::getNewConnectionState() {
+std::unique_ptr<ConnectionState> SingleHttpServer::getNewConnectionState() {
   if (!_cachedConnections.empty()) {
     // Reuse a cached ConnectionState object
     auto statePtr = std::move(_cachedConnections.back());

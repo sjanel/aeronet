@@ -105,6 +105,7 @@ int main(int argc, char* argv[]) {
 
   HttpServerConfig config;
   config.port = benchCfg.port;
+  config.nbThreads = benchCfg.numThreads;
   config.maxRequestsPerConnection = std::numeric_limits<uint32_t>::max();
   config.maxHeaderBytes = 256UL * 1024;  // 256KB headers for stress tests
   config.maxBodyBytes = 64UL << 20;      // 64MB bodies for large body tests
@@ -313,7 +314,7 @@ int main(int argc, char* argv[]) {
 
   SignalHandler::Enable();
 
-  MultiHttpServer server(std::move(config), std::move(router), static_cast<uint32_t>(benchCfg.numThreads));
+  HttpServer server(std::move(config), std::move(router));
 
   server.run();  // Blocking call - will return on SIGINT/SIGTERM
 

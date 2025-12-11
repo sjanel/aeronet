@@ -1,7 +1,7 @@
 // aeronet Umbrella Header
 //
 // Include this single header to pull in the core public HTTP server API:
-//   - Server types (HttpServer / MultiHttpServer)
+//   - Server types (SingleHttpServer / MultiHttpServer)
 //   - Configuration types (HttpServerConfig, CompressionConfig, Encoding, etc)
 //   - Request / Response primitives (HttpRequest, HttpResponse, HttpResponseWriter)
 //   - HTTP enums & helpers (methods, method sets, status codes, version)
@@ -31,7 +31,7 @@
 //      router.setDefault([](const HttpRequest& req){
 //         return HttpResponse(200, "OK").body("hi\n");
 //      });
-//      HttpServer server(HttpServerConfig{}.withPort(0), std::move(router));
+//      SingleHttpServer server(HttpServerConfig{}.withPort(0), std::move(router));
 //      server.run();
 //    }
 //
@@ -45,6 +45,7 @@
 #include "aeronet/http-server.hpp"          // IWYU pragma: export
 #include "aeronet/multi-http-server.hpp"    // IWYU pragma: export
 #include "aeronet/router.hpp"               // IWYU pragma: export
+#include "aeronet/single-http-server.hpp"   // IWYU pragma: export
 #include "aeronet/static-file-handler.hpp"  // IWYU pragma: export
 #include "aeronet/websocket-handler.hpp"    // IWYU pragma: export
 
