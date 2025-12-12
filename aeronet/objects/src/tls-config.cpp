@@ -38,15 +38,11 @@ void TLSConfig::validate() const {
   // If TLS config is present we require a cert and a key supplied (either file or in-memory PEM)
   const bool hasCert = !certFile().empty() || !certPem().empty();
   const bool hasKey = !keyFile().empty() || !keyPem().empty();
-
-  if (!hasCert && !hasKey) {
-    throw std::invalid_argument("TLS configured but no certificate/key provided");
+  if (!hasCert) {
+    throw std::invalid_argument("TLS configured: certificate missing");
   }
-  if (hasCert && !hasKey) {
-    throw std::invalid_argument("TLS configured: certificate present but private key missing");
-  }
-  if (hasKey && !hasCert) {
-    throw std::invalid_argument("TLS configured: private key present but certificate missing");
+  if (!hasKey) {
+    throw std::invalid_argument("TLS configured: private key missing");
   }
 
   if (requireClientCert && trustedClientCertsPem().empty()) {

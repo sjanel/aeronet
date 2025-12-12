@@ -64,6 +64,12 @@ TEST(HttpServerConfigTest, InvalidGlobalHeaderShouldThrow2) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
+TEST(HttpServerConfigTest, InvalidGlobalHeaderShouldThrow3) {
+  HttpServerConfig config;
+  config.globalHeaders.append("X-Custom: value\x7F");  // DEL control char
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
 TEST(HttpServerConfigTest, TooManyGlobalHeaders1) {
   HttpServerConfig config;
   std::vector<http::Header> headers;
