@@ -347,9 +347,6 @@ struct HttpServerConfig {
   // Set the telemetry configuration for this server instance
   HttpServerConfig& withTelemetryConfig(TelemetryConfig cfg);
 
-  // Backward-compatible alias. Prefer withTelemetryConfig().
-  HttpServerConfig& withOtelConfig(TelemetryConfig cfg) { return withTelemetryConfig(std::move(cfg)); }
-
   // Configure adaptive read chunk sizing (two tier). Returns *this.
   HttpServerConfig& withReadChunkStrategy(std::size_t initialBytes, std::size_t bodyBytes);
 
