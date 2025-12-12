@@ -97,6 +97,12 @@ TEST(EventFdTest, ConstructorThrowsWhenKernelFails) {
   EXPECT_THROW(EventFd(), std::system_error);
 }
 
+TEST(EventFdTest, SuccessfulSend) {
+  EventFd fd;
+  EventfdHookGuard guard;
+  fd.send();
+}
+
 TEST(EventFdTest, SendHandlesEagainWithoutErrorLog) {
   EventFd fd;
   EventfdHookGuard guard;
@@ -104,14 +110,27 @@ TEST(EventFdTest, SendHandlesEagainWithoutErrorLog) {
   fd.send();
 }
 
-TEST(EventFdTest, SendLogsFatalErrors) {
+TEST(EventFdTest, SendLogsErrors) {
   EventFd fd;
   EventfdHookGuard guard;
   SetWriteActions({EventfdErr(EIO)});
   fd.send();
 }
 
-TEST(EventFdTest, ReadHandlesFailureGracefully) {
+TEST(EventFdTest, SuccessfulRead) {
+  EventFd fd;
+  EventfdHookGuard guard;
+  fd.read();
+}
+
+TEST(EventFdTest, ReadHandlesEagainWithoutErrorLog) {
+  EventFd fd;
+  EventfdHookGuard guard;
+  SetReadActions({EventfdErr(EAGAIN)});
+  fd.read();
+}
+
+TEST(EventFdTest, ReadLogsErrors) {
   EventFd fd;
   EventfdHookGuard guard;
   SetReadActions({EventfdErr(EIO)});

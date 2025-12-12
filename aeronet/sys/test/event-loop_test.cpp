@@ -197,6 +197,8 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
 
   EXPECT_TRUE(loop.add(EventLoop::EventFd{readEnd.fd(), EventIn}));  // valid add
   EXPECT_FALSE(loop.add(EventLoop::EventFd{-1, EventIn}));           // invalid add; should log and return false
+  EXPECT_THROW(loop.addOrThrow(EventLoop::EventFd{-1, EventIn}),
+               std::system_error);  // invalid addOrThrow; should throw
 
   EXPECT_FALSE(loop.mod(EventLoop::EventFd{-1, EventIn}));  // invalid mod; should log and return false
 }
@@ -206,6 +208,11 @@ TEST(EventLoopTest, MoveConstructorAndAssignment) {
   // Move-construct loopB from loopA
   EventLoop loopB(std::move(loopA));
   // loopB should have non-zero capacity and loopA should be in a valid but unspecified state
+  EXPECT_GE(loopB.capacity(), 1U);
+
+  // self move assign should do nothing
+  auto& loopBBis = loopB;
+  loopB = std::move(loopBBis);
   EXPECT_GE(loopB.capacity(), 1U);
 
   // Move-assign loopC from loopB

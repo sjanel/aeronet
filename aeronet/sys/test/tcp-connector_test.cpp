@@ -14,11 +14,13 @@
 #include <initializer_list>
 #include <mutex>
 #include <optional>
-#include <string>
+#include <span>
 #include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include "aeronet/raw-chars.hpp"
 
 namespace {
 
@@ -177,12 +179,12 @@ class AddrinfoOverrideGuard {
 };
 
 struct HostPortBuffer {
-  std::string storage;
-  std::string_view host;
-  std::string_view port;
+  aeronet::RawChars storage;
+  std::span<char> host;
+  std::span<char> port;
 };
 
-[[nodiscard]] HostPortBuffer MakeHostPortBuffer(const std::string &host, const std::string &port) {
+[[nodiscard]] HostPortBuffer MakeHostPortBuffer(std::string_view host, std::string_view port) {
   HostPortBuffer buffer;
   buffer.storage.reserve(host.size() + port.size() + 2);
   buffer.storage.append(host);
@@ -190,8 +192,8 @@ struct HostPortBuffer {
   const std::size_t portOffset = buffer.storage.size();
   buffer.storage.append(port);
   buffer.storage.push_back('\0');
-  buffer.host = std::string_view(buffer.storage.data(), host.size());
-  buffer.port = std::string_view(buffer.storage.data() + portOffset, port.size());
+  buffer.host = std::span<char>(buffer.storage.data(), host.size());
+  buffer.port = std::span<char>(buffer.storage.data() + portOffset, port.size());
   return buffer;
 }
 
@@ -317,7 +319,7 @@ TEST(TcpConnectorTest, ResolutionFailureMarksFailure) {
   HookGuard guard;
   auto override = AddrinfoOverrideGuard::WithError(EAI_FAIL);
   auto buffer = MakeHostPortBuffer("invalid-host", "8080");
-  ConnectResult result = ConnectTCP(buffer.storage.data(), buffer.host, buffer.port, AF_UNSPEC);
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC);
   EXPECT_TRUE(result.failure);
   EXPECT_FALSE(result.connectPending);
   EXPECT_FALSE(result.cnx);
@@ -328,7 +330,18 @@ TEST(TcpConnectorTest, SocketEmfileStopsIteration) {
   AddrinfoOverrideGuard override({MakeLoopbackEntry(9)});
   SetSocketErrorSequence({EMFILE});
   auto buffer = MakeHostPortBuffer("loopback", "9");
-  ConnectResult result = ConnectTCP(buffer.storage.data(), buffer.host, buffer.port, AF_UNSPEC);
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC);
+  EXPECT_TRUE(result.failure);
+  EXPECT_FALSE(result.connectPending);
+  EXPECT_FALSE(result.cnx);
+}
+
+TEST(TcpConnectorTest, SocketEnfileStopsIteration) {
+  HookGuard guard;
+  AddrinfoOverrideGuard override({MakeLoopbackEntry(9)});
+  SetSocketErrorSequence({ENFILE});
+  auto buffer = MakeHostPortBuffer("loopback", "9");
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC);
   EXPECT_TRUE(result.failure);
   EXPECT_FALSE(result.connectPending);
   EXPECT_FALSE(result.cnx);
@@ -340,7 +353,7 @@ TEST(TcpConnectorTest, SocketErrorContinuesToNextAddress) {
   SetSocketErrorSequence({EACCES});
   SetConnectActionSequence({ConnectErr(ECONNREFUSED)});
   auto buffer = MakeHostPortBuffer("loopback", "10000");
-  ConnectResult result = ConnectTCP(buffer.storage.data(), buffer.host, buffer.port, AF_UNSPEC);
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC);
   EXPECT_TRUE(result.failure);
   EXPECT_FALSE(result.connectPending);
   if (result.cnx) {
@@ -353,7 +366,7 @@ TEST(TcpConnectorTest, ConnectSucceedsImmediately) {
   AddrinfoOverrideGuard override({MakeLoopbackEntry(15000)});
   SetConnectActionSequence({ConnectSuccess()});
   auto buffer = MakeHostPortBuffer("127.0.0.1", "15000");
-  ConnectResult result = ConnectTCP(buffer.storage.data(), buffer.host, buffer.port, AF_INET);
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_INET);
   EXPECT_FALSE(result.failure);
   EXPECT_FALSE(result.connectPending);
   ASSERT_TRUE(result.cnx);
@@ -365,7 +378,19 @@ TEST(TcpConnectorTest, ConnectReportsPendingWhenInProgress) {
   AddrinfoOverrideGuard override({MakeLoopbackEntry(11000)});
   SetConnectActionSequence({ConnectErr(EINPROGRESS)});
   auto buffer = MakeHostPortBuffer("loopback", "11000");
-  ConnectResult result = ConnectTCP(buffer.storage.data(), buffer.host, buffer.port, AF_UNSPEC);
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC);
+  EXPECT_FALSE(result.failure);
+  EXPECT_TRUE(result.connectPending);
+  ASSERT_TRUE(result.cnx);
+  result.cnx.close();
+}
+
+TEST(TcpConnectorTest, ConnectReportsPendingWhenAlready) {
+  HookGuard guard;
+  AddrinfoOverrideGuard override({MakeLoopbackEntry(11111)});
+  SetConnectActionSequence({ConnectErr(EALREADY)});
+  auto buffer = MakeHostPortBuffer("loopback", "11111");
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC);
   EXPECT_FALSE(result.failure);
   EXPECT_TRUE(result.connectPending);
   ASSERT_TRUE(result.cnx);
@@ -377,7 +402,7 @@ TEST(TcpConnectorTest, ConnectRetriesAfterEintrAndSucceeds) {
   AddrinfoOverrideGuard override({MakeLoopbackEntry(16000), MakeLoopbackEntry(16001)});
   SetConnectActionSequence({ConnectErr(EINTR), ConnectSuccess()});
   auto buffer = MakeHostPortBuffer("127.0.0.1", "16000");
-  ConnectResult result = ConnectTCP(buffer.storage.data(), buffer.host, buffer.port, AF_UNSPEC);
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC);
   EXPECT_FALSE(result.failure);
   EXPECT_FALSE(result.connectPending);
   ASSERT_TRUE(result.cnx);
@@ -389,7 +414,7 @@ TEST(TcpConnectorTest, ConnectFailureSetsFailureFlag) {
   AddrinfoOverrideGuard override({MakeLoopbackEntry(12000)});
   SetConnectActionSequence({ConnectErr(ECONNREFUSED)});
   auto buffer = MakeHostPortBuffer("loopback", "12000");
-  ConnectResult result = ConnectTCP(buffer.storage.data(), buffer.host, buffer.port, AF_UNSPEC);
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC);
   EXPECT_TRUE(result.failure);
   EXPECT_FALSE(result.connectPending);
   if (result.cnx) {

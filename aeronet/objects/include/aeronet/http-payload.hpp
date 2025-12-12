@@ -181,7 +181,7 @@ class HttpPayload {
           } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
             // switch to RawChars to simplify appending
             auto beg = reinterpret_cast<const char*>(val.first.get());
-            _data = RawChars(beg, beg + val.second);
+            _data = RawChars(beg, val.second);
           }
         },
         _data);

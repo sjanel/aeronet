@@ -14,6 +14,8 @@
 
 namespace aeronet {
 
+static_assert(EAGAIN == EWOULDBLOCK, "Add handling for EWOULDBLOCK if different from EAGAIN");
+
 namespace {
 int ComputeConnectionFd(int socketFd) {
   sockaddr_in in_addr{};
@@ -21,7 +23,7 @@ int ComputeConnectionFd(int socketFd) {
   int fd = ::accept4(socketFd, reinterpret_cast<sockaddr*>(&in_addr), &in_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
   if (fd == -1) [[unlikely]] {
     const auto savedErr = errno;  // capture errno before any other call
-    if (savedErr == EAGAIN || savedErr == EWOULDBLOCK) {
+    if (savedErr == EAGAIN) {
       log::trace("Connection accept would block: {} - this is expected if no pending connections",
                  std::strerror(savedErr));
     } else {

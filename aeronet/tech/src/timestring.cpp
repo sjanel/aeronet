@@ -38,9 +38,9 @@ SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
 
   const auto* begSuffix = begPtr + 10;
 
-  if (sz >= 7) [[likely]] {
+  if (sz >= 7) {
     month = std::chrono::month(static_cast<unsigned>(read2(begPtr + 5)));
-    if (sz >= 10) [[likely]] {
+    if (sz >= 10) {
       day = std::chrono::day(static_cast<unsigned>(read2(begPtr + 8)));
       if (sz >= 13) {
         hours = static_cast<uint8_t>(read2(begPtr + 11));

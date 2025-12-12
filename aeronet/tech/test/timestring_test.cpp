@@ -250,6 +250,11 @@ TEST_F(StringToTimeISO8601UTCTest, ThrowsOnEmptyString) {
   EXPECT_THROW(StringToTimeISO8601UTC(""), std::invalid_argument);
 }
 
+TEST_F(StringToTimeISO8601UTCTest, EdgeCases) {
+  EXPECT_EQ(StringToTimeISO8601UTC("2025"), StringToTimeISO8601UTC("2025-"));
+  EXPECT_EQ(StringToTimeISO8601UTC("2025-01-01"), StringToTimeISO8601UTC("2025"));
+}
+
 TEST_F(StringToTimeISO8601UTCTest, ThrowsOnInvalidMonth) {
   EXPECT_THROW(StringToTimeISO8601UTC("2025-13-01T12:34:56Z"), std::invalid_argument);
 }

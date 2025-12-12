@@ -18,7 +18,7 @@ int main(int argc, char** argv) {
     threads = std::stoi(argv[2]);
   }
 
-  aeronet::SignalHandler::Enable();
+  SignalHandler::Enable();
 
   Router router;
   try {

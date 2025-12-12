@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -12,21 +13,21 @@
 using namespace aeronet;
 
 TEST(ConcatenatedStrings, BasicAccess) {
-  StaticConcatenatedStrings<3, uint8_t> cs({"alpn", "cipher", "tls1.3"});
+  StaticConcatenatedStrings<3, uint32_t> cs({"alpn", "cipher", "tls1.3"});
   EXPECT_EQ(cs[0], "alpn");
   EXPECT_EQ(cs[1], "cipher");
   EXPECT_EQ(cs[2], "tls1.3");
 }
 
 TEST(ConcatenatedStrings, DefaultConstructedEmpty) {
-  StaticConcatenatedStrings<3, uint8_t> info;
+  StaticConcatenatedStrings<3, uint32_t> info;
   EXPECT_EQ(info[0], std::string_view());
   EXPECT_EQ(info[1], std::string_view());
   EXPECT_EQ(info[2], std::string_view());
 }
 
 TEST(ConcatenatedStrings, ParameterizedStoresAndReturns) {
-  StaticConcatenatedStrings<3, uint8_t> info({"h2", "TLS_AES_128_GCM_SHA256", "TLSv1.3"});
+  StaticConcatenatedStrings<3, uint32_t> info({"h2", "TLS_AES_128_GCM_SHA256", "TLSv1.3"});
   EXPECT_EQ(info[0], "h2");
   EXPECT_EQ(info[1], "TLS_AES_128_GCM_SHA256");
   EXPECT_EQ(info[2], "TLSv1.3");
@@ -43,37 +44,45 @@ TEST(ConcatenatedStrings, LongStringsAreHandled) {
 }
 
 TEST(ConcatenatedStrings, GuardAgainstOverflowConstruction) {
-  using T = StaticConcatenatedStrings<3, uint8_t>;
-  std::string aa(128, 'A');
-  std::string bb(100, 'B');
-  std::string cc(24, 'C');
+  if constexpr (sizeof(uint32_t) >= sizeof(std::size_t)) {
+    GTEST_SKIP() << "Test not applicable when uint32_t cannot overflow size_t";
+  }
+  using T = StaticConcatenatedStrings<3, uint32_t>;
 
-  EXPECT_NO_THROW((T({aa, bb, cc})));
-  EXPECT_THROW((T({aa, bb, bb})), std::length_error);
+  char ch{};
+  std::string aa(128UL, 'A');
+  std::string_view bb(&ch, std::numeric_limits<uint32_t>::max() - 50UL);
+
+  EXPECT_NO_THROW((T({aa, aa, aa})));
+  EXPECT_THROW((T({aa, aa, bb})), std::length_error);
 }
 
 TEST(ConcatenatedStrings, GuardAgainstOverflowSet) {
-  StaticConcatenatedStrings<3, uint8_t> tooSmall({"", "", ""});
-  std::string aa(128, 'A');
-  std::string bb(128, 'B');
+  if constexpr (sizeof(uint32_t) >= sizeof(std::size_t)) {
+    GTEST_SKIP() << "Test not applicable when uint32_t cannot overflow size_t";
+  }
+  StaticConcatenatedStrings<3, uint32_t> tooSmall({"", "", ""});
+  char ch{};
+  std::string aa(128UL, 'A');
+  std::string_view bb(&ch, std::numeric_limits<uint32_t>::max() - 50UL);
   tooSmall.set(0, aa);
   EXPECT_THROW(tooSmall.set(1, bb), std::length_error);
 }
 
 TEST(ConcatenatedStrings, CopyAndAssign) {
-  StaticConcatenatedStrings<2, uint8_t> src({"proto", "cipher"});
-  StaticConcatenatedStrings<2, uint8_t> copyInfo = src;  // NOLINT(performance-unnecessary-copy-initialization)
+  StaticConcatenatedStrings<2, uint32_t> src({"proto", "cipher"});
+  StaticConcatenatedStrings<2, uint32_t> copyInfo = src;  // NOLINT(performance-unnecessary-copy-initialization)
   EXPECT_EQ(copyInfo[0], "proto");
   EXPECT_EQ(copyInfo[1], "cipher");
 
-  StaticConcatenatedStrings<2, uint8_t> dst;
+  StaticConcatenatedStrings<2, uint32_t> dst;
   dst = src;  // copy assign
   EXPECT_EQ(dst[0], "proto");
   EXPECT_EQ(dst[1], "cipher");
 }
 
 TEST(ConcatenatedStrings, SetLarger) {
-  StaticConcatenatedStrings<3, uint8_t> cs({"a", "bb", "ccc"});
+  StaticConcatenatedStrings<3, uint32_t> cs({"a", "bb", "ccc"});
   // Replace middle part with a larger string
   cs.set(1U, std::string_view("BBBBBBBB"));
   EXPECT_EQ(cs[0], "a");
@@ -82,7 +91,7 @@ TEST(ConcatenatedStrings, SetLarger) {
 }
 
 TEST(ConcatenatedStrings, SetShorter) {
-  StaticConcatenatedStrings<3, uint8_t> cs({"aaaa", "bbbbbb", "cccccc"});
+  StaticConcatenatedStrings<3, uint32_t> cs({"aaaa", "bbbbbb", "cccccc"});
   // Replace first part with a shorter string
   cs.set(0, std::string_view("X"));
   EXPECT_EQ(cs[0], "X");
@@ -91,7 +100,7 @@ TEST(ConcatenatedStrings, SetShorter) {
 }
 
 TEST(ConcatenatedStrings, SetEqualSize) {
-  StaticConcatenatedStrings<3, uint8_t> cs({"one", "two", "three"});
+  StaticConcatenatedStrings<3, uint32_t> cs({"one", "two", "three"});
   // Replace last part with a same-size string
   cs.set(2, std::string_view("XXX"));
   EXPECT_EQ(cs[0], "one");
@@ -100,7 +109,7 @@ TEST(ConcatenatedStrings, SetEqualSize) {
 }
 
 TEST(ConcatenatedStrings, SetFirstGrowAndShrink) {
-  StaticConcatenatedStrings<3, uint8_t> cs({"aa", "bbbb", "cc"});
+  StaticConcatenatedStrings<3, uint32_t> cs({"aa", "bbbb", "cc"});
   // grow first
   cs.set(0, std::string_view("AAAAAAAA"));
   EXPECT_EQ(cs[0], "AAAAAAAA");
@@ -115,7 +124,7 @@ TEST(ConcatenatedStrings, SetFirstGrowAndShrink) {
 }
 
 TEST(ConcatenatedStrings, SetMiddleMultipleTimes) {
-  StaticConcatenatedStrings<4, uint8_t> cs({"a", "bb", "ccc", "dddd"});
+  StaticConcatenatedStrings<4, uint32_t> cs({"a", "bb", "ccc", "dddd"});
   // grow middle part (index 1)
   cs.set(1, std::string_view("BBBBBBBBBB"));
   EXPECT_EQ(cs[0], "a");
@@ -134,7 +143,7 @@ TEST(ConcatenatedStrings, SetMiddleMultipleTimes) {
 }
 
 TEST(ConcatenatedStrings, SetLastGrowAndShrink) {
-  StaticConcatenatedStrings<3, uint8_t> cs({"X", "YY", "ZZZ"});
+  StaticConcatenatedStrings<3, uint32_t> cs({"X", "YY", "ZZZ"});
   cs.set(2, std::string_view("LLLLLLLLLLLL"));
   EXPECT_EQ(cs[0], "X");
   EXPECT_EQ(cs[1], "YY");
@@ -268,7 +277,7 @@ TEST(ConcatenatedStrings, TmpNullTerminated_Nested) {
 TEST(ConcatenatedStrings, TmpNullTerminated_Stress) {
   StaticConcatenatedStrings<4> cs({"alpha", "beta", "gamma", "delta"});
   for (int i = 0; i < 2000; ++i) {
-    const size_t idx = static_cast<size_t>(i % 4);
+    const size_t idx = static_cast<std::size_t>(i % 4);
     auto ptr = const_cast<char *>(cs[idx].data());
     const char before = ptr[cs[idx].size()];
     {

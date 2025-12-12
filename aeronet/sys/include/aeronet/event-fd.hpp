@@ -14,7 +14,7 @@ class EventFd {
   void send() const noexcept;
 
   // read an event
-  void read() const;
+  void read() const noexcept;
 
   [[nodiscard]] int fd() const noexcept { return _baseFd.fd(); }
 
