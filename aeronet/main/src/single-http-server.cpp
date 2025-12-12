@@ -93,34 +93,38 @@ namespace {
 // These fields are captured before allowing config updates and silently restored afterward to prevent
 // runtime modification of settings that cannot be changed without recreating the server.
 struct ImmutableConfigSnapshot {
+  explicit ImmutableConfigSnapshot(const HttpServerConfig& cfg)
+      : nbThreads(cfg.nbThreads), port(cfg.port), reusePort(cfg.reusePort), tls(cfg.tls), telemetry(cfg.telemetry) {}
+
+  void restore(HttpServerConfig& cfg) {
+    if (cfg.nbThreads != nbThreads) [[unlikely]] {
+      cfg.nbThreads = nbThreads;
+      log::warn("Attempted to modify immutable HttpServerConfig.nbThreads at runtime; change ignored");
+    }
+    if (cfg.port != port) [[unlikely]] {
+      cfg.port = port;
+      log::warn("Attempted to modify immutable HttpServerConfig.port at runtime; change ignored");
+    }
+    if (cfg.reusePort != reusePort) [[unlikely]] {
+      cfg.reusePort = reusePort;
+      log::warn("Attempted to modify immutable HttpServerConfig.reusePort at runtime; change ignored");
+    }
+    if (cfg.tls != tls) [[unlikely]] {
+      cfg.tls = std::move(tls);
+      log::warn("Attempted to modify immutable HttpServerConfig.tls at runtime; change ignored");
+    }
+    if (cfg.telemetry != telemetry) [[unlikely]] {
+      cfg.telemetry = std::move(telemetry);
+      log::warn("Attempted to modify immutable HttpServerConfig.telemetry at runtime; change ignored");
+    }
+  }
+
+  uint32_t nbThreads;
   uint16_t port;
   bool reusePort;
   TLSConfig tls;
   TelemetryConfig telemetry;
 };
-
-ImmutableConfigSnapshot CaptureImmutable(const HttpServerConfig& cfg) {
-  return {cfg.port, cfg.reusePort, cfg.tls, cfg.telemetry};
-}
-
-void RestoreImmutable(HttpServerConfig& cfg, ImmutableConfigSnapshot snapshot) {
-  if (cfg.port != snapshot.port) {
-    cfg.port = snapshot.port;
-    log::warn("Attempted to modify immutable HttpServerConfig.port at runtime; change ignored");
-  }
-  if (cfg.reusePort != snapshot.reusePort) {
-    cfg.reusePort = snapshot.reusePort;
-    log::warn("Attempted to modify immutable HttpServerConfig.reusePort at runtime; change ignored");
-  }
-  if (cfg.tls != snapshot.tls) {
-    cfg.tls = std::move(snapshot.tls);
-    log::warn("Attempted to modify immutable HttpServerConfig.tls at runtime; change ignored");
-  }
-  if (cfg.telemetry != snapshot.telemetry) {
-    cfg.telemetry = std::move(snapshot.telemetry);
-    log::warn("Attempted to modify immutable HttpServerConfig.telemetry at runtime; change ignored");
-  }
-}
 
 }  // namespace
 
@@ -144,7 +148,7 @@ void SingleHttpServer::setExpectationHandler(ExpectationHandler handler) { _expe
 
 void SingleHttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater) {
   // Capture snapshot of immutable fields before queuing the update
-  auto configSnapshot = CaptureImmutable(_config);
+  ImmutableConfigSnapshot configSnapshot(_config);
 
   {
     std::scoped_lock lock(_updateLock);
@@ -153,7 +157,7 @@ void SingleHttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> u
     struct WrappedUpdater {
       void operator()(HttpServerConfig& cfg) {
         userUpdater(cfg);
-        RestoreImmutable(cfg, std::move(snapshot));
+        snapshot.restore(cfg);
       }
 
       std::function<void(HttpServerConfig&)> userUpdater;

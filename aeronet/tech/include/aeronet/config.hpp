@@ -8,14 +8,6 @@
 #define AERONET_MSVC _MSC_FULL_VER
 #endif
 
-#if defined(__GNUC__)
-#define AERONET_LIKELY(x) (__builtin_expect(!!(x), 1))
-#define AERONET_UNLIKELY(x) (__builtin_expect(!!(x), 0))
-#else
-#define AERONET_LIKELY(x) (!!(x))
-#define AERONET_UNLIKELY(x) (!!(x))
-#endif
-
 #define AERONET_PUSH_WARNING _Pragma("GCC diagnostic push")
 #define AERONET_POP_WARNING _Pragma("GCC diagnostic pop")
 

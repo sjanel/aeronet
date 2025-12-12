@@ -1,4 +1,4 @@
-#include "aeronet/zstd_test_helpers.hpp"
+#include "aeronet/zstd-test-helpers.hpp"
 
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
@@ -16,7 +16,7 @@ namespace aeronet::test {
 // (via frame header) we trust it; otherwise we fall back to an expected size hint.
 // expectedDecompressedSizeHint may be zero; in that case and when the frame size is
 // unknown we return an empty string to signal inability (tests can decide how to handle).
-std::string zstdRoundTripDecompress([[maybe_unused]] std::string_view compressed,
+std::string ZstdRoundTripDecompress([[maybe_unused]] std::string_view compressed,
                                     [[maybe_unused]] std::size_t expectedDecompressedSizeHint) {
   std::string out;
 #ifdef AERONET_ENABLE_ZSTD
