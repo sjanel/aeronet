@@ -237,6 +237,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    reserved-headers_test
+    test/reserved-headers_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     string-trim_test
     test/string-trim_test.cpp
 )

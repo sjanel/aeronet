@@ -10,9 +10,9 @@
 #include <utility>
 #include <vector>
 
-#include "aeronet/http-header.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/reserved-headers.hpp"
 
 namespace aeronet {
 namespace {

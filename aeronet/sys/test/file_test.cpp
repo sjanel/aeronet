@@ -1,12 +1,15 @@
 #include "aeronet/file.hpp"
 
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <gtest/gtest.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #include <array>
 #include <cerrno>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -39,10 +42,14 @@ struct ReadAction {
 
 test::KeyedActionQueue<std::string, ReadAction> gReadOverrides;
 test::KeyedActionQueue<std::string, int> gLseekErrnos;
+test::KeyedActionQueue<std::string, std::int64_t> gFstatSizes;
+test::KeyedActionQueue<std::string, int> gFcntlErrnos;
 
 void ResetFsHooks() {
   gReadOverrides.reset();
   gLseekErrnos.reset();
+  gFstatSizes.reset();
+  gFcntlErrnos.reset();
 }
 
 void SetReadActions(std::string_view path, std::initializer_list<ReadAction> actions) {
@@ -51,6 +58,10 @@ void SetReadActions(std::string_view path, std::initializer_list<ReadAction> act
 
 void SetLseekErrors(std::string_view path, std::initializer_list<int> errs) {
   gLseekErrnos.setActions(std::string(path), errs);
+}
+
+void SetFcntlErrors(std::string_view path, std::initializer_list<int> errs) {
+  gFcntlErrnos.setActions(std::string(path), errs);
 }
 
 std::optional<std::string> PathForFd(int fd) {
@@ -93,6 +104,36 @@ int PopLseekErrno(int fd, bool& hasErr) {
   }
   hasErr = true;
   return *err;
+}
+
+std::int64_t PopFstatSize(int fd, bool& hasSize) {
+  const auto pathOpt = PathForFd(fd);
+  if (!pathOpt.has_value()) {
+    hasSize = false;
+    return 0;
+  }
+  const auto val = gFstatSizes.pop(*pathOpt);
+  if (!val.has_value()) {
+    hasSize = false;
+    return 0;
+  }
+  hasSize = true;
+  return *val;
+}
+
+int PopFcntlErrno(int fd, bool& hasErr) {
+  const auto pathOpt = PathForFd(fd);
+  if (!pathOpt.has_value()) {
+    hasErr = false;
+    return 0;
+  }
+  const auto val = gFcntlErrnos.pop(*pathOpt);
+  if (!val.has_value()) {
+    hasErr = false;
+    return 0;
+  }
+  hasErr = true;
+  return *val;
 }
 
 class FileSyscallHookGuard {
@@ -145,6 +186,51 @@ extern "C" off_t lseek(int __fd, off_t __offset, int __whence) noexcept {
   return real_lseek(__fd, __offset, __whence);
 }
 
+// NOLINTNEXTLINE(bugprone-reserved-identifier,clang-diagnostic-reserved-identifier)
+extern "C" int fstat(int __fd, struct stat* __buf) {
+  using FstatFn = int (*)(int, struct stat*);
+  static FstatFn real_fstat = reinterpret_cast<FstatFn>(dlsym(RTLD_NEXT, "fstat"));
+  if (real_fstat == nullptr) {
+    std::abort();
+  }
+  bool hasSize = false;
+  const auto maybeSize = PopFstatSize(__fd, hasSize);
+  if (hasSize) {
+    if (maybeSize < 0) {
+      // Negative value indicates an error code to return
+      const int err = static_cast<int>(-maybeSize);
+      errno = err == 0 ? EIO : err;
+      return -1;
+    }
+    // Assume caller provided a valid buffer (fstat requires a non-null buffer).
+    // Set the st_size to the requested value and report success
+    __buf->st_size = static_cast<off_t>(maybeSize);
+    return 0;
+  }
+  return real_fstat(__fd, __buf);
+}
+
+// NOLINTNEXTLINE(bugprone-reserved-identifier,clang-diagnostic-reserved-identifier)
+extern "C" int fcntl(int __fd, int __cmd, ...) {
+  using FcntlFn = int (*)(int, int, ...);
+  static FcntlFn real_fcntl = reinterpret_cast<FcntlFn>(dlsym(RTLD_NEXT, "fcntl"));
+  if (real_fcntl == nullptr) {
+    std::abort();
+  }
+  bool hasErr = false;
+  const int err = PopFcntlErrno(__fd, hasErr);
+  if (hasErr && __cmd == F_DUPFD_CLOEXEC) {
+    errno = err == 0 ? EBADF : err;
+    return -1;
+  }
+
+  va_list ap;
+  va_start(ap, __cmd);
+  int arg = va_arg(ap, int);
+  va_end(ap);
+  return real_fcntl(__fd, __cmd, arg);
+}
+
 #ifdef __clang__
 #pragma clang diagnostic pop
 #elifdef __GNUC__
@@ -158,6 +244,10 @@ TEST(FileTest, DefaultConstructedIsFalse) {
   EXPECT_THROW((void)fileObj.loadAllContent(), std::runtime_error);
   EXPECT_THROW((void)fileObj.size(), std::runtime_error);
   EXPECT_THROW((void)fileObj.duplicate(), std::runtime_error);
+}
+
+TEST(FileTest, InvalidOpenMode) {
+  EXPECT_THROW(File fileObj("somefile.txt", static_cast<File::OpenMode>(0xFF)), std::invalid_argument);
 }
 
 TEST(FileTest, SizeAndLoadAllContent) {
@@ -249,13 +339,28 @@ TEST(FileTest, LoadAllContentRetriesAfterEintr) {
 
 TEST(FileTest, LoadAllContentThrowsOnFatalReadError) {
   FileSyscallHookGuard guard;
-  ScopedTempDir dir("aeronet-file-readerr");
+  ScopedTempDir dir("aeronet-file-reader");
   ScopedTempFile tmp(dir, "payload");
   const std::string path = tmp.filePath().string();
   File fileObj(path, File::OpenMode::ReadOnly);
   ASSERT_TRUE(static_cast<bool>(fileObj));
   SetReadActions(path, {ReadErr(EIO)});
   EXPECT_THROW(static_cast<void>(fileObj.loadAllContent()), std::runtime_error);
+}
+
+TEST(FileTest, SizeUsesFstatOverride) {
+  FileSyscallHookGuard guard;
+  ScopedTempDir dir("aeronet-file-fstat");
+  ScopedTempFile tmp(dir, "content123");
+  const std::string path = tmp.filePath().string();
+  File fileObj(path, File::OpenMode::ReadOnly);
+  ASSERT_TRUE(static_cast<bool>(fileObj));
+  // Set a fake size via the fstat override for this path
+  gFstatSizes.setActions(path, {static_cast<std::int64_t>(12345)});
+  EXPECT_EQ(fileObj.size(), static_cast<std::uint64_t>(12345));
+
+  gFstatSizes.setActions(path, {static_cast<std::int64_t>(-1)});
+  EXPECT_THROW(static_cast<void>(fileObj.size()), std::runtime_error);
 }
 
 TEST(FileTest, RestoreToStartLogsWhenLseekFails) {
@@ -290,4 +395,17 @@ TEST(FileTest, DupCreatesIndependentDescriptor) {
   original = File();
   ASSERT_TRUE(static_cast<bool>(duplicated));
   EXPECT_EQ(duplicated.loadAllContent(), "dup-content");
+}
+
+TEST(FileTest, DuplicateThrowsWhenFcntlFails) {
+  FileSyscallHookGuard guard;
+  ScopedTempDir dir("aeronet-file-dup-fail");
+  ScopedTempFile tmp(dir, "dup-content-fail");
+  const std::string path = tmp.filePath().string();
+
+  File original(path, File::OpenMode::ReadOnly);
+  ASSERT_TRUE(static_cast<bool>(original));
+  // Simulate fcntl failure for dup
+  SetFcntlErrors(path, {EBADF});
+  EXPECT_THROW((void)original.duplicate(), std::runtime_error);
 }

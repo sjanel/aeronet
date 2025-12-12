@@ -1,6 +1,6 @@
 #pragma once
 
-#include <string_view>
+#include <span>
 
 #include "aeronet/connection.hpp"
 
@@ -19,6 +19,11 @@ struct ConnectResult {
 //
 // Note: the default family value is 0 (unspecified). We avoid using
 // platform macros like AF_UNSPEC in the header to keep includes minimal.
-ConnectResult ConnectTCP(char *buf, std::string_view host, std::string_view port, int family = 0);
+// Parameters:
+// - host: span hostname or IP address to connect to
+// - port: span port number or service name
+// Note: the buffers pointed by given spans SHOULD be 1 byte writable at their end,
+// as getaddrinfo expects null-terminated strings.
+ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family = 0);
 
 }  // namespace aeronet
