@@ -23,7 +23,7 @@ namespace aeronet {
 
 namespace {
 
-int Flags(File::OpenMode mode) {
+inline int Flags(File::OpenMode mode) {
   switch (mode) {
     case File::OpenMode::ReadOnly:
       return O_RDONLY | O_CLOEXEC;
@@ -32,19 +32,19 @@ int Flags(File::OpenMode mode) {
   }
 }
 
-void CheckFd(std::string_view path, int fd) {
-  if (fd == -1) {
+inline void CheckFd(std::string_view path, int fd) {
+  if (fd == -1) [[unlikely]] {
     log::error("Unable to open file '{}' (errno {}: {})", path, errno, std::strerror(errno));
   }
 }
 
-int CreateFileBaseFd(std::string_view path, File::OpenMode mode) {
+inline int CreateFileBaseFd(std::string_view path, File::OpenMode mode) {
   const int fd = ::open(std::string(path).c_str(), Flags(mode));
   CheckFd(path, fd);
   return fd;
 }
 
-int CreateFileBaseFd(const char* path, File::OpenMode mode) {
+inline int CreateFileBaseFd(const char* path, File::OpenMode mode) {
   const int fd = ::open(path, Flags(mode));
   CheckFd(path, fd);
   return fd;
@@ -88,7 +88,7 @@ std::string File::loadAllContent() const {
     RestoreToStart& operator=(RestoreToStart&&) = delete;
 
     ~RestoreToStart() noexcept {
-      if (::lseek(_fd, 0, SEEK_SET) == -1) {
+      if (::lseek(_fd, 0, SEEK_SET) == -1) [[unlikely]] {
         // Log but do not throw from a destructor.
         log::error("File::loadAllContent: failed to restore offset for fd # {} errno={} msg={}", _fd, errno,
                    std::strerror(errno));

@@ -1,7 +1,7 @@
 aux_source_directory(src AERONET_BASIC_TEST_SUPPORT_SRC_LIST)
 
 if(NOT AERONET_ENABLE_OPENSSL)
-  list(REMOVE_ITEM AERONET_BASIC_TEST_SUPPORT_SRC_LIST src/test_tls_helper.cpp)
+  list(REMOVE_ITEM AERONET_BASIC_TEST_SUPPORT_SRC_LIST src/test-tls-helper.cpp)
 endif()
 
 AeronetAddProjectLibrary(aeronet_basic_test_support

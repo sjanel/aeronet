@@ -19,7 +19,7 @@
 #include <vector>
 
 #include "aeronet/string-equal-ignore-case.hpp"
-#include "aeronet/sys_test_support.hpp"
+#include "aeronet/sys-test-support.hpp"
 
 #ifdef AERONET_WANT_MALLOC_OVERRIDES
 #include <exception>
@@ -518,7 +518,7 @@ TEST(flat_hash_map, emplace_default_and_insert_or_assign_hint) {
 
 // Negative tests: simulate allocation failures and throwing constructors.
 TEST(flat_hash_map, rehash_handles_realloc_failure) {
-  using aeronet::test_support::FailNextRealloc;
+  using aeronet::test::FailNextRealloc;
   Map map1;
   for (int i = 0; i < 100; ++i) {
     map1.emplace("k" + std::to_string(i), i);
@@ -540,7 +540,7 @@ TEST(flat_hash_map, rehash_handles_realloc_failure) {
 }
 
 TEST(flat_hash_map, insert_range_handles_malloc_failure) {
-  using aeronet::test_support::FailNextMalloc;
+  using aeronet::test::FailNextMalloc;
   Map map1;
   std::vector<std::pair<std::string, int>> batch;
   batch.reserve(500);
@@ -586,7 +586,7 @@ struct MaybeThrow {
 std::mt19937 MaybeThrow::rng(1337);
 
 TEST(flat_hash_map, insert_object_that_can_throw_and_malloc_failure_mix) {
-  using aeronet::test_support::FailNextMalloc;
+  using aeronet::test::FailNextMalloc;
   aeronet::flat_hash_map<int, MaybeThrow> map;
 
   // Attempt many inserts; randomly simulate malloc failures and throwing constructors.
@@ -658,7 +658,7 @@ TEST(flat_hash_map, copy_ctor_with_alloc_handles_insertion_exception) {
 #if AERONET_WANT_MALLOC_OVERRIDES
 
 TEST(flat_hash_map, copy_ctor_with_alloc_handles_alloc_failure) {
-  using aeronet::test_support::FailNextMalloc;
+  using aeronet::test::FailNextMalloc;
   aeronet::flat_hash_map<std::string, int> src;
   for (int i = 0; i < 100; ++i) {
     src.emplace("v" + std::to_string(i), i);

@@ -10,11 +10,17 @@
 namespace aeronet {
 
 TEST(IntegralToCharVector, PositiveValueInt8) {
+  int8_t val = 117;
   EXPECT_EQ(std::string_view(IntegralToCharVector(static_cast<int8_t>(3))), "3");
+  EXPECT_EQ(std::string_view(IntegralToCharVector(static_cast<int8_t>(54))), "54");
+  EXPECT_EQ(std::string_view(IntegralToCharVector(val)), "117");
 }
 
 TEST(IntegralToCharVector, NegativeValueInt8) {
-  EXPECT_EQ(std::string_view(IntegralToCharVector(static_cast<int8_t>(-11))), "-11");
+  int8_t val = -11;
+  EXPECT_EQ(std::string_view(IntegralToCharVector(static_cast<int8_t>(-8))), "-8");
+  EXPECT_EQ(std::string_view(IntegralToCharVector(val)), "-11");
+  EXPECT_EQ(std::string_view(IntegralToCharVector(static_cast<int8_t>(-123))), "-123");
 }
 
 TEST(IntegralToCharVector, PositiveValueInt) { EXPECT_EQ(std::string_view(IntegralToCharVector(34)), "34"); }

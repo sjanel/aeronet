@@ -60,7 +60,7 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
   }
   FileResult res{static_cast<std::size_t>(bytes), tlsFlow ? FileResult::Code::Read : FileResult::Code::Sent, tlsFlow};
 
-  if (bytes == -1) {
+  if (bytes == -1) [[unlikely]] {
     res.bytesDone = 0;
     const int errnoVal = errno;
     static_assert(EAGAIN == EWOULDBLOCK, "Check logic below if EAGAIN != EWOULDBLOCK");

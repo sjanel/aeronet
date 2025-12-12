@@ -19,11 +19,10 @@
 #include <string>
 #include <string_view>
 
-#include "aeronet/sys_test_support.hpp"
+#include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 
 using namespace aeronet;
-namespace test_support = aeronet::test_support;
 
 using test::ScopedTempDir;
 using test::ScopedTempFile;
@@ -38,8 +37,8 @@ struct ReadAction {
 
 [[nodiscard]] ReadAction ReadErr(int err) { return ReadAction{ReadAction::Kind::Error, err}; }
 
-test_support::KeyedActionQueue<std::string, ReadAction> gReadOverrides;
-test_support::KeyedActionQueue<std::string, int> gLseekErrnos;
+test::KeyedActionQueue<std::string, ReadAction> gReadOverrides;
+test::KeyedActionQueue<std::string, int> gLseekErrnos;
 
 void ResetFsHooks() {
   gReadOverrides.reset();

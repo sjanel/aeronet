@@ -5,9 +5,7 @@
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
-#include <cstdint>
 #include <functional>
-#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -141,10 +139,9 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
     threadCount = std::thread::hardware_concurrency();
     if (threadCount == 0) {
       threadCount = 1;
-      log::warn("Unable to detect the number of available processors for MultiHttpServer - defaults to {}",
-                threadCount);
+      log::warn("Unable to detect the number of available processors for HttpServer - defaults to {}", threadCount);
     }
-    log::debug("MultiHttpServer auto-thread constructor detected hw_concurrency={}", threadCount);
+    log::debug("HttpServer auto-thread constructor detected hw_concurrency={}", threadCount);
   }
 
   _servers.reserve(static_cast<decltype(_servers)::size_type>(threadCount));
@@ -162,7 +159,7 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
     }
 
     cfg.reusePort = true;  // enforce reusePort for multi-threaded servers
-    log::debug("MultiHttpServer: Enabling reusePort for multi-threaded server");
+    log::debug("HttpServer: Enabling reusePort for multi-threaded server");
   }
 
   cfg.nbThreads = 1;  // will be applied for each SingleHttpServer.
@@ -177,7 +174,7 @@ MultiHttpServer::MultiHttpServer(const MultiHttpServer& other)
       _lifecycleTracker(std::make_shared<ServerLifecycleTracker>()),
       _serversAlive(std::make_shared<std::atomic<bool>>(true)) {
   if (other.isRunning()) {
-    throw std::logic_error("Cannot copy-construct a running MultiHttpServer");
+    throw std::logic_error("Cannot copy-construct a running HttpServer");
   }
 
   _servers.reserve(other._servers.capacity());
@@ -223,7 +220,7 @@ MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
 MultiHttpServer& MultiHttpServer::operator=(const MultiHttpServer& other) {
   if (this != &other) {
     if (other.isRunning()) {
-      throw std::logic_error("Cannot copy-assign a running MultiHttpServer");
+      throw std::logic_error("Cannot copy-assign a running HttpServer");
     }
 
     stop();
@@ -249,7 +246,7 @@ MultiHttpServer::~MultiHttpServer() {
 
 RouterUpdateProxy MultiHttpServer::router() {
   if (empty()) {
-    throw std::logic_error("Cannot access router proxy on an empty MultiHttpServer");
+    throw std::logic_error("Cannot access router proxy on an empty HttpServer");
   }
   return {[this](std::function<void(Router&)> fn) { this->postRouterUpdate(std::move(fn)); },
           [this]() -> Router& { return this->_servers.front()._router; }};
@@ -302,7 +299,7 @@ void MultiHttpServer::stop() noexcept {
   _stopRequested->store(true, std::memory_order_relaxed);
   _lifecycleTracker->notifyStopRequested();
 
-  log::debug("MultiHttpServer stopping (instances={})", _servers.size());
+  log::debug("HttpServer stopping (instances={})", _servers.size());
   std::ranges::for_each(_servers, [](SingleHttpServer& server) { server.stop(); });
 
   // Stop internal handle if start() was used (non-blocking API)
@@ -314,7 +311,7 @@ void MultiHttpServer::stop() noexcept {
   if (auto completion = _lastHandleCompletion.lock()) {
     completion->wait();
   }
-  log::info("MultiHttpServer stopped");
+  log::info("HttpServer stopped");
 }
 
 void MultiHttpServer::start() { _internalHandle.emplace(startDetached()); }
@@ -344,14 +341,14 @@ bool MultiHttpServer::isDraining() const {
 
 void MultiHttpServer::postConfigUpdate(const std::function<void(HttpServerConfig&)>& updater) {
   if (empty()) {
-    throw std::logic_error("Cannot post a config update on an empty MultiHttpServer");
+    throw std::logic_error("Cannot post a config update on an empty HttpServer");
   }
   std::ranges::for_each(_servers, [&updater](SingleHttpServer& server) { server.postConfigUpdate(updater); });
 }
 
 void MultiHttpServer::postRouterUpdate(std::function<void(Router&)> updater) {
   if (empty()) {
-    throw std::logic_error("Cannot post a router update on an empty MultiHttpServer");
+    throw std::logic_error("Cannot post a router update on an empty HttpServer");
   }
   auto sharedUpdater = std::make_shared<std::function<void(Router&)>>(std::move(updater));
   for (auto& server : _servers) {
@@ -365,13 +362,13 @@ void MultiHttpServer::canSetCallbacks() const {
     throw std::logic_error("Cannot mutate configuration while running (stop() first)");
   }
   if (_servers.empty()) {
-    throw std::logic_error("Cannot set callbacks on an empty MultiHttpServer");
+    throw std::logic_error("Cannot set callbacks on an empty HttpServer");
   }
 }
 
 void MultiHttpServer::ensureNextServersBuilt() {
   if (_servers.empty()) {
-    throw std::logic_error("Cannot rebuild servers on an empty MultiHttpServer");
+    throw std::logic_error("Cannot rebuild servers on an empty HttpServer");
   }
 
   auto& firstServer = _servers.front();
@@ -389,19 +386,18 @@ void MultiHttpServer::ensureNextServersBuilt() {
 }
 
 vector<SingleHttpServer*> MultiHttpServer::collectServerPointers() {
-  vector<SingleHttpServer*> serverPtrs;
-  serverPtrs.reserve(_servers.size());
-  std::ranges::transform(_servers, std::back_inserter(serverPtrs), [](SingleHttpServer& server) { return &server; });
+  vector<SingleHttpServer*> serverPtrs(_servers.size());
+  std::ranges::transform(_servers, serverPtrs.begin(), [](SingleHttpServer& server) { return &server; });
   return serverPtrs;
 }
 
 void MultiHttpServer::runBlocking(std::function<bool()> predicate, std::string_view modeLabel) {
   if (_servers.empty()) {
-    throw std::logic_error("Cannot run an empty MultiHttpServer");
+    throw std::logic_error("Cannot run an empty HttpServer");
   }
 
   if (isRunning()) {
-    throw std::logic_error("MultiHttpServer already started");
+    throw std::logic_error("HttpServer already started");
   }
 
   // Use a local AsyncHandle to manage the servers.
@@ -414,7 +410,7 @@ void MultiHttpServer::runBlocking(std::function<bool()> predicate, std::string_v
     _lifecycleTracker->waitUntilAllStopped(*_stopRequested);
   }
 
-  log::info("MultiHttpServer {}{}stopped", modeLabel, modeLabel.empty() ? "" : " ");
+  log::info("HttpServer {}{}stopped", modeLabel, modeLabel.empty() ? "" : " ");
 
   // handle goes out of scope here, stopping and joining all threads.
 }
@@ -422,10 +418,10 @@ void MultiHttpServer::runBlocking(std::function<bool()> predicate, std::string_v
 MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::function<bool()> extraStopCondition,
                                                                     const std::stop_token& externalStopToken) {
   if (_servers.empty()) {
-    throw std::logic_error("Cannot start an empty MultiHttpServer");
+    throw std::logic_error("Cannot start an empty HttpServer");
   }
   if (isRunning()) {
-    throw std::logic_error("MultiHttpServer already started");
+    throw std::logic_error("HttpServer already started");
   }
 
   _lifecycleTracker->clear();
@@ -435,7 +431,7 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
 
   _stopRequested->store(false, std::memory_order_relaxed);
 
-  log::debug("MultiHttpServer starting with {} thread(s) on port :{}", _servers.size(), port());
+  log::debug("HttpServer starting with {} thread(s) on port :{}", _servers.size(), port());
 
   vector<SingleHttpServer::AsyncHandle> serverHandles;
   serverHandles.reserve(_servers.size());
@@ -496,7 +492,7 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
           return false;
         }));
   }
-  log::info("MultiHttpServer started with {} thread(s) on port :{}", _servers.size(), port());
+  log::info("HttpServer started with {} thread(s) on port :{}", _servers.size(), port());
 
   // Move threads into the handle - this clears _threads so isRunning() will return false
   // but the handle owns the threads now.

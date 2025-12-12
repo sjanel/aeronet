@@ -22,10 +22,9 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/event.hpp"
-#include "aeronet/sys_test_support.hpp"
+#include "aeronet/sys-test-support.hpp"
 
 using namespace aeronet;
-namespace test_support = aeronet::test_support;
 
 namespace {
 
@@ -42,14 +41,14 @@ struct EpollWaitAction {
   std::vector<epoll_event> events;
 };
 
-test_support::ActionQueue<EpollCreateAction> gCreateActions;
-test_support::ActionQueue<EpollWaitAction> gWaitActions;
+test::ActionQueue<EpollCreateAction> gCreateActions;
+test::ActionQueue<EpollWaitAction> gWaitActions;
 
 void ResetEpollHooks() {
   gCreateActions.reset();
   gWaitActions.reset();
-  test_support::FailNextMalloc(0);
-  test_support::FailNextRealloc(0);
+  test::FailNextMalloc(0);
+  test::FailNextRealloc(0);
 }
 
 void SetEpollCreateActions(std::initializer_list<EpollCreateAction> actions) { gCreateActions.setActions(actions); }
@@ -275,7 +274,7 @@ TEST(EventLoopTest, ConstructorThrowsWhenAllocationFails) {
   if (!AERONET_WANT_MALLOC_OVERRIDES) {
     GTEST_SKIP() << "malloc overrides disabled on this toolchain; skipping";
   }
-  test_support::FailNextMalloc();
+  test::FailNextMalloc();
   EXPECT_THROW(EventLoop(std::chrono::milliseconds(5)), std::bad_alloc);
 }
 
@@ -308,7 +307,7 @@ TEST(EventLoopTest, PollKeepsCapacityWhenReallocFails) {
   if (!AERONET_WANT_MALLOC_OVERRIDES) {
     GTEST_SKIP() << "realloc overrides disabled on this toolchain; skipping";
   }
-  test_support::FailNextRealloc();
+  test::FailNextRealloc();
 
   int callbacks = 0;
   const int rc = loop.poll([&](EventLoop::EventFd) { ++callbacks; });
