@@ -17,6 +17,7 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/reserved-headers.hpp"
 #include "aeronet/tchars.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tls-config.hpp"

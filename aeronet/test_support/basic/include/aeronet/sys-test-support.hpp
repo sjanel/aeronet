@@ -2,6 +2,7 @@
 
 #include <dlfcn.h>
 #include <linux/memfd.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -304,6 +305,84 @@ class QueueResetGuard {
 
 }  // namespace aeronet::test
 
+// Socket syscall action queues: allow tests to simulate syscall errors.
+// Action type for socket syscalls: return value (-1 for error) and errno.
+using SyscallAction = std::pair<int, int>;  // (return value, errno)
+
+namespace aeronet::test {
+inline ActionQueue<SyscallAction> g_socket_actions;
+inline ActionQueue<SyscallAction> g_setsockopt_actions;
+inline ActionQueue<SyscallAction> g_bind_actions;
+inline ActionQueue<SyscallAction> g_listen_actions;
+inline ActionQueue<SyscallAction> g_getsockname_actions;
+
+inline void ResetSocketActions() {
+  g_socket_actions.reset();
+  g_setsockopt_actions.reset();
+  g_bind_actions.reset();
+  g_listen_actions.reset();
+  g_getsockname_actions.reset();
+}
+
+inline void PushSocketAction(SyscallAction action) { g_socket_actions.push(action); }
+inline void PushSetsockoptAction(SyscallAction action) { g_setsockopt_actions.push(action); }
+inline void PushBindAction(SyscallAction action) { g_bind_actions.push(action); }
+inline void PushListenAction(SyscallAction action) { g_listen_actions.push(action); }
+inline void PushGetsocknameAction(SyscallAction action) { g_getsockname_actions.push(action); }
+
+using SocketFn = int (*)(int, int, int);
+using SetsockoptFn = int (*)(int, int, int, const void*, socklen_t);
+using BindFn = int (*)(int, const struct sockaddr*, socklen_t);
+using ListenFn = int (*)(int, int);
+using GetsocknameFn = int (*)(int, struct sockaddr*, socklen_t*);
+
+inline SocketFn ResolveRealSocket() {
+  static SocketFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<SocketFn>("socket");
+  return fn;
+}
+
+inline SetsockoptFn ResolveRealSetsockopt() {
+  static SetsockoptFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<SetsockoptFn>("setsockopt");
+  return fn;
+}
+
+inline BindFn ResolveRealBind() {
+  static BindFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<BindFn>("bind");
+  return fn;
+}
+
+inline ListenFn ResolveRealListen() {
+  static ListenFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<ListenFn>("listen");
+  return fn;
+}
+
+inline GetsocknameFn ResolveRealGetsockname() {
+  static GetsocknameFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<GetsocknameFn>("getsockname");
+  return fn;
+}
+
+}  // namespace aeronet::test
+
 // IO override control: enable/disable replacement of ::read/::write for tests.
 
 // Simple action type: first = return value (bytes or -1), second = errno to set when returning -1
@@ -312,6 +391,22 @@ using IoAction = std::pair<ssize_t, int>;
 namespace aeronet::test {
 inline KeyedActionQueue<int, IoAction> g_read_actions;
 inline KeyedActionQueue<int, IoAction> g_write_actions;
+
+// connect override action queue: return (0 for success) or (-1, errno)
+inline ActionQueue<std::pair<int, int>> g_connect_actions;
+
+inline void PushConnectAction(std::pair<int, int> action) { g_connect_actions.push(action); }
+
+using ConnectFn = int (*)(int, const struct sockaddr*, socklen_t);
+
+inline ConnectFn ResolveRealConnect() {
+  static ConnectFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<ConnectFn>("connect");
+  return fn;
+}
 
 inline void ResetIoActions() {
   g_read_actions.reset();
@@ -383,6 +478,104 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t write(int fd, const v
   }
   auto real = aeronet::test::ResolveRealWrite();
   return real(fd, buf, count);
+}
+
+#endif
+
+#ifdef AERONET_WANT_SOCKET_OVERRIDES
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) int socket(int domain, int type, int protocol) {
+  auto act = aeronet::test::g_socket_actions.pop();
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealSocket();
+  return real(domain, type, protocol);
+}
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) int setsockopt(int sockfd, int level, int optname,
+                                                                  const void* optval, socklen_t optlen) {
+  auto act = aeronet::test::g_setsockopt_actions.pop();
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealSetsockopt();
+  return real(sockfd, level, optname, optval, optlen);
+}
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) int bind(int sockfd, const struct sockaddr* addr,
+                                                            socklen_t addrlen) {
+  auto act = aeronet::test::g_bind_actions.pop();
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealBind();
+  return real(sockfd, addr, addrlen);
+}
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) int listen(int sockfd, int backlog) {
+  auto act = aeronet::test::g_listen_actions.pop();
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealListen();
+  return real(sockfd, backlog);
+}
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) int connect(int sockfd, const struct sockaddr* addr,
+                                                               socklen_t addrlen) {
+  auto act = aeronet::test::g_connect_actions.pop();
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealConnect();
+  return real(sockfd, addr, addrlen);
+}
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) int getsockname(int sockfd, struct sockaddr* addr,
+                                                                   socklen_t* addrlen) {
+  auto act = aeronet::test::g_getsockname_actions.pop();
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealGetsockname();
+  return real(sockfd, addr, addrlen);
 }
 
 #endif

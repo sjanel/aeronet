@@ -12,11 +12,11 @@
 #include "aeronet/header-merge.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-header.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/reserved-headers.hpp"
 #include "aeronet/single-http-server.hpp"
 
 namespace aeronet {

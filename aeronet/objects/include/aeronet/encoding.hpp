@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <type_traits>
-#include <utility>
 
 #include "aeronet/http-constants.hpp"
 
@@ -20,20 +19,10 @@ enum class Encoding : std::uint8_t {
 inline constexpr std::underlying_type_t<Encoding> kNbContentEncodings = 5;
 
 constexpr std::string_view GetEncodingStr(Encoding compressionFormat) {
-  switch (compressionFormat) {
-    case Encoding::none:
-      return http::identity;
-    case Encoding::gzip:
-      return http::gzip;
-    case Encoding::deflate:
-      return http::deflate;
-    case Encoding::br:
-      return http::br;
-    case Encoding::zstd:
-      return http::zstd;
-    default:
-      std::unreachable();
-  }
+  static constexpr std::string_view kEncodingStrs[kNbContentEncodings] = {
+      http::zstd, http::br, http::gzip, http::deflate, http::identity,
+  };
+  return kEncodingStrs[static_cast<std::underlying_type_t<Encoding>>(compressionFormat)];
 }
 
 }  // namespace aeronet
