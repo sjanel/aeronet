@@ -1,7 +1,6 @@
 #include "aeronet/raw-bytes.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -17,14 +16,12 @@
 
 namespace aeronet {
 
-// Out-of-class definitions for RawBytesBase
-
 namespace {
 template <class ToT, class FromT>
 constexpr ToT SafeCast(FromT value) {
   if constexpr (sizeof(ToT) < sizeof(FromT)) {
     if (std::cmp_greater(value, std::numeric_limits<ToT>::max())) {
-      throw std::length_error("value exceeds target type maximum");
+      throw std::overflow_error("value exceeds target type maximum");
     }
   }
   return static_cast<ToT>(value);
@@ -40,18 +37,14 @@ RawBytesBase<T, ViewType, SizeType>::RawBytesBase(size_type capacity)
 }
 
 template <class T, class ViewType, class SizeType>
-RawBytesBase<T, ViewType, SizeType>::RawBytesBase(ViewType data) : RawBytesBase(SafeCast<size_type>(data.size())) {
-  if (!data.empty()) {
-    std::memcpy(_buf, data.data(), _capacity);
-    _size = _capacity;
-  }
-}
+RawBytesBase<T, ViewType, SizeType>::RawBytesBase(ViewType data)
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+    : RawBytesBase(data.data(), SafeCast<size_type>(data.size())) {}
 
 template <class T, class ViewType, class SizeType>
-RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const_pointer first, const_pointer last)
-    : RawBytesBase(SafeCast<size_type>(last - first)) {
-  if (first != last) {
-    std::memcpy(_buf, first, _capacity);
+RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const_pointer data, size_type sz) : RawBytesBase(sz) {
+  if (sz != 0) {
+    std::memcpy(_buf, data, _capacity);
     _size = _capacity;
   }
 }
@@ -59,7 +52,7 @@ RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const_pointer first, const_poi
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const RawBytesBase &rhs) : RawBytesBase(rhs.capacity()) {
   _size = rhs.size();
-  if (!empty()) {
+  if (_size != 0) {
     std::memcpy(_buf, rhs.data(), _size);
   }
 }
@@ -85,11 +78,9 @@ RawBytesBase<T, ViewType, SizeType> &RawBytesBase<T, ViewType, SizeType>::operat
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType> &RawBytesBase<T, ViewType, SizeType>::operator=(const RawBytesBase &rhs) {
   if (this != &rhs) {
-    if (size() < rhs.size()) {
-      ensureAvailableCapacity(rhs.size() - size());
-    }
+    reserve(rhs.size());
     _size = rhs.size();
-    if (!empty()) {
+    if (_size != 0) {
       std::memcpy(_buf, rhs.data(), _size);
     }
   }
@@ -102,19 +93,34 @@ RawBytesBase<T, ViewType, SizeType>::~RawBytesBase() {
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::unchecked_append(const_pointer first, const_pointer last) {
-  if (first != last) {
-    assert(first < last);
-    const std::size_t sz = static_cast<std::size_t>(last - first);
-    std::memcpy(_buf + _size, first, sz);
-    _size += static_cast<size_type>(sz);
+void RawBytesBase<T, ViewType, SizeType>::unchecked_append(const_pointer data, size_type sz) {
+  if (sz != 0) {
+    if (_size + sz < _size) [[unlikely]] {  // overflow check
+      throw std::overflow_error("append size overflow");
+    }
+    std::memcpy(_buf + _size, data, sz);
+    _size += sz;
   }
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::append(const_pointer first, const_pointer last) {
-  ensureAvailableCapacityExponential(SafeCast<size_type>(last - first));
-  unchecked_append(first, last);
+void RawBytesBase<T, ViewType, SizeType>::unchecked_append(ViewType data) {
+  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+  unchecked_append(data.data(), SafeCast<size_type>(data.size()));
+}
+
+template <class T, class ViewType, class SizeType>
+void RawBytesBase<T, ViewType, SizeType>::append(const_pointer data, size_type sz) {
+  ensureAvailableCapacityExponential(sz);
+  unchecked_append(data, sz);
+}
+
+template <class T, class ViewType, class SizeType>
+void RawBytesBase<T, ViewType, SizeType>::append(ViewType data) {
+  const auto sz = SafeCast<size_type>(data.size());
+  ensureAvailableCapacityExponential(sz);
+  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+  unchecked_append(data.data(), sz);
 }
 
 template <class T, class ViewType, class SizeType>
@@ -125,8 +131,8 @@ void RawBytesBase<T, ViewType, SizeType>::push_back(value_type byte) {
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::assign(const_pointer data, size_type size) {
-  reserve(size);
   if (size != 0) {
+    reserve(size);
     std::memcpy(_buf, data, size);
   }
   _size = size;
@@ -139,42 +145,10 @@ void RawBytesBase<T, ViewType, SizeType>::assign(ViewType data) {
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::assign(const_pointer first, const_pointer last) {
-  assign(first, SafeCast<size_type>(last - first));
-}
-
-template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::erase_front(size_type n) {
-  assert(n <= _size);
   if (n != 0) {
-    std::memmove(_buf, _buf + n, _size - n);
     _size -= n;
-  }
-}
-
-template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::setSize(size_type newSize) {
-  assert(newSize <= _capacity);
-  _size = newSize;
-}
-
-template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::addSize(size_type delta) {
-  assert(_size + delta <= _capacity);
-  _size += delta;
-}
-
-template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::reserveExponential(size_type newCapacity) {
-  if (_capacity < newCapacity) {
-    if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
-      // prevent overflow when doubling capacity
-      static constexpr uintmax_t kMaxCapacity = static_cast<uintmax_t>(std::numeric_limits<size_type>::max());
-      if ((static_cast<uintmax_t>(_capacity) * 2UL) + 1UL > kMaxCapacity) {
-        throw std::bad_alloc();
-      }
-    }
-    reallocUp(std::max(newCapacity, static_cast<size_type>((_capacity * 2U) + 1U)));
+    std::memmove(_buf, _buf + n, _size);
   }
 }
 
@@ -192,7 +166,6 @@ void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() {
       std::free(_buf);
       _buf = nullptr;
       _capacity = 0;
-
     } else {
       pointer newBuf = static_cast<pointer>(std::realloc(_buf, _size));
       if (newBuf != nullptr) {
@@ -208,7 +181,7 @@ void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacity(size_type avai
   if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
     static constexpr uintmax_t kMaxCapacity = static_cast<uintmax_t>(std::numeric_limits<size_type>::max());
     if (kMaxCapacity < static_cast<uintmax_t>(_size) + availableCapacity) {
-      throw std::bad_alloc();
+      throw std::overflow_error("capacity overflow");
     }
   }
   reserve(_size + availableCapacity);
@@ -216,13 +189,22 @@ void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacity(size_type avai
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacityExponential(size_type availableCapacity) {
-  if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
-    static constexpr uintmax_t kMaxCapacity = static_cast<uintmax_t>(std::numeric_limits<size_type>::max());
-    if (kMaxCapacity < static_cast<uintmax_t>(_size) + availableCapacity) {
-      throw std::bad_alloc();
+  const uintmax_t required = static_cast<uintmax_t>(_size) + static_cast<uintmax_t>(availableCapacity);
+
+  if (std::cmp_less(_capacity, required)) {
+    const uintmax_t doubled = (static_cast<uintmax_t>(_capacity) * 2UL) + 1UL;
+    const uintmax_t target = std::max(required, doubled);
+
+    if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
+      static constexpr uintmax_t kMaxCapacity = static_cast<uintmax_t>(std::numeric_limits<size_type>::max());
+      if (target > kMaxCapacity) {
+        throw std::overflow_error("capacity overflow");
+      }
     }
+
+    // Safe to cast now
+    reallocUp(static_cast<size_type>(target));
   }
-  reserveExponential(_size + availableCapacity);
 }
 
 template <class T, class ViewType, class SizeType>
@@ -262,6 +244,5 @@ void RawBytesBase<T, ViewType, SizeType>::reallocUp(size_type newCapacity) {
 // Explicit instantiations for commonly used concrete types
 template class RawBytesBase<char, std::string_view, std::size_t>;
 template class RawBytesBase<char, std::string_view, std::uint32_t>;
-template class RawBytesBase<char, std::string_view, std::uint8_t>;
 template class RawBytesBase<std::byte, std::span<const std::byte>, std::size_t>;
 }  // namespace aeronet

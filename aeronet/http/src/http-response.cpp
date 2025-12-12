@@ -31,7 +31,7 @@
 #include "aeronet/toupperlower.hpp"
 
 #ifndef NDEBUG
-#include "aeronet/http-header.hpp"
+#include "aeronet/reserved-headers.hpp"
 #include "aeronet/tchars.hpp"
 #endif
 

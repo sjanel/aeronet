@@ -6,34 +6,38 @@
 #include <cerrno>
 #include <cstring>
 #include <memory>
-#include <string_view>
+#include <span>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/log.hpp"
 
 namespace aeronet {
 
-ConnectResult ConnectTCP(char* buf, std::string_view host, std::string_view port, int family) {
+namespace {
+class CharReplacer {
+ public:
+  explicit CharReplacer(char* pos) : ch(*pos), pos(pos) { *pos = '\0'; }
+
+  CharReplacer(const CharReplacer&) = delete;
+  CharReplacer(CharReplacer&&) = delete;
+  CharReplacer& operator=(const CharReplacer&) = delete;
+  CharReplacer& operator=(CharReplacer&&) = delete;
+
+  ~CharReplacer() { *pos = ch; }
+
+ private:
+  char ch;
+  char* pos;
+};
+}  // namespace
+
+ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family) {
   addrinfo* res = nullptr;
 
   int gai;
   {
-    struct CharReplacer {
-      explicit CharReplacer(char* pos) : ch(*pos), pos(pos) { *pos = '\0'; }
-
-      CharReplacer(const CharReplacer&) = delete;
-      CharReplacer(CharReplacer&&) = delete;
-      CharReplacer& operator=(const CharReplacer&) = delete;
-      CharReplacer& operator=(CharReplacer&&) = delete;
-
-      ~CharReplacer() { *pos = ch; }
-
-      char ch;
-      char* pos;
-    };
-
-    CharReplacer hostReplacer(buf + (host.data() + host.size() - buf));
-    CharReplacer portReplacer(buf + (port.data() + port.size() - buf));
+    CharReplacer hostReplacer(host.data() + host.size());
+    CharReplacer portReplacer(port.data() + port.size());
 
     addrinfo hints{};
     hints.ai_family = family;
@@ -45,8 +49,9 @@ ConnectResult ConnectTCP(char* buf, std::string_view host, std::string_view port
   std::unique_ptr<addrinfo, void (*)(addrinfo*)> resRAII(res, &::freeaddrinfo);
   ConnectResult connectResult;
 
-  if (gai != 0 || res == nullptr) {
-    log::error("ConnectTCP: getaddrinfo('{}', '{}') failed: {}", host, port, gai_strerror(gai));
+  if (gai != 0) [[unlikely]] {
+    log::error("ConnectTCP: getaddrinfo('{}', '{}') failed: {}", std::string_view(host), std::string_view(port),
+               ::gai_strerror(gai));
     connectResult.failure = true;
     return connectResult;
   }

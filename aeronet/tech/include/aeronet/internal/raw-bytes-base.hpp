@@ -22,6 +22,7 @@ class RawBytesBase {
   using const_reference = const value_type &;
   using iterator = value_type *;
   using const_iterator = const value_type *;
+  using view_type = ViewType;
 
   static_assert(std::is_trivially_copyable_v<T> && sizeof(T) == 1);
   static_assert(std::is_unsigned_v<SizeType>, "RawBytesBase requires an unsigned size type");
@@ -32,7 +33,7 @@ class RawBytesBase {
 
   explicit RawBytesBase(ViewType data);
 
-  RawBytesBase(const_pointer first, const_pointer last);
+  RawBytesBase(const_pointer data, size_type sz);
 
   RawBytesBase(const RawBytesBase &rhs);
   RawBytesBase(RawBytesBase &&rhs) noexcept;
@@ -42,17 +43,13 @@ class RawBytesBase {
 
   ~RawBytesBase();
 
-  void unchecked_append(const_pointer first, const_pointer last);
+  void unchecked_append(const_pointer data, size_type sz);
 
-  void unchecked_append(const_pointer data, size_type sz) { unchecked_append(data, data + sz); }
+  void unchecked_append(ViewType data);
 
-  void unchecked_append(ViewType data) { unchecked_append(data.data(), data.data() + data.size()); }
+  void append(const_pointer data, size_type sz);
 
-  void append(const_pointer first, const_pointer last);
-
-  void append(const_pointer data, size_type sz) { append(data, data + sz); }
-
-  void append(ViewType data) { append(data.data(), data.data() + data.size()); }
+  void append(ViewType data);
 
   void unchecked_push_back(value_type byte) { _buf[_size++] = byte; }
 
@@ -62,23 +59,19 @@ class RawBytesBase {
 
   void assign(ViewType data);
 
-  void assign(const_pointer first, const_pointer last);
-
   void clear() noexcept { _size = 0; }
 
   void erase_front(size_type n);
 
-  void setSize(size_type newSize);
+  void setSize(size_type newSize) { _size = newSize; }
 
-  void addSize(size_type delta);
+  void addSize(size_type delta) { _size += delta; }
 
   [[nodiscard]] size_type size() const noexcept { return _size; }
 
   [[nodiscard]] size_type capacity() const noexcept { return _capacity; }
 
   [[nodiscard]] size_type availableCapacity() const noexcept { return _capacity - _size; }
-
-  void reserveExponential(size_type newCapacity);
 
   void reserve(size_type newCapacity);
 

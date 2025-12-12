@@ -241,13 +241,13 @@ TEST(ConnectionStateBufferTest, ShrinkToFitReducesNonEmptyBuffers) {
   ConnectionState state;
 
   // Grow buffers to have extra capacity
-  state.inBuffer.reserveExponential(1024);
+  state.inBuffer.reserve(1024);
   state.inBuffer.append(std::string_view("hello world"));
 
-  state.bodyAndTrailersBuffer.reserveExponential(2048);
+  state.bodyAndTrailersBuffer.reserve(2048);
   state.bodyAndTrailersBuffer.append(std::string_view("chunked body"));
 
-  state.headBuffer.reserveExponential(512);
+  state.headBuffer.reserve(512);
   state.headBuffer.append(std::string_view("GET / HTTP/1.1\r\nHost: a\r\n\r\n"));
 
   // Sanity: capacities should be larger than sizes prior to shrink

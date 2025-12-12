@@ -28,7 +28,7 @@ inline int Flags(File::OpenMode mode) {
     case File::OpenMode::ReadOnly:
       return O_RDONLY | O_CLOEXEC;
     default:
-      std::unreachable();
+      throw std::invalid_argument("Unsupported File::OpenMode");
   }
 }
 
@@ -69,10 +69,6 @@ std::size_t File::size() const {
 }
 
 std::string File::loadAllContent() const {
-  if (!_fd) {
-    throw std::runtime_error("File is not opened");
-  }
-
   std::string content;
   content.reserve(size());
 
@@ -87,7 +83,7 @@ std::string File::loadAllContent() const {
     RestoreToStart(RestoreToStart&&) = delete;
     RestoreToStart& operator=(RestoreToStart&&) = delete;
 
-    ~RestoreToStart() noexcept {
+    ~RestoreToStart() {
       if (::lseek(_fd, 0, SEEK_SET) == -1) [[unlikely]] {
         // Log but do not throw from a destructor.
         log::error("File::loadAllContent: failed to restore offset for fd # {} errno={} msg={}", _fd, errno,

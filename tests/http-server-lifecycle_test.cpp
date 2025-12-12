@@ -90,6 +90,11 @@ TEST(HttpServerMove, MoveAssignWhileStopped) {
   std::string resp = test::simpleGet(port2, "/x");
   stop.store(true);
   ASSERT_TRUE(resp.contains("S2"));
+
+  // self move-assign should do nothing
+  auto& s1Ref = s1;
+  s1 = std::move(s1Ref);
+  EXPECT_EQ(s1.port(), port2);
 }
 
 TEST(HttpServerMove, MoveConstructProbesCapturesThis) {

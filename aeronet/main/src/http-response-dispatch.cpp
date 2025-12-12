@@ -157,7 +157,9 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
       // Use helper to resolve and initiate a non-blocking connect. The helper
       // returns a ConnectResult with an owned BaseFd and flags indicating
       // whether the connect is pending or failed.
-      ConnectResult cres = ConnectTCP(cnxIt->second->inBuffer.data(), host, portStr);
+      char* data = cnxIt->second->inBuffer.data();
+      ConnectResult cres = ConnectTCP(std::span<char>(data + (host.data() - data), host.size()),
+                                      std::span<char>(data + (portStr.data() - data), portStr.size()));
       if (cres.failure) {
         emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Unable to resolve CONNECT target");
         return LoopAction::Break;
