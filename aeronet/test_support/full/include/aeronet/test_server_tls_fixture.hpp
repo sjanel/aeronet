@@ -9,8 +9,8 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/test-tls-helper.hpp"
 #include "aeronet/test_server_fixture.hpp"
-#include "aeronet/test_tls_helper.hpp"
 
 namespace aeronet::test {
 

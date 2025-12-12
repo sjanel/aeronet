@@ -20,12 +20,13 @@ inline auto IntegralToCharVector(std::integral auto val) {
   using Int = decltype(val);
 
   // +1 for minus, +1 for additional partial ranges coverage
-  static constexpr auto kMaxSize = std::numeric_limits<Int>::digits10 + 1 + (std::is_signed_v<Int> ? 1 : 0);
+  static constexpr auto kMaxSize = std::numeric_limits<Int>::digits10 + 1 + static_cast<int>(std::is_signed_v<Int>);
 
   using CharVector = FixedCapacityVector<char, kMaxSize>;
 
   CharVector ret(static_cast<CharVector::size_type>(nchars(val)));
 
+  // no need to check the return value here, it cannot fail as we sized the vector accordingly
   std::to_chars(ret.data(), ret.data() + ret.size(), val);
 
   return ret;

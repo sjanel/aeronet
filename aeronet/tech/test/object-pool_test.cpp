@@ -11,7 +11,7 @@
 #include <utility>
 #include <vector>
 
-#include "aeronet/sys_test_support.hpp"
+#include "aeronet/sys-test-support.hpp"
 
 #if AERONET_WANT_MALLOC_OVERRIDES
 #include <new>
@@ -521,7 +521,7 @@ TEST(ObjectPoolTest, BasicExceptionGuaranteeOnBlockAllocationFailure) {
   ASSERT_EQ(capBefore, kInitialCapacity);
 
   // next allocation should trigger a new block allocation; fail it
-  aeronet::test_support::FailNextMalloc();
+  aeronet::test::FailNextMalloc();
   ASSERT_THROW((void)pool.allocateAndConstruct(), std::bad_alloc);
 
   // basic guarantee: size and capacity remain unchanged

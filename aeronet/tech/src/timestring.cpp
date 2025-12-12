@@ -12,7 +12,6 @@
 #include <utility>
 
 #include "aeronet/cctype.hpp"
-#include "aeronet/config.hpp"
 #include "aeronet/ipow.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/simple-charconv.hpp"
@@ -24,7 +23,7 @@ namespace aeronet {
 
 SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
   const auto sz = endPtr - begPtr;
-  if (AERONET_UNLIKELY(sz < 4)) {
+  if (sz < 4) [[unlikely]] {
     log::critical("ISO8601 Time string '{}' is too short, expected at least 4 characters",
                   std::string_view(begPtr, endPtr));
     throw std::invalid_argument("ISO8601 Time string too short");
@@ -39,9 +38,9 @@ SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
 
   const auto* begSuffix = begPtr + 10;
 
-  if (AERONET_LIKELY(sz >= 7)) {
+  if (sz >= 7) [[likely]] {
     month = std::chrono::month(static_cast<unsigned>(read2(begPtr + 5)));
-    if (AERONET_LIKELY(sz >= 10)) {
+    if (sz >= 10) [[likely]] {
       day = std::chrono::day(static_cast<unsigned>(read2(begPtr + 8)));
       if (sz >= 13) {
         hours = static_cast<uint8_t>(read2(begPtr + 11));
@@ -61,7 +60,7 @@ SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
   std::chrono::year_month_day ymd{year, month, day};
 
   // NOLINTNEXTLINE(readability-simplify-boolean-expr)
-  if (AERONET_UNLIKELY(!ymd.ok() || hours > 23 || minutes > 59 || seconds > 60)) {  // 60 is possible with leap second
+  if (!ymd.ok() || hours > 23 || minutes > 59 || seconds > 60) [[unlikely]] {  // 60 is possible with leap second
     log::critical("Invalid date or time in ISO8601 Time string '{}'", std::string_view(begPtr, endPtr));
     throw std::invalid_argument("Invalid date or time in ISO8601 Time string");
   }

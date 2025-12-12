@@ -17,10 +17,10 @@
 #include "aeronet/server-stats.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/temp-file.hpp"
+#include "aeronet/test-tls-helper.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_server_tls_fixture.hpp"
 #include "aeronet/test_tls_client.hpp"
-#include "aeronet/test_tls_helper.hpp"
 #include "aeronet/test_util.hpp"
 
 using namespace aeronet;

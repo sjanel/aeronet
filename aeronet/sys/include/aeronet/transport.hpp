@@ -53,9 +53,8 @@ class ITransport {
       return result;
     }
 
-    auto bodyData = secondBuf;
-    if (!bodyData.empty()) {
-      const auto [bytesWritten, want] = write(bodyData);
+    if (!secondBuf.empty()) {
+      const auto [bytesWritten, want] = write(secondBuf);
       result.bytesProcessed += bytesWritten;
       result.want = want;
     }

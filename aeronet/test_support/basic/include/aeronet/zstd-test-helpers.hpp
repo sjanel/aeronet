@@ -10,7 +10,7 @@ namespace aeronet::test {
 // (via frame header) we trust it; otherwise we fall back to an expected size hint.
 // expectedDecompressedSizeHint may be zero; in that case and when the frame size is
 // unknown we return an empty string to signal inability (tests can decide how to handle).
-std::string zstdRoundTripDecompress(std::string_view compressed, std::size_t expectedDecompressedSizeHint = 0);
+std::string ZstdRoundTripDecompress(std::string_view compressed, std::size_t expectedDecompressedSizeHint = 0);
 
 constexpr bool HasZstdMagic(std::string_view body) {
   // zstd frame magic little endian 0x28 B5 2F FD

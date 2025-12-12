@@ -11,10 +11,9 @@
 #include <initializer_list>
 #include <utility>
 
-#include "aeronet/sys_test_support.hpp"
+#include "aeronet/sys-test-support.hpp"
 
 using namespace aeronet;
-namespace test_support = aeronet::test_support;
 
 namespace {
 struct CloseAction {
@@ -25,13 +24,13 @@ struct CloseAction {
 
 [[nodiscard]] CloseAction CloseErr(int err) { return CloseAction{CloseAction::Kind::Error, err}; }
 
-test_support::KeyedActionQueue<int, CloseAction> gCloseOverrides;
+test::KeyedActionQueue<int, CloseAction> gCloseOverrides;
 
 void SetCloseErrorSequence(int fd, std::initializer_list<CloseAction> actions) {
   gCloseOverrides.setActions(fd, actions);
 }
 
-class CloseOverrideGuard : public test_support::QueueResetGuard<test_support::KeyedActionQueue<int, CloseAction>> {
+class CloseOverrideGuard : public test::QueueResetGuard<test::KeyedActionQueue<int, CloseAction>> {
  public:
   CloseOverrideGuard() : QueueResetGuard(gCloseOverrides) {}
 };
@@ -86,7 +85,7 @@ TEST(BaseFd, ReleaseOnClosedReturnsClosedSentinel) {
 }
 
 TEST(BaseFd, BoolOperatorAndReleaseIntegration) {
-  const int fd = test_support::CreateMemfd("aeronet-memfd-bool");
+  const int fd = test::CreateMemfd("aeronet-memfd-bool");
   ASSERT_GE(fd, 0);
 
   BaseFd fdOwner3(fd);
@@ -98,7 +97,7 @@ TEST(BaseFd, BoolOperatorAndReleaseIntegration) {
 }
 
 TEST(BaseFd, DestroyShouldLogIfFdAlreadyClosed) {
-  const int fd = test_support::CreateMemfd("aeronet-memfd-bool");
+  const int fd = test::CreateMemfd("aeronet-memfd-bool");
   ASSERT_GE(fd, 0);
 
   BaseFd fdOwner(fd);
@@ -107,7 +106,7 @@ TEST(BaseFd, DestroyShouldLogIfFdAlreadyClosed) {
 }
 
 TEST(BaseFd, MoveAssignSelfNoOpLeavesFdIntact) {
-  const int fd = test_support::CreateMemfd("aeronet-memfd-self-move");
+  const int fd = test::CreateMemfd("aeronet-memfd-self-move");
   ASSERT_GE(fd, 0);
 
   BaseFd fdOwner(fd);
@@ -119,7 +118,7 @@ TEST(BaseFd, MoveAssignSelfNoOpLeavesFdIntact) {
 
 TEST(BaseFd, CloseRetriesAfterEintr) {
   CloseOverrideGuard guard;
-  const int fd = test_support::CreateMemfd("aeronet-memfd-eintr");
+  const int fd = test::CreateMemfd("aeronet-memfd-eintr");
   ASSERT_GE(fd, 0);
 
   SetCloseErrorSequence(fd, {CloseErr(EINTR)});
@@ -131,7 +130,7 @@ TEST(BaseFd, CloseRetriesAfterEintr) {
 
 TEST(BaseFd, CloseLogsOtherErrorsButMarksClosed) {
   CloseOverrideGuard guard;
-  const int fd = test_support::CreateMemfd("aeronet-memfd-error");
+  const int fd = test::CreateMemfd("aeronet-memfd-error");
   ASSERT_GE(fd, 0);
 
   SetCloseErrorSequence(fd, {CloseErr(EBADF)});

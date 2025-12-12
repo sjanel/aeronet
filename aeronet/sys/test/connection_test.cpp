@@ -13,10 +13,9 @@
 #include <optional>
 
 #include "aeronet/socket.hpp"
-#include "aeronet/sys_test_support.hpp"
+#include "aeronet/sys-test-support.hpp"
 
 using namespace aeronet;
-namespace test_support = aeronet::test_support;
 
 namespace {
 
@@ -29,11 +28,11 @@ struct AcceptAction {
 [[nodiscard]] AcceptAction AcceptFd(int fd) { return AcceptAction{AcceptAction::Kind::Fd, fd}; }
 [[nodiscard]] AcceptAction AcceptErr(int err) { return AcceptAction{AcceptAction::Kind::Error, err}; }
 
-test_support::ActionQueue<AcceptAction> gAcceptActions;
+test::ActionQueue<AcceptAction> gAcceptActions;
 
 void SetAcceptActionSequence(std::initializer_list<AcceptAction> actions) { gAcceptActions.setActions(actions); }
 
-class AcceptHookGuard : public test_support::QueueResetGuard<test_support::ActionQueue<AcceptAction>> {
+class AcceptHookGuard : public test::QueueResetGuard<test::ActionQueue<AcceptAction>> {
  public:
   AcceptHookGuard() : QueueResetGuard(gAcceptActions) {}
 };
@@ -79,7 +78,7 @@ TEST(ConnectionTest, AcceptFatalErrorYieldsFailure) {
 
 TEST(ConnectionTest, AcceptSuccessAdoptsFd) {
   AcceptHookGuard guard;
-  const int fakeFd = test_support::CreateMemfd("aeronet-accept");
+  const int fakeFd = test::CreateMemfd("aeronet-accept");
   ASSERT_GE(fakeFd, 0);
   SetAcceptActionSequence({AcceptFd(fakeFd)});
 
@@ -92,8 +91,8 @@ TEST(ConnectionTest, AcceptSuccessAdoptsFd) {
 
 TEST(ConnectionTest, Equality) {
   AcceptHookGuard guard;
-  const int fakeFd1 = test_support::CreateMemfd("aeronet-accept-1");
-  const int fakeFd2 = test_support::CreateMemfd("aeronet-accept-2");
+  const int fakeFd1 = test::CreateMemfd("aeronet-accept-1");
+  const int fakeFd2 = test::CreateMemfd("aeronet-accept-2");
   ASSERT_GE(fakeFd1, 0);
   ASSERT_GE(fakeFd2, 0);
   SetAcceptActionSequence({AcceptFd(fakeFd1), AcceptFd(fakeFd1), AcceptFd(fakeFd2)});
