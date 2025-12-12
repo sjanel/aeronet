@@ -109,13 +109,12 @@ void HttpResponseWriter::ensureHeadersSent() {
     return;
   }
   // For HEAD requests never emit chunked framing; force zero Content-Length if not provided.
-  if (!chunked()) {
-    if (!_fixedResponse.hasFile() && _declaredLength == 0) {
-      _fixedResponse.setHeader(http::ContentLength, "0");
-    }
-  } else {
-    _fixedResponse.setHeader(http::TransferEncoding, "chunked");
+  if (chunked()) {
+    _fixedResponse.appendHeaderInternal(http::TransferEncoding, "chunked");
+  } else if (!_fixedResponse.hasFile() && _declaredLength == 0) {
+    _fixedResponse.appendHeaderInternal(http::ContentLength, "0");
   }
+
   // If Content-Type has not been set, set to 'application/octet-stream' by default.
   _fixedResponse.setHeader(http::ContentType, http::ContentTypeApplicationOctetStream, HttpResponse::OnlyIfNew::Yes);
   // If compression already activated (delayed strategy) but header not sent yet, add Content-Encoding now.
@@ -130,9 +129,6 @@ void HttpResponseWriter::ensureHeadersSent() {
     _responseMiddlewareApplied = true;
   }
 
-  // Do NOT add Content-Encoding at header emission time; we wait until we actually activate
-  // compression (threshold reached) to avoid mislabeling identity bodies when size < threshold.
-  // Do not attempt to add Connection/Date here; finalize handles them (adds Date, Connection based on keepAlive flag).
   if (_pCorsPolicy != nullptr) {
     (void)_pCorsPolicy->applyToResponse(*_request, _fixedResponse);
     _pCorsPolicy = nullptr;

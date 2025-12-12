@@ -586,7 +586,7 @@ bool SingleHttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
       } else if (routingResult.methodNotAllowed) {
         resp.status(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed).body(resp.reason());
       } else {
-        resp.status(http::StatusCodeNotFound, http::NotFound).body(http::NotFound);
+        resp.status(http::StatusCodeNotFound);
       }
       sendResponse(std::move(resp));
     }
