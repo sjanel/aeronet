@@ -31,8 +31,8 @@
 #include "aeronet/unix-dogstatsd-sink.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/test-tls-helper.hpp"
 #include "aeronet/test_tls_client.hpp"
-#include "aeronet/test_tls_helper.hpp"
 #endif
 
 using namespace aeronet;

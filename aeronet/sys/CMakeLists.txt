@@ -79,4 +79,5 @@ AeronetAddUnitTest(
     test/transport_test.cpp
     LIBRARIES
     aeronet_sys
+    aeronet_basic_test_support
 )

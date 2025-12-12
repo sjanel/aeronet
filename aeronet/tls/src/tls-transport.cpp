@@ -15,6 +15,8 @@
 
 namespace aeronet {
 
+static_assert(EAGAIN == EWOULDBLOCK, "Add handling for EWOULDBLOCK if different from EAGAIN");
+
 namespace {
 inline bool isRetry(int code) { return code == SSL_ERROR_WANT_READ || code == SSL_ERROR_WANT_WRITE; }
 }  // namespace
@@ -25,7 +27,7 @@ ITransport::TransportResult TlsTransport::read(char* buf, std::size_t len) {
     return ret;  // indicate would-block during handshake
   }
 
-  if (::SSL_read_ex(_ssl.get(), buf, len, &ret.bytesProcessed) == 1) {
+  if (::SSL_read_ex(_ssl.get(), buf, len, &ret.bytesProcessed) == 1) [[likely]] {
     // success
     return ret;
   }
@@ -48,7 +50,7 @@ ITransport::TransportResult TlsTransport::read(char* buf, std::size_t len) {
 
   // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
   if (err == SSL_ERROR_SYSCALL) {
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    if (errno == EAGAIN) {
       ret.want = TransportHint::ReadReady;
       return ret;
     }
@@ -67,39 +69,38 @@ ITransport::TransportResult TlsTransport::read(char* buf, std::size_t len) {
 ITransport::TransportResult TlsTransport::write(std::string_view data) {
   TransportResult ret{0, handshake(TransportHint::WriteReady)};
   if (ret.want != TransportHint::None) {
-    return ret;  // indicate would-block during handshake
+    // indicate would-block during handshake
+    return ret;
   }
 
   // Avoid calling OpenSSL with a zero-length buffer. Some OpenSSL builds
   // treat a null/zero-length pointer as an invalid argument and return
   // 'bad length'. If there's nothing to write, simply return 0.
-  if (data.empty()) {
+  if (data.empty() || ::SSL_write_ex(_ssl.get(), data.data(), data.size(), &ret.bytesProcessed) == 1) [[likely]] {
     return ret;
   }
 
-  if (::SSL_write_ex(_ssl.get(), data.data(), data.size(), &ret.bytesProcessed) == 0) {
-    const auto err = ::SSL_get_error(_ssl.get(), 0);
-    if (isRetry(err)) {
-      ret.want = (err == SSL_ERROR_WANT_WRITE) ? TransportHint::WriteReady : TransportHint::ReadReady;
-      ret.bytesProcessed = 0;  // return 0 so caller retries with same data!
+  const auto err = ::SSL_get_error(_ssl.get(), 0);
+  if (isRetry(err)) {
+    ret.want = (err == SSL_ERROR_WANT_WRITE) ? TransportHint::WriteReady : TransportHint::ReadReady;
+    ret.bytesProcessed = 0;  // return 0 so caller retries with same data!
+    return ret;
+  }
+
+  // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
+  if (err == SSL_ERROR_SYSCALL) {
+    auto saved_errno = errno;
+    if (saved_errno == EAGAIN || (saved_errno == 0 && ERR_peek_error() == 0)) {
+      ret.want = TransportHint::WriteReady;
+      ret.bytesProcessed = 0;
       return ret;
     }
-
-    // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
-    if (err == SSL_ERROR_SYSCALL) {
-      auto saved_errno = errno;
-      if (saved_errno == EAGAIN || saved_errno == EWOULDBLOCK || (saved_errno == 0 && ERR_peek_error() == 0)) {
-        ret.want = TransportHint::WriteReady;
-        ret.bytesProcessed = 0;
-        return ret;
-      }
-    }
-
-    logErrorIfAny();
-
-    ret.want = TransportHint::Error;
-    ret.bytesProcessed = 0;
   }
+
+  logErrorIfAny();
+
+  ret.want = TransportHint::Error;
+  ret.bytesProcessed = 0;
 
   return ret;
 }
@@ -162,7 +163,7 @@ TransportHint TlsTransport::handshake(TransportHint want) {
         return (err == SSL_ERROR_WANT_WRITE) ? TransportHint::WriteReady : TransportHint::ReadReady;
       }
       // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
-      if (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      if (err == SSL_ERROR_SYSCALL && errno == EAGAIN) {
         return want;
       }
       return TransportHint::Error;

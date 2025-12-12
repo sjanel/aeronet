@@ -24,7 +24,7 @@ extern "C" void* __libc_malloc(size_t) noexcept;          // NOLINT(bugprone-res
 extern "C" void* __libc_realloc(void*, size_t) noexcept;  // NOLINT(bugprone-reserved-identifier)
 #endif
 
-namespace aeronet::test_support {
+namespace aeronet::test {
 
 // Allocation failure injection utilities used by sys tests. Tests can call
 // `FailNextMalloc()` / `FailNextRealloc()` to cause the next N allocations
@@ -82,7 +82,7 @@ Fn ResolveNext(const char* name) {
   return reinterpret_cast<Fn>(sym);
 }
 
-}  // namespace aeronet::test_support
+}  // namespace aeronet::test
 
 // Disable overriding malloc/realloc for:
 // 1. Clang builds instrumented with AddressSanitizer - Clang's ASAN runtime
@@ -126,7 +126,7 @@ void* CallRealMalloc(size_t size) {
   }
 
   // We are the resolver. Resolve the next-in-chain allocator via RTLD_NEXT.
-  fn = aeronet::test_support::ResolveNext<MallocFn>("malloc");
+  fn = aeronet::test::ResolveNext<MallocFn>("malloc");
   __sync_synchronize();
   resolving = 0;
   return fn(size);
@@ -150,7 +150,7 @@ void* CallRealRealloc(void* ptr, size_t size) {
 #endif
   }
 
-  fn = aeronet::test_support::ResolveNext<ReallocFn>("realloc");
+  fn = aeronet::test::ResolveNext<ReallocFn>("realloc");
   __sync_synchronize();
   resolving = 0;
   return fn(ptr, size);
@@ -166,7 +166,7 @@ void* CallRealRealloc(void* ptr, size_t size) {
 // overrides to avoid AddressSanitizer runtime initialization problems.
 #if AERONET_WANT_MALLOC_OVERRIDES
 extern "C" void* malloc(size_t size) {
-  if (aeronet::test_support::ShouldFailMalloc()) {
+  if (aeronet::test::ShouldFailMalloc()) {
     errno = ENOMEM;
     return nullptr;
   }
@@ -174,7 +174,7 @@ extern "C" void* malloc(size_t size) {
 }
 
 extern "C" void* realloc(void* ptr, size_t size) {
-  if (aeronet::test_support::ShouldFailRealloc()) {
+  if (aeronet::test::ShouldFailRealloc()) {
     errno = ENOMEM;
     return nullptr;
   }
@@ -184,7 +184,7 @@ extern "C" void* realloc(void* ptr, size_t size) {
 // free is intentionally left un-overridden.
 #endif  // AERONET_WANT_MALLOC_OVERRIDES
 
-namespace aeronet::test_support {
+namespace aeronet::test {
 
 inline int CreateMemfd(std::string_view name) {
   const std::string nameStr(name);
@@ -302,4 +302,87 @@ class QueueResetGuard {
   Queue& _queue;
 };
 
-}  // namespace aeronet::test_support
+}  // namespace aeronet::test
+
+// IO override control: enable/disable replacement of ::read/::write for tests.
+
+// Simple action type: first = return value (bytes or -1), second = errno to set when returning -1
+using IoAction = std::pair<ssize_t, int>;
+
+namespace aeronet::test {
+inline KeyedActionQueue<int, IoAction> g_read_actions;
+inline KeyedActionQueue<int, IoAction> g_write_actions;
+
+inline void ResetIoActions() {
+  g_read_actions.reset();
+  g_write_actions.reset();
+}
+
+inline void SetReadActions(int fd, std::initializer_list<IoAction> actions) { g_read_actions.setActions(fd, actions); }
+inline void SetWriteActions(int fd, std::initializer_list<IoAction> actions) {
+  g_write_actions.setActions(fd, actions);
+}
+inline void PushReadAction(int fd, IoAction action) { g_read_actions.push(fd, action); }
+inline void PushWriteAction(int fd, IoAction action) { g_write_actions.push(fd, action); }
+
+using ReadFn = ssize_t (*)(int, void*, size_t);
+using WriteFn = ssize_t (*)(int, const void*, size_t);
+
+inline ReadFn ResolveRealRead() {
+  static ReadFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<ReadFn>("read");
+  return fn;
+}
+
+inline WriteFn ResolveRealWrite() {
+  static WriteFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<WriteFn>("write");
+  return fn;
+}
+
+}  // namespace aeronet::test
+
+#ifdef AERONET_WANT_READ_WRITE_OVERRIDES
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) ssize_t read(int fd, void* buf, size_t count) {
+  auto act = aeronet::test::g_read_actions.pop(fd);
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      if ((buf != nullptr) && ret > 0) {
+        size_t fill = static_cast<size_t>(std::min<ssize_t>(ret, static_cast<ssize_t>(count)));
+        std::memset(buf, 'A', fill);
+      }
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealRead();
+  return real(fd, buf, count);
+}
+
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
+extern "C" __attribute__((no_sanitize("address"))) ssize_t write(int fd, const void* buf, size_t count) {
+  auto act = aeronet::test::g_write_actions.pop(fd);
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      // pretend we wrote ret bytes
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealWrite();
+  return real(fd, buf, count);
+}
+
+#endif

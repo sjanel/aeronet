@@ -12,10 +12,9 @@
 #include <optional>
 #include <system_error>
 
-#include "aeronet/sys_test_support.hpp"
+#include "aeronet/sys-test-support.hpp"
 
 using namespace aeronet;
-namespace test_support = aeronet::test_support;
 
 namespace {
 struct EventfdAction {
@@ -26,9 +25,9 @@ struct EventfdAction {
 
 [[nodiscard]] EventfdAction EventfdErr(int err) { return EventfdAction{EventfdAction::Kind::Error, err}; }
 
-test_support::ActionQueue<EventfdAction> gCreateActions;
-test_support::ActionQueue<EventfdAction> gWriteActions;
-test_support::ActionQueue<EventfdAction> gReadActions;
+test::ActionQueue<EventfdAction> gCreateActions;
+test::ActionQueue<EventfdAction> gWriteActions;
+test::ActionQueue<EventfdAction> gReadActions;
 
 void SetCreateActions(std::initializer_list<EventfdAction> actions) { gCreateActions.setActions(actions); }
 

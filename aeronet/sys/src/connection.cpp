@@ -19,7 +19,7 @@ int ComputeConnectionFd(int socketFd) {
   sockaddr_in in_addr{};
   socklen_t in_len = sizeof(in_addr);
   int fd = ::accept4(socketFd, reinterpret_cast<sockaddr*>(&in_addr), &in_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
-  if (fd == -1) {
+  if (fd == -1) [[unlikely]] {
     const auto savedErr = errno;  // capture errno before any other call
     if (savedErr == EAGAIN || savedErr == EWOULDBLOCK) {
       log::trace("Connection accept would block: {} - this is expected if no pending connections",

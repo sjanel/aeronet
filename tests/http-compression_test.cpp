@@ -23,7 +23,7 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "aeronet/zstd_test_helpers.hpp"
+#include "aeronet/zstd-test-helpers.hpp"
 
 using namespace aeronet;
 
@@ -816,7 +816,7 @@ TEST(HttpCompression, ZstdAppliedWhenEligible) {
   EXPECT_TRUE(test::HasZstdMagic(resp.body));
   EXPECT_LT(resp.body.size(), payload.size());
   // Round-trip verify by decompressing (simple one-shot) to ensure integrity
-  std::string decompressed = test::zstdRoundTripDecompress(resp.body, payload.size());
+  std::string decompressed = test::ZstdRoundTripDecompress(resp.body, payload.size());
   EXPECT_EQ(decompressed, payload);
 }
 
@@ -896,7 +896,7 @@ TEST(HttpCompression, ZstdActivatesAfterThreshold) {
   EXPECT_TRUE(test::HasZstdMagic(resp.plainBody));
   // Round-trip decompression via helper
   std::string original = chunk1 + chunk2;
-  auto decompressed = test::zstdRoundTripDecompress(resp.plainBody, original.size());
+  auto decompressed = test::ZstdRoundTripDecompress(resp.plainBody, original.size());
   EXPECT_EQ(decompressed, original);
 }
 

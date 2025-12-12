@@ -61,7 +61,7 @@ int main() {
 }
 ```
 
-See the [minimal example](examples/aeronet-minimal.cpp).
+See the [full program](examples/minimal.cpp).
 
 ### Streaming response
 
