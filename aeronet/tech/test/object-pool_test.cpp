@@ -62,12 +62,20 @@ TEST(ObjectPoolTest, ReuseFreelistAfterDestroy) {
 TEST(ObjectPoolTest, NonTrivialTypeConstructionAndDestroy) {
   ObjectPool<std::string> pool;
 
-  auto *strObj = pool.allocateAndConstruct("hello");
-  ASSERT_NE(strObj, nullptr);
-  EXPECT_EQ(*strObj, "hello");
+  auto *strObj1 = pool.allocateAndConstruct("hello");
+  ASSERT_NE(strObj1, nullptr);
+  EXPECT_EQ(*strObj1, "hello");
   EXPECT_EQ(pool.size(), 1U);
 
-  pool.destroyAndRelease(strObj);
+  auto *strObj2 = pool.allocateAndConstruct("world");
+  ASSERT_NE(strObj2, nullptr);
+  EXPECT_EQ(*strObj2, "world");
+  EXPECT_EQ(pool.size(), 2U);
+
+  pool.destroyAndRelease(strObj2);
+  EXPECT_EQ(pool.size(), 1U);
+
+  pool.clear();
   EXPECT_EQ(pool.size(), 0U);
 }
 
@@ -75,22 +83,33 @@ struct Counted {
   static int constructions;
   static int destructions;
 
-  Counted() : value(0) { ++constructions; }
-  explicit Counted(int val) : value(val) { ++constructions; }
-
-  ~Counted() { ++destructions; }
-
+  explicit Counted(int val = 0) : value(val) { ++constructions; }
   Counted(const Counted &) = delete;
   Counted &operator=(const Counted &) = delete;
 
   Counted(Counted &&) = delete;
   Counted &operator=(Counted &&) = delete;
+  ~Counted() { ++destructions; }
 
   int value;
 };
 
 int Counted::constructions = 0;
 int Counted::destructions = 0;
+
+TEST(ObjectPoolTest, DestroyReleasesObject) {
+  Counted::constructions = 0;
+  Counted::destructions = 0;
+  ObjectPool<Counted> pool;
+  Counted *cptr = pool.allocateAndConstruct(7);
+  EXPECT_EQ(Counted::constructions, 1);
+  // API requires a non-null pointer and disallows double-destroy; call once
+  // and verify the object was destroyed and the pool size updated.
+  ASSERT_NE(cptr, nullptr);
+  pool.destroyAndRelease(cptr);
+  EXPECT_EQ(pool.size(), 0U);
+  EXPECT_GE(Counted::destructions, 1);
+}
 
 TEST(ObjectPoolTest, DestructorsCalledOnPoolDestruction) {
   Counted::constructions = 0;
@@ -108,40 +127,38 @@ TEST(ObjectPoolTest, DestructorsCalledOnPoolDestruction) {
     EXPECT_EQ(pool.size(), 3U);
 
     pool.destroyAndRelease(c1);
+    EXPECT_EQ(Counted::destructions, 1);
     EXPECT_EQ(pool.size(), 2U);
     pool.destroyAndRelease(c2);
     EXPECT_EQ(pool.size(), 1U);
+    EXPECT_EQ(Counted::destructions, 2);
+    pool.clear();
+    EXPECT_EQ(pool.size(), 0U);
+    EXPECT_EQ(Counted::destructions, 3);
   }
-  // pool destructor must have destroyed all constructed objects
+  // no other object should have been destroyed
   EXPECT_EQ(Counted::destructions, 3);
-}
+  // Test destructors called for all live objects on pool destruction
+  {
+    ObjectPool<Counted> pool(3);
+    Counted *c1 = pool.allocateAndConstruct(5);
+    Counted *c2 = pool.allocateAndConstruct(6);
+    Counted *c3 = pool.allocateAndConstruct(7);
+    EXPECT_EQ(c1->value, 5);
+    EXPECT_EQ(c2->value, 6);
+    EXPECT_EQ(c3->value, 7);
 
-TEST(ObjectPoolTest, DestroyReleasesObject) {
-  Counted::constructions = 0;
-  Counted::destructions = 0;
-  ObjectPool<Counted> pool;
-  Counted *cptr = pool.allocateAndConstruct(7);
-  EXPECT_EQ(Counted::constructions, 1);
-  // API requires a non-null pointer and disallows double-destroy; call once
-  // and verify the object was destroyed and the pool size updated.
-  ASSERT_NE(cptr, nullptr);
-  pool.destroyAndRelease(cptr);
-  EXPECT_EQ(pool.size(), 0U);
-  EXPECT_GE(Counted::destructions, 1);
+    EXPECT_EQ(Counted::constructions, 6);
+    EXPECT_EQ(pool.size(), 3U);
+  }
+  EXPECT_EQ(Counted::destructions, 6);
 }
 
 TEST(ObjectPoolTest, VariadicForwardingConstruction) {
-  struct Pair {
-    int a;
-    int b;
-    Pair(int aa, int bb) : a(aa), b(bb) {}
-  };
-
-  ObjectPool<Pair> pool;
-  Pair *pairPtr = pool.allocateAndConstruct(3, 4);
-  ASSERT_NE(pairPtr, nullptr);
-  EXPECT_EQ(pairPtr->a, 3);
-  EXPECT_EQ(pairPtr->b, 4);
+  ObjectPool<std::string> pool;
+  std::string *strPtr = pool.allocateAndConstruct(8UL, 'A');
+  ASSERT_NE(strPtr, nullptr);
+  EXPECT_EQ(*strPtr, "AAAAAAAA");
 }
 
 TEST(ObjectPoolTest, MovePreservesPointersAndValues) {
@@ -489,14 +506,14 @@ TEST(ObjectPoolTest, ClearPreservesCapacityForString) {
   EXPECT_EQ(pool.size(), 0U);
   EXPECT_EQ(pool.capacity(), capBefore);
 
-  auto *obj = pool.allocateAndConstruct(std::string("after-clear"));
+  auto *obj = pool.allocateAndConstruct("after-clear");
   ASSERT_NE(obj, nullptr);
   EXPECT_EQ(*obj, "after-clear");
   EXPECT_EQ(pool.capacity(), capBefore);
   pool.destroyAndRelease(obj);
 
   for (int i = 0; i < capacity; ++i) {
-    (void)pool.allocateAndConstruct(std::string("after-clear"));
+    (void)pool.allocateAndConstruct("after-clear");
   }
   EXPECT_EQ(pool.capacity(), capBefore);
 }

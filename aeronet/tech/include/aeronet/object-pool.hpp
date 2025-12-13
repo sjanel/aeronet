@@ -253,12 +253,13 @@ T *ObjectPool<T>::allocateAndConstruct(Args &&...args) {
 
   try {
     ::new (slot) Slot(std::forward<Args>(args)...);
-    ++_liveCount;
   } catch (...) {
     slot->setFree(_freeList);
     _freeList = slot;
     throw;
   }
+
+  ++_liveCount;
 
   return slot->ptr();
 }

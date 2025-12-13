@@ -15,7 +15,6 @@
 #include <cstddef>
 #include <initializer_list>
 #include <memory>
-#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -482,13 +481,12 @@ TEST(TlsTransportLogTest, ControlledBioSslReadErrorMapping) {
   int rc = ::SSL_read_ex(pair.serverSsl.get(), buf, sizeof(buf), reinterpret_cast<size_t*>(&outLen));
   int err_with_rc = ::SSL_get_error(pair.serverSsl.get(), rc);
   int err_with_zero = ::SSL_get_error(pair.serverSsl.get(), 0);
-  fprintf(stderr, "DIAG SSL_read_ex rc=%d errno=%d err_with_rc=%d err_with_zero=%d\n", rc, errno, err_with_rc,
-          err_with_zero);
 
   // Ensure we observed the failing rc and some mapping
   EXPECT_NE(err_with_rc, 0);
   EXPECT_NE(err_with_zero, 0);
 }
+
 TEST(TlsTransportWriteHintTest, ReadReportsWriteReadyWhenWantWrite) {
   auto pair = MakeSslPair({"http/1.1"}, {"http/1.1"});
 

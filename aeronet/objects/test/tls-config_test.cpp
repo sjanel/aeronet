@@ -2,7 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <initializer_list>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -390,10 +392,10 @@ TEST(TlsConfigTest, WithTlsHandshakeConcurrencyLimitSetsValue) {
   cfg.enabled = true;
 
   cfg.withTlsHandshakeConcurrencyLimit(5);
-  EXPECT_EQ(cfg.maxConcurrentHandshakes, 5u);
+  EXPECT_EQ(cfg.maxConcurrentHandshakes, 5U);
 
   cfg.withTlsHandshakeConcurrencyLimit(0);
-  EXPECT_EQ(cfg.maxConcurrentHandshakes, 0u);
+  EXPECT_EQ(cfg.maxConcurrentHandshakes, 0U);
 }
 
 TEST(TlsConfigTest, WithTlsHandshakeRateLimitSetsValues) {
@@ -401,13 +403,13 @@ TEST(TlsConfigTest, WithTlsHandshakeRateLimitSetsValues) {
   cfg.enabled = true;
 
   cfg.withTlsHandshakeRateLimit(20, 100);
-  EXPECT_EQ(cfg.handshakeRateLimitPerSecond, 20u);
-  EXPECT_EQ(cfg.handshakeRateLimitBurst, 100u);
+  EXPECT_EQ(cfg.handshakeRateLimitPerSecond, 20U);
+  EXPECT_EQ(cfg.handshakeRateLimitBurst, 100U);
 
   // Changing values should overwrite previous ones
   cfg.withTlsHandshakeRateLimit(0, 0);
-  EXPECT_EQ(cfg.handshakeRateLimitPerSecond, 0u);
-  EXPECT_EQ(cfg.handshakeRateLimitBurst, 0u);
+  EXPECT_EQ(cfg.handshakeRateLimitPerSecond, 0U);
+  EXPECT_EQ(cfg.handshakeRateLimitBurst, 0U);
 }
 
 TEST(TlsConfigTest, WithoutTlsTrustedClientCertClearsList) {
