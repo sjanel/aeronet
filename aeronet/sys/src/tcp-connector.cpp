@@ -7,6 +7,7 @@
 #include <cstring>
 #include <memory>
 #include <span>
+#include <string_view>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/log.hpp"
