@@ -2,180 +2,482 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <list>
+#include <random>
+#include <type_traits>
 
 namespace aeronet {
 
-TEST(MathHelpers, NDigitsS8) {
-  EXPECT_EQ(ndigits(static_cast<int8_t>(0)), 1);
-  EXPECT_EQ(ndigits(static_cast<int8_t>(3)), 1);
-  EXPECT_EQ(ndigits(static_cast<int8_t>(78)), 2);
-  EXPECT_EQ(ndigits(static_cast<int8_t>(112)), 3);
-  EXPECT_EQ(ndigits(static_cast<int8_t>(-125)), 3);
-  EXPECT_EQ(ndigits(static_cast<int8_t>(-10)), 2);
-  EXPECT_EQ(ndigits(static_cast<int8_t>(-1)), 1);
+template <typename T>
+class S8NDigitsTest : public ::testing::Test {
+ public:
+  using List = typename std::list<T>;
+};
 
-  static_assert(ndigits(std::numeric_limits<int8_t>::max()) == 3);
-  static_assert(ndigits(std::numeric_limits<int8_t>::min()) == 3);
+using S8Types = ::testing::Types<char, int8_t>;
+TYPED_TEST_SUITE(S8NDigitsTest, S8Types, );
+
+TYPED_TEST(S8NDigitsTest, NDigitsS8) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 1) {
+    EXPECT_EQ(ndigits(static_cast<T>(0)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(3)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(78)), 2);
+    EXPECT_EQ(ndigits(static_cast<T>(112)), 3);
+    EXPECT_EQ(ndigits(std::numeric_limits<T>::max()), 3);
+    EXPECT_EQ(ndigits(static_cast<T>(-128)), 3);
+    EXPECT_EQ(ndigits(static_cast<T>(-125)), 3);
+    EXPECT_EQ(ndigits(static_cast<T>(-78)), 2);
+    EXPECT_EQ(ndigits(static_cast<T>(-10)), 2);
+    EXPECT_EQ(ndigits(static_cast<T>(-1)), 1);
+
+    static_assert(ndigits(std::numeric_limits<T>::max()) == 3);
+    static_assert(ndigits(std::numeric_limits<T>::min()) == 3);
+  }
 }
 
-TEST(MathHelpers, NDigitsChar) {
-  EXPECT_EQ(ndigits(static_cast<char>(0)), 1);
-  EXPECT_EQ(ndigits(static_cast<char>(3)), 1);
-  EXPECT_EQ(ndigits(static_cast<char>(78)), 2);
-  EXPECT_EQ(ndigits(static_cast<char>(112)), 3);
+template <typename T>
+class S16NDigitsTest : public ::testing::Test {
+ public:
+  using List = typename std::list<T>;
+};
 
-  static_assert(ndigits(std::numeric_limits<char>::max()) == 3);
-  static_assert(ndigits(std::numeric_limits<char>::min()) == 3);
+using S16Types = ::testing::Types<short, int16_t>;
+TYPED_TEST_SUITE(S16NDigitsTest, S16Types, );
+
+TYPED_TEST(S16NDigitsTest, NDigitsS16) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 2) {
+    EXPECT_EQ(ndigits(static_cast<T>(0)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(3)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(78)), 2);
+    EXPECT_EQ(ndigits(static_cast<T>(170)), 3);
+    EXPECT_EQ(ndigits(static_cast<T>(9245)), 4);
+    EXPECT_EQ(ndigits(static_cast<T>(31710)), 5);
+    EXPECT_EQ(ndigits(static_cast<T>(-26816)), 5);
+    EXPECT_EQ(ndigits(static_cast<T>(-3686)), 4);
+    EXPECT_EQ(ndigits(static_cast<T>(-686)), 3);
+    EXPECT_EQ(ndigits(static_cast<T>(-10)), 2);
+    EXPECT_EQ(ndigits(static_cast<T>(-2)), 1);
+
+    static_assert(ndigits(std::numeric_limits<T>::max()) == 5);
+    static_assert(ndigits(std::numeric_limits<T>::min()) == 5);
+  }
 }
 
-TEST(MathHelpers, NDigitsS16) {
-  EXPECT_EQ(ndigits(static_cast<int16_t>(0)), 1);
-  EXPECT_EQ(ndigits(static_cast<int16_t>(3)), 1);
-  EXPECT_EQ(ndigits(static_cast<int16_t>(78)), 2);
-  EXPECT_EQ(ndigits(static_cast<int16_t>(170)), 3);
-  EXPECT_EQ(ndigits(static_cast<int16_t>(9245)), 4);
-  EXPECT_EQ(ndigits(static_cast<int16_t>(31710)), 5);
-  EXPECT_EQ(ndigits(static_cast<int16_t>(-26816)), 5);
-  EXPECT_EQ(ndigits(static_cast<int16_t>(-3686)), 4);
-  EXPECT_EQ(ndigits(static_cast<int16_t>(-686)), 3);
-  EXPECT_EQ(ndigits(static_cast<int16_t>(-10)), 2);
-  EXPECT_EQ(ndigits(static_cast<int16_t>(-2)), 1);
+template <typename T>
+class S32NDigitsTest : public ::testing::Test {
+ public:
+  using List = typename std::list<T>;
+};
 
-  static_assert(ndigits(std::numeric_limits<int16_t>::max()) == 5);
-  static_assert(ndigits(std::numeric_limits<int16_t>::min()) == 5);
+using S32Types = ::testing::Types<int, int32_t>;
+TYPED_TEST_SUITE(S32NDigitsTest, S32Types, );
+
+TYPED_TEST(S32NDigitsTest, NDigitsS32) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 4) {
+    EXPECT_EQ(ndigits(static_cast<T>(0)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(3)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(78)), 2);
+    EXPECT_EQ(ndigits(static_cast<T>(170)), 3);
+    EXPECT_EQ(ndigits(static_cast<T>(9245)), 4);
+    EXPECT_EQ(ndigits(static_cast<T>(35710)), 5);
+    EXPECT_EQ(ndigits(static_cast<T>(100000)), 6);
+    EXPECT_EQ(ndigits(static_cast<T>(1035710)), 7);
+    EXPECT_EQ(ndigits(static_cast<T>(21035710)), 8);
+    EXPECT_EQ(ndigits(static_cast<T>(461035710)), 9);
+    EXPECT_EQ(ndigits(static_cast<T>(1905614858)), 10);
+    EXPECT_EQ(ndigits(static_cast<T>(-1000000000)), 10);
+    EXPECT_EQ(ndigits(static_cast<T>(-908561485)), 9);
+    EXPECT_EQ(ndigits(static_cast<T>(-18561485)), 8);
+    EXPECT_EQ(ndigits(static_cast<T>(-1861485)), 7);
+    EXPECT_EQ(ndigits(static_cast<T>(-186148)), 6);
+    EXPECT_EQ(ndigits(static_cast<T>(-36816)), 5);
+    EXPECT_EQ(ndigits(static_cast<T>(-3686)), 4);
+    EXPECT_EQ(ndigits(static_cast<T>(-686)), 3);
+    EXPECT_EQ(ndigits(static_cast<T>(-10)), 2);
+    EXPECT_EQ(ndigits(static_cast<T>(-1)), 1);
+
+    static_assert(ndigits(std::numeric_limits<T>::max()) == 10);
+    static_assert(ndigits(std::numeric_limits<T>::min()) == 10);
+  }
 }
 
-TEST(MathHelpers, NDigitsS32) {
-  EXPECT_EQ(ndigits(0), 1);
-  EXPECT_EQ(ndigits(3), 1);
-  EXPECT_EQ(ndigits(78), 2);
-  EXPECT_EQ(ndigits(170), 3);
-  EXPECT_EQ(ndigits(9245), 4);
-  EXPECT_EQ(ndigits(35710), 5);
-  EXPECT_EQ(ndigits(100000), 6);
-  EXPECT_EQ(ndigits(1035710), 7);
-  EXPECT_EQ(ndigits(21035710), 8);
-  EXPECT_EQ(ndigits(461035710), 9);
-  EXPECT_EQ(ndigits(5905614858), 10);
-  EXPECT_EQ(ndigits(-3954784858), 10);
-  EXPECT_EQ(ndigits(-908561485), 9);
-  EXPECT_EQ(ndigits(-18561485), 8);
-  EXPECT_EQ(ndigits(-1861485), 7);
-  EXPECT_EQ(ndigits(-186148), 6);
-  EXPECT_EQ(ndigits(-36816), 5);
-  EXPECT_EQ(ndigits(-3686), 4);
-  EXPECT_EQ(ndigits(-686), 3);
-  EXPECT_EQ(ndigits(-10), 2);
-  EXPECT_EQ(ndigits(-1), 1);
+template <typename T>
+class S64NDigitsTest : public ::testing::Test {
+ public:
+  using List = typename std::list<T>;
+};
 
-  static_assert(ndigits(std::numeric_limits<int32_t>::max()) == 10);
-  static_assert(ndigits(std::numeric_limits<int32_t>::min()) == 10);
+using S64Types = ::testing::Types<long, int64_t>;
+TYPED_TEST_SUITE(S64NDigitsTest, S64Types, );
+
+TYPED_TEST(S64NDigitsTest, NDigitsS64) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 8) {
+    EXPECT_EQ(ndigits(static_cast<T>(0)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(3)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(78)), 2);
+    EXPECT_EQ(ndigits(static_cast<T>(170)), 3);
+    EXPECT_EQ(ndigits(static_cast<T>(9245)), 4);
+    EXPECT_EQ(ndigits(static_cast<T>(35710)), 5);
+    EXPECT_EQ(ndigits(static_cast<T>(100000)), 6);
+    EXPECT_EQ(ndigits(static_cast<T>(1035710)), 7);
+    EXPECT_EQ(ndigits(static_cast<T>(18561485)), 8);
+    EXPECT_EQ(ndigits(static_cast<T>(908561485)), 9);
+    EXPECT_EQ(ndigits(static_cast<T>(5905614858)), 10);
+    EXPECT_EQ(ndigits(static_cast<T>(59085614858)), 11);
+    EXPECT_EQ(ndigits(static_cast<T>(590385614858)), 12);
+    EXPECT_EQ(ndigits(static_cast<T>(2938502856265)), 13);
+    EXPECT_EQ(ndigits(static_cast<T>(29938502856265)), 14);
+    EXPECT_EQ(ndigits(static_cast<T>(299385028562659)), 15);
+    EXPECT_EQ(ndigits(static_cast<T>(7299385028562659)), 16);
+    static_assert(ndigits(static_cast<T>(72993850285626590)) == 17);
+    EXPECT_EQ(ndigits(static_cast<T>(372993850285626590)), 18);
+    EXPECT_EQ(ndigits(static_cast<T>(1000000000000000000)), 19);
+    EXPECT_EQ(ndigits(std::numeric_limits<T>::max()), 19);
+    EXPECT_EQ(ndigits(std::numeric_limits<T>::min()), 19);
+    EXPECT_EQ(ndigits(static_cast<T>(-372909385028562659L)), 18);
+    EXPECT_EQ(ndigits(static_cast<T>(-87299385028566509L)), 17);
+    EXPECT_EQ(ndigits(static_cast<T>(-7299385028562659L)), 16);
+    EXPECT_EQ(ndigits(static_cast<T>(-299385028562659L)), 15);
+    EXPECT_EQ(ndigits(static_cast<T>(-29938502856265L)), 14);
+    EXPECT_EQ(ndigits(static_cast<T>(-2938502856265L)), 13);
+    EXPECT_EQ(ndigits(static_cast<T>(-590385614858L)), 12);
+    EXPECT_EQ(ndigits(static_cast<T>(-59085614858L)), 11);
+    EXPECT_EQ(ndigits(static_cast<T>(-5905614858L)), 10);
+    EXPECT_EQ(ndigits(static_cast<T>(-908561485L)), 9);
+    EXPECT_EQ(ndigits(static_cast<T>(-93058365L)), 8);
+    EXPECT_EQ(ndigits(static_cast<T>(-1861485L)), 7);
+    EXPECT_EQ(ndigits(static_cast<T>(-186148L)), 6);
+    EXPECT_EQ(ndigits(static_cast<T>(-73686L)), 5);
+    EXPECT_EQ(ndigits(static_cast<T>(-3686L)), 4);
+    EXPECT_EQ(ndigits(static_cast<T>(-686L)), 3);
+    EXPECT_EQ(ndigits(static_cast<T>(-10L)), 2);
+    EXPECT_EQ(ndigits(static_cast<T>(-7L)), 1);
+  }
 }
 
-TEST(MathHelpers, NDigitsS64) {
-  EXPECT_EQ(ndigits(0L), 1);
-  EXPECT_EQ(ndigits(3L), 1);
-  EXPECT_EQ(ndigits(78L), 2);
-  EXPECT_EQ(ndigits(170L), 3);
-  EXPECT_EQ(ndigits(9245L), 4);
-  EXPECT_EQ(ndigits(35710L), 5);
-  EXPECT_EQ(ndigits(100000L), 6);
-  EXPECT_EQ(ndigits(1035710L), 7);
-  EXPECT_EQ(ndigits(18561485L), 8);
-  EXPECT_EQ(ndigits(908561485L), 9);
-  EXPECT_EQ(ndigits(5905614858L), 10);
-  EXPECT_EQ(ndigits(59085614858L), 11);
-  EXPECT_EQ(ndigits(590385614858L), 12);
-  EXPECT_EQ(ndigits(2938502856265L), 13);
-  EXPECT_EQ(ndigits(29938502856265L), 14);
-  EXPECT_EQ(ndigits(299385028562659L), 15);
-  EXPECT_EQ(ndigits(7299385028562659L), 16);
-  static_assert(ndigits(72993850285626590L) == 17);
-  EXPECT_EQ(ndigits(372993850285626590L), 18);
-  EXPECT_EQ(ndigits(8729938502856126509L), 19);
-  EXPECT_EQ(ndigits(std::numeric_limits<int64_t>::max()), 19);
-  EXPECT_EQ(ndigits(std::numeric_limits<int64_t>::min()), 19);
-  EXPECT_EQ(ndigits(-372909385028562659L), 18);
-  EXPECT_EQ(ndigits(-87299385028566509L), 17);
-  EXPECT_EQ(ndigits(-7299385028562659L), 16);
-  EXPECT_EQ(ndigits(-299385028562659L), 15);
-  EXPECT_EQ(ndigits(-29938502856265L), 14);
-  EXPECT_EQ(ndigits(-2938502856265L), 13);
-  EXPECT_EQ(ndigits(-590385614858L), 12);
-  EXPECT_EQ(ndigits(-59085614858L), 11);
-  EXPECT_EQ(ndigits(-5905614858L), 10);
-  EXPECT_EQ(ndigits(-908561485L), 9);
-  EXPECT_EQ(ndigits(-93058365L), 8);
-  EXPECT_EQ(ndigits(-1861485L), 7);
-  EXPECT_EQ(ndigits(-186148L), 6);
-  EXPECT_EQ(ndigits(-73686L), 5);
-  EXPECT_EQ(ndigits(-3686L), 4);
-  EXPECT_EQ(ndigits(-686L), 3);
-  EXPECT_EQ(ndigits(-10L), 2);
+template <typename T>
+class U8NDigitsTest : public ::testing::Test {
+ public:
+  using List = typename std::list<T>;
+};
+
+using U8Types = ::testing::Types<unsigned char, uint8_t>;
+TYPED_TEST_SUITE(U8NDigitsTest, U8Types, );
+
+TYPED_TEST(U8NDigitsTest, NDigitsU8) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 1) {
+    EXPECT_EQ(ndigits(static_cast<T>(0)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(3)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(78)), 2);
+    EXPECT_EQ(ndigits(static_cast<T>(200)), 3);
+
+    static_assert(ndigits(std::numeric_limits<T>::max()) == 3);
+    static_assert(ndigits(std::numeric_limits<T>::min()) == 1);
+  }
 }
 
-TEST(MathHelpers, NDigitsU8) {
-  EXPECT_EQ(ndigits(static_cast<uint8_t>(0)), 1);
-  EXPECT_EQ(ndigits(static_cast<uint8_t>(3)), 1);
-  EXPECT_EQ(ndigits(static_cast<uint8_t>(78)), 2);
-  EXPECT_EQ(ndigits(static_cast<uint8_t>(200)), 3);
+template <typename T>
+class U16NDigitsTest : public ::testing::Test {
+ public:
+  using List = typename std::list<T>;
+};
 
-  static_assert(ndigits(std::numeric_limits<uint8_t>::max()) == 3);
-  static_assert(ndigits(std::numeric_limits<uint8_t>::min()) == 1);
+using U16Types = ::testing::Types<uint16_t, unsigned short>;
+TYPED_TEST_SUITE(U16NDigitsTest, U16Types, );
+
+TYPED_TEST(U16NDigitsTest, NDigitsU16) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 2) {
+    EXPECT_EQ(ndigits(static_cast<T>(0)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(10)), 2);
+    EXPECT_EQ(ndigits(static_cast<T>(170)), 3);
+    EXPECT_EQ(ndigits(static_cast<T>(4710)), 4);
+    EXPECT_EQ(ndigits(static_cast<T>(46816)), 5);
+
+    static_assert(ndigits(std::numeric_limits<T>::max()) == 5);
+    static_assert(ndigits(std::numeric_limits<T>::min()) == 1);
+  }
 }
 
-TEST(MathHelpers, NDigitsU16) {
-  EXPECT_EQ(ndigits(static_cast<uint16_t>(0)), 1);
-  EXPECT_EQ(ndigits(static_cast<uint16_t>(10)), 2);
-  EXPECT_EQ(ndigits(static_cast<uint16_t>(170)), 3);
-  EXPECT_EQ(ndigits(static_cast<uint16_t>(4710)), 4);
-  EXPECT_EQ(ndigits(static_cast<uint16_t>(46816)), 5);
+template <typename T>
+class U32NDigitsTest : public ::testing::Test {
+ public:
+  using List = typename std::list<T>;
+};
 
-  static_assert(ndigits(std::numeric_limits<uint16_t>::max()) == 5);
-  static_assert(ndigits(std::numeric_limits<uint16_t>::min()) == 1);
+using U32Types = ::testing::Types<uint32_t, unsigned int>;
+TYPED_TEST_SUITE(U32NDigitsTest, U32Types, );
+
+TYPED_TEST(U32NDigitsTest, NDigitsU32) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 4) {
+    EXPECT_EQ(ndigits(static_cast<T>(0U)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(3U)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(78U)), 2);
+    EXPECT_EQ(ndigits(static_cast<T>(170U)), 3);
+    EXPECT_EQ(ndigits(static_cast<T>(9245U)), 4);
+    EXPECT_EQ(ndigits(static_cast<T>(35710U)), 5);
+    EXPECT_EQ(ndigits(static_cast<T>(100000U)), 6);
+    EXPECT_EQ(ndigits(static_cast<T>(1035710U)), 7);
+    EXPECT_EQ(ndigits(static_cast<T>(31035710U)), 8);
+    EXPECT_EQ(ndigits(static_cast<T>(561035710U)), 9);
+    EXPECT_EQ(ndigits(static_cast<T>(4105614858U)), 10);
+
+    static_assert(ndigits(std::numeric_limits<T>::max()) == 10);
+    static_assert(ndigits(std::numeric_limits<T>::min()) == 1);
+  }
 }
 
-TEST(MathHelpers, NDigitsU32) {
-  EXPECT_EQ(ndigits(0U), 1);
-  EXPECT_EQ(ndigits(3U), 1);
-  EXPECT_EQ(ndigits(78U), 2);
-  EXPECT_EQ(ndigits(170U), 3);
-  EXPECT_EQ(ndigits(9245U), 4);
-  EXPECT_EQ(ndigits(35710U), 5);
-  EXPECT_EQ(ndigits(100000U), 6);
-  EXPECT_EQ(ndigits(1035710U), 7);
-  EXPECT_EQ(ndigits(31035710U), 8);
-  EXPECT_EQ(ndigits(561035710U), 9);
-  EXPECT_EQ(ndigits(4105614858U), 10);
+template <typename T>
+class U64NDigitsTest : public ::testing::Test {
+ public:
+  using List = typename std::list<T>;
+};
 
-  static_assert(ndigits(std::numeric_limits<uint32_t>::max()) == 10);
-  static_assert(ndigits(std::numeric_limits<uint32_t>::min()) == 1);
+using U64Types = ::testing::Types<uint64_t, unsigned long>;
+TYPED_TEST_SUITE(U64NDigitsTest, U64Types, );
+
+TYPED_TEST(U64NDigitsTest, NDigitsU64) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 8) {
+    EXPECT_EQ(ndigits(static_cast<T>(0UL)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(3UL)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(78UL)), 2);
+    EXPECT_EQ(ndigits(static_cast<T>(170UL)), 3);
+    EXPECT_EQ(ndigits(static_cast<T>(9245UL)), 4);
+    EXPECT_EQ(ndigits(static_cast<T>(35710UL)), 5);
+    EXPECT_EQ(ndigits(static_cast<T>(100000UL)), 6);
+    EXPECT_EQ(ndigits(static_cast<T>(1035710UL)), 7);
+    EXPECT_EQ(ndigits(static_cast<T>(18561485UL)), 8);
+    EXPECT_EQ(ndigits(static_cast<T>(908561485UL)), 9);
+    EXPECT_EQ(ndigits(static_cast<T>(5905614858UL)), 10);
+    EXPECT_EQ(ndigits(static_cast<T>(59085614858UL)), 11);
+    EXPECT_EQ(ndigits(static_cast<T>(590385614858UL)), 12);
+    EXPECT_EQ(ndigits(static_cast<T>(2938502856265UL)), 13);
+    EXPECT_EQ(ndigits(static_cast<T>(29938502856265UL)), 14);
+    EXPECT_EQ(ndigits(static_cast<T>(299385028562659UL)), 15);
+    EXPECT_EQ(ndigits(static_cast<T>(7299385028562659UL)), 16);
+    static_assert(ndigits(static_cast<T>(72993850285626590UL)) == 17);
+    EXPECT_EQ(ndigits(static_cast<T>(372993850285626590UL)), 18);
+    EXPECT_EQ(ndigits(static_cast<T>(8729938502856126509UL)), 19);
+    EXPECT_EQ(ndigits(std::numeric_limits<T>::max()), 20);
+    EXPECT_EQ(ndigits(std::numeric_limits<T>::min()), 1);
+  }
 }
 
-TEST(MathHelpers, NDigitsU64) {
-  EXPECT_EQ(ndigits(0UL), 1);
-  EXPECT_EQ(ndigits(3UL), 1);
-  EXPECT_EQ(ndigits(78UL), 2);
-  EXPECT_EQ(ndigits(170UL), 3);
-  EXPECT_EQ(ndigits(9245UL), 4);
-  EXPECT_EQ(ndigits(35710UL), 5);
-  EXPECT_EQ(ndigits(100000UL), 6);
-  EXPECT_EQ(ndigits(1035710UL), 7);
-  EXPECT_EQ(ndigits(18561485UL), 8);
-  EXPECT_EQ(ndigits(908561485UL), 9);
-  EXPECT_EQ(ndigits(5905614858UL), 10);
-  EXPECT_EQ(ndigits(59085614858UL), 11);
-  EXPECT_EQ(ndigits(590385614858UL), 12);
-  EXPECT_EQ(ndigits(2938502856265UL), 13);
-  EXPECT_EQ(ndigits(29938502856265UL), 14);
-  EXPECT_EQ(ndigits(299385028562659UL), 15);
-  EXPECT_EQ(ndigits(7299385028562659UL), 16);
-  static_assert(ndigits(72993850285626590UL) == 17);
-  EXPECT_EQ(ndigits(372993850285626590UL), 18);
-  EXPECT_EQ(ndigits(8729938502856126509UL), 19);
-  EXPECT_EQ(ndigits(std::numeric_limits<uint64_t>::max()), 20);
-  EXPECT_EQ(ndigits(std::numeric_limits<uint64_t>::min()), 1);
+namespace {
+// Exhaustive threshold tests for powers of 10 boundaries for each type width.
+template <typename T>
+void ExpectThresholdsUnsigned() {
+  using U = T;
+  U val = 1;
+  for (int digits = 1; digits <= 20; ++digits) {
+    // v == 10^(digits-1)
+    EXPECT_EQ(ndigits(static_cast<U>(val)), digits);
+
+    // v-1 has digits-1 (if v>1)
+    if (val > 1) {
+      EXPECT_EQ(ndigits(static_cast<U>(val - 1)), digits - 1);
+    }
+
+    // v*9 yields same digits if it fits in the type
+    if (val <= std::numeric_limits<U>::max() / 9) {
+      U nine = val * 9;
+      EXPECT_EQ(ndigits(static_cast<U>(nine)), digits);
+    }
+
+    // advance, careful to stop at overflow
+    if (val > std::numeric_limits<U>::max() / 10) {
+      break;
+    }
+    val *= 10;
+  }
 }
+
+template <typename T>
+void ExpectThresholdSigned() {
+  using S = T;
+  using U = std::make_unsigned_t<S>;
+
+  // positive thresholds
+  U val = 1;
+  for (int digits = 1; digits <= 20; ++digits) {
+    if (val <= static_cast<U>(std::numeric_limits<S>::max())) {
+      EXPECT_EQ(ndigits(static_cast<S>(val)), digits);
+      if (val > 1) {
+        EXPECT_EQ(ndigits(static_cast<S>(val - 1)), digits - 1);
+      }
+    }
+
+    // negative thresholds: -v has same digit count as v except sign not counted
+    if (val <= static_cast<U>(std::numeric_limits<S>::max())) {
+      S neg = static_cast<S>(-static_cast<S>(val));
+      EXPECT_EQ(ndigits(neg), digits);
+      if (val > 1) {
+        EXPECT_EQ(ndigits(static_cast<S>(-(static_cast<S>(val - 1)))), digits - 1);
+      }
+    }
+
+    if (val > std::numeric_limits<U>::max() / 10) {
+      break;
+    }
+    val *= 10;
+  }
+
+  // test min and max explicitly
+  EXPECT_EQ(ndigits(std::numeric_limits<S>::max()), ndigits(static_cast<S>(std::numeric_limits<S>::max())));
+  EXPECT_EQ(ndigits(std::numeric_limits<S>::min()), ndigits(static_cast<S>(std::numeric_limits<S>::min())));
+}
+
+}  // namespace
+
+TYPED_TEST(U16NDigitsTest, Thresholds) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 2) {
+    ExpectThresholdsUnsigned<T>();
+  }
+}
+
+TYPED_TEST(U32NDigitsTest, Thresholds) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 4) {
+    ExpectThresholdsUnsigned<T>();
+  }
+}
+
+TYPED_TEST(U64NDigitsTest, Thresholds) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 8) {
+    ExpectThresholdsUnsigned<T>();
+  }
+}
+
+TYPED_TEST(S8NDigitsTest, Thresholds) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 1) {
+    ExpectThresholdSigned<T>();
+  }
+}
+
+TYPED_TEST(S16NDigitsTest, Thresholds) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 2) {
+    ExpectThresholdSigned<T>();
+  }
+}
+
+TYPED_TEST(S32NDigitsTest, Thresholds) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 4) {
+    ExpectThresholdSigned<T>();
+  }
+}
+
+TYPED_TEST(S64NDigitsTest, Thresholds) {
+  using T = TypeParam;
+  if constexpr (sizeof(T) == 8) {
+    ExpectThresholdSigned<T>();
+  }
+}
+
+namespace {
+
+int CountDigitsReference(std::signed_integral auto n) {
+  using T = decltype(n);
+  using U = std::make_unsigned_t<T>;
+
+  // Handle zero explicitly
+  if (n == 0) {
+    return 1;
+  }
+
+  // Convert to unsigned magnitude without invoking undefined behavior for the
+  // most-negative value. Use the -(n+1) trick then add one after casting.
+  U val;
+  if (n < 0) {
+    val = static_cast<U>(-(n + 1));
+    val += 1U;
+  } else {
+    val = static_cast<U>(n);
+  }
+
+  int count = 0;
+  do {
+    val /= 10U;
+    ++count;
+  } while (val != 0U);
+  return count;
+}
+
+int CountDigitsReference(std::unsigned_integral auto n) {
+  int count = 0;
+  do {
+    n /= 10;
+    ++count;
+  } while (n != 0);
+  return count;
+}
+
+}  // namespace
+
+TEST(NDigitsTest, CompareToReferenceImplementationNormalDistribution) {
+  std::mt19937_64 rng(20240610);
+
+  // Precompute powers of 10 up to 19 digits (fits in uint64_t)
+  static constexpr int kMaxDigits = 19;  // int64_t has up to 19 decimal digits
+  uint64_t pow10[kMaxDigits + 1];
+  pow10[0] = 1ULL;
+  for (int i = 1; i <= kMaxDigits; ++i) {
+    pow10[i] = pow10[i - 1] * 10ULL;
+  }
+
+  // Choose a normal distribution over digit counts so we don't over-sample very large values.
+  std::normal_distribution<double> digit_dist(6.0, 5.0);
+  std::bernoulli_distribution sign_dist(0.5);
+
+  static constexpr int kTests = 1000000;
+  for (int i = 0; i < kTests; ++i) {
+    int digits = static_cast<int>(std::llround(digit_dist(rng)));
+    digits = std::max(digits, 1);
+    digits = std::min(digits, kMaxDigits);
+
+    // For 1-digit values allow zero..9, for others sample in [10^{d-1}, 10^d - 1].
+    uint64_t lo = (digits == 1) ? 0ULL : pow10[digits - 1];
+    uint64_t hi = pow10[digits] - 1ULL;
+
+    // Clamp hi to int64_t max to avoid overflow when converting to signed.
+    const uint64_t kI64Max = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+    hi = std::min(hi, kI64Max);
+
+    std::uniform_int_distribution<uint64_t> mag_dist(lo, hi);
+    uint64_t mag = mag_dist(rng);
+
+    int expected = CountDigitsReference(mag);
+    int actual = ndigits(mag);
+    EXPECT_EQ(actual, expected) << "Mismatch for value: " << mag;
+
+    bool negative = sign_dist(rng);
+    mag = std::min(mag, kI64Max);
+    int64_t val;
+    if (negative) {
+      // Avoid negating a value that would overflow; cap to int64_t max and negate.
+      val = -static_cast<int64_t>(mag);
+    } else {
+      val = static_cast<int64_t>(mag);
+    }
+
+    expected = CountDigitsReference(val);
+    actual = ndigits(val);
+    EXPECT_EQ(actual, expected) << "Mismatch for value: " << val;
+  }
+}
+
 }  // namespace aeronet

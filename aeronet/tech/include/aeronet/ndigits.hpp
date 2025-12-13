@@ -1,96 +1,73 @@
 #pragma once
 
+#include <bit>
 #include <concepts>
-#include <limits>
+#include <type_traits>
 
 namespace aeronet {
 
-/// Return the number of digits of given integral.
-/// The minus sign is not counted - use nchars if you want it counted.
-/// Maximum of int(log2(std::numeric_limits<T>::digits10)) + 2 comparisons.
-constexpr int ndigits(std::signed_integral auto n) noexcept {
-  using T = decltype(n);
-
-  if constexpr (std::numeric_limits<T>::digits10 == 2) {
-    return n < 0 ? (n > -10 ? 1 : (n > -100 ? 2 : 3)) : n < 10 ? 1 : (n < 100 ? 2 : 3);
+// Fast unsigned implementation using countl_zero to estimate floor(log2(n)),
+// then map to decimal digits via a small correction against powers of 10.
+constexpr int ndigits(std::unsigned_integral auto n) noexcept {
+  if (n < 10U) {
+    return 1;
   }
 
-  else if constexpr (std::numeric_limits<T>::digits10 == 4) {
-    return n < 0 ? (n > -100 ? (n > -10 ? 1 : 2) : (n > -1000 ? 3 : (n > -10000 ? 4 : 5)))
-                 : (n < 100 ? (n < 10 ? 1 : 2) : (n < 1000 ? 3 : (n < 10000 ? 4 : 5)));
+  // Powers of 10 up to 10^19
+  static constexpr unsigned long long pow10[] = {9ULL,
+                                                 99ULL,
+                                                 999ULL,
+                                                 9999ULL,
+                                                 99999ULL,
+                                                 999999ULL,
+                                                 9999999ULL,
+                                                 99999999ULL,
+                                                 999999999ULL,
+                                                 9999999999ULL,
+                                                 99999999999ULL,
+                                                 999999999999ULL,
+                                                 9999999999999ULL,
+                                                 99999999999999ULL,
+                                                 999999999999999ULL,
+                                                 9999999999999999ULL,
+                                                 99999999999999999ULL,
+                                                 999999999999999999ULL,
+                                                 9999999999999999999ULL,
+                                                 static_cast<unsigned long long>(-1)};
+
+  // Promote to 64-bit for countl_zero to avoid promotion surprises on narrow types.
+  const unsigned long long u64 = static_cast<unsigned long long>(n);
+  const unsigned int floorLog2 = 63U - static_cast<unsigned int>(std::countl_zero(u64));
+
+  // estimate decimal digits-1 using fixed-point approximation of log10(2)
+  // multiply by 1233/4096 ~= log10(2)
+  unsigned int estimate = (floorLog2 * 1233U) >> 12U;
+
+  // The fixed-point approximation (1233/4096) guarantees the initial
+  // estimate is never more than 18 for 64-bit inputs. Sanity-check that at
+  // compile-time so future edits won't break the invariant.
+  static_assert(((63U * 1233U) >> 12U) == 18U, "ndigits approximation bound changed");
+
+  // The initial estimate may occasionally be low by at most one
+  if (u64 > pow10[estimate]) {
+    ++estimate;
   }
 
-  else if constexpr (std::numeric_limits<T>::digits10 == 9) {
-    return n < 0 ? (n > -100000
-                        ? (n > -1000 ? (n > -10 ? 1 : (n > -100 ? 2 : 3)) : (n > -10000 ? 4 : 5))
-                        : (n > -10000000 ? (n > -1000000 ? 6 : 7) : (n > -1000000000 ? (n > -100000000 ? 8 : 9) : 10)))
-                 : (n < 100000
-                        ? (n < 1000 ? (n < 10 ? 1 : (n < 100 ? 2 : 3)) : (n < 10000 ? 4 : 5))
-                        : (n < 10000000 ? (n < 1000000 ? 6 : 7) : (n < 1000000000 ? (n < 100000000 ? 8 : 9) : 10)));
-  }
-
-  else if constexpr (std::numeric_limits<T>::digits10 == 18) {
-    return n < 0
-               ? (n > -1000000000L
-                      ? (n > -10000L ? (n > -100L ? (n > -10L ? 1 : 2) : (n > -1000L ? 3 : 4))
-                                     : (n > -1000000L ? (n > -100000L ? 5 : 6)
-                                                      : (n > -10000000L ? 7 : (n > -100000000L ? 8 : 9))))
-                      : (n > -100000000000000L
-                             ? (n > -1000000000000L ? (n > -10000000000L ? 10 : (n > -100000000000L ? 11 : 12))
-                                                    : (n > -10000000000000L ? 13 : 14))
-                             : (n > -10000000000000000L
-                                    ? (n > -1000000000000000L ? 15 : 16)
-                                    : (n > -1000000000000000000L ? (n > -100000000000000000L ? 17 : 18) : 19))))
-               : (n < 1000000000L
-                      ? (n < 10000L
-                             ? (n < 100L ? (n < 10L ? 1 : 2) : (n < 1000L ? 3 : 4))
-                             : (n < 1000000L ? (n < 100000L ? 5 : 6) : (n < 10000000L ? 7 : (n < 100000000L ? 8 : 9))))
-                      : (n < 100000000000000L
-                             ? (n < 1000000000000L ? (n < 10000000000L ? 10 : (n < 100000000000L ? 11 : 12))
-                                                   : (n < 10000000000000L ? 13 : 14))
-                             : (n < 10000000000000000L
-                                    ? (n < 1000000000000000L ? 15 : 16)
-                                    : (n < 1000000000000000000L ? (n < 100000000000000000L ? 17 : 18) : 19))));
-  }
-
-  else {
-    static_assert(false);
-  }
+  return static_cast<int>(estimate) + 1;
 }
 
-/// Return the number of digits of given integral.
-/// Maximum of int(log2(std::numeric_limits<T>::digits10)) + 1 comparisons.
-constexpr int ndigits(std::unsigned_integral auto n) noexcept {
-  using T = decltype(n);
+// Signed wrapper: compute absolute value safely in unsigned type to avoid
+// overflow for minimum value and delegate to unsigned implementation.
+constexpr int ndigits(std::signed_integral auto val) noexcept {
+  using T = decltype(val);
+  using U = std::make_unsigned_t<T>;
 
-  if constexpr (std::numeric_limits<T>::digits10 == 2) {
-    return n < 10U ? 1 : (n < 100U ? 2 : 3);
+  if (val >= 0) {
+    return ndigits(static_cast<U>(val));
   }
 
-  else if constexpr (std::numeric_limits<T>::digits10 == 4) {
-    return n < 100U ? (n < 10U ? 1 : 2) : (n < 1000U ? 3 : (n < 10000U ? 4 : 5));
-  }
-
-  else if constexpr (std::numeric_limits<T>::digits10 == 9) {
-    return n < 100000U ? (n < 1000U ? (n < 10U ? 1 : (n < 100U ? 2 : 3)) : (n < 10000U ? 4 : 5))
-                       : (n < 10000000U ? (n < 1000000U ? 6 : 7) : (n < 1000000000U ? (n < 100000000U ? 8 : 9) : 10));
-  }
-
-  else if constexpr (std::numeric_limits<T>::digits10 == 19) {
-    return n < 10000000000UL
-               ? (n < 1000000UL
-                      ? (n < 1000UL ? (n < 100UL ? (n < 10UL ? 1 : 2) : 3) : (n < 100000UL ? (n < 10000UL ? 4 : 5) : 6))
-                      : (n < 100000000UL ? (n < 10000000UL ? 7 : 8) : (n < 1000000000UL ? 9 : 10)))
-               : (n < 10000000000000000UL
-                      ? (n < 10000000000000UL ? (n < 1000000000000UL ? (n < 100000000000UL ? 11 : 12) : 13)
-                                              : (n < 1000000000000000UL ? (n < 100000000000000UL ? 14 : 15) : 16))
-                      : (n < 1000000000000000000UL ? (n < 100000000000000000UL ? 17 : 18)
-                                                   : (n < 10000000000000000000UL ? 19 : 20)));
-  }
-
-  else {
-    static_assert(false);
-  }
+  // Use -(val+1) which is representable, then add 1 after casting to unsigned.
+  return ndigits(static_cast<U>(-(val + 1)) + 1U);
 }
 
 }  // namespace aeronet
