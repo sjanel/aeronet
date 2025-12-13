@@ -3,6 +3,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
+#include <concepts>
 #include <cstdint>
 #include <limits>
 #include <list>
