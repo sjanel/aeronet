@@ -18,7 +18,7 @@
 namespace aeronet {
 namespace {
 
-[[nodiscard]] std::string_view NextCsvToken(std::string_view& csv) {
+std::string_view NextCsvToken(std::string_view& csv) {
   const auto commaPos = csv.find(',');
   const std::string_view token = commaPos == std::string_view::npos ? csv : csv.substr(0, commaPos);
   if (commaPos == std::string_view::npos) {
@@ -29,7 +29,7 @@ namespace {
   return TrimOws(token);
 }
 
-[[nodiscard]] bool ListContainsToken(std::string_view list, std::string_view token) {
+bool ListContainsToken(std::string_view list, std::string_view token) {
   while (!list.empty()) {
     const auto part = NextCsvToken(list);
     if (!part.empty() && CaseInsensitiveEqual(part, token)) {
@@ -144,47 +144,59 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequest& reque
   }
 
   const auto origin = request.headerValueOrEmpty(http::Origin);
-  if (origin.empty() || !originAllowed(origin)) {
+  if (!originAllowed(origin)) {
     result.status = PreflightResult::Status::OriginDenied;
     return result;
   }
 
   const auto effectiveMethods = effectiveAllowedMethods(routeMethods);
 
-  const auto methodOpt = request.headerValue(http::AccessControlRequestMethod);
-  if (!methodOpt || !methodAllowed(*methodOpt, effectiveMethods)) {
+  const std::string_view methodStr = request.headerValueOrEmpty(http::AccessControlRequestMethod);
+  if (!methodAllowed(methodStr, effectiveMethods)) {
     result.status = PreflightResult::Status::MethodDenied;
     return result;
   }
 
-  std::string_view requestedHeaders = request.headerValueOrEmpty(http::AccessControlRequestHeaders);
-  if (!requestedHeaders.empty() && !requestHeadersAllowed(requestedHeaders)) {
-    result.status = PreflightResult::Status::HeadersDenied;
-    return result;
+  // Distinguish between header absence and an explicitly-present empty value.
+  // If the header is present but trims to empty, treat it as an empty list (i.e. no requested headers).
+  // Only validate/deny when there are actual requested header tokens.
+  std::string_view requestedHeaders;
+  bool requestedHeadersPresent = false;
+  if (const auto requestedHeadersOpt = request.headerValue(http::AccessControlRequestHeaders); requestedHeadersOpt) {
+    requestedHeadersPresent = true;
+    requestedHeaders = TrimOws(*requestedHeadersOpt);
+    if (!requestedHeaders.empty()) {
+      if (!requestHeadersAllowed(requestedHeaders)) {
+        result.status = PreflightResult::Status::HeadersDenied;
+        return result;
+      }
+    }
   }
 
   auto& response = result.response;
   applyResponseHeaders(response, origin);
 
-  if (effectiveMethods != 0) {
-    FixedCapacityVector<char, http::kAllMethodsStrLen + static_cast<uint32_t>((http::kNbMethods - 1U) * 2U)> value;
-    for (http::MethodIdx idx = 0; idx < http::kNbMethods; ++idx) {
-      const auto method = http::MethodFromIdx(idx);
-      if (http::IsMethodSet(effectiveMethods, method)) {
-        if (!value.empty()) {
-          value.push_back(',');
-          value.push_back(' ');
-        }
-        value.append_range(http::MethodToStr(method));
+  FixedCapacityVector<char, http::kAllMethodsStrLen + static_cast<uint32_t>((http::kNbMethods - 1U) * 2U)> acamValues;
+  for (http::MethodIdx idx = 0; idx < http::kNbMethods; ++idx) {
+    const auto method = http::MethodFromIdx(idx);
+    if (http::IsMethodSet(effectiveMethods, method)) {
+      if (!acamValues.empty()) {
+        static constexpr std::string_view kCommaSep = ", ";
+        acamValues.append_range(kCommaSep);
       }
+      acamValues.append_range(http::MethodToStr(method));
     }
-    response.header(http::AccessControlAllowMethods, std::string_view(value));
   }
+  response.header(http::AccessControlAllowMethods, std::string_view(acamValues));
 
-  if (!_allowedRequestHeaders.empty()) {
+  // Only send Access-Control-Allow-Headers when the server allows any header (`*`),
+  // or when the client explicitly requested non-empty headers and they passed validation.
+  if (_allowedRequestHeaders.fullString() == "*") {
+    response.header(http::AccessControlAllowHeaders, "*");
+  } else if (requestedHeadersPresent && !requestedHeaders.empty()) {
+    // At this point, requestHeadersAllowed() has already been checked for non-empty lists,
+    // so it's safe to emit the server's allowed list (which must be non-empty) when present.
     response.header(http::AccessControlAllowHeaders, _allowedRequestHeaders.fullString());
-  } else if (!requestedHeaders.empty()) {
-    response.header(http::AccessControlAllowHeaders, requestedHeaders);
   }
 
   if (_allowPrivateNetwork) {
@@ -232,10 +244,6 @@ bool CorsPolicy::requestHeadersAllowed(std::string_view headerList) const {
   if (_allowedRequestHeaders.fullString() == "*") {
     return true;
   }
-  headerList = TrimOws(headerList);
-  if (headerList.empty()) {
-    return _allowedRequestHeaders.empty();
-  }
   if (_allowedRequestHeaders.empty()) {
     return false;
   }
@@ -277,12 +285,12 @@ void CorsPolicy::applyResponseHeaders(HttpResponse& response, std::string_view o
 }
 
 http::MethodBmp CorsPolicy::effectiveAllowedMethods(http::MethodBmp routeMethods) const noexcept {
-  if (_allowedMethods == 0 || routeMethods == 0) {
-    return 0;
-  }
-  if (routeMethods == kAllMethodsMask) {
-    return _allowedMethods;
-  }
+  // if (_allowedMethods == 0 || routeMethods == 0) {
+  //   return 0;
+  // }
+  // if (routeMethods == kAllMethodsMask) {
+  //   return _allowedMethods;
+  // }
   return _allowedMethods & routeMethods;
 }
 

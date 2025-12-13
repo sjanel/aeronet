@@ -233,7 +233,7 @@ class HttpRequest {
   friend class SingleHttpServer;
   friend class HttpRequestTest;
   friend class StaticFileHandlerTest;
-  friend class CorsPolicyHarness;
+  friend class CorsPolicyTest;
   friend class UpgradeHandlerHarness;
   friend struct ConnectionState;
 
