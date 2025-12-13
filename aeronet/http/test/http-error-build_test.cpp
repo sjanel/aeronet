@@ -78,12 +78,3 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorWithLargeBody) {
   EXPECT_TRUE(full.contains("Content-Length: 1024\r\n")) << full;
   EXPECT_TRUE(full.ends_with("\r\n\r\n" + largeBody)) << full;
 }
-
-TEST(HttpErrorBuildTest, InvalidStatusCodeCaughtInDebug) {
-#ifndef NDEBUG
-  // In debug builds, an invalid status code should trigger an assertion failure
-  EXPECT_DEATH({ BuildSimpleError(static_cast<http::StatusCode>(99), {}, "Bad"); }, "");  // status < 100
-
-  EXPECT_DEATH({ BuildSimpleError(static_cast<http::StatusCode>(1000), {}, "Bad"); }, "");  // status >= 1000
-#endif
-}

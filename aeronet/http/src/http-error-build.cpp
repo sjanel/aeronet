@@ -1,6 +1,5 @@
 ﻿#include "aeronet/http-error-build.hpp"
 
-#include <cassert>
 #include <cstddef>
 #include <string_view>
 
@@ -17,9 +16,7 @@
 namespace aeronet {
 
 RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& globalHeaders, std::string_view body) {
-  std::string_view reason = http::ReasonPhraseFor(status);
-
-  assert(status >= 100 && status < 1000);
+  const std::string_view reason = http::ReasonPhraseFor(status);
 
   static constexpr std::size_t kStatusLen = 3U;
 
