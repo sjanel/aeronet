@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <utility>

@@ -17,6 +17,7 @@
 #include <new>
 #include <optional>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
 #include <vector>
 

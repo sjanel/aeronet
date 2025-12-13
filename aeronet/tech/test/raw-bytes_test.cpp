@@ -79,6 +79,7 @@ TYPED_TEST(RawBaseTest, MoveConstructor) {
   ViewType dataView(reinterpret_cast<const Type *>(data.data()), data.size());
 
   EXPECT_EQ(buf2.size(), data.size());
+  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
   EXPECT_TRUE(std::equal(buf2View.data(), buf2View.data() + buf2View.size(), dataView.data()));
 }
 
@@ -100,6 +101,7 @@ TYPED_TEST(RawBaseTest, MoveAssignment) {
   ViewType dataView(reinterpret_cast<const Type *>(data.data()), data.size());
 
   EXPECT_EQ(buf2.size(), data.size());
+  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
   EXPECT_TRUE(std::equal(buf2View.data(), buf2View.data() + buf2View.size(), dataView.data()));
 
   // self-move should do nothing
@@ -125,12 +127,14 @@ TYPED_TEST(RawBaseTest, CopyAssignment) {
   ViewType dataView(reinterpret_cast<const Type *>(data.data()), data.size());
 
   EXPECT_EQ(buf2.size(), data.size());
+  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
   EXPECT_TRUE(std::equal(buf2View.data(), buf2View.data() + buf2View.size(), dataView.data()));
 
   // self-copy should do nothing
   auto &buf2Bis = buf2;
   buf2 = buf2Bis;
   EXPECT_EQ(buf2.size(), data.size());
+  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
   EXPECT_TRUE(std::equal(buf2View.data(), buf2View.data() + buf2View.size(), dataView.data()));
 }
 
