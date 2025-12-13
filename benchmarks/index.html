@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en"> 
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1"> 
+  <title>aeronet Benchmarks</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net"> 
+  <style>
+    :root { --bg: #ffffff; --muted: #666; --accent: #1976d2; --success: #2e7d32; }
+    body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, 'Helvetica Neue', Arial; margin: clamp(1rem, 2vw, 2.5rem); background: var(--bg); color: #111; }
+    .wrap { width: min(1700px, 95vw); margin: 0 auto; }
+    header { display:flex; align-items:baseline; gap:1rem; }
+    h1 { margin:0; font-size:1.4rem; }
+    .badge { background: var(--success); color: white; padding: 0.15rem 0.5rem; border-radius: 999px; font-size:0.75rem; }
+    .meta { margin-top:0.5rem; color: var(--muted); font-size:0.95rem; }
+    .meta-cards { display:flex; flex-wrap:wrap; gap:0.75rem; margin-top:1rem; }
+    .meta-cards div { flex:1 1 140px; border:1px solid #e0e7ff; background:#f6f8ff; border-radius:8px; padding:0.6rem 0.9rem; }
+    .meta-cards span { display:block; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em; color:#6b7280; }
+    .meta-cards strong { font-size:1.15rem; }
+    .tabs { display:inline-flex; gap:0.6rem; margin:1.25rem 0 0.5rem; border-bottom:1px solid #e5e7eb; }
+    .tab { border:none; background:none; padding:0.4rem 0.9rem; font-weight:600; color:#6b7280; border-bottom:3px solid transparent; cursor:pointer; }
+    .tab.active { color:#111; border-color: var(--accent); }
+    .chart-controls { display:flex; flex-wrap:wrap; gap:1rem; margin:0.75rem 0 0; align-items:flex-end; }
+    .chart-controls label { display:flex; flex-direction:column; gap:0.25rem; font-size:0.75rem; color:#4b5563; text-transform:uppercase; letter-spacing:0.04em; }
+    .chart-controls select { border:1px solid #d1d5db; border-radius:6px; padding:0.4rem 0.6rem; min-width:170px; font-size:0.95rem; }
+    .view { display:none; }
+    .view.active { display:block; }
+    .charts { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:1.5rem; margin-top:0.75rem; }
+    #charts-grid.focused { grid-template-columns: minmax(360px, 1fr); }
+    .chart-card { display:flex; flex-direction:column; gap:0.4rem; }
+    .chart-card.hidden { display:none; }
+    .chart-shell { position:relative; height:520px; background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:0.25rem; }
+    .chart-shell canvas { position:absolute; inset:0; width:100%; height:100%; }
+    .table-wrap { margin-top:1.25rem; overflow:auto; border-radius:6px; border:1px solid #eee; padding:0.5rem; background:#fff; }
+    .table-tabs { margin-top:1.25rem; }
+    .tabs-nav { display:inline-flex; gap:0.6rem; border-bottom:1px solid #e5e7eb; margin-bottom:0; }
+    .table-tab { border:none; background:none; padding:0.4rem 0.9rem; font-weight:600; color:#6b7280; border-bottom:3px solid transparent; cursor:pointer; }
+    .table-tab.active { color:#111; border-color: var(--accent); }
+    .table-content { overflow:auto; border-radius:6px; border:1px solid #eee; padding:0.5rem; background:#fff; margin-top:0.5rem; }
+    table { border-collapse: collapse; width:100%; font-size:0.9rem; }
+    table.benchmark-table { border-collapse: collapse; width:100%; font-size:0.9rem; }
+    th, td { padding:0.45rem 0.6rem; border-bottom: 1px solid #f4f4f4; text-align:right; }
+    th:first-child, td:first-child { text-align:left; }
+    td.best-cell { font-weight: 700; color: var(--success); background: #e8f5e9; }
+    @media (min-width: 1500px) {
+      .charts { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+    }
+    /* Focused (single chart) uses more vertical space */
+    #charts-grid.focused .chart-shell { height: min(80vh, 900px); }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>aeronet Benchmarks <span class="badge">CI</span></h1>
+    </header>
+    <p class="meta">This page is generated from <code>benchmark_latest.json</code>. Higher is better for requests/sec and throughput; lower is better for latency.</p>
+    
+<div class="meta-cards">
+  <div><span>Threads</span><strong>2</strong></div>
+  <div><span>wrk duration</span><strong>30s</strong></div>
+  <div><span>wrk warmup</span><strong>5s</strong></div>
+</div>
+
+
+    <div style="margin-top:0.5rem;">
+      <div class="tabs" role="tablist" aria-label="Benchmark views">
+        <button class="tab active" data-tab="charts" role="tab" aria-selected="true">Charts</button>
+        <button class="tab" data-tab="table" role="tab" aria-selected="false">Table</button>
+      </div>
+
+      <section id="view-charts" class="view active">
+        <div class="chart-controls" aria-label="Chart filters">
+          <label>Scenario
+            <select id="scenario-filter"><option value="all" selected>All scenarios</option>
+<option value="headers">headers</option>
+<option value="body">body</option>
+<option value="static">static</option>
+<option value="cpu">cpu</option>
+<option value="mixed">mixed</option>
+<option value="files">files</option>
+<option value="routing">routing</option></select>
+          </label>
+          <label>Metric
+            <select id="metric-filter"><option value="all" selected>All metrics</option>
+<option value="rps">Requests/sec (RPS)</option>
+<option value="latency">Avg Latency (ms)</option>
+<option value="transfer">Data transferred (MB)</option>
+<option value="memory">Memory Usage (RSS & Peak)</option></select>
+          </label>
+        </div>
+        <div class="charts" id="charts-grid">
+          <div class="chart-card" data-metric="rps">
+          <h3 style="margin:.25rem 0">Requests/sec (RPS)</h3>
+          <div class="chart-shell"><canvas id="chart-rps"></canvas></div>
+        </div>
+        <div class="chart-card" data-metric="latency">
+          <h3 style="margin:.25rem 0">Avg Latency (ms)</h3>
+          <div class="chart-shell"><canvas id="chart-latency"></canvas></div>
+        </div>
+        <div class="chart-card" data-metric="transfer">
+          <h3 style="margin:.25rem 0">Data transferred (MB)</h3>
+          <div class="chart-shell"><canvas id="chart-transfer"></canvas></div>
+        </div>
+        <div class="chart-card" data-metric="memory">
+          <h3 style="margin:.25rem 0">Memory RSS (MB)</h3>
+          <div class="chart-shell"><canvas id="chart-memory-rss"></canvas></div>
+        </div>
+        <div class="chart-card" data-metric="memory">
+          <h3 style="margin:.25rem 0">Memory Peak (MB)</h3>
+          <div class="chart-shell"><canvas id="chart-memory-peak"></canvas></div>
+        </div>
+        </div>
+      </section>
+
+      <section id="view-table" class="table-wrap view" hidden>
+        
+<div class="table-tabs">
+  <div class="tabs-nav">
+    <button class="table-tab active" data-table="rps">Requests/sec</button>
+    <button class="table-tab" data-table="latency">Latency</button>
+    <button class="table-tab" data-table="throughput">Throughput</button>
+    <button class="table-tab" data-table="memory">Memory</button>
+  </div>
+  <div class="table-content" id="table-rps" style="display: block;">
+<table class="benchmark-table">
+  <thead>
+    <tr><th>Scenario</th><th>aeronet</th><th>drogon</th><th>pistache</th><th>rust</th><th>undertow</th><th>go</th><th>python</th><th>Best</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>headers</td><td data-server='aeronet'>27338.54</td><td data-server='drogon'>22833.36</td><td data-server='pistache'>11636.29</td><td data-server='rust'>20482.52</td><td data-server='undertow'>16504.71</td><td data-server='go'>7599.23</td><td data-server='python'>1652.21</td><td class='best-cell'>aeronet</td></tr><tr><td>body</td><td data-server='aeronet'>3464.97</td><td data-server='drogon'>1531.11</td><td data-server='pistache'>1072.67</td><td data-server='rust'>3478.87</td><td data-server='undertow'>508.55</td><td data-server='go'>603.66</td><td data-server='python'>1592.23</td><td class='best-cell'>rust</td></tr><tr><td>static</td><td data-server='aeronet'>138160.27</td><td data-server='drogon'>119694.11</td><td data-server='pistache'>84363.38</td><td data-server='rust'>118914.07</td><td data-server='undertow'>131157.05</td><td data-server='go'>62515.71</td><td data-server='python'>2437.45</td><td class='best-cell'>aeronet</td></tr><tr><td>cpu</td><td data-server='aeronet'>15832.98</td><td data-server='drogon'>15183.93</td><td data-server='pistache'>15483.48</td><td data-server='rust'>15239.13</td><td data-server='undertow'>15474.29</td><td data-server='go'>13053.38</td><td data-server='python'>99.36</td><td class='best-cell'>aeronet</td></tr><tr><td>mixed</td><td data-server='aeronet'>78461.61</td><td data-server='drogon'>69885.20</td><td data-server='pistache'>62795.76</td><td data-server='rust'>65548.09</td><td data-server='undertow'>69845.78</td><td data-server='go'>31454.51</td><td data-server='python'>2389.17</td><td class='best-cell'>aeronet</td></tr><tr><td>files</td><td data-server='aeronet'>36.00</td><td data-server='drogon'>36.05</td><td data-server='pistache'>-</td><td data-server='rust'>17.05</td><td data-server='undertow'>35.53</td><td data-server='go'>35.69</td><td data-server='python'>19.76</td><td class='best-cell'>drogon</td></tr><tr><td>routing</td><td data-server='aeronet'>127737.25</td><td data-server='drogon'>121703.21</td><td data-server='pistache'>84868.84</td><td data-server='rust'>121473.31</td><td data-server='undertow'>124870.82</td><td data-server='go'>64801.68</td><td data-server='python'>2394.47</td><td class='best-cell'>aeronet</td></tr>
+  </tbody>
+</table>
+</div>
+  <div class="table-content" id="table-latency" hidden>
+<table class="benchmark-table">
+  <thead>
+    <tr><th>Scenario</th><th>aeronet</th><th>drogon</th><th>pistache</th><th>rust</th><th>undertow</th><th>go</th><th>python</th><th>Best</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>headers</td><td data-server='aeronet'>3.64ms</td><td data-server='drogon'>4.38ms</td><td data-server='pistache'>8.56ms</td><td data-server='rust'>4.87ms</td><td data-server='undertow'>6.05ms</td><td data-server='go'>13.40ms</td><td data-server='python'>60.43ms</td><td class='best-cell'>aeronet</td></tr><tr><td>body</td><td data-server='aeronet'>14.87ms</td><td data-server='drogon'>65.33ms</td><td data-server='pistache'>92.20ms</td><td data-server='rust'>14.66ms</td><td data-server='undertow'>196.51ms</td><td data-server='go'>132.01ms</td><td data-server='python'>66.41ms</td><td class='best-cell'>rust</td></tr><tr><td>static</td><td data-server='aeronet'>414.78us</td><td data-server='drogon'>816.29us</td><td data-server='pistache'>1.17ms</td><td data-server='rust'>828.88us</td><td data-server='undertow'>734.53us</td><td data-server='go'>1.65ms</td><td data-server='python'>40.97ms</td><td class='best-cell'>aeronet</td></tr><tr><td>cpu</td><td data-server='aeronet'>6.31ms</td><td data-server='drogon'>6.67ms</td><td data-server='pistache'>6.43ms</td><td data-server='rust'>6.55ms</td><td data-server='undertow'>6.47ms</td><td data-server='go'>7.94ms</td><td data-server='python'>989.84ms</td><td class='best-cell'>aeronet</td></tr><tr><td>mixed</td><td data-server='aeronet'>1.27ms</td><td data-server='drogon'>1.42ms</td><td data-server='pistache'>1.57ms</td><td data-server='rust'>1.52ms</td><td data-server='undertow'>1.42ms</td><td data-server='go'>3.29ms</td><td data-server='python'>41.80ms</td><td class='best-cell'>aeronet</td></tr><tr><td>files</td><td data-server='aeronet'>1.45s</td><td data-server='drogon'>1.45s</td><td data-server='pistache'>-</td><td data-server='rust'>5.30s</td><td data-server='undertow'>1.63s</td><td data-server='go'>1.53s</td><td data-server='python'>455.66ms</td><td class='best-cell'>python</td></tr><tr><td>routing</td><td data-server='aeronet'>422.66us</td><td data-server='drogon'>771.59us</td><td data-server='pistache'>1.16ms</td><td data-server='rust'>768.05us</td><td data-server='undertow'>553.05us</td><td data-server='go'>1.59ms</td><td data-server='python'>41.71ms</td><td class='best-cell'>aeronet</td></tr>
+  </tbody>
+</table>
+</div>
+  <div class="table-content" id="table-throughput" hidden>
+<table class="benchmark-table">
+  <thead>
+    <tr><th>Scenario</th><th>aeronet</th><th>drogon</th><th>pistache</th><th>rust</th><th>undertow</th><th>go</th><th>python</th><th>Best</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>headers</td><td data-server='aeronet'>197.52MB</td><td data-server='drogon'>165.47MB</td><td data-server='pistache'>0.92MB</td><td data-server='rust'>148.01MB</td><td data-server='undertow'>119.40MB</td><td data-server='go'>54.80MB</td><td data-server='python'>11.98MB</td><td class='best-cell'>aeronet</td></tr><tr><td>body</td><td data-server='aeronet'>1.69GB</td><td data-server='drogon'>766.45MB</td><td data-server='pistache'>536.59MB</td><td data-server='rust'>1.70GB</td><td data-server='undertow'>253.69MB</td><td data-server='go'>353.82MB</td><td data-server='python'>797.75MB</td><td class='best-cell'>rust</td></tr><tr><td>static</td><td data-server='aeronet'>21.35MB</td><td data-server='drogon'>20.87MB</td><td data-server='pistache'>7.95MB</td><td data-server='rust'>17.31MB</td><td data-server='undertow'>21.24MB</td><td data-server='go'>8.63MB</td><td data-server='python'>408.42KB</td><td class='best-cell'>aeronet</td></tr><tr><td>cpu</td><td data-server='aeronet'>3.26MB</td><td data-server='drogon'>3.46MB</td><td data-server='pistache'>1.54MB</td><td data-server='rust'>3.15MB</td><td data-server='undertow'>3.34MB</td><td data-server='go'>2.51MB</td><td data-server='python'>22.72KB</td><td class='best-cell'>drogon</td></tr><tr><td>mixed</td><td data-server='aeronet'>97.11MB</td><td data-server='drogon'>88.06MB</td><td data-server='pistache'>58.98MB</td><td data-server='rust'>81.10MB</td><td data-server='undertow'>87.07MB</td><td data-server='go'>38.66MB</td><td data-server='python'>2.98MB</td><td class='best-cell'>aeronet</td></tr><tr><td>files</td><td data-server='aeronet'>5.24GB</td><td data-server='drogon'>5.23GB</td><td data-server='pistache'>-</td><td data-server='rust'>2.39GB</td><td data-server='undertow'>5.11GB</td><td data-server='go'>5.13GB</td><td data-server='python'>445.07MB</td><td class='best-cell'>aeronet</td></tr><tr><td>routing</td><td data-server='aeronet'>15.49MB</td><td data-server='drogon'>17.43MB</td><td data-server='pistache'>6.00MB</td><td data-server='rust'>14.85MB</td><td data-server='undertow'>16.33MB</td><td data-server='go'>7.27MB</td><td data-server='python'>336.60KB</td><td class='best-cell'>drogon</td></tr>
+  </tbody>
+</table>
+</div>
+  <div class="table-content" id="table-memory" hidden>
+<table class="benchmark-table">
+  <thead>
+    <tr><th>Scenario</th><th>aeronet</th><th>drogon</th><th>pistache</th><th>rust</th><th>undertow</th><th>go</th><th>python</th><th>Best</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>headers</td><td data-server='aeronet'>10.7MB</td><td data-server='drogon'>12.7MB</td><td data-server='pistache'>4.9MB</td><td data-server='rust'>7.8MB</td><td data-server='undertow'>246.8MB</td><td data-server='go'>15.1MB</td><td data-server='python'>97.6MB</td><td class='best-cell'>pistache</td></tr><tr><td>body</td><td data-server='aeronet'>225.2MB</td><td data-server='drogon'>16.0MB</td><td data-server='pistache'>120.1MB</td><td data-server='rust'>17.9MB</td><td data-server='undertow'>1696.8MB</td><td data-server='go'>19.7MB</td><td data-server='python'>162.4MB</td><td class='best-cell'>drogon</td></tr><tr><td>static</td><td data-server='aeronet'>223.2MB</td><td data-server='drogon'>13.5MB</td><td data-server='pistache'>30.6MB</td><td data-server='rust'>17.9MB</td><td data-server='undertow'>1697.9MB</td><td data-server='go'>15.6MB</td><td data-server='python'>151.7MB</td><td class='best-cell'>drogon</td></tr><tr><td>cpu</td><td data-server='aeronet'>237.0MB</td><td data-server='drogon'>15.1MB</td><td data-server='pistache'>30.6MB</td><td data-server='rust'>17.9MB</td><td data-server='undertow'>1699.0MB</td><td data-server='go'>15.6MB</td><td data-server='python'>152.2MB</td><td class='best-cell'>drogon</td></tr><tr><td>mixed</td><td data-server='aeronet'>268.9MB</td><td data-server='drogon'>15.1MB</td><td data-server='pistache'>30.6MB</td><td data-server='rust'>17.9MB</td><td data-server='undertow'>1699.0MB</td><td data-server='go'>15.5MB</td><td data-server='python'>152.3MB</td><td class='best-cell'>drogon</td></tr><tr><td>files</td><td data-server='aeronet'>9.7MB</td><td data-server='drogon'>12.1MB</td><td data-server='pistache'>-</td><td data-server='rust'>1144.8MB</td><td data-server='undertow'>116.9MB</td><td data-server='go'>15.8MB</td><td data-server='python'>139.4MB</td><td class='best-cell'>aeronet</td></tr><tr><td>routing</td><td data-server='aeronet'>11.2MB</td><td data-server='drogon'>13.7MB</td><td data-server='pistache'>4.8MB</td><td data-server='rust'>73.3MB</td><td data-server='undertow'>246.8MB</td><td data-server='go'>16.0MB</td><td data-server='python'>97.8MB</td><td class='best-cell'>pistache</td></tr>
+  </tbody>
+</table>
+</div>
+</div>
+
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const payload = {"servers": ["aeronet", "drogon", "pistache", "rust", "undertow", "go", "python"], "scenarios": [{"name": "headers", "rps": [27338.54, 22833.36, 11636.29, 20482.52, 16504.71, 7599.23, 1652.21], "latency": [3.64, 4.38, 8.56, 4.87, 6.05, 13.4, 60.43], "transfer": [197.52, 165.47, 0.92, 148.01, 119.4, 54.8, 11.98], "memory_rss": [10.734, 12.727, 4.895, 7.789, 246.82, 15.148, 97.57], "memory_peak": [243.391, 239.895, 231.25, 200.891, 7377.234, 1604.785, 411.98]}, {"name": "body", "rps": [3464.97, 1531.11, 1072.67, 3478.87, 508.55, 603.66, 1592.23], "latency": [14.87, 65.33, 92.2, 14.66, 196.51, 132.01, 66.41], "transfer": [1730.56, 766.45, 536.59, 1740.8, 253.69, 353.82, 797.75], "memory_rss": [225.156, 15.965, 120.145, 17.945, 1696.77, 19.719, 162.43], "memory_peak": [432.891, 239.895, 359.379, 200.891, 7377.234, 1604.785, 411.98]}, {"name": "static", "rps": [138160.27, 119694.11, 84363.38, 118914.07, 131157.05, 62515.71, 2437.45], "latency": [0.41478, 0.81629, 1.17, 0.82888, 0.73453, 1.65, 40.97], "transfer": [21.35, 20.87, 7.95, 17.31, 21.24, 8.63, 0.39884765625], "memory_rss": [223.176, 13.488, 30.559, 17.945, 1697.859, 15.648, 151.68], "memory_peak": [432.891, 239.895, 359.379, 200.891, 7377.234, 1604.785, 411.98]}, {"name": "cpu", "rps": [15832.98, 15183.93, 15483.48, 15239.13, 15474.29, 13053.38, 99.36], "latency": [6.31, 6.67, 6.43, 6.55, 6.47, 7.94, 989.84], "transfer": [3.26, 3.46, 1.54, 3.15, 3.34, 2.51, 0.0221875], "memory_rss": [236.988, 15.113, 30.559, 17.945, 1698.984, 15.617, 152.18], "memory_peak": [432.891, 239.895, 359.379, 200.891, 7377.234, 1604.785, 411.98]}, {"name": "mixed", "rps": [78461.61, 69885.2, 62795.76, 65548.09, 69845.78, 31454.51, 2389.17], "latency": [1.27, 1.42, 1.57, 1.52, 1.42, 3.29, 41.8], "transfer": [97.11, 88.06, 58.98, 81.1, 87.07, 38.66, 2.98], "memory_rss": [268.863, 15.113, 30.559, 17.945, 1698.984, 15.508, 152.305], "memory_peak": [432.891, 239.895, 359.379, 200.891, 7377.234, 1604.785, 411.98]}, {"name": "files", "rps": [36.0, 36.05, null, 17.05, 35.53, 35.69, 19.76], "latency": [1450.0, 1450.0, null, 5300.0, 1630.0, 1530.0, 455.66], "transfer": [5365.76, 5355.52, null, 2447.36, 5232.64, 5253.12, 445.07], "memory_rss": [9.715, 12.145, null, 1144.777, 116.93, 15.777, 139.41], "memory_peak": [243.395, 239.895, null, 6414.0, 7446.883, 2067.68, 5901.109]}, {"name": "routing", "rps": [127737.25, 121703.21, 84868.84, 121473.31, 124870.82, 64801.68, 2394.47], "latency": [0.42266000000000004, 0.77159, 1.16, 0.7680499999999999, 0.5530499999999999, 1.59, 41.71], "transfer": [15.49, 17.43, 6.0, 14.85, 16.33, 7.27, 0.3287109375], "memory_rss": [11.211, 13.746, 4.762, 73.305, 246.785, 15.992, 97.828], "memory_peak": [243.391, 240.926, 231.25, 219.582, 7377.152, 1667.66, 411.965]}], "units": {"latency": "ms", "transfer": "MB"}};
+    const servers = payload.servers;
+    const units = payload.units || { latency: 'ms', transfer: 'MB' };
+    const scenarioLabels = payload.scenarios.map(s => s.name);
+    const palette = ['#2563eb', '#16a34a', '#f97316', '#a855f7', '#0ea5e9', '#f43f5e', '#22d3ee', '#fbbf24'];
+    const chartsGrid = document.getElementById('charts-grid');
+    const scenarioSelect = document.getElementById('scenario-filter');
+    const metricSelect = document.getElementById('metric-filter');
+
+    function datasetFor(metric) {
+      return servers.map((server, idx) => ({
+        label: server,
+        data: payload.scenarios.map(s => {
+          const arr = s[metric] || [];
+          const value = arr[idx];
+          return typeof value === 'number' ? value : null;
+        }),
+        backgroundColor: palette[idx % palette.length],
+        borderRadius: 6,
+        maxBarThickness: 48,
+      }));
+    }
+
+    function buildChartData(metric, scenarioValue) {
+      const datasets = datasetFor(metric);
+      if (scenarioValue === 'all') {
+        return { labels: scenarioLabels, datasets };
+      }
+      const scenarioIndex = scenarioLabels.indexOf(scenarioValue);
+      if (scenarioIndex === -1) {
+        return { labels: [], datasets: [] };
+      }
+      datasets.forEach(ds => {
+        ds.data = [ds.data[scenarioIndex] ?? null];
+      });
+      return { labels: [scenarioValue], datasets };
+    }
+
+    function minPositive(metric) {
+      let min = Infinity;
+      payload.scenarios.forEach(s => {
+        (s[metric] || []).forEach(val => {
+          if (typeof val === 'number' && val > 0 && val < min) {
+            min = val;
+          }
+        });
+      });
+      return Number.isFinite(min) ? min : 0.1;
+    }
+
+    function formatValue(value, metric) {
+      if (value === null || value === undefined) return 'n/a';
+      let unit = '';
+      if (metric === 'latency') unit = units.latency || 'ms';
+      if (metric === 'transfer') unit = units.transfer || 'MB';
+      const abs = Math.abs(value);
+      let formatted;
+      if (abs >= 1_000_000) {
+        formatted = (value / 1_000_000).toFixed(1) + 'M';
+      } else if (abs >= 1_000) {
+        formatted = (value / 1_000).toFixed(1) + 'k';
+      } else if (abs >= 100) {
+        formatted = value.toFixed(0);
+      } else if (abs >= 10) {
+        formatted = value.toFixed(1);
+      } else {
+        formatted = value.toFixed(2);
+      }
+      return unit ? `${formatted} ${unit}` : formatted;
+    }
+
+    function baseOptions(metric, axisOptions, showLabels = true) {
+      // Always include formatter; control visibility via `display` so the
+      // formatter is present even when labels are toggled on later.
+      const datalabelsConfig = {
+        anchor: 'end',
+        align: 'start',
+        offset: -22,
+        clip: false,
+        backgroundColor: 'rgba(255,255,255,0.9)',
+        borderRadius: 4,
+        padding: 4,
+        color: '#111',
+        font: { weight: '600', size: 11 },
+        formatter: (value, ctx) => {
+          // Show server name for single-scenario bars
+          const label = ctx.dataset.label || '';
+          return label;
+        },
+        display: showLabels,
+      };
+
+      return {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'bottom' },
+          tooltip: {
+            callbacks: {
+              label: ctx => {
+                const value = typeof ctx.parsed.y === 'number' ? ctx.parsed.y : ctx.raw;
+                return `${ctx.dataset.label}: ${formatValue(value, metric)}`;
+              }
+            }
+          },
+          datalabels: datalabelsConfig
+        },
+        scales: axisOptions,
+      };
+    }
+
+    // Register datalabels plugin if available so we can show server names above bars
+    if (typeof ChartDataLabels !== 'undefined') {
+      try { Chart.register(ChartDataLabels); } catch (e) { /* ignore if already registered */ }
+    }
+
+    const rpsChart = new Chart(document.getElementById('chart-rps'), {
+      type: 'bar',
+      data: buildChartData('rps', 'all'),
+      options: baseOptions('rps', {
+        x: { ticks: { autoSkip: false } },
+        y: {
+          beginAtZero: true,
+          title: { display: true, text: 'Requests/sec' },
+          ticks: { callback: value => formatValue(value, 'rps') },
+        }
+      }, false) // Hide labels for "all scenarios"
+    });
+
+    const latencyChart = new Chart(document.getElementById('chart-latency'), {
+      type: 'bar',
+      data: buildChartData('latency', 'all'),
+      options: baseOptions('latency', {
+        x: { ticks: { autoSkip: false } },
+        y: {
+          type: 'logarithmic',
+          min: Math.max(minPositive('latency') / 1.5, 1e-4),
+          title: { display: true, text: `Latency (${units.latency || 'ms'})` },
+          ticks: { callback: value => formatValue(value, 'latency') },
+        }
+      }, false) // Hide labels for "all scenarios"
+    });
+
+    const transferChart = new Chart(document.getElementById('chart-transfer'), {
+      type: 'bar',
+      data: buildChartData('transfer', 'all'),
+      options: baseOptions('transfer', {
+        x: { ticks: { autoSkip: false } },
+        y: {
+          type: 'logarithmic',
+          min: Math.max(minPositive('transfer') / 1.5, 1e-3),
+          title: { display: true, text: `Transfer (${units.transfer || 'MB'})` },
+          ticks: { callback: value => formatValue(value, 'transfer') },
+        }
+      }, false) // Hide labels for "all scenarios"
+    });
+
+    const memoryRssChart = new Chart(document.getElementById('chart-memory-rss'), {
+      type: 'bar',
+      data: buildChartData('memory_rss', 'all'),
+      options: baseOptions('memory', {
+        x: { ticks: { autoSkip: false } },
+        y: {
+          type: 'logarithmic',
+          min: Math.max(minPositive('memory_rss') / 1.5, 1e-2),
+          title: { display: true, text: 'RSS (MB) (log scale)' },
+          ticks: { callback: value => formatValue(value, 'memory') },
+        }
+      }, false) // Hide labels for "all scenarios"
+    });
+
+    const memoryPeakChart = new Chart(document.getElementById('chart-memory-peak'), {
+      type: 'bar',
+      data: buildChartData('memory_peak', 'all'),
+      options: baseOptions('memory', {
+        x: { ticks: { autoSkip: false } },
+        y: {
+          type: 'logarithmic',
+          min: Math.max(minPositive('memory_peak') / 1.5, 1e-2),
+          title: { display: true, text: 'Peak (MB) (log scale)' },
+          ticks: { callback: value => formatValue(value, 'memory') },
+        }
+      }, false) // Hide labels for "all scenarios"
+    });
+
+    const chartEntries = [
+      { metric: 'rps', chart: rpsChart, card: document.querySelector('.chart-card[data-metric="rps"]') },
+      { metric: 'latency', chart: latencyChart, card: document.querySelector('.chart-card[data-metric="latency"]') },
+      { metric: 'transfer', chart: transferChart, card: document.querySelector('.chart-card[data-metric="transfer"]') },
+      { metric: 'memory', chart: memoryRssChart, card: document.querySelectorAll('.chart-card[data-metric="memory"]')[0] },
+      { metric: 'memory', chart: memoryPeakChart, card: document.querySelectorAll('.chart-card[data-metric="memory"]')[1] },
+    ];
+
+    function refreshCharts() {
+      const scenarioValue = scenarioSelect.value;
+      const metricValue = metricSelect.value;
+      const scenarioFocused = scenarioValue !== 'all';
+      const metricFocused = metricValue !== 'all';
+      const focused = scenarioFocused || metricFocused;
+      // When a metric is focused, show only that metric. When only a scenario
+      // is focused, show all charts (each limited to the selected scenario).
+      const activeMetric = metricFocused ? metricValue : null;
+      const showLabels = scenarioFocused; // Only show labels when a specific scenario is selected
+      chartsGrid.classList.toggle('focused', focused);
+      chartEntries.forEach(entry => {
+        const showCard = activeMetric ? entry.metric === activeMetric : true;
+        entry.card.classList.toggle('hidden', !showCard);
+        const nextData = buildChartData(entry.chart.config.type === 'bar' ? 
+          (entry.chart.canvas.id === 'chart-memory-rss' ? 'memory_rss' : 
+           entry.chart.canvas.id === 'chart-memory-peak' ? 'memory_peak' : 
+           entry.metric) : entry.metric, scenarioValue);
+        entry.chart.data.labels = nextData.labels;
+        entry.chart.data.datasets = nextData.datasets;
+        // Update datalabels visibility
+        if (entry.chart.options.plugins.datalabels) {
+          entry.chart.options.plugins.datalabels.display = showLabels;
+        }
+        entry.chart.update();
+      });
+    }
+
+    scenarioSelect.addEventListener('change', refreshCharts);
+    metricSelect.addEventListener('change', refreshCharts);
+
+    // Tab switching logic to show charts full-screen-like and table on demand.
+    const tabs = document.querySelectorAll('.tab');
+    const views = document.querySelectorAll('.view');
+    function activateTab(name) {
+      tabs.forEach(t => { t.classList.toggle('active', t.dataset.tab === name); t.setAttribute('aria-selected', t.dataset.tab === name); });
+      views.forEach(v => {
+        if (v.id === 'view-' + name) { v.classList.add('active'); v.removeAttribute('hidden'); } else { v.classList.remove('active'); v.setAttribute('hidden', ''); }
+      });
+      // Update charts after layout change (avoid infinite resize loops)
+      chartEntries.forEach(entry => entry.chart.update());
+    }
+    tabs.forEach(t => t.addEventListener('click', () => activateTab(t.dataset.tab)));
+    refreshCharts();
+
+    // Table tab switching logic
+    const tableTabs = document.querySelectorAll('.table-tab');
+    const tableContents = document.querySelectorAll('.table-content');
+    tableTabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        const tableId = 'table-' + tab.dataset.table;
+        tableTabs.forEach(t => t.classList.toggle('active', t.dataset.table === tab.dataset.table));
+        tableContents.forEach(content => {
+          if (content.id === tableId) {
+            content.style.display = 'block';
+          } else {
+            content.style.display = 'none';
+          }
+        });
+      });
+    });
+  </script>
+</body>
+</html>
