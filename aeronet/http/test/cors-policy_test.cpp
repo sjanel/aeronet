@@ -237,4 +237,162 @@ TEST_F(CorsPolicyHarness, NotCorsWhenNoOrigin) {
   EXPECT_EQ(applyStatus, CorsPolicy::ApplyStatus::NotCors);
 }
 
+TEST_F(CorsPolicyHarness, MaxAgeMustBeNonNegative) {
+  CorsPolicy policy;
+  EXPECT_THROW(policy.maxAge(std::chrono::seconds{-1}), std::invalid_argument);
+}
+
+TEST_F(CorsPolicyHarness, ApplyOriginDeniedSetsForbidden) {
+  CorsPolicy policy;
+  policy.allowOrigin("https://allowed.example");
+
+  const auto status = parse(BuildRaw(http::GET, "/resource", "Origin: https://not.allowed\r\n"));
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  HttpResponse response;
+  const auto applyStatus = policy.applyToResponse(request, response);
+  EXPECT_EQ(applyStatus, CorsPolicy::ApplyStatus::OriginDenied);
+  EXPECT_EQ(response.status(), http::StatusCodeForbidden);
+  EXPECT_EQ(response.body(), http::ReasonForbidden);
+}
+
+TEST_F(CorsPolicyHarness, PreflightDeniedWhenPolicyAllowsNoMethods) {
+  CorsPolicy policy;
+  policy.allowAnyOrigin().allowMethods(static_cast<http::MethodBmp>(0));
+
+  auto raw = BuildRaw(http::OPTIONS, "/files",
+                      "Origin: https://any\r\n"
+                      "Access-Control-Request-Method: GET\r\n");
+  const auto status = parse(raw);
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  const auto result = policy.handlePreflight(request);
+  EXPECT_EQ(result.status, CorsPolicy::PreflightResult::Status::MethodDenied);
+}
+
+TEST_F(CorsPolicyHarness, PreflightWithRouteMethodsZeroIsDenied) {
+  CorsPolicy policy;
+  policy.allowAnyOrigin().allowMethods(static_cast<http::MethodBmp>(http::Method::GET) |
+                                       static_cast<http::MethodBmp>(http::Method::POST));
+
+  auto raw = BuildRaw(http::OPTIONS, "/files",
+                      "Origin: https://any\r\n"
+                      "Access-Control-Request-Method: GET\r\n");
+  const auto status = parse(raw);
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  const auto result = policy.handlePreflight(request, static_cast<http::MethodBmp>(0));
+  EXPECT_EQ(result.status, CorsPolicy::PreflightResult::Status::MethodDenied);
+}
+
+TEST_F(CorsPolicyHarness, VaryAlreadyContainsOriginNotDuplicated) {
+  CorsPolicy policy;
+  policy.allowOrigin("https://api.example");
+
+  const auto status = parse(BuildRaw(http::GET, "/resource", "Origin: https://api.example\r\n"));
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  HttpResponse response;
+  // existing Vary already lists origin (lower-case), should not be duplicated
+  response.addHeader(http::Vary, "Accept-Encoding, origin");
+
+  const auto applyStatus = policy.applyToResponse(request, response);
+  EXPECT_EQ(applyStatus, CorsPolicy::ApplyStatus::Applied);
+  EXPECT_EQ(response.headerValueOrEmpty(http::Vary), "Accept-Encoding, origin");
+}
+
+TEST_F(CorsPolicyHarness, ExposeHeaderDuplicatePrevention) {
+  CorsPolicy policy;
+  policy.allowOrigin("https://expose.example");
+  policy.exposeHeader("X-Exposed");
+  policy.exposeHeader(" X-Exposed ");
+
+  const auto status = parse(BuildRaw(http::GET, "/expose", "Origin: https://expose.example\r\n"));
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  HttpResponse response;
+  const auto applyStatus = policy.applyToResponse(request, response);
+  EXPECT_EQ(applyStatus, CorsPolicy::ApplyStatus::Applied);
+  EXPECT_EQ(response.headerValueOrEmpty(http::AccessControlExposeHeaders), "X-Exposed");
+}
+
+TEST_F(CorsPolicyHarness, AllowRequestHeaderTrimmingAndDuplicates) {
+  CorsPolicy policy;
+  policy.allowOrigin("https://hdrs.example");
+  policy.allowRequestHeader("  X-T  ");
+  policy.allowRequestHeader("X-T");
+
+  auto raw = BuildRaw(http::OPTIONS, "/hdrs",
+                      "Origin: https://hdrs.example\r\n"
+                      "Access-Control-Request-Method: GET\r\n"
+                      "Access-Control-Request-Headers:  X-T  \r\n");
+  const auto status = parse(raw);
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  const auto result = policy.handlePreflight(request);
+  ASSERT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
+  EXPECT_EQ(result.response.headerValueOrEmpty(http::AccessControlAllowHeaders), "X-T");
+}
+
+TEST_F(CorsPolicyHarness, PreflightOptionsWithoutOriginIsNotPreflight) {
+  CorsPolicy policy;
+  policy.allowAnyOrigin();
+
+  // OPTIONS but no Origin header -> not a preflight request
+  auto raw = BuildRaw(http::OPTIONS, "/files");
+  const auto status = parse(raw);
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  const auto result = policy.handlePreflight(request);
+  EXPECT_EQ(result.status, CorsPolicy::PreflightResult::Status::NotPreflight);
+}
+
+TEST_F(CorsPolicyHarness, PreflightUnknownMethodTokenIsDenied) {
+  CorsPolicy policy;
+  policy.allowAnyOrigin().allowMethods(http::Method::GET);
+
+  auto raw = BuildRaw(http::OPTIONS, "/files",
+                      "Origin: https://any\r\n"
+                      "Access-Control-Request-Method: UNKNOWN_METHOD\r\n");
+  const auto status = parse(raw);
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  const auto result = policy.handlePreflight(request);
+  EXPECT_EQ(result.status, CorsPolicy::PreflightResult::Status::MethodDenied);
+}
+
+TEST_F(CorsPolicyHarness, RequestHeadersEmptyAfterTrimChecksEmptyAllowedList) {
+  CorsPolicy policy;
+  // leave allowed list empty
+  policy.allowOrigin("https://hdrs.example");
+
+  auto raw = BuildRaw(http::OPTIONS, "/hdrs",
+                      "Origin: https://hdrs.example\r\n"
+                      "Access-Control-Request-Method: GET\r\n"
+                      "Access-Control-Request-Headers:   \r\n");
+  const auto status = parse(raw);
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  const auto result = policy.handlePreflight(request);
+  // since requested headers trimmed to empty and allowed list is empty, headersAllowed returns false -> deny
+  EXPECT_EQ(result.status, CorsPolicy::PreflightResult::Status::HeadersDenied);
+}
+
+TEST_F(CorsPolicyHarness, RequestHeadersDoubleCommaSkipsEmptyToken) {
+  CorsPolicy policy;
+  policy.allowOrigin("https://hdrs.example");
+  policy.allowRequestHeader("X-One");
+
+  auto raw = BuildRaw(http::OPTIONS, "/hdrs",
+                      "Origin: https://hdrs.example\r\n"
+                      "Access-Control-Request-Method: GET\r\n"
+                      "Access-Control-Request-Headers: X-One,,X-One\r\n");
+  const auto status = parse(raw);
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  const auto result = policy.handlePreflight(request);
+  EXPECT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
+  EXPECT_EQ(result.response.headerValueOrEmpty(http::AccessControlAllowHeaders), "X-One");
+}
+
 }  // namespace aeronet

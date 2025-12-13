@@ -157,10 +157,20 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequest& reque
     return result;
   }
 
-  std::string_view requestedHeaders = request.headerValueOrEmpty(http::AccessControlRequestHeaders);
-  if (!requestedHeaders.empty() && !requestHeadersAllowed(requestedHeaders)) {
-    result.status = PreflightResult::Status::HeadersDenied;
-    return result;
+  // Distinguish between header absence and an explicitly-present empty value.
+  std::string_view requestedHeaders;
+  if (const auto requestedHeadersOpt = request.headerValue(http::AccessControlRequestHeaders); requestedHeadersOpt) {
+    requestedHeaders = *requestedHeadersOpt;
+    if (requestedHeaders.empty()) {
+      // Header was present but parsed value is empty. Deny when policy has no allowed headers.
+      if (_allowedRequestHeaders.empty()) {
+        result.status = PreflightResult::Status::HeadersDenied;
+        return result;
+      }
+    } else if (!requestHeadersAllowed(requestedHeaders)) {
+      result.status = PreflightResult::Status::HeadersDenied;
+      return result;
+    }
   }
 
   auto& response = result.response;
@@ -172,8 +182,8 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequest& reque
       const auto method = http::MethodFromIdx(idx);
       if (http::IsMethodSet(effectiveMethods, method)) {
         if (!value.empty()) {
-          value.push_back(',');
-          value.push_back(' ');
+          static constexpr std::string_view kCommaSep = ", ";
+          value.append_range(kCommaSep);
         }
         value.append_range(http::MethodToStr(method));
       }
@@ -234,7 +244,11 @@ bool CorsPolicy::requestHeadersAllowed(std::string_view headerList) const {
   }
   headerList = TrimOws(headerList);
   if (headerList.empty()) {
-    return _allowedRequestHeaders.empty();
+    // If the client provided an empty header list (after trimming), treat this
+    // as a request for no headers. Only allow it when the policy explicitly
+    // lists allowed request headers (i.e. non-empty); if the policy's allowed
+    // list is empty, deny the preflight to be conservative.
+    return !_allowedRequestHeaders.empty();
   }
   if (_allowedRequestHeaders.empty()) {
     return false;
