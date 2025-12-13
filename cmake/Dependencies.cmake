@@ -1,6 +1,36 @@
 include(FetchContent)
+include(cmake/AeronetFindOrFetch.cmake)
 
-set(fetchContentPackagesToMakeAvailable "")
+set(AeronetFetchContentPackagesToMakeAvailable "")
+
+# Some imported targets provided by FetchContent or package configs only set
+# IMPORTED_LOCATION_RELEASE (or RELEASE-only properties). When CMake later
+# asks for IMPORTED_LOCATION (or the Debug configuration) this can trigger
+# "IMPORTED_LOCATION not set" errors. Normalize common imported targets by
+# copying RELEASE -> DEBUG and setting IMPORTED_LOCATION if missing.
+function(_aeronet_normalize_imported_location target)
+  if(NOT TARGET ${target})
+    return()
+  endif()
+  # Read config-specific properties
+  get_target_property(_loc_debug ${target} IMPORTED_LOCATION_DEBUG)
+  get_target_property(_loc_release ${target} IMPORTED_LOCATION_RELEASE)
+  get_target_property(_loc_no_cfg ${target} IMPORTED_LOCATION)
+
+  if(NOT _loc_debug AND _loc_release)
+    set_target_properties(${target} PROPERTIES IMPORTED_LOCATION_DEBUG "${_loc_release}")
+  endif()
+
+  # Ensure IMPORTED_LOCATION exists (some consumers query this property directly)
+  get_target_property(_loc_now ${target} IMPORTED_LOCATION)
+  if(NOT _loc_now)
+    if(_loc_debug)
+      set_target_properties(${target} PROPERTIES IMPORTED_LOCATION "${_loc_debug}")
+    elseif(_loc_release)
+      set_target_properties(${target} PROPERTIES IMPORTED_LOCATION "${_loc_release}")
+    endif()
+  endif()
+endfunction()
 
 set(LINK_AMC FALSE)
 find_package(amc CONFIG)
@@ -16,44 +46,36 @@ else()
     URL_HASH SHA256=a1cbb695f31c96b90699ef1d2db14dcd89984cf1135c29b48af70a007c44a02d
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
-  list(APPEND fetchContentPackagesToMakeAvailable amadeusamc)
+  list(APPEND AeronetFetchContentPackagesToMakeAvailable amadeusamc)
 endif()
 
 if(AERONET_BUILD_TESTS)
-  find_package(GTest CONFIG)
+  # Use modern position independent etc.
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
-  if(NOT GTest_FOUND)
-    FetchContent_Declare(
-      googletest
+  aeronet_find_or_declare(
+    NAME googletest
+    CONFIG
+    TARGETS GTest::gtest GTest::gmock GTest::gtest_main
+    DECLARE
       URL https://github.com/google/googletest/archive/refs/tags/v1.17.0.tar.gz
       URL_HASH SHA256=65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    )
-
-    # Use modern position independent etc.
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-
-    list(APPEND fetchContentPackagesToMakeAvailable googletest)
-  endif()
+  )
 
   enable_testing()
 endif()
 
 if(AERONET_ENABLE_SPDLOG)
-  # Prefer an existing package manager supplied spdlog (vcpkg/conan/system) before fetching.
-  find_package(spdlog CONFIG)
-  if(NOT spdlog_FOUND)
-    FetchContent_Declare(
-      spdlog
+  aeronet_find_or_declare(
+    NAME spdlog
+    CONFIG
+    TARGETS spdlog::spdlog
+    DECLARE
       URL https://github.com/gabime/spdlog/archive/refs/tags/v1.16.0.tar.gz
       URL_HASH SHA256=8741753e488a78dd0d0024c980e1fb5b5c85888447e309d9cb9d949bdb52aa3e
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    )
-    list(APPEND fetchContentPackagesToMakeAvailable spdlog)
-  endif()
-  if (AERONET_SPDLOG_USE_STD_FORMAT)
-    set(SPDLOG_USE_STD_FORMAT ON CACHE BOOL "" FORCE)
-  endif()
+  )
 endif()
 
 # Compression libraries (optional, isolated like TLS). Detect BEFORE building core targets so
@@ -63,153 +85,150 @@ if(AERONET_ENABLE_ZLIB)
 endif()
 
 if(AERONET_ENABLE_ZSTD)
-  # Try to locate an existing zstd installation (vcpkg, system) first.
-  find_package(zstd CONFIG QUIET)
-  if(NOT (TARGET zstd::libzstd OR TARGET zstd::zstd OR TARGET ZSTD::ZSTD OR TARGET libzstd_static))
-    # Fallback: build from source via FetchContent.
-    set(ZSTD_BUILD_STATIC ON CACHE INTERNAL "Only build static lib")
-    set(ZSTD_BUILD_SHARED OFF CACHE INTERNAL "Do not build shared lib")
-    set(ZSTD_LEGACY_SUPPORT OFF CACHE INTERNAL "No legacy support")
-    set(ZSTD_BUILD_PROGRAMS OFF CACHE INTERNAL "Do not build programs")
-    set(ZSTD_BUILD_TESTS OFF CACHE INTERNAL "Do not build tests")
+  # Configure zstd BEFORE declaration
+  set(ZSTD_BUILD_STATIC ON  CACHE BOOL "" FORCE)
+  set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
+  set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+  set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 
-    # Suppress upstream warning: ensure BUILD_SHARED_LIBS is OFF while configuring the zstd subproject.
-    if(DEFINED BUILD_SHARED_LIBS)
-      set(_AERONET_PREV_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
-    endif()
-    # Force OFF for the duration of zstd population (static linking desired here).
-    set(BUILD_SHARED_LIBS OFF CACHE BOOL "(temporarily)" FORCE)
-
-    set(zstd_URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz)
-    set(zstd_URL_HASH SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3)
-
-    FetchContent_Declare(
-      zstd
-      URL "${zstd_URL}"
-      URL_HASH "${zstd_URL_HASH}"
+  aeronet_find_or_declare(
+    NAME zstd
+    CONFIG
+    TARGETS zstd::libzstd
+    DECLARE
+      URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+      URL_HASH SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
       SOURCE_SUBDIR build/cmake
-    )
-    list(APPEND fetchContentPackagesToMakeAvailable zstd)
-    # We'll restore BUILD_SHARED_LIBS after FetchContent_MakeAvailable below.
-  endif()
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
 endif()
 
 if(AERONET_ENABLE_BROTLI)
-  # Try to locate an existing brotli installation first.
-  find_package(PkgConfig QUIET)
-  if(NOT TARGET brotlicommon OR NOT TARGET brotlidec OR NOT TARGET brotlienc)
-    # Fallback FetchContent of google/brotli (static libs only)
-    set(BROTLI_DISABLE_TESTS ON CACHE INTERNAL "Disable brotli tests")
-    # Hash updated to match upstream v1.1.0 release archive.
-    FetchContent_Declare(
-      brotli
-      URL https://github.com/google/brotli/archive/refs/tags/v1.1.0.tar.gz
-      URL_HASH SHA256=e720a6ca29428b803f4ad165371771f5398faba397edf6778837a18599ea13ff
+
+  # Brotli does not reliably provide Debug libs on many systems,
+  # so policy decides whether system packages are allowed.
+  aeronet_find_or_declare(
+    NAME brotli
+    CONFIG
+    TARGETS
+      brotlicommon
+      brotlidec
+      brotlienc
+    DECLARE
+      URL https://github.com/google/brotli/archive/refs/tags/v1.2.0.tar.gz
+      URL_HASH SHA256=816c96e8e8f193b40151dad7e8ff37b1221d019dbcb9c35cd3fadbfe6477dfec
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    )
-    list(APPEND fetchContentPackagesToMakeAvailable brotli)
-  endif()
+  )
+
+  # Brotli-specific configuration (applies only when fetched)
+  set(BROTLI_DISABLE_TESTS ON CACHE BOOL "Disable brotli tests" FORCE)
+
 endif()
 
 if(AERONET_ENABLE_OPENTELEMETRY)
-  # Prefer system-provided package if available
-  find_package(opentelemetry-cpp QUIET)
-  if(NOT TARGET opentelemetry::trace AND NOT TARGET OpenTelemetry::trace)
-    include(FetchContent)
-    # Require libcurl and protobuf development files. These are heavy native
-    # dependencies and should be provided by the system package manager when
-    # AERONET_ENABLE_OPENTELEMETRY=ON is used.
-    # Try Config-mode first (vcpkg/packaged CMake configs), fall back to module-mode
+
+  aeronet_system_packages_allowed(_otel_allow_system)
+
+  set(_USE_SYSTEM_OPENTELEMETRY FALSE)
+
+  if(_otel_allow_system)
+    find_package(opentelemetry-cpp CONFIG QUIET)
+  endif()
+  if(opentelemetry-cpp_FOUND)
+
+    # Check required OTLP HTTP exporter
+    set(_otel_has_http FALSE)
+    if(TARGET opentelemetry-cpp::otlp_http_exporter
+       OR TARGET opentelemetry-cpp::otlp_http_client
+       OR TARGET opentelemetry-cpp::otlp_http_metric_exporter)
+      set(_otel_has_http TRUE)
+    endif()
+
+    # Check proto target or headers
+    set(_otel_has_proto FALSE)
+    if(TARGET opentelemetry-cpp::proto OR TARGET opentelemetry_proto)
+      set(_otel_has_proto TRUE)
+    elseif(EXISTS "/usr/local/include/opentelemetry/proto/collector/metrics/v1/metrics_service.pb.h")
+      set(_otel_has_proto TRUE)
+    endif()
+
+    if(_otel_has_http AND _otel_has_proto)
+      message(STATUS "Using system opentelemetry-cpp with OTLP HTTP + proto support")
+      set(_USE_SYSTEM_OPENTELEMETRY TRUE)
+    else()
+      message(STATUS "System opentelemetry-cpp missing required OTLP HTTP/proto components")
+    endif()
+
+  endif()
+  if(NOT _USE_SYSTEM_OPENTELEMETRY)
+
+    # Hard requirements (never FetchContent these)
     find_package(CURL CONFIG QUIET)
     if(NOT CURL_FOUND)
       find_package(CURL QUIET)
     endif()
-    # Protobuf: prefer CONFIG-mode but accept module-mode as well
+
     find_package(Protobuf CONFIG QUIET)
     if(NOT Protobuf_FOUND)
       find_package(Protobuf QUIET)
     endif()
 
     if(NOT CURL_FOUND)
-      message(FATAL_ERROR "AERONET_ENABLE_OPENTELEMETRY=ON requires libcurl development files to build the OTLP HTTP exporter. Install libcurl (e.g. libcurl4-openssl-dev or curl-dev) or set AERONET_ENABLE_OPENTELEMETRY=OFF.")
+      message(FATAL_ERROR
+        "AERONET_ENABLE_OPENTELEMETRY requires libcurl development files.")
     endif()
+
     if(NOT Protobuf_FOUND)
-      message(FATAL_ERROR "AERONET_ENABLE_OPENTELEMETRY=ON requires protobuf development files (libprotobuf & protoc). Install protobuf (e.g. libprotobuf-dev and protobuf-compiler) or set AERONET_ENABLE_OPENTELEMETRY=OFF.\n\nNote: fetching opentelemetry-cpp will also attempt to fetch/build protobuf which may fail in disconnected environments. Using system protobuf avoids that and reduces build-time fetches.")
+      message(FATAL_ERROR
+        "AERONET_ENABLE_OPENTELEMETRY requires protobuf (libprotobuf + protoc).")
     endif()
-
-    # If a Conan-provided Protobuf package exposes a protoc target, prefer that
-    # executable for any protobuf code generation. This prevents CMake/FetchContent
-    # builds (like opentelemetry-cpp) from accidentally invoking a system
-    # /usr/bin/protoc that is version-incompatible with the Protobuf headers
-    # that will be used for compilation (see CI failures where generated files
-    # were produced by a newer protoc than the headers available during compile).
     if(TARGET protobuf::protoc)
-      # Try to read the imported location of the protoc executable target.
-      get_target_property(_PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION)
-      if(NOT _PROTOC_EXECUTABLE)
-        # Fallback property name used by some package configs.
-        get_target_property(_PROTOC_EXECUTABLE protobuf::protoc LOCATION)
+      get_target_property(_PROTOC protobuf::protoc IMPORTED_LOCATION)
+      if(NOT _PROTOC)
+        get_target_property(_PROTOC protobuf::protoc LOCATION)
       endif()
-      if(_PROTOC_EXECUTABLE)
-        # Force the Protobuf CMake cache variable so subsequent find_package or
-        # libraries that rely on Protobuf use this executable for generation.
-        set(Protobuf_PROTOC_EXECUTABLE "${_PROTOC_EXECUTABLE}" CACHE FILEPATH "Protobuf protoc executable (from Conan)" FORCE)
+      if(_PROTOC)
+        set(Protobuf_PROTOC_EXECUTABLE
+            "${_PROTOC}"
+            CACHE FILEPATH "Protobuf protoc executable" FORCE)
       endif()
     endif()
+    # ABI + feature configuration
+    set(WITH_STL OFF CACHE BOOL "Use nostd for ABI stability" FORCE)
+    set(WITH_HTTP_CLIENT_CURL ON CACHE BOOL "" FORCE)
+    set(WITH_OTLP_HTTP ON CACHE BOOL "" FORCE)
+    set(WITH_OTLP_GRPC OFF CACHE BOOL "" FORCE)
 
-    FetchContent_Declare(
-      opentelemetry_cpp
-      URL https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v1.24.0.tar.gz
-      URL_HASH SHA256=7b8e966affca1daf1906272f4d983631cad85fb6ea60fb6f55dcd1811a730604
-    )
-    # Configure opentelemetry-cpp to enable OTLP HTTP exporter and a curl http client.
-    # CRITICAL: Use nostd (WITH_STL=OFF) to ensure consistent ABI across all opentelemetry types.
-    # Using WITH_STL=ON causes ABI mismatch where some types use nostd::variant while others
-    # use std::shared_ptr, leading to variant destruction failures.
-    set(WITH_STL OFF CACHE BOOL "Use nostd types for ABI consistency" FORCE)
-    set(WITH_HTTP_CLIENT_CURL ON CACHE BOOL "Enable curl http client for OTLP HTTP" FORCE)
-    set(WITH_OTLP_HTTP ON CACHE BOOL "Build OTLP HTTP exporter" FORCE)
-    # Avoid pulling in gRPC/protobuf unless the user explicitly enables it upstream.
-    set(WITH_OTLP_GRPC OFF CACHE BOOL "Disable OTLP gRPC exporter by default" FORCE)
-    # Prefer to disable building tests/benchmarks/examples from the opentelemetry subtree
-    # to avoid pulling additional build-time dependencies (like Google Benchmark) into consumers.
     set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
     set(WITH_BENCHMARKS OFF CACHE BOOL "" FORCE)
     set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(WITH_FUNC_TESTS OFF CACHE BOOL "" FORCE)
-    
-    list(APPEND fetchContentPackagesToMakeAvailable opentelemetry_cpp)
+    aeronet_find_or_declare(
+      NAME opentelemetry_cpp
+      TARGETS
+        opentelemetry-cpp::otlp_http_exporter
+      DECLARE
+        URL https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v1.24.0.tar.gz
+        URL_HASH SHA256=7b8e966affca1daf1906272f4d983631cad85fb6ea60fb6f55dcd1811a730604
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+
   endif()
 endif()
 
 # Make fetch content available
-if(fetchContentPackagesToMakeAvailable)
-  message(STATUS "Configuring packages ${fetchContentPackagesToMakeAvailable}")
+if(AeronetFetchContentPackagesToMakeAvailable)
+  message(STATUS "Configuring packages ${AeronetFetchContentPackagesToMakeAvailable}")
   # In vcpkg builds, FETCHCONTENT_FULLY_DISCONNECTED is forced ON, so
   # population of new content that is not already present will fail.
   # We let FetchContent attempt population; if it fails to create the
   # expected targets we degrade gracefully by disabling AMC linkage.
-  FetchContent_MakeAvailable("${fetchContentPackagesToMakeAvailable}")
+  FetchContent_MakeAvailable(${AeronetFetchContentPackagesToMakeAvailable})
 
   # Restore BUILD_SHARED_LIBS if we overrode it for zstd.
   if(DEFINED _AERONET_PREV_BUILD_SHARED_LIBS)
     set(BUILD_SHARED_LIBS ${_AERONET_PREV_BUILD_SHARED_LIBS} CACHE BOOL "Restore previous value" FORCE)
     unset(_AERONET_PREV_BUILD_SHARED_LIBS)
-  endif()
-
-  # Normalize brotli target names (create plain names if only *-static provided)
-  if(AERONET_ENABLE_BROTLI)
-    if(TARGET brotlicommon-static AND NOT TARGET brotlicommon)
-      add_library(brotlicommon INTERFACE IMPORTED)
-      target_link_libraries(brotlicommon INTERFACE brotlicommon-static)
-    endif()
-    if(TARGET brotlidec-static AND NOT TARGET brotlidec)
-      add_library(brotlidec INTERFACE IMPORTED)
-      target_link_libraries(brotlidec INTERFACE brotlidec-static)
-    endif()
-    if(TARGET brotlienc-static AND NOT TARGET brotlienc)
-      add_library(brotlienc INTERFACE IMPORTED)
-      target_link_libraries(brotlienc INTERFACE brotlienc-static)
-    endif()
   endif()
 endif()
