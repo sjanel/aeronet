@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 namespace aeronet::http {
 
 TEST(ReservedHeadersTest, ReservedResponseHeaderBasic) {
