@@ -37,83 +37,122 @@ target_include_directories(aeronet_objects
 )
 
 if(AERONET_ENABLE_OPENTELEMETRY)
-    # Link opentelemetry targets. We prefer CMake targets over raw .a files
-    # because targets establish proper build dependencies. When using FetchContent,
-    # targets like 'opentelemetry_trace' ensure the library is built before linking.
-    # Make all links PUBLIC so consumers (tests/benchmarks) inherit dependencies.
-
-    # Try system-installed opentelemetry-cpp with find_package() double-colon names
-    set(_otel_targets_found FALSE)
-    if(TARGET opentelemetry::trace)
-        target_link_libraries(aeronet_objects PUBLIC opentelemetry::trace)
-        set(_otel_targets_found TRUE)
-    elseif(TARGET OpenTelemetry::trace)
-        target_link_libraries(aeronet_objects PUBLIC OpenTelemetry::trace)
-        set(_otel_targets_found TRUE)
+    # Link opentelemetry targets. Use system package if validated, otherwise FetchContent.
+    # The _USE_SYSTEM_OPENTELEMETRY variable is set in Dependencies.cmake after validation.
+    
+    # Core SDK trace library (prefer namespaced opentelemetry-cpp::trace)
+    if(TARGET opentelemetry-cpp::trace)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::trace)
+    elseif(TARGET opentelemetry_trace)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry_trace)
     endif()
 
-    # If no system package, use FetchContent targets (non-namespaced names).
-    # Use PRIVATE linking for FetchContent targets since they're not exported
-    # and consumers don't need direct access to opentelemetry internals.
-    if(NOT _otel_targets_found AND DEFINED opentelemetry_cpp_SOURCE_DIR)
-        # Core SDK trace library
-        if(TARGET opentelemetry_trace)
-            target_link_libraries(aeronet_objects PRIVATE opentelemetry_trace)
+    # Core SDK metrics library
+    if(TARGET opentelemetry-cpp::metrics)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::metrics)
+    elseif(TARGET opentelemetry_metrics)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry_metrics)
+    endif()
+
+    # OTLP HTTP exporter and related targets
+    if(TARGET opentelemetry-cpp::otlp_http_exporter)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::otlp_http_exporter)
+    elseif(TARGET opentelemetry_exporter_otlp_http)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry_exporter_otlp_http)
+    endif()
+
+    # OTLP HTTP metrics exporter
+    if(TARGET opentelemetry-cpp::otlp_http_metric_exporter)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::otlp_http_metric_exporter)
+    elseif(TARGET opentelemetry_exporter_otlp_http_metric)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry_exporter_otlp_http_metric)
+    endif()
+
+    # Ostream exporter for metrics (used in tests)
+    if(TARGET opentelemetry-cpp::ostream_metrics_exporter)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::ostream_metrics_exporter)
+    elseif(TARGET opentelemetry_exporter_ostream_metrics)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry_exporter_ostream_metrics)
+    endif()
+
+    if(TARGET opentelemetry-cpp::otlp_http_client)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::otlp_http_client)
+    elseif(TARGET opentelemetry_exporter_otlp_http_client)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry_exporter_otlp_http_client)
+    endif()
+
+    if(TARGET opentelemetry-cpp::otlp_recordable)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::otlp_recordable)
+    elseif(TARGET opentelemetry_otlp_recordable)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry_otlp_recordable)
+    endif()
+
+    if(TARGET opentelemetry-cpp::proto)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::proto)
+        get_target_property(_otel_proto_includes opentelemetry-cpp::proto INTERFACE_INCLUDE_DIRECTORIES)
+        if(_otel_proto_includes)
+            target_include_directories(aeronet_objects PUBLIC ${_otel_proto_includes})
         endif()
-        
-        # Core SDK metrics library
-        if(TARGET opentelemetry_metrics)
-            target_link_libraries(aeronet_objects PRIVATE opentelemetry_metrics)
+    elseif(TARGET opentelemetry_proto)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry_proto)
+        get_target_property(_otel_proto_includes opentelemetry_proto INTERFACE_INCLUDE_DIRECTORIES)
+        if(_otel_proto_includes)
+            target_include_directories(aeronet_objects PUBLIC ${_otel_proto_includes})
         endif()
-        
-        # OTLP HTTP exporter and related targets
-        if(TARGET opentelemetry_exporter_otlp_http)
-            target_link_libraries(aeronet_objects PRIVATE opentelemetry_exporter_otlp_http)
+    endif()
+
+    if(TARGET opentelemetry-cpp::logs)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::logs)
+    elseif(TARGET opentelemetry_logs)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry_logs)
+    endif()
+
+    if(TARGET opentelemetry-cpp::ostream_span_exporter)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::ostream_span_exporter)
+        get_target_property(_otel_exp_includes opentelemetry-cpp::ostream_span_exporter INTERFACE_INCLUDE_DIRECTORIES)
+        if(_otel_exp_includes)
+            target_include_directories(aeronet_objects PUBLIC ${_otel_exp_includes})
         endif()
-        
-        # OTLP HTTP metrics exporter
-        if(TARGET opentelemetry_exporter_otlp_http_metric)
-            target_link_libraries(aeronet_objects PRIVATE opentelemetry_exporter_otlp_http_metric)
+    elseif(TARGET opentelemetry_exporter_ostream_span)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry_exporter_ostream_span)
+        get_target_property(_otel_exp_includes opentelemetry_exporter_ostream_span INTERFACE_INCLUDE_DIRECTORIES)
+        if(_otel_exp_includes)
+            target_include_directories(aeronet_objects PUBLIC ${_otel_exp_includes})
         endif()
-        
-        # Ostream exporter for metrics (used in tests)
-        if(TARGET opentelemetry_exporter_ostream_metrics)
-            target_link_libraries(aeronet_objects PRIVATE opentelemetry_exporter_ostream_metrics)
-        endif()
-        if(TARGET opentelemetry_exporter_otlp_http_client)
-            target_link_libraries(aeronet_objects PRIVATE opentelemetry_exporter_otlp_http_client)
-        endif()
-        if(TARGET opentelemetry_otlp_recordable)
-            target_link_libraries(aeronet_objects PRIVATE opentelemetry_otlp_recordable)
-        endif()
-        if(TARGET opentelemetry_proto)
-            target_link_libraries(aeronet_objects PRIVATE opentelemetry_proto)
-            get_target_property(_otel_proto_includes opentelemetry_proto INTERFACE_INCLUDE_DIRECTORIES)
-            if(_otel_proto_includes)
-                target_include_directories(aeronet_objects PUBLIC ${_otel_proto_includes})
-            endif()
-        endif()
-        
-        # SDK support libraries
-        if(TARGET opentelemetry_common)
-            target_link_libraries(aeronet_objects PRIVATE opentelemetry_common)
-        endif()
-        if(TARGET opentelemetry_resources)
-            target_link_libraries(aeronet_objects PRIVATE opentelemetry_resources)
-        endif()
-        if(TARGET opentelemetry_version)
-            target_link_libraries(aeronet_objects PRIVATE opentelemetry_version)
-        endif()
-        
-        # HTTP client extension (curl-based)
-        if(TARGET http_client_curl)
-            target_link_libraries(aeronet_objects PRIVATE http_client_curl)
-        endif()
+    endif()
+
+    # SDK support libraries
+    if(TARGET opentelemetry-cpp::common)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::common)
+    elseif(TARGET opentelemetry_common)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry_common)
+    endif()
+    if(TARGET opentelemetry-cpp::sdk)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::sdk)
+    elseif(TARGET opentelemetry_sdk)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry_sdk)
+    endif()
+    if(TARGET opentelemetry-cpp::resources)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::resources)
+    elseif(TARGET opentelemetry_resources)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry_resources)
+    endif()
+    if(TARGET opentelemetry-cpp::version)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::version)
+    elseif(TARGET opentelemetry_version)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry_version)
+    endif()
+
+    # HTTP client extension (curl-based)
+    if(TARGET opentelemetry-cpp::http_client_curl)
+        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::http_client_curl)
+    elseif(TARGET http_client_curl)
+        target_link_libraries(aeronet_objects PRIVATE http_client_curl)
     endif()
 
     # Link system libraries required by opentelemetry (protobuf and curl).
-    # OpenTelemetry's CMake targets should transitively pull these in, but
-    # we also link them directly to ensure they're available to consumers.
+    # Ensure protobuf and curl are available to consumers. System-installed OpenTelemetry
+    # targets may or may not expose these transitively, so always find and link them.
     find_package(Protobuf REQUIRED)
     if(Protobuf_FOUND)
         target_include_directories(aeronet_objects PUBLIC ${Protobuf_INCLUDE_DIRS})
