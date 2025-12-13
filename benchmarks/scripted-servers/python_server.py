@@ -21,7 +21,12 @@ import sys
 
 try:
     from starlette.applications import Starlette
-    from starlette.responses import PlainTextResponse, JSONResponse, Response, FileResponse
+    from starlette.responses import (
+        PlainTextResponse,
+        JSONResponse,
+        Response,
+        FileResponse,
+    )
     from starlette.routing import Route, Mount
     from starlette.requests import Request
     from starlette.staticfiles import StaticFiles
@@ -40,7 +45,7 @@ route_count = 0
 
 def random_string(length: int) -> str:
     """Generate random alphanumeric string."""
-    return ''.join(random.choices(CHARSET, k=length))
+    return "".join(random.choices(CHARSET, k=length))
 
 
 def fibonacci(n: int) -> int:
@@ -55,12 +60,12 @@ def fibonacci(n: int) -> int:
 
 def compute_hash(data: str, iterations: int) -> int:
     """FNV-1a hash computation."""
-    hash_val = 0xcbf29ce484222325  # FNV-1a offset basis
-    data_bytes = data.encode('utf-8')
+    hash_val = 0xCBF29CE484222325  # FNV-1a offset basis
+    data_bytes = data.encode("utf-8")
     for _ in range(iterations):
         for b in data_bytes:
             hash_val ^= b
-            hash_val *= 0x100000001b3  # FNV-1a prime
+            hash_val *= 0x100000001B3  # FNV-1a prime
             hash_val &= 0xFFFFFFFFFFFFFFFF  # Keep 64-bit
     return hash_val
 
@@ -90,25 +95,19 @@ async def headers(request: Request) -> Response:
         value = random_string(size)
         response_headers[name] = value
 
-    return PlainTextResponse(
-        f"Generated {count} headers",
-        headers=response_headers
-    )
+    return PlainTextResponse(f"Generated {count} headers", headers=response_headers)
 
 
 async def uppercase(request: Request) -> Response:
     """Endpoint 3: /uppercase - Body uppercase test"""
     body = await request.body()
     try:
-        text = body.decode('utf-8')
-        out = text.upper().encode('utf-8')
+        text = body.decode("utf-8")
+        out = text.upper().encode("utf-8")
     except Exception:
         # If not valid UTF-8, fallback to returning original bytes
         out = body
-    return Response(
-        content=out,
-        media_type="application/octet-stream"
-    )
+    return Response(content=out, media_type="application/octet-stream")
 
 
 async def compute(request: Request) -> Response:
@@ -121,10 +120,7 @@ async def compute(request: Request) -> Response:
 
     return PlainTextResponse(
         f"fib({complexity})={fib_result}, hash={hash_result}",
-        headers={
-            "X-Fib-Result": str(fib_result),
-            "X-Hash-Result": str(hash_result)
-        }
+        headers={"X-Fib-Result": str(fib_result), "X-Hash-Result": str(hash_result)},
     )
 
 
@@ -134,8 +130,7 @@ async def json_endpoint(request: Request) -> Response:
 
     data = {
         "items": [
-            {"id": i, "name": f"item-{i}", "value": i * 100}
-            for i in range(items)
+            {"id": i, "name": f"item-{i}", "value": i * 100} for i in range(items)
         ]
     }
 
@@ -158,11 +153,7 @@ async def body(request: Request) -> Response:
 async def status(request: Request) -> Response:
     """Endpoint 8: /status - Health check"""
     threads = int(os.environ.get("BENCH_THREADS", str(num_threads)))
-    return JSONResponse({
-        "server": "python",
-        "threads": threads,
-        "status": "ok"
-    })
+    return JSONResponse({"server": "python", "threads": threads, "status": "ok"})
 
 
 async def route_handler(request: Request) -> Response:
@@ -199,20 +190,30 @@ def create_routes():
         Route("/body", body, methods=["GET"]),
         Route("/status", status, methods=["GET"]),
     ]
-    
+
     # Add static file serving if configured
     env_static = os.environ.get("BENCH_STATIC_DIR", "")
     if env_static and Path(env_static).is_dir():
         base_routes.append(Mount("/", StaticFiles(directory=env_static), name="static"))
-    
+
     # Add routing stress routes if configured
     env_routes = int(os.environ.get("BENCH_ROUTE_COUNT", "0"))
     if env_routes > 0:
         for i in range(env_routes):
             base_routes.append(Route(f"/r{i}", route_handler, methods=["GET"]))
-        base_routes.append(Route("/users/{user_id}/posts/{post_id}", user_post_handler, methods=["GET"]))
-        base_routes.append(Route("/api/v1/resources/{resource}/items/{item}/actions/{action}", api_pattern_handler, methods=["GET"]))
-    
+        base_routes.append(
+            Route(
+                "/users/{user_id}/posts/{post_id}", user_post_handler, methods=["GET"]
+            )
+        )
+        base_routes.append(
+            Route(
+                "/api/v1/resources/{resource}/items/{item}/actions/{action}",
+                api_pattern_handler,
+                methods=["GET"],
+            )
+        )
+
     return base_routes
 
 
@@ -240,8 +241,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Python benchmark server")
     parser.add_argument("--port", type=int, default=None, help="Listen port")
     parser.add_argument("--threads", type=int, default=None, help="Worker threads")
-    parser.add_argument("--static", type=str, default=None, help="Static files directory")
-    parser.add_argument("--routes", type=int, default=None, help="Number of /r{N} routes")
+    parser.add_argument(
+        "--static", type=str, default=None, help="Static files directory"
+    )
+    parser.add_argument(
+        "--routes", type=int, default=None, help="Number of /r{N} routes"
+    )
     args = parser.parse_args()
 
     port = args.port or get_port()
@@ -260,7 +265,7 @@ if __name__ == "__main__":
         print(f"Static files: {static_dir}")
     if route_count > 0:
         print(f"Routes: {route_count} literal + pattern routes")
-    
+
     # Set environment variables for worker processes and app configuration
     os.environ["BENCH_THREADS"] = str(num_threads)
     os.environ["BENCH_PORT"] = str(port)
@@ -279,25 +284,29 @@ if __name__ == "__main__":
 
     # Ensure pidfile is removed on exit
     import atexit
+
     def _cleanup_pidfile():
         try:
             if os.path.exists(pidfile):
                 os.remove(pidfile)
         except Exception:
             pass
+
     atexit.register(_cleanup_pidfile)
 
     # Install basic signal handlers to allow graceful shutdown
     import signal
+
     def _handle_term(signum, frame):
         try:
             _cleanup_pidfile()
         finally:
             # allow default handling to exit
             sys.exit(0)
+
     signal.signal(signal.SIGINT, _handle_term)
     signal.signal(signal.SIGTERM, _handle_term)
-    
+
     # If multiple workers are requested, run the uvicorn CLI with an import string
     # so worker mode works correctly. When uvicorn imports this module it will
     # pick up environment variables so routes are configured correctly.
@@ -310,25 +319,22 @@ if __name__ == "__main__":
             paths.insert(0, script_path)
             os.environ["PYTHONPATH"] = os.pathsep.join(paths)
         os.chdir(script_path)
-        os.execvp(sys.executable, [
+        os.execvp(
             sys.executable,
-            "-m",
-            "uvicorn",
-            "python_server:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-            "--workers",
-            str(num_threads),
-            "--log-level",
-            "warning",
-        ])
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "python_server:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--workers",
+                str(num_threads),
+                "--log-level",
+                "warning",
+            ],
+        )
 
-    uvicorn.run(
-        app,
-        host="127.0.0.1",
-        port=port,
-        log_level="warning",
-        access_log=False
-    )
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning", access_log=False)

@@ -5,11 +5,18 @@ from conan.tools.files import copy
 from pathlib import Path
 import os
 
+
 def _read_version():
     try:
-        return Path(__file__).parent.joinpath("VERSION").read_text(encoding="utf-8").strip()
+        return (
+            Path(__file__)
+            .parent.joinpath("VERSION")
+            .read_text(encoding="utf-8")
+            .strip()
+        )
     except Exception:
         return "0.0.0"
+
 
 class AeronetConan(ConanFile):
     name = "aeronet"
@@ -39,7 +46,15 @@ class AeronetConan(ConanFile):
         "with_zstd": False,
         "with_opentelemetry": False,
     }
-    exports_sources = "CMakeLists.txt", "cmake/*", "aeronet/*", "examples/*", "LICENSE", "README.md", "VERSION"
+    exports_sources = (
+        "CMakeLists.txt",
+        "cmake/*",
+        "aeronet/*",
+        "examples/*",
+        "LICENSE",
+        "README.md",
+        "VERSION",
+    )
     package_type = "library"
     required_conan_version = ">=2.0"
 
@@ -48,16 +63,22 @@ class AeronetConan(ConanFile):
 
     def generate(self):
         tc = CMakeToolchain(self)
-        tc.variables['AERONET_ENABLE_ASAN'] = "OFF"
-        tc.variables["AERONET_ENABLE_OPENSSL"] = "ON" if self.options.with_openssl else "OFF"
-        tc.variables["AERONET_ENABLE_SPDLOG"] = "ON" if self.options.with_spdlog else "OFF"
+        tc.variables["AERONET_ENABLE_ASAN"] = "OFF"
+        tc.variables["AERONET_ENABLE_OPENSSL"] = (
+            "ON" if self.options.with_openssl else "OFF"
+        )
+        tc.variables["AERONET_ENABLE_SPDLOG"] = (
+            "ON" if self.options.with_spdlog else "OFF"
+        )
         tc.variables["AERONET_ENABLE_BROTLI"] = "ON" if self.options.with_br else "OFF"
         tc.variables["AERONET_ENABLE_ZLIB"] = "ON" if self.options.with_zlib else "OFF"
         tc.variables["AERONET_ENABLE_ZSTD"] = "ON" if self.options.with_zstd else "OFF"
-        tc.variables["AERONET_ENABLE_OPENTELEMETRY"] = "ON" if self.options.with_opentelemetry else "OFF"
+        tc.variables["AERONET_ENABLE_OPENTELEMETRY"] = (
+            "ON" if self.options.with_opentelemetry else "OFF"
+        )
         # Force OFF for tests/examples in package context
         tc.variables["AERONET_BUILD_TESTS"] = "OFF"
-        tc.variables['AERONET_BUILD_BENCHMARKS'] = "OFF"
+        tc.variables["AERONET_BUILD_BENCHMARKS"] = "OFF"
         tc.variables["AERONET_BUILD_EXAMPLES"] = "OFF"
         tc.variables["AERONET_BUILD_SHARED"] = "ON" if self.options.shared else "OFF"
         tc.variables["AERONET_INSTALL"] = "ON"
@@ -96,11 +117,22 @@ class AeronetConan(ConanFile):
         cm = CMake(self)
         cm.install()
         # Conan 2 removed self.copy(); use tools.files.copy instead.
-        copy(self, "LICENSE", dst=os.path.join(self.package_folder, "licenses"), src=self.source_folder)
+        copy(
+            self,
+            "LICENSE",
+            dst=os.path.join(self.package_folder, "licenses"),
+            src=self.source_folder,
+        )
 
     def package_info(self):
         # Core libs always present
-        self.cpp_info.libs = ["aeronet", "aeronet_http", "aeronet_tech", "aeronet_objects", "aeronet_sys"]
+        self.cpp_info.libs = [
+            "aeronet",
+            "aeronet_http",
+            "aeronet_tech",
+            "aeronet_objects",
+            "aeronet_sys",
+        ]
         if self.options.with_openssl:
             # TLS module built separately
             self.cpp_info.libs.append("aeronet_tls")
