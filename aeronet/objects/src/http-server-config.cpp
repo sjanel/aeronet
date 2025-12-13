@@ -160,7 +160,7 @@ HttpServerConfig& HttpServerConfig::withTlsHandshakeLogging(bool on) {
 }
 
 HttpServerConfig& HttpServerConfig::withTlsHandshakeTimeout(std::chrono::milliseconds timeout) {
-  ensureTls().handshakeTimeout = timeout;
+  ensureTls().withTlsHandshakeTimeout(timeout);
   return *this;
 }
 
