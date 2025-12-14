@@ -56,11 +56,12 @@ void ZlibEncoder::encodeFull(std::size_t extraCapacity, std::string_view data, R
   zstream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
   zstream.avail_in = static_cast<uInt>(data.size());
 
-  std::size_t maxCompressedSize = static_cast<std::size_t>(deflateBound(&zstream, static_cast<uLong>(data.size())));
+  const std::size_t maxCompressedSize =
+      static_cast<std::size_t>(deflateBound(&zstream, static_cast<uLong>(data.size())));
 
   buf.ensureAvailableCapacity(maxCompressedSize + extraCapacity);
 
-  std::size_t availableCapacity = buf.availableCapacity();
+  const std::size_t availableCapacity = buf.availableCapacity();
 
   zstream.next_out = reinterpret_cast<unsigned char*>(buf.data() + buf.size());
   zstream.avail_out = static_cast<decltype(zstream.avail_out)>(availableCapacity);
