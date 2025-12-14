@@ -262,7 +262,10 @@ TEST(HttpPayload, EnsureAvailableCapacity_String) {
 
 TEST(HttpPayload, EnsureAvailableCapacity_VectorChar) {
   HttpPayload body(std::vector<char>{'a'});
+
   body.ensureAvailableCapacityExponential(4);
+  body.ensureAvailableCapacityExponential(4);
+  body.ensureAvailableCapacityExponential(5);
   body.addSize(2);
   EXPECT_EQ(body.size(), 3U);
 }
@@ -270,7 +273,9 @@ TEST(HttpPayload, EnsureAvailableCapacity_VectorChar) {
 TEST(HttpPayload, EnsureAvailableCapacity_VectorByte) {
   std::vector<std::byte> vec{std::byte{0x01}};
   HttpPayload body(vec);
-  body.ensureAvailableCapacityExponential(6);
+  body.ensureAvailableCapacityExponential(4);
+  body.ensureAvailableCapacityExponential(4);
+  body.ensureAvailableCapacityExponential(5);
   body.addSize(3);
   EXPECT_EQ(body.size(), 4U);
 }
