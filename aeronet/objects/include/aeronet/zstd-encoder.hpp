@@ -32,7 +32,6 @@ class ZstdEncoderContext : public EncoderContext {
 
  private:
   RawChars& _buf;
-  bool _finished{false};
   details::ZstdContextRAII _zs;
 };
 

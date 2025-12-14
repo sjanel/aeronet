@@ -45,7 +45,9 @@ class EncoderContext {
  public:
   virtual ~EncoderContext() = default;
 
-  // Streaming chunk encoder. If 'data' is empty, it will be considered as a finish.
+  // Streaming chunk encoder.
+  // Provide an empty chunk of 'data' if and only if finishing the stream.
+  // You should not call encodeChunk() again after having finished the stream.
   virtual std::string_view encodeChunk(std::size_t encoderChunkSize, std::string_view data) = 0;
 };
 
