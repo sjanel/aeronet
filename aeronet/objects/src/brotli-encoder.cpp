@@ -27,10 +27,6 @@ BrotliEncoderContext::BrotliEncoderContext(RawChars &sharedBuf, int quality, int
 }
 
 std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) {
-  _buf.clear();
-  if (_finished) {
-    return _buf;
-  }
   const uint8_t *nextIn = reinterpret_cast<const uint8_t *>(chunk.data());
   std::size_t availIn = chunk.size();
   // Shared streaming loop for both one-shot and chunked encoding.
@@ -38,7 +34,7 @@ std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize,
   //  - If finish == false: process input until all provided bytes are consumed; do not attempt to finish stream.
   //  - If finish == true: keep invoking the encoder until the stream reports finished (all input consumed and flush
   //  complete).
-  for (;;) {
+  for (_buf.clear();;) {
     _buf.ensureAvailableCapacityExponential(encoderChunkSize);
 
     uint8_t *nextOut = reinterpret_cast<uint8_t *>(_buf.data() + _buf.size());
@@ -69,9 +65,6 @@ std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize,
     if (availOut == 0) {
       continue;
     }
-  }
-  if (chunk.empty()) {
-    _finished = true;
   }
   return _buf;
 }
