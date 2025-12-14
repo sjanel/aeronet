@@ -416,3 +416,23 @@ TEST(ConnectionStateAsyncStateTest, ClearDestroysNonNullHandle) {
   state.clear();
   EXPECT_EQ(state.asyncState.handle, std::coroutine_handle<>());
 }
+
+TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSetsTlsEstablished) {
+  int sv[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+
+  ConnectionState state;
+  // attach a plain transport that writes to sv[0]
+  state.transport = std::make_unique<PlainTransport>(sv[0]);
+
+  // ensure tlsEstablished is initially false
+  state.tlsEstablished = false;
+
+  HttpResponseData resp("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
+  const auto res = state.transportWrite(resp);
+
+  // write should succeed and set tlsEstablished when handshakeDone() is true
+  EXPECT_GE(res.bytesProcessed, 0U);
+  EXPECT_TRUE(state.tlsEstablished);
+}
