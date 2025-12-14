@@ -17,6 +17,7 @@ class DecoderContext {
   // Feed a compressed chunk into the context.
   // When finalChunk is true, the caller does not provide any additional input.
   // Implementations append plain bytes to 'out'.
+  // Returns true on success, false on failure (e.g. decompression error or exceeding maxDecompressedBytes).
   virtual bool decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
                                std::size_t decoderChunkSize, RawChars &out) = 0;
 };
