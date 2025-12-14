@@ -39,8 +39,6 @@ bool ListContainsToken(std::string_view list, std::string_view token) {
   return false;
 }
 
-constexpr http::MethodBmp kAllMethodsMask = static_cast<http::MethodBmp>((1U << http::kNbMethods) - 1U);
-
 }  // namespace
 
 CorsPolicy& CorsPolicy::allowAnyOrigin() {
