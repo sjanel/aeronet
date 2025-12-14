@@ -5,11 +5,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <stdexcept>
+#include <new>
 #include <string_view>
 
 #include "aeronet/decoder.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "decoder-helpers.hpp"
 
 namespace aeronet {
 
@@ -21,67 +23,60 @@ class BrotliStreamingContext final : public DecoderContext {
  public:
   BrotliStreamingContext() {
     if (_state == nullptr) {
-      throw std::runtime_error("BrotliStreamingContext - BrotliDecoderCreateInstance failed");
+      throw std::bad_alloc();
     }
   }
 
   bool decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
                        std::size_t decoderChunkSize, RawChars &out) override {
-    if (finished()) {
-      return chunk.empty();
-    }
     if (chunk.empty()) {
-      return finalChunk ? finished() : true;
+      return true;
     }
 
     const auto *nextIn = reinterpret_cast<const uint8_t *>(chunk.data());
     std::size_t availIn = chunk.size();
 
+    DecoderBufferManager decoderBufferManager(out, decoderChunkSize, maxDecompressedBytes);
+
     while (true) {
-      out.ensureAvailableCapacityExponential(decoderChunkSize);
+      const bool forceEnd = decoderBufferManager.nextReserve();
       auto *nextOut = reinterpret_cast<uint8_t *>(out.data() + out.size());
       std::size_t availOut = out.availableCapacity();
 
-      auto res = BrotliDecoderDecompressStream(_state.get(), &availIn, &nextIn, &availOut, &nextOut, nullptr);
-      out.setSize(out.capacity() - availOut);
-      if (maxDecompressedBytes != 0 && out.size() > maxDecompressedBytes) {
+      const auto res = BrotliDecoderDecompressStream(_state.get(), &availIn, &nextIn, &availOut, &nextOut, nullptr);
+      if (res == BROTLI_DECODER_RESULT_ERROR) [[unlikely]] {
+        log::error("BrotliDecoderDecompressStream failed with error code {}",
+                   static_cast<int>(BrotliDecoderGetErrorCode(_state.get())));
         return false;
       }
-
+      out.setSize(out.capacity() - availOut);
       if (res == BROTLI_DECODER_RESULT_SUCCESS) {
         _state.reset();
         return availIn == 0;
       }
-      if (res == BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT) {
-        continue;
-      }
       if (res == BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT) {
-        if (availIn != 0) {
-          return false;
-        }
         return !finalChunk;
       }
-      return false;
+      // res == BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT
+      if (forceEnd) {
+        return false;
+      }
     }
   }
 
  private:
-  [[nodiscard]] bool finished() const noexcept { return _state == nullptr; }
-
   BrotliStateUniquePtr _state{BrotliDecoderCreateInstance(nullptr, nullptr, nullptr), &BrotliDecoderDestroyInstance};
 };
 }  // namespace
 
 bool BrotliDecoder::Decompress(std::string_view input, std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
                                RawChars &out) {
-  BrotliDecoder decoder;
-  return decoder.decompressFull(input, maxDecompressedBytes, decoderChunkSize, out);
+  return BrotliDecoder{}.decompressFull(input, maxDecompressedBytes, decoderChunkSize, out);
 }
 
 bool BrotliDecoder::decompressFull(std::string_view input, std::size_t maxDecompressedBytes,
                                    std::size_t decoderChunkSize, RawChars &out) {
-  BrotliStreamingContext ctx;
-  return ctx.decompressChunk(input, true, maxDecompressedBytes, decoderChunkSize, out);
+  return BrotliStreamingContext{}.decompressChunk(input, true, maxDecompressedBytes, decoderChunkSize, out);
 }
 
 std::unique_ptr<DecoderContext> BrotliDecoder::makeContext() { return std::make_unique<BrotliStreamingContext>(); }

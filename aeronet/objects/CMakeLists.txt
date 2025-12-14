@@ -186,6 +186,7 @@ if(AERONET_ENABLE_BROTLI)
         test/brotli-encoder-decoder_test.cpp
         LIBRARIES
         aeronet_objects
+        aeronet_basic_test_support
     )
 endif()
 
@@ -315,5 +316,6 @@ if(AERONET_ENABLE_ZSTD)
         test/zstd-encoder-decoder_test.cpp
         LIBRARIES
         aeronet_objects
+        aeronet_basic_test_support
     )
 endif()

@@ -11,8 +11,9 @@
 #include "aeronet/brotli-encoder.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/sys-test-support.hpp"
 
-using namespace aeronet;
+namespace aeronet {
 
 namespace {
 
@@ -95,6 +96,17 @@ void ExpectStreamingDecoderRoundTrip(BrotliEncoder& encoder, std::string_view pa
 
 }  // namespace
 
+#if AERONET_WANT_MALLOC_OVERRIDES
+
+TEST(BrotliDecoderTest, MallocConstructorFails) {
+  // Simulate malloc failure during BrotliDecoderCreateInstance
+  test::FailNextMalloc();
+  RawChars buf;
+  EXPECT_THROW(BrotliDecoder::Decompress("some-data", kMaxPlainBytes, kDecoderChunkSize, buf), std::bad_alloc);
+}
+
+#endif
+
 TEST(BrotliEncoderDecoderTest, EncodeFullHandlesEmptyPayload) {
   CompressionConfig cfg;
   BrotliEncoder encoder(cfg);
@@ -104,8 +116,23 @@ TEST(BrotliEncoderDecoderTest, EncodeFullHandlesEmptyPayload) {
   EXPECT_GT(compressed.size(), 0U);  // should produce some output even for empty input
 
   RawChars decompressed;
-  ASSERT_TRUE(BrotliDecoder::Decompress(std::string_view(compressed), kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  ASSERT_TRUE(BrotliDecoder::Decompress(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
   EXPECT_EQ(decompressed.size(), 0U);
+}
+
+TEST(BrotliEncoderDecoderTest, MaxDecompressedBytes) {
+  for (const auto& payload : samplePayloads()) {
+    CompressionConfig cfg;
+    BrotliEncoder encoder(cfg);
+    RawChars compressed;
+    encoder.encodeFull(kExtraCapacity, payload, compressed);
+
+    RawChars decompressed;
+    const std::size_t limit = payload.size() > 0 ? payload.size() - 1 : 0;
+    const bool isOK = BrotliDecoder::Decompress(compressed, limit, kDecoderChunkSize, decompressed);
+    EXPECT_EQ(isOK, payload.empty());
+    EXPECT_EQ(decompressed, std::string_view(payload).substr(0, limit));
+  }
 }
 
 TEST(BrotliEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
@@ -184,6 +211,7 @@ TEST(BrotliEncoderDecoderTest, StreamingAndOneShotProduceSameOutput) {
 TEST(BrotliEncoderDecoderTest, DecodeInvalidDataFails) {
   RawChars invalidData("NotAValidBrotliStream");
   RawChars decompressed;
-  EXPECT_FALSE(
-      BrotliDecoder::Decompress(std::string_view(invalidData), kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_FALSE(BrotliDecoder::Decompress(invalidData, kMaxPlainBytes, kDecoderChunkSize, decompressed));
 }
+
+}  // namespace aeronet

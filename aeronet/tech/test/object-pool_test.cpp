@@ -538,7 +538,7 @@ TEST(ObjectPoolTest, BasicExceptionGuaranteeOnBlockAllocationFailure) {
   ASSERT_EQ(capBefore, kInitialCapacity);
 
   // next allocation should trigger a new block allocation; fail it
-  aeronet::test::FailNextMalloc();
+  test::FailNextMalloc();
   ASSERT_THROW((void)pool.allocateAndConstruct(), std::bad_alloc);
 
   // basic guarantee: size and capacity remain unchanged
