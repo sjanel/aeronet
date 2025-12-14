@@ -21,7 +21,6 @@ class ZlibEncoderContext : public EncoderContext {
 
  private:
   RawChars& _buf;
-  bool _finished{false};
   ZStreamRAII _zs;
 };
 

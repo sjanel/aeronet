@@ -21,7 +21,6 @@ class BrotliEncoderContext : public EncoderContext {
  private:
   std::unique_ptr<BrotliEncoderState, void (*)(BrotliEncoderState *)> _state;
   RawChars &_buf;
-  bool _finished{false};
 };
 
 class BrotliEncoder : public Encoder {
