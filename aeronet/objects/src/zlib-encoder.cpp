@@ -20,9 +20,6 @@ ZlibEncoderContext::ZlibEncoderContext(ZStreamRAII::Variant variant, RawChars& s
 
 std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) {
   _buf.clear();
-  if (_finished) {
-    return _buf;
-  }
 
   _zs.stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(chunk.data()));
   _zs.stream.avail_in = static_cast<uInt>(chunk.size());
@@ -44,13 +41,10 @@ std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
     _buf.addSize(availableCapacity - _zs.stream.avail_out);
 
     if (ret == Z_STREAM_END) {
-      _finished = true;
       break;
     }
   } while (_zs.stream.avail_out == 0 || _zs.stream.avail_in > 0);
-  if (chunk.empty()) {
-    _finished = true;
-  }
+
   return _buf;
 }
 

@@ -32,14 +32,10 @@ ZstdContextRAII::ZstdContextRAII(int level, int windowLog) : ctx(ZSTD_createCCtx
 }  // namespace details
 
 std::string_view ZstdEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) {
-  _buf.clear();
-  if (_finished) {
-    return _buf;
-  }
   ZSTD_outBuffer outBuf{_buf.data(), _buf.capacity(), 0};
   ZSTD_inBuffer inBuf{chunk.data(), chunk.size(), 0};
   const auto mode = chunk.empty() ? ZSTD_e_end : ZSTD_e_continue;
-  while (true) {
+  for (_buf.clear();;) {
     _buf.ensureAvailableCapacityExponential(encoderChunkSize);
 
     outBuf.dst = _buf.data() + outBuf.pos;
@@ -59,9 +55,6 @@ std::string_view ZstdEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
         break;
       }
     }
-  }
-  if (chunk.empty()) {
-    _finished = true;
   }
   return _buf;
 }
