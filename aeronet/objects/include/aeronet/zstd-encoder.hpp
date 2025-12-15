@@ -23,7 +23,7 @@ struct ZstdContextRAII {
 
 }  // namespace details
 
-class ZstdEncoderContext : public EncoderContext {
+class ZstdEncoderContext final : public EncoderContext {
  public:
   ZstdEncoderContext(RawChars& sharedBuf, const CompressionConfig::Zstd& cfg)
       : _buf(sharedBuf), _zs(cfg.compressionLevel, cfg.windowLog) {}
@@ -35,7 +35,7 @@ class ZstdEncoderContext : public EncoderContext {
   details::ZstdContextRAII _zs;
 };
 
-class ZstdEncoder : public Encoder {
+class ZstdEncoder final : public Encoder {
  public:
   explicit ZstdEncoder(const CompressionConfig& cfg, std::size_t initialCapacity = 4096UL)
       : _buf(initialCapacity), _cfg(cfg.zstd), _zs(_cfg.compressionLevel, _cfg.windowLog) {}

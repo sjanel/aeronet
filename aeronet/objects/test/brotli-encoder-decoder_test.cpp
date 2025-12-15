@@ -103,6 +103,9 @@ TEST(BrotliDecoderTest, MallocConstructorFails) {
   test::FailNextMalloc();
   RawChars buf;
   EXPECT_THROW(BrotliDecoder::Decompress("some-data", kMaxPlainBytes, kDecoderChunkSize, buf), std::bad_alloc);
+
+  test::FailNextMalloc();
+  EXPECT_THROW(BrotliEncoderContext(buf, 5, 22), std::bad_alloc);
 }
 
 #endif

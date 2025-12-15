@@ -12,7 +12,7 @@
 
 namespace aeronet {
 
-class BrotliEncoderContext : public EncoderContext {
+class BrotliEncoderContext final : public EncoderContext {
  public:
   BrotliEncoderContext(RawChars &sharedBuf, int quality, int window);
 
@@ -23,7 +23,7 @@ class BrotliEncoderContext : public EncoderContext {
   RawChars &_buf;
 };
 
-class BrotliEncoder : public Encoder {
+class BrotliEncoder final : public Encoder {
  public:
   explicit BrotliEncoder(const CompressionConfig &cfg, std::size_t initialCapacity = 4096UL)
       : _buf(initialCapacity), _quality(cfg.brotli.quality), _window(cfg.brotli.window) {}
