@@ -12,6 +12,13 @@ TEST(CompressionConfigTest, DefaultIsValid) {
   EXPECT_NO_THROW(config.validate());
 }
 
+TEST(CompressionConfigTest, ZeroEncoderChunkSizeThrows) {
+  CompressionConfig config;
+  config.encoderChunkSize = 0;
+
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
 TEST(CompressionConfigTest, ZlibOK) {
   CompressionConfig config;
   config.zlib.level = 5;

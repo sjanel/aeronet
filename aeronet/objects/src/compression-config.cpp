@@ -14,6 +14,9 @@
 namespace aeronet {
 
 void CompressionConfig::validate() const {
+  if (encoderChunkSize == 0) {
+    throw std::invalid_argument("Invalid encoder chunk size");
+  }
   if constexpr (aeronet::zlibEnabled()) {
     if (zlib.level != Zlib::kDefaultLevel && (zlib.level < Zlib::kMinLevel || zlib.level > Zlib::kMaxLevel)) {
       log::critical("Invalid ZLIB compression level {}", zlib.level);
