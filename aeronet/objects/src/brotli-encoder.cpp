@@ -28,8 +28,9 @@ BrotliEncoderContext::BrotliEncoderContext(RawChars &sharedBuf, int quality, int
 
 std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) {
   const uint8_t *nextIn = reinterpret_cast<const uint8_t *>(chunk.data());
+  const BrotliEncoderOperation op = chunk.empty() ? BROTLI_OPERATION_FINISH : BROTLI_OPERATION_PROCESS;
   std::size_t availIn = chunk.size();
-  // Shared streaming loop for both one-shot and chunked encoding.
+
   // Semantics:
   //  - If finish == false: process input until all provided bytes are consumed; do not attempt to finish stream.
   //  - If finish == true: keep invoking the encoder until the stream reports finished (all input consumed and flush
@@ -40,18 +41,15 @@ std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize,
     uint8_t *nextOut = reinterpret_cast<uint8_t *>(_buf.data() + _buf.size());
     std::size_t availOut = _buf.availableCapacity();
 
-    // Only switch to FINISH operation after all input has been consumed when finish requested.
-    BrotliEncoderOperation op = chunk.empty() && availIn == 0 ? BROTLI_OPERATION_FINISH : BROTLI_OPERATION_PROCESS;
-
-    if (BrotliEncoderCompressStream(_state.get(), op, &availIn, &nextIn, &availOut, &nextOut, nullptr) == 0) {
+    if (BrotliEncoderCompressStream(_state.get(), op, &availIn, &nextIn, &availOut, &nextOut, nullptr) ==
+        BROTLI_FALSE) {
       throw std::runtime_error("BrotliEncoderCompressStream failed");
     }
-
     _buf.setSize(_buf.capacity() - availOut);
 
     if (chunk.empty()) {
       // Finishing mode: break only when encoder reports finished after issuing FINISH op
-      if (op == BROTLI_OPERATION_FINISH && BrotliEncoderIsFinished(_state.get()) != 0) {
+      if (BrotliEncoderIsFinished(_state.get()) == BROTLI_TRUE) {
         break;
       }
     } else {
