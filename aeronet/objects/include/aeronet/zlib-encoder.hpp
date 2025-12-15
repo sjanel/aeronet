@@ -13,7 +13,7 @@
 
 namespace aeronet {
 
-class ZlibEncoderContext : public EncoderContext {
+class ZlibEncoderContext final : public EncoderContext {
  public:
   ZlibEncoderContext(ZStreamRAII::Variant variant, RawChars& sharedBuf, int8_t level);
 
@@ -24,7 +24,7 @@ class ZlibEncoderContext : public EncoderContext {
   ZStreamRAII _zs;
 };
 
-class ZlibEncoder : public Encoder {
+class ZlibEncoder final : public Encoder {
  public:
   explicit ZlibEncoder(ZStreamRAII::Variant variant, const CompressionConfig& cfg, std::size_t initialCapacity = 4096UL)
       : _buf(initialCapacity), _level(cfg.zlib.level), _variant(variant) {}
