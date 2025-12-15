@@ -205,8 +205,7 @@ class HttpResponseWriter {
   const HttpRequest* _request{nullptr};
   int _fd{-1};
   bool _head{false};
-  // Combine transient booleans into a single state machine to reduce memory and
-  // make transitions explicit.
+  // Combine transient booleans into a single state machine to reduce memory and make transitions explicit.
   enum class State : std::uint8_t { Opened, HeadersSent, Ended, Failed };
   State _state{State::Opened};
   bool _requestConnClose{false};

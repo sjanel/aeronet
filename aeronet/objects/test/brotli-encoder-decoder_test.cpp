@@ -13,6 +13,10 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sys-test-support.hpp"
 
+#if AERONET_WANT_MALLOC_OVERRIDES
+#include <new>
+#endif
+
 namespace aeronet {
 
 namespace {
@@ -131,7 +135,7 @@ TEST(BrotliEncoderDecoderTest, MaxDecompressedBytes) {
     encoder.encodeFull(kExtraCapacity, payload, compressed);
 
     RawChars decompressed;
-    const std::size_t limit = payload.size() > 0 ? payload.size() - 1 : 0;
+    const std::size_t limit = payload.empty() ? 0 : payload.size() - 1;
     const bool isOK = BrotliDecoder::Decompress(compressed, limit, kDecoderChunkSize, decompressed);
     EXPECT_EQ(isOK, payload.empty());
     EXPECT_EQ(decompressed, std::string_view(payload).substr(0, limit));
