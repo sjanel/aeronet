@@ -443,6 +443,117 @@ inline WriteFn ResolveRealWrite() {
 
 }  // namespace aeronet::test
 
+#ifdef AERONET_WANT_SENDFILE_PREAD_OVERRIDES
+
+// Minimal overrides for sendfile(2) and pread(2) to simulate errno paths in tests
+namespace aeronet::test {
+inline std::optional<std::string> PathForFd(int fd) {
+  std::array<char, 64> linkBuf{};
+  std::snprintf(linkBuf.data(), linkBuf.size(), "/proc/self/fd/%d", fd);
+  std::array<char, 512> pathBuf{};
+  const auto len = ::readlink(linkBuf.data(), pathBuf.data(), pathBuf.size() - 1);
+  if (len <= 0) {
+    return std::nullopt;
+  }
+  pathBuf[static_cast<std::size_t>(len)] = '\0';
+  return std::string(pathBuf.data());
+}
+using PreadFn = ssize_t (*)(int, void*, size_t, off_t);
+using SendfileFn = ssize_t (*)(int, int, off_t*, size_t);
+
+inline PreadFn ResolveRealPread() {
+  static PreadFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<PreadFn>("pread");
+  return fn;
+}
+
+inline SendfileFn ResolveRealSendfile() {
+  static SendfileFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<SendfileFn>("sendfile");
+  return fn;
+}
+
+inline KeyedActionQueue<int, IoAction> g_pread_actions;
+inline KeyedActionQueue<int, IoAction> g_sendfile_actions;            // keyed by out_fd (destination)
+inline KeyedActionQueue<std::string, IoAction> g_pread_path_actions;  // keyed by file path
+
+inline void ResetPreadSendfile() {
+  g_pread_actions.reset();
+  g_sendfile_actions.reset();
+  g_pread_path_actions.reset();
+}
+
+inline void SetPreadActions(int fd, std::initializer_list<IoAction> actions) {
+  g_pread_actions.setActions(fd, actions);
+}
+
+inline void SetSendfileActions(int outFd, std::initializer_list<IoAction> actions) {
+  g_sendfile_actions.setActions(outFd, actions);
+}
+
+inline void SetPreadPathActions(std::string_view path, std::initializer_list<IoAction> actions) {
+  g_pread_path_actions.setActions(std::string(path), actions);
+}
+}  // namespace aeronet::test
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) ssize_t pread(int fd, void* buf, size_t count, off_t offset) {
+  if (auto act = aeronet::test::g_pread_actions.pop(fd)) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      if (buf != nullptr && ret > 0) {
+        std::memset(buf, 'B', static_cast<size_t>(std::min<ssize_t>(ret, static_cast<ssize_t>(count))));
+      }
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  // Try path-based actions by resolving fd -> path
+  if (auto pathOpt = aeronet::test::PathForFd(fd)) {
+    if (auto pact = aeronet::test::g_pread_path_actions.pop(*pathOpt)) {
+      auto [ret, err] = *pact;
+      if (ret >= 0) {
+        if (buf != nullptr && ret > 0) {
+          std::memset(buf, 'B', static_cast<size_t>(std::min<ssize_t>(ret, static_cast<ssize_t>(count))));
+        }
+        return ret;
+      }
+      errno = err;
+      return -1;
+    }
+  }
+  auto real = aeronet::test::ResolveRealPread();
+  return real(fd, buf, count, offset);
+}
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) ssize_t sendfile(int out_fd, int in_fd, off_t* offset,
+                                                                    size_t count) {
+  if (auto act = aeronet::test::g_sendfile_actions.pop(out_fd)) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      // pretend we sent ret bytes by advancing offset if provided
+      if (offset != nullptr) {
+        *offset += ret;
+      }
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealSendfile();
+  return real(out_fd, in_fd, offset, count);
+}
+
+#endif  // AERONET_WANT_SENDFILE_PREAD_OVERRIDES
+
 #ifdef AERONET_WANT_READ_WRITE_OVERRIDES
 
 // NOLINTNEXTLINE

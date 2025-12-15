@@ -36,6 +36,13 @@ if(AERONET_ENABLE_OPENSSL)
 endif()
 
 AeronetAddUnitTest(
+    lifecycle_test
+    test/lifecycle_test.cpp
+    LIBRARIES
+    aeronet_sys
+)
+
+AeronetAddUnitTest(
     path-handler-entry_test
     test/path-handler-entry_test.cpp
     LIBRARIES
