@@ -6,6 +6,7 @@
 #include <span>
 #include <string_view>
 #include <type_traits>
+#include <variant>
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/cors-policy.hpp"
@@ -322,18 +323,14 @@ class Router {
     CompiledRoute* route{nullptr};
   };
 
-  PathHandlerEntry& setPathInternal(http::MethodBmp methods, std::string_view path, RequestHandler handler,
-                                    StreamingHandler streaming, AsyncRequestHandler async);
+  using HandlerVariant = std::variant<RequestHandler, StreamingHandler, AsyncRequestHandler, WebSocketEndpoint>;
+
+  PathHandlerEntry& setPathInternal(http::MethodBmp methods, std::string_view path, HandlerVariant handlerVariant);
 
   static CompiledRoute CompilePattern(std::string_view path);
 
   RouteNode* ensureLiteralChild(RouteNode& node, std::string_view segmentLiteral);
   RouteNode* ensureDynamicChild(RouteNode& node, const CompiledSegment& segmentPattern);
-
-  static void AssignHandlers(RouteNode& node, http::MethodBmp methods, RequestHandler requestHandler,
-                             StreamingHandler streamingHandler, bool registeredWithTrailingSlash);
-  static void AssignAsyncHandlers(RouteNode& node, http::MethodBmp methods, AsyncRequestHandler handler,
-                                  bool registeredWithTrailingSlash);
 
   void ensureRouteMetadata(RouteNode& node, CompiledRoute&& route);
 
