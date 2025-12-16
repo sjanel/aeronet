@@ -50,6 +50,12 @@ class RouterUpdateProxy {
     return *this;
   }
 
+  /** Set the default asynchronous handler. See Router::setDefault(AsyncRequestHandler) */
+  RouterUpdateProxy& setDefault(AsyncRequestHandler handler) {
+    (*_dispatcher)([handler = std::move(handler)](Router& router) mutable { router.setDefault(std::move(handler)); });
+    return *this;
+  }
+
   /** Add a global request middleware. See Router::addRequestMiddleware */
   RouterUpdateProxy& addRequestMiddleware(RequestMiddleware middleware) {
     (*_dispatcher)([middleware = std::move(middleware)](Router& router) mutable {

@@ -20,9 +20,12 @@
 
 using namespace aeronet;
 
-TEST(RouterTest, RegisterAndMatchNormalHandler) {
+class RouterTest : public ::testing::Test {
+ protected:
   Router router;
+};
 
+TEST_F(RouterTest, RegisterAndMatchNormalHandler) {
   bool called = false;
   router.setPath(http::Method::GET, "/hello", [&called](const HttpRequest &) {
     called = true;
@@ -43,9 +46,52 @@ TEST(RouterTest, RegisterAndMatchNormalHandler) {
   EXPECT_TRUE(called);
 }
 
-TEST(RouterTest, RegisterAndMatchStreamingHandler) {
-  Router router;
+TEST_F(RouterTest, MatchPatternSegmentLiteralMismatchReturnsFalse) {
+  // Pattern with mixed literal/param/literal inside a single segment: prefix{}/suffix
+  router.setPath(http::Method::GET, "/items/prefix{}/suffix", [](const HttpRequest &) { return HttpResponse(200); });
 
+  // Try to match with a segment that doesn't start with the required 'prefix'
+  auto res = router.match(http::Method::GET, "/items/wrong/suffix");
+  // No handler should be found because the dynamic segment literal part doesn't match
+  EXPECT_EQ(res.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, MatchPatternSegmentMissingSeparatorReturnsFalse) {
+  // Pattern expects a literal suffix after the param; here the request's segment lacks that suffix
+  router.setPath(http::Method::GET, "/files/prefix{}end", [](const HttpRequest &) { return HttpResponse(200); });
+
+  // Segment 'prefixonly' contains the 'prefix' but not the required trailing 'end' literal
+  auto res = router.match(http::Method::GET, "/files/prefixonly");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, MatchPatternSegmentConsecutiveParamsReturnsFalse) {
+  // Pattern with consecutive params in a single segment: {}/{}
+  router.setPath(http::Method::GET, "/data/{}/{}", [](const HttpRequest &) { return HttpResponse(200); });
+
+  // Try to match with any segment; should fail due to consecutive params
+  auto res = router.match(http::Method::GET, "/data/anything");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, ConsecutiveParamsWithoutSeparatorNotPermitted) {
+  // Attempt to register a route with consecutive params in a single segment: {}{}
+  EXPECT_THROW(
+      router.setPath(http::Method::GET, "/consecutive/{}{}", [](const HttpRequest &) { return HttpResponse(200); }),
+      std::invalid_argument);
+}
+
+TEST_F(RouterTest, ConflictingParameterNamingThrows) {
+  // Register a route with a named parameter
+  router.setPath(http::Method::GET, "/items/{id}/view", [](const HttpRequest &) { return HttpResponse(200); });
+
+  // Register the same pattern but using an unnamed parameter in the same segment -> should throw
+  EXPECT_THROW(router.setPath(http::Method::GET, std::string{"/items/{}/view"},
+                              [](const HttpRequest &) { return HttpResponse(201); }),
+               std::logic_error);
+}
+
+TEST_F(RouterTest, RegisterAndMatchStreamingHandler) {
   bool streamCalled = false;
   router.setPath(http::Method::POST, "/stream",
                  [&streamCalled](const HttpRequest &, [[maybe_unused]] HttpResponseWriter &) { streamCalled = true; });
@@ -60,9 +106,7 @@ TEST(RouterTest, RegisterAndMatchStreamingHandler) {
   EXPECT_FALSE(streamCalled);
 }
 
-TEST(RouterTest, MethodNotAllowedAndFallback) {
-  Router router;
-
+TEST_F(RouterTest, MethodNotAllowedAndFallback) {
   router.setPath(http::Method::GET, "/onlyget", [](const HttpRequest &) { return HttpResponse(200); });
 
   // POST should result in methodNotAllowed
@@ -82,9 +126,7 @@ TEST(RouterTest, MethodNotAllowedAndFallback) {
   EXPECT_FALSE(resMissing.methodNotAllowed);
 }
 
-TEST(RouterTest, GlobalDefaultHandlersUsedWhenNoPath) {
-  Router router;
-
+TEST_F(RouterTest, GlobalDefaultHandlersUsedWhenNoPath) {
   router.setDefault([](const HttpRequest &) { return HttpResponse(204); });
 
   auto res = router.match(http::Method::GET, "/nope");
@@ -104,11 +146,11 @@ TEST(RouterTest, GlobalDefaultHandlersUsedWhenNoPath) {
   ASSERT_NE(res2.streamingHandler(), nullptr);
 }
 
-TEST(RouterTest, TrailingSlashRedirectAndNormalize) {
+TEST_F(RouterTest, TrailingSlashRedirectAndNormalize) {
   // Redirect policy: registering /p should redirect /p/ -> AddSlash or RemoveSlash depending
   RouterConfig cfg;
   cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Redirect);
-  Router router(cfg);
+  router = Router(cfg);
 
   router.setPath(http::Method::GET, "/can", [](const HttpRequest &) { return HttpResponse(200); });
 
@@ -123,8 +165,7 @@ TEST(RouterTest, TrailingSlashRedirectAndNormalize) {
   EXPECT_EQ(resSlashed.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::RemoveSlash);
 }
 
-TEST(RouterTest, HeadFallbackToGet) {
-  Router router;
+TEST_F(RouterTest, HeadFallbackToGet) {
   router.setPath(http::Method::GET, "/hf", [](const HttpRequest &) { return HttpResponse(200); });
 
   // HEAD should fallback to GET handler when no explicit HEAD handler registered
@@ -134,8 +175,7 @@ TEST(RouterTest, HeadFallbackToGet) {
   EXPECT_FALSE(resHead.methodNotAllowed);
 }
 
-TEST(RouterTest, MethodMergingAndOverwrite) {
-  Router router;
+TEST_F(RouterTest, MethodMergingAndOverwrite) {
   // register GET and then add POST using method-bmp OR
   router.setPath(http::Method::GET, "/merge", [](const HttpRequest &) { return HttpResponse(200); });
   router.setPath(http::Method::POST, "/merge", [](const HttpRequest &) { return HttpResponse(201); });
@@ -149,8 +189,7 @@ TEST(RouterTest, MethodMergingAndOverwrite) {
   EXPECT_FALSE(rPost.methodNotAllowed);
 }
 
-TEST(RouterTest, MethodBitmapRegistersMultipleHandlers) {
-  Router router;
+TEST_F(RouterTest, MethodBitmapRegistersMultipleHandlers) {
   router.setPath(http::Method::GET | http::Method::POST, "/combo",
                  [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
 
@@ -163,8 +202,7 @@ TEST(RouterTest, MethodBitmapRegistersMultipleHandlers) {
   EXPECT_FALSE(postRes.methodNotAllowed);
 }
 
-TEST(RouterTest, StreamingVsNormalConflictThrows) {
-  Router router;
+TEST_F(RouterTest, StreamingVsNormalConflictThrows) {
   router.setPath(http::Method::GET, "/conf", [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
   // Attempting to register a streaming handler for the same path+method should throw
   EXPECT_THROW(router.setPath(http::Method::GET, std::string{"/conf"},
@@ -172,7 +210,7 @@ TEST(RouterTest, StreamingVsNormalConflictThrows) {
                std::logic_error);
 }
 
-TEST(RouterTest, TrailingSlashStrictAndNormalize) {
+TEST_F(RouterTest, TrailingSlashStrictAndNormalize) {
   // Strict: /a/ registered does not match /a
   RouterConfig cfgStrict;
   cfgStrict.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict);
@@ -192,8 +230,7 @@ TEST(RouterTest, TrailingSlashStrictAndNormalize) {
   EXPECT_NE(res2.requestHandler(), nullptr);
 }
 
-TEST(RouterTest, CapturesNamedParameters) {
-  Router router;
+TEST_F(RouterTest, CapturesNamedParameters) {
   router.setPath(http::Method::GET, "/users/{userId}/posts/{postId}",
                  [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
 
@@ -206,8 +243,7 @@ TEST(RouterTest, CapturesNamedParameters) {
   EXPECT_EQ(res.pathParams[1].value, "abc");
 }
 
-TEST(RouterTest, CapturesUnnamedParametersAsIndices) {
-  Router router;
+TEST_F(RouterTest, CapturesUnnamedParametersAsIndices) {
   router.setPath(http::Method::GET, "/files/{}/chunk/{}",
                  [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
 
@@ -220,8 +256,7 @@ TEST(RouterTest, CapturesUnnamedParametersAsIndices) {
   EXPECT_EQ(res.pathParams[1].value, "123");
 }
 
-TEST(RouterTest, SupportsLiteralAndParamMixWithinSegment) {
-  Router router;
+TEST_F(RouterTest, SupportsLiteralAndParamMixWithinSegment) {
   router.setPath(http::Method::GET, "/api/v{}/foo{}bar",
                  [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
 
@@ -232,16 +267,14 @@ TEST(RouterTest, SupportsLiteralAndParamMixWithinSegment) {
   EXPECT_EQ(res.pathParams[1].value, "123");
 }
 
-TEST(RouterTest, EmptyPathInvalid) {
-  Router router;
+TEST_F(RouterTest, EmptyPathInvalid) {
   EXPECT_THROW(router.setPath(http::Method::GET, "", [](const HttpRequest &) { return HttpResponse(200); }),
                std::invalid_argument);
   EXPECT_THROW((void)router.match(http::Method::GET, ""), std::invalid_argument);
   EXPECT_THROW((void)router.allowedMethods(""), std::invalid_argument);
 }
 
-TEST(RouterTest, WildcardMatchesRemainingSegments) {
-  Router router;
+TEST_F(RouterTest, WildcardMatchesRemainingSegments) {
   router.setPath(http::Method::GET, "/static/*", [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
 
   auto res = router.match(http::Method::GET, "/static/css/app/main.css");
@@ -249,9 +282,23 @@ TEST(RouterTest, WildcardMatchesRemainingSegments) {
   EXPECT_EQ(res.pathParams.size(), 0U);
 }
 
-TEST(RouterTest, CopyConstructorCopiesHandlersAndPatterns) {
-  Router router;
+TEST_F(RouterTest, SpecialOperations) {
+  router.setPath(http::Method::GET, "/x", [](const HttpRequest &) { return HttpResponse(200); });
+  Router moved(std::move(router));
+  Router anotherRouter;
+  anotherRouter = std::move(moved);
 
+  auto &routerBis = moved;
+  routerBis = std::move(moved);  // should be no-op
+  routerBis = moved;             // should be no-op
+
+  EXPECT_TRUE(anotherRouter.match(http::Method::GET, "/x").hasHandler());
+
+  moved = anotherRouter;
+  EXPECT_TRUE(moved.match(http::Method::GET, "/x").hasHandler());
+}
+
+TEST_F(RouterTest, CopyConstructorCopiesHandlersAndPatterns) {
   bool calledA = false;
   router.setPath(http::Method::GET, "/copy/a", [&calledA](const HttpRequest &) {
     calledA = true;
@@ -304,7 +351,7 @@ TEST(RouterTest, CopyConstructorCopiesHandlersAndPatterns) {
   ASSERT_NE(resWild.requestHandler(), nullptr);
 }
 
-TEST(RouterTest, CopyAssignmentPreservesHandlersAndIsIndependent) {
+TEST_F(RouterTest, CopyAssignmentPreservesHandlersAndIsIndependent) {
   Router baseRouter;
 
   int invokedOriginal = 0;
@@ -346,7 +393,7 @@ TEST(RouterTest, CopyAssignmentPreservesHandlersAndIsIndependent) {
   EXPECT_EQ(respDest.status(), 200);
 }
 
-TEST(RouterTest, CopyPreservesTrailingSlashVariantsAndMethodTypes) {
+TEST_F(RouterTest, CopyPreservesTrailingSlashVariantsAndMethodTypes) {
   Router rTs;
   rTs.setPath(http::Method::GET, "/ts/", [](const HttpRequest &) { return HttpResponse(200); });
   rTs.setPath(http::Method::POST, "/ts", [](const HttpRequest &) { return HttpResponse(201); });
@@ -366,7 +413,7 @@ TEST(RouterTest, CopyPreservesTrailingSlashVariantsAndMethodTypes) {
   EXPECT_EQ(resp.status(), 201);
 }
 
-TEST(RouterTest, CopyHandlesHeadFallbackAndMethodBitmaps) {
+TEST_F(RouterTest, CopyHandlesHeadFallbackAndMethodBitmaps) {
   Router rHf;
   rHf.setPath(http::Method::GET, "/hfcopy", [](const HttpRequest &) { return HttpResponse(200); });
   Router cHf = rHf;
@@ -377,7 +424,7 @@ TEST(RouterTest, CopyHandlesHeadFallbackAndMethodBitmaps) {
   EXPECT_FALSE(rh.methodNotAllowed);
 }
 
-TEST(RouterTest, CopyPreservesLiteralOnlyFastPath) {
+TEST_F(RouterTest, CopyPreservesLiteralOnlyFastPath) {
   // Test that literal-only routes (no patterns) are correctly cloned with fast-path optimization
   Router original;
 
@@ -414,9 +461,36 @@ TEST(RouterTest, CopyPreservesLiteralOnlyFastPath) {
   EXPECT_EQ(callCount, 3);
 }
 
-TEST(RouterTest, NonCopyableHandlerAcrossMultipleMethods) {
-  Router router;
+TEST_F(RouterTest, RegisterWildcardTwiceExercisesExistingChild) {
+  // First registration should allocate wildcardChild
+  router.setPath(http::Method::GET, "/dup/*", [](const HttpRequest &) { return HttpResponse(200); });
 
+  // Second registration for the same pattern should find the existing wildcardChild and not reallocate.
+  // This exercises the branch where node->wildcardChild != nullptr inside setPathInternal.
+  router.setPath(http::Method::POST, "/dup/*", [](const HttpRequest &) { return HttpResponse(201); });
+
+  // Matching both GET and POST should succeed
+  auto m1 = router.match(http::Method::GET, "/dup/anything/here");
+  EXPECT_NE(m1.requestHandler(), nullptr);
+  auto m2 = router.match(http::Method::POST, "/dup/other");
+  EXPECT_NE(m2.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, DuplicateDynamicEdge) {
+  // Register a dynamic pattern with a parameter in the segment
+  router.setPath(http::Method::GET, "/users/{id}/profile", [](const HttpRequest &) { return HttpResponse(200); });
+
+  // Register the same dynamic pattern again (should find existing dynamic edge)
+  // This path uses std::string to exercise the overloads and code paths used in practice.
+  EXPECT_NO_THROW(router.setPath(http::Method::POST, std::string{"/users/{id}/profile"},
+                                 [](const HttpRequest &) { return HttpResponse(201); }));
+
+  // Match to ensure router still behaves
+  EXPECT_NE(router.match(http::Method::GET, "/users/42/profile").requestHandler(), nullptr);
+  EXPECT_NE(router.match(http::Method::POST, "/users/42/profile").requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, NonCopyableHandlerAcrossMultipleMethods) {
   // Construct a callable type that becomes invalid when copied: copies will throw on invocation.
   struct Poisonable {
     // mutable so operator() can be const
@@ -469,9 +543,7 @@ TEST(RouterTest, NonCopyableHandlerAcrossMultipleMethods) {
 }
 
 // New exhaustive coverage tests
-TEST(RouterTest, CompilePatternErrorsAndEscapes) {
-  Router router;
-
+TEST_F(RouterTest, CompilePatternErrorsAndEscapes) {
   // Path must begin with '/'
   EXPECT_THROW(router.setPath(http::Method::GET, "no-slash", [](const HttpRequest &) { return HttpResponse(200); }),
                std::invalid_argument);
@@ -491,56 +563,50 @@ TEST(RouterTest, CompilePatternErrorsAndEscapes) {
   EXPECT_EQ(res.requestHandler(), nullptr);
 }
 
-TEST(RouterTest, MixedNamedAndUnnamedParamsDisallowed) {
-  Router routerBad;
+TEST_F(RouterTest, MixedNamedAndUnnamedParamsDisallowed) {
+  EXPECT_THROW(router.setPath(http::Method::GET, "/mix/{}/{id}", [](const HttpRequest &) { return HttpResponse(200); }),
+               std::invalid_argument);
   EXPECT_THROW(
-      routerBad.setPath(http::Method::GET, "/mix/{}/{id}", [](const HttpRequest &) { return HttpResponse(200); }),
-      std::invalid_argument);
-  EXPECT_THROW(
-      routerBad.setPath(http::Method::GET, "/mix/{id}/{}/", [](const HttpRequest &) { return HttpResponse(200); }),
+      router.setPath(http::Method::GET, "/mix/{id}/{}/", [](const HttpRequest &) { return HttpResponse(200); }),
       std::invalid_argument);
 }
 
-TEST(RouterTest, WildcardConflictAndTerminalRules) {
-  Router routerWildcard;
+TEST_F(RouterTest, WildcardConflictAndTerminalRules) {
   // wildcard must be terminal
-  EXPECT_THROW(
-      routerWildcard.setPath(http::Method::GET, "/bad/*/here", [](const HttpRequest &) { return HttpResponse(200); }),
-      std::invalid_argument);
+  EXPECT_THROW(router.setPath(http::Method::GET, "/bad/*/here", [](const HttpRequest &) { return HttpResponse(200); }),
+               std::invalid_argument);
 
   // wildcard matching precedence and allowedMethods
-  routerWildcard.setPath(http::Method::GET, "/files/*", [](const HttpRequest &) { return HttpResponse(200); });
-  routerWildcard.setPath(http::Method::POST, "/files/upload", [](const HttpRequest &) { return HttpResponse(201); });
+  router.setPath(http::Method::GET, "/files/*", [](const HttpRequest &) { return HttpResponse(200); });
+  router.setPath(http::Method::POST, "/files/upload", [](const HttpRequest &) { return HttpResponse(201); });
 
-  auto gm = routerWildcard.match(http::Method::GET, "/files/foo/bar");
+  auto gm = router.match(http::Method::GET, "/files/foo/bar");
   EXPECT_NE(gm.requestHandler(), nullptr);
 
-  auto pm = routerWildcard.match(http::Method::POST, "/files/upload");
+  auto pm = router.match(http::Method::POST, "/files/upload");
   EXPECT_NE(pm.requestHandler(), nullptr);
 }
 
-TEST(RouterTest, AllowedMethodsAndGlobalFallback) {
-  Router routerAllowed;
-  routerAllowed.setDefault([](const HttpRequest &) { return HttpResponse(204); });
-  routerAllowed.setPath(http::Method::GET | http::Method::POST, "/combo2",
-                        [](const HttpRequest &) { return HttpResponse(); });
+TEST_F(RouterTest, AllowedMethodsAndGlobalFallback) {
+  router.setDefault([](const HttpRequest &) { return HttpResponse(204); });
+  router.setPath(http::Method::GET | http::Method::POST, "/combo2", [](const HttpRequest &) { return HttpResponse(); });
 
-  auto allowed = routerAllowed.allowedMethods("/combo2");
+  auto allowed = router.allowedMethods("/combo2");
   EXPECT_TRUE(http::IsMethodIdxSet(allowed, MethodToIdx(http::Method::GET)));
   EXPECT_TRUE(http::IsMethodIdxSet(allowed, MethodToIdx(http::Method::POST)));
 
   // Path not registered -> all methods allowed because global handler present
-  auto allAllowed = routerAllowed.allowedMethods("/nope");
+  auto allAllowed = router.allowedMethods("/nope");
   EXPECT_NE(allAllowed, 0U);
 }
 
-TEST(RouterTest, TrailingSlashEdgeCases) {
+TEST_F(RouterTest, TrailingSlashEdgeCases) {
   // Normalize should accept both
   RouterConfig cfg;
   cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Normalize);
-  Router rn(cfg);
-  rn.setPath(http::Method::GET, "/norm/", [](const HttpRequest &) { return HttpResponse(); });
-  auto resNorm = rn.match(http::Method::GET, "/norm");
+  router = Router(cfg);
+  router.setPath(http::Method::GET, "/norm/", [](const HttpRequest &) { return HttpResponse(); });
+  auto resNorm = router.match(http::Method::GET, "/norm");
   EXPECT_NE(resNorm.requestHandler(), nullptr);
 
   // Strict must differentiate
@@ -552,13 +618,12 @@ TEST(RouterTest, TrailingSlashEdgeCases) {
   EXPECT_EQ(resStrict.requestHandler(), nullptr);
 }
 
-TEST(RouterTest, ConflictingWildcardAndExact) {
-  Router routerConflict;
-  routerConflict.setPath(http::Method::GET, "/a/b", [](const HttpRequest &) { return HttpResponse(); });
-  routerConflict.setPath(http::Method::GET, "/a/*", [](const HttpRequest &) { return HttpResponse(); });
+TEST_F(RouterTest, ConflictingWildcardAndExact) {
+  router.setPath(http::Method::GET, "/a/b", [](const HttpRequest &) { return HttpResponse(); });
+  router.setPath(http::Method::GET, "/a/*", [](const HttpRequest &) { return HttpResponse(); });
 
   // exact should win
-  auto ex = routerConflict.match(http::Method::GET, "/a/b");
+  auto ex = router.match(http::Method::GET, "/a/b");
   EXPECT_NE(ex.requestHandler(), nullptr);
 }
 
@@ -641,7 +706,7 @@ TEST_F(RouterTestTrailingPolicy, RedirectRequestsRedirect) {
 
 // Run the large stress registration+match scenario for each trailing-slash policy to
 // ensure the router behaves correctly under different normalization/redirect semantics.
-TEST(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
+TEST_F(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
   const std::array<RouterConfig::TrailingSlashPolicy, 3> policies = {
       RouterConfig::TrailingSlashPolicy::Normalize,
       RouterConfig::TrailingSlashPolicy::Strict,
@@ -651,7 +716,7 @@ TEST(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
   for (auto policy : policies) {
     RouterConfig cfg;
     cfg.withTrailingSlashPolicy(policy);
-    Router router(cfg);
+    router = Router(cfg);
 
     const std::size_t routeCount = 1000;  // same large size as the base test
     const std::size_t segments = 6;
@@ -754,15 +819,14 @@ TEST(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
   }
 }
 
-TEST(RouterTest, RegisterAndMatchWebSocketEndpoint) {
-  Router router;
-
+TEST_F(RouterTest, RegisterAndMatchWebSocketEndpoint) {
   WebSocketEndpoint wsEndpoint;
 
   wsEndpoint.config.maxMessageSize = 1024;
 
   // Register a WebSocket endpoint
   router.setWebSocket("/ws", std::move(wsEndpoint));
+  router.setWebSocket("/path-with-trailing-slash/", WebSocketEndpoint{});
 
   // Match with GET should succeed and have the endpoint
   auto resGet = router.match(http::Method::GET, "/ws");
@@ -773,4 +837,19 @@ TEST(RouterTest, RegisterAndMatchWebSocketEndpoint) {
   auto resPost = router.match(http::Method::POST, "/ws");
   EXPECT_NE(resPost.pWebSocketEndpoint, nullptr);  // endpoint is still exposed
   EXPECT_TRUE(resPost.methodNotAllowed);           // but method is not allowed
+
+  // Match with trailing slash should succeed
+  auto resSlash = router.match(http::Method::GET, "/path-with-trailing-slash/");
+  EXPECT_NE(resSlash.pWebSocketEndpoint, nullptr);
+  EXPECT_FALSE(resSlash.methodNotAllowed);
+}
+
+TEST_F(RouterTest, MatchesWildcardTerminalSegment) {
+  // Register a wildcard terminal route /files/*
+  router.setPath(http::Method::GET, "/files/*", [](const HttpRequest &) { return HttpResponse{}; });
+  router.setPath(http::Method::GET, "/files/*", [](const HttpRequest &) { return HttpResponse{}; });
+
+  // Matching /files/anything/else should match the wildcard route
+  auto res = router.match(http::Method::GET, "/files/some/deep/path");
+  EXPECT_TRUE(res.hasHandler());
 }

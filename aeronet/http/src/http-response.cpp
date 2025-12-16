@@ -33,7 +33,6 @@
 
 #ifndef NDEBUG
 #include "aeronet/reserved-headers.hpp"
-#include "aeronet/tchars.hpp"
 #endif
 
 namespace aeronet {

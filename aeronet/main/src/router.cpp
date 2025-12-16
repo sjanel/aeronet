@@ -6,7 +6,9 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <utility>
+#include <variant>
 
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/flat-hash-map.hpp"
@@ -118,85 +120,35 @@ void Router::setDefault(StreamingHandler handler) {
 }
 
 PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string_view path, RequestHandler handler) {
-  return setPathInternal(methods, path, std::move(handler), {}, {});
+  return setPathInternal(methods, path, std::move(handler));
 }
 
 PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, RequestHandler handler) {
-  return setPathInternal(static_cast<http::MethodBmp>(method), path, std::move(handler), {}, {});
+  return setPathInternal(static_cast<http::MethodBmp>(method), path, std::move(handler));
 }
 
 PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string_view path, StreamingHandler handler) {
-  return setPathInternal(methods, path, {}, std::move(handler), {});
+  return setPathInternal(methods, path, std::move(handler));
 }
 
 PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, StreamingHandler handler) {
-  return setPathInternal(static_cast<http::MethodBmp>(method), path, {}, std::move(handler), {});
+  return setPathInternal(static_cast<http::MethodBmp>(method), path, std::move(handler));
 }
 
 PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string_view path, AsyncRequestHandler handler) {
-  return setPathInternal(methods, path, {}, {}, std::move(handler));
+  return setPathInternal(methods, path, std::move(handler));
 }
 
 PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, AsyncRequestHandler handler) {
-  return setPathInternal(static_cast<http::MethodBmp>(method), path, {}, {}, std::move(handler));
+  return setPathInternal(static_cast<http::MethodBmp>(method), path, std::move(handler));
 }
 
 PathHandlerEntry& Router::setWebSocket(std::string_view path, WebSocketEndpoint endpoint) {
-  const bool pathHasTrailingSlash = ShouldNormalize(_config.trailingSlashPolicy, path);
-
-  CompiledRoute compiled = CompilePattern(path);
-  if (pathHasTrailingSlash) {
-    compiled.hasWithSlashRegistered = true;
-  } else {
-    compiled.hasNoSlashRegistered = true;
-  }
-
-  // Check if this is a literal-only route (no patterns, no wildcard) for fast-path optimization
-  const bool isLiteralOnly = compiled.paramNames.empty() && !compiled.hasWildcard;
-
-  if (_pRootRouteNode == nullptr) {
-    _pRootRouteNode = _nodePool.allocateAndConstruct();
-  }
-
-  // Insert into trie for pattern matching
-  RouteNode* node = _pRootRouteNode;
-  for (const auto& segment : compiled.segments) {
-    if (segment.type() == CompiledSegment::Type::Literal) {
-      node = ensureLiteralChild(*node, segment.literal);
-    } else {
-      node = ensureDynamicChild(*node, segment);
-    }
-  }
-
-  if (compiled.hasWildcard) {
-    if (node->wildcardChild == nullptr) {
-      node->wildcardChild = _nodePool.allocateAndConstruct();
-    }
-    node = node->wildcardChild;
-  }
-
-  ensureRouteMetadata(*node, std::move(compiled));
-
-  // Store the WebSocket endpoint into the handler entry matching trailing slash variant
-  PathHandlerEntry& targetEntry = pathHasTrailingSlash ? node->handlersWithSlash : node->handlersNoSlash;
-  targetEntry.assignWebSocketEndpoint(std::move(endpoint));
-
-  // If this is a literal-only route, also store it in the fast-path map for O(1) lookup
-  if (isLiteralOnly) {
-    _literalOnlyRoutes[SmallRawChars(path)] = node;
-  }
-
-  return targetEntry;
+  return setPathInternal({}, path, std::move(endpoint));
 }
 
-PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_view path, RequestHandler handler,
-                                          StreamingHandler streaming, AsyncRequestHandler async) {
-  const int nbHandlers = static_cast<int>(static_cast<bool>(handler)) + static_cast<int>(static_cast<bool>(streaming)) +
-                         static_cast<int>(static_cast<bool>(async));
-  if (nbHandlers != 1) {
-    throw std::invalid_argument("setPath requires a handler");
-  }
-
+PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_view path,
+                                          HandlerVariant handlerVariant) {
   const bool pathHasTrailingSlash = ShouldNormalize(_config.trailingSlashPolicy, path);
 
   CompiledRoute compiled = CompilePattern(path);
@@ -205,9 +157,6 @@ PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_v
   } else {
     compiled.hasNoSlashRegistered = true;
   }
-
-  // Check if this is a literal-only route (no patterns, no wildcard) for fast-path optimization
-  const bool isLiteralOnly = compiled.paramNames.empty() && !compiled.hasWildcard;
 
   if (_pRootRouteNode == nullptr) {
     _pRootRouteNode = _nodePool.allocateAndConstruct();
@@ -215,38 +164,68 @@ PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_v
 
   // Insert into trie for pattern matching (also for literal-only routes, for simpler cloning)
   // For literal-only routes, we'll also store a pointer in _literalOnlyRoutes for O(1) fast-path lookup
-  RouteNode* node = _pRootRouteNode;
+  RouteNode* pNode = _pRootRouteNode;
   for (const auto& segment : compiled.segments) {
     if (segment.type() == CompiledSegment::Type::Literal) {
-      node = ensureLiteralChild(*node, segment.literal);
+      pNode = ensureLiteralChild(*pNode, segment.literal);
     } else {
-      node = ensureDynamicChild(*node, segment);
+      pNode = ensureDynamicChild(*pNode, segment);
     }
   }
 
   if (compiled.hasWildcard) {
-    if (node->wildcardChild == nullptr) {
-      node->wildcardChild = _nodePool.allocateAndConstruct();
+    if (pNode->wildcardChild == nullptr) {
+      pNode->wildcardChild = _nodePool.allocateAndConstruct();
     }
-    node = node->wildcardChild;
+    pNode = pNode->wildcardChild;
   }
 
-  ensureRouteMetadata(*node, std::move(compiled));
-  if (async) {
-    AssignAsyncHandlers(*node, methods, std::move(async), pathHasTrailingSlash);
-  } else {
-    AssignHandlers(*node, methods, std::move(handler), std::move(streaming), pathHasTrailingSlash);
-  }
+  ensureRouteMetadata(*pNode, std::move(compiled));
 
-  // Store per-path CorsPolicy if provided into the handler entry matching trailing slash variant
-  PathHandlerEntry& targetEntry = pathHasTrailingSlash ? node->handlersWithSlash : node->handlersNoSlash;
+  // Assign the handler based on the variant type using a visitor for clarity
+  PathHandlerEntry& entry = pathHasTrailingSlash ? pNode->handlersWithSlash : pNode->handlersNoSlash;
+
+  std::visit(
+      [&](auto&& handler) {
+        using T = std::decay_t<decltype(handler)>;
+        if constexpr (std::is_same_v<T, RequestHandler>) {
+          if (!handler) {
+            throw std::invalid_argument("Cannot set empty RequestHandler");
+          }
+          if ((entry.normalMethodBmp & methods) != 0) {
+            log::warn("Overwriting existing path handler for {}", std::string_view(pNode->patternString()));
+          }
+          entry.assignNormalHandler(methods, std::forward<decltype(handler)>(handler));
+        } else if constexpr (std::is_same_v<T, StreamingHandler>) {
+          if (!handler) {
+            throw std::invalid_argument("Cannot set empty StreamingHandler");
+          }
+          if ((entry.streamingMethodBmp & methods) != 0) {
+            log::warn("Overwriting existing streaming path handler for {}", std::string_view(pNode->patternString()));
+          }
+          entry.assignStreamingHandler(methods, std::forward<decltype(handler)>(handler));
+        } else if constexpr (std::is_same_v<T, AsyncRequestHandler>) {
+          if (!handler) {
+            throw std::invalid_argument("Cannot set empty AsyncRequestHandler");
+          }
+          if ((entry.asyncMethodBmp & methods) != 0) {
+            log::warn("Overwriting existing async path handler for {}", std::string_view(pNode->patternString()));
+          }
+          entry.assignAsyncHandler(methods, std::forward<decltype(handler)>(handler));
+        } else if constexpr (std::is_same_v<T, WebSocketEndpoint>) {
+          entry.assignWebSocketEndpoint(std::forward<decltype(handler)>(handler));
+        } else {
+          static_assert(false, "Non-exhaustive visitor!");
+        }
+      },
+      std::move(handlerVariant));
 
   // If this is a literal-only route, also store it in the fast-path map for O(1) lookup
-  if (isLiteralOnly) {
-    _literalOnlyRoutes[SmallRawChars(path)] = node;
+  if (compiled.paramNames.empty() && !compiled.hasWildcard) {
+    _literalOnlyRoutes[SmallRawChars(path)] = pNode;
   }
 
-  return targetEntry;
+  return entry;
 }
 
 Router::RouteNode* Router::ensureLiteralChild(RouteNode& node, std::string_view segmentLiteral) {
@@ -265,40 +244,7 @@ Router::RouteNode* Router::ensureDynamicChild(RouteNode& node, const CompiledSeg
   if (it != node.dynamicChildren.end()) {
     return it->child;
   }
-
   return node.dynamicChildren.emplace_back(segmentPattern, _nodePool.allocateAndConstruct()).child;
-}
-
-void Router::AssignHandlers(RouteNode& node, http::MethodBmp methods, RequestHandler requestHandler,
-                            StreamingHandler streamingHandler, bool registeredWithTrailingSlash) {
-  PathHandlerEntry& entry = registeredWithTrailingSlash ? node.handlersWithSlash : node.handlersNoSlash;
-
-  const bool hasNormalHandler = static_cast<bool>(requestHandler);
-  const bool hasStreamingHandler = static_cast<bool>(streamingHandler);
-
-  if ((entry.normalMethodBmp & methods) != 0) {
-    log::warn("Overwriting existing path handler for {}", std::string_view(node.patternString()));
-  }
-  if ((entry.streamingMethodBmp & methods) != 0) {
-    log::warn("Overwriting existing streaming path handler for {}", std::string_view(node.patternString()));
-  }
-
-  if (hasNormalHandler) {
-    entry.assignNormalHandler(methods, std::move(requestHandler));
-  } else if (hasStreamingHandler) {
-    entry.assignStreamingHandler(methods, std::move(streamingHandler));
-  }
-}
-
-void Router::AssignAsyncHandlers(RouteNode& node, http::MethodBmp methods, AsyncRequestHandler handler,
-                                 bool registeredWithTrailingSlash) {
-  PathHandlerEntry& entry = registeredWithTrailingSlash ? node.handlersWithSlash : node.handlersNoSlash;
-
-  if ((entry.asyncMethodBmp & methods) != 0) {
-    log::warn("Overwriting existing async path handler for {}", std::string_view(node.patternString()));
-  }
-
-  entry.assignAsyncHandler(methods, std::move(handler));
 }
 
 void Router::ensureRouteMetadata(RouteNode& node, CompiledRoute&& route) {
@@ -311,23 +257,19 @@ void Router::ensureRouteMetadata(RouteNode& node, CompiledRoute&& route) {
   if (existing.paramNames != route.paramNames) {
     throw std::logic_error("Conflicting parameter naming for identical path pattern");
   }
-  if (existing.hasWildcard != route.hasWildcard) {
-    throw std::logic_error("Conflicting wildcard usage for identical path pattern");
-  }
+  // both hasWildcard should be the same as well
   node.route->hasNoSlashRegistered |= route.hasNoSlashRegistered;
   node.route->hasWithSlashRegistered |= route.hasWithSlashRegistered;
 }
 
 bool Router::matchPatternSegment(const CompiledSegment& segmentPattern, std::string_view segmentValue) {
-  if (segmentPattern.type() != CompiledSegment::Type::Pattern) {
-    return false;
-  }
-
+  assert(segmentPattern.type() == CompiledSegment::Type::Pattern);
   std::size_t pos = 0;
   for (uint32_t idx = 0; idx < segmentPattern.parts.size(); ++idx) {
     const SegmentPart& part = segmentPattern.parts[idx];
     if (part.kind() == SegmentPart::Kind::Literal) {
-      if (pos > segmentValue.size() || !segmentValue.substr(pos).starts_with(part.literal)) {
+      assert(pos <= segmentValue.size());
+      if (!segmentValue.substr(pos).starts_with(part.literal)) {
         return false;
       }
       pos += part.literal.size();
@@ -338,9 +280,7 @@ bool Router::matchPatternSegment(const CompiledSegment& segmentPattern, std::str
     auto captureEnd = segmentValue.size();
     if (idx + 1 < segmentPattern.parts.size()) {
       const SegmentPart& next = segmentPattern.parts[idx + 1];
-      if (next.kind() != SegmentPart::Kind::Literal) {
-        return false;  // consecutive params not permitted
-      }
+      assert(next.kind() == SegmentPart::Kind::Literal);
       const std::size_t found = segmentValue.find(next.literal, pos);
       if (found == std::string_view::npos) {
         return false;
