@@ -846,3 +846,93 @@ TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete_ReadBodyAsync) {
   EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("1234567890")) << response;
 }
+
+TEST(RouterUpdateProxy, ClearRemovesAllHandlers) {
+  RouterUpdateProxy router = ts.resetRouterAndGet();
+  router.setPath(http::Method::GET, "/will-be-cleared",
+                 [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "should not see this"); });
+
+  router.clear();
+
+  const std::string response = test::simpleGet(ts.port(), "/will-be-cleared");
+  EXPECT_TRUE(response.contains("HTTP/1.1 404")) << response;
+}
+
+TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndStreamingHandler) {
+  RouterUpdateProxy router = ts.resetRouterAndGet();
+  router.setPath(http::Method::GET | http::Method::POST, "/stream-multi",
+                 [](const HttpRequest& req, HttpResponseWriter& writer) {
+                   writer.status(http::StatusCodeOK);
+                   writer.writeBody(std::string(http::MethodToStr(req.method())));
+                   writer.end();
+                 });
+
+  const std::string getResp = test::simpleGet(ts.port(), "/stream-multi");
+  EXPECT_TRUE(getResp.contains("HTTP/1.1 200")) << getResp;
+  EXPECT_TRUE(getResp.contains("GET")) << getResp;
+
+  test::RequestOptions postOpts;
+  postOpts.method = "POST";
+  postOpts.target = "/stream-multi";
+  postOpts.headers.emplace_back("Content-Length", "0");
+  const std::string postResp = test::requestOrThrow(ts.port(), postOpts);
+  EXPECT_TRUE(postResp.contains("HTTP/1.1 200")) << postResp;
+  EXPECT_TRUE(postResp.contains("POST")) << postResp;
+}
+
+TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndAsyncHandler) {
+  RouterUpdateProxy router = ts.resetRouterAndGet();
+  router.setPath(http::Method::GET | http::Method::PUT, "/async-multi",
+                 [](HttpRequest& req) -> RequestTask<HttpResponse> {
+                   co_return HttpResponse(http::StatusCodeOK, "async-" + std::string(http::MethodToStr(req.method())));
+                 });
+
+  const std::string getResp = test::simpleGet(ts.port(), "/async-multi");
+  EXPECT_TRUE(getResp.contains("HTTP/1.1 200")) << getResp;
+  EXPECT_TRUE(getResp.contains("async-GET")) << getResp;
+
+  test::RequestOptions putOpts;
+  putOpts.method = "PUT";
+  putOpts.target = "/async-multi";
+  putOpts.headers.emplace_back("Content-Length", "0");
+  const std::string putResp = test::requestOrThrow(ts.port(), putOpts);
+  EXPECT_TRUE(putResp.contains("HTTP/1.1 200")) << putResp;
+  EXPECT_TRUE(putResp.contains("async-PUT")) << putResp;
+}
+
+TEST(RouterUpdateProxy, PathEntryProxyCorsPolicy) {
+  RouterUpdateProxy router = ts.resetRouterAndGet();
+  CorsPolicy policy(CorsPolicy::Active::On);
+  policy.allowOrigin("https://example.com").allowMethods(http::Method::GET).allowRequestHeader("X-Custom");
+
+  router
+      .setPath(http::Method::GET, "/with-cors",
+               [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "cors-enabled"); })
+      .cors(std::move(policy));
+
+  test::RequestOptions opts;
+  opts.method = "OPTIONS";
+  opts.target = "/with-cors";
+  opts.headers.emplace_back("Origin", "https://example.com");
+  opts.headers.emplace_back("Access-Control-Request-Method", "GET");
+  opts.headers.emplace_back("Content-Length", "0");
+  const std::string preflightResp = test::requestOrThrow(ts.port(), opts);
+  EXPECT_TRUE(preflightResp.contains("HTTP/1.1 204")) << preflightResp;
+  EXPECT_TRUE(preflightResp.contains("Access-Control-Allow-Origin: https://example.com")) << preflightResp;
+}
+
+TEST(RouterUpdateProxy, SetDefaultStreamingHandler) {
+  RouterUpdateProxy router = ts.resetRouterAndGet();
+  router.setDefault([](const HttpRequest& req, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.contentType("text/plain");
+    writer.writeBody("default-streaming:");
+    writer.writeBody(req.path());
+    writer.end();
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/unmatched-path");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.contains("default-streaming:")) << response;
+  EXPECT_TRUE(response.contains("/unmatched-path")) << response;
+}

@@ -289,6 +289,14 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    telemetry-config_test
+    test/telemetry-config_test.cpp
+    LIBRARIES
+    aeronet_objects
+    aeronet_basic_test_support
+)
+
+AeronetAddUnitTest(
     tls-config_test
     test/tls-config_test.cpp
     LIBRARIES

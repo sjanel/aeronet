@@ -64,7 +64,7 @@ void sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeo
         log::error("sendAll timed out after {} ms", totalTimeout.count());
         throw std::runtime_error("sendAll timed out");
       }
-      std::this_thread::sleep_for(1ms);
+      std::this_thread::sleep_for(1ms);  // NOLINT(misc-include-cleaner) include chrono is there
       continue;
     }
     cursor += sent;
@@ -708,7 +708,7 @@ bool WaitForListenerClosed(uint16_t port, std::chrono::milliseconds timeout) {
       log::info("Confirmed listener on port {} is closed", port);
       return true;
     }
-    std::this_thread::sleep_for(5ms);
+    std::this_thread::sleep_for(5ms);  // NOLINT(misc-include-cleaner) include chrono is there
   }
   return !AttemptConnect(port);
 }

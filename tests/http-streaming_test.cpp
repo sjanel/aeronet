@@ -30,7 +30,7 @@
 using namespace aeronet;
 
 namespace {
-std::string blockingFetch(uint16_t port, std::string_view verb, std::string_view target) {
+std::string BlockingFetch(uint16_t port, std::string_view verb, std::string_view target) {
   test::RequestOptions opt;
   opt.method = verb;
   opt.target = target;
@@ -42,7 +42,7 @@ std::string blockingFetch(uint16_t port, std::string_view verb, std::string_view
   return *resp;
 }
 
-std::string doRequest(auto port, std::string_view verb, std::string_view target) {
+std::string RequestVerb(auto port, std::string_view verb, std::string_view target) {
   test::ClientConnection sock(port);
   int fd = sock.fd();
 
@@ -55,7 +55,7 @@ std::string doRequest(auto port, std::string_view verb, std::string_view target)
   return test::recvUntilClosed(fd);
 }
 
-std::string httpRequest(auto port, std::string_view method, std::string_view path, std::string_view body = {}) {
+std::string RequestMethod(auto port, std::string_view method, std::string_view path, std::string_view body = {}) {
   test::ClientConnection cnx(port);
   int fd = cnx.fd();
 
@@ -71,7 +71,7 @@ std::string httpRequest(auto port, std::string_view method, std::string_view pat
 }
 
 // Very small chunked decoder for tests (single pass, no trailers). Expects full HTTP response.
-std::string extractBody(std::string_view resp) {
+std::string ExtractBody(std::string_view resp) {
   auto headerEnd = resp.find(http::DoubleCRLF);
   if (headerEnd == std::string::npos) {
     return {};
@@ -109,7 +109,7 @@ std::string extractBody(std::string_view resp) {
 }
 
 test::TestServer ts(HttpServerConfig{});
-auto port = ts.port();
+const auto port = ts.port();
 }  // namespace
 
 TEST(HttpStreaming, ChunkedSimple) {
@@ -124,7 +124,7 @@ TEST(HttpStreaming, ChunkedSimple) {
     writer.end();
     writer.end();  // second end() should be no-op
   });
-  std::string resp = blockingFetch(port, "GET", "/stream");
+  std::string resp = BlockingFetch(port, "GET", "/stream");
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("X-Custom: value\r\n"));
   ASSERT_FALSE(resp.contains("X-Custom-2"));  // header added after headers sent should be ignored
@@ -148,7 +148,7 @@ TEST(HttpStreaming, SendFileFixedLengthPlain) {
     writer.status(404, "Not Found");  // should be ignored after end
   });
 
-  std::string resp = blockingFetch(port, "GET", "/file");
+  std::string resp = BlockingFetch(port, "GET", "/file");
 
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   ASSERT_FALSE(resp.contains("Transfer-Encoding: chunked"));
@@ -175,7 +175,7 @@ TEST(HttpStreaming, WriteBodyAndTrailersShouldFailIfSendFileIsUsed) {
     writer.end();
   });
 
-  std::string resp = blockingFetch(port, "GET", "/file");
+  std::string resp = BlockingFetch(port, "GET", "/file");
 
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   ASSERT_FALSE(resp.contains("Transfer-Encoding: chunked"));
@@ -200,7 +200,7 @@ TEST(HttpStreaming, SendFileHeadSuppressesBody) {
     writer.end();
   });
 
-  std::string resp = blockingFetch(port, "HEAD", "/file");
+  std::string resp = BlockingFetch(port, "HEAD", "/file");
 
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("Content-Length: " + std::to_string(kPayload.size())));
@@ -221,14 +221,14 @@ TEST(HttpStreaming, SendFileErrors) {
     EXPECT_FALSE(writer.file(File("/nonexistent/path")));  // should be no-op
   });
 
-  std::string resp = blockingFetch(port, "GET", "/file-after-write");
+  std::string resp = BlockingFetch(port, "GET", "/file-after-write");
 
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("Transfer-Encoding: chunked"));
 
   auto headerEnd = resp.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, headerEnd);
-  EXPECT_EQ(extractBody(resp), "initial data");
+  EXPECT_EQ(ExtractBody(resp), "initial data");
 }
 
 TEST(HttpStreaming, SendFileOverrideContentLength) {
@@ -245,7 +245,7 @@ TEST(HttpStreaming, SendFileOverrideContentLength) {
     writer.end();
   });
 
-  std::string resp = blockingFetch(port, "GET", "/file-override-cl");
+  std::string resp = BlockingFetch(port, "GET", "/file-override-cl");
 
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("Content-Length: 35"));
@@ -265,7 +265,7 @@ TEST(HttpStreaming, HeadSuppressedBody) {
     writer.writeBody("ignored body");  // should not be emitted for HEAD
     writer.end();
   });
-  std::string resp = blockingFetch(port, "HEAD", "/head");
+  std::string resp = BlockingFetch(port, "HEAD", "/head");
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   // For HEAD we expect no chunked framing. "0\r\n" alone would falsely match the Content-Length header line
   // ("Content-Length: 0\r\n"). What we really want to assert is that there is no terminating chunk sequence.
@@ -368,8 +368,8 @@ TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
     writer.end();
   });
 
-  std::string getResp = doRequest(port, "GET", "/hdr");
-  std::string headResp = doRequest(port, "HEAD", "/hdr");
+  std::string getResp = RequestVerb(port, "GET", "/hdr");
+  std::string headResp = RequestVerb(port, "HEAD", "/hdr");
 
   // Basic status line check
   ASSERT_TRUE(getResp.contains("HTTP/1.1 200"));
@@ -404,10 +404,10 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
   });
   ts.router().setPath(http::Method::POST, "/mix",
                       [](const HttpRequest& /*unused*/) { return HttpResponse(201).reason("Created").body("NORMAL"); });
-  std::string getResp = httpRequest(port, "GET", "/mix");
-  auto decoded = extractBody(getResp);
+  std::string getResp = RequestMethod(port, "GET", "/mix");
+  auto decoded = ExtractBody(getResp);
   EXPECT_EQ(decoded, "STREAM");
-  std::string postResp = httpRequest(port, "POST", "/mix", "x");
+  std::string postResp = RequestMethod(port, "POST", "/mix", "x");
   EXPECT_TRUE(postResp.contains("NORMAL"));
 }
 
@@ -446,11 +446,11 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
   ts.router().setPath(http::Method::GET, "/n",
                       [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("PN"); });
 
-  std::string pathStreamResp = httpRequest(port, "GET", "/s");
+  std::string pathStreamResp = RequestMethod(port, "GET", "/s");
   EXPECT_TRUE(pathStreamResp.contains("PS"));
-  std::string pathNormalResp = httpRequest(port, "GET", "/n");
+  std::string pathNormalResp = RequestMethod(port, "GET", "/n");
   EXPECT_TRUE(pathNormalResp.contains("PN"));
-  std::string fallback = httpRequest(port, "GET", "/other");
+  std::string fallback = RequestMethod(port, "GET", "/other");
   // Should use global streaming first (higher precedence than global normal)
   EXPECT_TRUE(fallback.contains("STREAMFALLBACK"));
 }
@@ -459,7 +459,7 @@ TEST(HttpServerMixed, GlobalNormalOnlyWhenNoStreaming) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = false; });
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("GN"); });
 
-  std::string result = httpRequest(port, "GET", "/x");
+  std::string result = RequestMethod(port, "GET", "/x");
   EXPECT_TRUE(result.contains("GN"));
 }
 
@@ -472,7 +472,7 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
     writer.writeBody("SHOULD_NOT_APPEAR");  // for HEAD this must be suppressed by writer
     writer.end();
   });
-  std::string headResp = httpRequest(port, "HEAD", "/head");
+  std::string headResp = RequestMethod(port, "HEAD", "/head");
   // Body should be empty; ensure word not present and Content-Length: 0 (or if chunked not used at all)
   auto headerEnd = headResp.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, headerEnd);
@@ -491,13 +491,13 @@ TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
     writer.writeBody("OKGET");
     writer.end();
   });
-  std::string postResp = httpRequest(port, "POST", "/m405", "data");
+  std::string postResp = RequestMethod(port, "POST", "/m405", "data");
   // Expect 405 Method Not Allowed
   EXPECT_TRUE(postResp.contains("405"));
   EXPECT_TRUE(postResp.contains("Method Not Allowed"));
   // Ensure GET still works and returns streaming body
-  std::string getResp2 = httpRequest(port, "GET", "/m405");
-  auto decoded2 = extractBody(getResp2);
+  std::string getResp2 = RequestMethod(port, "GET", "/m405");
+  auto decoded2 = ExtractBody(getResp2);
   EXPECT_EQ(decoded2, "OKGET");
 }
 
@@ -539,7 +539,7 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
   auto afterFirst = raw.find("HTTP/1.1 201 Created", firstHeaderEnd);
   ASSERT_NE(std::string::npos, afterFirst);
   std::string firstResponse = raw.substr(0, afterFirst);
-  auto body1 = extractBody(firstResponse);
+  auto body1 = ExtractBody(firstResponse);
   EXPECT_EQ(body1, "AB");
   // Second response should have NORMAL
   auto secondBodyStart = raw.find("NORMAL", afterFirst);
@@ -788,7 +788,7 @@ TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
     EXPECT_TRUE(writer.finished());
     EXPECT_FALSE(writer.failed());
   });
-  std::string resp = blockingFetch(port, "GET", "/adaptive");
+  std::string resp = BlockingFetch(port, "GET", "/adaptive");
   auto stats = ts.server.stats();
   EXPECT_GT(stats.totalBytesWrittenImmediate, kLargeSize);
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
@@ -839,4 +839,222 @@ TEST(HttpStreaming, CaseInsensitiveContentTypeAndEncodingSuppression) {
   EXPECT_FALSE(resp.contains("Content-Type: text/plain")) << resp;
   // Body should be identity (contains long run of 'Z').
   EXPECT_TRUE(resp.contains(std::string(50, 'Z'))) << "Body appears compressed when it should not";
+}
+
+// Test addHeader with Content-Encoding - sets _contentEncodingHeaderPresent
+TEST(HttpResponseWriterFailures, AddHeaderContentEncoding) {
+  ts.router().setPath(http::Method::GET, "/content-encoding", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.addHeader("Content-Encoding", "gzip");
+    writer.contentType("text/plain");
+    writer.writeBody("test");
+    writer.end();
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/content-encoding");
+  EXPECT_TRUE(response.contains("Content-Encoding: gzip"));
+}
+
+// Test contentLength called after writeBody - should log warning and ignore
+TEST(HttpResponseWriterFailures, ContentLengthAfterWrite) {
+  ts.router().setPath(http::Method::GET, "/len-after-write", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.writeBody("first");
+    writer.contentLength(100);  // Should be ignored with _bytesWritten > 0
+    writer.end();
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/len-after-write");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(response.contains("Transfer-Encoding: chunked"));
+}
+
+// Test file() called after writeBody - should fail
+TEST(HttpResponseWriterFailures, FileAfterWriteBody) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "test-content");
+
+  ts.router().setPath(http::Method::GET, "/file-after-write",
+                      [path = tmp.filePath().string()](const HttpRequest&, HttpResponseWriter& writer) {
+                        writer.status(http::StatusCodeOK);
+                        writer.writeBody("data");
+
+                        // Try to use file after writeBody
+                        bool fileResult = writer.file(File(path));
+                        EXPECT_FALSE(fileResult);  // Should fail because bytes already written
+
+                        writer.end();
+                      });
+
+  const std::string response = test::simpleGet(ts.port(), "/file-after-write");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+}
+
+// Test writeBody/addTrailer/end after end() - State::Ended checks
+TEST(HttpResponseWriterFailures, OperationsAfterEnd) {
+  ts.router().setPath(http::Method::GET, "/after-end", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.writeBody("data");
+    writer.end();
+
+    // These should all be ignored (State::Ended)
+    EXPECT_FALSE(writer.writeBody("more"));
+    writer.addTrailer("X-Ignored", "value");
+    writer.end();  // Second end() should be harmless
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/after-end");
+  EXPECT_TRUE(response.contains("data"));
+  EXPECT_FALSE(response.contains("more"));
+}
+
+// Test header/status operations after headers sent
+TEST(HttpResponseWriterFailures, ModifyAfterHeadersSent) {
+  ts.router().setPath(http::Method::GET, "/modify-after-headers", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.header("X-Before", "value1");
+    writer.writeBody("chunk1");  // This sends headers
+
+    // These should be ignored (State::HeadersSent)
+    writer.status(http::StatusCodeNotFound);  // Ignored
+    writer.header("X-After", "value2");       // Ignored
+    writer.addHeader("X-After2", "value3");   // Ignored
+    writer.contentLength(50);                 // Ignored
+
+    writer.writeBody("chunk2");
+    writer.end();
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/modify-after-headers");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(response.contains("X-Before: value1"));
+  EXPECT_FALSE(response.contains("X-After"));
+}
+
+// Test addTrailer for fixed-length response (non-chunked) - should be ignored
+TEST(HttpResponseWriterFailures, TrailerForFixedLength) {
+  ts.router().setPath(http::Method::GET, "/trailer-fixed-len", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.contentLength(4);  // Fixed length = non-chunked
+
+    // addTrailer should be ignored for fixed-length responses
+    writer.addTrailer("X-Trailer", "ignored");
+
+    writer.writeBody("test");
+    writer.end();
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/trailer-fixed-len");
+  auto parsed = test::parseResponseOrThrow(response);
+  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_EQ(4, parsed.body.size());
+}
+
+// Test writeBody with sendfile active - should be ignored
+TEST(HttpResponseWriterFailures, WriteBodyWithFileActive) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "file-data");
+
+  ts.router().setPath(http::Method::GET, "/write-with-file",
+                      [path = tmp.filePath().string()](const HttpRequest&, HttpResponseWriter& writer) {
+                        writer.status(http::StatusCodeOK);
+                        writer.file(File(path));
+
+                        // writeBody should be ignored when file is active
+                        EXPECT_FALSE(writer.writeBody("extra-data"));
+
+                        writer.end();
+                      });
+
+  const std::string response = test::simpleGet(ts.port(), "/write-with-file");
+  EXPECT_TRUE(response.contains("file-data"));
+  EXPECT_FALSE(response.contains("extra-data"));
+}
+
+// Test file() not in Opened state - should fail
+TEST(HttpResponseWriterFailures, FileNotInOpenedState) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "file-content");
+
+  ts.router().setPath(http::Method::GET, "/file-wrong-state",
+                      [path = tmp.filePath().string()](const HttpRequest&, HttpResponseWriter& writer) {
+                        writer.status(http::StatusCodeOK);
+                        writer.writeBody("data");  // Transitions to HeadersSent
+
+                        // file() should fail - not in Opened state anymore
+                        EXPECT_FALSE(writer.file(File(path)));
+
+                        writer.end();
+                      });
+
+  const std::string response = test::simpleGet(ts.port(), "/file-wrong-state");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+}
+
+// Test file() overriding previously declared Content-Length - should warn
+TEST(HttpResponseWriterFailures, FileOverridesContentLength) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "overridden-file-content");
+
+  ts.router().setPath(http::Method::GET, "/file-override-length",
+                      [path = tmp.filePath().string()](const HttpRequest&, HttpResponseWriter& writer) {
+                        writer.status(http::StatusCodeOK);
+                        writer.contentLength(100);  // Declare a length first
+
+                        // file() should override the previously set contentLength
+                        EXPECT_TRUE(writer.file(File(path)));
+
+                        writer.end();
+                      });
+
+  const std::string response = test::simpleGet(ts.port(), "/file-override-length");
+  EXPECT_TRUE(response.contains("overridden-file-content"));
+}
+
+// Test empty writeBody - should return true immediately
+TEST(HttpResponseWriterFailures, WriteBodyEmpty) {
+  ts.router().setPath(http::Method::GET, "/write-empty", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+
+    // Empty writes should succeed immediately
+    EXPECT_TRUE(writer.writeBody(""));
+    EXPECT_TRUE(writer.writeBody(std::string_view{}));
+
+    writer.writeBody("actual-data");
+    writer.end();
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/write-empty");
+  EXPECT_TRUE(response.contains("actual-data"));
+}
+
+// Test HEAD request - body should be suppressed
+TEST(HttpResponseWriterFailures, HeadRequestSuppressesBody) {
+  ts.router().setPath(http::Method::GET, "/head-test", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.contentType("text/plain");
+    writer.writeBody("this-should-not-appear-in-head");
+    writer.end();
+  });
+
+  test::RequestOptions opts;
+  opts.method = "HEAD";
+  opts.target = "/head-test";
+  const std::string response = test::sendAndCollect(ts.port(), test::buildRequest(opts));
+  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(test::noBodyAfterHeaders(response));  // HEAD responses have no body
+}
+
+// Test multiple status() calls - last one wins before headers sent
+TEST(HttpResponseWriterFailures, MultipleStatusCalls) {
+  ts.router().setPath(http::Method::GET, "/multi-status", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.status(http::StatusCodeNotFound);                              // Should override
+    writer.status(http::StatusCodeInternalServerError, "Custom Reason");  // Should override again
+    writer.end();
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/multi-status");
+  EXPECT_TRUE(response.contains("500"));
+  EXPECT_TRUE(response.contains("Custom Reason"));
 }

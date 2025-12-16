@@ -3,10 +3,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
-#include <stdexcept>
 #include <string>
 #include <string_view>
-#include <vector>
 #ifdef __unix__
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -24,49 +22,6 @@ using namespace aeronet;
 namespace {
 constexpr bool kDefaultEnabled = aeronet::openTelemetryEnabled();
 
-class ScopedEnvVar {
- public:
-  ScopedEnvVar(const char* name, const char* value) : _name(name) {
-    if (const char* prev = std::getenv(name)) {
-      _hadOld = true;
-      _old = prev;
-    }
-#ifdef _WIN32
-    if (value != nullptr) {
-      _putenv_s(name, value);
-    } else {
-      _putenv_s(name, "");
-    }
-#else
-    if (value != nullptr) {
-      ::setenv(name, value, 1);  // NOLINT(misc-include-cleaner) cstdlib header
-    } else {
-      ::unsetenv(name);  // NOLINT(misc-include-cleaner) cstdlib header
-    }
-#endif
-  }
-
-  ~ScopedEnvVar() {
-#ifdef _WIN32
-    if (_hadOld) {
-      _putenv_s(_name.c_str(), _old.c_str());
-    } else {
-      _putenv_s(_name.c_str(), "");
-    }
-#else
-    if (_hadOld) {
-      ::setenv(_name.c_str(), _old.c_str(), 1);  // NOLINT(misc-include-cleaner) cstdlib header
-    } else {
-      ::unsetenv(_name.c_str());  // NOLINT(misc-include-cleaner) cstdlib header
-    }
-#endif
-  }
-
- private:
-  std::string _name;
-  std::string _old;
-  bool _hadOld = false;
-};
 }  // namespace
 
 // Test basic TelemetryContext functionality
@@ -164,65 +119,6 @@ TEST(OpenTelemetryIntegration, IndependentContexts) {
   if (span2) {
     span2->end();
   }
-}
-
-TEST(OpenTelemetryIntegration, TelemetryConfigHttpHeadersStored) {
-  TelemetryConfig cfg;
-  cfg.addHttpHeader("Authorization", "Bearer secret-token");
-  cfg.addHttpHeader("X-Test", "Value 42");
-
-  std::vector<std::string_view> headers;
-  auto range = cfg.httpHeadersRange();
-  headers.assign(range.begin(), range.end());
-
-  ASSERT_EQ(headers.size(), 2UL);
-  EXPECT_EQ(headers[0], "Authorization: Bearer secret-token");
-  EXPECT_EQ(headers[1], "X-Test: Value 42");
-}
-
-TEST(OpenTelemetryIntegration, TelemetryConfigServiceTagAppendedOnce) {
-  TelemetryConfig cfg;
-  cfg.withServiceName("svc-aeronet");
-
-  cfg.validate();  // first call should append service tag
-  cfg.validate();  // second call should not duplicate the tag
-
-  std::vector<std::string_view> tags;
-  auto range = cfg.dogstatsdTagsRange();
-  tags.assign(range.begin(), range.end());
-
-  ASSERT_EQ(tags.size(), 1UL);
-  EXPECT_EQ(tags.front(), "service:svc-aeronet");
-}
-
-TEST(OpenTelemetryIntegration, TelemetryConfigInvalidSampleRateThrows) {
-  TelemetryConfig cfg;
-  cfg.sampleRate = -0.1;
-  EXPECT_THROW(cfg.validate(), std::invalid_argument);
-
-  TelemetryConfig cfgHigh;
-  cfgHigh.sampleRate = 1.5;
-  EXPECT_THROW(cfgHigh.validate(), std::invalid_argument);
-}
-
-TEST(OpenTelemetryIntegration, TelemetryConfigDogStatsDTakesEnvSocket) {
-  // Ensure DD_DOGSTATSD_SOCKET_PATH is unset so the DD_DOGSTATSD_SOCKET fallback is exercised.
-  ScopedEnvVar unsetPath("DD_DOGSTATSD_SOCKET_PATH", nullptr);
-  ScopedEnvVar socketEnv("DD_DOGSTATSD_SOCKET", "/tmp/aeronet-dsd.sock");
-
-  TelemetryConfig cfg;
-  cfg.dogStatsDEnabled = true;
-  cfg.validate();
-  EXPECT_EQ(cfg.dogstatsdSocketPath(), "/tmp/aeronet-dsd.sock");
-}
-
-TEST(OpenTelemetryIntegration, TelemetryConfigDogStatsDEnabledWithoutPathThrows) {
-  ScopedEnvVar unsetSocket("DD_DOGSTATSD_SOCKET", nullptr);
-  ScopedEnvVar unsetPath("DD_DOGSTATSD_SOCKET_PATH", nullptr);
-
-  TelemetryConfig cfg;
-  cfg.dogStatsDEnabled = true;
-  EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
 // Additional tests that require OpenTelemetry at compile-time
