@@ -128,7 +128,7 @@ TEST(ZstdEncoderDecoderTest, MaxDecompressedBytesFull) {
     encoder.encodeFull(kExtraCapacity, payload, compressed);
 
     RawChars decompressed;
-    const std::size_t limit = payload.size() > 0 ? payload.size() - 1 : 0;
+    const std::size_t limit = payload.empty() ? 0 : payload.size() - 1;
     EXPECT_EQ(ZstdDecoder::Decompress(compressed, limit, kDecoderChunkSize, decompressed), payload.empty());
   }
 }
@@ -137,7 +137,7 @@ TEST(ZstdEncoderDecoderTest, MaxDecompressedBytesStreaming) {
   for (const auto& payload : samplePayloads()) {
     const auto compressed = BuildStreamingCompressed(payload, 8U);
     RawChars decompressed;
-    const std::size_t limit = payload.size() > 0 ? payload.size() - 1 : 0;
+    const std::size_t limit = payload.empty() ? 0 : payload.size() - 1;
     EXPECT_EQ(ZstdDecoder::Decompress(compressed, limit, kDecoderChunkSize, decompressed), payload.empty());
   }
 }

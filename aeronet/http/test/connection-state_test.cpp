@@ -1,3 +1,6 @@
+// Enable syscall overrides for sendfile/pread used in ConnectionState::transportFile
+#define AERONET_WANT_SENDFILE_PREAD_OVERRIDES
+
 #include "aeronet/connection-state.hpp"
 
 #include <asm-generic/socket.h>
@@ -7,6 +10,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <coroutine>
 #include <cstddef>
 #include <cstdlib>
@@ -19,6 +23,7 @@
 #include "aeronet/base-fd.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/transport.hpp"
 
@@ -132,6 +137,88 @@ TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
   EXPECT_TRUE(sawWouldBlock);
 }
 
+// overrides enabled via macro at file top
+
+TEST(ConnectionStateSendfileTest, KernelSendfileEintrReturnsWouldBlockWithoutEnableWritable) {
+  int sv[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+
+  const std::string content(4096, 'C');
+  test::ScopedTempDir tmpDir;
+  ScopedTempFile tmp(tmpDir, content);
+
+  File file(tmp.filePath().string());
+  ConnectionState state;
+  state.fileSend.file = std::move(file);
+  state.fileSend.offset = 0;
+  state.fileSend.remaining = content.size();
+  state.fileSend.active = true;
+
+  // Force sendfile to report EINTR once for sv[0]
+  test::SetSendfileActions(sv[0], {IoAction{-1, EINTR}});
+
+  auto res = state.transportFile(sv[0], /*tlsFlow=*/false);
+  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::WouldBlock);
+  // EINTR should NOT request writable readiness
+  EXPECT_FALSE(res.enableWritable);
+  // Still active because we haven't transferred anything yet
+  EXPECT_TRUE(state.fileSend.active);
+}
+
+TEST(ConnectionStateSendfileTest, TlsPreadEintrSetsWouldBlockWhenRemainingPositive) {
+  int sv[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+
+  const std::string content(1024, 'D');
+  test::ScopedTempDir tmpDir;
+  ScopedTempFile tmp(tmpDir, content);
+
+  File file(tmp.filePath().string());
+  ConnectionState state;
+  state.fileSend.file = std::move(file);
+  state.fileSend.offset = 0;
+  state.fileSend.remaining = content.size();
+  state.fileSend.active = true;
+
+  // Force pread on the file path to return EINTR once
+  test::SetPreadPathActions(tmp.filePath().string(), {IoAction{-1, EINTR}});
+
+  auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
+  // EINTR with remaining > 0 maps to WouldBlock (retry later) in TLS path
+  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::WouldBlock);
+  // In TLS path, initial enableWritable is true from the FileResult ctor
+  EXPECT_TRUE(res.enableWritable);
+  EXPECT_TRUE(state.fileSend.active);
+}
+
+TEST(ConnectionStateSendfileTest, TlsPreadEintrWithNoRemainingDoesNotSetWouldBlock) {
+  int sv[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+
+  // Empty file => remaining == 0
+  test::ScopedTempDir tmpDir;
+  ScopedTempFile tmp(tmpDir, std::string());
+
+  File file(tmp.filePath().string());
+  ConnectionState state;
+  state.fileSend.file = std::move(file);
+  state.fileSend.offset = 0;
+  state.fileSend.remaining = 0;
+  state.fileSend.active = true;
+
+  // Force pread EINTR; since remaining == 0, code should not flip to WouldBlock per branch
+  test::SetPreadPathActions(tmp.filePath().string(), {IoAction{-1, EINTR}});
+
+  auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
+  EXPECT_NE(res.code, ConnectionState::FileResult::Code::WouldBlock);
+  // It should stay as the initial TLS Read code with 0 bytes
+  EXPECT_EQ(res.bytesDone, 0U);
+  // Because we returned early on EINTR, active is not cleared here
+  EXPECT_TRUE(state.fileSend.active);
+}
 TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
@@ -435,4 +522,143 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSetsTlsEstablished)
   // write should succeed and set tlsEstablished when handshakeDone() is true
   EXPECT_GE(res.bytesProcessed, 0U);
   EXPECT_TRUE(state.tlsEstablished);
+}
+
+namespace {
+// Simple controllable transport for unit tests
+class FakeTransport : public ITransport {
+ public:
+  explicit FakeTransport(bool handshakeInitially) : _handshakeDone(handshakeInitially) {}
+
+  TransportResult read(char* buf, std::size_t len) override {
+    // Write a small marker and report bytes read
+    const char* kMarker = "X";
+    if (len > 0) {
+      buf[0] = kMarker[0];
+      return {1U, TransportHint::None};
+    }
+    return {0U, TransportHint::None};
+  }
+
+  TransportResult write(std::string_view data) override {
+    _lastWrite.assign(data.begin(), data.end());
+    return {data.size(), TransportHint::None};
+  }
+
+  void setHandshakeDone(bool val) { _handshakeDone = val; }
+
+  [[nodiscard]] bool handshakeDone() const noexcept override { return _handshakeDone; }
+
+  [[nodiscard]] std::string lastWrite() const { return _lastWrite; }
+
+ private:
+  bool _handshakeDone{true};
+  std::string _lastWrite;
+};
+}  // namespace
+
+TEST(ConnectionStateTransportTest, TransportWriteStringSetsTlsEstablished) {
+  ConnectionState state;
+  state.transport = std::make_unique<FakeTransport>(/*handshakeInitially=*/true);
+  state.tlsEstablished = false;
+
+  const auto res = state.transportWrite(std::string_view{"hello"});
+  EXPECT_EQ(res.want, TransportHint::None);
+  EXPECT_EQ(res.bytesProcessed, 5U);
+  EXPECT_TRUE(state.tlsEstablished);
+}
+
+TEST(ConnectionStateTransportTest, TransportWriteStringWaitsUntilHandshakeDone) {
+  ConnectionState state;
+  auto fake = std::make_unique<FakeTransport>(/*handshakeInitially=*/false);
+  FakeTransport* raw = fake.get();
+  state.transport = std::move(fake);
+  state.tlsEstablished = false;
+
+  // First write: handshake not done yet, tlsEstablished should remain false
+  const auto res1 = state.transportWrite(std::string_view{"abc"});
+  EXPECT_EQ(res1.want, TransportHint::None);
+  EXPECT_EQ(res1.bytesProcessed, 3U);
+  EXPECT_FALSE(state.tlsEstablished);
+
+  // Now flip handshake to done and write again; tlsEstablished should become true
+  raw->setHandshakeDone(true);
+  const auto res2 = state.transportWrite(std::string_view{"def"});
+  EXPECT_EQ(res2.want, TransportHint::None);
+  EXPECT_EQ(res2.bytesProcessed, 3U);
+  EXPECT_TRUE(state.tlsEstablished);
+}
+
+TEST(ConnectionStateTransportTest, TransportReadSetsHeaderStartOnce) {
+  ConnectionState state;
+  state.transport = std::make_unique<FakeTransport>(/*handshakeInitially=*/true);
+
+  // Before any read, headerStartTp is epoch
+  EXPECT_EQ(state.headerStartTp.time_since_epoch().count(), 0);
+
+  // First read sets headerStartTp
+  auto r1 = state.transportRead(16U);
+  EXPECT_EQ(r1.want, TransportHint::None);
+  EXPECT_EQ(r1.bytesProcessed, 1U);
+  const auto firstTp = state.headerStartTp;
+  EXPECT_NE(firstTp.time_since_epoch().count(), 0);
+
+  // Second read should not overwrite the timestamp
+  auto r2 = state.transportRead(8U);
+  EXPECT_EQ(r2.want, TransportHint::None);
+  EXPECT_EQ(r2.bytesProcessed, 1U);
+  EXPECT_EQ(state.headerStartTp, firstTp);
+}
+
+TEST(ConnectionStateTransportTest, TransportWriteStringSkipsHandshakeWhenAlreadyEstablished) {
+  ConnectionState state;
+  auto fake = std::make_unique<FakeTransport>(/*handshakeInitially=*/true);
+  state.transport = std::move(fake);
+  state.tlsEstablished = true;  // simulate prior completion
+
+  const auto res = state.transportWrite(std::string_view{"xyz"});
+  EXPECT_EQ(res.want, TransportHint::None);
+  EXPECT_EQ(res.bytesProcessed, 3U);
+  EXPECT_TRUE(state.tlsEstablished);  // remains true; branch where !tlsEstablished is false
+}
+
+TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSkipsHandshakeWhenAlreadyEstablished) {
+  int sv[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+
+  ConnectionState state;
+  state.transport = std::make_unique<PlainTransport>(sv[0]);
+  state.tlsEstablished = true;  // simulate prior completion
+
+  HttpResponseData resp("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+  const auto res = state.transportWrite(resp);
+  EXPECT_GE(res.bytesProcessed, 0U);
+  EXPECT_TRUE(state.tlsEstablished);  // remains true; handshake not re-checked
+}
+
+TEST(ConnectionStateSendfileTest, TlsPreadErrorTriggersImmediateCloseAndClearsActive) {
+  int sv[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+
+  const std::string content(16, 'E');
+  test::ScopedTempDir tmpDir;
+  ScopedTempFile tmp(tmpDir, content);
+
+  File file(tmp.filePath().string());
+  ConnectionState state;
+  state.fileSend.file = std::move(file);
+  state.fileSend.offset = 0;
+  state.fileSend.remaining = content.size();
+  state.fileSend.active = true;
+
+  // Force a hard pread error (not EAGAIN/EINTR) to take default error path
+  test::SetPreadPathActions(tmp.filePath().string(), {IoAction{-1, EIO}});
+
+  auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
+  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::Error);
+  EXPECT_EQ(res.bytesDone, 0U);
+  EXPECT_FALSE(state.fileSend.active);
+  EXPECT_TRUE(state.isImmediateCloseRequested());
 }

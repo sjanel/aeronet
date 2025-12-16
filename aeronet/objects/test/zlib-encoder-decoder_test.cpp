@@ -152,7 +152,7 @@ TEST_P(ZlibEncoderDecoderTest, MaxDecompressedBytes) {
 
     const bool isGzip = variant == ZStreamRAII::Variant::gzip;
     RawChars decompressed;
-    const std::size_t limit = payload.size() > 0 ? payload.size() - 1 : 0;
+    const std::size_t limit = payload.empty() ? 0 : payload.size() - 1;
     const bool isOK = ZlibDecoder::Decompress(compressed, isGzip, limit, kDecoderChunkSize, decompressed);
     EXPECT_EQ(isOK, payload.empty());
     EXPECT_EQ(decompressed, std::string_view(payload).substr(0, limit));

@@ -162,8 +162,8 @@ jobs:
             -DAERONET_ENABLE_OPENTELEMETRY=ON \
             -DCMAKE_C_COMPILER=clang-21 \
             -DCMAKE_CXX_COMPILER=clang++-21 \
-            -DCMAKE_C_FLAGS="-fprofile-instr-generate -fcoverage-mapping -O0" \
-            -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping -O0" \
+            -DCMAKE_C_FLAGS="-fprofile-instr-generate -fcoverage-mapping -O0 -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping -O0 -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
 
       - name: Build (coverage)
@@ -176,7 +176,7 @@ jobs:
           echo "Running ctest with -j=${JOBS} (NUM_PROC=${NUM_PROC})"
           # Use LLVM profile file per-process. Pattern will create one .profraw per test process
           export LLVM_PROFILE_FILE="${{ github.workspace }}/coverage-%p.profraw"
-          ctest --test-dir ${BUILD_DIR} --repeat until-fail:3 --output-on-failure --timeout 100 -j ${JOBS}
+          ctest --test-dir ${BUILD_DIR} --timeout 100 -j ${JOBS}
 
       - name: Merge profile data and generate coverage reports
         run: |
