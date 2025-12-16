@@ -35,7 +35,7 @@ TEST(HttpTlsBasic, HandshakeAndSimpleGet) {
         .body(std::string("TLS OK ") + std::string(req.path()));
   });
   test::TlsClient client(ts.port());
-  auto raw = client.get("/hello", {{"X-Test", "tls"}});
+  auto raw = client.get("/hello", {http::Header{"X-Test", "tls"}});
   ASSERT_FALSE(raw.empty());
   ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
   ASSERT_TRUE(raw.contains("TLS OK /hello"));

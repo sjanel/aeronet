@@ -179,7 +179,7 @@ std::string TlsClient::get(std::string_view target, const std::vector<http::Head
   }
   std::string request = "GET " + std::string(target) + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n";
   for (const auto& header : extraHeaders) {
-    request.append(header.name).append(aeronet::http::HeaderSep).append(header.value).append(aeronet::http::CRLF);
+    request.append(header.name()).append(aeronet::http::HeaderSep).append(header.value()).append(aeronet::http::CRLF);
   }
   request += aeronet::http::CRLF;
   if (!writeAll(request)) {

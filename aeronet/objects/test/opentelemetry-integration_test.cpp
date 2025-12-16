@@ -21,7 +21,6 @@ using namespace aeronet;
 
 namespace {
 constexpr bool kDefaultEnabled = aeronet::openTelemetryEnabled();
-
 }  // namespace
 
 // Test basic TelemetryContext functionality
@@ -50,6 +49,14 @@ TEST(OpenTelemetryIntegration, CountersOperations) {
   cfg.otelEnabled = kDefaultEnabled;
   cfg.withEndpoint("http://localhost:4318/v1/metrics");
   cfg.withServiceName("aeronet-test");
+
+  telemetry = tracing::TelemetryContext(cfg);
+
+  // Should work after initialization (or silently fail)
+  telemetry.counterAdd("events.processed", 100U);
+  telemetry.counterAdd("bytes.written", 1024U);
+
+  cfg.withEndpoint("http://localhost:4318/v1/metrics/");
 
   telemetry = tracing::TelemetryContext(cfg);
 
@@ -170,9 +177,39 @@ TEST(OpenTelemetryIntegration, DogStatsDMetricsEmission) {
   EXPECT_TRUE(payload.contains("aeronet.test.metric:7|c"));
   EXPECT_TRUE(payload.contains("service:test-service"));
 }
+
+TEST(OpenTelemetryIntegration, DogStatsDClientRetrieveNull) {
+  tracing::TelemetryContext telemetry;
+  EXPECT_EQ(telemetry.dogstatsdClient(), nullptr);
+}
+
 #endif
 
-#ifndef AERONET_ENABLE_OPENTELEMETRY
+#ifdef AERONET_ENABLE_OPENTELEMETRY
+
+TEST(OpenTelemetryIntegration, NoServiceName) {
+  TelemetryConfig cfg;
+  cfg.otelEnabled = true;
+  cfg.withEndpoint("http://localhost:4318/v1/traces");
+  // Intentionally omit service name
+
+  // should be using default resource attributes
+  tracing::TelemetryContext telemetry(cfg);
+  EXPECT_NE(telemetry.createSpan("span-without-service-name"), nullptr);
+}
+
+TEST(OpenTelemetryIntegration, EmptyEndpoint) {
+  TelemetryConfig cfg;
+  cfg.otelEnabled = true;
+  cfg.withEndpoint("");  // Empty endpoint
+  cfg.withServiceName("test-service");
+
+  // should be using default resource attributes
+  tracing::TelemetryContext telemetry(cfg);
+  EXPECT_NE(telemetry.createSpan("span-without-service-name"), nullptr);
+}
+
+#else
 
 TEST(OpenTelemetryIntegration, ShouldThrowIfDisabledAndAsked) {
   TelemetryConfig cfg;

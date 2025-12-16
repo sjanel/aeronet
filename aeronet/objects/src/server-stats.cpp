@@ -44,12 +44,9 @@ std::string ServerStats::json_str() const {
   out.append(",\"tlsAlpnStrictMismatches\":").append(std::string_view(IntegralToCharVector(tlsAlpnStrictMismatches)));
   // ALPN distribution
   out.append(",\"tlsAlpnDistribution\":[");
-  bool first = true;
   for (const auto& kv : tlsAlpnDistribution) {
-    if (!first) {
+    if (out.back() != '[') {
       out.push_back(',');
-    } else {
-      first = false;
     }
     out.append(R"({"protocol":")")
         .append(kv.first)
@@ -60,12 +57,9 @@ std::string ServerStats::json_str() const {
   out.push_back(']');
   // TLS version counts
   out.append(",\"tlsVersionCounts\":[");
-  first = true;
   for (const auto& kv : tlsVersionCounts) {
-    if (!first) {
+    if (out.back() != '[') {
       out.push_back(',');
-    } else {
-      first = false;
     }
     out.append(R"({"version":")")
         .append(kv.first)
@@ -76,12 +70,9 @@ std::string ServerStats::json_str() const {
   out.push_back(']');
   // TLS cipher counts
   out.append(",\"tlsCipherCounts\":[");
-  first = true;
   for (const auto& kv : tlsCipherCounts) {
-    if (!first) {
+    if (out.back() != '[') {
       out.push_back(',');
-    } else {
-      first = false;
     }
     out.append(R"({"cipher":")")
         .append(kv.first)
