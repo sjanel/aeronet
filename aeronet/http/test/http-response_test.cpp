@@ -1403,7 +1403,7 @@ TEST_F(HttpResponseTest, ALotOfGlobalHeaders) {
   for (int headerIdx = 0; headerIdx < kGlobalHeaders; ++headerIdx) {
     std::string name = "X-Bulk-" + std::to_string(headerIdx);
     std::string value = "Value-" + std::to_string(headerIdx);
-    headerVec.push_back({name, value});
+    headerVec.push_back(http::Header{name, value});
     std::string header;
     header.reserve(name.size() + 2 + value.size());
     header.append(name);
@@ -1412,8 +1412,8 @@ TEST_F(HttpResponseTest, ALotOfGlobalHeaders) {
     globalHeaders.append(header);
   }
   // Force overlap with a couple of entries (exercise dynamic bitmap skip path)
-  resp.header(headerVec[42].name, "UserOverride-42");
-  resp.header(headerVec[199].name, "UserOverride-199");
+  resp.header(headerVec[42].name(), "UserOverride-42");
+  resp.header(headerVec[199].name(), "UserOverride-199");
 
   auto expected = ExpectedGlobalHeaderValues(resp, globalHeaders);
   auto serialized = concatenated(std::move(resp), globalHeaders);
@@ -1421,7 +1421,7 @@ TEST_F(HttpResponseTest, ALotOfGlobalHeaders) {
 
   ASSERT_GE(parsed.headers.size(), static_cast<std::size_t>(kGlobalHeaders));
   for (std::string_view gh : globalHeaders) {
-    const auto sep = gh.find(": ");
+    const auto sep = gh.find(http::HeaderSep);
     ASSERT_NE(sep, std::string_view::npos);
     std::string_view name = gh.substr(0, sep);
     const auto* actual = FindHeaderCaseInsensitive(parsed, name);
@@ -1471,7 +1471,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
     for (int globalIdx = 0; globalIdx < fuzzGlobalCount; ++globalIdx) {
       std::string name = "X-Fuzz-Global-" + std::to_string(caseIndex) + "-" + std::to_string(globalIdx);
       std::string value = makeValue(globalValueLenDist(rng));
-      fuzzHeaderVec.push_back({name, value});
+      fuzzHeaderVec.emplace_back(name, value);
       std::string hdr;
       hdr.reserve(name.size() + 2 + value.size());
       hdr.append(name);
@@ -1490,7 +1490,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
         case 0:
           lastHeaderKey = "X-" + std::to_string(step);
           if (!fuzzHeaderVec.empty() && reuseGlobalNameDist(rng) == 0) {
-            lastHeaderKey = fuzzHeaderVec[static_cast<std::size_t>(rng() % fuzzHeaderVec.size())].name;
+            lastHeaderKey = fuzzHeaderVec[static_cast<std::size_t>(rng() % fuzzHeaderVec.size())].name();
           }
           lastHeaderValue = makeValue(smallLen(rng));
           resp.addHeader(lastHeaderKey, lastHeaderValue);
@@ -1498,7 +1498,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
         case 1:
           lastHeaderKey = "U-" + std::to_string(step % 5);
           if (!fuzzHeaderVec.empty() && reuseGlobalNameDist(rng) == 0) {
-            lastHeaderKey = fuzzHeaderVec[static_cast<std::size_t>(rng() % fuzzHeaderVec.size())].name;
+            lastHeaderKey = fuzzHeaderVec[static_cast<std::size_t>(rng() % fuzzHeaderVec.size())].name();
           }
           lastHeaderValue = makeValue(midLen(rng));
           resp.header(lastHeaderKey, lastHeaderValue);

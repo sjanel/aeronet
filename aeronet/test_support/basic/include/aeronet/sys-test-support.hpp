@@ -39,16 +39,52 @@ namespace aeronet::test {
 // dynamic loader/sanitizer initialization.
 inline int g_malloc_failure_counter = 0;
 inline int g_realloc_failure_counter = 0;
+// Optional: allow tests to skip a number of successful allocations before
+// beginning to fail. This enables testing cases where the second (or Nth)
+// allocation should fail while previous ones succeed.
+inline int g_malloc_fail_after = 0;
+inline int g_realloc_fail_after = 0;
 
 __attribute__((no_sanitize("address"))) inline void FailNextMalloc(int count = 1) {
+  // Backwards compatible: request `count` immediate failing allocations.
+  __atomic_store_n(&g_malloc_fail_after, 0, __ATOMIC_RELAXED);
   __atomic_store_n(&g_malloc_failure_counter, count, __ATOMIC_RELAXED);
 }
 
+// New overload: skip `expectedSuccessfulAllocs` successful mallocs, then
+// cause `expectedUnsuccessfulAllocs` subsequent mallocs to fail.
+__attribute__((no_sanitize("address"))) inline void FailNextMalloc(int expectedSuccessfulAllocs,
+                                                                   int expectedUnsuccessfulAllocs) {
+  __atomic_store_n(&g_malloc_fail_after, expectedSuccessfulAllocs, __ATOMIC_RELAXED);
+  __atomic_store_n(&g_malloc_failure_counter, expectedUnsuccessfulAllocs, __ATOMIC_RELAXED);
+}
+
 __attribute__((no_sanitize("address"))) inline void FailNextRealloc(int count = 1) {
+  __atomic_store_n(&g_realloc_fail_after, 0, __ATOMIC_RELAXED);
   __atomic_store_n(&g_realloc_failure_counter, count, __ATOMIC_RELAXED);
 }
 
+// New overload for realloc
+__attribute__((no_sanitize("address"))) inline void FailNextRealloc(int expectedSuccessfulAllocs,
+                                                                    int expectedUnsuccessfulAllocs) {
+  __atomic_store_n(&g_realloc_fail_after, expectedSuccessfulAllocs, __ATOMIC_RELAXED);
+  __atomic_store_n(&g_realloc_failure_counter, expectedUnsuccessfulAllocs, __ATOMIC_RELAXED);
+}
+
 [[nodiscard]] inline __attribute__((no_sanitize("address"))) bool ShouldFailMalloc() {
+  // First, consume any configured successful allocation allowances.
+  int after = __atomic_load_n(&g_malloc_fail_after, __ATOMIC_RELAXED);
+  while (after > 0) {
+    int desired = after - 1;
+    if (__atomic_compare_exchange_n(&g_malloc_fail_after, &after, desired, /*weak=*/true, __ATOMIC_RELAXED,
+                                    __ATOMIC_RELAXED)) {
+      // This allocation is allowed to succeed.
+      return false;
+    }
+    // `after` was updated with current value by compare_exchange; loop again.
+  }
+
+  // No remaining successful-allocation skips; now behave like previous failure counter semantics.
   int remaining = __atomic_load_n(&g_malloc_failure_counter, __ATOMIC_RELAXED);
   while (remaining > 0) {
     int desired = remaining - 1;
@@ -61,6 +97,15 @@ __attribute__((no_sanitize("address"))) inline void FailNextRealloc(int count = 
 }
 
 [[nodiscard]] inline __attribute__((no_sanitize("address"))) bool ShouldFailRealloc() {
+  int after = __atomic_load_n(&g_realloc_fail_after, __ATOMIC_RELAXED);
+  while (after > 0) {
+    int desired = after - 1;
+    if (__atomic_compare_exchange_n(&g_realloc_fail_after, &after, desired, /*weak=*/true, __ATOMIC_RELAXED,
+                                    __ATOMIC_RELAXED)) {
+      return false;
+    }
+  }
+
   int remaining = __atomic_load_n(&g_realloc_failure_counter, __ATOMIC_RELAXED);
   while (remaining > 0) {
     int desired = remaining - 1;

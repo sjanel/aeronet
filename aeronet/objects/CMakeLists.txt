@@ -228,6 +228,14 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    http-header_test
+    src/http-header.cpp
+    test/http-header_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     http-payload_test
     test/http-payload_test.cpp
     LIBRARIES

@@ -27,11 +27,8 @@ test::TestServer ts(HttpServerConfig{}, RouterConfig{}, std::chrono::millisecond
 }
 
 TEST(HttpPipeline, TwoRequestsBackToBack) {
-  ts.router().setDefault([](const HttpRequest& req) {
-    HttpResponse respObj;
-    respObj.body(std::string("E:") + std::string(req.path()));
-    return respObj;
-  });
+  ts.router().setDefault(
+      [](const HttpRequest& req) { return HttpResponse(std::string("E:") + std::string(req.path())); });
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -45,11 +42,7 @@ TEST(HttpPipeline, TwoRequestsBackToBack) {
 }
 
 TEST(HttpExpect, ZeroLengthNo100) {
-  ts.router().setDefault([](const HttpRequest&) {
-    HttpResponse respObj;
-    respObj.body("Z");
-    return respObj;
-  });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("Z"); });
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
   std::string headers =
@@ -63,11 +56,7 @@ TEST(HttpExpect, ZeroLengthNo100) {
 TEST(HttpMaxRequests, CloseAfterLimit) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(2); });
   // parser error callback intentionally left empty in tests
-  ts.router().setDefault([](const HttpRequest&) {
-    HttpResponse respObj;
-    respObj.body("Q");
-    return respObj;
-  });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("Q"); });
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
   std::string reqs =
@@ -80,11 +69,7 @@ TEST(HttpMaxRequests, CloseAfterLimit) {
 }
 
 TEST(HttpPipeline, SecondMalformedAfterSuccess) {
-  ts.router().setDefault([](const HttpRequest&) {
-    HttpResponse respObj;
-    respObj.body("OK");
-    return respObj;
-  });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
   std::string piped = "GET /good HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\nBADSECONDREQUEST\r\n\r\n";
@@ -96,11 +81,7 @@ TEST(HttpPipeline, SecondMalformedAfterSuccess) {
 
 TEST(HttpContentLength, ExplicitTooLarge413) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(10); });
-  ts.router().setDefault([](const HttpRequest&) {
-    HttpResponse respObj;
-    respObj.body("R");
-    return respObj;
-  });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("R"); });
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
   std::string req = "POST /big HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\nConnection: close\r\n\r\n";
@@ -111,12 +92,13 @@ TEST(HttpContentLength, ExplicitTooLarge413) {
 
 TEST(HttpContentLength, GlobalHeaders) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.withGlobalHeader(http::Header{"X-Global", "gvalue"});
-    cfg.withGlobalHeader(http::Header{"X-Another", "anothervalue"});
-    cfg.withGlobalHeader(http::Header{"X-Custom", "global"});
+    cfg.addGlobalHeader(http::Header{"X-Global", "gvalue"});
+    cfg.addGlobalHeader(http::Header{"X-Another", "anothervalue"});
+    cfg.addGlobalHeader(http::Header{"X-Custom", "global"});
   });
   ts.router().setDefault([](const HttpRequest&) {
     HttpResponse respObj;
+    // This header should not be overwritten by the global one
     respObj.header("X-Custom", "original");
     respObj.body("R");
     return respObj;
@@ -137,11 +119,7 @@ TEST(HttpBasic, LargePayload) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.withMaxOutboundBufferBytes(1 << 25);  // 32 MiB
   });
-  ts.router().setDefault([&largeBody](const HttpRequest&) {
-    HttpResponse respObj;
-    respObj.body(largeBody);
-    return respObj;
-  });
+  ts.router().setDefault([&largeBody](const HttpRequest&) { return HttpResponse(largeBody); });
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
   std::string req = "GET /good HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -162,9 +140,7 @@ TEST(HttpBasic, ManyHeadersRequest) {
         ++headerCount;
       }
     }
-    HttpResponse respObj;
-    respObj.body("Received " + std::to_string(headerCount) + " custom headers");
-    return respObj;
+    return HttpResponse("Received " + std::to_string(headerCount) + " custom headers");
   });
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
@@ -219,11 +195,7 @@ TEST(HttpBasic, ManyHeadersResponse) {
 }
 
 TEST(HttpExpectation, UnknownExpectationReturns417) {
-  ts.router().setDefault([](const HttpRequest&) {
-    HttpResponse respObj;
-    respObj.body("X");
-    return respObj;
-  });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("X"); });
 
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
@@ -236,11 +208,7 @@ TEST(HttpExpectation, UnknownExpectationReturns417) {
 }
 
 TEST(HttpExpectation, MultipleTokensWithUnknownShouldReturn417) {
-  ts.router().setDefault([](const HttpRequest&) {
-    HttpResponse respObj;
-    respObj.body("X");
-    return respObj;
-  });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("X"); });
 
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
@@ -267,11 +235,7 @@ TEST(HttpExpectation, HandlerCanEmit102Interim) {
     return res;
   });
 
-  ts.router().setDefault([](const HttpRequest&) {
-    HttpResponse respObj;
-    respObj.body("OK");
-    return respObj;
-  });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
 
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
@@ -297,11 +261,7 @@ TEST(HttpExpectation, HandlerInvalidInterimStatusReturns500) {
     return res;
   });
 
-  ts.router().setDefault([](const HttpRequest&) {
-    HttpResponse respObj;
-    respObj.body("SHOULD NOT SEE");
-    return respObj;
-  });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("SHOULD NOT SEE"); });
 
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
@@ -327,11 +287,7 @@ TEST(HttpExpectation, HandlerThrowsReturns500AndSkipsBody) {
     return res;
   });
 
-  ts.router().setDefault([](const HttpRequest&) {
-    HttpResponse respObj;
-    respObj.body("SHOULD NOT SEE");
-    return respObj;
-  });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("SHOULD NOT SEE"); });
 
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
@@ -361,11 +317,7 @@ TEST(HttpExpectation, HandlerFinalResponseSkipsBody) {
     return res;
   });
 
-  ts.router().setDefault([](const HttpRequest&) {
-    HttpResponse respObj;
-    respObj.body("SHOULD NOT SEE");
-    return respObj;
-  });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("SHOULD NOT SEE"); });
 
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
@@ -391,11 +343,7 @@ TEST(HttpExpectation, Mixed100AndCustomWithHandlerContinue) {
     return res;
   });
 
-  ts.router().setDefault([](const HttpRequest&) {
-    HttpResponse respObj;
-    respObj.body("DONE");
-    return respObj;
-  });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("DONE"); });
 
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
@@ -414,11 +362,7 @@ TEST(HttpExpectation, Mixed100AndCustomWithHandlerContinue) {
 TEST(HttpHead, MaxRequestsApplied) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(3); });
   auto port = ts.port();
-  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
-    HttpResponse resp;
-    resp.body("IGNORED");
-    return resp;
-  });
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("IGNORED"); });
   test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   // 4 HEAD requests pipelined; only 3 responses expected then close
@@ -445,11 +389,7 @@ TEST(SingleHttpServer, CachedConnectionsTimeout) {
     cfg.withCloseCachedConnectionsTimeout({});
   });
   auto port = ts.port();
-  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
-    HttpResponse resp;
-    resp.body("OK");
-    return resp;
-  });
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("OK"); });
 
   const std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";
 

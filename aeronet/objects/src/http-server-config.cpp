@@ -1,9 +1,9 @@
 #include "aeronet/http-server-config.hpp"
 
-#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -15,10 +15,9 @@
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
-#include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/reserved-headers.hpp"
-#include "aeronet/tchars.hpp"
+#include "aeronet/string-trim.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tls-config.hpp"
 
@@ -218,22 +217,15 @@ HttpServerConfig& HttpServerConfig::withGlobalHeaders(std::span<const http::Head
   if (headers.size() > kMaxGlobalHeaders) {
     throw std::invalid_argument("too many global headers");
   }
-  RawChars data(32UL);
+  globalHeaders.clear();
   for (const auto& header : headers) {
-    data.assign(header.name);
-    data.append(http::HeaderSep);
-    data.append(header.value);
-    globalHeaders.append(data);
+    globalHeaders.append(header.raw());
   }
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withGlobalHeader(const http::Header& header) {
-  RawChars data(header.name.size() + http::HeaderSep.size() + header.value.size());
-  data.unchecked_append(header.name);
-  data.unchecked_append(http::HeaderSep);
-  data.unchecked_append(header.value);
-  globalHeaders.append(data);
+HttpServerConfig& HttpServerConfig::addGlobalHeader(const http::Header& header) {
+  globalHeaders.append(header.raw());
   return *this;
 }
 
@@ -273,30 +265,25 @@ void HttpServerConfig::validate() {
     throw std::invalid_argument("too many global headers");
   }
 
-  for (std::string_view headerKeyValue : globalHeaders) {
-    auto colonPos = headerKeyValue.find(':');
+  for (std::string_view headerNameValue : globalHeaders) {
+    auto colonPos = headerNameValue.find(':');
     if (colonPos == std::string_view::npos) {
       throw std::invalid_argument("header missing ':' separator in global headers");
     }
 
-    std::string_view headerKey = headerKeyValue.substr(0, colonPos);
-    std::string_view headerValue = headerKeyValue.substr(colonPos + 1);
+    std::string_view headerName = headerNameValue.substr(0, colonPos);
+    std::string_view headerValue = TrimOws(headerNameValue.substr(colonPos + 1));
 
-    if (http::IsReservedResponseHeader(headerKey)) {
-      log::critical("'{}' is a reserved header", headerKey);
-      throw std::invalid_argument("attempt to set reserved header");
+    if (http::IsReservedResponseHeader(headerName)) {
+      throw std::invalid_argument(std::format("attempt to set reserved header: '{}'", headerName));
     }
 
-    // A header key cannot have a space
-    if (headerKey.empty() || std::ranges::any_of(headerKey, [](char ch) { return !is_tchar(ch); })) {
-      log::critical("header '{}' is invalid", headerKey);
-      throw std::invalid_argument("header has invalid key");
+    if (!http::IsValidHeaderName(headerName)) {
+      throw std::invalid_argument(std::format("header has invalid name: '{}'", headerName));
     }
 
-    // basic sanity on header value
-    if (std::ranges::any_of(headerValue, [](unsigned char ch) { return ch <= 0x1F || ch == 0x7F; })) {
-      log::critical("header '{}' has invalid value characters", headerKey);
-      throw std::invalid_argument("header has invalid value");
+    if (!http::IsValidHeaderValue(headerValue)) {
+      throw std::invalid_argument(std::format("header has invalid value: '{}'", headerValue));
     }
   }
 

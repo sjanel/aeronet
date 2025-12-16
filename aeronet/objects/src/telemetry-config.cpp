@@ -5,9 +5,10 @@
 #include <stdexcept>
 #include <string_view>
 
-#include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/string-trim.hpp"
 
 namespace aeronet {
 
@@ -44,9 +45,18 @@ void TelemetryConfig::validate() {
 }
 
 TelemetryConfig& TelemetryConfig::addHttpHeader(std::string_view name, std::string_view value) {
-  RawChars header(name.size() + http::HeaderSep.size() + value.size());
+  name = TrimOws(name);
+  if (!http::IsValidHeaderName(name)) {
+    throw std::invalid_argument("HTTP header name is invalid");
+  }
+  value = TrimOws(value);
+  if (!http::IsValidHeaderValue(value)) {
+    throw std::invalid_argument("HTTP header value is invalid");
+  }
+
+  RawChars header(name.size() + 1U + value.size());
   header.unchecked_append(name);
-  header.unchecked_append(http::HeaderSep);
+  header.unchecked_push_back(':');
   header.unchecked_append(value);
   _httpHeaders.append(header);
   return *this;
