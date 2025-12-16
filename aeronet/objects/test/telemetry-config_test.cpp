@@ -49,9 +49,9 @@ TEST(TelemetryConfigTest, AddDogStatsD) {
   const auto headers = cfg.httpHeadersRange();
   EXPECT_EQ(std::distance(headers.begin(), headers.end()), 2);
   auto it = headers.begin();
-  EXPECT_EQ(*it, "Authorization: ApiKey 12345");
+  EXPECT_EQ(*it, "Authorization:ApiKey 12345");
   ++it;
-  EXPECT_EQ(*it, "Custom-Header: CustomValue");
+  EXPECT_EQ(*it, "Custom-Header:CustomValue");
 }
 
 TEST(TelemetryConfigTest, TelemetryConfigInvalidSampleRateThrows) {
@@ -103,8 +103,8 @@ TEST(TelemetryConfigTest, TelemetryConfigHttpHeadersStored) {
   headers.assign(range.begin(), range.end());
 
   ASSERT_EQ(headers.size(), 2UL);
-  EXPECT_EQ(headers[0], "Authorization: Bearer secret-token");
-  EXPECT_EQ(headers[1], "X-Test: Value 42");
+  EXPECT_EQ(headers[0], "Authorization:Bearer secret-token");
+  EXPECT_EQ(headers[1], "X-Test:Value 42");
 }
 
 TEST(TelemetryConfigTest, TelemetryConfigServiceTagAppendedOnce) {
@@ -120,6 +120,13 @@ TEST(TelemetryConfigTest, TelemetryConfigServiceTagAppendedOnce) {
 
   ASSERT_EQ(tags.size(), 1UL);
   EXPECT_EQ(tags.front(), "service:svc-aeronet");
+}
+
+TEST(TelemetryConfigTest, InvalidHeader) {
+  TelemetryConfig cfg;
+  EXPECT_THROW(cfg.addHttpHeader("Invalid-Header-Name:", "Some value"), std::invalid_argument);
+  EXPECT_THROW(cfg.addHttpHeader("Valid-Name", "Invalid\rValue"), std::invalid_argument);
+  EXPECT_NO_THROW(cfg.addHttpHeader("Valid-Name", "Valid Value"));
 }
 
 }  // namespace aeronet

@@ -14,47 +14,62 @@
 
 namespace aeronet {
 
+TEST(HttpServerConfigTest, WithGlobalHeadersShouldReplaceAllList) {
+  HttpServerConfig config;
+  config.withGlobalHeaders(
+      std::vector<http::Header>{http::Header{"X-Valid", "value"}, http::Header{"X-Custom", "value"}});
+  EXPECT_EQ(config.globalHeaders.size(), 2U);
+  config.withGlobalHeaders(
+      std::vector<http::Header>{http::Header{"X-Valid2", "value"}, http::Header{"X-Custom2", "value"}});
+  EXPECT_EQ(config.globalHeaders.size(), 2U);
+  config.withGlobalHeaders({});
+  EXPECT_TRUE(config.globalHeaders.empty());
+
+  EXPECT_NO_THROW(config.validate());
+}
+
+TEST(HttpServerConfigTest, AddGlobalHeader) {
+  HttpServerConfig config;
+  config.addGlobalHeader(http::Header{"X-Test", "value"});
+  EXPECT_NO_THROW(config.validate());
+}
+
 TEST(HttpServerConfigTest, HeaderKey1) {
   HttpServerConfig config;
-  config.withGlobalHeaders(std::vector<http::Header>{{"X-Valid", "value"}, {"X-Custom", "value"}});
+  config.withGlobalHeaders(
+      std::vector<http::Header>{http::Header{"X-Valid", "value"}, http::Header{"X-Custom", "value"}});
 
   EXPECT_NO_THROW(config.validate());
 }
 
 TEST(HttpServerConfigTest, HeaderKey2) {
   HttpServerConfig config;
-  config.withGlobalHeader(http::Header{"", "value"});
+  config.globalHeaders.append(":value");
 
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 TEST(HttpServerConfigTest, HeaderKey3) {
   HttpServerConfig config;
-  config.withGlobalHeader(http::Header{"Invalid Char!", "value"});  // invalid char '!'
+  config.globalHeaders.append("Invalid Char!:value");
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 TEST(HttpServerConfigTest, HeaderKey4) {
   HttpServerConfig config;
-  config.withGlobalHeader(http::Header{"Another@Invalid", "value"});  // invalid char '@'
+  config.globalHeaders.append("Another@Invalid:value");  // invalid char '@'
   EXPECT_THROW(config.validate(), std::invalid_argument);
-}
-
-TEST(HttpServerConfigTest, HeaderKey5) {
-  HttpServerConfig config;
-  config.withGlobalHeader(http::Header{"X-Valid-Again", "value"});  // valid again
-  EXPECT_NO_THROW(config.validate());
 }
 
 TEST(HttpServerConfigTest, ReservedGlobalHeaderShouldThrow) {
   HttpServerConfig config;
-  config.withGlobalHeader(http::Header{"Content-Length", "10"});
+  config.globalHeaders.append("Content-Length:10");
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 TEST(HttpServerConfigTest, InvalidGlobalHeaderShouldThrow1) {
   HttpServerConfig config;
-  config.withGlobalHeader(http::Header{"Invalid\nHeader", "value"});
+  config.globalHeaders.append("Invalid\nHeader:value");
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
@@ -75,7 +90,7 @@ TEST(HttpServerConfigTest, TooManyGlobalHeaders1) {
   std::vector<http::Header> headers;
   headers.reserve(HttpServerConfig::kMaxGlobalHeaders + 1);
   for (std::size_t i = 0; i < HttpServerConfig::kMaxGlobalHeaders + 1; ++i) {
-    headers.push_back(http::Header{"X-Header-" + std::to_string(i), "value"});
+    headers.emplace_back("X-Header-" + std::to_string(i), "value");
   }
   EXPECT_THROW(config.withGlobalHeaders(headers), std::invalid_argument);
 }
@@ -83,14 +98,14 @@ TEST(HttpServerConfigTest, TooManyGlobalHeaders1) {
 TEST(HttpServerConfigTest, TooManyGlobalHeaders2) {
   HttpServerConfig config;
   for (std::size_t i = 0; i < HttpServerConfig::kMaxGlobalHeaders + 1; ++i) {
-    config.withGlobalHeader(http::Header{"X-Header-" + std::to_string(i), "value"});
+    config.addGlobalHeader(http::Header{"X-Header-" + std::to_string(i), "value"});
   }
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 TEST(HttpServerConfigTest, InvalidGlobalHeaderValueWithControlChars) {
   HttpServerConfig config;
-  config.withGlobalHeader(http::Header{"X-Test", "value\x01"});  // control char 0x01
+  config.globalHeaders.append("X-Test:value\x01");  // control char 0x01
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 

@@ -82,17 +82,9 @@ namespace {
 void ForEachHttpHeader(const TelemetryConfig& cfg, const std::function<void(std::string_view, std::string_view)>& fn) {
   for (auto header : cfg.httpHeadersRange()) {
     const auto colonPos = header.find(':');
-    if (colonPos == std::string_view::npos) {
-      continue;
-    }
-    auto name = header.substr(0, colonPos);
-    auto value = header.substr(colonPos + 1);
-    while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
-      value.remove_prefix(1);
-    }
-    if (name.empty()) {
-      continue;
-    }
+    const auto name = header.substr(0, colonPos);
+    const auto value = header.substr(colonPos + 1);
+
     fn(name, value);
   }
 }
@@ -109,6 +101,7 @@ opentelemetry::exporter::otlp::OtlpHeaders buildOtlpHeaders(const TelemetryConfi
 
 opentelemetry::sdk::resource::Resource buildTelemetryResource(const TelemetryConfig& cfg) {
   if (cfg.serviceName().empty()) {
+    log::warn("Telemetry service name is empty; using default resource attributes");
     return opentelemetry::sdk::resource::Resource::Create({});
   }
   return opentelemetry::sdk::resource::Resource::Create({{"service.name", std::string(cfg.serviceName())}});
@@ -123,44 +116,17 @@ class OtelSpan final : public Span {
       : _span(std::move(span)) {}
 
   void setAttribute(std::string_view key, int64_t val) noexcept override {
-    if (!_span) {
-      return;
-    }
-    try {
-      _span->SetAttribute(opentelemetry::nostd::string_view(key.data(), key.size()), val);
-    } catch (const std::exception& ex) {
-      log::error("Failed to set span attribute '{}': {}", key, ex.what());
-    } catch (...) {
-      log::error("Failed to set span attribute '{}': unknown error", key);
-    }
+    _span->SetAttribute(opentelemetry::nostd::string_view(key.data(), key.size()), val);
   }
 
   void setAttribute(std::string_view key, std::string_view val) noexcept override {
-    if (!_span) {
-      return;
-    }
-    try {
-      _span->SetAttribute(opentelemetry::nostd::string_view(key.data(), key.size()),
-                          opentelemetry::nostd::string_view(val.data(), val.size()));
-    } catch (const std::exception& ex) {
-      log::error("Failed to set span attribute '{}': {}", key, ex.what());
-    } catch (...) {
-      log::error("Failed to set span attribute '{}': unknown error", key);
-    }
+    _span->SetAttribute(opentelemetry::nostd::string_view(key.data(), key.size()),
+                        opentelemetry::nostd::string_view(val.data(), val.size()));
   }
 
   void end() noexcept override {
-    if (!_span) {
-      return;
-    }
-    try {
-      _span->End();
-    } catch (const std::exception& ex) {
-      log::error("Failed to end span: {}", ex.what());
-    } catch (...) {
-      log::error("Failed to end span: unknown error");
-    }
-    _span = opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span>(nullptr);
+    _span->End();
+    _span = {};
   }
 
  private:
@@ -202,13 +168,15 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) : _impl(std::make
   // Build trace exporter
 #ifdef AERONET_HAVE_OTLP_HTTP
   opentelemetry::exporter::otlp::OtlpHttpExporterOptions opts;
-  if (!cfg.endpoint().empty()) {
+  if (cfg.endpoint().empty()) {
+    log::warn("OTLP endpoint is empty; using default endpoint from environment or SDK defaults");
+  } else {
     opts.url = cfg.endpoint();
     log::info("Initializing OTLP HTTP trace exporter with endpoint: {}", cfg.endpoint());
   }
   opts.http_headers = telemetryHeaders;
   auto exporter = std::unique_ptr<opentelemetry::sdk::trace::SpanExporter>(
-      new opentelemetry::exporter::otlp::OtlpHttpExporter(opts));
+      new opentelemetry::exporter::otlp::OtlpHttpExporter(std::move(opts)));  // NOLINT(performance-move-const-arg)
 #elifdef AERONET_HAVE_OSTREAM_EXPORTER
   log::info("Initializing ostream trace exporter (OTLP not available)");
   auto exporter = std::unique_ptr<opentelemetry::sdk::trace::SpanExporter>(
@@ -282,10 +250,10 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) : _impl(std::make
   _impl->_meter = _impl->_meterProvider->GetMeter("aeronet", AERONET_VERSION_STR);
 
   if (!_impl->_meter) {
-    log::error("Failed to get meter from provider");
-  } else {
-    log::info("Metrics provider initialized successfully");
+    throw std::runtime_error("Failed to get tracer from provider");
   }
+
+  log::debug("Metrics provider initialized successfully");
 
 #else
   log::warn("Metrics SDK not available - metrics disabled");
@@ -298,9 +266,7 @@ TelemetryContext::~TelemetryContext() {
   // Shutdown providers
   if (_impl && _impl->_initialized) {
 #ifdef AERONET_HAVE_METRICS_SDK
-    if (_impl->_meterProvider) {
-      _impl->_meterProvider->Shutdown();
-    }
+    _impl->_meterProvider->Shutdown();
 #endif
     // TracerProvider shutdown is handled by SDK
   }
@@ -310,22 +276,20 @@ TelemetryContext::TelemetryContext(TelemetryContext&&) noexcept = default;
 TelemetryContext& TelemetryContext::operator=(TelemetryContext&&) noexcept = default;
 
 SpanPtr TelemetryContext::createSpan(std::string_view name) const noexcept {
-  if (!_impl || !_impl->_initialized || !_impl->_tracer) {
+  if (!_impl || !_impl->_initialized) {
+    return nullptr;
+  }
+
+  auto span = _impl->_tracer->StartSpan(opentelemetry::nostd::string_view(name.data(), name.size()));
+  if (!span) [[unlikely]] {
+    log::error("Failed to create span '{}'", name);
     return nullptr;
   }
 
   try {
-    auto span = _impl->_tracer->StartSpan(opentelemetry::nostd::string_view(name.data(), name.size()));
-    if (!span) {
-      log::error("Failed to create span '{}'", name);
-      return nullptr;
-    }
-    return std::make_unique<OtelSpan>(span);
+    return std::make_unique<OtelSpan>(std::move(span));
   } catch (const std::exception& ex) {
     log::error("Failed to create span '{}': {}", name, ex.what());
-    return nullptr;
-  } catch (...) {
-    log::error("Failed to create span '{}': unknown error", name);
     return nullptr;
   }
 }
@@ -333,7 +297,7 @@ SpanPtr TelemetryContext::createSpan(std::string_view name) const noexcept {
 void TelemetryContext::counterAdd([[maybe_unused]] std::string_view name,
                                   [[maybe_unused]] uint64_t delta) const noexcept {
 #ifdef AERONET_HAVE_METRICS_SDK
-  if (_impl && _impl->_initialized && _impl->_meter) {
+  if (_impl && _impl->_initialized) {
     try {
       auto [it, inserted] = _impl->_counters.emplace(name, nullptr);
       if (inserted) {
@@ -343,8 +307,6 @@ void TelemetryContext::counterAdd([[maybe_unused]] std::string_view name,
       it->second->Add(delta);
     } catch (const std::exception& ex) {
       log::error("Failed to add counter '{}': {}", name, ex.what());
-    } catch (...) {
-      log::error("Failed to add counter '{}': unknown error", name);
     }
   }
 #endif

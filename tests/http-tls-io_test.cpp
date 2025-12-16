@@ -45,7 +45,7 @@ TEST(HttpTlsBasic, LargePayload) {
     return HttpResponse(http::StatusCodeOK, "OK").body(largeBody);
   });
   test::TlsClient client(ts.port());
-  auto raw = client.get("/hello", {{"X-Test", "tls"}});
+  auto raw = client.get("/hello", {http::Header{"X-Test", "tls"}});
   ASSERT_FALSE(raw.empty());
   EXPECT_TRUE(raw.contains("HTTP/1.1 200"));
   EXPECT_TRUE(raw.contains(largeBody));
@@ -94,7 +94,7 @@ TEST(HttpTlsCompressionStreaming, CompressionActivatedOverThresholdTls) {
   });
 
   test::TlsClient client(ts.port());
-  auto raw = client.get("/sgz", {{"Accept-Encoding", "gzip,zstd,br"}});
+  auto raw = client.get("/sgz", {http::Header{"Accept-Encoding", "gzip,zstd,br"}});
 
   EXPECT_GT(raw.size(), 0);
 

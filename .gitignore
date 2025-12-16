@@ -1,5 +1,6 @@
 build**
 .cache
+default.profraw
 benchmarks/scripted-servers/undertow_server/*.jar
 benchmarks/scripted-servers/results
 benchmarks/scripted-servers/rust_server/target
