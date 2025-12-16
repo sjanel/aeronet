@@ -357,7 +357,7 @@ struct HttpServerConfig {
   HttpServerConfig& withGlobalHeaders(std::span<const http::Header> headers);
 
   // Convenience: add a single global header entry (appended)
-  HttpServerConfig& withGlobalHeader(const http::Header& header);
+  HttpServerConfig& addGlobalHeader(const http::Header& header);
 
   // Set TRACE handling policy. Default: Disabled.
   HttpServerConfig& withTracePolicy(TraceMethodPolicy policy);

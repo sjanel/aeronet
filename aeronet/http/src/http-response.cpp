@@ -18,6 +18,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -131,7 +132,7 @@ void HttpResponse::setReason(std::string_view newReason) {
 }
 
 void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue, OnlyIfNew onlyIfNew) {
-  assert(!newKey.empty() && std::ranges::all_of(newKey, [](char ch) { return is_tchar(ch); }));
+  assert(http::IsValidHeaderName(newKey));
 
   auto optValue = headerValue(newKey);
   if (!optValue) {
@@ -356,7 +357,7 @@ std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) 
 }
 
 void HttpResponse::appendHeaderInternal(std::string_view key, std::string_view value) {
-  assert(!key.empty() && std::ranges::all_of(key, [](char ch) { return is_tchar(ch); }));
+  assert(http::IsValidHeaderName(key));
 
   if (_headersStartPos == 0) {
     _headersStartPos = static_cast<decltype(_headersStartPos)>(_bodyStartPos - http::DoubleCRLF.size());
@@ -378,7 +379,7 @@ void HttpResponse::appendHeaderInternal(std::string_view key, std::string_view v
 
 void HttpResponse::appendHeaderValueInternal(std::string_view key, std::string_view value, std::string_view separator) {
   assert(!http::IsReservedResponseHeader(key));
-  assert(!key.empty() && std::ranges::all_of(key, [](char ch) { return is_tchar(ch); }));
+  assert(http::IsValidHeaderName(key));
 
   auto optValue = headerValue(key);
   if (!optValue) {
@@ -561,7 +562,7 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
 }
 
 void HttpResponse::appendTrailer(std::string_view name, std::string_view value) {
-  assert(!name.empty() && std::ranges::all_of(name, [](char ch) { return is_tchar(ch); }));
+  assert(http::IsValidHeaderName(name));
   if (isFileBody()) {
     throw std::logic_error("Cannot add trailers when response body uses sendfile");
   }

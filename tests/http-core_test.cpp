@@ -29,7 +29,8 @@
 #include "aeronet/unix-dogstatsd-sink.hpp"
 
 using namespace std::chrono_literals;
-using namespace aeronet;
+
+namespace aeronet {
 
 namespace {
 // Use a short poll interval so the server's periodic maintenance (which enforces
@@ -542,8 +543,8 @@ TEST(HttpServerCopy, CopyConstruct) {
   EXPECT_THROW(SingleHttpServer{copy}, std::logic_error) << "Copy-constructing from a running server should throw";
 }
 
-TEST(HttpServerTelemetry, CounterSentViaTelemetryContext) {
-  aeronet::test::UnixDogstatsdSink sink;
+TEST(HttpServerTelemetry, DogStatsDClientSendsMetrics) {
+  test::UnixDogstatsdSink sink;
 
   TelemetryConfig tcfg;
   tcfg.withDogStatsdSocketPath(sink.path()).withDogStatsdNamespace("svc").enableDogStatsDMetrics(true);
@@ -553,7 +554,15 @@ TEST(HttpServerTelemetry, CounterSentViaTelemetryContext) {
 
   SingleHttpServer server(cfg);
 
-  server.telemetryContext().counterAdd("metric", 1);
+  auto& telemetryContext = server.telemetryContext();
+  auto* pDogStatsDClient = telemetryContext.dogstatsdClient();
+  ASSERT_NE(pDogStatsDClient, nullptr);
 
-  EXPECT_EQ(sink.recvMessage(), "svc.metric:1|c");
+  pDogStatsDClient->increment("metric1", 2);
+  telemetryContext.counterAdd("metric2", 1);
+
+  EXPECT_EQ(sink.recvMessage(), "svc.metric1:2|c");
+  EXPECT_EQ(sink.recvMessage(), "svc.metric2:1|c");
 }
+
+}  // namespace aeronet

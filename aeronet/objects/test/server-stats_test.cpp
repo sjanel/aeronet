@@ -24,21 +24,31 @@ TEST(ServerStatsTest, JsonIncludesKtlsFieldsWhenOpenSslEnabled) {
   stats.tlsHandshakesSucceeded = 13;
   stats.tlsClientCertPresent = 14;
   stats.tlsAlpnStrictMismatches = 15;
+
   stats.tlsAlpnDistribution.emplace_back("http/1.1", 2);
+  stats.tlsAlpnDistribution.emplace_back("h2", 3);
+
   stats.tlsVersionCounts.emplace_back("TLS1.3", 3);
+  stats.tlsVersionCounts.emplace_back("TLS1.2", 5);
+
   stats.tlsCipherCounts.emplace_back("TLS_AES_256_GCM_SHA384", 4);
+  stats.tlsCipherCounts.emplace_back("TLS_CHACHA20_POLY1305_SHA256", 6);
+
   stats.tlsHandshakeDurationCount = 16;
   stats.tlsHandshakeDurationTotalNs = 17;
   stats.tlsHandshakeDurationMaxNs = 18;
 
   const std::string json = stats.json_str();
-  EXPECT_NE(json.find("\"ktlsSendEnabledConnections\":9"), std::string::npos);
-  EXPECT_NE(json.find("\"ktlsSendEnableFallbacks\":10"), std::string::npos);
-  EXPECT_NE(json.find("\"ktlsSendForcedShutdowns\":11"), std::string::npos);
-  EXPECT_NE(json.find("\"ktlsSendBytes\":12"), std::string::npos);
-  EXPECT_NE(json.find("\"tlsAlpnDistribution\":[{"), std::string::npos);
-  EXPECT_NE(json.find("\"tlsVersionCounts\":[{"), std::string::npos);
-  EXPECT_NE(json.find("\"tlsCipherCounts\":[{"), std::string::npos);
+
+  EXPECT_TRUE(json.contains("\"ktlsSendEnabledConnections\":9"));
+  EXPECT_TRUE(json.contains("\"ktlsSendEnableFallbacks\":10"));
+  EXPECT_TRUE(json.contains("\"ktlsSendForcedShutdowns\":11"));
+  EXPECT_TRUE(json.contains("\"ktlsSendBytes\":12"));
+  EXPECT_TRUE(json.contains("\"tlsAlpnDistribution\":[{"));
+  EXPECT_TRUE(json.contains("\"tlsVersionCounts\":[{"));
+  EXPECT_TRUE(json.contains("\"tlsCipherCounts\":[{"));
+  EXPECT_TRUE(json.contains("TLS_AES_256_GCM_SHA384"));
+  EXPECT_TRUE(json.contains("TLS_CHACHA20_POLY1305_SHA256"));
 }
 #endif
 
