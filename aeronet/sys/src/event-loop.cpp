@@ -75,15 +75,15 @@ EventLoop& EventLoop::operator=(EventLoop&& rhs) noexcept {
 EventLoop::~EventLoop() { std::free(_pEvents); }
 
 void EventLoop::addOrThrow(EventFd event) const {
-  if (!add(event)) {
+  if (!add(event)) [[unlikely]] {
     throw_errno("epoll_ctl ADD failed (fd # {}, events=0x{:x})", event.fd, event.eventBmp);
   }
 }
 
 bool EventLoop::add(EventFd event) const {
   epoll_event ev{event.eventBmp, epoll_data_t{.fd = event.fd}};
-  if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_ADD, event.fd, &ev) != 0) {
-    auto err = errno;
+  if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_ADD, event.fd, &ev) != 0) [[unlikely]] {
+    const auto err = errno;
     log::error("epoll_ctl ADD failed (fd # {}, events=0x{:x}, errno={}, msg={})", event.fd, event.eventBmp, err,
                std::strerror(err));
     return false;
@@ -93,19 +93,25 @@ bool EventLoop::add(EventFd event) const {
 
 bool EventLoop::mod(EventFd event) const {
   epoll_event ev{event.eventBmp, epoll_data_t{.fd = event.fd}};
-  if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_MOD, event.fd, &ev) != 0) {
-    auto err = errno;
-    log::error("epoll_ctl MOD failed (fd # {}, events=0x{:x}, errno={}, msg={})", event.fd, event.eventBmp, err,
-               std::strerror(err));
+  if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_MOD, event.fd, &ev) != 0) [[unlikely]] {
+    const auto err = errno;
+    // EBADF or ENOENT can occur during races where a connection is concurrently closed; downgrade severity.
+    if (err == EBADF || err == ENOENT) {
+      log::warn("epoll_ctl MOD benign failure (fd # {}, events=0x{:x}, errno={}, msg={})", event.fd, event.eventBmp,
+                err, std::strerror(err));
+    } else {
+      log::error("epoll_ctl MOD failed (fd # {}, events=0x{:x}, errno={}, msg={})", event.fd, event.eventBmp, err,
+                 std::strerror(err));
+    }
     return false;
   }
   return true;
 }
 
 void EventLoop::del(int fd) const {
-  if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_DEL, fd, nullptr) != 0) {
+  if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_DEL, fd, nullptr) != 0) [[unlikely]] {
     // DEL failures are usually benign if fd already closed; log at debug to avoid noise.
-    auto err = errno;
+    const auto err = errno;
     log::debug("epoll_ctl DEL failed (fd # {}, errno={}, msg={})", fd, err, strerror(err));
   }
 }

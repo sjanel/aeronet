@@ -522,7 +522,7 @@ void SingleHttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
     }
 
     if (!peer.waitingWritable) {
-      enableWritableInterest(peerIt, "enable peer writable tunnel");
+      enableWritableInterest(peerIt);
     }
   }
 }
