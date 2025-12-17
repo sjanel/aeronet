@@ -36,7 +36,7 @@ class DogStatsD {
 
   void increment(std::string_view metric, uint64_t value = 1UL, const DogStatsDTags& tags = {}) const noexcept;
 
-  void gauge(std::string_view metric, double value, const DogStatsDTags& tags = {}) const noexcept;
+  void gauge(std::string_view metric, int64_t value, const DogStatsDTags& tags = {}) const noexcept;
 
   void histogram(std::string_view metric, double value, const DogStatsDTags& tags = {}) const noexcept;
 

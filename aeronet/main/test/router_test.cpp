@@ -15,6 +15,8 @@
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/path-handlers.hpp"
+#include "aeronet/request-task.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/websocket-endpoint.hpp"
 
@@ -22,6 +24,7 @@ using namespace aeronet;
 
 class RouterTest : public ::testing::Test {
  protected:
+  RouterConfig cfg;
   Router router;
 };
 
@@ -148,7 +151,7 @@ TEST_F(RouterTest, GlobalDefaultHandlersUsedWhenNoPath) {
 
 TEST_F(RouterTest, TrailingSlashRedirectAndNormalize) {
   // Redirect policy: registering /p should redirect /p/ -> AddSlash or RemoveSlash depending
-  RouterConfig cfg;
+
   cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Redirect);
   router = Router(cfg);
 
@@ -173,6 +176,67 @@ TEST_F(RouterTest, HeadFallbackToGet) {
   EXPECT_NE(resHead.requestHandler(), nullptr);
   EXPECT_EQ(resHead.streamingHandler(), nullptr);
   EXPECT_FALSE(resHead.methodNotAllowed);
+}
+
+TEST_F(RouterTest, ExplicitHeadHandlerUsed) {
+  // Explicit HEAD handler should be preferred over GET
+  router.setPath(http::Method::GET, "/head", [](const HttpRequest &) { return HttpResponse(200); });
+  router.setPath(http::Method::HEAD, "/head", [](const HttpRequest &) { return HttpResponse(201); });
+
+  auto res = router.match(http::Method::HEAD, "/head");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  alignas(HttpRequest) std::byte storage[sizeof(HttpRequest)];
+  const HttpRequest &req = *reinterpret_cast<const HttpRequest *>(&storage);
+  EXPECT_EQ((*res.requestHandler())(req).status(), 201);
+}
+
+TEST_F(RouterTest, HeadFallbackToStreamingGet) {
+  // If GET is registered as a streaming handler, HEAD should fallback to that streaming handler
+  router.setPath(http::Method::GET, "/hstream", StreamingHandler([](const HttpRequest &, HttpResponseWriter &) {}));
+
+  auto res = router.match(http::Method::HEAD, "/hstream");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+  EXPECT_NE(res.streamingHandler(), nullptr);
+  EXPECT_FALSE(res.methodNotAllowed);
+}
+
+TEST_F(RouterTest, HeadFallbackToAsyncGet) {
+  // If GET is registered as an async handler, HEAD should fallback to that async handler
+  router.setPath(http::Method::GET, "/haasync",
+                 AsyncRequestHandler([]([[maybe_unused]] HttpRequest &req) -> RequestTask<HttpResponse> {
+                   co_return HttpResponse(200);
+                 }));
+
+  auto res = router.match(http::Method::HEAD, "/haasync");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+  EXPECT_EQ(res.streamingHandler(), nullptr);
+  EXPECT_NE(res.asyncRequestHandler(), nullptr);
+  EXPECT_FALSE(res.methodNotAllowed);
+}
+
+TEST_F(RouterTest, ExplicitHeadStreamingAndAsyncHandlers) {
+  // Explicit streaming HEAD handler
+  Router r1;
+  r1.setPath(http::Method::HEAD, "/hds", StreamingHandler([](const HttpRequest &, HttpResponseWriter &) {}));
+  auto r1res = r1.match(http::Method::HEAD, "/hds");
+  EXPECT_EQ(r1res.requestHandler(), nullptr);
+  EXPECT_NE(r1res.streamingHandler(), nullptr);
+
+  // Explicit async HEAD handler
+  Router r2;
+  r2.setPath(http::Method::HEAD, "/hda",
+             AsyncRequestHandler(
+                 []([[maybe_unused]] HttpRequest &req) -> RequestTask<HttpResponse> { co_return HttpResponse(202); }));
+  auto r2res = r2.match(http::Method::HEAD, "/hda");
+  EXPECT_EQ(r2res.requestHandler(), nullptr);
+  EXPECT_EQ(r2res.streamingHandler(), nullptr);
+  EXPECT_NE(r2res.asyncRequestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, HeadMethodNotAllowedWhenNoGetOrHead) {
+  router.setPath(http::Method::POST, "/onlypost", [](const HttpRequest &) { return HttpResponse(200); });
+  auto res = router.match(http::Method::HEAD, "/onlypost");
+  EXPECT_TRUE(res.methodNotAllowed);
 }
 
 TEST_F(RouterTest, MethodMergingAndOverwrite) {
@@ -288,14 +352,14 @@ TEST_F(RouterTest, SpecialOperations) {
   Router anotherRouter;
   anotherRouter = std::move(moved);
 
-  auto &routerBis = moved;
-  routerBis = std::move(moved);  // should be no-op
-  routerBis = moved;             // should be no-op
-
   EXPECT_TRUE(anotherRouter.match(http::Method::GET, "/x").hasHandler());
 
   moved = anotherRouter;
   EXPECT_TRUE(moved.match(http::Method::GET, "/x").hasHandler());
+
+  auto &routerBis = anotherRouter;
+  routerBis = anotherRouter;             // should be no-op
+  routerBis = std::move(anotherRouter);  // should be no-op
 }
 
 TEST_F(RouterTest, CopyConstructorCopiesHandlersAndPatterns) {
@@ -600,9 +664,39 @@ TEST_F(RouterTest, AllowedMethodsAndGlobalFallback) {
   EXPECT_NE(allAllowed, 0U);
 }
 
+TEST_F(RouterTest, AllowedMethodsNoMatch) {
+  // Path not registered -> all methods allowed because async global handler present
+  auto allAllowed = router.allowedMethods("/still-missing");
+  // All-methods bitmap should be non-zero and contain at least GET and POST bits
+  EXPECT_EQ(allAllowed, 0U);
+  EXPECT_FALSE(http::IsMethodIdxSet(allAllowed, MethodToIdx(http::Method::GET)));
+  EXPECT_FALSE(http::IsMethodIdxSet(allAllowed, MethodToIdx(http::Method::POST)));
+}
+
+TEST_F(RouterTest, InvalidTrailingSlashPolicyNeverMatches) {
+  cfg.withTrailingSlashPolicy(static_cast<RouterConfig::TrailingSlashPolicy>(-1));
+  router = Router(cfg);
+  router.setPath(http::Method::GET, "/test", [](const HttpRequest &) { return HttpResponse(200); });
+
+  auto res = router.match(http::Method::GET, "/test");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, AllowedMethodsGlobalAsyncFallback) {
+  // Install an async global handler and ensure allowedMethods returns all methods
+  router.setDefault(AsyncRequestHandler(
+      []([[maybe_unused]] HttpRequest &req) -> RequestTask<HttpResponse> { co_return HttpResponse(204); }));
+
+  // Path not registered -> all methods allowed because async global handler present
+  auto allAllowed = router.allowedMethods("/still-missing");
+  // All-methods bitmap should be non-zero and contain at least GET and POST bits
+  EXPECT_NE(allAllowed, 0U);
+  EXPECT_TRUE(http::IsMethodIdxSet(allAllowed, MethodToIdx(http::Method::GET)));
+  EXPECT_TRUE(http::IsMethodIdxSet(allAllowed, MethodToIdx(http::Method::POST)));
+}
+
 TEST_F(RouterTest, TrailingSlashEdgeCases) {
   // Normalize should accept both
-  RouterConfig cfg;
   cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Normalize);
   router = Router(cfg);
   router.setPath(http::Method::GET, "/norm/", [](const HttpRequest &) { return HttpResponse(); });
@@ -714,7 +808,6 @@ TEST_F(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
   };
 
   for (auto policy : policies) {
-    RouterConfig cfg;
     cfg.withTrailingSlashPolicy(policy);
     router = Router(cfg);
 
@@ -852,4 +945,102 @@ TEST_F(RouterTest, MatchesWildcardTerminalSegment) {
   // Matching /files/anything/else should match the wildcard route
   auto res = router.match(http::Method::GET, "/files/some/deep/path");
   EXPECT_TRUE(res.hasHandler());
+}
+
+TEST_F(RouterTest, WildcardStrictTrailingSlashBehavior) {
+  // Verify matchWithWildcard respects RouterConfig::TrailingSlashPolicy::Strict
+
+  cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict);
+  Router router(cfg);
+
+  // Register wildcard terminal route without trailing slash
+  router.setPath(http::Method::GET, "/wild/*", [](const HttpRequest &) { return HttpResponse(); });
+  // It's not possible to register the same wildcard route with a trailing slash,
+  // as the wildcard must be terminal. So we only register the non-slashed variant.
+  EXPECT_THROW(router.setPath(http::Method::GET, "/wild/*/", [](const HttpRequest &) { return HttpResponse(); }),
+               std::invalid_argument);
+
+  // Should match non-slashed request
+  auto noSlash = router.match(http::Method::GET, "/wild/one/two");
+  EXPECT_NE(noSlash.requestHandler(), nullptr);
+
+  // Should NOT match a request where the path has an extra trailing slash at the end
+  auto withSlash = router.match(http::Method::GET, "/wild/one/two/");
+  EXPECT_EQ(withSlash.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, PatternStringRootAndComplexPattern) {
+  // Trigger patternString for the root path by overwriting the handler (invokes logging that calls patternString())
+  router.setPath(http::Method::GET, "/", [](const HttpRequest &) { return HttpResponse(200); });
+  // Overwrite to force the logging path that calls patternString()
+  router.setPath(http::Method::GET, std::string{"/"}, [](const HttpRequest &) { return HttpResponse(201); });
+
+  // Complex pattern with literal, unnamed param and wildcard terminal segment
+  router.setPath(http::Method::GET, "/p/{}/q/*", [](const HttpRequest &) { return HttpResponse(200); });
+  // Overwrite again to force patternString() on a route with params and wildcard
+  router.setPath(http::Method::GET, std::string{"/p/{}/q/*"}, [](const HttpRequest &) { return HttpResponse(201); });
+
+  // Basic asserts to ensure handlers are present
+  EXPECT_NE(router.match(http::Method::GET, "/").requestHandler(), nullptr);
+  EXPECT_NE(router.match(http::Method::GET, "/p/42/q/x/y").requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, TerminalWildcardMatchesEmptySuffix) {
+  // Register wildcard route and ensure matching the parent path (no extra segments)
+  router.setPath(http::Method::GET, "/files/*", [](const HttpRequest &) { return HttpResponse(200); });
+
+  // Matching exactly '/files' should match the wildcard child (terminal wildcard accepts empty suffix)
+  auto res = router.match(http::Method::GET, "/files");
+  EXPECT_NE(res.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, ComputePathHandlerEntryReturnsNullOnRedirectSlowPath) {
+  // Use Redirect policy and register only the no-slash variant for a pattern route.
+
+  cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Redirect);
+  router = Router(cfg);
+
+  // Register only the no-slash form for a pattern route
+  router.setPath(http::Method::GET, "/items/{id}", [](const HttpRequest &) { return HttpResponse(200); });
+
+  // Matching the opposite form (with trailing slash) should produce a redirect indication
+  auto res = router.match(http::Method::GET, "/items/42/");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+  EXPECT_EQ(res.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::RemoveSlash);
+}
+
+TEST_F(RouterTest, AllowedMethodsFastPathChoosesWithSlash) {
+  cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict);
+  router = Router(cfg);
+
+  // literal-only fast-path: register /lit/ and /lit
+  router.setPath(http::Method::GET, "/lit/", [](const HttpRequest &) { return HttpResponse(200); });
+  router.setPath(http::Method::POST, "/lit", [](const HttpRequest &) { return HttpResponse(201); });
+
+  // Query allowed methods for trailing-slash form -> should take into account the slash
+  auto bmp = router.allowedMethods("/lit");
+  EXPECT_FALSE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::GET)));
+  EXPECT_TRUE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::POST)));
+
+  bmp = router.allowedMethods("/lit/");
+  EXPECT_TRUE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::GET)));
+  EXPECT_FALSE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::POST)));
+}
+
+TEST_F(RouterTest, AllowedMethodsChoosesNoSlashForStrictSlowPath) {
+  cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict);
+  router = Router(cfg);
+
+  // Register only the no-slash form for a pattern route and the with-slash for POST
+  router.setPath(http::Method::GET, "/items/{id}", [](const HttpRequest &) { return HttpResponse(200); });
+  router.setPath(http::Method::POST, "/items/{id}/", [](const HttpRequest &) { return HttpResponse(201); });
+
+  // Query allowed methods for the no-slash form -> should prefer handlersNoSlash (GET)
+  auto bmp = router.allowedMethods("/items/42");
+  EXPECT_TRUE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::GET)));
+  EXPECT_FALSE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::POST)));
+
+  bmp = router.allowedMethods("/items/42/");
+  EXPECT_FALSE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::GET)));
+  EXPECT_TRUE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::POST)));
 }
