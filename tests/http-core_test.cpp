@@ -543,7 +543,7 @@ TEST(HttpServerCopy, CopyConstruct) {
   EXPECT_THROW(SingleHttpServer{copy}, std::logic_error) << "Copy-constructing from a running server should throw";
 }
 
-TEST(HttpServerTelemetry, DogStatsDClientSendsMetrics) {
+TEST(HttpServerTelemetry, DogStatsDClientSendsMetricsWithServiceName) {
   test::UnixDogstatsdSink sink;
 
   TelemetryConfig tcfg;
@@ -558,11 +558,39 @@ TEST(HttpServerTelemetry, DogStatsDClientSendsMetrics) {
   auto* pDogStatsDClient = telemetryContext.dogstatsdClient();
   ASSERT_NE(pDogStatsDClient, nullptr);
 
-  pDogStatsDClient->increment("metric1", 2);
-  telemetryContext.counterAdd("metric2", 1);
+  auto& dogStatsDClient = *pDogStatsDClient;
 
+  dogStatsDClient.increment("metric1", 2);
+  telemetryContext.counterAdd("metric2", 1);
   EXPECT_EQ(sink.recvMessage(), "svc.metric1:2|c");
   EXPECT_EQ(sink.recvMessage(), "svc.metric2:1|c");
+
+  dogStatsDClient.gauge("gauge1", 2);
+  telemetryContext.gauge("gauge2", 3);
+  EXPECT_EQ(sink.recvMessage(), "svc.gauge1:2|g");
+  EXPECT_EQ(sink.recvMessage(), "svc.gauge2:3|g");
+}
+
+TEST(HttpServerTelemetry, DogStatsDClientSendsMetricsWithoutServiceName) {
+  test::UnixDogstatsdSink sink;
+
+  TelemetryConfig tcfg;
+  tcfg.withDogStatsdSocketPath(sink.path()).enableDogStatsDMetrics(true);
+  tcfg.withServiceName("tel");
+
+  HttpServerConfig cfg;
+  cfg.withTelemetryConfig(std::move(tcfg));
+
+  SingleHttpServer server(cfg);
+
+  auto& telemetryContext = server.telemetryContext();
+  auto* pDogStatsDClient = telemetryContext.dogstatsdClient();
+  ASSERT_NE(pDogStatsDClient, nullptr);
+
+  auto& dogStatsDClient = *pDogStatsDClient;
+
+  dogStatsDClient.increment("metric1", 2);
+  EXPECT_EQ(sink.recvMessage(), "tel.metric1:2|c");
 }
 
 }  // namespace aeronet

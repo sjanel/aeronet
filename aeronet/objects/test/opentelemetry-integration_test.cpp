@@ -1,17 +1,16 @@
 #include <gtest/gtest.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <string>
 #include <string_view>
-#ifdef __unix__
-#include <sys/socket.h>
-#include <sys/un.h>
-#endif
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/features.hpp"
+#include "aeronet/sys-test-support.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_util.hpp"
@@ -43,6 +42,7 @@ TEST(OpenTelemetryIntegration, CountersOperations) {
   // Should be safe to call even without initialization
   telemetry.counterAdd("test.counter", 10U);
   telemetry.counterAdd("test.counter", 5U);
+  telemetry.gauge("test.gauge", 3);
 
   // Initialize
   TelemetryConfig cfg;
@@ -55,6 +55,8 @@ TEST(OpenTelemetryIntegration, CountersOperations) {
   // Should work after initialization (or silently fail)
   telemetry.counterAdd("events.processed", 100U);
   telemetry.counterAdd("bytes.written", 1024U);
+  telemetry.gauge("test.gauge", 3);
+  telemetry.gauge("test.gauge2", 3);
 
   cfg.withEndpoint("http://localhost:4318/v1/metrics/");
 
@@ -63,6 +65,8 @@ TEST(OpenTelemetryIntegration, CountersOperations) {
   // Should work after initialization (or silently fail)
   telemetry.counterAdd("events.processed", 100U);
   telemetry.counterAdd("bytes.written", 1024U);
+  telemetry.gauge("test.gauge", 3);
+  telemetry.gauge("test.gauge2", 3);
 }
 
 TEST(OpenTelemetryIntegration, SpanOperations) {
@@ -116,6 +120,9 @@ TEST(OpenTelemetryIntegration, IndependentContexts) {
   telemetry1.counterAdd("context1.counter");
   telemetry2.counterAdd("context2.counter");
 
+  telemetry1.gauge("context1.gauge", 1);
+  telemetry2.gauge("context2.gauge", 2);
+
   auto span1 = telemetry1.createSpan("context1-span");
   auto span2 = telemetry2.createSpan("context2-span");
 
@@ -142,7 +149,6 @@ TEST(OpenTelemetryIntegration, Disabled) {
   EXPECT_EQ(span, nullptr);
 }
 
-#ifdef __unix__
 TEST(OpenTelemetryIntegration, DogStatsDMetricsEmission) {
   // Create an isolated temporary directory and use a socket path inside it.
   aeronet::test::ScopedTempDir tmpDir("aeronet-dsd-dir-");
@@ -170,6 +176,7 @@ TEST(OpenTelemetryIntegration, DogStatsDMetricsEmission) {
 
   tracing::TelemetryContext telemetry(cfg);
   telemetry.counterAdd("test.metric", 7);
+  telemetry.gauge("test.gauge", 3);
 
   // Use test util's recvWithTimeout which handles non-blocking reads and timeouts.
   auto payload = aeronet::test::recvWithTimeout(serverFd.fd(), std::chrono::seconds{1});
@@ -182,8 +189,6 @@ TEST(OpenTelemetryIntegration, DogStatsDClientRetrieveNull) {
   tracing::TelemetryContext telemetry;
   EXPECT_EQ(telemetry.dogstatsdClient(), nullptr);
 }
-
-#endif
 
 #ifdef AERONET_ENABLE_OPENTELEMETRY
 
@@ -208,6 +213,27 @@ TEST(OpenTelemetryIntegration, EmptyEndpoint) {
   tracing::TelemetryContext telemetry(cfg);
   EXPECT_NE(telemetry.createSpan("span-without-service-name"), nullptr);
 }
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+
+TEST(OpenTelemetryIntegration, MallocFailureHandling) {
+  TelemetryConfig cfg;
+  cfg.otelEnabled = kDefaultEnabled;
+  cfg.withEndpoint("http://localhost:4318/v1/traces");
+  cfg.withServiceName("aeronet-test");
+
+  tracing::TelemetryContext telemetry(cfg);
+
+  // Set to fail next malloc
+  test::FailNextMalloc(1);  // no successes, 1 failure
+
+  // If malloc failure was injected, telemetry should be a no-op instance
+  EXPECT_NO_THROW(telemetry.counterAdd("test.should-fail", 1));
+  test::FailNextMalloc(1);
+  EXPECT_NO_THROW(telemetry.gauge("test.should-fail-gauge", 1));
+}
+
+#endif
 
 #else
 

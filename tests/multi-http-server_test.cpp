@@ -992,7 +992,7 @@ TEST(MultiHttpServer, ExplicitPortWithNoReusePortShouldCheckPortAvailability) {
   firstServer.stop();
 }
 
-TEST(MultiHttpServerTelemetry, CounterSentViaTelemetryContext) {
+TEST(MultiHttpServerTelemetry, MetricsSentViaTelemetryContext) {
   aeronet::test::UnixDogstatsdSink sink;
 
   TelemetryConfig tcfg;
@@ -1006,6 +1006,8 @@ TEST(MultiHttpServerTelemetry, CounterSentViaTelemetryContext) {
   MultiHttpServer multi(cfg);
 
   multi.telemetryContext().counterAdd("multi_metric", 1);
+  multi.telemetryContext().gauge("multi_gauge", 3);
 
   EXPECT_EQ(sink.recvMessage(), "svc.multi_metric:1|c");
+  EXPECT_EQ(sink.recvMessage(), "svc.multi_gauge:3|g");
 }
