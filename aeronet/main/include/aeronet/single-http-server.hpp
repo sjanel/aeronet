@@ -421,7 +421,7 @@ class SingleHttpServer {
   bool processRequestsOnConnection(ConnectionMapIt cnxIt);
   // Process WebSocket data through the protocol handler.
   // Returns true if the connection should be closed.
-  bool processWebSocketInput(ConnectionMapIt cnxIt);
+  bool processSpecialProtocolHandler(ConnectionMapIt cnxIt);
   // Split helpers
   enum class BodyDecodeStatus : uint8_t { Ready, NeedMore, Error };
 
@@ -490,8 +490,8 @@ class SingleHttpServer {
   // Helpers to enable/disable writable interest (EPOLLOUT) for a connection. They wrap
   // ModWithCloseOnFailure and update `ConnectionState::waitingWritable` and internal stats
   // consistently. Return true on success, false on failure (caller should handle close).
-  bool enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx);
-  bool disableWritableInterest(ConnectionMapIt cnxIt, const char* ctx);
+  bool enableWritableInterest(ConnectionMapIt cnxIt);
+  bool disableWritableInterest(ConnectionMapIt cnxIt);
 
   void emitMiddlewareMetrics(const HttpRequest& request, MiddlewareMetrics::Phase phase, bool isGlobal, uint32_t index,
                              uint64_t durationNs, bool shortCircuited, bool threw, bool streaming);

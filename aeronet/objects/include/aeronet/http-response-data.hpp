@@ -4,8 +4,8 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/http-payload.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "http-payload.hpp"
 
 namespace aeronet {
 
@@ -28,6 +28,7 @@ class HttpResponseData {
                ? std::string_view{}
                : std::string_view(_headAndOptionalBody.data() + _offset, _headAndOptionalBody.size() - _offset);
   }
+
   [[nodiscard]] std::string_view secondBuffer() const noexcept {
     return _offset > _headAndOptionalBody.size() ? _capturedBody.view().substr(_offset - _headAndOptionalBody.size())
                                                  : _capturedBody.view();
@@ -48,6 +49,14 @@ class HttpResponseData {
     } else {
       _headAndOptionalBody.append(other._headAndOptionalBody);
       _capturedBody = std::move(other._capturedBody);
+    }
+  }
+
+  void append(std::string_view data) {
+    if (_capturedBody.set()) {
+      _capturedBody.append(data);
+    } else {
+      _headAndOptionalBody.append(data);
     }
   }
 

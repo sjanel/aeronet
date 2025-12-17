@@ -2,10 +2,12 @@
 
 #include <dlfcn.h>
 #include <linux/memfd.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -361,12 +363,63 @@ inline ActionQueue<SyscallAction> g_bind_actions;
 inline ActionQueue<SyscallAction> g_listen_actions;
 inline ActionQueue<SyscallAction> g_getsockname_actions;
 
+// Epoll control action for MOD failures
+struct EpollCtlAction {
+  int ret{0};  // return value (0 for success, -1 for failure)
+  int err{0};  // errno to set on failure
+};
+
+inline ActionQueue<EpollCtlAction> g_epoll_ctl_actions;
+// Global flag to fail all epoll_ctl MOD operations for testing error handling
+inline std::atomic<bool> g_epoll_ctl_mod_fail{false};
+inline int g_epoll_ctl_mod_fail_errno = 0;
+// Counter to track how many MOD operations were intercepted (for test validation)
+inline std::atomic<std::size_t> g_epoll_ctl_mod_fail_count{0};
+
+// Epoll create action for create failures
+struct EpollCreateAction {
+  bool fail{false};
+  int err{0};
+};
+
+inline ActionQueue<EpollCreateAction> g_epoll_create_actions;
+
+// Epoll wait action for wait failures
+struct EpollWaitAction {
+  enum class Kind : std::uint8_t { Events, Error };
+  Kind kind{Kind::Events};
+  int result{0};
+  int err{0};
+  std::vector<struct epoll_event> events;
+};
+
+inline ActionQueue<EpollWaitAction> g_epoll_wait_actions;
+
+// Helper to fail all epoll_ctl MOD operations with a specific error
+inline void FailAllEpollCtlMod(int err) {
+  g_epoll_ctl_mod_fail.store(true, std::memory_order_release);
+  g_epoll_ctl_mod_fail_errno = err;
+  g_epoll_ctl_mod_fail_count.store(0, std::memory_order_release);
+}
+
+inline void ResetEpollCtlModFail() {
+  g_epoll_ctl_mod_fail.store(false, std::memory_order_release);
+  g_epoll_ctl_mod_fail_errno = 0;
+  g_epoll_ctl_mod_fail_count.store(0, std::memory_order_release);
+}
+
+inline std::size_t GetEpollCtlModFailCount() { return g_epoll_ctl_mod_fail_count.load(std::memory_order_acquire); }
+
 inline void ResetSocketActions() {
   g_socket_actions.reset();
   g_setsockopt_actions.reset();
   g_bind_actions.reset();
   g_listen_actions.reset();
   g_getsockname_actions.reset();
+  g_epoll_ctl_actions.reset();
+  g_epoll_create_actions.reset();
+  g_epoll_wait_actions.reset();
+  ResetEpollCtlModFail();
 }
 
 inline void PushSocketAction(SyscallAction action) { g_socket_actions.push(action); }
@@ -374,12 +427,18 @@ inline void PushSetsockoptAction(SyscallAction action) { g_setsockopt_actions.pu
 inline void PushBindAction(SyscallAction action) { g_bind_actions.push(action); }
 inline void PushListenAction(SyscallAction action) { g_listen_actions.push(action); }
 inline void PushGetsocknameAction(SyscallAction action) { g_getsockname_actions.push(action); }
+inline void PushEpollCtlAction(EpollCtlAction action) { g_epoll_ctl_actions.push(action); }
+inline void PushEpollCreateAction(EpollCreateAction action) { g_epoll_create_actions.push(action); }
+inline void PushEpollWaitAction(EpollWaitAction action) { g_epoll_wait_actions.push(std::move(action)); }
 
 using SocketFn = int (*)(int, int, int);
 using SetsockoptFn = int (*)(int, int, int, const void*, socklen_t);
 using BindFn = int (*)(int, const struct sockaddr*, socklen_t);
 using ListenFn = int (*)(int, int);
 using GetsocknameFn = int (*)(int, struct sockaddr*, socklen_t*);
+using EpollCtlFn = int (*)(int, int, int, struct epoll_event*);
+using EpollCreateFn = int (*)(int);
+using EpollWaitFn = int (*)(int, struct epoll_event*, int, int);
 
 inline SocketFn ResolveRealSocket() {
   static SocketFn fn = nullptr;
@@ -423,6 +482,33 @@ inline GetsocknameFn ResolveRealGetsockname() {
     return fn;
   }
   fn = aeronet::test::ResolveNext<GetsocknameFn>("getsockname");
+  return fn;
+}
+
+inline EpollCtlFn ResolveRealEpollCtl() {
+  static EpollCtlFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<EpollCtlFn>("epoll_ctl");
+  return fn;
+}
+
+inline EpollCreateFn ResolveRealEpollCreate1() {
+  static EpollCreateFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<EpollCreateFn>("epoll_create1");
+  return fn;
+}
+
+inline EpollWaitFn ResolveRealEpollWait() {
+  static EpollWaitFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<EpollWaitFn>("epoll_wait");
   return fn;
 }
 
@@ -732,6 +818,58 @@ extern "C" __attribute__((no_sanitize("address"))) int getsockname(int sockfd, s
   }
   auto real = aeronet::test::ResolveRealGetsockname();
   return real(sockfd, addr, addrlen);
+}
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) int epoll_ctl(int epfd, int op, int fd, struct epoll_event* event) {
+  // Only inject failures for MOD operations to allow normal ADD/DEL for setup/teardown
+  if (op == EPOLL_CTL_MOD) {
+    // Check global persistent fail flag first
+    if (aeronet::test::g_epoll_ctl_mod_fail.load(std::memory_order_acquire)) {
+      aeronet::test::g_epoll_ctl_mod_fail_count.fetch_add(1, std::memory_order_relaxed);
+      errno = aeronet::test::g_epoll_ctl_mod_fail_errno;
+      return -1;
+    }
+    // Otherwise check action queue for per-call failures
+    auto act = aeronet::test::g_epoll_ctl_actions.pop();
+    if (act && act->ret != 0) {
+      errno = act->err;
+      return -1;
+    }
+  }
+  auto real = aeronet::test::ResolveRealEpollCtl();
+  return real(epfd, op, fd, event);
+}
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) int epoll_create1(int flags) {
+  auto action = aeronet::test::g_epoll_create_actions.pop();
+  if (action && action->fail) {
+    errno = action->err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealEpollCreate1();
+  return real(flags);
+}
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) int epoll_wait(int epfd, struct epoll_event* events, int maxevents,
+                                                                  int timeout) {
+  auto action = aeronet::test::g_epoll_wait_actions.pop();
+  if (action) {
+    if (action->kind == aeronet::test::EpollWaitAction::Kind::Error) {
+      errno = action->err;
+      return -1;
+    }
+    // Copy events to the output buffer
+    const std::size_t limit = std::min(static_cast<std::size_t>(action->result), static_cast<std::size_t>(maxevents));
+    for (std::size_t i = 0; i < limit && i < action->events.size(); ++i) {
+      events[i] = action->events[i];
+    }
+    return action->result;
+  }
+  auto real = aeronet::test::ResolveRealEpollWait();
+  return real(epfd, events, maxevents, timeout);
 }
 
 #endif
