@@ -37,11 +37,20 @@ AsyncRequestHandler MakeAsyncHandler() {
 
 }  // namespace
 
+TEST(PathHandlerEntryTest, SetPathEmpty) {
+  Router router;
+  EXPECT_THROW(router.setPath(http::Method::GET, "/", RequestHandler{}), std::invalid_argument);
+  EXPECT_THROW(router.setPath(http::Method::GET, "/", StreamingHandler{}), std::invalid_argument);
+  EXPECT_THROW(router.setPath(http::Method::GET, "/", AsyncRequestHandler{}), std ::invalid_argument);
+}
+
 TEST(PathHandlerEntryTest, CopyAndMoveConstructorsCoverMixedHandlers) {
   Router router;
   auto& entry = router.setPath(http::Method::GET, "/ctor", MakeNormalHandler());
   router.setPath(http::Method::POST, "/ctor", MakeStreamingHandler());
+  router.setPath(http::Method::POST, "/ctor", MakeStreamingHandler());  // should override previous
   router.setPath(http::Method::PUT, "/ctor", MakeAsyncHandler());
+  router.setPath(http::Method::PUT, "/ctor", MakeAsyncHandler());  // should override previous
   entry.before([](HttpRequest&) { return MiddlewareResult::Continue(); })
       .after([](const HttpRequest&, HttpResponse&) {})
       .cors(CorsPolicy(CorsPolicy::Active::On).allowAnyOrigin());
@@ -50,7 +59,19 @@ TEST(PathHandlerEntryTest, CopyAndMoveConstructorsCoverMixedHandlers) {
   PathHandlerEntry secondCopy(copied);
   PathHandlerEntry moved(std::move(secondCopy));
   PathHandlerEntry movedAgain(std::move(moved));
-  (void)movedAgain;
+
+  auto result = router.match(http::Method::GET, "/ctor");
+  EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Request);
+  EXPECT_NE(result.requestHandler(), nullptr);
+  EXPECT_EQ(result.requestMiddlewareRange.size(), 1U);
+
+  result.resetHandler();
+  EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::None);
+  EXPECT_FALSE(result.hasHandler());
+  result = router.match(http::Method::POST, "/ctor");
+  EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Streaming);
+  EXPECT_NE(result.streamingHandler(), nullptr);
+  EXPECT_EQ(result.responseMiddlewareRange.size(), 1U);
 }
 
 TEST(PathHandlerEntryTest, CopyAssignmentTransfersNormalHandlers) {
@@ -63,6 +84,7 @@ TEST(PathHandlerEntryTest, CopyAssignmentTransfersNormalHandlers) {
   auto result = target.match(http::Method::GET, "/copy-dst");
   EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Request);
   EXPECT_NE(result.requestHandler(), nullptr);
+  EXPECT_TRUE(result.hasHandler());
 }
 
 TEST(PathHandlerEntryTest, CopyAssignmentReusesExistingStreamingStorage) {
@@ -74,6 +96,7 @@ TEST(PathHandlerEntryTest, CopyAssignmentReusesExistingStreamingStorage) {
   targetEntry = sourceEntry;
   auto result = target.match(http::Method::POST, "/stream-target");
   EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Streaming);
+  EXPECT_TRUE(result.hasHandler());
 }
 
 TEST(PathHandlerEntryTest, CopyAssignmentConstructsNewStreamingHandler) {
@@ -85,6 +108,7 @@ TEST(PathHandlerEntryTest, CopyAssignmentConstructsNewStreamingHandler) {
   targetEntry = sourceEntry;
   auto result = target.match(http::Method::POST, "/stream-target-2");
   EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Streaming);
+  EXPECT_TRUE(result.hasHandler());
 }
 
 TEST(PathHandlerEntryTest, CopyAssignmentConstructsAsyncHandler) {
@@ -96,6 +120,7 @@ TEST(PathHandlerEntryTest, CopyAssignmentConstructsAsyncHandler) {
   targetEntry = sourceEntry;
   auto result = target.match(http::Method::PUT, "/async-target");
   EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Async);
+  EXPECT_TRUE(result.hasHandler());
 }
 
 TEST(PathHandlerEntryTest, MoveAssignmentTransfersStreamingHandlers) {

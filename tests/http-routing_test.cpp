@@ -882,22 +882,30 @@ TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndStreamingHandler) {
 
 TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndAsyncHandler) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
+  router.setDefault([](HttpRequest& req) -> RequestTask<HttpResponse> {
+    co_return HttpResponse(http::StatusCodeOK, "async-default-" + std::string(http::MethodToStr(req.method())));
+  });
   router.setPath(http::Method::GET | http::Method::PUT, "/async-multi",
                  [](HttpRequest& req) -> RequestTask<HttpResponse> {
                    co_return HttpResponse(http::StatusCodeOK, "async-" + std::string(http::MethodToStr(req.method())));
                  });
 
   const std::string getResp = test::simpleGet(ts.port(), "/async-multi");
-  EXPECT_TRUE(getResp.contains("HTTP/1.1 200")) << getResp;
-  EXPECT_TRUE(getResp.contains("async-GET")) << getResp;
+  EXPECT_TRUE(getResp.contains("HTTP/1.1 200 async-GET")) << getResp;
 
   test::RequestOptions putOpts;
   putOpts.method = "PUT";
   putOpts.target = "/async-multi";
   putOpts.headers.emplace_back("Content-Length", "0");
   const std::string putResp = test::requestOrThrow(ts.port(), putOpts);
-  EXPECT_TRUE(putResp.contains("HTTP/1.1 200")) << putResp;
-  EXPECT_TRUE(putResp.contains("async-PUT")) << putResp;
+  EXPECT_TRUE(putResp.contains("HTTP/1.1 200 async-PUT")) << putResp;
+  // test default for other methods
+  test::RequestOptions postOpts;
+  postOpts.method = "POST";
+  postOpts.target = "/async-default";
+  postOpts.headers.emplace_back("Content-Length", "0");
+  const std::string postResp = test::requestOrThrow(ts.port(), postOpts);
+  EXPECT_TRUE(postResp.contains("HTTP/1.1 200 async-default-POST")) << postResp;
 }
 
 TEST(RouterUpdateProxy, PathEntryProxyCorsPolicy) {

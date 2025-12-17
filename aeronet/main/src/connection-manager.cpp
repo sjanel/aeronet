@@ -124,7 +124,7 @@ void SingleHttpServer::acceptNewConnections() {
         _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
       }
     }
-    if (!_eventLoop.add(EventLoop::EventFd{cnxFd, EventIn | EventEt})) {
+    if (!_eventLoop.add(EventLoop::EventFd{cnxFd, EventIn | EventEt})) [[unlikely]] {
       auto savedErr = errno;
       log::error("EventLoop add client failed fd # {} err={}: {}", cnxFd, savedErr, std::strerror(savedErr));
       _telemetry.counterAdd("aeronet.connections.errors.add_event_failed", 1UL);
@@ -132,7 +132,7 @@ void SingleHttpServer::acceptNewConnections() {
     }
 
     auto [cnxIt, inserted] = _activeConnectionsMap.emplace(std::move(cnx), getNewConnectionState());
-    if (!inserted) {
+    if (!inserted) [[unlikely]] {
       // This should not happen, if it does, it's probably a bug in the library or a very weird usage of
       // SingleHttpServer.
       log::error("Internal error: accepted connection fd # {} already present in connection map", cnxFd);
@@ -151,12 +151,12 @@ void SingleHttpServer::acceptNewConnections() {
 #ifdef AERONET_ENABLE_OPENSSL
     if (_tlsCtxHolder) {
       SSL_CTX* ctx = reinterpret_cast<SSL_CTX*>(_tlsCtxHolder->raw());
-      SslPtr sslPtr(SSL_new(ctx), SSL_free);
+      SslPtr sslPtr(::SSL_new(ctx), ::SSL_free);
       if (sslPtr.get() == nullptr) {
         continue;
       }
 
-      if (SSL_set_fd(sslPtr.get(), cnxFd) != 1) {  // associate
+      if (::SSL_set_fd(sslPtr.get(), cnxFd) != 1) {  // associate
         log::error("SSL_set_fd failed for fd # {}", cnxFd);
         continue;
       }
