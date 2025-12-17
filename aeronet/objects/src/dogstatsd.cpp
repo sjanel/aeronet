@@ -118,9 +118,8 @@ void DogStatsD::increment(std::string_view metric, uint64_t value, const DogStat
   sendMetricMessage(metric, std::string_view(IntegralToCharVector(value)), kCounterSuffix, tags);
 }
 
-void DogStatsD::gauge(std::string_view metric, double value, const DogStatsDTags& tags) const noexcept {
-  std::array<char, kFloatingBufferSize> buffer{};
-  sendMetricMessage(metric, FormatFloating(value, buffer), kGaugeSuffix, tags);
+void DogStatsD::gauge(std::string_view metric, int64_t value, const DogStatsDTags& tags) const noexcept {
+  sendMetricMessage(metric, std::string_view(IntegralToCharVector(value)), kGaugeSuffix, tags);
 }
 
 void DogStatsD::histogram(std::string_view metric, double value, const DogStatsDTags& tags) const noexcept {

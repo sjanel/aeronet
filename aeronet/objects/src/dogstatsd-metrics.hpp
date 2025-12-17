@@ -13,14 +13,13 @@ class DogStatsdMetrics {
   DogStatsdMetrics() = default;
 
   explicit DogStatsdMetrics(const TelemetryConfig& cfg) {
-    if (!cfg.dogStatsDEnabled) {
-      return;
+    if (cfg.dogStatsDEnabled) {
+      std::string_view metricNamespace =
+          cfg.dogstatsdNamespace().empty() ? cfg.serviceName() : cfg.dogstatsdNamespace();
+      _client = DogStatsD(cfg.dogstatsdSocketPath(), metricNamespace);
+
+      _pTags = &cfg.dogstatsdTags();
     }
-
-    std::string_view metricNamespace = cfg.dogstatsdNamespace().empty() ? cfg.serviceName() : cfg.dogstatsdNamespace();
-    _client = DogStatsD(cfg.dogstatsdSocketPath(), metricNamespace);
-
-    _pTags = &cfg.dogstatsdTags();
   }
 
   void increment(std::string_view metric, uint64_t delta = 1UL) const noexcept {
@@ -29,7 +28,7 @@ class DogStatsdMetrics {
     }
   }
 
-  void gauge(std::string_view metric, double value) const noexcept {
+  void gauge(std::string_view metric, int64_t value) const noexcept {
     if (_pTags != nullptr) {
       _client.gauge(metric, value, *_pTags);
     }

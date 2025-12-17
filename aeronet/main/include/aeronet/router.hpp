@@ -312,6 +312,7 @@ class Router {
   struct RouteNode {
     // Return a human-readable pattern string reconstructed from the compiled route
     // e.g. "/users/{param}/files/*" or "<empty>" when no route present.
+    // Prerequisite: pRoute should not be nullptr.
     [[nodiscard]] SmallRawChars patternString() const;
 
     RouteNodeMap literalChildren;
@@ -320,7 +321,7 @@ class Router {
 
     PathHandlerEntry handlersNoSlash;
     PathHandlerEntry handlersWithSlash;
-    CompiledRoute* route{nullptr};
+    CompiledRoute* pRoute{nullptr};
   };
 
   using HandlerVariant = std::variant<RequestHandler, StreamingHandler, AsyncRequestHandler, WebSocketEndpoint>;
@@ -336,9 +337,9 @@ class Router {
 
   bool matchPatternSegment(const CompiledSegment& segmentPattern, std::string_view segmentValue);
 
-  bool matchImpl(bool requestHasTrailingSlash, const RouteNode*& matchedNode);
+  const RouteNode* matchImpl(bool requestHasTrailingSlash);
 
-  bool matchWithWildcard(const RouteNode& node, bool requestHasTrailingSlash, const RouteNode*& matchedNode) const;
+  [[nodiscard]] const RouteNode* matchWithWildcard(const RouteNode& node, bool requestHasTrailingSlash) const;
 
   // prerequisite: path should not be empty
   void splitPathSegments(std::string_view path);

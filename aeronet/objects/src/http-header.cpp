@@ -1,6 +1,8 @@
 #include "aeronet/http-header.hpp"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <string_view>

@@ -1181,9 +1181,12 @@ void SingleHttpServer::eventLoop() {
   }
 
   const auto now = std::chrono::steady_clock::now();
-  const bool noConnections = _activeConnectionsMap.empty();
+  const auto nbConnections = _activeConnectionsMap.size();
 
-  if (_lifecycle.isStopping() || (_lifecycle.isDraining() && noConnections)) {
+  _telemetry.gauge("aeronet.connections.active_count", static_cast<int64_t>(nbConnections));
+  _telemetry.gauge("aeronet.events.capacity_current_count", static_cast<int64_t>(_eventLoop.capacity()));
+
+  if (_lifecycle.isStopping() || (_lifecycle.isDraining() && nbConnections == 0)) {
     closeAllConnections(true);
     _lifecycle.reset();
     if (!_isInMultiHttpServer) {
