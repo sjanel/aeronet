@@ -42,6 +42,12 @@ void TelemetryContext::counterAdd(std::string_view name, uint64_t delta) const n
   }
 }
 
+void TelemetryContext::gauge(std::string_view name, int64_t value) const noexcept {
+  if (_impl) {
+    _impl->dogstatsd.gauge(name, value);
+  }
+}
+
 const DogStatsD* TelemetryContext::dogstatsdClient() const noexcept {
   if (_impl) {
     return &_impl->dogstatsd.dogstatsdClient();

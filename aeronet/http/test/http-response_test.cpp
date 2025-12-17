@@ -1403,7 +1403,7 @@ TEST_F(HttpResponseTest, ALotOfGlobalHeaders) {
   for (int headerIdx = 0; headerIdx < kGlobalHeaders; ++headerIdx) {
     std::string name = "X-Bulk-" + std::to_string(headerIdx);
     std::string value = "Value-" + std::to_string(headerIdx);
-    headerVec.push_back(http::Header{name, value});
+    headerVec.emplace_back(name, value);
     std::string header;
     header.reserve(name.size() + 2 + value.size());
     header.append(name);

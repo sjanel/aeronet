@@ -71,6 +71,9 @@ class TelemetryContext {
   // Increment a counter by delta. No-op if metrics disabled/failed.
   void counterAdd(std::string_view name, uint64_t delta = 1UL) const noexcept;
 
+  // Record a gauge value. No-op if metrics disabled/failed.
+  void gauge(std::string_view name, int64_t value) const noexcept;
+
   // Access underlying DogStatsD client, or nullptr if not enabled.
   // You can use it to emit custom DogStatsD metrics.
   [[nodiscard]] const DogStatsD *dogstatsdClient() const noexcept;

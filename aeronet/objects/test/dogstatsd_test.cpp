@@ -23,8 +23,8 @@ TEST(DogStatsDTest, SendsAllMetricTypesWithTags) {
   client.increment("hits", 3, tags);
   EXPECT_EQ(sink.recvMessage(), "svc.hits:3|c|#env:dev,role:web");
 
-  client.gauge("temp", 12.5, tags);
-  EXPECT_EQ(sink.recvMessage(), "svc.temp:12.5|g|#env:dev,role:web");
+  client.gauge("temp", 12, tags);
+  EXPECT_EQ(sink.recvMessage(), "svc.temp:12|g|#env:dev,role:web");
 
   client.histogram("payload", 4.25, {});
   EXPECT_EQ(sink.recvMessage(), "svc.payload:4.25|h");

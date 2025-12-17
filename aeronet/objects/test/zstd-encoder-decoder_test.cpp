@@ -13,6 +13,10 @@
 #include "aeronet/zstd-decoder.hpp"
 #include "aeronet/zstd-encoder.hpp"
 
+#if AERONET_WANT_MALLOC_OVERRIDES
+#include <new>
+#endif
+
 namespace aeronet {
 
 namespace {

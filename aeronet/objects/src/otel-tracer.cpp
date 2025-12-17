@@ -146,6 +146,7 @@ class TelemetryContextImpl {
   opentelemetry::nostd::shared_ptr<opentelemetry::metrics::Meter> _meter;
   flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Counter<uint64_t>>>
       _counters;
+  flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Gauge<int64_t>>> _gauges;
 #endif
 
   detail::DogStatsdMetrics _dogstatsd;
@@ -294,15 +295,13 @@ SpanPtr TelemetryContext::createSpan(std::string_view name) const noexcept {
   }
 }
 
-void TelemetryContext::counterAdd([[maybe_unused]] std::string_view name,
-                                  [[maybe_unused]] uint64_t delta) const noexcept {
+void TelemetryContext::counterAdd(std::string_view name, uint64_t delta) const noexcept {
 #ifdef AERONET_HAVE_METRICS_SDK
   if (_impl && _impl->_initialized) {
     try {
       auto [it, inserted] = _impl->_counters.emplace(name, nullptr);
       if (inserted) {
-        it->second = _impl->_meter->CreateUInt64Counter(opentelemetry::nostd::string_view(name.data(), name.size()),
-                                                        "Total count", "1");
+        it->second = _impl->_meter->CreateUInt64Counter(opentelemetry::nostd::string_view(name.data(), name.size()));
       }
       it->second->Add(delta);
     } catch (const std::exception& ex) {
@@ -312,6 +311,25 @@ void TelemetryContext::counterAdd([[maybe_unused]] std::string_view name,
 #endif
   if (_impl) {
     _impl->_dogstatsd.increment(name, delta);
+  }
+}
+
+void TelemetryContext::gauge(std::string_view name, int64_t value) const noexcept {
+#ifdef AERONET_HAVE_METRICS_SDK
+  if (_impl && _impl->_initialized) {
+    try {
+      auto [it, inserted] = _impl->_gauges.emplace(name, nullptr);
+      if (inserted) {
+        it->second = _impl->_meter->CreateInt64Gauge(opentelemetry::nostd::string_view(name.data(), name.size()));
+      }
+      it->second->Record(value);
+    } catch (const std::exception& ex) {
+      log::error("Failed to set gauge '{}': {}", name, ex.what());
+    }
+  }
+#endif
+  if (_impl) {
+    _impl->_dogstatsd.gauge(name, value);
   }
 }
 
