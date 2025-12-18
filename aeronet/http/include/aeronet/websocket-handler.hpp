@@ -82,7 +82,7 @@ struct WebSocketCallbacks {
 ///   4. Use sendText/sendBinary/sendClose to transmit data
 ///
 /// Thread safety: Not thread-safe (designed for single-threaded event loop).
-class WebSocketHandler : public IProtocolHandler {
+class WebSocketHandler final : public IProtocolHandler {
  public:
   /// Create a WebSocket handler.
   /// @param config     Configuration options
@@ -91,21 +91,27 @@ class WebSocketHandler : public IProtocolHandler {
   explicit WebSocketHandler(WebSocketConfig config = {}, WebSocketCallbacks callbacks = {},
                             std::optional<DeflateNegotiatedParams> deflateParams = std::nullopt);
 
-  ~WebSocketHandler() override;
-
   // Non-copyable, movable
   WebSocketHandler(const WebSocketHandler&) = delete;
   WebSocketHandler& operator=(const WebSocketHandler&) = delete;
   WebSocketHandler(WebSocketHandler&&) noexcept;
   WebSocketHandler& operator=(WebSocketHandler&&) noexcept;
 
+  ~WebSocketHandler() override;
+
   // IProtocolHandler implementation
   [[nodiscard]] ProtocolType type() const noexcept override { return ProtocolType::WebSocket; }
+
   [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> data, ConnectionState& state) override;
+
   [[nodiscard]] bool hasPendingOutput() const noexcept override;
+
   [[nodiscard]] std::span<const std::byte> getPendingOutput() override;
+
   void onOutputWritten(std::size_t bytesWritten) override;
+
   void initiateClose() override;
+
   void onTransportClosing() override;
 
   // WebSocket-specific API

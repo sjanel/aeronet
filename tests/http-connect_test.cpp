@@ -1,11 +1,16 @@
 #include <gtest/gtest.h>
 
+#include <cerrno>
 #include <chrono>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#define AERONET_WANT_SOCKET_OVERRIDES
+#define AERONET_WANT_READ_WRITE_OVERRIDES
+
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/sys-test-support.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -14,28 +19,10 @@ using namespace aeronet;
 
 class HttpConnectDefaultConfig : public ::testing::Test {
  public:
-  ~HttpConnectDefaultConfig() override = default;
-
   test::TestServer ts{HttpServerConfig{}};
   test::ClientConnection client{ts.port()};
   int fd{client.fd()};
 };
-
-TEST_F(HttpConnectDefaultConfig, EchoTunnelSuccess) {
-  auto [sock, port] = test::startEchoServer();
-  // Build CONNECT request
-  std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
-  ASSERT_GT(fd, 0);
-  test::sendAll(fd, req);
-  auto resp = test::recvWithTimeout(fd, 500ms);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
-
-  // Now send data through the tunnel and expect echo
-  std::string_view payload = "hello-tunnel";
-  test::sendAll(fd, payload);
-  auto echoed = test::recvWithTimeout(fd, 500ms);
-  ASSERT_TRUE(echoed.contains(payload));
-}
 
 // This test reproduces a partial-write scenario on the upstream side while tunneling.
 // The upstream echo helper used elsewhere writes back immediately; here we start an
@@ -51,23 +38,38 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req);
-  auto resp = test::recvWithTimeout(fd, 500ms);
-  ASSERT_TRUE(resp.contains("200"));
+  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+
+  // Now send data through the tunnel and expect echo
+  std::string_view simpleHello = "hello-tunnel";
+  test::sendAll(fd, simpleHello);
+  auto echoedHello = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  EXPECT_TRUE(echoedHello.contains(simpleHello));
 
   // Send payload that upstream will partially echo
-  std::string payload(6000000, 'a');
+  std::string payload(16UL * 1024 * 1024, 'a');
   test::sendAll(fd, payload);
 
   // Wait to receive the full payload (some arrives quickly, remainder after upstream sleeps)
-  auto echoed = test::recvWithTimeout(fd, 2000ms);
-  ASSERT_TRUE(echoed.contains(payload));
+  auto echoed = test::recvWithTimeout(fd, std::chrono::milliseconds{1500});
+  EXPECT_TRUE(echoed.contains(payload));
+
+  // now simulate some epoll mod failures, server should be able to recover from these
+  test::FailAllEpollCtlMod(EACCES);
+  test::sendAll(fd, payload);
+
+  // Wait to receive the full payload (some arrives quickly, remainder after upstream sleeps)
+  test::recvWithTimeout(fd, std::chrono::milliseconds{1500});
+
+  test::ResetEpollCtlModFail();
 }
 
 TEST_F(HttpConnectDefaultConfig, DnsFailureReturns502) {
   std::string req = "CONNECT no-such-host.example.invalid:80 HTTP/1.1\r\nHost: no-such-host.example.invalid\r\n\r\n";
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req);
-  auto resp = test::recvWithTimeout(fd, 500ms);
+  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
   // Expect 502 Bad Gateway or connection close
   ASSERT_TRUE(resp.contains("502") || resp.empty());
 }
@@ -83,6 +85,6 @@ TEST_F(HttpConnectDefaultConfig, AllowlistRejectsTarget) {
 
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req);
-  auto resp = test::recvWithTimeout(fd, 500ms);
+  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
   ASSERT_TRUE(resp.contains("403") || resp.contains("CONNECT target not allowed"));
 }

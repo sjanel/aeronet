@@ -189,11 +189,8 @@ void SingleHttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
         log::error("Exception while applying posted router update: {}", ex.what());
       }
     } catch (...) {
-      if (completionPtr) {
-        completionPtr->set_value(std::current_exception());
-      } else {
-        log::error("Unknown exception while applying posted router update");
-      }
+      assert(completionPtr == nullptr);
+      log::error("Unknown exception while applying posted router update");
     }
   };
 
@@ -210,45 +207,31 @@ void SingleHttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
   _lifecycle.wakeupFd.send();
 }
 
-namespace {
-void RecordModFailure(auto cnxIt, uint32_t events, const char* ctx, auto& stats) {
-  const auto errCode = errno;
-  ++stats.epollModFailures;
-  // EBADF or ENOENT can occur during races where a connection is concurrently closed; downgrade severity.
-  if (errCode == EBADF || errCode == ENOENT) {
-    log::warn("epoll_ctl MOD benign failure (ctx={}, fd # {}, events=0x{:x}, errno={}, msg={})", ctx, cnxIt->first.fd(),
-              events, errCode, std::strerror(errCode));
-  } else {
-    log::error("epoll_ctl MOD failed (ctx={}, fd # {}, events=0x{:x}, errno={}, msg={})", ctx, cnxIt->first.fd(),
-               events, errCode, std::strerror(errCode));
-  }
-  cnxIt->second->requestDrainAndClose();
-}
-}  // namespace
-
-bool SingleHttpServer::enableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) {
+bool SingleHttpServer::enableWritableInterest(ConnectionMapIt cnxIt) {
   static constexpr EventBmp kEvents = EventIn | EventOut | EventEt;
-  ConnectionState* state = cnxIt->second.get();
 
-  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) {
-    if (!state->waitingWritable) {
-      state->waitingWritable = true;
-      ++_stats.deferredWriteEvents;
-    }
+  ConnectionState* state = cnxIt->second.get();
+  assert(!state->waitingWritable);
+  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) [[likely]] {
+    state->waitingWritable = true;
+    ++_stats.deferredWriteEvents;
     return true;
   }
-  RecordModFailure(cnxIt, kEvents, ctx, _stats);
+  ++_stats.epollModFailures;
+  cnxIt->second->requestDrainAndClose();
   return false;
 }
 
-bool SingleHttpServer::disableWritableInterest(ConnectionMapIt cnxIt, const char* ctx) {
+bool SingleHttpServer::disableWritableInterest(ConnectionMapIt cnxIt) {
   static constexpr EventBmp kEvents = EventIn | EventEt;
   ConnectionState* state = cnxIt->second.get();
-  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) {
+  assert(state->waitingWritable);
+  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) [[likely]] {
     state->waitingWritable = false;
     return true;
   }
-  RecordModFailure(cnxIt, kEvents, ctx, _stats);
+  ++_stats.epollModFailures;
+  cnxIt->second->requestDrainAndClose();
   return false;
 }
 
@@ -257,21 +240,15 @@ bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
 
   // If we have a protocol handler installed (e.g., WebSocket), use it
   if (state.protocolHandler != nullptr) {
-    return processWebSocketInput(cnxIt);
+    return processSpecialProtocolHandler(cnxIt);
   }
 
   // Default to HTTP/1.1 request processing
   return processRequestsOnConnection(cnxIt);
 }
 
-bool SingleHttpServer::processWebSocketInput(ConnectionMapIt cnxIt) {
+bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
-
-  if (!state.protocolHandler) {
-    log::error("processWebSocketInput called without protocol handler");
-    state.requestImmediateClose();
-    return true;
-  }
 
   // Convert input buffer to span of bytes
   std::span<const std::byte> inputData(reinterpret_cast<const std::byte*>(state.inBuffer.data()),
@@ -281,8 +258,10 @@ bool SingleHttpServer::processWebSocketInput(ConnectionMapIt cnxIt) {
     return state.isAnyCloseRequested();
   }
 
+  auto& handler = *state.protocolHandler;
+
   // Process input through the protocol handler
-  const auto result = state.protocolHandler->processInput(inputData, state);
+  const auto result = handler.processInput(inputData, state);
 
   // Consume processed bytes from input buffer
   if (result.bytesConsumed > 0) {
@@ -290,20 +269,20 @@ bool SingleHttpServer::processWebSocketInput(ConnectionMapIt cnxIt) {
   }
 
   // Queue any pending output from the handler
-  if (state.protocolHandler->hasPendingOutput()) {
-    auto pendingOutput = state.protocolHandler->getPendingOutput();
-    if (!pendingOutput.empty()) {
-      RawChars outputData;
-      outputData.append(reinterpret_cast<const char*>(pendingOutput.data()), pendingOutput.size());
-      state.outBuffer.append(HttpResponseData(std::move(outputData)));
-      state.protocolHandler->onOutputWritten(pendingOutput.size());
-      flushOutbound(cnxIt);
-    }
+  if (handler.hasPendingOutput()) {
+    auto pendingOutput = handler.getPendingOutput();
+    assert(!pendingOutput.empty());
+
+    state.outBuffer.append(std::string_view(reinterpret_cast<const char*>(pendingOutput.data()), pendingOutput.size()));
+    handler.onOutputWritten(pendingOutput.size());
+
+    flushOutbound(cnxIt);
   }
 
   // Handle result
   switch (result.action) {
     case ProtocolProcessResult::Action::Continue:
+      [[fallthrough]];
     case ProtocolProcessResult::Action::ResponseReady:
       // More data needed or processing can continue
       // ResponseReady was already handled above via getPendingOutput
@@ -867,42 +846,25 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRe
                                             const CorsPolicy* pCorsPolicy,
                                             std::span<const ResponseMiddleware> responseMiddleware) {
   ConnectionState& state = *cnxIt->second;
-  auto failFast = [&](std::string_view message) {
-    if (!bodyReady) {
-      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true, message);
-      return;
-    }
-    HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
-    resp.body(message);
-    applyResponseMiddleware(state.request, resp, responseMiddleware, false);
-    finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
-  };
-
-  RequestTask<HttpResponse> task;
-  try {
-    task = handler(state.request);
-  } catch (const std::exception& ex) {
-    log::error("Exception while creating async handler task: {}", ex.what());
-    failFast(ex.what());
-    return false;
-  } catch (...) {
-    log::error("Unknown exception while creating async handler task");
-    failFast("Unknown error");
-    return false;
-  }
+  RequestTask<HttpResponse> task = handler(state.request);
 
   if (!task.valid()) {
+    static constexpr std::string_view kMessage = "Async handler inactive";
     log::error("Async path handler returned an invalid RequestTask for path {}", state.request.path());
-    failFast("Async handler inactive");
+    if (bodyReady) {
+      HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
+      resp.body(kMessage);
+      applyResponseMiddleware(state.request, resp, responseMiddleware, false);
+      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
+    } else {
+      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true, kMessage);
+    }
+
     return false;
   }
 
   auto handle = task.release();
-  if (!handle) {
-    log::error("Async path handler returned a null coroutine for path {}", state.request.path());
-    failFast("Async handler inactive");
-    return false;
-  }
+  assert(handle);
 
   auto& asyncState = state.asyncState;
 

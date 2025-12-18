@@ -35,6 +35,7 @@ jobs:
 
       - name: Install all dependencies with features
         run: |
+          sudo apt update
           sudo apt install -y wrk libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
           pip install uvicorn starlette
 

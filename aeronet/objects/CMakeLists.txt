@@ -243,6 +243,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    http-response-data_test
+    test/http-response-data_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     http-server-config_test
     test/http-server-config_test.cpp
     LIBRARIES
