@@ -1,21 +1,17 @@
 #include "aeronet/event-loop.hpp"
 
-#include <dlfcn.h>
 #include <gtest/gtest.h>
 #include <sys/epoll.h>
 #include <unistd.h>
 
-#include <algorithm>
 #include <cerrno>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
 #include <initializer_list>
 #include <limits>
 #include <new>
-#include <optional>
 #include <stdexcept>
 #include <system_error>
 #include <utility>
@@ -23,38 +19,34 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/event.hpp"
+
+// Enable epoll/socket syscall overrides from sys-test-support.hpp
+#define AERONET_WANT_SOCKET_OVERRIDES
 #include "aeronet/sys-test-support.hpp"
 
 using namespace aeronet;
 
 namespace {
 
-struct EpollCreateAction {
-  bool fail{false};
-  int err{0};
-};
-
-struct EpollWaitAction {
-  enum class Kind : std::uint8_t { Events, Error };
-  Kind kind{Kind::Events};
-  int result{0};
-  int err{0};
-  std::vector<epoll_event> events;
-};
-
-test::ActionQueue<EpollCreateAction> gCreateActions;
-test::ActionQueue<EpollWaitAction> gWaitActions;
+// Use the centralized EpollCreateAction and EpollWaitAction from sys-test-support.hpp
+using test::EpollCreateAction;
+using test::EpollWaitAction;
 
 void ResetEpollHooks() {
-  gCreateActions.reset();
-  gWaitActions.reset();
+  test::g_epoll_create_actions.reset();
+  test::g_epoll_wait_actions.reset();
+  test::ResetEpollCtlModFail();
   test::FailNextMalloc(0);
   test::FailNextRealloc(0);
 }
 
-void SetEpollCreateActions(std::initializer_list<EpollCreateAction> actions) { gCreateActions.setActions(actions); }
+void SetEpollCreateActions(std::initializer_list<EpollCreateAction> actions) {
+  test::g_epoll_create_actions.setActions(actions);
+}
 
-void SetEpollWaitActions(std::vector<EpollWaitAction> actions) { gWaitActions.setActions(std::move(actions)); }
+void SetEpollWaitActions(std::vector<EpollWaitAction> actions) {
+  test::g_epoll_wait_actions.setActions(std::move(actions));
+}
 
 class EventLoopHookGuard {
  public:
@@ -88,46 +80,10 @@ epoll_event MakeEvent(int fd, uint32_t mask) {
   return ev;
 }
 
-void CopyEvents(const EpollWaitAction& action, epoll_event* events, int maxevents) {
-  const std::size_t limit = std::min(static_cast<std::size_t>(action.result), static_cast<std::size_t>(maxevents));
-  for (std::size_t i = 0; i < limit && i < action.events.size(); ++i) {
-    events[i] = action.events[i];
-  }
-}
-
 }  // namespace
 
-extern "C" int epoll_create1(int flags) {
-  using EpollCreateFn = int (*)(int);
-  static EpollCreateFn real_epoll_create1 = reinterpret_cast<EpollCreateFn>(dlsym(RTLD_NEXT, "epoll_create1"));
-  if (real_epoll_create1 == nullptr) {
-    std::abort();
-  }
-  const auto action = gCreateActions.pop();
-  if (action.has_value() && action->fail) {
-    errno = action->err;
-    return -1;
-  }
-  return real_epoll_create1(flags);
-}
-
-extern "C" int epoll_wait(int epfd, epoll_event* events, int maxevents, int timeout) {
-  using EpollWaitFn = int (*)(int, epoll_event*, int, int);
-  static EpollWaitFn real_epoll_wait = reinterpret_cast<EpollWaitFn>(dlsym(RTLD_NEXT, "epoll_wait"));
-  if (real_epoll_wait == nullptr) {
-    std::abort();
-  }
-  const auto action = gWaitActions.pop();
-  if (action.has_value()) {
-    if (action->kind == EpollWaitAction::Kind::Error) {
-      errno = action->err;
-      return -1;
-    }
-    CopyEvents(*action, events, maxevents);
-    return action->result;
-  }
-  return real_epoll_wait(epfd, events, maxevents, timeout);
-}
+// Epoll system overrides are now centralized in sys-test-support.hpp
+// under the AERONET_WANT_SOCKET_OVERRIDES macro.
 
 TEST(EventLoopTest, BasicPollAndGrowth) {
   // Short timeout so poll returns quickly if something goes wrong

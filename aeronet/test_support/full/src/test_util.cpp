@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <future>
 #include <optional>
 #include <stdexcept>
@@ -56,10 +57,16 @@ void sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeo
   const auto start = std::chrono::steady_clock::now();
   const auto maxTs = start + totalTimeout;
 
+  bool alreadyLoggedError = false;
+
   for (std::size_t remaining = data.size(); remaining > 0;) {
     const auto sent = ::send(fd, cursor, remaining, MSG_NOSIGNAL);
     if (sent <= 0) {
-      log::error("sendAll failed with error {}", std::strerror(errno));
+      const auto err = errno;
+      if (!alreadyLoggedError) {
+        alreadyLoggedError = true;
+        log::error("sendAll failed with error {}", std::strerror(err));
+      }
       if (std::chrono::steady_clock::now() >= maxTs) {
         log::error("sendAll timed out after {} ms", totalTimeout.count());
         throw std::runtime_error("sendAll timed out");
@@ -233,7 +240,12 @@ std::pair<Socket, uint16_t> startEchoServer() {
         break;  // connection closed
       }
 
-      sendAll(clientFd.fd(), std::string_view(buf, static_cast<std::size_t>(recvBytes)));
+      try {
+        sendAll(clientFd.fd(), std::string_view(buf, static_cast<std::size_t>(recvBytes)));
+      } catch (const std::exception &ex) {
+        log::error("Echo server sendAll failed: {}", ex.what());
+        break;
+      }
     }
   }).detach();
 

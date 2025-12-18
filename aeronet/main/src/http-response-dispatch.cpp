@@ -425,7 +425,7 @@ bool SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpRes
     state.requestImmediateClose();
   }
   if (!state.waitingWritable) {
-    enableWritableInterest(cnxIt, "enable writable buffered path");
+    enableWritableInterest(cnxIt);
   }
 
   // If we buffered data, try flushing it immediately
@@ -478,7 +478,7 @@ void SingleHttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
   if (state.outBuffer.empty() && !state.isSendingFile() && state.waitingWritable &&
       (state.tlsEstablished || state.transport->handshakeDone())) {
-    if (disableWritableInterest(cnxIt, "disable writable flushOutbound drop EPOLLOUT")) {
+    if (disableWritableInterest(cnxIt)) {
       if (state.isAnyCloseRequested()) {
         return;
       }
@@ -490,12 +490,12 @@ void SingleHttpServer::flushOutbound(ConnectionMapIt cnxIt) {
     bool transportNeedsWrite = (!state.tlsEstablished && want == TransportHint::WriteReady);
     if (transportNeedsWrite) {
       if (!state.waitingWritable) {
-        if (!enableWritableInterest(cnxIt, "enable writable flushOutbound transportNeedsWrite")) {
+        if (!enableWritableInterest(cnxIt)) {
           return;  // failure logged
         }
       }
     } else if (state.waitingWritable) {
-      disableWritableInterest(cnxIt, "disable writable flushOutbound transport no longer needs");
+      disableWritableInterest(cnxIt);
     }
   }
 }
@@ -535,7 +535,7 @@ bool SingleHttpServer::flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt) {
     // If we would block or transport needs write progress, enable writable interest and return
     if (want == TransportHint::WriteReady || written == 0) {
       if (!state.waitingWritable) {
-        enableWritableInterest(cnxIt, "enable writable sendfile TLS pending");
+        enableWritableInterest(cnxIt);
       }
       if (state.fileSend.remaining == 0) {
         state.fileSend.active = false;
@@ -623,7 +623,7 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
       case ConnectionState::FileResult::Code::WouldBlock:
         if (res.enableWritable && !state.waitingWritable) {
           // The helper reports WouldBlock; enable writable interest so we can resume later.
-          enableWritableInterest(cnxIt, "enable writable sendfile pending");
+          enableWritableInterest(cnxIt);
 
           // Edge-triggered epoll fix: immediately retry ONCE after enabling writable interest.
           // If the socket became writable between sendfile() returning EAGAIN and epoll_ctl(),
