@@ -2,11 +2,13 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/features.hpp"
@@ -36,37 +38,72 @@ TEST(OpenTelemetryIntegration, Lifecycle) {
   telemetry = tracing::TelemetryContext(cfg);
 }
 
-TEST(OpenTelemetryIntegration, CountersOperations) {
+TEST(OpenTelemetryIntegration, Endpoint) {
   tracing::TelemetryContext telemetry;
 
-  // Should be safe to call even without initialization
-  telemetry.counterAdd("test.counter", 10U);
-  telemetry.counterAdd("test.counter", 5U);
-  telemetry.gauge("test.gauge", 3);
+  TelemetryConfig cfg;
+  cfg.otelEnabled = kDefaultEnabled;
+  cfg.withEndpoint("http://localhost:4318");
 
-  // Initialize
+  telemetry = tracing::TelemetryContext(cfg);
+
+  cfg.withEndpoint("http://localhost:4318/");
+  telemetry = tracing::TelemetryContext(cfg);
+}
+
+TEST(OpenTelemetryIntegration, HistogramBuckets) {
+  tracing::TelemetryContext telemetry;
+
   TelemetryConfig cfg;
   cfg.otelEnabled = kDefaultEnabled;
   cfg.withEndpoint("http://localhost:4318/v1/metrics");
+  cfg.withServiceName("aeronet-integration-test");
+
+  // Configure custom histogram buckets
+  TelemetryConfig::HistogramBoundariesMap buckets;
+  cfg.addHistogramBuckets("test.histogram", std::vector{0.1, 1.0, 10.0, 100.0});
+  cfg.addHistogramBuckets("test.histogram2", std::vector{1.0, 2.0});
+
+  telemetry = tracing::TelemetryContext(cfg);
+}
+
+TEST(OpenTelemetryIntegration, MetricsOperations) {
+  tracing::TelemetryContext telemetry;
+
+  // Should be safe to call even without initialization
+  auto span = telemetry.createSpan("test.span");
+  EXPECT_EQ(span, nullptr);
+  telemetry.counterAdd("test.counter", 10U);
+  telemetry.counterAdd("test.counter", 5U);
+  telemetry.gauge("test.gauge", 3);
+  telemetry.histogram("test.histogram", 3.14);
+  telemetry.timing("test.timing", std::chrono::milliseconds(100));
+
+  // Initialize
+  TelemetryConfig cfg;
+  cfg.withEndpoint("http://localhost:4318/v1/metrics");
   cfg.withServiceName("aeronet-test");
 
-  telemetry = tracing::TelemetryContext(cfg);
+  for (bool otelEnabled : {false, kDefaultEnabled}) {
+    for (bool dogStatsDEnabled : {false, true}) {
+      cfg.otelEnabled = otelEnabled;
+      cfg.dogStatsDEnabled = dogStatsDEnabled;
+      telemetry = tracing::TelemetryContext(cfg);
 
-  // Should work after initialization (or silently fail)
-  telemetry.counterAdd("events.processed", 100U);
-  telemetry.counterAdd("bytes.written", 1024U);
-  telemetry.gauge("test.gauge", 3);
-  telemetry.gauge("test.gauge2", 3);
-
-  cfg.withEndpoint("http://localhost:4318/v1/metrics/");
-
-  telemetry = tracing::TelemetryContext(cfg);
-
-  // Should work after initialization (or silently fail)
-  telemetry.counterAdd("events.processed", 100U);
-  telemetry.counterAdd("bytes.written", 1024U);
-  telemetry.gauge("test.gauge", 3);
-  telemetry.gauge("test.gauge2", 3);
+      // Should work after initialization (or silently fail)
+      span = telemetry.createSpan("test.span");
+      EXPECT_EQ(span != nullptr, otelEnabled);
+      telemetry.counterAdd("events.processed", 100U);
+      telemetry.counterAdd("bytes.written", 1024U);
+      telemetry.gauge("test.gauge", 3);
+      telemetry.gauge("test.gauge2", 3);
+      telemetry.histogram("test.histogram", 2.71);
+      telemetry.histogram("test.histogram2", 1.61);
+      telemetry.timing("test.timing", std::chrono::milliseconds(250));
+      telemetry.timing("test.timing2", std::chrono::milliseconds(500));
+      cfg.withEndpoint("http://localhost:4318/v1/metrics/");
+    }
+  }
 }
 
 TEST(OpenTelemetryIntegration, SpanOperations) {
@@ -96,6 +133,13 @@ TEST(OpenTelemetryIntegration, SpanOperations) {
   } else {
     EXPECT_EQ(span2, nullptr);
   }
+
+  cfg.otelEnabled = false;
+  cfg.dogStatsDEnabled = true;
+  telemetry = tracing::TelemetryContext(cfg);
+
+  auto span3 = telemetry.createSpan("test-span-3");
+  EXPECT_EQ(span3, nullptr);
 }
 
 TEST(OpenTelemetryIntegration, IndependentContexts) {
@@ -122,6 +166,12 @@ TEST(OpenTelemetryIntegration, IndependentContexts) {
 
   telemetry1.gauge("context1.gauge", 1);
   telemetry2.gauge("context2.gauge", 2);
+
+  telemetry1.histogram("context1.histogram", 1.1);
+  telemetry2.histogram("context2.histogram", 2.2);
+
+  telemetry1.timing("context1.timing", std::chrono::milliseconds(150));
+  telemetry2.timing("context2.timing", std::chrono::milliseconds(250));
 
   auto span1 = telemetry1.createSpan("context1-span");
   auto span2 = telemetry2.createSpan("context2-span");
@@ -151,10 +201,10 @@ TEST(OpenTelemetryIntegration, Disabled) {
 
 TEST(OpenTelemetryIntegration, DogStatsDMetricsEmission) {
   // Create an isolated temporary directory and use a socket path inside it.
-  aeronet::test::ScopedTempDir tmpDir("aeronet-dsd-dir-");
+  test::ScopedTempDir tmpDir("aeronet-dsd-dir-");
   const auto socketPath = tmpDir.dirPath() / "aeronet-dsd.sock";
 
-  aeronet::BaseFd serverFd(::socket(AF_UNIX, SOCK_DGRAM, 0));
+  BaseFd serverFd(::socket(AF_UNIX, SOCK_DGRAM, 0));
   ASSERT_TRUE(serverFd);
 
   sockaddr_un addr{};
@@ -163,10 +213,10 @@ TEST(OpenTelemetryIntegration, DogStatsDMetricsEmission) {
   ASSERT_EQ(::bind(serverFd.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
 
   // Use test helper to set a receive timeout on the socket.
-  aeronet::test::setRecvTimeout(serverFd.fd(), std::chrono::seconds{1});
+  test::setRecvTimeout(serverFd.fd(), std::chrono::seconds{1});
 
   TelemetryConfig cfg;
-  cfg.otelEnabled = false;
+  cfg.otelEnabled = kDefaultEnabled;
   cfg.dogStatsDEnabled = true;
   cfg.withDogStatsdSocketPath(socketPath.string());
   cfg.withDogStatsdNamespace("aeronet");
@@ -177,12 +227,15 @@ TEST(OpenTelemetryIntegration, DogStatsDMetricsEmission) {
   tracing::TelemetryContext telemetry(cfg);
   telemetry.counterAdd("test.metric", 7);
   telemetry.gauge("test.gauge", 3);
+  telemetry.histogram("test.histogram", 4.25);
+  telemetry.timing("test.timing", std::chrono::milliseconds(15));
 
   // Use test util's recvWithTimeout which handles non-blocking reads and timeouts.
-  auto payload = aeronet::test::recvWithTimeout(serverFd.fd(), std::chrono::seconds{1});
-  ASSERT_FALSE(payload.empty());
+  auto payload = test::recvWithTimeout(serverFd.fd(), std::chrono::milliseconds{100});
   EXPECT_TRUE(payload.contains("aeronet.test.metric:7|c"));
-  EXPECT_TRUE(payload.contains("service:test-service"));
+  EXPECT_EQ(payload.contains("service:test-service"), kDefaultEnabled);
+  EXPECT_TRUE(payload.contains("aeronet.test.histogram:4.25|h"));
+  EXPECT_TRUE(payload.contains("aeronet.test.timing:15|ms"));
 }
 
 TEST(OpenTelemetryIntegration, DogStatsDClientRetrieveNull) {
@@ -194,7 +247,7 @@ TEST(OpenTelemetryIntegration, DogStatsDClientRetrieveNull) {
 
 TEST(OpenTelemetryIntegration, NoServiceName) {
   TelemetryConfig cfg;
-  cfg.otelEnabled = true;
+  cfg.otelEnabled = kDefaultEnabled;
   cfg.withEndpoint("http://localhost:4318/v1/traces");
   // Intentionally omit service name
 
@@ -205,7 +258,7 @@ TEST(OpenTelemetryIntegration, NoServiceName) {
 
 TEST(OpenTelemetryIntegration, EmptyEndpoint) {
   TelemetryConfig cfg;
-  cfg.otelEnabled = true;
+  cfg.otelEnabled = kDefaultEnabled;
   cfg.withEndpoint("");  // Empty endpoint
   cfg.withServiceName("test-service");
 
@@ -231,6 +284,10 @@ TEST(OpenTelemetryIntegration, MallocFailureHandling) {
   EXPECT_NO_THROW(telemetry.counterAdd("test.should-fail", 1));
   test::FailNextMalloc(1);
   EXPECT_NO_THROW(telemetry.gauge("test.should-fail-gauge", 1));
+  test::FailNextMalloc(1);
+  EXPECT_NO_THROW(telemetry.histogram("test.should-fail-histogram", 1.0));
+  test::FailNextMalloc(1);
+  EXPECT_NO_THROW(telemetry.timing("test.should-fail-timing", std::chrono::milliseconds(100)));
 }
 
 #endif

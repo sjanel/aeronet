@@ -2,11 +2,12 @@
 #include <opentelemetry/sdk/trace/processor.h>
 #include <opentelemetry/trace/tracer.h>
 
+#include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <functional>
 #include <memory>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -56,10 +57,15 @@
 #define AERONET_HAVE_METRICS_SDK 1
 #include <opentelemetry/metrics/sync_instruments.h>
 #include <opentelemetry/nostd/unique_ptr.h>
+#include <opentelemetry/sdk/metrics/aggregation/aggregation_config.h>
 #include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader_options.h>
+#include <opentelemetry/sdk/metrics/instruments.h>
 #include <opentelemetry/sdk/metrics/meter_provider.h>
 #include <opentelemetry/sdk/metrics/metric_reader.h>
 #include <opentelemetry/sdk/metrics/push_metric_exporter.h>
+#include <opentelemetry/sdk/metrics/view/instrument_selector_factory.h>
+#include <opentelemetry/sdk/metrics/view/meter_selector_factory.h>
+#include <opentelemetry/sdk/metrics/view/view.h>
 #include <opentelemetry/sdk/metrics/view/view_registry.h>
 #endif
 
@@ -77,6 +83,10 @@ namespace aeronet::tracing {
 #ifdef AERONET_HAVE_OTEL_SDK
 
 namespace {
+
+namespace {
+constexpr auto OtelSv(std::string_view sv) { return opentelemetry::nostd::string_view(sv.data(), sv.size()); }
+}  // namespace
 
 // Iterate over stored HTTP headers as (name, value) pairs; the callback receives string_view references.
 void ForEachHttpHeader(const TelemetryConfig& cfg, const std::function<void(std::string_view, std::string_view)>& fn) {
@@ -115,19 +125,13 @@ class OtelSpan final : public Span {
   explicit OtelSpan(opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span) noexcept
       : _span(std::move(span)) {}
 
-  void setAttribute(std::string_view key, int64_t val) noexcept override {
-    _span->SetAttribute(opentelemetry::nostd::string_view(key.data(), key.size()), val);
-  }
+  void setAttribute(std::string_view key, int64_t val) noexcept override { _span->SetAttribute(OtelSv(key), val); }
 
   void setAttribute(std::string_view key, std::string_view val) noexcept override {
-    _span->SetAttribute(opentelemetry::nostd::string_view(key.data(), key.size()),
-                        opentelemetry::nostd::string_view(val.data(), val.size()));
+    _span->SetAttribute(OtelSv(key), OtelSv(val));
   }
 
-  void end() noexcept override {
-    _span->End();
-    _span = {};
-  }
+  void end() noexcept override { _span->End(); }
 
  private:
   opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> _span;
@@ -136,28 +140,34 @@ class OtelSpan final : public Span {
 // TelemetryContext implementation details
 class TelemetryContextImpl {
  public:
-  explicit TelemetryContextImpl(const aeronet::TelemetryConfig& cfg) : _dogstatsd(cfg) {}
+  explicit TelemetryContextImpl(const TelemetryConfig& cfg) : _dogstatsd(cfg) {}
 
   opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider> _tracerProvider;
   opentelemetry::nostd::shared_ptr<opentelemetry::trace::Tracer> _tracer;
 
 #ifdef AERONET_HAVE_METRICS_SDK
-  std::shared_ptr<opentelemetry::sdk::metrics::MeterProvider> _meterProvider;
+  std::unique_ptr<opentelemetry::sdk::metrics::MeterProvider> _meterProvider;
   opentelemetry::nostd::shared_ptr<opentelemetry::metrics::Meter> _meter;
   flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Counter<uint64_t>>>
       _counters;
   flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Gauge<int64_t>>> _gauges;
+  flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Histogram<double>>>
+      _histograms;
 #endif
 
   detail::DogStatsdMetrics _dogstatsd;
-  bool _initialized = false;
 };
 
 TelemetryContext::TelemetryContext() noexcept = default;
 
-TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) : _impl(std::make_unique<TelemetryContextImpl>(cfg)) {
+TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) {
+  auto impl = std::make_unique<TelemetryContextImpl>(cfg);
+  TelemetryContextImpl& ctx = *impl;
   if (!cfg.otelEnabled) {
     log::trace("Telemetry disabled in config");
+    if (cfg.dogStatsDEnabled) {
+      _impl = std::move(impl);
+    }
     return;
   }
 
@@ -195,23 +205,20 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) : _impl(std::make
   auto sampler = std::unique_ptr<opentelemetry::sdk::trace::Sampler>(
       new opentelemetry::sdk::trace::TraceIdRatioBasedSampler(cfg.sampleRate));
 
-  _impl->_tracerProvider = opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider>(
+  ctx._tracerProvider = opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider>(
       new opentelemetry::sdk::trace::TracerProvider(std::move(processor), telemetryResource, std::move(sampler)));
 #else
-  _impl->_tracerProvider = opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider>(
+  ctx._tracerProvider = opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider>(
       new opentelemetry::sdk::trace::TracerProvider(std::move(processor), telemetryResource));
 #endif
 
   // Get tracer from this provider (NOT from global)
-  _impl->_tracer = _impl->_tracerProvider->GetTracer("aeronet", AERONET_VERSION_STR);
-
-  if (!_impl->_tracer) {
-    throw std::runtime_error("Failed to get tracer from provider");
-  }
+  ctx._tracer = ctx._tracerProvider->GetTracer("aeronet", AERONET_VERSION_STR);
+  assert(ctx._tracer != nullptr);
 
   // Initialize metrics provider if SDK available
 #if defined(AERONET_HAVE_METRICS_SDK) && defined(AERONET_HAVE_OTLP_METRICS)
-  opentelemetry::exporter::otlp::OtlpHttpMetricExporterOptions metric_opts;
+  opentelemetry::exporter::otlp::OtlpHttpMetricExporterOptions metricOpts;
   if (!cfg.endpoint().empty()) {
     // Convert trace endpoint to metrics endpoint
     // OTLP trace: /v1/traces, metrics: /v1/metrics
@@ -225,34 +232,48 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) : _impl(std::make
       endpoint += "/v1/metrics";
     }
     log::info("Initializing OTLP HTTP metrics exporter with endpoint: {}", endpoint);
-    metric_opts.url = std::move(endpoint);
+    metricOpts.url = std::move(endpoint);
   }
 
-  metric_opts.http_headers = telemetryHeaders;
+  metricOpts.http_headers = telemetryHeaders;
 
-  auto metric_exporter = std::unique_ptr<opentelemetry::sdk::metrics::PushMetricExporter>(
-      new opentelemetry::exporter::otlp::OtlpHttpMetricExporter(metric_opts));
+  auto metricExporter = std::unique_ptr<opentelemetry::sdk::metrics::PushMetricExporter>(
+      new opentelemetry::exporter::otlp::OtlpHttpMetricExporter(
+          std::move(metricOpts)));  // NOLINT(performance-move-const-arg)
 
-  opentelemetry::sdk::metrics::PeriodicExportingMetricReaderOptions reader_opts;
-  reader_opts.export_interval_millis = std::chrono::milliseconds(5000);  // Export every 5s
-  reader_opts.export_timeout_millis = std::chrono::milliseconds(3000);
+  opentelemetry::sdk::metrics::PeriodicExportingMetricReaderOptions readerOpts;
+  readerOpts.export_interval_millis = cfg.exportInterval;
+  readerOpts.export_timeout_millis = cfg.exportTimeout;
 
-  auto metric_reader = std::shared_ptr<opentelemetry::sdk::metrics::MetricReader>(
-      new opentelemetry::sdk::metrics::PeriodicExportingMetricReader(std::move(metric_exporter), reader_opts));
+  auto metricReader = std::shared_ptr<opentelemetry::sdk::metrics::MetricReader>(
+      new opentelemetry::sdk::metrics::PeriodicExportingMetricReader(std::move(metricExporter), std::move(readerOpts)));
+
+  auto viewRegistry = std::make_unique<opentelemetry::sdk::metrics::ViewRegistry>();
+  for (const auto& [metricName, boundaries] : cfg.histogramBuckets()) {
+    auto histogramCfg = std::make_shared<opentelemetry::sdk::metrics::HistogramAggregationConfig>();
+    histogramCfg->boundaries_.assign(boundaries.begin(), boundaries.end());
+
+    std::string metricNameStr(metricName);
+
+    auto instrumentSelector = opentelemetry::sdk::metrics::InstrumentSelectorFactory::Create(
+        opentelemetry::sdk::metrics::InstrumentType::kHistogram, metricNameStr, "");
+    auto meterSelector = opentelemetry::sdk::metrics::MeterSelectorFactory::Create("aeronet", AERONET_VERSION_STR, "");
+
+    auto view = std::make_unique<opentelemetry::sdk::metrics::View>(
+        metricNameStr, /*description=*/"", opentelemetry::sdk::metrics::AggregationType::kHistogram, histogramCfg);
+
+    viewRegistry->AddView(std::move(instrumentSelector), std::move(meterSelector), std::move(view));
+  }
 
   // Create MeterProvider - keep it in this instance, NO global singleton
-  _impl->_meterProvider = std::make_shared<opentelemetry::sdk::metrics::MeterProvider>(
-      std::make_unique<opentelemetry::sdk::metrics::ViewRegistry>(), telemetryResource);
+  ctx._meterProvider =
+      std::make_unique<opentelemetry::sdk::metrics::MeterProvider>(std::move(viewRegistry), telemetryResource);
 
   // Add the metric reader to the provider
-  _impl->_meterProvider->AddMetricReader(metric_reader);
-
+  ctx._meterProvider->AddMetricReader(metricReader);
   // Get meter from this provider (NOT from global)
-  _impl->_meter = _impl->_meterProvider->GetMeter("aeronet", AERONET_VERSION_STR);
-
-  if (!_impl->_meter) {
-    throw std::runtime_error("Failed to get tracer from provider");
-  }
+  ctx._meter = ctx._meterProvider->GetMeter("aeronet", AERONET_VERSION_STR);
+  assert(ctx._meter != nullptr);
 
   log::debug("Metrics provider initialized successfully");
 
@@ -260,35 +281,21 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) : _impl(std::make
   log::warn("Metrics SDK not available - metrics disabled");
 #endif
 
-  _impl->_initialized = true;
+  _impl = std::move(impl);
 }
 
-TelemetryContext::~TelemetryContext() {
-  // Shutdown providers
-  if (_impl && _impl->_initialized) {
-#ifdef AERONET_HAVE_METRICS_SDK
-    _impl->_meterProvider->Shutdown();
-#endif
-    // TracerProvider shutdown is handled by SDK
-  }
-}
+TelemetryContext::~TelemetryContext() = default;
 
 TelemetryContext::TelemetryContext(TelemetryContext&&) noexcept = default;
 TelemetryContext& TelemetryContext::operator=(TelemetryContext&&) noexcept = default;
 
 SpanPtr TelemetryContext::createSpan(std::string_view name) const noexcept {
-  if (!_impl || !_impl->_initialized) {
-    return nullptr;
-  }
-
-  auto span = _impl->_tracer->StartSpan(opentelemetry::nostd::string_view(name.data(), name.size()));
-  if (!span) [[unlikely]] {
-    log::error("Failed to create span '{}'", name);
+  if (!_impl || !_impl->_tracer) {
     return nullptr;
   }
 
   try {
-    return std::make_unique<OtelSpan>(std::move(span));
+    return std::make_unique<OtelSpan>(_impl->_tracer->StartSpan(OtelSv(name)));
   } catch (const std::exception& ex) {
     log::error("Failed to create span '{}': {}", name, ex.what());
     return nullptr;
@@ -296,48 +303,83 @@ SpanPtr TelemetryContext::createSpan(std::string_view name) const noexcept {
 }
 
 void TelemetryContext::counterAdd(std::string_view name, uint64_t delta) const noexcept {
-#ifdef AERONET_HAVE_METRICS_SDK
-  if (_impl && _impl->_initialized) {
-    try {
-      auto [it, inserted] = _impl->_counters.emplace(name, nullptr);
-      if (inserted) {
-        it->second = _impl->_meter->CreateUInt64Counter(opentelemetry::nostd::string_view(name.data(), name.size()));
-      }
-      it->second->Add(delta);
-    } catch (const std::exception& ex) {
-      log::error("Failed to add counter '{}': {}", name, ex.what());
-    }
-  }
-#endif
   if (_impl) {
+#ifdef AERONET_HAVE_METRICS_SDK
+    if (_impl->_meter) {
+      try {
+        auto [it, inserted] = _impl->_counters.emplace(name, nullptr);
+        if (inserted) {
+          it->second = _impl->_meter->CreateUInt64Counter(OtelSv(name));
+        }
+        it->second->Add(delta);
+      } catch (const std::exception& ex) {
+        log::error("Failed to add counter '{}': {}", name, ex.what());
+      }
+    }
+#endif
     _impl->_dogstatsd.increment(name, delta);
   }
 }
 
 void TelemetryContext::gauge(std::string_view name, int64_t value) const noexcept {
-#ifdef AERONET_HAVE_METRICS_SDK
-  if (_impl && _impl->_initialized) {
-    try {
-      auto [it, inserted] = _impl->_gauges.emplace(name, nullptr);
-      if (inserted) {
-        it->second = _impl->_meter->CreateInt64Gauge(opentelemetry::nostd::string_view(name.data(), name.size()));
-      }
-      it->second->Record(value);
-    } catch (const std::exception& ex) {
-      log::error("Failed to set gauge '{}': {}", name, ex.what());
-    }
-  }
-#endif
   if (_impl) {
+#ifdef AERONET_HAVE_METRICS_SDK
+    if (_impl->_meter) {
+      try {
+        auto [it, inserted] = _impl->_gauges.emplace(name, nullptr);
+        if (inserted) {
+          it->second = _impl->_meter->CreateInt64Gauge(OtelSv(name));
+        }
+        it->second->Record(value);
+      } catch (const std::exception& ex) {
+        log::error("Failed to set gauge '{}': {}", name, ex.what());
+      }
+    }
+#endif
     _impl->_dogstatsd.gauge(name, value);
   }
 }
 
-const DogStatsD* TelemetryContext::dogstatsdClient() const noexcept {
+void TelemetryContext::histogram(std::string_view name, double value) const noexcept {
   if (_impl) {
-    return &_impl->_dogstatsd.dogstatsdClient();
+#ifdef AERONET_HAVE_METRICS_SDK
+    if (_impl->_meter) {
+      try {
+        auto [it, inserted] = _impl->_histograms.emplace(name, nullptr);
+        if (inserted) {
+          it->second = _impl->_meter->CreateDoubleHistogram(OtelSv(name));
+        }
+        it->second->Record(value);
+      } catch (const std::exception& ex) {
+        log::error("Failed to record histogram '{}': {}", name, ex.what());
+      }
+    }
+#endif
+    _impl->_dogstatsd.histogram(name, value);
   }
-  return nullptr;
+}
+
+void TelemetryContext::timing(std::string_view name, std::chrono::milliseconds ms) const noexcept {
+  if (_impl) {
+#ifdef AERONET_HAVE_METRICS_SDK
+    if (_impl->_meter) {
+      try {
+        auto [it, inserted] = _impl->_gauges.emplace(name, nullptr);
+        if (inserted) {
+          it->second = _impl->_meter->CreateInt64Gauge(OtelSv(name));
+        }
+        it->second->Record(std::chrono::duration_cast<std::chrono::milliseconds>(ms).count());
+      } catch (const std::exception& ex) {
+        log::error("Failed to set gauge '{}': {}", name, ex.what());
+      }
+    }
+#endif
+    _impl->_dogstatsd.timing(name, ms);
+  }
+}
+
+const DogStatsD* TelemetryContext::dogstatsdClient() const noexcept {
+  return _impl ? &_impl->_dogstatsd.dogstatsdClient() : nullptr;
 }
 
 #endif  // AERONET_HAVE_OTEL_SDK

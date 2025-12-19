@@ -10,7 +10,9 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/middleware.hpp"
@@ -31,8 +33,19 @@ using namespace std::chrono_literals;
 using namespace aeronet;
 
 namespace {
-test::TestServer ts(HttpServerConfig{}, RouterConfig{}, std::chrono::milliseconds{5});
+
+HttpServerConfig TestServerConfig() {
+  HttpServerConfig cfg;
+#ifdef AERONET_ENABLE_OPENTELEMETRY
+  cfg.telemetry.otelEnabled = true;
+#else
+  cfg.telemetry.otelEnabled = false;
+#endif
+  return cfg;
 }
+
+test::TestServer ts(TestServerConfig(), RouterConfig{}, std::chrono::milliseconds{5});
+}  // namespace
 
 TEST(HttpPipeline, TwoRequestsBackToBack) {
   ts.router().setDefault(
@@ -675,14 +688,24 @@ TEST(SingleHttpServer, ResponseMiddlewareException) {
   ts.router().addResponseMiddleware(
       [](const HttpRequest&, HttpResponse&) { throw std::runtime_error("response middleware error"); });
 
+  ts.router().addResponseMiddleware([](const HttpRequest&, HttpResponse&) { throw 42; });
+
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  ts.router().setPath(http::Method::GET, "/test",
+                      [](const HttpRequest&, HttpResponseWriter& writer) { writer.writeBody("test"); });
 
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
-  test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
-  std::string resp = test::recvUntilClosed(fd);
 
-  ASSERT_FALSE(resp.empty());
+  test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  EXPECT_FALSE(test::recvUntilClosed(fd).empty());
+
+  clientConnection = test::ClientConnection(ts.port());
+  fd = clientConnection.fd();
+
+  test::sendAll(fd, "GET /test HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  EXPECT_FALSE(test::recvUntilClosed(fd).empty());
 
   ts.router() = Router();  // Clear middlewares for other tests
 }
@@ -751,4 +774,21 @@ TEST(SingleHttpServer, EpollCtlModEaccesFailure) {
   EXPECT_GT(data.size(), 0UL);
 
   test::ResetEpollCtlModFail();
+}
+
+TEST(SingleHttpServer, EpollPollFailure) {
+  test::EventLoopHookGuard guard;
+  test::SetEpollWaitActions({test::WaitError(EINTR), test::WaitError(EACCES), test::WaitError(EACCES),
+                             test::WaitError(EINTR), test::WaitError(EBADF), test::WaitError(EBADF)});
+
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(std::string(1024UL * 1024, 'Y')); });
+
+  test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+
+  test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+
+  auto data = test::recvWithTimeout(fd, std::chrono::milliseconds{50});
+
+  EXPECT_TRUE(data.empty());
 }

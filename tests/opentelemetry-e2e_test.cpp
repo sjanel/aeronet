@@ -4,6 +4,7 @@
 #include <opentelemetry/proto/metrics/v1/metrics.pb.h>
 
 #include <chrono>
+#include <exception>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -11,6 +12,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/otlp_test_collector.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -88,6 +90,8 @@ TEST(OpenTelemetryEndToEnd, EmitsTracesAndMetrics) {
   telemetryCfg.withServiceName("aeronet-e2e");
   telemetryCfg.withSampleRate(1.0);
   telemetryCfg.addHttpHeader("x-test-auth", "otel-secret");
+  telemetryCfg.exportInterval = std::chrono::milliseconds{200};  // Fast export for test
+  telemetryCfg.exportTimeout = std::chrono::milliseconds{199};   // Must be < exportInterval
 
   HttpServerConfig serverCfg;
   serverCfg.withTelemetryConfig(telemetryCfg);
@@ -100,16 +104,23 @@ TEST(OpenTelemetryEndToEnd, EmitsTracesAndMetrics) {
   ASSERT_FALSE(response.empty());
   EXPECT_TRUE(response.contains("otel-ok"));
 
-  std::vector<test::CapturedOtlpRequest> received;
-  received.push_back(collector.waitForRequest(1s));
-  received.push_back(collector.waitForRequest(10s));
+  // Collect requests until we have both trace and metrics exports or timeout
+  std::vector<test::CapturedOtlpRequest> captured;
+  const auto deadline = std::chrono::steady_clock::now() + 3s;
+  while (captured.size() < 2 && std::chrono::steady_clock::now() < deadline) {
+    try {
+      captured.emplace_back(collector.waitForRequest(500ms));
+    } catch (const std::exception&) {
+      log::error("timed out waiting for a single request; loop and check overall deadline");
+    }
+  }
 
   const test::CapturedOtlpRequest* traceReq = nullptr;
   const test::CapturedOtlpRequest* metricsReq = nullptr;
-  for (const auto& req : received) {
-    if (req.path == "/v1/traces") {
+  for (const auto& req : captured) {
+    if (req.path == "/v1/traces" && traceReq == nullptr) {
       traceReq = &req;
-    } else if (req.path == "/v1/metrics") {
+    } else if (req.path == "/v1/metrics" && metricsReq == nullptr) {
       metricsReq = &req;
     }
   }

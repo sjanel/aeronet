@@ -174,7 +174,7 @@ void ConnectionState::clear() {
   closeMode = CloseMode::None;
   waitingWritable = false;
   tlsEstablished = false;
-#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+#ifdef AERONET_ENABLE_KTLS
   ktlsSendAttempted = false;
   ktlsSendEnabled = false;
 #endif

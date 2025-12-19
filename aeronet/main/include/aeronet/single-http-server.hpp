@@ -483,7 +483,7 @@ class SingleHttpServer {
   void submitRouterUpdate(std::function<void(Router&)> updater,
                           std::shared_ptr<std::promise<std::exception_ptr>> completion);
 
-#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+#ifdef AERONET_ENABLE_KTLS
   void maybeEnableKtlsSend(ConnectionState& state, TlsTransport& transport, int fd);
 #endif
 
@@ -521,7 +521,7 @@ class SingleHttpServer {
     uint64_t epollModFailures{0};
     std::size_t maxConnectionOutboundBuffer{0};
     uint64_t totalRequestsServed{0};
-#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+#ifdef AERONET_ENABLE_KTLS
     uint64_t ktlsSendEnabledConnections{0};
     uint64_t ktlsSendEnableFallbacks{0};
     uint64_t ktlsSendForcedShutdowns{0};

@@ -367,7 +367,7 @@ void SingleHttpServer::handleReadableClient(int fd) {
       }
 #endif
       state.tlsEstablished = true;
-#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+#ifdef AERONET_ENABLE_KTLS
       if (state.isImmediateCloseRequested()) {
         closeConnection(cnxIt);
         return;

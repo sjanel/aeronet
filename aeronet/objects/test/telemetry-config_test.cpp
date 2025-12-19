@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -26,15 +27,6 @@ TEST(TelemetryConfigTest, ValidateAcceptsValidConfig) {
   EXPECT_NO_THROW(cfg.validate());
 }
 
-TEST(TelemetryConfigTest, ValidateRejectsInvalidSampleRate) {
-  TelemetryConfig cfg;
-  cfg.withSampleRate(-0.1);
-  EXPECT_THROW(cfg.validate(), std::invalid_argument);
-
-  cfg.withSampleRate(1.1);
-  EXPECT_THROW(cfg.validate(), std::invalid_argument);
-}
-
 TEST(TelemetryConfigTest, AddDogStatsD) {
   TelemetryConfig cfg;
   cfg.withDogStatsdSocketPath("/var/run/datadog/dsd.socket")
@@ -54,14 +46,18 @@ TEST(TelemetryConfigTest, AddDogStatsD) {
   EXPECT_EQ(*it, "Custom-Header:CustomValue");
 }
 
-TEST(TelemetryConfigTest, TelemetryConfigInvalidSampleRateThrows) {
+TEST(TelemetryConfigTest, TelemetryConfigSampleRateValidation) {
   TelemetryConfig cfg;
+  cfg.otelEnabled = true;
   cfg.sampleRate = -0.1;
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 
-  TelemetryConfig cfgHigh;
-  cfgHigh.sampleRate = 1.5;
-  EXPECT_THROW(cfgHigh.validate(), std::invalid_argument);
+  cfg.sampleRate = 1.5;
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+
+  cfg.otelEnabled = false;
+  cfg.sampleRate = -0.1;
+  EXPECT_NO_THROW(cfg.validate());  // sample rate not validated when otel is disabled
 }
 
 TEST(TelemetryConfigTest, TelemetryConfigDogStatsDTakesEnvSocket) {
@@ -107,8 +103,24 @@ TEST(TelemetryConfigTest, TelemetryConfigHttpHeadersStored) {
   EXPECT_EQ(headers[1], "X-Test:Value 42");
 }
 
+TEST(TelemetryConfigTest, ExportAndTimeoutValidation) {
+  TelemetryConfig cfg;
+  cfg.otelEnabled = true;
+  cfg.exportInterval = std::chrono::milliseconds{100};
+  cfg.exportTimeout = std::chrono::milliseconds{200};  // longer than interval
+
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+
+  cfg.exportTimeout = std::chrono::milliseconds{100};  // equal to interval
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+
+  cfg.exportTimeout = std::chrono::milliseconds{50};  // less than interval
+  EXPECT_NO_THROW(cfg.validate());
+}
+
 TEST(TelemetryConfigTest, TelemetryConfigServiceTagAppendedOnce) {
   TelemetryConfig cfg;
+  cfg.otelEnabled = true;
   cfg.withServiceName("svc-aeronet");
 
   cfg.validate();  // first call should append service tag
@@ -127,6 +139,38 @@ TEST(TelemetryConfigTest, InvalidHeader) {
   EXPECT_THROW(cfg.addHttpHeader("Invalid-Header-Name:", "Some value"), std::invalid_argument);
   EXPECT_THROW(cfg.addHttpHeader("Valid-Name", "Invalid\rValue"), std::invalid_argument);
   EXPECT_NO_THROW(cfg.addHttpHeader("Valid-Name", "Valid Value"));
+}
+
+TEST(TelemetryConfigTest, HistogramBoundaries) {
+  TelemetryConfig cfg;
+
+  // Strictly increasing boundaries are accepted
+  EXPECT_NO_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{1.0, 2.0, 3.0}).validate());
+
+  // Empty name rejected
+  EXPECT_THROW(cfg.addHistogramBuckets("", std::vector<double>{1.0, 2.0}), std::invalid_argument);
+
+  // Empty number of boundaries rejected
+  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{}), std::invalid_argument);
+  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{3.14}), std::invalid_argument);
+
+  // Double infinite values are rejected
+  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{1.0, std::numeric_limits<double>::infinity()}),
+               std::invalid_argument);
+  EXPECT_THROW(
+      cfg.addHistogramBuckets("test.histo", std::vector<double>{-std::numeric_limits<double>::infinity(), 3.0}),
+      std::invalid_argument);
+
+  // Non strictly increasing boundaries are rejected
+  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{1.0, 1.0, 2.0}), std::invalid_argument);
+  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{2.0, 3.0, 1.0}), std::invalid_argument);
+
+  // Override new boundaries for the same instrument name logs a warning but does not throw
+  EXPECT_NO_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{0.0, 1.0, 2.0}).validate());
+  ASSERT_EQ(cfg.histogramBuckets().size(), 1UL);
+  const auto &buckets = cfg.histogramBuckets().begin()->second;
+  EXPECT_EQ(buckets.size(), 3UL);
+  EXPECT_EQ(buckets[0], 0.0);
 }
 
 }  // namespace aeronet

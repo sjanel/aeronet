@@ -257,13 +257,6 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    extra-config-validations_test
-    test/extra-config-validations_test.cpp
-    LIBRARIES
-    aeronet_objects
-)
-
-AeronetAddUnitTest(
     server-stats_test
     test/server-stats_test.cpp
     LIBRARIES

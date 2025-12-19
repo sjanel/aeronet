@@ -206,6 +206,25 @@ TEST(RequestTaskExtras, ReleaseReturnsHandle_ValueAndDestroy) {
   EXPECT_EQ(alive->load(std::memory_order_relaxed), 0);
 }
 
+TEST(RequestTask, MoveConstructor) {
+  auto t1 = make_int_ok();
+  EXPECT_TRUE(t1.valid());
+  RequestTask<int> t2(std::move(t1));
+  t1.reset();  // NOLINT(bugprone-use-after-move)
+  EXPECT_FALSE(t1.valid());
+  EXPECT_TRUE(t1.done());
+  t1.resume();
+  EXPECT_TRUE(t2.valid());
+  int val = t2.runSynchronously();
+  EXPECT_EQ(val, 7);
+
+  auto &t2Bis = t2;
+  // self move construct should do nothing
+  t2 = std::move(t2Bis);
+  EXPECT_TRUE(t2Bis.valid());
+  EXPECT_TRUE(t2.valid());
+}
+
 TEST(RequestTaskExtras, ReleaseReturnsHandle_VoidAndDestroy) {
   auto alive = std::make_shared<std::atomic<int>>(1);
   RequestTask<void> task = make_guarded_void(alive);

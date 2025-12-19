@@ -26,62 +26,6 @@
 
 using namespace aeronet;
 
-namespace {
-
-// Use the centralized EpollCreateAction and EpollWaitAction from sys-test-support.hpp
-using test::EpollCreateAction;
-using test::EpollWaitAction;
-
-void ResetEpollHooks() {
-  test::g_epoll_create_actions.reset();
-  test::g_epoll_wait_actions.reset();
-  test::ResetEpollCtlModFail();
-  test::FailNextMalloc(0);
-  test::FailNextRealloc(0);
-}
-
-void SetEpollCreateActions(std::initializer_list<EpollCreateAction> actions) {
-  test::g_epoll_create_actions.setActions(actions);
-}
-
-void SetEpollWaitActions(std::vector<EpollWaitAction> actions) {
-  test::g_epoll_wait_actions.setActions(std::move(actions));
-}
-
-class EventLoopHookGuard {
- public:
-  EventLoopHookGuard() = default;
-  EventLoopHookGuard(const EventLoopHookGuard&) = delete;
-  EventLoopHookGuard& operator=(const EventLoopHookGuard&) = delete;
-  ~EventLoopHookGuard() { ResetEpollHooks(); }
-};
-
-[[nodiscard]] EpollCreateAction EpollCreateFail(int err) { return EpollCreateAction{true, err}; }
-
-[[nodiscard]] EpollWaitAction WaitReturn(int readyCount, std::vector<epoll_event> events) {
-  EpollWaitAction action;
-  action.kind = EpollWaitAction::Kind::Events;
-  action.result = readyCount;
-  action.events = std::move(events);
-  return action;
-}
-
-[[nodiscard]] EpollWaitAction WaitError(int err) {
-  EpollWaitAction action;
-  action.kind = EpollWaitAction::Kind::Error;
-  action.err = err;
-  return action;
-}
-
-epoll_event MakeEvent(int fd, uint32_t mask) {
-  epoll_event ev{};
-  ev.events = mask;
-  ev.data.fd = fd;
-  return ev;
-}
-
-}  // namespace
-
 // Epoll system overrides are now centralized in sys-test-support.hpp
 // under the AERONET_WANT_SOCKET_OVERRIDES macro.
 
@@ -228,13 +172,13 @@ TEST(EventLoopTest, InvalidEpollFlags) {
 }
 
 TEST(EventLoopTest, ConstructorThrowsWhenEpollCreateFails) {
-  EventLoopHookGuard guard;
-  SetEpollCreateActions({EpollCreateFail(EMFILE)});
+  test::EventLoopHookGuard guard;
+  test::SetEpollCreateActions({test::EpollCreateFail(EMFILE)});
   EXPECT_THROW(EventLoop(std::chrono::milliseconds(5)), std::runtime_error);
 }
 
 TEST(EventLoopTest, ConstructorThrowsWhenAllocationFails) {
-  EventLoopHookGuard guard;
+  test::EventLoopHookGuard guard;
   if (!AERONET_WANT_MALLOC_OVERRIDES) {
     GTEST_SKIP() << "malloc overrides disabled on this toolchain; skipping";
   }
@@ -243,31 +187,31 @@ TEST(EventLoopTest, ConstructorThrowsWhenAllocationFails) {
 }
 
 TEST(EventLoopTest, PollReturnsZeroWhenInterrupted) {
-  EventLoopHookGuard guard;
-  SetEpollWaitActions({WaitError(EINTR)});
+  test::EventLoopHookGuard guard;
+  test::SetEpollWaitActions({test::WaitError(EINTR)});
   EventLoop loop(std::chrono::milliseconds(5));
   const int rc = loop.poll([](EventLoop::EventFd) { FAIL() << "callback should not run"; });
   EXPECT_EQ(0, rc);
 }
 
 TEST(EventLoopTest, PollReturnsMinusOneOnFatalError) {
-  EventLoopHookGuard guard;
-  SetEpollWaitActions({WaitError(EIO)});
+  test::EventLoopHookGuard guard;
+  test::SetEpollWaitActions({test::WaitError(EIO)});
   EventLoop loop(std::chrono::milliseconds(5));
   const int rc = loop.poll([](EventLoop::EventFd) { FAIL() << "callback should not run"; });
   EXPECT_EQ(-1, rc);
 }
 
 TEST(EventLoopTest, PollKeepsCapacityWhenReallocFails) {
-  EventLoopHookGuard guard;
+  test::EventLoopHookGuard guard;
   EventLoop loop(std::chrono::milliseconds(5), 0, 2);
   const auto initialCapacity = loop.capacity();
   std::vector<epoll_event> events;
   events.reserve(initialCapacity);
   for (uint32_t i = 0; i < initialCapacity; ++i) {
-    events.push_back(MakeEvent(static_cast<int>(i), EventIn));
+    events.push_back(test::MakeEvent(static_cast<int>(i), EventIn));
   }
-  SetEpollWaitActions({WaitReturn(static_cast<int>(initialCapacity), std::move(events))});
+  test::SetEpollWaitActions({test::WaitReturn(static_cast<int>(initialCapacity), std::move(events))});
   if (!AERONET_WANT_MALLOC_OVERRIDES) {
     GTEST_SKIP() << "realloc overrides disabled on this toolchain; skipping";
   }
@@ -281,17 +225,36 @@ TEST(EventLoopTest, PollKeepsCapacityWhenReallocFails) {
 }
 
 TEST(EventLoopTest, PollDoublesCapacityWhenReallocSucceeds) {
-  EventLoopHookGuard guard;
+  test::EventLoopHookGuard guard;
   EventLoop loop(std::chrono::milliseconds(5), 0, 2);
   const auto initialCapacity = loop.capacity();
   std::vector<epoll_event> events;
   events.reserve(initialCapacity);
   for (uint32_t i = 0; i < initialCapacity; ++i) {
-    events.push_back(MakeEvent(static_cast<int>(i), EventIn));
+    events.push_back(test::MakeEvent(static_cast<int>(i), EventIn));
   }
-  SetEpollWaitActions({WaitReturn(static_cast<int>(initialCapacity), std::move(events))});
+  test::SetEpollWaitActions({test::WaitReturn(static_cast<int>(initialCapacity), std::move(events))});
 
   const int rc = loop.poll([](EventLoop::EventFd) {});
   EXPECT_EQ(static_cast<int>(initialCapacity), rc);
   EXPECT_EQ(loop.capacity(), initialCapacity * 2);
+}
+
+TEST(EventLoopTest, ModFailures) {
+  test::EventLoopHookGuard guard;
+  EventLoop loop(std::chrono::milliseconds(5), 0, 2);
+
+  // simulate benign mod failure (EBADF)
+  test::FailAllEpollCtlMod(EBADF);
+  EXPECT_FALSE(loop.mod(EventLoop::EventFd{42, EventIn}));
+
+  // simulate benign mod failure (ENOENT)
+  test::FailAllEpollCtlMod(ENOENT);
+  EXPECT_FALSE(loop.mod(EventLoop::EventFd{43, EventIn}));
+
+  // simulate fatal mod failure (EACCES)
+  test::FailAllEpollCtlMod(EACCES);
+  EXPECT_FALSE(loop.mod(EventLoop::EventFd{44, EventIn}));
+
+  test::ResetEpollCtlModFail();
 }
