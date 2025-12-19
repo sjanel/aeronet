@@ -22,6 +22,11 @@
 #include <utility>
 #include <vector>
 
+#ifdef AERONET_ENABLE_OPENSSL
+#include <openssl/bio.h>
+#include <openssl/ssl.h>
+#endif
+
 #ifdef __GLIBC__
 extern "C" void* __libc_malloc(size_t) noexcept;          // NOLINT(bugprone-reserved-identifier)
 extern "C" void* __libc_realloc(void*, size_t) noexcept;  // NOLINT(bugprone-reserved-identifier)
@@ -362,6 +367,7 @@ inline ActionQueue<SyscallAction> g_setsockopt_actions;
 inline ActionQueue<SyscallAction> g_bind_actions;
 inline ActionQueue<SyscallAction> g_listen_actions;
 inline ActionQueue<SyscallAction> g_getsockname_actions;
+inline ActionQueue<std::pair<ssize_t, int>> g_send_actions;  // (ret, errno)
 
 // Epoll control action for MOD failures
 struct EpollCtlAction {
@@ -402,6 +408,77 @@ inline void FailAllEpollCtlMod(int err) {
   g_epoll_ctl_mod_fail_count.store(0, std::memory_order_release);
 }
 
+#ifdef AERONET_ENABLE_OPENSSL
+// --- OpenSSL KTLS controls (tests only) ---
+// Allow tests to inject custom return values for BIO_ctrl when called with
+// BIO_CTRL_GET_KTLS_SEND or BIO_CTRL_SET_KTLS_SEND, and to force SSL_get_wbio
+// to return nullptr a configurable number of times.
+
+struct BioCtrlAction {
+  long ret{0};
+  int err{0};
+};
+
+// Queue of actions keyed by cmd (e.g., BIO_CTRL_GET_KTLS_SEND / BIO_CTRL_SET_KTLS_SEND)
+inline KeyedActionQueue<int, BioCtrlAction> g_bio_ctrl_actions;
+
+// Force N next calls to SSL_get_wbio to return nullptr.
+inline std::atomic<int> g_ssl_get_wbio_force_null{0};
+
+inline void ForceNextSslGetWbioNull(int count = 1) {
+  g_ssl_get_wbio_force_null.store(count, std::memory_order_release);
+}
+
+// Helpers for tests to push actions
+inline void PushBioCtrlAction(int cmd, long ret, int err = 0) { g_bio_ctrl_actions.push(cmd, BioCtrlAction{ret, err}); }
+
+#endif  // AERONET_ENABLE_OPENSSL
+
+#ifdef AERONET_ENABLE_OPENSSL
+// --- Interposed overrides for OpenSSL functions (tests only) ---
+extern "C" long BIO_ctrl(BIO* b, int cmd, long larg, void* parg) {  // NOLINT
+  using Fn = long (*)(BIO*, int, long, void*);
+  static Fn real_fn = nullptr;
+  if (real_fn == nullptr) {
+    real_fn = aeronet::test::ResolveNext<Fn>("BIO_ctrl");
+  }
+
+#if defined(BIO_CTRL_GET_KTLS_SEND)
+  if (cmd == BIO_CTRL_GET_KTLS_SEND) {
+    if (auto act = aeronet::test::g_bio_ctrl_actions.pop(cmd)) {
+      errno = act->err;
+      return act->ret;
+    }
+  }
+#endif
+#if defined(BIO_CTRL_SET_KTLS_SEND)
+  if (cmd == BIO_CTRL_SET_KTLS_SEND) {
+    if (auto act = aeronet::test::g_bio_ctrl_actions.pop(cmd)) {
+      errno = act->err;
+      return act->ret;
+    }
+  }
+#endif
+  return real_fn(b, cmd, larg, parg);
+}
+
+extern "C" BIO* SSL_get_wbio(const SSL* s) {  // NOLINT
+  using Fn = BIO* (*)(const SSL*);
+  static Fn real_fn = nullptr;
+  if (real_fn == nullptr) {
+    real_fn = aeronet::test::ResolveNext<Fn>("SSL_get_wbio");
+  }
+  int remaining = aeronet::test::g_ssl_get_wbio_force_null.load(std::memory_order_acquire);
+  while (remaining > 0) {
+    if (aeronet::test::g_ssl_get_wbio_force_null.compare_exchange_weak(
+            remaining, remaining - 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
+      return nullptr;
+    }
+  }
+  return real_fn(s);
+}
+#endif  // AERONET_ENABLE_OPENSSL
+
 inline void ResetEpollCtlModFail() {
   g_epoll_ctl_mod_fail.store(false, std::memory_order_release);
   g_epoll_ctl_mod_fail_errno = 0;
@@ -416,6 +493,7 @@ inline void ResetSocketActions() {
   g_bind_actions.reset();
   g_listen_actions.reset();
   g_getsockname_actions.reset();
+  g_send_actions.reset();
   g_epoll_ctl_actions.reset();
   g_epoll_create_actions.reset();
   g_epoll_wait_actions.reset();
@@ -427,6 +505,7 @@ inline void PushSetsockoptAction(SyscallAction action) { g_setsockopt_actions.pu
 inline void PushBindAction(SyscallAction action) { g_bind_actions.push(action); }
 inline void PushListenAction(SyscallAction action) { g_listen_actions.push(action); }
 inline void PushGetsocknameAction(SyscallAction action) { g_getsockname_actions.push(action); }
+inline void PushSendAction(std::pair<ssize_t, int> action) { g_send_actions.push(action); }
 inline void PushEpollCtlAction(EpollCtlAction action) { g_epoll_ctl_actions.push(action); }
 inline void PushEpollCreateAction(EpollCreateAction action) { g_epoll_create_actions.push(action); }
 inline void PushEpollWaitAction(EpollWaitAction action) { g_epoll_wait_actions.push(std::move(action)); }
@@ -436,6 +515,7 @@ using SetsockoptFn = int (*)(int, int, int, const void*, socklen_t);
 using BindFn = int (*)(int, const struct sockaddr*, socklen_t);
 using ListenFn = int (*)(int, int);
 using GetsocknameFn = int (*)(int, struct sockaddr*, socklen_t*);
+using SendFn = ssize_t (*)(int, const void*, size_t, int);
 using EpollCtlFn = int (*)(int, int, int, struct epoll_event*);
 using EpollCreateFn = int (*)(int);
 using EpollWaitFn = int (*)(int, struct epoll_event*, int, int);
@@ -485,6 +565,15 @@ inline GetsocknameFn ResolveRealGetsockname() {
   return fn;
 }
 
+inline SendFn ResolveRealSend() {
+  static SendFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<SendFn>("send");
+  return fn;
+}
+
 inline EpollCtlFn ResolveRealEpollCtl() {
   static EpollCtlFn fn = nullptr;
   if (fn != nullptr) {
@@ -510,6 +599,58 @@ inline EpollWaitFn ResolveRealEpollWait() {
   }
   fn = aeronet::test::ResolveNext<EpollWaitFn>("epoll_wait");
   return fn;
+}
+
+inline void ResetEpollHooks() {
+  test::g_epoll_create_actions.reset();
+  test::g_epoll_wait_actions.reset();
+  test::ResetEpollCtlModFail();
+  test::FailNextMalloc(0);
+  test::FailNextRealloc(0);
+}
+
+inline void SetEpollCreateActions(std::initializer_list<EpollCreateAction> actions) {
+  test::g_epoll_create_actions.setActions(actions);
+}
+
+inline void SetEpollWaitActions(std::vector<EpollWaitAction> actions) {
+  test::g_epoll_wait_actions.setActions(std::move(actions));
+}
+
+class EventLoopHookGuard {
+ public:
+  EventLoopHookGuard() = default;
+
+  EventLoopHookGuard(const EventLoopHookGuard&) = delete;
+  EventLoopHookGuard(EventLoopHookGuard&&) = delete;
+  EventLoopHookGuard& operator=(const EventLoopHookGuard&) = delete;
+  EventLoopHookGuard& operator=(EventLoopHookGuard&&) = delete;
+
+  ~EventLoopHookGuard() { ResetEpollHooks(); }
+};
+
+[[nodiscard]] inline EpollCreateAction EpollCreateFail(int err) { return EpollCreateAction{true, err}; }
+
+[[nodiscard]] inline EpollWaitAction WaitReturn(int readyCount, std::vector<epoll_event> events) {
+  EpollWaitAction action;
+  action.kind = EpollWaitAction::Kind::Events;
+  action.result = readyCount;
+  action.events = std::move(events);
+  return action;
+}
+
+[[nodiscard]] inline EpollWaitAction WaitError(int err) {
+  EpollWaitAction action;
+  action.kind = EpollWaitAction::Kind::Error;
+  action.err = err;
+  return action;
+}
+
+epoll_event inline MakeEvent(int fd, uint32_t mask) {
+  epoll_event ev{};
+  ev.events = mask;
+  ev.data.fd = fd;
+  return ev;
 }
 
 }  // namespace aeronet::test
@@ -818,6 +959,21 @@ extern "C" __attribute__((no_sanitize("address"))) int getsockname(int sockfd, s
   }
   auto real = aeronet::test::ResolveRealGetsockname();
   return real(sockfd, addr, addrlen);
+}
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) ssize_t send(int sockfd, const void* buf, size_t len, int flags) {
+  auto act = aeronet::test::g_send_actions.pop();
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealSend();
+  return real(sockfd, buf, len, flags);
 }
 
 // NOLINTNEXTLINE

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -66,7 +67,8 @@ void sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeo
 // For chunked responses, continues reading until the terminating chunk (0\r\n\r\n).
 // For responses with Content-Length, continues until body is complete.
 // For Connection: close responses, reads until peer closes or timeout.
-std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout = 500ms);
+std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout = 500ms,
+                            std::size_t expectedReceivedBytes = 0);
 
 std::string recvUntilClosed(int fd);
 

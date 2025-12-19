@@ -576,7 +576,7 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
   static constexpr bool tlsTransport = false;
 #endif
 
-#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+#ifdef AERONET_ENABLE_KTLS
   const bool ktlsSend = tlsTransport && state.ktlsSendEnabled;
 #else
   static constexpr bool ktlsSend = false;
@@ -611,7 +611,7 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
         break;
       case ConnectionState::FileResult::Code::Sent:
         _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(res.bytesDone);
-#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+#ifdef AERONET_ENABLE_KTLS
         if (ktlsSend) {
           _stats.ktlsSendBytes += static_cast<std::uint64_t>(res.bytesDone);
         }
@@ -631,7 +631,7 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
           const auto retryRes = state.transportFile(cnxIt->first.fd(), tlsFlow);
           if (retryRes.code == ConnectionState::FileResult::Code::Sent) {
             _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(retryRes.bytesDone);
-#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+#ifdef AERONET_ENABLE_KTLS
             if (ktlsSend) {
               _stats.ktlsSendBytes += static_cast<std::uint64_t>(retryRes.bytesDone);
             }

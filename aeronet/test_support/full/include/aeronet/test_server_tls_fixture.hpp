@@ -44,7 +44,7 @@ struct TlsTestServer {
   }
 
   explicit TlsTestServer(std::initializer_list<std::string_view> alpn = {}, const Mutator& mut = nullptr,
-                         std::chrono::milliseconds poll = std::chrono::milliseconds{50})
+                         std::chrono::milliseconds poll = std::chrono::milliseconds{1})
       : server(makeConfig(alpn, mut), RouterConfig{}, poll) {}
 
   [[nodiscard]] uint16_t port() const { return server.port(); }

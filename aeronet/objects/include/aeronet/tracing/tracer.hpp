@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string_view>
@@ -73,6 +74,12 @@ class TelemetryContext {
 
   // Record a gauge value. No-op if metrics disabled/failed.
   void gauge(std::string_view name, int64_t value) const noexcept;
+
+  // Record a histogram value. No-op if metrics disabled/failed.
+  void histogram(std::string_view name, double value) const noexcept;
+
+  // Record a timing value. No-op if metrics disabled/failed.
+  void timing(std::string_view name, std::chrono::milliseconds ms) const noexcept;
 
   // Access underlying DogStatsD client, or nullptr if not enabled.
   // You can use it to emit custom DogStatsD metrics.

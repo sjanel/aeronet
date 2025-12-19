@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/features.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/major-minor-version.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -15,25 +17,40 @@ namespace aeronet {
 
 namespace {
 std::string NormalizeHostname(std::string_view host) {
-  std::string normalized(host);
-  for (char& ch : normalized) {
-    ch = tolower(ch);
-  }
+  std::string normalized;
+  normalized.resize_and_overwrite(host.size(), [host](char* data, std::size_t size) {
+    std::ranges::transform(host, data, [](char ch) { return tolower(ch); });
+    return size;
+  });
   return normalized;
 }
 
 }  // namespace
 
-void TLSConfig::validate() const {
+void TLSConfig::validate() {
   if (!enabled) {
     return;
   }
 
-#ifndef AERONET_ENABLE_KTLS
-  if (ktlsMode != KtlsMode::Disabled) {
-    throw std::invalid_argument("KTLS requested but not enabled at build time");
+  switch (ktlsMode) {
+    case KtlsMode::Disabled:
+      break;
+    case KtlsMode::Auto:
+      if constexpr (!ktlsEnabled()) {
+        log::warn("KTLS requested but not enabled at build time - falling back to user-space TLS");
+        ktlsMode = KtlsMode::Disabled;
+      }
+      break;
+    case KtlsMode::Enabled:
+      [[fallthrough]];
+    case KtlsMode::Forced:
+      if constexpr (!ktlsEnabled()) {
+        throw std::invalid_argument("KTLS requested but not enabled at build time");
+      }
+      break;
+    default:
+      throw std::invalid_argument("Invalid KTLS mode");
   }
-#endif
 
   // If TLS config is present we require a cert and a key supplied (either file or in-memory PEM)
   const bool hasCert = !certFile().empty() || !certPem().empty();

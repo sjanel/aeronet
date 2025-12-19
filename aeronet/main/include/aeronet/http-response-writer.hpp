@@ -212,7 +212,6 @@ class HttpResponseWriter {
   Encoding _compressionFormat{Encoding::none};
   bool _compressionActivated{false};
   bool _contentEncodingHeaderPresent{false};
-  bool _responseMiddlewareApplied{false};
 
   // Internal fixed HttpResponse used solely for header accumulation and status/reason/body placeholder.
   // We never finalize until ensureHeadersSent(); body remains empty (streaming chunks / writes follow separately).
