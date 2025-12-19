@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "aeronet/decompression-config.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/tls-config.hpp"
 
@@ -144,7 +145,7 @@ TEST(HttpServerConfigTest, MaxPerEventReadBytesMustMatchChunkSize) {
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
-#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+#ifdef AERONET_ENABLE_KTLS
 TEST(HttpServerConfigTest, WithTlsKtlsModeEnablesTls) {
   HttpServerConfig config;
   config.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled);
@@ -195,6 +196,29 @@ TEST(HttpServerConfigTest, TooLargePollIntervalValueThrows) {
   HttpServerConfig config;
   config.withPollInterval(std::chrono::milliseconds{std::numeric_limits<int>::max()} + std::chrono::milliseconds{1});
   EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(HttpServerConfigTest, HeaderBodyLimits) {
+  HttpServerConfig cfg;
+  cfg.maxHeaderBytes = 10;
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+  cfg.maxHeaderBytes = 1024;
+  cfg.maxBodyBytes = 0;
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+TEST(HttpServerConfigTest, WithDecompressionConfig) {
+  HttpServerConfig config;
+  DecompressionConfig decfg;
+  decfg.enable = true;
+  decfg.decoderChunkSize = 1024;
+  decfg.maxDecompressedBytes = 10UL * 1024 * 1024;
+  config.withRequestDecompression(decfg);
+  EXPECT_NO_THROW(config.validate());
+
+  EXPECT_EQ(config.decompression.enable, true);
+  EXPECT_EQ(config.decompression.decoderChunkSize, 1024U);
+  EXPECT_EQ(config.decompression.maxDecompressedBytes, 10UL * 1024 * 1024);
 }
 
 }  // namespace aeronet

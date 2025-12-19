@@ -118,16 +118,13 @@ void HttpResponseWriter::ensureHeadersSent() {
   // If Content-Type has not been set, set to 'application/octet-stream' by default.
   _fixedResponse.setHeader(http::ContentType, http::ContentTypeApplicationOctetStream, HttpResponse::OnlyIfNew::Yes);
   // If compression already activated (delayed strategy) but header not sent yet, add Content-Encoding now.
-  if (_compressionActivated && _compressionFormat != Encoding::none) {
+  if (_compressionActivated) {
     _fixedResponse.setHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
     if (_server->_config.compression.addVaryHeader) {
       _fixedResponse.appendHeaderValue(http::Vary, http::AcceptEncoding);
     }
   }
-  if (!_responseMiddlewareApplied) {
-    _server->applyResponseMiddleware(*_request, _fixedResponse, _routeResponseMiddleware, true);
-    _responseMiddlewareApplied = true;
-  }
+  _server->applyResponseMiddleware(*_request, _fixedResponse, _routeResponseMiddleware, true);
 
   if (_pCorsPolicy != nullptr) {
     (void)_pCorsPolicy->applyToResponse(*_request, _fixedResponse);

@@ -2005,6 +2005,23 @@ Automatic (no handler code changes):
 - `aeronet.bytes.read` – bytes read from clients
 - `aeronet.bytes.written` – bytes written to clients
 
+**Metrics (histograms):**
+
+**aeronet** exposes a lightweight histogram API via `TelemetryContext::histogram(name, value)`.
+
+Bucket boundaries are configured explicitly in `TelemetryConfig` (OpenTelemetry explicit-bucket histogram view).
+This allows you to define stable bucket boundaries for a given instrument name.
+
+Configuration:
+
+- Register boundaries per instrument name via `TelemetryConfig::addHistogramBuckets(name, boundaries)`.
+- Boundaries must be finite and **strictly increasing**.
+
+Behavior:
+
+- DogStatsD emission does not use client-side bucket boundaries; histogram aggregation/bucketing is configured
+  on the DogStatsD backend/agent.
+
 All instrumentation is fully async (OTLP HTTP exporter) with configurable endpoints and sample rates. When
 `dogStatsDEnabled` is enabled, Aeronet also emits counter metrics over DogStatsD/UDS even if the build
 does not include OpenTelemetry.

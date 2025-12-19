@@ -182,7 +182,7 @@ TlsTransport::KtlsEnableResult TlsTransport::enableKtlsSend() {
   }
   _ktlsSendAttempted = true;
 
-#if defined(__linux__) && defined(BIO_CTRL_GET_KTLS_SEND) && !defined(OPENSSL_NO_KTLS)
+#if defined(BIO_CTRL_GET_KTLS_SEND) && defined(BIO_CTRL_SET_KTLS_SEND)
   auto* writeBio = ::SSL_get_wbio(_ssl.get());
   log::debug("enableKtlsSend: writeBio = {}", static_cast<void*>(writeBio));
   if (writeBio == nullptr) {
@@ -199,15 +199,7 @@ TlsTransport::KtlsEnableResult TlsTransport::enableKtlsSend() {
     result.status = KtlsEnableResult::Status::AlreadyEnabled;
     return result;
   }
-  /*
-   * Some OpenSSL distributions expose the GET control but intentionally
-   * do not expose the SET control as a public macro (it may be internal).
-   * Detect that at compile-time and adapt: if the SET control isn't
-   * available we cannot request KTLS via the BIO and must report
-   * Unsupported.
-   */
-#ifdef BIO_CTRL_SET_KTLS_SEND
-  log::debug("enableKtlsSend: BIO_CTRL_SET_KTLS_SEND defined at compile time");
+
   errno = 0;
   int setRes = ::BIO_ctrl(writeBio, BIO_CTRL_SET_KTLS_SEND, 0, nullptr);
   log::debug("enableKtlsSend: BIO_CTRL_SET_KTLS_SEND -> {} errno={} ({})", setRes, errno,
@@ -225,10 +217,7 @@ TlsTransport::KtlsEnableResult TlsTransport::enableKtlsSend() {
     result.sslError = lastErr;
   }
 #else
-  log::warn("enableKtlsSend: BIO_CTRL_SET_KTLS_SEND not defined in OpenSSL headers; cannot request KTLS via BIO");
-  result.status = KtlsEnableResult::Status::Unsupported;
-#endif
-#else
+  // Platform/OpenSSL build does not support requesting KTLS send offload.
   result.status = KtlsEnableResult::Status::Unsupported;
 #endif
   return result;

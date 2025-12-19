@@ -32,7 +32,8 @@ class DogStatsD {
   // socketPath: path to unix datagram socket used by the agent (e.g. /var/run/datadog/dsd.socket)
   // ns: optional metric namespace prefix (e.g. "myapp.")
   // Disables the client if socketPath is empty.
-  explicit DogStatsD(std::string_view socketPath = {}, std::string_view ns = {});
+  explicit DogStatsD(std::string_view socketPath = {}, std::string_view ns = {},
+                     std::chrono::milliseconds connectTimeout = std::chrono::milliseconds{5000});
 
   void increment(std::string_view metric, uint64_t value = 1UL, const DogStatsDTags& tags = {}) const noexcept;
 

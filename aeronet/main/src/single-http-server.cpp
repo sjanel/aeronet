@@ -1027,12 +1027,11 @@ void SingleHttpServer::applyResponseMiddleware(const HttpRequest& request, HttpR
                                                std::span<const ResponseMiddleware> routeChain, bool streaming) {
   auto runChain = [&](std::span<const ResponseMiddleware> postMiddleware, bool isGlobal) {
     for (uint32_t hookIdx = 0; hookIdx < postMiddleware.size(); ++hookIdx) {
-      const auto& middleware = postMiddleware[hookIdx];
       auto spanScope = startMiddlewareSpan(request, MiddlewareMetrics::Phase::Post, isGlobal, hookIdx, streaming);
       const auto start = std::chrono::steady_clock::now();
       bool threwEx = false;
       try {
-        middleware(request, response);
+        postMiddleware[hookIdx](request, response);
       } catch (const std::exception& ex) {
         threwEx = true;
         log::error("Exception in {} response middleware: {}", isGlobal ? "global" : "route", ex.what());
@@ -1096,8 +1095,7 @@ tracing::SpanRAII SingleHttpServer::startMiddlewareSpan(const HttpRequest& reque
 void SingleHttpServer::eventLoop() {
   sweepIdleConnections();
 
-  // Apply any pending config updates posted from other threads. Fast-path: check
-  // atomic flag before taking the lock to avoid contention in the nominal case.
+  // Apply any pending config updates posted from other threads.
   applyPendingUpdates();
 
   // Poll for events
@@ -1124,7 +1122,6 @@ void SingleHttpServer::eventLoop() {
     _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(ready));
   } else if (ready < 0) {
     _telemetry.counterAdd("aeronet.events.errors", 1);
-    log::error("eventLoop.poll failed: {}", std::strerror(errno));
     _lifecycle.exchangeStopping();
   } else {
     // ready == 0: timeout. Retry pending writes to handle edge-triggered epoll timing issues.
@@ -1186,7 +1183,7 @@ void SingleHttpServer::closeAllConnections(bool immediate) {
   }
 }
 
-#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+#ifdef AERONET_ENABLE_KTLS
 void SingleHttpServer::maybeEnableKtlsSend(ConnectionState& state, TlsTransport& transport, int fd) {
   if (state.ktlsSendAttempted || _config.tls.ktlsMode == TLSConfig::KtlsMode::Disabled) {
     state.ktlsSendAttempted = true;
@@ -1272,7 +1269,7 @@ ServerStats SingleHttpServer::stats() const {
   statsOut.epollModFailures = _stats.epollModFailures;
   statsOut.maxConnectionOutboundBuffer = _stats.maxConnectionOutboundBuffer;
   statsOut.totalRequestsServed = _stats.totalRequestsServed;
-#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+#ifdef AERONET_ENABLE_KTLS
   statsOut.ktlsSendEnabledConnections = _stats.ktlsSendEnabledConnections;
   statsOut.ktlsSendEnableFallbacks = _stats.ktlsSendEnableFallbacks;
   statsOut.ktlsSendForcedShutdowns = _stats.ktlsSendForcedShutdowns;
