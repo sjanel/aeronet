@@ -120,7 +120,7 @@ struct ConnectionState {
   CloseMode closeMode{CloseMode::None};
   bool waitingWritable{false};  // EPOLLOUT registered
   bool tlsEstablished{false};   // true once TLS handshake completed (if TLS enabled)
-#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_ENABLE_KTLS)
+#ifdef AERONET_ENABLE_KTLS
   bool ktlsSendAttempted{false};
   bool ktlsSendEnabled{false};
 #endif

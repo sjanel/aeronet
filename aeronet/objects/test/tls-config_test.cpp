@@ -5,9 +5,11 @@
 #include <cstddef>
 #include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 namespace aeronet {
 
@@ -55,7 +57,7 @@ TEST(TlsConfigTest, InvalidMaxVersionThrows) {
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
-TEST(TLSConfigValidate, SessionTicketKeysConfigured) {
+TEST(TLSConfigTest, SessionTicketKeysConfigured) {
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withKeyPem(kDummyKeyPem);
@@ -69,7 +71,7 @@ TEST(TLSConfigValidate, SessionTicketKeysConfigured) {
   EXPECT_EQ(cfg.keyFile(), std::string_view());
 }
 
-TEST(TLSConfigValidate, SessionTicketKeysConfiguredButTicketsDisabledThrows) {
+TEST(TLSConfigTest, SessionTicketKeysConfiguredButTicketsDisabledThrows) {
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withKeyPem(kDummyKeyPem);
@@ -79,7 +81,7 @@ TEST(TLSConfigValidate, SessionTicketKeysConfiguredButTicketsDisabledThrows) {
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
-TEST(TLSConfigValidate, HandshakeRateLimitBurstWithRate) {
+TEST(TLSConfigTest, HandshakeRateLimitBurstWithRate) {
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withKeyPem(kDummyKeyPem);
@@ -89,7 +91,7 @@ TEST(TLSConfigValidate, HandshakeRateLimitBurstWithRate) {
   cfg.validate();
 }
 
-TEST(TLSConfigValidate, HandshakeRateLimitBurstWithoutRateThrows) {
+TEST(TLSConfigTest, HandshakeRateLimitBurstWithoutRateThrows) {
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withKeyPem(kDummyKeyPem);
@@ -99,7 +101,7 @@ TEST(TLSConfigValidate, HandshakeRateLimitBurstWithoutRateThrows) {
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
-TEST(TLSConfigValidate, SniCertificatePatternNonEmpty) {
+TEST(TLSConfigTest, SniCertificatePatternNonEmpty) {
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withKeyPem(kDummyKeyPem);
@@ -107,7 +109,7 @@ TEST(TLSConfigValidate, SniCertificatePatternNonEmpty) {
   EXPECT_THROW(cfg.withTlsSniCertificateMemory("", kDummyCertPem, kDummyKeyPem), std::invalid_argument);
 }
 
-TEST(TLSConfigValidate, InvalidWildcard) {
+TEST(TLSConfigTest, InvalidWildcard) {
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withKeyPem(kDummyKeyPem);
@@ -115,7 +117,7 @@ TEST(TLSConfigValidate, InvalidWildcard) {
   EXPECT_THROW(cfg.withTlsSniCertificateMemory("*.", kDummyCertPem, kDummyKeyPem), std::invalid_argument);
 }
 
-TEST(TLSConfig, SessionTicketsConfigEquality) {
+TEST(TLSConfigTest, SessionTicketsConfigEquality) {
   TLSConfig::SessionTicketsConfig cfg1;
   cfg1.enabled = true;
   cfg1.lifetime = std::chrono::seconds(7200);
@@ -133,7 +135,7 @@ TEST(TLSConfig, SessionTicketsConfigEquality) {
   EXPECT_NE(cfg1, cfg.sessionTickets);
 }
 
-TEST(TLSConfig, SniCertificateEquality) {
+TEST(TLSConfigTest, SniCertificateEquality) {
   TLSConfig::SniCertificate cert1;
   cert1.setPattern("example.com");
   cert1.isWildcard = false;
@@ -150,7 +152,7 @@ TEST(TLSConfig, SniCertificateEquality) {
   EXPECT_NE(cert1, cert2);
 }
 
-TEST(TLSConfigValidate, RequiresCertAndKeyWhenEnabled) {
+TEST(TLSConfigTest, RequiresCertAndKeyWhenEnabled) {
   TLSConfig cfg;
   cfg.enabled = true;
   // neither cert nor key -> error
@@ -174,7 +176,7 @@ TEST(TLSConfigValidate, RequiresCertAndKeyWhenEnabled) {
   EXPECT_NO_THROW(cfg3.validate());
 }
 
-TEST(TLSConfigValidate, RequireClientCertNeedsTrustedCerts) {
+TEST(TLSConfigTest, RequireClientCertNeedsTrustedCerts) {
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withCertPem(kDummyCertPem);
@@ -199,7 +201,7 @@ TEST(TLSConfigTest, DisableCompression) {
   EXPECT_TRUE(cfg.disableCompression);
 }
 
-TEST(TLSConfigValidate, AlpnMustMatchRequiresProtocols) {
+TEST(TLSConfigTest, AlpnMustMatchRequiresProtocols) {
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withCertPem(kDummyCertPem);
@@ -217,7 +219,7 @@ TEST(TLSConfigValidate, AlpnMustMatchRequiresProtocols) {
   EXPECT_STREQ(cfg.keyPemCstrView().c_str(), kDummyKeyPem.data());  // NOLINT(bugprone-suspicious-stringview-data-usage)
 }
 
-TEST(TLSConfigValidate, AlpnProtocolEntriesNonEmptyAndWithinLimit) {
+TEST(TLSConfigTest, AlpnProtocolEntriesNonEmptyAndWithinLimit) {
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withCertPem(kDummyCertPem);
@@ -237,7 +239,7 @@ TEST(TLSConfigValidate, AlpnProtocolEntriesNonEmptyAndWithinLimit) {
   EXPECT_NO_THROW(cfg.validate());
 }
 
-TEST(TLSConfigValidate, MinMaxVersionValidation) {
+TEST(TLSConfigTest, MinMaxVersionValidation) {
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withCertPem(kDummyCertPem);
@@ -253,19 +255,37 @@ TEST(TLSConfigValidate, MinMaxVersionValidation) {
   EXPECT_NO_THROW(cfg.validate());
 }
 
-TEST(TLSConfigValidate, KtlsModeBuildGuard) {
+TEST(TLSConfigTest, KtlsModeBuildGuard) {
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withCertPem(kDummyCertPem);
   cfg.withKeyPem(kDummyKeyPem);
 
-#ifndef AERONET_ENABLE_KTLS
   cfg.withKtlsMode(TLSConfig::KtlsMode::Auto);
-  EXPECT_THROW(cfg.validate(), std::invalid_argument);
-#else
-  cfg.withKtlsMode(TLSConfig::KtlsMode::Auto);
+  EXPECT_NO_THROW(cfg.validate());  // Auto should never throw
+
+  cfg.withKtlsMode(TLSConfig::KtlsMode::Disabled);
+  EXPECT_NO_THROW(cfg.validate());  // Disabled should never throw
+
+  cfg.withKtlsMode(TLSConfig::KtlsMode::Enabled);
+
+#ifdef AERONET_ENABLE_KTLS
   EXPECT_NO_THROW(cfg.validate());
+#else
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
 #endif
+
+  cfg.withKtlsMode(TLSConfig::KtlsMode::Forced);
+
+#ifdef AERONET_ENABLE_KTLS
+  EXPECT_NO_THROW(cfg.validate());
+#else
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+#endif
+
+  cfg.withKtlsMode(
+      static_cast<TLSConfig::KtlsMode>(std::numeric_limits<std::underlying_type_t<TLSConfig::KtlsMode>>::max()));
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
 TEST(TlsConfigTest, ClearSniCertificatesWorks) {

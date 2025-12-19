@@ -13,7 +13,7 @@ namespace aeronet::tracing {
 // No-op implementation when OpenTelemetry is disabled, but still allows DogStatsD metrics.
 class TelemetryContextImpl {
  public:
-  explicit TelemetryContextImpl(const aeronet::TelemetryConfig& cfg) : dogstatsd(cfg) {}
+  explicit TelemetryContextImpl(const TelemetryConfig& cfg) : dogstatsd(cfg) {}
 
   detail::DogStatsdMetrics dogstatsd;
 };
@@ -45,6 +45,18 @@ void TelemetryContext::counterAdd(std::string_view name, uint64_t delta) const n
 void TelemetryContext::gauge(std::string_view name, int64_t value) const noexcept {
   if (_impl) {
     _impl->dogstatsd.gauge(name, value);
+  }
+}
+
+void TelemetryContext::histogram(std::string_view name, double value) const noexcept {
+  if (_impl) {
+    _impl->dogstatsd.histogram(name, value);
+  }
+}
+
+void TelemetryContext::timing(std::string_view name, std::chrono::milliseconds ms) const noexcept {
+  if (_impl) {
+    _impl->dogstatsd.timing(name, ms);
   }
 }
 

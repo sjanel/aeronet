@@ -74,7 +74,7 @@ class TLSConfig {
     StaticConcatenatedStrings<5, uint32_t> _strings;
   };
 
-  void validate() const;
+  void validate();
 
   // PEM server certificate (may contain chain)
   [[nodiscard]] std::string_view certFile() const noexcept { return _tlsStrings[0]; }

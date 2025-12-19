@@ -8,13 +8,55 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 
+#define AERONET_WANT_SOCKET_OVERRIDES
+#include "aeronet/sys-test-support.hpp"
 #include "aeronet/unix-dogstatsd-sink.hpp"
 
 namespace aeronet {
 
+TEST(DogStatsDTest, EmptyNamespace) {
+  test::UnixDogstatsdSink sink;
+  DogStatsD client(sink.path(), "");
+
+  client.increment("requests");
+  EXPECT_EQ(sink.recvMessage(), "requests:1|c");
+}
+
+TEST(DogStatsDTest, SocketFails) {
+  test::PushSocketAction({-1, EMFILE});  // EMFILE: too many open files
+  EXPECT_THROW(DogStatsD("/invalid/path/to/socket.sock", "svc"), std::system_error);
+}
+
+TEST(DogStatsDTest, SocketTimeout) {
+  // Use an invalid socket path to trigger syscall failure
+  EXPECT_THROW(DogStatsD("/invalid/path/to/socket.sock", "svc", std::chrono::milliseconds{5}), std::runtime_error);
+}
+
+TEST(DogStatsDTest, SendMetricFailsToAllocateMemory) {
+  test::UnixDogstatsdSink sink;
+  DogStatsD client(sink.path(), "svc");
+
+  test::FailNextMalloc(1);  // cause next malloc to fail
+
+  // Should not throw despite allocation failure
+  EXPECT_NO_THROW(client.increment("requests"));
+}
+
+TEST(DogStatsDTest, SendSystemError) {
+  test::UnixDogstatsdSink sink;
+  DogStatsD client(sink.path(), "svc");
+
+  // Inject send failure (EBADF - bad file descriptor)
+  test::PushSendAction({-1, EBADF});
+
+  // Should not throw despite send() failure
+  EXPECT_NO_THROW(client.increment("requests"));
+}
+
 TEST(DogStatsDTest, SendsAllMetricTypesWithTags) {
-  aeronet::test::UnixDogstatsdSink sink;
+  test::UnixDogstatsdSink sink;
   DogStatsD client(sink.path(), "svc");
   DogStatsD::DogStatsDTags tags;
   tags.append("env:dev");

@@ -79,7 +79,7 @@ void sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeo
   }
 }
 
-std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
+std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout, std::size_t expectedReceivedBytes) {
   std::string out;
   auto start = std::chrono::steady_clock::now();
   auto maxTs = start + totalTimeout;
@@ -125,8 +125,8 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
       if (tePos != std::string_view::npos) {
         if (out.size() >= bodyStart + 5) {
           std::string_view body(out.data() + bodyStart, out.size() - bodyStart);
-          if (body.find("0\r\n\r\n") != std::string_view::npos) {
-            break;
+          if (body.contains("0\r\n\r\n")) {
+            return out;
           }
         }
       } else {
@@ -149,7 +149,7 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
               auto [ptr, ec] = std::from_chars(lengthStr.data(), lengthStr.data() + lengthStr.size(), contentLength);
               if (ec == std::errc{}) {
                 if (out.size() >= bodyStart + contentLength) {
-                  break;
+                  return out;
                 }
               }
             }
@@ -157,10 +157,17 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout) {
         }
       }
       if (out.size() == oldSize) {
-        break;
+        return out;
       }
     }
+    if ((expectedReceivedBytes != 0 && out.size() >= expectedReceivedBytes)) {
+      log::info("recvWithTimeout received expected {} bytes", out.size());
+      return out;
+    }
   }
+
+  log::warn("timeout reached in recvWithTimeout returning {} bytes after {} ms", out.size(),
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
 
   return out;
 }

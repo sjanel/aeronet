@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <stdexcept>
+#include <string>
 
 namespace aeronet {
 
@@ -53,6 +54,16 @@ TEST(BuiltinProbesConfigTest, DisableValidation) {
   config.withStartupPath("/validpath/with space");
 
   EXPECT_NO_THROW(config.validate());
+}
+
+TEST(BuiltinProbesConfigTest, ControlCharacterInvalid) {
+  BuiltinProbesConfig config;
+  config.enabled = true;
+  std::string somePath("/validpath/with");
+  somePath.push_back('\x7F');  // DEL control character
+  somePath.append("delchar");
+  config.withLivenessPath(somePath);
+  EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 }  // namespace aeronet

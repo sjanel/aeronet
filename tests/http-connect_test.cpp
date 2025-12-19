@@ -52,15 +52,14 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   test::sendAll(fd, payload);
 
   // Wait to receive the full payload (some arrives quickly, remainder after upstream sleeps)
-  auto echoed = test::recvWithTimeout(fd, std::chrono::milliseconds{1500});
+  auto echoed = test::recvWithTimeout(fd, std::chrono::milliseconds{5000}, payload.size());
   EXPECT_TRUE(echoed.contains(payload));
 
   // now simulate some epoll mod failures, server should be able to recover from these
   test::FailAllEpollCtlMod(EACCES);
   test::sendAll(fd, payload);
 
-  // Wait to receive the full payload (some arrives quickly, remainder after upstream sleeps)
-  test::recvWithTimeout(fd, std::chrono::milliseconds{1500});
+  test::recvWithTimeout(fd, std::chrono::milliseconds{500}, payload.size());
 
   test::ResetEpollCtlModFail();
 }

@@ -37,32 +37,40 @@ enum class FrameType : uint8_t {
 
 // HTTP/2 Error Codes (RFC 9113 §7)
 // ================================
-enum class ErrorCode : uint32_t {
-  NoError = 0x00,             // Graceful shutdown
-  ProtocolError = 0x01,       // Protocol error detected
-  InternalError = 0x02,       // Implementation fault
-  FlowControlError = 0x03,    // Flow control limits exceeded
-  SettingsTimeout = 0x04,     // Settings not acknowledged in time
-  StreamClosed = 0x05,        // Frame received for closed stream
-  FrameSizeError = 0x06,      // Frame size incorrect
-  RefusedStream = 0x07,       // Stream not processed
-  Cancel = 0x08,              // Stream cancelled
-  CompressionError = 0x09,    // HPACK decompression failed
-  ConnectError = 0x0A,        // TCP connection error for CONNECT
-  EnhanceYourCalm = 0x0B,     // Excessive load
-  InadequateSecurity = 0x0C,  // Negotiated TLS parameters inadequate
-  Http11Required = 0x0D,      // HTTP/1.1 required for this request
+// Note: these codes are 32-bit values on the wire (RFC 9113). Keep the
+// underlying type as `uint32_t` intentionally to match the protocol's
+// on-the-wire representation and to avoid accidental truncation when
+// serializing/deserializing frames.
+enum class ErrorCode : uint32_t {  // NOLINT(performance-enum-size)
+  NoError = 0x00,                  // Graceful shutdown
+  ProtocolError = 0x01,            // Protocol error detected
+  InternalError = 0x02,            // Implementation fault
+  FlowControlError = 0x03,         // Flow control limits exceeded
+  SettingsTimeout = 0x04,          // Settings not acknowledged in time
+  StreamClosed = 0x05,             // Frame received for closed stream
+  FrameSizeError = 0x06,           // Frame size incorrect
+  RefusedStream = 0x07,            // Stream not processed
+  Cancel = 0x08,                   // Stream cancelled
+  CompressionError = 0x09,         // HPACK decompression failed
+  ConnectError = 0x0A,             // TCP connection error for CONNECT
+  EnhanceYourCalm = 0x0B,          // Excessive load
+  InadequateSecurity = 0x0C,       // Negotiated TLS parameters inadequate
+  Http11Required = 0x0D,           // HTTP/1.1 required for this request
 };
 
 // HTTP/2 Settings Parameters (RFC 9113 §6.5.2)
 // =============================================
-enum class SettingsParameter : uint16_t {
-  HeaderTableSize = 0x01,       // HPACK dynamic table size (default: 4096)
-  EnablePush = 0x02,            // Whether server push is permitted (default: 1)
-  MaxConcurrentStreams = 0x03,  // Maximum concurrent streams (default: unlimited)
-  InitialWindowSize = 0x04,     // Initial flow control window size (default: 65535)
-  MaxFrameSize = 0x05,          // Maximum frame payload size (default: 16384)
-  MaxHeaderListSize = 0x06,     // Maximum size of header list (default: unlimited)
+// Note: SETTINGS parameters are 16-bit identifiers on the wire (RFC 9113 §6.5.2).
+// Keep the underlying type as `uint16_t` intentionally to match the protocol's
+// on-the-wire representation and to avoid accidental truncation when
+// serializing/deserializing frames.
+enum class SettingsParameter : uint16_t {  // NOLINT(performance-enum-size)
+  HeaderTableSize = 0x01,                  // HPACK dynamic table size (default: 4096)
+  EnablePush = 0x02,                       // Whether server push is permitted (default: 1)
+  MaxConcurrentStreams = 0x03,             // Maximum concurrent streams (default: unlimited)
+  InitialWindowSize = 0x04,                // Initial flow control window size (default: 65535)
+  MaxFrameSize = 0x05,                     // Maximum frame payload size (default: 16384)
+  MaxHeaderListSize = 0x06,                // Maximum size of header list (default: unlimited)
 };
 
 // HTTP/2 Frame Flags (RFC 9113 §6)
@@ -113,7 +121,7 @@ inline constexpr std::size_t kFrameHeaderSize = 9;
 inline constexpr uint32_t kConnectionStreamId = 0;  // Stream 0 is the connection control stream
 
 // Check if a stream ID is valid for client-initiated streams (odd numbers)
-[[nodiscard]] constexpr bool IsClientStream(uint32_t streamId) noexcept { return streamId != 0 && (streamId & 1) == 1; }
+[[nodiscard]] constexpr bool IsClientStream(uint32_t streamId) noexcept { return (streamId & 1) != 0; }
 
 // Check if a stream ID is valid for server-initiated streams (even numbers, non-zero)
 [[nodiscard]] constexpr bool IsServerStream(uint32_t streamId) noexcept { return streamId != 0 && (streamId & 1) == 0; }

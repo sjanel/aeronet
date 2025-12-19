@@ -17,6 +17,7 @@
 #include <thread>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/errno-throw.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/stringconv.hpp"
@@ -37,7 +38,7 @@ std::string_view FormatFloating(double value, std::array<char, kFloatingBufferSi
 }
 }  // namespace
 
-DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns) {
+DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns, std::chrono::milliseconds connectTimeout) {
   if (socketPath.size() >= sizeof(sockaddr_un{}.sun_path)) {
     throw std::invalid_argument("DogStatsD: socket path too long");
   }
@@ -59,7 +60,7 @@ DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns) {
 
   _fd = BaseFd(::socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
   if (!_fd) {
-    throw std::runtime_error("DogStatsD: socket error");
+    throw_errno("DogStatsD: socket creation failed");
   }
 
   sockaddr_un addr{};
@@ -68,10 +69,10 @@ DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns) {
   addr.sun_path[socketPath.size()] = '\0';
   auto addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + socketPath.size() + 1);
 
-  std::chrono::seconds timeout{20};
   bool connected = false;
-  for (const auto deadline = std::chrono::steady_clock::now() + timeout; std::chrono::steady_clock::now() < deadline;
-       std::this_thread::sleep_for(std::chrono::milliseconds{1})) {
+  const auto stepWait = connectTimeout / 10;
+  for (const auto deadline = std::chrono::steady_clock::now() + connectTimeout;
+       std::chrono::steady_clock::now() < deadline; std::this_thread::sleep_for(stepWait)) {
     if (::connect(_fd.fd(), reinterpret_cast<sockaddr*>(&addr), addrlen) == 0) {
       connected = true;
       break;
@@ -79,7 +80,6 @@ DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns) {
     log::debug("DogStatsD: connect failed for fd # {}: {}", _fd.fd(), std::strerror(errno));
   }
   if (!connected) {
-    _fd.close();
     throw std::runtime_error("DogStatsD: connect timeout");
   }
 }
