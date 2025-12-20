@@ -127,7 +127,7 @@ ProtocolProcessResult WebSocketHandler::processFrame(const FrameParseResult& fra
   return handleDataFrame(frame.header, payload);
 }
 
-ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& header, std::span<const std::byte> payload) {
+ProtocolProcessResult WebSocketHandler::handleDataFrame(FrameHeader header, std::span<const std::byte> payload) {
   ProtocolProcessResult result;
 
   if (header.opcode == Opcode::Continuation) {
@@ -186,8 +186,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
   return result;
 }
 
-ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& header,
-                                                           std::span<const std::byte> payload) {
+ProtocolProcessResult WebSocketHandler::handleControlFrame(FrameHeader header, std::span<const std::byte> payload) {
   ProtocolProcessResult result;
 
   switch (header.opcode) {

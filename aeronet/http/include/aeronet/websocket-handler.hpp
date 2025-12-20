@@ -200,10 +200,10 @@ class WebSocketHandler final : public IProtocolHandler {
   ProtocolProcessResult processFrame(const FrameParseResult& frame);
 
   /// Handle a data frame (Text, Binary, Continuation).
-  ProtocolProcessResult handleDataFrame(const FrameHeader& header, std::span<const std::byte> payload);
+  ProtocolProcessResult handleDataFrame(FrameHeader header, std::span<const std::byte> payload);
 
   /// Handle a control frame (Ping, Pong, Close).
-  ProtocolProcessResult handleControlFrame(const FrameHeader& header, std::span<const std::byte> payload);
+  ProtocolProcessResult handleControlFrame(FrameHeader header, std::span<const std::byte> payload);
 
   /// Complete a message (called when FIN=1).
   ProtocolProcessResult completeMessage();

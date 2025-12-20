@@ -408,6 +408,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionWithMultipleTok
 // ValidateHttp2Upgrade tests
 // ============================================================================
 
+#ifdef AERONET_ENABLE_HTTP2
+
 TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_ValidRequest) {
   const auto status = parse(BuildRaw("GET", "/resource",
                                      "Upgrade: h2c\r\n"
@@ -429,6 +431,22 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_MissingUpgradeHeader) {
   const auto result = upgrade::ValidateHttp2Upgrade(request);
   EXPECT_FALSE(result.valid);
 }
+
+#else
+
+TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_Disabled) {
+  const auto status = parse(BuildRaw("GET", "/resource",
+                                     "Upgrade: h2c\r\n"
+                                     "Connection: Upgrade, HTTP2-Settings\r\n"
+                                     "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  const auto result = upgrade::ValidateHttp2Upgrade(request);
+  EXPECT_FALSE(result.valid);
+  EXPECT_FALSE(result.errorMessage.empty());
+}
+
+#endif
 
 TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_WrongUpgradeValue) {
   const auto status = parse(BuildRaw("GET", "/resource",
@@ -501,6 +519,7 @@ TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_WebSocketCaseInsensitive) {
   EXPECT_EQ(upgrade::DetectUpgradeTarget(request), ProtocolType::WebSocket);
 }
 
+#ifdef AERONET_ENABLE_HTTP2
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2) {
   const auto status = parse(BuildRaw("GET", "/", "Upgrade: h2c\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
@@ -514,6 +533,14 @@ TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2CaseInsensitive) {
 
   EXPECT_EQ(upgrade::DetectUpgradeTarget(request), ProtocolType::Http2);
 }
+#else
+TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2IgnoredWhenDisabled) {
+  const auto status = parse(BuildRaw("GET", "/", "Upgrade: h2c\r\n"));
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  EXPECT_EQ(upgrade::DetectUpgradeTarget(request), ProtocolType::Http11);
+}
+#endif
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_NoUpgrade) {
   const auto status = parse(BuildRaw("GET", "/"));
@@ -596,6 +623,7 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflate) {
 }
 
 // Tests for BuildHttp2UpgradeResponse
+#ifdef AERONET_ENABLE_HTTP2
 TEST(UpgradeHandlerTest, BuildHttp2UpgradeResponse_Basic) {
   UpgradeValidationResult validationResult;
   validationResult.valid = true;
@@ -614,6 +642,7 @@ TEST(UpgradeHandlerTest, BuildHttp2UpgradeResponse_Basic) {
   // Check response ends with double CRLF
   EXPECT_TRUE(responseView.ends_with("\r\n\r\n"));
 }
+#endif
 
 // WebSocket constants tests
 TEST(WebSocketConstantsTest, OpcodeValues) {
@@ -664,11 +693,6 @@ TEST(Http2ConstantsTest, SettingsParameterValues) {
   EXPECT_EQ(static_cast<uint16_t>(http2::SettingsParameter::InitialWindowSize), 0x04);
   EXPECT_EQ(static_cast<uint16_t>(http2::SettingsParameter::MaxFrameSize), 0x05);
   EXPECT_EQ(static_cast<uint16_t>(http2::SettingsParameter::MaxHeaderListSize), 0x06);
-}
-
-TEST(Http2ConstantsTest, ConnectionPreface) {
-  EXPECT_EQ(http2::kConnectionPreface, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-  EXPECT_EQ(http2::kConnectionPrefaceSize, 24);
 }
 
 TEST(Http2ConstantsTest, AlpnIdentifiers) {

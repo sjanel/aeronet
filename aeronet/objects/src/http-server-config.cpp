@@ -244,6 +244,18 @@ HttpServerConfig& HttpServerConfig::enableBuiltinProbes(bool on) {
   return *this;
 }
 
+#ifdef AERONET_ENABLE_HTTP2
+HttpServerConfig& HttpServerConfig::withHttp2(Http2Config cfg) {
+  http2 = std::move(cfg);
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::enableHttp2(bool on) {
+  http2.enable = on;
+  return *this;
+}
+#endif
+
 void HttpServerConfig::validate() {
   compression.validate();
   decompression.validate();
@@ -288,6 +300,9 @@ void HttpServerConfig::validate() {
   telemetry.validate();
   tls.validate();
   builtinProbes.validate();
+#ifdef AERONET_ENABLE_HTTP2
+  http2.validate();
+#endif
 
   // Validate some header/body limits
   if (std::cmp_less(maxHeaderBytes, 128)) {

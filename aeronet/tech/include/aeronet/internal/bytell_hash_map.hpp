@@ -491,7 +491,7 @@ public:
 
 
     template<typename Key, typename... Args>
-    inline std::pair<iterator, bool> emplace(Key && key, Args &&... args)
+    std::pair<iterator, bool> emplace(Key && key, Args &&... args)
     {
         size_t index = hash_object(key);
         size_t num_slots_minus_one = this->num_slots_minus_one;

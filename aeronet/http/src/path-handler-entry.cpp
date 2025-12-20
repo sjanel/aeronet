@@ -19,7 +19,8 @@ PathHandlerEntry::PathHandlerEntry(const PathHandlerEntry& rhs)
       websocketEndpoint(rhs.websocketEndpoint ? std::make_unique<WebSocketEndpoint>(*rhs.websocketEndpoint) : nullptr),
       corsPolicy(rhs.corsPolicy),
       preMiddleware(rhs.preMiddleware),
-      postMiddleware(rhs.postMiddleware) {
+      postMiddleware(rhs.postMiddleware),
+      pathConfig(rhs.pathConfig) {
   for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
     const HandlerStorage& rhsStorage = rhs.handlers[methodIdx];
     HandlerStorage& lhsStorage = handlers[methodIdx];
@@ -41,7 +42,8 @@ PathHandlerEntry::PathHandlerEntry(PathHandlerEntry&& rhs) noexcept
     : websocketEndpoint(std::move(rhs.websocketEndpoint)),
       corsPolicy(std::move(rhs.corsPolicy)),
       preMiddleware(std::move(rhs.preMiddleware)),
-      postMiddleware(std::move(rhs.postMiddleware)) {
+      postMiddleware(std::move(rhs.postMiddleware)),
+      pathConfig(rhs.pathConfig) {
   for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
     HandlerStorage& rhsStorage = rhs.handlers[methodIdx];
     HandlerStorage& lhsStorage = handlers[methodIdx];
@@ -69,6 +71,7 @@ PathHandlerEntry& PathHandlerEntry::operator=(const PathHandlerEntry& rhs) {
     corsPolicy = rhs.corsPolicy;
     preMiddleware = rhs.preMiddleware;
     postMiddleware = rhs.postMiddleware;
+    pathConfig = rhs.pathConfig;
 
     for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
       HandlerStorage& lhsStorage = handlers[methodIdx];
@@ -113,6 +116,7 @@ PathHandlerEntry& PathHandlerEntry::operator=(PathHandlerEntry&& rhs) noexcept {
     corsPolicy = std::move(rhs.corsPolicy);
     preMiddleware = std::move(rhs.preMiddleware);
     postMiddleware = std::move(rhs.postMiddleware);
+    pathConfig = rhs.pathConfig;
 
     for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
       HandlerStorage& lhsStorage = handlers[methodIdx];

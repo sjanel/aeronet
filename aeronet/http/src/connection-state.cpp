@@ -223,6 +223,10 @@ void ConnectionState::clear() {
 #endif
   fileSend = {};
 
+  // Reset protocol handler (e.g., WebSocket, HTTP/2)
+  protocolHandler.reset();
+  protocol = ProtocolType::Http11;
+
   asyncState.clear();
 }
 
