@@ -56,6 +56,7 @@ ITransport::TransportResult PlainTransport::write(std::string_view data) {
 ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std::string_view secondBuf) {
   // Use writev for scatter-gather I/O - single syscall for both buffers.
   // This avoids extra memcpy and allows optimal TCP segmentation.
+  // NOLINTNEXTLINE(misc-include-cleaner)
   std::array<iovec, 2> iov{{// NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
                             {const_cast<char*>(firstBuf.data()), firstBuf.size()},
                             // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)

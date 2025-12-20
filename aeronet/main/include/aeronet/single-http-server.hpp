@@ -39,6 +39,10 @@
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
 
+#ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/http2-protocol-handler.hpp"
+#endif
+
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-context.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
@@ -523,6 +527,12 @@ class SingleHttpServer {
   void handleAsyncBodyProgress(ConnectionMapIt cnxIt);
   void onAsyncHandlerCompleted(ConnectionMapIt cnxIt);
   bool tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt);
+
+#ifdef AERONET_ENABLE_HTTP2
+  // Sets up HTTP/2 protocol handler for a connection after ALPN "h2" negotiation.
+  // Initializes the protocol handler, sends the server preface (SETTINGS frame), and flushes output.
+  void setupHttp2Connection(ConnectionState& state);
+#endif
 
   struct StatsInternal {
     uint64_t totalBytesQueued{0};

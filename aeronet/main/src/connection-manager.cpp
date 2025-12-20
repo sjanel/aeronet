@@ -21,6 +21,10 @@
 #include "aeronet/event.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
+#ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/http2-frame-types.hpp"
+#include "aeronet/http2-protocol-handler.hpp"
+#endif
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
@@ -306,6 +310,12 @@ void SingleHttpServer::acceptNewConnections() {
           pCnx->tlsHandshakeInFlight = false;
           --_tls.handshakesInFlight;
         }
+#ifdef AERONET_ENABLE_HTTP2
+        // Check for HTTP/2 via ALPN negotiation ("h2")
+        if (_config.http2.enable && pCnx->tlsInfo.selectedAlpn() == http2::kAlpnH2) {
+          setupHttp2Connection(*pCnx);
+        }
+#endif
         if (pCnx->isImmediateCloseRequested()) {
           cnxIt = closeConnection(cnxIt);
           pCnx = nullptr;
@@ -383,7 +393,8 @@ void SingleHttpServer::acceptNewConnections() {
     if (pCnx == nullptr) {
       continue;
     }
-    const bool closeNow = processHttp1Requests(cnxIt);
+
+    const bool closeNow = processConnectionInput(cnxIt);
     if (closeNow && pCnx->outBuffer.empty() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->isSendingFile()) {
       closeConnection(cnxIt);
     }
@@ -473,6 +484,14 @@ void SingleHttpServer::handleReadableClient(int fd) {
       cnx.finalizeAndEmitTlsHandshakeIfNeeded(fd, _callbacks.tlsHandshake, _tls.metrics, _config.tls);
 #endif
       cnx.tlsEstablished = true;
+
+#ifdef AERONET_ENABLE_HTTP2
+      // Check for HTTP/2 via ALPN negotiation ("h2")
+      if (_config.http2.enable && cnx.tlsInfo.selectedAlpn() == http2::kAlpnH2) {
+        setupHttp2Connection(cnx);
+      }
+#endif
+
       if (cnx.isImmediateCloseRequested()) {
         closeConnection(cnxIt);
         return;

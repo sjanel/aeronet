@@ -159,6 +159,7 @@ def fallback_include_dirs() -> List[str]:
         "aeronet",
         "aeronet/main/include",
         "aeronet/http/include",
+        "aeronet/http2/include",
         "aeronet/objects/include",
         "aeronet/tech/include",
         "aeronet/sys/include",

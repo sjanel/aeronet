@@ -109,6 +109,45 @@ Call `co_await req.bodyAwaitable()` (or the chunked helpers) before touching the
 
 You can refer to the [complete async handlers example](examples/async-handlers.cpp) for more details.
 
+### HTTP/2 support
+
+`aeronet` is compatible with HTTP/2, with or without TLS, when built with `-DAERONET_ENABLE_HTTP2=ON`.
+
+When `AERONET_ENABLE_HTTP2` is OFF, the HTTP/2 module is not built and the HTTP/2-specific API surface (e.g. `Http2Config`, `HttpServerConfig::withHttp2()`) is not available.
+
+HTTP/2 uses the same unified `HttpRequest` type as HTTP/1.1:
+
+```cpp
+#include <aeronet/aeronet.hpp>
+
+using namespace aeronet;
+
+int main() {
+  Router router;
+  
+  // Single handler works for both HTTP/1.1 and HTTP/2
+  router.setDefault([](const HttpRequest& req) {
+    if (req.isHttp2()) {
+      return HttpResponse{"Hello from HTTP/2! Stream: " + std::to_string(req.streamId()) + "\n"};
+    }
+    return HttpResponse{"Hello from HTTP/1.1\n"};
+  });
+
+  HttpServerConfig config;
+  config.withPort(8443)
+      .withTlsCertKey("server.crt", "server.key")
+      .withTlsAlpnProtocols({"h2", "http/1.1"})
+      .withHttp2(Http2Config{.enable = true});
+
+  SingleHttpServer server(std::move(config), std::move(router));
+  server.run();
+}
+```
+
+Test: `curl -k --http2 https://localhost:8443/hello`
+
+See the [full HTTP/2 example](examples/http2.cpp) for more details.
+
 ## Quick Start with provided examples
 
 Minimal server examples for typical use cases are provided in [examples](examples) directory.
@@ -141,6 +180,7 @@ The following focused docs expand each area without cluttering the high‑level 
 - [Feature reference (FEATURES)](docs/FEATURES.md)
 
 - [WebSocket](docs/FEATURES.md#websocket-rfc-6455)
+- [HTTP/2](docs/FEATURES.md#http2-rfc-9113)
 - [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
 - [Static File Handler & Range Requests](docs/FEATURES.md#static-file-handler-rfc-7233--rfc-7232)
 - [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
@@ -171,6 +211,7 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Logging | ✔ (flag) | spdlog optional |
 | Duplicate header policy | ✔ | Deterministic, security‑minded |
 | WebSocket | ✔ | RFC 6455 compliant, text/binary frames, ping/pong, close handshake |
+| HTTP/2 | ✔ (flag) | RFC 9113, HPACK, ALPN h2, h2c upgrade, stream multiplexing |
 | Trailers exposure | ✔ | RFC 7230 §4.1.2 chunked trailer headers |
 | Middleware helpers | ✔ | Global + per-route request/response hooks (streaming-aware) |
 | Streaming inbound decompression | ✔ | Auto-switches to streaming inflaters once Content-Length exceeds configured threshold |

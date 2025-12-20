@@ -722,6 +722,7 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
 
   result.requestMiddlewareRange = entry._preMiddleware;
   result.responseMiddlewareRange = entry._postMiddleware;
+  result.pathConfig = entry._pathConfig;
 }
 
 void Router::cloneNodesFrom(const Router& other) {
