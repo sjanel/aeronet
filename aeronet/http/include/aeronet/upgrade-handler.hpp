@@ -1,22 +1,20 @@
 #pragma once
 
-#include <optional>
 #include <string_view>
 
 #include "aeronet/concatenated-strings.hpp"
+#include "aeronet/headers-view-map.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
-#include "aeronet/headers-view-map.hpp"
+#include <optional>
+
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-upgrade.hpp"
 #endif
 
 namespace aeronet {
-
-// Forward declarations
-class HttpRequest;
 
 /// Result of validating an HTTP Upgrade request.
 struct UpgradeValidationResult {
@@ -51,6 +49,15 @@ struct UpgradeValidationResult {
 /// For HTTP/2 over TLS (h2), ALPN negotiation is used instead of Upgrade.
 namespace upgrade {
 
+/// Check if a Connection header value contains "upgrade" (case-insensitive).
+///
+/// The Connection header may contain multiple comma-separated tokens.
+/// This function checks if any of them is "upgrade".
+///
+/// @param connectionValue  The value of the Connection header
+/// @return                 True if "upgrade" token is present
+[[nodiscard]] bool ConnectionContainsUpgrade(std::string_view connectionValue);
+
 #ifdef AERONET_ENABLE_WEBSOCKET
 /// Check if the request contains an Upgrade header requesting WebSocket.
 ///
@@ -67,6 +74,7 @@ namespace upgrade {
                                                                const WebSocketUpgradeConfig& config);
 #endif
 
+#ifdef AERONET_ENABLE_HTTP2
 /// Check if the request contains an Upgrade header requesting HTTP/2 (h2c).
 ///
 /// Validates:
@@ -74,9 +82,10 @@ namespace upgrade {
 ///   - Connection: Upgrade, HTTP2-Settings
 ///   - HTTP2-Settings header present (base64url encoded SETTINGS frame payload)
 ///
-/// @param request  The incoming HTTP request
+/// @param headers  Map of HTTP request headers
 /// @return         Validation result
-[[nodiscard]] UpgradeValidationResult ValidateHttp2Upgrade(const HttpRequest& request);
+[[nodiscard]] UpgradeValidationResult ValidateHttp2Upgrade(const HeadersViewMap& headers);
+#endif
 
 /// Detect the upgrade target from an HTTP request.
 ///
@@ -100,6 +109,7 @@ namespace upgrade {
 [[nodiscard]] RawChars BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResult);
 #endif
 
+#ifdef AERONET_ENABLE_HTTP2
 /// Generate a raw 101 Switching Protocols response for HTTP/2 upgrade.
 ///
 /// Returns the complete HTTP response as raw bytes, ready to be written to the socket.
@@ -110,15 +120,7 @@ namespace upgrade {
 /// @param validationResult  Result from ValidateHttp2Upgrade() (must be valid)
 /// @return                  Complete 101 response as raw bytes
 [[nodiscard]] RawChars BuildHttp2UpgradeResponse(const UpgradeValidationResult& validationResult);
-
-/// Check if a Connection header value contains "upgrade" (case-insensitive).
-///
-/// The Connection header may contain multiple comma-separated tokens.
-/// This function checks if any of them is "upgrade".
-///
-/// @param connectionValue  The value of the Connection header
-/// @return                 True if "upgrade" token is present
-[[nodiscard]] bool ConnectionContainsUpgrade(std::string_view connectionValue);
+#endif
 
 }  // namespace upgrade
 

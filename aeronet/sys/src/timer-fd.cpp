@@ -31,6 +31,7 @@ timespec ToTimespec(SysDuration dur) {
 
 }  // namespace
 
+// NOLINTNEXTLINE(misc-include-cleaner)
 TimerFd::TimerFd() : _baseFd(::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC)) {
   if (!_baseFd) {
     throw_errno("Unable to create a new TimerFd");
@@ -38,12 +39,12 @@ TimerFd::TimerFd() : _baseFd(::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TF
   log::debug("TimerFd fd # {} opened", fd());
 
   // Disabled by default.
-  itimerspec spec{};
+  itimerspec spec{};  // NOLINT(misc-include-cleaner)
   (void)::timerfd_settime(fd(), 0, &spec, nullptr);
 }
 
 void TimerFd::armPeriodic(SysDuration interval) const {
-  itimerspec spec{};
+  itimerspec spec{};  // NOLINT(misc-include-cleaner)
   // Always compute the timespec: non-positive durations map to {0,0} which disables the timer.
   const auto ts = ToTimespec(interval);
   spec.it_interval = ts;

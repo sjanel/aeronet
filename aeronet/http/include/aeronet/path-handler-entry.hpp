@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <type_traits>
 
 #include "aeronet/cors-policy.hpp"
@@ -17,6 +18,28 @@
 #endif
 
 namespace aeronet {
+
+/// Per-path configuration options for route handlers.
+///
+/// This struct allows fine-grained control over routing behavior on a per-path basis.
+/// Pass an instance to Router::setPath() or Router::setDefault() to configure specific
+/// options for that route.
+///
+/// Example:
+/// @code
+///   router.setPath(http::Method::GET, "/api/v2/stream",
+///                  myHandler, PathEntryConfig{.http2Enable = PathEntryConfig::Http2Enable::Enable});
+/// @endcode
+struct PathEntryConfig {
+  /// HTTP/2 enable mode for this specific path.
+  ///
+  /// - Default: Use the global Http2Config.enable setting from HttpServerConfig
+  /// - Enable: Force HTTP/2 support for this path (if client supports it)
+  /// - Disable: Force HTTP/1.1 only for this path even if HTTP/2 is globally enabled
+  enum class Http2Enable : uint8_t { Default, Enable, Disable };
+
+  Http2Enable http2Enable{Http2Enable::Default};
+};
 
 // Object that stores handlers and options for a specific group of paths.
 class PathHandlerEntry {
@@ -39,6 +62,16 @@ class PathHandlerEntry {
   // Register middleware executed after the route handler produces a response. The middleware
   // can amend headers or body before the response is finalized.
   PathHandlerEntry& after(ResponseMiddleware middleware);
+
+  /// Configure whether HTTP/2 is allowed for this route.
+  ///
+  /// Default: follow global HTTP/2 setting.
+  /// Enable: force HTTP/2 support for this route.
+  /// Disable: force HTTP/1.1 only for this route.
+  PathHandlerEntry& http2Enable(PathEntryConfig::Http2Enable mode) noexcept {
+    _pathConfig.http2Enable = mode;
+    return *this;
+  }
 
  private:
   friend class Router;
@@ -116,6 +149,8 @@ class PathHandlerEntry {
   CorsPolicy _corsPolicy;
   vector<RequestMiddleware> _preMiddleware;
   vector<ResponseMiddleware> _postMiddleware;
+  // Per-path configuration for HTTP/2 and other options.
+  PathEntryConfig _pathConfig;
 };
 
 }  // namespace aeronet

@@ -80,6 +80,7 @@ jobs:
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
             -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
             -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
+            -DAERONET_ENABLE_HTTP2=${{ matrix.features }} \
             -DAERONET_ENABLE_BROTLI=${{ matrix.features }} \
             -DAERONET_ENABLE_ZLIB=${{ matrix.features }} \
             -DAERONET_ENABLE_ZSTD=${{ matrix.features }} \
@@ -159,6 +160,7 @@ jobs:
             -DAERONET_ENABLE_CLANG_TIDY=OFF \
             -DAERONET_ENABLE_SPDLOG=ON \
             -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_HTTP2=ON \
             -DAERONET_ENABLE_BROTLI=ON \
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
@@ -257,6 +259,7 @@ jobs:
             -DAERONET_ENABLE_ASAN=OFF \
             -DAERONET_ENABLE_SPDLOG=ON \
             -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_HTTP2=ON \
             -DAERONET_ENABLE_BROTLI=ON \
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
@@ -269,6 +272,7 @@ jobs:
           aeronet \
           aeronet-async-handle \
           aeronet-async-handlers \
+          aeronet-http2 \
           aeronet-minimal \
           aeronet-multi \
           aeronet-sendfile \
@@ -338,6 +342,9 @@ jobs:
           run_server_and_curl async-handlers "http://127.0.0.1:18081/async" -- \
             "${EXAMPLE_DIR}/aeronet-async-handlers" 18081
 
+          run_server_and_curl http2 "https://127.0.0.1:19443/" -k -- \
+            "${EXAMPLE_DIR}/aeronet-http2" ${BUILD_DIR}/certs/server.crt ${BUILD_DIR}/certs/server.key 19443
+
           run_server_and_curl minimal "http://127.0.0.1:18082/hello" -- \
             "${EXAMPLE_DIR}/aeronet-minimal" 18082
 
@@ -401,6 +408,7 @@ jobs:
             -DAERONET_ENABLE_ASAN=OFF \
             -DAERONET_ENABLE_SPDLOG=ON \
             -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_HTTP2=ON \
             -DAERONET_ENABLE_BROTLI=ON \
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \

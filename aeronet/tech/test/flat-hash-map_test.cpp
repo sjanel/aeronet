@@ -232,6 +232,122 @@ TEST(flat_hash_map, preserves_value_alignment) {
   EXPECT_EQ(addr % expectedAlignment, 0U);
 }
 
+TEST(flat_hash_map, try_emplace_inserts_and_returns_iterator_bool) {
+  Map map;
+  auto [it, inserted] = map.try_emplace("alpha", 10);
+  EXPECT_TRUE(inserted);
+  ASSERT_NE(it, map.end());
+  EXPECT_EQ(it->first, "alpha");
+  EXPECT_EQ(it->second, 10);
+
+  auto [it2, inserted2] = map.try_emplace("alpha", 99);
+  EXPECT_FALSE(inserted2);
+  EXPECT_EQ(it2, it);
+  EXPECT_EQ(map.at("alpha"), 10);
+}
+
+TEST(flat_hash_map, try_emplace_constructs_mapped_from_multiple_args) {
+  struct MultiArgValue {
+    MultiArgValue(int aa, int bb) noexcept : a(aa), b(bb) {}
+    int a;
+    int b;
+  };
+
+  aeronet::flat_hash_map<std::string, MultiArgValue, std::hash<std::string_view>, std::equal_to<>> map;
+  auto [it, inserted] = map.try_emplace("k", 1, 2);
+  EXPECT_TRUE(inserted);
+  EXPECT_EQ(it->second.a, 1);
+  EXPECT_EQ(it->second.b, 2);
+}
+
+TEST(flat_hash_map, try_emplace_does_not_construct_mapped_when_key_exists) {
+  struct CountsCtor {
+    explicit CountsCtor(int &counterRef, int value) noexcept : value(value) { ++counterRef; }
+    int value;
+  };
+
+  aeronet::flat_hash_map<std::string, CountsCtor, std::hash<std::string_view>, std::equal_to<>> map;
+  int ctorCount = 0;
+
+  auto [it, inserted] = map.try_emplace("k", ctorCount, 7);
+  EXPECT_TRUE(inserted);
+  EXPECT_EQ(ctorCount, 1);
+  EXPECT_EQ(it->second.value, 7);
+
+  auto [it2, inserted2] = map.try_emplace("k", ctorCount, 123);
+  EXPECT_FALSE(inserted2);
+  EXPECT_EQ(it2, it);
+  EXPECT_EQ(ctorCount, 1) << "mapped_type constructor must not run on existing key";
+  EXPECT_EQ(map.at("k").value, 7);
+}
+
+TEST(flat_hash_map, try_emplace_supports_move_only_mapped_type) {
+  struct MoveOnly {
+    explicit MoveOnly(int val) noexcept : value(val) {}
+    MoveOnly(const MoveOnly &) = delete;
+    MoveOnly &operator=(const MoveOnly &) = delete;
+    MoveOnly(MoveOnly &&) noexcept = default;
+    MoveOnly &operator=(MoveOnly &&) noexcept = default;
+    int value;
+  };
+
+  aeronet::flat_hash_map<std::string, MoveOnly, std::hash<std::string_view>, std::equal_to<>> map;
+  auto [it, inserted] = map.try_emplace("k", 5);
+  EXPECT_TRUE(inserted);
+  EXPECT_EQ(it->second.value, 5);
+}
+
+TEST(flat_hash_map, try_emplace_hint_overload_returns_iterator) {
+  Map map;
+
+  auto it = map.try_emplace(map.end(), "alpha", 1);
+  ASSERT_NE(it, map.end());
+  EXPECT_EQ(it->second, 1);
+
+  auto it2 = map.try_emplace(map.begin(), "alpha", 999);
+  EXPECT_EQ(it2, it);
+  EXPECT_EQ(map.at("alpha"), 1);
+}
+
+TEST(flat_hash_map, try_emplace_supports_heterogeneous_key_lookup_and_insert) {
+  Map map;
+
+  std::string_view k1 = "alpha";
+  auto [it, inserted] = map.try_emplace(k1, 10);
+  EXPECT_TRUE(inserted);
+  EXPECT_EQ(it->first, "alpha");
+  EXPECT_EQ(it->second, 10);
+
+  const char *k2 = "alpha";
+  auto [it2, inserted2] = map.try_emplace(k2, 99);
+  EXPECT_FALSE(inserted2);
+  EXPECT_EQ(it2, it);
+  EXPECT_EQ(map.at("alpha"), 10);
+}
+
+TEST(flat_hash_map, try_emplace_heterogeneous_does_not_construct_mapped_when_key_exists) {
+  struct CountsCtor {
+    explicit CountsCtor(int &counterRef, int value) noexcept : value(value) { ++counterRef; }
+    int value;
+  };
+
+  aeronet::flat_hash_map<std::string, CountsCtor, std::hash<std::string_view>, std::equal_to<>> map;
+  int ctorCount = 0;
+
+  std::string_view key = "k";
+  auto [it, inserted] = map.try_emplace(key, ctorCount, 7);
+  EXPECT_TRUE(inserted);
+  EXPECT_EQ(ctorCount, 1);
+  EXPECT_EQ(it->second.value, 7);
+
+  const char *sameKey = "k";
+  auto [it2, inserted2] = map.try_emplace(sameKey, ctorCount, 123);
+  EXPECT_FALSE(inserted2);
+  EXPECT_EQ(it2, it);
+  EXPECT_EQ(ctorCount, 1);
+  EXPECT_EQ(map.at("k").value, 7);
+}
+
 TEST(flat_hash_map, proper_iteration_during_erase) {
   std::vector<std::unique_ptr<int>> pointers;
   aeronet::flat_hash_map<const int *, int> testMap;

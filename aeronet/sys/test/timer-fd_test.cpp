@@ -77,7 +77,7 @@ struct TimerfdCreateCall {
 struct TimerfdSettimeCall {
   int fd{-1};
   int flags{0};
-  itimerspec spec{};
+  itimerspec spec{};  // NOLINT(misc-include-cleaner)
 };
 
 class TimerfdOverrideState {
@@ -242,7 +242,7 @@ TEST(TimerFdTest, DefaultCtorCreatesAndDisablesTimer) {
 
   const auto calls = gTimerfd.createCalls();
   ASSERT_EQ(calls.size(), 1U);
-  EXPECT_EQ(calls[0].clockId, CLOCK_MONOTONIC);
+  EXPECT_EQ(calls[0].clockId, CLOCK_MONOTONIC);  // NOLINT(misc-include-cleaner)
   EXPECT_EQ(calls[0].flags, (TFD_NONBLOCK | TFD_CLOEXEC));
 
   const auto setCalls = gTimerfd.settimeCalls();

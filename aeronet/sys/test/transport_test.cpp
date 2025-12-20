@@ -1,6 +1,7 @@
 #include "aeronet/transport.hpp"
 
 #include <gtest/gtest.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <cerrno>
