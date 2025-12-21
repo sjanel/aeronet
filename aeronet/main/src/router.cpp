@@ -183,7 +183,7 @@ PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_v
 
   // If this is a literal-only route, also store it in the fast-path map for O(1) lookup
   if (compiled.paramNames.empty() && !compiled.hasWildcard) {
-    _literalOnlyRoutes[SmallRawChars(path)] = pNode;
+    _literalOnlyRoutes[RawChars32(path)] = pNode;
   }
 
   ensureRouteMetadata(*pNode, std::move(compiled));
@@ -315,27 +315,25 @@ const Router::RouteNode* Router::matchWithWildcard(const RouteNode& node, bool r
   return pWildcardNode;
 }
 
-SmallRawChars Router::RouteNode::patternString() const {
+RawChars32 Router::RouteNode::patternString() const {
   static constexpr std::string_view kParam = "{param}";
   static constexpr std::string_view kSlashAsterisk = "/*";
-
-  using size_type = SmallRawChars::size_type;
 
   // Not possible through the public API
   assert(pRoute != nullptr);
 
-  size_type sz = 0;
+  std::size_t sz = 0;
   for (const auto& seg : pRoute->segments) {
     sz += 1U;
-    sz += seg.literal.empty() ? static_cast<size_type>(kParam.size()) : static_cast<size_type>(seg.literal.size());
+    sz += seg.literal.empty() ? kParam.size() : seg.literal.size();
   }
   if (pRoute->hasWildcard) {
-    sz += static_cast<size_type>(kSlashAsterisk.size());
+    sz += kSlashAsterisk.size();
   } else if (sz == 0U) {
     sz = 1U;
   }
 
-  SmallRawChars out(sz);
+  RawChars32 out(sz);
   for (const auto& seg : pRoute->segments) {
     out.unchecked_push_back('/');
     out.unchecked_append(seg.literal.empty() ? kParam : seg.literal);
@@ -551,7 +549,7 @@ Router::CompiledRoute Router::CompilePattern(std::string_view path) {
       continue;
     }
 
-    SmallRawChars literalBuffer;
+    RawChars32 literalBuffer;
     bool previousWasParam = false;
     bool hasParam = false;
 

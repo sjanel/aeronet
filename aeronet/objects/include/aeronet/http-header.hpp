@@ -32,7 +32,7 @@ class Header {
   [[nodiscard]] std::string_view raw() const noexcept { return _data; }
 
  private:
-  SmallRawChars _data;
+  RawChars32 _data;
   uint32_t _colonPos;
 };
 

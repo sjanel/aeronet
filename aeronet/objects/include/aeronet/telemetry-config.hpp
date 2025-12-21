@@ -19,7 +19,7 @@ namespace aeronet {
 class TelemetryConfig {
  public:
   using HistogramBoundariesMap =
-      flat_hash_map<SmallRawChars, vector<double>, std::hash<std::string_view>, std::equal_to<>>;
+      flat_hash_map<RawChars32, vector<double>, std::hash<std::string_view>, std::equal_to<>>;
 
   void validate();
 
