@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 #include <type_traits>
 
+#include "aeronet/features.hpp"
 #include "aeronet/http-constants.hpp"
 
 namespace aeronet {
@@ -13,16 +15,32 @@ enum class Encoding : std::uint8_t {
   br,
   gzip,
   deflate,
-  none,
+  none,  // should be last
 };
 
-inline constexpr std::underlying_type_t<Encoding> kNbContentEncodings = 5;
+inline constexpr std::underlying_type_t<Encoding> kNbContentEncodings =
+    static_cast<std::underlying_type_t<Encoding>>(Encoding::none) + 1;
 
-constexpr std::string_view GetEncodingStr(Encoding compressionFormat) {
+// Get string representation of encoding for use in HTTP headers.
+constexpr std::string_view GetEncodingStr(Encoding enc) {
   static constexpr std::string_view kEncodingStrs[kNbContentEncodings] = {
       http::zstd, http::br, http::gzip, http::deflate, http::identity,
   };
-  return kEncodingStrs[static_cast<std::underlying_type_t<Encoding>>(compressionFormat)];
+  if (static_cast<std::underlying_type_t<Encoding>>(enc) >= kNbContentEncodings) [[unlikely]] {
+    return "unknown";
+  }
+  return kEncodingStrs[static_cast<std::underlying_type_t<Encoding>>(enc)];
+}
+
+// Check if encoding is enabled in this build.
+constexpr bool IsEncodingEnabled(Encoding enc) {
+  static constexpr bool kEncodingEnabled[kNbContentEncodings] = {
+      zstdEnabled(), brotliEnabled(), zlibEnabled(), zlibEnabled(), true,
+  };
+  if (static_cast<std::underlying_type_t<Encoding>>(enc) >= kNbContentEncodings) [[unlikely]] {
+    return false;
+  }
+  return kEncodingEnabled[static_cast<std::underlying_type_t<Encoding>>(enc)];
 }
 
 }  // namespace aeronet

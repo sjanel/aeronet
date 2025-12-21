@@ -1,9 +1,11 @@
 #include "aeronet/compression-config.hpp"
 
+#include <algorithm>
+#include <format>
 #include <stdexcept>
 
+#include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
-#include "aeronet/log.hpp"
 
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
@@ -19,27 +21,27 @@ void CompressionConfig::validate() const {
   }
   if constexpr (aeronet::zlibEnabled()) {
     if (zlib.level != Zlib::kDefaultLevel && (zlib.level < Zlib::kMinLevel || zlib.level > Zlib::kMaxLevel)) {
-      log::critical("Invalid ZLIB compression level {}", zlib.level);
-      throw std::invalid_argument("Invalid ZLIB compression level");
+      throw std::invalid_argument(std::format("Invalid ZLIB compression level {}", zlib.level));
     }
+  }
+  auto it = std::ranges::find_if_not(preferredFormats, [](Encoding enc) { return IsEncodingEnabled(enc); });
+  if (it != preferredFormats.end()) {
+    throw std::invalid_argument(std::format("Unsupported encoding {} in preferredFormats", static_cast<int>(*it)));
   }
 
 #ifdef AERONET_ENABLE_ZSTD
   if (zstd.compressionLevel < ZSTD_minCLevel() || zstd.compressionLevel > ZSTD_maxCLevel()) {
-    log::critical("Invalid ZSTD compression level {}", zstd.compressionLevel);
-    throw std::invalid_argument("Invalid ZSTD compression level");
+    throw std::invalid_argument(std::format("Invalid ZSTD compression level {}", zstd.compressionLevel));
   }
   details::ZstdContextRAII testConstruction(zstd.compressionLevel, zstd.windowLog);
 #endif
 
   if constexpr (aeronet::brotliEnabled()) {
     if (brotli.quality < Brotli::kMinQuality || brotli.quality > Brotli::kMaxQuality) {
-      log::critical("Invalid Brotli quality {}", brotli.quality);
-      throw std::invalid_argument("Invalid Brotli quality");
+      throw std::invalid_argument(std::format("Invalid Brotli quality {}", brotli.quality));
     }
     if (brotli.window < Brotli::kMinWindow || brotli.window > Brotli::kMaxWindow) {
-      log::critical("Invalid Brotli window {}", brotli.window);
-      throw std::invalid_argument("Invalid Brotli window");
+      throw std::invalid_argument(std::format("Invalid Brotli window {}", brotli.window));
     }
   }
 }

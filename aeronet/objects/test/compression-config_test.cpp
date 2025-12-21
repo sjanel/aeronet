@@ -12,6 +12,12 @@ TEST(CompressionConfigTest, DefaultIsValid) {
   EXPECT_NO_THROW(config.validate());
 }
 
+TEST(CompressionConfigTest, InvalidPreferredFormatsThrows) {
+  CompressionConfig config;
+  config.preferredFormats.push_back(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1)));
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
 TEST(CompressionConfigTest, ZeroEncoderChunkSizeThrows) {
   CompressionConfig config;
   config.encoderChunkSize = 0;

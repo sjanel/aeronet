@@ -1764,12 +1764,11 @@ TEST(HttpResponseTrailers, CapturedBodyVector) {
 
 // Test multiple trailers
 TEST(HttpResponseTrailers, MultipleTrailers) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body("body");
+  HttpResponse resp("body");
   resp.addTrailer("X-Checksum", "abc");
   resp.addTrailer("X-Timestamp", "2025-10-20T12:00:00Z");
   resp.addTrailer("X-Custom", "val");
-  // No assertion - just verify no crashes
+  EXPECT_EQ(resp.trailersFlatView(), "X-Checksum: abc\r\nX-Timestamp: 2025-10-20T12:00:00Z\r\nX-Custom: val\r\n");
 }
 
 // Test empty trailer value
