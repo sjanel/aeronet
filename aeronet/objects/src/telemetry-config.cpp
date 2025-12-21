@@ -108,7 +108,7 @@ TelemetryConfig& TelemetryConfig::addHistogramBuckets(std::string_view name, std
         std::format("Histogram '{}' bucket boundaries not strictly increasing", std::string_view(name)));
   }
   const auto [it, inserted] =
-      _histogramBuckets.emplace(SmallRawChars{name}, vector<double>{boundaries.begin(), boundaries.end()});
+      _histogramBuckets.emplace(RawChars32{name}, vector<double>{boundaries.begin(), boundaries.end()});
   if (!inserted) {
     log::warn("Overwriting '{}' histogram bucket boundaries", name);
     it->second.assign_range(boundaries);

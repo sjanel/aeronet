@@ -43,7 +43,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
     case http::Method::OPTIONS: {
       // OPTIONS * request (target="*") should return an Allow header listing supported methods.
       const auto buildAllowHeader = [](http::MethodBmp mask) {
-        SmallRawChars allowValue;
+        RawChars32 allowValue;
         for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
           if (!http::IsMethodIdxSet(mask, methodIdx)) {
             continue;

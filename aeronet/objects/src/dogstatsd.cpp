@@ -52,7 +52,7 @@ DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns, std::chro
 
   uint32_t dotAppendSz = !ns.empty() && ns.back() != '.' ? 1U : 0U;
 
-  _ns.reserve(static_cast<uint32_t>(ns.size()) + dotAppendSz);
+  _ns.reserve(ns.size() + dotAppendSz);
   _ns.unchecked_append(ns);
   if (dotAppendSz != 0) {
     _ns.unchecked_push_back('.');
