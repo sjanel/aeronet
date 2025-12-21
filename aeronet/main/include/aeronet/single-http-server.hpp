@@ -446,7 +446,7 @@ class SingleHttpServer {
   void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, bool immediate = false,
                        std::string_view body = {});
   // Outbound write helpers
-  bool queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::PreparedResponse prepared);
+  bool queueFormattedHttp1Response(ConnectionMapIt cnxIt, HttpResponse::FormattedHttp1Response prepared);
   bool queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData, std::uint64_t extraQueuedBytes = 0);
   void flushOutbound(ConnectionMapIt cnxIt);
   void flushFilePayload(ConnectionMapIt cnxIt);
