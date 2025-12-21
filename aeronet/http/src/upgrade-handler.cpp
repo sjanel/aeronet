@@ -175,7 +175,7 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const HttpRequest& request, con
   }
 
   const auto key = TrimOws(*keyHeader);
-  if (!IsValidWebSocketKey(key)) {
+  if (!IsValidWebSocketKey(key)) [[unlikely]] {
     result.errorMessage = "Invalid Sec-WebSocket-Key format";
     return result;
   }

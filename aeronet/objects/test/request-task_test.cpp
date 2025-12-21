@@ -221,7 +221,6 @@ TEST(RequestTask, MoveConstructor) {
   auto &t2Bis = t2;
   // self move construct should do nothing
   t2 = std::move(t2Bis);
-  EXPECT_TRUE(t2Bis.valid());
   EXPECT_TRUE(t2.valid());
 }
 

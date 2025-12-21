@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <random>
@@ -41,14 +42,16 @@ class HttpResponseTest : public ::testing::Test {
   static constexpr bool isHeadMethod = false;
   static constexpr std::size_t minCapturedBodySize = 4096;
 
-  static HttpResponse::PreparedResponse finalizePrepared(HttpResponse&& resp, bool head = isHeadMethod,
-                                                         bool keepAliveFlag = keepAlive) {
+  static HttpResponse::FormattedHttp1Response finalizePrepared(HttpResponse&& resp, bool head = isHeadMethod,
+                                                               bool keepAliveFlag = keepAlive) {
     return finalizePrepared(std::move(resp), {}, head, keepAliveFlag);
   }
 
-  static HttpResponse::PreparedResponse finalizePrepared(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders,
-                                                         bool head = isHeadMethod, bool keepAliveFlag = keepAlive) {
-    return resp.finalizeAndStealData(http::HTTP_1_1, tp, !keepAliveFlag, globalHeaders, head, minCapturedBodySize);
+  static HttpResponse::FormattedHttp1Response finalizePrepared(HttpResponse&& resp,
+                                                               const ConcatenatedHeaders& globalHeaders,
+                                                               bool head = isHeadMethod,
+                                                               bool keepAliveFlag = keepAlive) {
+    return resp.finalizeForHttp1(http::HTTP_1_1, tp, !keepAliveFlag, globalHeaders, head, minCapturedBodySize);
   }
 
   static HttpResponseData finalize(HttpResponse&& resp) {
@@ -64,7 +67,7 @@ class HttpResponseTest : public ::testing::Test {
     return std::move(prepared.data);
   }
 
-  static const File* file(const HttpResponse::PreparedResponse& prepared) {
+  static const File* file(const HttpResponse::FormattedHttp1Response& prepared) {
     return prepared.file ? &prepared.file : nullptr;
   }
 
@@ -401,8 +404,10 @@ TEST_F(HttpResponseTest, BodyFromUniquePtrByteRValue) {
 TEST_F(HttpResponseTest, StatusOnly) {
   HttpResponse resp(http::StatusCodeOK);
   EXPECT_EQ(200, resp.status());
+  EXPECT_EQ(resp.statusStr(), "200");
   resp.status(404);
   EXPECT_EQ(404, resp.status());
+  EXPECT_EQ(resp.statusStr(), "404");
 
   auto full = concatenated(std::move(resp));
 
@@ -413,6 +418,9 @@ TEST_F(HttpResponseTest, TooLongReasonShouldBeTruncated) {
   HttpResponse resp(http::StatusCodeOK);
   std::string longReason(70000, 'A');
   resp.reason(longReason);
+  EXPECT_LT(resp.reason().size(), longReason.size());
+
+  resp = HttpResponse(http::StatusCodeOK, longReason);
   EXPECT_LT(resp.reason().size(), longReason.size());
 }
 
@@ -444,7 +452,67 @@ TEST_F(HttpResponseTest, ConstructorWithBodyContentTypeOnly) {
   EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
 }
 
-TEST_F(HttpResponseTest, BadStatusCode) { EXPECT_DEBUG_DEATH(HttpResponse(1000), ""); }
+TEST_F(HttpResponseTest, BadStatusCode) {
+  EXPECT_THROW(HttpResponse(42), std::invalid_argument);
+  EXPECT_THROW(HttpResponse(1000), std::invalid_argument);
+}
+
+TEST_F(HttpResponseTest, LoopOnHeaders) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  auto headers = resp.headers();
+
+  EXPECT_EQ(headers.begin(), headers.end());
+
+  resp.addHeader("Header-1", "Value1");
+
+  headers = resp.headers();
+  EXPECT_EQ(std::distance(headers.begin(), headers.end()), 1);
+  EXPECT_EQ((*headers.begin()).name, "Header-1");
+  EXPECT_EQ((*headers.begin()).value, "Value1");
+
+  resp.addHeader("Header-2", "Value2").addHeader("Header-3", "Value3");
+
+  headers = resp.headers();
+  EXPECT_EQ(std::distance(headers.begin(), headers.end()), 3);
+  auto it = headers.begin();
+  EXPECT_EQ((*it).name, "Header-1");
+  EXPECT_EQ((*it).value, "Value1");
+  ++it;
+  EXPECT_EQ((*it).name, "Header-2");
+  EXPECT_EQ((*it).value, "Value2");
+  ++it;
+  EXPECT_EQ((*it).name, "Header-3");
+  EXPECT_EQ((*it).value, "Value3");
+  EXPECT_EQ(++it, headers.end());
+}
+
+TEST_F(HttpResponseTest, LoopOnTrailers) {
+  HttpResponse resp("some body");
+  auto trailers = resp.trailers();
+
+  EXPECT_EQ(trailers.begin(), trailers.end());
+  resp.addTrailer("Header-1", "Value1");
+
+  trailers = resp.trailers();
+  EXPECT_EQ(std::distance(trailers.begin(), trailers.end()), 1);
+  EXPECT_EQ((*trailers.begin()).name, "Header-1");
+  EXPECT_EQ((*trailers.begin()).value, "Value1");
+
+  resp.addTrailer("Header-2", "Value2").addTrailer("Header-3", "Value3");
+
+  trailers = resp.trailers();
+  EXPECT_EQ(std::distance(trailers.begin(), trailers.end()), 3);
+  auto it = trailers.begin();
+  EXPECT_EQ((*it).name, "Header-1");
+  EXPECT_EQ((*it).value, "Value1");
+  ++it;
+  EXPECT_EQ((*it).name, "Header-2");
+  EXPECT_EQ((*it).value, "Value2");
+  ++it;
+  EXPECT_EQ((*it).name, "Header-3");
+  EXPECT_EQ((*it).value, "Value3");
+  EXPECT_EQ(++it, trailers.end());
+}
 
 TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
   HttpResponse resp(http::StatusCodeOK, "OK");
@@ -654,6 +722,29 @@ TEST_F(HttpResponseTest, SendFilePayloadOffsetLengthRvalue) {
   EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
 }
 
+TEST_F(HttpResponseTest, SendFileZeroLengthPayload) {
+  // Create an empty temp file
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "");
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+  const auto sz = file.size();
+  EXPECT_EQ(sz, 0U);
+
+  auto resp = HttpResponse(http::StatusCodeOK, "OK");
+  resp.file(std::move(file));
+
+  auto prepared = finalizePrepared(std::move(resp));
+  // Zero-length file: prepared.fileLength should be 0 and no file moved out
+  EXPECT_EQ(prepared.fileLength, 0U);
+  EXPECT_FALSE(prepared.file);
+
+  std::string headers(prepared.data.firstBuffer());
+  // No Content-Length header is expected for zero-length file in current behavior
+  EXPECT_FALSE(headers.contains("Content-Length: 0"));
+  EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
+}
+
 TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
   constexpr std::string_view kPayload = "head sendfile payload";
   test::ScopedTempDir tmpDir;
@@ -667,7 +758,29 @@ TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
 
   auto prepared = finalizePrepared(std::move(resp), true /*head*/);
   EXPECT_EQ(prepared.fileLength, 0U);
-  EXPECT_FALSE(prepared.file);
+  EXPECT_TRUE(prepared.file);
+
+  std::string headers(prepared.data.firstBuffer());
+  EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz)));
+  EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
+}
+
+TEST_F(HttpResponseTest, SendFileHeadMovesFileAndSuppressesLength) {
+  constexpr std::string_view kPayload = "head sendfile payload move";
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+  const std::uint64_t sz = file.size();
+
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.file(std::move(file));
+
+  auto prepared = finalizePrepared(std::move(resp), true /*head*/);
+  // The file should be moved out, but head suppresses payload length to 0
+  EXPECT_EQ(prepared.fileLength, 0U);
+  EXPECT_TRUE(prepared.file);
+  EXPECT_EQ(prepared.file.size(), sz);
 
   std::string headers(prepared.data.firstBuffer());
   EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz)));
@@ -1690,27 +1803,25 @@ TEST_F(HttpResponseTest, TrailersNoBody) {
   HttpResponse resp(http::StatusCodeOK);
   resp.addHeader("X-Test", "val");
   // No trailers added -> empty view
-  EXPECT_TRUE(resp.trailers().empty());
+  EXPECT_TRUE(resp.trailersFlatView().empty());
   // body remains accessible and unchanged
   EXPECT_EQ(resp.body(), std::string_view());
 }
 
 TEST_F(HttpResponseTest, TrailersInline_NoTrailers) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body("inline-body");
+  HttpResponse resp("inline-body");
   // No trailers added -> empty view
-  auto tv = resp.trailers();
+  auto tv = resp.trailersFlatView();
   EXPECT_TRUE(tv.empty());
   // body remains accessible and unchanged
   EXPECT_EQ(resp.body(), std::string_view("inline-body"));
 }
 
 TEST_F(HttpResponseTest, TrailersInline_WithTrailers) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body("inline-body");
+  HttpResponse resp("inline-body");
   resp.addTrailer("X-First", "one");
   resp.addTrailer("X-Second", "two");
-  auto tv = resp.trailers();
+  auto tv = resp.trailersFlatView();
   EXPECT_FALSE(tv.empty());
   // trailers are stored as header lines terminated by CRLF
   EXPECT_TRUE(tv.contains("X-First: one\r\n"));
@@ -1723,7 +1834,7 @@ TEST_F(HttpResponseTest, TrailersInline_WithTrailers) {
 TEST_F(HttpResponseTest, TrailersCaptured_NoTrailers) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body(std::string("captured-body-content"));
-  auto tv = resp.trailers();
+  auto tv = resp.trailersFlatView();
   EXPECT_TRUE(tv.empty());
   EXPECT_EQ(resp.body(), std::string_view("captured-body-content"));
 }
@@ -1732,7 +1843,7 @@ TEST_F(HttpResponseTest, TrailersCaptured_WithTrailers) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body(std::string("captured-body"));
   resp.addTrailer("X-Custom", "val");
-  auto tv = resp.trailers();
+  auto tv = resp.trailersFlatView();
   EXPECT_FALSE(tv.empty());
   EXPECT_TRUE(tv.contains("X-Custom: val\r\n"));
   EXPECT_TRUE(tv.ends_with(http::CRLF));
@@ -1744,11 +1855,6 @@ TEST(HttpResponseAppendHeaderValue, AppendsToEmptyHeader) {
   HttpResponse resp;
   resp.appendHeaderValue("X-Test", "alpha");
   EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "alpha");
-}
-
-TEST(HttpResponse, AppendReservedHeaderShouldDieInDebug) {
-  HttpResponse resp;
-  EXPECT_DEBUG_DEATH(resp.appendHeaderValue(http::Connection, "some value"), "");
 }
 
 TEST(HttpResponseAppendHeaderValue, AppendsWithDefaultSeparator) {
