@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string_view>
 #include <type_traits>
 
@@ -27,13 +28,18 @@ class RawBytesBase {
   static_assert(std::is_trivially_copyable_v<T> && sizeof(T) == 1);
   static_assert(std::is_unsigned_v<SizeType>, "RawBytesBase requires an unsigned size type");
 
+  // Constructs an empty buffer, without any allocated storage.
   RawBytesBase() noexcept = default;
 
-  explicit RawBytesBase(size_type capacity);
+  // Constructs a buffer with the specified capacity.
+  // Warning: unlike std::string or std::vector, the size is set to 0, not to capacity.
+  explicit RawBytesBase(uint64_t capacity);
 
+  // Constructs a buffer initialized with the specified data.
   explicit RawBytesBase(ViewType data);
 
-  RawBytesBase(const_pointer data, size_type sz);
+  // Constructs a buffer initialized with the specified data.
+  RawBytesBase(const_pointer data, uint64_t sz);
 
   RawBytesBase(const RawBytesBase &rhs);
   RawBytesBase(RawBytesBase &&rhs) noexcept;
@@ -43,55 +49,87 @@ class RawBytesBase {
 
   ~RawBytesBase();
 
-  void unchecked_append(const_pointer data, size_type sz);
+  // Appends data to the end of the buffer without checking capacity.
+  void unchecked_append(const_pointer data, uint64_t sz);
 
+  // Appends data to the end of the buffer without checking capacity.
   void unchecked_append(ViewType data);
 
-  void append(const_pointer data, size_type sz);
+  // Appends data to the end of the buffer, reallocating if necessary.
+  void append(const_pointer data, uint64_t sz);
 
+  // Appends data to the end of the buffer, reallocating if necessary.
   void append(ViewType data);
 
-  void unchecked_push_back(value_type byte) { _buf[_size++] = byte; }
+  // Appends a single byte to the end of the buffer without checking capacity.
+  void unchecked_push_back(value_type byte) noexcept { _buf[_size++] = byte; }
 
+  // Appends a single byte to the end of the buffer, reallocating if necessary.
   void push_back(value_type byte);
 
-  void assign(const_pointer data, size_type size);
+  // Assigns new data to the buffer, replacing its current contents.
+  void assign(const_pointer data, uint64_t size);
 
+  // Assigns new data to the buffer, replacing its current contents.
   void assign(ViewType data);
 
+  // Clears the buffer, setting its size to zero.
   void clear() noexcept { _size = 0; }
 
-  void erase_front(size_type n);
+  // Erases the first n bytes from the buffer.
+  void erase_front(size_type n) noexcept;
 
-  void setSize(size_type newSize) { _size = newSize; }
+  // Sets the size of the buffer.
+  void setSize(size_type newSize) noexcept { _size = newSize; }
 
-  void addSize(size_type delta) { _size += delta; }
+  // Increases the size of the buffer by delta.
+  void addSize(size_type delta) noexcept { _size += delta; }
 
+  // Returns the current size of the buffer.
   [[nodiscard]] size_type size() const noexcept { return _size; }
 
+  // Returns the current capacity of the buffer.
   [[nodiscard]] size_type capacity() const noexcept { return _capacity; }
 
+  // Returns the available capacity of the buffer.
   [[nodiscard]] size_type availableCapacity() const noexcept { return _capacity - _size; }
 
-  void reserve(size_type newCapacity);
+  // Reserves capacity for at least newCapacity bytes.
+  void reserve(uint64_t newCapacity);
 
-  void shrink_to_fit();
+  // Shrinks the capacity of the buffer to fit its current size.
+  // Frees memory completely if the buffer is empty.
+  void shrink_to_fit() noexcept;
 
-  void ensureAvailableCapacity(size_type availableCapacity);
+  // Ensures that the buffer has at least the specified available capacity.
+  void ensureAvailableCapacity(uint64_t availableCapacity);
 
-  void ensureAvailableCapacityExponential(size_type availableCapacity);
+  // Ensures that the buffer has at least the specified available capacity,
+  // growing the capacity exponentially.
+  void ensureAvailableCapacityExponential(uint64_t availableCapacity);
 
+  // Returns a pointer to the buffer data.
   [[nodiscard]] pointer data() noexcept { return _buf; }
+
+  // Returns a const pointer to the buffer data.
   [[nodiscard]] const_pointer data() const noexcept { return _buf; }
 
+  // Returns a const iterator to the beginning of the buffer.
   [[nodiscard]] iterator begin() noexcept { return _buf; }
+
+  // Returns a const iterator to the beginning of the buffer.
   [[nodiscard]] const_iterator begin() const noexcept { return _buf; }
 
+  // Returns a const iterator to the end of the buffer.
   [[nodiscard]] iterator end() noexcept { return _buf + _size; }
+
+  // Returns a const iterator to the end of the buffer.
   [[nodiscard]] const_iterator end() const noexcept { return _buf + _size; }
 
+  // Returns true if the buffer is empty.
   [[nodiscard]] bool empty() const noexcept { return _size == 0; }
 
+  // Swaps the contents of this buffer with another buffer.
   void swap(RawBytesBase &rhs) noexcept;
 
   value_type &operator[](size_type pos) { return _buf[pos]; }
