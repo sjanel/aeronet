@@ -18,7 +18,7 @@ class Header {
  public:
   // Constructs a Header with the given name and value.
   // The value is trimmed.
-  explicit Header(std::string_view name, std::string_view value);
+  Header(std::string_view name, std::string_view value);
 
   // Returns the header name.
   [[nodiscard]] std::string_view name() const noexcept { return {_data.data(), _colonPos}; }

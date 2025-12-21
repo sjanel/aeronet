@@ -285,7 +285,7 @@ TEST(HttpResponseFuzzTest, TrailerStress) {
     }
 
     // Read trailers
-    [[maybe_unused]] auto trailers = resp.trailers();
+    [[maybe_unused]] auto trailers = resp.trailersFlatView();
 
     SUCCEED();
   }

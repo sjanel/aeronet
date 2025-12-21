@@ -343,8 +343,8 @@ void SingleHttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRespon
     tryCompressResponse(request, resp);
   }
 
-  queuePreparedResponse(cnxIt, resp.finalizeAndStealData(request.version(), SysClock::now(), !keepAlive,
-                                                         _config.globalHeaders, isHead, _config.minCapturedBodySize));
+  queueFormattedHttp1Response(cnxIt, resp.finalizeForHttp1(request.version(), SysClock::now(), !keepAlive,
+                                                           _config.globalHeaders, isHead, _config.minCapturedBodySize));
 
   state.inBuffer.erase_front(consumedBytes);
   if (!keepAlive && state.outBuffer.empty()) {
@@ -358,7 +358,8 @@ void SingleHttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRespon
   request.end(respStatusCode);
 }
 
-bool SingleHttpServer::queuePreparedResponse(ConnectionMapIt cnxIt, HttpResponse::PreparedResponse prepared) {
+bool SingleHttpServer::queueFormattedHttp1Response(ConnectionMapIt cnxIt,
+                                                   HttpResponse::FormattedHttp1Response prepared) {
   const bool hasFile = prepared.fileLength > 0;
   const std::uint64_t fileBytes = hasFile ? prepared.fileLength : 0;
 

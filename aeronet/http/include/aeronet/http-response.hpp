@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cassert>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <span>
@@ -16,6 +18,7 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -30,9 +33,10 @@ namespace aeronet {
 // -----------------------------------------------------------------------------
 // HttpResponse
 // -----------------------------------------------------------------------------
-// A contiguous single-buffer HTTP/1.x response builder focused on minimal
+// A contiguous single-buffer HTTP/1.x friendly response builder focused on minimal
 // allocations and cache-friendly writes, optionally supporting large bodies captured
-// in the response.
+// in the response. It is also used as the basis for HTTP/2 response serialization,
+// so that the API is common between HTTP/1.x and HTTP/2 responses.
 //
 // Memory layout (before finalize):
 //   [HTTP/1.x SP status-code [SP reason] CRLF][CRLF][CRLF]  (DoubleCRLF sentinel)
@@ -126,17 +130,29 @@ class HttpResponse {
   static constexpr std::size_t kReasonBeg = kStatusCodeBeg + 3 + 1;    // index of first reason phrase character
 
  public:
+  // Minimum initial capacity for HttpResponse internal buffer to avoid too-small allocations.
+  // In practice, even tiny responses will have several headers.
   static constexpr std::size_t kHttpResponseMinInitialCapacity = 128UL;
 
-  // Constructs an HttpResponse with the given status code and optional reason phrase, and a default initial capacity.
-  explicit HttpResponse(http::StatusCode code = http::StatusCodeOK, std::string_view reason = {});
+  // Constructs an HttpResponse with the given status code and a default initial capacity.
+  explicit HttpResponse(http::StatusCode code = http::StatusCodeOK)
+      : HttpResponse(kHttpResponseMinInitialCapacity, code) {}
 
-  // Constructs an HttpResponse with an initial capacity for the internal buffer, a status code and an optional reason
-  // phrase. The initial capacity is rounded up to at least kHttpResponseMinInitialCapacity.
+  // Constructs an HttpResponse with the given status code and reason phrase (ignored in HTTP/2), and a default
+  // initial capacity.
+  HttpResponse(http::StatusCode code, std::string_view reason);
+
+  // Constructs an HttpResponse with an initial capacity for the internal buffer and a status code.
+  // The initial capacity is rounded up to at least kHttpResponseMinInitialCapacity.
   // The capacity will hold at least the status line and the headers, and possibly the inlined body.
-  HttpResponse(std::size_t initialCapacity, http::StatusCode code, std::string_view reason = {});
+  HttpResponse(std::size_t initialCapacity, http::StatusCode code);
 
-  // Constructs an HttpResponse with a 200 status code, empty reason phrase and given body.
+  // Constructs an HttpResponse with an initial capacity for the internal buffer, a status code and a reason
+  // phrase (ignored in HTTP/2). The initial capacity is rounded up to at least kHttpResponseMinInitialCapacity.
+  // The capacity will hold at least the status line and the headers, and possibly the inlined body.
+  HttpResponse(std::size_t initialCapacity, http::StatusCode code, std::string_view reason);
+
+  // Constructs an HttpResponse with a 200 status code, no reason phrase and given body.
   // The body is copied into the internal buffer, and the content type header is set if the body is not empty.
   // If the body is large, prefer the capture by value of body() overloads to avoid a copy (and possibly an allocation).
   // The content type defaults to "text/plain"
@@ -146,6 +162,9 @@ class HttpResponse {
   [[nodiscard]] http::StatusCode status() const noexcept {
     return static_cast<http::StatusCode>(read3(_data.data() + kStatusCodeBeg));
   }
+
+  // Get the current status code string view stored in this HttpResponse
+  [[nodiscard]] std::string_view statusStr() const noexcept { return {_data.data() + kStatusCodeBeg, 3UL}; }
 
   // Get the current reason stored in this HttpResponse.
   [[nodiscard]] std::string_view reason() const noexcept { return {_data.data() + kReasonBeg, reasonLen()}; }
@@ -158,9 +177,59 @@ class HttpResponse {
   // If the header is not found, returns an empty string_view.
   // To distinguish between missing and present-but-empty header values, use headerValue().
   [[nodiscard]] std::string_view headerValueOrEmpty(std::string_view key) const noexcept {
-    const auto optValue = headerValue(key);
-    return optValue ? *optValue : std::string_view{};
+    return headerValue(key).value_or(std::string_view{});
   }
+
+  // Get a contiguous view of the current headers stored in this HttpResponse.
+  // Each header line is formatted as: name + ": " + value + CRLF.
+  // If no headers are present, it returns an empty view.
+  // If there is at least one header, the view ends with a single CRLF (of the last header).
+  [[nodiscard]] std::string_view headersFlatView() const noexcept;
+
+  class HeadersView {
+   public:
+    class iterator {
+     public:
+      using value_type = http::HeaderView;
+      using reference = http::HeaderView;
+      using pointer = void;
+      using difference_type = std::ptrdiff_t;
+      using iterator_category = std::forward_iterator_tag;
+
+      iterator(const char* beg, const char* end) noexcept;
+
+      bool operator==(const iterator& rhs) const noexcept { return _cur == rhs._cur; }
+
+      http::HeaderView operator*() const noexcept {
+        return http::HeaderView{std::string_view(_cur, _colonPos),
+                                std::string_view(_cur + _colonPos + http::HeaderSep.size(), _cur + _crlfPos)};
+      }
+
+      iterator& operator++() noexcept;
+
+     private:
+      const char* _cur = nullptr;
+      const char* _end = nullptr;
+      uint32_t _colonPos;
+      uint32_t _crlfPos;
+    };
+
+    explicit HeadersView(std::string_view sv) noexcept : data(sv) {}
+
+    [[nodiscard]] iterator begin() const noexcept { return {data.data(), data.data() + data.size()}; }
+    [[nodiscard]] iterator end() const noexcept { return {data.data() + data.size(), data.data() + data.size()}; }
+
+   private:
+    std::string_view data;
+  };
+
+  // Return a non-allocating, iterable view over headers.
+  // Each element is a HeaderView with name and value string_views.
+  // Usage example:
+  //   for (const auto &[name, value] : response.headers()) {
+  //       process(name, value);
+  //   }
+  [[nodiscard]] HeadersView headers() const noexcept { return HeadersView(headersFlatView()); }
 
   // Get a view of the current body stored in this HttpResponse.
   // If the body is not present, it returns an empty view.
@@ -172,36 +241,44 @@ class HttpResponse {
   // Check if this HttpResponse has a file payload.
   [[nodiscard]] bool hasFile() const noexcept { return isFileBody(); }
 
+  // Return a non-allocating, iterable view over trailer headers.
+  // Each element is a HeaderView with name and value string_views.
+  // Usage example:
+  //   for (const auto &[name, value] : response.headers()) {
+  //       process(name, value);
+  //   }
+  [[nodiscard]] HeadersView trailers() const noexcept { return HeadersView(trailersFlatView()); }
+
   // Get a view of the current trailers stored in this HttpResponse, starting at the first
   // trailer key (if any).
   // Each trailer line is formatted as: name + ": " + value + CRLF.
   // If no trailers are present, it returns an empty view.
-  [[nodiscard]] std::string_view trailers() const noexcept {
+  [[nodiscard]] std::string_view trailersFlatView() const noexcept {
     const auto* pExternPayload = externPayloadPtr();
     return pExternPayload != nullptr ? externalTrailers(*pExternPayload) : internalTrailers();
   }
 
   // Replaces the status code. Must be a 3 digits integer (undefined behavior otherwise).
-  HttpResponse& status(http::StatusCode statusCode) & noexcept {
+  HttpResponse& status(http::StatusCode statusCode) & {
     setStatusCode(statusCode);
     return *this;
   }
 
   // Replaces the status code. Must be a 3 digits integer (undefined behavior otherwise).
-  HttpResponse&& status(http::StatusCode statusCode) && noexcept {
+  HttpResponse&& status(http::StatusCode statusCode) && {
     setStatusCode(statusCode);
     return std::move(*this);
   }
 
   // Replaces the status code and the reason phrase. Must be a 3 digits integer (undefined behavior otherwise).
-  HttpResponse& status(http::StatusCode statusCode, std::string_view reason) & noexcept {
+  HttpResponse& status(http::StatusCode statusCode, std::string_view reason) & {
     setStatusCode(statusCode);
     setReason(reason);
     return *this;
   }
 
   // Replaces the status code and the reason phrase. Must be a 3 digits integer (undefined behavior otherwise).
-  HttpResponse&& status(http::StatusCode statusCode, std::string_view reason) && noexcept {
+  HttpResponse&& status(http::StatusCode statusCode, std::string_view reason) && {
     setStatusCode(statusCode);
     setReason(reason);
     return std::move(*this);
@@ -761,9 +838,11 @@ class HttpResponse {
 
   [[nodiscard]] std::size_t bodyLen() const noexcept;
 
-  [[nodiscard]] std::size_t internalBodyAndTrailersLen() const noexcept { return _data.size() - _bodyStartPos; }
+  [[nodiscard]] std::size_t internalBodyAndTrailersLen() const noexcept {
+    return _data.size() - static_cast<std::size_t>(bodyStartPos());
+  }
 
-  void setStatusCode(http::StatusCode statusCode) noexcept;
+  void setStatusCode(http::StatusCode statusCode);
 
   void setReason(std::string_view newReason);
 
@@ -794,7 +873,7 @@ class HttpResponse {
 
   void appendTrailer(std::string_view name, std::string_view value);
 
-  struct PreparedResponse {
+  struct FormattedHttp1Response {
     HttpResponseData data;
     File file;
     std::uint64_t fileOffset{0};
@@ -810,9 +889,9 @@ class HttpResponse {
   // IMPORTANT: This method finalizes the response by appending reserved headers,
   // and returns the internal buffers stolen from this HttpResponse instance.
   // So this instance must not be used anymore after this call.
-  PreparedResponse finalizeAndStealData(http::Version version, SysTimePoint tp, bool close,
-                                        const ConcatenatedHeaders& globalHeaders, bool isHeadMethod,
-                                        std::size_t minCapturedBodySize);
+  FormattedHttp1Response finalizeForHttp1(http::Version version, SysTimePoint tp, bool close,
+                                          const ConcatenatedHeaders& globalHeaders, bool isHeadMethod,
+                                          std::size_t minCapturedBodySize);
 
   HttpPayload* externPayloadPtr() noexcept { return std::get_if<HttpPayload>(&_payloadVariant); }
 
@@ -829,17 +908,44 @@ class HttpResponse {
   [[nodiscard]] bool isInlineBody() const noexcept { return _payloadVariant.index() == 0; }
   [[nodiscard]] bool isFileBody() const noexcept { return _payloadVariant.index() == 2; }
 
-  void setBodyEnsureNoTrailers() const {
-    if (_trailerPos != 0) {
-      throw std::logic_error("Cannot set body after the first trailer");
-    }
-  }
-
   void appendBodyResetContentType(std::string_view givenContentType, std::string_view defaultContentType);
 
+  static constexpr unsigned kHeaderPosNbBits = 16U;
+
+  static constexpr unsigned kBodyPosNbBits = 64U - kHeaderPosNbBits;
+
+  static constexpr std::uint64_t kHeadersStartMask = (std::uint64_t{1} << kHeaderPosNbBits) - 1;
+  static constexpr std::uint64_t kBodyStartMask = (std::uint64_t{1} << kBodyPosNbBits) - 1;
+
+  [[nodiscard]] std::uint64_t headersStartPos() const noexcept { return _posBitmap & kHeadersStartMask; }
+  [[nodiscard]] std::uint64_t bodyStartPos() const noexcept {
+    return (_posBitmap >> kHeaderPosNbBits) & kBodyStartMask;
+  }
+
+  void setHeadersStartPos(std::uint16_t pos) noexcept {
+    const std::uint64_t bodyBits = _posBitmap & (kBodyStartMask << kHeaderPosNbBits);
+    _posBitmap = bodyBits | static_cast<std::uint64_t>(pos);
+  }
+
+  void setBodyStartPos(std::uint64_t pos) {
+    assert(pos <= kBodyStartMask);
+    const std::uint64_t headerBits = _posBitmap & kHeadersStartMask;
+    _posBitmap = headerBits | (pos << kHeaderPosNbBits);
+  }
+
+  void adjustHeadersStart(int32_t diff) {
+    const auto next = static_cast<int64_t>(headersStartPos()) + diff;
+    setHeadersStartPos(static_cast<std::uint16_t>(next));
+  }
+
+  void adjustBodyStart(int64_t diff) {
+    const auto next = static_cast<int64_t>(bodyStartPos()) + diff;
+    setBodyStartPos(static_cast<std::uint64_t>(next));
+  }
+
   RawChars _data;
-  uint16_t _headersStartPos{0};  // position just at the CRLF that starts the first header line
-  uint32_t _bodyStartPos{0};     // position of first body byte (after CRLF CRLF)
+  // Bitmap layout: [48 bits bodyStartPos][16 bits headersStartPos]
+  std::uint64_t _posBitmap{0};
   // Variant holding either an external captured payload (HttpPayload) or a FilePayload.
   // monostate represents "no external payload".
   std::variant<std::monostate, HttpPayload, FilePayload> _payloadVariant;

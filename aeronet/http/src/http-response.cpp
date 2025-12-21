@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
-#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
@@ -38,23 +37,58 @@
 namespace aeronet {
 
 namespace {
-constexpr std::size_t HttpResponseInitialSize(std::string_view reason = {}) {
-  return http::HTTP10Sv.size() + 1U + 3U + (reason.empty() ? 0UL : reason.size() + 1UL) + http::DoubleCRLF.size();
+// The RFC does not specify a maximum length for the reason phrase,
+// but in practice it should be reasonable. If you need a longer reason,
+// consider using headers / body instead.
+constexpr std::string_view::size_type kMaxReasonLength = 1024;
+
+// Number of digits in the status code (3 digits).
+constexpr std::size_t kNdigitsStatusCode = 3U;
+
+constexpr std::size_t HttpResponseInitialSize() {
+  return http::HTTP10Sv.size() + 1U + kNdigitsStatusCode + http::DoubleCRLF.size();
+}
+
+constexpr std::size_t HttpResponseInitialSize(std::size_t reasonLen) {
+  return http::HTTP10Sv.size() + 1U + kNdigitsStatusCode +
+         (reasonLen == 0 ? 0UL : std::min(reasonLen, kMaxReasonLength) + 1UL) + http::DoubleCRLF.size();
+}
+
+constexpr std::string_view AdjustReasonLen(std::string_view reason) {
+  if (reason.size() > kMaxReasonLength) [[unlikely]] {
+    log::warn("Provided reason is too long ({} bytes), truncating it to {} bytes", reason.length(), kMaxReasonLength);
+    reason.remove_suffix(reason.size() - kMaxReasonLength);
+  }
+  return reason;
 }
 }  // namespace
 
 HttpResponse::HttpResponse(http::StatusCode code, std::string_view reason)
     : HttpResponse(kHttpResponseMinInitialCapacity, code, reason) {}
 
+HttpResponse::HttpResponse(std::size_t initialCapacity, http::StatusCode code)
+    : _data(std::max({HttpResponseInitialSize(), initialCapacity, kHttpResponseMinInitialCapacity})) {
+  _data[http::HTTP10Sv.size()] = ' ';
+  const auto bodyStart = HttpResponseInitialSize();
+  setBodyStartPos(bodyStart);
+  setStatusCode(code);
+  std::memcpy(_data.data() + bodyStart - http::DoubleCRLF.size(), http::DoubleCRLF.data(), http::DoubleCRLF.size());
+  _data.setSize(bodyStart);
+}
+
 HttpResponse::HttpResponse(std::size_t initialCapacity, http::StatusCode code, std::string_view reason)
-    : _data(std::max({HttpResponseInitialSize(reason), initialCapacity, kHttpResponseMinInitialCapacity})),
-      _bodyStartPos(static_cast<uint32_t>(HttpResponseInitialSize(reason))) {
+    : _data(std::max({HttpResponseInitialSize(reason.size()), initialCapacity, kHttpResponseMinInitialCapacity})) {
+  _data[http::HTTP10Sv.size()] = ' ';
+  const auto bodyStart = HttpResponseInitialSize(reason.size());
+  setBodyStartPos(bodyStart);
   setStatusCode(code);
   if (!reason.empty()) {
+    reason = AdjustReasonLen(reason);
+    _data[kReasonBeg - 1UL] = ' ';
     std::memcpy(_data.data() + kReasonBeg, reason.data(), reason.size());
   }
-  std::memcpy(_data.data() + _bodyStartPos - http::DoubleCRLF.size(), http::DoubleCRLF.data(), http::DoubleCRLF.size());
-  _data.setSize(_bodyStartPos);
+  std::memcpy(_data.data() + bodyStart - http::DoubleCRLF.size(), http::DoubleCRLF.data(), http::DoubleCRLF.size());
+  _data.setSize(bodyStart);
 }
 
 HttpResponse::HttpResponse(std::string_view body, std::string_view contentType)
@@ -66,10 +100,10 @@ std::size_t HttpResponse::reasonLen() const noexcept {
   if (_data[kReasonBeg] == '\n') {
     return 0UL;
   }
-  if (_headersStartPos != 0) {
-    return _headersStartPos - kReasonBeg;
+  if (headersStartPos() != 0) {
+    return headersStartPos() - kReasonBeg;
   }
-  return _bodyStartPos - kReasonBeg - http::DoubleCRLF.size();
+  return bodyStartPos() - kReasonBeg - http::DoubleCRLF.size();
 }
 
 std::size_t HttpResponse::bodyLen() const noexcept {
@@ -83,13 +117,15 @@ std::size_t HttpResponse::bodyLen() const noexcept {
   return pExternPayload != nullptr ? pExternPayload->size() : internalBodyAndTrailersLen();
 }
 
-void HttpResponse::setStatusCode(http::StatusCode statusCode) noexcept {
-  assert(statusCode >= 100 && statusCode < 1000);
+void HttpResponse::setStatusCode(http::StatusCode statusCode) {
+  if (statusCode < 100 || statusCode > 999) [[unlikely]] {
+    throw std::invalid_argument("Invalid HTTP status code, should be 3 digits");
+  }
   write3(_data.data() + kStatusCodeBeg, statusCode);
 }
 
 std::string_view HttpResponse::internalTrailers() const noexcept {
-  return {_trailerPos != 0 ? (_data.begin() + _bodyStartPos + _trailerPos) : _data.end(), _data.end()};
+  return {_trailerPos != 0 ? (_data.begin() + bodyStartPos() + _trailerPos) : _data.end(), _data.end()};
 }
 
 std::string_view HttpResponse::externalTrailers(const HttpPayload& data) const noexcept {
@@ -98,35 +134,39 @@ std::string_view HttpResponse::externalTrailers(const HttpPayload& data) const n
 }
 
 void HttpResponse::setReason(std::string_view newReason) {
-  static constexpr std::string_view::size_type kMaxReasonLength = 1024;
-  if (newReason.size() > kMaxReasonLength) {
-    log::error("Provided reason is too long ({} bytes), truncating it to {} bytes", newReason.length(),
-               kMaxReasonLength);
-    newReason.remove_suffix(newReason.size() - kMaxReasonLength);
-  }
-
-  const auto oldReasonSz = reasonLen();
+  newReason = AdjustReasonLen(newReason);
+  auto oldReasonSz = reasonLen();
   int32_t diff = static_cast<int32_t>(newReason.size()) - static_cast<int32_t>(oldReasonSz);
+  if (diff == 0) {
+    if (!newReason.empty()) {
+      std::memcpy(_data.data() + kReasonBeg, newReason.data(), newReason.size());
+    }
+    return;
+  }
   if (diff > 0) {
     if (oldReasonSz == 0) {
       ++diff;  // for the space before first reason char
     }
     _data.ensureAvailableCapacityExponential(static_cast<std::size_t>(diff));
-  } else if (diff < 0 && newReason.empty()) {
+  } else if (newReason.empty()) {
     --diff;  // remove the space that previously separated status and reason
   }
   const std::string_view oldReason = reason();
-  char* orig = _data.data() + kReasonBeg + oldReason.size();
+  char* orig = _data.data() + kReasonBeg + oldReasonSz;
   if (oldReason.empty()) {
     --orig;  // point to the CR (space placeholder location)
   }
-  std::memmove(orig + diff, orig,
-               _data.size() - kStatusCodeBeg - 3U - oldReason.size() - static_cast<uint32_t>(!oldReason.empty()));
-  _bodyStartPos = static_cast<uint32_t>(static_cast<int64_t>(_bodyStartPos) + diff);
-  if (_headersStartPos != 0) {
-    _headersStartPos = static_cast<decltype(_headersStartPos)>(static_cast<int64_t>(_headersStartPos) + diff);
+  std::memmove(
+      orig + diff, orig,
+      _data.size() - kStatusCodeBeg - kNdigitsStatusCode - oldReasonSz - static_cast<uint32_t>(!oldReason.empty()));
+  adjustBodyStart(diff);
+  if (headersStartPos() != 0) {
+    adjustHeadersStart(diff);
   }
-  std::memcpy(_data.data() + kReasonBeg, newReason.data(), newReason.size());
+  if (!newReason.empty()) {
+    _data[kReasonBeg - 1UL] = ' ';
+    std::memcpy(_data.data() + kReasonBeg, newReason.data(), newReason.size());
+  }
   _data.addSize(static_cast<std::size_t>(diff));
 }
 
@@ -164,7 +204,7 @@ void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
   // In C++, unsigned overflow is well-defined.
   _data.addSize(static_cast<std::size_t>(diff));
 
-  _bodyStartPos = static_cast<uint32_t>(static_cast<int64_t>(_bodyStartPos) + diff);
+  adjustBodyStart(diff);
 }
 
 void HttpResponse::setContentTypeHeader(std::string_view contentTypeValue, bool isEmpty) {
@@ -190,16 +230,25 @@ void HttpResponse::eraseHeader(std::string_view key) {
   const std::size_t headerLineLen = static_cast<std::size_t>(valueEnd - keyBeg) + http::CRLF.size();
 
   // If removed header was the only header, we need to reset _headersStartPos to 0
-  if (_headersStartPos + headerLineLen + http::DoubleCRLF.size() == _bodyStartPos) {
-    _headersStartPos = 0;
+  if (headersStartPos() + headerLineLen + http::DoubleCRLF.size() == bodyStartPos()) {
+    setHeadersStartPos(0);
   }
 
-  _bodyStartPos -= static_cast<decltype(_bodyStartPos)>(headerLineLen);
+  adjustBodyStart(-static_cast<int64_t>(headerLineLen));
   _data.setSize(_data.size() - headerLineLen);
 }
 
+namespace {
+void SetBodyEnsureNoTrailers(std::size_t trailerPos) {
+  if (trailerPos != 0) [[unlikely]] {
+    throw std::logic_error("Cannot set body after the first trailer");
+  }
+}
+
+}  // namespace
+
 void HttpResponse::setBodyInternal(std::string_view newBody) {
-  setBodyEnsureNoTrailers();
+  SetBodyEnsureNoTrailers(_trailerPos);
   const int64_t diff = static_cast<int64_t>(newBody.size()) - static_cast<int64_t>(internalBodyAndTrailersLen());
   if (diff > 0) {
     int64_t newBodyInternalPos = -1;
@@ -219,7 +268,7 @@ void HttpResponse::setBodyInternal(std::string_view newBody) {
   }
   if (!newBody.empty()) {
     // Because calling memcpy with a null pointer is undefined behavior even if size is 0
-    std::memcpy(_data.data() + _bodyStartPos, newBody.data(), newBody.size());
+    std::memcpy(_data.data() + bodyStartPos(), newBody.data(), newBody.size());
   }
   // Clear payload variant at the end because newBody may point to its internal memory.
   _payloadVariant = {};
@@ -232,7 +281,8 @@ constexpr std::size_t kExtraSpaceForContentTypeHeader =
 }  // namespace
 
 void HttpResponse::appendBodyInternal(std::string_view data, std::string_view contentType) {
-  setBodyEnsureNoTrailers();
+  SetBodyEnsureNoTrailers(_trailerPos);
+
   if (!data.empty()) {
     _data.ensureAvailableCapacityExponential(
         data.size() + kExtraSpaceForContentTypeHeader +
@@ -247,7 +297,7 @@ void HttpResponse::appendBodyInternal(std::string_view data, std::string_view co
 
 void HttpResponse::appendBodyInternal(std::size_t maxLen, const std::function<std::size_t(char*)>& writer,
                                       std::string_view contentType) {
-  setBodyEnsureNoTrailers();
+  SetBodyEnsureNoTrailers(_trailerPos);
 
   _data.ensureAvailableCapacityExponential(maxLen + kExtraSpaceForContentTypeHeader +
                                            std::max(http::ContentTypeTextPlain.size(), contentType.size()));
@@ -264,7 +314,8 @@ void HttpResponse::appendBodyInternal(std::size_t maxLen, const std::function<st
 
 void HttpResponse::appendBodyInternal(std::size_t maxLen, const std::function<std::size_t(std::byte*)>& writer,
                                       std::string_view contentType) {
-  setBodyEnsureNoTrailers();
+  SetBodyEnsureNoTrailers(_trailerPos);
+
   _data.ensureAvailableCapacityExponential(
       maxLen + kExtraSpaceForContentTypeHeader +
       std::max(http::ContentTypeApplicationOctetStream.size(), contentType.size()));
@@ -311,22 +362,53 @@ const File* HttpResponse::file() const noexcept {
 
 std::string_view HttpResponse::body() const noexcept {
   const HttpPayload* pExternPayload = externPayloadPtr();
-  auto ret =
-      pExternPayload != nullptr ? pExternPayload->view() : std::string_view{_data.begin() + _bodyStartPos, _data.end()};
+  auto ret = pExternPayload != nullptr ? pExternPayload->view()
+                                       : std::string_view{_data.begin() + bodyStartPos(), _data.end()};
   if (_trailerPos != 0) {
     ret.remove_suffix(ret.size() - _trailerPos);
   }
   return ret;
 }
 
+std::string_view HttpResponse::headersFlatView() const noexcept {
+  const auto headersStart = headersStartPos();
+  if (headersStart == 0) {
+    return {};
+  }
+  return {_data.data() + headersStart + http::CRLF.size(), _data.data() + bodyStartPos() - http::CRLF.size()};
+}
+
+HttpResponse::HeadersView::iterator::iterator(const char* beg, const char* end) noexcept : _cur(beg), _end(end) {
+  if (_cur != _end) {
+    const char* colonPtr = std::search(_cur, _end, http::HeaderSep.begin(), http::HeaderSep.end());
+    assert(colonPtr != _end);
+    _colonPos = static_cast<uint32_t>(colonPtr - _cur);
+
+    const char* crlfPtr = std::search(colonPtr + http::HeaderSep.size(), _end, http::CRLF.begin(), http::CRLF.end());
+    _crlfPos = static_cast<uint32_t>(crlfPtr - _cur);
+  }
+}
+
+HttpResponse::HeadersView::iterator& HttpResponse::HeadersView::iterator::operator++() noexcept {
+  _cur += _crlfPos + http::CRLF.size();
+
+  const char* colonPtr = std::search(_cur, _end, http::HeaderSep.begin(), http::HeaderSep.end());
+  _colonPos = static_cast<uint32_t>(colonPtr - _cur);
+  const char* crlfPtr = std::search(colonPtr + http::HeaderSep.size(), _end, http::CRLF.begin(), http::CRLF.end());
+  _crlfPos = static_cast<uint32_t>(crlfPtr - _cur);
+
+  return *this;
+}
+
 std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) const noexcept {
   std::optional<std::string_view> ret;
-  if (_headersStartPos == 0) {
+  const auto headersStart = headersStartPos();
+  if (headersStart == 0) {
     return ret;
   }
 
-  const char* headersBeg = _data.data() + _headersStartPos + http::CRLF.size();
-  const char* headersEnd = _data.data() + _bodyStartPos - http::CRLF.size();
+  const char* headersBeg = _data.data() + headersStart + http::CRLF.size();
+  const char* headersEnd = _data.data() + bodyStartPos() - http::CRLF.size();
   const char* endKey = key.end();
 
   while (headersBeg < headersEnd) {
@@ -358,22 +440,22 @@ std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) 
 void HttpResponse::appendHeaderInternal(std::string_view key, std::string_view value) {
   assert(http::IsValidHeaderName(key));
 
-  if (_headersStartPos == 0) {
-    _headersStartPos = static_cast<decltype(_headersStartPos)>(_bodyStartPos - http::DoubleCRLF.size());
+  if (headersStartPos() == 0) {
+    setHeadersStartPos(static_cast<std::uint16_t>(bodyStartPos() - http::DoubleCRLF.size()));
   }
 
   const std::size_t headerLineSize = http::CRLF.size() + key.size() + http::HeaderSep.size() + value.size();
 
   _data.ensureAvailableCapacityExponential(headerLineSize);
 
-  char* insertPtr = _data.data() + _bodyStartPos - http::DoubleCRLF.size();
+  char* insertPtr = _data.data() + bodyStartPos() - http::DoubleCRLF.size();
 
   std::memmove(insertPtr + headerLineSize, insertPtr, http::DoubleCRLF.size() + internalBodyAndTrailersLen());
 
   WriteCRLFHeader(insertPtr, key, value);
 
   _data.addSize(headerLineSize);
-  _bodyStartPos += static_cast<uint32_t>(headerLineSize);
+  adjustBodyStart(static_cast<int64_t>(headerLineSize));
 }
 
 void HttpResponse::appendHeaderValueInternal(std::string_view key, std::string_view value, std::string_view separator) {
@@ -411,7 +493,7 @@ void HttpResponse::appendHeaderValueInternal(std::string_view key, std::string_v
   }
 
   _data.addSize(extraLen);
-  _bodyStartPos = static_cast<uint32_t>(_bodyStartPos + extraLen);
+  adjustBodyStart(static_cast<int64_t>(extraLen));
 }
 
 HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoint tp, bool isHeadMethod, bool close,
@@ -425,17 +507,25 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
 
   const auto bodySz = bodyLen();
   bool moveBodyInline;
-  if (bodySz == 0 || isHeadMethod) {
+  if (bodySz == 0) {
+    assert(_trailerPos == 0);
     moveBodyInline = false;
 
     // erase body and trailers (but keep headers, especially Content-Length / Content-Type)
     if (isInlineBody()) {
-      _data.setSize(_data.size() - bodySz - _trailerPos);
+      _data.setSize(_data.size() - bodySz);
     } else {
       _payloadVariant = {};
       pExternPayload = nullptr;
     }
-
+  } else if (isHeadMethod) {
+    // For HEAD responses we must not transmit the body, but keep file payloads
+    // intact so ownership can be transferred by finalizeForHttp1. For inline
+    // bodies we still erase the inline bytes.
+    moveBodyInline = false;
+    if (isInlineBody()) {
+      _data.setSize(_data.size() - bodySz - _trailerPos);
+    }
     // A HEAD response must not have trailers
     _trailerPos = 0;
   } else {
@@ -450,12 +540,12 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
   // HTTP/1.0 is the opposite - Connection: close is the default.
   const bool addConnectionHeader = (close && version == http::HTTP_1_1) || (!close && version == http::HTTP_1_0);
   const auto bodySzStr = IntegralToCharVector(bodySz);
-  const bool hasHeaders = _headersStartPos != 0;
+  const bool hasHeaders = headersStartPos() != 0;
 
   std::size_t totalNewHeadersSize = http::Date.size() + kRFC7231DateStrLen + kHeaderAdditionalSize;
 
   if (!hasHeaders) {
-    _headersStartPos = static_cast<decltype(_headersStartPos)>(_bodyStartPos - http::DoubleCRLF.size());
+    setHeadersStartPos(static_cast<std::uint16_t>(bodyStartPos() - http::DoubleCRLF.size()));
   }
 
   if (addConnectionHeader) {
@@ -483,9 +573,7 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
     ++pos;
   }
 
-  if (std::cmp_greater(totalNewHeadersSize + _bodyStartPos, std::numeric_limits<decltype(_bodyStartPos)>::max())) {
-    throw std::length_error("HTTP response headers too large");
-  }
+  assert(totalNewHeadersSize + bodyStartPos() <= kBodyStartMask);
 
   std::size_t extraSize = totalNewHeadersSize;
   if (moveBodyInline) {
@@ -499,7 +587,7 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
 
   _data.ensureAvailableCapacity(extraSize);
 
-  char* insertPtr = _data.data() + _bodyStartPos - http::DoubleCRLF.size();
+  char* insertPtr = _data.data() + bodyStartPos() - http::DoubleCRLF.size();
 
   std::memmove(insertPtr + totalNewHeadersSize, insertPtr, http::DoubleCRLF.size() + internalBodyAndTrailersLen());
 
@@ -532,10 +620,10 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
   }
 
   _data.addSize(extraSize);
-  _bodyStartPos += static_cast<uint32_t>(totalNewHeadersSize);
+  adjustBodyStart(static_cast<int64_t>(totalNewHeadersSize));
 
   if (moveBodyInline) {
-    std::memcpy(_data.data() + _bodyStartPos, externBodyAndTrailers.data(), externBodyAndTrailers.size());
+    std::memcpy(_data.data() + bodyStartPos(), externBodyAndTrailers.data(), externBodyAndTrailers.size());
     _payloadVariant = {};
     pExternPayload = nullptr;
   }
@@ -597,32 +685,26 @@ void HttpResponse::appendTrailer(std::string_view name, std::string_view value) 
   WriteHeaderCRLF(insertPtr, name, value);
 }
 
-HttpResponse::PreparedResponse HttpResponse::finalizeAndStealData(http::Version version, SysTimePoint tp, bool close,
-                                                                  const ConcatenatedHeaders& globalHeaders,
-                                                                  bool isHeadMethod, std::size_t minCapturedBodySize) {
+HttpResponse::FormattedHttp1Response HttpResponse::finalizeForHttp1(http::Version version, SysTimePoint tp, bool close,
+                                                                    const ConcatenatedHeaders& globalHeaders,
+                                                                    bool isHeadMethod,
+                                                                    std::size_t minCapturedBodySize) {
   const auto versionStr = version.str();
   std::memcpy(_data.data(), versionStr.data(), versionStr.size());
-  _data[versionStr.size()] = ' ';
-  // status code already set. Space before reason only if reason present.
-  const auto rLen = reasonLen();
-  if (rLen != 0) {
-    _data[kReasonBeg - 1UL] = ' ';
-  }
 
   HttpPayload* pExternPayload =
       finalizeHeadersBody(version, tp, isHeadMethod, close, globalHeaders, minCapturedBodySize);
 
-  PreparedResponse prepared;
+  FormattedHttp1Response prepared;
   // Move head (_data) first.
   prepared.data = HttpResponseData{std::move(_data)};
   if (pExternPayload != nullptr) {
     // Move captured body out of the variant into a temporary HttpResponseData and append it.
-    HttpPayload moved = std::move(*pExternPayload);
-    HttpResponseData tail{RawChars{}, std::move(moved)};
-    prepared.data.append(std::move(tail));
+    prepared.data.append(HttpResponseData{RawChars{}, std::move(*pExternPayload)});
   } else {
     FilePayload* pFilePayload = filePayloadPtr();
-    if (pFilePayload != nullptr && pFilePayload->length != 0) {
+    if (pFilePayload != nullptr) {
+      assert(pFilePayload->length != 0);
       prepared.file = std::move(pFilePayload->file);
       prepared.fileOffset = pFilePayload->offset;
       // HEAD responses must not transmit the body; still close the descriptor via moved File.
