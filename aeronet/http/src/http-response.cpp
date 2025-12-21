@@ -380,23 +380,24 @@ std::string_view HttpResponse::headersFlatView() const noexcept {
 
 HttpResponse::HeadersView::iterator::iterator(const char* beg, const char* end) noexcept : _cur(beg), _end(end) {
   if (_cur != _end) {
-    const char* colonPtr = std::search(_cur, _end, http::HeaderSep.begin(), http::HeaderSep.end());
-    assert(colonPtr != _end);
-    _colonPos = static_cast<uint32_t>(colonPtr - _cur);
-
-    const char* crlfPtr = std::search(colonPtr + http::HeaderSep.size(), _end, http::CRLF.begin(), http::CRLF.end());
-    _crlfPos = static_cast<uint32_t>(crlfPtr - _cur);
+    setLen();
   }
 }
 
-HttpResponse::HeadersView::iterator& HttpResponse::HeadersView::iterator::operator++() noexcept {
-  _cur += _crlfPos + http::CRLF.size();
-
+void HttpResponse::HeadersView::iterator::setLen() {
   const char* colonPtr = std::search(_cur, _end, http::HeaderSep.begin(), http::HeaderSep.end());
-  _colonPos = static_cast<uint32_t>(colonPtr - _cur);
-  const char* crlfPtr = std::search(colonPtr + http::HeaderSep.size(), _end, http::CRLF.begin(), http::CRLF.end());
-  _crlfPos = static_cast<uint32_t>(crlfPtr - _cur);
+  assert(colonPtr != _end);  // should not happen in well-formed headers
+  const char* begValue = colonPtr + http::HeaderSep.size();
 
+  _nameLen = static_cast<uint32_t>(colonPtr - _cur);
+  _valueLen = static_cast<uint32_t>(std::search(begValue, _end, http::CRLF.begin(), http::CRLF.end()) - begValue);
+}
+
+HttpResponse::HeadersView::iterator& HttpResponse::HeadersView::iterator::operator++() noexcept {
+  _cur += _nameLen + http::HeaderSep.size() + _valueLen + http::CRLF.size();
+  if (_cur != _end) {
+    setLen();
+  }
   return *this;
 }
 

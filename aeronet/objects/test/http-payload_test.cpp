@@ -68,6 +68,14 @@ TEST(HttpPayload, AppendStringToString) {
   EXPECT_EQ(body.view(), "foobar");
 }
 
+TEST(HttpPayload, AppendStringViewToUniqueBytesBuffer) {
+  auto buf = std::make_unique<std::byte[]>(2);
+  std::memcpy(buf.get(), "12", 2);
+  HttpPayload body(std::move(buf), 2);
+  body.append(std::string_view("34"));
+  EXPECT_EQ(body.view(), "1234");
+}
+
 TEST(HttpPayload, AppendStringViewToVector) {
   std::vector<char> vec{'1', '2'};
   HttpPayload body(std::move(vec));
@@ -90,6 +98,15 @@ TEST(HttpPayload, AppendHttpBodyToMonostateAdopts) {
   EXPECT_EQ(body1.view(), "adopted");
 }
 
+TEST(HttpPayload, AppendHttpPayloadToUniqueCharBuffer) {
+  auto buf = std::make_unique<char[]>(3);
+  std::memcpy(buf.get(), "123", 3);
+  HttpPayload body1(std::move(buf), 3);
+  HttpPayload body2(std::string("456"));
+  body1.append(body2);
+  EXPECT_EQ(body1.view(), "123456");
+}
+
 TEST(HttpPayload, AppendLargeToCharBuffer) {
   auto buf = std::make_unique<char[]>(3);
   std::memcpy(buf.get(), "ABC", 3);
@@ -100,18 +117,34 @@ TEST(HttpPayload, AppendLargeToCharBuffer) {
 }
 
 TEST(HttpPayload, ClearResetsSizeOrZeroesBuffer) {
-  HttpPayload body1(std::string("toreset"));
-  EXPECT_EQ(body1.size(), 7U);
-  body1.clear();
-  EXPECT_EQ(body1.size(), 0U);
-  HttpPayload body2(std::vector<char>{'x', 'y'});
-  body2.clear();
-  EXPECT_EQ(body2.size(), 0U);
-  auto buf = std::make_unique<char[]>(5);
-  std::memcpy(buf.get(), "hello", 5);
-  HttpPayload body3(std::move(buf), 5);
-  body3.clear();
-  EXPECT_EQ(body3.size(), 0U);
+  HttpPayload body(std::string("toreset"));
+  EXPECT_EQ(body.size(), 7U);
+  body.clear();
+  EXPECT_EQ(body.size(), 0U);
+
+  body = HttpPayload(std::vector<char>{'x', 'y'});
+  EXPECT_EQ(body.size(), 2U);
+  body.clear();
+  EXPECT_EQ(body.size(), 0U);
+
+  body = HttpPayload(std::vector<std::byte>{std::byte{'x'}, std::byte{'y'}});
+  EXPECT_EQ(body.size(), 2U);
+  body.clear();
+  EXPECT_EQ(body.size(), 0U);
+
+  auto chars = std::make_unique<char[]>(5);
+  std::memcpy(chars.get(), "hello", 5);
+  body = HttpPayload(std::move(chars), 5);
+  EXPECT_EQ(body.size(), 5U);
+  body.clear();
+  EXPECT_EQ(body.size(), 0U);
+
+  auto bytes = std::make_unique<std::byte[]>(5);
+  std::memcpy(bytes.get(), "hello", 5);
+  body = HttpPayload(std::move(bytes), 5);
+  EXPECT_EQ(body.size(), 5U);
+  body.clear();
+  EXPECT_EQ(body.size(), 0U);
 }
 
 TEST(HttpPayload, MultipleAppendCombinations) {
