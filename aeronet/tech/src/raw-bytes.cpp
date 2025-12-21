@@ -20,7 +20,7 @@ namespace {
 template <class ToT, class FromT>
 constexpr ToT SafeCast(FromT value) {
   if constexpr (sizeof(ToT) < sizeof(FromT)) {
-    if (std::cmp_greater(value, std::numeric_limits<ToT>::max())) {
+    if (std::numeric_limits<ToT>::max() < value) [[unlikely]] {
       throw std::overflow_error("value exceeds target type maximum");
     }
   }
@@ -29,9 +29,10 @@ constexpr ToT SafeCast(FromT value) {
 }  // namespace
 
 template <class T, class ViewType, class SizeType>
-RawBytesBase<T, ViewType, SizeType>::RawBytesBase(size_type capacity)
-    : _buf(static_cast<value_type *>(std::malloc(capacity))), _capacity(capacity) {
-  if (capacity != 0 && _buf == nullptr) {
+RawBytesBase<T, ViewType, SizeType>::RawBytesBase(uint64_t capacity)
+    : _buf(static_cast<value_type *>(std::malloc(SafeCast<size_type>(capacity)))),
+      _capacity(static_cast<size_type>(capacity)) {
+  if (capacity != 0 && _buf == nullptr) [[unlikely]] {
     throw std::bad_alloc();
   }
 }
@@ -42,7 +43,7 @@ RawBytesBase<T, ViewType, SizeType>::RawBytesBase(ViewType data)
     : RawBytesBase(data.data(), SafeCast<size_type>(data.size())) {}
 
 template <class T, class ViewType, class SizeType>
-RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const_pointer data, size_type sz) : RawBytesBase(sz) {
+RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const_pointer data, uint64_t sz) : RawBytesBase(sz) {
   if (sz != 0) {
     std::memcpy(_buf, data, _capacity);
     _size = _capacity;
@@ -93,13 +94,15 @@ RawBytesBase<T, ViewType, SizeType>::~RawBytesBase() {
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::unchecked_append(const_pointer data, size_type sz) {
+void RawBytesBase<T, ViewType, SizeType>::unchecked_append(const_pointer data, uint64_t sz) {
   if (sz != 0) {
-    if (_size + sz < _size) [[unlikely]] {  // overflow check
-      throw std::overflow_error("append size overflow");
+    if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
+      if (static_cast<uintmax_t>(std::numeric_limits<size_type>::max()) < sz + _size) [[unlikely]] {
+        throw std::overflow_error("capacity overflow");
+      }
     }
     std::memcpy(_buf + _size, data, sz);
-    _size += sz;
+    _size += static_cast<size_type>(sz);
   }
 }
 
@@ -110,17 +113,16 @@ void RawBytesBase<T, ViewType, SizeType>::unchecked_append(ViewType data) {
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::append(const_pointer data, size_type sz) {
+void RawBytesBase<T, ViewType, SizeType>::append(const_pointer data, uint64_t sz) {
   ensureAvailableCapacityExponential(sz);
   unchecked_append(data, sz);
 }
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::append(ViewType data) {
-  const auto sz = SafeCast<size_type>(data.size());
-  ensureAvailableCapacityExponential(sz);
+  ensureAvailableCapacityExponential(data.size());
   // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-  unchecked_append(data.data(), sz);
+  unchecked_append(data.data(), data.size());
 }
 
 template <class T, class ViewType, class SizeType>
@@ -130,12 +132,12 @@ void RawBytesBase<T, ViewType, SizeType>::push_back(value_type byte) {
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::assign(const_pointer data, size_type size) {
+void RawBytesBase<T, ViewType, SizeType>::assign(const_pointer data, uint64_t size) {
   if (size != 0) {
     reserve(size);
     std::memcpy(_buf, data, size);
   }
-  _size = size;
+  _size = static_cast<size_type>(size);
 }
 
 template <class T, class ViewType, class SizeType>
@@ -145,7 +147,7 @@ void RawBytesBase<T, ViewType, SizeType>::assign(ViewType data) {
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::erase_front(size_type n) {
+void RawBytesBase<T, ViewType, SizeType>::erase_front(size_type n) noexcept {
   if (n != 0) {
     _size -= n;
     std::memmove(_buf, _buf + n, _size);
@@ -153,14 +155,14 @@ void RawBytesBase<T, ViewType, SizeType>::erase_front(size_type n) {
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::reserve(size_type newCapacity) {
-  if (_capacity < newCapacity) {
-    reallocUp(newCapacity);
+void RawBytesBase<T, ViewType, SizeType>::reserve(uint64_t newCapacity) {
+  if (_capacity < SafeCast<size_type>(newCapacity)) {
+    reallocUp(static_cast<size_type>(newCapacity));
   }
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() {
+void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() noexcept {
   if (_size < _capacity) {
     if (_size == 0) {
       std::free(_buf);
@@ -177,10 +179,10 @@ void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() {
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacity(size_type availableCapacity) {
+void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacity(uint64_t availableCapacity) {
   if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
-    static constexpr uintmax_t kMaxCapacity = static_cast<uintmax_t>(std::numeric_limits<size_type>::max());
-    if (kMaxCapacity < static_cast<uintmax_t>(_size) + availableCapacity) {
+    if (static_cast<uintmax_t>(std::numeric_limits<size_type>::max()) <
+        static_cast<uintmax_t>(_size) + availableCapacity) [[unlikely]] {
       throw std::overflow_error("capacity overflow");
     }
   }
@@ -188,16 +190,16 @@ void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacity(size_type avai
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacityExponential(size_type availableCapacity) {
-  const uintmax_t required = static_cast<uintmax_t>(_size) + static_cast<uintmax_t>(availableCapacity);
+void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacityExponential(uint64_t availableCapacity) {
+  const uintmax_t required = availableCapacity + _size;
 
-  if (std::cmp_less(_capacity, required)) {
+  if (_capacity < required) {
     const uintmax_t doubled = (static_cast<uintmax_t>(_capacity) * 2UL) + 1UL;
     const uintmax_t target = std::max(required, doubled);
 
     if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
       static constexpr uintmax_t kMaxCapacity = static_cast<uintmax_t>(std::numeric_limits<size_type>::max());
-      if (target > kMaxCapacity) {
+      if (kMaxCapacity < target) {
         throw std::overflow_error("capacity overflow");
       }
     }

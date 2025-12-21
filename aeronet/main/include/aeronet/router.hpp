@@ -1,6 +1,5 @@
 #pragma once
 
-#include <amc/type_traits.hpp>
 #include <cstdint>
 #include <functional>
 #include <span>
@@ -270,9 +269,9 @@ class Router {
 
     bool operator==(const SegmentPart&) const noexcept = default;
 
-    using trivially_relocatable = amc::is_trivially_relocatable<SmallRawChars>::type;
+    using trivially_relocatable = std::true_type;
 
-    SmallRawChars literal;  // non empty when Kind::Literal
+    RawChars32 literal;  // non empty when Kind::Literal
   };
 
   struct CompiledSegment {
@@ -284,7 +283,7 @@ class Router {
 
     using trivially_relocatable = std::true_type;
 
-    SmallRawChars literal;      // non empty when Type::Literal
+    RawChars32 literal;         // non empty when Type::Literal
     vector<SegmentPart> parts;  // used when Type::Pattern
   };
 
@@ -307,13 +306,13 @@ class Router {
     RouteNode* child{nullptr};
   };
 
-  using RouteNodeMap = flat_hash_map<SmallRawChars, RouteNode*, std::hash<std::string_view>, std::equal_to<>>;
+  using RouteNodeMap = flat_hash_map<RawChars32, RouteNode*, std::hash<std::string_view>, std::equal_to<>>;
 
   struct RouteNode {
     // Return a human-readable pattern string reconstructed from the compiled route
     // e.g. "/users/{param}/files/*" or "<empty>" when no route present.
     // Prerequisite: pRoute should not be nullptr.
-    [[nodiscard]] SmallRawChars patternString() const;
+    [[nodiscard]] RawChars32 patternString() const;
 
     RouteNodeMap literalChildren;
     vector<DynamicEdge> dynamicChildren;

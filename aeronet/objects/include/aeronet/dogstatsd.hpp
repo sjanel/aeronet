@@ -49,7 +49,7 @@ class DogStatsD {
   void sendMetricMessage(std::string_view metric, std::string_view value, std::string_view typeSuffix,
                          const DogStatsDTags& tags) const noexcept;
 
-  SmallRawChars _ns;
+  RawChars32 _ns;
   BaseFd _fd;
 };
 

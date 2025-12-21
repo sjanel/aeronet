@@ -26,7 +26,7 @@ class RawBaseTest : public ::testing::Test {
   using List = typename std::list<T>;
 };
 
-using MyTypes = ::testing::Types<RawBytes, SmallRawChars, RawChars>;
+using MyTypes = ::testing::Types<RawBytes, RawChars32, RawChars>;
 TYPED_TEST_SUITE(RawBaseTest, MyTypes, );
 
 TYPED_TEST(RawBaseTest, DefaultConstructor) {
@@ -338,7 +338,7 @@ TYPED_TEST(RawBaseTest, CopyFromEmpty) {
 }
 
 TYPED_TEST(RawBaseTest, UncheckedAppendAndOverflowCheck) {
-  using RawT = TypeParam;
+  using RawT = RawChars32;
   using Type = typename RawT::value_type;
   using SizeType = typename RawT::size_type;
 

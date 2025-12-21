@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <stdexcept>
 #include <string_view>
 
@@ -16,16 +15,13 @@ namespace aeronet::http {
 Header::Header(std::string_view name, std::string_view value) : _colonPos(static_cast<uint32_t>(name.size())) {
   value = TrimOws(value);
   std::size_t totalSize = name.size() + HeaderSep.size() + value.size();
-  if (totalSize > static_cast<std::size_t>(std::numeric_limits<decltype(_data)::size_type>::max())) {
-    throw std::invalid_argument("HTTP header size exceeds maximum allowed");
-  }
   if (!IsValidHeaderName(name)) {
     throw std::invalid_argument("HTTP header name is invalid");
   }
   if (!IsValidHeaderValue(value)) {
     throw std::invalid_argument("HTTP header value is invalid");
   }
-  _data.reserve(static_cast<decltype(_data)::size_type>(totalSize));
+  _data.reserve(totalSize);
   _data.unchecked_append(name);
   _data.unchecked_append(HeaderSep);
   _data.unchecked_append(value);
