@@ -119,7 +119,7 @@ void EventLoop::del(int fd) const {
 int EventLoop::poll(const std::function<void(EventFd)>& cb) {
   const int nbReadyFds = ::epoll_wait(_baseFd.fd(), static_cast<epoll_event*>(_pEvents),
                                       static_cast<int>(_nbAllocatedEvents), _pollTimeoutMs);
-  if (nbReadyFds < 0) {
+  if (nbReadyFds == -1) {
     if (errno == EINTR) {
       return 0;  // interrupted; treat as no events
     }

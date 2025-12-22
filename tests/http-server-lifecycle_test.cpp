@@ -345,7 +345,8 @@ TEST(HttpDrain, StopsNewConnections) {
 
   ts.server.beginDrain();
 
-  EXPECT_FALSE(test::AttemptConnect(port));
+  // During drain, connections are still accepted (for health probes), but responses include Connection: close
+  ASSERT_TRUE(test::AttemptConnect(port));
 
   ts.stop();
 }
@@ -485,37 +486,36 @@ TEST(HttpRouterUpdate, RuntimeChangeObserved) {
   EXPECT_TRUE(sawV2) << "Did not observe runtime router update within timeout";
 }
 
-TEST(HttpProbes, StartupAndReadinessTransitions) {
+TEST(HttpProbes, ReadinessProbleShouldReturn503WhenDrainingIfSomeConnectionsAlive) {
   HttpServerConfig cfg{};
   cfg.enableBuiltinProbes(true);
+  cfg.withKeepAliveTimeout(500ms);
+
   test::TestServer ts(std::move(cfg));
 
+  ts.postRouterUpdate([](Router& router) { router.setDefault([](const HttpRequest&) { return HttpResponse("OK"); }); });
+
   auto readyResp = test::simpleGet(ts.port(), "/readyz");
-  EXPECT_TRUE(readyResp.contains("200"));
+  EXPECT_TRUE(readyResp.contains("HTTP/1.1 200"));
 
   auto liveResp = test::simpleGet(ts.port(), "/livez");
-  EXPECT_TRUE(liveResp.contains("200"));
+  EXPECT_TRUE(liveResp.contains("HTTP/1.1 200"));
 
+  // Launch a keep-alive connection to observe readiness probe change during drain
+  test::ClientConnection cnx(ts.port());
+  const int fd = cnx.fd();
+  test::sendAll(fd, SimpleGetRequest("/some-path", "keep-alive"));
+
+  std::this_thread::sleep_for(20ms);  // ensure request is processed
+
+  // Keep-alive connection should be kept open
   ts.server.beginDrain(500ms);
   ts.server.beginDrain(SignalHandler::GetMaxDrainPeriod());
 
-  // Rather than a single fixed sleep which can occasionally race with the server's
-  // internal drain transition, poll briefly for the expected states. The readiness
-  // probe may either return an explicit 503 or the client helper may fail to
-  // connect (empty string) depending on timing. Retry for a short window to make
-  // this assertion stable on CI where timing varies.
-  bool hasFailed = false;
-  const auto deadline = std::chrono::steady_clock::now() + 200ms;
-  while (std::chrono::steady_clock::now() < deadline) {
-    try {
-      test::simpleGet(ts.port(), "/readyz");
-    } catch (const std::runtime_error&) {
-      hasFailed = true;
-      break;
-    }
-    std::this_thread::sleep_for(2ms);
-  }
-  EXPECT_TRUE(hasFailed);
+  std::this_thread::sleep_for(20ms);  // ensure drain has been initiated
+
+  auto raw = test::simpleGet(ts.port(), "/readyz");
+  EXPECT_TRUE(raw.contains("HTTP/1.1 503"));
 }
 
 TEST(HttpProbes, OverridePaths) {
