@@ -196,31 +196,36 @@ class HttpResponse {
       using difference_type = std::ptrdiff_t;
       using iterator_category = std::forward_iterator_tag;
 
-      iterator(const char* beg, const char* end) noexcept;
-
-      bool operator==(const iterator& rhs) const noexcept { return _cur == rhs._cur; }
-
       http::HeaderView operator*() const noexcept {
-        return http::HeaderView{std::string_view(_cur, _colonPos),
-                                std::string_view(_cur + _colonPos + http::HeaderSep.size(), _cur + _crlfPos)};
+        return {std::string_view(_cur, _nameLen),
+                std::string_view(_cur + _nameLen + http::HeaderSep.size(), _valueLen)};
       }
 
       iterator& operator++() noexcept;
 
+      bool operator==(const iterator& rhs) const noexcept { return _cur == rhs._cur; }
+
      private:
-      const char* _cur = nullptr;
-      const char* _end = nullptr;
-      uint32_t _colonPos;
-      uint32_t _crlfPos;
+      friend class HeadersView;
+
+      iterator(const char* beg, const char* end) noexcept;
+
+      void setLen();
+
+      const char* _cur;
+      const char* _end;
+      uint32_t _nameLen;
+      uint32_t _valueLen;
     };
 
-    explicit HeadersView(std::string_view sv) noexcept : data(sv) {}
+    explicit HeadersView(std::string_view sv) noexcept : _beg(sv.data()), _end(sv.data() + sv.size()) {}
 
-    [[nodiscard]] iterator begin() const noexcept { return {data.data(), data.data() + data.size()}; }
-    [[nodiscard]] iterator end() const noexcept { return {data.data() + data.size(), data.data() + data.size()}; }
+    [[nodiscard]] iterator begin() const noexcept { return {_beg, _end}; }
+    [[nodiscard]] iterator end() const noexcept { return {_end, _end}; }
 
    private:
-    std::string_view data;
+    const char* _beg;
+    const char* _end;
   };
 
   // Return a non-allocating, iterable view over headers.

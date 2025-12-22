@@ -36,6 +36,12 @@ TEST(SingleHttpServer, DefaultConstructor) {
   server.setExpectationHandler({});
 }
 
+TEST(SingleHttpServer, ShouldHaveOnlyOneThread) {
+  HttpServerConfig config;
+  config.withNbThreads(2);
+  EXPECT_THROW(SingleHttpServer(std::move(config)), std::invalid_argument);
+}
+
 TEST(HttpServerMove, MoveConstructAndServe) {
   std::atomic_bool stop{false};
   SingleHttpServer original;
@@ -185,7 +191,7 @@ TEST(HttpServerMove, DISABLED_CapturedThisAfterMoveHazard) {
 // We cannot test with determinism the move constructor throw because we first move construct the fields before checking
 // running status, so the moved-from object may be left in a valid but stopped state.
 
-TEST(SingleHttpServer, MoveAssignWhileRunningThrows) {
+TEST(SingleHttpServer, MoveAssignOrDoubleRunWhileRunningThrows) {
   HttpServerConfig cfg;
   SingleHttpServer serverA(cfg);
   SingleHttpServer serverB(cfg);
@@ -205,6 +211,7 @@ TEST(SingleHttpServer, MoveAssignWhileRunningThrows) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   ASSERT_TRUE(serverA.isRunning());
+  EXPECT_THROW(serverA.run(), std::logic_error);
   EXPECT_THROW({ serverB = std::move(serverA); }, std::logic_error);
 }
 
@@ -213,11 +220,8 @@ TEST(HttpServerRestart, RestartPossible) {
   std::atomic_bool stop2{false};
   SingleHttpServer server(HttpServerConfig{});
   auto port = server.port();
-  server.router().setDefault([](const HttpRequest& req) {
-    HttpResponse resp;
-    resp.body(std::string("ORIG:") + std::string(req.path()));
-    return resp;
-  });
+  server.router().setDefault(
+      [](const HttpRequest& req) { return HttpResponse(std::string("ORIG:") + std::string(req.path())); });
 
   std::jthread th([&] {
     server.runUntil([&] { return stop1.load(); });
