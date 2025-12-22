@@ -17,7 +17,6 @@
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
-#include "aeronet/features.hpp"
 #include "aeronet/fixedcapacityvector.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -27,23 +26,6 @@ namespace aeronet {
 namespace {
 
 constexpr std::string_view kWhitespace = " \t";
-
-constexpr bool IsEncodingEnabled(Encoding enc) {
-  switch (enc) {
-    case Encoding::br:
-      return brotliEnabled();
-    case Encoding::zstd:
-      return zstdEnabled();
-    case Encoding::gzip:
-      [[fallthrough]];
-    case Encoding::deflate:
-      return zlibEnabled();
-    case Encoding::none:
-      return true;
-    default:
-      std::unreachable();
-  }
-}
 
 // Parse q-value within a token (portion including parameters); never throws.
 double ParseQ(std::string_view token) {
