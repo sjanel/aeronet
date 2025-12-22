@@ -210,11 +210,7 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
   MultiHttpServer multi(std::move(cfg));
   const auto port = multi.port();
 
-  multi.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
-    HttpResponse resp;
-    resp.body("OK");
-    return resp;
-  });
+  multi.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("OK"); });
 
   auto handle = multi.startDetachedAndStopWhen({});
 
@@ -228,10 +224,8 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
   multi.beginDrain(200ms);
   EXPECT_TRUE(multi.isDraining());
 
-  // Wait for the listener to be closed by beginDrain() (avoid racey immediate connect attempts)
-  // Use a higher timeout to reduce flakiness on CI where shutdown may take longer.
-  EXPECT_TRUE(test::WaitForListenerClosed(port, 210ms));
-
+  // During drain, listener remains open to allow health probe connections
+  // Existing keep-alive connections will receive Connection: close on next response
   test::sendAll(fd, SimpleGetRequest("/two", "keep-alive"));
   const auto drained = test::recvWithTimeout(fd);
   EXPECT_TRUE(drained.contains("Connection: close"));
@@ -249,11 +243,7 @@ TEST(MultiHttpServer, RapidStartStopCycles) {
   // Keep cycles modest to avoid lengthening normal test runtime too much; adjust if needed.
   MultiHttpServer multi(cfg);
   for (int statePos = 0; statePos < 100; ++statePos) {
-    multi.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
-      HttpResponse resp;
-      resp.body("S");
-      return resp;
-    });
+    multi.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("S"); });
     auto handle = multi.startDetached();
     ASSERT_TRUE(handle.started());
     // Short dwell to allow threads to enter run loop.

@@ -45,8 +45,8 @@ TEST(LifecycleTest, ResetClearsState) {
   EXPECT_EQ(lifecycle.state.load(), Lifecycle::State::Idle);
   EXPECT_FALSE(lifecycle.drainDeadlineEnabled);
   EXPECT_EQ(lifecycle.drainDeadline.time_since_epoch().count(), 0);
-  EXPECT_FALSE(lifecycle.started.load());
-  EXPECT_FALSE(lifecycle.ready.load());
+  EXPECT_FALSE(lifecycle.started());
+  EXPECT_FALSE(lifecycle.ready());
 }
 
 TEST(LifecycleTest, SelfMoveAssignmentIsNoop) {
@@ -62,13 +62,23 @@ TEST(LifecycleTest, SelfMoveAssignmentIsNoop) {
   EXPECT_EQ(lifecycle.state.load(), Lifecycle::State::Running);
   EXPECT_TRUE(lifecycle.drainDeadlineEnabled);
   EXPECT_NE(lifecycle.drainDeadline.time_since_epoch().count(), 0);
-  EXPECT_TRUE(lifecycle.started.load());
-  EXPECT_TRUE(lifecycle.ready.load());
+  EXPECT_TRUE(lifecycle.started());
+  EXPECT_TRUE(lifecycle.ready());
 }
 
 TEST(LifecycleTest, ShrinkDeadlineUpdatesDeadline) {
   Lifecycle lifecycle;
   lifecycle.enterDraining(std::chrono::steady_clock::now() + std::chrono::seconds(10), true);
+
+  auto newDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  lifecycle.shrinkDeadline(newDeadline);
+
+  EXPECT_EQ(lifecycle.drainDeadline, newDeadline);
+}
+
+TEST(LifecycleTest, EnterDrainingDrainDeadlineDisabled) {
+  Lifecycle lifecycle;
+  lifecycle.enterDraining(std::chrono::steady_clock::now() + std::chrono::seconds(10), false);
 
   auto newDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   lifecycle.shrinkDeadline(newDeadline);

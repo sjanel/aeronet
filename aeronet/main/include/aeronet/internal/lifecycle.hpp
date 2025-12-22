@@ -10,7 +10,6 @@
 namespace aeronet::internal {
 
 struct Lifecycle {
-  // TODO: Stopping state is not really needed, could be merged with Draining
   enum class State : uint8_t { Idle, Running, Draining, Stopping };
 
   Lifecycle() = default;
@@ -22,9 +21,7 @@ struct Lifecycle {
       : drainDeadline(std::exchange(other.drainDeadline, {})),
         wakeupFd(std::move(other.wakeupFd)),
         state(other.state.exchange(State::Idle, std::memory_order_relaxed)),
-        drainDeadlineEnabled(std::exchange(other.drainDeadlineEnabled, false)),
-        started(other.started.load(std::memory_order_relaxed)),
-        ready(other.ready.load(std::memory_order_relaxed)) {}
+        drainDeadlineEnabled(std::exchange(other.drainDeadlineEnabled, false)) {}
 
   Lifecycle& operator=(const Lifecycle&) = delete;
 
@@ -34,8 +31,6 @@ struct Lifecycle {
       wakeupFd = std::move(other.wakeupFd);
       state.store(other.state.exchange(State::Idle, std::memory_order_relaxed), std::memory_order_relaxed);
       drainDeadlineEnabled = std::exchange(other.drainDeadlineEnabled, false);
-      started.store(other.started.load(std::memory_order_relaxed));
-      ready.store(other.ready.load(std::memory_order_relaxed));
     }
     return *this;
   }
@@ -46,16 +41,11 @@ struct Lifecycle {
     drainDeadline = {};
     state.store(State::Idle, std::memory_order_relaxed);
     drainDeadlineEnabled = false;
-    started.store(false, std::memory_order_relaxed);
-    ready.store(false, std::memory_order_relaxed);
   }
 
   void enterRunning() noexcept {
     state.store(State::Running, std::memory_order_relaxed);
     drainDeadlineEnabled = false;
-    // Mark probes as started and ready before entering running state
-    started.store(true, std::memory_order_relaxed);
-    ready.store(true, std::memory_order_relaxed);
   }
 
   // Atomically set state to Stopping only if current state is Running.
@@ -70,8 +60,6 @@ struct Lifecycle {
   }
 
   void enterDraining(std::chrono::steady_clock::time_point deadline, bool enabled) noexcept {
-    ready.store(false, std::memory_order_relaxed);
-
     drainDeadline = deadline;
     state.store(State::Draining, std::memory_order_relaxed);
     drainDeadlineEnabled = enabled;
@@ -90,21 +78,21 @@ struct Lifecycle {
   [[nodiscard]] bool isDraining() const noexcept { return state.load(std::memory_order_relaxed) == State::Draining; }
   [[nodiscard]] bool isStopping() const noexcept { return state.load(std::memory_order_relaxed) == State::Stopping; }
   [[nodiscard]] bool isActive() const noexcept { return state.load(std::memory_order_relaxed) != State::Idle; }
-  [[nodiscard]] bool acceptingConnections() const noexcept {
-    return state.load(std::memory_order_relaxed) == State::Running;
-  }
+
   [[nodiscard]] bool hasDeadline() const noexcept { return drainDeadlineEnabled; }
   [[nodiscard]] std::chrono::steady_clock::time_point deadline() const noexcept { return drainDeadline; }
+
+  // Probe status derived from state (no need for separate atomics):
+  // - started: true when server has entered the event loop (state != Idle)
+  // - ready: true when server is accepting normal traffic (state == Running)
+  [[nodiscard]] bool started() const noexcept { return state.load(std::memory_order_relaxed) != State::Idle; }
+  [[nodiscard]] bool ready() const noexcept { return state.load(std::memory_order_relaxed) == State::Running; }
 
   std::chrono::steady_clock::time_point drainDeadline;
   // Wakeup fd (eventfd) used to interrupt epoll_wait promptly when stop() is invoked from another thread.
   EventFd wakeupFd;
   std::atomic<State> state{State::Idle};
   bool drainDeadlineEnabled{false};
-
-  // Probe flags
-  std::atomic<bool> started{false};
-  std::atomic<bool> ready{false};
 };
 
 }  // namespace aeronet::internal

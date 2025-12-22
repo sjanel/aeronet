@@ -96,9 +96,10 @@ class StaticConcatenatedStrings {
       // pointers may have changed after ensureAvailableCapacityExponential
       data = _buf.data();
       // move tail to the right
-      std::memmove(data + oldEndPos + delta, data + oldEndPos, static_cast<std::size_t>(tailSize));
+      std::memmove(data + oldEndPos + delta, data + oldEndPos, tailSize);
       // copy new part
-      std::memcpy(data + oldBegPos, str.data(), static_cast<std::size_t>(newSize));
+      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+      std::memcpy(data + oldBegPos, str.data(), newSize);
       _buf.addSize(delta);
       // update offsets for subsequent parts
       for (auto offsetIdx = static_cast<typename offsets_array::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
@@ -107,9 +108,10 @@ class StaticConcatenatedStrings {
     } else if (newSize < oldSize) {
       const auto delta = static_cast<size_type>(oldSize - newSize);
       // move tail to the left
-      std::memmove(data + oldBegPos + newSize, data + oldEndPos, static_cast<std::size_t>(tailSize));
+      std::memmove(data + oldBegPos + newSize, data + oldEndPos, tailSize);
       if (newSize != 0) {
-        std::memcpy(data + oldBegPos, str.data(), static_cast<std::size_t>(newSize));
+        // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+        std::memcpy(data + oldBegPos, str.data(), newSize);
       }
       _buf.setSize(static_cast<size_type>(_buf.size() - delta));
       // update offsets for subsequent parts
@@ -117,7 +119,8 @@ class StaticConcatenatedStrings {
         _offsets[offsetIdx] -= static_cast<size_type>(delta);
       }
     } else if (newSize != 0) {
-      std::memcpy(data + oldBegPos, str.data(), static_cast<std::size_t>(newSize));
+      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+      std::memcpy(data + oldBegPos, str.data(), newSize);
     }
   }
 
