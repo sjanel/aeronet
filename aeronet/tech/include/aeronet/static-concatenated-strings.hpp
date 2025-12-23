@@ -24,19 +24,19 @@ namespace aeronet {
 // the size of the tail.
 template <unsigned N, class SizeType = std::size_t>
 class StaticConcatenatedStrings {
-  static_assert(N > 0U, "StaticConcatenatedStrings requires N > 0");
+  static_assert(N > 1U, "StaticConcatenatedStrings requires N > 1");
   static_assert(std::is_unsigned_v<SizeType>, "StaticConcatenatedStrings requires an unsigned SizeType");
 
  public:
   using size_type = SizeType;
 
-  using offsets_array = std::array<size_type, N - 1>;
+  using Offsets = std::array<size_type, N - 1>;
 
-  static constexpr offsets_array::size_type kParts = N;
+  static constexpr Offsets::size_type kParts = N;
 
-  StaticConcatenatedStrings() noexcept = default;
+  StaticConcatenatedStrings() noexcept : _offsets(), _buf() {}
 
-  explicit StaticConcatenatedStrings(size_type initialCapacity) : _buf(initialCapacity) {}
+  explicit StaticConcatenatedStrings(size_type initialCapacity) : _offsets(), _buf(initialCapacity) {}
 
   StaticConcatenatedStrings(std::initializer_list<std::string_view> parts) {
     if (parts.size() != kParts) {
@@ -44,16 +44,16 @@ class StaticConcatenatedStrings {
     }
 
     uintmax_t total = 0;
-    for (auto part : parts) {
+    for (std::string_view part : parts) {
       if constexpr (sizeof(size_type) < sizeof(std::string_view::size_type)) {
-        if (std::cmp_greater(part.size(), std::numeric_limits<size_type>::max())) {
-          throw std::length_error("StaticConcatenatedStrings: part size exceeds maximum");
+        if (std::cmp_greater_equal(part.size(), std::numeric_limits<size_type>::max())) {
+          throw std::overflow_error("StaticConcatenatedStrings: part size exceeds maximum");
         }
       }
       total += part.size();
       if constexpr (sizeof(size_type) < sizeof(std::string_view::size_type)) {
         if (std::cmp_greater_equal(total, std::numeric_limits<size_type>::max())) {
-          throw std::length_error("StaticConcatenatedStrings: total size exceeds maximum");
+          throw std::overflow_error("StaticConcatenatedStrings: total size exceeds maximum");
         }
       }
     }
@@ -62,11 +62,11 @@ class StaticConcatenatedStrings {
 
     size_type pos = 0;
     size_type index = 0;
-    for (auto part : parts) {
+    for (std::string_view part : parts) {
       _buf.unchecked_append(part);
       pos += static_cast<size_type>(part.size());
       if (std::cmp_less(index + size_type{1}, kParts)) {
-        _offsets[static_cast<offsets_array::size_type>(index)] = pos;
+        _offsets[static_cast<Offsets::size_type>(index)] = pos;
         ++index;
       }
     }
@@ -74,8 +74,8 @@ class StaticConcatenatedStrings {
   }
 
   void set(size_type idx, std::string_view str) {
-    const size_type oldBegPos = idx == 0 ? 0 : _offsets[static_cast<offsets_array::size_type>(idx - size_type{1})];
-    const size_type oldEndPos = idx + 1 == kParts ? _buf.size() : _offsets[static_cast<offsets_array::size_type>(idx)];
+    const size_type oldBegPos = idx == 0 ? 0 : _offsets[static_cast<Offsets::size_type>(idx - size_type{1})];
+    const size_type oldEndPos = idx + 1 == kParts ? _buf.size() : _offsets[static_cast<Offsets::size_type>(idx)];
     const size_type oldSize = oldEndPos - oldBegPos;
 
     if constexpr (sizeof(size_type) < sizeof(std::string_view::size_type)) {
@@ -102,7 +102,7 @@ class StaticConcatenatedStrings {
       std::memcpy(data + oldBegPos, str.data(), newSize);
       _buf.addSize(delta);
       // update offsets for subsequent parts
-      for (auto offsetIdx = static_cast<typename offsets_array::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
+      for (auto offsetIdx = static_cast<typename Offsets::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
         _offsets[offsetIdx] += static_cast<size_type>(delta);
       }
     } else if (newSize < oldSize) {
@@ -115,7 +115,7 @@ class StaticConcatenatedStrings {
       }
       _buf.setSize(static_cast<size_type>(_buf.size() - delta));
       // update offsets for subsequent parts
-      for (auto offsetIdx = static_cast<typename offsets_array::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
+      for (auto offsetIdx = static_cast<typename Offsets::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
         _offsets[offsetIdx] -= static_cast<size_type>(delta);
       }
     } else if (newSize != 0) {
@@ -167,34 +167,30 @@ class StaticConcatenatedStrings {
     return TmpNullTerminatedSv(const_cast<char *>(begPtr(idx)), endPtr(idx));
   }
 
-  bool operator==(const StaticConcatenatedStrings<N, size_type> &) const noexcept = default;
+  bool operator==(const StaticConcatenatedStrings &) const noexcept = default;
 
   using trivially_relocatable = std::true_type;
 
  private:
   auto *begPtr(size_type idx) noexcept {
-    return _buf.data() +
-           static_cast<std::ptrdiff_t>(
-               idx == 0 ? 0 : _offsets[static_cast<typename offsets_array::size_type>(idx - size_type{1})]);
+    return _buf.data() + static_cast<std::ptrdiff_t>(
+                             idx == 0 ? 0 : _offsets[static_cast<typename Offsets::size_type>(idx - size_type{1})]);
   }
   const auto *begPtr(size_type idx) const noexcept {
-    return _buf.data() +
-           static_cast<std::ptrdiff_t>(
-               idx == 0 ? 0 : _offsets[static_cast<typename offsets_array::size_type>(idx - size_type{1})]);
+    return _buf.data() + static_cast<std::ptrdiff_t>(
+                             idx == 0 ? 0 : _offsets[static_cast<typename Offsets::size_type>(idx - size_type{1})]);
   }
 
   auto *endPtr(size_type idx) noexcept {
-    return _buf.data() +
-           static_cast<std::ptrdiff_t>(
-               idx + 1 == kParts ? _buf.size() : _offsets[static_cast<typename offsets_array::size_type>(idx)]);
+    return _buf.data() + static_cast<std::ptrdiff_t>(
+                             idx + 1 == kParts ? _buf.size() : _offsets[static_cast<typename Offsets::size_type>(idx)]);
   }
   const auto *endPtr(size_type idx) const noexcept {
-    return _buf.data() +
-           static_cast<std::ptrdiff_t>(
-               idx + 1 == kParts ? _buf.size() : _offsets[static_cast<typename offsets_array::size_type>(idx)]);
+    return _buf.data() + static_cast<std::ptrdiff_t>(
+                             idx + 1 == kParts ? _buf.size() : _offsets[static_cast<typename Offsets::size_type>(idx)]);
   }
 
-  offsets_array _offsets{};
+  Offsets _offsets;
   RawBytesBase<char, std::string_view, size_type> _buf;
 };
 

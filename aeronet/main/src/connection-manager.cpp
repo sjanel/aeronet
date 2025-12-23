@@ -16,9 +16,11 @@
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/connection.hpp"
+#include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/transport.hpp"
@@ -32,9 +34,6 @@
 #include "aeronet/tls-raii.hpp"
 #include "aeronet/tls-transport.hpp"  // from tls module include directory
 #endif
-
-#include "aeronet/event-loop.hpp"
-#include "aeronet/log.hpp"
 
 namespace aeronet {
 
@@ -275,7 +274,7 @@ void SingleHttpServer::acceptNewConnections() {
     if (pCnx == nullptr) {
       continue;
     }
-    const bool closeNow = processRequestsOnConnection(cnxIt);
+    const bool closeNow = processHttp1Requests(cnxIt);
     if (closeNow && pCnx->outBuffer.empty() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->isSendingFile()) {
       closeConnection(cnxIt);
     }

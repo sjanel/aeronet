@@ -1,5 +1,6 @@
 #include "aeronet/websocket-handler.hpp"
 
+#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -377,10 +378,8 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
 bool WebSocketHandler::hasPendingOutput() const noexcept { return _outputOffset < _outputBuffer.size(); }
 
 std::span<const std::byte> WebSocketHandler::getPendingOutput() {
-  if (_outputOffset >= _outputBuffer.size()) {
-    return {};
-  }
-  return std::as_bytes(std::span(_outputBuffer.data() + _outputOffset, _outputBuffer.size() - _outputOffset));
+  assert(_outputOffset <= _outputBuffer.size());
+  return {_outputBuffer.begin() + _outputOffset, _outputBuffer.end()};
 }
 
 void WebSocketHandler::onOutputWritten(std::size_t bytesWritten) {
