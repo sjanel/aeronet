@@ -264,7 +264,7 @@ TEST(HttpLargeFile, ServeLargeFile) {
 
 #ifdef AERONET_ENABLE_OPENSSL
 TEST(HttpLargeFile, ServeLargeFileTls) {
-  const std::uint64_t size = 16ULL * 1024ULL * 1024ULL;
+  static constexpr std::uint64_t size = 16ULL * 1024ULL * 1024ULL;
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp([&]() {
     std::string data;

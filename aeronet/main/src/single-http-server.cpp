@@ -244,7 +244,7 @@ bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
   }
 
   // Default to HTTP/1.1 request processing
-  return processRequestsOnConnection(cnxIt);
+  return processHttp1Requests(cnxIt);
 }
 
 bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
@@ -308,7 +308,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
   return state.isAnyCloseRequested();
 }
 
-bool SingleHttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
+bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   if (state.asyncState.active) {
     handleAsyncBodyProgress(cnxIt);
@@ -375,6 +375,7 @@ bool SingleHttpServer::processRequestsOnConnection(ConnectionMapIt cnxIt) {
 
       // Build upgrade config from endpoint settings
       WebSocketUpgradeConfig upgradeConfig;
+      // TODO: can we avoid a vector here?
       vector<std::string_view> protocolViews;
       protocolViews.reserve(static_cast<decltype(protocolViews)::size_type>(endpoint.supportedProtocols.size()));
       for (const auto& proto : endpoint.supportedProtocols) {

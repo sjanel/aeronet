@@ -98,6 +98,20 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    path-handler-entry_test
+    test/path-handler-entry_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+AeronetAddUnitTest(
+    router_test
+    test/router_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+AeronetAddUnitTest(
     static-file-handler_test
     test/static-file-handler_test.cpp
     LIBRARIES
@@ -115,6 +129,13 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     websocket-deflate_test
     test/websocket-deflate_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+AeronetAddUnitTest(
+    websocket-endpoint_test
+    test/websocket-endpoint_test.cpp
     LIBRARIES
     aeronet_http
 )

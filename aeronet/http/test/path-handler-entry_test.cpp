@@ -8,7 +8,6 @@
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
-#include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
@@ -17,7 +16,9 @@
 #include "aeronet/request-task.hpp"
 #include "aeronet/router.hpp"
 
-using namespace aeronet;
+namespace aeronet {
+
+class HttpResponseWriter;
 
 namespace {
 
@@ -212,3 +213,5 @@ TEST(PathHandlerEntryTest, StreamingAfterAsyncThrows) {
   router.setPath(http::Method::GET, "/conflict-stream-2", MakeAsyncHandler());
   EXPECT_THROW(router.setPath(http::Method::GET, "/conflict-stream-2", MakeStreamingHandler()), std::logic_error);
 }
+
+}  // namespace aeronet

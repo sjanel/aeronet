@@ -41,24 +41,3 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_sys
 )
-
-AeronetAddUnitTest(
-    path-handler-entry_test
-    test/path-handler-entry_test.cpp
-    LIBRARIES
-    aeronet
-)
-
-AeronetAddUnitTest(
-    router_test
-    test/router_test.cpp
-    LIBRARIES
-    aeronet
-)
-
-AeronetAddUnitTest(
-    websocket-endpoint_test
-    test/websocket-endpoint_test.cpp
-    LIBRARIES
-    aeronet
-)
