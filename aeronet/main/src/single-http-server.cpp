@@ -1099,13 +1099,12 @@ void SingleHttpServer::eventLoop() {
   applyPendingUpdates();
 
   // Poll for events
-  int ready = _eventLoop.poll([this](EventLoop::EventFd eventFd) {
+  const int ready = _eventLoop.poll([this](EventLoop::EventFd eventFd) {
     if (eventFd.fd == _listenSocket.fd()) {
-      if (_lifecycle.acceptingConnections()) {
-        acceptNewConnections();
-      } else {
-        log::warn("Not accepting new incoming connection");
-      }
+      // Always attempt to accept new connections when the listener is signaled.
+      // The lifecycle controls higher-level acceptance semantics; accepting
+      // here is safe and allows probes to connect during drain.
+      acceptNewConnections();
     } else if (eventFd.fd == _lifecycle.wakeupFd.fd()) {
       _lifecycle.wakeupFd.read();
     } else {
@@ -1115,14 +1114,15 @@ void SingleHttpServer::eventLoop() {
       if (eventFd.eventBmp & EventIn) {
         handleReadableClient(eventFd.fd);
       }
+      // TODO: can other events be signaled separately, for instance HUP / ERR?
     }
   });
 
-  if (ready > 0) {
-    _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(ready));
-  } else if (ready < 0) {
+  if (ready == -1) [[unlikely]] {
     _telemetry.counterAdd("aeronet.events.errors", 1);
     _lifecycle.exchangeStopping();
+  } else if (ready > 0) {
+    _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(ready));
   } else {
     // ready == 0: timeout. Retry pending writes to handle edge-triggered epoll timing issues.
     // With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before

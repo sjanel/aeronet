@@ -32,8 +32,8 @@
 namespace aeronet::test {
 
 namespace {
-aeronet::RawBytes buildAlpnWire(std::span<const std::string> protos) {
-  aeronet::RawBytes wire;
+RawBytes BuildAlpnWire(std::span<const std::string> protos) {
+  RawBytes wire;
   for (const auto& protoStr : protos) {
     wire.push_back(static_cast<std::byte>(protoStr.size()));
     wire.append(reinterpret_cast<const std::byte*>(protoStr.data()), protoStr.size());
@@ -207,7 +207,7 @@ void TlsClient::init() {
     loadClientCertKey(localCtx.get());
   }
   if (!_opts.alpn.empty()) {
-    auto wire = buildAlpnWire(_opts.alpn);
+    auto wire = BuildAlpnWire(_opts.alpn);
     if (!wire.empty()) {
       ::SSL_CTX_set_alpn_protos(localCtx.get(), reinterpret_cast<const unsigned char*>(wire.data()),
                                 static_cast<unsigned int>(wire.size()));

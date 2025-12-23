@@ -152,11 +152,12 @@ void SingleHttpServer::acceptNewConnections() {
     if (_tlsCtxHolder) {
       SSL_CTX* ctx = reinterpret_cast<SSL_CTX*>(_tlsCtxHolder->raw());
       SslPtr sslPtr(::SSL_new(ctx), ::SSL_free);
-      if (sslPtr.get() == nullptr) {
+      if (sslPtr.get() == nullptr) [[unlikely]] {
+        log::error("SSL_new failed for fd # {}", cnxFd);
         continue;
       }
 
-      if (::SSL_set_fd(sslPtr.get(), cnxFd) != 1) {  // associate
+      if (::SSL_set_fd(sslPtr.get(), cnxFd) != 1) [[unlikely]] {  // associate
         log::error("SSL_set_fd failed for fd # {}", cnxFd);
         continue;
       }
@@ -315,7 +316,8 @@ SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMa
 
 void SingleHttpServer::handleReadableClient(int fd) {
   auto cnxIt = _activeConnectionsMap.find(fd);
-  if (cnxIt == _activeConnectionsMap.end()) {
+  if (cnxIt == _activeConnectionsMap.end()) [[unlikely]] {
+    log::error("Received an invalid fd # {} from the event loop (or already removed?)", fd);
     return;
   }
   ConnectionState& state = *cnxIt->second;
@@ -324,6 +326,7 @@ void SingleHttpServer::handleReadableClient(int fd) {
   // If there's buffered outbound data, try to flush it FIRST. This handles the case where
   // TLS needs to read before it can continue writing (SSL_ERROR_WANT_READ during SSL_write).
   // We must attempt flush before reading new data to unblock the write operation.
+  // TODO: is this still useful ? This code path is actually unreachable in our tests.
   if (!state.outBuffer.empty()) {
     flushOutbound(cnxIt);
     // Check if connection was closed during flush
@@ -424,7 +427,7 @@ void SingleHttpServer::handleReadableClient(int fd) {
 
 void SingleHttpServer::handleWritableClient(int fd) {
   const auto cnxIt = _activeConnectionsMap.find(fd);
-  if (cnxIt == _activeConnectionsMap.end()) {
+  if (cnxIt == _activeConnectionsMap.end()) [[unlikely]] {
     log::error("Received an invalid fd # {} from the event loop (or already removed?)", fd);
     return;
   }

@@ -430,7 +430,8 @@ void SingleHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
   }
 
   _lifecycle.enterDraining(deadline, hasDeadline);
-  closeListener();
+  // Keep listener open during drain to allow health probes to connect and receive 503 status.
+  // Regular connections will still be accepted but will receive Connection: close headers.
 }
 
 void SingleHttpServer::registerBuiltInProbes() {
@@ -438,14 +439,16 @@ void SingleHttpServer::registerBuiltInProbes() {
     return;
   }
 
-  // liveness: lightweight, should not depend on external systems
+  // Liveness: Always returns 200 OK if the server is responding.
+  // Indicates the application is alive (not deadlocked/crashed).
   _router.setPath(http::Method::GET, _config.builtinProbes.livenessPath(),
                   [](const HttpRequest&) { return HttpResponse("OK\n"); });
 
-  // readiness: reflects lifecycle.ready
+  // Readiness: Returns 200 when ready to serve traffic, 503 during drain.
+  // Used by load balancers to determine if instance should receive traffic.
   _router.setPath(http::Method::GET, _config.builtinProbes.readinessPath(), [this](const HttpRequest&) {
     HttpResponse resp(http::StatusCodeOK);
-    if (_lifecycle.ready.load(std::memory_order_relaxed)) {
+    if (_lifecycle.ready()) {
       resp.body("OK\n");
     } else {
       resp.status(http::StatusCodeServiceUnavailable);
@@ -454,10 +457,13 @@ void SingleHttpServer::registerBuiltInProbes() {
     return resp;
   });
 
-  // startup: reflects lifecycle.started
+  // Startup: Returns 200 once server is running (listener active).
+  // Note: Since aeronet has no separate initialization phase, this is essentially
+  // equivalent to liveness. Provided for Kubernetes compatibility where startup
+  // probes can have different timeout/period settings for slow-starting applications.
   _router.setPath(http::Method::GET, _config.builtinProbes.startupPath(), [this](const HttpRequest&) {
     HttpResponse resp(http::StatusCodeOK);
-    if (_lifecycle.started.load(std::memory_order_relaxed)) {
+    if (_lifecycle.started()) {
       resp.body("OK\n");
     } else {
       resp.status(http::StatusCodeServiceUnavailable);
