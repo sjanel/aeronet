@@ -12,7 +12,6 @@
 
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
-#include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/path-handlers.hpp"
@@ -20,7 +19,9 @@
 #include "aeronet/router-config.hpp"
 #include "aeronet/websocket-endpoint.hpp"
 
-using namespace aeronet;
+namespace aeronet {
+
+class HttpResponseWriter;
 
 class RouterTest : public ::testing::Test {
  protected:
@@ -140,10 +141,7 @@ TEST_F(RouterTest, GlobalDefaultHandlersUsedWhenNoPath) {
   // streaming default
   Router r2;
   bool sCalled = false;
-  r2.setDefault([&sCalled](const HttpRequest &, HttpResponseWriter &writerParam) {
-    sCalled = true;
-    writerParam.end();
-  });
+  r2.setDefault([&sCalled](const HttpRequest &, HttpResponseWriter &) { sCalled = true; });
   auto res2 = r2.match(http::Method::GET, "/nope");
   ASSERT_EQ(res2.requestHandler(), nullptr);
   ASSERT_NE(res2.streamingHandler(), nullptr);
@@ -1044,3 +1042,4 @@ TEST_F(RouterTest, AllowedMethodsChoosesNoSlashForStrictSlowPath) {
   EXPECT_FALSE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::GET)));
   EXPECT_TRUE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::POST)));
 }
+}  // namespace aeronet

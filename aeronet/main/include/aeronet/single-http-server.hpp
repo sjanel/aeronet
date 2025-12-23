@@ -414,11 +414,11 @@ class SingleHttpServer {
   void acceptNewConnections();
   void handleReadableClient(int fd);
   // Dispatches input to appropriate handler based on protocol.
-  // For HTTP/1.1, calls processRequestsOnConnection.
+  // For HTTP/1.1, calls processHttp1Requests.
   // For WebSocket, routes through the protocol handler.
   // Returns true if the connection should be closed.
   bool processConnectionInput(ConnectionMapIt cnxIt);
-  bool processRequestsOnConnection(ConnectionMapIt cnxIt);
+  bool processHttp1Requests(ConnectionMapIt cnxIt);
   // Process WebSocket data through the protocol handler.
   // Returns true if the connection should be closed.
   bool processSpecialProtocolHandler(ConnectionMapIt cnxIt);
