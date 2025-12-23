@@ -1,6 +1,7 @@
 #include "aeronet/raw-bytes.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -66,7 +67,7 @@ RawBytesBase<T, ViewType, SizeType>::RawBytesBase(RawBytesBase &&rhs) noexcept
 
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType> &RawBytesBase<T, ViewType, SizeType>::operator=(RawBytesBase &&rhs) noexcept {
-  if (this != &rhs) {
+  if (this != &rhs) [[likely]] {
     std::free(_buf);
 
     _buf = std::exchange(rhs._buf, nullptr);
@@ -78,7 +79,7 @@ RawBytesBase<T, ViewType, SizeType> &RawBytesBase<T, ViewType, SizeType>::operat
 
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType> &RawBytesBase<T, ViewType, SizeType>::operator=(const RawBytesBase &rhs) {
-  if (this != &rhs) {
+  if (this != &rhs) [[likely]] {
     reserve(rhs.size());
     _size = rhs.size();
     if (_size != 0) {
@@ -121,7 +122,6 @@ void RawBytesBase<T, ViewType, SizeType>::append(const_pointer data, uint64_t sz
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::append(ViewType data) {
   ensureAvailableCapacityExponential(data.size());
-  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
   unchecked_append(data.data(), data.size());
 }
 
@@ -149,6 +149,7 @@ void RawBytesBase<T, ViewType, SizeType>::assign(ViewType data) {
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::erase_front(size_type n) noexcept {
   if (n != 0) {
+    assert(n <= _size);
     _size -= n;
     std::memmove(_buf, _buf + n, _size);
   }
@@ -223,14 +224,7 @@ bool RawBytesBase<T, ViewType, SizeType>::operator==(const RawBytesBase &rhs) co
   if (size() != rhs.size()) {
     return false;
   }
-  const auto *lhsData = data();
-  const auto *rhsData = rhs.data();
-  if (lhsData != nullptr && rhsData != nullptr) {
-    // This is because calling memcmp with nullptr is undefined behavior even if size is zero
-    return std::memcmp(lhsData, rhsData, size()) == 0;
-  }
-  // if we are here, size is same and at least one is nullptr, so both size must be zero
-  return true;
+  return empty() || std::memcmp(data(), rhs.data(), size()) == 0;
 }
 
 template <class T, class ViewType, class SizeType>

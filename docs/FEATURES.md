@@ -1415,7 +1415,7 @@ To sum-up, for most cases you will prefer `reusePort = false` (which is the defa
 
 ## Built-in Kubernetes-style probes
 
-Aeronet can optionally provide a small set of built-in HTTP probe endpoints intended to be used
+`aeronet` can optionally provide a small set of built-in HTTP probe endpoints intended to be used
 by Kubernetes-style health checks and load-balancers. These probes are lightweight, handled
 entirely by the server, and do not require application handlers to be installed when enabled.
 
@@ -1423,21 +1423,10 @@ entirely by the server, and do not require application handlers to be installed 
 
 - Enabled via `HttpServerConfig::withBuiltinProbes(BuiltinProbesConfig)` or `enableBuiltinProbes(true)`.
 - Default probe paths (configurable in `BuiltinProbesConfig`):
-  - Liveness: `/livez` — indicates the process has started (HTTP 200 when started)
-  - Readiness: `/readyz` — indicates the server is ready to receive new requests (HTTP 200)
-  - Startup: `/startupz` — reports startup progress (returns 503 until the server has fully started)
+  - Liveness: `/livez` — consistently returns HTTP 200 while the server is running
+  - Readiness: `/readyz` — indicates the server is ready to receive new requests (HTTP 200). During draining, it returns HTTP 503 and returns `Connection: close` to signal clients not to reuse connections.
+  - Startup: `/startupz` — returns HTTP 503 until the server has fully initialized, then returns HTTP 200 like liveness.
 - The probe handlers return minimal responses (status only, configurable Content-Type) and avoid heavy work.
-
-### Probes lifecycle semantics
-
-- `liveness` (livez): reflects a simple "started" flag. Once the server has successfully entered the
-  running state this endpoint returns 200. It is intended to indicate the process is alive.
-- `readiness` (readyz): reflects a `ready` flag that is cleared early during graceful shutdown (`beginDrain()`).
-  During normal operation it returns 200. When `beginDrain()` is invoked the server sets `ready=false`
-  (returning 503) so load-balancers and Kubernetes can stop sending new connections while existing
-  keep-alive requests drain.
-- `startup` (startupz): returns 503 prior to the server fully initializing and starts returning 200 once
-  initialization completes. This is useful for probes that should fail until the server is truly ready.
 
 ### Probes configuration options
 
