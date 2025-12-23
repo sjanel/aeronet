@@ -129,8 +129,6 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     string-equal-ignore-case_test
     test/string-equal-ignore-case_test.cpp
-    LIBRARIES
-    aeronet_tech
 )
 
 AeronetAddUnitTest(
