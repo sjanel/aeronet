@@ -196,12 +196,20 @@ class HttpResponse {
       using difference_type = std::ptrdiff_t;
       using iterator_category = std::forward_iterator_tag;
 
+      iterator() noexcept : _cur(nullptr), _end(nullptr), _nameLen(0), _valueLen(0) {}
+
       http::HeaderView operator*() const noexcept {
         return {std::string_view(_cur, _nameLen),
                 std::string_view(_cur + _nameLen + http::HeaderSep.size(), _valueLen)};
       }
 
       iterator& operator++() noexcept;
+
+      iterator operator++(int) noexcept {
+        iterator tmp = *this;
+        ++(*this);
+        return tmp;
+      }
 
       bool operator==(const iterator& rhs) const noexcept { return _cur == rhs._cur; }
 

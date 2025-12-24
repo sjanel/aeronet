@@ -38,6 +38,31 @@ using namespace aeronet;
 namespace tls_test {
 namespace {
 
+// Certificate cache to avoid expensive RSA keygen + signing in every test.
+// Most tests don't require unique certificates, so we cache and reuse them.
+struct CertKeyCache {
+  std::pair<std::string, std::string> localhost;
+  std::pair<std::string, std::string> serverA;
+  std::pair<std::string, std::string> serverB;
+  std::pair<std::string, std::string> client;
+  std::pair<std::string, std::string> wildcard;
+
+  static CertKeyCache& Get() {
+    static CertKeyCache instance{};
+    return instance;
+  }
+
+ private:
+  CertKeyCache() {
+    // Pre-generate all certificate pairs on first access
+    localhost = test::MakeEphemeralCertKey("localhost");
+    serverA = test::MakeEphemeralCertKey("server-a");
+    serverB = test::MakeEphemeralCertKey("server-b");
+    client = test::MakeEphemeralCertKey("client.example.com");
+    wildcard = test::MakeEphemeralCertKey("main.example.com");
+  }
+};
+
 struct SslTestPair {
   TLSConfig cfg;
   TlsMetricsExternal externalMetrics{};
@@ -148,7 +173,7 @@ std::vector<unsigned char> MakeAlpnWire(std::initializer_list<std::string_view> 
 
 void ConfigureSslPair(SslTestPair& pair, std::initializer_list<std::string_view> serverAlpn,
                       std::initializer_list<std::string_view> clientAlpn, bool strictAlpn) {
-  auto cert = test::MakeEphemeralCertKey();
+  auto cert = CertKeyCache::Get().localhost;
   ASSERT_FALSE(cert.first.empty());
   ASSERT_FALSE(cert.second.empty());
   pair.cfg.enabled = true;
@@ -227,7 +252,7 @@ TEST(TlsContextTest, StrictAlpnMismatchIncrementsMetric) {
 
 #ifdef TLS1_3_VERSION
 TEST(TlsContextTest, SupportsTls13VersionBounds) {
-  auto certKey = test::MakeEphemeralCertKey();
+  auto certKey = CertKeyCache::Get().localhost;
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
   TLSConfig cfg;
@@ -244,7 +269,7 @@ TEST(TlsContextTest, SupportsTls13VersionBounds) {
 #endif
 
 TEST(TlsContextTest, InvalidMinVersionThrows) {
-  auto certKey = test::MakeEphemeralCertKey();
+  auto certKey = CertKeyCache::Get().localhost;
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
   TLSConfig cfg;
@@ -256,7 +281,7 @@ TEST(TlsContextTest, InvalidMinVersionThrows) {
 }
 
 TEST(TlsContextTest, InvalidMaxVersionThrows) {
-  auto certKey = test::MakeEphemeralCertKey();
+  auto certKey = CertKeyCache::Get().localhost;
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
   TLSConfig cfg;
@@ -268,7 +293,7 @@ TEST(TlsContextTest, InvalidMaxVersionThrows) {
 }
 
 TEST(TlsContextTest, CipherPolicyAppliesPredefinedSuites) {
-  auto certKey = test::MakeEphemeralCertKey();
+  auto certKey = CertKeyCache::Get().localhost;
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
 
@@ -299,8 +324,8 @@ TEST(TlsContextTest, InvalidInMemoryPemThrows) {
 }
 
 TEST(TlsContextTest, MismatchedPrivateKeyFailsCheck) {
-  auto certA = test::MakeEphemeralCertKey("server-a");
-  auto certB = test::MakeEphemeralCertKey("server-b");
+  auto certA = CertKeyCache::Get().serverA;
+  auto certB = CertKeyCache::Get().serverB;
   ASSERT_FALSE(certA.first.empty());
   ASSERT_FALSE(certA.second.empty());
   ASSERT_FALSE(certB.first.empty());
@@ -314,7 +339,7 @@ TEST(TlsContextTest, MismatchedPrivateKeyFailsCheck) {
 }
 
 TEST(TlsContextTest, EmptyTrustedClientCertPemThrows) {
-  auto certKey = test::MakeEphemeralCertKey();
+  auto certKey = CertKeyCache::Get().localhost;
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
   TLSConfig cfg;
@@ -327,7 +352,7 @@ TEST(TlsContextTest, EmptyTrustedClientCertPemThrows) {
 }
 
 TEST(TlsContextTest, InvalidTrustedClientCertPemThrows) {
-  auto certKey = test::MakeEphemeralCertKey();
+  auto certKey = CertKeyCache::Get().localhost;
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
   TLSConfig cfg;
@@ -627,7 +652,7 @@ TEST(TlsHandshakeTest, PeerSubjectNonEmptyAfterHandshake) {
 
   // Create a client certificate and attach it to the client SSL so the server
   // can observe a peer certificate during handshake.
-  auto clientCertKey = test::MakeEphemeralCertKey("client.example.com");
+  auto clientCertKey = CertKeyCache::Get().client;
   ASSERT_FALSE(clientCertKey.first.empty());
   ASSERT_FALSE(clientCertKey.second.empty());
 
@@ -688,8 +713,8 @@ TEST(TlsTransportTest, KtlsSendAlreadyAttemptedReturnsFailed) {
 
 TEST(TlsContextTest, SniCertificateWithWildcardPatternWorks) {
   // Test that a valid wildcard pattern starting with "*." is accepted
-  auto mainCert = test::MakeEphemeralCertKey("main.example.com");
-  auto sniCert = test::MakeEphemeralCertKey("sub.example.com");
+  auto mainCert = CertKeyCache::Get().wildcard;
+  auto sniCert = CertKeyCache::Get().client;
   ASSERT_FALSE(mainCert.first.empty());
   ASSERT_FALSE(sniCert.first.empty());
 
@@ -755,7 +780,7 @@ TEST(TlsTransportTest, ReadAfterPeerCloseReturnsZero) {
 
 TEST(TlsContextTest, SessionTicketsEnabledAutoCreatesKeyStore) {
   // Covers lines 318-319: auto-creation of ticket key store when sessionTickets.enabled is true
-  auto certKey = test::MakeEphemeralCertKey();
+  auto certKey = CertKeyCache::Get().localhost;
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
 
@@ -775,7 +800,7 @@ TEST(TlsContextTest, SessionTicketsEnabledAutoCreatesKeyStore) {
 
 TEST(TlsContextTest, SessionTicketsWithStaticKeys) {
   // Covers line 321-322: loading static keys into ticket store
-  auto certKey = test::MakeEphemeralCertKey();
+  auto certKey = CertKeyCache::Get().localhost;
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
 
@@ -803,7 +828,7 @@ TEST(TlsContextTest, SessionTicketsWithStaticKeys) {
 TEST(TlsContextTest, SniCertificateWithFilePaths) {
   // This test covers line 342 in tls-context.cpp: the file-path branch in SNI loading
   // We use file paths that will fail, exercising the else branch
-  auto mainCert = test::MakeEphemeralCertKey("main.example.com");
+  auto mainCert = CertKeyCache::Get().wildcard;
   ASSERT_FALSE(mainCert.first.empty());
 
   TLSConfig cfg;
@@ -818,7 +843,7 @@ TEST(TlsContextTest, SniCertificateWithFilePaths) {
 }
 
 TEST(TlsContextTest, DefaultCipherPolicyDoesNotApplyPolicy) {
-  auto certKey = test::MakeEphemeralCertKey("test.example.com");
+  auto certKey = CertKeyCache::Get().localhost;
   ASSERT_FALSE(certKey.first.empty());
 
   TLSConfig cfg;
@@ -831,7 +856,7 @@ TEST(TlsContextTest, DefaultCipherPolicyDoesNotApplyPolicy) {
 }
 
 TEST(TlsContextTest, DefaultCipherPolicyWithCustomCipherList) {
-  auto certKey = test::MakeEphemeralCertKey("test.example.com");
+  auto certKey = CertKeyCache::Get().localhost;
   ASSERT_FALSE(certKey.first.empty());
 
   TLSConfig cfg;
@@ -845,7 +870,7 @@ TEST(TlsContextTest, DefaultCipherPolicyWithCustomCipherList) {
 }
 
 TEST(TlsContextTest, SessionTicketsWithTlsHandshake) {
-  auto certKey = test::MakeEphemeralCertKey("test.example.com");
+  auto certKey = CertKeyCache::Get().localhost;
   ASSERT_FALSE(certKey.first.empty());
 
   TLSConfig cfg;
@@ -917,9 +942,7 @@ TEST(TlsContextTest, SessionTicketsWithTlsHandshake) {
 }
 
 TEST(TlsContextTest, SessionTicketsStoreCreatedWithoutStaticKeys) {
-  // Covers lines 318-322: when session tickets are enabled without static keys,
-  // a new ticket store is created and attached
-  auto certKey = test::MakeEphemeralCertKey("test.example.com");
+  auto certKey = CertKeyCache::Get().localhost;
   ASSERT_FALSE(certKey.first.empty());
 
   TLSConfig cfg;

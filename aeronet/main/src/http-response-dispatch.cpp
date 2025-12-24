@@ -150,7 +150,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
 
       // Enforce CONNECT allowlist if present
       const auto& connectAllowList = _config.connectAllowlist();
-      if (!connectAllowList.empty() && !connectAllowList.contains(host)) {
+      if (!connectAllowList.empty() && !connectAllowList.containsCI(host)) {
         emitSimpleError(cnxIt, http::StatusCodeForbidden, true, "CONNECT target not allowed");
         return LoopAction::Break;
       }
@@ -241,7 +241,7 @@ void SingleHttpServer::tryCompressResponse(const HttpRequest& request, HttpRespo
 
   if (!compressionConfig.contentTypeAllowList.empty()) {
     std::string_view contentType = request.headerValueOrEmpty(http::ContentType);
-    if (!compressionConfig.contentTypeAllowList.contains(contentType)) {
+    if (!compressionConfig.contentTypeAllowList.containsCI(contentType)) {
       return;
     }
   }
