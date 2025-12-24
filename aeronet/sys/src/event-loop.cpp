@@ -29,6 +29,9 @@ static_assert(std::is_trivially_copyable_v<epoll_event>,
 
 static_assert(EventIn == EPOLLIN, "EventIn value mismatch");
 static_assert(EventOut == EPOLLOUT, "EventOut value mismatch");
+static_assert(EventErr == EPOLLERR, "EventErr value mismatch");
+static_assert(EventHup == EPOLLHUP, "EventHup value mismatch");
+static_assert(EventRdHup == EPOLLRDHUP, "EventRdHup value mismatch");
 static_assert(EventEt == EPOLLET, "EventEt value mismatch");
 
 }  // namespace

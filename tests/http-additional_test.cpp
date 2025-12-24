@@ -1,8 +1,13 @@
+#include <dirent.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -45,6 +50,160 @@ HttpServerConfig TestServerConfig() {
 }
 
 test::TestServer ts(TestServerConfig(), RouterConfig{}, std::chrono::milliseconds{5});
+
+struct Ipv4Endpoint {
+  uint32_t addr{0};
+  uint16_t port{0};
+};
+
+static bool GetIpv4SockName(int fd, Ipv4Endpoint& out) {
+  sockaddr_in addr{};
+  socklen_t len = sizeof(addr);
+  if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+    return false;
+  }
+  if (addr.sin_family != AF_INET) {
+    return false;
+  }
+  out.addr = addr.sin_addr.s_addr;
+  out.port = addr.sin_port;
+  return true;
+}
+
+static bool GetIpv4PeerName(int fd, Ipv4Endpoint& out) {
+  sockaddr_in addr{};
+  socklen_t len = sizeof(addr);
+  if (::getpeername(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+    return false;
+  }
+  if (addr.sin_family != AF_INET) {
+    return false;
+  }
+  out.addr = addr.sin_addr.s_addr;
+  out.port = addr.sin_port;
+  return true;
+}
+
+static int FindServerSideFdForClientOrThrow(int clientFd, std::chrono::milliseconds timeout) {
+  Ipv4Endpoint clientLocal{};
+  Ipv4Endpoint clientPeer{};
+  if (!GetIpv4SockName(clientFd, clientLocal) || !GetIpv4PeerName(clientFd, clientPeer)) {
+    throw std::runtime_error("Unable to read client socket endpoints");
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    DIR* dir = ::opendir("/proc/self/fd");
+    if (dir == nullptr) {
+      throw std::runtime_error("Unable to open /proc/self/fd");
+    }
+
+    while (auto* ent = ::readdir(dir)) {
+      const char* name = ent->d_name;
+      if (name == nullptr || name[0] == '.') {
+        continue;
+      }
+      char* endp = nullptr;
+      const long parsed = std::strtol(name, &endp, 10);
+      if (endp == name || parsed < 0 || parsed > INT32_MAX) {
+        continue;
+      }
+      const int candFd = static_cast<int>(parsed);
+      if (candFd == clientFd) {
+        continue;
+      }
+
+      Ipv4Endpoint candLocal{};
+      Ipv4Endpoint candPeer{};
+      if (!GetIpv4SockName(candFd, candLocal) || !GetIpv4PeerName(candFd, candPeer)) {
+        continue;
+      }
+
+      // Server-side accepted socket has local port == server port and peer port == client ephemeral port.
+      // Prefer port matching: some platforms/configs can report wildcard local addresses.
+      if (candLocal.port == clientPeer.port && candPeer.port == clientLocal.port) {
+        ::closedir(dir);
+        return candFd;
+      }
+    }
+
+    ::closedir(dir);
+    std::this_thread::sleep_for(1ms);
+  }
+
+  // One last pass to provide diagnostics in the failure message.
+  int entryCount = 0;
+  int ipv4SockCount = 0;
+  int connectedIpv4SockCount = 0;
+  std::string samples;
+  DIR* dir = ::opendir("/proc/self/fd");
+  if (dir != nullptr) {
+    while (auto* ent = ::readdir(dir)) {
+      const char* name = ent->d_name;
+      if (name == nullptr || name[0] == '.') {
+        continue;
+      }
+      ++entryCount;
+      char* endp = nullptr;
+      const long parsed = std::strtol(name, &endp, 10);
+      if (endp == name || parsed < 0 || parsed > INT32_MAX) {
+        continue;
+      }
+      const int candFd = static_cast<int>(parsed);
+      if (candFd == clientFd) {
+        continue;
+      }
+      Ipv4Endpoint candLocal{};
+      if (!GetIpv4SockName(candFd, candLocal)) {
+        continue;
+      }
+      ++ipv4SockCount;
+      Ipv4Endpoint candPeer{};
+      if (!GetIpv4PeerName(candFd, candPeer)) {
+        continue;
+      }
+      ++connectedIpv4SockCount;
+      if (samples.size() < 512) {
+        samples.append(" fd=")
+            .append(std::to_string(candFd))
+            .append(" lp=")
+            .append(std::to_string(static_cast<unsigned>(ntohs(candLocal.port))))
+            .append(" pp=")
+            .append(std::to_string(static_cast<unsigned>(ntohs(candPeer.port))));
+      }
+    }
+    ::closedir(dir);
+  }
+
+  throw std::runtime_error(
+      std::string("Timed out finding server-side fd for client") +
+      " (client local port=" + std::to_string(static_cast<unsigned>(ntohs(clientLocal.port))) +
+      ", client peer port=" + std::to_string(static_cast<unsigned>(ntohs(clientPeer.port))) +
+      ", /proc/self/fd entries=" + std::to_string(entryCount) + ", ipv4 sockets=" + std::to_string(ipv4SockCount) +
+      ", connected ipv4 sockets=" + std::to_string(connectedIpv4SockCount) + ", samples:" + samples + ")");
+}
+
+static bool WaitForPeerClosedNonBlocking(int fd, std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    char tmp = 0;
+    const ssize_t ret = ::recv(fd, &tmp, 1, MSG_PEEK | MSG_DONTWAIT);
+    if (ret == 0) {
+      return true;  // orderly close
+    }
+    if (ret == -1) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        std::this_thread::sleep_for(1ms);
+        continue;
+      }
+      if (errno == ECONNRESET) {
+        return true;  // treated as closed
+      }
+    }
+    std::this_thread::sleep_for(1ms);
+  }
+  return false;
+}
 }  // namespace
 
 TEST(HttpPipeline, TwoRequestsBackToBack) {
@@ -791,4 +950,64 @@ TEST(SingleHttpServer, EpollPollFailure) {
   auto data = test::recvWithTimeout(fd, std::chrono::milliseconds{50});
 
   EXPECT_TRUE(data.empty());
+}
+
+TEST(SingleHttpServer, EpollRdhupWithoutInTriggersClose) {
+  test::EventLoopHookGuard hookGuard;
+
+  // Keep router simple; no request is sent.
+  test::TestServer localTs(TestServerConfig(), RouterConfig{}, std::chrono::milliseconds{5});
+  localTs.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  test::ClientConnection clientConnection(localTs.port());
+  const int clientFd = clientConnection.fd();
+  ASSERT_GE(clientFd, 0);
+
+  const int serverFd = FindServerSideFdForClientOrThrow(clientFd, 1s);
+
+  // Make the RDHUP event consistent: half-close client write end so server read observes EOF.
+  ASSERT_EQ(0, ::shutdown(clientFd, SHUT_WR));
+
+  // Inject EPOLLRDHUP WITHOUT EPOLLIN. The server should still drive the read path and close.
+  test::PushEpollWaitAction(test::WaitReturn(1, {test::MakeEvent(serverFd, EPOLLRDHUP)}));
+
+  ASSERT_TRUE(WaitForPeerClosedNonBlocking(clientFd, 1s));
+}
+
+TEST(SingleHttpServer, EpollHupWithoutInTriggersClose) {
+  test::EventLoopHookGuard hookGuard;
+  test::TestServer localTs(TestServerConfig(), RouterConfig{}, std::chrono::milliseconds{5});
+  localTs.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  test::ClientConnection clientConnection(localTs.port());
+  const int clientFd = clientConnection.fd();
+  ASSERT_GE(clientFd, 0);
+
+  const int serverFd = FindServerSideFdForClientOrThrow(clientFd, 1s);
+
+  ASSERT_EQ(0, ::shutdown(clientFd, SHUT_WR));
+
+  // Inject EPOLLHUP WITHOUT EPOLLIN.
+  test::PushEpollWaitAction(test::WaitReturn(1, {test::MakeEvent(serverFd, EPOLLHUP)}));
+
+  ASSERT_TRUE(WaitForPeerClosedNonBlocking(clientFd, 1s));
+}
+
+TEST(SingleHttpServer, EpollErrWithoutInTriggersCloseOnReadError) {
+  test::EventLoopHookGuard hookGuard;
+  test::TestServer localTs(TestServerConfig(), RouterConfig{}, std::chrono::milliseconds{5});
+  localTs.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  test::ClientConnection clientConnection(localTs.port());
+  const int clientFd = clientConnection.fd();
+  ASSERT_GE(clientFd, 0);
+
+  const int serverFd = FindServerSideFdForClientOrThrow(clientFd, 1s);
+
+  // Force the next server-side read to fail fatally, then inject EPOLLERR WITHOUT EPOLLIN.
+  test::SetReadActions(serverFd, {{-1, ECONNRESET}});
+  test::PushEpollWaitAction(test::WaitReturn(1, {test::MakeEvent(serverFd, EPOLLERR)}));
+
+  ASSERT_TRUE(WaitForPeerClosedNonBlocking(clientFd, 1s));
+  test::ResetIoActions();
 }
