@@ -141,6 +141,12 @@ class MultiHttpServer {
   // SingleHttpServer at start() time. Must be set before start().
   void setMiddlewareMetricsCallback(SingleHttpServer::MiddlewareMetricsCallback cb);
 
+#ifdef AERONET_ENABLE_OPENSSL
+  // Install a TLS handshake callback on all underlying servers.
+  // The callback is copied into each SingleHttpServer at start() time. Must be set before start().
+  void setTlsHandshakeCallback(SingleHttpServer::TlsHandshakeCallback cb);
+#endif
+
   // run():
   //   Blocking variant of start(). Launches the configured number of SingleHttpServer instances and
   //   blocks the calling thread until all servers complete (via stop() or graceful drain completion).

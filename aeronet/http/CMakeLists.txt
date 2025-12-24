@@ -16,6 +16,7 @@ endif()
 target_include_directories(aeronet_http
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<$<BOOL:${AERONET_ENABLE_OPENSSL}>:$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/aeronet/tls/include>>
         $<INSTALL_INTERFACE:include>
 )
 

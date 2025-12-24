@@ -22,21 +22,6 @@ This file lists planned features and near-term priorities. Implemented features 
 
 ### TLS enhancements (detailed roadmap)
 
-#### Phase 2
-
-- Session resumption (tickets) + resumed/full handshake counters
-- SNI multi-cert routing (single listener, map host -> cert bundle)
-- Failure reason counters + structured handshake event callback
-- Cipher policy presets & disable compression flag
-- Handshake concurrency limit + basic rate limiting
-- MultiHttpServer shared ticket key support
-
-#### Phase 2.5
-
-- Hot cert/key reload (atomic swap)
-- Key algorithm diversity tests (RSA + ECDSA)
-- Dynamic trust store update API
-
 #### Phase 3 (Advanced / Enterprise)
 
 - OCSP stapling (passive, cached)

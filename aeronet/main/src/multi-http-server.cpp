@@ -22,6 +22,10 @@
 #include "aeronet/router.hpp"
 #include "aeronet/server-lifecycle-tracker.hpp"
 #include "aeronet/single-http-server.hpp"
+
+#ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/tls-ticket-key-store.hpp"
+#endif
 #include "aeronet/vector.hpp"
 
 namespace aeronet {
@@ -286,6 +290,13 @@ void MultiHttpServer::setMiddlewareMetricsCallback(SingleHttpServer::MiddlewareM
   _servers.front().setMiddlewareMetricsCallback(std::move(cb));
 }
 
+#ifdef AERONET_ENABLE_OPENSSL
+void MultiHttpServer::setTlsHandshakeCallback(SingleHttpServer::TlsHandshakeCallback cb) {
+  canSetCallbacks();
+  _servers.front().setTlsHandshakeCallback(std::move(cb));
+}
+#endif
+
 void MultiHttpServer::run() { runBlocking({}, ""); }
 
 void MultiHttpServer::runUntil(const std::function<bool()>& predicate) {
@@ -375,10 +386,23 @@ void MultiHttpServer::ensureNextServersBuilt() {
 
   firstServer.applyPendingUpdates();
 
+#ifdef AERONET_ENABLE_OPENSSL
+  // Set up shared session ticket key store on firstServer BEFORE duplication.
+  // This ensures all copied servers will have the shared store when their TLS contexts are built.
+  if (firstServer._config.tls.sessionTickets.enabled && !firstServer._sharedTicketKeyStore) {
+    firstServer._sharedTicketKeyStore = std::make_shared<TlsTicketKeyStore>(
+        firstServer._config.tls.sessionTickets.lifetime, firstServer._config.tls.sessionTickets.maxKeys);
+    if (!firstServer._config.tls.sessionTicketKeys().empty()) {
+      firstServer._sharedTicketKeyStore->loadStaticKeys(firstServer._config.tls.sessionTicketKeys());
+    }
+  }
+#endif
+
   const auto targetCount = _servers.capacity();
 
   _servers.resize(1UL);
 
+  // Copy firstServer for each additional thread - copy constructor inherits _sharedTicketKeyStore
   while (_servers.size() < targetCount) {
     auto& nextServer = _servers.emplace_back(firstServer);
     nextServer._lifecycleTracker = _lifecycleTracker;
@@ -519,6 +543,11 @@ MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
     agg.total.tlsHandshakesSucceeded += st.tlsHandshakesSucceeded;
     agg.total.tlsClientCertPresent += st.tlsClientCertPresent;
     agg.total.tlsAlpnStrictMismatches += st.tlsAlpnStrictMismatches;
+    agg.total.tlsHandshakesFull += st.tlsHandshakesFull;
+    agg.total.tlsHandshakesResumed += st.tlsHandshakesResumed;
+    agg.total.tlsHandshakesFailed += st.tlsHandshakesFailed;
+    agg.total.tlsHandshakesRejectedConcurrency += st.tlsHandshakesRejectedConcurrency;
+    agg.total.tlsHandshakesRejectedRateLimit += st.tlsHandshakesRejectedRateLimit;
     for (const auto& kv : st.tlsAlpnDistribution) {
       auto it = std::ranges::find_if(agg.total.tlsAlpnDistribution,
                                      [&kv](const auto& existing) { return existing.first == kv.first; });
@@ -526,6 +555,15 @@ MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
         it->second += kv.second;
       } else {
         agg.total.tlsAlpnDistribution.push_back(kv);
+      }
+    }
+    for (const auto& kv : st.tlsHandshakeFailureReasons) {
+      auto it = std::ranges::find_if(agg.total.tlsHandshakeFailureReasons,
+                                     [&kv](const auto& existing) { return existing.first == kv.first; });
+      if (it != agg.total.tlsHandshakeFailureReasons.end()) {
+        it->second += kv.second;
+      } else {
+        agg.total.tlsHandshakeFailureReasons.push_back(kv);
       }
     }
     for (const auto& kv : st.tlsVersionCounts) {

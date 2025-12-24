@@ -49,22 +49,22 @@ TlsHandshakeResult CollectTlsHandshakeInfo(const SSL* ssl, std::chrono::steady_c
   if (const char* vers = ::SSL_get_version(ssl)) {
     res.parts.set(2, vers);
   }
+
   if (X509* peerRaw = ::SSL_get_peer_certificate(ssl)) {
-    X509Ptr peer(peerRaw, ::X509_free);
+    auto peer = MakeX509(peerRaw);
     res.clientCertPresent = true;
     if (X509_NAME* name = ::X509_get_subject_name(peer.get())) {
       auto memBio = MakeMemoryBio();
-      if (memBio) {
-        if (::X509_NAME_print_ex(memBio.get(), name, 0, XN_FLAG_RFC2253 & ~ASN1_STRFLGS_ESC_MSB) >= 0) {
-          BUF_MEM* bptr = nullptr;
-          ::BIO_get_mem_ptr(memBio.get(), &bptr);
-          if (bptr != nullptr) {
-            res.parts.set(3, std::string_view(bptr->data, bptr->length));
-          }
+      if (::X509_NAME_print_ex(memBio.get(), name, 0, XN_FLAG_RFC2253 & ~ASN1_STRFLGS_ESC_MSB) >= 0) {
+        BUF_MEM* bptr = nullptr;
+        ::BIO_get_mem_ptr(memBio.get(), &bptr);
+        if (bptr != nullptr) {
+          res.parts.set(3, std::string_view(bptr->data, bptr->length));
         }
       }
     }
   }
+
   if (handshakeStart.time_since_epoch().count() != 0) {
     auto dur = std::chrono::steady_clock::now() - handshakeStart;
     res.durationNs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(dur).count());
@@ -92,6 +92,11 @@ TLSInfo FinalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake,
 
   // Metrics updates
   ++metrics.handshakesSucceeded;
+  if (::SSL_session_reused(ssl) == 1) {
+    ++metrics.handshakesResumed;
+  } else {
+    ++metrics.handshakesFull;
+  }
   if (!ret.selectedAlpn().empty()) {
     auto [it, inserted] = metrics.alpnDistribution.emplace(ret.selectedAlpn(), 1);
     if (!inserted) {

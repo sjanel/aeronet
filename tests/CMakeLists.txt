@@ -1,6 +1,6 @@
 function(aeronet_http_test NAME)
 	set(TGT ${NAME}_test)
-	AeronetAddProjectExecutable(${TGT} ${TGT}.cpp)
+	AeronetAddProjectExecutable(${TGT} ${TGT}.cpp ${ARGN})
 	target_link_libraries(${TGT} PRIVATE aeronet aeronet_test_support GTest::gtest GTest::gmock GTest::gmock_main)
 	add_test(NAME ${TGT} COMMAND ${TGT})
 endfunction()
@@ -28,7 +28,7 @@ aeronet_http_test(http-streaming)
 
 # TLS tests only compiled when OpenSSL support is enabled in the library build.
 if (AERONET_ENABLE_OPENSSL)
-	aeronet_http_test(http-tls-handshake)
+	aeronet_http_test(http-tls-handshake http-tls-openssl-fault-injection.cpp)
 	aeronet_http_test(http-tls-io)
 endif()
 
