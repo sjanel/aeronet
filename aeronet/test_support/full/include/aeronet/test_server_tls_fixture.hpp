@@ -14,6 +14,24 @@
 
 namespace aeronet::test {
 
+// Certificate cache to avoid expensive RSA keygen + signing on every TlsTestServer creation.
+// Since TlsTestServer instances don't require cryptographically unique certificates for testing,
+// we cache and reuse the same ephemeral cert across all test instances.
+struct TlsTestServerCertCache {
+  std::pair<std::string, std::string> ephemeralCert;
+
+  static TlsTestServerCertCache& Get() {
+    static TlsTestServerCertCache instance{};
+    return instance;
+  }
+
+ private:
+  TlsTestServerCertCache() {
+    // Pre-generate ephemeral cert on first access
+    ephemeralCert = MakeEphemeralCertKey();
+  }
+};
+
 // TLS-enabled variant of TestServer that auto-generates an ephemeral certificate/key
 // for each test instance and optionally configures ALPN protocols or applies additional
 // user-supplied mutations to the HttpServerConfig before launch.
@@ -32,7 +50,7 @@ struct TlsTestServer {
 
   static HttpServerConfig makeConfig(std::initializer_list<std::string_view> alpn, const Mutator& mut) {
     HttpServerConfig cfg;  // ephemeral port by default
-    auto pair = MakeEphemeralCertKey();
+    auto pair = TlsTestServerCertCache::Get().ephemeralCert;
     cfg.withTlsCertKeyMemory(pair.first, pair.second);
     if (alpn.size() != 0) {
       cfg.withTlsAlpnProtocols(alpn);

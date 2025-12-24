@@ -53,7 +53,7 @@ CorsPolicy& CorsPolicy::allowOrigin(std::string_view origin) {
   _originMode = OriginMode::Enumerated;
 
   origin = TrimOws(origin);
-  if (!origin.empty() && !_allowedOrigins.contains(origin)) {
+  if (!origin.empty() && !_allowedOrigins.containsCI(origin)) {
     _allowedOrigins.append(origin);
   }
   return *this;
@@ -224,7 +224,7 @@ bool CorsPolicy::originAllowed(std::string_view origin) const noexcept {
   if (_originMode == OriginMode::Any) {
     return true;
   }
-  return _allowedOrigins.contains(origin);
+  return _allowedOrigins.containsCI(origin);
 }
 
 bool CorsPolicy::methodAllowed(std::string_view methodToken, http::MethodBmp routeMethods) const noexcept {

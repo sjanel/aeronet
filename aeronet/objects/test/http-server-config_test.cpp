@@ -19,10 +19,10 @@ TEST(HttpServerConfigTest, WithGlobalHeadersShouldReplaceAllList) {
   HttpServerConfig config;
   config.withGlobalHeaders(
       std::vector<http::Header>{http::Header{"X-Valid", "value"}, http::Header{"X-Custom", "value"}});
-  EXPECT_EQ(config.globalHeaders.size(), 2U);
+  EXPECT_EQ(config.globalHeaders.nbConcatenatedStrings(), 2U);
   config.withGlobalHeaders(
       std::vector<http::Header>{http::Header{"X-Valid2", "value"}, http::Header{"X-Custom2", "value"}});
-  EXPECT_EQ(config.globalHeaders.size(), 2U);
+  EXPECT_EQ(config.globalHeaders.nbConcatenatedStrings(), 2U);
   config.withGlobalHeaders({});
   EXPECT_TRUE(config.globalHeaders.empty());
 

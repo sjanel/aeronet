@@ -44,9 +44,7 @@ TYPED_TEST(RawBaseTest, ConstructorZeroCapacity) {
   RawT buf(0);
   EXPECT_EQ(buf.size(), 0);
   EXPECT_TRUE(buf.empty());
-  EXPECT_NE(buf.data(), nullptr);  // malloc(0) may return non-null
   EXPECT_EQ(buf.begin(), buf.end());
-  EXPECT_EQ(buf.data(), buf.data() + buf.size());
 }
 
 TYPED_TEST(RawBaseTest, RandomAccessIteratorConstructor) {

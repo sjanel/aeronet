@@ -10,6 +10,6 @@ namespace detail {
 inline constexpr char kCRLFChars[] = {"\r\n"};
 }
 
-using ConcatenatedHeaders = DynamicConcatenatedStrings<detail::kCRLFChars, false, uint32_t>;
+using ConcatenatedHeaders = DynamicConcatenatedStrings<detail::kCRLFChars, uint32_t>;
 
 }  // namespace aeronet
