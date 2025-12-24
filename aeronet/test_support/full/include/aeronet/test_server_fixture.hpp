@@ -41,7 +41,7 @@ class TestHttpServer : public SingleHttpServer {
 
 struct TestServer {
   explicit TestServer(aeronet::HttpServerConfig cfg, aeronet::RouterConfig routerCfg = {},
-                      std::chrono::milliseconds pollPeriod = std::chrono::milliseconds{5})
+                      std::chrono::milliseconds pollPeriod = std::chrono::milliseconds{1})
       : server(std::move(cfg.withPollInterval(pollPeriod)), std::move(routerCfg)) {
     server.start();
     waitReady(std::chrono::milliseconds{500});

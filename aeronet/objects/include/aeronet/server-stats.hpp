@@ -32,6 +32,11 @@ struct ServerStats {
     fun("ktlsSendForcedShutdowns", ktlsSendForcedShutdowns);
     fun("ktlsSendBytes", ktlsSendBytes);
     fun("tlsHandshakesSucceeded", tlsHandshakesSucceeded);
+    fun("tlsHandshakesFull", tlsHandshakesFull);
+    fun("tlsHandshakesResumed", tlsHandshakesResumed);
+    fun("tlsHandshakesFailed", tlsHandshakesFailed);
+    fun("tlsHandshakesRejectedConcurrency", tlsHandshakesRejectedConcurrency);
+    fun("tlsHandshakesRejectedRateLimit", tlsHandshakesRejectedRateLimit);
     fun("tlsClientCertPresent", tlsClientCertPresent);
     fun("tlsAlpnStrictMismatches", tlsAlpnStrictMismatches);
     fun("tlsHandshakeDurationCount", tlsHandshakeDurationCount);
@@ -54,11 +59,17 @@ struct ServerStats {
   uint64_t ktlsSendForcedShutdowns{};
   uint64_t ktlsSendBytes{};
   uint64_t tlsHandshakesSucceeded{};
+  uint64_t tlsHandshakesFull{};
+  uint64_t tlsHandshakesResumed{};
+  uint64_t tlsHandshakesFailed{};
+  uint64_t tlsHandshakesRejectedConcurrency{};
+  uint64_t tlsHandshakesRejectedRateLimit{};
   uint64_t tlsClientCertPresent{};
   uint64_t tlsAlpnStrictMismatches{};
-  std::vector<std::pair<std::string, uint64_t>> tlsAlpnDistribution;  // snapshot of ALPN protocol counts
-  std::vector<std::pair<std::string, uint64_t>> tlsVersionCounts;     // per TLS version counts
-  std::vector<std::pair<std::string, uint64_t>> tlsCipherCounts;      // per cipher counts
+  std::vector<std::pair<std::string, uint64_t>> tlsAlpnDistribution;         // snapshot of ALPN protocol counts
+  std::vector<std::pair<std::string, uint64_t>> tlsHandshakeFailureReasons;  // best-effort failure/reject bucketing
+  std::vector<std::pair<std::string, uint64_t>> tlsVersionCounts;            // per TLS version counts
+  std::vector<std::pair<std::string, uint64_t>> tlsCipherCounts;             // per cipher counts
   uint64_t tlsHandshakeDurationCount{};
   uint64_t tlsHandshakeDurationTotalNs{};
   uint64_t tlsHandshakeDurationMaxNs{};

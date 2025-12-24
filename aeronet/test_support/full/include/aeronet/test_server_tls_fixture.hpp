@@ -48,7 +48,7 @@ struct TlsTestServer {
 
   using Mutator = std::function<void(HttpServerConfig&)>;
 
-  static HttpServerConfig makeConfig(std::initializer_list<std::string_view> alpn, const Mutator& mut) {
+  static HttpServerConfig MakeConfig(std::initializer_list<std::string_view> alpn, const Mutator& mut) {
     HttpServerConfig cfg;  // ephemeral port by default
     auto pair = TlsTestServerCertCache::Get().ephemeralCert;
     cfg.withTlsCertKeyMemory(pair.first, pair.second);
@@ -63,7 +63,7 @@ struct TlsTestServer {
 
   explicit TlsTestServer(std::initializer_list<std::string_view> alpn = {}, const Mutator& mut = nullptr,
                          std::chrono::milliseconds poll = std::chrono::milliseconds{1})
-      : server(makeConfig(alpn, mut), RouterConfig{}, poll) {}
+      : server(MakeConfig(alpn, mut), RouterConfig{}, poll) {}
 
   [[nodiscard]] uint16_t port() const { return server.port(); }
   void stop() { server.stop(); }

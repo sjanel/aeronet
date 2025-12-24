@@ -16,7 +16,15 @@
 #include "aeronet/tls-info.hpp"
 #include "aeronet/transport.hpp"
 
+#ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/tls-handshake-observer.hpp"
+#endif
+
 namespace aeronet {
+
+#ifdef AERONET_ENABLE_OPENSSL
+class TlsContext;
+#endif
 
 class CorsPolicy;
 
@@ -114,6 +122,9 @@ struct ConnectionState {
   // Position where trailer headers start in bodyAndTrailersBuffer (0 if no trailers).
   // Trailers occupy [trailerStartPos, bodyAndTrailersBuffer.size()).
   std::size_t trailerStartPos{0};
+
+  TLSInfo tlsInfo;
+
   // Connection close lifecycle.
   enum class CloseMode : uint8_t { None, DrainThenClose, Immediate };
 
@@ -132,9 +143,24 @@ struct ConnectionState {
   // Current protocol type. Http11 by default, changes after successful upgrade.
   ProtocolType protocol{ProtocolType::Http11};
 
-  TLSInfo tlsInfo;
 #ifdef AERONET_ENABLE_OPENSSL
+
+  // Observability / attribution for handshake failures.
+  // Populated by OpenSSL callbacks via SSL ex_data (see tls-handshake-observer).
+  TlsHandshakeObserver tlsHandshakeObserver;
+
+  // Ensures the TLS handshake event callback is emitted at most once per connection.
+  bool tlsHandshakeEventEmitted{false};
+
+  // True while the TLS handshake for this connection is in-flight and counted against
+  // concurrency limits.
+  bool tlsHandshakeInFlight{false};
+
   std::chrono::steady_clock::time_point handshakeStart;  // TLS handshake start time (steady clock)
+
+  // Keep the TLS context alive for as long as this connection's SSL/handshake may reference
+  // callback user pointers (ALPN/SNI). This is required for safe hot-reload of TLS contexts.
+  std::shared_ptr<const TlsContext> tlsContextKeepAlive;
 #endif
   struct FileSendState {
     File file;

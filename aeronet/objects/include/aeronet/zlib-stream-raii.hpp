@@ -29,7 +29,7 @@ struct ZStreamRAII {
   z_stream stream{};
 
  private:
-  enum class AllocatedType : int8_t { deflate, inflate } _allocatedType;
+  bool _isDeflate;
 };
 
 }  // namespace aeronet

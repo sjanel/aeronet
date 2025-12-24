@@ -40,6 +40,13 @@ std::string ServerStats::json_str() const {
   out.append(",\"ktlsSendForcedShutdowns\":").append(std::string_view(IntegralToCharVector(ktlsSendForcedShutdowns)));
   out.append(",\"ktlsSendBytes\":").append(std::string_view(IntegralToCharVector(ktlsSendBytes)));
   out.append(",\"tlsHandshakesSucceeded\":").append(std::string_view(IntegralToCharVector(tlsHandshakesSucceeded)));
+  out.append(",\"tlsHandshakesFull\":").append(std::string_view(IntegralToCharVector(tlsHandshakesFull)));
+  out.append(",\"tlsHandshakesResumed\":").append(std::string_view(IntegralToCharVector(tlsHandshakesResumed)));
+  out.append(",\"tlsHandshakesFailed\":").append(std::string_view(IntegralToCharVector(tlsHandshakesFailed)));
+  out.append(",\"tlsHandshakesRejectedConcurrency\":")
+      .append(std::string_view(IntegralToCharVector(tlsHandshakesRejectedConcurrency)));
+  out.append(",\"tlsHandshakesRejectedRateLimit\":")
+      .append(std::string_view(IntegralToCharVector(tlsHandshakesRejectedRateLimit)));
   out.append(",\"tlsClientCertPresent\":").append(std::string_view(IntegralToCharVector(tlsClientCertPresent)));
   out.append(",\"tlsAlpnStrictMismatches\":").append(std::string_view(IntegralToCharVector(tlsAlpnStrictMismatches)));
   // ALPN distribution
@@ -51,6 +58,19 @@ std::string ServerStats::json_str() const {
     out.append(R"({"protocol":")")
         .append(kv.first)
         .append(R"(","count":)")
+        .append(std::string_view(IntegralToCharVector(kv.second)))
+        .append("}");
+  }
+  out.push_back(']');
+  // TLS handshake failure reasons
+  out.append(",\"tlsHandshakeFailureReasons\":[");
+  for (const auto& kv : tlsHandshakeFailureReasons) {
+    if (out.back() != '[') {
+      out.push_back(',');
+    }
+    out.append(R"({\"reason\":\")")
+        .append(kv.first)
+        .append(R"(\",\"count\":)")
         .append(std::string_view(IntegralToCharVector(kv.second)))
         .append("}");
   }

@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 
 namespace aeronet {
@@ -34,6 +35,9 @@ TEST(ServerStatsTest, JsonIncludesKtlsFieldsWhenOpenSslEnabled) {
   stats.tlsCipherCounts.emplace_back("TLS_AES_256_GCM_SHA384", 4);
   stats.tlsCipherCounts.emplace_back("TLS_CHACHA20_POLY1305_SHA256", 6);
 
+  stats.tlsHandshakeFailureReasons.emplace_back("bad_certificate", 7);
+  stats.tlsHandshakeFailureReasons.emplace_back("unsupported_protocol", 8);
+
   stats.tlsHandshakeDurationCount = 16;
   stats.tlsHandshakeDurationTotalNs = 17;
   stats.tlsHandshakeDurationMaxNs = 18;
@@ -49,6 +53,11 @@ TEST(ServerStatsTest, JsonIncludesKtlsFieldsWhenOpenSslEnabled) {
   EXPECT_TRUE(json.contains("\"tlsCipherCounts\":[{"));
   EXPECT_TRUE(json.contains("TLS_AES_256_GCM_SHA384"));
   EXPECT_TRUE(json.contains("TLS_CHACHA20_POLY1305_SHA256"));
+
+  EXPECT_EQ(std::ranges::count(json, '{'), std::ranges::count(json, '}'));
+  EXPECT_EQ(std::ranges::count(json, '['), std::ranges::count(json, ']'));
+  EXPECT_TRUE(json.starts_with('{'));
+  EXPECT_TRUE(json.ends_with('}'));
 }
 #endif
 

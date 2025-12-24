@@ -94,7 +94,7 @@ namespace {
 // runtime modification of settings that cannot be changed without recreating the server.
 struct ImmutableConfigSnapshot {
   explicit ImmutableConfigSnapshot(const HttpServerConfig& cfg)
-      : nbThreads(cfg.nbThreads), port(cfg.port), reusePort(cfg.reusePort), tls(cfg.tls), telemetry(cfg.telemetry) {}
+      : nbThreads(cfg.nbThreads), port(cfg.port), reusePort(cfg.reusePort), telemetry(cfg.telemetry) {}
 
   void restore(HttpServerConfig& cfg) {
     if (cfg.nbThreads != nbThreads) [[unlikely]] {
@@ -109,10 +109,6 @@ struct ImmutableConfigSnapshot {
       cfg.reusePort = reusePort;
       log::warn("Attempted to modify immutable HttpServerConfig.reusePort at runtime; change ignored");
     }
-    if (cfg.tls != tls) [[unlikely]] {
-      cfg.tls = std::move(tls);
-      log::warn("Attempted to modify immutable HttpServerConfig.tls at runtime; change ignored");
-    }
     if (cfg.telemetry != telemetry) [[unlikely]] {
       cfg.telemetry = std::move(telemetry);
       log::warn("Attempted to modify immutable HttpServerConfig.telemetry at runtime; change ignored");
@@ -122,7 +118,6 @@ struct ImmutableConfigSnapshot {
   uint32_t nbThreads;
   uint16_t port;
   bool reusePort;
-  TLSConfig tls;
   TelemetryConfig telemetry;
 };
 
@@ -143,6 +138,10 @@ RouterUpdateProxy SingleHttpServer::router() {
 void SingleHttpServer::setParserErrorCallback(ParserErrorCallback cb) { _parserErrCb = std::move(cb); }
 
 void SingleHttpServer::setMetricsCallback(MetricsCallback cb) { _metricsCb = std::move(cb); }
+
+#ifdef AERONET_ENABLE_OPENSSL
+void SingleHttpServer::setTlsHandshakeCallback(TlsHandshakeCallback cb) { _tlsHandshakeCb = std::move(cb); }
+#endif
 
 void SingleHttpServer::setExpectationHandler(ExpectationHandler handler) { _expectationHandler = std::move(handler); }
 
@@ -355,8 +354,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       }
     }
 
-    const std::string_view contentLength = request.headerValueOrEmpty(http::ContentLength);
-    const bool hasContentLength = !contentLength.empty();
+    const bool hasContentLength = !request.headerValueOrEmpty(http::ContentLength).empty();
     if (hasContentLength && hasTransferEncoding) {
       emitSimpleError(cnxIt, http::StatusCodeBadRequest, true,
                       "Content-Length and Transfer-Encoding cannot be used together");
@@ -1181,82 +1179,6 @@ void SingleHttpServer::closeAllConnections(bool immediate) {
   }
 }
 
-#ifdef AERONET_ENABLE_KTLS
-void SingleHttpServer::maybeEnableKtlsSend(ConnectionState& state, TlsTransport& transport, int fd) {
-  if (state.ktlsSendAttempted || _config.tls.ktlsMode == TLSConfig::KtlsMode::Disabled) {
-    state.ktlsSendAttempted = true;
-    return;
-  }
-  state.ktlsSendAttempted = true;
-
-  const bool force = _config.tls.ktlsMode == TLSConfig::KtlsMode::Forced;
-  // Treat Auto as an opportunistic mode but do NOT fail silently: emit a warning on fallback so
-  // deployments using Auto are informed about why kernel offload wasn't available. This follows the
-  // principle of least surprise while preserving Auto's opportunistic behavior.
-  const bool warnOnFailure =
-      _config.tls.ktlsMode == TLSConfig::KtlsMode::Enabled || _config.tls.ktlsMode == TLSConfig::KtlsMode::Auto;
-
-  const auto result = transport.enableKtlsSend();
-  switch (result.status) {
-    case TlsTransport::KtlsEnableResult::Status::Enabled:
-    case TlsTransport::KtlsEnableResult::Status::AlreadyEnabled:
-      state.ktlsSendEnabled = true;
-      ++_stats.ktlsSendEnabledConnections;
-      log::debug("KTLS send enabled on fd # {}", fd);
-      break;
-    case TlsTransport::KtlsEnableResult::Status::Unsupported:
-      ++_stats.ktlsSendEnableFallbacks;
-      if (force) {
-        ++_stats.ktlsSendForcedShutdowns;
-        log::error("KTLS send unsupported on fd # {} while forced", fd);
-        state.requestImmediateClose();
-      } else if (warnOnFailure) {
-        log::warn(
-            "KTLS send unsupported on fd # {} (falling back to user-space TLS). Consider using "
-            "TLSConfig::KtlsMode::Forced to treat this as fatal.",
-            fd);
-      } else {
-        log::debug("KTLS send unsupported on fd # {} (fallback)", fd);
-      }
-      break;
-    case TlsTransport::KtlsEnableResult::Status::Failed: {
-      ++_stats.ktlsSendEnableFallbacks;
-      RawChars reason;
-      if (result.sysError != 0) {
-        reason.append("errno=");
-        reason.append(std::string_view(IntegralToCharVector(result.sysError)));
-        reason.push_back(' ');
-        reason.append(std::strerror(result.sysError));
-      }
-      if (result.sslError != 0) {
-        char errBuf[256];
-        ::ERR_error_string_n(result.sslError, errBuf, sizeof(errBuf));
-        if (!reason.empty()) {
-          reason.append("; ");
-        }
-        reason.append("ssl=");
-        reason.append(errBuf);
-      }
-      if (force) {
-        ++_stats.ktlsSendForcedShutdowns;
-        log::error("KTLS send enable failed for fd # {} (forced mode) reason={}", fd,
-                   reason.empty() ? std::string_view("unknown") : reason);
-        state.requestImmediateClose();
-      } else if (warnOnFailure) {
-        log::warn("KTLS send enable failed for fd # {} (falling back) reason={}", fd,
-                  reason.empty() ? std::string_view("unknown") : reason);
-      } else {
-        log::debug("KTLS send enable failed for fd # {} reason={}", fd,
-                   reason.empty() ? std::string_view("unknown") : reason);
-      }
-      break;
-    }
-    default:
-      std::unreachable();
-  }
-}
-#endif
-
 ServerStats SingleHttpServer::stats() const {
   ServerStats statsOut;
   statsOut.totalBytesQueued = _stats.totalBytesQueued;
@@ -1267,31 +1189,40 @@ ServerStats SingleHttpServer::stats() const {
   statsOut.epollModFailures = _stats.epollModFailures;
   statsOut.maxConnectionOutboundBuffer = _stats.maxConnectionOutboundBuffer;
   statsOut.totalRequestsServed = _stats.totalRequestsServed;
-#ifdef AERONET_ENABLE_KTLS
-  statsOut.ktlsSendEnabledConnections = _stats.ktlsSendEnabledConnections;
-  statsOut.ktlsSendEnableFallbacks = _stats.ktlsSendEnableFallbacks;
-  statsOut.ktlsSendForcedShutdowns = _stats.ktlsSendForcedShutdowns;
-  statsOut.ktlsSendBytes = _stats.ktlsSendBytes;
-#endif
 #ifdef AERONET_ENABLE_OPENSSL
   statsOut.tlsHandshakesSucceeded = _tlsMetrics.handshakesSucceeded;
+  statsOut.tlsHandshakesFull = _tlsMetrics.handshakesFull;
+  statsOut.tlsHandshakesResumed = _tlsMetrics.handshakesResumed;
+  statsOut.tlsHandshakesFailed = _tlsMetrics.handshakesFailed;
+  statsOut.tlsHandshakesRejectedConcurrency = _tlsMetrics.handshakesRejectedConcurrency;
+  statsOut.tlsHandshakesRejectedRateLimit = _tlsMetrics.handshakesRejectedRateLimit;
   statsOut.tlsClientCertPresent = _tlsMetrics.clientCertPresent;
   statsOut.tlsAlpnStrictMismatches = _tlsMetricsExternal.alpnStrictMismatches;
   statsOut.tlsAlpnDistribution.reserve(_tlsMetrics.alpnDistribution.size());
-  for (const auto& kv : _tlsMetrics.alpnDistribution) {
-    statsOut.tlsAlpnDistribution.emplace_back(kv.first, kv.second);
+  for (const auto& [key, value] : _tlsMetrics.alpnDistribution) {
+    statsOut.tlsAlpnDistribution.emplace_back(key, value);
+  }
+  statsOut.tlsHandshakeFailureReasons.reserve(_tlsMetrics.handshakeFailureReasons.size());
+  for (const auto& [key, value] : _tlsMetrics.handshakeFailureReasons) {
+    statsOut.tlsHandshakeFailureReasons.emplace_back(key, value);
   }
   statsOut.tlsVersionCounts.reserve(_tlsMetrics.versionCounts.size());
-  for (const auto& kv : _tlsMetrics.versionCounts) {
-    statsOut.tlsVersionCounts.emplace_back(kv.first, kv.second);
+  for (const auto& [key, value] : _tlsMetrics.versionCounts) {
+    statsOut.tlsVersionCounts.emplace_back(key, value);
   }
   statsOut.tlsCipherCounts.reserve(_tlsMetrics.cipherCounts.size());
-  for (const auto& kv : _tlsMetrics.cipherCounts) {
-    statsOut.tlsCipherCounts.emplace_back(kv.first, kv.second);
+  for (const auto& [key, value] : _tlsMetrics.cipherCounts) {
+    statsOut.tlsCipherCounts.emplace_back(key, value);
   }
   statsOut.tlsHandshakeDurationCount = _tlsMetrics.handshakeDurationCount;
   statsOut.tlsHandshakeDurationTotalNs = _tlsMetrics.handshakeDurationTotalNs;
   statsOut.tlsHandshakeDurationMaxNs = _tlsMetrics.handshakeDurationMaxNs;
+#ifdef AERONET_ENABLE_KTLS
+  statsOut.ktlsSendEnabledConnections = _tlsMetrics.ktlsSendEnabledConnections;
+  statsOut.ktlsSendEnableFallbacks = _tlsMetrics.ktlsSendEnableFallbacks;
+  statsOut.ktlsSendForcedShutdowns = _tlsMetrics.ktlsSendForcedShutdowns;
+  statsOut.ktlsSendBytes = _tlsMetrics.ktlsSendBytes;
+#endif
 #endif
   return statsOut;
 }
@@ -1446,6 +1377,11 @@ void ApplyPendingUpdates(std::mutex& mutex, auto& vec, std::atomic<bool>& flag, 
 
 void SingleHttpServer::applyPendingUpdates() {
   if (_hasPendingConfigUpdates.load(std::memory_order_acquire)) {
+#ifdef AERONET_ENABLE_OPENSSL
+    // Capture TLS config before updates to detect changes
+    const TLSConfig tlsBefore = _config.tls;
+#endif
+
     ApplyPendingUpdates(_updateLock, _pendingConfigUpdates, _hasPendingConfigUpdates, _config, "config");
 
     _config.validate();
@@ -1455,6 +1391,18 @@ void SingleHttpServer::applyPendingUpdates() {
     _eventLoop.updatePollTimeout(_config.pollInterval);
     registerBuiltInProbes();
     createEncoders();
+
+#ifdef AERONET_ENABLE_OPENSSL
+    // If TLS config changed, rebuild the OpenSSL context.
+    // Note: keep old context alive for existing connections via ConnectionState::tlsContextKeepAlive.
+    if (_config.tls != tlsBefore) {
+      if (_config.tls.enabled) {
+        _tlsCtxHolder = std::make_shared<TlsContext>(_config.tls, &_tlsMetricsExternal, _sharedTicketKeyStore);
+      } else {
+        _tlsCtxHolder.reset();
+      }
+    }
+#endif
   }
   if (_hasPendingRouterUpdates.load(std::memory_order_acquire)) {
     ApplyPendingUpdates(_updateLock, _pendingRouterUpdates, _hasPendingRouterUpdates, _router, "router");

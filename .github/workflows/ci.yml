@@ -190,8 +190,8 @@ jobs:
           # Merge all profraw files into a single profdata
           llvm-profdata-21 merge -sparse ../coverage-*.profraw -o coverage.profdata
 
-          # Find all test binaries to use as coverage objects
-          BINARIES=$(find aeronet -type f -executable -name "*_test" | head -1)
+          # Find a binary that links to all objects (the first test in tests binary)
+          BINARIES=$(find tests -type f -executable -name "*_test" | head -1)
           OBJECTS=$(find aeronet -type f -executable -name "*_test" | tail -n+2 | sed 's/^/-object /' | tr '\n' ' ')
 
           # Ignore patterns: test files, test_support, CompilerId, _deps, and generated protobuf

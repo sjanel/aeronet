@@ -183,6 +183,10 @@ void ConnectionState::clear() {
   tlsInfo = {};
 #ifdef AERONET_ENABLE_OPENSSL
   handshakeStart = {};
+  tlsHandshakeObserver = {};
+  tlsHandshakeEventEmitted = false;
+  tlsContextKeepAlive.reset();
+  tlsHandshakeInFlight = false;
 #endif
   fileSend = {};
 

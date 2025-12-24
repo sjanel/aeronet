@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 #include <cerrno>
 #include <chrono>
@@ -56,7 +57,7 @@ struct Ipv4Endpoint {
   uint16_t port{0};
 };
 
-static bool GetIpv4SockName(int fd, Ipv4Endpoint& out) {
+bool GetIpv4SockName(int fd, Ipv4Endpoint& out) {
   sockaddr_in addr{};
   socklen_t len = sizeof(addr);
   if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
@@ -70,7 +71,7 @@ static bool GetIpv4SockName(int fd, Ipv4Endpoint& out) {
   return true;
 }
 
-static bool GetIpv4PeerName(int fd, Ipv4Endpoint& out) {
+bool GetIpv4PeerName(int fd, Ipv4Endpoint& out) {
   sockaddr_in addr{};
   socklen_t len = sizeof(addr);
   if (::getpeername(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
@@ -84,7 +85,7 @@ static bool GetIpv4PeerName(int fd, Ipv4Endpoint& out) {
   return true;
 }
 
-static int FindServerSideFdForClientOrThrow(int clientFd, std::chrono::milliseconds timeout) {
+int FindServerSideFdForClientOrThrow(int clientFd, std::chrono::milliseconds timeout) {
   Ipv4Endpoint clientLocal{};
   Ipv4Endpoint clientPeer{};
   if (!GetIpv4SockName(clientFd, clientLocal) || !GetIpv4PeerName(clientFd, clientPeer)) {
@@ -183,11 +184,11 @@ static int FindServerSideFdForClientOrThrow(int clientFd, std::chrono::milliseco
       ", connected ipv4 sockets=" + std::to_string(connectedIpv4SockCount) + ", samples:" + samples + ")");
 }
 
-static bool WaitForPeerClosedNonBlocking(int fd, std::chrono::milliseconds timeout) {
+bool WaitForPeerClosedNonBlocking(int fd, std::chrono::milliseconds timeout) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (std::chrono::steady_clock::now() < deadline) {
     char tmp = 0;
-    const ssize_t ret = ::recv(fd, &tmp, 1, MSG_PEEK | MSG_DONTWAIT);
+    const auto ret = ::recv(fd, &tmp, 1, MSG_PEEK | MSG_DONTWAIT);
     if (ret == 0) {
       return true;  // orderly close
     }
@@ -204,6 +205,7 @@ static bool WaitForPeerClosedNonBlocking(int fd, std::chrono::milliseconds timeo
   }
   return false;
 }
+
 }  // namespace
 
 TEST(HttpPipeline, TwoRequestsBackToBack) {
@@ -343,6 +345,16 @@ TEST(HttpBasic, ManyHeadersRequest) {
   std::string resp = test::recvUntilClosed(fd);
   EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
   EXPECT_TRUE(resp.contains("Received " + std::to_string(kNbHeaders) + " custom headers"));
+}
+
+TEST(HttpBasic, InvalidContentLength) {
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("X"); });
+
+  test::ClientConnection clientConnection(ts.port());
+  std::string req = "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: invalid-length\r\nConnection: close\r\n\r\nHELLO";
+  test::sendAll(clientConnection.fd(), req);
+  std::string resp = test::recvUntilClosed(clientConnection.fd());
+  EXPECT_TRUE(resp.contains("HTTP/1.1 400")) << resp;
 }
 
 TEST(HttpBasic, ManyHeadersResponse) {

@@ -231,7 +231,6 @@ Key characteristics:
 - It is **restartable**, you can call `start()` after a `stop()`.
 - You can modify most of its **configuration safely at runtime** via `postConfigUpdate()` and `postRouterUpdate()`.
 - Graceful draining is available via `beginDrain(std::chrono::milliseconds maxWait = 0)`: it stops accepting new connections, lets in-flight responses finish with `Connection: close`, and optionally enforces a deadline before forcing the remaining connections to close.
-- It is also [trivially relocatable](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p1144r10.html), although I doubt it will be very useful for this type.
 
 ##### Configuration
 

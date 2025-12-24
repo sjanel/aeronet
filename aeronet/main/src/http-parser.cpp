@@ -51,11 +51,11 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(Conne
   // Note: in HTTP/1.1, there cannot be trailers for non-chunked bodies.
   std::size_t declaredContentLen = 0;
   auto [ptr, err] = std::from_chars(lenViewAll.data(), lenViewAll.data() + lenViewAll.size(), declaredContentLen);
-  if (err != std::errc() || ptr != lenViewAll.data() + lenViewAll.size()) {
+  if (err != std::errc() || ptr != lenViewAll.data() + lenViewAll.size()) [[unlikely]] {
     emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Invalid Content-Length");
     return BodyDecodeStatus::Error;
   }
-  if (declaredContentLen > _config.maxBodyBytes) {
+  if (_config.maxBodyBytes < declaredContentLen) [[unlikely]] {
     emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true, {});
     return BodyDecodeStatus::Error;
   }
