@@ -208,7 +208,7 @@ void SingleHttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
 }
 
 bool SingleHttpServer::enableWritableInterest(ConnectionMapIt cnxIt) {
-  static constexpr EventBmp kEvents = EventIn | EventOut | EventEt;
+  static constexpr EventBmp kEvents = EventIn | EventOut | EventRdHup | EventEt;
 
   ConnectionState* state = cnxIt->second.get();
   assert(!state->waitingWritable);
@@ -223,7 +223,7 @@ bool SingleHttpServer::enableWritableInterest(ConnectionMapIt cnxIt) {
 }
 
 bool SingleHttpServer::disableWritableInterest(ConnectionMapIt cnxIt) {
-  static constexpr EventBmp kEvents = EventIn | EventEt;
+  static constexpr EventBmp kEvents = EventIn | EventRdHup | EventEt;
   ConnectionState* state = cnxIt->second.get();
   assert(state->waitingWritable);
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) [[likely]] {
@@ -1108,10 +1108,11 @@ void SingleHttpServer::eventLoop() {
       if (eventFd.eventBmp & EventOut) {
         handleWritableClient(eventFd.fd);
       }
-      if (eventFd.eventBmp & EventIn) {
+      // EPOLLERR/EPOLLHUP/EPOLLRDHUP can be delivered without EPOLLIN.
+      // Treat them as a read trigger so we promptly observe EOF/errors and close.
+      if (eventFd.eventBmp & (EventIn | EventErr | EventHup | EventRdHup)) {
         handleReadableClient(eventFd.fd);
       }
-      // TODO: can other events be signaled separately, for instance HUP / ERR?
     }
   });
 
