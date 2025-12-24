@@ -264,9 +264,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
   const auto result = handler.processInput(inputData, state);
 
   // Consume processed bytes from input buffer
-  if (result.bytesConsumed > 0) {
-    state.inBuffer.erase_front(result.bytesConsumed);
-  }
+  state.inBuffer.erase_front(result.bytesConsumed);
 
   // Queue any pending output from the handler
   if (handler.hasPendingOutput()) {
@@ -377,7 +375,8 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       WebSocketUpgradeConfig upgradeConfig;
       // TODO: can we avoid a vector here?
       vector<std::string_view> protocolViews;
-      protocolViews.reserve(static_cast<decltype(protocolViews)::size_type>(endpoint.supportedProtocols.size()));
+      protocolViews.reserve(
+          static_cast<decltype(protocolViews)::size_type>(endpoint.supportedProtocols.nbConcatenatedStrings()));
       for (const auto& proto : endpoint.supportedProtocols) {
         protocolViews.push_back(proto);
       }
@@ -388,7 +387,6 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       const auto upgradeValidation = upgrade::ValidateWebSocketUpgrade(request, upgradeConfig);
       if (upgradeValidation.valid) {
         // Generate and send 101 Switching Protocols response
-        RawChars upgradeResponse = upgrade::BuildWebSocketUpgradeResponse(upgradeValidation);
         const std::size_t consumedBytes = request.headSpanSize();
         state.inBuffer.erase_front(consumedBytes);
 
@@ -415,7 +413,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         state.protocol = ProtocolType::WebSocket;
 
         // Queue the upgrade response
-        state.outBuffer.append(HttpResponseData(std::move(upgradeResponse)));
+        state.outBuffer.append(HttpResponseData(upgrade::BuildWebSocketUpgradeResponse(upgradeValidation)));
         flushOutbound(cnxIt);
 
         ++state.requestsServed;
@@ -1012,16 +1010,14 @@ bool SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt) {
 
 void SingleHttpServer::emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
                                           bool reusedConnection) {
-  if (_metricsCb) {
-    RequestMetrics metrics;
-    metrics.status = status;
-    metrics.bytesIn = bytesIn;
-    metrics.reusedConnection = reusedConnection;
-    metrics.method = request.method();
-    metrics.path = request.path();
-    metrics.duration = std::chrono::steady_clock::now() - request.reqStart();
-    _metricsCb(metrics);
-  }
+  RequestMetrics metrics;
+  metrics.status = status;
+  metrics.bytesIn = bytesIn;
+  metrics.reusedConnection = reusedConnection;
+  metrics.method = request.method();
+  metrics.path = request.path();
+  metrics.duration = std::chrono::steady_clock::now() - request.reqStart();
+  _metricsCb(metrics);
 }
 
 void SingleHttpServer::applyResponseMiddleware(const HttpRequest& request, HttpResponse& response,
@@ -1047,8 +1043,10 @@ void SingleHttpServer::applyResponseMiddleware(const HttpRequest& request, HttpR
         spanScope.span->setAttribute("aeronet.middleware.short_circuit", int64_t{0});
         spanScope.span->setAttribute("aeronet.middleware.duration_ns", static_cast<int64_t>(duration.count()));
       }
-      emitMiddlewareMetrics(request, MiddlewareMetrics::Phase::Post, isGlobal, hookIdx,
-                            static_cast<uint64_t>(duration.count()), false, threwEx, streaming);
+      if (_middlewareMetricsCb) {
+        emitMiddlewareMetrics(request, MiddlewareMetrics::Phase::Post, isGlobal, hookIdx,
+                              static_cast<uint64_t>(duration.count()), false, threwEx, streaming);
+      }
     }
   };
   runChain(routeChain, false);
@@ -1058,20 +1056,18 @@ void SingleHttpServer::applyResponseMiddleware(const HttpRequest& request, HttpR
 void SingleHttpServer::emitMiddlewareMetrics(const HttpRequest& request, MiddlewareMetrics::Phase phase, bool isGlobal,
                                              uint32_t index, uint64_t durationNs, bool shortCircuited, bool threw,
                                              bool streaming) {
-  if (_middlewareMetricsCb) {
-    MiddlewareMetrics metrics;
-    metrics.phase = phase;
-    metrics.isGlobal = isGlobal;
-    metrics.shortCircuited = shortCircuited;
-    metrics.threw = threw;
-    metrics.streaming = streaming;
-    metrics.index = index;
-    metrics.durationNs = durationNs;
-    metrics.method = request.method();
-    metrics.requestPath = request.path();
+  MiddlewareMetrics metrics;
+  metrics.phase = phase;
+  metrics.isGlobal = isGlobal;
+  metrics.shortCircuited = shortCircuited;
+  metrics.threw = threw;
+  metrics.streaming = streaming;
+  metrics.index = index;
+  metrics.durationNs = durationNs;
+  metrics.method = request.method();
+  metrics.requestPath = request.path();
 
-    _middlewareMetricsCb(metrics);
-  }
+  _middlewareMetricsCb(metrics);
 }
 
 tracing::SpanRAII SingleHttpServer::startMiddlewareSpan(const HttpRequest& request, MiddlewareMetrics::Phase phase,
@@ -1489,8 +1485,10 @@ bool SingleHttpServer::runPreChain(HttpRequest& request, bool willStream, std::s
       spanScope.span->setAttribute("aeronet.middleware.short_circuit", shortCircuited ? int64_t{1} : int64_t{0});
       spanScope.span->setAttribute("aeronet.middleware.duration_ns", static_cast<int64_t>(duration.count()));
     }
-    emitMiddlewareMetrics(request, MiddlewareMetrics::Phase::Pre, isGlobal, idx,
-                          static_cast<uint64_t>(duration.count()), shortCircuited, false, willStream);
+    if (_middlewareMetricsCb) {
+      emitMiddlewareMetrics(request, MiddlewareMetrics::Phase::Pre, isGlobal, idx,
+                            static_cast<uint64_t>(duration.count()), shortCircuited, false, willStream);
+    }
     if (shortCircuited) {
       out = std::move(decision).takeResponse();
       return true;

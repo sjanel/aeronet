@@ -2,7 +2,6 @@
 
 #include <optional>
 #include <span>
-#include <string>
 #include <string_view>
 
 #include "aeronet/concatenated-strings.hpp"
@@ -29,7 +28,7 @@ struct UpgradeValidationResult {
   std::string_view errorMessage;  // Populated if !valid
 
   // WebSocket-specific fields (populated when targetProtocol == WebSocket)
-  std::string selectedProtocol;  // Selected subprotocol (if any)
+  std::string_view selectedProtocol;  // Selected subprotocol (if any)
 
   // Offered protocols by the client (empty if none offered)
   ConcatenatedStrings offeredProtocols;

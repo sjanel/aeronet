@@ -62,8 +62,12 @@ class HttpResponseTest : public ::testing::Test {
 
   static HttpResponseData finalize(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders,
                                    bool head = isHeadMethod, bool keepAliveFlag = keepAlive) {
+    std::size_t expectedFileLen = 0;
+    if (resp.hasFile()) {
+      expectedFileLen = resp.file()->size();
+    }
     auto prepared = finalizePrepared(std::move(resp), globalHeaders, head, keepAliveFlag);
-    EXPECT_EQ(prepared.fileLength, 0U);
+    EXPECT_EQ(prepared.fileLength, expectedFileLen);
     return std::move(prepared.data);
   }
 
@@ -462,6 +466,7 @@ TEST_F(HttpResponseTest, LoopOnHeaders) {
   auto headers = resp.headers();
 
   EXPECT_EQ(headers.begin(), headers.end());
+  EXPECT_EQ(HttpResponse::HeadersView::iterator(), HttpResponse::HeadersView::iterator());
 
   resp.addHeader("Header-1", "Value1");
 
@@ -476,14 +481,28 @@ TEST_F(HttpResponseTest, LoopOnHeaders) {
   EXPECT_EQ(std::distance(headers.begin(), headers.end()), 3);
   auto it = headers.begin();
   EXPECT_EQ((*it).name, "Header-1");
-  EXPECT_EQ((*it).value, "Value1");
-  ++it;
+  EXPECT_EQ((*it++).value, "Value1");  // test post-increment
   EXPECT_EQ((*it).name, "Header-2");
   EXPECT_EQ((*it).value, "Value2");
   ++it;
   EXPECT_EQ((*it).name, "Header-3");
   EXPECT_EQ((*it).value, "Value3");
   EXPECT_EQ(++it, headers.end());
+}
+
+TEST_F(HttpResponseTest, HeadersRange) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.addHeader("Header-1", "Value1");
+  resp.addHeader("Header-2", "Value2");
+  auto headers = resp.headers();
+
+  static_assert(std::ranges::input_range<decltype(headers)>);
+
+  static_assert(
+      std::indirect_unary_predicate<decltype([](auto&&) { return true; }), std::ranges::iterator_t<decltype(headers)>>);
+
+  EXPECT_TRUE(std::ranges::any_of(
+      headers, [](const auto& header) { return header.name == "Header-1" && header.value == "Value1"; }));
 }
 
 TEST_F(HttpResponseTest, LoopOnTrailers) {
@@ -1324,7 +1343,7 @@ struct ParsedResponse {
   std::vector<std::pair<std::string, std::string>> trailers;
 };
 
-ParsedResponse parseResponse(std::string_view full) {
+ParsedResponse parseResponse(std::string_view full, bool hasFile) {
   ParsedResponse pr;
   if (!full.starts_with("HTTP/1.1 ")) {
     throw std::runtime_error("Bad version in response");
@@ -1383,7 +1402,7 @@ ParsedResponse parseResponse(std::string_view full) {
     }
   }
 
-  if (hasContentLen) {
+  if (hasContentLen && !hasFile) {
     if (cursor + contentLen > full.size()) {
       throw std::runtime_error("Truncated body");
     }
@@ -1483,7 +1502,7 @@ TEST_F(HttpResponseTest, RandomGlobalHeadersApplyOnce) {
 
     auto expected = ExpectedGlobalHeaderValues(resp, globalHeaders);
     auto serialized = concatenated(std::move(resp), globalHeaders);
-    ParsedResponse parsed = parseResponse(serialized);
+    ParsedResponse parsed = parseResponse(serialized, false);
 
     for (std::string_view gh : globalHeaders) {
       // gh is a string_view of the form "Name: Value". Extract the name for comparisons.
@@ -1530,7 +1549,7 @@ TEST_F(HttpResponseTest, ALotOfGlobalHeaders) {
 
   auto expected = ExpectedGlobalHeaderValues(resp, globalHeaders);
   auto serialized = concatenated(std::move(resp), globalHeaders);
-  ParsedResponse parsed = parseResponse(serialized);
+  ParsedResponse parsed = parseResponse(serialized, false);
 
   ASSERT_GE(parsed.headers.size(), static_cast<std::size_t>(kGlobalHeaders));
   for (std::string_view gh : globalHeaders) {
@@ -1549,11 +1568,14 @@ TEST_F(HttpResponseTest, ALotOfGlobalHeaders) {
 }
 
 TEST_F(HttpResponseTest, FuzzStructuralValidation) {
-  static constexpr int kNbHttpResponses = 60;
+  static constexpr int kNbHttpResponses = 150;
   static constexpr int kNbOperationsPerHttpResponse = 100;
 
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "some data");
+
   std::mt19937 rng(12345);
-  std::uniform_int_distribution<int> opDist(0, 5);
+  std::uniform_int_distribution<int> opDist(0, 6);
   std::uniform_int_distribution<int> smallLen(0, 12);
   std::uniform_int_distribution<int> midLen(0, 24);
   std::uniform_int_distribution<int> globalHeaderCountDist(0, 32);
@@ -1598,6 +1620,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
     std::string lastHeaderValue;
     std::string lastTrailerKey;
     std::string lastTrailerValue;
+    http::StatusCode lastStatus = resp.status();
     for (int step = 0; step < kNbOperationsPerHttpResponse; ++step) {
       switch (opDist(rng)) {
         case 0:
@@ -1636,31 +1659,54 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
           break;
         case 4: {
           static constexpr http::StatusCode opts[] = {200, 204, 404};
-          resp.status(opts[static_cast<std::size_t>(step) % std::size(opts)]);
+          lastStatus = opts[static_cast<std::size_t>(step) % std::size(opts)];
+          resp.status(lastStatus);
           break;
         }
         case 5:
           if (lastBody.empty()) {
             EXPECT_THROW(resp.addTrailer("X-Trailer", "value"), std::logic_error);
-          } else {
+          } else if (!resp.hasFile()) {
             lastTrailerKey = "X-" + std::to_string(step);
             lastTrailerValue = makeValue(smallLen(rng));
             resp.addTrailer(lastTrailerKey, lastTrailerValue);
+          } else {
+            // Once a file body was set, trailers cannot be added
+            EXPECT_THROW(resp.addTrailer("X-Trailer", "value"), std::logic_error);
           }
           break;
+        case 6: {
+          File file(tmp.filePath().string());
+          if (lastTrailerKey.empty()) {
+            lastBody = file.loadAllContent();
+            resp.file(std::move(file));
+          } else {
+            // Once a trailer was set, body cannot be changed
+            EXPECT_THROW(resp.file(std::move(file)), std::logic_error);
+          }
+          break;
+        }
         default:
           throw std::runtime_error("Invalid random value, update the test");
       }
     }
 
+    const bool hasFile = resp.hasFile();
+
     // Pre-finalize state checks (reason/body accessible before finalize)
-    EXPECT_EQ(resp.reason(), std::string_view(lastReason));
-    EXPECT_EQ(resp.body(), std::string_view(lastBody));
+    EXPECT_EQ(resp.status(), lastStatus);
+    EXPECT_EQ(resp.reason(), lastReason);
+    if (hasFile) {
+      EXPECT_TRUE(resp.body().empty());
+      EXPECT_EQ(resp.file()->loadAllContent(), lastBody);
+    } else {
+      EXPECT_EQ(resp.body(), lastBody);
+    }
 
     auto expectedGlobals = ExpectedGlobalHeaderValues(resp, fuzzGlobalHeaders);
 
     auto full = concatenated(std::move(resp), fuzzGlobalHeaders);
-    ParsedResponse pr = parseResponse(full);
+    ParsedResponse pr = parseResponse(full, hasFile);
 
     int dateCount = 0;
     int connCount = 0;
@@ -1678,25 +1724,27 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
     }
     EXPECT_EQ(dateCount, 1);
     EXPECT_EQ(connCount, 1);
-    if (!pr.body.empty()) {
-      EXPECT_EQ(clCount, 1);
-      if (clVal != pr.body.size()) {
-        // Diagnostic: content-length mismatch
-        ADD_FAILURE() << "Content-Length header=" << clVal << " but parsed body size=" << pr.body.size()
-                      << "\nFull response:\n"
-                      << full;
-        return;  // stop early to inspect this failing case
+    if (!hasFile) {
+      if (!pr.body.empty()) {
+        EXPECT_EQ(clCount, 1);
+        if (clVal != pr.body.size()) {
+          // Diagnostic: content-length mismatch
+          ADD_FAILURE() << "Content-Length header=" << clVal << " but parsed body size=" << pr.body.size()
+                        << "\nFull response:\n"
+                        << full;
+          return;  // stop early to inspect this failing case
+        }
+        EXPECT_EQ(clVal, pr.body.size());
+        ASSERT_GE(pr.headers.size(), 3U);
+        EXPECT_EQ(pr.headers[pr.headers.size() - 3].first, http::Connection);
+        EXPECT_EQ(pr.headers[pr.headers.size() - 2].first, http::Date);
+        EXPECT_EQ(pr.headers[pr.headers.size() - 1].first, http::ContentLength);
+      } else {
+        EXPECT_EQ(clCount, 0);
+        ASSERT_GE(pr.headers.size(), 2U);
+        EXPECT_EQ(pr.headers[pr.headers.size() - 2].first, http::Connection);
+        EXPECT_EQ(pr.headers[pr.headers.size() - 1].first, http::Date);
       }
-      EXPECT_EQ(clVal, pr.body.size());
-      ASSERT_GE(pr.headers.size(), 3U);
-      EXPECT_EQ(pr.headers[pr.headers.size() - 3].first, http::Connection);
-      EXPECT_EQ(pr.headers[pr.headers.size() - 2].first, http::Date);
-      EXPECT_EQ(pr.headers[pr.headers.size() - 1].first, http::ContentLength);
-    } else {
-      EXPECT_EQ(clCount, 0);
-      ASSERT_GE(pr.headers.size(), 2U);
-      EXPECT_EQ(pr.headers[pr.headers.size() - 2].first, http::Connection);
-      EXPECT_EQ(pr.headers[pr.headers.size() - 1].first, http::Date);
     }
 
     if (!lastHeaderKey.empty()) {

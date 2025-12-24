@@ -5,7 +5,6 @@
 #include <cstring>
 #include <optional>
 #include <span>
-#include <string>
 #include <string_view>
 #include <utility>
 
@@ -61,15 +60,13 @@ ConcatenatedStrings ParseTokenList(std::string_view header) {
 }
 
 // Select the first matching subprotocol from client's offer
-[[nodiscard]] std::string NegotiateSubprotocol(const ConcatenatedStrings& offered,
-                                               std::span<const std::string_view> supported) {
+[[nodiscard]] std::string_view NegotiateSubprotocol(const ConcatenatedStrings& offered,
+                                                    std::span<const std::string_view> supported) {
   // Server's preference order
-  for (const auto& serverProto : supported) {
-    for (const auto& clientProto : offered) {
-      if (CaseInsensitiveEqual(serverProto, clientProto)) {
-        return std::string(serverProto);
-      }
-    }
+  auto it = std::ranges::find_if(supported,
+                                 [&offered](std::string_view serverProto) { return offered.containsCI(serverProto); });
+  if (it != supported.end()) {
+    return *it;
   }
   return {};
 }
@@ -290,7 +287,7 @@ ProtocolType DetectUpgradeTarget(const HttpRequest& request) {
 
 namespace {
 
-inline constexpr std::string_view kSwitchingProtocolsHttp11HeaderLine = "HTTP/1.1 101 Switching Protocols\r\n";
+constexpr std::string_view kSwitchingProtocolsHttp11HeaderLine = "HTTP/1.1 101 Switching Protocols\r\n";
 
 }
 
