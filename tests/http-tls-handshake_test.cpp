@@ -454,7 +454,14 @@ TEST(HttpTlsNegative, PlainHttpToTlsPortRejected) {
   std::string bogus = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";  // not TLS handshake
   test::sendAll(fd, bogus);
   // default recvWithTimeout waits 2000ms; explicit shorter timeout keeps test fast
-  ASSERT_TRUE(test::recvWithTimeout(fd, 500ms).empty());
+  try {
+    ASSERT_TRUE(test::recvWithTimeout(fd, 500ms).empty());
+  } catch (const std::system_error& ex) {
+    // Depending on timing and transport behavior, rejecting cleartext on a TLS port
+    // may result in a reset (ECONNRESET) rather than an orderly close.
+    const int err = ex.code().value();
+    ASSERT_TRUE(err == ECONNRESET || err == ECONNABORTED || err == ENOTCONN) << ex.what();
+  }
 }
 
 // When server only requests (but does not require) a client cert, handshake should succeed

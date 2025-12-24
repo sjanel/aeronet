@@ -123,7 +123,7 @@ void SingleHttpServer::acceptNewConnections() {
         _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
       }
     }
-    if (!_eventLoop.add(EventLoop::EventFd{cnxFd, EventIn | EventEt})) [[unlikely]] {
+    if (!_eventLoop.add(EventLoop::EventFd{cnxFd, EventIn | EventRdHup | EventEt})) [[unlikely]] {
       auto savedErr = errno;
       log::error("EventLoop add client failed fd # {} err={}: {}", cnxFd, savedErr, std::strerror(savedErr));
       _telemetry.counterAdd("aeronet.connections.errors.add_event_failed", 1UL);
@@ -226,7 +226,7 @@ void SingleHttpServer::acceptNewConnections() {
       // Close only on fatal transport error or an orderly EOF (bytesRead==0 with no 'want' hint).
       if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
         // If TLS handshake still pending, treat a transport Error as transient and retry later.
-        if (want == TransportHint::Error) {
+        if (want == TransportHint::Error) [[unlikely]] {
           if (pCnx != nullptr && pCnx->transport && !pCnx->transport->handshakeDone()) {
             log::debug("Transient transport error during TLS handshake on fd # {}; will retry", cnxFd);
             // Yield and let event loop drive readiness notifications; do not close yet.
@@ -258,7 +258,7 @@ void SingleHttpServer::acceptNewConnections() {
         // Transport indicates we should wait for readability or writability before continuing.
         // Adjust epoll interest if TLS handshake needs write readiness
         if (want == TransportHint::WriteReady && !pCnx->waitingWritable) {
-          pCnx->waitingWritable = _eventLoop.mod(EventLoop::EventFd{cnxFd, EventIn | EventOut | EventEt});
+          pCnx->waitingWritable = _eventLoop.mod(EventLoop::EventFd{cnxFd, EventIn | EventOut | EventRdHup | EventEt});
         }
         break;
       }
@@ -379,10 +379,14 @@ void SingleHttpServer::handleReadableClient(int fd) {
     if (state.waitingForBody && count > 0) {
       state.bodyLastActivity = std::chrono::steady_clock::now();
     }
+    if (want == TransportHint::Error) [[unlikely]] {
+      state.requestImmediateClose();
+      break;
+    }
     if (want != TransportHint::None) {
       // Non-fatal: transport needs the socket to be readable or writable before proceeding.
       if (want == TransportHint::WriteReady && !state.waitingWritable) {
-        state.waitingWritable = _eventLoop.mod(EventLoop::EventFd{fd, EventIn | EventOut | EventEt});
+        state.waitingWritable = _eventLoop.mod(EventLoop::EventFd{fd, EventIn | EventOut | EventRdHup | EventEt});
       }
       break;
     }
@@ -455,14 +459,12 @@ void SingleHttpServer::handleWritableClient(int fd) {
   // If tunneling, flush tunnelOutBuffer first
   if (state.isTunneling() && !state.tunnelOrFileBuffer.empty()) {
     const auto [written, want] = state.transportWrite(state.tunnelOrFileBuffer);
-    if (want == TransportHint::Error) {
+    if (want == TransportHint::Error) [[unlikely]] {
       // Fatal error writing tunnel data: close this connection
       closeConnection(cnxIt);
       return;
     }
-    if (written > 0) {
-      state.tunnelOrFileBuffer.erase_front(written);
-    }
+    state.tunnelOrFileBuffer.erase_front(written);
     // If still has data, keep EPOLLOUT registered
     if (!state.tunnelOrFileBuffer.empty()) {
       return;
@@ -506,7 +508,7 @@ void SingleHttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
   }
   ConnectionState& peer = *peerIt->second;
   const auto [written, want] = peer.transportWrite(state.inBuffer);
-  if (want == TransportHint::Error) {
+  if (want == TransportHint::Error) [[unlikely]] {
     // Fatal transport error while forwarding to peer: close both sides.
     closeConnection(peerIt);
     closeConnection(cnxIt);

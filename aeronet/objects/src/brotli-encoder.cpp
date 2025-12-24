@@ -60,9 +60,6 @@ std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize,
     }
 
     // If encoder produced output filling current buffer chunk, loop to grow and continue.
-    if (availOut == 0) {
-      continue;
-    }
   }
   return _buf;
 }
