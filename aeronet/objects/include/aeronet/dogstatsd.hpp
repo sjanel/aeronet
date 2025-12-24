@@ -27,7 +27,7 @@ class DogStatsD {
   static constexpr const char kCommaSep[] = ",";
 
  public:
-  using DogStatsDTags = DynamicConcatenatedStrings<kCommaSep, false, uint32_t>;
+  using DogStatsDTags = DynamicConcatenatedStrings<kCommaSep, uint32_t>;
 
   // socketPath: path to unix datagram socket used by the agent (e.g. /var/run/datadog/dsd.socket)
   // ns: optional metric namespace prefix (e.g. "myapp.")

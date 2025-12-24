@@ -472,7 +472,7 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
 
   setMatchedHandler(method, *entryPtr, result);
 
-  assert(std::cmp_equal(route->paramNames.size(), _matchStateBuffer.size()));
+  assert(std::cmp_equal(route->paramNames.nbConcatenatedStrings(), _matchStateBuffer.size()));
 
   _pathParamCaptureBuffer.clear();
   for (auto [paramPos, param] : std::views::enumerate(route->paramNames)) {

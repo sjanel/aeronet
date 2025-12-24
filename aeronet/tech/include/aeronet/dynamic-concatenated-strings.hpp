@@ -2,27 +2,28 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
-#include <limits>
-#include <stdexcept>
 #include <string_view>
 #include <type_traits>
-#include <utility>
 
 #include "aeronet/internal/raw-bytes-base.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet {
 
-template <const char* Sep, bool ContainsCaseInsensitive = false, class SizeType = std::size_t>
+template <const char* Sep, class SizeType = uint64_t>
 class DynamicConcatenatedStrings {
  private:
   static_assert(std::is_unsigned_v<SizeType>);
 
   static constexpr char kNullChar = '\0';
-  static constexpr std::string_view kSep = Sep[0] == '\0' ? std::string_view(&kNullChar, 1UL) : std::string_view(Sep);
 
  public:
+  static constexpr std::string_view kSep = Sep[0] == '\0' ? std::string_view(&kNullChar, 1UL) : std::string_view(Sep);
+
+  static_assert(!kSep.empty());
+
   using size_type = SizeType;
   using BufferType = RawBytesBase<char, std::string_view, SizeType>;
 
@@ -33,35 +34,34 @@ class DynamicConcatenatedStrings {
   // Append a new string part.
   // The string must not contain the separator character.
   void append(std::string_view str) {
+    _buf.ensureAvailableCapacityExponential(str.size() + kSep.size());
     assert(!str.contains(kSep));
-    if (std::cmp_greater(str.size(), std::numeric_limits<SizeType>::max() - _buf.size() - kSep.size())) {
-      throw std::length_error("DynamicConcatenatedStrings: appended string size exceeds SizeType limit");
-    }
-    _buf.ensureAvailableCapacityExponential(static_cast<size_type>(str.size() + kSep.size()));
     _buf.unchecked_append(str);
     _buf.unchecked_append(kSep);
   }
 
   // Check whether a given part is already contained.
   [[nodiscard]] bool contains(std::string_view part) const noexcept {
-    std::string_view buf = _buf;
-    if constexpr (ContainsCaseInsensitive) {
-      while (!buf.empty()) {
-        const auto nextSep = buf.find(kSep);
-        std::string_view currentPart{buf.substr(0, nextSep)};
-        if (CaseInsensitiveEqual(currentPart, part)) {
-          return true;
-        }
-        buf.remove_prefix(nextSep + kSep.size());
-      }
+    const std::string_view buf = _buf;
+    const auto pos = buf.find(part);
+    if (pos == std::string_view::npos || buf.substr(pos + part.size(), kSep.size()) != kSep) {
       return false;
-    } else {
-      const auto pos = buf.find(part);
-      if (pos == std::string_view::npos || buf.substr(pos + part.size(), kSep.size()) != kSep) {
-        return false;
-      }
-      return pos == 0 || buf.substr(pos - kSep.size(), kSep.size()) == kSep;
     }
+    return pos == 0 || (pos > kSep.size() && buf.substr(pos - kSep.size(), kSep.size()) == kSep);
+  }
+
+  // Check whether a given part is already contained (case-insensitive).
+  [[nodiscard]] bool containsCI(std::string_view part) const noexcept {
+    std::string_view buf = _buf;
+    while (!buf.empty()) {
+      const auto nextSep = buf.find(kSep);
+      const std::string_view currentPart{buf.begin(), nextSep};
+      if (CaseInsensitiveEqual(currentPart, part)) {
+        return true;
+      }
+      buf.remove_prefix(nextSep + kSep.size());
+    }
+    return false;
   }
 
   // Non-allocating forward iterator over the concatenated parts. Yields std::string_view for each part.
@@ -92,21 +92,19 @@ class DynamicConcatenatedStrings {
     bool operator==(const iterator&) const noexcept = default;
 
    private:
-    friend class DynamicConcatenatedStrings<Sep, ContainsCaseInsensitive, SizeType>;
+    friend class DynamicConcatenatedStrings<Sep, SizeType>;
 
-    explicit iterator(std::string_view buf) noexcept : _cur(buf.begin(), buf.end()), _end(buf.end()) { advance(true); }
+    iterator(const char* first, const char* last) noexcept : _cur(first, last), _end(last) { advance(true); }
 
     void advance(bool init = false) noexcept {
       if ((init && _cur.empty()) || _cur.end() + kSep.size() == _end) {
         _cur = {};
         _end = nullptr;
-        return;
-      }
-      for (const char* endPtr = init ? _cur.begin() : _cur.end() + kSep.size(); endPtr != _end; ++endPtr) {
-        if (std::string_view(endPtr, kSep.size()) == kSep) {
-          _cur = std::string_view(init ? _cur.begin() : _cur.end() + kSep.size(), endPtr);
-          return;
-        }
+      } else {
+        const char* begPtr = init ? _cur.begin() : _cur.end() + kSep.size();
+        const auto sepPos = std::string_view(begPtr, _end).find(kSep);
+        assert(sepPos != std::string_view::npos);
+        _cur = std::string_view(begPtr, begPtr + sepPos);
       }
     }
 
@@ -115,7 +113,7 @@ class DynamicConcatenatedStrings {
   };
 
   // Range helpers
-  [[nodiscard]] iterator begin() const noexcept { return iterator(std::string_view(_buf.data(), _buf.size())); }
+  [[nodiscard]] iterator begin() const noexcept { return iterator(_buf.data(), _buf.data() + _buf.size()); }
   [[nodiscard]] iterator end() const noexcept { return {}; }
 
   // Get the full concatenated string
@@ -144,7 +142,7 @@ class DynamicConcatenatedStrings {
 
   // Get the number of concatenated strings
   // The complexity is linear in the number of concatenated strings.
-  [[nodiscard]] size_type size() const noexcept {
+  [[nodiscard]] size_type nbConcatenatedStrings() const noexcept {
     size_type count = 0;
     std::string_view buf = _buf;
     for (std::string_view::size_type pos = 0; pos < buf.size(); ++count) {
@@ -154,7 +152,7 @@ class DynamicConcatenatedStrings {
   }
 
   // Get the current capacity of the internal buffer
-  [[nodiscard]] size_type capacity() const noexcept { return _buf.capacity(); }
+  [[nodiscard]] size_type internalBufferCapacity() const noexcept { return _buf.capacity(); }
 
   bool operator==(const DynamicConcatenatedStrings& other) const noexcept = default;
 

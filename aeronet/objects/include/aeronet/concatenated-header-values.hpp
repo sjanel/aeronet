@@ -10,6 +10,6 @@ namespace detail {
 inline constexpr const char kHeaderValueSep[] = ", ";
 }
 
-using ConcatenatedHeaderValues = DynamicConcatenatedStrings<detail::kHeaderValueSep, true, uint32_t>;
+using ConcatenatedHeaderValues = DynamicConcatenatedStrings<detail::kHeaderValueSep, uint32_t>;
 
 }  // namespace aeronet

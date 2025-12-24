@@ -99,7 +99,7 @@ TEST(WebSocketEndpointTest, WithProtocolsAndCallbacks_SetsProtocols) {
   auto endpoint = WebSocketEndpoint::WithProtocolsAndCallbacks(protocols, std::move(callbacks));
 
   EXPECT_TRUE(static_cast<bool>(endpoint.factory));
-  EXPECT_EQ(endpoint.supportedProtocols.size(), 2);
+  EXPECT_EQ(endpoint.supportedProtocols.nbConcatenatedStrings(), 2);
   EXPECT_TRUE(endpoint.supportedProtocols.contains("graphql-ws"));
   EXPECT_TRUE(endpoint.supportedProtocols.contains("chat"));
 }
@@ -148,7 +148,7 @@ TEST(WebSocketEndpointTest, WithFullConfig_SetsAllFields) {
   EXPECT_EQ(endpoint.config.maxFrameSize, 1000);
 
   // Verify protocols
-  EXPECT_EQ(endpoint.supportedProtocols.size(), 3);
+  EXPECT_EQ(endpoint.supportedProtocols.nbConcatenatedStrings(), 3);
   EXPECT_TRUE(endpoint.supportedProtocols.contains("proto1"));
   EXPECT_TRUE(endpoint.supportedProtocols.contains("proto2"));
   EXPECT_TRUE(endpoint.supportedProtocols.contains("proto3"));
@@ -204,7 +204,7 @@ TEST(WebSocketEndpointTest, CombinedUsage_WithCompressionEnabled) {
   endpoint.enableCompression = true;
 
   EXPECT_TRUE(endpoint.enableCompression);
-  EXPECT_EQ(endpoint.supportedProtocols.size(), 1);
+  EXPECT_EQ(endpoint.supportedProtocols.nbConcatenatedStrings(), 1);
   EXPECT_TRUE(static_cast<bool>(endpoint.factory));
 }
 

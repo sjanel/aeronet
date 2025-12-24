@@ -26,6 +26,28 @@
 using namespace aeronet;
 using namespace std::chrono_literals;
 
+namespace {
+// Certificate cache to avoid expensive RSA keygen + signing in every test.
+struct CertKeyCache {
+  std::pair<std::string, std::string> localhost;
+  std::pair<std::string, std::string> server;
+  std::pair<std::string, std::string> client;
+
+  static CertKeyCache& Get() {
+    static CertKeyCache instance{};
+    return instance;
+  }
+
+ private:
+  CertKeyCache() {
+    // Pre-generate all certificate pairs on first access
+    localhost = test::MakeEphemeralCertKey();
+    server = test::MakeEphemeralCertKey();
+    client = test::MakeEphemeralCertKey();
+  }
+};
+}  // namespace
+
 TEST(HttpTlsBasic, HandshakeAndSimpleGet) {
   // Prepare config with in-memory self-signed cert/key
   test::TlsTestServer ts;  // ephemeral TLS server
@@ -114,7 +136,7 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
 // here we simply assert successful handshake + ALPN negotiation after a move.
 
 TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
-  auto pair = test::MakeEphemeralCertKey();
+  auto pair = CertKeyCache::Get().localhost;
   ASSERT_FALSE(pair.first.empty());
   ASSERT_FALSE(pair.second.empty());
 
@@ -155,7 +177,7 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
 // Test mutual TLS requirement and ALPN negotiation (server selects http/1.1)
 
 TEST(HttpTlsMtlsAlpn, RequireClientCertHandshakeFailsWithout) {
-  auto serverCert = test::MakeEphemeralCertKey();  // still needed for trust store
+  auto serverCert = CertKeyCache::Get().server;  // still needed for trust store
   ASSERT_FALSE(serverCert.first.empty());
   ASSERT_FALSE(serverCert.second.empty());
   std::string resp;
@@ -186,7 +208,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertHandshakeFailsWithout) {
 }
 
 TEST(HttpTlsMtlsAlpn, RequireClientCertSuccessWithAlpn) {
-  auto serverCert = test::MakeEphemeralCertKey();
+  auto serverCert = CertKeyCache::Get().server;
   ASSERT_FALSE(serverCert.first.empty());
   ASSERT_FALSE(serverCert.second.empty());
   auto clientCert = serverCert;  // reuse same self-signed for simplicity
@@ -291,7 +313,7 @@ TEST(HttpTlsCipherList, InvalidCipherListThrows) {
 }
 
 TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
-  auto pair = test::MakeEphemeralCertKey();
+  auto pair = CertKeyCache::Get().localhost;
   ASSERT_FALSE(pair.first.empty());
   ASSERT_FALSE(pair.second.empty());
   // Write both to temp files inside a temporary directory
@@ -323,7 +345,7 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
 
 TEST(HttpTlsMtlsMetrics, ClientCertPresenceIncrementsMetric) {
   // Per-server metrics now, no global reset required.
-  auto certKey = test::MakeEphemeralCertKey();  // also used as trusted client CA
+  auto certKey = CertKeyCache::Get().localhost;  // also used as trusted client CA
   ASSERT_FALSE(certKey.first.empty());
   ASSERT_FALSE(certKey.second.empty());
   {
@@ -349,8 +371,8 @@ TEST(HttpTlsMtlsMetrics, ClientCertPresenceIncrementsMetric) {
 }
 
 TEST(HttpTlsSniCertificates, ExactHostPicksAlternateCertificate) {
-  auto defaultPair = test::MakeEphemeralCertKey();
-  auto sniPair = test::MakeEphemeralCertKey();
+  auto defaultPair = CertKeyCache::Get().localhost;
+  auto sniPair = CertKeyCache::Get().server;
 
   HttpServerConfig cfg;
   cfg.withTlsCertKeyMemory(defaultPair.first, defaultPair.second);
@@ -380,8 +402,8 @@ TEST(HttpTlsSniCertificates, ExactHostPicksAlternateCertificate) {
 }
 
 TEST(HttpTlsSniCertificates, WildcardHostCaseInsensitiveMatch) {
-  auto defaultPair = test::MakeEphemeralCertKey();
-  auto wildcardPair = test::MakeEphemeralCertKey();
+  auto defaultPair = CertKeyCache::Get().localhost;
+  auto wildcardPair = CertKeyCache::Get().server;
 
   HttpServerConfig cfg;
   cfg.withTlsCertKeyMemory(defaultPair.first, defaultPair.second);
@@ -466,7 +488,7 @@ TEST(HttpTlsRequestClientCert, OptionalNoClientCertAccepted) {
 }
 
 TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
-  auto clientPair = test::MakeEphemeralCertKey();
+  auto clientPair = CertKeyCache::Get().client;
   ASSERT_FALSE(clientPair.first.empty());
   ASSERT_FALSE(clientPair.second.empty());
   ServerStats statsAfter{};

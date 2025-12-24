@@ -238,7 +238,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithProtocol) {
   EXPECT_TRUE(result.valid);
 
   // Check offered protocols are captured
-  ASSERT_EQ(result.offeredProtocols.size(), 2);
+  ASSERT_EQ(result.offeredProtocols.nbConcatenatedStrings(), 2);
   EXPECT_TRUE(result.offeredProtocols.contains("graphql-ws"));
   EXPECT_TRUE(result.offeredProtocols.contains("chat"));
 }
@@ -314,7 +314,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithExtensions) {
   EXPECT_TRUE(result.valid);
 
   // Extensions are captured for informational purposes
-  ASSERT_EQ(result.offeredExtensions.size(), 1);
+  ASSERT_EQ(result.offeredExtensions.nbConcatenatedStrings(), 1);
   EXPECT_TRUE(result.offeredExtensions.begin()->starts_with("permessage-deflate"));
 }
 
@@ -855,7 +855,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_NoSupportedProtocols) {
   const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);
   // Protocols are captured but none selected
-  EXPECT_EQ(result.offeredProtocols.size(), 2);
+  EXPECT_EQ(result.offeredProtocols.nbConcatenatedStrings(), 2);
   EXPECT_TRUE(result.selectedProtocol.empty());
 }
 
