@@ -169,7 +169,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
       int upstreamFd = cres.cnx.fd();
       // Register upstream in event loop for edge-triggered reads and writes so we can detect
       // completion of non-blocking connect (EPOLLOUT) as well as incoming data.
-      if (!_eventLoop.add(EventLoop::EventFd{upstreamFd, EventIn | EventOut | EventEt})) {
+      if (!_eventLoop.add(EventLoop::EventFd{upstreamFd, EventIn | EventOut | EventRdHup | EventEt})) {
         emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Failed to register upstream fd");
         return LoopAction::Break;
       }
@@ -511,19 +511,17 @@ bool SingleHttpServer::flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt) {
   for (;;) {
     const auto [written, want] = state.transportWrite(state.tunnelOrFileBuffer);
 
-    if (want == TransportHint::Error) {
+    if (want == TransportHint::Error) [[unlikely]] {
       state.requestImmediateClose();
       state.fileSend.active = false;
       state.tunnelOrFileBuffer.clear();
       return false;
     }
 
-    if (written > 0) {
-      state.tunnelOrFileBuffer.erase_front(written);
-      // Note: fileSend.offset and fileSend.remaining were already updated in transportFile when the data was read.
-      // Do NOT update them again here or we'll double-count and prematurely mark the transfer complete.
-      _stats.totalBytesWrittenFlush += written;
-    }
+    state.tunnelOrFileBuffer.erase_front(written);
+    // Note: fileSend.offset and fileSend.remaining were already updated in transportFile when the data was read.
+    // Do NOT update them again here or we'll double-count and prematurely mark the transfer complete.
+    _stats.totalBytesWrittenFlush += written;
 
     // If buffer is now empty, we're done
     if (state.tunnelOrFileBuffer.empty()) {
