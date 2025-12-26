@@ -16,6 +16,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/server-stats.hpp"
 #include "aeronet/single-http-server.hpp"
@@ -25,6 +26,7 @@
 #include "aeronet/test_server_tls_fixture.hpp"
 #include "aeronet/test_tls_client.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/tls-handshake-failure-reasons.hpp"
 
 using namespace aeronet;
 using namespace std::chrono_literals;
@@ -47,6 +49,8 @@ struct CertKeyCache {
     localhost = test::MakeEphemeralCertKey("localhost");
     server = test::MakeEphemeralCertKey("server");
     client = test::MakeEphemeralCertKey("client");
+
+    log::set_level(log::level::debug);
   }
 };
 }  // namespace
@@ -104,10 +108,6 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
 
 extern std::atomic<int> g_aeronetTestFailNextSslNew;
 extern std::atomic<int> g_aeronetTestFailNextSslSetFd;
-namespace aeronet {
-extern std::atomic<int> g_aeronetTestForceAlpnStrictMismatch;
-}
-using aeronet::g_aeronetTestForceAlpnStrictMismatch;
 
 TEST(HttpTlsHandshakeCallback, ExceptionRaisedInCallbackIsLoggedAndIgnored) {
   test::TlsTestServer ts({"http/1.1"}, [](HttpServerConfig& cfg) {
@@ -115,7 +115,7 @@ TEST(HttpTlsHandshakeCallback, ExceptionRaisedInCallbackIsLoggedAndIgnored) {
     cfg.withTlsHandshakeLogging(true);
   });
 
-  ts.server.server.setTlsHandshakeCallback([&]([[maybe_unused]] const SingleHttpServer::TlsHandshakeEvent& ev) {
+  ts.server.server.setTlsHandshakeCallback([&]([[maybe_unused]] const TlsHandshakeEvent& ev) {
     throw std::runtime_error("Simulated exception in handshake callback");
   });
 
@@ -135,8 +135,7 @@ TEST(HttpTlsHandshakeCallback, UnknownExceptionRaisedInCallbackIsLoggedAndIgnore
     cfg.withTlsHandshakeLogging(true);
   });
 
-  ts.server.server.setTlsHandshakeCallback(
-      [&]([[maybe_unused]] const SingleHttpServer::TlsHandshakeEvent& ev) { throw 42; });
+  ts.server.server.setTlsHandshakeCallback([&]([[maybe_unused]] const TlsHandshakeEvent& ev) { throw 42; });
 
   ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
 
@@ -158,8 +157,8 @@ TEST(HttpTlsHandshakeCallback, EmitsSuccessEventWithNegotiatedAlpn) {
   std::mutex mu;
   std::string lastAlpn;
 
-  ts.server.server.setTlsHandshakeCallback([&](const SingleHttpServer::TlsHandshakeEvent& ev) {
-    if (ev.result == SingleHttpServer::TlsHandshakeEvent::Result::Succeeded) {
+  ts.server.server.setTlsHandshakeCallback([&](const TlsHandshakeEvent& ev) {
+    if (ev.result == TlsHandshakeEvent::Result::Succeeded) {
       ++successCount;
       std::scoped_lock lock(mu);
       lastAlpn = std::string(ev.selectedAlpn);
@@ -189,8 +188,8 @@ TEST(HttpTlsHandshakeCallback, EmitsFailureEventAndBucketsReasonOnStrictAlpnMism
 
   std::atomic_bool callbackOK{false};
 
-  ts.server.server.setTlsHandshakeCallback([&](const SingleHttpServer::TlsHandshakeEvent& ev) {
-    if (ev.result == SingleHttpServer::TlsHandshakeEvent::Result::Failed && ev.reason == "alpn_strict_mismatch") {
+  ts.server.server.setTlsHandshakeCallback([&](const TlsHandshakeEvent& ev) {
+    if (ev.result == TlsHandshakeEvent::Result::Failed && ev.reason == kTlsHandshakeFailureReasonAlpnStrictMismatch) {
       callbackOK.store(true);
     }
   });
@@ -213,7 +212,7 @@ TEST(HttpTlsHandshakeCallback, EmitsFailureEventAndBucketsReasonOnStrictAlpnMism
     std::this_thread::sleep_for(ts.server.server.config().pollInterval + 100us);
     st = ts.stats();
     for (const auto& kv : st.tlsHandshakeFailureReasons) {
-      if (kv.first == "alpn_strict_mismatch" && kv.second >= 1) {
+      if (kv.first == kTlsHandshakeFailureReasonAlpnStrictMismatch && kv.second >= 1) {
         found = true;
         break;
       }
@@ -222,56 +221,6 @@ TEST(HttpTlsHandshakeCallback, EmitsFailureEventAndBucketsReasonOnStrictAlpnMism
 
   EXPECT_TRUE(callbackOK.load());
   EXPECT_TRUE(found);
-}
-
-TEST(HttpTlsHandshakeCallback, EmitsFailureEventWhenObserverFlagsAlpnStrictMismatchAfterSuccessfulHandshake) {
-  // Force the observer flag without aborting the handshake to cover the post-handshake branch.
-  g_aeronetTestForceAlpnStrictMismatch.store(1, std::memory_order_relaxed);
-
-  test::TlsTestServer ts({"h2"}, [](HttpServerConfig& cfg) {
-    cfg.withTlsAlpnMustMatch(true);
-    cfg.withTlsHandshakeLogging(true);
-  });
-
-  std::atomic_bool callbackOK{false};
-  std::string_view lastReason;
-  SingleHttpServer::TlsHandshakeEvent::Result lastResult = SingleHttpServer::TlsHandshakeEvent::Result::Succeeded;
-
-  ts.server.server.setTlsHandshakeCallback([&](const SingleHttpServer::TlsHandshakeEvent& ev) {
-    lastResult = ev.result;
-    lastReason = ev.reason;
-    if (ev.result == SingleHttpServer::TlsHandshakeEvent::Result::Failed && ev.reason == "alpn_strict_mismatch") {
-      callbackOK.store(true, std::memory_order_relaxed);
-    }
-  });
-
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
-
-  test::TlsClient::Options opt;
-  opt.alpn = {"h2"};  // ALPN intersects; handshake should succeed but observer is forced to flag a mismatch.
-  test::TlsClient client(ts.port(), std::move(opt));
-  ASSERT_TRUE(client.handshakeOk());
-
-  // Wait for callback and stats propagation.
-  ServerStats st{};
-  bool found = false;
-  const auto deadline = std::chrono::steady_clock::now() + 2s;
-  while (std::chrono::steady_clock::now() < deadline && (!callbackOK.load(std::memory_order_relaxed) || !found)) {
-    std::this_thread::sleep_for(ts.server.server.config().pollInterval + 100us);
-    st = ts.stats();
-    for (const auto& kv : st.tlsHandshakeFailureReasons) {
-      if (kv.first == "alpn_strict_mismatch" && kv.second >= 1) {
-        found = true;
-        break;
-      }
-    }
-  }
-
-  EXPECT_TRUE(callbackOK.load());
-  EXPECT_EQ(lastResult, SingleHttpServer::TlsHandshakeEvent::Result::Failed);
-  EXPECT_EQ(lastReason, "alpn_strict_mismatch");
-  EXPECT_TRUE(found);
-  EXPECT_GE(st.tlsAlpnStrictMismatches, 1U);
 }
 
 TEST(HttpTlsHandshakeCallback, EmitsRejectedEventAndBucketsReasonOnConcurrencyLimit) {
@@ -283,8 +232,8 @@ TEST(HttpTlsHandshakeCallback, EmitsRejectedEventAndBucketsReasonOnConcurrencyLi
   std::atomic_bool callbackOK{false};
   std::string_view lastReason;
 
-  ts.server.server.setTlsHandshakeCallback([&](const SingleHttpServer::TlsHandshakeEvent& ev) {
-    if (ev.result == SingleHttpServer::TlsHandshakeEvent::Result::Rejected) {
+  ts.server.server.setTlsHandshakeCallback([&](const TlsHandshakeEvent& ev) {
+    if (ev.result == TlsHandshakeEvent::Result::Rejected) {
       lastReason = ev.reason;
       callbackOK.store(true);
     }
@@ -308,12 +257,12 @@ TEST(HttpTlsHandshakeCallback, EmitsRejectedEventAndBucketsReasonOnConcurrencyLi
   const auto st = ts.stats();
 
   EXPECT_TRUE(callbackOK.load());
-  EXPECT_EQ(lastReason, "rejected_concurrency");
+  EXPECT_EQ(lastReason, kTlsHandshakeFailureReasonRejectedConcurrency);
   EXPECT_GE(st.tlsHandshakesRejectedConcurrency, 1UL);
 
   bool found = false;
   for (const auto& kv : st.tlsHandshakeFailureReasons) {
-    if (kv.first == "rejected_concurrency") {
+    if (kv.first == kTlsHandshakeFailureReasonRejectedConcurrency) {
       found = true;
       EXPECT_GE(kv.second, 1UL);
     }
@@ -332,8 +281,8 @@ TEST(HttpTlsHandshakeCallback, EmitsRejectedEventAndBucketsReasonOnRateLimit) {
   std::atomic_bool callbackOK{false};
   std::string_view lastReason;
 
-  ts.server.server.setTlsHandshakeCallback([&](const SingleHttpServer::TlsHandshakeEvent& ev) {
-    if (ev.result == SingleHttpServer::TlsHandshakeEvent::Result::Rejected) {
+  ts.server.server.setTlsHandshakeCallback([&](const TlsHandshakeEvent& ev) {
+    if (ev.result == TlsHandshakeEvent::Result::Rejected) {
       lastReason = ev.reason;
       callbackOK.store(true);
     }
@@ -355,12 +304,12 @@ TEST(HttpTlsHandshakeCallback, EmitsRejectedEventAndBucketsReasonOnRateLimit) {
   }
   const auto st = ts.stats();
 
-  EXPECT_EQ(lastReason, "rejected_rate_limit");
+  EXPECT_EQ(lastReason, kTlsHandshakeFailureReasonRejectedRateLimit);
   EXPECT_GE(st.tlsHandshakesRejectedRateLimit, 1UL);
 
   bool found = false;
   for (const auto& kv : st.tlsHandshakeFailureReasons) {
-    if (kv.first == "rejected_rate_limit") {
+    if (kv.first == kTlsHandshakeFailureReasonRejectedRateLimit) {
       found = true;
       EXPECT_GE(kv.second, 1UL);
     }
@@ -374,8 +323,8 @@ TEST(HttpTlsHandshakeCallback, EmitsFailureEventAndBucketsReasonOnHandshakeTimeo
   std::atomic_bool callbackOK{false};
   std::string_view lastReason;
 
-  ts.server.server.setTlsHandshakeCallback([&](const SingleHttpServer::TlsHandshakeEvent& ev) {
-    if (ev.result == SingleHttpServer::TlsHandshakeEvent::Result::Failed) {
+  ts.server.server.setTlsHandshakeCallback([&](const TlsHandshakeEvent& ev) {
+    if (ev.result == TlsHandshakeEvent::Result::Failed) {
       lastReason = ev.reason;
       callbackOK.store(true);
     }
@@ -396,12 +345,12 @@ TEST(HttpTlsHandshakeCallback, EmitsFailureEventAndBucketsReasonOnHandshakeTimeo
   ts.stop();
 
   EXPECT_TRUE(callbackOK.load());
-  EXPECT_EQ(lastReason, "handshake_timeout");
+  EXPECT_EQ(lastReason, kTlsHandshakeFailureReasonHandshakeTimeout);
   EXPECT_GE(st.tlsHandshakesFailed, 1UL);
 
   bool found = false;
   for (const auto& kv : st.tlsHandshakeFailureReasons) {
-    if (kv.first == "handshake_timeout") {
+    if (kv.first == kTlsHandshakeFailureReasonHandshakeTimeout) {
       found = true;
       EXPECT_GE(kv.second, 1UL);
     }
@@ -414,8 +363,8 @@ TEST(HttpTlsHandshakeCallback, BucketsReasonWhenSslNewFails) {
 
   std::atomic_bool callbackOK{false};
 
-  ts.server.server.setTlsHandshakeCallback([&](const SingleHttpServer::TlsHandshakeEvent& ev) {
-    if (ev.result == SingleHttpServer::TlsHandshakeEvent::Result::Failed && ev.reason == "ssl_new_failed") {
+  ts.server.server.setTlsHandshakeCallback([&](const TlsHandshakeEvent& ev) {
+    if (ev.result == TlsHandshakeEvent::Result::Failed && ev.reason == kTlsHandshakeFailureReasonSslNewFailed) {
       callbackOK.store(true);
     }
   });
@@ -441,7 +390,7 @@ TEST(HttpTlsHandshakeCallback, BucketsReasonWhenSslNewFails) {
 
   bool found = false;
   for (const auto& kv : st.tlsHandshakeFailureReasons) {
-    if (kv.first == "ssl_new_failed") {
+    if (kv.first == kTlsHandshakeFailureReasonSslNewFailed) {
       found = true;
       EXPECT_GE(kv.second, 1UL);
     }
@@ -488,8 +437,8 @@ TEST(HttpTlsHandshakeCallback, BucketsReasonWhenSslSetFdFails) {
 
   std::atomic_bool callbackOK{false};
 
-  ts.server.server.setTlsHandshakeCallback([&](const SingleHttpServer::TlsHandshakeEvent& ev) {
-    if (ev.result == SingleHttpServer::TlsHandshakeEvent::Result::Failed && ev.reason == "ssl_set_fd_failed") {
+  ts.server.server.setTlsHandshakeCallback([&](const TlsHandshakeEvent& ev) {
+    if (ev.result == TlsHandshakeEvent::Result::Failed && ev.reason == kTlsHandshakeFailureReasonSslSetFdFailed) {
       callbackOK.store(true);
     }
   });
@@ -515,7 +464,7 @@ TEST(HttpTlsHandshakeCallback, BucketsReasonWhenSslSetFdFails) {
 
   bool found = false;
   for (const auto& kv : st.tlsHandshakeFailureReasons) {
-    if (kv.first == "ssl_set_fd_failed") {
+    if (kv.first == kTlsHandshakeFailureReasonSslSetFdFailed) {
       found = true;
       EXPECT_GE(kv.second, 1UL);
     }
@@ -848,27 +797,24 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
 TEST(HttpTlsMtlsMetrics, ClientCertPresenceIncrementsMetric) {
   // Per-server metrics now, no global reset required.
   auto certKey = CertKeyCache::Get().localhost;  // also used as trusted client CA
-  ASSERT_FALSE(certKey.first.empty());
-  ASSERT_FALSE(certKey.second.empty());
-  {
-    test::TlsTestServer ts({"http/1.1"}, [&](HttpServerConfig& cfg) {
-      cfg.withTlsRequireClientCert(true).withTlsTrustedClientCert(certKey.first);
-    });
-    auto port = ts.port();
-    ts.setDefault([](const HttpRequest&) { return HttpResponse("m"); });
-    auto before = ts.stats();
-    test::TlsClient::Options opts;
-    opts.alpn = {"http/1.1"};
-    opts.clientCertPem = certKey.first;
-    opts.clientKeyPem = certKey.second;
-    test::TlsClient client(port, opts);
-    ASSERT_TRUE(client.handshakeOk());
-    auto resp = client.get("/m");
-    auto after = ts.stats();
-    ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
-    ASSERT_LT(before.tlsClientCertPresent, after.tlsClientCertPresent);
-    ASSERT_GE(after.tlsHandshakesSucceeded, 1U);
-  }
+
+  test::TlsTestServer ts({"http/1.1"}, [&](HttpServerConfig& cfg) {
+    cfg.withTlsRequireClientCert(true).withTlsTrustedClientCert(certKey.first);
+  });
+  auto port = ts.port();
+  ts.setDefault([](const HttpRequest&) { return HttpResponse("m"); });
+  auto before = ts.stats();
+  test::TlsClient::Options opts;
+  opts.alpn = {"http/1.1"};
+  opts.clientCertPem = certKey.first;
+  opts.clientKeyPem = certKey.second;
+  test::TlsClient client(port, opts);
+  ASSERT_TRUE(client.handshakeOk());
+  auto resp = client.get("/m");
+  auto after = ts.stats();
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_LT(before.tlsClientCertPresent, after.tlsClientCertPresent);
+  ASSERT_GE(after.tlsHandshakesSucceeded, 1U);
 }
 
 TEST(HttpTlsSniCertificates, ExactHostPicksAlternateCertificate) {

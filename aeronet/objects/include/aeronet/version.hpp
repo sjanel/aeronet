@@ -47,15 +47,8 @@ constexpr std::string_view fullVersionStringView() {
   static constexpr std::string_view _sv_openssl_ver = OPENSSL_VERSION_TEXT;  // e.g. "OpenSSL 3.0.13 30 Jan 2024"
   static constexpr std::string_view _sv_tls_prefix = "tls: ";
 
-// KTLS section fragment: report whether the build provided KTLS support.
-#ifdef AERONET_ENABLE_KTLS
-  static constexpr std::string_view _sv_ktls_section = ", ktls: provided";
-#else
-  static constexpr std::string_view _sv_ktls_section = ", ktls: not provided";
-#endif
-
   // We choose to keep full OPENSSL_VERSION_TEXT (concise enough) – trimming can be added later if needed.
-  using tls_join_t = JoinStringView<_sv_tls_prefix, _sv_openssl_ver, _sv_ktls_section>;
+  using tls_join_t = JoinStringView<_sv_tls_prefix, _sv_openssl_ver>;
 
   static constexpr std::string_view _sv_tls_section = tls_join_t::value;
 #else

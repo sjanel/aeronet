@@ -5,6 +5,7 @@
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -282,7 +283,7 @@ void MultiHttpServer::setMiddlewareMetricsCallback(SingleHttpServer::MiddlewareM
 }
 
 #ifdef AERONET_ENABLE_OPENSSL
-void MultiHttpServer::setTlsHandshakeCallback(SingleHttpServer::TlsHandshakeCallback cb) {
+void MultiHttpServer::setTlsHandshakeCallback(TlsHandshakeCallback cb) {
   canSetCallbacks();
   _servers.front().setTlsHandshakeCallback(std::move(cb));
 }

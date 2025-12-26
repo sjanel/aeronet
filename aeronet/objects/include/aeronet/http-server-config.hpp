@@ -216,13 +216,13 @@ struct HttpServerConfig {
  private:
   TLSConfig& ensureTls();
 
-  SmallConcatenatedStrings _connectAllowlist;
+  ConcatenatedStrings32 _connectAllowlist;
 
  public:
   // Optional allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT to any
   // resolved host is allowed. When non-empty, the target host must exactly match one of these entries. The matching is
   // case-insensitive for hostnames.
-  [[nodiscard]] const SmallConcatenatedStrings& connectAllowlist() const { return _connectAllowlist; }
+  [[nodiscard]] const ConcatenatedStrings32& connectAllowlist() const { return _connectAllowlist; }
 
   // Set number of threads to use for the server event loops.
   // This setting is only meaningful for HttpServer (aka MultiHttpServer);

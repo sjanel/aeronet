@@ -91,7 +91,7 @@ class CorsPolicy {
 
   [[nodiscard]] http::MethodBmp effectiveAllowedMethods(http::MethodBmp routeMethods) const noexcept;
 
-  SmallConcatenatedStrings _allowedOrigins;
+  ConcatenatedStrings32 _allowedOrigins;
   ConcatenatedHeaderValues _allowedRequestHeaders;
   ConcatenatedHeaderValues _exposedHeaders;
   std::chrono::seconds _maxAge{-1};

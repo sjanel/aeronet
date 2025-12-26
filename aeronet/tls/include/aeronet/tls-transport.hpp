@@ -3,11 +3,11 @@
 #include <openssl/ssl.h>
 
 #include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/tls-ktls.hpp"
 #include "aeronet/transport.hpp"
 
 namespace aeronet {
@@ -32,26 +32,14 @@ class TlsTransport : public ITransport {
 
   void logErrorIfAny() const noexcept;
 
-#ifdef AERONET_ENABLE_KTLS
-  struct KtlsEnableResult {
-    enum class Status : std::uint8_t { Unsupported, Enabled, AlreadyEnabled, Failed };
-    Status status{Status::Unsupported};
-    int sysError{0};
-    unsigned long sslError{0};
-  };
-
   KtlsEnableResult enableKtlsSend();
-#endif
 
  private:
   TransportHint handshake(TransportHint want);
 
   SslPtr _ssl;
   bool _handshakeDone{false};
-#ifdef AERONET_ENABLE_KTLS
-  bool _ktlsSendAttempted{false};
-  bool _ktlsSendEnabled{false};
-#endif
+  KtlsEnableResult _ktlsResult{KtlsEnableResult::Unknown};
 };
 
 }  // namespace aeronet

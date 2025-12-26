@@ -1484,7 +1484,7 @@ Optional (`AERONET_ENABLE_OPENSSL`). Provides termination, optional / required m
 | Negotiated cipher & version | ✅ | `HttpRequest::{tlsCipher,tlsVersion}` |
 | Handshake logging | ✅ | `withTlsHandshakeLogging()` (cipher, version, ALPN, peer subject) |
 | Min / Max protocol version | ✅ | `withTlsMinVersion("TLS1.2")`, `withTlsMaxVersion("TLS1.3")` |
-| Kernel TLS (KTLS) sendfile | ✅ | Linux-only zero-copy sendfile for TLS sockets; enabled by default with graceful fallback. |
+| Kernel TLS (kTLS) sendfile | ✅ | Linux-only zero-copy sendfile for TLS sockets; enabled by default with graceful fallback. |
 | Handshake timeout | ✅ | `withTlsHandshakeTimeout(ms)` closes stalled handshakes |
 | Graceful TLS shutdown | ✅ | Best‑effort `SSL_shutdown` before close |
 | ALPN strict mismatch counter | ✅ | Per‑server stats |
@@ -1531,11 +1531,11 @@ You can subscribe to handshake outcomes (succeeded / failed / rejected) with a l
 
 ```cpp
 SingleHttpServer server;
-server.setTlsHandshakeCallback([](const SingleHttpServer::TlsHandshakeEvent& ev) {
+server.setTlsHandshakeCallback([](const TlsHandshakeEvent& ev) {
   // ev.result is one of: Succeeded, Failed, Rejected
   // ev.reason is a short string for failures/rejections (best-effort)
   // ev.selectedAlpn / negotiatedCipher / negotiatedVersion are filled for successful handshakes
-  if (ev.result == SingleHttpServer::TlsHandshakeEvent::Result::Failed) {
+  if (ev.result == TlsHandshakeEvent::Result::Failed) {
     log::warn("TLS handshake failed fd={} reason={} ver={} cipher={}", ev.fd, ev.reason,
               ev.negotiatedVersion, ev.negotiatedCipher);
   }
@@ -1582,39 +1582,37 @@ server.postConfigUpdate([newClientCaPem](HttpServerConfig& cfg) {
 });
 ```
 
-### Kernel TLS (KTLS) sendfile
+### Kernel TLS (kTLS) sendfile
 
-When built with `AERONET_ENABLE_KTLS=ON` (Linux + OpenSSL), aeronet will attempt to enable kernel TLS sendfile on
-each TLS connection. The default mode is **Auto**: the server opportunistically enables KTLS and will fall back to
-the existing user-space TLS path if the kernel, OpenSSL, or negotiated cipher suite does not support it. Auto
-is opportunistic but NOT silent — the server emits warnings and increments the `ktlsSendEnableFallbacks` counter
-when offload is unavailable so operators are informed about the reason for fallback. Use `Forced` to treat
-offload failure as fatal.
+**aeronet** supports kTLS when supported by the system. It will attempt to enable kernel TLS sendfile on
+each TLS connection. The default mode is **Opportunistic**: the server opportunistically enables kTLS and will fall back silently to
+the existing user-space TLS path if the kernel, OpenSSL, or negotiated cipher suite does not support it.
+It increments the `ktlsSendEnableFallbacks` counter when offload is unavailable so operators are informed about the reason for fallback.
+Use `Required` to treat offload failure as fatal.
 Configuration lives in `TLSConfig::ktlsMode`, exposed via `HttpServerConfig::withTlsKtlsMode(...)` with the
 following modes:
 
 | Mode | Behaviour |
 |------|-----------|
-| `Disabled` | Never attempt KTLS. |
-| `Auto` (default) | Attempt once per connection; on failure fall back to user-space TLS but emit a warning and increment the fallback counter so operators are informed. |
-| `Enabled` | Attempt and log warnings on fallback (still continues). |
-| `Forced` | Treat failure/unsupported as fatal and close the connection immediately. |
+| `Disabled` | Never attempt kTLS. |
+| `Opportunistic` (default) | Attempt once per connection; on failure fall back to user-space TLS. |
+| `Enabled` | Same as `Opportunistic`, but emits a warning log in case of failure to set kTLS during the handshake. |
+| `Required` | Treat failure/unsupported as fatal and close the connection immediately. |
 
-Runtime counters (`ServerStats`) report how many connections enabled KTLS, how many fell back, forced shutdowns, and
+Runtime counters (`ServerStats`) report how many connections enabled kTLS, how many fell back, forced shutdowns, and
 the aggregate bytes transferred via kernel TLS sendfile. Logs capture the reason for any fallback.
 
-#### How to enable KTLS in your server
+#### How to enable kTLS in your server
 
-1. Ensure the project was compiled with both `AERONET_ENABLE_OPENSSL=ON` and `AERONET_ENABLE_KTLS=ON` (the top-level
-  build defaults already do this on Linux).
+1. Ensure the project was compiled with both `AERONET_ENABLE_OPENSSL=ON` and uses a modern OpenSSL version (>= 3.0).
 1. Provide TLS credentials — either files or in-memory PEM strings — exactly as for any HTTPS deployment.
-1. Set the desired KTLS mode before constructing the server:
+1. Set the desired kTLS mode before constructing the server:
 
 ```cpp
 HttpServerConfig cfg;
 cfg.withPort(8443)
    .withTlsCertKey("/path/to/fullchain.pem", "/path/to/privkey.pem")
-   .withTlsKtlsMode(TLSConfig::KtlsMode::Auto);  // or Enabled / Forced / Disabled
+   .withTlsKtlsMode(TLSConfig::KtlsMode::Opportunistic);  // or Disabled / Enabled / Required
 SingleHttpServer server(cfg);
 ```
 
