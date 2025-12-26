@@ -34,6 +34,10 @@ class TlsClient {
     std::string clientKeyPem;          // optional client key (mTLS)
     std::string trustedServerCertPem;  // optional PEM added to trust store when verifyPeer=true
     std::string serverName;            // optional SNI/Host name override
+
+    // Optional session to attempt TLS resumption.
+    // Ownership is external; the session must outlive the client handshake.
+    SSL_SESSION* reuseSession{nullptr};
   };
 
   // Constructor without custom options.
@@ -61,6 +65,12 @@ class TlsClient {
   std::string get(std::string_view target, const std::vector<http::Header>& extraHeaders = {});
 
   [[nodiscard]] std::string_view negotiatedAlpn() const { return _negotiatedAlpn; }
+
+  // Convenience: returns the peer certificate subject CN (empty if unavailable).
+  [[nodiscard]] std::string peerCommonName() const;
+
+  using SessionUniquePtr = std::unique_ptr<SSL_SESSION, void (*)(SSL_SESSION*)>;
+  [[nodiscard]] SessionUniquePtr get1Session() const;
 
  private:
   using SSLUniquePtr = std::unique_ptr<SSL, void (*)(SSL*)>;

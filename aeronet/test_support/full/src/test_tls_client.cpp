@@ -4,6 +4,7 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/obj_mac.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/tls1.h>
@@ -14,6 +15,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstddef>
 #include <span>
 #include <stdexcept>
@@ -142,6 +144,28 @@ std::string TlsClient::readAll() {
   return out;
 }
 
+std::string TlsClient::peerCommonName() const {
+  if (!_handshakeOk || !_ssl) {
+    return {};
+  }
+
+  const X509* cert = ::SSL_get0_peer_certificate(_ssl.get());
+  if (cert == nullptr) {
+    return {};
+  }
+  X509_NAME* subj = ::X509_get_subject_name(const_cast<X509*>(cert));
+  if (subj == nullptr) {
+    return {};
+  }
+
+  char buf[256];
+  const int len = ::X509_NAME_get_text_by_NID(subj, NID_commonName, buf, static_cast<int>(sizeof(buf)));
+  if (len <= 0) {
+    return {};
+  }
+  return {buf, static_cast<std::size_t>(len)};
+}
+
 template <typename Duration>
 bool TlsClient::waitForSocketReady(short events, Duration timeout) {
   int fd = ::SSL_get_fd(_ssl.get());
@@ -179,9 +203,9 @@ std::string TlsClient::get(std::string_view target, const std::vector<http::Head
   }
   std::string request = "GET " + std::string(target) + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n";
   for (const auto& header : extraHeaders) {
-    request.append(header.name()).append(aeronet::http::HeaderSep).append(header.value()).append(aeronet::http::CRLF);
+    request.append(header.name()).append(http::HeaderSep).append(header.value()).append(http::CRLF);
   }
-  request += aeronet::http::CRLF;
+  request += http::CRLF;
   if (!writeAll(request)) {
     return {};
   }
@@ -189,12 +213,26 @@ std::string TlsClient::get(std::string_view target, const std::vector<http::Head
 }
 
 void TlsClient::init() {
+  // Avoid test process termination when writing to a closed TLS socket.
+  // OpenSSL ultimately writes to the underlying fd, which can raise SIGPIPE on Linux.
+  static const int _sigpipeIgnored = []() {
+    ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
+    return 0;
+  }();
+  (void)_sigpipeIgnored;
+
   ::SSL_library_init();
   ::SSL_load_error_strings();
   SSL_CTXUniquePtr localCtx(::SSL_CTX_new(TLS_client_method()), ::SSL_CTX_free);
   if (!localCtx) {
     return;
   }
+
+  // Ensure TLS session resumption works consistently across OpenSSL builds.
+  // Some libssl configurations default to a disabled/limited client-side session cache,
+  // which prevents TLS 1.3 NewSessionTicket from being retained for later reuse.
+  ::SSL_CTX_set_session_cache_mode(localCtx.get(), SSL_SESS_CACHE_CLIENT);
+
   if (_opts.verifyPeer) {
     ::SSL_CTX_set_verify(localCtx.get(), SSL_VERIFY_PEER, nullptr);
     if (!_opts.trustedServerCertPem.empty()) {
@@ -228,6 +266,10 @@ void TlsClient::init() {
   ::SSL_set_fd(localSsl.get(), fd);
   if (!_opts.serverName.empty()) {
     ::SSL_set_tlsext_host_name(localSsl.get(), _opts.serverName.c_str());
+  }
+  if (_opts.reuseSession != nullptr) {
+    // Best-effort: if it fails, handshake will proceed as full.
+    (void)::SSL_set_session(localSsl.get(), _opts.reuseSession);
   }
 
   // Move ownership first so we can use waitForSocketReady
@@ -288,16 +330,22 @@ void TlsClient::init() {
   }
 }
 
+TlsClient::SessionUniquePtr TlsClient::get1Session() const {
+  if (!_handshakeOk || !_ssl) {
+    return {nullptr, ::SSL_SESSION_free};
+  }
+  SSL_SESSION* sess = ::SSL_get1_session(_ssl.get());
+  return {sess, ::SSL_SESSION_free};
+}
+
 void TlsClient::loadClientCertKey(SSL_CTX* ctx) {
-  aeronet::BioPtr certBio(BIO_new_mem_buf(_opts.clientCertPem.data(), static_cast<int>(_opts.clientCertPem.size())),
-                          ::BIO_free);
-  aeronet::BioPtr keyBio(BIO_new_mem_buf(_opts.clientKeyPem.data(), static_cast<int>(_opts.clientKeyPem.size())),
-                         ::BIO_free);
+  BioPtr certBio(BIO_new_mem_buf(_opts.clientCertPem.data(), static_cast<int>(_opts.clientCertPem.size())), ::BIO_free);
+  BioPtr keyBio(BIO_new_mem_buf(_opts.clientKeyPem.data(), static_cast<int>(_opts.clientKeyPem.size())), ::BIO_free);
   if (!certBio || !keyBio) {
     return;  // allocation failure
   }
-  aeronet::X509Ptr cert(PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr), ::X509_free);
-  aeronet::PKeyPtr pkey(PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr), ::EVP_PKEY_free);
+  X509Ptr cert(PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr), ::X509_free);
+  PKeyPtr pkey(PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr), ::EVP_PKEY_free);
   if (cert != nullptr && pkey != nullptr) {
     ::SSL_CTX_use_certificate(ctx, cert.get());
     ::SSL_CTX_use_PrivateKey(ctx, pkey.get());
@@ -305,13 +353,12 @@ void TlsClient::loadClientCertKey(SSL_CTX* ctx) {
 }
 
 void TlsClient::loadTrustedServerCert(SSL_CTX* ctx) {
-  aeronet::BioPtr caBio(
-      BIO_new_mem_buf(_opts.trustedServerCertPem.data(), static_cast<int>(_opts.trustedServerCertPem.size())),
-      ::BIO_free);
+  BioPtr caBio(BIO_new_mem_buf(_opts.trustedServerCertPem.data(), static_cast<int>(_opts.trustedServerCertPem.size())),
+               ::BIO_free);
   if (!caBio) {
     return;
   }
-  aeronet::X509Ptr ca(PEM_read_bio_X509(caBio.get(), nullptr, nullptr, nullptr), ::X509_free);
+  X509Ptr ca(PEM_read_bio_X509(caBio.get(), nullptr, nullptr, nullptr), ::X509_free);
   if (!ca) {
     return;
   }

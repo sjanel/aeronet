@@ -24,7 +24,7 @@ std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
   _zs.stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(chunk.data()));
   _zs.stream.avail_in = static_cast<uInt>(chunk.size());
 
-  auto flush = chunk.empty() ? Z_FINISH : Z_NO_FLUSH;
+  const auto flush = chunk.empty() ? Z_FINISH : Z_NO_FLUSH;
   do {
     _buf.ensureAvailableCapacityExponential(encoderChunkSize);
 

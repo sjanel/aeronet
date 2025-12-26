@@ -26,7 +26,7 @@ class ZlibEncoderContext final : public EncoderContext {
 
 class ZlibEncoder final : public Encoder {
  public:
-  explicit ZlibEncoder(ZStreamRAII::Variant variant, const CompressionConfig& cfg, std::size_t initialCapacity = 4096UL)
+  ZlibEncoder(ZStreamRAII::Variant variant, const CompressionConfig& cfg, std::size_t initialCapacity = 4096UL)
       : _buf(initialCapacity), _level(cfg.zlib.level), _variant(variant) {}
 
   void encodeFull(std::size_t extraCapacity, std::string_view data, RawChars& buf) override;

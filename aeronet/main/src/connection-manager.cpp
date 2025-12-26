@@ -11,7 +11,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <memory>
+#include <string_view>
 #include <utility>
 
 #include "aeronet/connection-state.hpp"
@@ -28,21 +30,201 @@
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/ssl.h>
 #include <openssl/types.h>
+#include <openssl/x509.h>
+#include <openssl/x509_vfy.h>
 
 #include "aeronet/tls-context.hpp"
+#include "aeronet/tls-handshake-observer.hpp"
 #include "aeronet/tls-handshake.hpp"
+#include "aeronet/tls-metrics.hpp"
+#include "aeronet/tls-openssl-callouts.hpp"
 #include "aeronet/tls-raii.hpp"
 #include "aeronet/tls-transport.hpp"  // from tls module include directory
+#ifdef AERONET_ENABLE_KTLS
+#include <openssl/err.h>
+#endif
 #endif
 
 namespace aeronet {
+
+#ifdef AERONET_ENABLE_OPENSSL
+namespace {
+inline void IncrementTlsFailureReason(TlsMetricsInternal& metrics, std::string_view reason) {
+  auto [it, inserted] = metrics.handshakeFailureReasons.emplace(reason, 1);
+  if (!inserted) {
+    ++(it->second);
+  }
+}
+
+inline uint64_t DurationNs(std::chrono::steady_clock::time_point start) {
+  if (start.time_since_epoch().count() == 0) {
+    return 0;
+  }
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+}
+
+inline void EmitTlsHandshakeEvent(ConnectionState& state, const SingleHttpServer::TlsHandshakeCallback& cb,
+                                  SingleHttpServer::TlsHandshakeEvent::Result result, int fd,
+                                  std::string_view reason = {}, bool resumed = false,
+                                  bool clientCertPresent = false) noexcept {
+  if (state.tlsHandshakeEventEmitted) {
+    return;
+  }
+  state.tlsHandshakeEventEmitted = true;
+
+  if (cb) {
+    SingleHttpServer::TlsHandshakeEvent ev;
+    ev.result = result;
+    ev.reason = reason;
+    ev.fd = fd;
+    ev.resumed = resumed;
+    ev.clientCertPresent = clientCertPresent;
+    ev.durationNs = DurationNs(state.handshakeStart);
+    ev.selectedAlpn = state.tlsInfo.selectedAlpn();
+    ev.negotiatedCipher = state.tlsInfo.negotiatedCipher();
+    ev.negotiatedVersion = state.tlsInfo.negotiatedVersion();
+    ev.peerSubject = state.tlsInfo.peerSubject();
+    try {
+      cb(ev);
+    } catch (const std::exception& ex) {
+      log::error("Exception raised in TLS handshake callback: {}", ex.what());
+    } catch (...) {
+      log::error("Unknown exception raised in TLS handshake callback");
+    }
+  }
+}
+
+#ifdef AERONET_ENABLE_KTLS
+inline void MaybeEnableKtlsSend(ConnectionState& state, TlsTransport& transport, int fd, TLSConfig::KtlsMode ktlsMode,
+                                TlsMetricsInternal& metrics) {
+  const bool force = ktlsMode == TLSConfig::KtlsMode::Forced;
+  // Treat Auto as an opportunistic mode but do NOT fail silently: emit a warning on fallback so
+  // deployments using Auto are informed about why kernel offload wasn't available. This follows the
+  // principle of least surprise while preserving Auto's opportunistic behavior.
+  const bool warnOnFailure = ktlsMode == TLSConfig::KtlsMode::Enabled || ktlsMode == TLSConfig::KtlsMode::Auto;
+
+  const auto result = transport.enableKtlsSend();
+  switch (result.status) {
+    case TlsTransport::KtlsEnableResult::Status::Enabled:
+      [[fallthrough]];
+    case TlsTransport::KtlsEnableResult::Status::AlreadyEnabled:
+      state.ktlsSendEnabled = true;
+      ++metrics.ktlsSendEnabledConnections;
+      log::debug("KTLS send enabled on fd # {}", fd);
+      break;
+    case TlsTransport::KtlsEnableResult::Status::Unsupported:
+      ++metrics.ktlsSendEnableFallbacks;
+      if (force) {
+        ++metrics.ktlsSendForcedShutdowns;
+        log::error("KTLS send unsupported on fd # {} while forced", fd);
+        state.requestImmediateClose();
+      } else if (warnOnFailure) {
+        log::warn(
+            "KTLS send unsupported on fd # {} (falling back to user-space TLS). Consider using "
+            "TLSConfig::KtlsMode::Forced to treat this as fatal.",
+            fd);
+      } else {
+        log::debug("KTLS send unsupported on fd # {} (fallback)", fd);
+      }
+      break;
+    case TlsTransport::KtlsEnableResult::Status::Failed:
+      [[fallthrough]];
+    default: {
+      ++metrics.ktlsSendEnableFallbacks;
+      RawChars32 reason;
+      if (result.sysError != 0) {
+        reason.append("errno=");
+        reason.append(std::string_view(IntegralToCharVector(result.sysError)));
+        reason.push_back(' ');
+        reason.append(std::strerror(result.sysError));
+      }
+      if (result.sslError != 0) {
+        char errBuf[256];
+        ::ERR_error_string_n(result.sslError, errBuf, sizeof(errBuf));
+        if (!reason.empty()) {
+          reason.append("; ");
+        }
+        reason.append("ssl=");
+        reason.append(errBuf);
+      }
+      if (force) {
+        ++metrics.ktlsSendForcedShutdowns;
+        log::error("KTLS send enable failed for fd # {} (forced mode) reason={}", fd,
+                   reason.empty() ? std::string_view("unknown") : reason);
+        state.requestImmediateClose();
+      } else if (warnOnFailure) {
+        log::warn("KTLS send enable failed for fd # {} (falling back) reason={}", fd,
+                  reason.empty() ? std::string_view("unknown") : reason);
+      } else {
+        log::debug("KTLS send enable failed for fd # {} reason={}", fd,
+                   reason.empty() ? std::string_view("unknown") : reason);
+      }
+      break;
+    }
+  }
+}
+#endif
+
+// Finalize TLS handshake (if this transport is TLS) and emit the handshake event.
+// Returns true if a TLS transport was finalized (caller may perform transport-specific book-keeping).
+inline bool FinalizeAndEmitTlsHandshakeIfNeeded(ConnectionState& state, int fd,
+                                                const SingleHttpServer::TlsHandshakeCallback& cb,
+                                                TlsMetricsInternal& metrics, const HttpServerConfig& cfg) {
+  auto* tlsTr = dynamic_cast<TlsTransport*>(state.transport.get());
+  if (tlsTr == nullptr) {
+    return false;
+  }
+
+  state.tlsInfo = FinalizeTlsHandshake(tlsTr->rawSsl(), fd, cfg.tls.logHandshake, state.handshakeStart, metrics);
+
+  const bool resumed = (::SSL_session_reused(tlsTr->rawSsl()) == 1);
+  const bool clientCertPresent = !state.tlsInfo.peerSubject().empty();
+
+  std::string_view outcomeReason;
+  if (state.tlsHandshakeObserver.alpnStrictMismatch) {
+    outcomeReason = "alpn_strict_mismatch";
+    ++metrics.handshakesFailed;
+    IncrementTlsFailureReason(metrics, outcomeReason);
+  }
+
+  EmitTlsHandshakeEvent(state, cb,
+                        outcomeReason.empty() ? SingleHttpServer::TlsHandshakeEvent::Result::Succeeded
+                                              : SingleHttpServer::TlsHandshakeEvent::Result::Failed,
+                        fd, outcomeReason, resumed, clientCertPresent);
+
+#ifdef AERONET_ENABLE_KTLS
+  const auto ktlsMode = cfg.tls.ktlsMode;
+  if (!state.ktlsSendAttempted && ktlsMode != TLSConfig::KtlsMode::Disabled) {
+    MaybeEnableKtlsSend(state, *tlsTr, fd, ktlsMode, metrics);
+  }
+  state.ktlsSendAttempted = true;  // TODO: is this bool really needed?
+#endif
+
+  return true;
+}
+
+inline void FailTlsHandshakeOnce(ConnectionState& state, TlsMetricsInternal& metrics,
+                                 const SingleHttpServer::TlsHandshakeCallback& cb, int fd, std::string_view reason,
+                                 bool resumed = false, bool clientCertPresent = false) noexcept {
+  if (state.tlsHandshakeEventEmitted) {
+    return;
+  }
+  ++metrics.handshakesFailed;
+  IncrementTlsFailureReason(metrics, reason);
+  EmitTlsHandshakeEvent(state, cb, SingleHttpServer::TlsHandshakeEvent::Result::Failed, fd, reason, resumed,
+                        clientCertPresent);
+}
+
+}  // namespace
+#endif
 
 void SingleHttpServer::sweepIdleConnections() {
   // Periodic maintenance of live connections: applies keep-alive timeout (if enabled) and
   // header read timeout (always, regardless of keep-alive enablement). The header read timeout
   // needs a periodic check because a client might send a partial request line then stall; no
   // further EPOLLIN events will arrive to trigger enforcement in handleReadableClient().
-  auto now = std::chrono::steady_clock::now();
+  const auto now = std::chrono::steady_clock::now();
   for (auto cnxIt = _activeConnectionsMap.begin(); cnxIt != _activeConnectionsMap.end();) {
     ConnectionState& state = *cnxIt->second;
 
@@ -83,12 +265,13 @@ void SingleHttpServer::sweepIdleConnections() {
       _telemetry.counterAdd("aeronet.connections.closed_for_body_read_timeout");
       continue;
     }
-    // TLS handshake timeout (if enabled). Applies only while handshake pending.
 #ifdef AERONET_ENABLE_OPENSSL
+    // TLS handshake timeout (if enabled). Applies only while handshake pending.
     if (_config.tls.handshakeTimeout.count() > 0 && _config.tls.enabled &&
         state.handshakeStart.time_since_epoch().count() != 0 && !state.tlsEstablished &&
         !state.transport->handshakeDone()) {
       if (now > state.handshakeStart + _config.tls.handshakeTimeout) {
+        FailTlsHandshakeOnce(state, _tlsMetrics, _tlsHandshakeCb, cnxIt->first.fd(), "handshake_timeout");
         cnxIt = closeConnection(cnxIt);
         _telemetry.counterAdd("aeronet.connections.closed_for_handshake_timeout");
         continue;
@@ -117,15 +300,15 @@ void SingleHttpServer::acceptNewConnections() {
     int cnxFd = cnx.fd();
     if (_config.tcpNoDelay) {
       static constexpr int enable = 1;
-      if (::setsockopt(cnxFd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) != 0) {
-        auto err = errno;
+      if (::setsockopt(cnxFd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) != 0) [[unlikely]] {
+        const auto err = errno;
         log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={} ({})", cnxFd, err, std::strerror(err));
         _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
       }
     }
     if (!_eventLoop.add(EventLoop::EventFd{cnxFd, EventIn | EventRdHup | EventEt})) [[unlikely]] {
-      auto savedErr = errno;
-      log::error("EventLoop add client failed fd # {} err={}: {}", cnxFd, savedErr, std::strerror(savedErr));
+      const auto err = errno;
+      log::error("EventLoop add client failed fd # {} err={}: {}", cnxFd, err, std::strerror(err));
       _telemetry.counterAdd("aeronet.connections.errors.add_event_failed", 1UL);
       continue;
     }
@@ -149,15 +332,71 @@ void SingleHttpServer::acceptNewConnections() {
     ConnectionState& state = *cnxIt->second;
 #ifdef AERONET_ENABLE_OPENSSL
     if (_tlsCtxHolder) {
+      // TLS handshake admission control (Phase 2): concurrency and basic token bucket rate limiting.
+      // Rejections happen before allocating OpenSSL objects.
+      if (_config.tls.maxConcurrentHandshakes != 0 && _tlsHandshakesInFlight >= _config.tls.maxConcurrentHandshakes)
+          [[unlikely]] {
+        ++_tlsMetrics.handshakesRejectedConcurrency;
+        IncrementTlsFailureReason(_tlsMetrics, "rejected_concurrency");
+        EmitTlsHandshakeEvent(state, _tlsHandshakeCb, TlsHandshakeEvent::Result::Rejected, cnxFd,
+                              "rejected_concurrency");
+        closeConnection(cnxIt);
+        continue;
+      }
+      if (_config.tls.handshakeRateLimitPerSecond != 0) {
+        const auto burst = (_config.tls.handshakeRateLimitBurst != 0) ? _config.tls.handshakeRateLimitBurst
+                                                                      : _config.tls.handshakeRateLimitPerSecond;
+        const auto now = std::chrono::steady_clock::now();
+        if (_tlsRateLimitLastRefill.time_since_epoch().count() == 0) {
+          _tlsRateLimitLastRefill = now;
+          _tlsRateLimitTokens = burst;
+        }
+        const auto elapsed = now - _tlsRateLimitLastRefill;
+        const auto addIntervals = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+        if (addIntervals > 0) {
+          const uint32_t addTokens = static_cast<uint32_t>(addIntervals) * _config.tls.handshakeRateLimitPerSecond;
+          _tlsRateLimitTokens = std::min(burst, _tlsRateLimitTokens + addTokens);
+          _tlsRateLimitLastRefill += std::chrono::seconds{addIntervals};
+        }
+        if (_tlsRateLimitTokens == 0) [[unlikely]] {
+          ++_tlsMetrics.handshakesRejectedRateLimit;
+          IncrementTlsFailureReason(_tlsMetrics, "rejected_rate_limit");
+          EmitTlsHandshakeEvent(state, _tlsHandshakeCb, TlsHandshakeEvent::Result::Rejected, cnxFd,
+                                "rejected_rate_limit");
+          closeConnection(cnxIt);
+          continue;
+        }
+        --_tlsRateLimitTokens;
+      }
+
+      state.tlsContextKeepAlive = _tlsCtxHolder;
+      state.tlsHandshakeInFlight = true;
+      state.tlsHandshakeObserver = {};
+      state.tlsHandshakeEventEmitted = false;
+
       SSL_CTX* ctx = reinterpret_cast<SSL_CTX*>(_tlsCtxHolder->raw());
-      SslPtr sslPtr(::SSL_new(ctx), ::SSL_free);
+      SslPtr sslPtr(AeronetSslNew(ctx), ::SSL_free);
       if (sslPtr.get() == nullptr) [[unlikely]] {
         log::error("SSL_new failed for fd # {}", cnxFd);
+        FailTlsHandshakeOnce(state, _tlsMetrics, _tlsHandshakeCb, cnxFd, "ssl_new_failed");
+        closeConnection(cnxIt);
         continue;
       }
 
-      if (::SSL_set_fd(sslPtr.get(), cnxFd) != 1) [[unlikely]] {  // associate
+      // Install per-connection observer for OpenSSL callbacks.
+      if (SetTlsHandshakeObserver(reinterpret_cast<ssl_st*>(sslPtr.get()), &state.tlsHandshakeObserver) != 1)
+          [[unlikely]] {
+        log::error("SSL_set_ex_data failed to install TLS handshake observer for fd # {}", cnxFd);
+        // Treat this as a handshake failure: record metrics, emit event, and close the connection.
+        FailTlsHandshakeOnce(state, _tlsMetrics, _tlsHandshakeCb, cnxFd, "ssl_set_ex_data_failed");
+        closeConnection(cnxIt);
+        continue;
+      }
+
+      if (AeronetSslSetFd(sslPtr.get(), cnxFd) != 1) [[unlikely]] {  // associate
         log::error("SSL_set_fd failed for fd # {}", cnxFd);
+        FailTlsHandshakeOnce(state, _tlsMetrics, _tlsHandshakeCb, cnxFd, "ssl_set_fd_failed");
+        closeConnection(cnxIt);
         continue;
       }
       // Enable partial writes: SSL_write will return after writing some data rather than
@@ -166,6 +405,7 @@ void SingleHttpServer::acceptNewConnections() {
       ::SSL_set_accept_state(sslPtr.get());
       state.transport = std::make_unique<TlsTransport>(std::move(sslPtr));
       state.handshakeStart = std::chrono::steady_clock::now();
+      ++_tlsHandshakesInFlight;
     } else {
       state.transport = std::make_unique<PlainTransport>(cnxFd);
     }
@@ -204,21 +444,20 @@ void SingleHttpServer::acceptNewConnections() {
       // transport error/EOF handling below.
       if (!pCnx->tlsEstablished && pCnx->transport->handshakeDone()) {
 #ifdef AERONET_ENABLE_OPENSSL
-        if (_config.tls.enabled && dynamic_cast<TlsTransport*>(pCnx->transport.get()) != nullptr) {
-          auto* tlsTr = static_cast<TlsTransport*>(pCnx->transport.get());
-          pCnx->tlsInfo =
-              FinalizeTlsHandshake(tlsTr->rawSsl(), cnxFd, _config.tls.logHandshake, pCnx->handshakeStart, _tlsMetrics);
-#ifdef AERONET_ENABLE_KTLS
-          maybeEnableKtlsSend(*pCnx, *tlsTr, cnxFd);
-#endif
+        FinalizeAndEmitTlsHandshakeIfNeeded(*pCnx, cnxFd, _tlsHandshakeCb, _tlsMetrics, _config);
+        if (pCnx->tlsHandshakeInFlight) {
+          pCnx->tlsHandshakeInFlight = false;
+          --_tlsHandshakesInFlight;
         }
-#endif
-        pCnx->tlsEstablished = true;
+#ifdef AERONET_ENABLE_KTLS
         if (pCnx->isImmediateCloseRequested()) {
           cnxIt = closeConnection(cnxIt);
           pCnx = nullptr;
           break;
         }
+#endif
+#endif
+        pCnx->tlsEstablished = true;
       }
       if (pCnx->waitingForBody && bytesRead > 0) {
         pCnx->bodyLastActivity = std::chrono::steady_clock::now();
@@ -227,7 +466,7 @@ void SingleHttpServer::acceptNewConnections() {
       if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
         // If TLS handshake still pending, treat a transport Error as transient and retry later.
         if (want == TransportHint::Error) [[unlikely]] {
-          if (pCnx != nullptr && pCnx->transport && !pCnx->transport->handshakeDone()) {
+          if (pCnx->transport && !pCnx->transport->handshakeDone()) {
             log::debug("Transient transport error during TLS handshake on fd # {}; will retry", cnxFd);
             // Yield and let event loop drive readiness notifications; do not close yet.
             break;
@@ -250,6 +489,18 @@ void SingleHttpServer::acceptNewConnections() {
           }
 #endif
         }
+
+#ifdef AERONET_ENABLE_OPENSSL
+        if (_config.tls.enabled && !pCnx->tlsEstablished && _tlsCtxHolder &&
+            dynamic_cast<TlsTransport*>(pCnx->transport.get()) != nullptr && !pCnx->tlsHandshakeEventEmitted) {
+          std::string_view reason =
+              (want == TransportHint::None) ? std::string_view("handshake_eof") : std::string_view("handshake_error");
+          if (pCnx->tlsHandshakeObserver.alpnStrictMismatch) {
+            reason = "alpn_strict_mismatch";
+          }
+          FailTlsHandshakeOnce(*pCnx, _tlsMetrics, _tlsHandshakeCb, cnxFd, reason);
+        }
+#endif
         closeConnection(cnxIt);
         pCnx = nullptr;
         break;
@@ -294,6 +545,12 @@ SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMa
   // Best-effort graceful TLS shutdown
 #ifdef AERONET_ENABLE_OPENSSL
   if (_config.tls.enabled) {
+    // If the connection is closed mid-handshake, release admission control slot.
+    if (cnxIt->second->tlsHandshakeInFlight) {
+      cnxIt->second->tlsHandshakeInFlight = false;
+      --_tlsHandshakesInFlight;
+    }
+
     if (auto* tlsTr = dynamic_cast<TlsTransport*>(cnxIt->second->transport.get())) {
       tlsTr->shutdown();
     }
@@ -359,14 +616,7 @@ void SingleHttpServer::handleReadableClient(int fd) {
     const auto [count, want] = state.transportRead(chunkSize);
     if (!state.tlsEstablished && state.transport->handshakeDone()) {
 #ifdef AERONET_ENABLE_OPENSSL
-      if (_config.tls.enabled && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
-        auto* tlsTr = static_cast<TlsTransport*>(state.transport.get());
-        state.tlsInfo =
-            FinalizeTlsHandshake(tlsTr->rawSsl(), fd, _config.tls.logHandshake, state.handshakeStart, _tlsMetrics);
-#ifdef AERONET_ENABLE_KTLS
-        maybeEnableKtlsSend(state, *tlsTr, fd);
-#endif
-      }
+      FinalizeAndEmitTlsHandshakeIfNeeded(state, fd, _tlsHandshakeCb, _tlsMetrics, _config);
 #endif
       state.tlsEstablished = true;
 #ifdef AERONET_ENABLE_KTLS
@@ -380,6 +630,15 @@ void SingleHttpServer::handleReadableClient(int fd) {
       state.bodyLastActivity = std::chrono::steady_clock::now();
     }
     if (want == TransportHint::Error) [[unlikely]] {
+#ifdef AERONET_ENABLE_OPENSSL
+      if (_config.tls.enabled && !state.tlsEstablished && _tlsCtxHolder &&
+          dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr && !state.tlsHandshakeEventEmitted) {
+        std::string_view reason = state.tlsHandshakeObserver.alpnStrictMismatch
+                                      ? std::string_view("alpn_strict_mismatch")
+                                      : std::string_view("handshake_error");
+        FailTlsHandshakeOnce(state, _tlsMetrics, _tlsHandshakeCb, fd, reason);
+      }
+#endif
       state.requestImmediateClose();
       break;
     }
@@ -391,6 +650,12 @@ void SingleHttpServer::handleReadableClient(int fd) {
       break;
     }
     if (count == 0) {
+#ifdef AERONET_ENABLE_OPENSSL
+      if (_config.tls.enabled && !state.tlsEstablished && _tlsCtxHolder &&
+          dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr && !state.tlsHandshakeEventEmitted) {
+        FailTlsHandshakeOnce(state, _tlsMetrics, _tlsHandshakeCb, fd, "handshake_eof");
+      }
+#endif
       state.requestImmediateClose();
       break;
     }

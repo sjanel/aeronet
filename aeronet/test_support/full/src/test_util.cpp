@@ -260,7 +260,7 @@ std::pair<Socket, uint16_t> startEchoServer() {
 }
 
 namespace {
-Socket connectLoop(auto port, std::chrono::milliseconds timeout) {
+Socket ConnectLoop(auto port, std::chrono::milliseconds timeout) {
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
@@ -283,7 +283,7 @@ Socket connectLoop(auto port, std::chrono::milliseconds timeout) {
 }  // namespace
 
 ClientConnection::ClientConnection(uint16_t port, std::chrono::milliseconds timeout)
-    : _socket(connectLoop(port, timeout)) {}
+    : _socket(ConnectLoop(port, timeout)) {}
 
 int countOccurrences(std::string_view haystack, std::string_view needle) {
   if (needle.empty()) {

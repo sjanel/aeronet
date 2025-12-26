@@ -3,6 +3,9 @@
 #include <gtest/gtest.h>
 
 #include <stdexcept>
+#include <type_traits>
+
+#include "aeronet/encoding.hpp"
 
 namespace aeronet {
 

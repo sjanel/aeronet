@@ -125,10 +125,18 @@ SingleHttpServer::SingleHttpServer(const SingleHttpServer& other)
       _parserErrCb(other._parserErrCb),
       _metricsCb(other._metricsCb),
       _middlewareMetricsCb(other._middlewareMetricsCb),
+#ifdef AERONET_ENABLE_OPENSSL
+      _tlsHandshakeCb(other._tlsHandshakeCb),
+#endif
       _expectationHandler(other._expectationHandler),
       _pendingConfigUpdates(other._pendingConfigUpdates),
       _pendingRouterUpdates(other._pendingRouterUpdates),
-      _telemetry(_config.telemetry) {
+      _telemetry(_config.telemetry)
+#ifdef AERONET_ENABLE_OPENSSL
+      ,
+      _sharedTicketKeyStore(other._sharedTicketKeyStore)
+#endif
+{
   if (!other._lifecycle.isIdle()) {
     throw std::logic_error("Cannot copy-construct from a running SingleHttpServer");
   }
@@ -176,6 +184,9 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
       _parserErrCb(std::move(other._parserErrCb)),
       _metricsCb(std::move(other._metricsCb)),
       _middlewareMetricsCb(std::move(other._middlewareMetricsCb)),
+#ifdef AERONET_ENABLE_OPENSSL
+      _tlsHandshakeCb(std::move(other._tlsHandshakeCb)),
+#endif
       _expectationHandler(std::move(other._expectationHandler)),
       _tmpBuffer(std::move(other._tmpBuffer)),
       _pendingConfigUpdates(std::move(other._pendingConfigUpdates)),
@@ -223,6 +234,9 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
     _parserErrCb = std::move(other._parserErrCb);
     _metricsCb = std::move(other._metricsCb);
     _middlewareMetricsCb = std::move(other._middlewareMetricsCb);
+#ifdef AERONET_ENABLE_OPENSSL
+    _tlsHandshakeCb = std::move(other._tlsHandshakeCb);
+#endif
     _expectationHandler = std::move(other._expectationHandler);
     _tmpBuffer = std::move(other._tmpBuffer);
     _pendingConfigUpdates = std::move(other._pendingConfigUpdates);
@@ -298,9 +312,7 @@ void SingleHttpServer::initListener() {
   // Initialize TLS context if requested (OpenSSL build).
   if (_config.tls.enabled) {
 #ifdef AERONET_ENABLE_OPENSSL
-    // Allocate TlsContext on the heap so its address remains stable even if SingleHttpServer is moved.
-    // (See detailed rationale in header next to _tlsCtxHolder.)
-    _tlsCtxHolder = std::make_unique<TlsContext>(_config.tls, &_tlsMetricsExternal);
+    _tlsCtxHolder = std::make_shared<TlsContext>(_config.tls, &_tlsMetricsExternal, _sharedTicketKeyStore);
 #else
     throw std::invalid_argument("aeronet built without OpenSSL support but TLS configuration provided");
 #endif

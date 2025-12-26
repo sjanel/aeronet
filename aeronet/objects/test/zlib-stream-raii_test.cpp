@@ -6,12 +6,25 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
 
+#include "aeronet/sys-test-support.hpp"
+
 namespace aeronet {
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+
+TEST(ZStreamRAII, InitFails) {
+  test::FailNextMalloc();
+  EXPECT_THROW(ZStreamRAII{ZStreamRAII::Variant::gzip}, std::runtime_error);
+}
+
+#endif
 
 TEST(ZStreamRAII, VariantAndTypeSetAllocatedType) {
   // gzip + compress -> deflate
