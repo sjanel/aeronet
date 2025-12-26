@@ -338,27 +338,23 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
     // that the header timeout should track the next pending request only.
     state.headerStartTp = {};
     bool isChunked = false;
-    bool hasTransferEncoding = false;
-    const std::string_view transferEncoding = request.headerValueOrEmpty(http::TransferEncoding);
-    if (!transferEncoding.empty()) {
-      hasTransferEncoding = true;
+    const auto optTransferEncoding = request.headerValue(http::TransferEncoding);
+    if (optTransferEncoding) {
       if (request.version() == http::HTTP_1_0) {
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Transfer-Encoding not allowed in HTTP/1.0");
         break;
       }
-      if (CaseInsensitiveEqual(transferEncoding, http::chunked)) {
+      if (CaseInsensitiveEqual(*optTransferEncoding, http::chunked)) {
         isChunked = true;
       } else {
         emitSimpleError(cnxIt, http::StatusCodeNotImplemented, true, "Unsupported Transfer-Encoding");
         break;
       }
-    }
-
-    const bool hasContentLength = !request.headerValueOrEmpty(http::ContentLength).empty();
-    if (hasContentLength && hasTransferEncoding) {
-      emitSimpleError(cnxIt, http::StatusCodeBadRequest, true,
-                      "Content-Length and Transfer-Encoding cannot be used together");
-      break;
+      if (request.headerValue(http::ContentLength)) {
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true,
+                        "Content-Length and Transfer-Encoding cannot be used together");
+        break;
+      }
     }
 
     // Route matching
@@ -1256,6 +1252,7 @@ bool SingleHttpServer::handleExpectHeader(ConnectionMapIt cnxIt, const CorsPolic
   const std::size_t headerEnd = request.headSpanSize();
   // Parse comma-separated tokens (trim spaces/tabs). Case-insensitive comparison for 100-continue.
   // headerEnd = offset from connection buffer start to end of headers
+  // TODO: simplify this code using TrimOws
   for (const char *cur = expectHeader.data(), *end = cur + expectHeader.size(); cur < end; ++cur) {
     // skip leading whitespace
     while (cur < end && http::IsHeaderWhitespace(*cur)) {
@@ -1365,6 +1362,9 @@ void ApplyPendingUpdates(std::mutex& mutex, auto& vec, std::atomic<bool>& flag, 
   for (auto& updater : pendingUpdates) {
     try {
       updater(objToUpdate);
+      if constexpr (std::is_same_v<std::remove_reference_t<decltype(objToUpdate)>, HttpServerConfig>) {
+        objToUpdate.validate();
+      }
     } catch (const std::exception& ex) {
       log::error("Exception while applying posted {} update: {}", name, ex.what());
     } catch (...) {
@@ -1383,8 +1383,6 @@ void SingleHttpServer::applyPendingUpdates() {
 #endif
 
     ApplyPendingUpdates(_updateLock, _pendingConfigUpdates, _hasPendingConfigUpdates, _config, "config");
-
-    _config.validate();
 
     // Reinitialize components dependent on config values.
     _encodingSelector = EncodingSelector(_config.compression);

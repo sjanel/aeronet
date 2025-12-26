@@ -201,7 +201,7 @@ TEST_F(WebSocketTest, UpgradeSuccessful) {
   test::sendAll(conn.fd(), upgradeReq);
 
   // Read response
-  std::string response = test::recvWithTimeout(conn.fd(), 500ms);
+  std::string response = test::recvWithTimeout(conn.fd(), 1000ms, 129UL);
 
   // Verify 101 response
   EXPECT_TRUE(response.contains("HTTP/1.1 101")) << "Response: " << response;
@@ -251,7 +251,7 @@ TEST_F(WebSocketTest, UpgradeNonWebSocketPath) {
   std::string upgradeReq = BuildUpgradeRequest("/other");
   test::sendAll(conn.fd(), upgradeReq);
 
-  std::string response = test::recvWithTimeout(conn.fd(), 500ms);
+  std::string response = test::recvWithTimeout(conn.fd(), 1000ms, 1531UL);
 
   // Should get 404 Not Found (no handler for /other)
   EXPECT_TRUE(response.find("HTTP/1.1 404") != std::string::npos) << "Response: " << response;
@@ -286,7 +286,7 @@ TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
 
   // Upgrade
   test::sendAll(conn.fd(), BuildUpgradeRequest("/echo"));
-  std::string upgradeResponse = test::recvWithTimeout(conn.fd(), 500ms);
+  std::string upgradeResponse = test::recvWithTimeout(conn.fd(), 1000ms, 129UL);
   ASSERT_TRUE(upgradeResponse.contains("HTTP/1.1 101"));
 
   // Send a text frame
@@ -297,13 +297,13 @@ TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
   std::this_thread::sleep_for(50ms);
 
   // Read response frame
-  std::string rawResponse = test::recvWithTimeout(conn.fd(), 500ms);
+  std::string response = test::recvWithTimeout(conn.fd(), 1000ms, 19UL);
 
   // Parse the frame
-  std::span<const std::byte> responseData(reinterpret_cast<const std::byte*>(rawResponse.data()), rawResponse.size());
+  std::span<const std::byte> responseData(reinterpret_cast<const std::byte*>(response.data()), response.size());
   auto frame = ParseServerFrame(responseData);
 
-  ASSERT_TRUE(frame.has_value()) << "Failed to parse server frame, raw size: " << rawResponse.size();
+  ASSERT_TRUE(frame.has_value()) << "Failed to parse server frame, raw size: " << response.size();
   EXPECT_EQ(frame.value_or(ServerFrame{}).opcode, Opcode::Text);
   EXPECT_TRUE(frame.value_or(ServerFrame{}).fin);
   EXPECT_EQ(PayloadToString(frame.value_or(ServerFrame{}).payload), "Hello, WebSocket!");
@@ -336,7 +336,7 @@ TEST_F(WebSocketTest, CloseHandshake) {
 
   // Upgrade
   test::sendAll(conn.fd(), BuildUpgradeRequest("/ws"));
-  std::string upgradeResponse = test::recvWithTimeout(conn.fd(), 500ms);
+  std::string upgradeResponse = test::recvWithTimeout(conn.fd(), 1000ms, 129UL);
   ASSERT_TRUE(upgradeResponse.find("HTTP/1.1 101") != std::string::npos);
 
   // Send close frame
@@ -347,7 +347,7 @@ TEST_F(WebSocketTest, CloseHandshake) {
   std::this_thread::sleep_for(50ms);
 
   // Read response
-  std::string rawResponse = test::recvWithTimeout(conn.fd(), 500ms);
+  std::string rawResponse = test::recvWithTimeout(conn.fd(), 1000ms, 11UL);
   std::span<const std::byte> responseData(reinterpret_cast<const std::byte*>(rawResponse.data()), rawResponse.size());
   auto frame = ParseServerFrame(responseData);
 
@@ -386,7 +386,7 @@ TEST_F(WebSocketTest, WithConfigAndCallbacksCustomMaxMessageSize) {
 
   // Upgrade
   test::sendAll(conn.fd(), BuildUpgradeRequest("/ws"));
-  std::string upgradeResponse = test::recvWithTimeout(conn.fd(), 500ms);
+  std::string upgradeResponse = test::recvWithTimeout(conn.fd(), 1000ms, 129UL);
   ASSERT_TRUE(upgradeResponse.contains("HTTP/1.1 101"));
 
   // Send a small message (should work)

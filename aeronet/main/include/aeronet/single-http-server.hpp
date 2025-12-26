@@ -177,6 +177,7 @@ class SingleHttpServer {
    private:
     friend class SingleHttpServer;
 
+    AsyncHandle() noexcept = default;
     AsyncHandle(std::jthread thread, std::shared_ptr<std::exception_ptr> error);
 
     std::jthread _thread;
@@ -604,7 +605,7 @@ class SingleHttpServer {
   // Internal handle for simple start() API - managed by the server itself.
   // When start() is called, the handle is stored here and the server takes ownership.
   // When startDetached() is called, the handle is returned to the caller.
-  std::optional<AsyncHandle> _internalHandle;
+  AsyncHandle _internalHandle;
 
   std::weak_ptr<ServerLifecycleTracker> _lifecycleTracker;
 

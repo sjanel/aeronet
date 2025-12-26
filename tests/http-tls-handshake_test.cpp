@@ -104,6 +104,10 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
 
 extern std::atomic<int> g_aeronetTestFailNextSslNew;
 extern std::atomic<int> g_aeronetTestFailNextSslSetFd;
+namespace aeronet {
+extern std::atomic<int> g_aeronetTestForceAlpnStrictMismatch;
+}
+using aeronet::g_aeronetTestForceAlpnStrictMismatch;
 
 TEST(HttpTlsHandshakeCallback, ExceptionRaisedInCallbackIsLoggedAndIgnored) {
   test::TlsTestServer ts({"http/1.1"}, [](HttpServerConfig& cfg) {
@@ -218,6 +222,56 @@ TEST(HttpTlsHandshakeCallback, EmitsFailureEventAndBucketsReasonOnStrictAlpnMism
 
   EXPECT_TRUE(callbackOK.load());
   EXPECT_TRUE(found);
+}
+
+TEST(HttpTlsHandshakeCallback, EmitsFailureEventWhenObserverFlagsAlpnStrictMismatchAfterSuccessfulHandshake) {
+  // Force the observer flag without aborting the handshake to cover the post-handshake branch.
+  g_aeronetTestForceAlpnStrictMismatch.store(1, std::memory_order_relaxed);
+
+  test::TlsTestServer ts({"h2"}, [](HttpServerConfig& cfg) {
+    cfg.withTlsAlpnMustMatch(true);
+    cfg.withTlsHandshakeLogging(true);
+  });
+
+  std::atomic_bool callbackOK{false};
+  std::string_view lastReason;
+  SingleHttpServer::TlsHandshakeEvent::Result lastResult = SingleHttpServer::TlsHandshakeEvent::Result::Succeeded;
+
+  ts.server.server.setTlsHandshakeCallback([&](const SingleHttpServer::TlsHandshakeEvent& ev) {
+    lastResult = ev.result;
+    lastReason = ev.reason;
+    if (ev.result == SingleHttpServer::TlsHandshakeEvent::Result::Failed && ev.reason == "alpn_strict_mismatch") {
+      callbackOK.store(true, std::memory_order_relaxed);
+    }
+  });
+
+  ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  test::TlsClient::Options opt;
+  opt.alpn = {"h2"};  // ALPN intersects; handshake should succeed but observer is forced to flag a mismatch.
+  test::TlsClient client(ts.port(), std::move(opt));
+  ASSERT_TRUE(client.handshakeOk());
+
+  // Wait for callback and stats propagation.
+  ServerStats st{};
+  bool found = false;
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline && (!callbackOK.load(std::memory_order_relaxed) || !found)) {
+    std::this_thread::sleep_for(ts.server.server.config().pollInterval + 100us);
+    st = ts.stats();
+    for (const auto& kv : st.tlsHandshakeFailureReasons) {
+      if (kv.first == "alpn_strict_mismatch" && kv.second >= 1) {
+        found = true;
+        break;
+      }
+    }
+  }
+
+  EXPECT_TRUE(callbackOK.load());
+  EXPECT_EQ(lastResult, SingleHttpServer::TlsHandshakeEvent::Result::Failed);
+  EXPECT_EQ(lastReason, "alpn_strict_mismatch");
+  EXPECT_TRUE(found);
+  EXPECT_GE(st.tlsAlpnStrictMismatches, 1U);
 }
 
 TEST(HttpTlsHandshakeCallback, EmitsRejectedEventAndBucketsReasonOnConcurrencyLimit) {

@@ -107,9 +107,7 @@ void MultiHttpServer::AsyncHandle::stop() noexcept {
     (*_onStop)();
   }
 
-  for (auto& handle : _serverHandles) {
-    handle.stop();
-  }
+  std::ranges::for_each(_serverHandles, [](auto& handle) { handle.stop(); });
 
   // Release the shared stop callback so any weak_ptr held by the MultiHttpServer
   // instance can expire when the caller has stopped the AsyncHandle. Clear the
@@ -120,9 +118,7 @@ void MultiHttpServer::AsyncHandle::stop() noexcept {
 }
 
 void MultiHttpServer::AsyncHandle::rethrowIfError() {
-  for (auto& handle : _serverHandles) {
-    handle.rethrowIfError();
-  }
+  std::ranges::for_each(_serverHandles, [](auto& handle) { handle.rethrowIfError(); });
 }
 
 void MultiHttpServer::AsyncHandle::notifyCompletion() noexcept {
@@ -182,10 +178,9 @@ MultiHttpServer::MultiHttpServer(const MultiHttpServer& other)
   }
 
   _servers.reserve(other._servers.capacity());
-  for (const auto& server : other._servers) {
-    auto& cloned = _servers.emplace_back(server);
-    cloned._lifecycleTracker = _lifecycleTracker;
-  }
+  std::ranges::for_each(other._servers, [this](const auto& server) {
+    _servers.emplace_back(server)._lifecycleTracker = _lifecycleTracker;
+  });
 }
 
 MultiHttpServer::MultiHttpServer(MultiHttpServer&& other) noexcept
@@ -196,9 +191,7 @@ MultiHttpServer::MultiHttpServer(MultiHttpServer&& other) noexcept
       _lastHandleStopFn(std::move(other._lastHandleStopFn)),
       _lastHandleCompletion(std::move(other._lastHandleCompletion)),
       _serversAlive(std::move(other._serversAlive)) {
-  for (auto& server : _servers) {
-    server._lifecycleTracker = _lifecycleTracker;
-  }
+  std::ranges::for_each(_servers, [this](auto& server) { server._lifecycleTracker = _lifecycleTracker; });
 }
 
 MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
@@ -214,9 +207,7 @@ MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
     _lastHandleCompletion = std::move(other._lastHandleCompletion);
     _serversAlive = std::move(other._serversAlive);
 
-    for (auto& server : _servers) {
-      server._lifecycleTracker = _lifecycleTracker;
-    }
+    std::ranges::for_each(_servers, [this](auto& server) { server._lifecycleTracker = _lifecycleTracker; });
   }
   return *this;
 }
@@ -548,40 +539,36 @@ MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
     agg.total.tlsHandshakesFailed += st.tlsHandshakesFailed;
     agg.total.tlsHandshakesRejectedConcurrency += st.tlsHandshakesRejectedConcurrency;
     agg.total.tlsHandshakesRejectedRateLimit += st.tlsHandshakesRejectedRateLimit;
-    for (const auto& kv : st.tlsAlpnDistribution) {
-      auto it = std::ranges::find_if(agg.total.tlsAlpnDistribution,
-                                     [&kv](const auto& existing) { return existing.first == kv.first; });
+    for (const auto& [key, value] : st.tlsAlpnDistribution) {
+      auto it = std::ranges::find(agg.total.tlsAlpnDistribution, key, &std::pair<std::string, uint64_t>::first);
       if (it != agg.total.tlsAlpnDistribution.end()) {
-        it->second += kv.second;
+        it->second += value;
       } else {
-        agg.total.tlsAlpnDistribution.push_back(kv);
+        agg.total.tlsAlpnDistribution.emplace_back(key, value);
       }
     }
-    for (const auto& kv : st.tlsHandshakeFailureReasons) {
-      auto it = std::ranges::find_if(agg.total.tlsHandshakeFailureReasons,
-                                     [&kv](const auto& existing) { return existing.first == kv.first; });
+    for (const auto& [key, value] : st.tlsHandshakeFailureReasons) {
+      auto it = std::ranges::find(agg.total.tlsHandshakeFailureReasons, key, &std::pair<std::string, uint64_t>::first);
       if (it != agg.total.tlsHandshakeFailureReasons.end()) {
-        it->second += kv.second;
+        it->second += value;
       } else {
-        agg.total.tlsHandshakeFailureReasons.push_back(kv);
+        agg.total.tlsHandshakeFailureReasons.emplace_back(key, value);
       }
     }
-    for (const auto& kv : st.tlsVersionCounts) {
-      auto it = std::ranges::find_if(agg.total.tlsVersionCounts,
-                                     [&kv](const auto& existing) { return existing.first == kv.first; });
+    for (const auto& [key, value] : st.tlsVersionCounts) {
+      auto it = std::ranges::find(agg.total.tlsVersionCounts, key, &std::pair<std::string, uint64_t>::first);
       if (it != agg.total.tlsVersionCounts.end()) {
-        it->second += kv.second;
+        it->second += value;
       } else {
-        agg.total.tlsVersionCounts.push_back(kv);
+        agg.total.tlsVersionCounts.emplace_back(key, value);
       }
     }
-    for (const auto& [newKey, newVal] : st.tlsCipherCounts) {
-      auto it = std::ranges::find_if(agg.total.tlsCipherCounts,
-                                     [&newKey](const auto& existing) { return existing.first == newKey; });
+    for (const auto& [key, value] : st.tlsCipherCounts) {
+      auto it = std::ranges::find(agg.total.tlsCipherCounts, key, &std::pair<std::string, uint64_t>::first);
       if (it != agg.total.tlsCipherCounts.end()) {
-        it->second += newVal;
+        it->second += value;
       } else {
-        agg.total.tlsCipherCounts.emplace_back(newKey, newVal);
+        agg.total.tlsCipherCounts.emplace_back(key, value);
       }
     }
     agg.total.tlsHandshakeDurationCount += st.tlsHandshakeDurationCount;
