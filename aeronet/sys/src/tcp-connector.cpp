@@ -61,7 +61,7 @@ ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family)
     const int socktype = rp->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC;
 
     connectResult.cnx = Connection(BaseFd(::socket(rp->ai_family, socktype, rp->ai_protocol)));
-    if (!connectResult.cnx) {
+    if (!connectResult.cnx) [[unlikely]] {
       const int saved = errno;
       log::error(
           "ConnectTCP: socket() failed for addrinfo entry (family={}, socktype={}, protocol={}): errno={}, msg={}",

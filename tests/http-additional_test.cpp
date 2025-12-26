@@ -235,6 +235,14 @@ TEST(HttpExpect, ZeroLengthNo100) {
   ASSERT_TRUE(resp.contains('Z'));
 }
 
+TEST(HttpServer, PostConfigUpdateExceptionDoesNotCrash) {
+  ts.postConfigUpdate(
+      [](HttpServerConfig& /*cfg*/) { throw std::runtime_error("Intentional exception in config update"); });
+  ts.postConfigUpdate([](HttpServerConfig& /*cfg*/) { throw 42; });
+  ts.postRouterUpdate([](Router& /*cfg*/) { throw std::runtime_error("Intentional exception in router update"); });
+  ts.postRouterUpdate([](Router& /*cfg*/) { throw 42; });
+}
+
 TEST(HttpMaxRequests, CloseAfterLimit) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(2); });
   // parser error callback intentionally left empty in tests
@@ -355,6 +363,36 @@ TEST(HttpBasic, InvalidContentLength) {
   test::sendAll(clientConnection.fd(), req);
   std::string resp = test::recvUntilClosed(clientConnection.fd());
   EXPECT_TRUE(resp.contains("HTTP/1.1 400")) << resp;
+
+  // Now try with a negative Content-Length
+  test::ClientConnection clientConnection2(ts.port());
+  std::string req2 = "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: -5\r\nConnection: close\r\n\r\nHELLO";
+  test::sendAll(clientConnection2.fd(), req2);
+  std::string resp2 = test::recvUntilClosed(clientConnection2.fd());
+  EXPECT_TRUE(resp2.contains("HTTP/1.1 400")) << resp2;
+
+  // Now try with an excessively large Content-Length
+  test::ClientConnection clientConnection3(ts.port());
+  std::string req3 =
+      "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 18446744073709551615000000000000\r\nConnection: "
+      "close\r\n\r\nHELLO";
+  test::sendAll(clientConnection3.fd(), req3);
+  std::string resp3 = test::recvUntilClosed(clientConnection3.fd());
+  EXPECT_TRUE(resp3.contains("HTTP/1.1 400")) << resp3;
+
+  // Try with a partial match of std::from_chars:
+  test::ClientConnection clientConnection4(ts.port());
+  std::string req4 = "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 123abc\r\nConnection: close\r\n\r\nHELLO";
+  test::sendAll(clientConnection4.fd(), req4);
+  std::string resp4 = test::recvUntilClosed(clientConnection4.fd());
+  EXPECT_TRUE(resp4.contains("HTTP/1.1 400")) << resp4;
+
+  // Empty content length is invalid too
+  test::ClientConnection clientConnection5(ts.port());
+  std::string req5 = "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: \r\nConnection: close\r\n\r\nHELLO";
+  test::sendAll(clientConnection5.fd(), req5);
+  std::string resp5 = test::recvUntilClosed(clientConnection5.fd());
+  EXPECT_TRUE(resp5.contains("HTTP/1.1 400")) << resp5;
 }
 
 TEST(HttpBasic, ManyHeadersResponse) {
