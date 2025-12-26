@@ -318,11 +318,13 @@ if(AERONET_ENABLE_ZLIB)
         LIBRARIES
         aeronet_objects
     )
+    
     AeronetAddUnitTest(
         zlib-stream-raii_test
         test/zlib-stream-raii_test.cpp
         LIBRARIES
         aeronet_objects
+        aeronet_basic_test_support
     )
 endif()
 

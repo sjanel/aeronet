@@ -18,6 +18,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/signal-handler.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/test_server_fixture.hpp"

@@ -14,25 +14,23 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
-#include <mutex>
 #include <numeric>
 #include <span>
 #include <stdexcept>
-#include <string>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/tls-config.hpp"
+#include "aeronet/tls-handshake-observer.hpp"
 #include "aeronet/tls-raii.hpp"
 #include "aeronet/tls-ticket-key-store.hpp"
-#include "aeronet/toupperlower.hpp"
 
 namespace aeronet {
 namespace {
 void ApplyCipherPolicy(SSL_CTX* ctx, const TLSConfig& cfg);
-void AttachTicketStore(SSL_CTX* ctx, const std::shared_ptr<TlsTicketKeyStore>& store);
 
 int parseTlsVersion(TLSConfig::Version ver) {
   if (ver == TLSConfig::TLS_1_2) {
@@ -46,23 +44,19 @@ int parseTlsVersion(TLSConfig::Version ver) {
   return 0;  // unknown / not set
 }
 
-std::string NormalizeServerName(std::string_view host) {
-  std::string normalized(host);
-  for (char& ch : normalized) {
-    ch = tolower(ch);
-  }
-  return normalized;
-}
-
 bool MatchesSniPattern(std::string_view pattern, bool wildcard, std::string_view serverName) {
   if (!wildcard) {
-    return serverName == pattern;
+    return CaseInsensitiveEqual(serverName, pattern);
   }
-  if (serverName.size() <= pattern.size() - 2) {
+  // pattern starts with "*.", so require serverName to be longer than the remaining
+  // pattern characters after the "*." prefix. The `- 2` strips the leading "*." from
+  // `pattern` (two characters) when comparing lengths for a wildcard match.
+  pattern = pattern.substr(2);
+  if (serverName.size() <= pattern.size()) {
     return false;
   }
-  const std::string_view suffix = pattern.substr(1);  // drop '*'
-  return serverName.ends_with(suffix.substr(1));
+  serverName.remove_prefix(serverName.size() - pattern.size());
+  return CaseInsensitiveEqual(serverName, pattern);
 }
 
 void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_view keyPem, const char* certFilePath,
@@ -70,14 +64,9 @@ void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_v
   if (!certPem.empty() && !keyPem.empty()) {
     auto certBio = MakeMemBio(certPem.data(), static_cast<int>(certPem.size()));
     auto keyBio = MakeMemBio(keyPem.data(), static_cast<int>(keyPem.size()));
-    if (!certBio || !keyBio) {
-      throw std::runtime_error("Failed to allocate BIO for in-memory cert/key");
-    }
-    X509Ptr certX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr), ::X509_free);
-    PKeyPtr pkey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr), ::EVP_PKEY_free);
-    if (!certX509 || !pkey) {
-      throw std::runtime_error("Failed to parse in-memory certificate/key");
-    }
+    auto certX509 = MakeX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr));
+    auto pkey = MakePKey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr));
+
     if (::SSL_CTX_use_certificate(ctx, certX509.get()) != 1) {
       throw std::runtime_error("Failed to use in-memory certificate");
     }
@@ -103,11 +92,15 @@ void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_v
 
 void ConfigureContextOptions(SSL_CTX* ctx, const TLSConfig& cfg) {
   if (cfg.disableCompression) {
-    ::SSL_CTX_set_options(ctx, SSL_OP_NO_COMPRESSION);
+    if ((::SSL_CTX_set_options(ctx, SSL_OP_NO_COMPRESSION) & SSL_OP_NO_COMPRESSION) == 0) {
+      throw std::runtime_error("Failed to set SSL_OP_NO_COMPRESSION on SSL_CTX");
+    }
   }
 #if defined(AERONET_ENABLE_KTLS) && defined(SSL_OP_ENABLE_KTLS)
   if (cfg.ktlsMode != TLSConfig::KtlsMode::Disabled) {
-    ::SSL_CTX_set_options(ctx, SSL_OP_ENABLE_KTLS);
+    if ((::SSL_CTX_set_options(ctx, SSL_OP_ENABLE_KTLS) & SSL_OP_ENABLE_KTLS) == 0) {
+      throw std::runtime_error("Failed to set SSL_OP_ENABLE_KTLS on SSL_CTX");
+    }
   }
 #endif
   if (cfg.cipherPolicy != TLSConfig::CipherPolicy::Default) {
@@ -148,13 +141,7 @@ void ConfigureClientVerification(SSL_CTX* ctx, const TLSConfig& cfg) {
       throw std::runtime_error("Empty trusted client certificate PEM provided");
     }
     auto cbio = MakeMemBio(pem.data(), static_cast<int>(pem.size()));
-    if (!cbio) {
-      throw std::runtime_error("Failed to alloc BIO for client trust cert");
-    }
-    X509Ptr cx(::PEM_read_bio_X509(cbio.get(), nullptr, nullptr, nullptr), ::X509_free);
-    if (!cx) {
-      throw std::runtime_error("Failed to parse trusted client certificate");
-    }
+    auto cx = MakeX509(::PEM_read_bio_X509(cbio.get(), nullptr, nullptr, nullptr));
     if (::SSL_CTX_get_cert_store(ctx) == nullptr) {
       throw std::runtime_error("No cert store available in SSL_CTX");
     }
@@ -164,15 +151,32 @@ void ConfigureClientVerification(SSL_CTX* ctx, const TLSConfig& cfg) {
   }
 }
 
+const int kTicketStoreIndex = []() { return ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr); }();
+
+int SessionTicketCallback(SSL* ssl, unsigned char* keyName, unsigned char* iv, EVP_CIPHER_CTX* cctx, EVP_MAC_CTX* mctx,
+                          int enc) {
+  SSL_CTX* sslCtx = ::SSL_get_SSL_CTX(ssl);
+  TlsTicketKeyStore* storePtr = static_cast<TlsTicketKeyStore*>(::SSL_CTX_get_ex_data(sslCtx, kTicketStoreIndex));
+  if (storePtr == nullptr) {
+    return 0;
+  }
+  return storePtr->processTicket(keyName, iv, EVP_MAX_IV_LENGTH, cctx, mctx, enc);
+}
+
 void ConfigureSessionTickets(SSL_CTX* ctx, const TLSConfig& cfg,
                              const std::shared_ptr<TlsTicketKeyStore>& ticketStore) {
   if (!cfg.sessionTickets.enabled) {
-    ::SSL_CTX_set_options(ctx, SSL_OP_NO_TICKET);
+    if ((::SSL_CTX_set_options(ctx, SSL_OP_NO_TICKET) & SSL_OP_NO_TICKET) == 0) {
+      throw std::runtime_error("Failed to set SSL_OP_NO_TICKET on SSL_CTX");
+    }
     return;
   }
-  ::SSL_CTX_clear_options(ctx, SSL_OP_NO_TICKET);
+  if ((::SSL_CTX_clear_options(ctx, SSL_OP_NO_TICKET) & SSL_OP_NO_TICKET) != 0) {
+    throw std::runtime_error("Failed to clear SSL_OP_NO_TICKET on SSL_CTX");
+  }
   if (ticketStore) {
-    AttachTicketStore(ctx, ticketStore);
+    ::SSL_CTX_set_ex_data(ctx, kTicketStoreIndex, ticketStore.get());
+    ::SSL_CTX_set_tlsext_ticket_key_evp_cb(ctx, &SessionTicketCallback);
   }
 }
 
@@ -207,9 +211,6 @@ const char* CipherPolicyTls12(TLSConfig::CipherPolicy policy) {
 }
 
 void ApplyCipherPolicy(SSL_CTX* ctx, const TLSConfig& cfg) {
-  if (cfg.cipherPolicy == TLSConfig::CipherPolicy::Default) {
-    return;
-  }
   if (const char* suites13 = CipherPolicyTls13(cfg.cipherPolicy)) {
     if (::SSL_CTX_set_ciphersuites(ctx, suites13) != 1) {
       throw std::runtime_error("Failed to set TLS 1.3 cipher suites");
@@ -222,37 +223,6 @@ void ApplyCipherPolicy(SSL_CTX* ctx, const TLSConfig& cfg) {
   }
 }
 
-int TicketStoreIndex() {
-  static std::once_flag flag;
-  static int index = 0;
-  std::call_once(flag, [] { index = ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr); });
-  return index;
-}
-
-TlsTicketKeyStore* GetTicketStore(SSL_CTX* ctx) {
-  if (ctx == nullptr) {
-    return nullptr;
-  }
-  return static_cast<TlsTicketKeyStore*>(::SSL_CTX_get_ex_data(ctx, TicketStoreIndex()));
-}
-
-int SessionTicketCallback(SSL* ssl, unsigned char* keyName, unsigned char* iv, EVP_CIPHER_CTX* cctx, EVP_MAC_CTX* mctx,
-                          int enc) {
-  SSL_CTX* sslCtx = ::SSL_get_SSL_CTX(ssl);
-  auto* storePtr = GetTicketStore(sslCtx);
-  if (storePtr == nullptr) {
-    return 0;
-  }
-  return storePtr->processTicket(keyName, iv, EVP_MAX_IV_LENGTH, cctx, mctx, enc);
-}
-
-void AttachTicketStore(SSL_CTX* ctx, const std::shared_ptr<TlsTicketKeyStore>& store) {
-  if (ctx == nullptr || store == nullptr) {
-    return;
-  }
-  ::SSL_CTX_set_ex_data(ctx, TicketStoreIndex(), store.get());
-  ::SSL_CTX_set_tlsext_ticket_key_evp_cb(ctx, &SessionTicketCallback);
-}
 }  // namespace
 
 void TlsContext::CtxDel::operator()(ssl_ctx_st* ctxPtr) const noexcept {
@@ -276,14 +246,9 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics,
   if (!certPem.empty() && !keyPem.empty()) {
     auto certBio = MakeMemBio(certPem.data(), static_cast<int>(certPem.size()));
     auto keyBio = MakeMemBio(keyPem.data(), static_cast<int>(keyPem.size()));
-    if (!certBio || !keyBio) {
-      throw std::runtime_error("Failed to allocate BIO for in-memory cert/key");
-    }
-    X509Ptr certX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr), ::X509_free);
-    PKeyPtr pkey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr), ::EVP_PKEY_free);
-    if (!certX509 || !pkey) {
-      throw std::runtime_error("Failed to parse in-memory certificate/key");
-    }
+    auto certX509 = MakeX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr));
+    auto pkey = MakePKey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr));
+
     if (::SSL_CTX_use_certificate(raw, certX509.get()) != 1) {
       throw std::runtime_error("Failed to use in-memory certificate");
     }
@@ -381,6 +346,9 @@ int TlsContext::SelectAlpn([[maybe_unused]] SSL* ssl, const unsigned char** out,
     if (data->metrics != nullptr) {
       ++data->metrics->alpnStrictMismatches;
     }
+    if (auto* obs = GetTlsHandshakeObserver(reinterpret_cast<ssl_st*>(ssl))) {
+      obs->alpnStrictMismatch = true;
+    }
     return SSL_TLSEXT_ERR_ALERT_FATAL;
   }
   return SSL_TLSEXT_ERR_NOACK;
@@ -394,9 +362,8 @@ int TlsContext::SelectSniRoute(SSL* ssl, int* alert, void* arg) {
   if (serverName == nullptr) {
     return SSL_TLSEXT_ERR_NOACK;
   }
-  std::string normalized = NormalizeServerName(serverName);
   for (auto& route : routeSpan) {
-    if (MatchesSniPattern(route.pattern, route.wildcard, normalized)) {
+    if (MatchesSniPattern(route.pattern, route.wildcard, serverName)) {
       auto* nextCtx = reinterpret_cast<SSL_CTX*>(route.ctx.get());
       if (nextCtx == nullptr) {
         break;

@@ -225,7 +225,7 @@ Notes and implementation details
 
 - [x] Server objects moveable
 - [x] Builder style HttpServerConfig
-- Note: Some configuration fields are immutable after construction (for example: `port`, `reusePort`, TLS and OpenTelemetry setup). Other fields (limits, timeouts, compression, headers, etc.) are runtime-updatable via `postConfigUpdate()`; see `docs/CONFIG_MUTABILITY.md` for the full field-by-field guide.
+- Note: Some configuration fields are immutable after construction (for example: `port`, `reusePort`, and OpenTelemetry setup). Most mutable fields (limits, timeouts, compression, headers, TLS configuration) are runtime-updatable via `postConfigUpdate()`. See `docs/CONFIG_MUTABILITY.md` for the full field-by-field guide.
 - [x] Simple lambda handler signature
 - [x] Simple exact-match per-path routing (`setPath`)
 - [x] Configurable trailing slash handling (Strict / Normalize / Redirect)
@@ -1494,11 +1494,17 @@ Optional (`AERONET_ENABLE_OPENSSL`). Provides termination, optional / required m
 | TLS version distribution | ✅ | Stats field |
 | Cipher distribution | ✅ | Stats field |
 | Handshake duration metrics | ✅ | Count / total ns / max ns |
+| Handshake failure reason buckets | ✅ | `ServerStats::tlsHandshakeFailureReasons` |
+| Handshake event callback | ✅ | `SingleHttpServer::setTlsHandshakeCallback()` (and `MultiHttpServer::setTlsHandshakeCallback()`) |
 | JSON stats export | ✅ | `serverStatsToJson()` includes TLS metrics |
 | No process‑global mutable TLS state | ✅ | All metrics per server instance |
 | Session resumption (tickets) | ✅ | Server-side TLS session ticket support with automatic key rotation. |
-| SNI multi-cert routing | ⏳ | Serve different certs per SNI name (mapping & routing rules). |
-| Hot cert/key reload (atomic swap) | ⏳ | Atomic in-memory cert/key swap to avoid restarts. |
+| Handshake full/resumed counters | ✅ | `ServerStats::{tlsHandshakesFull,tlsHandshakesResumed}` |
+| Handshake admission control | ✅ | Concurrency limit + basic rate limiting via `TLSConfig::{maxConcurrentHandshakes,handshakeRateLimitPerSecond,handshakeRateLimitBurst}` |
+| MultiHttpServer shared ticket keys | ✅ | Session ticket key store is shared across instances for consistent resumption |
+| SNI multi-cert routing | ✅ | `TLSConfig::withTlsSniCertificate*()` selects cert by SNI |
+| Hot cert/key reload (atomic swap) | ✅ | `postConfigUpdate()` with TLS config change rebuilds and swaps TLS context for new connections |
+| Dynamic trust store update | ✅ | `postConfigUpdate()` with trust store change |
 | OCSP stapling / revocation checks | ⏳ | OCSP staple responses & revocation checking with caching. |
 
 ### TLS Configuration Example
@@ -1518,6 +1524,63 @@ SingleHttpServer server(cfg);
 ```
 
 Strict ALPN: if enabled and no protocol overlap, handshake aborts (connection closed, metric incremented).
+
+### Handshake event callback
+
+You can subscribe to handshake outcomes (succeeded / failed / rejected) with a lightweight callback.
+
+```cpp
+SingleHttpServer server;
+server.setTlsHandshakeCallback([](const SingleHttpServer::TlsHandshakeEvent& ev) {
+  // ev.result is one of: Succeeded, Failed, Rejected
+  // ev.reason is a short string for failures/rejections (best-effort)
+  // ev.selectedAlpn / negotiatedCipher / negotiatedVersion are filled for successful handshakes
+  if (ev.result == SingleHttpServer::TlsHandshakeEvent::Result::Failed) {
+    log::warn("TLS handshake failed fd={} reason={} ver={} cipher={}", ev.fd, ev.reason,
+              ev.negotiatedVersion, ev.negotiatedCipher);
+  }
+});
+```
+
+### Handshake failure reason buckets (stats)
+
+`ServerStats::tlsHandshakeFailureReasons` provides best-effort bucketing of why handshakes failed or were rejected.
+
+```cpp
+SingleHttpServer server;
+const ServerStats st = server.stats();
+for (const auto& kv : st.tlsHandshakeFailureReasons) {
+  const std::string& reason = kv.first;
+  const uint64_t count = kv.second;
+  log::info("tls_handshake_reason={} count={}", reason, count);
+}
+```
+
+### Hot reload (cert/key) and dynamic trust store update
+
+New connections pick up the updated TLS configuration after the next poll cycle.
+Use `postConfigUpdate()` to modify TLS settings at runtime - changes are detected
+and the SSL context is atomically rebuilt for new connections.
+
+```cpp
+SingleHttpServer server;
+
+// Hot swap certificate and key
+TLSConfig tls;
+tls.enabled = true;
+std::string_view newCertPem /* = R"(-----BEGIN CERTIFICATE-----"*/;
+std::string_view newKeyPem  /* = R"(-----BEGIN PRIVATE KEY-----"*/; 
+tls.withCertPem(newCertPem).withKeyPem(newKeyPem);
+server.postConfigUpdate([tls = std::move(tls)](HttpServerConfig& cfg) mutable {
+  cfg.tls = std::move(tls);
+});
+
+// Or just update the trust store (clears existing, adds new)
+std::string_view newClientCaPem /* = R"(-----BEGIN CERTIFICATE-----"*/;
+server.postConfigUpdate([newClientCaPem](HttpServerConfig& cfg) {
+  cfg.tls.withoutTlsTrustedClientCert().withTlsTrustedClientCert(newClientCaPem);
+});
+```
 
 ### Kernel TLS (KTLS) sendfile
 

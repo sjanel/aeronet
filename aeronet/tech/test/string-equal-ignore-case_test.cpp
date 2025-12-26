@@ -3,7 +3,12 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cstddef>
+#include <iterator>
 #include <random>
+#include <string>
+#include <string_view>
 
 namespace aeronet {
 

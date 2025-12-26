@@ -94,9 +94,7 @@ int ControlledBioDestroy(BIO* bio) {
   return 1;
 }
 
-long ControlledBioCtrl(BIO* bio [[maybe_unused]], int cmd, long num, void* ptr) {
-  (void)num;
-  (void)ptr;
+long ControlledBioCtrl(BIO* bio [[maybe_unused]], int cmd, [[maybe_unused]] long num, [[maybe_unused]] void* ptr) {
   return (cmd == BIO_CTRL_FLUSH) ? 1 : 0;
 }
 
@@ -227,6 +225,12 @@ void SetNonBlocking(int fd) {
 
 }  // namespace
 
+TEST(TLSRaiiTest, ShouldThrowBadAllocOnNullPtrs) {
+  EXPECT_THROW(MakeBio(nullptr), std::bad_alloc);
+  EXPECT_THROW(MakePKey(nullptr), std::bad_alloc);
+  EXPECT_THROW(MakeX509(nullptr), std::bad_alloc);
+}
+
 TEST(TlsContextTest, CollectsHandshakeInfo) {
   auto pair = MakeSslPair({"http/1.1"}, {"http/1.1"});
   const auto start = std::chrono::steady_clock::now();
@@ -236,7 +240,7 @@ TEST(TlsContextTest, CollectsHandshakeInfo) {
   auto tlsInfo = FinalizeTlsHandshake(pair.serverSsl.get(), pair.serverFd.fd(), true, start, metrics);
   EXPECT_EQ(tlsInfo.selectedAlpn(), "http/1.1");
   EXPECT_EQ(metrics.handshakesSucceeded, 1U);
-  EXPECT_EQ(metrics.alpnDistribution["http/1.1"], 1U);
+  EXPECT_EQ(metrics.alpnDistribution[RawChars32("http/1.1")], 1U);
   EXPECT_EQ(metrics.versionCounts.size(), 1U);
   EXPECT_EQ(metrics.cipherCounts.size(), 1U);
   EXPECT_EQ(metrics.handshakeDurationCount, 1U);
@@ -320,7 +324,7 @@ TEST(TlsContextTest, InvalidInMemoryPemThrows) {
   cfg.withCertPem("not-a-real-pem");
   cfg.withKeyPem("still-not-a-pem");
   TlsMetricsExternal metrics{};
-  EXPECT_THROW(TlsContext(cfg, &metrics), std::runtime_error);
+  EXPECT_THROW(TlsContext(cfg, &metrics), std::bad_alloc);
 }
 
 TEST(TlsContextTest, MismatchedPrivateKeyFailsCheck) {
@@ -361,7 +365,7 @@ TEST(TlsContextTest, InvalidTrustedClientCertPemThrows) {
   cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
   cfg.withTlsTrustedClientCert("not-a-cert");
   TlsMetricsExternal metrics{};
-  EXPECT_THROW(TlsContext(cfg, &metrics), std::runtime_error);
+  EXPECT_THROW(TlsContext(cfg, &metrics), std::bad_alloc);
 }
 
 TEST(TlsContextTest, MissingCertificateFilesThrow) {
@@ -657,13 +661,10 @@ TEST(TlsHandshakeTest, PeerSubjectNonEmptyAfterHandshake) {
   ASSERT_FALSE(clientCertKey.second.empty());
 
   auto certBio = MakeMemBio(clientCertKey.first.data(), static_cast<int>(clientCertKey.first.size()));
-
-  ASSERT_NE(certBio, nullptr);
   auto xcert = MakeX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr));
   ASSERT_NE(xcert, nullptr);
 
   auto keyBio = MakeMemBio(clientCertKey.second.data(), static_cast<int>(clientCertKey.second.size()));
-  ASSERT_NE(keyBio, nullptr);
   auto pKey = MakePKey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr));
   ASSERT_NE(pKey, nullptr);
 

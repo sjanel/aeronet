@@ -612,7 +612,7 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
         _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(res.bytesDone);
 #ifdef AERONET_ENABLE_KTLS
         if (ktlsSend) {
-          _stats.ktlsSendBytes += static_cast<std::uint64_t>(res.bytesDone);
+          _tlsMetrics.ktlsSendBytes += static_cast<std::uint64_t>(res.bytesDone);
         }
 #endif
         // Continue loop to send more
@@ -632,7 +632,7 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
             _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(retryRes.bytesDone);
 #ifdef AERONET_ENABLE_KTLS
             if (ktlsSend) {
-              _stats.ktlsSendBytes += static_cast<std::uint64_t>(retryRes.bytesDone);
+              _tlsMetrics.ktlsSendBytes += static_cast<std::uint64_t>(retryRes.bytesDone);
             }
 #endif
             // Socket was writable, continue the loop to send more

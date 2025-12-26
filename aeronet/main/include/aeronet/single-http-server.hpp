@@ -42,9 +42,6 @@
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-context.hpp"
 #include "aeronet/tls-metrics.hpp"
-#ifdef AERONET_ENABLE_KTLS
-#include "aeronet/tls-transport.hpp"
-#endif
 #endif
 
 namespace aeronet {
@@ -67,6 +64,31 @@ class CorsPolicy;
 class SingleHttpServer {
  public:
   using ParserErrorCallback = std::function<void(http::StatusCode)>;
+
+#ifdef AERONET_ENABLE_OPENSSL
+  struct TlsHandshakeEvent {
+    enum class Result : uint8_t { Succeeded, Failed, Rejected };
+
+    int fd{-1};
+
+    Result result{Result::Succeeded};
+
+    bool resumed{false};
+    bool clientCertPresent{false};
+
+    uint64_t durationNs{0};
+
+    // Stable reason identifier for Failed / Rejected (empty for success).
+    // Note: views are only guaranteed to be valid during the callback.
+    std::string_view reason;
+    std::string_view selectedAlpn;
+    std::string_view negotiatedCipher;
+    std::string_view negotiatedVersion;
+    std::string_view peerSubject;
+  };
+
+  using TlsHandshakeCallback = std::function<void(const TlsHandshakeEvent&)>;
+#endif
 
   struct RequestMetrics {
     http::StatusCode status{0};
@@ -251,6 +273,17 @@ class SingleHttpServer {
   //     Provide an empty std::function ({}) to clear.
   void setMetricsCallback(MetricsCallback cb);
 
+#ifdef AERONET_ENABLE_OPENSSL
+  // Install a callback invoked exactly once per connection for TLS handshake outcomes.
+  // Semantics:
+  //   - Executed in the server's event loop thread.
+  //   - Called on success, failure (including mTLS verification failures), and admission-control rejection.
+  //   - All string_view fields are only guaranteed valid for the duration of the callback.
+  // Exceptions:
+  //   - Exceptions escaping the callback are caught and ignored.
+  void setTlsHandshakeCallback(TlsHandshakeCallback cb);
+#endif
+
   // Register or clear the expectation handler. This handler will be invoked from
   // the server's event-loop thread when a request contains an `Expect` header
   // with tokens other than "100-continue". To clear, pass an empty std::function.
@@ -386,11 +419,18 @@ class SingleHttpServer {
   //   The following fields are immutable (require socket rebind or structural reinitialization)
   //   and will be silently restored to their original values after the updater runs:
   //     - port, reusePort (socket binding parameters)
-  //     - tls (SSL_CTX is initialized once at construction)
   //     - otel (tracer/exporter setup is one-time at construction)
   //   Attempting to modify these fields will have no effect and will emit a warning log in
-  //   debug builds. All other fields (limits, timeouts, compression settings, etc.) are
-  //   mutable and will take effect as documented for each field.
+  //   debug builds.
+  //
+  // TLS hot reload:
+  //   TLS configuration (cfg.tls) IS mutable via postConfigUpdate. When you modify cfg.tls,
+  //   the server will automatically rebuild the SSL context for new connections. Existing
+  //   connections continue using their current SSL/TLS state. If the new config is invalid
+  //   or context rebuild fails, the old TLS context remains active and the config is restored.
+  //
+  // All other fields (limits, timeouts, compression settings, etc.) are mutable and will
+  // take effect as documented for each field.
   void postConfigUpdate(std::function<void(HttpServerConfig&)> updater);
 
   // Post a router update to be applied from the event loop thread. The updater executes with exclusive
@@ -483,10 +523,6 @@ class SingleHttpServer {
   void submitRouterUpdate(std::function<void(Router&)> updater,
                           std::shared_ptr<std::promise<std::exception_ptr>> completion);
 
-#ifdef AERONET_ENABLE_KTLS
-  void maybeEnableKtlsSend(ConnectionState& state, TlsTransport& transport, int fd);
-#endif
-
   // Helpers to enable/disable writable interest (EPOLLOUT) for a connection. They wrap
   // ModWithCloseOnFailure and update `ConnectionState::waitingWritable` and internal stats
   // consistently. Return true on success, false on failure (caller should handle close).
@@ -521,12 +557,6 @@ class SingleHttpServer {
     uint64_t epollModFailures{0};
     std::size_t maxConnectionOutboundBuffer{0};
     uint64_t totalRequestsServed{0};
-#ifdef AERONET_ENABLE_KTLS
-    uint64_t ktlsSendEnabledConnections{0};
-    uint64_t ktlsSendEnableFallbacks{0};
-    uint64_t ktlsSendForcedShutdowns{0};
-    uint64_t ktlsSendBytes{0};
-#endif
   } _stats;
 
   HttpServerConfig _config;
@@ -552,6 +582,9 @@ class SingleHttpServer {
   ParserErrorCallback _parserErrCb;
   MetricsCallback _metricsCb;
   MiddlewareMetricsCallback _middlewareMetricsCb;
+#ifdef AERONET_ENABLE_OPENSSL
+  TlsHandshakeCallback _tlsHandshakeCb;
+#endif
   ExpectationHandler _expectationHandler;
   RawChars _tmpBuffer;  // can be used for any kind of temporary buffer
 
@@ -578,22 +611,22 @@ class SingleHttpServer {
 #ifdef AERONET_ENABLE_OPENSSL
   // TlsContext lifetime & pointer stability:
   // ----------------------------------------
-  // OpenSSL's SSL_CTX_set_alpn_select_cb stores the opaque `void* arg` pointer and later invokes the
-  // callback during each TLS handshake. We pass a pointer to our TlsContext so the callback can access
-  // ALPN configuration / metrics.
+  // OpenSSL stores user pointers for callbacks (ALPN selection and SNI routing). These pointers must remain
+  // valid for the lifetime of the SSL_CTX and any SSL handshakes using it.
   //
-  // If we placed TlsContext directly as a value member (or inside std::optional) and later moved the
-  // encompassing SingleHttpServer, the TlsContext object would be moved / reconstructed at a new address while
-  // OpenSSL still retains the original pointer, leading to a dangling pointer and potential UAF during
-  // future handshakes (we previously observed this as an ASan stack-use-after-return when a temporary was
-  // moved into an optional after registration).
-  //
-  // Storing TlsContext behind a std::unique_ptr guarantees a stable object address for the entire
-  // SingleHttpServer lifetime irrespective of SingleHttpServer moves; only the owning smart pointer value changes.
-  // This is the least invasive way to provide pointer stability without prohibiting SingleHttpServer move
-  // semantics or introducing a heavier PImpl layer.
-  std::unique_ptr<TlsContext> _tlsCtxHolder;  // stable address for OpenSSL callbacks
-  TlsMetricsInternal _tlsMetrics;             // defined in aeronet/tls-metrics.hpp
+  // For hot reload we keep contexts alive via shared_ptr and each ConnectionState holds a keep-alive to the
+  // context it was created from.
+  std::shared_ptr<TlsContext> _tlsCtxHolder;
+
+  // Optional shared session ticket key store (MultiHttpServer shares one store across instances).
+  std::shared_ptr<TlsTicketKeyStore> _sharedTicketKeyStore;
+
+  // TLS handshake admission control (basic concurrency + rate limiting).
+  uint32_t _tlsHandshakesInFlight{0};
+  uint32_t _tlsRateLimitTokens{0};
+  std::chrono::steady_clock::time_point _tlsRateLimitLastRefill;
+
+  TlsMetricsInternal _tlsMetrics;  // defined in aeronet/tls-metrics.hpp
   // External metrics struct used by TLS context for ALPN mismatch increments only.
   TlsMetricsExternal _tlsMetricsExternal;  // shares alpnStrictMismatches with _tlsMetrics (synced in stats retrieval)
 #endif

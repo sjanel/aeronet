@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -563,7 +564,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithoutHeaders) {
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
   HttpResponse resp(404, "Not Found");
   EXPECT_EQ(resp.reason(), http::NotFound);
-  resp.status(200).reason("OK");
+  resp = HttpResponse{}.status(200, "OK");
   EXPECT_EQ(resp.reason(), "OK");
   auto full = concatenated(std::move(resp));
 
@@ -1805,9 +1806,14 @@ TEST(HttpResponseTrailers, CapturedBodyString) {
 // Test trailer with captured body (vector<char>)
 TEST(HttpResponseTrailers, CapturedBodyVector) {
   HttpResponse resp(http::StatusCodeOK);
-  std::vector<char> vec = {'h', 'e', 'l', 'l', 'o'};
-  resp.body(std::move(vec));
+  resp.body(std::vector<char>{'h', 'e', 'l', 'l', 'o'});
+  EXPECT_EQ(resp.body(), std::string_view("hello"));
   EXPECT_NO_THROW(resp.addTrailer("X-Data", "123"));
+
+  resp = HttpResponse{"some body that should be erased"};
+  resp.body(std::vector<char>{});  // empty body
+  EXPECT_EQ(resp.body(), std::string_view());
+  EXPECT_THROW(resp.addTrailer("X-Data", "123"), std::logic_error);
 }
 
 // Test multiple trailers
