@@ -299,16 +299,14 @@ void SingleHttpServer::acceptNewConnections() {
     }
     int cnxFd = cnx.fd();
     if (_config.tcpNoDelay) {
-      static constexpr int enable = 1;
-      if (::setsockopt(cnxFd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) != 0) [[unlikely]] {
+      static constexpr int kEnable = 1;
+      if (::setsockopt(cnxFd, IPPROTO_TCP, TCP_NODELAY, &kEnable, sizeof(kEnable)) != 0) [[unlikely]] {
         const auto err = errno;
         log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={} ({})", cnxFd, err, std::strerror(err));
         _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
       }
     }
     if (!_eventLoop.add(EventLoop::EventFd{cnxFd, EventIn | EventRdHup | EventEt})) [[unlikely]] {
-      const auto err = errno;
-      log::error("EventLoop add client failed fd # {} err={}: {}", cnxFd, err, std::strerror(err));
       _telemetry.counterAdd("aeronet.connections.errors.add_event_failed", 1UL);
       continue;
     }
@@ -321,8 +319,6 @@ void SingleHttpServer::acceptNewConnections() {
       // Close the newly accepted connection immediately to avoid fd leak.
       _eventLoop.del(cnxFd);
       _telemetry.counterAdd("aeronet.connections.errors.duplicate_accept", 1UL);
-
-      assert(false);
       continue;
     }
 
@@ -779,9 +775,7 @@ void SingleHttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
     closeConnection(cnxIt);
     return;
   }
-  if (written > 0) {
-    state.inBuffer.erase_front(written);
-  }
+  state.inBuffer.erase_front(written);
   if (!state.inBuffer.empty()) {
     if (peer.tunnelOrFileBuffer.empty()) {
       state.inBuffer.swap(peer.tunnelOrFileBuffer);

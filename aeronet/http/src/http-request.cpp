@@ -114,22 +114,20 @@ bool HttpRequest::hasExpectContinue() const noexcept {
 
 http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
                                              bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan) {
-  auto* first = state.inBuffer.data();
-  auto* last = first + state.inBuffer.size();
+  char* first = state.inBuffer.data();
+  char* last = first + state.inBuffer.size();
   _headPinned = false;
 
   _reqStart = std::chrono::steady_clock::now();
 
-  // Example : GET /path HTTP/1.1\r\nHost: example.com\r\nUser-Agent: FooBar\r\n\r\n
-
-  auto* lineLast = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
+  char* lineLast = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
   if (lineLast == last) {
     return kStatusNeedMoreData;
   }
   if (std::cmp_less(lineLast - first, http::kHttpReqLineMinLen - http::CRLF.size())) {
     return http::StatusCodeBadRequest;
   }
-  auto* nextSep = std::find(first, lineLast, ' ');
+  char* nextSep = std::find(first, lineLast, ' ');
   if (nextSep == lineLast) {
     // we have a new line, but no spaces in the first line. This is definitely a bad request.
     return http::StatusCodeBadRequest;

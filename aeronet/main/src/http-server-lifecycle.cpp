@@ -365,7 +365,7 @@ void SingleHttpServer::runUntil(const std::function<bool()>& predicate) {
   }
 }
 
-void SingleHttpServer::start() { _internalHandle.emplace(startDetached()); }
+void SingleHttpServer::start() { _internalHandle = startDetached(); }
 
 SingleHttpServer::AsyncHandle SingleHttpServer::startDetached() {
   auto errorPtr = std::make_shared<std::exception_ptr>();
@@ -412,10 +412,8 @@ void SingleHttpServer::stop() noexcept {
     log::debug("Stopping server");
 
     // Stop internal handle if start() was used (non-blocking API)
-    if (_internalHandle) {
-      _internalHandle->stop();
-      _internalHandle.reset();
-    }
+    _internalHandle.stop();
+
     _lifecycle.reset();
     log::debug("Stopped server");
   }

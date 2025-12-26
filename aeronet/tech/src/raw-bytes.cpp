@@ -171,7 +171,7 @@ void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() noexcept {
       _capacity = 0;
     } else {
       pointer newBuf = static_cast<pointer>(std::realloc(_buf, _size));
-      if (newBuf != nullptr) {
+      if (newBuf != nullptr) [[likely]] {
         _buf = newBuf;
         _capacity = _size;
       }
@@ -230,7 +230,7 @@ bool RawBytesBase<T, ViewType, SizeType>::operator==(const RawBytesBase &rhs) co
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::reallocUp(size_type newCapacity) {
   pointer newBuf = static_cast<pointer>(std::realloc(_buf, newCapacity));
-  if (newBuf == nullptr) {
+  if (newBuf == nullptr) [[unlikely]] {
     throw std::bad_alloc();
   }
   _buf = newBuf;
