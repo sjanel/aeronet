@@ -63,12 +63,6 @@
 #include "aeronet/websocket-endpoint.hpp"
 #include "aeronet/websocket-handler.hpp"
 
-#ifdef AERONET_ENABLE_OPENSSL
-#include <openssl/err.h>
-
-#include "aeronet/tls-transport.hpp"
-#endif
-
 #ifdef AERONET_ENABLE_BROTLI
 #include "aeronet/brotli-decoder.hpp"
 #endif
@@ -92,33 +86,35 @@ namespace {
 // Snapshot of immutable HttpServerConfig fields that require socket rebind or structural reinitialization.
 // These fields are captured before allowing config updates and silently restored afterward to prevent
 // runtime modification of settings that cannot be changed without recreating the server.
-struct ImmutableConfigSnapshot {
+class ImmutableConfigSnapshot {
+ public:
   explicit ImmutableConfigSnapshot(const HttpServerConfig& cfg)
-      : nbThreads(cfg.nbThreads), port(cfg.port), reusePort(cfg.reusePort), telemetry(cfg.telemetry) {}
+      : _nbThreads(cfg.nbThreads), _port(cfg.port), _reusePort(cfg.reusePort), _telemetry(cfg.telemetry) {}
 
   void restore(HttpServerConfig& cfg) {
-    if (cfg.nbThreads != nbThreads) [[unlikely]] {
-      cfg.nbThreads = nbThreads;
+    if (cfg.nbThreads != _nbThreads) [[unlikely]] {
+      cfg.nbThreads = _nbThreads;
       log::warn("Attempted to modify immutable HttpServerConfig.nbThreads at runtime; change ignored");
     }
-    if (cfg.port != port) [[unlikely]] {
-      cfg.port = port;
+    if (cfg.port != _port) [[unlikely]] {
+      cfg.port = _port;
       log::warn("Attempted to modify immutable HttpServerConfig.port at runtime; change ignored");
     }
-    if (cfg.reusePort != reusePort) [[unlikely]] {
-      cfg.reusePort = reusePort;
+    if (cfg.reusePort != _reusePort) [[unlikely]] {
+      cfg.reusePort = _reusePort;
       log::warn("Attempted to modify immutable HttpServerConfig.reusePort at runtime; change ignored");
     }
-    if (cfg.telemetry != telemetry) [[unlikely]] {
-      cfg.telemetry = std::move(telemetry);
+    if (cfg.telemetry != _telemetry) [[unlikely]] {
+      cfg.telemetry = std::move(_telemetry);
       log::warn("Attempted to modify immutable HttpServerConfig.telemetry at runtime; change ignored");
     }
   }
 
-  uint32_t nbThreads;
-  uint16_t port;
-  bool reusePort;
-  TelemetryConfig telemetry;
+ private:
+  uint32_t _nbThreads;
+  uint16_t _port;
+  bool _reusePort;
+  TelemetryConfig _telemetry;
 };
 
 }  // namespace
@@ -1213,12 +1209,10 @@ ServerStats SingleHttpServer::stats() const {
   statsOut.tlsHandshakeDurationCount = _tlsMetrics.handshakeDurationCount;
   statsOut.tlsHandshakeDurationTotalNs = _tlsMetrics.handshakeDurationTotalNs;
   statsOut.tlsHandshakeDurationMaxNs = _tlsMetrics.handshakeDurationMaxNs;
-#ifdef AERONET_ENABLE_KTLS
   statsOut.ktlsSendEnabledConnections = _tlsMetrics.ktlsSendEnabledConnections;
   statsOut.ktlsSendEnableFallbacks = _tlsMetrics.ktlsSendEnableFallbacks;
   statsOut.ktlsSendForcedShutdowns = _tlsMetrics.ktlsSendForcedShutdowns;
   statsOut.ktlsSendBytes = _tlsMetrics.ktlsSendBytes;
-#endif
 #endif
   return statsOut;
 }

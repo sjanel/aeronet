@@ -9,9 +9,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <utility>
 
 #include "aeronet/log.hpp"
+#include "aeronet/tls-config.hpp"
 #include "aeronet/tls-info.hpp"
 #include "aeronet/tls-metrics.hpp"
 #include "aeronet/tls-raii.hpp"
@@ -84,36 +86,41 @@ TlsHandshakeResult CollectAndLogTlsHandshake(const SSL* ssl, int fd, bool logHan
 }
 }  // namespace
 
-TLSInfo FinalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake,
-                             std::chrono::steady_clock::time_point handshakeStart, TlsMetricsInternal& metrics) {
+TLSInfo FinalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake, bool& tlsHandshakeEventEmitted,
+                             const TlsHandshakeCallback& cb, std::chrono::steady_clock::time_point handshakeStart,
+                             TlsMetricsInternal& metrics) {
   TlsHandshakeResult hs = CollectAndLogTlsHandshake(ssl, fd, logHandshake, handshakeStart);
 
-  TLSInfo ret{std::move(hs.parts)};
+  const bool resumed = ::SSL_session_reused(ssl) == 1;
+  const bool clientCertPresent = hs.clientCertPresent;
 
   // Metrics updates
   ++metrics.handshakesSucceeded;
-  if (::SSL_session_reused(ssl) == 1) {
+  if (resumed) {
     ++metrics.handshakesResumed;
   } else {
     ++metrics.handshakesFull;
   }
-  if (!ret.selectedAlpn().empty()) {
-    auto [it, inserted] = metrics.alpnDistribution.emplace(ret.selectedAlpn(), 1);
-    if (!inserted) {
-      ++(it->second);
-    }
-  }
-  if (hs.clientCertPresent) {
+  if (clientCertPresent) {
     ++metrics.clientCertPresent;
   }
-  if (!ret.negotiatedCipher().empty()) {
-    auto [it, inserted] = metrics.cipherCounts.emplace(ret.negotiatedCipher(), 1);
+
+  TLSInfo tlsInfo{handshakeStart, std::move(hs.parts)};
+
+  if (!tlsInfo.selectedAlpn().empty()) {
+    auto [it, inserted] = metrics.alpnDistribution.emplace(tlsInfo.selectedAlpn(), 1);
     if (!inserted) {
       ++(it->second);
     }
   }
-  if (!ret.negotiatedVersion().empty()) {
-    auto [it, inserted] = metrics.versionCounts.emplace(ret.negotiatedVersion(), 1);
+  if (!tlsInfo.negotiatedCipher().empty()) {
+    auto [it, inserted] = metrics.cipherCounts.emplace(tlsInfo.negotiatedCipher(), 1);
+    if (!inserted) {
+      ++(it->second);
+    }
+  }
+  if (!tlsInfo.negotiatedVersion().empty()) {
+    auto [it, inserted] = metrics.versionCounts.emplace(tlsInfo.negotiatedVersion(), 1);
     if (!inserted) {
       ++(it->second);
     }
@@ -124,7 +131,85 @@ TLSInfo FinalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake,
     metrics.handshakeDurationMaxNs = std::max(metrics.handshakeDurationMaxNs, hs.durationNs);
   }
 
-  return ret;
+  EmitTlsHandshakeEvent(tlsHandshakeEventEmitted, tlsInfo, cb, TlsHandshakeEvent::Result::Succeeded, fd, {}, resumed,
+                        clientCertPresent);
+
+  return tlsInfo;
+}
+
+namespace {
+
+inline uint64_t DurationNs(std::chrono::steady_clock::time_point start) {
+  if (start.time_since_epoch().count() == 0) {
+    return 0;
+  }
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+}
+
+}  // namespace
+
+void EmitTlsHandshakeEvent(bool& tlsHandshakeEventEmitted, const TLSInfo& tlsInfo, const TlsHandshakeCallback& cb,
+                           TlsHandshakeEvent::Result result, int fd, std::string_view reason, bool resumed,
+                           bool clientCertPresent) {
+  if (tlsHandshakeEventEmitted) {
+    return;
+  }
+  tlsHandshakeEventEmitted = true;
+
+  if (cb) {
+    TlsHandshakeEvent ev;
+    ev.result = result;
+    ev.reason = reason;
+    ev.fd = fd;
+    ev.resumed = resumed;
+    ev.clientCertPresent = clientCertPresent;
+    ev.durationNs = DurationNs(tlsInfo.handshakeStart);
+    ev.selectedAlpn = tlsInfo.selectedAlpn();
+    ev.negotiatedCipher = tlsInfo.negotiatedCipher();
+    ev.negotiatedVersion = tlsInfo.negotiatedVersion();
+    ev.peerSubject = tlsInfo.peerSubject();
+    try {
+      cb(ev);
+    } catch (const std::exception& ex) {
+      log::error("Exception raised in TLS handshake callback: {}", ex.what());
+    } catch (...) {
+      log::error("Unknown exception raised in TLS handshake callback");
+    }
+  }
+}
+
+KtlsApplication MaybeEnableKtlsSend(KtlsEnableResult ktlsResult, int fd, TLSConfig::KtlsMode ktlsMode,
+                                    TlsMetricsInternal& metrics) {
+  const bool force = ktlsMode == TLSConfig::KtlsMode::Required;
+  const bool warnOnFailure = ktlsMode == TLSConfig::KtlsMode::Enabled || ktlsMode == TLSConfig::KtlsMode::Required;
+
+  std::string_view reason = "unknown";
+  switch (ktlsResult) {
+    case KtlsEnableResult::Enabled:
+      ++metrics.ktlsSendEnabledConnections;
+      log::debug("kTLS send enabled on fd # {}", fd);
+      return KtlsApplication::Enabled;
+    case KtlsEnableResult::Unsupported:
+      reason = "unsupported";
+      [[fallthrough]];
+    case KtlsEnableResult::Disabled:
+      reason = "disabled";
+      [[fallthrough]];
+    default:
+      ++metrics.ktlsSendEnableFallbacks;
+      if (force) {
+        ++metrics.ktlsSendForcedShutdowns;
+        log::error("kTLS send {} on fd # {} while forced", reason, fd);
+        return KtlsApplication::CloseConnection;
+      }
+      if (warnOnFailure) {
+        log::warn("kTLS send {} on fd # {} (falling back to user-space TLS)", reason, fd);
+      } else {
+        log::debug("kTLS send {} on fd # {} (fallback)", reason, fd);
+      }
+      return KtlsApplication::Disabled;
+  }
 }
 
 }  // namespace aeronet

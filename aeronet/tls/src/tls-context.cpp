@@ -9,12 +9,12 @@
 #include <openssl/x509.h>      // X509_free, X509_get_subject_name, X509_NAME_oneline
 #include <openssl/x509_vfy.h>  // X509_STORE_add_cert
 
-#include <atomic>
 #include <cassert>
 #include <cctype>
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <numeric>
 #include <span>
 #include <stdexcept>
@@ -28,18 +28,16 @@
 #include "aeronet/tls-handshake-observer.hpp"
 #include "aeronet/tls-raii.hpp"
 #include "aeronet/tls-ticket-key-store.hpp"
+#include "spdlog/common.h"
+#include "spdlog/spdlog.h"
 
 namespace aeronet {
-
-// Test-only hook: when set > 0, marks the observer as an ALPN strict mismatch without aborting the handshake.
-// Default is zero so production runs are unaffected unless tests mutate it.
-std::atomic<int> g_aeronetTestForceAlpnStrictMismatch{0};
 
 namespace {
 
 void ApplyCipherPolicy(SSL_CTX* ctx, const TLSConfig& cfg);
 
-int parseTlsVersion(TLSConfig::Version ver) {
+int ParseTlsVersion(TLSConfig::Version ver) {
   if (ver == TLSConfig::TLS_1_2) {
     return TLS1_2_VERSION;
   }
@@ -99,21 +97,33 @@ void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_v
 
 void ConfigureContextOptions(SSL_CTX* ctx, const TLSConfig& cfg) {
   if (cfg.disableCompression) {
-    if ((::SSL_CTX_set_options(ctx, SSL_OP_NO_COMPRESSION) & SSL_OP_NO_COMPRESSION) == 0) {
-      throw std::runtime_error("Failed to set SSL_OP_NO_COMPRESSION on SSL_CTX");
-    }
+    ::SSL_CTX_set_options(ctx, SSL_OP_NO_COMPRESSION);
+    assert((::SSL_CTX_get_options(ctx) & SSL_OP_NO_COMPRESSION) != 0);
+  } else {
+    ::SSL_CTX_clear_options(ctx, SSL_OP_NO_COMPRESSION);
+    assert((::SSL_CTX_get_options(ctx) & SSL_OP_NO_COMPRESSION) == 0);
   }
-#if defined(AERONET_ENABLE_KTLS) && defined(SSL_OP_ENABLE_KTLS)
-  if (cfg.ktlsMode != TLSConfig::KtlsMode::Disabled) {
-    if ((::SSL_CTX_set_options(ctx, SSL_OP_ENABLE_KTLS) & SSL_OP_ENABLE_KTLS) == 0) {
-      throw std::runtime_error("Failed to set SSL_OP_ENABLE_KTLS on SSL_CTX");
-    }
+  switch (cfg.ktlsMode) {
+    case TLSConfig::KtlsMode::Disabled:
+      ::SSL_CTX_clear_options(ctx, SSL_OP_ENABLE_KTLS);
+      assert((::SSL_CTX_get_options(ctx) & SSL_OP_ENABLE_KTLS) == 0);
+      break;
+    case TLSConfig::KtlsMode::Opportunistic:
+      [[fallthrough]];
+    case TLSConfig::KtlsMode::Enabled:
+      [[fallthrough]];
+    case TLSConfig::KtlsMode::Required:
+      // Required will be checked at handshake time, Enabled will log warnings if not available
+      ::SSL_CTX_set_options(ctx, SSL_OP_ENABLE_KTLS);
+      assert((::SSL_CTX_get_options(ctx) & SSL_OP_ENABLE_KTLS) != 0);
+      break;
+    default:
+      throw std::invalid_argument("Invalid kTLS mode");
   }
-#endif
   if (cfg.cipherPolicy != TLSConfig::CipherPolicy::Default) {
     ApplyCipherPolicy(ctx, cfg);
   } else if (!cfg.cipherList().empty()) {
-    if (::SSL_CTX_set_cipher_list(ctx, cfg.cipherListCstrView().c_str()) != 1) {
+    if (::SSL_CTX_set_cipher_list(ctx, cfg.cipherListCstr()) != 1) {
       throw std::runtime_error("Failed to set cipher list");
     }
   }
@@ -121,13 +131,13 @@ void ConfigureContextOptions(SSL_CTX* ctx, const TLSConfig& cfg) {
 
 void ConfigureProtocolBounds(SSL_CTX* ctx, const TLSConfig& cfg) {
   if (cfg.minVersion != TLSConfig::Version{}) {
-    int mv = parseTlsVersion(cfg.minVersion);
+    int mv = ParseTlsVersion(cfg.minVersion);
     if (mv == 0 || ::SSL_CTX_set_min_proto_version(ctx, mv) != 1) {
       throw std::runtime_error("Failed to set minimum TLS version");
     }
   }
   if (cfg.maxVersion != TLSConfig::Version{}) {
-    int Mv = parseTlsVersion(cfg.maxVersion);
+    int Mv = ParseTlsVersion(cfg.maxVersion);
     if (Mv == 0 || ::SSL_CTX_set_max_proto_version(ctx, Mv) != 1) {
       throw std::runtime_error("Failed to set maximum TLS version");
     }
@@ -181,21 +191,21 @@ void ConfigureSessionTickets(SSL_CTX* ctx, const TLSConfig& cfg,
   if ((::SSL_CTX_clear_options(ctx, SSL_OP_NO_TICKET) & SSL_OP_NO_TICKET) != 0) {
     throw std::runtime_error("Failed to clear SSL_OP_NO_TICKET on SSL_CTX");
   }
-  if (ticketStore) {
-    ::SSL_CTX_set_ex_data(ctx, kTicketStoreIndex, ticketStore.get());
-    ::SSL_CTX_set_tlsext_ticket_key_evp_cb(ctx, &SessionTicketCallback);
-  }
+  assert(ticketStore != nullptr);
+  ::SSL_CTX_set_ex_data(ctx, kTicketStoreIndex, ticketStore.get());
+  ::SSL_CTX_set_tlsext_ticket_key_evp_cb(ctx, &SessionTicketCallback);
 }
 
 const char* CipherPolicyTls13(TLSConfig::CipherPolicy policy) {
   switch (policy) {
     case TLSConfig::CipherPolicy::Modern:
+      [[fallthrough]];
     case TLSConfig::CipherPolicy::Compatibility:
       return "TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256";
     case TLSConfig::CipherPolicy::Legacy:
       return "TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256";
     default:
-      return nullptr;
+      throw std::invalid_argument("Invalid cipher policy");
   }
 }
 
@@ -213,20 +223,16 @@ const char* CipherPolicyTls12(TLSConfig::CipherPolicy policy) {
     case TLSConfig::CipherPolicy::Legacy:
       return "ECDHE-RSA-AES256-SHA:ECDHE-RSA-AES128-SHA:AES256-SHA:AES128-SHA";
     default:
-      return nullptr;
+      throw std::invalid_argument("Invalid cipher policy");
   }
 }
 
 void ApplyCipherPolicy(SSL_CTX* ctx, const TLSConfig& cfg) {
-  if (const char* suites13 = CipherPolicyTls13(cfg.cipherPolicy)) {
-    if (::SSL_CTX_set_ciphersuites(ctx, suites13) != 1) {
-      throw std::runtime_error("Failed to set TLS 1.3 cipher suites");
-    }
+  if (::SSL_CTX_set_ciphersuites(ctx, CipherPolicyTls13(cfg.cipherPolicy)) != 1) {
+    throw std::runtime_error("Failed to set TLS 1.3 cipher suites");
   }
-  if (const char* suites12 = CipherPolicyTls12(cfg.cipherPolicy)) {
-    if (::SSL_CTX_set_cipher_list(ctx, suites12) != 1) {
-      throw std::runtime_error("Failed to set TLS cipher list");
-    }
+  if (::SSL_CTX_set_cipher_list(ctx, CipherPolicyTls12(cfg.cipherPolicy)) != 1) {
+    throw std::runtime_error("Failed to set TLS cipher list");
   }
 }
 
@@ -243,37 +249,13 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics,
                        std::shared_ptr<TlsTicketKeyStore> ticketKeyStore)
     : _ctx(::SSL_CTX_new(TLS_server_method())), _ticketKeyStore(std::move(ticketKeyStore)) {
   if (!_ctx) {
-    throw std::runtime_error("SSL_CTX_new failed");
+    throw std::bad_alloc();
   }
-  auto* raw = reinterpret_cast<SSL_CTX*>(_ctx.get());
-  ConfigureContextOptions(raw, cfg);
-  ConfigureProtocolBounds(raw, cfg);
-  std::string_view certPem = cfg.certPem();
-  std::string_view keyPem = cfg.keyPem();
-  if (!certPem.empty() && !keyPem.empty()) {
-    auto certBio = MakeMemBio(certPem.data(), static_cast<int>(certPem.size()));
-    auto keyBio = MakeMemBio(keyPem.data(), static_cast<int>(keyPem.size()));
-    auto certX509 = MakeX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr));
-    auto pkey = MakePKey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr));
-
-    if (::SSL_CTX_use_certificate(raw, certX509.get()) != 1) {
-      throw std::runtime_error("Failed to use in-memory certificate");
-    }
-    if (::SSL_CTX_use_PrivateKey(raw, pkey.get()) != 1) {
-      throw std::runtime_error("Failed to use in-memory private key");
-    }
-  } else {
-    if (::SSL_CTX_use_certificate_file(raw, cfg.certFileCstrView().c_str(), SSL_FILETYPE_PEM) != 1) {
-      throw std::runtime_error("Failed to load certificate");
-    }
-    if (::SSL_CTX_use_PrivateKey_file(raw, cfg.keyFileCstrView().c_str(), SSL_FILETYPE_PEM) != 1) {
-      throw std::runtime_error("Failed to load private key");
-    }
-  }
-  if (::SSL_CTX_check_private_key(raw) != 1) {
-    throw std::runtime_error("Private key check failed");
-  }
-  ConfigureClientVerification(raw, cfg);
+  auto* ctx = reinterpret_cast<SSL_CTX*>(_ctx.get());
+  ConfigureContextOptions(ctx, cfg);
+  ConfigureProtocolBounds(ctx, cfg);
+  LoadCertificateAndKey(ctx, cfg.certPem(), cfg.keyPem(), cfg.certFileCstr(), cfg.keyFileCstr());
+  ConfigureClientVerification(ctx, cfg);
 
   auto alpnProtocols = cfg.alpnProtocols();
   std::size_t wireLen = std::accumulate(alpnProtocols.begin(), alpnProtocols.end(), std::size_t{0},
@@ -284,7 +266,7 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics,
       _alpnData->wire.unchecked_push_back(static_cast<std::byte>(proto.size()));
       _alpnData->wire.unchecked_append(reinterpret_cast<const std::byte*>(proto.data()), proto.size());
     }
-    ::SSL_CTX_set_alpn_select_cb(raw, &TlsContext::SelectAlpn, _alpnData.get());
+    ::SSL_CTX_set_alpn_select_cb(ctx, &TlsContext::SelectAlpn, _alpnData.get());
   }
 
   if (cfg.sessionTickets.enabled) {
@@ -295,7 +277,7 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics,
       _ticketKeyStore->loadStaticKeys(cfg.sessionTicketKeys());
     }
   }
-  ConfigureSessionTickets(raw, cfg, _ticketKeyStore);
+  ConfigureSessionTickets(ctx, cfg, _ticketKeyStore);
 
   const auto& sniCerts = cfg.sniCertificates();
   if (!sniCerts.empty()) {
@@ -310,8 +292,8 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics,
       ConfigureContextOptions(routeRaw, cfg);
       ConfigureProtocolBounds(routeRaw, cfg);
       if (entry.certPem().empty()) {
-        LoadCertificateAndKey(routeRaw, std::string_view{}, std::string_view{}, entry.certFileCstrView().c_str(),
-                              entry.keyFileCstrView().c_str());
+        LoadCertificateAndKey(routeRaw, std::string_view{}, std::string_view{}, entry.certFileCstrView(),
+                              entry.keyFileCstrView());
       } else {
         LoadCertificateAndKey(routeRaw, entry.certPem(), entry.keyPem(), nullptr, nullptr);
       }
@@ -323,26 +305,22 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics,
       *pRoute = SniRoute(RawChars(entry.pattern()), entry.isWildcard, std::move(routeCtx));
       ++pRoute;
     }
-    ::SSL_CTX_set_tlsext_servername_arg(raw, _sniRoutes.get());
-    ::SSL_CTX_set_tlsext_servername_callback(raw, &TlsContext::SelectSniRoute);
+    ::SSL_CTX_set_tlsext_servername_arg(ctx, _sniRoutes.get());
+    ::SSL_CTX_set_tlsext_servername_callback(ctx, &TlsContext::SelectSniRoute);
   }
+
+  const auto opts = ::SSL_CTX_get_options(ctx);
+  const bool ktlsAllowed = (opts & SSL_OP_ENABLE_KTLS) != 0;
+  const bool compressionAllowed = (opts & SSL_OP_NO_COMPRESSION) == 0;
+  log::debug("SSL_CTX options:");
+  log::debug(" - kTLS:        {}", ktlsAllowed ? "enabled" : "disabled");
+  log::debug(" - compression: {}", compressionAllowed ? "enabled" : "disabled");
 }
 
 int TlsContext::SelectAlpn([[maybe_unused]] SSL* ssl, const unsigned char** out, unsigned char* outlen,
                            const unsigned char* in, unsigned int inlen, void* arg) {
   auto* data = reinterpret_cast<AlpnData*>(arg);
   assert(data != nullptr && !data->wire.empty());
-
-  // Fault injection: allow tests to flag a strict mismatch even if protocols intersect.
-  if (g_aeronetTestForceAlpnStrictMismatch.fetch_sub(1, std::memory_order_relaxed) > 0) {
-    if (data->metrics != nullptr) {
-      ++data->metrics->alpnStrictMismatches;
-    }
-    if (auto* obs = GetTlsHandshakeObserver(reinterpret_cast<ssl_st*>(ssl))) {
-      obs->alpnStrictMismatch = true;
-    }
-  }
-
   const unsigned char* ptr = reinterpret_cast<const unsigned char*>(data->wire.data());
   const unsigned int prefLen = static_cast<unsigned int>(data->wire.size());
   for (unsigned int prefIndex = 0; prefIndex < prefLen;) {

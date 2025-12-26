@@ -32,12 +32,10 @@ struct TlsMetricsInternal {
   uint64_t handshakeDurationTotalNs{};
   uint64_t handshakeDurationCount{};
   uint64_t handshakeDurationMaxNs{};
-#ifdef AERONET_ENABLE_KTLS
   uint64_t ktlsSendEnabledConnections{0};
   uint64_t ktlsSendEnableFallbacks{0};
   uint64_t ktlsSendForcedShutdowns{0};
   uint64_t ktlsSendBytes{0};
-#endif
 };
 
 }  // namespace aeronet

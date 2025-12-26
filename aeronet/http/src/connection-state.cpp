@@ -16,6 +16,14 @@
 #include "aeronet/log.hpp"
 #include "aeronet/transport.hpp"
 
+#ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/tls-config.hpp"
+#include "aeronet/tls-handshake-callback.hpp"
+#include "aeronet/tls-handshake.hpp"
+#include "aeronet/tls-metrics.hpp"
+#include "aeronet/tls-transport.hpp"
+#endif
+
 namespace aeronet {
 
 ITransport::TransportResult ConnectionState::transportRead(std::size_t chunkSize) {
@@ -97,7 +105,7 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
     if (bytes > 0) {
       fileSend.offset = static_cast<std::size_t>(off);
       fileSend.remaining -= static_cast<std::size_t>(bytes);
-    } else if (bytes == 0) {
+    } else {  // 0
       // sendfile() returning 0 with a non-blocking socket typically means the socket would block.
       // Treat it as WouldBlock to enable writable interest and wait for the socket to be ready.
       res.code = FileResult::Code::WouldBlock;
@@ -155,6 +163,35 @@ void ConnectionState::installAggregatedBodyBridge() {
   request._bodyAccessBridge = &kAggregatedBodyBridge;
   request._bodyAccessContext = &bodyStreamContext;
 }
+#ifdef AERONET_ENABLE_OPENSSL
+bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(int fd, const TlsHandshakeCallback& cb,
+                                                          TlsMetricsInternal& metrics, const TLSConfig& cfg) {
+  auto* tlsTr = dynamic_cast<TlsTransport*>(transport.get());
+  if (tlsTr == nullptr) {
+    return false;
+  }
+
+  auto* ssl = tlsTr->rawSsl();
+
+  tlsInfo =
+      FinalizeTlsHandshake(ssl, fd, cfg.logHandshake, tlsHandshakeEventEmitted, cb, tlsInfo.handshakeStart, metrics);
+
+  // SelectAlpn should abort the handshake (SSL_TLSEXT_ERR_ALERT_FATAL) before we reach here.
+  assert(!tlsHandshakeObserver.alpnStrictMismatch && "ALPN strict mismatch should have aborted the handshake earlier");
+
+  const auto ktlsMode = cfg.ktlsMode;
+  if (ktlsMode != TLSConfig::KtlsMode::Disabled) {
+    const auto application = MaybeEnableKtlsSend(tlsTr->enableKtlsSend(), fd, ktlsMode, metrics);
+    if (application == KtlsApplication::CloseConnection) {
+      requestImmediateClose();
+    } else if (application == KtlsApplication::Enabled) {
+      ktlsSendEnabled = true;
+    }
+  }
+
+  return true;
+}
+#endif
 
 void ConnectionState::clear() {
   tunnelOrFileBuffer.clear();
@@ -174,15 +211,11 @@ void ConnectionState::clear() {
   closeMode = CloseMode::None;
   waitingWritable = false;
   tlsEstablished = false;
-#ifdef AERONET_ENABLE_KTLS
-  ktlsSendAttempted = false;
   ktlsSendEnabled = false;
-#endif
   waitingForBody = false;
   connectPending = false;
   tlsInfo = {};
 #ifdef AERONET_ENABLE_OPENSSL
-  handshakeStart = {};
   tlsHandshakeObserver = {};
   tlsHandshakeEventEmitted = false;
   tlsContextKeepAlive.reset();

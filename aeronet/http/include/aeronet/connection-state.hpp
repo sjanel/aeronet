@@ -17,7 +17,10 @@
 #include "aeronet/transport.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/tls-config.hpp"
+#include "aeronet/tls-handshake-callback.hpp"
 #include "aeronet/tls-handshake-observer.hpp"
+#include "aeronet/tls-metrics.hpp"
 #endif
 
 namespace aeronet {
@@ -85,6 +88,12 @@ struct ConnectionState {
   // Helper to set up request body streaming bridges for aggregated body reading.
   void installAggregatedBodyBridge();
 
+#ifdef AERONET_ENABLE_OPENSSL
+  // Finalize TLS handshake (if this transport is TLS) and emit the handshake event.
+  // Returns true if a TLS transport was finalized (caller may perform transport-specific book-keeping).
+  bool finalizeAndEmitTlsHandshakeIfNeeded(int fd, const TlsHandshakeCallback& cb, TlsMetricsInternal& metrics,
+                                           const TLSConfig& cfg);
+#endif
   // Reset the connection state usable for a new connection without freeing allocated buffers.
   void clear();
 
@@ -131,10 +140,7 @@ struct ConnectionState {
   CloseMode closeMode{CloseMode::None};
   bool waitingWritable{false};  // EPOLLOUT registered
   bool tlsEstablished{false};   // true once TLS handshake completed (if TLS enabled)
-#ifdef AERONET_ENABLE_KTLS
-  bool ktlsSendAttempted{false};
   bool ktlsSendEnabled{false};
-#endif
   bool waitingForBody{false};  // true when awaiting missing body bytes (bodyReadTimeout enforcement)
   // Tunnel state: true when peerFd != -1. Use accessor isTunneling() to query.
   // True when a non-blocking connect() was issued and completion is pending (EPOLLOUT will signal).
@@ -155,8 +161,6 @@ struct ConnectionState {
   // True while the TLS handshake for this connection is in-flight and counted against
   // concurrency limits.
   bool tlsHandshakeInFlight{false};
-
-  std::chrono::steady_clock::time_point handshakeStart;  // TLS handshake start time (steady clock)
 
   // Keep the TLS context alive for as long as this connection's SSL/handshake may reference
   // callback user pointers (ALPN/SNI). This is required for safe hot-reload of TLS contexts.

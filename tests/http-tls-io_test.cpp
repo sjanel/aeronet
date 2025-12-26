@@ -26,6 +26,8 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/log.hpp"
+#include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_tls_fixture.hpp"
 #include "aeronet/test_tls_client.hpp"
@@ -33,7 +35,7 @@
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-ticket-key-store.hpp"
 
-using namespace aeronet;
+namespace aeronet {
 using namespace std::chrono_literals;
 
 TEST(HttpTlsBasic, LargePayload) {
@@ -305,9 +307,9 @@ TEST(HttpTlsSessionTickets, AutoRotationRefreshesPrimaryKeyAndRejectsUnknown) {
   EXPECT_EQ(store.processTicket(bogus, iv, EVP_MAX_IV_LENGTH, ctx.get(), mctx.get(), 0), 0);
 }
 
-#if defined(AERONET_ENABLE_KTLS) && (defined(__linux__) && defined(BIO_CTRL_GET_KTLS_SEND) && \
-                                     !defined(OPENSSL_NO_KTLS) && defined(BIO_CTRL_SET_KTLS_SEND))
+#if defined(BIO_CTRL_GET_KTLS_SEND) && !defined(OPENSSL_NO_KTLS)
 TEST(HttpTlsKtlsMode, EnabledModeTracksStats) {
+  log::set_level(log::level::debug);
   test::TlsTestServer ts({"http/1.1"},
                          [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled); });
   ts.setDefault([](const HttpRequest&) { return HttpResponse("ktls"); });
@@ -324,8 +326,8 @@ TEST(HttpTlsKtlsMode, EnabledModeTracksStats) {
   EXPECT_EQ(stats.ktlsSendForcedShutdowns, 0U);
 }
 
-// Integration-style coverage across KTLS modes using real TLS connections.
-// Disabled: should not attempt KTLS (no counters incremented).
+// Integration-style coverage across kTLS modes using real TLS connections.
+// Disabled: should not attempt kTLS (no counters incremented).
 TEST(HttpTlsKtlsMode, DisabledModeDoesNotAttemptKtls) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled); });
   ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK"); });
@@ -342,14 +344,14 @@ TEST(HttpTlsKtlsMode, DisabledModeDoesNotAttemptKtls) {
   EXPECT_EQ(stats.ktlsSendForcedShutdowns, 0U);
 }
 
-// Auto: opportunistic — expect either enabled or fallback, but never forced shutdowns.
-TEST(HttpTlsKtlsMode, AutoModeEnabledOrFallbackNoForcedClose) {
-  test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Auto); });
+// Opportunistic — expect either enabled or fallback, but never forced shutdowns.
+TEST(HttpTlsKtlsMode, OpportunisticModeEnabledOrFallbackNoForcedClose) {
+  test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Opportunistic); });
   ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK"); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
-  // Force a KTLS enable failure path by making SSL_get_wbio return nullptr once.
+  // Force a kTLS enable failure path by making SSL_get_wbio return nullptr once.
   test::ForceNextSslGetWbioNull(1);
   auto raw = client.get("/auto", {});
   ASSERT_FALSE(raw.empty());
@@ -360,7 +362,7 @@ TEST(HttpTlsKtlsMode, AutoModeEnabledOrFallbackNoForcedClose) {
   EXPECT_EQ(stats.ktlsSendForcedShutdowns, 0U);
 }
 
-// Enabled: similar to Auto for warnings on fallback — ensure no forced shutdowns.
+// Enabled: similar to Opportunistic for warnings on fallback — ensure no forced shutdowns.
 TEST(HttpTlsKtlsMode, EnabledModeEnabledOrFallbackNoForcedClose) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled); });
   ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK"); });
@@ -380,12 +382,12 @@ TEST(HttpTlsKtlsMode, EnabledModeEnabledOrFallbackNoForcedClose) {
 
 // Forced: treat failure as fatal — expect either enabled OR forced shutdown recorded.
 TEST(HttpTlsKtlsMode, ForcedModeEnabledOrForcedShutdown) {
-  test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Forced); });
+  test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Required); });
   ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK"); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
-  // Force failure via SSL_get_wbio(nullptr) to ensure forced shutdown is recorded when KTLS cannot be enabled.
+  // Force failure via SSL_get_wbio(nullptr) to ensure forced shutdown is recorded when kTLS cannot be enabled.
   test::ForceNextSslGetWbioNull(1);
   [[maybe_unused]] auto raw = client.get("/forced", {});
 
@@ -395,7 +397,7 @@ TEST(HttpTlsKtlsMode, ForcedModeEnabledOrForcedShutdown) {
 
 // When OpenSSL headers do not expose BIO_CTRL_SET_KTLS_SEND, TlsTransport::enableKtlsSend()
 // reports Unsupported at compile time. Cover that switch branch opportunistically.
-#if !defined(BIO_CTRL_SET_KTLS_SEND)
+#ifndef BIO_CTRL_SET_KTLS_SEND
 TEST(HttpTlsKtlsUnsupported, AutoOrEnabledFallBackWithoutForcedClose) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled); });
   ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK"); });
@@ -406,5 +408,6 @@ TEST(HttpTlsKtlsUnsupported, AutoOrEnabledFallBackWithoutForcedClose) {
   ASSERT_FALSE(raw.empty());
   ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
 }
-#endif  // !defined(BIO_CTRL_SET_KTLS_SEND)
-#endif  // KTLS tests only on supported platforms/builds
+#endif
+#endif
+}  // namespace aeronet

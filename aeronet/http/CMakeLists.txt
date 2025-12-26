@@ -11,6 +11,7 @@ target_link_libraries(aeronet_http
 if(AERONET_ENABLE_OPENSSL)
     find_package(OpenSSL REQUIRED)
     target_link_libraries(aeronet_http PRIVATE OpenSSL::Crypto)
+    target_link_libraries(aeronet_http PRIVATE aeronet_tls)
 endif()
 
 target_include_directories(aeronet_http

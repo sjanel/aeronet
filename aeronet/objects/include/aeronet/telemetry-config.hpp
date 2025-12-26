@@ -110,7 +110,7 @@ class TelemetryConfig {
 
   DogStatsD::DogStatsDTags _dogstatsdTags;
 
-  SmallConcatenatedStrings _httpHeaders;
+  ConcatenatedStrings32 _httpHeaders;
 
   HistogramBoundariesMap _histogramBuckets;
 };

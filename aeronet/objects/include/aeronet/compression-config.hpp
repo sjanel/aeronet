@@ -82,7 +82,7 @@ struct CompressionConfig {
 
   // Simple allowlist of content-types (prefix match) eligible for compression. If empty, any content type will be
   // eligible for compression.
-  SmallConcatenatedStrings contentTypeAllowList;
+  ConcatenatedStrings32 contentTypeAllowList;
 
   // Chunk size of buffer growths during compression.
   // Prefer a large size if you expect big payloads in average, prefer a small size if you want to limit memory

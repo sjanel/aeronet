@@ -715,11 +715,7 @@ TEST(MultiHttpServer, AutoThreadCountConstructor) {
   // Port should be resolved immediately at construction time.
   EXPECT_GT(multi.port(), 0);
 
-  multi.router().setDefault([](const HttpRequest&) {
-    HttpResponse resp;
-    resp.body("Auto");
-    return resp;
-  });
+  multi.router().setDefault([](const HttpRequest&) { return HttpResponse("Auto"); });
   auto handle = multi.startDetached();
   auto port = multi.port();
   ASSERT_GT(port, 0);
@@ -736,11 +732,7 @@ TEST(MultiHttpServer, MoveConstruction) {
   HttpServerConfig cfg;
   MultiHttpServer original(cfg);  // auto threads
   EXPECT_GT(original.port(), 0);  // resolved at construction
-  original.router().setDefault([](const HttpRequest&) {
-    HttpResponse resp;
-    resp.body("Move");
-    return resp;
-  });
+  original.router().setDefault([](const HttpRequest&) { return HttpResponse("Move"); });
   auto port = original.port();
   ASSERT_GT(port, 0);
   // Move into new instance
@@ -760,11 +752,7 @@ TEST(MultiHttpServer, DefaultConstructorAndMoveAssignment) {
   cfg.withReusePort();
   MultiHttpServer source(cfg);  // not started yet
   EXPECT_GT(source.port(), 0);
-  source.router().setDefault([](const HttpRequest&) {
-    HttpResponse resp;
-    resp.body("MoveAssign");
-    return resp;
-  });
+  source.router().setDefault([](const HttpRequest&) { return HttpResponse("MoveAssign"); });
   const auto originalPort = source.port();
   const auto originalThreads = source.nbThreads();
   ASSERT_GE(originalThreads, 1U);
@@ -797,11 +785,7 @@ TEST(MultiHttpServer, BlockingRunMethod) {
   _cfg.withNbThreads(2U);
   MultiHttpServer multi(_cfg);
 
-  multi.router().setDefault([](const HttpRequest& req) {
-    HttpResponse resp;
-    resp.body(std::string("Blocking:") + std::string(req.path()));
-    return resp;
-  });
+  multi.router().setDefault([](const HttpRequest& req) { return HttpResponse("Blocking:" + std::string(req.path())); });
 
   auto port = multi.port();
   ASSERT_GT(port, 0);
@@ -835,11 +819,7 @@ TEST(MultiHttpServer, RunStopAndRestart) {
   _cfg.withNbThreads(2U);
   MultiHttpServer multi(_cfg);
 
-  multi.router().setDefault([](const HttpRequest&) {
-    HttpResponse resp;
-    resp.body("First");
-    return resp;
-  });
+  multi.router().setDefault([](const HttpRequest&) { return HttpResponse("First"); });
 
   auto port = multi.port();
 
@@ -885,11 +865,7 @@ TEST(MultiHttpServer, RunUntilStopsWhenPredicateFires) {
   cfg.withReusePort();
   cfg.withNbThreads(2U);
   MultiHttpServer multi(cfg);
-  multi.router().setDefault([](const HttpRequest&) {
-    HttpResponse resp;
-    resp.body("RunUntil");
-    return resp;
-  });
+  multi.router().setDefault([](const HttpRequest&) { return HttpResponse("RunUntil"); });
 
   std::atomic<bool> done = false;
   std::jthread runner([&multi, &done](std::stop_token st) {
@@ -918,11 +894,7 @@ TEST(MultiHttpServer, StartDetachedWithStopTokenStopsOnRequest) {
   cfg.withReusePort();
   cfg.withNbThreads(1U);
   MultiHttpServer multi(cfg);
-  multi.router().setDefault([](const HttpRequest&) {
-    HttpResponse resp;
-    resp.body("Token");
-    return resp;
-  });
+  multi.router().setDefault([](const HttpRequest&) { return HttpResponse("Token"); });
 
   std::stop_source stopSource;
   auto handle = multi.startDetachedWithStopToken(stopSource.get_token());

@@ -80,7 +80,6 @@ jobs:
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
             -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
             -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
-            -DAERONET_ENABLE_KTLS=${{ matrix.features }} \
             -DAERONET_ENABLE_BROTLI=${{ matrix.features }} \
             -DAERONET_ENABLE_ZLIB=${{ matrix.features }} \
             -DAERONET_ENABLE_ZSTD=${{ matrix.features }} \
@@ -159,7 +158,6 @@ jobs:
             -DAERONET_ENABLE_CLANG_TIDY=OFF \
             -DAERONET_ENABLE_SPDLOG=ON \
             -DAERONET_ENABLE_OPENSSL=ON \
-            -DAERONET_ENABLE_KTLS=ON \
             -DAERONET_ENABLE_BROTLI=ON \
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
@@ -257,7 +255,6 @@ jobs:
             -DAERONET_ENABLE_ASAN=OFF \
             -DAERONET_ENABLE_SPDLOG=ON \
             -DAERONET_ENABLE_OPENSSL=ON \
-            -DAERONET_ENABLE_KTLS=ON \
             -DAERONET_ENABLE_BROTLI=ON \
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
@@ -401,7 +398,6 @@ jobs:
             -DAERONET_ENABLE_ASAN=OFF \
             -DAERONET_ENABLE_SPDLOG=ON \
             -DAERONET_ENABLE_OPENSSL=ON \
-            -DAERONET_ENABLE_KTLS=ON \
             -DAERONET_ENABLE_BROTLI=ON \
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \

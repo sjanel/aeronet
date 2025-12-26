@@ -27,12 +27,6 @@ TEST(CompileTimeTraits, Features) {
   EXPECT_FALSE(aeronet::openSslEnabled());
 #endif
 
-#ifdef AERONET_ENABLE_KTLS
-  EXPECT_TRUE(aeronet::ktlsEnabled());
-#else
-  EXPECT_FALSE(aeronet::ktlsEnabled());
-#endif
-
 #ifdef AERONET_ENABLE_SPDLOG
   EXPECT_TRUE(aeronet::spdLogEnabled());
 #else
