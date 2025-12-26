@@ -9,6 +9,7 @@
 #include <openssl/x509.h>      // X509_free, X509_get_subject_name, X509_NAME_oneline
 #include <openssl/x509_vfy.h>  // X509_STORE_add_cert
 
+#include <atomic>
 #include <cassert>
 #include <cctype>
 #include <cstddef>
@@ -29,7 +30,13 @@
 #include "aeronet/tls-ticket-key-store.hpp"
 
 namespace aeronet {
+
+// Test-only hook: when set > 0, marks the observer as an ALPN strict mismatch without aborting the handshake.
+// Default is zero so production runs are unaffected unless tests mutate it.
+std::atomic<int> g_aeronetTestForceAlpnStrictMismatch{0};
+
 namespace {
+
 void ApplyCipherPolicy(SSL_CTX* ctx, const TLSConfig& cfg);
 
 int parseTlsVersion(TLSConfig::Version ver) {
@@ -325,6 +332,17 @@ int TlsContext::SelectAlpn([[maybe_unused]] SSL* ssl, const unsigned char** out,
                            const unsigned char* in, unsigned int inlen, void* arg) {
   auto* data = reinterpret_cast<AlpnData*>(arg);
   assert(data != nullptr && !data->wire.empty());
+
+  // Fault injection: allow tests to flag a strict mismatch even if protocols intersect.
+  if (g_aeronetTestForceAlpnStrictMismatch.fetch_sub(1, std::memory_order_relaxed) > 0) {
+    if (data->metrics != nullptr) {
+      ++data->metrics->alpnStrictMismatches;
+    }
+    if (auto* obs = GetTlsHandshakeObserver(reinterpret_cast<ssl_st*>(ssl))) {
+      obs->alpnStrictMismatch = true;
+    }
+  }
+
   const unsigned char* ptr = reinterpret_cast<const unsigned char*>(data->wire.data());
   const unsigned int prefLen = static_cast<unsigned int>(data->wire.size());
   for (unsigned int prefIndex = 0; prefIndex < prefLen;) {

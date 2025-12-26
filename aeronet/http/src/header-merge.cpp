@@ -10,10 +10,6 @@
 
 namespace aeronet::http {
 
-// In-place variant used by request header parsing where headers live inside a connection buffer.
-// 'bufferBase' must point to the beginning of the connection receive buffer (state.inBuffer.data()).
-// 'currentLineStart' is the pointer to the start of the header line being parsed (the 'first' pointer in setHead).
-// 'tmp' is a temporary RawChars used to stage moved data (same tmpBuffer passed into setHead).
 bool AddOrMergeHeaderInPlace(HeadersViewMap& map, std::string_view name, std::string_view value, RawChars& tmp,
                              const char* bufferBase, const char* currentLineStart,
                              bool mergeAllowedForUnknownRequestHeaders) {
@@ -35,7 +31,7 @@ bool AddOrMergeHeaderInPlace(HeadersViewMap& map, std::string_view name, std::st
   // Host: example.com[]H: v1***[]User-Agent: FooBar[]v2[]Other: v1[][]
   // Host: example.com[]H: v1,v2[]User-Agent: FooBar[]v2[]Other: v1[][]
 
-  const auto mergeSep = ReqHeaderValueSeparator(it->first, mergeAllowedForUnknownRequestHeaders);
+  const char mergeSep = ReqHeaderValueSeparator(it->first, mergeAllowedForUnknownRequestHeaders);
   if (mergeSep == '\0') {
     // Merge is forbidden, reject 400 Bad Request
     return false;
@@ -62,10 +58,12 @@ bool AddOrMergeHeaderInPlace(HeadersViewMap& map, std::string_view name, std::st
   tmp.assign(value);
 
   // Step 2 - move existing suffix to the right to make room for new data
-  auto* firstValueFirst = const_cast<char*>(bufferBase) + (it->second.data() - bufferBase);
-  auto* firstValueLast = firstValueFirst + it->second.size();
+  char* firstValueFirst = const_cast<char*>(bufferBase) + (it->second.data() - bufferBase);
+  char* firstValueLast = firstValueFirst + it->second.size();
 
   std::memmove(firstValueLast + szToMove, firstValueLast, static_cast<std::size_t>(currentLineStart - firstValueLast));
+
+  // Update all pointers in map that are after firstValueLast
   for (auto& [key, val] : map) {
     if (key.data() > firstValueLast) {
       key = std::string_view(key.begin() + szToMove, key.end() + szToMove);

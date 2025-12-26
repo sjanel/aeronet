@@ -54,7 +54,7 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
       // Need more data - save remainder for next call
       if (_inputBuffer.empty()) {
         _inputBuffer.append(data);
-      } else if (totalConsumed > 0) {
+      } else {
         // Shift remaining data to front
         _inputBuffer.erase_front(totalConsumed);
       }
