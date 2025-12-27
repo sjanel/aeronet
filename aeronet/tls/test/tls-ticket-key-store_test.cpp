@@ -1,11 +1,15 @@
 #include "aeronet/tls-ticket-key-store.hpp"
 
+#include <dlfcn.h>
 #include <gtest/gtest.h>
 #include <openssl/evp.h>
+#include <openssl/params.h>
+#include <openssl/rand.h>
 #include <openssl/types.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -15,7 +19,90 @@
 
 #include "aeronet/tls-config.hpp"
 
+namespace {
+
+std::atomic<int> gFailRandBytes{0};
+std::atomic<int> gFailEncryptInitEx{0};
+std::atomic<int> gFailDecryptInitEx{0};
+std::atomic<int> gFailMacCtxSetParams{0};
+
+class ScopedFailNext final {
+ public:
+  explicit ScopedFailNext(std::atomic<int>& counter) : _counter(counter), _prev(counter.exchange(1)) {}
+  ~ScopedFailNext() { _counter.store(_prev); }
+
+  ScopedFailNext(const ScopedFailNext&) = delete;
+  ScopedFailNext& operator=(const ScopedFailNext&) = delete;
+  ScopedFailNext(ScopedFailNext&&) = delete;
+  ScopedFailNext& operator=(ScopedFailNext&&) = delete;
+
+ private:
+  std::atomic<int>& _counter;
+  int _prev;
+};
+
+int ConsumeFail(std::atomic<int>& counter) {
+  int cur = counter.load();
+  if (cur <= 0) {
+    return 0;
+  }
+  counter.store(cur - 1);
+  return 1;
+}
+
+}  // namespace
+
+extern "C" {
+
+int RAND_bytes(unsigned char* buf, int num) {
+  using RealFn = int (*)(unsigned char*, int);
+  static RealFn real = reinterpret_cast<RealFn>(::dlsym(RTLD_NEXT, "RAND_bytes"));
+  if (ConsumeFail(gFailRandBytes) == 1) {
+    return 0;
+  }
+  return (real != nullptr) ? real(buf, num) : 0;
+}
+
+int EVP_EncryptInit_ex(EVP_CIPHER_CTX* ctx, const EVP_CIPHER* cipher, ENGINE* impl, const unsigned char* key,
+                       const unsigned char* iv) {
+  using RealFn = int (*)(EVP_CIPHER_CTX*, const EVP_CIPHER*, ENGINE*, const unsigned char*, const unsigned char*);
+  static RealFn real = reinterpret_cast<RealFn>(::dlsym(RTLD_NEXT, "EVP_EncryptInit_ex"));
+  if (ConsumeFail(gFailEncryptInitEx) == 1) {
+    return 0;
+  }
+  return (real != nullptr) ? real(ctx, cipher, impl, key, iv) : 0;
+}
+
+int EVP_DecryptInit_ex(EVP_CIPHER_CTX* ctx, const EVP_CIPHER* cipher, ENGINE* impl, const unsigned char* key,
+                       const unsigned char* iv) {
+  using RealFn = int (*)(EVP_CIPHER_CTX*, const EVP_CIPHER*, ENGINE*, const unsigned char*, const unsigned char*);
+  static RealFn real = reinterpret_cast<RealFn>(::dlsym(RTLD_NEXT, "EVP_DecryptInit_ex"));
+  if (ConsumeFail(gFailDecryptInitEx) == 1) {
+    return 0;
+  }
+  return (real != nullptr) ? real(ctx, cipher, impl, key, iv) : 0;
+}
+
+int EVP_MAC_CTX_set_params(EVP_MAC_CTX* ctx, const OSSL_PARAM params[]) {
+  using RealFn = int (*)(EVP_MAC_CTX*, const OSSL_PARAM[]);
+  static RealFn real = reinterpret_cast<RealFn>(::dlsym(RTLD_NEXT, "EVP_MAC_CTX_set_params"));
+  if (ConsumeFail(gFailMacCtxSetParams) == 1) {
+    return 0;
+  }
+  return (real != nullptr) ? real(ctx, params) : 0;
+}
+
+}  // extern "C"
+
 namespace aeronet {
+
+namespace {
+
+using CipherPtr = std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)>;
+using MacCtxPtr = std::unique_ptr<EVP_MAC_CTX, decltype(&::EVP_MAC_CTX_free)>;
+using MacPtr = std::unique_ptr<EVP_MAC, decltype(&::EVP_MAC_free)>;
+
+}  // namespace
 
 TEST(TlsTicketKeyStoreTest, ProcessTicketIssuesAndDecrypts) {
   // Create a ticket store with a single static key.
@@ -30,14 +117,12 @@ TEST(TlsTicketKeyStoreTest, ProcessTicketIssuesAndDecrypts) {
   std::array<unsigned char, 16> keyName{};
   std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
 
-  std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)> cipherCtx{::EVP_CIPHER_CTX_new(),
-                                                                              &::EVP_CIPHER_CTX_free};
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
   ASSERT_NE(cipherCtx.get(), nullptr);
 
-  EVP_MAC* mac = ::EVP_MAC_fetch(nullptr, "HMAC", nullptr);
-  ASSERT_NE(mac, nullptr);
-  std::unique_ptr<EVP_MAC_CTX, decltype(&::EVP_MAC_CTX_free)> macCtx{::EVP_MAC_CTX_new(mac), &::EVP_MAC_CTX_free};
-  ::EVP_MAC_free(mac);
+  MacPtr mac = MacPtr(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
   ASSERT_NE(macCtx.get(), nullptr);
 
   // Test issuing a new ticket (enc = 1).
@@ -45,14 +130,10 @@ TEST(TlsTicketKeyStoreTest, ProcessTicketIssuesAndDecrypts) {
                                           macCtx.get(), 1);
   EXPECT_EQ(issueRc, 1);
 
-  // Reset cipher context for decryption test.
-  ::EVP_CIPHER_CTX_reset(cipherCtx.get());
-
   // Recreate MAC context for decryption.
-  mac = ::EVP_MAC_fetch(nullptr, "HMAC", nullptr);
-  ASSERT_NE(mac, nullptr);
-  macCtx.reset(::EVP_MAC_CTX_new(mac));
-  ::EVP_MAC_free(mac);
+  mac = MacPtr(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  macCtx.reset(::EVP_MAC_CTX_new(mac.get()));
   ASSERT_NE(macCtx.get(), nullptr);
 
   // Test decrypting with the same key name (enc = 0).
@@ -71,14 +152,12 @@ TEST(TlsTicketKeyStoreTest, RotateExceedsMaxKeysPopsBack) {
   std::array<unsigned char, 16> firstKeyName{};
   std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
 
-  std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)> cipherCtx{::EVP_CIPHER_CTX_new(),
-                                                                              &::EVP_CIPHER_CTX_free};
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
   ASSERT_NE(cipherCtx.get(), nullptr);
 
-  EVP_MAC* mac = ::EVP_MAC_fetch(nullptr, "HMAC", nullptr);
-  ASSERT_NE(mac, nullptr);
-  std::unique_ptr<EVP_MAC_CTX, decltype(&::EVP_MAC_CTX_free)> macCtx{::EVP_MAC_CTX_new(mac), &::EVP_MAC_CTX_free};
-  ::EVP_MAC_free(mac);
+  MacPtr mac(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
   ASSERT_NE(macCtx.get(), nullptr);
 
   // Issue first ticket (creates initial key)
@@ -93,10 +172,9 @@ TEST(TlsTicketKeyStoreTest, RotateExceedsMaxKeysPopsBack) {
   std::array<unsigned char, 16> secondKeyName{};
   std::array<unsigned char, EVP_MAX_IV_LENGTH> iv2{};
   ::EVP_CIPHER_CTX_reset(cipherCtx.get());
-  mac = ::EVP_MAC_fetch(nullptr, "HMAC", nullptr);
-  ASSERT_NE(mac, nullptr);
-  macCtx.reset(::EVP_MAC_CTX_new(mac));
-  ::EVP_MAC_free(mac);
+  mac.reset(::EVP_MAC_fetch(nullptr, "HMAC", nullptr));
+  ASSERT_NE(mac.get(), nullptr);
+  macCtx.reset(::EVP_MAC_CTX_new(mac.get()));
   ASSERT_NE(macCtx.get(), nullptr);
 
   int rc2 = ticketStore.processTicket(secondKeyName.data(), iv2.data(), static_cast<int>(iv2.size()), cipherCtx.get(),
@@ -105,10 +183,9 @@ TEST(TlsTicketKeyStoreTest, RotateExceedsMaxKeysPopsBack) {
 
   // Attempt to decrypt with the original first key name: should return 0 (unknown key) because it was popped.
   ::EVP_CIPHER_CTX_reset(cipherCtx.get());
-  mac = ::EVP_MAC_fetch(nullptr, "HMAC", nullptr);
-  ASSERT_NE(mac, nullptr);
-  macCtx.reset(::EVP_MAC_CTX_new(mac));
-  ::EVP_MAC_free(mac);
+  mac.reset(::EVP_MAC_fetch(nullptr, "HMAC", nullptr));
+  ASSERT_NE(mac.get(), nullptr);
+  macCtx.reset(::EVP_MAC_CTX_new(mac.get()));
   ASSERT_NE(macCtx.get(), nullptr);
 
   int decryptRc = ticketStore.processTicket(firstKeyName.data(), iv.data(), static_cast<int>(iv.size()),
@@ -134,14 +211,12 @@ TEST(TlsTicketKeyStoreTest, LoadStaticKeysMaxKeysLimit) {
   std::array<unsigned char, 16> keyName{};
   std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
 
-  std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)> cipherCtx{::EVP_CIPHER_CTX_new(),
-                                                                              &::EVP_CIPHER_CTX_free};
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
   ASSERT_NE(cipherCtx.get(), nullptr);
 
-  EVP_MAC* mac = ::EVP_MAC_fetch(nullptr, "HMAC", nullptr);
-  ASSERT_NE(mac, nullptr);
-  std::unique_ptr<EVP_MAC_CTX, decltype(&::EVP_MAC_CTX_free)> macCtx{::EVP_MAC_CTX_new(mac), &::EVP_MAC_CTX_free};
-  ::EVP_MAC_free(mac);
+  MacPtr mac(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
   ASSERT_NE(macCtx.get(), nullptr);
 
   // Issue should succeed (key was loaded)
@@ -165,14 +240,12 @@ TEST(TlsTicketKeyStoreTest, ProcessTicketUnknownKeyReturns0) {
   std::ranges::fill(unknownKeyName, 0xFF);
   std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
 
-  std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)> cipherCtx{::EVP_CIPHER_CTX_new(),
-                                                                              &::EVP_CIPHER_CTX_free};
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
   ASSERT_NE(cipherCtx.get(), nullptr);
 
-  EVP_MAC* mac = ::EVP_MAC_fetch(nullptr, "HMAC", nullptr);
-  ASSERT_NE(mac, nullptr);
-  std::unique_ptr<EVP_MAC_CTX, decltype(&::EVP_MAC_CTX_free)> macCtx{::EVP_MAC_CTX_new(mac), &::EVP_MAC_CTX_free};
-  ::EVP_MAC_free(mac);
+  MacPtr mac(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
   ASSERT_NE(macCtx.get(), nullptr);
 
   // Decrypt with unknown key should return 0 (key not found)
@@ -188,14 +261,12 @@ TEST(TlsTicketKeyStoreTest, ProcessTicketShouldGenerateRandomKeyIfNoKeys) {
   std::ranges::fill(unknownKeyName, 0xFF);
   std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
 
-  std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)> cipherCtx{::EVP_CIPHER_CTX_new(),
-                                                                              &::EVP_CIPHER_CTX_free};
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
   ASSERT_NE(cipherCtx.get(), nullptr);
 
-  EVP_MAC* mac = ::EVP_MAC_fetch(nullptr, "HMAC", nullptr);
-  ASSERT_NE(mac, nullptr);
-  std::unique_ptr<EVP_MAC_CTX, decltype(&::EVP_MAC_CTX_free)> macCtx{::EVP_MAC_CTX_new(mac), &::EVP_MAC_CTX_free};
-  ::EVP_MAC_free(mac);
+  MacPtr mac(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
   ASSERT_NE(macCtx.get(), nullptr);
 
   // Decrypt with unknown key should return 0 (key not found)
@@ -216,14 +287,12 @@ TEST(TlsTicketKeyStoreTest, LoadStaticKeysEmptyGeneratesKey) {
   std::array<unsigned char, 16> keyName{};
   std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
 
-  std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)> cipherCtx{::EVP_CIPHER_CTX_new(),
-                                                                              &::EVP_CIPHER_CTX_free};
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
   ASSERT_NE(cipherCtx.get(), nullptr);
 
-  EVP_MAC* mac = ::EVP_MAC_fetch(nullptr, "HMAC", nullptr);
-  ASSERT_NE(mac, nullptr);
-  std::unique_ptr<EVP_MAC_CTX, decltype(&::EVP_MAC_CTX_free)> macCtx{::EVP_MAC_CTX_new(mac), &::EVP_MAC_CTX_free};
-  ::EVP_MAC_free(mac);
+  MacPtr mac(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
   ASSERT_NE(macCtx.get(), nullptr);
 
   int rc = ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
@@ -241,14 +310,12 @@ TEST(TlsTicketKeyStoreTest, AutoRotateGeneratesKeyWhenEmpty) {
   std::array<unsigned char, 16> keyName{};
   std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
 
-  std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)> cipherCtx{::EVP_CIPHER_CTX_new(),
-                                                                              &::EVP_CIPHER_CTX_free};
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
   ASSERT_NE(cipherCtx.get(), nullptr);
 
-  EVP_MAC* mac = ::EVP_MAC_fetch(nullptr, "HMAC", nullptr);
-  ASSERT_NE(mac, nullptr);
-  std::unique_ptr<EVP_MAC_CTX, decltype(&::EVP_MAC_CTX_free)> macCtx{::EVP_MAC_CTX_new(mac), &::EVP_MAC_CTX_free};
-  ::EVP_MAC_free(mac);
+  MacPtr mac(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
   ASSERT_NE(macCtx.get(), nullptr);
 
   // Issue should succeed because auto-rotate creates a key
@@ -270,20 +337,188 @@ TEST(TlsTicketKeyStoreTest, RotateAfterLifetimeExpires) {
   std::array<unsigned char, 16> keyName{};
   std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
 
-  std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)> cipherCtx{::EVP_CIPHER_CTX_new(),
-                                                                              &::EVP_CIPHER_CTX_free};
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
   ASSERT_NE(cipherCtx.get(), nullptr);
 
-  EVP_MAC* mac = ::EVP_MAC_fetch(nullptr, "HMAC", nullptr);
-  ASSERT_NE(mac, nullptr);
-  std::unique_ptr<EVP_MAC_CTX, decltype(&::EVP_MAC_CTX_free)> macCtx{::EVP_MAC_CTX_new(mac), &::EVP_MAC_CTX_free};
-  ::EVP_MAC_free(mac);
+  MacPtr mac(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
   ASSERT_NE(macCtx.get(), nullptr);
 
   // Issue a ticket - with lifetime=0, this will trigger rotation on each call
   int issueRc = ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
                                           macCtx.get(), 1);
   EXPECT_EQ(issueRc, 1);
+}
+
+TEST(TlsTicketKeyStoreTest, EvpMacParamsWrongTypeParamFails) {
+  MacPtr mac(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr ctx(::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free);
+  ASSERT_NE(ctx.get(), nullptr);
+
+  // Some implementations accept OSSL_MAC_PARAM_DIGEST as a utf8 string.
+  // We'll deliberately pass a binary integer parameter for that key which should be rejected.
+  int bogus = 42;
+  static const OSSL_PARAM params[] = {
+      OSSL_PARAM_construct_int("digest", &bogus),
+      OSSL_PARAM_construct_end(),
+  };
+
+  int rc = ::EVP_MAC_CTX_set_params(ctx.get(), params);
+  EXPECT_NE(rc, 1);
+}
+
+TEST(TlsTicketKeyStoreTest, ProcessTicketFailsWhenRandBytesForIvFails) {
+  TlsTicketKeyStore ticketStore(std::chrono::seconds(60), 2);
+  std::array<TLSConfig::SessionTicketKey, 1> staticKeys;
+  for (std::size_t idx = 0; idx < staticKeys[0].size(); ++idx) {
+    staticKeys[0][idx] = static_cast<std::byte>(idx);
+  }
+  ticketStore.loadStaticKeys(staticKeys);
+
+  std::array<unsigned char, 16> keyName{};
+  std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
+
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
+  ASSERT_NE(cipherCtx.get(), nullptr);
+
+  MacPtr mac(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
+  ASSERT_NE(macCtx.get(), nullptr);
+
+  ScopedFailNext randFail(gFailRandBytes);
+  int rc = ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
+                                     macCtx.get(), 1);
+  EXPECT_EQ(rc, -1);
+}
+
+TEST(TlsTicketKeyStoreTest, ProcessTicketFailsWhenEncryptInitFails) {
+  TlsTicketKeyStore ticketStore(std::chrono::seconds(60), 2);
+  std::array<TLSConfig::SessionTicketKey, 1> staticKeys;
+  for (std::size_t idx = 0; idx < staticKeys[0].size(); ++idx) {
+    staticKeys[0][idx] = static_cast<std::byte>(idx);
+  }
+  ticketStore.loadStaticKeys(staticKeys);
+
+  std::array<unsigned char, 16> keyName{};
+  std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
+
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
+  ASSERT_NE(cipherCtx.get(), nullptr);
+
+  MacPtr mac(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
+  ASSERT_NE(macCtx.get(), nullptr);
+
+  ScopedFailNext encFail(gFailEncryptInitEx);
+  int rc = ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
+                                     macCtx.get(), 1);
+  EXPECT_EQ(rc, -1);
+}
+
+TEST(TlsTicketKeyStoreTest, ProcessTicketFailsWhenDecryptInitFails) {
+  TlsTicketKeyStore ticketStore(std::chrono::seconds(60), 2);
+  std::array<TLSConfig::SessionTicketKey, 1> staticKeys;
+  for (std::size_t idx = 0; idx < staticKeys[0].size(); ++idx) {
+    staticKeys[0][idx] = static_cast<std::byte>(idx);
+  }
+  ticketStore.loadStaticKeys(staticKeys);
+
+  std::array<unsigned char, 16> keyName{};
+  std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
+
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
+  ASSERT_NE(cipherCtx.get(), nullptr);
+
+  MacPtr mac(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
+  ASSERT_NE(macCtx.get(), nullptr);
+
+  int issueRc = ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
+                                          macCtx.get(), 1);
+  ASSERT_EQ(issueRc, 1);
+
+  ::EVP_CIPHER_CTX_reset(cipherCtx.get());
+  mac.reset(::EVP_MAC_fetch(nullptr, "HMAC", nullptr));
+  ASSERT_NE(mac.get(), nullptr);
+  macCtx.reset(::EVP_MAC_CTX_new(mac.get()));
+  ASSERT_NE(macCtx.get(), nullptr);
+
+  ScopedFailNext decFail(gFailDecryptInitEx);
+  int decryptRc = ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
+                                            macCtx.get(), 0);
+  EXPECT_EQ(decryptRc, -1);
+}
+
+TEST(TlsTicketKeyStoreTest, ProcessTicketFailsWhenInitMacContextFailsOnDecrypt) {
+  TlsTicketKeyStore ticketStore(std::chrono::seconds(60), 2);
+  std::array<TLSConfig::SessionTicketKey, 1> staticKeys;
+  for (std::size_t idx = 0; idx < staticKeys[0].size(); ++idx) {
+    staticKeys[0][idx] = static_cast<std::byte>(idx);
+  }
+  ticketStore.loadStaticKeys(staticKeys);
+
+  std::array<unsigned char, 16> keyName{};
+  std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
+
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
+  ASSERT_NE(cipherCtx.get(), nullptr);
+
+  MacPtr mac(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
+  ASSERT_NE(macCtx.get(), nullptr);
+
+  int issueRc = ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
+                                          macCtx.get(), 1);
+  ASSERT_EQ(issueRc, 1);
+
+  ::EVP_CIPHER_CTX_reset(cipherCtx.get());
+  mac.reset(::EVP_MAC_fetch(nullptr, "HMAC", nullptr));
+  ASSERT_NE(mac.get(), nullptr);
+  macCtx.reset(::EVP_MAC_CTX_new(mac.get()));
+  ASSERT_NE(macCtx.get(), nullptr);
+
+  ScopedFailNext macParamsFail(gFailMacCtxSetParams);
+  int decryptRc = ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
+                                            macCtx.get(), 0);
+  EXPECT_EQ(decryptRc, -1);
+}
+
+TEST(TlsTicketKeyStoreTest, LoadStaticKeysEmptyThrowsWhenRandBytesFailsGeneratingKey) {
+  TlsTicketKeyStore ticketStore(std::chrono::seconds(60), 2);
+  std::span<const TLSConfig::SessionTicketKey> emptyKeys;
+
+  ScopedFailNext randFail(gFailRandBytes);
+  EXPECT_THROW(ticketStore.loadStaticKeys(emptyKeys), std::runtime_error);
+}
+TEST(TlsTicketKeyStoreTest, ProcessTicketFailsWhenEvpMacCtxSetParamsFails) {
+  TlsTicketKeyStore ticketStore(std::chrono::seconds(60), 2);
+  std::array<TLSConfig::SessionTicketKey, 1> staticKeys;
+  for (std::size_t idx = 0; idx < staticKeys[0].size(); ++idx) {
+    staticKeys[0][idx] = static_cast<std::byte>(idx);
+  }
+  ticketStore.loadStaticKeys(staticKeys);
+
+  std::array<unsigned char, 16> keyName{};
+  std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
+
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
+  ASSERT_NE(cipherCtx.get(), nullptr);
+
+  MacPtr mac = MacPtr(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
+  ASSERT_NE(macCtx.get(), nullptr);
+
+  ScopedFailNext macParamsFail(gFailMacCtxSetParams);
+  int rc = ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
+                                     macCtx.get(), 1);
+  EXPECT_EQ(rc, -1);
 }
 
 }  // namespace aeronet
