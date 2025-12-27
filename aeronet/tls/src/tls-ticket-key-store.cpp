@@ -22,7 +22,7 @@
 namespace aeronet {
 
 TlsTicketKeyStore::TlsTicketKeyStore(std::chrono::seconds lifetime, std::uint32_t maxKeys)
-    : _lifetime(lifetime), _maxKeys(std::max<std::uint32_t>(1, maxKeys)) {}
+    : _lifetime(lifetime), _maxKeys(std::max(1U, maxKeys)) {}
 
 void TlsTicketKeyStore::loadStaticKeys(std::span<const TLSConfig::SessionTicketKey> keys) {
   std::scoped_lock<std::mutex> lock(_mutex);
@@ -48,15 +48,14 @@ void TlsTicketKeyStore::loadStaticKeys(std::span<const TLSConfig::SessionTicketK
 }
 
 namespace {
-
 bool InitMacContext(EVP_MAC_CTX* mctx, const unsigned char* hmacKey, std::size_t hmacKeyLen) {
   static const OSSL_PARAM params[]{
-      OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>("SHA256"), 0),
-      OSSL_PARAM_construct_end()};
-  if (EVP_MAC_CTX_set_params(mctx, params) != 1) {
+      ::OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>("SHA256"), 0),
+      ::OSSL_PARAM_construct_end()};
+  if (::EVP_MAC_CTX_set_params(mctx, params) != 1) {
     return false;
   }
-  return EVP_MAC_init(mctx, hmacKey, hmacKeyLen, nullptr) == 1;
+  return ::EVP_MAC_init(mctx, hmacKey, hmacKeyLen, nullptr) == 1;
 }
 
 }  // namespace
@@ -70,11 +69,11 @@ int TlsTicketKeyStore::processTicket(unsigned char keyName[16], unsigned char* i
       _keys.emplace_back(GenerateRandomKeyUnlocked());
     }
     auto& key = _keys.front();
-    if (RAND_bytes(iv, ivLen) != 1) {
+    if (::RAND_bytes(iv, ivLen) != 1) {
       return -1;
     }
     std::memcpy(keyName, key.name.data(), key.name.size());
-    if (EVP_EncryptInit_ex(cctx, EVP_aes_128_cbc(), nullptr, key.aesKey.data(), iv) != 1) {
+    if (::EVP_EncryptInit_ex(cctx, ::EVP_aes_128_cbc(), nullptr, key.aesKey.data(), iv) != 1) {
       return -1;
     }
     if (!InitMacContext(mctx, key.hmacKey.data(), key.hmacKey.size())) {
@@ -87,7 +86,7 @@ int TlsTicketKeyStore::processTicket(unsigned char keyName[16], unsigned char* i
   if (key == nullptr) {
     return 0;  // trigger full handshake
   }
-  if (EVP_DecryptInit_ex(cctx, EVP_aes_128_cbc(), nullptr, key->aesKey.data(), iv) != 1) {
+  if (::EVP_DecryptInit_ex(cctx, ::EVP_aes_128_cbc(), nullptr, key->aesKey.data(), iv) != 1) {
     return -1;
   }
   if (!InitMacContext(mctx, key->hmacKey.data(), key->hmacKey.size())) {
@@ -99,7 +98,7 @@ int TlsTicketKeyStore::processTicket(unsigned char keyName[16], unsigned char* i
 TlsTicketKeyStore::KeyMaterial TlsTicketKeyStore::GenerateRandomKeyUnlocked() {
   KeyMaterial key;
   auto data = key.data();
-  if (RAND_bytes(data.data(), static_cast<int>(data.size())) != 1) {
+  if (::RAND_bytes(data.data(), static_cast<int>(data.size())) != 1) {
     throw std::runtime_error("RAND_bytes failed generating ticket");
   }
   key.created = std::chrono::steady_clock::now();
