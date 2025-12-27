@@ -58,52 +58,52 @@ class PathHandlerEntry {
   void assignStreamingHandler(http::MethodBmp methodBmp, StreamingHandler handler);
 
   [[nodiscard]] bool hasNormalHandler(http::MethodIdx methodIdx) const {
-    return http::IsMethodIdxSet(normalMethodBmp, methodIdx);
+    return http::IsMethodIdxSet(_normalMethodBmp, methodIdx);
   }
 
   [[nodiscard]] bool hasAsyncHandler(http::MethodIdx methodIdx) const {
-    return http::IsMethodIdxSet(asyncMethodBmp, methodIdx);
+    return http::IsMethodIdxSet(_asyncMethodBmp, methodIdx);
   }
 
   [[nodiscard]] bool hasStreamingHandler(http::MethodIdx methodIdx) const {
-    return http::IsMethodIdxSet(streamingMethodBmp, methodIdx);
+    return http::IsMethodIdxSet(_streamingMethodBmp, methodIdx);
   }
 
   [[nodiscard]] const RequestHandler* requestHandlerPtr(http::MethodIdx methodIdx) const {
-    return &reinterpret_cast<const RequestHandler&>(handlers[methodIdx]);
+    return &reinterpret_cast<const RequestHandler&>(_handlers[methodIdx]);
   }
 
   [[nodiscard]] const StreamingHandler* streamingHandlerPtr(http::MethodIdx methodIdx) const {
-    return &reinterpret_cast<const StreamingHandler&>(handlers[methodIdx]);
+    return &reinterpret_cast<const StreamingHandler&>(_handlers[methodIdx]);
   }
 
   [[nodiscard]] const AsyncRequestHandler* asyncHandlerPtr(http::MethodIdx methodIdx) const {
-    return &reinterpret_cast<const AsyncRequestHandler&>(handlers[methodIdx]);
+    return &reinterpret_cast<const AsyncRequestHandler&>(_handlers[methodIdx]);
   }
 
   void assignWebSocketEndpoint(WebSocketEndpoint endpoint);
 
-  [[nodiscard]] bool hasWebSocketEndpoint() const { return websocketEndpoint != nullptr; }
+  [[nodiscard]] bool hasWebSocketEndpoint() const { return _websocketEndpoint != nullptr; }
 
-  [[nodiscard]] const WebSocketEndpoint* webSocketEndpointPtr() const { return websocketEndpoint.get(); }
+  [[nodiscard]] const WebSocketEndpoint* webSocketEndpointPtr() const { return _websocketEndpoint.get(); }
 
   /// Check if this entry has any handlers (HTTP or WebSocket).
   [[nodiscard]] bool hasAnyHandler() const {
-    return normalMethodBmp != 0U || streamingMethodBmp != 0U || asyncMethodBmp != 0U || hasWebSocketEndpoint();
+    return _normalMethodBmp != 0U || _streamingMethodBmp != 0U || _asyncMethodBmp != 0U || hasWebSocketEndpoint();
   }
 
   void destroyIdx(http::MethodIdx methodIdx);
 
-  http::MethodBmp normalMethodBmp{};
-  http::MethodBmp streamingMethodBmp{};
-  http::MethodBmp asyncMethodBmp{};
-  std::array<HandlerStorage, http::kNbMethods> handlers;
+  http::MethodBmp _normalMethodBmp{};
+  http::MethodBmp _streamingMethodBmp{};
+  http::MethodBmp _asyncMethodBmp{};
+  std::array<HandlerStorage, http::kNbMethods> _handlers;
   // Optional WebSocket endpoint for this route. If set, upgrade requests are handled here.
-  std::unique_ptr<WebSocketEndpoint> websocketEndpoint;
+  std::unique_ptr<WebSocketEndpoint> _websocketEndpoint;
   // Optional per-route CorsPolicy stored by value. If set, match() will return a pointer to it.
-  CorsPolicy corsPolicy;
-  vector<RequestMiddleware> preMiddleware;
-  vector<ResponseMiddleware> postMiddleware;
+  CorsPolicy _corsPolicy;
+  vector<RequestMiddleware> _preMiddleware;
+  vector<ResponseMiddleware> _postMiddleware;
 };
 
 }  // namespace aeronet
