@@ -198,7 +198,7 @@ PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_v
           if (!handler) {
             throw std::invalid_argument("Cannot set empty RequestHandler");
           }
-          if ((entry.normalMethodBmp & methods) != 0) {
+          if ((entry._normalMethodBmp & methods) != 0) {
             log::warn("Overwriting existing path handler for {}", std::string_view(pNode->patternString()));
           }
           entry.assignNormalHandler(methods, std::forward<decltype(handler)>(handler));
@@ -206,7 +206,7 @@ PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_v
           if (!handler) {
             throw std::invalid_argument("Cannot set empty StreamingHandler");
           }
-          if ((entry.streamingMethodBmp & methods) != 0) {
+          if ((entry._streamingMethodBmp & methods) != 0) {
             log::warn("Overwriting existing streaming path handler for {}", std::string_view(pNode->patternString()));
           }
           entry.assignStreamingHandler(methods, std::forward<decltype(handler)>(handler));
@@ -214,7 +214,7 @@ PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_v
           if (!handler) {
             throw std::invalid_argument("Cannot set empty AsyncRequestHandler");
           }
-          if ((entry.asyncMethodBmp & methods) != 0) {
+          if ((entry._asyncMethodBmp & methods) != 0) {
             log::warn("Overwriting existing async path handler for {}", std::string_view(pNode->patternString()));
           }
           entry.assignAsyncHandler(methods, std::forward<decltype(handler)>(handler));
@@ -491,7 +491,7 @@ http::MethodBmp Router::allowedMethods(std::string_view path) {
   if (const auto it = _literalOnlyRoutes.find(path); it != _literalOnlyRoutes.end()) {
     const RouteNode* pMatchedNode = it->second;
     const auto& entry = pathHasTrailingSlash ? pMatchedNode->handlersWithSlash : pMatchedNode->handlersNoSlash;
-    return static_cast<http::MethodBmp>(entry.normalMethodBmp | entry.streamingMethodBmp | entry.asyncMethodBmp);
+    return static_cast<http::MethodBmp>(entry._normalMethodBmp | entry._streamingMethodBmp | entry._asyncMethodBmp);
   }
 
   // Slow path: split segments and match patterns via trie
@@ -500,7 +500,7 @@ http::MethodBmp Router::allowedMethods(std::string_view path) {
   const RouteNode* pMatchedNode = matchImpl(pathHasTrailingSlash);
   if (pMatchedNode != nullptr) {
     const auto& entry = pathHasTrailingSlash ? pMatchedNode->handlersWithSlash : pMatchedNode->handlersNoSlash;
-    return static_cast<http::MethodBmp>(entry.normalMethodBmp | entry.streamingMethodBmp | entry.asyncMethodBmp);
+    return static_cast<http::MethodBmp>(entry._normalMethodBmp | entry._streamingMethodBmp | entry._asyncMethodBmp);
   }
 
   if (_streamingHandler || _handler || _asyncHandler) {
@@ -682,13 +682,13 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
   }
 
   if (entry.hasStreamingHandler(methodIdx)) {
-    assert(http::IsMethodSet(entry.streamingMethodBmp, method));
+    assert(http::IsMethodSet(entry._streamingMethodBmp, method));
     result.setStreamingHandler(entry.streamingHandlerPtr(methodIdx));
   } else if (entry.hasAsyncHandler(methodIdx)) {
-    assert(http::IsMethodSet(entry.asyncMethodBmp, method));
+    assert(http::IsMethodSet(entry._asyncMethodBmp, method));
     result.setAsyncRequestHandler(entry.asyncHandlerPtr(methodIdx));
   } else if (entry.hasNormalHandler(methodIdx)) {
-    assert(http::IsMethodSet(entry.normalMethodBmp, method));
+    assert(http::IsMethodSet(entry._normalMethodBmp, method));
     result.setRequestHandler(entry.requestHandlerPtr(methodIdx));
   } else if (entry.hasWebSocketEndpoint() && method == http::Method::GET) {
     // WebSocket endpoint on GET - handler will be determined by upgrade validation
@@ -698,8 +698,8 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
   }
 
   // Expose per-route cors policy pointer if present
-  if (entry.corsPolicy.active()) {
-    result.pCorsPolicy = &entry.corsPolicy;
+  if (entry._corsPolicy.active()) {
+    result.pCorsPolicy = &entry._corsPolicy;
   } else if (_config.defaultCorsPolicy.active()) {
     result.pCorsPolicy = &_config.defaultCorsPolicy;
   }
@@ -709,8 +709,8 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
     result.pWebSocketEndpoint = entry.webSocketEndpointPtr();
   }
 
-  result.requestMiddlewareRange = entry.preMiddleware;
-  result.responseMiddlewareRange = entry.postMiddleware;
+  result.requestMiddlewareRange = entry._preMiddleware;
+  result.responseMiddlewareRange = entry._postMiddleware;
 }
 
 void Router::cloneNodesFrom(const Router& other) {
