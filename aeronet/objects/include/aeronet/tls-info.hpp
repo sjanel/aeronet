@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <string_view>
 
@@ -7,29 +8,25 @@
 
 namespace aeronet {
 
-// Optimized pack of TLS str information in one allocated storage containing the following information:
-// negotiated ALPN protocol (if any)
-// negotiated TLS cipher suite (if TLS)
-// negotiated TLS protocol version string
-// RFC2253 formatted subject if client cert present
-class TLSInfo {
- public:
+struct TLSInfo {
+  // Optimized pack of TLS str information in one allocated storage containing the following information:
+  // negotiated ALPN protocol (if any)
+  // negotiated TLS cipher suite (if TLS)
+  // negotiated TLS protocol version string
+  // RFC2253 formatted subject if client cert present
   using Parts = StaticConcatenatedStrings<4, uint32_t>;
 
-  TLSInfo() noexcept = default;
+  [[nodiscard]] std::string_view selectedAlpn() const noexcept { return parts[0]; }
 
-  explicit TLSInfo(Parts parts) noexcept : _parts(std::move(parts)) {}
+  [[nodiscard]] std::string_view negotiatedCipher() const noexcept { return parts[1]; }
 
-  [[nodiscard]] std::string_view selectedAlpn() const noexcept { return _parts[0]; }
+  [[nodiscard]] std::string_view negotiatedVersion() const noexcept { return parts[2]; }
 
-  [[nodiscard]] std::string_view negotiatedCipher() const noexcept { return _parts[1]; }
+  [[nodiscard]] std::string_view peerSubject() const noexcept { return parts[3]; }
 
-  [[nodiscard]] std::string_view negotiatedVersion() const noexcept { return _parts[2]; }
+  std::chrono::steady_clock::time_point handshakeStart;  // TLS handshake start time (steady clock)
 
-  [[nodiscard]] std::string_view peerSubject() const noexcept { return _parts[3]; }
-
- private:
-  Parts _parts;
+  Parts parts;
 };
 
 }  // namespace aeronet

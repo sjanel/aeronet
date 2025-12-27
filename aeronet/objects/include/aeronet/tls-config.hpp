@@ -18,7 +18,7 @@ namespace aeronet {
 
 class TLSConfig {
  public:
-  using StringViewRange = std::ranges::subrange<SmallConcatenatedStrings::iterator>;
+  using StringViewRange = std::ranges::subrange<ConcatenatedStrings32::iterator>;
 
   // RFC 7301 (ALPN) protocol identifier length is encoded in a single octet => maximum 255 bytes.
   // OpenSSL lacks a stable public constant for this; we define it here to avoid magic numbers.
@@ -29,7 +29,12 @@ class TLSConfig {
 
   using Version = MajorMinorVersion<kTlsVersionPrefix>;
 
-  enum class KtlsMode : std::uint8_t { Disabled, Auto, Enabled, Forced };
+  enum class KtlsMode : std::uint8_t {
+    Disabled,       // Never use kTLS
+    Opportunistic,  // Use kTLS if available (DEFAULT)
+    Enabled,        // Same as Opportunistic, but log a warning if kTLS not active
+    Required        // Fail connection if kTLS not active
+  };
   enum class CipherPolicy : std::uint8_t { Default, Modern, Compatibility, Legacy };
 
   using SessionTicketKey = std::array<std::byte, kSessionTicketKeySize>;
@@ -50,11 +55,11 @@ class TLSConfig {
     void setPattern(std::string_view value) { _strings.set(0, value); }
 
     [[nodiscard]] std::string_view certFile() const noexcept { return _strings[1]; }
-    [[nodiscard]] auto certFileCstrView() const noexcept { return _strings.makeNullTerminated(1); }
+    [[nodiscard]] auto certFileCstrView() const noexcept { return _strings.c_str(1); }
     void setCertFile(std::string_view value) { _strings.set(1, value); }
 
     [[nodiscard]] std::string_view keyFile() const noexcept { return _strings[2]; }
-    [[nodiscard]] auto keyFileCstrView() const noexcept { return _strings.makeNullTerminated(2); }
+    [[nodiscard]] auto keyFileCstrView() const noexcept { return _strings.c_str(2); }
     void setKeyFile(std::string_view value) { _strings.set(2, value); }
 
     [[nodiscard]] std::string_view certPem() const noexcept { return _strings[3]; }
@@ -78,23 +83,22 @@ class TLSConfig {
 
   // PEM server certificate (may contain chain)
   [[nodiscard]] std::string_view certFile() const noexcept { return _tlsStrings[0]; }
-  [[nodiscard]] auto certFileCstrView() const noexcept { return _tlsStrings.makeNullTerminated(0); }
+  [[nodiscard]] const char* certFileCstr() const noexcept { return _tlsStrings.c_str(0); }
 
   // PEM private key
   [[nodiscard]] std::string_view keyFile() const noexcept { return _tlsStrings[1]; }
-  [[nodiscard]] auto keyFileCstrView() const noexcept { return _tlsStrings.makeNullTerminated(1); }
-
+  [[nodiscard]] const char* keyFileCstr() const noexcept { return _tlsStrings.c_str(1); }
   // In-memory PEM certificate (used if certFile empty & this non-empty)
   [[nodiscard]] std::string_view certPem() const noexcept { return _tlsStrings[2]; }
-  [[nodiscard]] auto certPemCstrView() const noexcept { return _tlsStrings.makeNullTerminated(2); }
+  [[nodiscard]] const char* certPemCstr() const noexcept { return _tlsStrings.c_str(2); }
 
   // In-memory PEM private key (used if keyFile empty & this non-empty)
   [[nodiscard]] std::string_view keyPem() const noexcept { return _tlsStrings[3]; }
-  [[nodiscard]] auto keyPemCstrView() const noexcept { return _tlsStrings.makeNullTerminated(3); }
+  [[nodiscard]] const char* keyPemCstr() const noexcept { return _tlsStrings.c_str(3); }
 
   // Optional OpenSSL cipher list string (empty -> default)
   [[nodiscard]] std::string_view cipherList() const noexcept { return _tlsStrings[4]; }
-  [[nodiscard]] auto cipherListCstrView() const noexcept { return _tlsStrings.makeNullTerminated(4); }
+  [[nodiscard]] const char* cipherListCstr() const noexcept { return _tlsStrings.c_str(4); }
 
   TLSConfig& withTlsHandshakeTimeout(std::chrono::milliseconds timeout) {
     handshakeTimeout = timeout;
@@ -232,13 +236,7 @@ class TLSConfig {
   bool disableCompression{true};  // Disable TLS-level compression (CRIME mitigation)
   CipherPolicy cipherPolicy{CipherPolicy::Default};
 
-  KtlsMode ktlsMode{
-#ifdef AERONET_ENABLE_KTLS
-      KtlsMode::Auto
-#else
-      KtlsMode::Disabled
-#endif
-  };
+  KtlsMode ktlsMode{KtlsMode::Opportunistic};
 
   // Optional protocol version bounds (empty => library defaults). Accepted values: "TLS1.2", "TLS1.3".
   Version minVersion;  // If set, enforce minimum TLS protocol version.
@@ -255,10 +253,10 @@ class TLSConfig {
   // cipher list string
   StaticConcatenatedStrings<5, uint32_t> _tlsStrings;  // Stored TLS-related strings
 
-  SmallConcatenatedStrings _alpnProtocols;
+  ConcatenatedStrings32 _alpnProtocols;
 
   // Additional trusted client root / leaf certs (PEM, stored as NUL-separated entries)
-  SmallConcatenatedStrings _trustedClientCertsPem;
+  ConcatenatedStrings32 _trustedClientCertsPem;
 
   vector<SniCertificate> _sniCertificates;
   vector<SessionTicketKey> _staticTicketKeys;

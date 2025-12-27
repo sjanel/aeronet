@@ -15,8 +15,8 @@
 
 namespace aeronet {
 
-// ConcatenatedStrings stores N string parts in a single contiguous RawChars buffer.
-// It provides access to individual parts as string_views or temporary null-terminated strings,
+// StaticConcatenatedStrings stores N string parts in a single contiguous RawChars buffer.
+// It provides access to individual parts as string_views pointing to null-terminated strings,
 // and allows replacing individual parts while keeping the rest intact.
 // Compared to its cousin DynamicConcatenatedStrings, it has a fixed number of parts (N) known at compile time,
 // which allows for O(1) access to a specific part. Setting a sub-string in the middle that is of different length
@@ -43,7 +43,7 @@ class StaticConcatenatedStrings {
       throw std::length_error("StaticConcatenatedStrings: must provide exactly the compile-time number of parts");
     }
 
-    uintmax_t total = 0;
+    uintmax_t total = kParts;  // +1 for null terminator after each part
     for (std::string_view part : parts) {
       if constexpr (sizeof(size_type) < sizeof(std::string_view::size_type)) {
         if (std::cmp_greater_equal(part.size(), std::numeric_limits<size_type>::max())) {
@@ -58,42 +58,51 @@ class StaticConcatenatedStrings {
       }
     }
 
-    _buf.reserve(static_cast<size_type>(total + 1U));  // +1 for null terminator support if needed
+    _buf.reserve(static_cast<size_type>(total));
 
     size_type pos = 0;
     size_type index = 0;
     for (std::string_view part : parts) {
       _buf.unchecked_append(part);
-      pos += static_cast<size_type>(part.size());
+      _buf.unchecked_push_back('\0');
+      pos += static_cast<size_type>(part.size() + 1UL);
       if (std::cmp_less(index + size_type{1}, kParts)) {
         _offsets[static_cast<Offsets::size_type>(index)] = pos;
         ++index;
       }
     }
-    _buf[static_cast<size_type>(total)] = '\0';  // do not count null terminator in size
   }
 
   void set(size_type idx, std::string_view str) {
+    if (_buf.empty()) {
+      _buf.reserve(str.size() + kParts);
+      std::memset(_buf.data(), 0, kParts);
+      _buf.setSize(kParts);
+      for (size_type i = 1U; i < kParts; ++i) {
+        _offsets[static_cast<Offsets::size_type>(i - size_type{1})] = i;
+      }
+    }
     const size_type oldBegPos = idx == 0 ? 0 : _offsets[static_cast<Offsets::size_type>(idx - size_type{1})];
-    const size_type oldEndPos = idx + 1 == kParts ? _buf.size() : _offsets[static_cast<Offsets::size_type>(idx)];
+    const size_type oldEndPos =
+        (idx + 1 == kParts ? _buf.size() : _offsets[static_cast<Offsets::size_type>(idx)]) - size_type{1};
     const size_type oldSize = oldEndPos - oldBegPos;
 
     if constexpr (sizeof(size_type) < sizeof(std::string_view::size_type)) {
-      if (std::cmp_greater(static_cast<std::string_view::size_type>(_buf.size()) -
-                               static_cast<std::string_view::size_type>(oldSize) + str.size(),
-                           std::numeric_limits<size_type>::max())) {
+      if (static_cast<std::string_view::size_type>(_buf.size()) - static_cast<std::string_view::size_type>(oldSize) +
+              str.size() >
+          std::numeric_limits<size_type>::max()) {
         throw std::length_error("StaticConcatenatedStrings: new part size exceeds maximum");
       }
     }
 
     const auto newSize = static_cast<size_type>(str.size());
     const auto tailSize = static_cast<size_type>(_buf.size() - oldEndPos);
-    auto *data = _buf.data();
+    char *data = _buf.data();
 
     if (newSize > oldSize) {
       const auto delta = static_cast<size_type>(newSize - oldSize);
-      _buf.ensureAvailableCapacityExponential(delta);
-      // pointers may have changed after ensureAvailableCapacityExponential
+      _buf.ensureAvailableCapacity(delta);
+      // pointers may have changed after ensureAvailableCapacity
       data = _buf.data();
       // move tail to the right
       std::memmove(data + oldEndPos + delta, data + oldEndPos, tailSize);
@@ -124,70 +133,28 @@ class StaticConcatenatedStrings {
     }
   }
 
-  [[nodiscard]] std::string_view operator[](size_type idx) const { return {begPtr(idx), endPtr(idx)}; }
+  [[nodiscard]] const char *c_str(size_type idx) const { return begPtr(idx); }
 
-  class TmpNullTerminatedSv {
-   public:
-    TmpNullTerminatedSv(const TmpNullTerminatedSv &) = delete;
-    TmpNullTerminatedSv &operator=(const TmpNullTerminatedSv &) = delete;
-
-    TmpNullTerminatedSv(TmpNullTerminatedSv &&other) = delete;
-    TmpNullTerminatedSv &operator=(TmpNullTerminatedSv &&other) = delete;
-
-    // Get a temporary null-terminated c-string.
-    [[nodiscard]] const char *c_str() const noexcept { return _begPtr; }
-
-    ~TmpNullTerminatedSv() { _begPtr[_svSz] = _ch; }
-
-   private:
-    friend class StaticConcatenatedStrings<N, size_type>;
-
-    // construct and temporarily replace the character at endPtr with '\0'
-    TmpNullTerminatedSv(char *begPtr, const char *endPtr)
-        : _begPtr(begPtr), _svSz(static_cast<size_type>(endPtr - begPtr)), _ch(*endPtr) {
-      _begPtr[_svSz] = '\0';
-    }
-
-    char *_begPtr;
-    size_type _svSz;
-    char _ch;
-  };
-
-  // Returns a temporary object that provides a c_str() method to have a null-terminated string.
-  // WARNING: do not call other methods on this instance before destruction of returned local object,
-  // as it modifies temporarily internal buffer state. The safe usage pattern is to call c_str() from
-  // the returned object directly where you need it, to restore the buffer as soon as possible.
-  // In C++, the standard guarantees that the destructor of the returned temporary will be called
-  // at the end of the full expression in which it was created.
-  // Example of a safe usage:
-  //  ::SSL_CTX_use_certificate_file(raw, cfg.certFileCstrView().c_str(), SSL_FILETYPE_PEM)
-  // Note that this method lies about constness as it modifies internal buffer state, but is marked const
-  // for convenience of usage, and if the caller respects the usage pattern it is safe.
-  auto makeNullTerminated(size_type idx) const noexcept {
-    return TmpNullTerminatedSv(const_cast<char *>(begPtr(idx)), endPtr(idx));
-  }
+  [[nodiscard]] std::string_view operator[](size_type idx) const { return {begPtr(idx), sizeAt(idx)}; }
 
   bool operator==(const StaticConcatenatedStrings &) const noexcept = default;
 
   using trivially_relocatable = std::true_type;
 
  private:
-  auto *begPtr(size_type idx) noexcept {
-    return _buf.data() + static_cast<std::ptrdiff_t>(
-                             idx == 0 ? 0 : _offsets[static_cast<typename Offsets::size_type>(idx - size_type{1})]);
-  }
-  const auto *begPtr(size_type idx) const noexcept {
+  const char *begPtr(size_type idx) const noexcept {
     return _buf.data() + static_cast<std::ptrdiff_t>(
                              idx == 0 ? 0 : _offsets[static_cast<typename Offsets::size_type>(idx - size_type{1})]);
   }
 
-  auto *endPtr(size_type idx) noexcept {
-    return _buf.data() + static_cast<std::ptrdiff_t>(
-                             idx + 1 == kParts ? _buf.size() : _offsets[static_cast<typename Offsets::size_type>(idx)]);
-  }
-  const auto *endPtr(size_type idx) const noexcept {
-    return _buf.data() + static_cast<std::ptrdiff_t>(
-                             idx + 1 == kParts ? _buf.size() : _offsets[static_cast<typename Offsets::size_type>(idx)]);
+  size_type sizeAt(size_type idx) const noexcept {
+    if (_buf.empty()) {
+      return 0;
+    }
+    const size_type begPos = idx == 0 ? 0 : _offsets[static_cast<typename Offsets::size_type>(idx - size_type{1})];
+    const size_type endPos =
+        (idx + 1 == kParts ? _buf.size() : _offsets[static_cast<typename Offsets::size_type>(idx)]) - size_type{1};
+    return endPos - begPos;
   }
 
   Offsets _offsets;

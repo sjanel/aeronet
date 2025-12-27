@@ -14,30 +14,55 @@ namespace aeronet {
 
 using TestType = StaticConcatenatedStrings<3, uint32_t>;
 
-TEST(ConcatenatedStrings, BasicAccess) {
-  TestType cs({"alpn", "cipher", "tls1.3"});
-  EXPECT_EQ(cs[0], "alpn");
-  EXPECT_EQ(cs[1], "cipher");
-  EXPECT_EQ(cs[2], "tls1.3");
-}
-
-TEST(ConcatenatedStrings, NotSameNumberOfParts) {
-  EXPECT_THROW(TestType({"one", "two"}), std::length_error);
-  EXPECT_THROW(TestType({"one", "two", "three", "four"}), std::length_error);
-}
-
 TEST(ConcatenatedStrings, DefaultConstructedEmpty) {
   TestType info;
   EXPECT_EQ(info[0], std::string_view());
   EXPECT_EQ(info[1], std::string_view());
   EXPECT_EQ(info[2], std::string_view());
+  EXPECT_EQ(info.c_str(0), nullptr);
+  EXPECT_EQ(info.c_str(1), nullptr);
+  EXPECT_EQ(info.c_str(2), nullptr);
+  EXPECT_EQ(info, TestType());  // equality comparison
 }
 
-TEST(ConcatenatedStrings, ParameterizedStoresAndReturns) {
+TEST(ConcatenatedStrings, SetFromDefaultConstructed) {
+  TestType def;
+  TestType withInitialCapacity{4};
+  for (TestType *pInfo : {&def, &withInitialCapacity}) {
+    TestType &info = *pInfo;
+    info.set(0, "1");
+    EXPECT_EQ(info[0], "1");
+    EXPECT_EQ(info[1], "");
+    EXPECT_EQ(info[2], "");
+
+    info.set(1, "22");
+    EXPECT_EQ(info[0], "1");
+    EXPECT_EQ(info[1], "22");
+    EXPECT_EQ(info[2], "");
+
+    info.set(2, "333");
+    EXPECT_EQ(info[0], "1");
+    EXPECT_EQ(info[1], "22");
+    EXPECT_EQ(info[2], "333");
+    EXPECT_STREQ(info.c_str(0), "1");
+    EXPECT_STREQ(info.c_str(1), "22");
+    EXPECT_STREQ(info.c_str(2), "333");
+  }
+}
+
+TEST(ConcatenatedStrings, BasicAccess) {
   TestType info({"h2", "TLS_AES_128_GCM_SHA256", "TLSv1.3"});
   EXPECT_EQ(info[0], "h2");
   EXPECT_EQ(info[1], "TLS_AES_128_GCM_SHA256");
   EXPECT_EQ(info[2], "TLSv1.3");
+  EXPECT_STREQ(info.c_str(0), "h2");
+  EXPECT_STREQ(info.c_str(1), "TLS_AES_128_GCM_SHA256");
+  EXPECT_STREQ(info.c_str(2), "TLSv1.3");
+}
+
+TEST(ConcatenatedStrings, NotSameNumberOfParts) {
+  EXPECT_THROW(TestType({"one", "two"}), std::length_error);
+  EXPECT_THROW(TestType({"one", "two", "three", "four"}), std::length_error);
 }
 
 TEST(ConcatenatedStrings, LongStringsAreHandled) {
@@ -48,6 +73,9 @@ TEST(ConcatenatedStrings, LongStringsAreHandled) {
   EXPECT_EQ(info[0], alpn);
   EXPECT_EQ(info[1], cipher);
   EXPECT_EQ(info[2], version);
+  EXPECT_STREQ(info.c_str(0), alpn.c_str());
+  EXPECT_STREQ(info.c_str(1), cipher.c_str());
+  EXPECT_STREQ(info.c_str(2), version.c_str());
 }
 
 TEST(ConcatenatedStrings, GuardAgainstOverflowConstruction) {
@@ -99,6 +127,9 @@ TEST(ConcatenatedStrings, SetLarger) {
   EXPECT_EQ(cs[0], "a");
   EXPECT_EQ(cs[1], "BBBBBBBB");
   EXPECT_EQ(cs[2], "ccc");
+  EXPECT_STREQ(cs.c_str(0), "a");
+  EXPECT_STREQ(cs.c_str(1), "BBBBBBBB");
+  EXPECT_STREQ(cs.c_str(2), "ccc");
 }
 
 TEST(ConcatenatedStrings, SetShorter) {
@@ -108,6 +139,9 @@ TEST(ConcatenatedStrings, SetShorter) {
   EXPECT_EQ(cs[0], "X");
   EXPECT_EQ(cs[1], "bbbbbb");
   EXPECT_EQ(cs[2], "cccccc");
+  EXPECT_STREQ(cs.c_str(0), "X");
+  EXPECT_STREQ(cs.c_str(1), "bbbbbb");
+  EXPECT_STREQ(cs.c_str(2), "cccccc");
 }
 
 TEST(ConcatenatedStrings, SetEqualSize) {
@@ -117,6 +151,9 @@ TEST(ConcatenatedStrings, SetEqualSize) {
   EXPECT_EQ(cs[0], "one");
   EXPECT_EQ(cs[1], "two");
   EXPECT_EQ(cs[2], "XXX");
+  EXPECT_STREQ(cs.c_str(0), "one");
+  EXPECT_STREQ(cs.c_str(1), "two");
+  EXPECT_STREQ(cs.c_str(2), "XXX");
 }
 
 TEST(ConcatenatedStrings, SetFirstGrowAndShrink) {
@@ -126,12 +163,18 @@ TEST(ConcatenatedStrings, SetFirstGrowAndShrink) {
   EXPECT_EQ(cs[0], "AAAAAAAA");
   EXPECT_EQ(cs[1], "bbbb");
   EXPECT_EQ(cs[2], "cc");
+  EXPECT_STREQ(cs.c_str(0), "AAAAAAAA");
+  EXPECT_STREQ(cs.c_str(1), "bbbb");
+  EXPECT_STREQ(cs.c_str(2), "cc");
 
   // shrink first
   cs.set(0, std::string_view("Z"));
   EXPECT_EQ(cs[0], "Z");
   EXPECT_EQ(cs[1], "bbbb");
   EXPECT_EQ(cs[2], "cc");
+  EXPECT_STREQ(cs.c_str(0), "Z");
+  EXPECT_STREQ(cs.c_str(1), "bbbb");
+  EXPECT_STREQ(cs.c_str(2), "cc");
 }
 
 TEST(ConcatenatedStrings, SetMiddleMultipleTimes) {
@@ -140,17 +183,26 @@ TEST(ConcatenatedStrings, SetMiddleMultipleTimes) {
   EXPECT_EQ(cs[0], "BBBBBBBBBB");
   EXPECT_EQ(cs[1], "bb");
   EXPECT_EQ(cs[2], "ccc");
+  EXPECT_STREQ(cs.c_str(0), "BBBBBBBBBB");
+  EXPECT_STREQ(cs.c_str(1), "bb");
+  EXPECT_STREQ(cs.c_str(2), "ccc");
 
   cs.set(1, std::string_view(""));
   EXPECT_EQ(cs[0], "BBBBBBBBBB");
   EXPECT_EQ(cs[1], std::string_view());
   EXPECT_EQ(cs[2], "ccc");
+  EXPECT_STREQ(cs.c_str(0), "BBBBBBBBBB");
+  EXPECT_STREQ(cs.c_str(1), "");
+  EXPECT_STREQ(cs.c_str(2), "ccc");
 
   // replace middle again with equal size
   cs.set(0, std::string_view("0123456789"));
   EXPECT_EQ(cs[0], "0123456789");
   EXPECT_EQ(cs[1], std::string_view());
   EXPECT_EQ(cs[2], "ccc");
+  EXPECT_STREQ(cs.c_str(0), "0123456789");
+  EXPECT_STREQ(cs.c_str(1), "");
+  EXPECT_STREQ(cs.c_str(2), "ccc");
 }
 
 TEST(ConcatenatedStrings, SetLastGrowAndShrink) {
@@ -159,9 +211,17 @@ TEST(ConcatenatedStrings, SetLastGrowAndShrink) {
   EXPECT_EQ(cs[0], "X");
   EXPECT_EQ(cs[1], "YY");
   EXPECT_EQ(cs[2], "LLLLLLLLLLLL");
+  EXPECT_STREQ(cs.c_str(0), "X");
+  EXPECT_STREQ(cs.c_str(1), "YY");
+  EXPECT_STREQ(cs.c_str(2), "LLLLLLLLLLLL");
 
   cs.set(2, std::string_view("ok"));
+  EXPECT_EQ(cs[0], "X");
+  EXPECT_EQ(cs[1], "YY");
   EXPECT_EQ(cs[2], "ok");
+  EXPECT_STREQ(cs.c_str(0), "X");
+  EXPECT_STREQ(cs.c_str(1), "YY");
+  EXPECT_STREQ(cs.c_str(2), "ok");
 }
 
 TEST(ConcatenatedStrings, SetEmptyAtPositions) {
@@ -171,6 +231,9 @@ TEST(ConcatenatedStrings, SetEmptyAtPositions) {
   EXPECT_EQ(cs1[0], std::string_view());
   EXPECT_EQ(cs1[1], "middle");
   EXPECT_EQ(cs1[2], "last");
+  EXPECT_STREQ(cs1.c_str(0), "");
+  EXPECT_STREQ(cs1.c_str(1), "middle");
+  EXPECT_STREQ(cs1.c_str(2), "last");
 
   // empty middle
   TestType cs2({"first", "middle", "last"});
@@ -178,6 +241,9 @@ TEST(ConcatenatedStrings, SetEmptyAtPositions) {
   EXPECT_EQ(cs2[0], "first");
   EXPECT_EQ(cs2[1], std::string_view());
   EXPECT_EQ(cs2[2], "last");
+  EXPECT_STREQ(cs2.c_str(0), "first");
+  EXPECT_STREQ(cs2.c_str(1), "");
+  EXPECT_STREQ(cs2.c_str(2), "last");
 
   // empty last
   TestType cs3({"first", "middle", "last"});
@@ -185,6 +251,9 @@ TEST(ConcatenatedStrings, SetEmptyAtPositions) {
   EXPECT_EQ(cs3[0], "first");
   EXPECT_EQ(cs3[1], "middle");
   EXPECT_EQ(cs3[2], std::string_view());
+  EXPECT_STREQ(cs3.c_str(0), "first");
+  EXPECT_STREQ(cs3.c_str(1), "middle");
+  EXPECT_STREQ(cs3.c_str(2), "");
 }
 
 TEST(ConcatenatedStrings, StressManySets) {
@@ -200,6 +269,9 @@ TEST(ConcatenatedStrings, StressManySets) {
     EXPECT_TRUE(cs[0].starts_with('A'));
     EXPECT_TRUE(cs[1].starts_with('B'));
     EXPECT_TRUE(cs[2].starts_with('C'));
+    EXPECT_STREQ(cs.c_str(0), cs[0].data());  // NOLINT(bugprone-suspicious-stringview-data-usage)
+    EXPECT_STREQ(cs.c_str(1), cs[1].data());  // NOLINT(bugprone-suspicious-stringview-data-usage)
+    EXPECT_STREQ(cs.c_str(2), cs[2].data());  // NOLINT(bugprone-suspicious-stringview-data-usage)
     // ensure offsets still produce concatenated length >= single parts
     std::size_t totalLen = cs[0].size() + cs[1].size() + cs[2].size();
     EXPECT_GE(totalLen, static_cast<std::size_t>(0));
@@ -209,16 +281,16 @@ TEST(ConcatenatedStrings, StressManySets) {
 TEST(ConcatenatedStrings, TmpNullTerminated_FirstMiddleLast) {
   TestType cs({"first", "middle", "last"});
 
-  EXPECT_EQ(std::strlen(cs.makeNullTerminated(0).c_str()), 5UL);
+  EXPECT_EQ(std::strlen(cs.c_str(0)), 5UL);
 
   // First
   {
     auto ptr = const_cast<char *>(cs[0].data());
     (void)ptr;  // silence unused warnings in some builds
-    auto tmp = cs.makeNullTerminated(0);
-    EXPECT_EQ(tmp.c_str(), ptr);
-    EXPECT_EQ(std::strlen(tmp.c_str()), cs[0].size());
-    EXPECT_EQ(tmp.c_str()[cs[0].size()], '\0');
+    auto tmp = cs.c_str(0);
+    EXPECT_EQ(tmp, ptr);
+    EXPECT_EQ(std::strlen(tmp), cs[0].size());
+    EXPECT_EQ(tmp[cs[0].size()], '\0');
   }
   const char orig0 = const_cast<char *>(cs[0].data())[cs[0].size()];
   EXPECT_EQ(const_cast<char *>(cs[0].data())[cs[0].size()], orig0);
@@ -227,10 +299,10 @@ TEST(ConcatenatedStrings, TmpNullTerminated_FirstMiddleLast) {
   {
     auto ptr = const_cast<char *>(cs[1].data());
     (void)ptr;
-    auto tmp = cs.makeNullTerminated(1);
-    EXPECT_EQ(tmp.c_str(), ptr);
-    EXPECT_EQ(std::strlen(tmp.c_str()), cs[1].size());
-    EXPECT_EQ(tmp.c_str()[cs[1].size()], '\0');
+    auto tmp = cs.c_str(1);
+    EXPECT_EQ(tmp, ptr);
+    EXPECT_EQ(std::strlen(tmp), cs[1].size());
+    EXPECT_EQ(tmp[cs[1].size()], '\0');
   }
   const char orig1 = const_cast<char *>(cs[1].data())[cs[1].size()];
   EXPECT_EQ(const_cast<char *>(cs[1].data())[cs[1].size()], orig1);
@@ -240,10 +312,10 @@ TEST(ConcatenatedStrings, TmpNullTerminated_FirstMiddleLast) {
     auto ptr = const_cast<char *>(cs[2].data());
     (void)ptr;
     // end char for last initially is the trailing null appended by constructor
-    auto tmp = cs.makeNullTerminated(2);
-    EXPECT_EQ(tmp.c_str(), ptr);
-    EXPECT_EQ(std::strlen(tmp.c_str()), cs[2].size());
-    EXPECT_EQ(tmp.c_str()[cs[2].size()], '\0');
+    auto tmp = cs.c_str(2);
+    EXPECT_EQ(tmp, ptr);
+    EXPECT_EQ(std::strlen(tmp), cs[2].size());
+    EXPECT_EQ(tmp[cs[2].size()], '\0');
   }
   const char orig2 = const_cast<char *>(cs[2].data())[cs[2].size()];
   EXPECT_EQ(const_cast<char *>(cs[2].data())[cs[2].size()], orig2);
@@ -258,17 +330,17 @@ TEST(ConcatenatedStrings, TmpNullTerminated_Nested) {
 
   // create nested temporaries for non-adjacent parts
   {
-    auto t0 = cs.makeNullTerminated(0);
-    EXPECT_EQ(t0.c_str(), ptr0);
-    EXPECT_EQ(t0.c_str()[cs[0].size()], '\0');
+    auto t0 = cs.c_str(0);
+    EXPECT_EQ(t0, ptr0);
+    EXPECT_EQ(t0[cs[0].size()], '\0');
 
-    auto t2 = cs.makeNullTerminated(2);
-    EXPECT_EQ(t2.c_str(), ptr2);
-    EXPECT_EQ(t2.c_str()[cs[2].size()], '\0');
+    auto t2 = cs.c_str(2);
+    EXPECT_EQ(t2, ptr2);
+    EXPECT_EQ(t2[cs[2].size()], '\0');
 
     // still null-terminated inside scope
-    EXPECT_EQ(std::strlen(t0.c_str()), cs[0].size());
-    EXPECT_EQ(std::strlen(t2.c_str()), cs[2].size());
+    EXPECT_EQ(std::strlen(t0), cs[0].size());
+    EXPECT_EQ(std::strlen(t2), cs[2].size());
   }
 
   // restored after destruction
@@ -283,9 +355,9 @@ TEST(ConcatenatedStrings, TmpNullTerminated_Stress) {
     auto ptr = const_cast<char *>(cs[idx].data());
     const char before = ptr[cs[idx].size()];
     {
-      auto tmp = cs.makeNullTerminated(idx);
-      EXPECT_EQ(tmp.c_str(), ptr);
-      EXPECT_EQ(tmp.c_str()[cs[idx].size()], '\0');
+      auto tmp = cs.c_str(idx);
+      EXPECT_EQ(tmp, ptr);
+      EXPECT_EQ(tmp[cs[idx].size()], '\0');
     }
     EXPECT_EQ(ptr[cs[idx].size()], before);
   }

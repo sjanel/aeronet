@@ -1,16 +1,15 @@
 #include "aeronet/tls-transport.hpp"
 
+#include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
-#ifdef AERONET_ENABLE_KTLS
-#include <openssl/bio.h>
-#endif
 
 #include <cerrno>
 #include <cstddef>
 #include <string_view>
 
 #include "aeronet/log.hpp"
+#include "aeronet/tls-ktls.hpp"
 #include "aeronet/transport.hpp"
 
 namespace aeronet {
@@ -172,56 +171,28 @@ TransportHint TlsTransport::handshake(TransportHint want) {
   return TransportHint::None;
 }
 
-#ifdef AERONET_ENABLE_KTLS
-TlsTransport::KtlsEnableResult TlsTransport::enableKtlsSend() {
-  KtlsEnableResult result{};
-
-  if (_ktlsSendAttempted) {
-    result.status = _ktlsSendEnabled ? KtlsEnableResult::Status::AlreadyEnabled : KtlsEnableResult::Status::Failed;
-    return result;
+KtlsEnableResult TlsTransport::enableKtlsSend() {
+  if (_ktlsResult != KtlsEnableResult::Unknown) {
+    return _ktlsResult;
   }
-  _ktlsSendAttempted = true;
+#ifdef BIO_CTRL_GET_KTLS_SEND
+  _ktlsResult = KtlsEnableResult::Disabled;
 
-#if defined(BIO_CTRL_GET_KTLS_SEND) && defined(BIO_CTRL_SET_KTLS_SEND)
-  auto* writeBio = ::SSL_get_wbio(_ssl.get());
-  log::debug("enableKtlsSend: writeBio = {}", static_cast<void*>(writeBio));
-  if (writeBio == nullptr) {
+  auto* wbio = ::SSL_get_wbio(_ssl.get());
+  if (wbio == nullptr) [[unlikely]] {
     log::error("enableKtlsSend: writeBio == nullptr -> fail");
-    result.status = KtlsEnableResult::Status::Failed;
-    return result;
+    return _ktlsResult;
   }
 
-  auto getResLong = ::BIO_ctrl(writeBio, BIO_CTRL_GET_KTLS_SEND, 0, nullptr);
-  int getRes = static_cast<int>(getResLong);
+  const auto getRes = ::BIO_ctrl(wbio, BIO_CTRL_GET_KTLS_SEND, 0, nullptr);
   log::debug("enableKtlsSend: BIO_CTRL_GET_KTLS_SEND -> {}", getRes);
   if (getRes == 1) {
-    _ktlsSendEnabled = true;
-    result.status = KtlsEnableResult::Status::AlreadyEnabled;
-    return result;
-  }
-
-  errno = 0;
-  int setRes = ::BIO_ctrl(writeBio, BIO_CTRL_SET_KTLS_SEND, 0, nullptr);
-  log::debug("enableKtlsSend: BIO_CTRL_SET_KTLS_SEND -> {} errno={} ({})", setRes, errno,
-             (errno == 0) ? std::string_view("no error") : std::string_view(std::strerror(errno)));
-
-  if (setRes == 1) {
-    _ktlsSendEnabled = true;
-    result.status = KtlsEnableResult::Status::Enabled;
-    return result;
-  }
-
-  result.status = KtlsEnableResult::Status::Failed;
-  result.sysError = errno;
-  if (unsigned long lastErr = ::ERR_peek_last_error(); lastErr != 0) {
-    result.sslError = lastErr;
+    _ktlsResult = KtlsEnableResult::Enabled;
   }
 #else
-  // Platform/OpenSSL build does not support requesting KTLS send offload.
-  result.status = KtlsEnableResult::Status::Unsupported;
+  _ktlsResult = KtlsEnableResult::Unsupported;
 #endif
-  return result;
+  return _ktlsResult;
 }
-#endif
 
 }  // namespace aeronet

@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
 
   try {
     aeronet::HttpServerConfig cfg;
-    cfg.withPort(port).withTlsCertKey(certPath, keyPath).withTlsKtlsMode(aeronet::TLSConfig::KtlsMode::Auto);
+    cfg.withPort(port).withTlsCertKey(certPath, keyPath).withTlsKtlsMode(aeronet::TLSConfig::KtlsMode::Enabled);
 
     aeronet::Router router;
     router.setDefault([](const aeronet::HttpRequest& req) {
@@ -41,10 +41,10 @@ int main(int argc, char** argv) {
     server.run();
 
     const auto stats = server.stats();
-    std::cout << "KTLS send enabled connections: " << stats.ktlsSendEnabledConnections << '\n';
-    std::cout << "KTLS send fallbacks: " << stats.ktlsSendEnableFallbacks << '\n';
-    std::cout << "KTLS forced shutdowns: " << stats.ktlsSendForcedShutdowns << '\n';
-    std::cout << "KTLS bytes sent via kernel TLS: " << stats.ktlsSendBytes << '\n';
+    std::cout << "kTLS send enabled connections: " << stats.ktlsSendEnabledConnections << '\n';
+    std::cout << "kTLS send fallbacks: " << stats.ktlsSendEnableFallbacks << '\n';
+    std::cout << "kTLS forced shutdowns: " << stats.ktlsSendForcedShutdowns << '\n';
+    std::cout << "kTLS bytes sent via kernel TLS: " << stats.ktlsSendBytes << '\n';
   } catch (const std::exception& ex) {
     std::cerr << "Error: " << ex.what() << '\n';
     return EXIT_FAILURE;

@@ -145,14 +145,12 @@ TEST(HttpServerConfigTest, MaxPerEventReadBytesMustMatchChunkSize) {
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
-#ifdef AERONET_ENABLE_KTLS
 TEST(HttpServerConfigTest, WithTlsKtlsModeEnablesTls) {
   HttpServerConfig config;
   config.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled);
   EXPECT_TRUE(config.tls.enabled);
   EXPECT_EQ(config.tls.ktlsMode, TLSConfig::KtlsMode::Enabled);
 }
-#endif
 
 TEST(HttpServerConfigTest, InvalidKeepAliveTimeoutThrows) {
   HttpServerConfig config;

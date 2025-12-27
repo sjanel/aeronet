@@ -8,7 +8,6 @@
 #include <string_view>
 #include <utility>
 
-#include "aeronet/features.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/major-minor-version.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -34,31 +33,22 @@ void TLSConfig::validate() {
 
   switch (ktlsMode) {
     case KtlsMode::Disabled:
-      break;
-    case KtlsMode::Auto:
-      if constexpr (!ktlsEnabled()) {
-        log::warn("KTLS requested but not enabled at build time - falling back to user-space TLS");
-        ktlsMode = KtlsMode::Disabled;
-      }
-      break;
+      [[fallthrough]];
+    case KtlsMode::Opportunistic:
+      [[fallthrough]];
     case KtlsMode::Enabled:
       [[fallthrough]];
-    case KtlsMode::Forced:
-      if constexpr (!ktlsEnabled()) {
-        throw std::invalid_argument("KTLS requested but not enabled at build time");
-      }
+    case KtlsMode::Required:
       break;
     default:
-      throw std::invalid_argument("Invalid KTLS mode");
+      throw std::invalid_argument("Invalid kTLS mode");
   }
 
   // If TLS config is present we require a cert and a key supplied (either file or in-memory PEM)
-  const bool hasCert = !certFile().empty() || !certPem().empty();
-  const bool hasKey = !keyFile().empty() || !keyPem().empty();
-  if (!hasCert) {
+  if (certFile().empty() && certPem().empty()) {
     throw std::invalid_argument("TLS configured: certificate missing");
   }
-  if (!hasKey) {
+  if (keyFile().empty() && keyPem().empty()) {
     throw std::invalid_argument("TLS configured: private key missing");
   }
 

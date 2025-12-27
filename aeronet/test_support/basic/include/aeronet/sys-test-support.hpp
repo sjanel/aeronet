@@ -13,6 +13,7 @@
 #include <cstring>
 #include <deque>
 #include <initializer_list>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -66,6 +67,19 @@ __attribute__((no_sanitize("address"))) inline void FailNextMalloc(int expectedS
   __atomic_store_n(&g_malloc_failure_counter, expectedUnsuccessfulAllocs, __ATOMIC_RELAXED);
 }
 
+// Fail all subsequent malloc calls until reset. Useful for coarse-grained
+// failure testing when the exact allocation index is unknown.
+__attribute__((no_sanitize("address"))) inline void FailAllMallocs() {
+  __atomic_store_n(&g_malloc_fail_after, 0, __ATOMIC_RELAXED);
+  __atomic_store_n(&g_malloc_failure_counter, std::numeric_limits<int>::max(), __ATOMIC_RELAXED);
+}
+
+// Reset malloc behavior to normal (no injected failures).
+__attribute__((no_sanitize("address"))) inline void ResetToSysMalloc() {
+  __atomic_store_n(&g_malloc_fail_after, 0, __ATOMIC_RELAXED);
+  __atomic_store_n(&g_malloc_failure_counter, 0, __ATOMIC_RELAXED);
+}
+
 __attribute__((no_sanitize("address"))) inline void FailNextRealloc(int count = 1) {
   __atomic_store_n(&g_realloc_fail_after, 0, __ATOMIC_RELAXED);
   __atomic_store_n(&g_realloc_failure_counter, count, __ATOMIC_RELAXED);
@@ -76,6 +90,18 @@ __attribute__((no_sanitize("address"))) inline void FailNextRealloc(int expected
                                                                     int expectedUnsuccessfulAllocs) {
   __atomic_store_n(&g_realloc_fail_after, expectedSuccessfulAllocs, __ATOMIC_RELAXED);
   __atomic_store_n(&g_realloc_failure_counter, expectedUnsuccessfulAllocs, __ATOMIC_RELAXED);
+}
+
+// Fail all subsequent realloc calls until reset.
+__attribute__((no_sanitize("address"))) inline void FailAllReallocs() {
+  __atomic_store_n(&g_realloc_fail_after, 0, __ATOMIC_RELAXED);
+  __atomic_store_n(&g_realloc_failure_counter, std::numeric_limits<int>::max(), __ATOMIC_RELAXED);
+}
+
+// Reset realloc behavior to normal (no injected failures).
+__attribute__((no_sanitize("address"))) inline void ResetToSysRealloc() {
+  __atomic_store_n(&g_realloc_fail_after, 0, __ATOMIC_RELAXED);
+  __atomic_store_n(&g_realloc_failure_counter, 0, __ATOMIC_RELAXED);
 }
 
 [[nodiscard]] inline __attribute__((no_sanitize("address"))) bool ShouldFailMalloc() {
@@ -238,6 +264,21 @@ extern "C" void* realloc(void* ptr, size_t size) {
 #endif  // AERONET_WANT_MALLOC_OVERRIDES
 
 namespace aeronet::test {
+
+// RAII guard that forces all malloc/realloc calls to fail while in scope and
+// restores normal behavior on destruction.
+struct FailAllAllocationsGuard {
+  FailAllAllocationsGuard() noexcept {
+    FailAllMallocs();
+    FailAllReallocs();
+  }
+  FailAllAllocationsGuard(const FailAllAllocationsGuard&) = delete;
+  FailAllAllocationsGuard& operator=(const FailAllAllocationsGuard&) = delete;
+  ~FailAllAllocationsGuard() {
+    ResetToSysMalloc();
+    ResetToSysRealloc();
+  }
+};
 
 inline int CreateMemfd(std::string_view name) {
   const std::string nameStr(name);
@@ -409,9 +450,9 @@ inline void FailAllEpollCtlMod(int err) {
 }
 
 #ifdef AERONET_ENABLE_OPENSSL
-// --- OpenSSL KTLS controls (tests only) ---
+// --- OpenSSL kTLS controls (tests only) ---
 // Allow tests to inject custom return values for BIO_ctrl when called with
-// BIO_CTRL_GET_KTLS_SEND or BIO_CTRL_SET_KTLS_SEND, and to force SSL_get_wbio
+// BIO_CTRL_GET_KTLS_SEND, and to force SSL_get_wbio
 // to return nullptr a configurable number of times.
 
 struct BioCtrlAction {
@@ -419,7 +460,7 @@ struct BioCtrlAction {
   int err{0};
 };
 
-// Queue of actions keyed by cmd (e.g., BIO_CTRL_GET_KTLS_SEND / BIO_CTRL_SET_KTLS_SEND)
+// Queue of actions keyed by cmd (e.g., BIO_CTRL_GET_KTLS_SEND)
 inline KeyedActionQueue<int, BioCtrlAction> g_bio_ctrl_actions;
 
 // Force N next calls to SSL_get_wbio to return nullptr.
@@ -443,16 +484,8 @@ extern "C" long BIO_ctrl(BIO* b, int cmd, long larg, void* parg) {  // NOLINT
     real_fn = aeronet::test::ResolveNext<Fn>("BIO_ctrl");
   }
 
-#if defined(BIO_CTRL_GET_KTLS_SEND)
+#ifdef BIO_CTRL_GET_KTLS_SEND
   if (cmd == BIO_CTRL_GET_KTLS_SEND) {
-    if (auto act = aeronet::test::g_bio_ctrl_actions.pop(cmd)) {
-      errno = act->err;
-      return act->ret;
-    }
-  }
-#endif
-#if defined(BIO_CTRL_SET_KTLS_SEND)
-  if (cmd == BIO_CTRL_SET_KTLS_SEND) {
     if (auto act = aeronet::test::g_bio_ctrl_actions.pop(cmd)) {
       errno = act->err;
       return act->ret;

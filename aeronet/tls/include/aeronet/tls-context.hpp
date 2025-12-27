@@ -17,7 +17,6 @@ namespace aeronet {
 
 class TlsTicketKeyStore;
 
-// Forward-declared metrics container (owned by SingleHttpServer) used for ALPN mismatch counting during selection.
 struct TlsMetricsExternal {
   uint64_t alpnStrictMismatches{0};
 };
@@ -27,10 +26,10 @@ struct TlsMetricsExternal {
 // RAII wrapper around SSL_CTX with minimal configuration derived from HttpServerConfig::TLSConfig.
 class TlsContext {
  public:
+  TlsContext() = default;
+
   // Creates a new TLSContext
   TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics, std::shared_ptr<TlsTicketKeyStore> ticketKeyStore = {});
-
-  TlsContext() = default;
 
   TlsContext(const TlsContext&) = delete;
   TlsContext& operator=(const TlsContext&) = delete;
