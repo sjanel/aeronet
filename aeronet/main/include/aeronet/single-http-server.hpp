@@ -39,6 +39,10 @@
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
 
+#ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/http2-protocol-handler.hpp"
+#endif
+
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-context.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
@@ -268,6 +272,13 @@ class SingleHttpServer {
 
   // Install a callback invoked with middleware metrics.
   void setMiddlewareMetricsCallback(MiddlewareMetricsCallback cb) { _middlewareMetricsCb = std::move(cb); }
+
+  /// Check if HTTP/2 support is enabled (compile-time + runtime).
+#ifdef AERONET_ENABLE_HTTP2
+  [[nodiscard]] bool http2Enabled() const noexcept { return _config.http2.enable; }
+#else
+  [[nodiscard]] bool http2Enabled() const noexcept { return false; }
+#endif
 
   // Run the server event loop until stop() is called (e.g. from another thread) or the process receives SIGINT/SIGTERM.
   // The maximum blocking interval of a single poll cycle is controlled by HttpServerConfig::pollInterval.
@@ -524,6 +535,12 @@ class SingleHttpServer {
   bool tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt);
 
   std::unique_ptr<ConnectionState> getNewConnectionState();
+
+#ifdef AERONET_ENABLE_HTTP2
+  // Sets up HTTP/2 protocol handler for a connection after ALPN "h2" negotiation.
+  // Initializes the protocol handler, sends the server preface (SETTINGS frame), and flushes output.
+  void setupHttp2Connection(ConnectionState& state);
+#endif
 
   struct StatsInternal {
     uint64_t totalBytesQueued{0};

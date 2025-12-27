@@ -219,8 +219,13 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const HttpRequest& request, con
   return result;
 }
 
-UpgradeValidationResult ValidateHttp2Upgrade(const HttpRequest& request) {
+UpgradeValidationResult ValidateHttp2Upgrade([[maybe_unused]] const HttpRequest& request) {
   UpgradeValidationResult result;
+
+#ifndef AERONET_ENABLE_HTTP2
+  result.errorMessage = "HTTP/2 support is not enabled";
+  return result;
+#endif
 
   // Check Upgrade header
   const auto upgradeHeader = request.headerValue(http::Upgrade);
@@ -278,9 +283,11 @@ ProtocolType DetectUpgradeTarget(const HttpRequest& request) {
     return ProtocolType::WebSocket;
   }
 
+#ifdef AERONET_ENABLE_HTTP2
   if (CaseInsensitiveEqual(value, http2::kAlpnH2c)) {
     return ProtocolType::Http2;
   }
+#endif
 
   return ProtocolType::Http11;
 }
@@ -323,6 +330,10 @@ RawChars BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validation
 }
 
 RawChars BuildHttp2UpgradeResponse(const UpgradeValidationResult& validationResult) {
+#ifndef AERONET_ENABLE_HTTP2
+  (void)validationResult;
+  return {};
+#else
   (void)validationResult;  // Used for future extension
 
   // Build raw HTTP response: "HTTP/1.1 101 Switching Protocols\r\n" + headers + "\r\n"
@@ -339,6 +350,7 @@ RawChars BuildHttp2UpgradeResponse(const UpgradeValidationResult& validationResu
   response.append(http::CRLF);
 
   return response;
+#endif
 }
 
 }  // namespace upgrade

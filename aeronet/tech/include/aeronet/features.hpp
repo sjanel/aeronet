@@ -14,6 +14,12 @@ constexpr bool openSslEnabled() { return true; }
 constexpr bool openSslEnabled() { return false; }
 #endif
 
+#ifdef AERONET_ENABLE_HTTP2
+constexpr bool http2Enabled() { return true; }
+#else
+constexpr bool http2Enabled() { return false; }
+#endif
+
 #ifdef AERONET_ENABLE_ZLIB
 constexpr bool zlibEnabled() { return true; }
 #else

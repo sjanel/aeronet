@@ -11,7 +11,6 @@ namespace aeronet::http2 {
 // Connection preface: client must send this magic string first (RFC 9113 §3.4)
 // "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 inline constexpr std::string_view kConnectionPreface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
-inline constexpr std::size_t kConnectionPrefaceSize = 24;
 
 // ALPN protocol identifier for HTTP/2 over TLS
 inline constexpr std::string_view kAlpnH2 = "h2";
@@ -32,7 +31,8 @@ enum class FrameType : uint8_t {
   GoAway = 0x07,        // GOAWAY frame - graceful connection shutdown
   WindowUpdate = 0x08,  // WINDOW_UPDATE frame - flow control
   Continuation = 0x09,  // CONTINUATION frame - continuation of header block
-  // 0x0A-0xFF reserved for extensions
+  // 0x0A-0xFE reserved for extensions
+  Unknown = 0xFF  // Sentinel for unknown/invalid frame types
 };
 
 // HTTP/2 Error Codes (RFC 9113 §7)
@@ -75,7 +75,10 @@ enum class SettingsParameter : uint16_t {  // NOLINT(performance-enum-size)
 
 // HTTP/2 Frame Flags (RFC 9113 §6)
 // ================================
-namespace flags {
+namespace FrameFlags {
+
+// No flags set
+inline constexpr uint8_t None = 0x00;
 
 // DATA frame flags (§6.1)
 inline constexpr uint8_t DataEndStream = 0x01;  // END_STREAM: last frame for this stream
@@ -96,7 +99,7 @@ inline constexpr uint8_t PingAck = 0x01;  // ACK: response to PING
 // CONTINUATION frame flags (§6.10)
 inline constexpr uint8_t ContinuationEndHeaders = 0x04;  // END_HEADERS: end of header block
 
-}  // namespace flags
+}  // namespace FrameFlags
 
 // HTTP/2 Default Values (RFC 9113 §6.5.2)
 // =======================================

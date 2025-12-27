@@ -17,8 +17,11 @@ This file lists planned features and near-term priorities. Implemented features 
 ## Long-term / Nice-to-have
 
 - Fuzz harness integration (libFuzzer targets)
-- HTTP/2 prototype (leveraging ALPN + transport abstraction)
 - OCSP stapling / advanced TLS features
+
+## Recently Completed
+
+- **HTTP/2** (RFC 9113): HPACK header compression, stream multiplexing, flow control, ALPN "h2" negotiation, h2c cleartext (prior knowledge + HTTP/1.1 Upgrade). See [HTTP/2 documentation](FEATURES.md#http2-rfc-9113).
 
 ### TLS enhancements (detailed roadmap)
 
@@ -32,7 +35,7 @@ This file lists planned features and near-term priorities. Implemented features 
 
 #### Phase 4 (Future Protocol / Extensibility)
 
-- ALPN "h2" groundwork (without committing to HTTP/2 yet)
+- ~~ALPN "h2" groundwork~~ ✔ (HTTP/2 implemented)
 - Per-SNI mTLS policies
 - Session ticket key rotation scheduling & multi-key window
 - (Stretch) Exploring QUIC/HTTP/3 (would likely be a separate transport layer, so only mention if strategic)
