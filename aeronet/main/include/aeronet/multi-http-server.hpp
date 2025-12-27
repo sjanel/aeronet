@@ -18,6 +18,10 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/vector.hpp"
 
+#ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/tls-handshake-callback.hpp"
+#endif
+
 namespace aeronet {
 
 // MultiHttpServer: convenience wrapper that spins up N SingleHttpServer instances
@@ -144,7 +148,7 @@ class MultiHttpServer {
 #ifdef AERONET_ENABLE_OPENSSL
   // Install a TLS handshake callback on all underlying servers.
   // The callback is copied into each SingleHttpServer at start() time. Must be set before start().
-  void setTlsHandshakeCallback(SingleHttpServer::TlsHandshakeCallback cb);
+  void setTlsHandshakeCallback(TlsHandshakeCallback cb);
 #endif
 
   // run():

@@ -12,6 +12,6 @@ inline constexpr char kNullCharSep[] = {'\0'};
 }  // namespace detail
 
 using ConcatenatedStrings = DynamicConcatenatedStrings<detail::kNullCharSep, uint64_t>;
-using SmallConcatenatedStrings = DynamicConcatenatedStrings<detail::kNullCharSep, uint32_t>;
+using ConcatenatedStrings32 = DynamicConcatenatedStrings<detail::kNullCharSep, uint32_t>;
 
 }  // namespace aeronet

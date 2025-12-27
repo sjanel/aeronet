@@ -19,12 +19,10 @@ target_link_libraries(aeronet-static-example PRIVATE aeronet)
 AeronetAddProjectExecutable(aeronet-websocket-echo websocket-echo.cpp)
 target_link_libraries(aeronet-websocket-echo PRIVATE aeronet)
 
-if (AERONET_ENABLE_KTLS)
-	AeronetAddProjectExecutable(aeronet-tls-ktls tls-ktls.cpp)
-	target_link_libraries(aeronet-tls-ktls PRIVATE aeronet)
-endif()
-
 if (AERONET_ENABLE_OPENSSL)
 	AeronetAddProjectExecutable(aeronet-tls-session-tickets tls-session-tickets.cpp)
 	target_link_libraries(aeronet-tls-session-tickets PRIVATE aeronet)
+	
+	AeronetAddProjectExecutable(aeronet-tls-ktls tls-ktls.cpp)
+	target_link_libraries(aeronet-tls-ktls PRIVATE aeronet)
 endif()

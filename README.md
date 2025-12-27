@@ -164,7 +164,7 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Keep‑Alive / Limits | ✔ | Header/body size, max requests per connection, idle timeout |
 | Compression (gzip/deflate/zstd/br) | ✔ | Flags opt‑in; q‑value negotiation; threshold; per‑response opt‑out |
 | Inbound body decompression | ✔ | Multi‑layer, safety guards, header removal |
-| TLS | ✔ (flag) | ALPN, mTLS, session tickets, KTLS sendfile, timeouts, metrics |
+| TLS | ✔ (flag) | ALPN, mTLS, session tickets, kTLS sendfile, timeouts, metrics |
 | OpenTelemetry | ✔ (flag) | Distributed tracing spans, metrics counters (experimental) |
 | Async wrapper | ✔ | Background thread convenience |
 | Metrics hook | ✔ (alpha) | Per‑request basic stats |

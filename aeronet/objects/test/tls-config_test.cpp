@@ -215,8 +215,8 @@ TEST(TLSConfigTest, AlpnMustMatchRequiresProtocols) {
   EXPECT_NO_THROW(cfg.validate());
 
   // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-  EXPECT_STREQ(cfg.certPemCstrView().c_str(), kDummyCertPem.data());
-  EXPECT_STREQ(cfg.keyPemCstrView().c_str(), kDummyKeyPem.data());  // NOLINT(bugprone-suspicious-stringview-data-usage)
+  EXPECT_STREQ(cfg.certPemCstr(), kDummyCertPem.data());
+  EXPECT_STREQ(cfg.keyPemCstr(), kDummyKeyPem.data());  // NOLINT(bugprone-suspicious-stringview-data-usage)
 }
 
 TEST(TLSConfigTest, AlpnProtocolEntriesNonEmptyAndWithinLimit) {
@@ -261,27 +261,19 @@ TEST(TLSConfigTest, KtlsModeBuildGuard) {
   cfg.withCertPem(kDummyCertPem);
   cfg.withKeyPem(kDummyKeyPem);
 
-  cfg.withKtlsMode(TLSConfig::KtlsMode::Auto);
-  EXPECT_NO_THROW(cfg.validate());  // Auto should never throw
+  cfg.withKtlsMode(TLSConfig::KtlsMode::Opportunistic);
+  EXPECT_NO_THROW(cfg.validate());
 
   cfg.withKtlsMode(TLSConfig::KtlsMode::Disabled);
-  EXPECT_NO_THROW(cfg.validate());  // Disabled should never throw
+  EXPECT_NO_THROW(cfg.validate());
 
   cfg.withKtlsMode(TLSConfig::KtlsMode::Enabled);
 
-#ifdef AERONET_ENABLE_KTLS
   EXPECT_NO_THROW(cfg.validate());
-#else
-  EXPECT_THROW(cfg.validate(), std::invalid_argument);
-#endif
 
-  cfg.withKtlsMode(TLSConfig::KtlsMode::Forced);
+  cfg.withKtlsMode(TLSConfig::KtlsMode::Required);
 
-#ifdef AERONET_ENABLE_KTLS
   EXPECT_NO_THROW(cfg.validate());
-#else
-  EXPECT_THROW(cfg.validate(), std::invalid_argument);
-#endif
 
   cfg.withKtlsMode(
       static_cast<TLSConfig::KtlsMode>(std::numeric_limits<std::underlying_type_t<TLSConfig::KtlsMode>>::max()));

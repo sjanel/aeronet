@@ -291,7 +291,7 @@ class Router {
     using trivially_relocatable = std::true_type;
 
     vector<CompiledSegment> segments;
-    SmallConcatenatedStrings paramNames;
+    ConcatenatedStrings32 paramNames;
     bool hasWildcard{false};
     bool hasNoSlashRegistered{false};
     bool hasWithSlashRegistered{false};
