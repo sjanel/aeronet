@@ -42,3 +42,7 @@ AeronetAddUnitTest(
     OpenSSL::SSL
     OpenSSL::Crypto
 )
+
+if(AERONET_BUILD_TESTS)
+    target_link_libraries(tls-ticket-key-store_test PRIVATE dl)
+endif()
