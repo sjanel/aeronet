@@ -38,13 +38,13 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req);
-  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{1000}, 93UL);
   EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
 
   // Now send data through the tunnel and expect echo
   std::string_view simpleHello = "hello-tunnel";
   test::sendAll(fd, simpleHello);
-  auto echoedHello = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  auto echoedHello = test::recvWithTimeout(fd, std::chrono::milliseconds{1000}, simpleHello.size());
   EXPECT_TRUE(echoedHello.contains(simpleHello));
 
   // Send payload that upstream will partially echo
@@ -56,12 +56,12 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   EXPECT_TRUE(echoed.contains(payload));
 
   // now simulate some epoll mod failures, server should be able to recover from these
+  test::EventLoopHookGuard guard;
   test::FailAllEpollCtlMod(EACCES);
   test::sendAll(fd, payload);
 
-  test::recvWithTimeout(fd, std::chrono::milliseconds{500}, payload.size());
-
-  test::ResetEpollCtlModFail();
+  // Get out of the recv as soon as we receive some data to decrease the unit test time, but don't assert anything here
+  test::recvWithTimeout(fd, std::chrono::milliseconds{500}, 16UL);
 }
 
 TEST_F(HttpConnectDefaultConfig, DnsFailureReturns502) {
@@ -86,4 +86,13 @@ TEST_F(HttpConnectDefaultConfig, AllowlistRejectsTarget) {
   test::sendAll(fd, req);
   auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
   ASSERT_TRUE(resp.contains("403") || resp.contains("CONNECT target not allowed"));
+}
+
+TEST_F(HttpConnectDefaultConfig, MalformedConnectTargetReturns400) {
+  // Missing ':' in authority form -> should return 400 Bad Request
+  std::string req = "CONNECT malformed-target HTTP/1.1\r\nHost: malformed-target\r\n\r\n";
+  ASSERT_GT(fd, 0);
+  test::sendAll(fd, req);
+  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  ASSERT_TRUE(resp.contains("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
 }

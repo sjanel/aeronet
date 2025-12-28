@@ -585,7 +585,7 @@ std::string buildRequest(const RequestOptions &opt) {
 std::optional<std::string> request(uint16_t port, const RequestOptions &opt) {
   ClientConnection cnx(port);
   int fd = cnx.fd();
-  setRecvTimeout(fd, std::chrono::seconds(opt.recvTimeoutSeconds));
+  setRecvTimeout(fd, opt.recvTimeout);
   auto reqStr = buildRequest(opt);
 
   sendAll(fd, reqStr);
