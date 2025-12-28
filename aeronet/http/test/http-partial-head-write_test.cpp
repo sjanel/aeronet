@@ -12,7 +12,7 @@
 using namespace aeronet;
 
 // Fake transport that simulates a partial head write first, then completes remaining head and body.
-class PartialWriteTransport : public ITransport {
+class PartialWriteTransport final : public ITransport {
  public:
   using ITransport::write;  // bring base overloads into scope
 

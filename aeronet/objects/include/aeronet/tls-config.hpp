@@ -55,11 +55,11 @@ class TLSConfig {
     void setPattern(std::string_view value) { _strings.set(0, value); }
 
     [[nodiscard]] std::string_view certFile() const noexcept { return _strings[1]; }
-    [[nodiscard]] auto certFileCstrView() const noexcept { return _strings.c_str(1); }
+    [[nodiscard]] auto certFileCstr() const noexcept { return _strings.c_str(1); }
     void setCertFile(std::string_view value) { _strings.set(1, value); }
 
     [[nodiscard]] std::string_view keyFile() const noexcept { return _strings[2]; }
-    [[nodiscard]] auto keyFileCstrView() const noexcept { return _strings.c_str(2); }
+    [[nodiscard]] auto keyFileCstr() const noexcept { return _strings.c_str(2); }
     void setKeyFile(std::string_view value) { _strings.set(2, value); }
 
     [[nodiscard]] std::string_view certPem() const noexcept { return _strings[3]; }

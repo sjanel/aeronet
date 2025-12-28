@@ -197,8 +197,7 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
 #ifdef AERONET_ENABLE_OPENSSL
       ,
       _tlsCtxHolder(std::move(other._tlsCtxHolder)),
-      _tlsMetrics(std::move(other._tlsMetrics)),
-      _tlsMetricsExternal(std::exchange(other._tlsMetricsExternal, {}))
+      _tlsMetrics(std::move(other._tlsMetrics))
 #endif
 {
   if (!_lifecycle.isIdle()) {
@@ -248,7 +247,6 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
 #ifdef AERONET_ENABLE_OPENSSL
     _tlsCtxHolder = std::move(other._tlsCtxHolder);
     _tlsMetrics = std::move(other._tlsMetrics);
-    _tlsMetricsExternal = std::exchange(other._tlsMetricsExternal, {});
 #endif
     // transfer pending updates state; keep mutex per-instance
     _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_release);
@@ -309,14 +307,12 @@ void SingleHttpServer::initListener() {
     _eventLoop = EventLoop(_config.pollInterval);
   }
 
+#ifdef AERONET_ENABLE_OPENSSL
   // Initialize TLS context if requested (OpenSSL build).
   if (_config.tls.enabled) {
-#ifdef AERONET_ENABLE_OPENSSL
-    _tlsCtxHolder = std::make_shared<TlsContext>(_config.tls, &_tlsMetricsExternal, _sharedTicketKeyStore);
-#else
-    throw std::invalid_argument("aeronet built without OpenSSL support but TLS configuration provided");
-#endif
+    _tlsCtxHolder = std::make_shared<TlsContext>(_config.tls, _sharedTicketKeyStore);
   }
+#endif
 
   _listenSocket.bindAndListen(_config.reusePort, _config.tcpNoDelay, _config.port);
 
