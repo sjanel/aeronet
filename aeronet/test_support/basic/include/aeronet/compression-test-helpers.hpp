@@ -19,4 +19,6 @@ constexpr bool HasZstdMagic(std::string_view body) {
          static_cast<unsigned char>(body[3]) == 0xFD;
 }
 
+std::string MakePatternedPayload(std::size_t size);
+
 }  // namespace aeronet::test

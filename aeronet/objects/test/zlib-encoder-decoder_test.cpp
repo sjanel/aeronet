@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "aeronet/compression-config.hpp"
+#include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/zlib-decoder.hpp"
@@ -27,21 +28,13 @@ constexpr std::size_t kDecoderChunkSize = 512;
 constexpr std::size_t kExtraCapacity = 0;
 constexpr std::size_t kMaxPlainBytes = 2UL * 1024 * 1024;
 
-std::string MakePatternedPayload(std::size_t size) {
-  std::string payload;
-  payload.reserve(size);
-  for (std::size_t pos = 0; pos < size; ++pos) {
-    payload.push_back(static_cast<char>('a' + static_cast<int>(pos % 13U)));
-  }
-  return payload;
-}
-
 std::vector<std::string> SamplePayloads() {
   std::vector<std::string> payloads;
+  payloads.reserve(4);
   payloads.emplace_back("");
   payloads.emplace_back("gzip -> deflate parity test");
   payloads.emplace_back(2048, 'x');
-  payloads.emplace_back(MakePatternedPayload(64UL * 1024UL));
+  payloads.emplace_back(test::MakePatternedPayload(64UL * 1024UL));
   return payloads;
 }
 
@@ -205,7 +198,7 @@ TEST_P(ZlibEncoderDecoderTest, StreamingDecoderHandlesChunkSplits) {
 
 TEST(ZlibEncoderDecoderTest, SmallEncoderChunkSizeLargeChunks) {
   static constexpr std::size_t kChunkSize = 4UL * 1024 * 1024;
-  const auto largePayload = MakePatternedPayload(kChunkSize);
+  const auto largePayload = test::MakePatternedPayload(kChunkSize);
   // This test validates handling of very large streaming chunk sizes; it must not be
   // constrained by the small default max-decompressed limit used by other tests.
   ExpectStreamingRoundTrip(ZStreamRAII::Variant::deflate, largePayload, kChunkSize, 8, kChunkSize);

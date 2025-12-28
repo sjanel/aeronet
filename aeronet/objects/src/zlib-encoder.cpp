@@ -34,7 +34,7 @@ std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
     _zs.stream.avail_out = static_cast<decltype(_zs.stream.avail_out)>(availableCapacity);
 
     const auto ret = deflate(&_zs.stream, flush);
-    if (ret == Z_STREAM_ERROR) {
+    if (ret == Z_STREAM_ERROR) [[unlikely]] {
       throw std::runtime_error(std::format("Zlib streaming error {}", ret));
     }
 
@@ -67,7 +67,7 @@ void ZlibEncoder::encodeFull(std::size_t extraCapacity, std::string_view data, R
   zstream.avail_out = static_cast<decltype(zstream.avail_out)>(availableCapacity);
 
   const auto rc = deflate(&zstream, Z_FINISH);
-  if (rc != Z_STREAM_END) {
+  if (rc != Z_STREAM_END) [[unlikely]] {
     throw std::runtime_error(
         std::format("Error {} during {} compression", rc, _variant == ZStreamRAII::Variant::gzip ? "gzip" : "deflate"));
   }

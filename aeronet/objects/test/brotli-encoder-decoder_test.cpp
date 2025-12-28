@@ -10,6 +10,7 @@
 #include "aeronet/brotli-decoder.hpp"
 #include "aeronet/brotli-encoder.hpp"
 #include "aeronet/compression-config.hpp"
+#include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sys-test-support.hpp"
 
@@ -26,21 +27,12 @@ constexpr std::size_t kDecoderChunkSize = 256;
 constexpr std::size_t kExtraCapacity = 0;
 constexpr std::size_t kMaxPlainBytes = 2UL * 1024 * 1024;
 
-std::string makePatternedPayload(std::size_t size) {
-  std::string payload;
-  payload.reserve(size);
-  for (std::size_t pos = 0; pos < size; ++pos) {
-    payload.push_back(static_cast<char>('a' + static_cast<int>(pos % 23U)));
-  }
-  return payload;
-}
-
-std::vector<std::string> samplePayloads() {
+std::vector<std::string> SamplePayloads() {
   std::vector<std::string> payloads;
   payloads.emplace_back("");
   payloads.emplace_back("Hello, Brotli compression!");
   payloads.emplace_back(512, 'A');
-  payloads.emplace_back(makePatternedPayload(128UL * 1024UL));
+  payloads.emplace_back(test::MakePatternedPayload(128UL * 1024UL));
   return payloads;
 }
 
@@ -128,7 +120,7 @@ TEST(BrotliEncoderDecoderTest, EncodeFullHandlesEmptyPayload) {
 }
 
 TEST(BrotliEncoderDecoderTest, MaxDecompressedBytes) {
-  for (const auto& payload : samplePayloads()) {
+  for (const auto& payload : SamplePayloads()) {
     CompressionConfig cfg;
     BrotliEncoder encoder(cfg);
     RawChars compressed;
@@ -146,7 +138,7 @@ TEST(BrotliEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
   CompressionConfig cfg;
   BrotliEncoder encoder(cfg);
 
-  for (const auto& payload : samplePayloads()) {
+  for (const auto& payload : SamplePayloads()) {
     SCOPED_TRACE(testing::Message() << "payload bytes=" << payload.size());
     ExpectOneShotRoundTrip(encoder, payload);
   }
@@ -157,7 +149,7 @@ TEST(BrotliEncoderDecoderTest, StreamingRoundTripsAcrossChunkSplits) {
   BrotliEncoder encoder(cfg);
 
   static constexpr std::array kSplits{1ULL, 5ULL, 113ULL, 4096ULL, 10000ULL};
-  for (const auto& payload : samplePayloads()) {
+  for (const auto& payload : SamplePayloads()) {
     for (const auto split : kSplits) {
       SCOPED_TRACE(testing::Message() << "payload bytes=" << payload.size() << " split=" << split);
       ExpectStreamingRoundTrip(encoder, payload, split);
@@ -169,7 +161,7 @@ TEST(BrotliEncoderDecoderTest, StreamingDecoderHandlesChunkSplits) {
   CompressionConfig cfg;
   BrotliEncoder encoder(cfg);
   static constexpr std::array<std::size_t, 4> kDecodeSplits{1U, 7U, 257U, 4096U};
-  for (const auto& payload : samplePayloads()) {
+  for (const auto& payload : SamplePayloads()) {
     for (const auto split : kDecodeSplits) {
       SCOPED_TRACE(testing::Message() << "payload bytes=" << payload.size() << " decode split=" << split);
       ExpectStreamingDecoderRoundTrip(encoder, payload, split);
@@ -181,7 +173,7 @@ TEST(BrotliEncoderDecoderTest, StreamingAndOneShotProduceSameOutput) {
   CompressionConfig cfg;
   BrotliEncoder encoder(cfg);
 
-  for (const auto& payload : samplePayloads()) {
+  for (const auto& payload : SamplePayloads()) {
     RawChars oneShotCompressed;
     encoder.encodeFull(kExtraCapacity, payload, oneShotCompressed);
 
