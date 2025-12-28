@@ -123,7 +123,7 @@ bool ValidateSniCertificateParameters(std::string_view pattern, std::string_view
 
 TLSConfig& TLSConfig::withTlsSniCertificateFiles(std::string_view hostname, std::string_view certPath,
                                                  std::string_view keyPath) {
-  bool isWildcard = ValidateSniCertificateParameters(hostname, certPath, keyPath);
+  const bool isWildcard = ValidateSniCertificateParameters(hostname, certPath, keyPath);
   SniCertificate& entry = _sniCertificates.emplace_back();
   entry.setPattern(NormalizeHostname(hostname));
   entry.isWildcard = isWildcard;
@@ -134,7 +134,7 @@ TLSConfig& TLSConfig::withTlsSniCertificateFiles(std::string_view hostname, std:
 
 TLSConfig& TLSConfig::withTlsSniCertificateMemory(std::string_view hostname, std::string_view certPem,
                                                   std::string_view keyPem) {
-  bool isWildcard = ValidateSniCertificateParameters(hostname, certPem, keyPem);
+  const bool isWildcard = ValidateSniCertificateParameters(hostname, certPem, keyPem);
   SniCertificate& entry = _sniCertificates.emplace_back();
   entry.setPattern(NormalizeHostname(hostname));
   entry.isWildcard = isWildcard;

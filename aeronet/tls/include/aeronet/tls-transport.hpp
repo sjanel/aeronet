@@ -13,7 +13,7 @@
 namespace aeronet {
 
 // TLS transport (OpenSSL). Implementation will live in tls-transport.cpp.
-class TlsTransport : public ITransport {
+class TlsTransport final : public ITransport {
  public:
   using SslPtr = std::unique_ptr<SSL, void (*)(SSL*)>;
 
@@ -23,7 +23,7 @@ class TlsTransport : public ITransport {
 
   TransportResult write(std::string_view data) override;
 
-  [[nodiscard]] bool handshakeDone() const noexcept override;
+  [[nodiscard]] bool handshakeDone() const noexcept override { return _handshakeDone; }
 
   // Perform best-effort bidirectional TLS shutdown (non-blocking). Safe to call multiple times.
   void shutdown() noexcept;

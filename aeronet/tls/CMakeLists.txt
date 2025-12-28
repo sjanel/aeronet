@@ -8,7 +8,6 @@ AeronetAddProjectLibrary(aeronet_tls
 target_include_directories(aeronet_tls
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../main/include>
         $<INSTALL_INTERFACE:include>
 )
 

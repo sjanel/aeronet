@@ -9,13 +9,13 @@
 #include <openssl/x509.h>      // X509_free, X509_get_subject_name, X509_NAME_oneline
 #include <openssl/x509_vfy.h>  // X509_STORE_add_cert
 
+#include <algorithm>
 #include <cassert>
 #include <cctype>
 #include <cstddef>
 #include <cstring>
 #include <memory>
 #include <new>
-#include <numeric>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -28,8 +28,6 @@
 #include "aeronet/tls-handshake-observer.hpp"
 #include "aeronet/tls-raii.hpp"
 #include "aeronet/tls-ticket-key-store.hpp"
-#include "spdlog/common.h"
-#include "spdlog/spdlog.h"
 
 namespace aeronet {
 
@@ -239,34 +237,33 @@ void ApplyCipherPolicy(SSL_CTX* ctx, const TLSConfig& cfg) {
 }  // namespace
 
 void TlsContext::CtxDel::operator()(ssl_ctx_st* ctxPtr) const noexcept {
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
   ::SSL_CTX_free(reinterpret_cast<SSL_CTX*>(ctxPtr));
 }
 
 TlsContext::~TlsContext() = default;
 
-TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics,
-                       std::shared_ptr<TlsTicketKeyStore> ticketKeyStore)
+TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> ticketKeyStore)
     : _ctx(::SSL_CTX_new(TLS_server_method())), _ticketKeyStore(std::move(ticketKeyStore)) {
   if (!_ctx) {
     throw std::bad_alloc();
   }
+
   auto* ctx = reinterpret_cast<SSL_CTX*>(_ctx.get());
   ConfigureContextOptions(ctx, cfg);
   ConfigureProtocolBounds(ctx, cfg);
   LoadCertificateAndKey(ctx, cfg.certPem(), cfg.keyPem(), cfg.certFileCstr(), cfg.keyFileCstr());
   ConfigureClientVerification(ctx, cfg);
 
-  auto alpnProtocols = cfg.alpnProtocols();
-  std::size_t wireLen = std::accumulate(alpnProtocols.begin(), alpnProtocols.end(), std::size_t{0},
-                                        [](std::size_t sum, const auto& proto) { return sum + 1UL + proto.size(); });
+  const auto alpnProtocols = cfg.alpnProtocols();
+  const std::size_t wireLen = std::ranges::fold_left(
+      alpnProtocols, std::size_t{0}, [](std::size_t sum, const auto& proto) { return sum + 1UL + proto.size(); });
   if (wireLen != 0) {
-    _alpnData = std::make_unique<AlpnData>(RawBytes{wireLen}, cfg.alpnMustMatch, metrics);
+    _alpnData = AlpnData{RawBytes32{wireLen}, 0, cfg.alpnMustMatch};
     for (const auto& proto : alpnProtocols) {
-      _alpnData->wire.unchecked_push_back(static_cast<std::byte>(proto.size()));
-      _alpnData->wire.unchecked_append(reinterpret_cast<const std::byte*>(proto.data()), proto.size());
+      _alpnData.wire.unchecked_push_back(static_cast<std::byte>(proto.size()));
+      _alpnData.wire.unchecked_append(reinterpret_cast<const std::byte*>(proto.data()), proto.size());
     }
-    ::SSL_CTX_set_alpn_select_cb(ctx, &TlsContext::SelectAlpn, _alpnData.get());
+    ::SSL_CTX_set_alpn_select_cb(ctx, &TlsContext::SelectAlpn, &_alpnData);
   }
 
   if (cfg.sessionTickets.enabled) {
@@ -281,37 +278,38 @@ TlsContext::TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics,
 
   const auto& sniCerts = cfg.sniCertificates();
   if (!sniCerts.empty()) {
-    _sniRoutes = std::make_unique<SniRoutes>(std::make_unique<SniRoute[]>(sniCerts.size()), sniCerts.size());
-    SniRoute* pRoute = _sniRoutes->routes.get();
+    _sniRoutes = SniRoutes{std::make_unique<SniRoute[]>(sniCerts.size()), sniCerts.size()};
+    SniRoute* pRoute = _sniRoutes.routes.get();
     for (const auto& entry : sniCerts) {
-      CtxPtr routeCtx{reinterpret_cast<ssl_ctx_st*>(::SSL_CTX_new(TLS_server_method()))};
+      CtxPtr routeCtx{reinterpret_cast<ssl_ctx_st*>(::SSL_CTX_new(::TLS_server_method()))};
       if (!routeCtx) {
-        throw std::runtime_error("SSL_CTX_new failed for SNI certificate");
+        throw std::bad_alloc();
       }
       auto* routeRaw = reinterpret_cast<SSL_CTX*>(routeCtx.get());
       ConfigureContextOptions(routeRaw, cfg);
       ConfigureProtocolBounds(routeRaw, cfg);
       if (entry.certPem().empty()) {
-        LoadCertificateAndKey(routeRaw, std::string_view{}, std::string_view{}, entry.certFileCstrView(),
-                              entry.keyFileCstrView());
+        LoadCertificateAndKey(routeRaw, std::string_view{}, std::string_view{}, entry.certFileCstr(),
+                              entry.keyFileCstr());
       } else {
         LoadCertificateAndKey(routeRaw, entry.certPem(), entry.keyPem(), nullptr, nullptr);
       }
       ConfigureClientVerification(routeRaw, cfg);
-      if (_alpnData != nullptr) {
-        ::SSL_CTX_set_alpn_select_cb(routeRaw, &TlsContext::SelectAlpn, _alpnData.get());
+      if (wireLen != 0) {
+        ::SSL_CTX_set_alpn_select_cb(routeRaw, &TlsContext::SelectAlpn, &_alpnData);
       }
       ConfigureSessionTickets(routeRaw, cfg, _ticketKeyStore);
-      *pRoute = SniRoute(RawChars(entry.pattern()), entry.isWildcard, std::move(routeCtx));
+      *pRoute = SniRoute(RawChars32(entry.pattern()), entry.isWildcard, std::move(routeCtx));
       ++pRoute;
     }
-    ::SSL_CTX_set_tlsext_servername_arg(ctx, _sniRoutes.get());
+    ::SSL_CTX_set_tlsext_servername_arg(ctx, &_sniRoutes);
     ::SSL_CTX_set_tlsext_servername_callback(ctx, &TlsContext::SelectSniRoute);
   }
 
   const auto opts = ::SSL_CTX_get_options(ctx);
   const bool ktlsAllowed = (opts & SSL_OP_ENABLE_KTLS) != 0;
   const bool compressionAllowed = (opts & SSL_OP_NO_COMPRESSION) == 0;
+
   log::debug("SSL_CTX options:");
   log::debug(" - kTLS:        {}", ktlsAllowed ? "enabled" : "disabled");
   log::debug(" - compression: {}", compressionAllowed ? "enabled" : "disabled");
@@ -339,9 +337,7 @@ int TlsContext::SelectAlpn([[maybe_unused]] SSL* ssl, const unsigned char** out,
     prefIndex += 1 + len;
   }
   if (data->mustMatch) {
-    if (data->metrics != nullptr) {
-      ++data->metrics->alpnStrictMismatches;
-    }
+    ++data->nbStrictMismatches;
     if (auto* obs = GetTlsHandshakeObserver(reinterpret_cast<ssl_st*>(ssl))) {
       obs->alpnStrictMismatch = true;
     }
@@ -361,9 +357,7 @@ int TlsContext::SelectSniRoute(SSL* ssl, int* alert, void* arg) {
   for (auto& route : routeSpan) {
     if (MatchesSniPattern(route.pattern, route.wildcard, serverName)) {
       auto* nextCtx = reinterpret_cast<SSL_CTX*>(route.ctx.get());
-      if (nextCtx == nullptr) {
-        break;
-      }
+      assert(nextCtx != nullptr);
       if (::SSL_set_SSL_CTX(ssl, nextCtx) != nullptr) {
         return SSL_TLSEXT_ERR_OK;
       }

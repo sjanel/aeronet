@@ -40,17 +40,6 @@ std::string SimpleGetRequest(std::string_view target, std::string_view connectio
   return req;
 }
 
-bool WaitForServer(SingleHttpServer& server, std::chrono::milliseconds timeout, bool running = true) {
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  while (std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(1ms);
-    if (server.isRunning() == running) {
-      return true;
-    }
-  }
-  return server.isRunning() == running;
-}
-
 }  // namespace
 
 TEST(SingleHttpServer, DefaultConstructor) {
@@ -78,7 +67,7 @@ TEST(HttpServerMove, MoveConstructAndServe) {
 
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
 
-  WaitForServer(moved, 250ms);
+  test::WaitForServer(moved);
 
   std::string resp = test::simpleGet(moved.port(), "/mv");
 
@@ -104,7 +93,7 @@ TEST(HttpServerMove, MoveAssignWhileStopped) {
 
   std::atomic_bool stop{false};
   std::jthread th([&] { s1.runUntil([&] { return stop.load(); }); });
-  WaitForServer(s1, 250ms);
+  test::WaitForServer(s1);
   std::string resp = test::simpleGet(port2, "/x");
   stop.store(true);
   ASSERT_TRUE(resp.contains("S2"));
@@ -125,7 +114,7 @@ TEST(HttpServerMove, MoveConstructProbesCapturesThis) {
   SingleHttpServer moved(std::move(original));
 
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
-  WaitForServer(moved, 250ms);
+  test::WaitForServer(moved);
 
   // Probe startup path. Correct behavior: after moved.runUntil started, startup probe should return 200.
   std::string resp = test::simpleGet(port, "/startupz");
@@ -152,7 +141,7 @@ TEST(HttpServerMove, ReRegisterHandlersAfterMove) {
   moved.router().setDefault([](const HttpRequest&) { return HttpResponse("MOVED"); });
 
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
-  WaitForServer(moved, 250ms);
+  test::WaitForServer(moved);
 
   std::string resp = test::simpleGet(port, "/x");
   stop.store(true);
@@ -180,7 +169,7 @@ TEST(HttpServerMove, DISABLED_CapturedThisAfterMoveHazard) {
   SingleHttpServer moved(std::move(original));
 
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
-  WaitForServer(moved, 250ms);
+  test::WaitForServer(moved);
 
   std::string resp = test::simpleGet(port, "/y");
   stop.store(true);
@@ -202,7 +191,7 @@ TEST(SingleHttpServer, MoveAssignOrDoubleRunWhileRunningThrows) {
   serverA.router().setDefault([](const HttpRequest&) { return HttpResponse("a"); });
   serverB.router().setDefault([](const HttpRequest&) { return HttpResponse("b"); });
   std::jthread thr([&] { serverA.run(); });
-  WaitForServer(serverA, 250ms);
+  test::WaitForServer(serverA);
   ASSERT_TRUE(serverA.isRunning());
   EXPECT_THROW(serverA.run(), std::logic_error);
   EXPECT_THROW({ serverB = std::move(serverA); }, std::logic_error);
@@ -220,7 +209,7 @@ TEST(HttpServerRestart, RestartPossible) {
     server.runUntil([&] { return stop1.load(); });
     server.runUntil([&] { return stop2.load(); });
   });
-  WaitForServer(server, 250ms);
+  test::WaitForServer(server);
   std::string resp = test::simpleGet(port, "/mv");
 
   ASSERT_TRUE(resp.contains("ORIG:/mv"));
@@ -250,7 +239,7 @@ TEST(HttpServerCopy, CopyAssignWhileStopped) {
 
   std::atomic_bool stop{false};
   std::jthread worker([&] { destination.runUntil([&] { return stop.load(); }); });
-  ASSERT_TRUE(WaitForServer(destination, 200ms));
+  ASSERT_TRUE(test::WaitForServer(destination));
 
   auto resp = test::simpleGet(destination.port(), "/cpy");
   EXPECT_TRUE(resp.contains("COPY"));
@@ -268,7 +257,7 @@ TEST(HttpServerCopy, CopyAssignWhileRunningThrows) {
   SingleHttpServer target(cfg);
 
   std::jthread worker([&] { running.run(); });
-  ASSERT_TRUE(WaitForServer(running, 200ms));
+  ASSERT_TRUE(test::WaitForServer(running));
 
   EXPECT_THROW({ target = running; }, std::logic_error);
 
@@ -292,7 +281,7 @@ TEST(HttpDrain, StopsNewConnections) {
     test::ClientConnection cnx(port);
     test::sendAll(cnx.fd(), SimpleGetRequest("/pre", "keep-alive"));
     const auto resp = test::recvWithTimeout(cnx.fd());
-    EXPECT_TRUE(resp.contains("200"));
+    EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
   }
 
   ts.server.beginDrain();
@@ -340,7 +329,7 @@ TEST(HttpDrain, DeadlineForcesIdleConnectionsToClose) {
   test::ClientConnection idle(port);
   const int fd = idle.fd();
 
-  ASSERT_TRUE(WaitForServer(ts.server, 200ms));
+  ASSERT_TRUE(test::WaitForServer(ts.server));
   ts.server.beginDrain(std::chrono::milliseconds{500});
   ts.server.beginDrain(std::chrono::milliseconds{50});
   ASSERT_TRUE(ts.server.isDraining());
@@ -360,7 +349,7 @@ TEST(HttpConfigUpdate, InlineApplyWhenStopped) {
   // Start the server briefly to allow eventLoop to run and apply pending updates.
   std::atomic_bool stop{false};
   std::jthread th([&] { server.runUntil([&] { return stop.load(); }); });
-  WaitForServer(server, 250ms);
+  test::WaitForServer(server);
   stop.store(true);
   th.join();
 
@@ -549,7 +538,7 @@ TEST_F(SignalHandlerGlobalTest, AutoDrainOnStopRequest) {
   // Server should have initiated drain (may have already completed if no connections)
   // We can't reliably check isDraining() because with 0 connections the drain completes immediately
   // Instead, verify the server stopped accepting new connections
-  EXPECT_TRUE(WaitForServer(ts.server, 250ms, false));
+  EXPECT_TRUE(test::WaitForServer(ts.server, false));
 }
 
 TEST_F(SignalHandlerGlobalTest, MultiServerCoordination) {
@@ -571,8 +560,8 @@ TEST_F(SignalHandlerGlobalTest, MultiServerCoordination) {
   ::raise(SIGTERM);
   EXPECT_TRUE(SignalHandler::IsStopRequested());
 
-  EXPECT_TRUE(WaitForServer(ts1.server, 250ms, false));
-  EXPECT_TRUE(WaitForServer(ts2.server, 250ms, false));
+  EXPECT_TRUE(test::WaitForServer(ts1.server, false));
+  EXPECT_TRUE(test::WaitForServer(ts2.server, false));
 }
 
 // Tests for SingleHttpServer::AsyncHandle and start() methods
@@ -587,7 +576,7 @@ TEST(HttpServerAsyncHandle, BasicStartAndStop) {
   auto handle = server.startDetached();
   EXPECT_TRUE(handle.started());
 
-  WaitForServer(server, 250ms);
+  test::WaitForServer(server);
 
   // Make a request
   auto resp = test::simpleGet(port, "/test");
@@ -611,7 +600,7 @@ TEST(HttpServerAsyncHandle, RAIIAutoStop) {
 
   {
     auto handle = server.startDetached();
-    WaitForServer(server, 250ms);
+    test::WaitForServer(server);
 
     auto resp = test::simpleGet(port, "/");
     EXPECT_TRUE(resp.contains("raii-test"));
@@ -619,7 +608,7 @@ TEST(HttpServerAsyncHandle, RAIIAutoStop) {
     // handle goes out of scope - should auto-stop
   }
 
-  EXPECT_TRUE(WaitForServer(server, 250ms, false));
+  EXPECT_TRUE(test::WaitForServer(server, false));
 }
 
 TEST(HttpServerAsyncHandle, StartAndStopWhen) {
@@ -632,7 +621,7 @@ TEST(HttpServerAsyncHandle, StartAndStopWhen) {
   server.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.path()); });
 
   auto handle = server.startDetachedAndStopWhen([&] { return done.load(); });
-  EXPECT_TRUE(WaitForServer(server, 250ms, true));
+  EXPECT_TRUE(test::WaitForServer(server, true));
 
   auto resp = test::simpleGet(port, "/predicate");
   EXPECT_TRUE(resp.contains("/predicate"));
@@ -641,7 +630,7 @@ TEST(HttpServerAsyncHandle, StartAndStopWhen) {
   done.store(true);
 
   // Server should have stopped
-  EXPECT_TRUE(WaitForServer(server, 250ms, false));
+  EXPECT_TRUE(test::WaitForServer(server, false));
   EXPECT_NO_THROW(handle.rethrowIfError());
 }
 
@@ -655,7 +644,7 @@ TEST(HttpServerAsyncHandle, StartWithStopToken) {
   server.router().setDefault([](const HttpRequest&) { return HttpResponse("token-test"); });
 
   auto handle = server.startDetachedWithStopToken(source.get_token());
-  EXPECT_TRUE(WaitForServer(server, 250ms, true));
+  EXPECT_TRUE(test::WaitForServer(server, true));
 
   auto resp = test::simpleGet(port, "/");
   EXPECT_TRUE(resp.contains("token-test"));
@@ -664,7 +653,7 @@ TEST(HttpServerAsyncHandle, StartWithStopToken) {
   source.request_stop();
 
   // Server should have stopped
-  EXPECT_TRUE(WaitForServer(server, 250ms, false));
+  EXPECT_TRUE(test::WaitForServer(server, false));
   EXPECT_NO_THROW(handle.rethrowIfError());
 }
 
@@ -677,7 +666,7 @@ TEST(HttpServerAsyncHandle, MoveHandle) {
   server.router().setDefault([](const HttpRequest&) { return HttpResponse(200).body("move-test"); });
 
   auto handle1 = server.startDetached();
-  EXPECT_TRUE(WaitForServer(server, 250ms, true));
+  EXPECT_TRUE(test::WaitForServer(server, true));
 
   // Move construct
   SingleHttpServer::AsyncHandle handle2(std::move(handle1));
@@ -703,7 +692,7 @@ TEST(HttpServerAsyncHandle, RestartAfterStop) {
   {
     auto handle = server.startDetached();
 
-    EXPECT_TRUE(WaitForServer(server, 250ms, true));
+    EXPECT_TRUE(test::WaitForServer(server, true));
     auto resp = test::simpleGet(port, "/");
     EXPECT_TRUE(resp.contains("restart"));
 
@@ -714,12 +703,12 @@ TEST(HttpServerAsyncHandle, RestartAfterStop) {
     handle = std::move(handle2);  // test move assignment
   }
 
-  EXPECT_TRUE(WaitForServer(server, 250ms, false));
+  EXPECT_TRUE(test::WaitForServer(server, false));
 
   // Second run - server should be restartable
   {
     auto handle = server.startDetached();
-    EXPECT_TRUE(WaitForServer(server, 250ms, true));
+    EXPECT_TRUE(test::WaitForServer(server, true));
     auto resp = test::simpleGet(port, "/");
     EXPECT_TRUE(resp.contains("restart"));
   }
