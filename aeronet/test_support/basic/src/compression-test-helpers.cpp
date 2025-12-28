@@ -1,4 +1,4 @@
-#include "aeronet/zstd-test-helpers.hpp"
+#include "aeronet/compression-test-helpers.hpp"
 
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
@@ -7,6 +7,7 @@
 #endif
 
 #include <cstddef>
+#include <numeric>
 #include <string>
 #include <string_view>
 
@@ -45,6 +46,15 @@ std::string ZstdRoundTripDecompress([[maybe_unused]] std::string_view compressed
   out.resize(dsz);
 #endif
   return out;
+}
+
+std::string MakePatternedPayload(std::size_t size) {
+  std::string payload;
+  payload.resize_and_overwrite(size, [](char* data, std::size_t size) {
+    std::iota(data, data + size, static_cast<unsigned char>(0));
+    return size;
+  });
+  return payload;
 }
 
 }  // namespace aeronet::test

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "aeronet/compression-config.hpp"
+#include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
 #include "aeronet/http-request.hpp"
@@ -23,7 +24,6 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
-#include "aeronet/zstd-test-helpers.hpp"
 
 using namespace aeronet;
 
