@@ -69,13 +69,12 @@ inline void FailTlsHandshakeOnce(ConnectionState& state, TlsMetricsInternal& met
 }  // namespace
 #endif
 
-void SingleHttpServer::sweepIdleConnections() {
+void SingleHttpServer::sweepIdleConnections(std::chrono::steady_clock::time_point now) {
   // Periodic maintenance of live connections: applies keep-alive timeout (if enabled) and
   // header read timeout (always, regardless of keep-alive enablement). The header read timeout
   // needs a periodic check because a client might send a partial request line then stall; no
   // further EPOLLIN events will arrive to trigger enforcement in handleReadableClient().
-  const auto now = std::chrono::steady_clock::now();
-  for (auto cnxIt = _activeConnectionsMap.begin(); cnxIt != _activeConnectionsMap.end();) {
+  for (auto cnxIt = _connections.active.begin(); cnxIt != _connections.active.end();) {
     ConnectionState& state = *cnxIt->second;
 
     // Close immediately if requested
@@ -132,13 +131,8 @@ void SingleHttpServer::sweepIdleConnections() {
     ++cnxIt;
   }
 
-  // Clean up cached closed connections older than timeout
-  // The connections are ordered by increasing lastActivity time, so we can stop at the first
-  // one that is still within the timeout.
-  const auto deadline = std::chrono::steady_clock::now() - _config.cachedConnectionsTimeout;
-  const auto cutOffIt = std::ranges::partition_point(
-      _cachedConnections, [deadline](const auto& ptr) { return ptr->lastActivity < deadline; });
-  _cachedConnections.erase(_cachedConnections.begin(), cutOffIt);
+  // Clean up cached connections that have been idle for too long
+  _connections.sweepCachedConnections(std::chrono::hours{1});
 }
 
 void SingleHttpServer::acceptNewConnections() {
@@ -162,7 +156,7 @@ void SingleHttpServer::acceptNewConnections() {
       continue;
     }
 
-    auto [cnxIt, inserted] = _activeConnectionsMap.emplace(std::move(cnx), getNewConnectionState());
+    auto [cnxIt, inserted] = _connections.emplace(std::move(cnx));
     if (!inserted) [[unlikely]] {
       // This should not happen, if it does, it's probably a bug in the library or a very weird usage of
       // SingleHttpServer.
@@ -407,20 +401,12 @@ SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMa
   }
 #endif
 
-  // Move ConnectionState to cache for potential reuse
-  if (_config.cachedConnectionsTimeout.count() > 0) {
-    auto statePtr = std::move(cnxIt->second);
-    statePtr->lastActivity = std::chrono::steady_clock::now();
-
-    _cachedConnections.push_back(std::move(statePtr));
-  }
-
-  return _activeConnectionsMap.erase(cnxIt);
+  return _connections.recycleOrRelease(_config.maxCachedConnections, cnxIt);
 }
 
 void SingleHttpServer::handleReadableClient(int fd) {
-  auto cnxIt = _activeConnectionsMap.find(fd);
-  if (cnxIt == _activeConnectionsMap.end()) [[unlikely]] {
+  auto cnxIt = _connections.active.find(fd);
+  if (cnxIt == _connections.active.end()) [[unlikely]] {
     log::error("Received an invalid fd # {} from the event loop (or already removed?)", fd);
     return;
   }
@@ -540,8 +526,8 @@ void SingleHttpServer::handleReadableClient(int fd) {
 }
 
 void SingleHttpServer::handleWritableClient(int fd) {
-  const auto cnxIt = _activeConnectionsMap.find(fd);
-  if (cnxIt == _activeConnectionsMap.end()) [[unlikely]] {
+  const auto cnxIt = _connections.active.find(fd);
+  if (cnxIt == _connections.active.end()) [[unlikely]] {
     log::error("Received an invalid fd # {} from the event loop (or already removed?)", fd);
     return;
   }
@@ -555,8 +541,8 @@ void SingleHttpServer::handleWritableClient(int fd) {
       state.connectPending = false;
       if (soerr != 0) {
         // Upstream connect failed. Attempt to notify the client side (peerFd) with 502 and close both.
-        const auto peerIt = _activeConnectionsMap.find(state.peerFd);
-        if (peerIt != _activeConnectionsMap.end()) {
+        const auto peerIt = _connections.active.find(state.peerFd);
+        if (peerIt != _connections.active.end()) {
           emitSimpleError(peerIt, http::StatusCodeBadGateway, true, "Upstream connect failed");
         } else {
           log::error("Unable to notify client of upstream connect failure: peer fd # {} not found", state.peerFd);
@@ -612,8 +598,8 @@ void SingleHttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
   if (state.inBuffer.empty()) {
     return;
   }
-  auto peerIt = _activeConnectionsMap.find(state.peerFd);
-  if (peerIt == _activeConnectionsMap.end()) {
+  auto peerIt = _connections.active.find(state.peerFd);
+  if (peerIt == _connections.active.end()) {
     closeConnection(cnxIt);
     return;
   }

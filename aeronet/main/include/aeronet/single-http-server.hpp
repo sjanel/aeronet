@@ -17,10 +17,8 @@
 
 #include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/connection-state.hpp"
-#include "aeronet/connection.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/event-loop.hpp"
-#include "aeronet/flat-hash-map.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
@@ -28,6 +26,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/internal/lifecycle.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
@@ -418,15 +417,13 @@ class SingleHttpServer {
   friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
   friend class MultiHttpServer;
 
-  using ConnectionMap = flat_hash_map<Connection, std::unique_ptr<ConnectionState>, std::hash<int>, std::equal_to<>>;
-
-  using ConnectionMapIt = ConnectionMap::iterator;
+  using ConnectionMapIt = internal::ConnectionStorage::ConnectionMapIt;
 
   void initListener();
   void prepareRun();
 
   void eventLoop();
-  void sweepIdleConnections();
+  void sweepIdleConnections(std::chrono::steady_clock::time_point now);
   void applyPendingUpdates();
   void acceptNewConnections();
   void handleReadableClient(int fd);
@@ -523,8 +520,6 @@ class SingleHttpServer {
   void onAsyncHandlerCompleted(ConnectionMapIt cnxIt);
   bool tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt);
 
-  std::unique_ptr<ConnectionState> getNewConnectionState();
-
   struct StatsInternal {
     uint64_t totalBytesQueued{0};
     uint64_t totalBytesWrittenImmediate{0};
@@ -543,13 +538,13 @@ class SingleHttpServer {
   std::atomic<bool> _hasPendingRouterUpdates{false};
   bool _isInMultiHttpServer{false};
   EventLoop _eventLoop;  // epoll-based event loop
+  std::chrono::steady_clock::time_point _lastIdleSweep;
 
   internal::Lifecycle _lifecycle;
 
   Router _router;
 
-  ConnectionMap _activeConnectionsMap;
-  vector<std::unique_ptr<ConnectionState>> _cachedConnections;  // cache of closed ConnectionState objects for reuse
+  internal::ConnectionStorage _connections;
 
   // Pre-allocated encoders (one per supported format), -1 to remove identity which is last (no encoding).
   // Index corresponds to static_cast<size_t>(Encoding).

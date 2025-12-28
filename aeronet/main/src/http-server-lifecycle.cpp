@@ -120,6 +120,7 @@ SingleHttpServer::SingleHttpServer(const SingleHttpServer& other)
       _listenSocket(Socket::Type::StreamNonBlock),
       _isInMultiHttpServer(other._isInMultiHttpServer),
       _eventLoop(_config.pollInterval),
+      _lastIdleSweep(other._lastIdleSweep),
       _router(other._router),
       _encodingSelector(_config.compression),
       _parserErrCb(other._parserErrCb),
@@ -175,10 +176,10 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
       _listenSocket(std::move(other._listenSocket)),
       _isInMultiHttpServer(other._isInMultiHttpServer),
       _eventLoop(std::move(other._eventLoop)),
+      _lastIdleSweep(other._lastIdleSweep),
       _lifecycle(std::move(other._lifecycle)),
       _router(std::move(other._router)),
-      _activeConnectionsMap(std::move(other._activeConnectionsMap)),
-      _cachedConnections(std::move(other._cachedConnections)),
+      _connections(std::move(other._connections)),
       _encoders(std::move(other._encoders)),
       _encodingSelector(std::move(other._encodingSelector)),
       _parserErrCb(std::move(other._parserErrCb)),
@@ -197,6 +198,10 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
 #ifdef AERONET_ENABLE_OPENSSL
       ,
       _tlsCtxHolder(std::move(other._tlsCtxHolder)),
+      _sharedTicketKeyStore(std::move(other._sharedTicketKeyStore)),
+      _tlsHandshakesInFlight(std::move(other._tlsHandshakesInFlight)),
+      _tlsRateLimitTokens(std::move(other._tlsRateLimitTokens)),
+      _tlsRateLimitLastRefill(std::move(other._tlsRateLimitLastRefill)),
       _tlsMetrics(std::move(other._tlsMetrics))
 #endif
 {
@@ -224,10 +229,10 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
     _listenSocket = std::move(other._listenSocket);
     _isInMultiHttpServer = other._isInMultiHttpServer;
     _eventLoop = std::move(other._eventLoop);
+    _lastIdleSweep = other._lastIdleSweep;
     _lifecycle = std::move(other._lifecycle);
     _router = std::move(other._router);
-    _activeConnectionsMap = std::move(other._activeConnectionsMap);
-    _cachedConnections = std::move(other._cachedConnections);
+    _connections = std::move(other._connections);
     _encoders = std::move(other._encoders);
     _encodingSelector = std::move(other._encodingSelector);
     _parserErrCb = std::move(other._parserErrCb);
@@ -246,6 +251,10 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
 
 #ifdef AERONET_ENABLE_OPENSSL
     _tlsCtxHolder = std::move(other._tlsCtxHolder);
+    _sharedTicketKeyStore = std::move(other._sharedTicketKeyStore);
+    _tlsHandshakesInFlight = std::move(other._tlsHandshakesInFlight);
+    _tlsRateLimitTokens = std::move(other._tlsRateLimitTokens);
+    _tlsRateLimitLastRefill = std::move(other._tlsRateLimitLastRefill);
     _tlsMetrics = std::move(other._tlsMetrics);
 #endif
     // transfer pending updates state; keep mutex per-instance
@@ -431,8 +440,9 @@ void SingleHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
     return;
   }
 
-  if (!_activeConnectionsMap.empty()) {
-    log::info("Initiating graceful drain (connections={})", _activeConnectionsMap.size());
+  const auto nbActiveConnections = _connections.active.size();
+  if (nbActiveConnections != 0) {
+    log::info("Initiating graceful drain (connections={})", nbActiveConnections);
   }
 
   _lifecycle.enterDraining(deadline, hasDeadline);

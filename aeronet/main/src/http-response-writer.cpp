@@ -129,8 +129,8 @@ void HttpResponseWriter::ensureHeadersSent() {
     _pCorsPolicy = nullptr;
   }
 
-  auto cnxIt = _server->_activeConnectionsMap.find(_fd);
-  if (cnxIt == _server->_activeConnectionsMap.end() ||
+  auto cnxIt = _server->_connections.active.find(_fd);
+  if (cnxIt == _server->_connections.active.end() ||
       !_server->queueFormattedHttp1Response(
           cnxIt, _fixedResponse.finalizeForHttp1(http::HTTP_1_1, SysClock::now(), _requestConnClose,
                                                  _server->config().globalHeaders, _head,
@@ -339,8 +339,8 @@ void HttpResponseWriter::end() {
 
 bool HttpResponseWriter::enqueue(HttpResponseData httpResponseData) {
   // Access the connection state to determine backpressure / closure.
-  auto cnxIt = _server->_activeConnectionsMap.find(_fd);
-  if (cnxIt == _server->_activeConnectionsMap.end()) {
+  auto cnxIt = _server->_connections.active.find(_fd);
+  if (cnxIt == _server->_connections.active.end()) {
     return false;
   }
   return _server->queueData(cnxIt, std::move(httpResponseData)) && !cnxIt->second->isAnyCloseRequested();

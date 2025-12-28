@@ -1,0 +1,65 @@
+#pragma once
+
+#include <functional>
+
+#include "aeronet/connection-state.hpp"
+#include "aeronet/connection.hpp"
+#include "aeronet/flat-hash-map.hpp"
+#include "aeronet/object-pool.hpp"
+#include "aeronet/vector.hpp"
+
+namespace aeronet::internal {
+
+class ConnectionStorage {
+ public:
+  //  - The server and request layer rely on a stable ConnectionState address:
+  //      * HttpRequest stores `ConnectionState* _ownerState` and uses it for async/body coordination
+  //        (e.g. HttpRequest::markAwaitingBody()) and body access bridges.
+  //      * The event loop code often keeps `ConnectionState&` / `ConnectionState*` across helper calls
+  //        that may emplace new connections (see processSpecialMethods comment in the .cpp).
+  //    If ConnectionState were stored by value in the hash table, these pointers/references could dangle.
+  using ConnectionMap = flat_hash_map<Connection, ConnectionState*, std::hash<int>, std::equal_to<>>;
+
+  using ConnectionMapIt = ConnectionMap::iterator;
+
+  ConnectionMapIt recycleOrRelease(uint32_t maxCachedConnections, ConnectionMapIt cnxIt) {
+    // Move ConnectionState to cache for potential reuse
+    if (_cachedConnections.size() < maxCachedConnections) {
+      _cachedConnections.push_back(cnxIt->second);
+    } else {
+      _connectionStatePool.destroyAndRelease(cnxIt->second);
+    }
+
+    return active.erase(cnxIt);
+  }
+
+  auto emplace(Connection&& cnx) { return active.emplace(std::move(cnx), getNewConnectionState()); }
+
+  void sweepCachedConnections(std::chrono::steady_clock::duration timeout) {
+    const auto deadline = std::chrono::steady_clock::now() - timeout;
+    auto it = _cachedConnections.begin();
+    for (; it != _cachedConnections.end() && (*it)->lastActivity < deadline; ++it) {
+      _connectionStatePool.destroyAndRelease(*it);
+    }
+    _cachedConnections.erase(_cachedConnections.begin(), it);
+  }
+
+  ConnectionMap active;
+
+ private:
+  ConnectionState* getNewConnectionState() {
+    if (!_cachedConnections.empty()) {
+      // Reuse a cached ConnectionState object
+      ConnectionState* statePtr = _cachedConnections.back();
+      _cachedConnections.pop_back();
+      statePtr->clear();
+      return statePtr;
+    }
+    return _connectionStatePool.allocateAndConstruct();
+  }
+
+  ObjectPool<ConnectionState> _connectionStatePool;
+  vector<ConnectionState*> _cachedConnections;  // cache of closed ConnectionState objects for reuse
+};
+
+}  // namespace aeronet::internal

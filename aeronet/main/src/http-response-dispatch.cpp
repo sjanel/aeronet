@@ -169,7 +169,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
       int upstreamFd = cres.cnx.fd();
       // Register upstream in event loop for edge-triggered reads and writes so we can detect
       // completion of non-blocking connect (EPOLLOUT) as well as incoming data.
-      if (!_eventLoop.add(EventLoop::EventFd{upstreamFd, EventIn | EventOut | EventRdHup | EventEt})) {
+      if (!_eventLoop.add(EventLoop::EventFd{upstreamFd, EventIn | EventOut | EventRdHup | EventEt})) [[unlikely]] {
         emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Failed to register upstream fd");
         return LoopAction::Break;
       }
@@ -178,8 +178,8 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
       // caller's iterator; save the client's fd and re-resolve the client iterator
       // after emplacing.
       const int clientFd = cnxIt->first.fd();
-      auto [upIt, inserted] = _activeConnectionsMap.emplace(std::move(cres.cnx), getNewConnectionState());
-      if (!inserted) {
+      auto [upIt, inserted] = _connections.emplace(std::move(cres.cnx));
+      if (!inserted) [[unlikely]] {
         log::error("TCP connection ConnectionState fd # {} already exists, should not happen", upstreamFd);
         _eventLoop.del(upstreamFd);
         // Try to re-find client to report error; if not found, just return Break.
@@ -196,13 +196,12 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
 
       // Reply 200 Connection Established to client
       // Since cnxIt is passed by reference we will update it here so the caller need not re-find.
-      cnxIt = _activeConnectionsMap.find(clientFd);
-      if (cnxIt == _activeConnectionsMap.end()) {
+      cnxIt = _connections.active.find(clientFd);
+      if (cnxIt == _connections.active.end()) [[unlikely]] {
         throw std::runtime_error("Should not happen - Client connection vanished after upstream insertion");
       }
 
-      finalizeAndSendResponse(cnxIt, HttpResponse(http::StatusCodeOK, "Connection Established"), consumedBytes,
-                              pCorsPolicy);
+      finalizeAndSendResponse(cnxIt, HttpResponse("Connection Established"), consumedBytes, pCorsPolicy);
 
       // Enter tunneling mode: link peer fds
       cnxIt->second->peerFd = upstreamFd;
@@ -232,8 +231,7 @@ void SingleHttpServer::tryCompressResponse(const HttpRequest& request, HttpRespo
   // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
   // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
   if (reject) {
-    resp.status(http::StatusCodeNotAcceptable, http::ReasonNotAcceptable)
-        .body("No acceptable content-coding available");
+    resp.status(http::StatusCodeNotAcceptable).body("No acceptable content-coding available");
   }
   if (encoding == Encoding::none) {
     return;

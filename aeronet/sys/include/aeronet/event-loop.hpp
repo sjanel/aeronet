@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
+#include <span>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/event.hpp"
@@ -29,8 +29,11 @@ class EventLoop {
   static constexpr uint32_t kInitialCapacity = 64;
 
   struct EventFd {
-    int fd;
+    EventFd(int fd, EventBmp eventBmp) : eventBmp(eventBmp), fd(fd) {}
+
     EventBmp eventBmp;
+    int fd;
+    uint32_t _padding;
   };
 
   // Default constructor - creates an empty EventLoop.
@@ -70,11 +73,17 @@ class EventLoop {
   // Log on error.
   void del(int fd) const;
 
-  // Polls for ready events up to the poll timeout. On success returns number of ready fds.
-  // Returns 0 when interrupted by a signal (EINTR handled internally) or when timeout expires with no events.
-  // Returns -1 on unrecoverable epoll_wait failure (already logged).
-  // The callback is invoked for each ready fd.
-  int poll(const std::function<void(EventFd event)>& cb);
+  // Polls for ready events up to the poll timeout.
+  //
+  // Returns a span over an internal, reusable buffer (no allocations on the hot path).
+  //
+  // Semantics:
+  //  - On success: returns a non-empty span of ready events.
+  //  - On timeout or when interrupted by a signal (EINTR): returns an empty span
+  //    with non-null data() pointer.
+  //  - On unrecoverable epoll_wait failure (already logged): returns an empty span
+  //    with nullptr data() pointer.
+  [[nodiscard]] std::span<const EventFd> poll();
 
   // Current allocated capacity (number of epoll_event slots available without reallocation).
   [[nodiscard]] uint32_t capacity() const noexcept { return _nbAllocatedEvents; }

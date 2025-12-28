@@ -205,7 +205,7 @@ void SingleHttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
 bool SingleHttpServer::enableWritableInterest(ConnectionMapIt cnxIt) {
   static constexpr EventBmp kEvents = EventIn | EventOut | EventRdHup | EventEt;
 
-  ConnectionState* state = cnxIt->second.get();
+  ConnectionState* state = cnxIt->second;
   assert(!state->waitingWritable);
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) [[likely]] {
     state->waitingWritable = true;
@@ -219,7 +219,7 @@ bool SingleHttpServer::enableWritableInterest(ConnectionMapIt cnxIt) {
 
 bool SingleHttpServer::disableWritableInterest(ConnectionMapIt cnxIt) {
   static constexpr EventBmp kEvents = EventIn | EventRdHup | EventEt;
-  ConnectionState* state = cnxIt->second.get();
+  ConnectionState* state = cnxIt->second;
   assert(state->waitingWritable);
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) [[likely]] {
     state->waitingWritable = false;
@@ -1071,7 +1071,7 @@ tracing::SpanRAII SingleHttpServer::startMiddlewareSpan(const HttpRequest& reque
     spanScope.span->setAttribute("aeronet.middleware.scope",
                                  isGlobal ? std::string_view("global") : std::string_view("route"));
     spanScope.span->setAttribute("aeronet.middleware.index", static_cast<int64_t>(index));
-    spanScope.span->setAttribute("aeronet.middleware.streaming", streaming ? int64_t{1} : int64_t{0});
+    spanScope.span->setAttribute("aeronet.middleware.streaming", static_cast<int64_t>(streaming));
     spanScope.span->setAttribute("http.method", http::MethodToStr(request.method()));
     spanScope.span->setAttribute("http.target", request.path());
   }
@@ -1080,42 +1080,39 @@ tracing::SpanRAII SingleHttpServer::startMiddlewareSpan(const HttpRequest& reque
 }
 
 void SingleHttpServer::eventLoop() {
-  sweepIdleConnections();
-
-  // Apply any pending config updates posted from other threads.
-  applyPendingUpdates();
-
   // Poll for events
-  const int ready = _eventLoop.poll([this](EventLoop::EventFd eventFd) {
-    if (eventFd.fd == _listenSocket.fd()) {
-      // Always attempt to accept new connections when the listener is signaled.
-      // The lifecycle controls higher-level acceptance semantics; accepting
-      // here is safe and allows probes to connect during drain.
-      acceptNewConnections();
-    } else if (eventFd.fd == _lifecycle.wakeupFd.fd()) {
-      _lifecycle.wakeupFd.read();
-    } else {
-      if (eventFd.eventBmp & EventOut) {
-        handleWritableClient(eventFd.fd);
-      }
-      // EPOLLERR/EPOLLHUP/EPOLLRDHUP can be delivered without EPOLLIN.
-      // Treat them as a read trigger so we promptly observe EOF/errors and close.
-      if (eventFd.eventBmp & (EventIn | EventErr | EventHup | EventRdHup)) {
-        handleReadableClient(eventFd.fd);
-      }
-    }
-  });
-
-  if (ready == -1) [[unlikely]] {
+  const auto events = _eventLoop.poll();
+  if (events.data() == nullptr) [[unlikely]] {
     _telemetry.counterAdd("aeronet.events.errors", 1);
     _lifecycle.exchangeStopping();
-  } else if (ready > 0) {
-    _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(ready));
+  } else if (!events.empty()) {
+    _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(events.size()));
+    for (auto event : events) {
+      const int fd = event.fd;
+      const auto bmp = event.eventBmp;
+      if (fd == _listenSocket.fd()) {
+        // Always attempt to accept new connections when the listener is signaled.
+        // The lifecycle controls higher-level acceptance semantics; accepting
+        // here is safe and allows probes to connect during drain.
+        acceptNewConnections();
+      } else if (fd == _lifecycle.wakeupFd.fd()) {
+        _lifecycle.wakeupFd.read();
+      } else {
+        if ((bmp & EventOut) != 0) {
+          handleWritableClient(fd);
+        }
+        // EPOLLERR/EPOLLHUP/EPOLLRDHUP can be delivered without EPOLLIN.
+        // Treat them as a read trigger so we promptly observe EOF/errors and close.
+        if ((bmp & (EventIn | EventErr | EventHup | EventRdHup)) != 0) {
+          handleReadableClient(fd);
+        }
+      }
+    }
   } else {
-    // ready == 0: timeout. Retry pending writes to handle edge-triggered epoll timing issues.
+    // timeout / EINTR (treated as timeout). Retry pending writes to handle edge-triggered epoll timing issues.
     // With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before
     // epoll_ctl(EPOLL_CTL_MOD), we miss the edge. Periodic retries ensure we eventually resume.
-    for (auto it = _activeConnectionsMap.begin(); it != _activeConnectionsMap.end();) {
+    for (auto it = _connections.active.begin(); it != _connections.active.end();) {
       if (it->second->isSendingFile() && it->second->waitingWritable) {
         flushFilePayload(it);
         if (it->second->isImmediateCloseRequested()) {
@@ -1128,26 +1125,36 @@ void SingleHttpServer::eventLoop() {
   }
 
   const auto now = std::chrono::steady_clock::now();
-  const auto nbConnections = _activeConnectionsMap.size();
 
-  _telemetry.gauge("aeronet.connections.active_count", static_cast<int64_t>(nbConnections));
-  _telemetry.gauge("aeronet.events.capacity_current_count", static_cast<int64_t>(_eventLoop.capacity()));
+  if (now >= _lastIdleSweep + _config.pollInterval) {
+    _lastIdleSweep = now;
 
-  if (_lifecycle.isStopping() || (_lifecycle.isDraining() && nbConnections == 0)) {
-    closeAllConnections(true);
-    _lifecycle.reset();
-    if (!_isInMultiHttpServer) {
-      log::info("Server stopped");
-    }
-  } else if (_lifecycle.isDraining()) {
-    if (_lifecycle.hasDeadline() && now >= _lifecycle.deadline()) {
-      log::warn("Drain deadline reached with {} active connection(s); forcing close", _activeConnectionsMap.size());
+    const auto nbActiveConnections = _connections.active.size();
+
+    sweepIdleConnections(now);
+
+    // Apply any pending config updates posted from other threads.
+    applyPendingUpdates();
+
+    _telemetry.gauge("aeronet.connections.active_count", static_cast<int64_t>(nbActiveConnections));
+    _telemetry.gauge("aeronet.events.capacity_current_count", static_cast<int64_t>(_eventLoop.capacity()));
+
+    if (_lifecycle.isStopping() || (_lifecycle.isDraining() && nbActiveConnections == 0)) {
       closeAllConnections(true);
       _lifecycle.reset();
-      log::info("Server drained after deadline");
+      if (!_isInMultiHttpServer) {
+        log::info("Server stopped");
+      }
+    } else if (_lifecycle.isDraining()) {
+      if (_lifecycle.hasDeadline() && now >= _lifecycle.deadline()) {
+        log::warn("Drain deadline reached with {} active connection(s); forcing close", nbActiveConnections);
+        closeAllConnections(true);
+        _lifecycle.reset();
+        log::info("Server drained after deadline");
+      }
+    } else if (SignalHandler::IsStopRequested()) {
+      beginDrain(SignalHandler::GetMaxDrainPeriod());
     }
-  } else if (SignalHandler::IsStopRequested()) {
-    beginDrain(SignalHandler::GetMaxDrainPeriod());
   }
 }
 
@@ -1161,7 +1168,7 @@ void SingleHttpServer::closeListener() noexcept {
 }
 
 void SingleHttpServer::closeAllConnections(bool immediate) {
-  for (auto it = _activeConnectionsMap.begin(); it != _activeConnectionsMap.end();) {
+  for (auto it = _connections.active.begin(); it != _connections.active.end();) {
     if (immediate) {
       it = closeConnection(it);
     } else {
@@ -1438,22 +1445,6 @@ bool SingleHttpServer::runPreChain(HttpRequest& request, bool willStream, std::s
     }
   }
   return false;
-}
-
-std::unique_ptr<ConnectionState> SingleHttpServer::getNewConnectionState() {
-  if (!_cachedConnections.empty()) {
-    // Reuse a cached ConnectionState object
-    auto statePtr = std::move(_cachedConnections.back());
-    if (statePtr->lastActivity + _config.cachedConnectionsTimeout > std::chrono::steady_clock::now()) {
-      _cachedConnections.pop_back();
-      statePtr->clear();
-      _telemetry.counterAdd("aeronet.connections.reused_from_cache", 1UL);
-      return statePtr;
-    }
-    // all connections are older than timeout, clear cache
-    _cachedConnections.clear();
-  }
-  return std::make_unique<ConnectionState>();
 }
 
 }  // namespace aeronet

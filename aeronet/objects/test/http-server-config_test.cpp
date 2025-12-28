@@ -219,4 +219,15 @@ TEST(HttpServerConfigTest, WithDecompressionConfig) {
   EXPECT_EQ(config.decompression.maxDecompressedBytes, 10UL * 1024 * 1024);
 }
 
+TEST(HttpServerConfigTest, CachedConnections) {
+  HttpServerConfig config;
+  config.withMaxCachedConnections(0);
+  EXPECT_EQ(config.maxCachedConnections, 0U);
+  EXPECT_NO_THROW(config.validate());
+
+  config.withMaxCachedConnections(100);
+  EXPECT_EQ(config.maxCachedConnections, 100U);
+  EXPECT_NO_THROW(config.validate());
+}
+
 }  // namespace aeronet

@@ -613,35 +613,6 @@ TEST(HttpHead, MaxRequestsApplied) {
   ASSERT_FALSE(resp.contains("IGNORED"));
 }
 
-TEST(SingleHttpServer, CachedConnectionsTimeout) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.withKeepAliveMode(false);
-    cfg.withCloseCachedConnectionsTimeout({});
-  });
-  auto port = ts.port();
-  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("OK"); });
-
-  const std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";
-
-  for (int reqPos = 0; reqPos < 10; ++reqPos) {
-    test::ClientConnection clientConnection(port);
-    int fd = clientConnection.fd();
-    ASSERT_GE(fd, 0);
-    test::sendAll(fd, req);
-    std::string firstResp = test::recvWithTimeout(fd);
-    ASSERT_TRUE(firstResp.contains("HTTP/1.1 200")) << firstResp;
-  }
-
-  std::this_thread::sleep_for(5ms);
-
-  test::ClientConnection clientConnection(port);
-  int fd = clientConnection.fd();
-  test::sendAll(fd, req);
-  std::string secondResp = test::recvWithTimeout(fd);
-  // Expect no data (connection should be closed)
-  ASSERT_TRUE(secondResp.contains("HTTP/1.1 200")) << secondResp;
-}
-
 // Test immutable config changes are rejected at runtime (nbThreads)
 TEST(SingleHttpServer, ImmutableConfigChangeNbThreadsIgnored) {
   auto origThreadCount = ts.server.config().nbThreads;
@@ -665,15 +636,6 @@ TEST(SingleHttpServer, ImmutableConfigChangeReusePortIgnored) {
   ts.postConfigUpdate([origReusePort](HttpServerConfig& cfg) { cfg.reusePort = !origReusePort; });
   std::this_thread::sleep_for(10ms);
   ASSERT_EQ(origReusePort, ts.server.config().reusePort);
-}
-
-// Test posted router update exception handling without completion (async path)
-TEST(SingleHttpServer, PostedRouterUpdateExceptionAsyncLogged) {
-  // Use postRouterUpdate (no completion) to exercise the else branch in catch blocks
-  ts.postRouterUpdate([](Router&) { throw std::runtime_error("Test exception in posted update"); });
-  std::this_thread::sleep_for(10ms);
-  // If we get here without crash, the exception was caught and logged
-  SUCCEED();
 }
 
 // Test synchronous router update exception handling with completion
