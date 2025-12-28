@@ -650,8 +650,7 @@ inline void SetEpollWaitActions(std::vector<EpollWaitAction> actions) {
   test::g_epoll_wait_actions.setActions(std::move(actions));
 }
 
-class EventLoopHookGuard {
- public:
+struct EventLoopHookGuard {
   EventLoopHookGuard() = default;
 
   EventLoopHookGuard(const EventLoopHookGuard&) = delete;

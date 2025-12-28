@@ -947,6 +947,7 @@ TEST(SingleHttpServer, MultipleResponseMiddleware) {
 // This test exercises the RecordModFailure code path in single-http-server.cpp.
 // RecordModFailure is called when epoll_ctl MOD fails during write interest management.
 TEST(SingleHttpServer, EpollCtlModBenignFailure) {
+  test::EventLoopHookGuard guard;
   test::FailAllEpollCtlMod(EBADF);
 
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(std::string(24UL * 1024 * 1024, 'Y')); });
@@ -961,14 +962,11 @@ TEST(SingleHttpServer, EpollCtlModBenignFailure) {
 
   // Should have received data
   EXPECT_GT(data.size(), 0UL);
-
-  // The test verifies the server doesn't crash when MOD failures happen
-  // MOD may or may not be called depending on write buffering
-  test::ResetEpollCtlModFail();
 }
 
 // Test epoll_ctl MOD failure with EACCES (serious) error
 TEST(SingleHttpServer, EpollCtlModEaccesFailure) {
+  test::EventLoopHookGuard guard;
   test::FailAllEpollCtlMod(EACCES);
 
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(std::string(24UL * 1024 * 1024, 'Y')); });
@@ -981,8 +979,6 @@ TEST(SingleHttpServer, EpollCtlModEaccesFailure) {
   auto data = test::recvUntilClosed(fd);
 
   EXPECT_GT(data.size(), 0UL);
-
-  test::ResetEpollCtlModFail();
 }
 
 TEST(SingleHttpServer, EpollPollFailure) {
@@ -997,7 +993,7 @@ TEST(SingleHttpServer, EpollPollFailure) {
 
   test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
 
-  auto data = test::recvWithTimeout(fd, std::chrono::milliseconds{50});
+  auto data = test::recvWithTimeout(fd, 50ms);
 
   EXPECT_TRUE(data.empty());
 }

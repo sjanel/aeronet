@@ -57,7 +57,7 @@ struct RequestOptions {
   std::string connection{"close"};
   std::string body;
   std::vector<std::pair<std::string, std::string>> headers;  // additional headers
-  int recvTimeoutSeconds{2};                                 // socket receive timeout
+  std::chrono::milliseconds recvTimeout{500ms};              // socket receive timeout
   std::size_t maxResponseBytes{1 << 20};                     // 1 MiB safety cap
 };
 
