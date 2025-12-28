@@ -1,7 +1,9 @@
 #include "aeronet/zstd-encoder.hpp"
 
+#include <cassert>
 #include <cstddef>
 #include <format>
+#include <new>
 #include <stdexcept>
 #include <string_view>
 
@@ -16,17 +18,16 @@ void ZSTD_freeWrapper(ZSTD_CCtx* pCtx) { (void)ZSTD_freeCCtx(pCtx); }
 }  // namespace
 
 ZstdContextRAII::ZstdContextRAII(int level, int windowLog) : ctx(ZSTD_createCCtx(), &ZSTD_freeWrapper), level(level) {
-  if (!ctx) {
-    throw std::runtime_error("ZSTD_createCCtx failed");
+  if (!ctx) [[unlikely]] {
+    throw std::bad_alloc();
   }
 
-  if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx.get(), ZSTD_c_compressionLevel, level)) != 0U) {
-    throw std::invalid_argument("ZSTD set level failed");
-  }
+  auto ret = ZSTD_CCtx_setParameter(ctx.get(), ZSTD_c_compressionLevel, level);
+  assert(ZSTD_isError(ret) == 0U);
+
   if (windowLog > 0) {
-    if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx.get(), ZSTD_c_windowLog, windowLog)) != 0U) {
-      throw std::invalid_argument("ZSTD set windowLog failed");
-    }
+    ret = ZSTD_CCtx_setParameter(ctx.get(), ZSTD_c_windowLog, windowLog);
+    assert(ZSTD_isError(ret) == 0U);
   }
 }
 }  // namespace details
@@ -42,12 +43,12 @@ std::string_view ZstdEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
     outBuf.size = _buf.capacity() - outBuf.pos;
 
     std::size_t ret = ZSTD_compressStream2(_zs.ctx.get(), &outBuf, &inBuf, mode);
-    if (ZSTD_isError(ret) != 0U) {
+    if (ZSTD_isError(ret) != 0U) [[unlikely]] {
       throw std::runtime_error(std::format("ZSTD_compressStream2 error: {}", ZSTD_getErrorName(ret)));
     }
     _buf.setSize(outBuf.pos);
     if (chunk.empty()) {
-      if (ret == 0) {
+      if (ret == 0) [[likely]] {
         break;
       }
     } else {
@@ -68,7 +69,7 @@ void ZstdEncoder::encodeFull(std::size_t extraCapacity, std::string_view data, R
   const auto dstCapacity = buf.availableCapacity();
 
   const auto written = ZSTD_compress2(_zs.ctx.get(), buf.data() + oldSize, dstCapacity, data.data(), data.size());
-  if (ZSTD_isError(written) != 0U) {
+  if (ZSTD_isError(written) != 0U) [[unlikely]] {
     throw std::runtime_error(std::format("zstd compress2 error: {}", ZSTD_getErrorName(written)));
   }
 

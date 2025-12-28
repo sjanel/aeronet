@@ -317,6 +317,7 @@ if(AERONET_ENABLE_ZLIB)
         test/zlib-encoder-decoder_test.cpp
         LIBRARIES
         aeronet_objects
+        aeronet_basic_test_support
     )
     
     AeronetAddUnitTest(

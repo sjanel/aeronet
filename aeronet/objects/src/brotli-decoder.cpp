@@ -22,7 +22,7 @@ using BrotliStateUniquePtr = std::unique_ptr<BrotliDecoderState, decltype(&Brotl
 class BrotliStreamingContext final : public DecoderContext {
  public:
   BrotliStreamingContext() {
-    if (_state == nullptr) {
+    if (_state == nullptr) [[unlikely]] {
       throw std::bad_alloc();
     }
   }
