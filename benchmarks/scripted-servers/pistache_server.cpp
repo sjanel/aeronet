@@ -182,16 +182,8 @@ class BenchHandler : public Pistache::Http::Handler {
 
     if (method == Pistache::Http::Method::Get && path == "/json") {
       std::size_t items = static_cast<std::size_t>(GetQueryParamOr(req, "items", 10));
-      std::string json = "{\"items\":[";
-      for (std::size_t itemPos = 0; itemPos < items; ++itemPos) {
-        if (itemPos > 0) {
-          json += ",";
-        }
-        json += std::format(R"({{"id":{},"name":"item-{}","value":{}}})", itemPos, itemPos, itemPos * 100);
-      }
-      json += "]}";
       response.headers().addRaw(Pistache::Http::Header::Raw("Content-Type", "application/json"));
-      response.send(Pistache::Http::Code::Ok, json);
+      response.send(Pistache::Http::Code::Ok, bench::BuildJson(items));
       return;
     }
 

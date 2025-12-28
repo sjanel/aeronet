@@ -68,14 +68,14 @@ struct HttpServerConfig {
   // Default: 100,000 requests.
   uint32_t maxRequestsPerConnection{100000};
 
+  // Maximum number of closed ConnectionState objects to cache for reuse to reduce allocations.
+  // When the limit is reached, closed connections are fully destroyed. Default: 100.
+  uint32_t maxCachedConnections{100};
+
   // Idle timeout for keep-alive connections (duration to wait for next request after previous response is fully
   // sent). Once exceeded the server proactively closes the connection.
   // Default: 5000 ms.
   std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
-
-  // Duration to keep closed ConnectionState objects in the cache for potential reuse, to avoid reallocating memory
-  // on new incoming connections. Default: 60 seconds.
-  std::chrono::seconds cachedConnectionsTimeout{std::chrono::seconds{60}};
 
   // ============================
   // Request parsing & body limits
@@ -107,10 +107,13 @@ struct HttpServerConfig {
   // Event loop polling / responsiveness tuning
   // ===========================================
   // Maximum duration the event loop will block waiting for I/O in a single epoll_wait() when idle before it wakes to
-  // perform housekeeping and to check for external stop conditions (stop() call or runUntil predicate).
+  // check for external stop conditions (stop() call or runUntil predicate).
+  //
+  // Note: periodic timeout enforcement (keep-alive idle timeout, header/body read timeouts, TLS handshake timeout)
+  // is driven by an internal timerfd registered in epoll. This decouples timeout enforcement from whether
+  // epoll_wait() happens to hit its timeout under load.
   // Lower values:
   //   + Faster responsiveness to external stop() calls.
-  //   + Finer granularity for periodic housekeeping (idle connection sweeping).
   //   - More wake‑ups -> higher baseline CPU usage.
   // Higher values:
   //   + Fewer wake‑ups (reduced idle CPU) when the server is mostly idle.
@@ -258,8 +261,8 @@ struct HttpServerConfig {
   // Adjust idle keep-alive timeout
   HttpServerConfig& withKeepAliveTimeout(std::chrono::milliseconds timeout);
 
-  // Adjust duration to keep closed ConnectionState objects in the cache for potential reuse
-  HttpServerConfig& withCloseCachedConnectionsTimeout(std::chrono::seconds timeout);
+  // Maximum number of closed connection objects to cache for reuse to reduce allocations.
+  HttpServerConfig& withMaxCachedConnections(uint32_t maxCachedConnections);
 
   // Adjust event loop max idle wait
   HttpServerConfig& withPollInterval(std::chrono::milliseconds interval);

@@ -61,7 +61,7 @@ void sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeo
 
   for (std::size_t remaining = data.size(); remaining > 0;) {
     const auto sent = ::send(fd, cursor, remaining, MSG_NOSIGNAL);
-    if (sent <= 0) {
+    if (sent == -1) {
       const auto err = errno;
       if (!alreadyLoggedError) {
         alreadyLoggedError = true;

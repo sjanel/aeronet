@@ -1,4 +1,3 @@
-#include <atomic>
 #include <cassert>
 #include <cerrno>
 #include <chrono>
@@ -11,7 +10,6 @@
 #include <thread>
 #include <utility>
 
-#include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
@@ -29,6 +27,7 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/timer-fd.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 
@@ -96,55 +95,43 @@ void SingleHttpServer::AsyncHandle::rethrowIfError() {
 }
 
 SingleHttpServer::SingleHttpServer(HttpServerConfig config, RouterConfig routerConfig)
-    : _config(std::move(config)),
+    : _compression(config.compression),
+      _config(std::move(config)),
       _listenSocket(Socket::Type::StreamNonBlock),
       _eventLoop(_config.pollInterval),
       _router(std::move(routerConfig)),
-      _encodingSelector(_config.compression),
       _telemetry(_config.telemetry) {
   initListener();
 }
 
 SingleHttpServer::SingleHttpServer(HttpServerConfig cfg, Router router)
-    : _config(std::move(cfg)),
+    : _compression(cfg.compression),
+      _config(std::move(cfg)),
       _listenSocket(Socket::Type::StreamNonBlock),
       _eventLoop(_config.pollInterval),
       _router(std::move(router)),
-      _encodingSelector(_config.compression),
       _telemetry(_config.telemetry) {
   initListener();
 }
 
 SingleHttpServer::SingleHttpServer(const SingleHttpServer& other)
-    : _config(other._config),
+    : _callbacks(other._callbacks),
+      _updates(other._updates),
+      _compression(other._config.compression),
+      _config(other._config),
       _listenSocket(Socket::Type::StreamNonBlock),
       _isInMultiHttpServer(other._isInMultiHttpServer),
       _eventLoop(_config.pollInterval),
       _router(other._router),
-      _encodingSelector(_config.compression),
-      _parserErrCb(other._parserErrCb),
-      _metricsCb(other._metricsCb),
-      _middlewareMetricsCb(other._middlewareMetricsCb),
-#ifdef AERONET_ENABLE_OPENSSL
-      _tlsHandshakeCb(other._tlsHandshakeCb),
-#endif
-      _expectationHandler(other._expectationHandler),
-      _pendingConfigUpdates(other._pendingConfigUpdates),
-      _pendingRouterUpdates(other._pendingRouterUpdates),
-      _telemetry(_config.telemetry)
-#ifdef AERONET_ENABLE_OPENSSL
-      ,
-      _sharedTicketKeyStore(other._sharedTicketKeyStore)
-#endif
-{
+      _telemetry(_config.telemetry) {
   if (!other._lifecycle.isIdle()) {
     throw std::logic_error("Cannot copy-construct from a running SingleHttpServer");
   }
 
-  _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.load(std::memory_order_relaxed),
-                                 std::memory_order_relaxed);
-  _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.load(std::memory_order_relaxed),
-                                 std::memory_order_relaxed);
+#ifdef AERONET_ENABLE_OPENSSL
+  // Copy-constructor inherits the shared ticket key store for MultiHttpServer fan-out.
+  _tls.sharedTicketKeyStore = other._tls.sharedTicketKeyStore;
+#endif
 
   initListener();
 }
@@ -171,42 +158,30 @@ SingleHttpServer& SingleHttpServer::operator=(const SingleHttpServer& other) {
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
 SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
     : _stats(std::exchange(other._stats, {})),
+      _callbacks(std::move(other._callbacks)),
+      _updates(std::move(other._updates)),
+      _compression(std::move(other._compression)),
       _config(std::move(other._config)),
       _listenSocket(std::move(other._listenSocket)),
       _isInMultiHttpServer(other._isInMultiHttpServer),
       _eventLoop(std::move(other._eventLoop)),
+      _maintenanceTimer(std::move(other._maintenanceTimer)),
       _lifecycle(std::move(other._lifecycle)),
       _router(std::move(other._router)),
-      _activeConnectionsMap(std::move(other._activeConnectionsMap)),
-      _cachedConnections(std::move(other._cachedConnections)),
-      _encoders(std::move(other._encoders)),
-      _encodingSelector(std::move(other._encodingSelector)),
-      _parserErrCb(std::move(other._parserErrCb)),
-      _metricsCb(std::move(other._metricsCb)),
-      _middlewareMetricsCb(std::move(other._middlewareMetricsCb)),
-#ifdef AERONET_ENABLE_OPENSSL
-      _tlsHandshakeCb(std::move(other._tlsHandshakeCb)),
-#endif
-      _expectationHandler(std::move(other._expectationHandler)),
+      _connections(std::move(other._connections)),
       _tmpBuffer(std::move(other._tmpBuffer)),
-      _pendingConfigUpdates(std::move(other._pendingConfigUpdates)),
-      _pendingRouterUpdates(std::move(other._pendingRouterUpdates)),
       _telemetry(std::move(other._telemetry)),
       _internalHandle(std::move(other._internalHandle)),
       _lifecycleTracker(std::move(other._lifecycleTracker))
 #ifdef AERONET_ENABLE_OPENSSL
       ,
-      _tlsCtxHolder(std::move(other._tlsCtxHolder)),
-      _tlsMetrics(std::move(other._tlsMetrics))
+      _tls(std::move(other._tls))
 #endif
 {
   if (!_lifecycle.isIdle()) {
     throw std::logic_error("Cannot move-construct a running SingleHttpServer");
   }
 
-  // transfer pending updates state; mutex remains with each instance (do not move mutex)
-  _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_release);
-  _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.exchange(false), std::memory_order_release);
   other._lifecycle.reset();
 }
 
@@ -220,38 +195,25 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
       throw std::logic_error("Cannot move-assign from a running SingleHttpServer");
     }
     _stats = std::exchange(other._stats, {});
+    _callbacks = std::move(other._callbacks);
+    _updates = std::move(other._updates);
+    _compression = std::move(other._compression);
     _config = std::move(other._config);
     _listenSocket = std::move(other._listenSocket);
     _isInMultiHttpServer = other._isInMultiHttpServer;
     _eventLoop = std::move(other._eventLoop);
+    _maintenanceTimer = std::move(other._maintenanceTimer);
     _lifecycle = std::move(other._lifecycle);
     _router = std::move(other._router);
-    _activeConnectionsMap = std::move(other._activeConnectionsMap);
-    _cachedConnections = std::move(other._cachedConnections);
-    _encoders = std::move(other._encoders);
-    _encodingSelector = std::move(other._encodingSelector);
-    _parserErrCb = std::move(other._parserErrCb);
-    _metricsCb = std::move(other._metricsCb);
-    _middlewareMetricsCb = std::move(other._middlewareMetricsCb);
-#ifdef AERONET_ENABLE_OPENSSL
-    _tlsHandshakeCb = std::move(other._tlsHandshakeCb);
-#endif
-    _expectationHandler = std::move(other._expectationHandler);
+    _connections = std::move(other._connections);
     _tmpBuffer = std::move(other._tmpBuffer);
-    _pendingConfigUpdates = std::move(other._pendingConfigUpdates);
-    _pendingRouterUpdates = std::move(other._pendingRouterUpdates);
     _telemetry = std::move(other._telemetry);
     _internalHandle = std::move(other._internalHandle);
     _lifecycleTracker = std::move(other._lifecycleTracker);
 
 #ifdef AERONET_ENABLE_OPENSSL
-    _tlsCtxHolder = std::move(other._tlsCtxHolder);
-    _tlsMetrics = std::move(other._tlsMetrics);
+    _tls = std::move(other._tls);
 #endif
-    // transfer pending updates state; keep mutex per-instance
-    _hasPendingConfigUpdates.store(other._hasPendingConfigUpdates.exchange(false), std::memory_order_release);
-    _hasPendingRouterUpdates.store(other._hasPendingRouterUpdates.exchange(false), std::memory_order_release);
-
     other._lifecycle.reset();
   }
   return *this;
@@ -310,7 +272,7 @@ void SingleHttpServer::initListener() {
 #ifdef AERONET_ENABLE_OPENSSL
   // Initialize TLS context if requested (OpenSSL build).
   if (_config.tls.enabled) {
-    _tlsCtxHolder = std::make_shared<TlsContext>(_config.tls, _sharedTicketKeyStore);
+    _tls.ctxHolder = std::make_shared<TlsContext>(_config.tls, _tls.sharedTicketKeyStore);
   }
 #endif
 
@@ -318,6 +280,9 @@ void SingleHttpServer::initListener() {
 
   _eventLoop.addOrThrow(EventLoop::EventFd{_listenSocket.fd(), EventIn});
   _eventLoop.addOrThrow(EventLoop::EventFd{_lifecycle.wakeupFd.fd(), EventIn});
+
+  updateMaintenanceTimer();
+  _eventLoop.addOrThrow(EventLoop::EventFd{_maintenanceTimer.fd(), EventIn});
 
   // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
   createEncoders();
@@ -431,8 +396,9 @@ void SingleHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
     return;
   }
 
-  if (!_activeConnectionsMap.empty()) {
-    log::info("Initiating graceful drain (connections={})", _activeConnectionsMap.size());
+  const auto nbActiveConnections = _connections.active.size();
+  if (nbActiveConnections != 0) {
+    log::info("Initiating graceful drain (connections={})", nbActiveConnections);
   }
 
   _lifecycle.enterDraining(deadline, hasDeadline);
@@ -481,16 +447,16 @@ void SingleHttpServer::registerBuiltInProbes() {
 
 void SingleHttpServer::createEncoders() {
 #ifdef AERONET_ENABLE_ZLIB
-  _encoders[static_cast<std::size_t>(Encoding::gzip)] =
+  _compression.encoders[static_cast<std::size_t>(Encoding::gzip)] =
       std::make_unique<ZlibEncoder>(ZStreamRAII::Variant::gzip, _config.compression);
-  _encoders[static_cast<std::size_t>(Encoding::deflate)] =
+  _compression.encoders[static_cast<std::size_t>(Encoding::deflate)] =
       std::make_unique<ZlibEncoder>(ZStreamRAII::Variant::deflate, _config.compression);
 #endif
 #ifdef AERONET_ENABLE_ZSTD
-  _encoders[static_cast<std::size_t>(Encoding::zstd)] = std::make_unique<ZstdEncoder>(_config.compression);
+  _compression.encoders[static_cast<std::size_t>(Encoding::zstd)] = std::make_unique<ZstdEncoder>(_config.compression);
 #endif
 #ifdef AERONET_ENABLE_BROTLI
-  _encoders[static_cast<std::size_t>(Encoding::br)] = std::make_unique<BrotliEncoder>(_config.compression);
+  _compression.encoders[static_cast<std::size_t>(Encoding::br)] = std::make_unique<BrotliEncoder>(_config.compression);
 #endif
 }
 

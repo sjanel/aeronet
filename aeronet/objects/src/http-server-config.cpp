@@ -76,8 +76,8 @@ HttpServerConfig& HttpServerConfig::withKeepAliveTimeout(std::chrono::millisecon
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withCloseCachedConnectionsTimeout(std::chrono::seconds timeout) {
-  this->cachedConnectionsTimeout = timeout;
+HttpServerConfig& HttpServerConfig::withMaxCachedConnections(uint32_t maxCachedConnections) {
+  this->maxCachedConnections = maxCachedConnections;
   return *this;
 }
 
