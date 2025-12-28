@@ -4,26 +4,26 @@
 -- Simulates realistic microservice traffic patterns with a mix of:
 -- - Fast health checks (30%)
 -- - JSON API calls (25%)
--- - Medium body requests (20%)
--- - Header-heavy requests (15%)
--- - CPU-intensive operations (10%)
+-- - Medium body requests (25%)
+-- - Header-heavy requests (25%)
+-- - CPU-intensive operations (15%)
 --
 -- Configurable via:
---   - distribution: Comma-separated percentages (default: 30,25,20,15,10)
---   - close_ratio: Percentage of requests using "Connection: close" (default: 20)
+--   - distribution: Comma-separated percentages (default: 30,25,25,25,15)
+--   - close_ratio: Percentage of requests using "Connection: close"
 
-local close_ratio = 20
+local close_ratio = 10
 
 local headers_keep_alive = { ["Connection"] = "keep-alive" }
 local headers_close = { ["Connection"] = "close" }
 
 -- Request type definitions
 local request_types = {
-  { path = "/ping", weight = 30, name = "health" },
-  { path = "/json?items=10", weight = 25, name = "json" },
-  { path = "/body?size=4096", weight = 20, name = "body" },
-  { path = "/headers?count=20&size=64", weight = 15, name = "headers" },
-  { path = "/compute?complexity=25&hash_iters=500", weight = 10, name = "compute" }
+  { path = "/ping", weight = 5, name = "ping" },
+  { path = "/json?items=10", weight = 30, name = "json" },
+  { path = "/body?size=4096", weight = 25, name = "body" },
+  { path = "/headers?count=20&size=64", weight = 25, name = "headers" },
+  { path = "/compute?complexity=25&hash_iters=500", weight = 15, name = "compute" }
 }
 
 -- Cumulative weights for weighted random selection

@@ -198,19 +198,10 @@ int main(int argc, char* argv[]) {
           items = static_cast<std::size_t>(std::stoull(itemsParam));
         }
 
-        std::string json = "{\"items\":[";
-        for (std::size_t itemPos = 0; itemPos < items; ++itemPos) {
-          if (itemPos > 0) {
-            json += ",";
-          }
-          json += std::format(R"({{"id":{},"name":"item-{}","value":{}}})", itemPos, itemPos, itemPos * 100);
-        }
-        json += "]}";
-
         auto resp = drogon::HttpResponse::newHttpResponse();
         resp->setStatusCode(drogon::k200OK);
         resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
-        resp->setBody(std::move(json));
+        resp->setBody(bench::BuildJson(items));
         callback(resp);
       },
       {drogon::Get});

@@ -116,28 +116,27 @@ jobs:
           EVENT_NAME=${GITHUB_EVENT_NAME:-}
           REF=${GITHUB_REF:-}
           WARMUP=5s
+          THREADS=2
+          CONN=150
 
           if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
             DUR=30s
-            THREADS=2
           elif [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "schedule" ]; then
             if [ -n "${{ github.event.inputs.bench_duration }}" ]; then
               DUR="${{ github.event.inputs.bench_duration }}"
             else
-              DUR=60s
+              DUR=90s
             fi
-            THREADS=2
-            ITER=3
           else
             # pull_request and non-main pushes
             DUR=5s
             WARMUP=2s
             THREADS=1
-            ITER=1
+            CONN=100
           fi
 
           echo "Event: $EVENT_NAME ref: $REF -> running for $DUR with $THREADS threads"
-          ./run_benchmarks.py --duration "$DUR" --threads "$THREADS" --warmup "$WARMUP" --iterations "$ITER"
+          ./run_benchmarks.py --duration "$DUR" --threads "$THREADS" --warmup "$WARMUP" --connections "$CONN"
 
       - name: Render HTML for Pages
         run: |

@@ -194,12 +194,10 @@ class BenchmarkRunner:
         if scenario_arg == "all":
             return ["headers", "body", "static", "cpu", "mixed", "files", "routing"]
         scenarios = [s.strip() for s in scenario_arg.split(",") if s.strip()]
-        resolved: List[str] = []
         for sc in scenarios:
             if sc not in self.SCENARIOS:
                 raise BenchmarkError(f"Unknown scenario: {sc}")
-            resolved.append(sc)
-        return resolved
+        return scenarios
 
     def _server_available(self, name: str) -> bool:
         try:
@@ -423,12 +421,14 @@ class BenchmarkRunner:
             if self._start_server(
                 server, extra_args=None, scheme="http", insecure=False
             ):
+                # First pass: warmup all normal scenarios to reuse the same warmed server state.
                 for scenario in normal:
-                    self._run_single(server, scenario)
+                    self._run_single(server, scenario, warmup=True, warmup_only=True)
+                # Second pass: run the real measurements without rerunning warmup.
+                for scenario in normal:
+                    self._run_single(server, scenario, warmup=False)
                 self._stop_server(server)
-                # Allow TCP sockets in TIME_WAIT to start clearing
-                # and system resources to stabilize before next server
-                time.sleep(self.args.server_delay)
+                time.sleep(1)
 
         for scenario in special:
             scenario_meta = self.SCENARIOS[scenario]
@@ -446,7 +446,7 @@ class BenchmarkRunner:
             ):
                 self._run_single(server, scenario)
                 self._stop_server(server)
-                time.sleep(self.args.server_delay)
+                time.sleep(1)
 
     def _start_server(
         self,
@@ -522,7 +522,7 @@ class BenchmarkRunner:
 
     # ---------------------------- Benchmark logic --------------------------- #
 
-    def _run_single(self, server: str, scenario_name: str) -> None:
+    def _run_single(self, server: str, scenario_name: str, *, warmup: bool = True, warmup_only: bool = False) -> None:
         scenario = self.SCENARIOS[scenario_name]
         lua_script = self.script_dir / scenario.lua_script
         if not lua_script.is_file():
@@ -532,23 +532,10 @@ class BenchmarkRunner:
         scheme = "https" if scenario.use_https else "http"
         endpoint = scenario.endpoint
         url = f"{scheme}://127.0.0.1:{port}{endpoint}"
-        print(f"\n>>> Running: {server} / {scenario_name}")
-        print(f"    Script: {lua_script.relative_to(self.script_dir)}")
-        print(f"    URL: {url}")
-
-        iterations = getattr(self.args, "iterations", 1)
-        best_rps = 0.0
-        best_output = ""
-        best_metrics: Dict[str, str] = {"rps": "-", "latency": "-", "transfer": "-"}
-
-        for iteration in range(1, iterations + 1):
-            if iterations > 1:
-                print(f"    Iteration {iteration}/{iterations}")
-
+        if warmup:
+            print(f">>> Warm-up: {server} / {scenario_name}")
             warmup_cmd = [
                 "wrk",
-                "--timeout",
-                "30s",
                 f"-t{self.threads}",
                 f"-c{self.connections}",
                 f"-d{self.warmup}",
@@ -556,65 +543,46 @@ class BenchmarkRunner:
                 str(lua_script),
                 url,
             ]
-            subprocess.run(
-                warmup_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            subprocess.run(warmup_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if warmup_only:
+                return
+        print(f">>> Running: {server} / {scenario_name}")
+        print(f"    Script: {lua_script.relative_to(self.script_dir)}")
+        print(f"    URL: {url}")
+        bench_cmd = [
+            "wrk",
+            f"-t{self.threads}",
+            f"-c{self.connections}",
+            f"-d{self.duration}",
+            "-s",
+            str(lua_script),
+            url,
+        ]
+        try:
+            result = subprocess.run(
+                bench_cmd, capture_output=True, text=True, check=True
             )
-            bench_cmd = [
-                "wrk",
-                "--timeout",
-                "30s",
-                f"-t{self.threads}",
-                f"-c{self.connections}",
-                f"-d{self.duration}",
-                "-s",
-                str(lua_script),
-                url,
-            ]
-            try:
-                result = subprocess.run(
-                    bench_cmd, capture_output=True, text=True, check=True
-                )
-                output = result.stdout
-            except subprocess.CalledProcessError as exc:
-                output = (exc.stdout or "") + (exc.stderr or "")
-                print(
-                    f"ERROR: wrk failed for {server} / {scenario_name} (exit {exc.returncode})"
-                )
-                print(output)
-                continue
-
-            metrics = self._parse_wrk_output(output)
-            try:
-                current_rps = float(metrics["rps"].replace(",", ""))
-            except (ValueError, AttributeError):
-                current_rps = 0.0
-
-            if iterations > 1:
-                print(f"    -> RPS: {metrics['rps']}")
-
-            if current_rps > best_rps:
-                best_rps = current_rps
-                best_output = output
-                best_metrics = metrics
-
-            # Small delay between iterations to let sockets settle
-            if iteration < iterations:
-                time.sleep(2)
-
-        if best_metrics["rps"] == "-":
+            output = result.stdout
+        except subprocess.CalledProcessError as exc:
+            output = (exc.stdout or "") + (exc.stderr or "")
+            print(
+                f"ERROR: wrk failed for {server} / {scenario_name} (exit {exc.returncode})"
+            )
+            print(output)
             self._store_result(server, scenario_name, "-", "-", "-")
-            self._append_result_block(server, scenario_name, best_output, error=True)
-        else:
-            self._store_result(
-                server,
-                scenario_name,
-                best_metrics["rps"],
-                best_metrics["latency"],
-                best_metrics["transfer"],
-            )
-            print(best_output)
-            self._append_result_block(server, scenario_name, best_output, error=False)
-
+            self._append_result_block(server, scenario_name, output, error=True)
+            self._record_memory_usage(server, scenario_name)
+            return
+        metrics = self._parse_wrk_output(output)
+        self._store_result(
+            server,
+            scenario_name,
+            metrics["rps"],
+            metrics["latency"],
+            metrics["transfer"],
+        )
+        print(output)
+        self._append_result_block(server, scenario_name, output, error=False)
         self._record_memory_usage(server, scenario_name)
 
     def _parse_wrk_output(self, output: str) -> Dict[str, str]:
@@ -1285,18 +1253,6 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="all",
         help="Comma-separated list of scenarios (headers,body,static,cpu,mixed,files,routing,tls)",
-    )
-    parser.add_argument(
-        "--server-delay",
-        type=int,
-        default=int(os.environ.get("BENCH_SERVER_DELAY", 5)),
-        help="Delay in seconds between testing different servers (default: 5s)",
-    )
-    parser.add_argument(
-        "--iterations",
-        type=int,
-        default=int(os.environ.get("BENCH_ITERATIONS", 1)),
-        help="Number of benchmark iterations per scenario (best result kept)",
     )
     return parser.parse_args()
 

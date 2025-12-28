@@ -131,22 +131,24 @@ RouterUpdateProxy SingleHttpServer::router() {
           [this]() -> Router& { return _router; }};
 }
 
-void SingleHttpServer::setParserErrorCallback(ParserErrorCallback cb) { _parserErrCb = std::move(cb); }
+void SingleHttpServer::setParserErrorCallback(ParserErrorCallback cb) { _callbacks.parserErr = std::move(cb); }
 
-void SingleHttpServer::setMetricsCallback(MetricsCallback cb) { _metricsCb = std::move(cb); }
+void SingleHttpServer::setMetricsCallback(MetricsCallback cb) { _callbacks.metrics = std::move(cb); }
 
 #ifdef AERONET_ENABLE_OPENSSL
-void SingleHttpServer::setTlsHandshakeCallback(TlsHandshakeCallback cb) { _tlsHandshakeCb = std::move(cb); }
+void SingleHttpServer::setTlsHandshakeCallback(TlsHandshakeCallback cb) { _callbacks.tlsHandshake = std::move(cb); }
 #endif
 
-void SingleHttpServer::setExpectationHandler(ExpectationHandler handler) { _expectationHandler = std::move(handler); }
+void SingleHttpServer::setExpectationHandler(ExpectationHandler handler) {
+  _callbacks.expectation = std::move(handler);
+}
 
 void SingleHttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater) {
   // Capture snapshot of immutable fields before queuing the update
   ImmutableConfigSnapshot configSnapshot(_config);
 
   {
-    std::scoped_lock lock(_updateLock);
+    std::scoped_lock lock(_updates.lock);
     // Wrap user's updater with immutability enforcement: apply user changes then restore immutable fields
 
     struct WrappedUpdater {
@@ -159,8 +161,8 @@ void SingleHttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> u
       ImmutableConfigSnapshot snapshot;
     };
 
-    _pendingConfigUpdates.emplace_back(WrappedUpdater{std::move(updater), std::move(configSnapshot)});
-    _hasPendingConfigUpdates.store(true, std::memory_order_release);
+    _updates.config.emplace_back(WrappedUpdater{std::move(updater), std::move(configSnapshot)});
+    _updates.hasConfig.store(true, std::memory_order_release);
   }
   _lifecycle.wakeupFd.send();
 }
@@ -195,9 +197,9 @@ void SingleHttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
   }
 
   {
-    std::scoped_lock lock(_updateLock);
-    _pendingRouterUpdates.emplace_back(std::move(wrappedUpdater));
-    _hasPendingRouterUpdates.store(true, std::memory_order_release);
+    std::scoped_lock lock(_updates.lock);
+    _updates.router.emplace_back(std::move(wrappedUpdater));
+    _updates.hasRouter.store(true, std::memory_order_release);
   }
   _lifecycle.wakeupFd.send();
 }
@@ -205,7 +207,7 @@ void SingleHttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
 bool SingleHttpServer::enableWritableInterest(ConnectionMapIt cnxIt) {
   static constexpr EventBmp kEvents = EventIn | EventOut | EventRdHup | EventEt;
 
-  ConnectionState* state = cnxIt->second.get();
+  ConnectionState* state = cnxIt->second;
   assert(!state->waitingWritable);
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) [[likely]] {
     state->waitingWritable = true;
@@ -219,7 +221,7 @@ bool SingleHttpServer::enableWritableInterest(ConnectionMapIt cnxIt) {
 
 bool SingleHttpServer::disableWritableInterest(ConnectionMapIt cnxIt) {
   static constexpr EventBmp kEvents = EventIn | EventRdHup | EventEt;
-  ConnectionState* state = cnxIt->second.get();
+  ConnectionState* state = cnxIt->second;
   assert(state->waitingWritable);
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) [[likely]] {
     state->waitingWritable = false;
@@ -784,7 +786,7 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
 
   if (!isHead) {
     auto encHeader = request.headerValueOrEmpty(http::AcceptEncoding);
-    auto negotiated = _encodingSelector.negotiateAcceptEncoding(encHeader);
+    auto negotiated = _compression.selector.negotiateAcceptEncoding(encHeader);
     if (negotiated.reject) {
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
       HttpResponse resp(http::StatusCodeNotAcceptable);
@@ -821,7 +823,7 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
     state.requestDrainAndClose();
   }
 
-  if (_metricsCb) {
+  if (_callbacks.metrics) {
     emitRequestMetrics(request, http::StatusCodeOK, request.body().size(), state.requestsServed > 1);
   }
 
@@ -1005,7 +1007,7 @@ void SingleHttpServer::emitRequestMetrics(const HttpRequest& request, http::Stat
   metrics.method = request.method();
   metrics.path = request.path();
   metrics.duration = std::chrono::steady_clock::now() - request.reqStart();
-  _metricsCb(metrics);
+  _callbacks.metrics(metrics);
 }
 
 void SingleHttpServer::applyResponseMiddleware(const HttpRequest& request, HttpResponse& response,
@@ -1031,7 +1033,7 @@ void SingleHttpServer::applyResponseMiddleware(const HttpRequest& request, HttpR
         spanScope.span->setAttribute("aeronet.middleware.short_circuit", int64_t{0});
         spanScope.span->setAttribute("aeronet.middleware.duration_ns", static_cast<int64_t>(duration.count()));
       }
-      if (_middlewareMetricsCb) {
+      if (_callbacks.middlewareMetrics) {
         emitMiddlewareMetrics(request, MiddlewareMetrics::Phase::Post, isGlobal, hookIdx,
                               static_cast<uint64_t>(duration.count()), false, threwEx, streaming);
       }
@@ -1055,7 +1057,7 @@ void SingleHttpServer::emitMiddlewareMetrics(const HttpRequest& request, Middlew
   metrics.method = request.method();
   metrics.requestPath = request.path();
 
-  _middlewareMetricsCb(metrics);
+  _callbacks.middlewareMetrics(metrics);
 }
 
 tracing::SpanRAII SingleHttpServer::startMiddlewareSpan(const HttpRequest& request, MiddlewareMetrics::Phase phase,
@@ -1069,7 +1071,7 @@ tracing::SpanRAII SingleHttpServer::startMiddlewareSpan(const HttpRequest& reque
     spanScope.span->setAttribute("aeronet.middleware.scope",
                                  isGlobal ? std::string_view("global") : std::string_view("route"));
     spanScope.span->setAttribute("aeronet.middleware.index", static_cast<int64_t>(index));
-    spanScope.span->setAttribute("aeronet.middleware.streaming", streaming ? int64_t{1} : int64_t{0});
+    spanScope.span->setAttribute("aeronet.middleware.streaming", static_cast<int64_t>(streaming));
     spanScope.span->setAttribute("http.method", http::MethodToStr(request.method()));
     spanScope.span->setAttribute("http.target", request.path());
   }
@@ -1078,75 +1080,106 @@ tracing::SpanRAII SingleHttpServer::startMiddlewareSpan(const HttpRequest& reque
 }
 
 void SingleHttpServer::eventLoop() {
-  sweepIdleConnections();
-
   // Apply any pending config updates posted from other threads.
   applyPendingUpdates();
 
   // Poll for events
-  const int ready = _eventLoop.poll([this](EventLoop::EventFd eventFd) {
-    if (eventFd.fd == _listenSocket.fd()) {
-      // Always attempt to accept new connections when the listener is signaled.
-      // The lifecycle controls higher-level acceptance semantics; accepting
-      // here is safe and allows probes to connect during drain.
-      acceptNewConnections();
-    } else if (eventFd.fd == _lifecycle.wakeupFd.fd()) {
-      _lifecycle.wakeupFd.read();
-    } else {
-      if (eventFd.eventBmp & EventOut) {
-        handleWritableClient(eventFd.fd);
-      }
-      // EPOLLERR/EPOLLHUP/EPOLLRDHUP can be delivered without EPOLLIN.
-      // Treat them as a read trigger so we promptly observe EOF/errors and close.
-      if (eventFd.eventBmp & (EventIn | EventErr | EventHup | EventRdHup)) {
-        handleReadableClient(eventFd.fd);
-      }
-    }
-  });
+  const auto events = _eventLoop.poll();
 
-  if (ready == -1) [[unlikely]] {
+  bool maintenanceTick = false;
+
+  if (events.data() == nullptr) [[unlikely]] {
     _telemetry.counterAdd("aeronet.events.errors", 1);
     _lifecycle.exchangeStopping();
-  } else if (ready > 0) {
-    _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(ready));
-  } else {
-    // ready == 0: timeout. Retry pending writes to handle edge-triggered epoll timing issues.
-    // With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before
-    // epoll_ctl(EPOLL_CTL_MOD), we miss the edge. Periodic retries ensure we eventually resume.
-    for (auto it = _activeConnectionsMap.begin(); it != _activeConnectionsMap.end();) {
-      if (it->second->isSendingFile() && it->second->waitingWritable) {
-        flushFilePayload(it);
-        if (it->second->isImmediateCloseRequested()) {
-          it = closeConnection(it);
-          continue;
+  } else if (!events.empty()) {
+    _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(events.size()));
+    for (auto event : events) {
+      const int fd = event.fd;
+      if (fd == _listenSocket.fd()) {
+        // Always attempt to accept new connections when the listener is signaled.
+        // The lifecycle controls higher-level acceptance semantics; accepting
+        // here is safe and allows probes to connect during drain.
+        acceptNewConnections();
+      } else if (fd == _lifecycle.wakeupFd.fd()) {
+        _lifecycle.wakeupFd.read();
+      } else if (fd == _maintenanceTimer.fd()) {
+        _maintenanceTimer.drain();
+        maintenanceTick = true;
+      } else {
+        const auto bmp = event.eventBmp;
+        if ((bmp & EventOut) != 0) {
+          handleWritableClient(fd);
+        }
+        // EPOLLERR/EPOLLHUP/EPOLLRDHUP can be delivered without EPOLLIN.
+        // Treat them as a read trigger so we promptly observe EOF/errors and close.
+        if ((bmp & (EventIn | EventErr | EventHup | EventRdHup)) != 0) {
+          handleReadableClient(fd);
         }
       }
-      ++it;
     }
+  } else {
+    // timeout / EINTR (treated as timeout). Retry pending writes to handle edge-triggered epoll timing issues.
+    // With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before
+    // epoll_ctl(EPOLL_CTL_MOD), we miss the edge. Periodic retries ensure we eventually resume.
+    maintenanceTick = true;
   }
 
-  const auto now = std::chrono::steady_clock::now();
-  const auto nbConnections = _activeConnectionsMap.size();
+  // Under high load epoll_wait may return immediately and never hit the timeout path.
+  // We still need periodic maintenance for timeouts and edge-triggered sendfile progress.
+  if (maintenanceTick) {
+    const auto nbActiveConnections = _connections.active.size();
 
-  _telemetry.gauge("aeronet.connections.active_count", static_cast<int64_t>(nbConnections));
-  _telemetry.gauge("aeronet.events.capacity_current_count", static_cast<int64_t>(_eventLoop.capacity()));
+    _telemetry.gauge("aeronet.connections.active_count", static_cast<int64_t>(nbActiveConnections));
+    _telemetry.gauge("aeronet.events.capacity_current_count", static_cast<int64_t>(_eventLoop.capacity()));
 
-  if (_lifecycle.isStopping() || (_lifecycle.isDraining() && nbConnections == 0)) {
-    closeAllConnections();
-    _lifecycle.reset();
-    if (!_isInMultiHttpServer) {
-      log::info("Server stopped");
-    }
-  } else if (_lifecycle.isDraining()) {
-    if (_lifecycle.hasDeadline() && now >= _lifecycle.deadline()) {
-      log::warn("Drain deadline reached with {} active connection(s); forcing close", _activeConnectionsMap.size());
+    sweepIdleConnections();
+
+    if (_lifecycle.isStopping() || (_lifecycle.isDraining() && nbActiveConnections == 0)) {
       closeAllConnections();
       _lifecycle.reset();
-      log::info("Server drained after deadline");
+      if (!_isInMultiHttpServer) {
+        log::info("Server stopped");
+      }
+    } else if (_lifecycle.isDraining()) {
+      if (_lifecycle.hasDeadline() && std::chrono::steady_clock::now() >= _lifecycle.deadline()) {
+        log::warn("Drain deadline reached with {} active connection(s); forcing close", nbActiveConnections);
+        closeAllConnections();
+        _lifecycle.reset();
+        log::info("Server drained after deadline");
+      }
+    } else if (SignalHandler::IsStopRequested()) {
+      beginDrain(SignalHandler::GetMaxDrainPeriod());
     }
-  } else if (SignalHandler::IsStopRequested()) {
-    beginDrain(SignalHandler::GetMaxDrainPeriod());
   }
+}
+
+void SingleHttpServer::updateMaintenanceTimer() {
+  // Periodic maintenance timer: drives idle sweeps / housekeeping without relying on epoll_wait timeouts.
+  using namespace std::chrono;
+
+  milliseconds minTimeout = milliseconds::max();
+  const auto consider = [&](milliseconds d) {
+    if (d.count() > 0) {
+      minTimeout = std::min(minTimeout, d);
+    }
+  };
+
+  if (_config.enableKeepAlive) {
+    consider(_config.keepAliveTimeout);
+  }
+  consider(_config.headerReadTimeout);
+  consider(_config.bodyReadTimeout);
+  consider(_config.pollInterval);
+
+#ifdef AERONET_ENABLE_OPENSSL
+  if (_config.tls.enabled) {
+    consider(_config.tls.handshakeTimeout);
+  }
+#endif
+
+  assert(minTimeout != milliseconds::max());
+
+  _maintenanceTimer.armPeriodic(minTimeout);
 }
 
 void SingleHttpServer::closeListener() noexcept {
@@ -1159,7 +1192,7 @@ void SingleHttpServer::closeListener() noexcept {
 }
 
 void SingleHttpServer::closeAllConnections() {
-  for (auto it = _activeConnectionsMap.begin(); it != _activeConnectionsMap.end();) {
+  for (auto it = _connections.active.begin(); it != _connections.active.end();) {
     it = closeConnection(it);
   }
 }
@@ -1175,39 +1208,39 @@ ServerStats SingleHttpServer::stats() const {
   statsOut.maxConnectionOutboundBuffer = _stats.maxConnectionOutboundBuffer;
   statsOut.totalRequestsServed = _stats.totalRequestsServed;
 #ifdef AERONET_ENABLE_OPENSSL
-  statsOut.tlsHandshakesSucceeded = _tlsMetrics.handshakesSucceeded;
-  statsOut.tlsHandshakesFull = _tlsMetrics.handshakesFull;
-  statsOut.tlsHandshakesResumed = _tlsMetrics.handshakesResumed;
-  statsOut.tlsHandshakesFailed = _tlsMetrics.handshakesFailed;
-  statsOut.tlsHandshakesRejectedConcurrency = _tlsMetrics.handshakesRejectedConcurrency;
-  statsOut.tlsHandshakesRejectedRateLimit = _tlsMetrics.handshakesRejectedRateLimit;
-  statsOut.tlsClientCertPresent = _tlsMetrics.clientCertPresent;
-  if (_tlsCtxHolder) {
-    statsOut.tlsAlpnStrictMismatches = _tlsCtxHolder->alpnStrictMismatches();
+  statsOut.tlsHandshakesSucceeded = _tls.metrics.handshakesSucceeded;
+  statsOut.tlsHandshakesFull = _tls.metrics.handshakesFull;
+  statsOut.tlsHandshakesResumed = _tls.metrics.handshakesResumed;
+  statsOut.tlsHandshakesFailed = _tls.metrics.handshakesFailed;
+  statsOut.tlsHandshakesRejectedConcurrency = _tls.metrics.handshakesRejectedConcurrency;
+  statsOut.tlsHandshakesRejectedRateLimit = _tls.metrics.handshakesRejectedRateLimit;
+  statsOut.tlsClientCertPresent = _tls.metrics.clientCertPresent;
+  if (_tls.ctxHolder) {
+    statsOut.tlsAlpnStrictMismatches = _tls.ctxHolder->alpnStrictMismatches();
   }
-  statsOut.tlsAlpnDistribution.reserve(_tlsMetrics.alpnDistribution.size());
-  for (const auto& [key, value] : _tlsMetrics.alpnDistribution) {
+  statsOut.tlsAlpnDistribution.reserve(_tls.metrics.alpnDistribution.size());
+  for (const auto& [key, value] : _tls.metrics.alpnDistribution) {
     statsOut.tlsAlpnDistribution.emplace_back(key, value);
   }
-  statsOut.tlsHandshakeFailureReasons.reserve(_tlsMetrics.handshakeFailureReasons.size());
-  for (const auto& [key, value] : _tlsMetrics.handshakeFailureReasons) {
+  statsOut.tlsHandshakeFailureReasons.reserve(_tls.metrics.handshakeFailureReasons.size());
+  for (const auto& [key, value] : _tls.metrics.handshakeFailureReasons) {
     statsOut.tlsHandshakeFailureReasons.emplace_back(key, value);
   }
-  statsOut.tlsVersionCounts.reserve(_tlsMetrics.versionCounts.size());
-  for (const auto& [key, value] : _tlsMetrics.versionCounts) {
+  statsOut.tlsVersionCounts.reserve(_tls.metrics.versionCounts.size());
+  for (const auto& [key, value] : _tls.metrics.versionCounts) {
     statsOut.tlsVersionCounts.emplace_back(key, value);
   }
-  statsOut.tlsCipherCounts.reserve(_tlsMetrics.cipherCounts.size());
-  for (const auto& [key, value] : _tlsMetrics.cipherCounts) {
+  statsOut.tlsCipherCounts.reserve(_tls.metrics.cipherCounts.size());
+  for (const auto& [key, value] : _tls.metrics.cipherCounts) {
     statsOut.tlsCipherCounts.emplace_back(key, value);
   }
-  statsOut.tlsHandshakeDurationCount = _tlsMetrics.handshakeDurationCount;
-  statsOut.tlsHandshakeDurationTotalNs = _tlsMetrics.handshakeDurationTotalNs;
-  statsOut.tlsHandshakeDurationMaxNs = _tlsMetrics.handshakeDurationMaxNs;
-  statsOut.ktlsSendEnabledConnections = _tlsMetrics.ktlsSendEnabledConnections;
-  statsOut.ktlsSendEnableFallbacks = _tlsMetrics.ktlsSendEnableFallbacks;
-  statsOut.ktlsSendForcedShutdowns = _tlsMetrics.ktlsSendForcedShutdowns;
-  statsOut.ktlsSendBytes = _tlsMetrics.ktlsSendBytes;
+  statsOut.tlsHandshakeDurationCount = _tls.metrics.handshakeDurationCount;
+  statsOut.tlsHandshakeDurationTotalNs = _tls.metrics.handshakeDurationTotalNs;
+  statsOut.tlsHandshakeDurationMaxNs = _tls.metrics.handshakeDurationMaxNs;
+  statsOut.ktlsSendEnabledConnections = _tls.metrics.ktlsSendEnabledConnections;
+  statsOut.ktlsSendEnableFallbacks = _tls.metrics.ktlsSendEnableFallbacks;
+  statsOut.ktlsSendForcedShutdowns = _tls.metrics.ktlsSendForcedShutdowns;
+  statsOut.ktlsSendBytes = _tls.metrics.ktlsSendBytes;
 #endif
   return statsOut;
 }
@@ -1216,11 +1249,11 @@ void SingleHttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode s
                                        std::string_view body) {
   queueData(cnxIt, HttpResponseData(BuildSimpleError(statusCode, _config.globalHeaders, body)));
 
-  if (_parserErrCb) {
+  if (_callbacks.parserErr) {
+    // Swallow exceptions from user callback to avoid destabilizing the server
     try {
-      _parserErrCb(statusCode);
+      _callbacks.parserErr(statusCode);
     } catch (const std::exception& ex) {
-      // Swallow exceptions from user callback to avoid destabilizing the server
       log::error("Exception raised in user callback: {}", ex.what());
     } catch (...) {
       log::error("Unknown exception raised in user callback");
@@ -1271,13 +1304,13 @@ bool SingleHttpServer::handleExpectHeader(ConnectionMapIt cnxIt, std::string_vie
       // built-in behaviour; leave actual 100 emission to body-decoding logic
       continue;
     }
-    if (!_expectationHandler) {
+    if (!_callbacks.expectation) {
       // No handler and not 100-continue -> RFC says respond 417
       emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, true, {});
       return true;
     }
     try {
-      auto expectationResult = _expectationHandler(request, token);
+      auto expectationResult = _callbacks.expectation(request, token);
       switch (expectationResult.kind) {
         case ExpectationResultKind::Reject:
           emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, true, {});
@@ -1366,17 +1399,18 @@ void ApplyPendingUpdates(std::mutex& mutex, auto& vec, std::atomic<bool>& flag, 
 }  // namespace
 
 void SingleHttpServer::applyPendingUpdates() {
-  if (_hasPendingConfigUpdates.load(std::memory_order_acquire)) {
+  if (_updates.hasConfig.load(std::memory_order_acquire)) {
 #ifdef AERONET_ENABLE_OPENSSL
     // Capture TLS config before updates to detect changes
     const TLSConfig tlsBefore = _config.tls;
 #endif
 
-    ApplyPendingUpdates(_updateLock, _pendingConfigUpdates, _hasPendingConfigUpdates, _config, "config");
+    ApplyPendingUpdates(_updates.lock, _updates.config, _updates.hasConfig, _config, "config");
 
     // Reinitialize components dependent on config values.
-    _encodingSelector = EncodingSelector(_config.compression);
+    _compression.selector = EncodingSelector(_config.compression);
     _eventLoop.updatePollTimeout(_config.pollInterval);
+    updateMaintenanceTimer();
     registerBuiltInProbes();
     createEncoders();
 
@@ -1385,33 +1419,33 @@ void SingleHttpServer::applyPendingUpdates() {
     // Note: keep old context alive for existing connections via ConnectionState::tlsContextKeepAlive.
     if (_config.tls != tlsBefore) {
       if (_config.tls.enabled) {
-        _tlsCtxHolder = std::make_shared<TlsContext>(_config.tls, _sharedTicketKeyStore);
+        _tls.ctxHolder = std::make_shared<TlsContext>(_config.tls, _tls.sharedTicketKeyStore);
       } else {
-        _tlsCtxHolder.reset();
+        _tls.ctxHolder.reset();
       }
     }
 #endif
   }
-  if (_hasPendingRouterUpdates.load(std::memory_order_acquire)) {
-    ApplyPendingUpdates(_updateLock, _pendingRouterUpdates, _hasPendingRouterUpdates, _router, "router");
+  if (_updates.hasRouter.load(std::memory_order_acquire)) {
+    ApplyPendingUpdates(_updates.lock, _updates.router, _updates.hasRouter, _router, "router");
   }
 }
 
 bool SingleHttpServer::runPreChain(HttpRequest& request, bool willStream, std::span<const RequestMiddleware> chain,
                                    HttpResponse& out, bool isGlobal) {
-  for (uint32_t idx = 0; idx < chain.size(); ++idx) {
-    const auto& middleware = chain[idx];
+  for (uint32_t chainPos = 0; chainPos < chain.size(); ++chainPos) {
     const auto start = std::chrono::steady_clock::now();
-    auto spanScope = startMiddlewareSpan(request, MiddlewareMetrics::Phase::Pre, isGlobal, idx, willStream);
+    auto spanScope = startMiddlewareSpan(request, MiddlewareMetrics::Phase::Pre, isGlobal, chainPos, willStream);
     MiddlewareResult decision;
-    bool threwEx = true;
+    bool threwEx = false;
     try {
-      decision = middleware(request);
-      threwEx = false;
+      decision = chain[chainPos](request);
     } catch (const std::exception& ex) {
       log::error("Exception while applying pre middleware: {}", ex.what());
+      threwEx = true;
     } catch (...) {
       log::error("Unknown exception while applying pre middleware");
+      threwEx = true;
     }
 
     const auto duration =
@@ -1422,8 +1456,8 @@ bool SingleHttpServer::runPreChain(HttpRequest& request, bool willStream, std::s
       spanScope.span->setAttribute("aeronet.middleware.short_circuit", shortCircuited ? int64_t{1} : int64_t{0});
       spanScope.span->setAttribute("aeronet.middleware.duration_ns", static_cast<int64_t>(duration.count()));
     }
-    if (_middlewareMetricsCb) {
-      emitMiddlewareMetrics(request, MiddlewareMetrics::Phase::Pre, isGlobal, idx,
+    if (_callbacks.middlewareMetrics) {
+      emitMiddlewareMetrics(request, MiddlewareMetrics::Phase::Pre, isGlobal, chainPos,
                             static_cast<uint64_t>(duration.count()), shortCircuited, false, willStream);
     }
     if (shortCircuited) {
@@ -1432,22 +1466,6 @@ bool SingleHttpServer::runPreChain(HttpRequest& request, bool willStream, std::s
     }
   }
   return false;
-}
-
-std::unique_ptr<ConnectionState> SingleHttpServer::getNewConnectionState() {
-  if (!_cachedConnections.empty()) {
-    // Reuse a cached ConnectionState object
-    auto statePtr = std::move(_cachedConnections.back());
-    if (statePtr->lastActivity + _config.cachedConnectionsTimeout > std::chrono::steady_clock::now()) {
-      _cachedConnections.pop_back();
-      statePtr->clear();
-      _telemetry.counterAdd("aeronet.connections.reused_from_cache", 1UL);
-      return statePtr;
-    }
-    // all connections are older than timeout, clear cache
-    _cachedConnections.clear();
-  }
-  return std::make_unique<ConnectionState>();
 }
 
 }  // namespace aeronet

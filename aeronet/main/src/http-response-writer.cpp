@@ -129,8 +129,8 @@ void HttpResponseWriter::ensureHeadersSent() {
     _pCorsPolicy = nullptr;
   }
 
-  auto cnxIt = _server->_activeConnectionsMap.find(_fd);
-  if (cnxIt == _server->_activeConnectionsMap.end() ||
+  auto cnxIt = _server->_connections.active.find(_fd);
+  if (cnxIt == _server->_connections.active.end() ||
       !_server->queueFormattedHttp1Response(
           cnxIt, _fixedResponse.finalizeForHttp1(http::HTTP_1_1, SysClock::now(), _requestConnClose,
                                                  _server->config().globalHeaders, _head,
@@ -339,8 +339,8 @@ void HttpResponseWriter::end() {
 
 bool HttpResponseWriter::enqueue(HttpResponseData httpResponseData) {
   // Access the connection state to determine backpressure / closure.
-  auto cnxIt = _server->_activeConnectionsMap.find(_fd);
-  if (cnxIt == _server->_activeConnectionsMap.end()) {
+  auto cnxIt = _server->_connections.active.find(_fd);
+  if (cnxIt == _server->_connections.active.end()) {
     return false;
   }
   return _server->queueData(cnxIt, std::move(httpResponseData)) && !cnxIt->second->isAnyCloseRequested();
@@ -378,7 +378,7 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
     return true;
   }
   // Threshold reached exactly or exceeded: activate encoder.
-  auto& encoderPtr = _server->_encoders[static_cast<std::size_t>(_compressionFormat)];
+  auto& encoderPtr = _server->_compression.encoders[static_cast<std::size_t>(_compressionFormat)];
   _activeEncoderCtx = encoderPtr->makeContext();
   _compressionActivated = true;
   // Set Content-Encoding prior to emitting headers.
