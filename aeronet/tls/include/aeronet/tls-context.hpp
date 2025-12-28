@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <type_traits>
 
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -17,10 +16,6 @@ namespace aeronet {
 
 class TlsTicketKeyStore;
 
-struct TlsMetricsExternal {
-  uint64_t alpnStrictMismatches{0};
-};
-
 // Forward declare the OpenSSL free function (signature matches OpenSSL); avoids including heavy headers here.
 
 // RAII wrapper around SSL_CTX with minimal configuration derived from HttpServerConfig::TLSConfig.
@@ -29,25 +24,27 @@ class TlsContext {
   TlsContext() = default;
 
   // Creates a new TLSContext
-  TlsContext(const TLSConfig& cfg, TlsMetricsExternal* metrics, std::shared_ptr<TlsTicketKeyStore> ticketKeyStore = {});
+  TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> ticketKeyStore = {});
 
   TlsContext(const TlsContext&) = delete;
   TlsContext& operator=(const TlsContext&) = delete;
-  TlsContext(TlsContext&&) noexcept = default;
-  TlsContext& operator=(TlsContext&&) noexcept = default;
+  // TLSContext is not movable to keep the internal pointer stable for OpenSSL callbacks.
+  // Make all fields passed to callbacks stable if you need to add move support.
+  TlsContext(TlsContext&&) noexcept = delete;
+  TlsContext& operator=(TlsContext&&) noexcept = delete;
 
   ~TlsContext();
 
   [[nodiscard]] void* raw() const noexcept { return static_cast<void*>(_ctx.get()); }
 
+  [[nodiscard]] uint64_t alpnStrictMismatches() const noexcept { return _alpnData.nbStrictMismatches; }
+
  private:
   struct AlpnData {
-    using trivially_relocatable = std::true_type;
-
     // private implementation detail (binary length-prefixed ALPN protocol list per RFC 7301)
-    RawBytes wire;  // [len][bytes]...[len][bytes]
+    RawBytes32 wire;  // [len][bytes]...[len][bytes]
+    uint64_t nbStrictMismatches{0};
     bool mustMatch{false};
-    TlsMetricsExternal* metrics{nullptr};
   };
   struct CtxDel {
     void operator()(ssl_ctx_st* ctxPtr) const noexcept;
@@ -55,9 +52,7 @@ class TlsContext {
   using CtxPtr = std::unique_ptr<ssl_ctx_st, CtxDel>;
 
   struct SniRoute {
-    using trivially_relocatable = std::true_type;
-
-    RawChars pattern;
+    RawChars32 pattern;
     bool wildcard{false};
     CtxPtr ctx;
   };
@@ -74,8 +69,8 @@ class TlsContext {
   CtxPtr _ctx;
   // alpnData is a unique_ptr because the pointer value should stay valid as passed to SSL_CTX_set_alpn_select_cb
   // callback. If TlsContext is moved around, not having a unique_ptr would invalid the pointer passed to the callback
-  std::unique_ptr<AlpnData> _alpnData;
-  std::unique_ptr<SniRoutes> _sniRoutes;
+  AlpnData _alpnData;
+  SniRoutes _sniRoutes;
   std::shared_ptr<TlsTicketKeyStore> _ticketKeyStore;
 };
 

@@ -26,7 +26,7 @@ class RawBaseTest : public ::testing::Test {
   using List = typename std::list<T>;
 };
 
-using MyTypes = ::testing::Types<RawBytes, RawChars32, RawChars>;
+using MyTypes = ::testing::Types<RawBytes32, RawChars32, RawBytes, RawChars>;
 TYPED_TEST_SUITE(RawBaseTest, MyTypes, );
 
 TYPED_TEST(RawBaseTest, DefaultConstructor) {

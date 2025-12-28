@@ -1189,7 +1189,9 @@ ServerStats SingleHttpServer::stats() const {
   statsOut.tlsHandshakesRejectedConcurrency = _tlsMetrics.handshakesRejectedConcurrency;
   statsOut.tlsHandshakesRejectedRateLimit = _tlsMetrics.handshakesRejectedRateLimit;
   statsOut.tlsClientCertPresent = _tlsMetrics.clientCertPresent;
-  statsOut.tlsAlpnStrictMismatches = _tlsMetricsExternal.alpnStrictMismatches;
+  if (_tlsCtxHolder) {
+    statsOut.tlsAlpnStrictMismatches = _tlsCtxHolder->alpnStrictMismatches();
+  }
   statsOut.tlsAlpnDistribution.reserve(_tlsMetrics.alpnDistribution.size());
   for (const auto& [key, value] : _tlsMetrics.alpnDistribution) {
     statsOut.tlsAlpnDistribution.emplace_back(key, value);
@@ -1389,7 +1391,7 @@ void SingleHttpServer::applyPendingUpdates() {
     // Note: keep old context alive for existing connections via ConnectionState::tlsContextKeepAlive.
     if (_config.tls != tlsBefore) {
       if (_config.tls.enabled) {
-        _tlsCtxHolder = std::make_shared<TlsContext>(_config.tls, &_tlsMetricsExternal, _sharedTicketKeyStore);
+        _tlsCtxHolder = std::make_shared<TlsContext>(_config.tls, _sharedTicketKeyStore);
       } else {
         _tlsCtxHolder.reset();
       }

@@ -604,8 +604,6 @@ class SingleHttpServer {
   std::chrono::steady_clock::time_point _tlsRateLimitLastRefill;
 
   TlsMetricsInternal _tlsMetrics;  // defined in aeronet/tls-metrics.hpp
-  // External metrics struct used by TLS context for ALPN mismatch increments only.
-  TlsMetricsExternal _tlsMetricsExternal;  // shares alpnStrictMismatches with _tlsMetrics (synced in stats retrieval)
 #endif
 };
 

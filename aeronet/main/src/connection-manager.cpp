@@ -404,8 +404,6 @@ SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMa
     if (auto* tlsTr = dynamic_cast<TlsTransport*>(cnxIt->second->transport.get())) {
       tlsTr->shutdown();
     }
-    // Propagate ALPN mismatch counter from external struct
-    _tlsMetrics.alpnStrictMismatches = _tlsMetricsExternal.alpnStrictMismatches;  // capture latest
   }
 #endif
 

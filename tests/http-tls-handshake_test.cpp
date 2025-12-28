@@ -106,6 +106,35 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
   }
 }
 
+TEST(HttpTlsAlpnMismatch, StrictMismatchMetricSurvivesServerMove) {
+  auto defaultPair = CertKeyCache::Get().localhost;
+
+  HttpServerConfig cfg;
+  cfg.withTlsCertKeyMemory(defaultPair.first, defaultPair.second);
+  cfg.withTlsAlpnProtocols({"http/1.1"});
+  cfg.withTlsAlpnMustMatch(true);
+
+  SingleHttpServer server(cfg, RouterConfig{});
+  server.router().setDefault([](const HttpRequest&) { return HttpResponse("MOVE"); });
+
+  // Move while idle: TLS context and its ALPN callback data are reused.
+  SingleHttpServer moved(std::move(server));
+
+  auto handle = moved.startDetached();
+  ASSERT_TRUE(handle.started());
+  ASSERT_TRUE(test::WaitForServer(moved, true));
+
+  test::TlsClient::Options opts;
+  opts.alpn = {"protoX"};
+  test::TlsClient client(moved.port(), opts);
+  ASSERT_FALSE(client.handshakeOk());
+
+  ServerStats statsAfter = moved.stats();
+  ASSERT_GE(statsAfter.tlsAlpnStrictMismatches, 1U);
+
+  handle.stop();
+}
+
 extern std::atomic<int> g_aeronetTestFailNextSslNew;
 extern std::atomic<int> g_aeronetTestFailNextSslSetFd;
 
@@ -834,16 +863,32 @@ TEST(HttpTlsSniCertificates, ExactHostPicksAlternateCertificate) {
   sniOpts.alpn = {"http/1.1"};
   sniOpts.serverName = "api.example.test";
   sniOpts.trustedServerCertPem = sniPair.first;
-  test::TlsClient sniClient(server.port(), sniOpts);
-  ASSERT_TRUE(sniClient.handshakeOk());
-  auto resp = sniClient.get("/sni", {});
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
-  ASSERT_TRUE(resp.contains("SNI-EXACT"));
+  {
+    test::TlsClient sniClient(server.port(), sniOpts);
+    ASSERT_TRUE(sniClient.handshakeOk());
+    auto resp = sniClient.get("/sni", {});
+    ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+    ASSERT_TRUE(resp.contains("SNI-EXACT"));
+  }
 
   test::TlsClient::Options fallbackOpts = sniOpts;
   fallbackOpts.serverName.clear();
   test::TlsClient fallbackClient(server.port(), fallbackOpts);
   ASSERT_FALSE(fallbackClient.handshakeOk());
+
+  server.server.stop();
+  test::WaitForServer(server.server, false);
+  auto moved = std::move(server);
+  auto handler = moved.server.startDetached();
+  ASSERT_TRUE(handler.started());
+
+  {
+    test::TlsClient sniClient(moved.port(), sniOpts);
+    ASSERT_TRUE(sniClient.handshakeOk());
+    auto resp = sniClient.get("/sni", {});
+    ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+    ASSERT_TRUE(resp.contains("SNI-EXACT"));
+  }
 }
 
 TEST(HttpTlsSniCertificates, WildcardHostCaseInsensitiveMatch) {

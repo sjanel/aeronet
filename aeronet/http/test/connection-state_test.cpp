@@ -526,7 +526,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSetsTlsEstablished)
 
 namespace {
 // Simple controllable transport for unit tests
-class FakeTransport : public ITransport {
+class FakeTransport final : public ITransport {
  public:
   explicit FakeTransport(bool handshakeInitially) : _handshakeDone(handshakeInitially) {}
 

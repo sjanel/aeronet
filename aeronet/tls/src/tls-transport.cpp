@@ -75,7 +75,7 @@ ITransport::TransportResult TlsTransport::write(std::string_view data) {
   // Avoid calling OpenSSL with a zero-length buffer. Some OpenSSL builds
   // treat a null/zero-length pointer as an invalid argument and return
   // 'bad length'. If there's nothing to write, simply return 0.
-  if (data.empty() || ::SSL_write_ex(_ssl.get(), data.data(), data.size(), &ret.bytesProcessed) == 1) [[likely]] {
+  if (data.empty() || ::SSL_write_ex(_ssl.get(), data.data(), data.size(), &ret.bytesProcessed) == 1) {
     return ret;
   }
 
@@ -104,8 +104,6 @@ ITransport::TransportResult TlsTransport::write(std::string_view data) {
   return ret;
 }
 
-bool TlsTransport::handshakeDone() const noexcept { return _handshakeDone; }
-
 void TlsTransport::shutdown() noexcept {
   auto* ssl = _ssl.get();
   if (ssl == nullptr) {
@@ -130,24 +128,10 @@ void TlsTransport::shutdown() noexcept {
 }
 
 void TlsTransport::logErrorIfAny() const noexcept {
-  // If handshake is not yet complete, OpenSSL may push non-fatal queue entries
-  // (for example an unexpected EOF observed during a non-blocking handshake). In
-  // such cases the outer layer often treats the condition as transient and will
-  // retry; emitting an error-level log here causes noisy test logs even though
-  // the condition is benign. Lower severity for pre-handshake errors to WARN so
-  // they remain visible but do not appear as test failures in CI logs.
-  const bool preHandshake = !_handshakeDone;
   for (auto errVal = ::ERR_get_error(); errVal != 0; errVal = ::ERR_get_error()) {
     char errBuf[256];
     ::ERR_error_string_n(errVal, errBuf, sizeof(errBuf));
-    std::string_view errStr(errBuf);
-    if (preHandshake) {
-      // Common during non-blocking handshake retries; log at debug level to reduce noise.
-      auto logLevel = errStr.contains("unexpected eof while reading") ? log::level::debug : log::level::warn;
-      log::log(logLevel, "TLS transport OpenSSL error (pre-handshake): {}", errStr);
-    } else {
-      log::error("TLS transport OpenSSL error: {}", errStr);
-    }
+    log::error("TLS transport OpenSSL error: {} (handshake done={})", std::string_view(errBuf), _handshakeDone);
   }
 }
 
