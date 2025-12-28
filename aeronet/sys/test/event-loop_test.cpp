@@ -255,6 +255,4 @@ TEST(EventLoopTest, ModFailures) {
   // simulate fatal mod failure (EACCES)
   test::FailAllEpollCtlMod(EACCES);
   EXPECT_FALSE(loop.mod(EventLoop::EventFd{44, EventIn}));
-
-  test::ResetEpollCtlModFail();
 }
