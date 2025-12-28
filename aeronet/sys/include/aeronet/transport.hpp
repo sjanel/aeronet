@@ -65,7 +65,7 @@ class ITransport {
 };
 
 // Plain transport directly operates on a non-blocking fd.
-class PlainTransport : public ITransport {
+class PlainTransport final : public ITransport {
  public:
   explicit PlainTransport(int fd) : _fd(fd) {}
 

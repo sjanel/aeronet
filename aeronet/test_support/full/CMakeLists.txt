@@ -8,10 +8,19 @@ AeronetAddProjectLibrary(aeronet_test_support
     ${AERONET_FULL_TEST_SUPPORT_SRC_LIST}
 )
 
-target_include_directories(aeronet_test_support PUBLIC include)
+target_include_directories(aeronet_test_support
+    PUBLIC
+        include
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../main/include>
+)
 
 target_link_libraries(aeronet_test_support
-    PUBLIC aeronet_tech aeronet_sys aeronet_basic_test_support aeronet_objects aeronet_http
+    PUBLIC 
+    aeronet_tech
+    aeronet_sys
+    aeronet_basic_test_support
+    aeronet_objects
+    aeronet_http
 )
 
 if(AERONET_ENABLE_OPENSSL)

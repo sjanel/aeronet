@@ -79,7 +79,7 @@ struct TlsTestServer {
     server.server.setParserErrorCallback(std::forward<ErrCb>(cb));
   }
   [[nodiscard]] auto stats() const { return server.server.stats(); }
-  TestHttpServer& http() { return server.server; }
+  auto& http() { return server.server; }
 };
 
 }  // namespace aeronet::test
