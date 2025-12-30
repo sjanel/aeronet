@@ -82,3 +82,11 @@ AeronetAddUnitTest(
     aeronet_sys
     aeronet_basic_test_support
 )
+
+AeronetAddUnitTest(
+    timer-fd_test
+    test/timer-fd_test.cpp
+    LIBRARIES
+    aeronet_sys
+    aeronet_basic_test_support
+)

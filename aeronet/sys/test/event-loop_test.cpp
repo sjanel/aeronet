@@ -8,7 +8,6 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
-#include <functional>
 #include <initializer_list>
 #include <limits>
 #include <new>
@@ -46,15 +45,17 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
   const char ch = 'x';
   ASSERT_EQ(::write(writeEnd.fd(), &ch, 1), 1);
 
-  int nb = loop.poll([&](EventLoop::EventFd event) {
+  const auto events0 = loop.poll();
+  ASSERT_NE(events0.data(), nullptr);
+  ASSERT_FALSE(events0.empty());
+  for (const auto& event : events0) {
     EXPECT_EQ(event.fd, readEnd.fd());
     EXPECT_EQ(event.eventBmp, EventIn);
     invoked = true;
     // consume the byte so subsequent polls don't repeatedly report it
     char tmp;
     EXPECT_EQ(1, ::read(event.fd, &tmp, 1));
-  });
-  EXPECT_GT(nb, 0);
+  }
   EXPECT_TRUE(invoked);
 
   // Now exercise growth: create many pipes and write to their write ends so that
@@ -76,22 +77,21 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
 
   // Poll once and count events handled
   int handled = 0;
-  nb = loop.poll([&](EventLoop::EventFd event) {
+  const auto events1 = loop.poll();
+  ASSERT_NE(events1.data(), nullptr);
+  for (const auto& event : events1) {
     ASSERT_EQ(event.eventBmp, EventIn);
     ++handled;
     char tmp;
     EXPECT_EQ(1, ::read(event.fd, &tmp, 1));
-  });
+  }
 
-  EXPECT_EQ(nb, static_cast<int>(handled));
-  EXPECT_GT(nb, 0);
+  EXPECT_EQ(events1.size(), static_cast<std::size_t>(handled));
+  EXPECT_GT(events1.size(), 0U);
   // The EventLoop should have grown capacity at least to hold 'kExtra' events
   EXPECT_GE(loop.capacity(), 4U);
 
   // test errors
-
-  // invalid callback (null)
-  EXPECT_THROW(loop.poll(nullptr), std::bad_function_call);
 
   loop.del(readEnd.fd());  // valid del
   loop.del(readEnd.fd());  // invalid del; should log but not throw
@@ -148,21 +148,24 @@ TEST(EventLoopTest, NoShrinkPolicy) {
   }
 
   // Poll once to cause growth
-  int first = loop.poll([](EventLoop::EventFd event) {
+  const auto firstEvents = loop.poll();
+  ASSERT_NE(firstEvents.data(), nullptr);
+  for (const auto& event : firstEvents) {
     char tmp;
     EXPECT_EQ(1, ::read(event.fd, &tmp, 1));
-  });
-  EXPECT_GT(first, 0);
+  }
+  EXPECT_GT(firstEvents.size(), 0U);
   auto capacityAfterGrow = loop.capacity();
   EXPECT_GT(capacityAfterGrow, 4U);
 
   // Now repeatedly poll (without changing set) and ensure capacity doesn't shrink
   for (int i = 0; i < 20; ++i) {
-    int pollCount = loop.poll([](EventLoop::EventFd event) {
+    const auto pollEvents = loop.poll();
+    ASSERT_NE(pollEvents.data(), nullptr);
+    for (const auto& event : pollEvents) {
       char tmp;
       EXPECT_EQ(1, ::read(event.fd, &tmp, 1));
-    });
-    (void)pollCount;  // ignore returned ready count; we care about capacity
+    }
     EXPECT_GE(loop.capacity(), capacityAfterGrow);
   }
 }
@@ -190,16 +193,18 @@ TEST(EventLoopTest, PollReturnsZeroWhenInterrupted) {
   test::EventLoopHookGuard guard;
   test::SetEpollWaitActions({test::WaitError(EINTR)});
   EventLoop loop(std::chrono::milliseconds(5));
-  const int rc = loop.poll([](EventLoop::EventFd) { FAIL() << "callback should not run"; });
-  EXPECT_EQ(0, rc);
+  const auto events = loop.poll();
+  EXPECT_NE(events.data(), nullptr);
+  EXPECT_TRUE(events.empty());
 }
 
 TEST(EventLoopTest, PollReturnsMinusOneOnFatalError) {
   test::EventLoopHookGuard guard;
   test::SetEpollWaitActions({test::WaitError(EIO)});
   EventLoop loop(std::chrono::milliseconds(5));
-  const int rc = loop.poll([](EventLoop::EventFd) { FAIL() << "callback should not run"; });
-  EXPECT_EQ(-1, rc);
+  const auto events = loop.poll();
+  EXPECT_EQ(events.data(), nullptr);
+  EXPECT_TRUE(events.empty());
 }
 
 TEST(EventLoopTest, PollKeepsCapacityWhenReallocFails) {
@@ -218,9 +223,14 @@ TEST(EventLoopTest, PollKeepsCapacityWhenReallocFails) {
   test::FailNextRealloc();
 
   int callbacks = 0;
-  const int rc = loop.poll([&](EventLoop::EventFd) { ++callbacks; });
-  EXPECT_EQ(static_cast<int>(initialCapacity), rc);
-  EXPECT_EQ(callbacks, rc);
+  const auto eventsSpan = loop.poll();
+  ASSERT_NE(eventsSpan.data(), nullptr);
+  for (const auto& event : eventsSpan) {
+    (void)event;
+    ++callbacks;
+  }
+  EXPECT_EQ(eventsSpan.size(), initialCapacity);
+  EXPECT_EQ(callbacks, static_cast<int>(eventsSpan.size()));
   EXPECT_EQ(loop.capacity(), initialCapacity);
 }
 
@@ -235,8 +245,9 @@ TEST(EventLoopTest, PollDoublesCapacityWhenReallocSucceeds) {
   }
   test::SetEpollWaitActions({test::WaitReturn(static_cast<int>(initialCapacity), std::move(events))});
 
-  const int rc = loop.poll([](EventLoop::EventFd) {});
-  EXPECT_EQ(static_cast<int>(initialCapacity), rc);
+  const auto span = loop.poll();
+  ASSERT_NE(span.data(), nullptr);
+  EXPECT_EQ(span.size(), initialCapacity);
   EXPECT_EQ(loop.capacity(), initialCapacity * 2);
 }
 

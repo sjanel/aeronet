@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <format>
 #include <random>
 #include <string>
 #include <string_view>
@@ -62,6 +63,24 @@ inline int GetNumThreads() {
   }
   int hwThreads = static_cast<int>(std::thread::hardware_concurrency());
   return std::max(1, hwThreads / 2);
+}
+
+inline std::string BuildJson(std::size_t itemCount) {
+  std::string json = "{\"items\":[";
+  for (std::size_t itemPos = 0; itemPos < itemCount; ++itemPos) {
+    if (itemPos > 0) {
+      json += ",";
+    }
+    json.append(R"({{"id":)");
+    json += std::to_string(itemPos);
+    json += R"(,"name":"item-)";
+    json += std::to_string(itemPos);
+    json += R"(","value":)";
+    json += std::to_string(itemPos * 100);
+    json += "}";
+  }
+  json += "]}";
+  return json;
 }
 
 }  // namespace bench

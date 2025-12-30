@@ -381,11 +381,11 @@ void MultiHttpServer::ensureNextServersBuilt() {
 #ifdef AERONET_ENABLE_OPENSSL
   // Set up shared session ticket key store on firstServer BEFORE duplication.
   // This ensures all copied servers will have the shared store when their TLS contexts are built.
-  if (firstServer._config.tls.sessionTickets.enabled && !firstServer._sharedTicketKeyStore) {
-    firstServer._sharedTicketKeyStore = std::make_shared<TlsTicketKeyStore>(
+  if (firstServer._config.tls.sessionTickets.enabled && !firstServer._tls.sharedTicketKeyStore) {
+    firstServer._tls.sharedTicketKeyStore = std::make_shared<TlsTicketKeyStore>(
         firstServer._config.tls.sessionTickets.lifetime, firstServer._config.tls.sessionTickets.maxKeys);
     if (!firstServer._config.tls.sessionTicketKeys().empty()) {
-      firstServer._sharedTicketKeyStore->loadStaticKeys(firstServer._config.tls.sessionTicketKeys());
+      firstServer._tls.sharedTicketKeyStore->loadStaticKeys(firstServer._config.tls.sessionTicketKeys());
     }
   }
 #endif
@@ -394,7 +394,7 @@ void MultiHttpServer::ensureNextServersBuilt() {
 
   _servers.resize(1UL);
 
-  // Copy firstServer for each additional thread - copy constructor inherits _sharedTicketKeyStore
+  // Copy firstServer for each additional thread - copy constructor inherits sharedTicketKeyStore
   while (_servers.size() < targetCount) {
     auto& nextServer = _servers.emplace_back(firstServer);
     nextServer._lifecycleTracker = _lifecycleTracker;
