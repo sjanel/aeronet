@@ -91,7 +91,7 @@ cmake .. -DAERONET_BENCH_ENABLE_PISTACHE=ON
 ninja pistache-bench-server
 ```
 
-**Note:** Pistache requires explicit `Connection: keep-alive` header in requests, otherwise it defaults to `Connection: Close` which severely impacts performance. All Lua benchmark scripts include this header automatically.
+**Note:** Pistache requires explicit `Connection: keep-alive` header in requests, otherwise it defaults to `Connection: Close` which severely impacts performance. All Lua benchmark scripts include this header automatically. The `mixed_workload.lua` scenario also injects a small percentage of `Connection: close` requests to simulate real-world connection churn.
 
 ## Benchmark Scenarios
 
@@ -137,6 +137,9 @@ Simulates realistic microservice traffic patterns.
 
 ```bash
 wrk -t4 -c100 -d30s -s lua/mixed_workload.lua http://127.0.0.1:8080/
+
+# Optional: add connection churn (percentage of requests using Connection: close)
+wrk -t4 -c100 -d30s -s lua/mixed_workload.lua http://127.0.0.1:8080/ --close-ratio 20
 ```
 
 ### 6. Static File Serving (`static_files.lua`)

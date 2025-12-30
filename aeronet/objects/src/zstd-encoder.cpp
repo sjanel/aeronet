@@ -22,7 +22,7 @@ ZstdContextRAII::ZstdContextRAII(int level, int windowLog) : ctx(ZSTD_createCCtx
     throw std::bad_alloc();
   }
 
-  auto ret = ZSTD_CCtx_setParameter(ctx.get(), ZSTD_c_compressionLevel, level);
+  [[maybe_unused]] auto ret = ZSTD_CCtx_setParameter(ctx.get(), ZSTD_c_compressionLevel, level);
   assert(ZSTD_isError(ret) == 0U);
 
   if (windowLog > 0) {

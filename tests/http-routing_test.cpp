@@ -693,7 +693,7 @@ TEST(HttpRouting, AsyncBodyBeforeReadBodyThrows) {
     } catch (const std::logic_error&) {
       sawException.store(true, std::memory_order_relaxed);
     }
-    co_return HttpResponse(http::StatusCodeOK).body("ok");
+    co_return HttpResponse("ok");
   });
 
   test::RequestOptions opts;
@@ -717,7 +717,7 @@ TEST(HttpRouting, AsyncIdentityContentLengthReadBodyStreams) {
                                      collected.append(chunk);
                                    }
                                    EXPECT_FALSE(req.hasMoreBody());
-                                   co_return HttpResponse(http::StatusCodeOK).body(collected);
+                                   co_return HttpResponse(collected);
                                  });
 
   test::RequestOptions opts;
@@ -1018,7 +1018,7 @@ TEST(HttpRouting, AsyncHandlerThrowsWithBodyNotReady) {
       "\r\n";
   test::sendAll(client.fd(), request);
 
-  const std::string response = test::recvWithTimeout(client.fd(), std::chrono::milliseconds{500});
+  const std::string response = test::recvWithTimeout(client.fd(), std::chrono::milliseconds{250});
 
   // When bodyReady=false and immediate close happens, response may not be fully sent
   if (response.empty()) {
@@ -1094,10 +1094,9 @@ TEST(HttpRouting, AsyncHandlerNonStdExceptionWithBodyNotReady) {
   test::sendAll(client.fd(), request);
 
   // Try to read response with timeout
-  const std::string response = test::recvWithTimeout(client.fd(), std::chrono::milliseconds{500});
+  const std::string response = test::recvWithTimeout(client.fd(), std::chrono::milliseconds{250});
 
   // When bodyReady=false and immediate close happens, we might not get a response
-  // But the code path was still exercised and logged
   if (response.empty()) {
     // This is acceptable - failFast with bodyReady=false may close immediately
     // The important thing is the exception handler was called (logged above)
