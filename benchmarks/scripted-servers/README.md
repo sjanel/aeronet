@@ -320,6 +320,90 @@ for each scenario/server combination. The table is derived directly from `/proc/
 6. **Check for errors**: Verify `Non-2xx responses` count is zero
 7. **Use keep-alive**: All Lua scripts include `Connection: keep-alive` header. Some servers (e.g., Pistache) default to `Connection: Close` if no header is sent, which drastically reduces throughput
 
+### CPU And Process Pinning
+
+For repeatable, low-variance measurements on modern hybrid CPUs (for example 12th Gen Intel i7 with P/E cores), follow these steps to inspect, set, and pin CPU behavior before running benchmarks.
+
+- **Inspect CPU topology and max frequencies**: identify P-cores (high-frequency) vs E-cores.
+
+```bash
+lscpu -e
+for c in /sys/devices/system/cpu/cpu[0-9]*; do
+  printf "%s %s\n" "${c##*/}" "$(cat $c/cpufreq/cpuinfo_max_freq 2>/dev/null || echo NA)"
+done | sort -k2 -nr
+```
+
+- **Set performance governor**: lock the CPU to performance governor to avoid frequency scaling noise.
+
+```bash
+sudo cpupower frequency-set -g performance
+```
+
+If `cpupower` is not available, use sysfs:
+
+```bash
+echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+```
+
+- **Disable turbo (optional, for determinism)**:
+
+```bash
+# try intel_pstate no_turbo
+sudo sh -c 'echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo' \
+  || sudo sh -c 'echo 0 > /sys/devices/system/cpu/cpufreq/boost'
+```
+
+- **Pin server and load-generator processes to chosen cores**: keep server on dedicated P-cores and run `wrk` on separate cores to avoid contention. Use `taskset` and optionally `chrt` for fixed scheduling priority.
+
+```bash
+# start server pinned to P-cores (example cores 0-3)
+sudo chrt -f 5 taskset -c 0-3 /path/to/aeronet-bench-server --port 8080 &
+
+# run wrk pinned to other cores (example cores 4-5)
+taskset -c 4-5 ./wrk -t2 -c100 -d30s -s lua/mixed_workload.lua http://127.0.0.1:8080/
+```
+
+- **Optional: use cpusets / isolcpus for stronger isolation**:
+
+```bash
+# Using cset (if installed)
+sudo cset shield --cpu 0-3 --kthread=on
+# then run server inside the shield or pin explicitly with taskset
+```
+
+Or add `isolcpus=` kernel parameter at boot for permanent isolation (requires reboot).
+
+- **Warm the CPU and verify steady frequencies**: run a short CPU warmup to reach steady frequency/thermal conditions, then verify.
+
+```bash
+# warm P-cores for ~15s
+taskset -c 0-3 stress-ng --cpu 4 --timeout 15s
+
+# verify current frequencies (or use turbostat if available)
+watch -n1 "for c in /sys/devices/system/cpu/cpu[0-9]*; do printf '%s %s\n' "${c##*/}" "$(cat $c/cpufreq/scaling_cur_freq 2>/dev/null || echo NA)"; done | head -n 12"
+
+# or use turbostat
+sudo turbostat --interval 1
+```
+
+- **Run the benchmark**: after governor/turbo/pinning/warmup are applied.
+
+```bash
+# Example full sequence
+sudo cpupower frequency-set -g performance
+sudo sh -c 'echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo' || true
+sudo chrt -f 5 taskset -c 0-3 /path/to/aeronet-bench-server --port 8080 &
+taskset -c 0-3 stress-ng --cpu 4 --timeout 15s
+taskset -c 4-5 ./wrk -t2 -c200 -d30s -s lua/mixed_workload.lua http://127.0.0.1:8080/
+```
+
+Notes:
+
+- Keep `wrk` off the same cores as the server to avoid CPU contention. Dedicate at least one core for `wrk` threads.
+- Disabling turbo will reduce peak throughput but increases repeatability. Toggle turbo back after measurements if desired.
+- If `run_benchmarks.py` starts servers for you, prefer starting the server manually pinned (as above) and point the runner at the running server to ensure pinning takes effect.
+- If you want automation, consider a small wrapper script that sets governor, pins processes, warms, runs the bench, and restores settings afterwards.
+
 ## Adding New Servers
 
 1. Create a new server file (e.g., `newserver_server.cpp`)

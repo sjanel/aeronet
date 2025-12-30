@@ -200,16 +200,17 @@ int main(int argc, char* argv[]) {
   router.setPath(http::Method::GET, "/json", [](const HttpRequest& req) {
     const std::size_t items = GetQueryParamOrThrow<std::size_t>(req, "items");
 
-    std::string json = "{\"items\":[";
+    HttpResponse resp(200);
+    resp.appendBody("{\"items\":[", "application/json");
     for (std::size_t itemPos = 0; itemPos < items; ++itemPos) {
       if (itemPos > 0) {
-        json += ",";
+        resp.appendBody(",");
       }
-      json += std::format(R"({{"id":{},"name":"item-{}","value":{}}})", itemPos, itemPos, itemPos * 100);
+      resp.appendBody(std::format(R"({{"id":{},"name":"item-{}","value":{}}})", itemPos, itemPos, itemPos * 100));
     }
-    json += "]}";
+    resp.appendBody("]}");
 
-    return HttpResponse(std::move(json), http::ContentTypeApplicationJson);
+    return resp;
   });
 
   // ============================================================

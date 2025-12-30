@@ -17,10 +17,8 @@
 
 #include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/connection-state.hpp"
-#include "aeronet/connection.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/event-loop.hpp"
-#include "aeronet/flat-hash-map.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
@@ -28,6 +26,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/internal/lifecycle.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
@@ -36,6 +35,7 @@
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
 #include "aeronet/socket.hpp"
+#include "aeronet/timer-fd.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
 
@@ -267,7 +267,7 @@ class SingleHttpServer {
   void setExpectationHandler(ExpectationHandler handler);
 
   // Install a callback invoked with middleware metrics.
-  void setMiddlewareMetricsCallback(MiddlewareMetricsCallback cb) { _middlewareMetricsCb = std::move(cb); }
+  void setMiddlewareMetricsCallback(MiddlewareMetricsCallback cb) { _callbacks.middlewareMetrics = std::move(cb); }
 
   // Run the server event loop until stop() is called (e.g. from another thread) or the process receives SIGINT/SIGTERM.
   // The maximum blocking interval of a single poll cycle is controlled by HttpServerConfig::pollInterval.
@@ -418,9 +418,7 @@ class SingleHttpServer {
   friend class HttpResponseWriter;  // allow streaming writer to access queueData and _connStates
   friend class MultiHttpServer;
 
-  using ConnectionMap = flat_hash_map<Connection, std::unique_ptr<ConnectionState>, std::hash<int>, std::equal_to<>>;
-
-  using ConnectionMapIt = ConnectionMap::iterator;
+  using ConnectionMapIt = internal::ConnectionStorage::ConnectionMapIt;
 
   void initListener();
   void prepareRun();
@@ -498,6 +496,8 @@ class SingleHttpServer {
 
   void createEncoders();
 
+  void updateMaintenanceTimer();
+
   void submitRouterUpdate(std::function<void(Router&)> updater,
                           std::shared_ptr<std::promise<std::exception_ptr>> completion);
 
@@ -524,8 +524,6 @@ class SingleHttpServer {
   void onAsyncHandlerCompleted(ConnectionMapIt cnxIt);
   bool tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt);
 
-  std::unique_ptr<ConnectionState> getNewConnectionState();
-
   struct StatsInternal {
     uint64_t totalBytesQueued{0};
     uint64_t totalBytesWrittenImmediate{0};
@@ -537,44 +535,86 @@ class SingleHttpServer {
     uint64_t totalRequestsServed{0};
   } _stats;
 
+  struct Callbacks {
+    ParserErrorCallback parserErr;
+    MetricsCallback metrics;
+    MiddlewareMetricsCallback middlewareMetrics;
+#ifdef AERONET_ENABLE_OPENSSL
+    TlsHandshakeCallback tlsHandshake;
+#endif
+    ExpectationHandler expectation;
+  } _callbacks;
+
+  struct PendingUpdates {
+    PendingUpdates() noexcept = default;
+
+    PendingUpdates(const PendingUpdates& other) : config(other.config), router(other.router) {
+      hasConfig.store(other.hasConfig.load(std::memory_order_relaxed), std::memory_order_relaxed);
+      hasRouter.store(other.hasRouter.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
+
+    PendingUpdates& operator=(const PendingUpdates& other) {
+      if (this != &other) [[likely]] {
+        config = other.config;
+        router = other.router;
+        hasConfig.store(other.hasConfig.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        hasRouter.store(other.hasRouter.load(std::memory_order_relaxed), std::memory_order_relaxed);
+      }
+      return *this;
+    }
+
+    PendingUpdates(PendingUpdates&& other) noexcept : config(std::move(other.config)), router(std::move(other.router)) {
+      hasConfig.store(other.hasConfig.exchange(false, std::memory_order_acq_rel), std::memory_order_release);
+      hasRouter.store(other.hasRouter.exchange(false, std::memory_order_acq_rel), std::memory_order_release);
+    }
+
+    PendingUpdates& operator=(PendingUpdates&& other) noexcept {
+      if (this != &other) [[likely]] {
+        config = std::move(other.config);
+        router = std::move(other.router);
+        hasConfig.store(other.hasConfig.exchange(false, std::memory_order_acq_rel), std::memory_order_release);
+        hasRouter.store(other.hasRouter.exchange(false, std::memory_order_acq_rel), std::memory_order_release);
+      }
+      return *this;
+    }
+
+    // Protected by lock since callers may post from other threads.
+    mutable std::mutex lock;
+    vector<std::function<void(HttpServerConfig&)>> config;
+    vector<std::function<void(Router&)>> router;
+
+    std::atomic<bool> hasConfig{false};
+    std::atomic<bool> hasRouter{false};
+
+  } _updates;
+
+  struct CompressionState {
+    CompressionState() noexcept = default;
+    explicit CompressionState(const CompressionConfig& cfg) : selector(cfg) {}
+
+    // Pre-allocated encoders (one per supported format), -1 to remove identity which is last (no encoding).
+    // Index corresponds to static_cast<size_t>(Encoding).
+    std::array<std::unique_ptr<Encoder>, kNbContentEncodings - 1> encoders;
+    EncodingSelector selector;
+  };
+
+  CompressionState _compression;
+
   HttpServerConfig _config;
 
   Socket _listenSocket;  // listening socket
-  std::atomic<bool> _hasPendingConfigUpdates{false};
-  std::atomic<bool> _hasPendingRouterUpdates{false};
   bool _isInMultiHttpServer{false};
   EventLoop _eventLoop;  // epoll-based event loop
+
+  TimerFd _maintenanceTimer;
 
   internal::Lifecycle _lifecycle;
 
   Router _router;
 
-  ConnectionMap _activeConnectionsMap;
-  vector<std::unique_ptr<ConnectionState>> _cachedConnections;  // cache of closed ConnectionState objects for reuse
+  internal::ConnectionStorage _connections;
 
-  // Pre-allocated encoders (one per supported format), -1 to remove identity which is last (no encoding).
-  // Index corresponds to static_cast<size_t>(Encoding).
-  std::array<std::unique_ptr<Encoder>, kNbContentEncodings - 1> _encoders;
-  EncodingSelector _encodingSelector;
-
-  ParserErrorCallback _parserErrCb;
-  MetricsCallback _metricsCb;
-  MiddlewareMetricsCallback _middlewareMetricsCb;
-#ifdef AERONET_ENABLE_OPENSSL
-  TlsHandshakeCallback _tlsHandshakeCb;
-#endif
-  ExpectationHandler _expectationHandler;
   RawChars _tmpBuffer;  // can be used for any kind of temporary buffer
-
-  using ConfigUpdateVector = vector<std::function<void(HttpServerConfig&)>>;
-  using RouterUpdateVector = vector<std::function<void(Router&)>>;
-
-  // Simple pending updates container: updaters are appended and applied at the
-  // start of the next event loop iteration on the server thread. Protected by mutex
-  // since callers may post from other threads.
-  mutable std::mutex _updateLock;
-  ConfigUpdateVector _pendingConfigUpdates;
-  RouterUpdateVector _pendingRouterUpdates;
 
   // Telemetry context - one per SingleHttpServer instance (no global singletons)
   tracing::TelemetryContext _telemetry;
@@ -587,24 +627,28 @@ class SingleHttpServer {
   std::weak_ptr<ServerLifecycleTracker> _lifecycleTracker;
 
 #ifdef AERONET_ENABLE_OPENSSL
-  // TlsContext lifetime & pointer stability:
-  // ----------------------------------------
-  // OpenSSL stores user pointers for callbacks (ALPN selection and SNI routing). These pointers must remain
-  // valid for the lifetime of the SSL_CTX and any SSL handshakes using it.
-  //
-  // For hot reload we keep contexts alive via shared_ptr and each ConnectionState holds a keep-alive to the
-  // context it was created from.
-  std::shared_ptr<TlsContext> _tlsCtxHolder;
+  struct TlsRuntimeState {
+    // TlsContext lifetime & pointer stability:
+    // ----------------------------------------
+    // OpenSSL stores user pointers for callbacks (ALPN selection and SNI routing). These pointers must remain
+    // valid for the lifetime of the SSL_CTX and any SSL handshakes using it.
+    //
+    // For hot reload we keep contexts alive via shared_ptr and each ConnectionState holds a keep-alive to the
+    // context it was created from.
+    std::shared_ptr<TlsContext> ctxHolder;
 
-  // Optional shared session ticket key store (MultiHttpServer shares one store across instances).
-  std::shared_ptr<TlsTicketKeyStore> _sharedTicketKeyStore;
+    // Optional shared session ticket key store (MultiHttpServer shares one store across instances).
+    std::shared_ptr<TlsTicketKeyStore> sharedTicketKeyStore;
 
-  // TLS handshake admission control (basic concurrency + rate limiting).
-  uint32_t _tlsHandshakesInFlight{0};
-  uint32_t _tlsRateLimitTokens{0};
-  std::chrono::steady_clock::time_point _tlsRateLimitLastRefill;
+    // TLS handshake admission control (basic concurrency + rate limiting).
+    uint32_t handshakesInFlight{0};
+    uint32_t rateLimitTokens{0};
+    std::chrono::steady_clock::time_point rateLimitLastRefill;
 
-  TlsMetricsInternal _tlsMetrics;  // defined in aeronet/tls-metrics.hpp
+    TlsMetricsInternal metrics;  // defined in aeronet/tls-metrics.hpp
+  };
+
+  TlsRuntimeState _tls;
 #endif
 };
 

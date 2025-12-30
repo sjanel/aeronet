@@ -644,7 +644,7 @@ TEST(HttpRouting, AsyncLargeResponseChunks) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   router.setPath(http::Method::GET, "/async-large", [](HttpRequest&) -> RequestTask<HttpResponse> {
     std::string body(kAsyncLargePayload, 'x');
-    co_return HttpResponse(http::StatusCodeOK, http::ReasonOK).body(std::move(body));
+    co_return HttpResponse(http::StatusCodeOK).body(std::move(body));
   });
 
   test::RequestOptions opts;
@@ -669,7 +669,7 @@ TEST(HttpRouting, AsyncReadBodyBeforeBodyThrows) {
     } catch (const std::logic_error&) {
       sawException.store(true, std::memory_order_relaxed);
     }
-    co_return HttpResponse(http::StatusCodeOK).body("ok");
+    co_return HttpResponse("ok");
   });
 
   test::RequestOptions opts;
@@ -677,6 +677,7 @@ TEST(HttpRouting, AsyncReadBodyBeforeBodyThrows) {
   opts.target = "/async-read-before-body";
   opts.headers.emplace_back("Connection", "close");
   opts.body = "abc";
+  opts.recvTimeout = std::chrono::milliseconds{500};
 
   auto resp = test::requestOrThrow(ts.port(), opts);
   EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
@@ -701,6 +702,7 @@ TEST(HttpRouting, AsyncBodyBeforeReadBodyThrows) {
   opts.target = "/async-body-before-read";
   opts.headers.emplace_back("Connection", "close");
   opts.body = "xyz";
+  opts.recvTimeout = std::chrono::milliseconds{500};
 
   auto resp = test::requestOrThrow(ts.port(), opts);
   EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
@@ -725,6 +727,7 @@ TEST(HttpRouting, AsyncIdentityContentLengthReadBodyStreams) {
   opts.target = "/identity-stream-cl";
   opts.headers.emplace_back("Connection", "close");
   opts.body = "stream-this-body";
+  opts.recvTimeout = std::chrono::milliseconds{500};
 
   auto resp = test::requestOrThrow(ts.port(), opts);
   EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
@@ -747,10 +750,11 @@ TEST(HttpRouting, AsyncReadBodyAsyncStreams) {
   opts.target = "/async-readbody-async";
   opts.headers.emplace_back("Connection", "close");
   opts.body = "chunked-async-body-data";
+  opts.recvTimeout = std::chrono::milliseconds{500};
 
   auto resp = test::requestOrThrow(ts.port(), opts);
   EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
-  EXPECT_TRUE(resp.find("chunked-async-body-data") != std::string::npos) << resp;
+  EXPECT_TRUE(resp.contains("chunked-async-body-data")) << resp;
 }
 
 TEST(HttpRouting, AsyncIdentityChunkedReadBodyStreams) {
