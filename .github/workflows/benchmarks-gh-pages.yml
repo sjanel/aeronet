@@ -124,18 +124,20 @@ jobs:
             if [ -n "${{ github.event.inputs.bench_duration }}" ]; then
               DUR="${{ github.event.inputs.bench_duration }}"
             else
-              DUR=90s
+              DUR=60s
             fi
             THREADS=2
+            ITER=3
           else
             # pull_request and non-main pushes
             DUR=5s
             WARMUP=2s
             THREADS=1
+            ITER=1
           fi
 
           echo "Event: $EVENT_NAME ref: $REF -> running for $DUR with $THREADS threads"
-          ./run_benchmarks.py --duration "$DUR" --threads "$THREADS" --warmup "$WARMUP"
+          ./run_benchmarks.py --duration "$DUR" --threads "$THREADS" --warmup "$WARMUP" --iterations "$ITER"
 
       - name: Render HTML for Pages
         run: |

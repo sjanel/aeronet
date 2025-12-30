@@ -452,10 +452,11 @@ class SingleHttpServer {
                                const CorsPolicy* pCorsPolicy);
   // Handle Expect header tokens other than the built-in 100-continue.
   // Returns true if processing should stop for this request (response already queued/sent).
-  bool handleExpectHeader(ConnectionMapIt cnxIt, const CorsPolicy* pCorsPolicy, bool& found100Continue);
+  bool handleExpectHeader(ConnectionMapIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
+                          bool& found100Continue);
   // Helper to populate and invoke the metrics callback for a completed request.
   void emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
-                          bool reusedConnection);
+                          bool reusedConnection) const;
   void applyResponseMiddleware(const HttpRequest& request, HttpResponse& response,
                                std::span<const ResponseMiddleware> routeChain, bool streaming);
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
@@ -491,7 +492,7 @@ class SingleHttpServer {
   void handleInTunneling(ConnectionMapIt cnxIt);
 
   void closeListener() noexcept;
-  void closeAllConnections(bool immediate);
+  void closeAllConnections();
 
   void registerBuiltInProbes();
 
@@ -507,7 +508,7 @@ class SingleHttpServer {
   bool disableWritableInterest(ConnectionMapIt cnxIt);
 
   void emitMiddlewareMetrics(const HttpRequest& request, MiddlewareMetrics::Phase phase, bool isGlobal, uint32_t index,
-                             uint64_t durationNs, bool shortCircuited, bool threw, bool streaming);
+                             uint64_t durationNs, bool shortCircuited, bool threw, bool streaming) const;
 
   [[nodiscard]] tracing::SpanRAII startMiddlewareSpan(const HttpRequest& request, MiddlewareMetrics::Phase phase,
                                                       bool isGlobal, uint32_t index, bool streaming);

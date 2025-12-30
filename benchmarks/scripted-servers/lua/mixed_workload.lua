@@ -10,6 +10,12 @@
 --
 -- Configurable via:
 --   - distribution: Comma-separated percentages (default: 30,25,20,15,10)
+--   - close_ratio: Percentage of requests using "Connection: close" (default: 20)
+
+local close_ratio = 20
+
+local headers_keep_alive = { ["Connection"] = "keep-alive" }
+local headers_close = { ["Connection"] = "close" }
 
 -- Request type definitions
 local request_types = {
@@ -38,6 +44,8 @@ function init(args)
           idx = idx + 1
         end
       end
+    elseif arg == "--close-ratio" then
+      close_ratio = tonumber(args[i + 1]) or close_ratio
     end
   end
   
@@ -52,6 +60,10 @@ function init(args)
   for i, rt in ipairs(request_types) do
     print(string.format("  %s: %d%% (%s)", rt.name, rt.weight, rt.path))
   end
+
+  if close_ratio < 0 then close_ratio = 0 end
+  if close_ratio > 100 then close_ratio = 100 end
+  print(string.format("Connection close ratio: %d%%", close_ratio))
   
   -- Initialize random seed
   math.randomseed(os.time())
@@ -70,8 +82,10 @@ end
 
 function request()
   local rt = select_request_type()
-  local headers = { ["Connection"] = "keep-alive" }
-  return wrk.format("GET", rt.path, headers)
+  if close_ratio > 0 and math.random(1, 100) <= close_ratio then
+    return wrk.format("GET", rt.path, headers_close)
+  end
+  return wrk.format("GET", rt.path, headers_keep_alive)
 end
 
 -- Track per-type statistics
