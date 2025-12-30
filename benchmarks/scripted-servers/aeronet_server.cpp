@@ -229,7 +229,9 @@ int main(int argc, char* argv[]) {
   // Returns body of size ?size=N bytes
   // ============================================================
   router.setPath(http::Method::GET, "/body", [](const HttpRequest& req) {
-    return HttpResponse(bench::GenerateRandomString(GetQueryParamOrThrow<std::size_t>(req, "size")));
+    HttpResponse resp(200);
+    resp.body(bench::GenerateRandomString(GetQueryParamOrThrow<std::size_t>(req, "size")));
+    return resp;
   });
 
   // ============================================================

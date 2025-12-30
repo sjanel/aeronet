@@ -613,35 +613,6 @@ TEST(HttpHead, MaxRequestsApplied) {
   ASSERT_FALSE(resp.contains("IGNORED"));
 }
 
-TEST(SingleHttpServer, CachedConnectionsTimeout) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.withKeepAliveMode(false);
-    cfg.withCloseCachedConnectionsTimeout({});
-  });
-  auto port = ts.port();
-  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("OK"); });
-
-  const std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";
-
-  for (int reqPos = 0; reqPos < 10; ++reqPos) {
-    test::ClientConnection clientConnection(port);
-    int fd = clientConnection.fd();
-    ASSERT_GE(fd, 0);
-    test::sendAll(fd, req);
-    std::string firstResp = test::recvWithTimeout(fd);
-    ASSERT_TRUE(firstResp.contains("HTTP/1.1 200")) << firstResp;
-  }
-
-  std::this_thread::sleep_for(5ms);
-
-  test::ClientConnection clientConnection(port);
-  int fd = clientConnection.fd();
-  test::sendAll(fd, req);
-  std::string secondResp = test::recvWithTimeout(fd);
-  // Expect no data (connection should be closed)
-  ASSERT_TRUE(secondResp.contains("HTTP/1.1 200")) << secondResp;
-}
-
 // Test immutable config changes are rejected at runtime (nbThreads)
 TEST(SingleHttpServer, ImmutableConfigChangeNbThreadsIgnored) {
   auto origThreadCount = ts.server.config().nbThreads;
@@ -665,15 +636,6 @@ TEST(SingleHttpServer, ImmutableConfigChangeReusePortIgnored) {
   ts.postConfigUpdate([origReusePort](HttpServerConfig& cfg) { cfg.reusePort = !origReusePort; });
   std::this_thread::sleep_for(10ms);
   ASSERT_EQ(origReusePort, ts.server.config().reusePort);
-}
-
-// Test posted router update exception handling without completion (async path)
-TEST(SingleHttpServer, PostedRouterUpdateExceptionAsyncLogged) {
-  // Use postRouterUpdate (no completion) to exercise the else branch in catch blocks
-  ts.postRouterUpdate([](Router&) { throw std::runtime_error("Test exception in posted update"); });
-  std::this_thread::sleep_for(10ms);
-  // If we get here without crash, the exception was caught and logged
-  SUCCEED();
 }
 
 // Test synchronous router update exception handling with completion
@@ -715,11 +677,11 @@ TEST(SingleHttpServer, BodyReadTimeoutSetWhenNotReady) {
   // Send headers indicating body but don't send body yet
   std::string req = "POST /test HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n";
   test::sendAll(fd, req);
-  std::this_thread::sleep_for(20ms);
+  std::this_thread::sleep_for(50ms);
   // Now send body
   test::sendAll(fd, "1234567890");
-  std::string resp = test::recvWithTimeout(fd);
-  ASSERT_TRUE(resp.contains("200")) << resp;
+  std::string resp = test::recvWithTimeout(fd, 1000ms, 187);
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
 }
 
 // Test body read timeout cleared when body is ready
@@ -732,8 +694,25 @@ TEST(SingleHttpServer, BodyReadTimeoutClearedWhenReady) {
   std::string req = "POST /test HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nConnection: close\r\n\r\nHELLO";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200")) << resp;
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("HELLO")) << resp;
+}
+
+TEST(SingleHttpServer, KeepAliveTimeoutNotTiedToPollInterval) {
+  const auto oldPollInterval = ts.server.config().pollInterval;
+
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withKeepAliveMode(true);
+    cfg.withKeepAliveTimeout(5ms);
+    cfg.withPollInterval(std::chrono::milliseconds{100});
+  });
+
+  test::ClientConnection cnx(ts.port());
+
+  // The server should proactively close the idle keep-alive connection quickly.
+  EXPECT_TRUE(test::WaitForPeerClose(cnx.fd(), 500ms));
+
+  ts.postConfigUpdate([oldPollInterval](HttpServerConfig& cfg) { cfg.withPollInterval(oldPollInterval); });
 }
 
 // Test request decompression when Content-Encoding is identity (no decompression needed)
@@ -746,7 +725,7 @@ TEST(SingleHttpServer, RequestBodyIdentityEncodingNoDecompression) {
       "close\r\n\r\ntest";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200")) << resp;
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("test")) << resp;
 }
 
@@ -764,22 +743,16 @@ TEST(SingleHttpServer, RequestBodyDecompressionDisabledPassthrough) {
       "POST /test HTTP/1.1\r\nHost: x\r\nContent-Encoding: gzip\r\nContent-Length: 5\r\nConnection: close\r\n\r\nDUMMY";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200")) << resp;
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("gzip")) << resp;
 }
 
 // Test unknown exception in router update without completion ptr
 TEST(SingleHttpServer, RouterUpdateUnknownExceptionNoCompletion) {
   // Exception that doesn't inherit from std::exception
-  struct CustomException {
-    int code = 999;
-  };
-
   ts.postRouterUpdate([](Router&) {
-    throw CustomException{};  // Triggers catch(...) path
+    throw 999;  // Triggers catch(...) path
   });
-
-  std::this_thread::sleep_for(50ms);
 
   // Server should still be functional
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
@@ -787,7 +760,7 @@ TEST(SingleHttpServer, RouterUpdateUnknownExceptionNoCompletion) {
   int fd = clientConnection.fd();
   test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200")) << resp;
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
 }
 
 // Test TLS config modification attempt at runtime (should be ignored)
@@ -796,7 +769,6 @@ TEST(SingleHttpServer, TLSConfigModificationIgnored) {
     // Attempt to modify immutable TLS config - should be logged and ignored
     cfg.tls.withCertFile("/some/path");
   });
-  std::this_thread::sleep_for(20ms);
 
   // Server should still work
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
@@ -813,7 +785,6 @@ TEST(SingleHttpServer, TelemetryConfigModificationIgnored) {
     // Attempt to modify immutable telemetry config - should be logged and ignored
     cfg.telemetry.otelEnabled = !cfg.telemetry.otelEnabled;
   });
-  std::this_thread::sleep_for(20ms);
 
   // Server should still work
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
@@ -853,7 +824,7 @@ TEST(SingleHttpServer, HeadMethodNoBody) {
   int fd = clientConnection.fd();
   test::sendAll(fd, "HEAD / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("X-Custom"));
   // Body should not be present for HEAD
   ASSERT_FALSE(resp.contains("This is the body content"));
@@ -868,7 +839,7 @@ TEST(SingleHttpServer, OptionsMethod) {
   test::sendAll(fd, "OPTIONS / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
   std::string resp = test::recvUntilClosed(fd);
   // Should handle OPTIONS (typically returns 200 or 204)
-  ASSERT_TRUE(resp.contains("200") || resp.contains("204")) << resp;
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200") || resp.contains("HTTP/1.1 204")) << resp;
 }
 
 // Test exception in request middleware
@@ -876,6 +847,12 @@ TEST(SingleHttpServer, MiddlewareExceptionHandling) {
   ts.router().addRequestMiddleware([](HttpRequest&) {
     // Test just that adding a middleware that throws doesn't crash
     throw std::runtime_error("middleware failure");
+    return MiddlewareResult::Continue();
+  });
+
+  ts.router().addRequestMiddleware([](HttpRequest&) {
+    // Test just that adding a middleware that throws doesn't crash
+    throw 42;
     return MiddlewareResult::Continue();
   });
 

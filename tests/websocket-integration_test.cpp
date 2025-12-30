@@ -153,7 +153,7 @@ std::optional<ServerFrame> ParseServerFrame(std::span<const std::byte> data) {
   return frame;
 }
 
-std::string PayloadToString(const std::vector<std::byte>& payload) {
+std::string PayloadToString(std::span<const std::byte> payload) {
   std::string result;
   for (auto byte : payload) {
     result.push_back(static_cast<char>(byte));
@@ -182,17 +182,16 @@ TEST_F(WebSocketTest, UpgradeSuccessful) {
 
   // Register a WebSocket endpoint
   ts.postRouterUpdate([this](Router& router) {
-    router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(WebSocketCallbacks{
-                                   .onMessage =
-                                       [this](std::span<const std::byte> payload, bool isBinary) {
-                                         _receivedMessages.emplace_back(
-                                             PayloadToString({payload.begin(), payload.end()}), isBinary);
-                                       },
-                                   .onPing = {},
-                                   .onPong = {},
-                                   .onClose = {},
-                                   .onError = {},
-                               }));
+    router.setWebSocket(
+        "/ws",
+        WebSocketEndpoint::WithCallbacks(WebSocketCallbacks{
+            .onMessage = [this](std::span<const std::byte> payload,
+                                bool isBinary) { _receivedMessages.emplace_back(PayloadToString(payload), isBinary); },
+            .onPing = {},
+            .onPong = {},
+            .onClose = {},
+            .onError = {},
+        }));
   });
 
   // Connect and send upgrade request
@@ -266,11 +265,10 @@ TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
                           handler->setCallbacks(WebSocketCallbacks{
                               .onMessage =
                                   [this, handler = handler.get()](std::span<const std::byte> payload, bool isBinary) {
-                                    _receivedMessages.emplace_back(PayloadToString({payload.begin(), payload.end()}),
-                                                                   isBinary);
+                                    _receivedMessages.emplace_back(PayloadToString(payload), isBinary);
                                     // Echo back
                                     if (!isBinary) {
-                                      handler->sendText(PayloadToString({payload.begin(), payload.end()}));
+                                      handler->sendText(PayloadToString(payload));
                                     }
                                   },
                               .onPing = {},
@@ -372,8 +370,7 @@ TEST_F(WebSocketTest, WithConfigAndCallbacksCustomMaxMessageSize) {
                                    config, WebSocketCallbacks{
                                                .onMessage =
                                                    [this](std::span<const std::byte> payload, bool isBinary) {
-                                                     _receivedMessages.emplace_back(
-                                                         PayloadToString({payload.begin(), payload.end()}), isBinary);
+                                                     _receivedMessages.emplace_back(PayloadToString(payload), isBinary);
                                                    },
                                                .onPing = {},
                                                .onPong = {},
