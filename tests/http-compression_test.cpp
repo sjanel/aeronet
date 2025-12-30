@@ -427,7 +427,7 @@ TEST(HttpCompression, StreamingIdentityForbiddenNoAlternativesReturns406) {
   });
   auto resp = test::simpleGet(ts.port(), "/sbr5", {{"Accept-Encoding", "identity;q=0, snappy;q=0"}});
   // Server should respond 406 (not compressible with offered encodings; identity forbidden)
-  EXPECT_TRUE(resp.headersRaw.contains(" 406 "));
+  EXPECT_TRUE(resp.headersRaw.contains("HTTP/1.1 406"));
 }
 
 TEST(HttpCompression, GzipUserContentEncodingIdentityDisablesCompression) {

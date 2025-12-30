@@ -150,7 +150,6 @@ struct ConnectionState {
   ProtocolType protocol{ProtocolType::Http11};
 
 #ifdef AERONET_ENABLE_OPENSSL
-
   // Observability / attribution for handshake failures.
   // Populated by OpenSSL callbacks via SSL ex_data (see tls-handshake-observer).
   TlsHandshakeObserver tlsHandshakeObserver;

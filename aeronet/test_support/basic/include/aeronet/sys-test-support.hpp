@@ -442,6 +442,11 @@ struct EpollWaitAction {
 
 inline ActionQueue<EpollWaitAction> g_epoll_wait_actions;
 
+// Optional default action used when the epoll_wait action queue is exhausted.
+// This is primarily to make tests deterministic when the system under test
+// calls epoll_wait more times than expected due to timing.
+inline std::optional<EpollWaitAction> g_epoll_wait_default_action;
+
 // Helper to fail all epoll_ctl MOD operations with a specific error
 inline void FailAllEpollCtlMod(int err) {
   g_epoll_ctl_mod_fail.store(true, std::memory_order_release);
@@ -637,6 +642,7 @@ inline EpollWaitFn ResolveRealEpollWait() {
 inline void ResetEpollHooks() {
   test::g_epoll_create_actions.reset();
   test::g_epoll_wait_actions.reset();
+  test::g_epoll_wait_default_action.reset();
   test::ResetEpollCtlModFail();
   test::FailNextMalloc(0);
   test::FailNextRealloc(0);
@@ -647,6 +653,11 @@ inline void SetEpollCreateActions(std::initializer_list<EpollCreateAction> actio
 }
 
 inline void SetEpollWaitActions(std::vector<EpollWaitAction> actions) {
+  test::g_epoll_wait_default_action.reset();
+  if (!actions.empty()) {
+    // Repeat the last action if the queue is exhausted.
+    test::g_epoll_wait_default_action = actions.back();
+  }
   test::g_epoll_wait_actions.setActions(std::move(actions));
 }
 
@@ -1044,17 +1055,23 @@ extern "C" __attribute__((no_sanitize("address"))) int epoll_create1(int flags) 
 extern "C" __attribute__((no_sanitize("address"))) int epoll_wait(int epfd, struct epoll_event* events, int maxevents,
                                                                   int timeout) {
   auto action = aeronet::test::g_epoll_wait_actions.pop();
-  if (action) {
-    if (action->kind == aeronet::test::EpollWaitAction::Kind::Error) {
-      errno = action->err;
+  const auto applyAction = [&](const aeronet::test::EpollWaitAction& act) -> int {
+    if (act.kind == aeronet::test::EpollWaitAction::Kind::Error) {
+      errno = act.err;
       return -1;
     }
-    // Copy events to the output buffer
-    const std::size_t limit = std::min(static_cast<std::size_t>(action->result), static_cast<std::size_t>(maxevents));
-    for (std::size_t i = 0; i < limit && i < action->events.size(); ++i) {
-      events[i] = action->events[i];
+    const std::size_t limit = std::min(static_cast<std::size_t>(act.result), static_cast<std::size_t>(maxevents));
+    for (std::size_t i = 0; i < limit && i < act.events.size(); ++i) {
+      events[i] = act.events[i];
     }
-    return action->result;
+    return act.result;
+  };
+
+  if (action) {
+    return applyAction(*action);
+  }
+  if (aeronet::test::g_epoll_wait_default_action) {
+    return applyAction(*aeronet::test::g_epoll_wait_default_action);
   }
   auto real = aeronet::test::ResolveRealEpollWait();
   return real(epfd, events, maxevents, timeout);

@@ -893,6 +893,7 @@ TEST(MultiHttpServer, StartDetachedWithStopTokenStopsOnRequest) {
   HttpServerConfig cfg;
   cfg.withReusePort();
   cfg.withNbThreads(1U);
+  cfg.withPollInterval(10ms);
   MultiHttpServer multi(cfg);
   multi.router().setDefault([](const HttpRequest&) { return HttpResponse("Token"); });
 

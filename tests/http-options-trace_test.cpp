@@ -28,7 +28,7 @@ TEST(HttpOptionsTrace, OptionsStarReturnsAllow) {
 
   auto resp =
       test::requestOrThrow(port, test::RequestOptions{.method = "OPTIONS", .target = "*", .body = "", .headers = {}});
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("Allow:"));
 }
 
@@ -37,10 +37,19 @@ TEST(HttpOptionsTrace, TraceEchoWhenEnabled) {
       [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS); });
 
   auto resp = test::requestOrThrow(
-      port, test::RequestOptions{.method = "TRACE", .target = "/test", .body = "abcd", .headers = {}});
-  // Should contain echoed body
-  ASSERT_TRUE(resp.contains("abcd"));
+      port,
+      test::RequestOptions{.method = "TRACE", .target = "/test", .body = "", .headers = {{"X-Test-Header", "value"}}});
+
+  ASSERT_FALSE(resp.empty());
+
+  // TRACE response must be message/http
   ASSERT_TRUE(resp.contains("Content-Type: message/http"));
+
+  // Should echo request line
+  ASSERT_TRUE(resp.contains("TRACE /test HTTP/"));
+
+  // Should echo headers
+  ASSERT_TRUE(resp.contains("X-Test-Header: value"));
 }
 
 TEST(HttpOptionsTrace, TraceDisabledReturns405) {

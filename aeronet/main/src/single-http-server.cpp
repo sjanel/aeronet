@@ -422,14 +422,13 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
 
     // Handle Expect header tokens beyond the built-in 100-continue.
     // RFC: if any expectation token is not understood and not handled, respond 417.
-    const std::string_view expectHeader = request.headerValueOrEmpty(http::Expect);
     bool found100Continue = false;
-    if (!expectHeader.empty() && handleExpectHeader(cnxIt, pCorsPolicy, found100Continue)) {
+    auto optExpect = request.headerValue(http::Expect);
+    if (optExpect && handleExpectHeader(cnxIt, *optExpect, pCorsPolicy, found100Continue)) {
       break;  // stop processing this request (response queued)
     }
-    const bool expectContinue = found100Continue || request.hasExpectContinue();
     std::size_t consumedBytes = 0;
-    const BodyDecodeStatus decodeStatus = decodeBodyIfReady(cnxIt, isChunked, expectContinue, consumedBytes);
+    const BodyDecodeStatus decodeStatus = decodeBodyIfReady(cnxIt, isChunked, found100Continue, consumedBytes);
     if (decodeStatus == BodyDecodeStatus::Error) {
       break;
     }
@@ -438,6 +437,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       if (_config.bodyReadTimeout.count() > 0) {
         state.waitingForBody = true;
         state.bodyLastActivity = std::chrono::steady_clock::now();
+      }
+      if (routingResult.asyncRequestHandler() == nullptr) {
+        break;
       }
     } else {
       if (_config.bodyReadTimeout.count() > 0) {
@@ -448,10 +450,6 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         break;
       }
       state.installAggregatedBodyBridge();
-    }
-
-    if (!bodyReady && routingResult.asyncRequestHandler() == nullptr) {
-      break;
     }
 
     // Handle OPTIONS and TRACE per RFC 7231 §4.3
@@ -516,7 +514,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       }
 
       const bool handlerActive =
-          dispatchAsyncHandler(cnxIt, *routingResult.asyncRequestHandler(), bodyReady, isChunked, expectContinue,
+          dispatchAsyncHandler(cnxIt, *routingResult.asyncRequestHandler(), bodyReady, isChunked, found100Continue,
                                consumedBytes, pCorsPolicy, responseMiddlewareRange);
       if (handlerActive) {
         return state.isAnyCloseRequested();
@@ -789,7 +787,7 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
     auto negotiated = _encodingSelector.negotiateAcceptEncoding(encHeader);
     if (negotiated.reject) {
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
-      HttpResponse resp(http::StatusCodeNotAcceptable, http::ReasonNotAcceptable);
+      HttpResponse resp(http::StatusCodeNotAcceptable);
       resp.body("No acceptable content-coding available");
       applyResponseMiddleware(request, resp, postMiddleware, false);
       finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
@@ -999,7 +997,7 @@ bool SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt) {
 }
 
 void SingleHttpServer::emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
-                                          bool reusedConnection) {
+                                          bool reusedConnection) const {
   RequestMetrics metrics;
   metrics.status = status;
   metrics.bytesIn = bytesIn;
@@ -1045,7 +1043,7 @@ void SingleHttpServer::applyResponseMiddleware(const HttpRequest& request, HttpR
 
 void SingleHttpServer::emitMiddlewareMetrics(const HttpRequest& request, MiddlewareMetrics::Phase phase, bool isGlobal,
                                              uint32_t index, uint64_t durationNs, bool shortCircuited, bool threw,
-                                             bool streaming) {
+                                             bool streaming) const {
   MiddlewareMetrics metrics;
   metrics.phase = phase;
   metrics.isGlobal = isGlobal;
@@ -1134,7 +1132,7 @@ void SingleHttpServer::eventLoop() {
   _telemetry.gauge("aeronet.events.capacity_current_count", static_cast<int64_t>(_eventLoop.capacity()));
 
   if (_lifecycle.isStopping() || (_lifecycle.isDraining() && nbConnections == 0)) {
-    closeAllConnections(true);
+    closeAllConnections();
     _lifecycle.reset();
     if (!_isInMultiHttpServer) {
       log::info("Server stopped");
@@ -1142,7 +1140,7 @@ void SingleHttpServer::eventLoop() {
   } else if (_lifecycle.isDraining()) {
     if (_lifecycle.hasDeadline() && now >= _lifecycle.deadline()) {
       log::warn("Drain deadline reached with {} active connection(s); forcing close", _activeConnectionsMap.size());
-      closeAllConnections(true);
+      closeAllConnections();
       _lifecycle.reset();
       log::info("Server drained after deadline");
     }
@@ -1160,14 +1158,9 @@ void SingleHttpServer::closeListener() noexcept {
   }
 }
 
-void SingleHttpServer::closeAllConnections(bool immediate) {
+void SingleHttpServer::closeAllConnections() {
   for (auto it = _activeConnectionsMap.begin(); it != _activeConnectionsMap.end();) {
-    if (immediate) {
-      it = closeConnection(it);
-    } else {
-      it->second->requestDrainAndClose();
-      ++it;
-    }
+    it = closeConnection(it);
   }
 }
 
@@ -1229,6 +1222,8 @@ void SingleHttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode s
     } catch (const std::exception& ex) {
       // Swallow exceptions from user callback to avoid destabilizing the server
       log::error("Exception raised in user callback: {}", ex.what());
+    } catch (...) {
+      log::error("Unknown exception raised in user callback");
     }
   }
 
@@ -1241,10 +1236,9 @@ void SingleHttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode s
   cnxIt->second->request.end(statusCode);
 }
 
-bool SingleHttpServer::handleExpectHeader(ConnectionMapIt cnxIt, const CorsPolicy* pCorsPolicy,
-                                          bool& found100Continue) {
+bool SingleHttpServer::handleExpectHeader(ConnectionMapIt cnxIt, std::string_view expectHeader,
+                                          const CorsPolicy* pCorsPolicy, bool& found100Continue) {
   HttpRequest& request = cnxIt->second->request;
-  const std::string_view expectHeader = request.headerValueOrEmpty(http::Expect);
   const std::size_t headerEnd = request.headSpanSize();
   // Parse comma-separated tokens (trim spaces/tabs). Case-insensitive comparison for 100-continue.
   // headerEnd = offset from connection buffer start to end of headers

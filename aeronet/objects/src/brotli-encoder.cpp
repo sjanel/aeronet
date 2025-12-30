@@ -19,7 +19,8 @@ BrotliEncoderContext::BrotliEncoderContext(RawChars &sharedBuf, int quality, int
   if (!_state) [[unlikely]] {
     throw std::bad_alloc();
   }
-  auto res = BrotliEncoderSetParameter(_state.get(), BROTLI_PARAM_QUALITY, static_cast<uint32_t>(quality));
+  [[maybe_unused]] auto res =
+      BrotliEncoderSetParameter(_state.get(), BROTLI_PARAM_QUALITY, static_cast<uint32_t>(quality));
   assert(res == BROTLI_TRUE);
   res = BrotliEncoderSetParameter(_state.get(), BROTLI_PARAM_LGWIN, static_cast<uint32_t>(window));
   assert(res == BROTLI_TRUE);
