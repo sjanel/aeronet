@@ -107,10 +107,13 @@ struct HttpServerConfig {
   // Event loop polling / responsiveness tuning
   // ===========================================
   // Maximum duration the event loop will block waiting for I/O in a single epoll_wait() when idle before it wakes to
-  // perform housekeeping and to check for external stop conditions (stop() call or runUntil predicate).
+  // check for external stop conditions (stop() call or runUntil predicate).
+  //
+  // Note: periodic timeout enforcement (keep-alive idle timeout, header/body read timeouts, TLS handshake timeout)
+  // is driven by an internal timerfd registered in epoll. This decouples timeout enforcement from whether
+  // epoll_wait() happens to hit its timeout under load.
   // Lower values:
   //   + Faster responsiveness to external stop() calls.
-  //   + Finer granularity for periodic housekeeping (idle connection sweeping).
   //   - More wake‑ups -> higher baseline CPU usage.
   // Higher values:
   //   + Fewer wake‑ups (reduced idle CPU) when the server is mostly idle.

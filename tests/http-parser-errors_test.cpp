@@ -59,6 +59,34 @@ TEST(HttpParserErrors, InvalidVersion505) {
   ASSERT_TRUE(seen);
 }
 
+TEST(HttpParserErrors, ExceptionInParserShouldBeControlled) {
+  Capture cap;
+  ts.server.setParserErrorCallback([&]([[maybe_unused]] http::StatusCode err) { throw std::runtime_error("boom"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+
+  std::string bad =
+      "GET / HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\nConnection: close\r\n\r\n";  // invalid content-length
+
+  {
+    test::ClientConnection clientConnection(port);
+    int fd = clientConnection.fd();
+
+    test::sendAll(fd, bad);
+    std::string resp = test::recvUntilClosed(fd);
+    ASSERT_TRUE(resp.contains("400")) << resp;
+  }
+
+  ts.server.setParserErrorCallback([&]([[maybe_unused]] http::StatusCode err) { throw 42; });
+  std::this_thread::sleep_for(2 * ts.server.config().pollInterval);
+  {
+    test::ClientConnection clientConnection(port);
+    int fd = clientConnection.fd();
+    test::sendAll(fd, bad);
+    std::string resp = test::recvUntilClosed(fd);
+    ASSERT_TRUE(resp.contains("400")) << resp;
+  }
+}
+
 TEST(HttpParserErrors, Expect100OnlyWithBody) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   test::ClientConnection clientConnection(port);

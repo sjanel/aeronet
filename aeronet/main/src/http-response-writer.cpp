@@ -378,7 +378,7 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
     return true;
   }
   // Threshold reached exactly or exceeded: activate encoder.
-  auto& encoderPtr = _server->_encoders[static_cast<std::size_t>(_compressionFormat)];
+  auto& encoderPtr = _server->_compression.encoders[static_cast<std::size_t>(_compressionFormat)];
   _activeEncoderCtx = encoderPtr->makeContext();
   _compressionActivated = true;
   // Set Content-Encoding prior to emitting headers.

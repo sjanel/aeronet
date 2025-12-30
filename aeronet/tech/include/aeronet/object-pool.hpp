@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -84,10 +85,10 @@ struct Slot<T, true> {
 // Object pools for fast allocation/deallocation of frequently used objects.
 // Once allocated and constructed, object pointers remain valid along with the pool lifetime.
 // All allocated objects are destroyed when the pool is destroyed.
-template <class T>
+template <class T, class SizeType = uint32_t>
 class ObjectPool {
  public:
-  using size_type = std::size_t;
+  using size_type = SizeType;
 
   static constexpr size_type kDefaultInitialCapacity = 16U;
   static constexpr size_type kGrowthFactor = 2U;
@@ -213,16 +214,16 @@ class ObjectPool {
   size_type _liveCount{0};
 };
 
-template <class T>
-ObjectPool<T>::ObjectPool(ObjectPool &&other) noexcept
+template <class T, class SizeType>
+ObjectPool<T, SizeType>::ObjectPool(ObjectPool &&other) noexcept
     : _lastBlock(std::exchange(other._lastBlock, nullptr)),
       _freeList(std::exchange(other._freeList, nullptr)),
       _nextSlot(std::exchange(other._nextSlot, nullptr)),
       _totalCapacity(std::exchange(other._totalCapacity, kDefaultInitialCapacity)),
       _liveCount(std::exchange(other._liveCount, 0)) {}
 
-template <class T>
-ObjectPool<T> &ObjectPool<T>::operator=(ObjectPool &&other) noexcept {
+template <class T, class SizeType>
+ObjectPool<T, SizeType> &ObjectPool<T, SizeType>::operator=(ObjectPool &&other) noexcept {
   if (this != &other) {
     reset();
 
@@ -235,9 +236,9 @@ ObjectPool<T> &ObjectPool<T>::operator=(ObjectPool &&other) noexcept {
   return *this;
 }
 
-template <class T>
+template <class T, class SizeType>
 template <class... Args>
-T *ObjectPool<T>::allocateAndConstruct(Args &&...args) {
+T *ObjectPool<T, SizeType>::allocateAndConstruct(Args &&...args) {
   Slot *slot;
   if (_freeList == nullptr) {
     if (_lastBlock == nullptr || _nextSlot == slotEnd(_lastBlock)) {
@@ -264,8 +265,8 @@ T *ObjectPool<T>::allocateAndConstruct(Args &&...args) {
   return slot->ptr();
 }
 
-template <class T>
-void ObjectPool<T>::destroyAndRelease(T *obj) noexcept {
+template <class T, class SizeType>
+void ObjectPool<T, SizeType>::destroyAndRelease(T *obj) noexcept {
   Slot *slot = slotFromObject(obj);
 
   slot->setFree(_freeList);
@@ -273,8 +274,8 @@ void ObjectPool<T>::destroyAndRelease(T *obj) noexcept {
   --_liveCount;
 }
 
-template <class T>
-T ObjectPool<T>::release(T *obj) noexcept
+template <class T, class SizeType>
+T ObjectPool<T, SizeType>::release(T *obj) noexcept
   requires std::is_move_constructible_v<T>
 {
   Slot *slot = slotFromObject(obj);
@@ -286,8 +287,8 @@ T ObjectPool<T>::release(T *obj) noexcept
   return ret;
 }
 
-template <class T>
-void ObjectPool<T>::clear() noexcept {
+template <class T, class SizeType>
+void ObjectPool<T, SizeType>::clear() noexcept {
   _freeList = nullptr;
 
   for (Block *block = _lastBlock; block != nullptr; block = block->_prevBlock) {
@@ -301,8 +302,8 @@ void ObjectPool<T>::clear() noexcept {
   _liveCount = 0U;
 }
 
-template <class T>
-void ObjectPool<T>::reset() noexcept {
+template <class T, class SizeType>
+void ObjectPool<T, SizeType>::reset() noexcept {
   for (Block *block = _lastBlock; block != nullptr;) {
     Block *prev = block->_prevBlock;
     if constexpr (!std::is_trivially_destructible_v<T>) {

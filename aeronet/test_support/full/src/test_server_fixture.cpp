@@ -1,8 +1,10 @@
 #include "aeronet/test_server_fixture.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <exception>
 #include <functional>
+#include <future>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -25,12 +27,28 @@ TestServer::TestServer(aeronet::HttpServerConfig cfg, aeronet::RouterConfig rout
 
 void TestServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater) {
   server.postConfigUpdate(std::move(updater));
-  std::this_thread::sleep_for(server.config().pollInterval + 100us);  // allow event loop to process update
+  std::this_thread::sleep_for(2 * server.config().pollInterval);  // allow event loop to process update
 }
 
 void TestServer::postRouterUpdate(std::function<void(Router&)> updater) {
-  server.postRouterUpdate(std::move(updater));
-  std::this_thread::sleep_for(server.config().pollInterval + 100us);
+  auto completion = std::make_shared<std::promise<void>>();
+  auto future = completion->get_future();
+
+  server.postRouterUpdate([completion, updater = std::move(updater)](Router& router) mutable {
+    try {
+      updater(router);
+    } catch (...) {
+      completion->set_value();
+      throw;
+    }
+    completion->set_value();
+  });
+
+  const auto waitTimeout = std::max(server.config().pollInterval * 10, std::chrono::milliseconds{200});
+  if (future.wait_for(waitTimeout) == std::future_status::timeout) {
+    log::warn("Router update did not complete within {} ms", waitTimeout.count());
+    future.wait();
+  }
 }
 
 RouterUpdateProxy TestServer::resetRouterAndGet(std::function<void(Router&)> initializer) {

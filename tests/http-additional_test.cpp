@@ -698,6 +698,21 @@ TEST(SingleHttpServer, BodyReadTimeoutClearedWhenReady) {
   ASSERT_TRUE(resp.contains("HELLO")) << resp;
 }
 
+TEST(SingleHttpServer, KeepAliveTimeoutNotTiedToPollInterval) {
+  HttpServerConfig cfg = TestServerConfig();
+  cfg.withKeepAliveMode(true);
+  cfg.withKeepAliveTimeout(50ms);
+
+  // Use a very large poll interval to ensure timeout enforcement does not rely on epoll_wait() timing out.
+  test::TestServer slowPollServer(std::move(cfg), RouterConfig{}, std::chrono::seconds{5});
+
+  test::ClientConnection cnx(slowPollServer.port());
+  ASSERT_NE(cnx.fd(), -1);
+
+  // The server should proactively close the idle keep-alive connection quickly.
+  EXPECT_TRUE(test::WaitForPeerClose(cnx.fd(), 1500ms));
+}
+
 // Test request decompression when Content-Encoding is identity (no decompression needed)
 TEST(SingleHttpServer, RequestBodyIdentityEncodingNoDecompression) {
   ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
@@ -838,6 +853,12 @@ TEST(SingleHttpServer, MiddlewareExceptionHandling) {
   ts.router().addRequestMiddleware([](HttpRequest&) {
     // Test just that adding a middleware that throws doesn't crash
     throw std::runtime_error("middleware failure");
+    return MiddlewareResult::Continue();
+  });
+
+  ts.router().addRequestMiddleware([](HttpRequest&) {
+    // Test just that adding a middleware that throws doesn't crash
+    throw 42;
     return MiddlewareResult::Continue();
   });
 

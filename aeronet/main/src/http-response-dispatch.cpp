@@ -227,7 +227,7 @@ void SingleHttpServer::tryCompressResponse(const HttpRequest& request, HttpRespo
     return;
   }
   const std::string_view encHeader = request.headerValueOrEmpty(http::AcceptEncoding);
-  auto [encoding, reject] = _encodingSelector.negotiateAcceptEncoding(encHeader);
+  auto [encoding, reject] = _compression.selector.negotiateAcceptEncoding(encHeader);
   // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
   // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
   if (reject) {
@@ -261,7 +261,7 @@ void SingleHttpServer::tryCompressResponse(const HttpRequest& request, HttpRespo
     resp.appendHeaderValue(http::Vary, http::AcceptEncoding);
   }
 
-  auto& encoder = _encoders[static_cast<std::size_t>(encoding)];
+  auto& encoder = _compression.encoders[static_cast<std::size_t>(encoding)];
   auto* pExternPayload = resp.externPayloadPtr();
   // If the external payload exists, we can compress directly into the HttpResponse internal buffer.
   // We don't need to care about the trailers because, if present, they are necessarily appended to the body buffer.
@@ -348,7 +348,7 @@ void SingleHttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRespon
   if (!keepAlive && state.outBuffer.empty()) {
     state.requestDrainAndClose();
   }
-  if (_metricsCb) {
+  if (_callbacks.metrics) {
     emitRequestMetrics(request, respStatusCode, request.body().size(), state.requestsServed > 0);
   }
 
@@ -473,10 +473,12 @@ void SingleHttpServer::flushOutbound(ConnectionMapIt cnxIt) {
     state.fileSend.headersPending = false;
   }
 
-  flushFilePayload(cnxIt);
+  if (state.isSendingFile()) {
+    flushFilePayload(cnxIt);
+  }
   // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
-  if (state.outBuffer.empty() && !state.isSendingFile() && state.waitingWritable &&
-      (state.tlsEstablished || state.transport->handshakeDone())) {
+  else if (state.outBuffer.empty() && state.waitingWritable &&
+           (state.tlsEstablished || state.transport->handshakeDone())) {
     if (disableWritableInterest(cnxIt)) {
       if (state.isAnyCloseRequested()) {
         return;
@@ -546,9 +548,6 @@ bool SingleHttpServer::flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt) {
 
 void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
-  if (!state.isSendingFile()) {
-    return;
-  }
 
   if (state.fileSend.headersPending) {
     if (!state.outBuffer.empty()) {
@@ -606,7 +605,7 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
         _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(res.bytesDone);
 #ifdef AERONET_ENABLE_OPENSSL
         if (ktlsSend) {
-          _tlsMetrics.ktlsSendBytes += static_cast<std::uint64_t>(res.bytesDone);
+          _tls.metrics.ktlsSendBytes += static_cast<std::uint64_t>(res.bytesDone);
         }
 #endif
         // Continue loop to send more
@@ -626,7 +625,7 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
             _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(retryRes.bytesDone);
 #ifdef AERONET_ENABLE_OPENSSL
             if (ktlsSend) {
-              _tlsMetrics.ktlsSendBytes += static_cast<std::uint64_t>(retryRes.bytesDone);
+              _tls.metrics.ktlsSendBytes += static_cast<std::uint64_t>(retryRes.bytesDone);
             }
 #endif
             // Socket was writable, continue the loop to send more

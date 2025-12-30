@@ -6,6 +6,7 @@
 #include "aeronet/connection.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/object-pool.hpp"
+#include "aeronet/tls-transport.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet::internal {
@@ -22,7 +23,28 @@ class ConnectionStorage {
 
   using ConnectionMapIt = ConnectionMap::iterator;
 
-  ConnectionMapIt recycleOrRelease(uint32_t maxCachedConnections, ConnectionMapIt cnxIt) {
+  ConnectionMapIt recycleOrRelease(uint32_t maxCachedConnections, bool tlsEnabled, ConnectionMapIt cnxIt,
+                                   uint32_t& handshakesInFlight) {
+    auto& asyncState = cnxIt->second->asyncState;
+    if (asyncState.active || asyncState.handle) {
+      asyncState.clear();
+    }
+
+    // Best-effort graceful TLS shutdown
+#ifdef AERONET_ENABLE_OPENSSL
+    if (tlsEnabled) {
+      // If the connection is closed mid-handshake, release admission control slot.
+      if (cnxIt->second->tlsHandshakeInFlight) {
+        cnxIt->second->tlsHandshakeInFlight = false;
+        --handshakesInFlight;
+      }
+
+      if (auto* tlsTr = dynamic_cast<TlsTransport*>(cnxIt->second->transport.get())) {
+        tlsTr->shutdown();
+      }
+    }
+#endif
+
     // Move ConnectionState to cache for potential reuse
     if (_cachedConnections.size() < maxCachedConnections) {
       _cachedConnections.push_back(cnxIt->second);
