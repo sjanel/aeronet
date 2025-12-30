@@ -10,6 +10,9 @@
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
 
+#include <utility>
+
+#include "aeronet/log.hpp"
 #include "aeronet/zstd-encoder.hpp"
 #endif
 
@@ -19,7 +22,7 @@ void CompressionConfig::validate() const {
   if (encoderChunkSize == 0) {
     throw std::invalid_argument("Invalid encoder chunk size");
   }
-  if constexpr (aeronet::zlibEnabled()) {
+  if constexpr (zlibEnabled()) {
     if (zlib.level != Zlib::kDefaultLevel && (zlib.level < Zlib::kMinLevel || zlib.level > Zlib::kMaxLevel)) {
       throw std::invalid_argument(std::format("Invalid ZLIB compression level {}", zlib.level));
     }
@@ -34,9 +37,13 @@ void CompressionConfig::validate() const {
     throw std::invalid_argument(std::format("Invalid ZSTD compression level {}", zstd.compressionLevel));
   }
   details::ZstdContextRAII testConstruction(zstd.compressionLevel, zstd.windowLog);
+  if (std::cmp_less(encoderChunkSize, ZSTD_CStreamOutSize())) {
+    log::warn("Encoder chunk size {} is less than recommended minimum {} for ZSTD; performance may be degraded",
+              encoderChunkSize, ZSTD_CStreamOutSize());
+  }
 #endif
 
-  if constexpr (aeronet::brotliEnabled()) {
+  if constexpr (brotliEnabled()) {
     if (brotli.quality < Brotli::kMinQuality || brotli.quality > Brotli::kMaxQuality) {
       throw std::invalid_argument(std::format("Invalid Brotli quality {}", brotli.quality));
     }

@@ -1,19 +1,26 @@
 #include "aeronet/timer-fd.hpp"
 
-#include <dlfcn.h>
 #include <gtest/gtest.h>
 #include <sys/timerfd.h>
+#include <sys/types.h>
 
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
+#include <initializer_list>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
+#include <vector>
+
+#include "aeronet/base-fd.hpp"
+#include "aeronet/timedef.hpp"
 
 // Enable read override from sys-test-support.hpp so we can deterministically
 // drive TimerFd::drain() without relying on a real timerfd.
@@ -32,17 +39,17 @@ struct TimerfdCreateAction {
 };
 
 [[nodiscard]] TimerfdCreateAction CreateReturnFd(int fd) {
-  TimerfdCreateAction a;
-  a.kind = TimerfdCreateAction::Kind::ReturnFd;
-  a.fd = fd;
-  return a;
+  TimerfdCreateAction act;
+  act.kind = TimerfdCreateAction::Kind::ReturnFd;
+  act.fd = fd;
+  return act;
 }
 
 [[nodiscard]] TimerfdCreateAction CreateError(int err) {
-  TimerfdCreateAction a;
-  a.kind = TimerfdCreateAction::Kind::Error;
-  a.err = err;
-  return a;
+  TimerfdCreateAction act;
+  act.kind = TimerfdCreateAction::Kind::Error;
+  act.err = err;
+  return act;
 }
 
 struct TimerfdSettimeAction {
@@ -56,10 +63,10 @@ struct TimerfdSettimeAction {
 }
 
 [[nodiscard]] TimerfdSettimeAction SettimeError(int err) {
-  TimerfdSettimeAction a;
-  a.kind = TimerfdSettimeAction::Kind::Error;
-  a.err = err;
-  return a;
+  TimerfdSettimeAction act;
+  act.kind = TimerfdSettimeAction::Kind::Error;
+  act.err = err;
+  return act;
 }
 
 struct TimerfdCreateCall {
@@ -159,10 +166,11 @@ TimerfdCreateFn ResolveRealTimerfdCreate() {
   return fn;
 }
 
-[[nodiscard]] std::string SysErrorWhat(const std::system_error& err) { return std::string(err.what()); }
+[[nodiscard]] std::string SysErrorWhat(const std::system_error& err) { return err.what(); }
 
 }  // namespace
 
+// NOLINTNEXTLINE
 extern "C" int timerfd_create(int clockid, int flags) {
   gTimerfd.recordCreateCall(clockid, flags);
 
@@ -178,6 +186,7 @@ extern "C" int timerfd_create(int clockid, int flags) {
   return ResolveRealTimerfdCreate()(clockid, flags);
 }
 
+// NOLINTNEXTLINE
 extern "C" int timerfd_settime(int fd, int flags, const itimerspec* new_value, itimerspec* old_value) {
   itimerspec specCopy{};
   if (new_value != nullptr) {

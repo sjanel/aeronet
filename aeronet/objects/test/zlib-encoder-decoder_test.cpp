@@ -14,6 +14,7 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoder.hpp"
+#include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
@@ -219,6 +220,52 @@ TEST(ZlibEncoderDecoderTest, EncodeChunkAfterContextDestroyed) {
   ctx = reinterpret_cast<ZlibEncoderContext*>(ctxBuf2.data());
 
   EXPECT_THROW(ctx->encodeChunk(kEncoderChunkSize, "Test data"), std::runtime_error);
+}
+
+TEST(ZlibEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
+  // Create a patterned payload large enough to force multiple compressStream2 calls
+  // when the encoder is given a very small output buffer.
+  const std::string payload = test::MakePatternedPayload(1024);
+
+  CompressionConfig cfg;
+  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, cfg, 1);
+  auto ctx = encoder.makeContext();
+  RawChars compressed;
+  const auto produced = ctx->encodeChunk(1, std::string_view(payload));
+  compressed.append(produced);
+  const auto tail = ctx->encodeChunk(1, {});
+  compressed.append(tail);
+
+  RawChars decompressed;
+  ASSERT_TRUE(
+      ZlibDecoder::Decompress(std::string_view(compressed), true, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_EQ(std::string_view(decompressed), payload);
+}
+
+TEST(ZlibEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIterations) {
+  // Incompressible payload to force encoder to iterate and grow output as needed.
+  const RawBytes payload = test::MakeRandomPayload(256UL * 1024);
+
+  static constexpr std::size_t kChunkSize = 1UL;  // small to force multiple iterations; encoder will grow as needed
+  CompressionConfig cfg;
+  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, cfg, kChunkSize);
+  auto ctx = encoder.makeContext();
+  RawChars compressed;
+
+  const auto produced =
+      ctx->encodeChunk(kChunkSize, std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()));
+  compressed.append(produced);
+  const auto tail = ctx->encodeChunk(kChunkSize, {});
+  compressed.append(tail);
+
+  // Expect more than one chunk worth of output, implying multiple loop iterations.
+  ASSERT_GT(compressed.size(), kChunkSize);
+
+  RawChars decompressed;
+  ASSERT_TRUE(ZlibDecoder::Decompress(compressed, true, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+
+  EXPECT_EQ(decompressed.size(), payload.size());
+  EXPECT_EQ(std::memcmp(decompressed.data(), payload.data(), payload.size()), 0);
 }
 
 }  // namespace aeronet

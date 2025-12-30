@@ -1,8 +1,5 @@
 #pragma once
 
-#include <chrono>
-#include <cstdint>
-
 #include "aeronet/base-fd.hpp"
 #include "aeronet/timedef.hpp"
 
@@ -14,9 +11,6 @@ class TimerFd {
  public:
   // Create a disabled timerfd (non-blocking, close-on-exec).
   TimerFd();
-
-  // Create and arm a periodic timer.
-  explicit TimerFd(SysDuration interval);
 
   // Arm a periodic timer. A non-positive interval disables the timer.
   void armPeriodic(SysDuration interval) const;

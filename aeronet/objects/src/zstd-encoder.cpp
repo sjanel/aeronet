@@ -33,20 +33,23 @@ ZstdContextRAII::ZstdContextRAII(int level, int windowLog) : ctx(ZSTD_createCCtx
 }  // namespace details
 
 std::string_view ZstdEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) {
-  ZSTD_outBuffer outBuf{_buf.data(), _buf.capacity(), 0};
   ZSTD_inBuffer inBuf{chunk.data(), chunk.size(), 0};
   const auto mode = chunk.empty() ? ZSTD_e_end : ZSTD_e_continue;
+  assert(encoderChunkSize > 0);
+
   for (_buf.clear();;) {
     _buf.ensureAvailableCapacityExponential(encoderChunkSize);
 
-    outBuf.dst = _buf.data() + outBuf.pos;
-    outBuf.size = _buf.capacity() - outBuf.pos;
+    // Provide zstd an output window starting at the current end of _buf.
+    // Important: ZSTD_outBuffer.pos is relative to dst, so always 0 here.
+    ZSTD_outBuffer outBuf{_buf.data() + _buf.size(), _buf.availableCapacity(), 0};
 
-    std::size_t ret = ZSTD_compressStream2(_zs.ctx.get(), &outBuf, &inBuf, mode);
+    const std::size_t ret = ZSTD_compressStream2(_zs.ctx.get(), &outBuf, &inBuf, mode);
     if (ZSTD_isError(ret) != 0U) [[unlikely]] {
       throw std::runtime_error(std::format("ZSTD_compressStream2 error: {}", ZSTD_getErrorName(ret)));
     }
-    _buf.setSize(outBuf.pos);
+
+    _buf.addSize(outBuf.pos);
     if (chunk.empty()) {
       if (ret == 0) [[likely]] {
         break;

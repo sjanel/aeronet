@@ -15,6 +15,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/request-task.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/websocket-endpoint.hpp"
 
 namespace aeronet {
 
