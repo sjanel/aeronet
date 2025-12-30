@@ -5,6 +5,7 @@
 #include <exception>
 #include <functional>
 #include <future>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -13,6 +14,8 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/router-update-proxy.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/test_util.hpp"
 

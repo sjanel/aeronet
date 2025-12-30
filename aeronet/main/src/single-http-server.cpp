@@ -77,6 +77,7 @@
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-context.hpp"
+#include "aeronet/tls-handshake-callback.hpp"
 #endif
 
 namespace aeronet {
@@ -1158,9 +1159,9 @@ void SingleHttpServer::updateMaintenanceTimer() {
   using namespace std::chrono;
 
   milliseconds minTimeout = milliseconds::max();
-  const auto consider = [&](milliseconds d) {
-    if (d.count() > 0) {
-      minTimeout = std::min(minTimeout, d);
+  const auto consider = [&](milliseconds dur) {
+    if (dur.count() > 0) {
+      minTimeout = std::min(minTimeout, dur);
     }
   };
 

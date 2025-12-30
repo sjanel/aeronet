@@ -8,7 +8,6 @@
 #include <openssl/types.h>
 #include <openssl/x509_vfy.h>
 #include <sys/socket.h>
-#include <unistd.h>
 
 #include <array>
 #include <cerrno>
@@ -23,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 

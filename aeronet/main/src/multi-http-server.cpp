@@ -25,6 +25,7 @@
 #include "aeronet/single-http-server.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/tls-handshake-callback.hpp"
 #include "aeronet/tls-ticket-key-store.hpp"
 #endif
 #include "aeronet/vector.hpp"

@@ -78,7 +78,7 @@ struct CompressionConfig {
 
   // Only responses whose (uncompressed) size is >= this threshold are considered for compression.
   // For streaming responses (unknown size), compression begins once cumulative bytes reach threshold.
-  std::size_t minBytes{256};
+  std::size_t minBytes{1024UL};
 
   // Simple allowlist of content-types (prefix match) eligible for compression. If empty, any content type will be
   // eligible for compression.
@@ -87,7 +87,7 @@ struct CompressionConfig {
   // Chunk size of buffer growths during compression.
   // Prefer a large size if you expect big payloads in average, prefer a small size if you want to limit memory
   // overhead.
-  std::size_t encoderChunkSize{32UL * 1024UL};
+  std::size_t encoderChunkSize{256UL * 1024UL};
 };
 
 }  // namespace aeronet

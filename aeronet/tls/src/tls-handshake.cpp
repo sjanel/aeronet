@@ -14,7 +14,9 @@
 
 #include "aeronet/log.hpp"
 #include "aeronet/tls-config.hpp"
+#include "aeronet/tls-handshake-callback.hpp"
 #include "aeronet/tls-info.hpp"
+#include "aeronet/tls-ktls.hpp"
 #include "aeronet/tls-metrics.hpp"
 #include "aeronet/tls-raii.hpp"
 
