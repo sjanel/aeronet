@@ -32,9 +32,10 @@ class ITransport {
   // want: indicates whether socket needs to be readable or writable for operation to proceed.
   virtual TransportResult write(std::string_view data) = 0;
 
-  // Non-blocking write. Returns bytes written (>0), 0 no progress (treat like EAGAIN), -1 fatal error.
+  // Non-blocking scatter write. Returns total bytes written across both buffers.
+  // Default implementation calls write() twice; PlainTransport overrides with writev for efficiency.
   // want: indicates whether socket needs to be readable or writable for operation to proceed.
-  TransportResult write(std::string_view firstBuf, std::string_view secondBuf) {
+  virtual TransportResult write(std::string_view firstBuf, std::string_view secondBuf) {
     // First attempt to write the response head. Only if the head was fully
     // written do we proceed to write the body. This is important for TLS
     // transports where a write call may succeed and report a positive
@@ -72,6 +73,9 @@ class PlainTransport final : public ITransport {
   TransportResult read(char* buf, std::size_t len) override;
 
   TransportResult write(std::string_view data) override;
+
+  /// Scatter write using writev - single syscall for two buffers.
+  TransportResult write(std::string_view firstBuf, std::string_view secondBuf) override;
 
  private:
   int _fd;

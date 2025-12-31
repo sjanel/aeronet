@@ -107,7 +107,7 @@ TEST(PlainTransport, WriteHandlesEAGAINAndSuccess) {
   EXPECT_EQ(std::memcmp(buf, data.data(), 6), 0);
 }
 
-TEST(PlainTransport, TwoBufWriteReturnsEarlyWhenHeadNeedsRetry) {
+TEST(PlainTransport, TwoBufWriteReturnsEarlyWhenWritevNeedsRetry) {
   int fds[2];
   ASSERT_EQ(pipe(fds), 0);
   const int readFd = fds[0];
@@ -116,16 +116,62 @@ TEST(PlainTransport, TwoBufWriteReturnsEarlyWhenHeadNeedsRetry) {
   BaseFd readFdGuard(readFd);
   BaseFd writeFdGuard(writeFd);
 
-  // Simulate the head (firstBuf) write returning EAGAIN -> caller should
-  // receive a result with want != None and no body written.
-  test::SetWriteActions(writeFd, {IoAction{-1, EAGAIN}});
+  // Simulate writev returning EAGAIN -> caller should
+  // receive a result with want != None and no data written.
+  test::SetWritevActions(writeFd, {IoAction{-1, EAGAIN}});
 
   PlainTransport transport(writeFd);
   std::string_view head("HEAD");
   std::string_view body("BODY-BODY");
 
-  auto res = static_cast<ITransport&>(transport).write(head, body);
+  auto res = transport.write(head, body);
   EXPECT_EQ(res.bytesProcessed, 0U);
+  EXPECT_EQ(res.want, TransportHint::WriteReady);
+}
+
+TEST(PlainTransport, TwoBufWriteUsesWritevSuccessfully) {
+  int fds[2];
+  ASSERT_EQ(pipe(fds), 0);
+  const int readFd = fds[0];
+  const int writeFd = fds[1];
+
+  BaseFd readFdGuard(readFd);
+  BaseFd writeFdGuard(writeFd);
+
+  PlainTransport transport(writeFd);
+  std::string_view head("HEAD");
+  std::string_view body("BODY");
+
+  // Write both buffers using writev
+  auto res = transport.write(head, body);
+  EXPECT_EQ(res.bytesProcessed, head.size() + body.size());
+  EXPECT_EQ(res.want, TransportHint::None);
+
+  // Read back and verify data was written correctly as one contiguous write
+  char buf[16]{};
+  ASSERT_EQ(::read(readFd, buf, sizeof(buf)), static_cast<ssize_t>(head.size() + body.size()));
+  EXPECT_EQ(std::string_view(buf, head.size() + body.size()), "HEADBODY");
+}
+
+TEST(PlainTransport, TwoBufWriteHandlesPartialWrite) {
+  int fds[2];
+  ASSERT_EQ(pipe(fds), 0);
+  const int readFd = fds[0];
+  const int writeFd = fds[1];
+
+  BaseFd readFdGuard(readFd);
+  BaseFd writeFdGuard(writeFd);
+
+  PlainTransport transport(writeFd);
+  std::string_view head("HEAD");
+  std::string_view body("BODY-DATA");
+
+  // Simulate partial write: only 2 bytes on first call, then EAGAIN
+  // This tests that partial progress is correctly reported
+  test::SetWritevActions(writeFd, {IoAction{2, 0}, IoAction{-1, EAGAIN}});
+
+  auto res = transport.write(head, body);
+  EXPECT_EQ(res.bytesProcessed, 2U);
   EXPECT_EQ(res.want, TransportHint::WriteReady);
 }
 
