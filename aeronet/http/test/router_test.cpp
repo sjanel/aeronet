@@ -17,7 +17,10 @@
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/request-task.hpp"
 #include "aeronet/router-config.hpp"
+
+#ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/websocket-endpoint.hpp"
+#endif
 
 namespace aeronet {
 
@@ -910,6 +913,7 @@ TEST_F(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
   }
 }
 
+#ifdef AERONET_ENABLE_WEBSOCKET
 TEST_F(RouterTest, RegisterAndMatchWebSocketEndpoint) {
   WebSocketEndpoint wsEndpoint;
 
@@ -934,6 +938,7 @@ TEST_F(RouterTest, RegisterAndMatchWebSocketEndpoint) {
   EXPECT_NE(resSlash.pWebSocketEndpoint, nullptr);
   EXPECT_FALSE(resSlash.methodNotAllowed);
 }
+#endif
 
 TEST_F(RouterTest, MatchesWildcardTerminalSegment) {
   // Register a wildcard terminal route /files/*

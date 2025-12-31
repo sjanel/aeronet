@@ -83,7 +83,8 @@ jobs:
             -DAERONET_ENABLE_BROTLI=${{ matrix.features }} \
             -DAERONET_ENABLE_ZLIB=${{ matrix.features }} \
             -DAERONET_ENABLE_ZSTD=${{ matrix.features }} \
-            -DAERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }}
+            -DAERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }} \
+            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }}
 
       - name: Build
         run: |
@@ -162,6 +163,7 @@ jobs:
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
             -DAERONET_ENABLE_OPENTELEMETRY=ON \
+            -DAERONET_ENABLE_WEBSOCKET=ON \
             -DCMAKE_C_COMPILER=clang-21 \
             -DCMAKE_CXX_COMPILER=clang++-21 \
             -DCMAKE_C_FLAGS="-DNDEBUG -fprofile-instr-generate -fcoverage-mapping -O0 -fno-omit-frame-pointer" \
@@ -258,7 +260,8 @@ jobs:
             -DAERONET_ENABLE_BROTLI=ON \
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
-            -DAERONET_ENABLE_OPENTELEMETRY=ON
+            -DAERONET_ENABLE_OPENTELEMETRY=ON \
+            -DAERONET_ENABLE_WEBSOCKET=ON
 
       - name: Build examples
         run: |
@@ -401,7 +404,9 @@ jobs:
             -DAERONET_ENABLE_BROTLI=ON \
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
-            -DAERONET_ENABLE_OPENTELEMETRY=ON
+            -DAERONET_ENABLE_OPENTELEMETRY=ON \
+            -DAERONET_ENABLE_WEBSOCKET=ON
+
         shell: alpine.sh {0}
 
       - name: Build

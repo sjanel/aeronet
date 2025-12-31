@@ -10,6 +10,7 @@ endif()
 # exported targets referencing their imported targets do not break consumer configure.
 set(AERONET_WITH_ZLIB "@AERONET_ENABLE_ZLIB@")
 set(AERONET_WITH_ZSTD "@AERONET_ENABLE_ZSTD@")
+set(AERONET_WITH_WEBSOCKET "@AERONET_ENABLE_WEBSOCKET@")
 
 if(AERONET_WITH_ZLIB)
 	if(NOT TARGET ZLIB::ZLIB)

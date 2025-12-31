@@ -38,4 +38,10 @@ constexpr bool openTelemetryEnabled() { return true; }
 constexpr bool openTelemetryEnabled() { return false; }
 #endif
 
+#ifdef AERONET_ENABLE_WEBSOCKET
+constexpr bool webSocketEnabled() { return true; }
+#else
+constexpr bool webSocketEnabled() { return false; }
+#endif
+
 }  // namespace aeronet

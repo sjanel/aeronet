@@ -15,7 +15,10 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/request-task.hpp"
 #include "aeronet/router.hpp"
+
+#ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/websocket-endpoint.hpp"
+#endif
 
 namespace aeronet {
 
@@ -50,6 +53,7 @@ class PathHandlerEntryTest : public ::testing::Test {
     entry.assignAsyncHandler(bmp, std::move(handler));
   }
 
+#ifdef AERONET_ENABLE_WEBSOCKET
   static void assignWebSocketEndpoint(PathHandlerEntry& entry) {
     entry.assignWebSocketEndpoint(WebSocketEndpoint::WithCallbacks({
         .onMessage = {},
@@ -59,6 +63,7 @@ class PathHandlerEntryTest : public ::testing::Test {
         .onError = {},
     }));
   }
+#endif
 
   void addPaths() {
     router.setPath(http::Method::GET, "/ctor", MakeNormalHandler());
@@ -75,8 +80,11 @@ class PathHandlerEntryTest : public ::testing::Test {
   static auto getNormalMethodBmp(const PathHandlerEntry& entry) { return entry._normalMethodBmp; }
   static auto getAsyncMethodBmp(const PathHandlerEntry& entry) { return entry._asyncMethodBmp; }
   static auto getStreamingMethodBmp(const PathHandlerEntry& entry) { return entry._streamingMethodBmp; }
+
+#ifdef AERONET_ENABLE_WEBSOCKET
   static bool hasWebSocketEndpoint(const PathHandlerEntry& entry) { return entry.hasWebSocketEndpoint(); }
   static auto* webSocketEndpointPtr(const PathHandlerEntry& entry) { return entry.webSocketEndpointPtr(); }
+#endif
 
   static auto* normalHandlerPtr(const PathHandlerEntry& entry, http::MethodIdx idx) {
     return entry.requestHandlerPtr(idx);
@@ -101,7 +109,9 @@ TEST_F(PathHandlerEntryTest, SpecialOperationsWithoutWebSocket) {
 
   PathHandlerEntry copied(entry);
   EXPECT_EQ(getNormalMethodBmp(copied), getNormalMethodBmp(entry));
+#ifdef AERONET_ENABLE_WEBSOCKET
   EXPECT_EQ(hasWebSocketEndpoint(copied), hasWebSocketEndpoint(entry));
+#endif
   entry.after({});
   EXPECT_NE(getPostMiddleware(copied).size(), getPostMiddleware(entry).size());
   entry = copied;
@@ -120,6 +130,7 @@ TEST_F(PathHandlerEntryTest, SpecialOperationsWithoutWebSocket) {
   entry = std::move(alias);
 }
 
+#ifdef AERONET_ENABLE_WEBSOCKET
 TEST_F(PathHandlerEntryTest, SpecialOperationsWithWebSocket) {
   entry = router.setPath(http::Method::GET, "/ctor", MakeNormalHandler());
   addPaths();
@@ -144,6 +155,7 @@ TEST_F(PathHandlerEntryTest, SpecialOperationsWithWebSocket) {
   entry = std::move(moved);
   EXPECT_EQ(getNormalMethodBmp(entry), getNormalMethodBmp(copied));
 }
+#endif
 
 TEST_F(PathHandlerEntryTest, CopyAndMoveConstructorsCoverMixedHandlers) {
   auto& entry = router.setPath(http::Method::GET, "/ctor", MakeNormalHandler());

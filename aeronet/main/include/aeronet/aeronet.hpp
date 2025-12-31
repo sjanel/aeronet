@@ -47,7 +47,9 @@
 #include "aeronet/router.hpp"               // IWYU pragma: export
 #include "aeronet/single-http-server.hpp"   // IWYU pragma: export
 #include "aeronet/static-file-handler.hpp"  // IWYU pragma: export
-#include "aeronet/websocket-handler.hpp"    // IWYU pragma: export
+#ifdef AERONET_ENABLE_WEBSOCKET
+#include "aeronet/websocket-handler.hpp"  // IWYU pragma: export
+#endif
 
 // Configuration
 #include "aeronet/builtin-probes-config.hpp"  // IWYU pragma: export
@@ -71,8 +73,10 @@
 #include "aeronet/http-status-code.hpp"     // IWYU pragma: export
 #include "aeronet/http-version.hpp"         // IWYU pragma: export
 #include "aeronet/multipart-form-data.hpp"  // IWYU pragma: export
+#ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/websocket-constants.hpp"  // IWYU pragma: export
 #include "aeronet/websocket-endpoint.hpp"   // IWYU pragma: export
+#endif
 
 // Stats / metrics surface
 #include "aeronet/server-stats.hpp"  // IWYU pragma: export

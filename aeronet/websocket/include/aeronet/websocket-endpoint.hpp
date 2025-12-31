@@ -31,14 +31,6 @@ struct WebSocketEndpoint {
   /// Common examples: "graphql-ws", "graphql-transport-ws", "chat", "v1.json"
   ConcatenatedStrings supportedProtocols;
 
-/// Whether to enable permessage-deflate compression (RFC 7692).
-/// Note: Compression support requires AERONET_ENABLE_ZLIB.
-#ifdef AERONET_ENABLE_ZLIB
-  bool enableCompression{true};
-#else
-  bool enableCompression{false};
-#endif
-
   /// Create an endpoint with a custom handler factory.
   static WebSocketEndpoint WithFactory(WebSocketHandlerFactory factory) {
     WebSocketEndpoint ep;

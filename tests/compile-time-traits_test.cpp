@@ -56,4 +56,10 @@ TEST(CompileTimeTraits, Features) {
 #else
   EXPECT_FALSE(aeronet::openTelemetryEnabled());
 #endif
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+  EXPECT_TRUE(aeronet::webSocketEnabled());
+#else
+  EXPECT_FALSE(aeronet::webSocketEnabled());
+#endif
 }

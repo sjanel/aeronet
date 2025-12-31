@@ -17,7 +17,10 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/vector.hpp"
+
+#ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/websocket-endpoint.hpp"
+#endif
 
 namespace aeronet {
 
@@ -140,6 +143,7 @@ class Router {
   // async handler following the standard HEAD→GET semantics.
   PathHandlerEntry& setPath(http::Method method, std::string_view path, AsyncRequestHandler handler);
 
+#ifdef AERONET_ENABLE_WEBSOCKET
   // Register a WebSocket endpoint for the provided path.
   //
   // WebSocket endpoints handle upgrade requests (GET with Upgrade: websocket headers).
@@ -150,6 +154,7 @@ class Router {
   // Returns the PathHandlerEntry allowing further configuration (e.g. per-route CORS policy).
   // The returned reference is valid until the next call to setPath or setWebSocket.
   PathHandlerEntry& setWebSocket(std::string_view path, WebSocketEndpoint endpoint);
+#endif
 
   struct PathParamCapture {
     std::string_view key;
@@ -216,8 +221,10 @@ class Router {
     // If set, points to the per-route CorsPolicy stored in the matched route entry; nullptr if none.
     const CorsPolicy* pCorsPolicy{nullptr};
 
+#ifdef AERONET_ENABLE_WEBSOCKET
     // If set, points to the WebSocket endpoint for this route; nullptr if not a WebSocket route.
     const WebSocketEndpoint* pWebSocketEndpoint{nullptr};
+#endif
 
     // The ordered range of RequestMiddleware to be applied.
     RequestMiddlewareRange requestMiddlewareRange;
@@ -323,7 +330,11 @@ class Router {
     CompiledRoute* pRoute{nullptr};
   };
 
+#ifdef AERONET_ENABLE_WEBSOCKET
   using HandlerVariant = std::variant<RequestHandler, StreamingHandler, AsyncRequestHandler, WebSocketEndpoint>;
+#else
+  using HandlerVariant = std::variant<RequestHandler, StreamingHandler, AsyncRequestHandler>;
+#endif
 
   PathHandlerEntry& setPathInternal(http::MethodBmp methods, std::string_view path, HandlerVariant handlerVariant);
 
