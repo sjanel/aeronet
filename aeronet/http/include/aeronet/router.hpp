@@ -231,6 +231,9 @@ class Router {
 
     // The ordered range of ResponseMiddleware to be applied.
     ResponseMiddlewareRange responseMiddlewareRange;
+
+    // Per-path configuration (HTTP/2 enable mode, etc.)
+    PathEntryConfig pathConfig;
   };
 
   // Match the provided `path` for `method` and return the matching handlers (or a

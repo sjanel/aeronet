@@ -19,6 +19,10 @@
 #include "decompression-config.hpp"
 #include "tls-config.hpp"
 
+#ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/http2-config.hpp"
+#endif
+
 namespace aeronet {
 
 struct HttpServerConfig {
@@ -145,6 +149,20 @@ struct HttpServerConfig {
   // TLS configuration
   // =================
   TLSConfig tls;
+
+#ifdef AERONET_ENABLE_HTTP2
+  // ===========================================
+  // HTTP/2 protocol configuration
+  // ===========================================
+  /// HTTP/2 settings including frame sizes, flow control, and feature toggles.
+  /// Use `http2.enable` to control whether HTTP/2 is globally enabled.
+  /// When enabled and a client supports HTTP/2:
+  /// - TLS connections negotiating "h2" via ALPN will use HTTP/2
+  /// - Cleartext connections may upgrade via h2c (if http2.enableH2c is true)
+  /// The same handlers (RequestHandler, StreamingHandler, AsyncRequestHandler)
+  /// work transparently for both HTTP/1.1 and HTTP/2.
+  Http2Config http2;
+#endif
 
   // Telemetry configuration (OpenTelemetry tracing + DogStatsD metrics)
   TelemetryConfig telemetry;
@@ -370,6 +388,14 @@ struct HttpServerConfig {
 
   // Enable (or disable) builtin probes with default configuration.
   HttpServerConfig& enableBuiltinProbes(bool on = true);
+
+#ifdef AERONET_ENABLE_HTTP2
+  // Configure HTTP/2 protocol settings
+  HttpServerConfig& withHttp2(Http2Config cfg);
+
+  // Enable or disable HTTP/2 globally (shorthand for http2.enable = on)
+  HttpServerConfig& enableHttp2(bool on = true);
+#endif
 };
 
 }  // namespace aeronet

@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -55,13 +56,17 @@ class TlsClient {
 
   [[nodiscard]] bool handshakeOk() const { return _handshakeOk; }
 
-  // Send arbitrary bytes (only if handshake succeeded).
+  /// Send arbitrary bytes (only if handshake succeeded).
   bool writeAll(std::string_view data);
 
-  // Read until close (or error). Returns accumulated data.
+  /// Read until close (or error). Returns accumulated data.
   std::string readAll();
 
-  // Convenience: perform a GET request and read entire response.
+  /// Read some data into buffer, returning a view of what was read.
+  /// Non-blocking if no data immediately available.
+  std::string_view readSome(std::span<char> buffer);
+
+  /// Convenience: perform a GET request and read entire response.
   std::string get(std::string_view target, const std::vector<http::Header>& extraHeaders = {});
 
   [[nodiscard]] std::string_view negotiatedAlpn() const { return _negotiatedAlpn; }
@@ -71,6 +76,9 @@ class TlsClient {
 
   using SessionUniquePtr = std::unique_ptr<SSL_SESSION, void (*)(SSL_SESSION*)>;
   [[nodiscard]] SessionUniquePtr get1Session() const;
+
+  /// Get the underlying socket file descriptor.
+  [[nodiscard]] int fd() const noexcept;
 
  private:
   using SSLUniquePtr = std::unique_ptr<SSL, void (*)(SSL*)>;

@@ -33,6 +33,12 @@ TEST(CompileTimeTraits, Features) {
   EXPECT_FALSE(aeronet::spdLogEnabled());
 #endif
 
+#ifdef AERONET_ENABLE_HTTP2
+  EXPECT_TRUE(aeronet::http2Enabled());
+#else
+  EXPECT_FALSE(aeronet::http2Enabled());
+#endif
+
 #ifdef AERONET_ENABLE_ZLIB
   EXPECT_TRUE(aeronet::zlibEnabled());
 #else

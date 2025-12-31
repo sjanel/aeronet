@@ -166,6 +166,33 @@ std::string TlsClient::peerCommonName() const {
   return {buf, static_cast<std::size_t>(len)};
 }
 
+std::string_view TlsClient::readSome(std::span<char> buffer) {
+  if (!_handshakeOk || buffer.empty()) {
+    return {};
+  }
+
+  int readRet = ::SSL_read(_ssl.get(), buffer.data(), static_cast<int>(buffer.size()));
+  if (readRet > 0) {
+    return {buffer.data(), static_cast<std::size_t>(readRet)};
+  }
+
+  int err = ::SSL_get_error(_ssl.get(), readRet);
+  if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+    // No data available right now
+    return {};
+  }
+
+  // Error or shutdown
+  return {};
+}
+
+int TlsClient::fd() const noexcept {
+  if (!_ssl) {
+    return -1;
+  }
+  return ::SSL_get_fd(_ssl.get());
+}
+
 template <typename Duration>
 bool TlsClient::waitForSocketReady(short events, Duration timeout) {
   int fd = ::SSL_get_fd(_ssl.get());

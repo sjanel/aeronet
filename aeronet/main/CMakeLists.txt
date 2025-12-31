@@ -35,6 +35,10 @@ if(AERONET_ENABLE_OPENSSL)
     target_link_libraries(aeronet PUBLIC aeronet_tls)
 endif()
 
+if(AERONET_ENABLE_HTTP2)
+    target_link_libraries(aeronet PUBLIC aeronet_http2)
+endif()
+
 AeronetAddUnitTest(
     lifecycle_test
     test/lifecycle_test.cpp

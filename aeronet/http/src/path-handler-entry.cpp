@@ -25,7 +25,8 @@ PathHandlerEntry::PathHandlerEntry(const PathHandlerEntry& rhs)
 #endif
       _corsPolicy(rhs._corsPolicy),
       _preMiddleware(rhs._preMiddleware),
-      _postMiddleware(rhs._postMiddleware) {
+      _postMiddleware(rhs._postMiddleware),
+      _pathConfig(rhs._pathConfig) {
   for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
     const HandlerStorage& rhsStorage = rhs._handlers[methodIdx];
     HandlerStorage& lhsStorage = _handlers[methodIdx];
@@ -50,7 +51,8 @@ PathHandlerEntry::PathHandlerEntry(PathHandlerEntry&& rhs) noexcept
 #endif
       _corsPolicy(std::move(rhs._corsPolicy)),
       _preMiddleware(std::move(rhs._preMiddleware)),
-      _postMiddleware(std::move(rhs._postMiddleware)) {
+      _postMiddleware(std::move(rhs._postMiddleware)),
+      _pathConfig(rhs._pathConfig) {
   for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
     HandlerStorage& rhsStorage = rhs._handlers[methodIdx];
     HandlerStorage& lhsStorage = _handlers[methodIdx];
@@ -81,6 +83,7 @@ PathHandlerEntry& PathHandlerEntry::operator=(const PathHandlerEntry& rhs) {
     _corsPolicy = rhs._corsPolicy;
     _preMiddleware = rhs._preMiddleware;
     _postMiddleware = rhs._postMiddleware;
+    _pathConfig = rhs._pathConfig;
 
     for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
       HandlerStorage& lhsStorage = _handlers[methodIdx];
@@ -127,6 +130,7 @@ PathHandlerEntry& PathHandlerEntry::operator=(PathHandlerEntry&& rhs) noexcept {
     _corsPolicy = std::move(rhs._corsPolicy);
     _preMiddleware = std::move(rhs._preMiddleware);
     _postMiddleware = std::move(rhs._postMiddleware);
+    _pathConfig = rhs._pathConfig;
 
     for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
       HandlerStorage& lhsStorage = _handlers[methodIdx];

@@ -2,12 +2,11 @@
 
 #include <cctype>
 #include <cstring>
-#include <optional>
 #include <string_view>
 
 #include "aeronet/header-write.hpp"
+#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-request.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -179,44 +178,45 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const HeadersViewMap& headers, 
 }
 #endif
 
-UpgradeValidationResult ValidateHttp2Upgrade(const HttpRequest& request) {
+#ifdef AERONET_ENABLE_HTTP2
+UpgradeValidationResult ValidateHttp2Upgrade([[maybe_unused]] const HeadersViewMap& headers) {
   UpgradeValidationResult result;
 
   // Check Upgrade header
-  const auto upgradeHeader = request.headerValue(http::Upgrade);
-  if (!upgradeHeader.has_value()) {
+  auto it = headers.find(http::Upgrade);
+  if (it == headers.end()) {
     result.errorMessage = "Missing Upgrade header";
     return result;
   }
 
-  if (!CaseInsensitiveEqual(*upgradeHeader, http2::kAlpnH2c)) {
+  if (!CaseInsensitiveEqual(it->second, http2::kAlpnH2c)) {
     result.errorMessage = "Upgrade header is not 'h2c'";
     return result;
   }
 
   // Check Connection header contains "upgrade" and "HTTP2-Settings"
-  const auto connectionHeader = request.headerValue(http::Connection);
-  if (!connectionHeader.has_value()) {
+  it = headers.find(http::Connection);
+  if (it == headers.end()) {
     result.errorMessage = "Missing Connection header";
     return result;
   }
 
-  if (!ConnectionContainsUpgrade(*connectionHeader)) {
+  if (!ConnectionContainsUpgrade(it->second)) {
     result.errorMessage = "Connection header does not contain 'upgrade'";
     return result;
   }
 
   // Check for HTTP2-Settings header
   static constexpr std::string_view kHttp2Settings = "HTTP2-Settings";
-  const auto settingsHeader = request.headerValue(kHttp2Settings);
-  if (!settingsHeader.has_value()) {
+  it = headers.find(kHttp2Settings);
+  if (it == headers.end()) {
     result.errorMessage = "Missing HTTP2-Settings header";
     return result;
   }
 
   // The HTTP2-Settings header must contain a base64url-encoded SETTINGS payload
   // We validate format here; actual parsing happens during protocol switch
-  if (settingsHeader->empty()) {
+  if (it->second.empty()) {
     result.errorMessage = "Empty HTTP2-Settings header";
     return result;
   }
@@ -225,17 +225,20 @@ UpgradeValidationResult ValidateHttp2Upgrade(const HttpRequest& request) {
   result.targetProtocol = ProtocolType::Http2;
   return result;
 }
+#endif
 
 ProtocolType DetectUpgradeTarget(std::string_view upgradeHeaderValue) {
+#ifdef AERONET_ENABLE_HTTP2
+  if (CaseInsensitiveEqual(upgradeHeaderValue, http2::kAlpnH2c)) {
+    return ProtocolType::Http2;
+  }
+#endif
+
 #ifdef AERONET_ENABLE_WEBSOCKET
   if (CaseInsensitiveEqual(upgradeHeaderValue, websocket::UpgradeValue)) {
     return ProtocolType::WebSocket;
   }
 #endif
-
-  if (CaseInsensitiveEqual(upgradeHeaderValue, http2::kAlpnH2c)) {
-    return ProtocolType::Http2;
-  }
 
   return ProtocolType::Http11;
 }
@@ -279,6 +282,7 @@ RawChars BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validation
 }
 #endif
 
+#ifdef AERONET_ENABLE_HTTP2
 RawChars BuildHttp2UpgradeResponse(const UpgradeValidationResult& validationResult) {
   (void)validationResult;  // Used for future extension
 
@@ -297,6 +301,7 @@ RawChars BuildHttp2UpgradeResponse(const UpgradeValidationResult& validationResu
 
   return response;
 }
+#endif
 
 }  // namespace upgrade
 

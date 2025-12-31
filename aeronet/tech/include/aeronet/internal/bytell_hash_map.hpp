@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <iterator>
 #include <utility>
+#include <tuple>
 #include <type_traits>
 #include "flat_hash_map.hpp"
 #include <array>
@@ -491,7 +492,7 @@ public:
 
 
     template<typename Key, typename... Args>
-    inline std::pair<iterator, bool> emplace(Key && key, Args &&... args)
+    std::pair<iterator, bool> emplace(Key && key, Args &&... args)
     {
         size_t index = hash_object(key);
         size_t num_slots_minus_one = this->num_slots_minus_one;
@@ -519,6 +520,39 @@ public:
             index = hash_policy.keep_in_range(index, num_slots_minus_one);
         }
     }
+
+protected:
+    template<typename Key, typename... Args>
+    std::pair<iterator, bool> emplace_no_key(const Key & key, Args &&... args)
+    {
+        size_t index = hash_object(key);
+        size_t num_slots_minus_one = this->num_slots_minus_one;
+        BlockPointer entries = this->entries;
+        index = hash_policy.index_for_hash(index, num_slots_minus_one);
+        bool first = true;
+        for (;;)
+        {
+            size_t block_index = index / BlockSize;
+            int index_in_block = index % BlockSize;
+            BlockPointer block = entries + block_index;
+            int8_t metadata = block->control_bytes[index_in_block];
+            if (first)
+            {
+                if ((metadata & Constants::bits_for_direct_hit) != Constants::magic_for_direct_hit)
+                    return emplace_direct_hit_no_key({ index, block }, key, std::forward<Args>(args)...);
+                first = false;
+            }
+            if (compares_equal(key, block->data[index_in_block]))
+                return { { block, index }, false };
+            int8_t to_next_index = metadata & Constants::bits_for_distance;
+            if (to_next_index == 0)
+                return emplace_new_key_no_key({ index, block }, key, std::forward<Args>(args)...);
+            index += Constants::jump_distances[to_next_index];
+            index = hash_policy.keep_in_range(index, num_slots_minus_one);
+        }
+    }
+
+public:
 
     std::pair<iterator, bool> insert(const value_type & value)
     {
@@ -966,6 +1000,72 @@ private:
         return { free_block.second.it(), true };
     }
 
+    template<typename Key, typename... Args>
+    SKA_NOINLINE(std::pair<iterator, bool>) emplace_direct_hit_no_key(LinkedListIt block, const Key & key, Args &&... args)
+    {
+        using std::swap;
+        if (is_full())
+        {
+            grow();
+            return emplace_no_key(key, std::forward<Args>(args)...);
+        }
+        if (block.metadata() == Constants::magic_for_empty)
+        {
+            AllocatorTraits::construct(*this, std::addressof(*block), std::forward<Args>(args)...);
+            block.set_metadata(Constants::magic_for_direct_hit);
+            ++num_elements;
+            return { block.it(), true };
+        }
+        else
+        {
+            LinkedListIt parent_block = find_parent_block(block);
+            std::pair<int8_t, LinkedListIt> free_block = find_free_index(parent_block);
+            if (!free_block.first)
+            {
+                grow();
+                return emplace_no_key(key, std::forward<Args>(args)...);
+            }
+            value_type new_value(std::forward<Args>(args)...);
+            for (LinkedListIt it = block;;)
+            {
+                int8_t jump_index = it.jump_index();
+                if (jump_index == 0)
+                {
+                    it.set_next(free_block.first);
+                    break;
+                }
+                LinkedListIt next = it.next(*this);
+                swap(new_value, *next);
+                it = next;
+            }
+            AllocatorTraits::construct(*this, std::addressof(*block), std::move(new_value));
+            block.set_metadata(Constants::magic_for_direct_hit);
+            ++num_elements;
+            return { block.it(), true };
+        }
+    }
+
+    template<typename Key, typename... Args>
+    SKA_NOINLINE(std::pair<iterator, bool>) emplace_new_key_no_key(LinkedListIt parent, const Key & key, Args &&... args)
+    {
+        if (is_full())
+        {
+            grow();
+            return emplace_no_key(key, std::forward<Args>(args)...);
+        }
+        std::pair<int8_t, LinkedListIt> free_block = find_free_index(parent);
+        if (!free_block.first)
+        {
+            grow();
+            return emplace_no_key(key, std::forward<Args>(args)...);
+        }
+        AllocatorTraits::construct(*this, std::addressof(*free_block.second), std::forward<Args>(args)...);
+        free_block.second.set_metadata(Constants::magic_for_list_entry);
+        parent.set_next(free_block.first);
+        ++num_elements;
+        return { free_block.second.it(), true };
+    }
+
     LinkedListIt find_direct_hit(LinkedListIt child) const
     {
         size_t to_move_hash = hash_object(*child);
@@ -1170,6 +1270,57 @@ public:
     typename Table::iterator insert_or_assign(typename Table::const_iterator, key_type && key, M && m)
     {
         return insert_or_assign(std::move(key), std::forward<M>(m)).first;
+    }
+
+    template<typename... Args>
+    std::pair<typename Table::iterator, bool> try_emplace(const key_type & key, Args &&... args)
+    {
+        return this->emplace_no_key(key,
+                                    std::piecewise_construct,
+                                    std::forward_as_tuple(key),
+                                    std::forward_as_tuple(std::forward<Args>(args)...));
+    }
+
+    template<typename... Args>
+    std::pair<typename Table::iterator, bool> try_emplace(key_type && key, Args &&... args)
+    {
+        return this->emplace_no_key(key,
+                                    std::piecewise_construct,
+                                    std::forward_as_tuple(std::move(key)),
+                                    std::forward_as_tuple(std::forward<Args>(args)...));
+    }
+
+    template<typename KeyLike, typename... Args,
+             typename std::enable_if_t<!std::is_same_v<std::remove_cvref_t<KeyLike>, key_type> &&
+                                           std::is_constructible_v<key_type, KeyLike &&>,
+                                       int> = 0>
+    std::pair<typename Table::iterator, bool> try_emplace(KeyLike && key, Args &&... args)
+    {
+        return this->emplace_no_key(key,
+                                    std::piecewise_construct,
+                                    std::forward_as_tuple(std::forward<KeyLike>(key)),
+                                    std::forward_as_tuple(std::forward<Args>(args)...));
+    }
+
+    template<typename... Args>
+    typename Table::iterator try_emplace(typename Table::const_iterator, const key_type & key, Args &&... args)
+    {
+        return try_emplace(key, std::forward<Args>(args)...).first;
+    }
+
+    template<typename... Args>
+    typename Table::iterator try_emplace(typename Table::const_iterator, key_type && key, Args &&... args)
+    {
+        return try_emplace(std::move(key), std::forward<Args>(args)...).first;
+    }
+
+    template<typename KeyLike, typename... Args,
+             typename std::enable_if_t<!std::is_same_v<std::remove_cvref_t<KeyLike>, key_type> &&
+                                           std::is_constructible_v<key_type, KeyLike &&>,
+                                       int> = 0>
+    typename Table::iterator try_emplace(typename Table::const_iterator, KeyLike && key, Args &&... args)
+    {
+        return try_emplace(std::forward<KeyLike>(key), std::forward<Args>(args)...).first;
     }
 
     friend bool operator==(const bytell_hash_map & lhs, const bytell_hash_map & rhs)

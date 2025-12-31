@@ -230,4 +230,19 @@ TEST(HttpServerConfigTest, CachedConnections) {
   EXPECT_NO_THROW(config.validate());
 }
 
+#ifdef AERONET_ENABLE_HTTP2
+TEST(HttpServerConfigTest, WithHttp2Config) {
+  HttpServerConfig config;
+  Http2Config http2cfg;
+  http2cfg.enable = true;
+  http2cfg.maxConcurrentStreams = 100;
+  http2cfg.initialWindowSize = 65536;
+  config.withHttp2(http2cfg);
+  EXPECT_NO_THROW(config.validate());
+
+  config.enableHttp2(false);
+  EXPECT_FALSE(config.http2.enable);
+}
+#endif
+
 }  // namespace aeronet
