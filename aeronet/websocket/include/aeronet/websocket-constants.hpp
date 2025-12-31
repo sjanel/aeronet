@@ -10,7 +10,7 @@ namespace aeronet::websocket {
 // ========================================
 
 // The magic GUID used in the Sec-WebSocket-Accept calculation (RFC 6455 §1.3)
-inline constexpr std::string_view kWebSocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+inline constexpr std::string_view kGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 // WebSocket version we support
 inline constexpr std::string_view kWebSocketVersion = "13";

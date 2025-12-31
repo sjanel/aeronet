@@ -29,14 +29,14 @@ struct WebSocketConfig {
   /// Maximum size of a single frame payload.
   std::size_t maxFrameSize{kDefaultMaxFrameSize};
 
-  /// Whether this is the server side (affects masking validation).
-  bool isServerSide{true};
-
   /// Close timeout to wait for close response.
   std::chrono::milliseconds closeTimeout{std::chrono::milliseconds{5000}};
 
   /// Deflate configuration (optional, for permessage-deflate extension).
   DeflateConfig deflateConfig;
+
+  /// Whether this is the server side (affects masking validation).
+  bool isServerSide{true};
 };
 
 /// Callbacks for WebSocket events.

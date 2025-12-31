@@ -8,8 +8,9 @@ else()
 endif()
 
 if(NOT AERONET_ENABLE_ZLIB)
-  list(REMOVE_ITEM AERONET_OBJECTS_SRC src/zlib-encoder.cpp)
   list(REMOVE_ITEM AERONET_OBJECTS_SRC src/zlib-decoder.cpp)
+  list(REMOVE_ITEM AERONET_OBJECTS_SRC src/zlib-encoder.cpp)
+  list(REMOVE_ITEM AERONET_OBJECTS_SRC src/zlib-stream-raii.cpp)
 endif()
 
 if(NOT AERONET_ENABLE_ZSTD)
@@ -29,6 +30,45 @@ AeronetAddProjectLibrary(aeronet_objects
 target_link_libraries(aeronet_objects
     PUBLIC aeronet_tech aeronet_sys
 )
+
+if(AERONET_ENABLE_ZLIB)
+    target_link_libraries(aeronet_objects
+        PRIVATE ZLIB::ZLIB
+    )
+endif()
+
+if(AERONET_ENABLE_ZSTD)
+    # Detect whichever zstd target name is available in this build context.
+    set(_AERONET_ZSTD_TARGET "")
+    if(TARGET libzstd_static)
+        set(_AERONET_ZSTD_TARGET libzstd_static)
+    elseif(TARGET zstd::libzstd)
+        set(_AERONET_ZSTD_TARGET zstd::libzstd)
+    elseif(TARGET zstd::zstd)
+        set(_AERONET_ZSTD_TARGET zstd::zstd)
+    elseif(TARGET ZSTD::ZSTD)
+        set(_AERONET_ZSTD_TARGET ZSTD::ZSTD)
+    endif()
+    if(_AERONET_ZSTD_TARGET)
+        # Keep PRIVATE to signal implementation detail; for static libs some CMake versions may still
+        # surface it transitively when exporting. If stricter encapsulation is desired we would need
+        # to vendor or wrap symbols.
+        target_link_libraries(aeronet_objects PRIVATE ${_AERONET_ZSTD_TARGET})
+        get_target_property(_zstd_includes ${_AERONET_ZSTD_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
+        if(_zstd_includes)
+            # Create an INTERFACE wrapper for zstd include dirs so we can re-export
+            # them cleanly to Aeronet consumers without exposing the library link.
+            if(NOT TARGET aeronet_zstd_headers)
+                add_library(aeronet_zstd_headers INTERFACE)
+            endif()
+            if(NOT TARGET aeronet::zstd_headers)
+                add_library(aeronet::zstd_headers ALIAS aeronet_zstd_headers)
+            endif()
+            target_include_directories(aeronet_zstd_headers INTERFACE ${_zstd_includes})
+            target_link_libraries(aeronet_objects PUBLIC aeronet::zstd_headers)
+        endif()
+    endif()
+endif()
 
 target_include_directories(aeronet_objects
     PUBLIC

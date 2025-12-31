@@ -8,7 +8,10 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
+
+#ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/websocket-endpoint.hpp"
+#endif
 
 namespace aeronet {
 
@@ -16,8 +19,10 @@ PathHandlerEntry::PathHandlerEntry(const PathHandlerEntry& rhs)
     : _normalMethodBmp(rhs._normalMethodBmp),
       _streamingMethodBmp(rhs._streamingMethodBmp),
       _asyncMethodBmp(rhs._asyncMethodBmp),
+#ifdef AERONET_ENABLE_WEBSOCKET
       _websocketEndpoint(rhs._websocketEndpoint ? std::make_unique<WebSocketEndpoint>(*rhs._websocketEndpoint)
                                                 : nullptr),
+#endif
       _corsPolicy(rhs._corsPolicy),
       _preMiddleware(rhs._preMiddleware),
       _postMiddleware(rhs._postMiddleware) {
@@ -39,7 +44,10 @@ PathHandlerEntry::PathHandlerEntry(const PathHandlerEntry& rhs)
 }
 
 PathHandlerEntry::PathHandlerEntry(PathHandlerEntry&& rhs) noexcept
-    : _websocketEndpoint(std::move(rhs._websocketEndpoint)),
+    :
+#ifdef AERONET_ENABLE_WEBSOCKET
+      _websocketEndpoint(std::move(rhs._websocketEndpoint)),
+#endif
       _corsPolicy(std::move(rhs._corsPolicy)),
       _preMiddleware(std::move(rhs._preMiddleware)),
       _postMiddleware(std::move(rhs._postMiddleware)) {
@@ -65,9 +73,11 @@ PathHandlerEntry::PathHandlerEntry(PathHandlerEntry&& rhs) noexcept
 }
 
 PathHandlerEntry& PathHandlerEntry::operator=(const PathHandlerEntry& rhs) {
-  if (&rhs != this) {
+  if (&rhs != this) [[likely]] {
+#ifdef AERONET_ENABLE_WEBSOCKET
     _websocketEndpoint =
         rhs._websocketEndpoint ? std::make_unique<WebSocketEndpoint>(*rhs._websocketEndpoint) : nullptr;
+#endif
     _corsPolicy = rhs._corsPolicy;
     _preMiddleware = rhs._preMiddleware;
     _postMiddleware = rhs._postMiddleware;
@@ -110,8 +120,10 @@ PathHandlerEntry& PathHandlerEntry::operator=(const PathHandlerEntry& rhs) {
 }
 
 PathHandlerEntry& PathHandlerEntry::operator=(PathHandlerEntry&& rhs) noexcept {
-  if (&rhs != this) {
+  if (&rhs != this) [[likely]] {
+#ifdef AERONET_ENABLE_WEBSOCKET
     _websocketEndpoint = std::move(rhs._websocketEndpoint);
+#endif
     _corsPolicy = std::move(rhs._corsPolicy);
     _preMiddleware = std::move(rhs._preMiddleware);
     _postMiddleware = std::move(rhs._postMiddleware);
@@ -289,6 +301,7 @@ void PathHandlerEntry::destroyIdx(http::MethodIdx methodIdx) {
   }
 }
 
+#ifdef AERONET_ENABLE_WEBSOCKET
 void PathHandlerEntry::assignWebSocketEndpoint(WebSocketEndpoint endpoint) {
   if (_websocketEndpoint) {
     *_websocketEndpoint = std::move(endpoint);
@@ -296,5 +309,6 @@ void PathHandlerEntry::assignWebSocketEndpoint(WebSocketEndpoint endpoint) {
     _websocketEndpoint = std::make_unique<WebSocketEndpoint>(std::move(endpoint));
   }
 }
+#endif
 
 }  // namespace aeronet

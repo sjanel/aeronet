@@ -1,6 +1,7 @@
+#include "aeronet/sha1.hpp"
+
 #include <gtest/gtest.h>
 
-#include <aeronet/sha1.hpp>
 #include <algorithm>
 #include <cstddef>
 #include <cstring>

@@ -14,6 +14,10 @@ if(AERONET_ENABLE_OPENSSL)
     target_link_libraries(aeronet_http PRIVATE aeronet_tls)
 endif()
 
+if(AERONET_ENABLE_WEBSOCKET)
+    target_link_libraries(aeronet_http PUBLIC aeronet_websocket)
+endif()
+
 target_include_directories(aeronet_http
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -117,34 +121,6 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     upgrade-handler_test
     test/upgrade-handler_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
-AeronetAddUnitTest(
-    websocket-deflate_test
-    test/websocket-deflate_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
-AeronetAddUnitTest(
-    websocket-endpoint_test
-    test/websocket-endpoint_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
-AeronetAddUnitTest(
-    websocket-frame_test
-    test/websocket-frame_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
-AeronetAddUnitTest(
-    websocket-handler_test
-    test/websocket-handler_test.cpp
     LIBRARIES
     aeronet_http
 )
