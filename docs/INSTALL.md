@@ -28,6 +28,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 | `AERONET_ENABLE_SPDLOG` | ON* | Enable spdlog logging integration |
 | `AERONET_ENABLE_OPENSSL` | ON* | Enable TLS module (`aeronet_tls`) |
 | `AERONET_ENABLE_OPENTELEMETRY` | ON* | Enable OpenTelemetry instrumentation (build-time flag; opt-in) |
+| `AERONET_ENABLE_WEBSOCKET` | ON | Enable WebSocket protocol support |
 | `AERONET_ENABLE_ZLIB` | ON* | Enable gzip/deflate (zlib) compression + decompression |
 | `AERONET_ENABLE_ZSTD` | ON* | Enable zstd compression + decompression |
 | `AERONET_ENABLE_BROTLI` | ON* | Enable brotli compression + decompression |
@@ -116,6 +117,7 @@ set(AERONET_ENABLE_OPENSSL ON CACHE BOOL "" FORCE)
 set(AERONET_ENABLE_ZSTD ON CACHE BOOL "" FORCE)
 set(AERONET_ENABLE_BROTLI OFF CACHE BOOL "" FORCE) # toggle as needed
 set(AERONET_ENABLE_SPDLOG OFF CACHE BOOL "" FORCE)
+set(AERONET_ENABLE_WEBSOCKET OFF CACHE BOOL "" FORCE) # toggle as needed
 
 FetchContent_MakeAvailable(aeronet)
 

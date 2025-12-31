@@ -2,7 +2,6 @@
 
 #include <array>
 #include <cstddef>
-#include <memory>
 #include <type_traits>
 
 #include "aeronet/cors-policy.hpp"
@@ -10,7 +9,12 @@
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/vector.hpp"
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+#include <memory>
+
 #include "aeronet/websocket-endpoint.hpp"
+#endif
 
 namespace aeronet {
 
@@ -81,15 +85,21 @@ class PathHandlerEntry {
     return &reinterpret_cast<const AsyncRequestHandler&>(_handlers[methodIdx]);
   }
 
+#ifdef AERONET_ENABLE_WEBSOCKET
   void assignWebSocketEndpoint(WebSocketEndpoint endpoint);
 
   [[nodiscard]] bool hasWebSocketEndpoint() const { return _websocketEndpoint != nullptr; }
 
   [[nodiscard]] const WebSocketEndpoint* webSocketEndpointPtr() const { return _websocketEndpoint.get(); }
+#endif
 
   /// Check if this entry has any handlers (HTTP or WebSocket).
   [[nodiscard]] bool hasAnyHandler() const {
+#ifdef AERONET_ENABLE_WEBSOCKET
     return _normalMethodBmp != 0U || _streamingMethodBmp != 0U || _asyncMethodBmp != 0U || hasWebSocketEndpoint();
+#else
+    return _normalMethodBmp != 0U || _streamingMethodBmp != 0U || _asyncMethodBmp != 0U;
+#endif
   }
 
   void destroyIdx(http::MethodIdx methodIdx);
@@ -98,8 +108,10 @@ class PathHandlerEntry {
   http::MethodBmp _streamingMethodBmp{};
   http::MethodBmp _asyncMethodBmp{};
   std::array<HandlerStorage, http::kNbMethods> _handlers;
+#ifdef AERONET_ENABLE_WEBSOCKET
   // Optional WebSocket endpoint for this route. If set, upgrade requests are handled here.
   std::unique_ptr<WebSocketEndpoint> _websocketEndpoint;
+#endif
   // Optional per-route CorsPolicy stored by value. If set, match() will return a pointer to it.
   CorsPolicy _corsPolicy;
   vector<RequestMiddleware> _preMiddleware;

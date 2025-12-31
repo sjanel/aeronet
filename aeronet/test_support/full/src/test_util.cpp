@@ -95,8 +95,10 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout, std:
 
     bool again = false;
 
+    bool peerClosed = false;
+
     out.resize_and_overwrite(oldSize + kChunkSize,
-                             [fd, oldSize, &again](char *data, [[maybe_unused]] std::size_t newCap) {
+                             [fd, oldSize, &again, &peerClosed](char *data, [[maybe_unused]] std::size_t newCap) {
                                ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, MSG_DONTWAIT);
                                if (recvBytes == -1) {
                                  if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -104,10 +106,19 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout, std:
                                    again = true;
                                    return oldSize;
                                  }
+                                 if (errno == ECONNRESET) {
+                                   // Peer closed connection - return what we have so far
+                                   peerClosed = true;
+                                   return oldSize;
+                                 }
                                  throw_errno("Error from non-blocking recv");
                                }
                                return oldSize + static_cast<std::size_t>(recvBytes);
                              });
+
+    if (peerClosed) {
+      return out;
+    }
 
     if (again) {
       continue;

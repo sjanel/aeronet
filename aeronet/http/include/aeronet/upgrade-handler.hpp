@@ -6,7 +6,12 @@
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+#include "aeronet/headers-view-map.hpp"
 #include "aeronet/websocket-deflate.hpp"
+#include "aeronet/websocket-upgrade.hpp"
+#endif
 
 namespace aeronet {
 
@@ -15,14 +20,15 @@ class HttpRequest;
 
 /// Result of validating an HTTP Upgrade request.
 struct UpgradeValidationResult {
-  using B64EncodedSha1 = std::array<char, 28>;  // Base64-encoded SHA-1 is always 28 chars
-
   bool valid{false};
   ProtocolType targetProtocol{ProtocolType::Http11};
+
+#ifdef AERONET_ENABLE_WEBSOCKET
   B64EncodedSha1 secWebSocketAccept;  // Computed Sec-WebSocket-Accept value
 
-  // Negotiated permessage-deflate parameters (if compression was negotiated)
+  // Negotiated WebSocket permessage-deflate parameters (if compression was negotiated)
   std::optional<websocket::DeflateNegotiatedParams> deflateParams;
+#endif
 
   std::string_view errorMessage;  // Populated if !valid
 
@@ -36,21 +42,6 @@ struct UpgradeValidationResult {
   ConcatenatedStrings offeredExtensions;
 };
 
-/// Configuration for WebSocket upgrade validation.
-struct WebSocketUpgradeConfig {
-  /// Subprotocols supported by the server, in order of preference.
-  /// If the client offers one of these, the first matching one is selected.
-  /// If empty, no subprotocol negotiation is performed.
-  const ConcatenatedStrings& supportedProtocols;
-
-  /// Whether to enable permessage-deflate compression (RFC 7692).
-  /// If true and the client offers permessage-deflate, it will be negotiated.
-  bool enableCompression{false};
-
-  /// Deflate configuration (used when enableCompression is true).
-  websocket::DeflateConfig deflateConfig;
-};
-
 /// Utility functions for protocol upgrade handling.
 ///
 /// This module provides validation and response generation for:
@@ -60,6 +51,7 @@ struct WebSocketUpgradeConfig {
 /// For HTTP/2 over TLS (h2), ALPN negotiation is used instead of Upgrade.
 namespace upgrade {
 
+#ifdef AERONET_ENABLE_WEBSOCKET
 /// Check if the request contains an Upgrade header requesting WebSocket.
 ///
 /// Validates:
@@ -68,11 +60,12 @@ namespace upgrade {
 ///   - Sec-WebSocket-Version: 13
 ///   - Sec-WebSocket-Key: present and 24 bytes (base64 of 16 random bytes)
 ///
-/// @param request  The incoming HTTP request
+/// @param headers  Map of HTTP request headers
 /// @param config   Optional configuration for subprotocol/extension negotiation
 /// @return         Validation result with computed Sec-WebSocket-Accept if valid
-[[nodiscard]] UpgradeValidationResult ValidateWebSocketUpgrade(const HttpRequest& request,
+[[nodiscard]] UpgradeValidationResult ValidateWebSocketUpgrade(const HeadersViewMap& headers,
                                                                const WebSocketUpgradeConfig& config);
+#endif
 
 /// Check if the request contains an Upgrade header requesting HTTP/2 (h2c).
 ///
@@ -93,8 +86,9 @@ namespace upgrade {
 ///
 /// @param request  The incoming HTTP request
 /// @return         Target protocol type, or Http11 if no valid upgrade requested
-[[nodiscard]] ProtocolType DetectUpgradeTarget(const HttpRequest& request);
+[[nodiscard]] ProtocolType DetectUpgradeTarget(std::string_view upgradeHeaderValue);
 
+#ifdef AERONET_ENABLE_WEBSOCKET
 /// Generate a raw 101 Switching Protocols response for WebSocket upgrade.
 ///
 /// Returns the complete HTTP response as raw bytes, ready to be written to the socket.
@@ -104,6 +98,7 @@ namespace upgrade {
 /// @param validationResult  Result from ValidateWebSocketUpgrade() (must be valid)
 /// @return                  Complete 101 response as raw bytes
 [[nodiscard]] RawChars BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResult);
+#endif
 
 /// Generate a raw 101 Switching Protocols response for HTTP/2 upgrade.
 ///
@@ -116,17 +111,6 @@ namespace upgrade {
 /// @return                  Complete 101 response as raw bytes
 [[nodiscard]] RawChars BuildHttp2UpgradeResponse(const UpgradeValidationResult& validationResult);
 
-/// Compute the Sec-WebSocket-Accept value from a client's Sec-WebSocket-Key.
-///
-/// The algorithm (RFC 6455 §1.3):
-///   1. Concatenate the key with the WebSocket GUID
-///   2. Compute SHA-1 hash
-///   3. Base64 encode the result
-///
-/// @param key  The value of the Sec-WebSocket-Key header
-/// @return     The computed Sec-WebSocket-Accept value
-[[nodiscard]] UpgradeValidationResult::B64EncodedSha1 ComputeWebSocketAccept(std::string_view key);
-
 /// Check if a Connection header value contains "upgrade" (case-insensitive).
 ///
 /// The Connection header may contain multiple comma-separated tokens.
@@ -135,14 +119,6 @@ namespace upgrade {
 /// @param connectionValue  The value of the Connection header
 /// @return                 True if "upgrade" token is present
 [[nodiscard]] bool ConnectionContainsUpgrade(std::string_view connectionValue);
-
-/// Validate the format of a Sec-WebSocket-Key.
-///
-/// A valid key is exactly 24 base64 characters (representing 16 random bytes).
-///
-/// @param key  The value of the Sec-WebSocket-Key header
-/// @return     True if the key format is valid
-[[nodiscard]] bool IsValidWebSocketKey(std::string_view key);
 
 }  // namespace upgrade
 

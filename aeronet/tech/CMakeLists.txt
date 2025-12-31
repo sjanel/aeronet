@@ -91,18 +91,6 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    sha1_test
-    test/sha1_test.cpp
-    LIBRARIES
-    aeronet_tech
-)
-
-if(AERONET_ENABLE_OPENSSL AND AERONET_BUILD_TESTS)
-    find_package(OpenSSL REQUIRED)
-    target_link_libraries(sha1_test PRIVATE OpenSSL::Crypto)
-endif()
-
-AeronetAddUnitTest(
     simple-charconv_test
     test/simple-charconv_test.cpp
     LIBRARIES

@@ -92,6 +92,13 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_ClientMaxWindowBits) {
 #endif
 }
 
+TEST(WebSocketDeflateTest, ParseDeflateOffer_ClientMaxWindowBitsInvalid) {
+  DeflateConfig serverConfig;
+  auto result = ParseDeflateOffer("permessage-deflate; client_max_window_bits=12X", serverConfig);
+
+  EXPECT_FALSE(result.has_value());
+}
+
 TEST(WebSocketDeflateTest, ParseDeflateOffer_InvalidWindowBitsTooSmall) {
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate; server_max_window_bits=7", serverConfig);
@@ -161,6 +168,14 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_QuotedValue) {
 #endif
 }
 
+TEST(WebSocketDeflateTest, ParseDeflateOffer_QuotedValueMissingEndQuote) {
+  DeflateConfig serverConfig;
+  auto result = ParseDeflateOffer("permessage-deflate; server_max_window_bits=\"10", serverConfig);
+
+  // Missing end quote makes it invalid
+  EXPECT_FALSE(result.has_value());
+}
+
 TEST(WebSocketDeflateTest, ParseDeflateOffer_UnknownParameterIgnored) {
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate; unknown_param=value; server_max_window_bits=10", serverConfig);
@@ -187,11 +202,40 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_WindowBitsClampedToServerConfig) {
 #endif
 }
 
+TEST(WebSocketDeflateTest, ParseDeflateOffer_WhitespaceInParams) {
+  DeflateConfig serverConfig;
+  auto result = ParseDeflateOffer("permessage-deflate ;  server_max_window_bits = 10 ", serverConfig);
+
+#ifdef AERONET_ENABLE_ZLIB
+  EXPECT_EQ(result.value_or(DeflateNegotiatedParams{}).serverMaxWindowBits, 10);
+#else
+  EXPECT_FALSE(result.has_value());
+#endif
+}
+
+TEST(WebSocketDeflateTest, ParseDeflateOffer_MaxWindowBitsNoEqualsSignShouldBeIgnored) {
+  DeflateConfig serverConfig;
+  auto result = ParseDeflateOffer("permessage-deflate; server_max_window_bits abc", serverConfig);
+
+#ifdef AERONET_ENABLE_ZLIB
+  ASSERT_TRUE(result.has_value());
+#else
+  EXPECT_FALSE(result.has_value());
+#endif
+}
+
 TEST(WebSocketDeflateTest, ParseDeflateOffer_InvalidWindowBitsNonNumeric) {
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate; server_max_window_bits=abc", serverConfig);
 
   // Non-numeric value is invalid
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST(WebSocketDeflateTest, ParseDeflateOffer_InvalidWindowBits) {
+  DeflateConfig serverConfig;
+  auto result = ParseDeflateOffer("permessage-deflate ;  server_max_window_bits = 10X ", serverConfig);
+
   EXPECT_FALSE(result.has_value());
 }
 
@@ -212,17 +256,6 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_CaseInsensitiveParams) {
 
 #ifdef AERONET_ENABLE_ZLIB
   EXPECT_TRUE(result.value_or(DeflateNegotiatedParams{}).serverNoContextTakeover);
-#else
-  EXPECT_FALSE(result.has_value());
-#endif
-}
-
-TEST(WebSocketDeflateTest, ParseDeflateOffer_WhitespaceInParams) {
-  DeflateConfig serverConfig;
-  auto result = ParseDeflateOffer("permessage-deflate ;  server_max_window_bits = 10 ", serverConfig);
-
-#ifdef AERONET_ENABLE_ZLIB
-  EXPECT_EQ(result.value_or(DeflateNegotiatedParams{}).serverMaxWindowBits, 10);
 #else
   EXPECT_FALSE(result.has_value());
 #endif

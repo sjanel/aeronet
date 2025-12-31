@@ -11,7 +11,6 @@
 #include <string_view>
 #include <utility>
 
-#include "aeronet/connection-state.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"

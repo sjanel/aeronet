@@ -163,6 +163,7 @@ def fallback_include_dirs() -> List[str]:
         "aeronet/tech/include",
         "aeronet/sys/include",
         "aeronet/tls/include",
+        "aeronet/websocket/include",
     ]
     dirs: List[str] = []
     for root in possible_roots:
@@ -501,12 +502,17 @@ def write_cmake_project(
             libs + dependency_libs + dependency_link_flags + system_link_flags
         )
         if link_entries:
+            use_link_group = len(link_entries) > 1
             lines.append(f"target_link_libraries({env_target} INTERFACE")
+            if use_link_group:
+                lines.append("  -Wl,--start-group")
             for entry in link_entries:
                 if entry.startswith("-"):
                     lines.append(f"  {entry}")
                 else:
                     lines.append(f'  "{cmake_escape(entry)}"')
+            if use_link_group:
+                lines.append("  -Wl,--end-group")
             lines.append(")")
         if sanitize_flags:
             lines.append(f"target_link_options({env_target} INTERFACE")

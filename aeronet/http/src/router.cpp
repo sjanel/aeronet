@@ -21,7 +21,10 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/stringconv.hpp"
+
+#ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/websocket-endpoint.hpp"
+#endif
 
 namespace aeronet {
 namespace {
@@ -144,9 +147,11 @@ PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, As
   return setPathInternal(static_cast<http::MethodBmp>(method), path, std::move(handler));
 }
 
+#ifdef AERONET_ENABLE_WEBSOCKET
 PathHandlerEntry& Router::setWebSocket(std::string_view path, WebSocketEndpoint endpoint) {
   return setPathInternal({}, path, std::move(endpoint));
 }
+#endif
 
 PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_view path,
                                           HandlerVariant handlerVariant) {
@@ -218,8 +223,10 @@ PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_v
             log::warn("Overwriting existing async path handler for {}", std::string_view(pNode->patternString()));
           }
           entry.assignAsyncHandler(methods, std::forward<decltype(handler)>(handler));
+#ifdef AERONET_ENABLE_WEBSOCKET
         } else if constexpr (std::is_same_v<T, WebSocketEndpoint>) {
           entry.assignWebSocketEndpoint(std::forward<decltype(handler)>(handler));
+#endif
         } else {
           static_assert(false, "Non-exhaustive visitor!");
         }
@@ -690,9 +697,11 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
   } else if (entry.hasNormalHandler(methodIdx)) {
     assert(http::IsMethodSet(entry._normalMethodBmp, method));
     result.setRequestHandler(entry.requestHandlerPtr(methodIdx));
+#ifdef AERONET_ENABLE_WEBSOCKET
   } else if (entry.hasWebSocketEndpoint() && method == http::Method::GET) {
-    // WebSocket endpoint on GET - handler will be determined by upgrade validation
-    // Don't mark as methodNotAllowed; let the WebSocket upgrade code handle it
+// WebSocket endpoint on GET - handler will be determined by upgrade validation
+// Don't mark as methodNotAllowed; let the WebSocket upgrade code handle it
+#endif
   } else {
     result.methodNotAllowed = true;
   }
@@ -704,10 +713,12 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
     result.pCorsPolicy = &_config.defaultCorsPolicy;
   }
 
+#ifdef AERONET_ENABLE_WEBSOCKET
   // Expose WebSocket endpoint if present
   if (entry.hasWebSocketEndpoint()) {
     result.pWebSocketEndpoint = entry.webSocketEndpointPtr();
   }
+#endif
 
   result.requestMiddlewareRange = entry._preMiddleware;
   result.responseMiddlewareRange = entry._postMiddleware;
