@@ -40,6 +40,10 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/http2-frame-types.hpp"
+#include "aeronet/http2-protocol-handler.hpp"
+#endif
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/nchars.hpp"
@@ -58,7 +62,6 @@
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
-#include "aeronet/upgrade-handler.hpp"
 #include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_BROTLI
@@ -82,6 +85,10 @@
 #include "aeronet/websocket-endpoint.hpp"
 #include "aeronet/websocket-handler.hpp"
 #include "aeronet/websocket-upgrade.hpp"
+#endif
+
+#if defined(AERONET_ENABLE_HTTP2) || defined(AERONET_ENABLE_WEBSOCKET)
+#include "aeronet/upgrade-handler.hpp"
 #endif
 
 namespace aeronet {
@@ -240,10 +247,34 @@ bool SingleHttpServer::disableWritableInterest(ConnectionMapIt cnxIt) {
 bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
 
-  // If we have a protocol handler installed (e.g., WebSocket), use it
+  // If we have a protocol handler installed (e.g., WebSocket, HTTP/2), use it
   if (state.protocolHandler != nullptr) {
     return processSpecialProtocolHandler(cnxIt);
   }
+
+  // Check for h2c prior knowledge: client sending HTTP/2 connection preface directly
+  // The preface is "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" (24 bytes)
+  // h2c prior knowledge only applies to non-TLS (plaintext) connections
+#ifdef AERONET_ENABLE_HTTP2
+  if (_config.http2.enable && _config.http2.enableH2c && !_config.tls.enabled) {
+    std::string_view bufView(state.inBuffer);
+    // Check if buffer starts with "PRI " (first 4 chars of HTTP/2 preface)
+    if (bufView.starts_with("PRI ")) {
+      // Wait for full preface if we don't have enough data
+      if (bufView.size() < http2::kConnectionPreface.size()) {
+        return false;  // Need more data
+      }
+      // Verify full preface
+      if (bufView.starts_with(http2::kConnectionPreface)) {
+        // Switch to HTTP/2 protocol handler using unified dispatch
+        state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router);
+        return processSpecialProtocolHandler(cnxIt);
+      }
+      log::error("Invalid HTTP/2 preface, falling back to HTTP/1.1");
+      // Invalid preface - continue with HTTP/1.1 (will likely fail with 400)
+    }
+  }
+#endif
 
   // Default to HTTP/1.1 request processing
   return processHttp1Requests(cnxIt);
@@ -252,53 +283,62 @@ bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
 bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
 
-  // Convert input buffer to span of bytes
-  std::span<const std::byte> inputData(reinterpret_cast<const std::byte*>(state.inBuffer.data()),
-                                       state.inBuffer.size());
-
   auto& handler = *state.protocolHandler;
 
-  // Process input through the protocol handler
-  const auto result = handler.processInput(inputData, state);
+  // Process input in a loop until no more bytes can be consumed
+  // This is important for HTTP/2 where the client may send multiple frames
+  // (e.g., connection preface + SETTINGS) in a single TCP packet
+  while (!state.inBuffer.empty()) {
+    // Convert input buffer to span of bytes
+    std::span<const std::byte> inputData(reinterpret_cast<const std::byte*>(state.inBuffer.data()),
+                                         state.inBuffer.size());
 
-  // Consume processed bytes from input buffer
-  state.inBuffer.erase_front(result.bytesConsumed);
+    // Process input through the protocol handler
+    const auto result = handler.processInput(inputData, state);
 
-  // Queue any pending output from the handler
-  if (handler.hasPendingOutput()) {
-    auto pendingOutput = handler.getPendingOutput();
-    assert(!pendingOutput.empty());
+    // Consume processed bytes from input buffer
+    state.inBuffer.erase_front(result.bytesConsumed);
 
-    state.outBuffer.append(std::string_view(reinterpret_cast<const char*>(pendingOutput.data()), pendingOutput.size()));
-    handler.onOutputWritten(pendingOutput.size());
+    // Queue any pending output from the handler
+    if (handler.hasPendingOutput()) {
+      auto pendingOutput = handler.getPendingOutput();
+      assert(!pendingOutput.empty());
 
-    flushOutbound(cnxIt);
-  }
+      state.outBuffer.append(
+          std::string_view(reinterpret_cast<const char*>(pendingOutput.data()), pendingOutput.size()));
+      handler.onOutputWritten(pendingOutput.size());
 
-  // Handle result
-  switch (result.action) {
-    case ProtocolProcessResult::Action::Continue:
-      [[fallthrough]];
-    case ProtocolProcessResult::Action::ResponseReady:
-      // More data needed or processing can continue
-      // ResponseReady was already handled above via getPendingOutput
-      break;
+      flushOutbound(cnxIt);
+    }
 
-    case ProtocolProcessResult::Action::Upgrade:
-      // Should not happen for WebSocket handler
-      log::warn("Unexpected upgrade action from WebSocket handler");
-      break;
+    // Handle result
+    switch (result.action) {
+      case ProtocolProcessResult::Action::Continue:
+        [[fallthrough]];
+      case ProtocolProcessResult::Action::ResponseReady:
+        // ResponseReady was already handled above via getPendingOutput
+        // If no bytes consumed, we need more data
+        if (result.bytesConsumed == 0) {
+          return state.isAnyCloseRequested();
+        }
+        break;
 
-    case ProtocolProcessResult::Action::Close:
-      // Protocol wants to close gracefully (e.g., close handshake complete)
-      state.requestDrainAndClose();
-      break;
+      case ProtocolProcessResult::Action::Upgrade:
+        // Should not happen for WebSocket/HTTP2 handler
+        log::warn("Unexpected upgrade action from protocol handler");
+        break;
 
-    case ProtocolProcessResult::Action::CloseImmediate:
-      // Protocol error - close immediately
-      log::warn("WebSocket protocol error");
-      state.requestImmediateClose();
-      break;
+      case ProtocolProcessResult::Action::Close:
+        // Protocol wants to close gracefully (e.g., close handshake complete)
+        state.requestDrainAndClose();
+        return true;
+
+      case ProtocolProcessResult::Action::CloseImmediate:
+        // Protocol error - close immediately
+        log::warn("Protocol handler reported error");
+        state.requestImmediateClose();
+        return true;
+    }
   }
 
   return state.isAnyCloseRequested();
@@ -359,6 +399,39 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
     // Route matching
     const Router::RoutingResult routingResult = _router.match(request.method(), request.path());
     const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
+
+    // Check for HTTP/2 cleartext upgrade (h2c) - only if HTTP/2 is enabled and not already TLS
+#ifdef AERONET_ENABLE_HTTP2
+    if (_config.http2.enable && !state.tlsEstablished &&
+        upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)) == ProtocolType::Http2) {
+      const auto upgradeValidation = upgrade::ValidateHttp2Upgrade(request.headers());
+      if (upgradeValidation.valid) {
+        // Generate and send 101 Switching Protocols response
+        RawChars upgradeResponse = upgrade::BuildHttp2UpgradeResponse(upgradeValidation);
+        const std::size_t consumedBytesUpgrade = request.headSpanSize();
+        state.inBuffer.erase_front(consumedBytesUpgrade);
+
+        // Create HTTP/2 protocol handler using unified dispatch
+        state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router);
+        state.protocol = ProtocolType::Http2;
+
+        // Queue the upgrade response
+        state.outBuffer.append(HttpResponseData(std::move(upgradeResponse)));
+        flushOutbound(cnxIt);
+
+        log::debug("HTTP/2 connection established via h2c upgrade on fd {}", cnxIt->first.fd());
+
+        ++state.requestsServed;
+        ++_stats.totalRequestsServed;
+
+        // Return - the connection is now HTTP/2 and will be handled differently
+        return false;
+      }
+      // If h2c upgrade validation failed, respond with error
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, upgradeValidation.errorMessage);
+      break;
+    }
+#endif
 
 #ifdef AERONET_ENABLE_WEBSOCKET
     // Check for WebSocket upgrade request
@@ -1460,5 +1533,22 @@ bool SingleHttpServer::runPreChain(HttpRequest& request, bool willStream, std::s
   }
   return false;
 }
+
+#ifdef AERONET_ENABLE_HTTP2
+void SingleHttpServer::setupHttp2Connection(ConnectionState& state) {
+  // Create HTTP/2 protocol handler with unified dispatcher
+  // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
+  state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, true);
+  state.protocol = ProtocolType::Http2;
+
+  // Immediately flush the server preface (SETTINGS frame) that was queued during handler creation
+  // For TLS ALPN "h2", the server must send SETTINGS before the client sends any data
+  if (state.protocolHandler->hasPendingOutput()) {
+    auto pendingOutput = state.protocolHandler->getPendingOutput();
+    state.outBuffer.append(std::string_view(reinterpret_cast<const char*>(pendingOutput.data()), pendingOutput.size()));
+    state.protocolHandler->onOutputWritten(pendingOutput.size());
+  }
+}
+#endif
 
 }  // namespace aeronet

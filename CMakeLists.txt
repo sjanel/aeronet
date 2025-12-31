@@ -54,6 +54,7 @@ option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_BE
 # implemented internally without third-party dependencies.
 option(AERONET_ENABLE_SPDLOG "Use spdlog library for logging" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" ${PROJECT_IS_TOP_LEVEL})
+option(AERONET_ENABLE_HTTP2 "Enable HTTP/2 (RFC 9113) support" ON)
 option(AERONET_ENABLE_BROTLI "Enable usage of Brotli for br codec support" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_ZLIB "Enable usage of zlib for deflate and gzip codec support" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_ZSTD "Enable usage of Zstandard for zstd codec support" ${PROJECT_IS_TOP_LEVEL})
@@ -138,6 +139,9 @@ if(AERONET_INSTALL)
   )
 
   set(_AERONET_EXPORT_TARGETS aeronet aeronet_http aeronet_tech aeronet_objects aeronet_sys)
+  if(AERONET_ENABLE_HTTP2)
+    list(APPEND _AERONET_EXPORT_TARGETS aeronet_http2)
+  endif()
   if(AERONET_ENABLE_WEBSOCKET)
     list(APPEND _AERONET_EXPORT_TARGETS aeronet_websocket)
   endif()
@@ -167,6 +171,9 @@ if(AERONET_INSTALL)
   # Headers: install each public include tree
   install(DIRECTORY aeronet/main/include/ DESTINATION include)
   install(DIRECTORY aeronet/http/include/ DESTINATION include)
+  if(AERONET_ENABLE_HTTP2)
+    install(DIRECTORY aeronet/http2/include/ DESTINATION include)
+  endif()
   install(DIRECTORY aeronet/tech/include/ DESTINATION include)
   install(DIRECTORY aeronet/sys/include/ DESTINATION include)
 

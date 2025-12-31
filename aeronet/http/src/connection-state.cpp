@@ -15,6 +15,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/protocol-handler.hpp"
 #include "aeronet/transport.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -223,6 +224,10 @@ void ConnectionState::clear() {
   tlsHandshakeInFlight = false;
 #endif
   fileSend = {};
+
+  // Reset protocol handler (e.g., WebSocket, HTTP/2)
+  protocolHandler.reset();
+  protocol = ProtocolType::Http11;
 
   asyncState.clear();
 }

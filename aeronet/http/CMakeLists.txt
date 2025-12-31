@@ -1,4 +1,9 @@
-aux_source_directory(src/ AERONET_HTTP_SRC_LIST)
+aux_source_directory(src AERONET_HTTP_SRC_LIST)
+
+# Remove upgrade-handler.cpp if neither HTTP/2 nor WebSocket is enabled
+if(NOT AERONET_ENABLE_HTTP2 AND NOT AERONET_ENABLE_WEBSOCKET)
+    list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/upgrade-handler.cpp)
+endif()
 
 AeronetAddProjectLibrary(aeronet_http
     ${AERONET_HTTP_SRC_LIST}
@@ -118,9 +123,11 @@ AeronetAddUnitTest(
     aeronet_test_support
 )
 
-AeronetAddUnitTest(
-    upgrade-handler_test
-    test/upgrade-handler_test.cpp
-    LIBRARIES
-    aeronet_http
-)
+if (AERONET_ENABLE_HTTP2 OR AERONET_ENABLE_WEBSOCKET)
+    AeronetAddUnitTest(
+        upgrade-handler_test
+        test/upgrade-handler_test.cpp
+        LIBRARIES
+        aeronet_http
+    )
+endif()

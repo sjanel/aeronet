@@ -73,6 +73,7 @@ endif()
 target_include_directories(aeronet_objects
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<$<BOOL:${AERONET_ENABLE_HTTP2}>:$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../http2/include>>
         $<INSTALL_INTERFACE:include>
 )
 

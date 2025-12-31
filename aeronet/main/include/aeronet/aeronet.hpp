@@ -68,10 +68,20 @@
 #include "aeronet/request-task.hpp"          // IWYU pragma: export
 
 // HTTP protocol enums & helpers
-#include "aeronet/http-constants.hpp"       // IWYU pragma: export
-#include "aeronet/http-method.hpp"          // IWYU pragma: export
-#include "aeronet/http-status-code.hpp"     // IWYU pragma: export
-#include "aeronet/http-version.hpp"         // IWYU pragma: export
+#include "aeronet/http-constants.hpp"    // IWYU pragma: export
+#include "aeronet/http-method.hpp"       // IWYU pragma: export
+#include "aeronet/http-status-code.hpp"  // IWYU pragma: export
+#include "aeronet/http-version.hpp"      // IWYU pragma: export
+
+#ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/http2-config.hpp"            // IWYU pragma: export
+#include "aeronet/http2-connection.hpp"        // IWYU pragma: export
+#include "aeronet/http2-frame-types.hpp"       // IWYU pragma: export
+#include "aeronet/http2-frame.hpp"             // IWYU pragma: export
+#include "aeronet/http2-protocol-handler.hpp"  // IWYU pragma: export
+#include "aeronet/http2-stream.hpp"            // IWYU pragma: export
+#endif
+
 #include "aeronet/multipart-form-data.hpp"  // IWYU pragma: export
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/websocket-constants.hpp"  // IWYU pragma: export

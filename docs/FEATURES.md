@@ -27,6 +27,7 @@ Single consolidated reference for **aeronet** features.
 1. [OpenTelemetry Integration](#opentelemetry-integration)
 1. [Access-Control (CORS) Helpers](#access-control-cors-helpers)
 1. [WebSocket (RFC 6455)](#websocket-rfc-6455)
+1. [HTTP/2 (RFC 9113)](#http2-rfc-9113)
 1. [Future Expansions](#future-expansions)
 1. [Large-body optimization](#large-body-optimization)
 
@@ -2466,6 +2467,177 @@ When negotiation succeeds, messages are automatically compressed/decompressed tr
 ### Thread Safety
 
 WebSocket handlers run on the same reactor thread as HTTP handlers. The `WebSocketHandler` pointer captured in callbacks is valid only during callback execution. For async operations, capture handler data (not the handler pointer) and use thread-safe mechanisms to communicate back.
+
+## HTTP/2 (RFC 9113)
+
+`aeronet` provides optional HTTP/2 support implementing [RFC 9113](https://httpwg.org/specs/rfc9113.html) with HPACK header compression ([RFC 7541](https://httpwg.org/specs/rfc7541.html)).
+
+### Feature Matrix
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| HPACK header compression | ✔ | Static/dynamic table, Huffman encoding |
+| Stream multiplexing | ✔ | Multiple concurrent streams per connection |
+| Flow control | ✔ | Per-stream and connection-level |
+| ALPN "h2" negotiation | ✔ | Over TLS (requires OpenSSL) |
+| h2c (cleartext prior knowledge) | ✔ | Client sends HTTP/2 preface directly |
+| h2c upgrade (HTTP/1.1 → HTTP/2) | ✔ | Via `Upgrade: h2c` header |
+| Server push | ✗ | Disabled (rarely used by modern clients) |
+| PRIORITY frames | ✔ | Optional, configurable |
+
+### Enabling HTTP/2
+
+HTTP/2 support is controlled at build time via CMake:
+
+```bash
+cmake -S . -B build -DAERONET_ENABLE_HTTP2=ON
+cmake --build build
+```
+
+When `AERONET_ENABLE_HTTP2` is OFF, the `aeronet/http2` module is not compiled and the HTTP/2-specific API surface (such as `HttpServerConfig::withHttp2()` / `enableHttp2()`) is not available.
+
+When enabled, you configure HTTP/2 through `Http2Config` on your server:
+
+```cpp
+#include <aeronet/aeronet.hpp>
+
+using namespace aeronet;
+
+int main() {
+  Router router;
+  
+  // Unified handler for both HTTP/1.1 and HTTP/2
+  // Use req.isHttp2() and req.streamId() to detect HTTP/2 if needed
+  router.setDefault([](const HttpRequest& req) {
+    if (req.isHttp2()) {
+      return HttpResponse(200).body("Hello from HTTP/2! Stream " + std::to_string(req.streamId()) + "\n");
+    }
+    return HttpResponse(200).body("Hello from HTTP/1.1\n");
+  });
+
+  // HTTP/2 configuration
+  Http2Config http2Config;
+  http2Config.enable = true;
+  http2Config.maxConcurrentStreams = 100;
+  http2Config.initialWindowSize = 65535;
+
+  // Configure server with TLS, ALPN, and HTTP/2
+  HttpServerConfig config;
+  config.withPort(8443)
+      .withTlsCertKey("server.crt", "server.key")
+      .withTlsAlpnProtocols({"h2", "http/1.1"})  // Prefer HTTP/2
+      .withHttp2(http2Config);
+
+  SingleHttpServer server(std::move(config), std::move(router));
+  server.run();
+}
+```
+
+### Unified Handler API
+
+HTTP/2 requests use the same `HttpRequest` type and handlers as HTTP/1.1. The framework automatically routes requests to your handlers regardless of protocol version. To detect HTTP/2 in your handler:
+
+```cpp
+Router router;
+
+// Single handler works for both HTTP/1.1 and HTTP/2
+router.setDefault([](const HttpRequest& req) {
+  if (req.isHttp2()) {
+    // HTTP/2-specific logic using req.streamId(), req.scheme(), etc.
+    return HttpResponse(200).body("HTTP/2 stream " + std::to_string(req.streamId()) + "\n");
+  }
+  return HttpResponse(200).body("HTTP/1.1 response\n");
+});
+
+// Per-path handlers work identically for both protocols
+router.setPath(http::Method::GET, "/api/{resource}", [](const HttpRequest& req) {
+  return HttpResponse(200).body("Resource: " + std::string(req.pathParams().at("resource")) + "\n");
+});
+
+HttpServerConfig config;
+config.withPort(8080)
+    .withHttp2(Http2Config{.enable = true, .enableH2c = true});
+
+SingleHttpServer server(std::move(config), std::move(router));
+server.run();
+```
+
+Notes:
+
+- Pattern syntax, trailing-slash policy, and HEAD→GET fallback apply identically to both protocols.
+- `AsyncRequestHandler` and `StreamingHandler` are also supported for HTTP/2 (async handlers execute synchronously since HTTP/2 streams are already multiplexed).
+- All handler types registered in the Router work transparently for both HTTP/1.1 and HTTP/2.
+
+### Http2Config
+
+The `Http2Config` structure provides comprehensive HTTP/2 tuning.
+
+### ALPN Protocol Negotiation (h2)
+
+For TLS connections, HTTP/2 is negotiated via ALPN (Application-Layer Protocol Negotiation):
+
+```cpp
+HttpServerConfig config;
+config.withTlsCertKey("server.crt", "server.key")
+    .withTlsAlpnProtocols({"h2", "http/1.1"});  // Server advertises both
+
+// After TLS handshake, if client selected "h2":
+// - Connection automatically switches to HTTP/2 protocol handler
+// - All subsequent frames use HTTP/2 binary framing
+```
+
+The server automatically detects the negotiated protocol and routes the connection to the appropriate handler.
+
+### Cleartext HTTP/2 (h2c)
+
+HTTP/2 over cleartext (without TLS) is supported via two mechanisms.
+
+#### Prior Knowledge
+
+Client sends the HTTP/2 connection preface (`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`) directly:
+
+```cpp
+Http2Config config;
+config.enableH2c = true;  // Accept direct HTTP/2 preface on plaintext
+```
+
+#### HTTP/1.1 Upgrade
+
+Client sends an HTTP/1.1 request with upgrade headers:
+
+```text
+GET / HTTP/1.1
+Host: localhost
+Connection: Upgrade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settings: AAMAAABkAAQBAAAAAAIAAAAA
+```
+
+The server responds with `101 Switching Protocols` and transitions to HTTP/2:
+
+```cpp
+Http2Config config;
+config.enableH2cUpgrade = true;  // Enable Upgrade mechanism
+```
+
+### Testing HTTP/2
+
+Test with curl:
+
+```bash
+# HTTPS with ALPN negotiation
+curl -k --http2 https://localhost:8443/hello
+
+# h2c (cleartext) with prior knowledge
+curl --http2-prior-knowledge http://localhost:8080/hello
+
+# h2c via upgrade
+curl --http2 http://localhost:8080/hello
+```
+
+### Thread Safety
+
+HTTP/2 handlers execute on the same reactor thread as HTTP/1.1. The `HttpRequest` references are valid only during handler execution. For long-running operations, copy any needed data before returning.
 
 ## Future Expansions
 

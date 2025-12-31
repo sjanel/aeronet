@@ -15,5 +15,6 @@ using Version = MajorMinorVersion<kHttpPrefix, uint8_t>;
 inline constexpr Version HTTP_0_9{0, 9};
 inline constexpr Version HTTP_1_0{1, 0};
 inline constexpr Version HTTP_1_1{1, 1};
+inline constexpr Version HTTP_2_0{2, 0};
 
 }  // namespace aeronet::http

@@ -18,6 +18,10 @@ namespace aeronet {
 
 struct ConnectionState;
 
+namespace http2 {
+class Http2ProtocolHandler;
+}  // namespace http2
+
 class HttpRequest {
  public:
   static constexpr std::size_t kDefaultReadBodyChunk = 4096;
@@ -219,6 +223,23 @@ class HttpRequest {
   // Negotiated TLS protocol version string (e.g. "TLSv1.3"); empty if not TLS.
   [[nodiscard]] std::string_view tlsVersion() const noexcept { return _tlsVersion; }
 
+  // ============================
+  // HTTP/2-specific accessors
+  // ============================
+
+  // Returns true if this request arrived over HTTP/2.
+  [[nodiscard]] bool isHttp2() const noexcept { return _streamId != 0; }
+
+  // HTTP/2 stream identifier (0 for HTTP/1.x requests).
+  [[nodiscard]] uint32_t streamId() const noexcept { return _streamId; }
+
+  // HTTP/2 :scheme pseudo-header ("https" or "http"); empty for HTTP/1.x.
+  [[nodiscard]] std::string_view scheme() const noexcept { return _scheme; }
+
+  // HTTP/2 :authority pseudo-header (equivalent to Host header); empty for HTTP/1.x.
+  // For HTTP/1.x requests, use headerValueOrEmpty("Host") instead.
+  [[nodiscard]] std::string_view authority() const noexcept { return _authority; }
+
   // Tells whether this request has a 'Expect: 100-continue' header.
   [[nodiscard]] bool hasExpectContinue() const noexcept;
 
@@ -236,6 +257,9 @@ class HttpRequest {
   friend class CorsPolicyTest;
   friend class UpgradeHandlerHarness;
   friend struct ConnectionState;
+#ifdef AERONET_ENABLE_HTTP2
+  friend class http2::Http2ProtocolHandler;
+#endif
 
   static constexpr http::StatusCode kStatusNeedMoreData = static_cast<http::StatusCode>(0);
 
@@ -286,6 +310,11 @@ class HttpRequest {
   std::string_view _alpnProtocol;  // Selected ALPN protocol (if any) for this connection, empty if none/unsupported
   std::string_view _tlsCipher;     // Negotiated cipher suite (empty if not TLS)
   std::string_view _tlsVersion;    // Negotiated TLS protocol version (e.g. TLSv1.3) empty if not TLS
+
+  // HTTP/2 specific fields (populated only for HTTP/2 requests)
+  std::string_view _scheme;     // :scheme pseudo-header ("http" or "https")
+  std::string_view _authority;  // :authority pseudo-header (equivalent to Host)
+  uint32_t _streamId{0};        // HTTP/2 stream ID (0 indicates HTTP/1.x)
 
   std::chrono::steady_clock::time_point _reqStart;
   std::size_t _headSpanSize{0};

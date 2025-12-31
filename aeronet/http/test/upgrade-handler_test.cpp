@@ -83,6 +83,21 @@ TEST(UpgradeHandlerTest, ConnectionContainsUpgrade_NoUpgrade) {
   EXPECT_FALSE(upgrade::ConnectionContainsUpgrade(""));
 }
 
+TEST(UpgradeHandlerTest, ConnectionContainsUpgrade_EmptyToken) {
+  EXPECT_FALSE(upgrade::ConnectionContainsUpgrade(","));
+  EXPECT_FALSE(upgrade::ConnectionContainsUpgrade(",,"));
+  EXPECT_TRUE(upgrade::ConnectionContainsUpgrade(",upgrade,"));
+}
+
+TEST(UpgradeHandlerTest, ConnectionContainsUpgrade_SingleUpgrade) {
+  EXPECT_TRUE(upgrade::ConnectionContainsUpgrade("upgrade"));
+}
+
+TEST(UpgradeHandlerTest, ConnectionContainsUpgrade_TrailingComma) {
+  EXPECT_TRUE(upgrade::ConnectionContainsUpgrade("upgrade,"));
+  EXPECT_TRUE(upgrade::ConnectionContainsUpgrade("keep-alive,upgrade,"));
+}
+
 // ============================================================================
 // ValidateWebSocketUpgrade tests using real HttpRequest parsing
 // ============================================================================
@@ -402,6 +417,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionWithMultipleTok
 // ValidateHttp2Upgrade tests
 // ============================================================================
 
+#ifdef AERONET_ENABLE_HTTP2
+
 TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_ValidRequest) {
   const auto status = parse(BuildRaw("GET", "/resource",
                                      "Upgrade: h2c\r\n"
@@ -409,7 +426,7 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_ValidRequest) {
                                      "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateHttp2Upgrade(request);
+  const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
   EXPECT_TRUE(result.valid);
   EXPECT_EQ(result.targetProtocol, ProtocolType::Http2);
 }
@@ -420,7 +437,7 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_MissingUpgradeHeader) {
                                      "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateHttp2Upgrade(request);
+  const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
   EXPECT_FALSE(result.valid);
 }
 
@@ -431,7 +448,7 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_WrongUpgradeValue) {
                                      "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateHttp2Upgrade(request);
+  const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
   EXPECT_FALSE(result.valid);
 }
 
@@ -441,7 +458,7 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_MissingConnectionHeader) {
                                      "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateHttp2Upgrade(request);
+  const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
   EXPECT_FALSE(result.valid);
 }
 
@@ -452,7 +469,7 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_ConnectionWithoutUpgrade) {
                                      "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateHttp2Upgrade(request);
+  const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
   EXPECT_FALSE(result.valid);
 }
 
@@ -462,7 +479,7 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_MissingSettings) {
                                      "Connection: Upgrade, HTTP2-Settings\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateHttp2Upgrade(request);
+  const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
   EXPECT_FALSE(result.valid);
 }
 
@@ -473,9 +490,10 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_EmptySettings) {
                                      "HTTP2-Settings: \r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateHttp2Upgrade(request);
+  const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
   EXPECT_FALSE(result.valid);
 }
+#endif
 
 // ============================================================================
 // DetectUpgradeTarget tests
@@ -503,6 +521,7 @@ TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_WebSocketCaseInsensitive) {
 #endif
 }
 
+#ifdef AERONET_ENABLE_HTTP2
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2) {
   const auto status = parse(BuildRaw("GET", "/", "Upgrade: h2c\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
@@ -516,6 +535,14 @@ TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2CaseInsensitive) {
 
   EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http2);
 }
+#else
+TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2IgnoredWhenDisabled) {
+  const auto status = parse(BuildRaw("GET", "/", "Upgrade: h2c\r\n"));
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http11);
+}
+#endif
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_NoUpgrade) {
   const auto status = parse(BuildRaw("GET", "/"));
@@ -604,6 +631,7 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflate) {
 #endif
 
 // Tests for BuildHttp2UpgradeResponse
+#ifdef AERONET_ENABLE_HTTP2
 TEST(UpgradeHandlerTest, BuildHttp2UpgradeResponse_Basic) {
   UpgradeValidationResult validationResult;
   validationResult.valid = true;
@@ -622,25 +650,7 @@ TEST(UpgradeHandlerTest, BuildHttp2UpgradeResponse_Basic) {
   // Check response ends with double CRLF
   EXPECT_TRUE(responseView.ends_with("\r\n\r\n"));
 }
-
-// ============================================================================
-// Additional ConnectionContainsUpgrade edge case tests
-// ============================================================================
-
-TEST(UpgradeHandlerTest, ConnectionContainsUpgrade_EmptyToken) {
-  EXPECT_FALSE(upgrade::ConnectionContainsUpgrade(","));
-  EXPECT_FALSE(upgrade::ConnectionContainsUpgrade(",,"));
-  EXPECT_TRUE(upgrade::ConnectionContainsUpgrade(",upgrade,"));
-}
-
-TEST(UpgradeHandlerTest, ConnectionContainsUpgrade_SingleUpgrade) {
-  EXPECT_TRUE(upgrade::ConnectionContainsUpgrade("upgrade"));
-}
-
-TEST(UpgradeHandlerTest, ConnectionContainsUpgrade_TrailingComma) {
-  EXPECT_TRUE(upgrade::ConnectionContainsUpgrade("upgrade,"));
-  EXPECT_TRUE(upgrade::ConnectionContainsUpgrade("keep-alive,upgrade,"));
-}
+#endif
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 // ============================================================================
