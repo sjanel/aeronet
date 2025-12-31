@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -169,6 +170,16 @@ TYPED_TEST(DynamicConcatenatedStringsTest, IteratorCaseInsensitive) {
   EXPECT_EQ(parts[1], std::string_view("DeF"));
   EXPECT_FALSE(pool.contains("abc"));
   EXPECT_TRUE(pool.containsCI("abc"));
+}
+
+TYPED_TEST(DynamicConcatenatedStringsTest, Range) {
+  TypeParam pool;
+  pool.append("AbC");
+  pool.append("DeF");
+
+  EXPECT_TRUE(std::ranges::any_of(pool, [](std::string_view part) { return part == "AbC"; }));
+  EXPECT_FALSE(std::ranges::any_of(pool, [](std::string_view part) { return part == "abc"; }));
+  EXPECT_TRUE(std::ranges::any_of(pool, [](std::string_view part) { return CaseInsensitiveEqual(part, "abc"); }));
 }
 
 TYPED_TEST(DynamicConcatenatedStringsTest, FullString) {

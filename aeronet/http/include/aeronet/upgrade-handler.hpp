@@ -1,7 +1,6 @@
 #pragma once
 
 #include <optional>
-#include <span>
 #include <string_view>
 
 #include "aeronet/concatenated-strings.hpp"
@@ -42,7 +41,7 @@ struct WebSocketUpgradeConfig {
   /// Subprotocols supported by the server, in order of preference.
   /// If the client offers one of these, the first matching one is selected.
   /// If empty, no subprotocol negotiation is performed.
-  std::span<const std::string_view> supportedProtocols;
+  const ConcatenatedStrings& supportedProtocols;
 
   /// Whether to enable permessage-deflate compression (RFC 7692).
   /// If true and the client offers permessage-deflate, it will be negotiated.
@@ -73,7 +72,7 @@ namespace upgrade {
 /// @param config   Optional configuration for subprotocol/extension negotiation
 /// @return         Validation result with computed Sec-WebSocket-Accept if valid
 [[nodiscard]] UpgradeValidationResult ValidateWebSocketUpgrade(const HttpRequest& request,
-                                                               const WebSocketUpgradeConfig& config = {});
+                                                               const WebSocketUpgradeConfig& config);
 
 /// Check if the request contains an Upgrade header requesting HTTP/2 (h2c).
 ///
