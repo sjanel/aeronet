@@ -251,10 +251,6 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
   std::span<const std::byte> inputData(reinterpret_cast<const std::byte*>(state.inBuffer.data()),
                                        state.inBuffer.size());
 
-  if (inputData.empty()) {
-    return state.isAnyCloseRequested();
-  }
-
   auto& handler = *state.protocolHandler;
 
   // Process input through the protocol handler
@@ -364,17 +360,8 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       const auto& endpoint = *routingResult.pWebSocketEndpoint;
 
       // Build upgrade config from endpoint settings
-      WebSocketUpgradeConfig upgradeConfig;
-      // TODO: can we avoid a vector here?
-      vector<std::string_view> protocolViews;
-      protocolViews.reserve(
-          static_cast<decltype(protocolViews)::size_type>(endpoint.supportedProtocols.nbConcatenatedStrings()));
-      for (const auto& proto : endpoint.supportedProtocols) {
-        protocolViews.push_back(proto);
-      }
-      upgradeConfig.supportedProtocols = protocolViews;
-      upgradeConfig.enableCompression = endpoint.enableCompression;
-      upgradeConfig.deflateConfig = endpoint.config.deflateConfig;
+      WebSocketUpgradeConfig upgradeConfig{endpoint.supportedProtocols, endpoint.enableCompression,
+                                           endpoint.config.deflateConfig};
 
       const auto upgradeValidation = upgrade::ValidateWebSocketUpgrade(request, upgradeConfig);
       if (upgradeValidation.valid) {
