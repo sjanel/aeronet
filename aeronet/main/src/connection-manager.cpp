@@ -34,6 +34,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-context.hpp"
+#include "aeronet/tls-handshake-callback.hpp"
 #include "aeronet/tls-handshake-failure-reasons.hpp"
 #include "aeronet/tls-handshake-observer.hpp"
 #include "aeronet/tls-handshake.hpp"

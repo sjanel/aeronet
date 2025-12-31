@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -11,6 +12,7 @@
 #include "aeronet/brotli-encoder.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
+#include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sys-test-support.hpp"
 
@@ -211,6 +213,51 @@ TEST(BrotliEncoderDecoderTest, DecodeInvalidDataFails) {
   RawChars invalidData("NotAValidBrotliStream");
   RawChars decompressed;
   EXPECT_FALSE(BrotliDecoder::Decompress(invalidData, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+}
+
+TEST(BrotliEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
+  // Create a patterned payload large enough to force multiple compressStream2 calls
+  // when the encoder is given a very small output buffer.
+  const std::string payload = test::MakePatternedPayload(1024);
+
+  CompressionConfig cfg;
+  BrotliEncoder encoder(cfg, 1);
+  auto ctx = encoder.makeContext();
+  RawChars compressed;
+  const auto produced = ctx->encodeChunk(1, std::string_view(payload));
+  compressed.append(produced);
+  const auto tail = ctx->encodeChunk(1, {});
+  compressed.append(tail);
+
+  RawChars decompressed;
+  ASSERT_TRUE(BrotliDecoder::Decompress(std::string_view(compressed), kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_EQ(std::string_view(decompressed), payload);
+}
+
+TEST(BrotliEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIterations) {
+  // Incompressible payload to force encoder to iterate and grow output as needed.
+  const RawBytes payload = test::MakeRandomPayload(256UL * 1024);
+
+  static constexpr std::size_t kChunkSize = 1UL;  // small to force multiple iterations; encoder will grow as needed
+  CompressionConfig cfg;
+  BrotliEncoder encoder(cfg, kChunkSize);
+  auto ctx = encoder.makeContext();
+  RawChars compressed;
+
+  const auto produced =
+      ctx->encodeChunk(kChunkSize, std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()));
+  compressed.append(produced);
+  const auto tail = ctx->encodeChunk(kChunkSize, {});
+  compressed.append(tail);
+
+  // Expect more than one chunk worth of output, implying multiple loop iterations.
+  ASSERT_GT(compressed.size(), kChunkSize);
+
+  RawChars decompressed;
+  ASSERT_TRUE(BrotliDecoder::Decompress(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+
+  EXPECT_EQ(decompressed.size(), payload.size());
+  EXPECT_EQ(std::memcmp(decompressed.data(), payload.data(), payload.size()), 0);
 }
 
 }  // namespace aeronet

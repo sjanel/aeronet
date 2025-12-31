@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <thread>
 
 #include "aeronet/tls-config.hpp"

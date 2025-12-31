@@ -26,6 +26,7 @@
 #include "aeronet/test_server_tls_fixture.hpp"
 #include "aeronet/test_tls_client.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/tls-handshake-callback.hpp"
 #include "aeronet/tls-handshake-failure-reasons.hpp"
 
 using namespace aeronet;

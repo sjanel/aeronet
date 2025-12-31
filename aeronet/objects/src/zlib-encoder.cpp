@@ -3,6 +3,7 @@
 #include <zconf.h>
 #include <zlib.h>
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -43,7 +44,9 @@ std::string_view ZlibEncoderContext::encodeChunk(std::size_t encoderChunkSize, s
     if (ret == Z_STREAM_END) {
       break;
     }
-  } while (_zs.stream.avail_out == 0 || _zs.stream.avail_in > 0);
+  } while (_zs.stream.avail_out == 0);
+
+  assert(_zs.stream.avail_in == 0);
 
   return _buf;
 }
@@ -71,6 +74,8 @@ void ZlibEncoder::encodeFull(std::size_t extraCapacity, std::string_view data, R
     throw std::runtime_error(
         std::format("Error {} during {} compression", rc, _variant == ZStreamRAII::Variant::gzip ? "gzip" : "deflate"));
   }
+
+  assert(zstream.avail_in == 0);
 
   buf.addSize(availableCapacity - zstream.avail_out);
 }

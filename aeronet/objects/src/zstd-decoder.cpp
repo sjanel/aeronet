@@ -38,7 +38,7 @@ class ZstdStreamingContext final : public DecoderContext {
       ZSTD_outBuffer output{out.data() + out.size(), out.availableCapacity(), 0};
       const std::size_t ret = ZSTD_decompressStream(_stream.get(), &output, &in);
       if (ZSTD_isError(ret) != 0U) [[unlikely]] {
-        log::error("ZstdDecoder::Decompress - ZSTD_decompressStream failed with error {}", ret);
+        log::error("ZstdDecoder::Decompress - ZSTD_decompressStream failed with error {}", ZSTD_getErrorName(ret));
         return false;
       }
       out.addSize(output.pos);
@@ -82,7 +82,7 @@ bool ZstdDecoder::decompressFull(std::string_view input, std::size_t maxDecompre
       out.ensureAvailableCapacityExponential(rSize);
       const std::size_t ret = ZSTD_decompress(out.data() + out.size(), rSize, input.data(), input.size());
       if (ZSTD_isError(ret) != 0U) [[unlikely]] {
-        log::error("ZstdDecoder::Decompress - ZSTD_decompress failed with error {}", ret);
+        log::error("ZstdDecoder::Decompress - ZSTD_decompress failed with error {}", ZSTD_getErrorName(ret));
         return false;
       }
 
