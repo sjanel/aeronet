@@ -5,6 +5,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -737,6 +738,9 @@ inline void PushWriteAction(int fd, IoAction action) { g_write_actions.push(fd, 
 
 using ReadFn = ssize_t (*)(int, void*, size_t);
 using WriteFn = ssize_t (*)(int, const void*, size_t);
+using WritevFn = ssize_t (*)(int, const struct iovec*, int);
+
+inline KeyedActionQueue<int, IoAction> g_writev_actions;
 
 inline ReadFn ResolveRealRead() {
   static ReadFn fn = nullptr;
@@ -754,6 +758,19 @@ inline WriteFn ResolveRealWrite() {
   }
   fn = aeronet::test::ResolveNext<WriteFn>("write");
   return fn;
+}
+
+inline WritevFn ResolveRealWritev() {
+  static WritevFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<WritevFn>("writev");
+  return fn;
+}
+
+inline void SetWritevActions(int fd, std::initializer_list<IoAction> actions) {
+  g_writev_actions.setActions(fd, actions);
 }
 
 }  // namespace aeronet::test
@@ -904,6 +921,22 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t write(int fd, const v
   }
   auto real = aeronet::test::ResolveRealWrite();
   return real(fd, buf, count);
+}
+
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
+extern "C" __attribute__((no_sanitize("address"))) ssize_t writev(int fd, const struct iovec* iov, int iovcnt) {
+  auto act = aeronet::test::g_writev_actions.pop(fd);
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      // pretend we wrote ret bytes
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealWritev();
+  return real(fd, iov, iovcnt);
 }
 
 #endif
