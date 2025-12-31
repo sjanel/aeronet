@@ -1,5 +1,9 @@
 #include "aeronet/compression-test-helpers.hpp"
 
+#include <random>
+
+#include "aeronet/raw-bytes.hpp"
+
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
 
@@ -54,6 +58,17 @@ std::string MakePatternedPayload(std::size_t size) {
     std::iota(data, data + size, static_cast<unsigned char>(0));
     return size;
   });
+  return payload;
+}
+
+RawBytes MakeRandomPayload(std::size_t size) {
+  RawBytes payload(size);
+  std::mt19937_64 rng{123456789ULL};
+  std::uniform_int_distribution<int> dist(0, 255);
+  for (std::size_t i = 0; i < size; ++i) {
+    payload[i] = static_cast<std::byte>(dist(rng));
+  }
+  payload.setSize(size);
   return payload;
 }
 

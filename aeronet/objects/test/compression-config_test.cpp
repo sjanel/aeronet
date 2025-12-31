@@ -62,6 +62,13 @@ TEST(CompressionConfigTest, ZstdInvalidLevelThrows) {
 
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
+
+TEST(CompressionConfigTest, ZstdTooSmallEncoderChunkSizeShouldLogWarning) {
+  CompressionConfig config;
+  config.encoderChunkSize = 1;
+
+  EXPECT_NO_THROW(config.validate());
+}
 #endif
 
 TEST(CompressionConfigTest, BrotliOK) {

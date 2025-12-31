@@ -4,6 +4,8 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/raw-bytes.hpp"
+
 namespace aeronet::test {
 
 // Decompress a single zstd frame contained in 'compressed'. If the frame size is known
@@ -20,5 +22,8 @@ constexpr bool HasZstdMagic(std::string_view body) {
 }
 
 std::string MakePatternedPayload(std::size_t size);
+
+// Create a random payload of given size so that it's very difficult to compress.
+RawBytes MakeRandomPayload(std::size_t size);
 
 }  // namespace aeronet::test

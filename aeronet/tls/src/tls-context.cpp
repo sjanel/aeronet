@@ -6,7 +6,6 @@
 #include <openssl/ssl.h>       // SSL_*, SSL_read/write, handshake, shutdown, SSL_CTX, SSL_get_error
 #include <openssl/tls1.h>      // TLS1_2_VERSION (for OpenSSL < 3.0, safe to include anyway)
 #include <openssl/types.h>     // SSL, SSL_CTX forward declarations
-#include <openssl/x509.h>      // X509_free, X509_get_subject_name, X509_NAME_oneline
 #include <openssl/x509_vfy.h>  // X509_STORE_add_cert
 
 #include <algorithm>
@@ -21,6 +20,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/log.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"

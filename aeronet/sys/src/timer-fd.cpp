@@ -4,11 +4,15 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
+#include <utility>
 
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/timedef.hpp"
 
 namespace aeronet {
 
@@ -38,8 +42,6 @@ TimerFd::TimerFd() : _baseFd(::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TF
   (void)::timerfd_settime(fd(), 0, &spec, nullptr);
 }
 
-TimerFd::TimerFd(SysDuration interval) : TimerFd() { armPeriodic(interval); }
-
 void TimerFd::armPeriodic(SysDuration interval) const {
   itimerspec spec{};
   // Always compute the timespec: non-positive durations map to {0,0} which disables the timer.
@@ -57,7 +59,7 @@ void TimerFd::drain() const noexcept {
   while (true) {
     std::uint64_t expirations = 0;
     const auto ret = ::read(fd(), &expirations, sizeof(expirations));
-    if (ret == static_cast<ssize_t>(sizeof(expirations))) {
+    if (std::cmp_equal(ret, sizeof(expirations))) {
       // Keep draining in case multiple expirations accumulated.
       continue;
     }

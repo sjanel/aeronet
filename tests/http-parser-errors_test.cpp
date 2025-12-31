@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <mutex>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
