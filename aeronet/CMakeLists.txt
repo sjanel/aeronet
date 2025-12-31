@@ -1,7 +1,14 @@
 add_subdirectory(tech)
 add_subdirectory(sys)
 add_subdirectory(objects)
+# Optional TLS module kept separate to minimize #ifdef sprawl.
+if(AERONET_ENABLE_OPENSSL)  
+  add_subdirectory(tls)
+endif()
 add_subdirectory(http)
+if(AERONET_ENABLE_WEBSOCKET)
+  add_subdirectory(websocket)
+endif()
 add_subdirectory(main)
 
 if(AERONET_BUILD_TESTS OR AERONET_BUILD_BENCHMARKS)

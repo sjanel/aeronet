@@ -14,6 +14,14 @@ namespace aeronet::websocket {
 
 /// Configuration for permessage-deflate extension (RFC 7692).
 struct DeflateConfig {
+  /// Whether to enable permessage-deflate compression (RFC 7692).
+  /// If true and the client offers permessage-deflate, it will be negotiated.
+#ifdef AERONET_ENABLE_ZLIB
+  bool enabled{true};
+#else
+  bool enabled{false};
+#endif
+
   /// Compression level (0 = no compression, 9 = best compression).
   /// Default is 6 (balanced speed/compression).
   int8_t compressionLevel{6};
@@ -37,7 +45,7 @@ struct DeflateConfig {
   bool clientNoContextTakeover{false};
 
   /// Minimum message size to compress. Messages smaller than this are sent uncompressed.
-  std::size_t minCompressSize{64U};
+  uint32_t minCompressSize{256U};
 };
 
 /// Negotiated permessage-deflate parameters (after upgrade handshake).
@@ -105,7 +113,7 @@ class DeflateContext {
  private:
   struct Impl;
   std::unique_ptr<Impl> _impl;
-  std::size_t _minCompressSize{0};
+  uint32_t _minCompressSize{0};
   std::string_view _lastError;
 };
 

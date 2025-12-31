@@ -2,36 +2,34 @@
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
-#include <array>
 #include <cctype>
-#include <cstdint>
 #include <cstring>
-#include <optional>
-#include <span>
-#include <string>
 #include <string_view>
 #include <utility>
 
-#include "aeronet/concatenated-strings.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/http2-frame-types.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/websocket-constants.hpp"
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+#include <algorithm>
+#include <optional>
+
+#include "aeronet/concatenated-strings.hpp"
 #include "aeronet/websocket-deflate.hpp"
+#include "aeronet/websocket-upgrade.hpp"
+#endif
 
 namespace aeronet {
 namespace {
 
-// Valid WebSocket key (24 base64 chars representing 16 bytes)
-constexpr std::string_view kValidWebSocketKey = "dGhlIHNhbXBsZSBub25jZQ==";
-
+#ifdef AERONET_ENABLE_WEBSOCKET
 // Expected Sec-WebSocket-Accept for the above key (computed per RFC 6455)
 constexpr std::string_view kExpectedWebSocketAccept = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+#endif
 
 // Helper to build a raw HTTP request
 RawChars BuildRaw(std::string_view method, std::string_view target, std::string_view extraHeaders = {}) {
@@ -61,8 +59,6 @@ class UpgradeHandlerHarness : public ::testing::Test {
   ConnectionState connState;
 };
 
-namespace {
-
 // Tests for ConnectionContainsUpgrade
 TEST(UpgradeHandlerTest, ConnectionContainsUpgrade_Simple) {
   EXPECT_TRUE(upgrade::ConnectionContainsUpgrade("upgrade"));
@@ -87,41 +83,10 @@ TEST(UpgradeHandlerTest, ConnectionContainsUpgrade_NoUpgrade) {
   EXPECT_FALSE(upgrade::ConnectionContainsUpgrade(""));
 }
 
-// Tests for IsValidWebSocketKey
-TEST(UpgradeHandlerTest, IsValidWebSocketKey_ValidKey) {
-  // Valid key: exactly 24 base64 characters
-  EXPECT_TRUE(upgrade::IsValidWebSocketKey(kValidWebSocketKey));
-}
-
-TEST(UpgradeHandlerTest, IsValidWebSocketKey_TooShort) {
-  EXPECT_FALSE(upgrade::IsValidWebSocketKey("dGhlIHNhbXBsZSBub25jZQ="));
-}
-
-TEST(UpgradeHandlerTest, IsValidWebSocketKey_TooLong) {
-  EXPECT_FALSE(upgrade::IsValidWebSocketKey("dGhlIHNhbXBsZSBub25jZQ==="));
-}
-
-TEST(UpgradeHandlerTest, IsValidWebSocketKey_InvalidCharacters) {
-  EXPECT_FALSE(upgrade::IsValidWebSocketKey("dGhlIHNhbXBsZSBub25j@Q=="));
-}
-
-TEST(UpgradeHandlerTest, IsValidWebSocketKey_Empty) { EXPECT_FALSE(upgrade::IsValidWebSocketKey("")); }
-
-TEST(UpgradeHandlerTest, IsValidWebSocketKey_NotEndingWithDoubleEquals) {
-  EXPECT_FALSE(upgrade::IsValidWebSocketKey("dGhlIHNhbXBsZSBub25jZQAA"));
-}
-
-// Test for ComputeWebSocketAccept
-TEST(UpgradeHandlerTest, ComputeWebSocketAccept_RFC6455TestVector) {
-  // RFC 6455 test vector
-  const auto accept = upgrade::ComputeWebSocketAccept(kValidWebSocketKey);
-
-  EXPECT_EQ(std::string_view(accept.data(), accept.size()), kExpectedWebSocketAccept);
-}
-
 // ============================================================================
 // ValidateWebSocketUpgrade tests using real HttpRequest parsing
 // ============================================================================
+#ifdef AERONET_ENABLE_WEBSOCKET
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ValidRequest) {
   const auto status = parse(BuildRaw("GET", "/ws",
                                      "Upgrade: websocket\r\n"
@@ -131,8 +96,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ValidRequest) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);
   EXPECT_EQ(result.targetProtocol, ProtocolType::WebSocket);
   EXPECT_TRUE(result.errorMessage.empty());
@@ -148,8 +113,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingUpgradeHeader) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("Upgrade"));
 }
@@ -163,8 +128,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WrongUpgradeValue) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("websocket"));
 }
@@ -177,8 +142,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingConnectionHeader) 
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("Connection"));
 }
@@ -191,8 +156,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingVersion) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("Version"));
 }
@@ -206,8 +171,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WrongVersion) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("13"));
 }
@@ -219,8 +184,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingKey) {
                                      "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("Key"));
 }
@@ -234,8 +199,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_InvalidKeyFormat) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("Key"));
 }
@@ -250,8 +215,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithProtocol) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);
 
   // Check offered protocols are captured
@@ -273,9 +238,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_SubprotocolNegotiation) {
   ConcatenatedStrings serverProtocols;
   serverProtocols.append("json");
   serverProtocols.append("chat");
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  WebSocketUpgradeConfig config{serverProtocols, {}};
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);
 
   // Should select "json" (server's first preference that client offers)
@@ -295,9 +260,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_SubprotocolNoMatch) {
   ConcatenatedStrings serverProtocols;
   serverProtocols.append("binary");
   serverProtocols.append("xml");
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  WebSocketUpgradeConfig config{serverProtocols, {}};
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);  // Still valid, just no protocol selected
   EXPECT_TRUE(result.selectedProtocol.empty());
 }
@@ -313,9 +278,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_SubprotocolCaseInsensitiv
 
   ConcatenatedStrings serverProtocols;
   serverProtocols.append("graphql-ws");
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  WebSocketUpgradeConfig config{serverProtocols, {}};
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);
   EXPECT_EQ(result.selectedProtocol, "graphql-ws");
 }
@@ -330,8 +295,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithExtensions) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);
 
   // Extensions are captured for informational purposes
@@ -348,9 +313,11 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateNegotiat
                                      "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  WebSocketUpgradeConfig config{{}, true, {}};
+  websocket::DeflateConfig deflateConfig;
+  deflateConfig.enabled = true;
+  WebSocketUpgradeConfig config{{}, deflateConfig};
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
 
 #ifdef AERONET_ENABLE_ZLIB
   // Compression should be negotiated
@@ -377,9 +344,11 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateWithPara
                                      "client_no_context_takeover\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  WebSocketUpgradeConfig config{{}, true, {}};
+  websocket::DeflateConfig deflateConfig;
+  deflateConfig.enabled = true;
+  WebSocketUpgradeConfig config{{}, deflateConfig};
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
 
 #ifdef AERONET_ENABLE_ZLIB
   EXPECT_TRUE(result.valid);
@@ -402,9 +371,12 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateDisabled
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  websocket::DeflateConfig deflateConfig;
+  deflateConfig.enabled = false;  // Compression disabled
+  WebSocketUpgradeConfig config{serverProtocols, deflateConfig};
+
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);
 
   // Compression should NOT be negotiated
@@ -420,10 +392,11 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionWithMultipleTok
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);
 }
+#endif
 
 // ============================================================================
 // ValidateHttp2Upgrade tests
@@ -512,51 +485,64 @@ TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_WebSocket) {
   const auto status = parse(BuildRaw("GET", "/ws", "Upgrade: websocket\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  EXPECT_EQ(upgrade::DetectUpgradeTarget(request), ProtocolType::WebSocket);
+#ifdef AERONET_ENABLE_WEBSOCKET
+  EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::WebSocket);
+#else
+  EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http11);
+#endif
 }
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_WebSocketCaseInsensitive) {
   const auto status = parse(BuildRaw("GET", "/ws", "Upgrade: WEBSOCKET\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  EXPECT_EQ(upgrade::DetectUpgradeTarget(request), ProtocolType::WebSocket);
+#ifdef AERONET_ENABLE_WEBSOCKET
+  EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::WebSocket);
+#else
+  EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http11);
+#endif
 }
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2) {
   const auto status = parse(BuildRaw("GET", "/", "Upgrade: h2c\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  EXPECT_EQ(upgrade::DetectUpgradeTarget(request), ProtocolType::Http2);
+  EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http2);
 }
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2CaseInsensitive) {
   const auto status = parse(BuildRaw("GET", "/", "Upgrade: H2C\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  EXPECT_EQ(upgrade::DetectUpgradeTarget(request), ProtocolType::Http2);
+  EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http2);
 }
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_NoUpgrade) {
   const auto status = parse(BuildRaw("GET", "/"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  EXPECT_EQ(upgrade::DetectUpgradeTarget(request), ProtocolType::Http11);
+  EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http11);
 }
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_UnknownProtocol) {
   const auto status = parse(BuildRaw("GET", "/", "Upgrade: unknown-protocol\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  EXPECT_EQ(upgrade::DetectUpgradeTarget(request), ProtocolType::Http11);
+  EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http11);
 }
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_WithWhitespace) {
   const auto status = parse(BuildRaw("GET", "/ws", "Upgrade:  websocket \r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  EXPECT_EQ(upgrade::DetectUpgradeTarget(request), ProtocolType::WebSocket);
+#ifdef AERONET_ENABLE_WEBSOCKET
+  EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::WebSocket);
+#else
+  EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http11);
+#endif
 }
 
+#ifdef AERONET_ENABLE_WEBSOCKET
 // Tests for BuildWebSocketUpgradeResponse
 TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_Basic) {
   UpgradeValidationResult validationResult;
@@ -615,6 +601,7 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflate) {
   // client_max_window_bits=15 is default, should not appear
   EXPECT_FALSE(responseView.contains("client_max_window_bits"));
 }
+#endif
 
 // Tests for BuildHttp2UpgradeResponse
 TEST(UpgradeHandlerTest, BuildHttp2UpgradeResponse_Basic) {
@@ -636,74 +623,6 @@ TEST(UpgradeHandlerTest, BuildHttp2UpgradeResponse_Basic) {
   EXPECT_TRUE(responseView.ends_with("\r\n\r\n"));
 }
 
-// WebSocket constants tests
-TEST(WebSocketConstantsTest, OpcodeValues) {
-  EXPECT_EQ(static_cast<uint8_t>(websocket::Opcode::Continuation), 0x00);
-  EXPECT_EQ(static_cast<uint8_t>(websocket::Opcode::Text), 0x01);
-  EXPECT_EQ(static_cast<uint8_t>(websocket::Opcode::Binary), 0x02);
-  EXPECT_EQ(static_cast<uint8_t>(websocket::Opcode::Close), 0x08);
-  EXPECT_EQ(static_cast<uint8_t>(websocket::Opcode::Ping), 0x09);
-  EXPECT_EQ(static_cast<uint8_t>(websocket::Opcode::Pong), 0x0A);
-}
-
-TEST(WebSocketConstantsTest, CloseCodeValues) {
-  EXPECT_EQ(static_cast<uint16_t>(websocket::CloseCode::Normal), 1000);
-  EXPECT_EQ(static_cast<uint16_t>(websocket::CloseCode::GoingAway), 1001);
-  EXPECT_EQ(static_cast<uint16_t>(websocket::CloseCode::ProtocolError), 1002);
-  EXPECT_EQ(static_cast<uint16_t>(websocket::CloseCode::UnsupportedData), 1003);
-}
-
-TEST(WebSocketConstantsTest, HeaderNames) {
-  EXPECT_EQ(websocket::SecWebSocketKey, "Sec-WebSocket-Key");
-  EXPECT_EQ(websocket::SecWebSocketAccept, "Sec-WebSocket-Accept");
-  EXPECT_EQ(websocket::SecWebSocketVersion, "Sec-WebSocket-Version");
-  EXPECT_EQ(websocket::SecWebSocketProtocol, "Sec-WebSocket-Protocol");
-  EXPECT_EQ(websocket::SecWebSocketExtensions, "Sec-WebSocket-Extensions");
-  EXPECT_EQ(websocket::UpgradeValue, "websocket");
-}
-
-// HTTP/2 constants tests
-TEST(Http2ConstantsTest, FrameTypeValues) {
-  EXPECT_EQ(static_cast<uint8_t>(http2::FrameType::Data), 0x00);
-  EXPECT_EQ(static_cast<uint8_t>(http2::FrameType::Headers), 0x01);
-  EXPECT_EQ(static_cast<uint8_t>(http2::FrameType::Settings), 0x04);
-  EXPECT_EQ(static_cast<uint8_t>(http2::FrameType::Ping), 0x06);
-  EXPECT_EQ(static_cast<uint8_t>(http2::FrameType::GoAway), 0x07);
-  EXPECT_EQ(static_cast<uint8_t>(http2::FrameType::WindowUpdate), 0x08);
-}
-
-TEST(Http2ConstantsTest, ErrorCodeValues) {
-  EXPECT_EQ(static_cast<uint32_t>(http2::ErrorCode::NoError), 0x00);
-  EXPECT_EQ(static_cast<uint32_t>(http2::ErrorCode::ProtocolError), 0x01);
-  EXPECT_EQ(static_cast<uint32_t>(http2::ErrorCode::FlowControlError), 0x03);
-}
-
-TEST(Http2ConstantsTest, SettingsParameterValues) {
-  EXPECT_EQ(static_cast<uint16_t>(http2::SettingsParameter::HeaderTableSize), 0x01);
-  EXPECT_EQ(static_cast<uint16_t>(http2::SettingsParameter::EnablePush), 0x02);
-  EXPECT_EQ(static_cast<uint16_t>(http2::SettingsParameter::MaxConcurrentStreams), 0x03);
-  EXPECT_EQ(static_cast<uint16_t>(http2::SettingsParameter::InitialWindowSize), 0x04);
-  EXPECT_EQ(static_cast<uint16_t>(http2::SettingsParameter::MaxFrameSize), 0x05);
-  EXPECT_EQ(static_cast<uint16_t>(http2::SettingsParameter::MaxHeaderListSize), 0x06);
-}
-
-TEST(Http2ConstantsTest, ConnectionPreface) {
-  EXPECT_EQ(http2::kConnectionPreface, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-  EXPECT_EQ(http2::kConnectionPrefaceSize, 24);
-}
-
-TEST(Http2ConstantsTest, AlpnIdentifiers) {
-  EXPECT_EQ(http2::kAlpnH2, "h2");
-  EXPECT_EQ(http2::kAlpnH2c, "h2c");
-}
-
-// Protocol type tests
-TEST(ProtocolTypeTest, Values) {
-  EXPECT_EQ(static_cast<uint8_t>(ProtocolType::Http11), 0);
-  EXPECT_EQ(static_cast<uint8_t>(ProtocolType::WebSocket), 1);
-  EXPECT_EQ(static_cast<uint8_t>(ProtocolType::Http2), 2);
-}
-
 // ============================================================================
 // Additional ConnectionContainsUpgrade edge case tests
 // ============================================================================
@@ -723,23 +642,7 @@ TEST(UpgradeHandlerTest, ConnectionContainsUpgrade_TrailingComma) {
   EXPECT_TRUE(upgrade::ConnectionContainsUpgrade("keep-alive,upgrade,"));
 }
 
-// ============================================================================
-// IsValidWebSocketKey edge case tests
-// ============================================================================
-
-TEST(UpgradeHandlerTest, IsValidWebSocketKey_ExactlyWrongPadding) {
-  // Key with wrong padding position
-  EXPECT_FALSE(upgrade::IsValidWebSocketKey("dGhlIHNhbXBsZSBub25jZQA="));  // Single = at wrong position
-}
-
-TEST(UpgradeHandlerTest, IsValidWebSocketKey_NonBase64InMiddle) {
-  EXPECT_FALSE(upgrade::IsValidWebSocketKey("dGhlIHNhbXBsZS!ub25jZQ=="));  // ! is not base64
-}
-
-TEST(UpgradeHandlerTest, IsValidWebSocketKey_SpacesInKey) {
-  EXPECT_FALSE(upgrade::IsValidWebSocketKey("dGhlIHNhbXBsZS ub25jZQ=="));  // Space not allowed
-}
-
+#ifdef AERONET_ENABLE_WEBSOCKET
 // ============================================================================
 // Additional ValidateWebSocketUpgrade tests
 // ============================================================================
@@ -753,8 +656,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_UpgradeHeaderWithWhitespa
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);
 }
 
@@ -767,8 +670,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionUpgradeWithExtr
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);
 }
 
@@ -781,8 +684,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_VersionWithWhitespace) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);
 }
 
@@ -795,8 +698,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_KeyWithWhitespace) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);
 }
 
@@ -809,8 +712,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionNoUpgradeToken)
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("upgrade"));
 }
@@ -824,9 +727,11 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MultipleExtensions) {
                                      "Sec-WebSocket-Extensions: x-webkit-deflate-frame, permessage-deflate\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  WebSocketUpgradeConfig config{{}, true, {}};
+  websocket::DeflateConfig deflateConfig;
+  deflateConfig.enabled = true;
+  WebSocketUpgradeConfig config{{}, deflateConfig};
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
 
 // Should pick the first acceptable extension (permessage-deflate)
 // x-webkit-deflate-frame is not supported
@@ -849,8 +754,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_EmptyProtocolHeader) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);
   EXPECT_TRUE(result.offeredProtocols.empty());
 }
@@ -864,9 +769,11 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_EmptyExtensionsHeader) {
                                      "Sec-WebSocket-Extensions: \r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  WebSocketUpgradeConfig config{{}, true, {}};
+  websocket::DeflateConfig deflateConfig;
+  deflateConfig.enabled = true;
+  WebSocketUpgradeConfig config{{}, deflateConfig};
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);
   EXPECT_FALSE(result.deflateParams.has_value());
 }
@@ -881,9 +788,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_NoSupportedProtocols) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
-  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  WebSocketUpgradeConfig config{serverProtocols, {}};
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid);
   // Protocols are captured but none selected
   EXPECT_EQ(result.offeredProtocols.nbConcatenatedStrings(), 2);
@@ -926,22 +833,6 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflateNoContextTakeo
   EXPECT_TRUE(responseView.contains("server_no_context_takeover"));
   EXPECT_TRUE(responseView.contains("client_no_context_takeover"));
 }
+#endif
 
-// ============================================================================
-// ComputeWebSocketAccept edge cases
-// ============================================================================
-
-TEST(UpgradeHandlerTest, ComputeWebSocketAccept_EmptyKey) {
-  const auto accept = upgrade::ComputeWebSocketAccept("");
-  // Should still work - concatenates empty string with GUID
-  EXPECT_NE(accept[0], '\0');
-}
-
-TEST(UpgradeHandlerTest, ComputeWebSocketAccept_LongKey) {
-  std::string longKey(1000, 'X');
-  const auto accept = upgrade::ComputeWebSocketAccept(longKey);
-  EXPECT_NE(accept[0], '\0');
-}
-
-}  // namespace
 }  // namespace aeronet

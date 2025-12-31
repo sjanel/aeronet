@@ -50,12 +50,17 @@ option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_BE
 
 # Features
 # Optional dependencies (aeronet is able to compile without the feature if not enabled)
-option(AERONET_ENABLE_SPDLOG "Enable usage of spdlog library for logging" ${PROJECT_IS_TOP_LEVEL})
+# Most of these features depend on external libraries, except WEBSOCKET which is
+# implemented internally without third-party dependencies.
+option(AERONET_ENABLE_SPDLOG "Use spdlog library for logging" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_BROTLI "Enable usage of Brotli for br codec support" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_ZLIB "Enable usage of zlib for deflate and gzip codec support" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_ZSTD "Enable usage of Zstandard for zstd codec support" ${PROJECT_IS_TOP_LEVEL})
-option(AERONET_ENABLE_OPENTELEMETRY "Enable OpenTelemetry C++ integration (optional)" ${PROJECT_IS_TOP_LEVEL})
+option(AERONET_ENABLE_OPENTELEMETRY "Enable OpenTelemetry C++ integration" ${PROJECT_IS_TOP_LEVEL})
+# WebSocket is ON by default, but you can disable it if you don't need WebSocket support
+# and wish to reduce binary size and compilation time.
+option(AERONET_ENABLE_WEBSOCKET "Enable WebSocket support (no library dependency)" ON)
 
 option(AERONET_SPDLOG_USE_STD_FORMAT "Use std::format instead of fmt::format in spdlog" ON)
 
@@ -103,11 +108,6 @@ include(cmake/AddUnitTest.cmake)
 
 add_subdirectory(aeronet)
 
-# Optional TLS module kept separate to minimize #ifdef sprawl.
-if(AERONET_ENABLE_OPENSSL)  
-  add_subdirectory(aeronet/tls)
-endif()
-
 if(AERONET_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()
@@ -138,6 +138,9 @@ if(AERONET_INSTALL)
   )
 
   set(_AERONET_EXPORT_TARGETS aeronet aeronet_http aeronet_tech aeronet_objects aeronet_sys)
+  if(AERONET_ENABLE_WEBSOCKET)
+    list(APPEND _AERONET_EXPORT_TARGETS aeronet_websocket)
+  endif()
   if(TARGET aeronet_zstd_headers)
     list(APPEND _AERONET_EXPORT_TARGETS aeronet_zstd_headers)
   endif()
@@ -195,6 +198,10 @@ if(AERONET_INSTALL)
       FILE aeronetTargets.cmake
       DESTINATION ${AERONET_INSTALL_CMAKE_DIR}
     )
+  endif()
+
+  if(AERONET_ENABLE_WEBSOCKET)
+    install(DIRECTORY aeronet/websocket/include/ DESTINATION include)
   endif()
 
   install(FILES

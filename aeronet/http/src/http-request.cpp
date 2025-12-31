@@ -184,7 +184,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
       // we are pointing to a CRLF (empty line) - end of headers
       break;
     }
-    if (std::cmp_less(maxHeadersBytes, static_cast<std::size_t>(lineLast - headersFirst) + http::CRLF.size())) {
+    if (maxHeadersBytes < static_cast<std::size_t>(lineLast - headersFirst) + http::CRLF.size()) {
       return http::StatusCodeRequestHeaderFieldsTooLarge;
     }
     const auto [nameView, valueView] = http::ParseHeaderLine(first, lineLast);

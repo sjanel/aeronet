@@ -25,11 +25,6 @@ TEST(WebSocketEndpointTest, DefaultConstruction) {
   WebSocketEndpoint endpoint;
 
   EXPECT_TRUE(endpoint.supportedProtocols.empty());
-#ifdef AERONET_ENABLE_ZLIB
-  EXPECT_TRUE(endpoint.enableCompression);
-#else
-  EXPECT_FALSE(endpoint.enableCompression);
-#endif
   EXPECT_FALSE(endpoint.factory);  // No factory set by default
 }
 
@@ -184,26 +179,21 @@ TEST(WebSocketEndpointTest, WithFullConfig_EmptyProtocols) {
   EXPECT_TRUE(endpoint.supportedProtocols.empty());
 }
 
-TEST(WebSocketEndpointTest, EnableCompression_CanBeSet) {
-  WebSocketEndpoint endpoint;
-  endpoint.enableCompression = true;
-  EXPECT_TRUE(endpoint.enableCompression);
-}
-
 // ============================================================================
 // Combined usage tests
 // ============================================================================
 
 TEST(WebSocketEndpointTest, CombinedUsage_WithCompressionEnabled) {
   websocket::WebSocketConfig config;
+
+  config.deflateConfig.enabled = true;
   config.isServerSide = true;
 
   std::array<std::string, 1> protocols = {"graphql-ws"};
 
   auto endpoint = WebSocketEndpoint::WithFullConfig(config, protocols, {});
-  endpoint.enableCompression = true;
 
-  EXPECT_TRUE(endpoint.enableCompression);
+  EXPECT_TRUE(endpoint.config.deflateConfig.enabled);
   EXPECT_EQ(endpoint.supportedProtocols.nbConcatenatedStrings(), 1);
   EXPECT_TRUE(static_cast<bool>(endpoint.factory));
 }

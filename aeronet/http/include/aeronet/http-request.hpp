@@ -105,7 +105,7 @@ class HttpRequest {
   //   * Trailing & leading horizontal whitespace around each original field-value are removed.
   //   * Empty headers are retained (key maps to empty string_view) allowing explicit empties to be detected via
   //     headerValue().
-  [[nodiscard]] const auto& headers() const noexcept { return _headers; }
+  [[nodiscard]] const HeadersViewMap& headers() const noexcept { return _headers; }
 
   // Provides zero-allocation iteration over key/value pairs in the raw query string.
   // Decoding rules (application/x-www-form-urlencoded semantics for each component ONLY):

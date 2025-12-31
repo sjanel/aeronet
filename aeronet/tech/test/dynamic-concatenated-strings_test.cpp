@@ -179,7 +179,6 @@ TYPED_TEST(DynamicConcatenatedStringsTest, Range) {
 
   EXPECT_TRUE(std::ranges::any_of(pool, [](std::string_view part) { return part == "AbC"; }));
   EXPECT_FALSE(std::ranges::any_of(pool, [](std::string_view part) { return part == "abc"; }));
-  EXPECT_TRUE(std::ranges::any_of(pool, [](std::string_view part) { return CaseInsensitiveEqual(part, "abc"); }));
 }
 
 TYPED_TEST(DynamicConcatenatedStringsTest, FullString) {

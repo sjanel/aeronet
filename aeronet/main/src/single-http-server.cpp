@@ -60,8 +60,6 @@
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/upgrade-handler.hpp"
 #include "aeronet/vector.hpp"
-#include "aeronet/websocket-endpoint.hpp"
-#include "aeronet/websocket-handler.hpp"
 
 #ifdef AERONET_ENABLE_BROTLI
 #include "aeronet/brotli-decoder.hpp"
@@ -78,6 +76,12 @@
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-context.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+#include "aeronet/websocket-endpoint.hpp"
+#include "aeronet/websocket-handler.hpp"
+#include "aeronet/websocket-upgrade.hpp"
 #endif
 
 namespace aeronet {
@@ -356,15 +360,15 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
     const Router::RoutingResult routingResult = _router.match(request.method(), request.path());
     const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
 
+#ifdef AERONET_ENABLE_WEBSOCKET
     // Check for WebSocket upgrade request
     if (routingResult.pWebSocketEndpoint != nullptr && request.method() == http::Method::GET) {
-      const auto& endpoint = *routingResult.pWebSocketEndpoint;
+      const WebSocketEndpoint& endpoint = *routingResult.pWebSocketEndpoint;
 
       // Build upgrade config from endpoint settings
-      WebSocketUpgradeConfig upgradeConfig{endpoint.supportedProtocols, endpoint.enableCompression,
-                                           endpoint.config.deflateConfig};
+      WebSocketUpgradeConfig upgradeConfig{endpoint.supportedProtocols, endpoint.config.deflateConfig};
 
-      const auto upgradeValidation = upgrade::ValidateWebSocketUpgrade(request, upgradeConfig);
+      const auto upgradeValidation = upgrade::ValidateWebSocketUpgrade(request.headers(), upgradeConfig);
       if (upgradeValidation.valid) {
         // Generate and send 101 Switching Protocols response
         const std::size_t consumedBytes = request.headSpanSize();
@@ -403,12 +407,13 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         return false;
       }
       // If upgrade validation failed but route has WebSocket endpoint, return 400
-      if (upgrade::DetectUpgradeTarget(request) == ProtocolType::WebSocket) {
+      if (upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)) == ProtocolType::WebSocket) {
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, upgradeValidation.errorMessage);
         break;
       }
       // Otherwise, fall through to normal request handling (if there's a regular handler)
     }
+#endif
 
     // Handle Expect header tokens beyond the built-in 100-continue.
     // RFC: if any expectation token is not understood and not handled, respond 417.
