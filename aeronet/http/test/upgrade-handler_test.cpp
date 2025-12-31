@@ -130,7 +130,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ValidRequest) {
                                      "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);
   EXPECT_EQ(result.targetProtocol, ProtocolType::WebSocket);
   EXPECT_TRUE(result.errorMessage.empty());
@@ -145,7 +147,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingUpgradeHeader) {
                                      "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("Upgrade"));
 }
@@ -158,7 +162,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WrongUpgradeValue) {
                                      "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("websocket"));
 }
@@ -170,7 +176,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingConnectionHeader) 
                                      "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("Connection"));
 }
@@ -182,7 +190,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingVersion) {
                                      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("Version"));
 }
@@ -195,7 +205,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WrongVersion) {
                                      "Sec-WebSocket-Version: 8\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("13"));
 }
@@ -206,8 +218,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingKey) {
                                      "Connection: Upgrade\r\n"
                                      "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
-
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("Key"));
 }
@@ -220,7 +233,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_InvalidKeyFormat) {
                                      "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("Key"));
 }
@@ -234,7 +249,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithProtocol) {
                                      "Sec-WebSocket-Protocol: graphql-ws, chat\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);
 
   // Check offered protocols are captured
@@ -253,9 +270,10 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_SubprotocolNegotiation) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   // Server supports "json" and "chat", prefers "json"
-  std::array<std::string_view, 2> serverProtocols = {"json", "chat"};
-  WebSocketUpgradeConfig config;
-  config.supportedProtocols = serverProtocols;
+  ConcatenatedStrings serverProtocols;
+  serverProtocols.append("json");
+  serverProtocols.append("chat");
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
 
   const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);
@@ -274,9 +292,10 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_SubprotocolNoMatch) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   // Server supports "binary" and "xml" - no match with client
-  std::array<std::string_view, 2> serverProtocols = {"binary", "xml"};
-  WebSocketUpgradeConfig config;
-  config.supportedProtocols = serverProtocols;
+  ConcatenatedStrings serverProtocols;
+  serverProtocols.append("binary");
+  serverProtocols.append("xml");
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
 
   const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);  // Still valid, just no protocol selected
@@ -292,9 +311,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_SubprotocolCaseInsensitiv
                                      "Sec-WebSocket-Protocol: GraphQL-WS\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  std::array<std::string_view, 1> serverProtocols = {"graphql-ws"};
-  WebSocketUpgradeConfig config;
-  config.supportedProtocols = serverProtocols;
+  ConcatenatedStrings serverProtocols;
+  serverProtocols.append("graphql-ws");
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
 
   const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);
@@ -310,7 +329,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithExtensions) {
                                      "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);
 
   // Extensions are captured for informational purposes
@@ -327,8 +348,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateNegotiat
                                      "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  WebSocketUpgradeConfig config;
-  config.enableCompression = true;
+  WebSocketUpgradeConfig config{{}, true, {}};
 
   const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
 
@@ -357,8 +377,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateWithPara
                                      "client_no_context_takeover\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  WebSocketUpgradeConfig config;
-  config.enableCompression = true;
+  WebSocketUpgradeConfig config{{}, true, {}};
 
   const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
 
@@ -382,8 +401,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateDisabled
                                      "Sec-WebSocket-Extensions: permessage-deflate\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  WebSocketUpgradeConfig config;
-  config.enableCompression = false;  // Server doesn't want compression
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
 
   const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);
@@ -400,7 +419,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionWithMultipleTok
                                      "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);
 }
 
@@ -731,7 +752,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_UpgradeHeaderWithWhitespa
                                      "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);
 }
 
@@ -743,7 +766,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionUpgradeWithExtr
                                      "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);
 }
 
@@ -755,7 +780,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_VersionWithWhitespace) {
                                      "Sec-WebSocket-Version:  13  \r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);
 }
 
@@ -767,7 +794,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_KeyWithWhitespace) {
                                      "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);
 }
 
@@ -779,7 +808,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionNoUpgradeToken)
                                      "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_FALSE(result.valid);
   EXPECT_TRUE(result.errorMessage.contains("upgrade"));
 }
@@ -793,8 +824,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MultipleExtensions) {
                                      "Sec-WebSocket-Extensions: x-webkit-deflate-frame, permessage-deflate\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  WebSocketUpgradeConfig config;
-  config.enableCompression = true;
+  WebSocketUpgradeConfig config{{}, true, {}};
 
   const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
 
@@ -818,7 +848,9 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_EmptyProtocolHeader) {
                                      "Sec-WebSocket-Protocol: \r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  const auto result = upgrade::ValidateWebSocketUpgrade(request);
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);
   EXPECT_TRUE(result.offeredProtocols.empty());
 }
@@ -832,8 +864,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_EmptyExtensionsHeader) {
                                      "Sec-WebSocket-Extensions: \r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  WebSocketUpgradeConfig config;
-  config.enableCompression = true;
+  WebSocketUpgradeConfig config{{}, true, {}};
 
   const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);
@@ -849,8 +880,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_NoSupportedProtocols) {
                                      "Sec-WebSocket-Protocol: graphql-ws, chat\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  // Server supports nothing (empty config)
-  WebSocketUpgradeConfig config;
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, false, {}};
 
   const auto result = upgrade::ValidateWebSocketUpgrade(request, config);
   EXPECT_TRUE(result.valid);

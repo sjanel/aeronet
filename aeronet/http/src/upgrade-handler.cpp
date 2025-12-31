@@ -61,7 +61,7 @@ ConcatenatedStrings ParseTokenList(std::string_view header) {
 
 // Select the first matching subprotocol from client's offer
 [[nodiscard]] std::string_view NegotiateSubprotocol(const ConcatenatedStrings& offered,
-                                                    std::span<const std::string_view> supported) {
+                                                    const ConcatenatedStrings& supported) {
   // Server's preference order
   auto it = std::ranges::find_if(supported,
                                  [&offered](std::string_view serverProto) { return offered.containsCI(serverProto); });
@@ -186,9 +186,7 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const HttpRequest& request, con
     result.offeredProtocols = ParseTokenList(*protocolHeader);
 
     // Negotiate subprotocol if server supports any
-    if (!config.supportedProtocols.empty()) {
-      result.selectedProtocol = NegotiateSubprotocol(result.offeredProtocols, config.supportedProtocols);
-    }
+    result.selectedProtocol = NegotiateSubprotocol(result.offeredProtocols, config.supportedProtocols);
   }
 
   // Parse Sec-WebSocket-Extensions and negotiate permessage-deflate
