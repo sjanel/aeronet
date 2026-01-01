@@ -492,12 +492,13 @@ TEST(HttpConfigUpdate, ImmutableFieldsProtected) {
     cfg.maxBodyBytes = 1024UL * 1024UL;  // mutable - will take effect
   });
 
-  auto portResp = test::simpleGet(ts.port(), "/port");
-  auto reusePortResp = test::simpleGet(ts.port(), "/reuseport");
-  auto maxBodyResp = test::simpleGet(ts.port(), "/maxbody");
+  auto portResp = test::simpleGet(originalPort, "/port");
+  auto reusePortResp = test::simpleGet(originalPort, "/reuseport");
+  auto maxBodyResp = test::simpleGet(originalPort, "/maxbody");
 
   // Immutable fields should remain unchanged
   EXPECT_TRUE(portResp.contains(std::to_string(originalPort)));
+  EXPECT_EQ(ts.port(), originalPort);
   EXPECT_TRUE(reusePortResp.contains(originalReusePort ? "true" : "false"));
 
   // Mutable field should have changed
