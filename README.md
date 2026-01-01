@@ -18,12 +18,12 @@
 - **Modular & opt‑in**: enable only the features you need at compile time to minimize binary size and dependencies
 - **Ergonomic**: easy API, automatic features (encoding, telemetry), RAII listener setup with sync / async server lifetime control, developer friendly with no hidden global state, no macros
 - **Configurable**: extensive dynamic configuration with reasonable defaults (principle of least surprise)
-- **Standards compliant**: Compression, Streaming, Trailers, TLS, CORS, Range Requests, Conditional Requests, Static files, Percent Decoding, etc.
+- **Standards compliant**: HTTP/1.1, HTTP/2, WebSocket, Compression, Streaming, Trailers, TLS, CORS, Range & Conditional Requests, Static files, URL Decoding, multipart/form-data, etc.
 - **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing), dogstatsd support, perfect for micro-services
 
 ### Performance at a glance
 
-`aeronet` is designed to be **very fast**. In our automated [wrk](https://github.com/wg/wrk)-based benchmarks against other popular frameworks (run in CI against a fixed set of competitors such as [drogon](https://github.com/drogonframework/drogon), [pistache](https://github.com/pistacheio/pistache), a Rust Axum server, Java Undertow, Go and Python), aeronet:
+`aeronet` is designed to be **very fast**. In our automated [wrk](https://github.com/wg/wrk)-based benchmarks against other popular frameworks (run in CI against a fixed set of competitors such as [drogon](https://github.com/drogonframework/drogon), [pistache](https://github.com/pistacheio/pistache), a Rust Axum server, Java Undertow, Go and Python), `aeronet`:
 
 - Achieves the **highest requests/sec** in most scenarios
 - Consistently delivers **lower average latency** in those same scenarios
@@ -233,7 +233,7 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Outbound stats | Bytes queued, immediate vs flush writes, high-water marks |
 | Lightweight logging | Pluggable design (spdlog optional); ISO 8601 UTC timestamps |
 | Builder-style config | Fluent `HttpServerConfig` setters (`withPort()`, etc.) |
-| Metrics callback (alpha) | Per-request timing & size scaffold hook |
+| Metrics callback | Per-request timing & size scaffold hook |
 | RAII construction | Fully listening after constructor (ephemeral port resolved immediately) |
 | Comprehensive tests | Parsing, limits, streaming, mixed precedence, reuseport, move semantics, keep-alive |
 | Mixed handlers example | Normal + streaming coexistence on same path (e.g. GET streaming, POST fixed) |
@@ -249,7 +249,7 @@ Moved out of the landing page to keep things concise. See the full, continually 
 
 ## Public objects and usage
 
-Consuming `aeronet` will result in the client code interacting with [server objects](#server-objects), [router](#router-configuration-two-safe-ways-to-set-handlers), [http responses](#building-the-http-response), streaming HTTP responses (documentation TODO) and reading HTTP requests.
+Consuming `aeronet` will result in the client code interacting with [server objects](#server-objects), [router](#router-configuration-two-safe-ways-to-set-handlers), [http responses](#building-the-http-response), streaming HTTP responses and reading HTTP requests.
 
 ### Server objects
 
@@ -647,7 +647,7 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 | Limits | Chunk total/body growth -> 413 | ✅ | exercised across `http-chunked-head_test.cpp` and parser fuzz paths |
 | Bodies | Content-Length body handling | ✅ | `http-core_test.cpp`, `http-additional_test.cpp` |
 | Bodies | Chunked decoding | ✅ | `http-chunked-head_test.cpp`, `http-parser-errors_test.cpp` |
-| Bodies | Trailers exposure | ❌ | Not implemented (roadmap) |
+| Bodies | Trailers exposure | ✅ | Implemented (see tests/http-trailers_test.cpp) |
 | Expect | 100-continue w/ non-zero length | ✅ | `http-parser-errors_test.cpp` |
 | Expect | No 100 for zero-length | ✅ | `http-parser-errors_test.cpp`, `http-additional_test.cpp` |
 | Keep-Alive | Basic keep-alive persistence | ✅ | `http-core_test.cpp` |
@@ -677,7 +677,7 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 | OpenTelemetry | Basic integration smoke | ✅ | `opentelemetry-integration_test.cpp` |
 | Async run | SingleHttpServer::start() behavior | ✅ | `http-server-lifecycle_test.cpp` |
 | Misc / Smoke | Probes, stats, misc invariants | ✅ | `http-server-lifecycle_test.cpp`, `http-stats_test.cpp` |
-| Not Implemented | Trailers (outgoing chunked / trailing headers planned) | ❌ | Roadmap |
+| Implemented | Trailers (outgoing chunked / trailing headers) | ✅ | See tests/http-trailers_test.cpp and http-response-writer.hpp |
 
 ## Build & Installation
 
