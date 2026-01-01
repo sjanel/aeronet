@@ -18,6 +18,7 @@
 #include <system_error>
 #include <utility>
 
+#include "aeronet/bytes-string.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
@@ -83,82 +84,6 @@ void AppendHtmlEscaped(std::string_view requestPath, RawChars& out) {
   }
 }
 
-// Format a file size into a human-readable string using binary units (powers of 1024).
-// Rules:
-//  - Units used: B, KB, MB, GB, TB (where 1 KB == 1024 bytes, 1 MB == 1024*1024 bytes, ...).
-//  - For values < 1024 bytes the function prints an integer number of bytes, e.g. "512 B".
-//  - For values >= 1024 the value is divided by 1024 repeatedly to find the largest unit
-//    with a value < 1024. For those units we print a decimal number; formatting uses one
-//    decimal place when the numeric value is less than 10 (to preserve a single significant
-//    fractional digit) and no decimals when the value is >= 10. Examples:
-//      0         -> "0 B"
-//      512       -> "512 B"
-//      1536      -> "1.5 KB"   (1536 / 1024 == 1.5)
-//      1048576   -> "1.0 MB"   (1024*1024 -> value is 1.0, one decimal is shown)
-//      12345678  -> "11.8 MB"  (approx; displays one decimal when < 10, otherwise no fractional)
-//  - A single space separates the number and the unit (e.g. "1.5 KB").
-void AddFormattedSize(std::uintmax_t size, RawChars& out) {
-  static constexpr std::array<std::string_view, 5> units{"B", "KB", "MB", "GB", "TB"};
-
-  // Find the largest unit where the value is < 1024 (binary units, 1024^n)
-  std::size_t unitIdx = 0;
-  std::uintmax_t divisor = 1;
-  for (; unitIdx + 1U < units.size() && size >= divisor * 1024U; ++unitIdx) {
-    divisor *= 1024U;
-  }
-
-  // small helper: append integer value and the unit (with leading space)
-  const auto appendIntAndUnit = [&out](std::uintmax_t value, std::string_view unit) {
-    const auto buf = IntegralToCharVector(value);
-    out.ensureAvailableCapacityExponential(buf.size() + 1 + unit.size());
-    out.unchecked_append(buf.data(), buf.size());
-    out.unchecked_push_back(' ');
-    out.unchecked_append(unit);
-  };
-
-  // Bytes: print integer bytes
-  if (unitIdx == 0U) {
-    appendIntAndUnit(size, units[unitIdx]);
-    return;
-  }
-
-  // For units >= KB, follow existing formatting rules: if the numeric value is < 10, print one
-  // decimal place (rounded). Otherwise print an integer (rounded).
-  // Check value < 10  <=> size < divisor * 10
-  if (size < divisor * 10U) {
-    const std::uintmax_t intPart = size / divisor;
-    const std::uintmax_t rem = size % divisor;
-    // frac10 = round(rem * 10 / divisor)
-    const std::uintmax_t frac10 = (rem * 10U + divisor / 2U) / divisor;
-    std::uintmax_t finalInt = intPart;
-    std::uintmax_t finalFrac = frac10;
-    if (frac10 >= 10U) {
-      // carry into integer part (e.g. 9.96 -> rounds to 10.0)
-      finalInt = intPart + 1U;
-      finalFrac = 0U;
-    }
-    // If carry produced a value >= 10 we should print integer form (no decimal) per rules
-    if (finalInt >= 10U) {
-      appendIntAndUnit(finalInt, units[unitIdx]);
-      return;
-    }
-    // print one decimal: int.frac unit
-    const auto intBuf = IntegralToCharVector(finalInt);
-    const auto fracBuf = IntegralToCharVector(finalFrac);
-    out.ensureAvailableCapacityExponential(intBuf.size() + 1U + fracBuf.size() + 1U + units[unitIdx].size());
-    out.unchecked_append(intBuf.data(), intBuf.size());
-    out.unchecked_push_back('.');
-    out.unchecked_append(fracBuf.data(), fracBuf.size());
-    out.unchecked_push_back(' ');
-    out.unchecked_append(units[unitIdx]);
-    return;
-  }
-
-  // Print integer with rounding
-  const std::uintmax_t rounded = (size + divisor / 2U) / divisor;
-  appendIntAndUnit(rounded, units[unitIdx]);
-}
-
 void FormatLastModified(SysTimePoint tp, RawChars& buf) {
   if (tp == kInvalidTimePoint) {
     buf.push_back('-');
@@ -191,7 +116,7 @@ struct DirectoryListingEntry {
   std::string name;
   std::filesystem::directory_entry entry;
   bool isDirectory{false};
-  bool sizeKnown{false};
+  bool fileSizeKnown{false};
   std::uintmax_t sizeBytes{0};
   SysTimePoint lastModified{kInvalidTimePoint};
 };
@@ -241,7 +166,7 @@ RawChars RenderDefaultDirectoryListing(std::string_view requestPath, std::span<c
     AppendHtmlEscaped(entry.name, body);
 
     body.append("</a></td><td class=\"size\">");
-    if (entry.sizeKnown && !isDir) {
+    if (entry.fileSizeKnown) {
       AddFormattedSize(entry.sizeBytes, body);
     } else {
       body.push_back('-');
@@ -315,7 +240,7 @@ struct DirectoryListingResult {
         if (stepEc) {
           log::error("Failed to get size for directory entry '{}': {}", current.path().c_str(), stepEc.message());
         } else {
-          info.sizeKnown = true;
+          info.fileSizeKnown = true;
           info.sizeBytes = fileSize;
         }
       }
@@ -491,7 +416,7 @@ RangeSelection ParseRange(std::string_view raw, std::uint64_t fileSize) {
 
   if (firstPart.empty()) {
     // suffix-byte-range-spec: bytes=-N (last N bytes)
-    auto suffixLen = ParseUint(secondPart);
+    const auto suffixLen = ParseUint(secondPart);
     if (suffixLen == kInvalidUint64 || suffixLen == 0) {
       result.state = RangeSelection::State::Invalid;
       return result;

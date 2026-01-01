@@ -281,12 +281,12 @@ TEST_F(StaticFileHandlerTest, DirectoryListingEscapesAndFormatsSizes) {
     EXPECT_TRUE(body.contains("<td class=\"modified\">-</td>"));
     EXPECT_TRUE(body.contains("body{color:red;}"));
     EXPECT_EQ(body.contains("a-mix&amp;&lt;&gt;&quot;&#39;name.txt"), maxEntriesToList >= 1U);
-    EXPECT_EQ(body.contains("1.5 KB"), maxEntriesToList >= 1U);
+    EXPECT_EQ(body.contains("1.5 KiB"), maxEntriesToList >= 1U);
     EXPECT_EQ(body.contains("b-rounding.bin"), maxEntriesToList >= 2U);
-    EXPECT_EQ(body.contains("10 KB"), maxEntriesToList >= 2U);
+    EXPECT_EQ(body.contains("10 KiB"), maxEntriesToList >= 2U);
     EXPECT_EQ(body.contains("c-dangling"), maxEntriesToList >= 3U);
     EXPECT_EQ(body.contains("d-large.bin"), maxEntriesToList >= 4U);
-    EXPECT_EQ(body.contains("24 KB"), maxEntriesToList >= 4U);
+    EXPECT_EQ(body.contains("24 KiB"), maxEntriesToList >= 4U);
   }
 }
 
@@ -305,7 +305,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingFormatsLargeSizesWithoutDecimals) 
   HttpResponse resp = handler(req);
   ASSERT_EQ(resp.status(), http::StatusCodeOK);
   const std::string_view body = resp.body();
-  EXPECT_NE(body.find("24 KB"), std::string_view::npos);
+  EXPECT_NE(body.find("24 KiB"), std::string_view::npos);
   EXPECT_EQ(resp.headerValueOrEmpty("X-Directory-Listing-Truncated"), "0");
 }
 
@@ -334,6 +334,29 @@ TEST_F(StaticFileHandlerTest, DirectoryListingUsesCustomRenderer) {
   ASSERT_TRUE(rendererCalled);
   EXPECT_EQ(resp.body(), "<html>custom</html>");
   EXPECT_EQ(resp.headerValueOrEmpty("X-Directory-Listing-Truncated"), "0");
+}
+
+TEST_F(StaticFileHandlerTest, DirectoryListingFormatsOneMegabyteWithDecimal) {
+  const auto dirPath = tmpDir.dirPath() / "megadir";
+  std::filesystem::create_directories(dirPath);
+
+  // Create a 1 MiB file to exercise MB formatting (1.0 MB)
+  const std::size_t oneMiB = 1024UL * 1024U;
+  writeFileWithSize(dirPath / "big.bin", oneMiB);
+
+  StaticFileConfig cfg;
+  cfg.enableDirectoryIndex = true;
+  StaticFileHandler handler(tmpDir.dirPath(), cfg);
+
+  buildReq("megadir/");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodeOK);
+  const std::string_view body = resp.body();
+
+  // The listing should contain the size formatted as "1.0 MiB"
+  EXPECT_TRUE(body.contains("1.0 MiB"));
 }
 
 TEST_F(StaticFileHandlerTest, DirectoryListingFailsWhenDirectoryUnreadable) {

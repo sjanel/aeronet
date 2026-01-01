@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 
@@ -17,15 +18,15 @@ TEST(Http2Config, DefaultValues) {
   Http2Config config;
 
   // RFC 9113 SETTINGS defaults
-  EXPECT_EQ(config.headerTableSize, 4096u);
+  EXPECT_EQ(config.headerTableSize, 4096U);
   EXPECT_FALSE(config.enablePush);
-  EXPECT_EQ(config.maxConcurrentStreams, 100u);
-  EXPECT_EQ(config.initialWindowSize, 65535u);
-  EXPECT_EQ(config.maxFrameSize, 16384u);
-  EXPECT_EQ(config.maxHeaderListSize, 8192u);
+  EXPECT_EQ(config.maxConcurrentStreams, 100U);
+  EXPECT_EQ(config.initialWindowSize, 65535U);
+  EXPECT_EQ(config.maxFrameSize, 16384U);
+  EXPECT_EQ(config.maxHeaderListSize, 8192U);
 
   // Connection-level defaults
-  EXPECT_EQ(config.connectionWindowSize, 1u << 20);  // 1MB
+  EXPECT_EQ(config.connectionWindowSize, 1U << 20);  // 1MB
 
   // Timeout defaults
   EXPECT_EQ(config.settingsTimeout, std::chrono::milliseconds{5000});
@@ -33,11 +34,11 @@ TEST(Http2Config, DefaultValues) {
   EXPECT_EQ(config.pingTimeout, std::chrono::milliseconds{10000});
 
   // Other defaults
-  EXPECT_EQ(config.maxStreamsPerConnection, 0u);
+  EXPECT_EQ(config.maxStreamsPerConnection, 0U);
   EXPECT_TRUE(config.enableH2c);
   EXPECT_TRUE(config.enableH2cUpgrade);
   EXPECT_TRUE(config.enablePriority);
-  EXPECT_EQ(config.maxPriorityTreeDepth, 256u);
+  EXPECT_EQ(config.maxPriorityTreeDepth, 256U);
 }
 
 // ============================
@@ -53,12 +54,12 @@ TEST(Http2Config, BuilderPatternSettings) {
                            .withMaxFrameSize(32768)
                            .withMaxHeaderListSize(65536);
 
-  EXPECT_EQ(config.headerTableSize, 8192u);
+  EXPECT_EQ(config.headerTableSize, 8192U);
   EXPECT_TRUE(config.enablePush);
-  EXPECT_EQ(config.maxConcurrentStreams, 50u);
-  EXPECT_EQ(config.initialWindowSize, 32768u);
-  EXPECT_EQ(config.maxFrameSize, 32768u);
-  EXPECT_EQ(config.maxHeaderListSize, 65536u);
+  EXPECT_EQ(config.maxConcurrentStreams, 50U);
+  EXPECT_EQ(config.initialWindowSize, 32768U);
+  EXPECT_EQ(config.maxFrameSize, 32768U);
+  EXPECT_EQ(config.maxHeaderListSize, 65536U);
 }
 
 TEST(Http2Config, BuilderPatternConnection) {
@@ -69,11 +70,11 @@ TEST(Http2Config, BuilderPatternConnection) {
                            .withPingTimeout(std::chrono::milliseconds{5000})
                            .withMaxStreamsPerConnection(1000);
 
-  EXPECT_EQ(config.connectionWindowSize, 2u << 20);
+  EXPECT_EQ(config.connectionWindowSize, 2U << 20);
   EXPECT_EQ(config.settingsTimeout, std::chrono::milliseconds{10000});
   EXPECT_EQ(config.pingInterval, std::chrono::milliseconds{30000});
   EXPECT_EQ(config.pingTimeout, std::chrono::milliseconds{5000});
-  EXPECT_EQ(config.maxStreamsPerConnection, 1000u);
+  EXPECT_EQ(config.maxStreamsPerConnection, 1000U);
 }
 
 TEST(Http2Config, BuilderPatternFeatures) {
@@ -84,7 +85,7 @@ TEST(Http2Config, BuilderPatternFeatures) {
   EXPECT_FALSE(config.enableH2c);
   EXPECT_FALSE(config.enableH2cUpgrade);
   EXPECT_FALSE(config.enablePriority);
-  EXPECT_EQ(config.maxPriorityTreeDepth, 128u);
+  EXPECT_EQ(config.maxPriorityTreeDepth, 128U);
 }
 
 TEST(Http2Config, BuilderChaining) {
@@ -148,17 +149,17 @@ TEST(Http2Config, ValidateMaxFrameSizeTooLarge) {
 }
 
 TEST(Http2Config, ValidateInitialWindowSizeTooLarge) {
-  Http2Config config = Http2Config{}.withInitialWindowSize(2147483648u);  // 2^31
+  Http2Config config = Http2Config{}.withInitialWindowSize(2147483648U);  // 2^31
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 TEST(Http2Config, ValidateConnectionWindowSizeTooLarge) {
-  Http2Config config = Http2Config{}.withConnectionWindowSize(2147483648u);  // 2^31
+  Http2Config config = Http2Config{}.withConnectionWindowSize(2147483648U);  // 2^31
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 TEST(Http2Config, ValidateHeaderTableSizeTooLarge) {
-  Http2Config config = Http2Config{}.withHeaderTableSize(65537);  // Above internal limit
+  Http2Config config = Http2Config{}.withHeaderTableSize(65537U);  // Above internal limit
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
@@ -200,8 +201,8 @@ TEST(Http2Config, CopyConstruction) {
 
   Http2Config copy{original};
 
-  EXPECT_EQ(copy.headerTableSize, 8192u);
-  EXPECT_EQ(copy.maxConcurrentStreams, 200u);
+  EXPECT_EQ(copy.headerTableSize, 8192U);
+  EXPECT_EQ(copy.maxConcurrentStreams, 200U);
 }
 
 TEST(Http2Config, CopyAssignment) {
@@ -210,14 +211,14 @@ TEST(Http2Config, CopyAssignment) {
 
   assigned = original;
 
-  EXPECT_EQ(assigned.headerTableSize, 8192u);
+  EXPECT_EQ(assigned.headerTableSize, 8192U);
 }
 
 TEST(Http2Config, MoveConstruction) {
   Http2Config original = Http2Config{}.withHeaderTableSize(8192);
   Http2Config moved{std::move(original)};
 
-  EXPECT_EQ(moved.headerTableSize, 8192u);
+  EXPECT_EQ(moved.headerTableSize, 8192U);
 }
 
 }  // namespace

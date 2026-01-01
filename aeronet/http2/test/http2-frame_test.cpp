@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <span>
 
-#include "aeronet/http2-frame.hpp"
+#include "aeronet/http2-frame-types.hpp"
 #include "aeronet/raw-bytes.hpp"
 
 namespace aeronet::http2 {
@@ -131,7 +131,7 @@ TEST(Http2Frame, ParseDataFrameSimple) {
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_TRUE(frame.endStream);
-  EXPECT_EQ(frame.data.size(), 5u);
+  EXPECT_EQ(frame.data.size(), 5U);
   EXPECT_EQ(static_cast<char>(frame.data[0]), 'h');
 }
 
