@@ -907,7 +907,7 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRe
     static constexpr std::string_view kMessage = "Async handler inactive";
     log::error("Async path handler returned an invalid RequestTask for path {}", state.request.path());
     if (bodyReady) {
-      HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
+      HttpResponse resp(http::StatusCodeInternalServerError);
       resp.body(kMessage);
       applyResponseMiddleware(state.request, resp, responseMiddleware, false);
       finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);

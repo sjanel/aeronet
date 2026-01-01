@@ -331,6 +331,44 @@ TEST(Http2ProtocolHandler, SimpleGetWithBodyProducesHeadersAndData) {
   EXPECT_TRUE(loop.clientData[0].endStream);
 }
 
+TEST(Http2ProtocolHandler, HttpRequestHttp2FieldsSetCorrectly) {
+  Router router;
+  router.setPath(http::Method::GET, "/hello", [](const HttpRequest& req) {
+    std::string body = "Handler called\n";
+    body += "isHttp2: " + std::string(req.isHttp2() ? "true" : "false") + "\n";
+    body += "streamId: " + std::to_string(req.streamId()) + "\n";
+    body += "scheme: " + std::string(req.scheme()) + "\n";
+    body += "authority: " + std::string(req.authority()) + "\n";
+    return HttpResponse(body);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  const auto ok = loop.client.sendHeaders(
+      1,
+      [](const HeaderCallback& emit) {
+        emit(":method", "GET");
+        emit(":scheme", "https");
+        emit(":authority", "example.com");
+        emit(":path", "/hello");
+      },
+      true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "200");
+  EXPECT_FALSE(loop.clientHeaders[0].endStream);
+
+  ASSERT_FALSE(loop.clientData.empty());
+  EXPECT_TRUE(loop.clientData[0].endStream);
+  EXPECT_EQ(loop.clientData[0].data,
+            "Handler called\nisHttp2: true\nstreamId: 1\nscheme: https\nauthority: example.com\n");
+}
+
 TEST(Http2ProtocolHandler, ResponseWithTrailersEndsOnTrailerHeaders) {
   Router router;
   router.setPath(http::Method::GET, "/trailers",
