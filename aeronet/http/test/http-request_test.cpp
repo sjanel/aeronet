@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <initializer_list>
 #include <memory>
 #include <random>
@@ -304,11 +305,11 @@ TEST_F(HttpRequestTest, TraceSpanNotSetWhenNoHostHeader) {
 
 TEST_F(HttpRequestTest, PinHead_NoHeadSpan_Noop) {
   // When no head span is present, pinHeadStorage should be a no-op.
-  EXPECT_EQ(req.headSpanSize(), 0u);
+  EXPECT_EQ(req.headSpanSize(), 0);
 
   callPinHeadStorage();
 
-  EXPECT_EQ(req.headSpanSize(), 0u);
+  EXPECT_EQ(req.headSpanSize(), 0);
 }
 
 TEST_F(HttpRequestTest, PinHead_NormalCopiesAndRemaps) {
@@ -323,7 +324,7 @@ TEST_F(HttpRequestTest, PinHead_NormalCopiesAndRemaps) {
 
   // Call pinHeadStorage to copy head into headBuffer and remap views
   callPinHeadStorage();
-  EXPECT_GT(req.headSpanSize(), 0u);
+  EXPECT_GT(req.headSpanSize(), 0);
 
   // Header value should still be accessible and unchanged after pin
   EXPECT_EQ(req.headerValueOrEmpty("X-Test"), "v");
@@ -335,14 +336,14 @@ TEST_F(HttpRequestTest, PinHead_SecondCallIsNoop) {
   auto st = reqSet(std::move(raw));
   ASSERT_EQ(st, http::StatusCodeOK);
   callPinHeadStorage();
-  EXPECT_GT(req.headSpanSize(), 0u);
+  EXPECT_GT(req.headSpanSize(), 0);
 
   // Capture header pointer after first pin
   auto val1 = req.headerValueOrEmpty("X-A");
 
   // Second call should be a no-op and not crash/change values
   callPinHeadStorage();
-  EXPECT_GT(req.headSpanSize(), 0u);
+  EXPECT_GT(req.headSpanSize(), 0);
   auto val2 = req.headerValueOrEmpty("X-A");
   EXPECT_EQ(val1, val2);
 }
@@ -728,6 +729,18 @@ TEST_F(HttpRequestTest, HasMoreBodyReturnsFalseWhenAggregated) {
   EXPECT_FALSE(req.hasMoreBody());
 }
 
+TEST_F(HttpRequestTest, ReadBufferedBodyNullContextReturnsEmpty) {
+  // Install aggregated bridge via ConnectionState helper
+  cs.installAggregatedBodyBridge();
+
+  // Force the bridge context to be null to exercise the null-context branch
+  setRequestBodyAccessContextToNull();
+
+  // Calling readBody should return empty when context is null
+  auto chunk = cs.request.readBody(4);
+  EXPECT_TRUE(chunk.empty());
+}
+
 TEST_F(HttpRequestTest, HasMoreBodyReturnsFalseWhenBridgeHasNoHasMore) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
@@ -895,7 +908,6 @@ TEST_F(HttpRequestTest, PinHead_SkipsRemapForViewsBeforeOldBase) {
   // Allocate a temporary small buffer and make a pointer that points before oldBase
   std::string tmp = "PRE_DATA";
   const char* tmpPtr = tmp.data();
-  const char* oldBase = cs.inBuffer.data();
   // choose a pointer that lies before oldBase
   const char* before = tmpPtr;  // tmp is separate from inBuffer
 

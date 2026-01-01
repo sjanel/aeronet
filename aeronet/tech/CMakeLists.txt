@@ -17,6 +17,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    bytes-string_test
+    test/bytes-string_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     cctype_test
     test/cctype_test.cpp
 )

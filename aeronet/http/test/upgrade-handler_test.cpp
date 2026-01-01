@@ -226,7 +226,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithProtocol) {
                                      "Connection: Upgrade\r\n"
                                      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
                                      "Sec-WebSocket-Version: 13\r\n"
-                                     "Sec-WebSocket-Protocol: graphql-ws, chat\r\n"));
+                                     "Sec-WebSocket-Protocol: graphql-ws, chat,,\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -238,6 +238,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithProtocol) {
   ASSERT_EQ(result.offeredProtocols.nbConcatenatedStrings(), 2);
   EXPECT_TRUE(result.offeredProtocols.contains("graphql-ws"));
   EXPECT_TRUE(result.offeredProtocols.contains("chat"));
+  EXPECT_FALSE(result.offeredProtocols.contains(""));  // Empty token ignored
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_SubprotocolNegotiation) {
@@ -317,6 +318,24 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithExtensions) {
   // Extensions are captured for informational purposes
   ASSERT_EQ(result.offeredExtensions.nbConcatenatedStrings(), 1);
   EXPECT_TRUE(result.offeredExtensions.begin()->starts_with("permessage-deflate"));
+}
+
+TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithExtensionsEmptyList) {
+  const auto status = parse(BuildRaw("GET", "/ws",
+                                     "Upgrade: websocket\r\n"
+                                     "Connection: Upgrade\r\n"
+                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                     "Sec-WebSocket-Version: 13\r\n"
+                                     "Sec-WebSocket-Extensions: ,\r\n"));
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
+  EXPECT_TRUE(result.valid);
+
+  // Extensions are captured for informational purposes
+  ASSERT_EQ(result.offeredExtensions.nbConcatenatedStrings(), 0);
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateNegotiation) {

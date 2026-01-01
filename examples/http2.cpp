@@ -24,7 +24,9 @@
 #include <cstring>
 #include <exception>
 #include <iostream>
+#include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 using namespace aeronet;

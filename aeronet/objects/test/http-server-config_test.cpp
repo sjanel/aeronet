@@ -13,6 +13,10 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/tls-config.hpp"
 
+#ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/http2-config.hpp"
+#endif
+
 namespace aeronet {
 
 TEST(HttpServerConfigTest, WithGlobalHeadersShouldReplaceAllList) {

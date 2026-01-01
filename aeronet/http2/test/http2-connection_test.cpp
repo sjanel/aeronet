@@ -5,9 +5,12 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
+#include <iterator>
 #include <span>
 
 #include "aeronet/http2-config.hpp"
+#include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/vector.hpp"
 

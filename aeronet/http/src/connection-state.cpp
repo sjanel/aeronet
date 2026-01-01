@@ -140,7 +140,7 @@ std::string_view ReadBufferedBody([[maybe_unused]] HttpRequest& request, void* c
   }
   const std::size_t remaining = ctx->body.size() - ctx->offset;
   const std::size_t len = std::min(maxBytes, remaining);
-  std::string_view chunk(ctx->body.data() + ctx->offset, len);
+  const std::string_view chunk(ctx->body.data() + ctx->offset, len);
   ctx->offset += len;
   return chunk;
 }

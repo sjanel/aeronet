@@ -219,6 +219,35 @@ TEST(ConnectionStateSendfileTest, TlsPreadEintrWithNoRemainingDoesNotSetWouldBlo
   // Because we returned early on EINTR, active is not cleared here
   EXPECT_TRUE(state.fileSend.active);
 }
+
+TEST(ConnectionStateSendfileTest, TlsPreadZeroKeepsActiveWhenRemainingPositive) {
+  int sv[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+
+  const std::string content(1024, 'Z');
+  test::ScopedTempDir tmpDir;
+  ScopedTempFile tmp(tmpDir, content);
+
+  File file(tmp.filePath().string());
+  ConnectionState state;
+  state.fileSend.file = std::move(file);
+  state.fileSend.offset = 0;
+  state.fileSend.remaining = content.size();
+  state.fileSend.active = true;
+
+  // Simulate pread returning 0 bytes (e.g., unexpected EOF) while remaining > 0
+  test::SetPreadPathActions(tmp.filePath().string(), {IoAction{0, 0}});
+
+  auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
+
+  // transportFile should return with 0 bytes read and fileSend should remain active
+  EXPECT_EQ(res.bytesDone, 0U);
+  EXPECT_TRUE(state.tunnelOrFileBuffer.empty());
+  EXPECT_TRUE(state.fileSend.remaining > 0);
+  EXPECT_TRUE(state.fileSend.active);
+}
+
 TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
@@ -608,6 +637,29 @@ TEST(ConnectionStateTransportTest, TransportReadSetsHeaderStartOnce) {
   EXPECT_EQ(r2.want, TransportHint::None);
   EXPECT_EQ(r2.bytesProcessed, 1U);
   EXPECT_EQ(state.headerStartTp, firstTp);
+}
+
+TEST(ConnectionStateTransportTest, TransportWriteHttpResponseWaitsUntilHandshakeDone) {
+  ConnectionState state;
+  auto fake = std::make_unique<FakeTransport>(/*handshakeInitially=*/false);
+  FakeTransport* raw = fake.get();
+  state.transport = std::move(fake);
+  state.tlsEstablished = false;
+
+  HttpResponseData resp("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
+
+  // First write: handshake not done yet, tlsEstablished should remain false
+  const auto res1 = state.transportWrite(resp);
+  EXPECT_EQ(res1.want, TransportHint::None);
+  EXPECT_GE(res1.bytesProcessed, 0U);
+  EXPECT_FALSE(state.tlsEstablished);
+
+  // Now flip handshake to done and write again; tlsEstablished should become true
+  raw->setHandshakeDone(true);
+  const auto res2 = state.transportWrite(resp);
+  EXPECT_EQ(res2.want, TransportHint::None);
+  EXPECT_GE(res2.bytesProcessed, 0U);
+  EXPECT_TRUE(state.tlsEstablished);
 }
 
 TEST(ConnectionStateTransportTest, TransportWriteStringSkipsHandshakeWhenAlreadyEstablished) {
