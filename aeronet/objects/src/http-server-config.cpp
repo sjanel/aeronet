@@ -221,13 +221,13 @@ HttpServerConfig& HttpServerConfig::withGlobalHeaders(std::span<const http::Head
   }
   globalHeaders.clear();
   for (const auto& header : headers) {
-    globalHeaders.append(header.raw());
+    globalHeaders.append(header.http1Raw());
   }
   return *this;
 }
 
 HttpServerConfig& HttpServerConfig::addGlobalHeader(const http::Header& header) {
-  globalHeaders.append(header.raw());
+  globalHeaders.append(header.http1Raw());
   return *this;
 }
 
