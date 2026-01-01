@@ -6,6 +6,8 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/vector.hpp"
+
 namespace aeronet {
 namespace {
 
@@ -111,7 +113,8 @@ TEST(MultipartFormDataTest, PartLookupGracefullyHandlesMissingNames) {
 }
 
 TEST(MultipartFormDataTest, DefaultPartExposesNoHeaders) {
-  MultipartFormData::Part part;
+  vector<MultipartHeaderView> headers;
+  MultipartFormData::Part part(headers);
   EXPECT_TRUE(part.name.empty());
   EXPECT_TRUE(part.headers().empty());
   EXPECT_TRUE(part.headerValueOrEmpty("anything").empty());
@@ -147,6 +150,32 @@ TEST(MultipartFormDataTest, EmptyContentTypeHeaderMakesFormInvalid) {
   ExpectInvalid(form, "multipart/form-data boundary missing");
 }
 
+TEST(MultipartFormDataTest, EmptyParamsMakeFormInvalid) {
+  const std::string body = BuildBody({
+      "--Test--Boundary\r\n",
+      " \t\tContent-Disposition  \t:\t  form-data \t ; \t name=\"a\"\r\n",
+      "\r\n",
+      "1\r\n",
+      "--Test--Boundary--\r\n",
+  });
+
+  MultipartFormData form("multipart/form-data;", body);
+  ExpectInvalid(form, "multipart/form-data boundary missing");
+}
+
+TEST(MultipartFormDataTest, EmptyParamsMakeFormInvalid2) {
+  const std::string body = BuildBody({
+      "--Test--Boundary\r\n",
+      " \t\tContent-Disposition  \t:\t  form-data \t ; \t name=\"a\"\r\n",
+      "\r\n",
+      "1\r\n",
+      "--Test--Boundary--\r\n",
+  });
+
+  MultipartFormData form("multipart/form-data;;;", body);
+  ExpectInvalid(form, "multipart/form-data boundary missing");
+}
+
 TEST(MultipartFormDataTest, BoundaryTypeMustMatch) {
   const std::string body = BuildBody({"--Mismatch\r\n"});
   MultipartFormData form("multipart/mixed; boundary=Mismatch", body);
@@ -170,7 +199,20 @@ TEST(MultipartFormDataTest, MiddlePrefixSpaces) {
   EXPECT_EQ(form.parts()[0].value, "1");
 }
 
-TEST(MultipartFormDataTest, ExceedingPartLimitThrows) {
+TEST(MultipartFormDataTest, BoundaryTypo) {
+  const std::string body = BuildBody({
+      "--Test--Boundary\r\n",
+      " \t\tContent-Disposition  \t:\t  form-data \t ; \t name=\"a\"\r\n",
+      "\r\n",
+      "1\r\n",
+      "--Test--Boundary--\r\n",
+  });
+
+  MultipartFormData form("multipart/form-data; boudary=Test--Boundary", body);
+  ExpectInvalid(form, "multipart/form-data boundary missing");
+}
+
+TEST(MultipartFormDataTest, MaxPartsConfiguration) {
   const std::string body = BuildBody({
       "--TestBoundary\r\n",
       "Content-Disposition: form-data; name= \"a\"\r\n",
@@ -187,6 +229,11 @@ TEST(MultipartFormDataTest, ExceedingPartLimitThrows) {
   options.maxParts = 1;
   MultipartFormData form("multipart/form-data; boundary=TestBoundary", body, options);
   ExpectInvalid(form, "multipart exceeds part limit");
+
+  options.maxParts = 0;  // no limit
+  MultipartFormData form2("multipart/form-data; boundary=TestBoundary", body, options);
+  ASSERT_TRUE(form2.valid());
+  ASSERT_EQ(form2.parts().size(), 2);
 }
 
 TEST(MultipartFormDataTest, MissingContentDispositionRejected) {
@@ -200,6 +247,19 @@ TEST(MultipartFormDataTest, MissingContentDispositionRejected) {
 
   MultipartFormData form("multipart/form-data; boundary=TestBoundary", body);
   ExpectInvalid(form, "multipart part missing Content-Disposition header");
+}
+
+TEST(MultipartFormDataTest, EmptyLine) {
+  const std::string body = BuildBody({
+      "--TestBoundary\r\n\r\n",
+      " \r\n",
+      "\r\n",
+      "no header\r\n",
+      "--TestBoundary--\r\n",
+  });
+
+  MultipartFormData form("multipart/form-data; boundary=TestBoundary", body);
+  ExpectInvalid(form, "multipart part header missing colon");
 }
 
 TEST(MultipartFormDataTest, ContentDispositionMustContainValue) {
@@ -293,9 +353,28 @@ TEST(MultipartFormDataTest, MalformedFilenameStarIsInvalid2) {
   ExpectInvalid(form, "multipart part invalid Content-Disposition filename* parameter");
 }
 
+TEST(MultipartFormDataTest, MalformedFilenameStarIsInvalid3) {
+  const std::string body = BuildBody({
+      "--Fs\r\n",
+      "    \t\t Content-Disposition \t\t\t : form-data; filename*=utf-8'langvalue'\r\n",
+      "\r\n",
+      "payload\r\n",
+      "--Fs--\r\n",
+  });
+
+  MultipartFormData form("multipart/form-data; boundary=Fs", body);
+  ExpectInvalid(form, "multipart part invalid Content-Disposition filename* parameter");
+}
+
 TEST(MultipartFormDataTest, StartingBoundaryMustExist) {
   const std::string body = BuildBody({"garbage"});
   MultipartFormData form("multipart/form-data; boundary=Start", body);
+  ExpectInvalid(form, "multipart body missing starting boundary");
+}
+
+TEST(MultipartFormDataTest, StartingBoundaryMustExist2) {
+  const std::string body = BuildBody({"--garbage"});
+  MultipartFormData form("multipart/form-data; boundary=toto", body);
   ExpectInvalid(form, "multipart body missing starting boundary");
 }
 
@@ -355,14 +434,33 @@ TEST(MultipartFormDataTest, HeaderLimitIsEnforced) {
   options.maxHeadersPerPart = 1;
   MultipartFormData form("multipart/form-data; boundary=HeaderLimit", body, options);
   ExpectInvalid(form, "multipart part exceeds header limit");
+
+  options.maxHeadersPerPart = 0;  // no limit
+  MultipartFormData form2("multipart/form-data; boundary=HeaderLimit", body, options);
+  ASSERT_TRUE(form2.valid());
+  ASSERT_EQ(form2.parts().size(), 1);
+  EXPECT_EQ(form2.parts()[0].headerValueOrEmpty("Content-Type"), "text/plain");
 }
 
-TEST(MultipartFormDataTest, MissingClosingBoundaryThrows) {
+TEST(MultipartFormDataTest, MissingClosingBoundaryInvalid) {
   const std::string body = BuildBody({
       "--NoClosing\r\n",
       "Content-Disposition: form-data; name=\"field\"\r\n",
       "\r\n",
       "value",
+  });
+
+  MultipartFormData form("multipart/form-data; boundary=NoClosing", body);
+  ExpectInvalid(form, "multipart part missing closing boundary");
+}
+
+TEST(MultipartFormDataTest, MissingClosingBoundaryInvalid2) {
+  const std::string body = BuildBody({
+      "--NoClosing\r\n",
+      "Content-Disposition: form-data; name=\"field\"\r\n",
+      "\r\n",
+      "value",
+      "\r\n--Another--\r\n",
   });
 
   MultipartFormData form("multipart/form-data; boundary=NoClosing", body);
@@ -382,6 +480,12 @@ TEST(MultipartFormDataTest, PartSizeLimitIsHonored) {
   options.maxPartSizeBytes = 4;
   MultipartFormData form("multipart/form-data; boundary=PartLimit", body, options);
   ExpectInvalid(form, "multipart part exceeds size limit");
+
+  options.maxPartSizeBytes = 0;  // no limit
+  MultipartFormData form2("multipart/form-data; boundary=PartLimit", body, options);
+  ASSERT_TRUE(form2.valid());
+  ASSERT_EQ(form2.parts().size(), 1);
+  EXPECT_EQ(form2.parts()[0].value, "oversize");
 }
 
 TEST(MultipartFormDataTest, BoundaryRequiresTrailingCRLFForNextPart) {
@@ -399,6 +503,127 @@ TEST(MultipartFormDataTest, BoundaryRequiresTrailingCRLFForNextPart) {
 
   MultipartFormData form("multipart/form-data; boundary=Multi", body);
   ExpectInvalid(form, "multipart boundary missing CRLF");
+}
+
+TEST(MultipartFormDataTest, FinalBoundaryNoTrailingCRLFAccepted) {
+  // Create a body that has a single part and then the final boundary marker
+  // with no trailing CRLF. At the check in multipart-form-data.cpp this
+  // should make `body.starts_with(http::CRLF)` false, and `!body.empty() &&
+  // !finalBoundary` false as well (because it is a final boundary), so the
+  // parser should accept the final boundary and succeed.
+  const std::string body = BuildBody({
+      "--Final\r\n", "Content-Disposition: form-data; name=\"a\"\r\n", "\r\n", "1\r\n",
+      "--Final--",  // final boundary with no trailing CRLF
+  });
+
+  MultipartFormData form("multipart/form-data; boundary=Final", body);
+  ASSERT_TRUE(form.valid());
+  ASSERT_EQ(form.parts().size(), 1);
+  EXPECT_EQ(form.parts()[0].value, "1");
+}
+
+TEST(MultipartFormDataTest, FinalBoundaryWithTrailingDataRejected) {
+  // Construct a body that contains a final boundary but with extra trailing
+  // data (not just an optional trailing CRLF). This should make
+  // `body.starts_with(http::CRLF)` false, `!body.empty()` true, and
+  // `!finalBoundary` false (since it is a final boundary). The parser should
+  // therefore reject with "multipart data after final boundary".
+  const std::string body = BuildBody({
+      "--Tail\r\n",
+      "Content-Disposition: form-data; name=\"a\"\r\n",
+      "\r\n",
+      "1\r\n",
+      "--Tail--",
+      "EXTRA",
+  });
+
+  MultipartFormData form("multipart/form-data; boundary=Tail", body);
+  ExpectInvalid(form, "multipart data after final boundary");
+}
+
+TEST(MultipartFormDataTest, FinalBoundaryWithEmptyTrailingDataAccepted) {
+  // Construct a body that contains a final boundary but with extra trailing
+  // data (not just an optional trailing CRLF). This should make
+  // `body.starts_with(http::CRLF)` false, `!body.empty()` true, and
+  // `!finalBoundary` false (since it is a final boundary). The parser should
+  // therefore reject with "multipart data after final boundary".
+  const std::string body = BuildBody({
+      "--Tail\r\n",
+      "Content-Disposition: form-data; name=\"a\"\r\n",
+      "\r\n",
+      "1\r\n",
+      "--Tail--",
+      "\r\n\r\n",
+  });
+
+  MultipartFormData form("multipart/form-data; boundary=Tail", body);
+  ASSERT_TRUE(form.valid());
+  ASSERT_EQ(form.parts().size(), 1);
+  EXPECT_EQ(form.parts()[0].value, "1");
+}
+
+TEST(MultipartFormDataTest, InvalidHeadersEnd) {
+  const std::string body = BuildBody({
+      "--Tail\r\n",
+      "Content-Disposition: form-data; name=\"a\"\r\n",
+      "\r ",
+      "1\r\n",
+      "--Tail--",
+      "\r\n \n",
+  });
+
+  MultipartFormData form("multipart/form-data; boundary=Tail", body);
+  ExpectInvalid(form, "multipart data after final boundary");
+}
+
+TEST(MultipartFormDataTest, InvalidHeadersEnd2) {
+  const std::string body = BuildBody({"--Tail\r\n", "Content-Disposition: form-data; name=\"a\"\r\n", "\r"});
+
+  MultipartFormData form("multipart/form-data; boundary=Tail", body);
+  ExpectInvalid(form, "multipart part missing closing boundary");
+}
+
+TEST(MultipartFormDataTest, StripQuotes) {
+  // Construct a body that contains a final boundary but with extra trailing
+  // data (not just an optional trailing CRLF). This should make
+  // `body.starts_with(http::CRLF)` false, `!body.empty()` true, and
+  // `!finalBoundary` false (since it is a final boundary). The parser should
+  // therefore reject with "multipart data after final boundary".
+  const std::string body = BuildBody({
+      "--A\r\n",
+      "Content-Disposition: form-data; name=a; value=\"b; something=c\"; data=\"d\"\r\n",
+      "\r\n",
+      "1\r\n",
+      "--A--",
+      "\r\n\r\n",
+  });
+
+  MultipartFormData form("multipart/form-data; boundary=A", body);
+  ASSERT_TRUE(form.valid());
+  ASSERT_EQ(form.parts().size(), 1);
+  EXPECT_EQ(form.parts()[0].value, "1");
+  const auto& part = form.parts()[0];
+  EXPECT_EQ(part.name, "a");
+  EXPECT_EQ(part.headerValueOrEmpty("Content-Disposition"), "form-data; name=a; value=\"b; something=c\"; data=\"d\"");
+}
+
+TEST(MultipartFormDataTest, EmptyParseContentDisposition) {
+  // Construct a body that contains a final boundary but with extra trailing
+  // data (not just an optional trailing CRLF). This should make
+  // `body.starts_with(http::CRLF)` false, `!body.empty()` true, and
+  // `!finalBoundary` false (since it is a final boundary). The parser should
+  // therefore reject with "multipart data after final boundary".
+  const std::string body = BuildBody({
+      "--A\r\n",
+      "Content-Disposition: form-data;\r\n",
+      "\r\n",
+      "1\r\n",
+      "--A--",
+      "\r\n\r\n",
+  });
+
+  MultipartFormData form("multipart/form-data; boundary=A", body);
+  ExpectInvalid(form, "multipart part missing name parameter");
 }
 
 TEST(MultipartFormDataTest, DataAfterFinalBoundaryIsRejected) {

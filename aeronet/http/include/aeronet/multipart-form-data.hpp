@@ -31,13 +31,18 @@ class MultipartFormData {
   MultipartFormData(std::string_view contentTypeHeader, std::string_view body, MultipartFormDataOptions options = {});
 
   struct Part {
+    explicit Part(const vector<MultipartHeaderView>& headerStoreRef)
+        : headerOffset(headerStoreRef.size()), headerStore(headerStoreRef) {}
+
     std::string_view name;
     std::optional<std::string_view> filename;
     std::optional<std::string_view> contentType;
     std::string_view value;
 
     // Get all headers associated with this part
-    [[nodiscard]] std::span<const MultipartHeaderView> headers() const noexcept;
+    [[nodiscard]] std::span<const MultipartHeaderView> headers() const noexcept {
+      return {headerStore.data() + headerOffset, headerCount};
+    }
 
     // Get the value of the specified header, or an empty string_view if not present
     [[nodiscard]] std::string_view headerValueOrEmpty(std::string_view key) const noexcept;
@@ -46,7 +51,7 @@ class MultipartFormData {
     friend class MultipartFormData;
     std::size_t headerOffset{0};
     std::size_t headerCount{0};
-    const vector<MultipartHeaderView>* headerStore{nullptr};
+    const vector<MultipartHeaderView>& headerStore;
   };
 
   // Get all parsed parts

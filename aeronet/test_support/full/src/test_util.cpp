@@ -252,6 +252,16 @@ std::pair<Socket, uint16_t> startEchoServer() {
     while (true) {
       ssize_t recvBytes = ::recv(clientFd.fd(), buf, static_cast<int>(sizeof(buf)), 0);
       if (recvBytes == -1) {
+        const int err = errno;
+        // Treat common transient or peer-closed errors as termination conditions for the echo thread
+        if (err == EINTR) {
+          continue;
+        }
+        if (err == ECONNRESET || err == ENOTCONN || err == EBADF) {
+          // Peer reset or socket closed - stop the echo loop gracefully
+          log::error("Echo server recv returned {}, exiting echo loop", std::strerror(err));
+          break;
+        }
         throw_errno("Error from ::recv");
       }
       if (recvBytes == 0) {
