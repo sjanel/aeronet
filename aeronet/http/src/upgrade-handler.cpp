@@ -39,12 +39,11 @@ void AppendHeader(RawChars& buf, std::string_view name, std::string_view value) 
 // Parse a comma-separated list of tokens (for Sec-WebSocket-Protocol, etc.)
 ConcatenatedStrings ParseTokenList(std::string_view header) {
   ConcatenatedStrings result;
-  std::size_t pos = 0;
-  while (pos < header.size()) {
+  for (std::size_t pos = 0; pos < header.size();) {
     const auto commaPos = header.find(',', pos);
     const auto tokenEnd = (commaPos == std::string_view::npos) ? header.size() : commaPos;
 
-    auto token = TrimOws(header.substr(pos, tokenEnd - pos));
+    const auto token = TrimOws(header.substr(pos, tokenEnd - pos));
     if (!token.empty()) {
       result.append(token);
     }
@@ -58,8 +57,8 @@ ConcatenatedStrings ParseTokenList(std::string_view header) {
 [[nodiscard]] std::string_view NegotiateSubprotocol(const ConcatenatedStrings& offered,
                                                     const ConcatenatedStrings& supported) {
   // Server's preference order
-  auto it = std::ranges::find_if(supported,
-                                 [&offered](std::string_view serverProto) { return offered.containsCI(serverProto); });
+  const auto it = std::ranges::find_if(
+      supported, [&offered](std::string_view serverProto) { return offered.containsCI(serverProto); });
   if (it != supported.end()) {
     return *it;
   }

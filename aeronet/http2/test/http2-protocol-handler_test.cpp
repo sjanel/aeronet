@@ -8,8 +8,10 @@
 #include <cstdint>
 #include <iterator>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-method.hpp"
@@ -17,6 +19,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
+#include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/protocol-handler.hpp"

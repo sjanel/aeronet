@@ -2,11 +2,16 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <random>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "aeronet/raw-bytes.hpp"
@@ -15,9 +20,8 @@ namespace aeronet::http2 {
 
 namespace {
 
-// Helper to create a span from a vector
-std::span<const std::byte> AsSpan(const std::vector<uint8_t>& vec) {
-  return {reinterpret_cast<const std::byte*>(vec.data()), vec.size()};
+std::span<const std::byte> AsBytes(std::span<const uint8_t> span) {
+  return {reinterpret_cast<const std::byte*>(span.data()), span.size()};
 }
 
 // ============================
@@ -163,7 +167,7 @@ TEST(HpackDecoder, DecodeIndexedHeader) {
 
   std::string name;
   std::string value;
-  auto result = decoder.decode(AsSpan(encoded), [&](std::string_view nm, std::string_view val) {
+  auto result = decoder.decode(AsBytes(encoded), [&](std::string_view nm, std::string_view val) {
     name = std::string(nm);
     value = std::string(val);
   });
@@ -187,7 +191,7 @@ TEST(HpackDecoder, DecodeLiteralWithIndexing) {
 
   std::string name;
   std::string value;
-  auto result = decoder.decode(AsSpan(encoded), [&](std::string_view n, std::string_view val) {
+  auto result = decoder.decode(AsBytes(encoded), [&](std::string_view n, std::string_view val) {
     name = std::string(n);
     value = std::string(val);
   });
@@ -209,7 +213,7 @@ TEST(HpackDecoder, DecodeLiteralNameIncomplete) {
   // provided
   std::vector<uint8_t> encoded = {0x40, 0x7F};
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
   EXPECT_FALSE(result.isSuccess());
   ASSERT_NE(result.errorMessage, nullptr);
   EXPECT_STREQ(result.errorMessage, "Failed to decode literal header name");
@@ -222,7 +226,7 @@ TEST(HpackDecoder, DecodeLiteralHeaderNameInsufficientBytes) {
   // Name length 5, but only provide 2 bytes -> should detect insufficient data
   std::vector<uint8_t> encoded = {0x40, 0x05, 'a', 'b'};
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
   EXPECT_FALSE(result.isSuccess());
   ASSERT_NE(result.errorMessage, nullptr);
   EXPECT_STREQ(result.errorMessage, "Failed to decode literal header name");
@@ -237,7 +241,7 @@ TEST(HpackDecoder, DecodeLiteralHeaderNameInvalidHuffman) {
   // Next byte: 0x00 (invalid/insufficient Huffman data)
   std::vector<uint8_t> encoded = {0x40, 0x81, 0x00};
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
   EXPECT_FALSE(result.isSuccess());
   ASSERT_NE(result.errorMessage, nullptr);
   EXPECT_STREQ(result.errorMessage, "Failed to decode literal header name");
@@ -251,7 +255,7 @@ TEST(HpackDecoder, DecodeLiteralHeaderNameHuffmanEos) {
   // This should include the EOS code (30 ones) and be detected as an error
   std::vector<uint8_t> encoded = {0x40, 0x84, 0xFF, 0xFF, 0xFF, 0xFF};
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
 
   EXPECT_FALSE(result.isSuccess());
   ASSERT_NE(result.errorMessage, nullptr);
@@ -266,7 +270,7 @@ TEST(HpackDecoder, DecodeLiteralHeaderValueHuffmanEos) {
   // Value: Huffman-flag set, length 4, payload all 0xFF (contains EOS)
   std::vector<uint8_t> encoded = {0x40, 0x03, 'k', 'e', 'y', 0x84, 0xFF, 0xFF, 0xFF, 0xFF};
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
 
   EXPECT_FALSE(result.isSuccess());
   ASSERT_NE(result.errorMessage, nullptr);
@@ -282,7 +286,7 @@ TEST(HpackDecoder, DecodeLiteralHeaderNameInvalidEncoding) {
   // and should return max when no symbol matches and bitsInBuffer >= 30
   std::vector<uint8_t> encoded = {0x40, 0x84, 0x00, 0x00, 0x00, 0x00};
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
 
   EXPECT_FALSE(result.isSuccess());
   ASSERT_NE(result.errorMessage, nullptr);
@@ -297,7 +301,7 @@ TEST(HpackDecoder, DecodeLiteralHeaderNameTooManyLeftoverBits) {
   // This should leave >=8 leftover bits and trigger the 'too many leftover bits' path
   std::vector<uint8_t> encoded = {0x40, 0x82, 0xFF, 0xFF};
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
 
   EXPECT_FALSE(result.isSuccess());
   ASSERT_NE(result.errorMessage, nullptr);
@@ -326,7 +330,7 @@ TEST(HpackDecoder, FindInvalidHuffmanEncoding) {
       // Literal with indexing, Huffman-flag set, length 4
       encoded = {0x40, 0x84, b0, b1, b2, b3};
 
-      auto res = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+      auto res = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
       if (!res.isSuccess()) {
         // We observed a decode failure for the literal header name.
         // Report and stop searching.
@@ -350,7 +354,7 @@ TEST(HpackDecoder, DecodeLiteralValueIncomplete) {
   // Value: length prefix 127 (incomplete)
   std::vector<uint8_t> encoded = {0x40, 0x03, 'k', 'e', 'y', 0x7F};
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
   EXPECT_FALSE(result.isSuccess());
   ASSERT_NE(result.errorMessage, nullptr);
   EXPECT_STREQ(result.errorMessage, "Failed to decode literal header value");
@@ -366,7 +370,7 @@ TEST(HpackDecoder, DecodeLiteralWithoutIndexing) {
 
   std::string name;
   std::string value;
-  auto result = decoder.decode(AsSpan(encoded), [&](std::string_view nm, std::string_view val) {
+  auto result = decoder.decode(AsBytes(encoded), [&](std::string_view nm, std::string_view val) {
     name = std::string(nm);
     value = std::string(val);
   });
@@ -386,7 +390,7 @@ TEST(HpackDecoder, DecodeMultipleHeaders) {
   std::vector<uint8_t> encoded = {0x82, 0x84, 0x87};
 
   std::vector<std::pair<std::string, std::string>> headers;
-  auto result = decoder.decode(AsSpan(encoded),
+  auto result = decoder.decode(AsBytes(encoded),
                                [&](std::string_view nm, std::string_view val) { headers.emplace_back(nm, val); });
 
   EXPECT_TRUE(result.isSuccess());
@@ -406,7 +410,7 @@ TEST(HpackDecoder, DecodeDynamicTableSizeUpdate) {
   // (0x20 | 31) = 0x3f, then 1024 - 31 = 993 = 0x07e1 in varint
   std::vector<uint8_t> encoded = {0x3f, 0xe1, 0x07};
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
 
   EXPECT_TRUE(result.isSuccess());
   EXPECT_EQ(decoder.dynamicTable().maxSize(), 1024U);
@@ -418,7 +422,7 @@ TEST(HpackDecoder, InvalidIndexedHeader) {
   // Index 0 is invalid
   std::vector<uint8_t> encoded = {0x80};
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
 
   EXPECT_FALSE(result.isSuccess());
 }
@@ -430,7 +434,7 @@ TEST(HpackDecoder, DecodeIndexedHeaderIntegerIncomplete) {
   // Use first byte with prefix bits all ones (0xFF) so decodeInteger requires continuation bytes
   std::vector<uint8_t> encoded = {0xFF};
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
   EXPECT_FALSE(result.isSuccess());
   ASSERT_NE(result.errorMessage, nullptr);
   EXPECT_STREQ(result.errorMessage, "Failed to decode indexed header field index");
@@ -453,7 +457,7 @@ TEST(HpackDecoder, DecodeIndexedHeaderIntegerOverflow) {
     encoded.push_back(0xFF);  // 0x80 | 0x7F
   }
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
 
   EXPECT_FALSE(result.isSuccess());
   ASSERT_NE(result.errorMessage, nullptr);
@@ -469,7 +473,7 @@ TEST(HpackDecoder, DecodeIndexedHeaderInvalidZero) {
   // 0x80 has prefix value 0 -> triggers invalid-index-0 path
   std::vector<uint8_t> encoded = {0x80};
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
   EXPECT_FALSE(result.isSuccess());
   // Either 'Failed to decode indexed header field index' or 'Invalid index 0 in indexed header field'
   ASSERT_NE(result.errorMessage, nullptr);
@@ -491,7 +495,7 @@ TEST(HpackDecoder, DecodeIndexedHeaderOutOfBounds) {
   }
   encoded.push_back(static_cast<uint8_t>(rem));
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
   EXPECT_FALSE(result.isSuccess());
   ASSERT_NE(result.errorMessage, nullptr);
   EXPECT_STREQ(result.errorMessage, "Index out of bounds in indexed header field");
@@ -503,7 +507,7 @@ TEST(HpackDecoder, DecodeDynamicTableSizeUpdateIncomplete) {
   // Dynamic table size update prefix 001xxxxx (0x20). Use 0x3f (prefix all ones) and no continuation
   std::vector<uint8_t> encoded = {0x3f};
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
   EXPECT_FALSE(result.isSuccess());
   ASSERT_NE(result.errorMessage, nullptr);
   EXPECT_STREQ(result.errorMessage, "Failed to decode dynamic table size update");
@@ -516,7 +520,7 @@ TEST(HpackDecoder, DecodeLiteralHeaderIndexIncomplete) {
   // Provide a byte where the lower 4 bits are all ones -> requires continuation, but none provided
   std::vector<uint8_t> encoded = {0x0F};
 
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
   EXPECT_FALSE(result.isSuccess());
   ASSERT_NE(result.errorMessage, nullptr);
   EXPECT_STREQ(result.errorMessage, "Failed to decode literal header index");
@@ -540,7 +544,7 @@ TEST(HpackDecoder, DecodeLiteralHeaderNameOutOfBounds) {
   encoded.push_back(static_cast<uint8_t>(rem));
 
   // No name/value bytes are required because lookup should fail on name index.
-  auto result = decoder.decode(AsSpan(encoded), [](std::string_view, std::string_view) {});
+  auto result = decoder.decode(AsBytes(encoded), [](std::string_view, std::string_view) {});
 
   EXPECT_FALSE(result.isSuccess());
   ASSERT_NE(result.errorMessage, nullptr);
@@ -556,9 +560,9 @@ TEST(HpackDecoder, SetMaxDynamicTableSize) {
 
   std::vector<uint8_t> encoded2 = {0x40, 0x04, 'h', 'e', 'a', 'd', 0x05, 'v', 'a', 'l', 'u', 'e'};
 
-  auto r1 = decoder.decode(AsSpan(encoded1), [](std::string_view, std::string_view) {});
+  auto r1 = decoder.decode(AsBytes(encoded1), [](std::string_view, std::string_view) {});
   EXPECT_TRUE(r1.isSuccess());
-  auto r2 = decoder.decode(AsSpan(encoded2), [](std::string_view, std::string_view) {});
+  auto r2 = decoder.decode(AsBytes(encoded2), [](std::string_view, std::string_view) {});
   EXPECT_TRUE(r2.isSuccess());
 
   EXPECT_EQ(decoder.dynamicTable().entryCount(), 2U);
@@ -579,7 +583,7 @@ TEST(HpackDecoder, ClearDecodedStrings) {
                                   'c',  'u',  's', 't', 'o', 'm', '-', 'v', 'a', 'l', 'u', 'e'};
 
   std::string name1;
-  auto res1 = decoder.decode(AsSpan(encoded), [&](std::string_view n, std::string_view) { name1 = std::string(n); });
+  auto res1 = decoder.decode(AsBytes(encoded), [&](std::string_view n, std::string_view) { name1 = std::string(n); });
   EXPECT_TRUE(res1.isSuccess());
   EXPECT_EQ(name1, "custom-key");
 
@@ -587,7 +591,7 @@ TEST(HpackDecoder, ClearDecodedStrings) {
   decoder.clearDecodedStrings();
 
   std::string name2;
-  auto res2 = decoder.decode(AsSpan(encoded), [&](std::string_view n, std::string_view) { name2 = std::string(n); });
+  auto res2 = decoder.decode(AsBytes(encoded), [&](std::string_view n, std::string_view) { name2 = std::string(n); });
   EXPECT_TRUE(res2.isSuccess());
   EXPECT_EQ(name2, "custom-key");
 }
@@ -829,7 +833,7 @@ TEST(HpackDecoderFuzz, RandomizedReserveFuzz) {
     // Run decode; ensure it doesn't crash and returns a well-formed DecodeResult.
     // Any decode error is acceptable but must provide a non-null, non-empty error message.
     size_t calls = 0;
-    auto res = decoder.decode(AsSpan(buf), [&](std::string_view, std::string_view) { ++calls; });
+    auto res = decoder.decode(AsBytes(buf), [&](std::string_view, std::string_view) { ++calls; });
 
     ASSERT_TRUE(res.isSuccess() || (res.errorMessage != nullptr && res.errorMessage[0] != '\0'));
     decoder.clearDecodedStrings();

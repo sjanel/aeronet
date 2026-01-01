@@ -1,18 +1,23 @@
 #include "aeronet/http2-connection.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <span>
 #include <stdexcept>
+#include <utility>
 
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/raw-chars.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
 
@@ -208,7 +213,7 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte
     return ErrorCode::FlowControlError;
   }
 
-  if (static_cast<int32_t>(dataSize) > _connectionSendWindow) {
+  if (std::cmp_less(_connectionSendWindow, dataSize)) {
     // Restore stream window
     (void)stream->increaseSendWindow(dataSize);
     return ErrorCode::FlowControlError;
@@ -849,7 +854,7 @@ ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<con
   // Note: We must copy strings here because the HPACK dynamic table may evict entries
   // during decode, invalidating string_views that point to evicted entries.
   // TODO: optimize this looping allocations
-  vector<std::pair<std::string, std::string>> decodedHeaders;
+  vector<std::pair<RawChars32, RawChars32>> decodedHeaders;
   if (hasOnHeadersCallback) {
     decodedHeaders.reserve(16);
   }
