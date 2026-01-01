@@ -1,6 +1,7 @@
 #include "aeronet/multipart-form-data.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cctype>
 #include <cstddef>
 #include <functional>
@@ -34,10 +35,11 @@ struct ContentDispositionInfo {
 };
 
 ContentDispositionInfo ParseContentDisposition(std::string_view headerValue) {
-  std::string_view trimmed = TrimOws(headerValue);
   ContentDispositionInfo ret;
 
-  if (trimmed.empty()) {
+  headerValue = TrimOws(headerValue);
+
+  if (headerValue.empty()) {
     ret.invalidReason = "multipart part missing Content-Disposition value";
     return ret;
   }
@@ -45,9 +47,9 @@ ContentDispositionInfo ParseContentDisposition(std::string_view headerValue) {
   std::string_view type;
 
   bool firstToken = true;
-  while (!trimmed.empty()) {
-    auto semicolon = trimmed.find(';');
-    std::string_view token = semicolon == std::string_view::npos ? trimmed : trimmed.substr(0, semicolon);
+  do {
+    auto semicolon = headerValue.find(';');
+    std::string_view token = semicolon == std::string_view::npos ? headerValue : headerValue.substr(0, semicolon);
     token = TrimOws(token);
     if (token.empty()) {
       // Empty token (e.g., consecutive semicolons) is malformed
@@ -75,9 +77,10 @@ ContentDispositionInfo ParseContentDisposition(std::string_view headerValue) {
             ret.invalidReason = "multipart part invalid Content-Disposition filename* parameter";
             return ret;
           }
+
           auto secondTick = value.find('\'', firstTick + 1);
           // If the pattern isn't charset'lang'value (i.e., both ticks present and payload after), it's malformed.
-          if (secondTick == std::string_view::npos || secondTick + 1 > value.size()) {
+          if (secondTick == std::string_view::npos || secondTick + 1 >= value.size()) {
             ret.invalidReason = "multipart part invalid Content-Disposition filename* parameter";
             return ret;
           }
@@ -92,11 +95,11 @@ ContentDispositionInfo ParseContentDisposition(std::string_view headerValue) {
     if (semicolon == std::string_view::npos) {
       break;
     }
-    trimmed.remove_prefix(semicolon + 1);
+    headerValue.remove_prefix(semicolon + 1);
     firstToken = false;
-  }
+  } while (!headerValue.empty());
 
-  if (type.empty() || !CaseInsensitiveEqual(type, "form-data")) {
+  if (!CaseInsensitiveEqual(type, "form-data")) {
     ret.invalidReason = "multipart part must have Content-Disposition: form-data";
   } else if (ret.name.empty()) {
     ret.invalidReason = "multipart part missing name parameter";
@@ -119,6 +122,7 @@ std::string_view ExtractBoundary(std::string_view contentType) {
     return {};
   }
   auto params = contentType.substr(semicolon + 1);
+
   while (!params.empty()) {
     if (params.front() == ';') {
       params.remove_prefix(1);
@@ -168,9 +172,6 @@ std::size_t FindHeaderDelimiter(std::string_view buffer) {
 }
 
 std::size_t DelimiterLength(std::string_view buffer, std::size_t headerEnd) {
-  if (headerEnd == std::string_view::npos) {
-    return 0;
-  }
   if (headerEnd + http::DoubleCRLF.size() <= buffer.size() &&
       buffer.substr(headerEnd, http::DoubleCRLF.size()) == http::DoubleCRLF) {
     return http::DoubleCRLF.size();
@@ -179,13 +180,6 @@ std::size_t DelimiterLength(std::string_view buffer, std::size_t headerEnd) {
 }
 
 }  // namespace
-
-std::span<const MultipartHeaderView> MultipartFormData::Part::headers() const noexcept {
-  if (headerCount == 0 || headerStore == nullptr) {
-    return {};
-  }
-  return {headerStore->data() + headerOffset, headerCount};
-}
 
 std::string_view MultipartFormData::Part::headerValueOrEmpty(std::string_view key) const noexcept {
   const auto headers = this->headers();
@@ -214,27 +208,19 @@ MultipartFormData::MultipartFormData(std::string_view contentTypeHeader, std::st
   }
 
   static constexpr std::string_view kDoubleDash{"--"};
-
-  const auto matchFirstBoundary = [this, boundaryView](std::string_view& body) {
-    if (!body.starts_with(kDoubleDash)) {
-      _invalidReason = "multipart body missing starting boundary";
-      return false;
-    }
-    body.remove_prefix(kDoubleDash.size());
-
-    if (!body.starts_with(boundaryView)) {
-      _invalidReason = "multipart body missing starting boundary";
-      return false;
-    }
-    body.remove_prefix(boundaryView.size());
-    return true;
-  };
-
   static constexpr std::string_view kMiddleBoundaryPrefix{"\r\n--"};
 
-  if (!matchFirstBoundary(body)) {
+  if (!body.starts_with(kDoubleDash)) {
+    _invalidReason = "multipart body missing starting boundary";
     return;
   }
+  body.remove_prefix(kDoubleDash.size());
+
+  if (!body.starts_with(boundaryView)) {
+    _invalidReason = "multipart body missing starting boundary";
+    return;
+  }
+  body.remove_prefix(boundaryView.size());
 
   if (!body.starts_with(http::CRLF)) {
     _invalidReason = "multipart boundary not followed by CRLF";
@@ -248,18 +234,17 @@ MultipartFormData::MultipartFormData(std::string_view contentTypeHeader, std::st
       return;
     }
 
-    auto headerEnd = FindHeaderDelimiter(body);
+    const auto headerEnd = FindHeaderDelimiter(body);
     if (headerEnd == std::string_view::npos) {
       _invalidReason = "multipart part missing header terminator";
       return;
     }
+
     auto headerBlock = body.substr(0, headerEnd);
-    auto delimiterLen = DelimiterLength(body, headerEnd);
+    const auto delimiterLen = DelimiterLength(body, headerEnd);
     body.remove_prefix(headerEnd + delimiterLen);
 
-    auto& part = _parts.emplace_back();
-    part.headerStore = &_headers;
-    part.headerOffset = _headers.size();
+    auto& part = _parts.emplace_back(_headers);
 
     std::size_t headerCountForPart = 0;
     while (!headerBlock.empty()) {
@@ -304,7 +289,6 @@ MultipartFormData::MultipartFormData(std::string_view contentTypeHeader, std::st
     }
 
     std::size_t boundaryPos = 0;
-    bool found = false;
 
     while (true) {
       boundaryPos = body.find(kMiddleBoundaryPrefix, boundaryPos);
@@ -313,27 +297,22 @@ MultipartFormData::MultipartFormData(std::string_view contentTypeHeader, std::st
         return;
       }
       if (body.substr(boundaryPos + kMiddleBoundaryPrefix.size()).starts_with(boundaryView)) {
-        found = true;
         break;
       }
       boundaryPos += kMiddleBoundaryPrefix.size();
-    }
-
-    if (!found) {
-      _invalidReason = "multipart part missing closing boundary";
-      return;
     }
 
     if (options.maxPartSizeBytes != 0 && boundaryPos > options.maxPartSizeBytes) {
       _invalidReason = "multipart part exceeds size limit";
       return;
     }
+
     part.value = body.substr(0, boundaryPos);
     body.remove_prefix(boundaryPos + http::CRLF.size());  // drop CRLF preceding boundary marker
 
-    if (!matchFirstBoundary(body)) {
-      return;
-    }
+    assert(body.starts_with(kDoubleDash));
+    assert(body.substr(kDoubleDash.size()).starts_with(boundaryView));
+    body.remove_prefix(kDoubleDash.size() + boundaryView.size());
 
     bool finalBoundary = body.starts_with(kDoubleDash);
     if (finalBoundary) {
