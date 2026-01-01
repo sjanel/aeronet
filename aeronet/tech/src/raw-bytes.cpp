@@ -14,20 +14,9 @@
 #include <utility>
 
 #include "aeronet/internal/raw-bytes-base.hpp"
+#include "aeronet/safe-cast.hpp"
 
 namespace aeronet {
-
-namespace {
-template <class ToT, class FromT>
-constexpr ToT SafeCast(FromT value) {
-  if constexpr (sizeof(ToT) < sizeof(FromT)) {
-    if (std::numeric_limits<ToT>::max() < value) [[unlikely]] {
-      throw std::overflow_error("value exceeds target type maximum");
-    }
-  }
-  return static_cast<ToT>(value);
-}
-}  // namespace
 
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType>::RawBytesBase(uint64_t capacity)
