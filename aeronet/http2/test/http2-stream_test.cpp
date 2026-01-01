@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <type_traits>
 
 #include "aeronet/http2-frame-types.hpp"
 

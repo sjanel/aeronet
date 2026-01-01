@@ -1,12 +1,13 @@
 #include "aeronet/test_tls_http2_client.hpp"
 
-#include <fcntl.h>
-#include <openssl/ssl.h>
 #include <poll.h>
 
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -16,6 +17,7 @@
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
+#include "aeronet/http2-frame.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 
@@ -58,7 +60,7 @@ TlsHttp2Client::TlsHttp2Client(uint16_t port, Http2Config config)
           if (name == ":status") {
             streamResp.response.statusCode = 0;
             for (char ch : value) {
-              streamResp.response.statusCode = streamResp.response.statusCode * 10 + (ch - '0');
+              streamResp.response.statusCode = (streamResp.response.statusCode * 10) + (ch - '0');
             }
           } else {
             streamResp.response.headers.emplace_back(std::string(name), std::string(value));
@@ -176,10 +178,11 @@ bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
     std::array<char, 16384> buffer{};
     int fd = _tlsClient.fd();
 
-    struct pollfd pfd{};
+    struct pollfd pfd{};  // NOLINT(misc-include-cleaner) poll.h is the correct include
     pfd.fd = fd;
-    pfd.events = POLLIN;
+    pfd.events = POLLIN;  // NOLINT(misc-include-cleaner)
 
+    // NOLINTNEXTLINE(misc-include-cleaner)
     int ret = ::poll(&pfd, 1, 100);  // 100ms poll timeout
     if (ret < 0) {
       return false;

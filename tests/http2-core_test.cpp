@@ -4,11 +4,13 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
@@ -168,8 +170,8 @@ class Http2Loopback {
     vector<std::byte> bytes = MakePreface();
     if (alsoSendClientSettings) {
       auto settings = BuildSettingsFrame(_clientCfg);
-      auto s = AsSpan(settings);
-      bytes.insert(bytes.end(), s.begin(), s.end());
+      auto span = AsSpan(settings);
+      bytes.insert(bytes.end(), span.begin(), span.end());
     }
     feed(server, bytes);
 
@@ -267,11 +269,11 @@ TEST(Http2Core, LoopbackHandshakeOpensConnection) {
   Http2Config clientCfg;
   Http2Config serverCfg;
 
-  Http2Loopback h(clientCfg, serverCfg);
-  h.connect(true);
+  Http2Loopback h2(clientCfg, serverCfg);
+  h2.connect(true);
 
-  EXPECT_TRUE(h.client.isOpen());
-  EXPECT_TRUE(h.server.isOpen());
+  EXPECT_TRUE(h2.client.isOpen());
+  EXPECT_TRUE(h2.server.isOpen());
 }
 
 TEST(Http2Core, PeerSettingsAreAppliedFromRemoteSettingsFrame) {
@@ -281,18 +283,18 @@ TEST(Http2Core, PeerSettingsAreAppliedFromRemoteSettingsFrame) {
   serverCfg.maxHeaderListSize = 12345;
   serverCfg.enablePush = false;
 
-  Http2Loopback h(clientCfg, serverCfg);
-  h.connect(true);
+  Http2Loopback h2(clientCfg, serverCfg);
+  h2.connect(true);
 
   // Client peer settings should mirror server local settings.
-  EXPECT_EQ(h.client.peerSettings().maxFrameSize, serverCfg.maxFrameSize);
-  EXPECT_EQ(h.client.peerSettings().maxHeaderListSize, serverCfg.maxHeaderListSize);
-  EXPECT_FALSE(h.client.peerSettings().enablePush);
+  EXPECT_EQ(h2.client.peerSettings().maxFrameSize, serverCfg.maxFrameSize);
+  EXPECT_EQ(h2.client.peerSettings().maxHeaderListSize, serverCfg.maxHeaderListSize);
+  EXPECT_FALSE(h2.client.peerSettings().enablePush);
 
   // Server peer settings should mirror client local settings.
-  EXPECT_EQ(h.server.peerSettings().maxFrameSize, clientCfg.maxFrameSize);
-  EXPECT_EQ(h.server.peerSettings().maxHeaderListSize, clientCfg.maxHeaderListSize);
-  EXPECT_EQ(h.server.peerSettings().enablePush, clientCfg.enablePush);
+  EXPECT_EQ(h2.server.peerSettings().maxFrameSize, clientCfg.maxFrameSize);
+  EXPECT_EQ(h2.server.peerSettings().maxHeaderListSize, clientCfg.maxHeaderListSize);
+  EXPECT_EQ(h2.server.peerSettings().enablePush, clientCfg.enablePush);
 }
 
 TEST(Http2Core, InvalidPeerMaxFrameSizeCausesProtocolError) {
@@ -322,12 +324,12 @@ TEST(Http2Core, ClientSendHeadersIsDecodedOnServer) {
   Http2Config clientCfg;
   Http2Config serverCfg;
 
-  Http2Loopback h(clientCfg, serverCfg);
-  h.connect(true);
+  Http2Loopback h2(clientCfg, serverCfg);
+  h2.connect(true);
 
-  const uint32_t streamId = 1;
+  constexpr uint32_t streamId = 1;
 
-  ErrorCode err = h.client.sendHeaders(
+  ErrorCode err = h2.client.sendHeaders(
       streamId,
       [&](const HeaderCallback& emit) {
         emit(":method", "GET");
@@ -340,7 +342,7 @@ TEST(Http2Core, ClientSendHeadersIsDecodedOnServer) {
   ASSERT_EQ(err, ErrorCode::NoError);
 
   // Client must have output HEADERS.
-  auto out = h.client.getPendingOutput();
+  auto out = h2.client.getPendingOutput();
   ASSERT_FALSE(out.empty());
 
   const auto frames = ParseFrames(out);
@@ -349,10 +351,10 @@ TEST(Http2Core, ClientSendHeadersIsDecodedOnServer) {
   EXPECT_EQ(frames[0].header.streamId, streamId);
 
   // Deliver to server.
-  h.pump(h.client, h.server);
+  Http2Loopback::pump(h2.client, h2.server);
 
-  ASSERT_EQ(h.serverHeaders.size(), 1U);
-  const auto& ev = h.serverHeaders[0];
+  ASSERT_EQ(h2.serverHeaders.size(), 1U);
+  const auto& ev = h2.serverHeaders[0];
   EXPECT_EQ(ev.streamId, streamId);
   EXPECT_FALSE(ev.endStream);
 
@@ -367,12 +369,12 @@ TEST(Http2Core, ServerSendHeadersIsDecodedOnClient) {
   Http2Config clientCfg;
   Http2Config serverCfg;
 
-  Http2Loopback h(clientCfg, serverCfg);
-  h.connect(true);
+  Http2Loopback h2(clientCfg, serverCfg);
+  h2.connect(true);
 
-  const uint32_t streamId = 2;
+  constexpr uint32_t streamId = 2;
 
-  ErrorCode err = h.server.sendHeaders(
+  ErrorCode err = h2.server.sendHeaders(
       streamId,
       [&](const HeaderCallback& emit) {
         emit(":status", "200");
@@ -382,17 +384,17 @@ TEST(Http2Core, ServerSendHeadersIsDecodedOnClient) {
       false);
   ASSERT_EQ(err, ErrorCode::NoError);
 
-  auto out = h.server.getPendingOutput();
+  auto out = h2.server.getPendingOutput();
   ASSERT_FALSE(out.empty());
   const auto frames = ParseFrames(out);
   ASSERT_FALSE(frames.empty());
   EXPECT_EQ(frames[0].header.type, FrameType::Headers);
   EXPECT_EQ(frames[0].header.streamId, streamId);
 
-  h.pump(h.server, h.client);
+  Http2Loopback::pump(h2.server, h2.client);
 
-  ASSERT_EQ(h.clientHeaders.size(), 1U);
-  const auto& ev = h.clientHeaders[0];
+  ASSERT_EQ(h2.clientHeaders.size(), 1U);
+  const auto& ev = h2.clientHeaders[0];
   EXPECT_EQ(ev.streamId, streamId);
   EXPECT_TRUE(HasHeader(ev, ":status", "200"));
   EXPECT_TRUE(HasHeader(ev, "content-type", "text/plain"));
@@ -403,12 +405,12 @@ TEST(Http2Core, HeadersEndStreamClosesRemoteSideStream) {
   Http2Config clientCfg;
   Http2Config serverCfg;
 
-  Http2Loopback h(clientCfg, serverCfg);
-  h.connect(true);
+  Http2Loopback h2(clientCfg, serverCfg);
+  h2.connect(true);
 
-  const uint32_t streamId = 1;
+  constexpr uint32_t streamId = 1;
 
-  ASSERT_EQ(h.client.sendHeaders(
+  ASSERT_EQ(h2.client.sendHeaders(
                 streamId,
                 [&](const HeaderCallback& emit) {
                   emit(":method", "GET");
@@ -419,12 +421,12 @@ TEST(Http2Core, HeadersEndStreamClosesRemoteSideStream) {
                 true),
             ErrorCode::NoError);
 
-  h.pump(h.client, h.server);
+  Http2Loopback::pump(h2.client, h2.server);
 
-  ASSERT_EQ(h.serverHeaders.size(), 1U);
-  EXPECT_TRUE(h.serverHeaders[0].endStream);
+  ASSERT_EQ(h2.serverHeaders.size(), 1U);
+  EXPECT_TRUE(h2.serverHeaders[0].endStream);
 
-  const auto* stream = h.server.getStream(streamId);
+  const auto* stream = h2.server.getStream(streamId);
   ASSERT_NE(stream, nullptr);
   // Per RFC: receiving HEADERS with END_STREAM on an initial request transitions to HalfClosedRemote.
   // The stream is only "closed" when both sides have ended.
@@ -444,13 +446,13 @@ TEST(Http2Core, ClientSplitsLargeHeaderBlockIntoContinuationFrames) {
   // Instead, we create an oversized header block so it splits even at 16KB, and we keep the test fast.
   serverCfg.maxFrameSize = 16384;
 
-  Http2Loopback h(clientCfg, serverCfg);
-  h.connect(true);
+  Http2Loopback h2(clientCfg, serverCfg);
+  h2.connect(true);
 
-  const uint32_t streamId = 1;
+  constexpr uint32_t streamId = 1;
 
   std::string largeValue(7000, 'x');
-  ASSERT_EQ(h.client.sendHeaders(
+  ASSERT_EQ(h2.client.sendHeaders(
                 streamId,
                 [&](const HeaderCallback& emit) {
                   emit(":method", "GET");
@@ -465,7 +467,7 @@ TEST(Http2Core, ClientSplitsLargeHeaderBlockIntoContinuationFrames) {
                 false),
             ErrorCode::NoError);
 
-  auto out = h.client.getPendingOutput();
+  auto out = h2.client.getPendingOutput();
   ASSERT_FALSE(out.empty());
 
   const auto frames = ParseFrames(out);
@@ -489,9 +491,9 @@ TEST(Http2Core, ClientSplitsLargeHeaderBlockIntoContinuationFrames) {
   EXPECT_TRUE(last.hasFlag(FrameFlags::ContinuationEndHeaders) || last.hasFlag(FrameFlags::HeadersEndHeaders));
 
   // Deliver and validate decoding succeeded.
-  h.pump(h.client, h.server);
-  ASSERT_EQ(h.serverHeaders.size(), 1U);
-  const auto& ev = h.serverHeaders[0];
+  Http2Loopback::pump(h2.client, h2.server);
+  ASSERT_EQ(h2.serverHeaders.size(), 1U);
+  const auto& ev = h2.serverHeaders[0];
   EXPECT_EQ(ev.streamId, streamId);
   EXPECT_TRUE(HasHeader(ev, ":path", "/big"));
   EXPECT_TRUE(HasHeader(ev, "x-big-0", largeValue));
@@ -568,7 +570,7 @@ TEST(Http2Core, DataIsDeliveredToPeer) {
   Http2Loopback h2(clientCfg, serverCfg);
   h2.connect(true);
 
-  const uint32_t streamId = 1;
+  constexpr uint32_t streamId = 1;
 
   ASSERT_EQ(h2.client.sendHeaders(
                 streamId,
@@ -614,7 +616,7 @@ TEST(Http2Core, SendingMoreThanConnectionSendWindowFails) {
   Http2Loopback h2(clientCfg, serverCfg);
   h2.connect(true);
 
-  const uint32_t streamId = 1;
+  constexpr uint32_t streamId = 1;
   ASSERT_EQ(h2.client.sendHeaders(
                 streamId,
                 [&](const HeaderCallback& emit) {
@@ -643,11 +645,11 @@ TEST(Http2Core, StreamSendWindowIsEnforced) {
   // Make the peer initial window size small by sending SETTINGS from server to client.
   serverCfg.initialWindowSize = 1024;
 
-  Http2Loopback h(clientCfg, serverCfg);
-  h.connect(true);
+  Http2Loopback h2(clientCfg, serverCfg);
+  h2.connect(true);
 
-  const uint32_t streamId = 1;
-  ASSERT_EQ(h.client.sendHeaders(
+  constexpr uint32_t streamId = 1;
+  ASSERT_EQ(h2.client.sendHeaders(
                 streamId,
                 [&](const HeaderCallback& emit) {
                   emit(":method", "POST");
@@ -659,15 +661,15 @@ TEST(Http2Core, StreamSendWindowIsEnforced) {
             ErrorCode::NoError);
 
   // The stream send window should now be 1024 on the client (it is created with peer initial window).
-  auto* st = h.client.getStream(streamId);
+  auto* st = h2.client.getStream(streamId);
   ASSERT_NE(st, nullptr);
   EXPECT_EQ(st->sendWindow(), 1024);
 
   vector<std::byte> payload(static_cast<std::size_t>(1024), std::byte{'x'});
-  ASSERT_EQ(h.client.sendData(streamId, payload, false), ErrorCode::NoError);
+  ASSERT_EQ(h2.client.sendData(streamId, payload, false), ErrorCode::NoError);
 
   std::array<std::byte, 1> extra = {std::byte{'y'}};
-  EXPECT_EQ(h.client.sendData(streamId, extra, false), ErrorCode::FlowControlError);
+  EXPECT_EQ(h2.client.sendData(streamId, extra, false), ErrorCode::FlowControlError);
 }
 
 // ============================
@@ -746,8 +748,8 @@ TEST(Http2Core, PriorityInfoFromHeadersIsStoredOnStream) {
   Http2Config clientCfg;
   Http2Config serverCfg;
 
-  Http2Loopback h(clientCfg, serverCfg);
-  h.connect(true);
+  Http2Loopback h2(clientCfg, serverCfg);
+  h2.connect(true);
 
   // Build a HEADERS frame with PRIORITY flag.
   // Wire weight 55 => logical weight 56 (RFC 9113 §5.3.1: add one to wire value)
@@ -755,10 +757,10 @@ TEST(Http2Core, PriorityInfoFromHeadersIsStoredOnStream) {
   std::array<std::byte, 1> hb = {std::byte{0x82}};
   WriteHeadersFrameWithPriority(buf, 1, hb, 0, 55, true, false, true);
 
-  auto res = h.server.processInput(AsSpan(buf));
+  auto res = h2.server.processInput(AsSpan(buf));
   ASSERT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
 
-  const auto* stream = h.server.getStream(1);
+  const auto* stream = h2.server.getStream(1);
   ASSERT_NE(stream, nullptr);
   EXPECT_EQ(stream->streamDependency(), 0U);
   EXPECT_EQ(stream->weight(), 56U);  // Wire value 55 + 1 = 56
@@ -769,11 +771,11 @@ TEST(Http2Core, PriorityFrameUpdatesStream) {
   Http2Config clientCfg;
   Http2Config serverCfg;
 
-  Http2Loopback h(clientCfg, serverCfg);
-  h.connect(true);
+  Http2Loopback h2(clientCfg, serverCfg);
+  h2.connect(true);
 
   // Create a stream by sending HEADERS.
-  ASSERT_EQ(h.client.sendHeaders(
+  ASSERT_EQ(h2.client.sendHeaders(
                 1,
                 [&](const HeaderCallback& emit) {
                   emit(":method", "GET");
@@ -783,15 +785,15 @@ TEST(Http2Core, PriorityFrameUpdatesStream) {
                 },
                 false),
             ErrorCode::NoError);
-  h.pump(h.client, h.server);
+  Http2Loopback::pump(h2.client, h2.server);
 
   RawBytes pri;
   // Note: weight in PRIORITY frame is 0-255 but stored as weight+1, so sending 11 gives weight 12.
   WritePriorityFrame(pri, 1, 0, 11, false);
-  auto res = h.server.processInput(AsSpan(pri));
+  auto res = h2.server.processInput(AsSpan(pri));
   ASSERT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
 
-  const auto* stream = h.server.getStream(1);
+  const auto* stream = h2.server.getStream(1);
   ASSERT_NE(stream, nullptr);
   EXPECT_EQ(stream->weight(), 12U);
   EXPECT_FALSE(stream->isExclusive());
@@ -1095,7 +1097,7 @@ TEST(Http2Core, RoundTripDataChunksAcrossManyFrames) {
   Http2Loopback h2(clientCfg, serverCfg);
   h2.connect(true);
 
-  const uint32_t streamId = 1;
+  constexpr uint32_t streamId = 1;
   ASSERT_EQ(h2.client.sendHeaders(
                 streamId,
                 [&](const HeaderCallback& emit) {
@@ -1111,10 +1113,10 @@ TEST(Http2Core, RoundTripDataChunksAcrossManyFrames) {
 
   // Send multiple chunks.
   for (int iter = 0; iter < 20; ++iter) {
-    std::string s = "chunk-" + std::to_string(iter);
+    std::string str = "chunk-" + std::to_string(iter);
     vector<std::byte> payload;
-    payload.reserve(static_cast<decltype(payload)::size_type>(s.size()));
-    std::ranges::transform(s, std::back_inserter(payload), [](char ch) { return static_cast<std::byte>(ch); });
+    payload.reserve(static_cast<decltype(payload)::size_type>(str.size()));
+    std::ranges::transform(str, std::back_inserter(payload), [](char ch) { return static_cast<std::byte>(ch); });
 
     const bool endStream = (iter == 19);
     ASSERT_EQ(h2.client.sendData(streamId, payload, endStream), ErrorCode::NoError);
@@ -1175,18 +1177,18 @@ TEST(Http2Core, GoAwayCallbackIsInvoked) {
   Http2Config clientCfg;
   Http2Config serverCfg;
 
-  Http2Loopback h(clientCfg, serverCfg);
-  h.connect(true);
+  Http2Loopback h2(clientCfg, serverCfg);
+  h2.connect(true);
 
   RawBytes go;
   WriteGoAwayFrame(go, 0, ErrorCode::EnhanceYourCalm, "too many requests");
 
-  auto res = h.client.processInput(AsSpan(go));
+  auto res = h2.client.processInput(AsSpan(go));
   ASSERT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
 
-  ASSERT_EQ(h.clientGoAway.size(), 1U);
-  EXPECT_EQ(h.clientGoAway[0].errorCode, ErrorCode::EnhanceYourCalm);
-  EXPECT_EQ(h.clientGoAway[0].debug, "too many requests");
+  ASSERT_EQ(h2.clientGoAway.size(), 1U);
+  EXPECT_EQ(h2.clientGoAway[0].errorCode, ErrorCode::EnhanceYourCalm);
+  EXPECT_EQ(h2.clientGoAway[0].debug, "too many requests");
 }
 
 TEST(Http2Core, WindowUpdateIncreasesConnectionRecvWindow) {
@@ -1221,7 +1223,7 @@ TEST(Http2Core, StreamClosedRejectsDataAfterEndStream) {
   Http2Loopback h2(clientCfg, serverCfg);
   h2.connect(true);
 
-  const uint32_t streamId = 1;
+  constexpr uint32_t streamId = 1;
 
   ASSERT_EQ(h2.client.sendHeaders(
                 streamId,
@@ -1255,7 +1257,7 @@ TEST(Http2Core, FrameParserHandlesBackToBackFramesInSingleBuffer) {
   h2.connect(true);
 
   // Use the proper sendHeaders/sendData API which handles HPACK encoding correctly.
-  const uint32_t streamId = 1;
+  constexpr uint32_t streamId = 1;
   ASSERT_EQ(h2.client.sendHeaders(
                 streamId,
                 [&](const HeaderCallback& emit) {
@@ -1286,7 +1288,7 @@ TEST(Http2Core, ManyTinyFramesDontBreakStateMachine) {
   h2.connect(true);
 
   // Construct 100 minimal DATA frames on a single stream.
-  const uint32_t streamId = 1;
+  constexpr uint32_t streamId = 1;
   ASSERT_EQ(h2.client.sendHeaders(
                 streamId,
                 [&](const HeaderCallback& emit) {
@@ -1300,9 +1302,9 @@ TEST(Http2Core, ManyTinyFramesDontBreakStateMachine) {
   Http2Loopback::pump(h2.client, h2.server);
 
   for (int ii = 0; ii < 100; ++ii) {
-    std::array<std::byte, 1> b = {static_cast<std::byte>('a' + (ii % 26))};
+    std::array<std::byte, 1> bytes = {static_cast<std::byte>('a' + (ii % 26))};
     const bool endStream = (ii == 99);
-    ASSERT_EQ(h2.client.sendData(streamId, b, endStream), ErrorCode::NoError);
+    ASSERT_EQ(h2.client.sendData(streamId, bytes, endStream), ErrorCode::NoError);
     // Pump after each to avoid flow control blocking.
     Http2Loopback::pump(h2.client, h2.server);
   }

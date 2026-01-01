@@ -2,16 +2,27 @@
 
 #include <chrono>
 #include <coroutine>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <exception>
 #include <memory>
+#include <span>
+#include <string_view>
 #include <utility>
 
 #include "aeronet/connection-state.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/http2-config.hpp"
+#include "aeronet/http2-connection.hpp"
+#include "aeronet/http2-frame-types.hpp"
+#include "aeronet/http2-frame.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/path-handler-entry.hpp"
+#include "aeronet/protocol-handler.hpp"
 #include "aeronet/request-task.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/vector.hpp"
