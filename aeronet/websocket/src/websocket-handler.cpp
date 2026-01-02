@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -190,7 +191,7 @@ ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& he
   ProtocolProcessResult result;
 
   switch (header.opcode) {
-    case Opcode::Ping: {
+    case Opcode::Ping:
       // Respond with Pong containing same payload
       sendPong(payload);
       result.action = ProtocolProcessResult::Action::ResponseReady;
@@ -199,19 +200,17 @@ ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& he
         _callbacks.onPing(payload);
       }
       break;
-    }
 
-    case Opcode::Pong: {
+    case Opcode::Pong:
       // Informational only
       if (_callbacks.onPong) {
         _callbacks.onPong(payload);
       }
       result.action = ProtocolProcessResult::Action::Continue;
       break;
-    }
 
     case Opcode::Close: {
-      auto closeInfo = ParseClosePayload(payload);
+      const auto closeInfo = ParseClosePayload(payload);
 
       if (_closeState == CloseState::Open) {
         // Peer initiated close - respond with Close
@@ -233,13 +232,8 @@ ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& he
     }
 
     default:
-      // Unknown control opcode - protocol error
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::ProtocolError, "Unknown control opcode");
-      }
-      sendClose(CloseCode::ProtocolError, "Unknown control opcode");
-      result.action = ProtocolProcessResult::Action::Close;
-      break;
+      // Unknown control opcode - should not reach here via public API; throw for visibility
+      throw std::logic_error("handleControlFrame: unexpected control opcode encountered");
   }
 
   return result;
@@ -329,7 +323,8 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
   std::span<const std::byte> messageData;
   if (_messageCompressed && _deflateContext) {
     _compressBuffer.clear();
-    if (!_deflateContext->decompress(_message.buffer, _compressBuffer, _config.maxMessageSize)) {
+    const char* errMsg = _deflateContext->decompress(_message.buffer, _compressBuffer, _config.maxMessageSize);
+    if (errMsg != nullptr) {
       if (_callbacks.onError) {
         _callbacks.onError(CloseCode::InvalidPayloadData, "Decompression failed");
       }
@@ -425,7 +420,8 @@ bool WebSocketHandler::sendText(std::string_view text) {
   // Try to compress if compression is enabled and payload is large enough
   if (_deflateContext && !_deflateContext->shouldSkipCompression(text.size())) {
     _compressBuffer.clear();
-    if (_deflateContext->compress(textSpan, _compressBuffer)) {
+    const char* errMsg = _deflateContext->compress(textSpan, _compressBuffer);
+    if (errMsg == nullptr) {
       // Only use compressed data if it's smaller
       if (_compressBuffer.size() < text.size()) {
         auto compressedSpan = std::as_bytes(std::span(_compressBuffer.data(), _compressBuffer.size()));
@@ -449,7 +445,8 @@ bool WebSocketHandler::sendBinary(std::span<const std::byte> data) {
   // Try to compress if compression is enabled and payload is large enough
   if (_deflateContext && !_deflateContext->shouldSkipCompression(data.size())) {
     _compressBuffer.clear();
-    if (_deflateContext->compress(data, _compressBuffer)) {
+    const char* errMsg = _deflateContext->compress(data, _compressBuffer);
+    if (errMsg == nullptr) {
       // Only use compressed data if it's smaller
       if (_compressBuffer.size() < data.size()) {
         auto compressedSpan = std::as_bytes(std::span(_compressBuffer.data(), _compressBuffer.size()));

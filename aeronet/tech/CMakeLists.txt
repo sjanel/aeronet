@@ -82,6 +82,14 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    object-array-pool_test
+    test/object-array-pool_test.cpp
+    LIBRARIES
+    aeronet_tech
+    aeronet_basic_test_support
+)
+
+AeronetAddUnitTest(
     object-pool_test
     test/object-pool_test.cpp
     LIBRARIES

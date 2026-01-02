@@ -222,8 +222,7 @@ enum class FrameParseResult : uint8_t { Ok, NeedMoreData, FrameSizeError, Protoc
                                                       WindowUpdateFrame& out) noexcept;
 
 /// Parse a CONTINUATION frame payload.
-[[nodiscard]] FrameParseResult ParseContinuationFrame(FrameHeader header, std::span<const std::byte> payload,
-                                                      ContinuationFrame& out) noexcept;
+void ParseContinuationFrame(FrameHeader header, std::span<const std::byte> payload, ContinuationFrame& out) noexcept;
 
 // ============================
 // Frame writing functions

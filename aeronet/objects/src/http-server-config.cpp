@@ -188,6 +188,9 @@ HttpServerConfig& HttpServerConfig::withRequestDecompression(DecompressionConfig
 
 HttpServerConfig& HttpServerConfig::withMergeUnknownRequestHeaders(bool on) {
   mergeUnknownRequestHeaders = on;
+#ifdef AERONET_ENABLE_HTTP2
+  http2.mergeUnknownRequestHeaders = on;
+#endif
   return *this;
 }
 

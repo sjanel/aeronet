@@ -66,6 +66,15 @@ struct HttpServerConfig {
   // each response regardless of client headers. Default: true.
   bool enableKeepAlive{true};
 
+  // ===========================================
+  // Header merge behavior tuning
+  // ===========================================
+  // When merging repeated unknown (i.e. not in the curated table) request headers, the default policy (true)
+  // assumes list semantics and joins with a comma. If set to false, unknown headers are treated as non-mergeable
+  // (duplicates will be handled according to parser singleton logic or rejected). This allows stricter deployments
+  // to avoid accidentally merging custom singleton semantics.
+  bool mergeUnknownRequestHeaders{true};
+
   // Maximum number of HTTP requests to serve over a single persistent connection before forcing close.
   // A high value improves connection reuse at the cost of potential resource exhaustion from slow clients.
   // A low value limits resource usage but may increase latency due to more frequent connection establishment.
@@ -179,15 +188,6 @@ struct HttpServerConfig {
   // Request body decompression configuration
   // ===========================================
   DecompressionConfig decompression;
-
-  // ===========================================
-  // Header merge behavior tuning
-  // ===========================================
-  // When merging repeated unknown (i.e. not in the curated table) request headers, the default policy (true)
-  // assumes list semantics and joins with a comma. If set to false, unknown headers are treated as non-mergeable
-  // (duplicates will be handled according to parser singleton logic or rejected). This allows stricter deployments
-  // to avoid accidentally merging custom singleton semantics.
-  bool mergeUnknownRequestHeaders{true};
 
   // ===========================================
   // Adaptive inbound read chunk sizing

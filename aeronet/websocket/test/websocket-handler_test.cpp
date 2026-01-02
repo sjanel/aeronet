@@ -29,7 +29,7 @@ std::span<const std::byte> sv_bytes(std::string_view sv) noexcept {
   return std::as_bytes(std::span<const char>(sv.data(), sv.size()));
 }
 
-std::span<const std::byte> buf_bytes(const aeronet::RawBytes& buf) noexcept { return {buf.data(), buf.size()}; }
+std::span<const std::byte> buf_bytes(const RawBytes& buf) noexcept { return {buf.data(), buf.size()}; }
 
 template <typename Container>
 std::span<const std::byte> container_bytes(const Container& cont) noexcept {
@@ -74,24 +74,22 @@ class WebSocketHandlerTest : public ::testing::Test {
   }
 
   // Helper to build a masked frame (simulating client->server)
-  static aeronet::RawBytes BuildMaskedFrame(Opcode opcode, std::string_view payload, bool fin = true) {
-    aeronet::RawBytes frame;
+  static RawBytes BuildMaskedFrame(Opcode opcode, std::string_view payload, bool fin = true) {
+    RawBytes frame;
     MaskingKey mask = {std::byte{0x12}, std::byte{0x34}, std::byte{0x56}, std::byte{0x78}};
     BuildFrame(frame, opcode, sv_bytes(payload), fin, true, mask);
     return frame;
   }
 
   // Helper to build an unmasked frame (simulating server->client)
-  static aeronet::RawBytes BuildUnmaskedFrame(Opcode opcode, std::string_view payload, bool fin = true) {
-    aeronet::RawBytes frame;
+  static RawBytes BuildUnmaskedFrame(Opcode opcode, std::string_view payload, bool fin = true) {
+    RawBytes frame;
     BuildFrame(frame, opcode, sv_bytes(payload), fin, false);
     return frame;
   }
 
   // Helper to process frame data
-  ProtocolProcessResult process(const aeronet::RawBytes& data) {
-    return handler->processInput(buf_bytes(data), dummyState);
-  }
+  ProtocolProcessResult process(const RawBytes& data) { return handler->processInput(buf_bytes(data), dummyState); }
 
   std::unique_ptr<WebSocketHandler> handler;
   ConnectionState dummyState;  // Not used in current implementation
@@ -132,7 +130,7 @@ TEST_F(WebSocketHandlerTest, ReceiveTextMessage) {
 
 TEST_F(WebSocketHandlerTest, ReceiveBinaryMessage) {
   std::array<uint8_t, 4> binaryData = {0xDE, 0xAD, 0xBE, 0xEF};
-  aeronet::RawBytes frame;
+  RawBytes frame;
   BuildFrame(frame, Opcode::Binary, container_bytes(binaryData), true, false);
 
   auto result = process(frame);
@@ -157,7 +155,7 @@ TEST_F(WebSocketHandlerTest, ReceiveMultipleMessages) {
   auto frame2 = BuildUnmaskedFrame(Opcode::Text, "Second");
 
   // Concatenate frames
-  aeronet::RawBytes combined;
+  RawBytes combined;
   combined.append(frame1.data(), frame1.size());
   combined.append(frame2.data(), frame2.size());
 
@@ -219,7 +217,7 @@ TEST_F(WebSocketHandlerTest, NewMessageDuringFragment) {
 // ============================================================================
 
 TEST_F(WebSocketHandlerTest, ReceivePing) {
-  aeronet::RawBytes frame;
+  RawBytes frame;
   BuildCloseFrame(frame, CloseCode::Normal, "");  // Just to get structure
   frame.clear();
   BuildFrame(frame, Opcode::Ping, sv_bytes(std::string_view("ping data", 9)), true, false);
@@ -235,7 +233,7 @@ TEST_F(WebSocketHandlerTest, ReceivePing) {
 }
 
 TEST_F(WebSocketHandlerTest, ReceivePong) {
-  aeronet::RawBytes frame;
+  RawBytes frame;
   BuildFrame(frame, Opcode::Pong, sv_bytes(std::string_view("pong data", 9)), true, false);
 
   auto result = process(frame);
@@ -246,7 +244,7 @@ TEST_F(WebSocketHandlerTest, ReceivePong) {
 }
 
 TEST_F(WebSocketHandlerTest, ReceiveClose) {
-  aeronet::RawBytes frame;
+  RawBytes frame;
   BuildCloseFrame(frame, CloseCode::Normal, "Goodbye");
 
   (void)process(frame);
@@ -266,7 +264,7 @@ TEST_F(WebSocketHandlerTest, ControlFrameDuringFragment) {
   process(frag1);
 
   // Receive a ping during fragmentation
-  aeronet::RawBytes pingFrame;
+  RawBytes pingFrame;
   BuildFrame(pingFrame, Opcode::Ping, sv_bytes(std::string_view("ping", 4)), true, false);
   auto pingResult = process(pingFrame);
 
@@ -298,7 +296,7 @@ TEST_F(WebSocketHandlerTest, ValidUtf8Text) {
 TEST_F(WebSocketHandlerTest, InvalidUtf8Text) {
   // Invalid UTF-8 sequence
   std::array<char, 4> invalidUtf8 = {'\xC0', '\x80', 'a', 'b'};  // Overlong encoding
-  aeronet::RawBytes frame;
+  RawBytes frame;
   BuildFrame(frame, Opcode::Text, container_bytes(invalidUtf8), true, false);
 
   auto result = process(frame);
@@ -311,7 +309,7 @@ TEST_F(WebSocketHandlerTest, InvalidUtf8Text) {
 TEST_F(WebSocketHandlerTest, Utf8SurrogatePairInvalid) {
   // UTF-16 surrogate pair encoded in UTF-8 (invalid)
   std::array<char, 3> surrogate = {'\xED', '\xA0', '\x80'};  // U+D800 surrogate
-  aeronet::RawBytes frame;
+  RawBytes frame;
   BuildFrame(frame, Opcode::Text, container_bytes(surrogate), true, false);
 
   auto result = process(frame);
@@ -400,7 +398,7 @@ TEST_F(WebSocketHandlerTest, CloseHandshakeInitiatedByUs) {
   EXPECT_FALSE(handler->isCloseComplete());
 
   // Receive close response
-  aeronet::RawBytes closeFrame;
+  RawBytes closeFrame;
   BuildCloseFrame(closeFrame, CloseCode::GoingAway, "Bye");
   auto result = process(closeFrame);
 
@@ -409,7 +407,7 @@ TEST_F(WebSocketHandlerTest, CloseHandshakeInitiatedByUs) {
 }
 
 TEST_F(WebSocketHandlerTest, CloseHandshakeInitiatedByPeer) {
-  aeronet::RawBytes closeFrame;
+  RawBytes closeFrame;
   BuildCloseFrame(closeFrame, CloseCode::Normal, "Peer closing");
   (void)process(closeFrame);
 
@@ -440,6 +438,35 @@ TEST_F(WebSocketHandlerTest, MessageTooLarge) {
   EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
 }
 
+TEST_F(WebSocketHandlerTest, MessageTooLargeTriggersOnError) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  config.maxMessageSize = 100;  // Small limit
+
+  // Capture errors via callbacks
+  WebSocketCallbacks callbacks;
+  callbacks.onError = [this](CloseCode code, std::string_view message) {
+    lastErrorCode = code;
+    lastErrorMessage = std::string(message);
+    errorCount++;
+  };
+
+  auto limitedHandler = std::make_unique<WebSocketHandler>(config, std::move(callbacks));
+
+  // Send fragmented message that exceeds maxMessageSize
+  std::string largePayload(60, 'X');
+  auto frag1 = BuildUnmaskedFrame(Opcode::Text, largePayload, false);
+  (void)limitedHandler->processInput(buf_bytes(frag1), dummyState);
+
+  auto frag2 = BuildUnmaskedFrame(Opcode::Continuation, largePayload, true);
+  auto result = limitedHandler->processInput(buf_bytes(frag2), dummyState);
+
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(errorCount, 1);
+  EXPECT_EQ(lastErrorCode, CloseCode::MessageTooBig);
+  EXPECT_EQ(lastErrorMessage, "Message too large");
+}
+
 // ============================================================================
 // Incomplete frame handling tests
 // ============================================================================
@@ -448,7 +475,7 @@ TEST_F(WebSocketHandlerTest, IncompleteFrame) {
   auto frame = BuildUnmaskedFrame(Opcode::Text, "Complete message");
 
   // Only send half the frame
-  aeronet::RawBytes partial;
+  RawBytes partial;
   partial.append(frame.data(), frame.size() / 2);
 
   auto result = process(partial);
@@ -456,7 +483,7 @@ TEST_F(WebSocketHandlerTest, IncompleteFrame) {
   EXPECT_EQ(messageCount, 0);
 
   // Send the rest
-  aeronet::RawBytes rest;
+  RawBytes rest;
   rest.append(frame.data() + (frame.size() / 2), frame.size() - (frame.size() / 2));
   result = process(rest);
 
@@ -626,7 +653,7 @@ TEST_F(WebSocketHandlerTest, SendPongAfterClosed) {
 
 TEST_F(WebSocketHandlerTest, RSVBitsSetRejectsFrame) {
   // Build a frame with RSV1 bit set (would be for extensions)
-  aeronet::RawBytes frame;
+  RawBytes frame;
   frame.push_back(std::byte{0x91});  // FIN=1, RSV1=1, opcode=Text
   frame.push_back(std::byte{0x05});  // MASK=0, length=5
   frame.append(reinterpret_cast<const std::byte*>("Hello"), 5);
@@ -644,7 +671,7 @@ TEST_F(WebSocketHandlerTest, RSVBitsSetRejectsFrame) {
 
 TEST_F(WebSocketHandlerTest, ReservedOpcodeRejectsFrame) {
   // Build a frame with reserved opcode (e.g., 3)
-  aeronet::RawBytes frame;
+  RawBytes frame;
   frame.push_back(std::byte{0x83});  // FIN=1, opcode=3 (reserved)
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
@@ -661,7 +688,7 @@ TEST_F(WebSocketHandlerTest, ReservedOpcodeRejectsFrame) {
 
 TEST_F(WebSocketHandlerTest, FragmentedPingRejectsFrame) {
   // Build a Ping frame with FIN=0 (invalid - control frames can't be fragmented)
-  aeronet::RawBytes frame;
+  RawBytes frame;
   frame.push_back(std::byte{0x09});  // FIN=0, opcode=Ping
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
@@ -678,7 +705,7 @@ TEST_F(WebSocketHandlerTest, FragmentedPingRejectsFrame) {
 
 TEST_F(WebSocketHandlerTest, ControlFramePayloadTooLarge) {
   // Build a Ping frame with payload > 125 bytes
-  aeronet::RawBytes frame;
+  RawBytes frame;
   frame.push_back(std::byte{0x89});  // FIN=1, opcode=Ping
   frame.push_back(std::byte{126});   // MASK=0, 16-bit length indicator
   frame.push_back(std::byte{0x00});
@@ -734,7 +761,7 @@ TEST_F(WebSocketHandlerTest, GetPendingOutputEmpty) {
 
 TEST_F(WebSocketHandlerTest, UnknownControlOpcode) {
   // Build a frame with control opcode 0x0B (reserved control opcode)
-  aeronet::RawBytes frame;
+  RawBytes frame;
   frame.push_back(std::byte{0x8B});  // FIN=1, opcode=0x0B
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
@@ -753,7 +780,7 @@ TEST_F(WebSocketHandlerTest, Utf8IncompleteAtEnd) {
   // UTF-8 sequence starting but incomplete at end of data
   std::array<char, 3> incomplete = {'a', static_cast<char>(0xC2), 'b'};  // 0xC2 starts 2-byte seq
   incomplete[2] = 'b';                                                   // Not a continuation byte
-  aeronet::RawBytes frame;
+  RawBytes frame;
   BuildFrame(frame, Opcode::Text, container_bytes(incomplete), true, false);
 
   auto result = process(frame);
@@ -765,7 +792,7 @@ TEST_F(WebSocketHandlerTest, Utf8IncompleteAtEnd) {
 TEST_F(WebSocketHandlerTest, Utf8OutOfRange) {
   // Codepoint > U+10FFFF (4-byte sequence: F4 90 80 80 would be U+110000)
   std::array<char, 4> outOfRange = {'\xF4', '\x90', '\x80', '\x80'};
-  aeronet::RawBytes frame;
+  RawBytes frame;
   BuildFrame(frame, Opcode::Text, container_bytes(outOfRange), true, false);
 
   auto result = process(frame);
@@ -777,7 +804,7 @@ TEST_F(WebSocketHandlerTest, Utf8OutOfRange) {
 TEST_F(WebSocketHandlerTest, Utf8InvalidLeadingByte) {
   // Invalid leading byte (continuation byte without lead)
   std::array<char, 2> invalidLead = {'\x80', 'a'};
-  aeronet::RawBytes frame;
+  RawBytes frame;
   BuildFrame(frame, Opcode::Text, container_bytes(invalidLead), true, false);
 
   auto result = process(frame);
@@ -796,14 +823,14 @@ TEST_F(WebSocketHandlerTest, InputBufferCarryOver) {
   auto frame2 = BuildUnmaskedFrame(Opcode::Text, "Second");
 
   // Send partial first frame, then complete first and start second
-  aeronet::RawBytes partial1;
+  RawBytes partial1;
   partial1.append(frame1.data(), 3);
   auto result1 = process(partial1);
   EXPECT_EQ(result1.action, ProtocolProcessResult::Action::Continue);
   EXPECT_EQ(messageCount, 0);
 
   // Send rest of first frame + complete second frame
-  aeronet::RawBytes rest;
+  RawBytes rest;
   rest.append(frame1.data() + 3, frame1.size() - 3);
   rest.append(frame2.data(), frame2.size());
   (void)process(rest);
@@ -829,7 +856,7 @@ TEST_F(WebSocketHandlerTest, PayloadTooLargeError) {
   auto limitedHandler = std::make_unique<WebSocketHandler>(config, std::move(callbacks));
 
   // Build a frame with header indicating a very large payload
-  aeronet::RawBytes frame;
+  RawBytes frame;
   frame.push_back(std::byte{0x82});  // FIN=1, opcode=binary
   frame.push_back(std::byte{127});   // 64-bit length indicator
   // Set length to a large value
@@ -904,7 +931,7 @@ TEST_F(WebSocketHandlerTest, CloseInitiatedThenReceived) {
   handler->onOutputWritten(output.size());
 
   // Peer responds with close
-  aeronet::RawBytes closeFrame;
+  RawBytes closeFrame;
   BuildCloseFrame(closeFrame, CloseCode::Normal, "Peer response");
   auto result = process(closeFrame);
 
@@ -943,11 +970,11 @@ TEST_F(WebSocketHandlerTest, RSV1AcceptedWithCompression) {
   // Create a compressed message
   DeflateContext ctx(deflateParams, DeflateConfig{}, false);
   std::string_view original = "Hello, compressed world!";
-  aeronet::RawBytes compressed;
-  ASSERT_TRUE(ctx.compress(sv_bytes(original), compressed));
+  RawBytes compressed;
+  ASSERT_EQ(ctx.compress(sv_bytes(original), compressed), nullptr);
 
   // Build frame with RSV1 set (compressed)
-  aeronet::RawBytes frame;
+  RawBytes frame;
   bool shouldMask = false;
   MaskingKey mask{};
   BuildFrame(frame, Opcode::Text, buf_bytes(compressed), true, shouldMask, mask, true);  // RSV1=true
@@ -1046,7 +1073,7 @@ TEST_F(WebSocketHandlerTest, DecompressionFailure) {
   auto compressHandler = std::make_unique<WebSocketHandler>(config, std::move(callbacks), deflateParams);
 
   // Build a frame with RSV1 (compressed) but with invalid compressed data
-  aeronet::RawBytes frame;
+  RawBytes frame;
   frame.push_back(std::byte{0xC1});                              // FIN=1, RSV1=1, opcode=Text
   frame.push_back(std::byte{0x05});                              // MASK=0, length=5
   frame.append(reinterpret_cast<const std::byte*>("XXXXX"), 5);  // Invalid deflate data
@@ -1078,18 +1105,18 @@ TEST_F(WebSocketHandlerTest, CompressedFragmentedMessage) {
   // Compress full message
   DeflateContext ctx(deflateParams, DeflateConfig{}, false);
   std::string_view original = "Hello, fragmented compressed world!";
-  aeronet::RawBytes compressed;
-  ASSERT_TRUE(ctx.compress(sv_bytes(original), compressed));
+  RawBytes compressed;
+  ASSERT_EQ(ctx.compress(sv_bytes(original), compressed), nullptr);
 
   // Split into two fragments - RSV1 should only be set on first
   std::size_t half = compressed.size() / 2;
 
-  aeronet::RawBytes frag1;
+  RawBytes frag1;
   frag1.push_back(std::byte{0x41});  // FIN=0, RSV1=1, opcode=Text
   frag1.push_back(std::byte{static_cast<uint8_t>(half)});
   frag1.append(compressed.data(), half);
 
-  aeronet::RawBytes frag2;
+  RawBytes frag2;
   frag2.push_back(std::byte{0x80});  // FIN=1, RSV1=0, opcode=Continuation
   frag2.push_back(std::byte{static_cast<uint8_t>(compressed.size() - half)});
   frag2.append(compressed.data() + half, compressed.size() - half);
@@ -1111,7 +1138,7 @@ TEST_F(WebSocketHandlerTest, Utf8OverlongEncoding2Byte) {
   // 2-byte encoding for a character that fits in 1 byte (0x00 = NUL)
   // Valid encoding: 0x00, overlong: 0xC0 0x80
   std::array<char, 2> overlong = {'\xC0', '\x80'};
-  aeronet::RawBytes frame;
+  RawBytes frame;
   BuildFrame(frame, Opcode::Text, container_bytes(overlong), true, false);
 
   auto result = process(frame);
@@ -1123,7 +1150,7 @@ TEST_F(WebSocketHandlerTest, Utf8OverlongEncoding3Byte) {
   // 3-byte encoding for a character that fits in 2 bytes (0x80)
   // Valid encoding: 0xC2 0x80, overlong: 0xE0 0x82 0x80
   std::array<char, 3> overlong = {'\xE0', '\x82', '\x80'};
-  aeronet::RawBytes frame;
+  RawBytes frame;
   BuildFrame(frame, Opcode::Text, container_bytes(overlong), true, false);
 
   auto result = process(frame);
@@ -1134,7 +1161,7 @@ TEST_F(WebSocketHandlerTest, Utf8OverlongEncoding3Byte) {
 TEST_F(WebSocketHandlerTest, Utf84ByteValid) {
   // Valid 4-byte sequence for U+1F600 (😀)
   std::array<char, 4> valid4byte = {'\xF0', '\x9F', '\x98', '\x80'};
-  aeronet::RawBytes frame;
+  RawBytes frame;
   BuildFrame(frame, Opcode::Text, container_bytes(valid4byte), true, false);
 
   auto result = process(frame);
@@ -1232,7 +1259,7 @@ TEST_F(WebSocketHandlerTest, CloseTimeout_NotTimedOutAfterCloseComplete) {
   handler->sendClose(CloseCode::Normal, "closing");
 
   // Complete the close handshake by receiving close from peer
-  aeronet::RawBytes closeFrame;
+  RawBytes closeFrame;
   BuildCloseFrame(closeFrame, CloseCode::Normal, "peer closing");
   auto result = process(closeFrame);
 

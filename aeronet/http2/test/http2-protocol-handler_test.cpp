@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "aeronet/connection-state.hpp"
+#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -58,13 +59,13 @@ struct DataEvent {
 class Http2ProtocolLoopback {
  public:
   explicit Http2ProtocolLoopback(Router& router) : handler(serverCfg, router), client(clientCfg, false) {
-    client.setOnHeaders([this](uint32_t streamId, const HeaderProvider& provider, bool endStream) {
+    client.setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
       HeaderEvent ev;
       ev.streamId = streamId;
       ev.endStream = endStream;
-      provider([&](std::string_view name, std::string_view value) {
-        ev.headers.emplace_back(std::string(name), std::string(value));
-      });
+      for (const auto& [name, value] : headers) {
+        ev.headers.emplace_back(name, value);
+      }
       clientHeaders.push_back(std::move(ev));
     });
 
@@ -780,6 +781,39 @@ TEST(Http2ProtocolHandler, HandlerUnknownExceptionReturns500UnknownError) {
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "500");
   ASSERT_FALSE(loop.clientData.empty());
   EXPECT_EQ(loop.clientData[0].data, "Unknown error");
+}
+
+TEST(Http2ProtocolHandler, MissingPathSendsRstStream) {
+  Router router;
+  // Default handler should not be called because request is invalid
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  // Send headers without :path pseudo-header
+  const auto ok = loop.client.sendHeaders(
+      1,
+      [](const HeaderCallback& emit) {
+        emit(":method", "GET");
+        emit(":scheme", "https");
+        emit(":authority", "example.com");
+        // omit :path
+      },
+      true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  // Deliver server output to the client so the RST_STREAM is observed by the client
+  loop.pumpServerToClient();
+
+  // The handler should send a RST_STREAM (client receives stream reset)
+  // Client side registers resets in streamResets vector
+  ASSERT_FALSE(loop.streamResets.empty());
+  // Expect the reset for stream 1 with ProtocolError
+  const auto [sid, code] = loop.streamResets.back();
+  EXPECT_EQ(sid, 1U);
+  EXPECT_EQ(code, ErrorCode::ProtocolError);
 }
 
 }  // namespace

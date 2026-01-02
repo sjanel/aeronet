@@ -26,6 +26,12 @@ struct Http2Config {
   /// Default: false.
   bool enablePush{false};
 
+  /// Whether to merge multiple header values for unknown request headers.
+  /// If true, multiple values for unknown headers are concatenated with commas,
+  /// per RFC 9113 §8.1.2. If false, only the last value is kept.
+  /// Default: true.
+  bool mergeUnknownRequestHeaders{true};
+
   /// SETTINGS_HEADER_TABLE_SIZE (0x1): Maximum size of the HPACK dynamic table.
   /// Default: 4096 bytes (RFC 9113 default).
   uint32_t headerTableSize{4096};
@@ -117,6 +123,11 @@ struct Http2Config {
 
   Http2Config& withEnablePush(bool enable) {
     enablePush = enable;
+    return *this;
+  }
+
+  Http2Config& withMergeUnknownRequestHeaders(bool enable) {
+    this->mergeUnknownRequestHeaders = enable;
     return *this;
   }
 
