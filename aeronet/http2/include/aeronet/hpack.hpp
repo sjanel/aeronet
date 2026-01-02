@@ -2,13 +2,14 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <span>
 #include <string_view>
 #include <type_traits>
 
+#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/object-array-pool.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/vector.hpp"
@@ -30,7 +31,7 @@ class HpackDynamicEntry {
   HpackDynamicEntry(std::string_view name, std::string_view value);
 
   /// Calculate the size of this entry as defined by RFC 7541 §4.1.
-  [[nodiscard]] std::size_t size() const noexcept { return _nameLength + _valueLength + kOverhead; }
+  [[nodiscard]] std::size_t size() const noexcept { return kOverhead + _nameLength + _valueLength; }
 
   [[nodiscard]] std::string_view name() const noexcept { return {_data.get(), _nameLength}; }
 
@@ -40,8 +41,8 @@ class HpackDynamicEntry {
 
  private:
   std::unique_ptr<char[]> _data;
-  std::size_t _nameLength;
-  std::size_t _valueLength;
+  uint32_t _nameLength;
+  uint32_t _valueLength;
 };
 
 /// HPACK dynamic table with FIFO eviction (RFC 7541 §2.3.2).
@@ -109,34 +110,32 @@ struct HpackLookupResult {
 class HpackDecoder {
  public:
   /// Create a decoder with the specified maximum dynamic table size.
-  explicit HpackDecoder(std::size_t maxDynamicTableSize = 4096) : _dynamicTable(maxDynamicTableSize) {}
+  explicit HpackDecoder(std::size_t maxDynamicTableSize = 4096, bool mergeAllowedForUnknownRequestHeaders = true)
+      : _dynamicTable(maxDynamicTableSize),
+        _decodedStrings(128U),
+        _mergeAllowedForUnknownRequestHeaders(mergeAllowedForUnknownRequestHeaders) {}
 
   /// Decode result for a single header block.
   struct DecodeResult {
     [[nodiscard]] bool isSuccess() const noexcept { return errorMessage == nullptr; }
 
     const char* errorMessage;
+    const HeadersViewMap& decodedHeaders;
   };
-
-  using DecodeCallback = std::function<void(std::string_view name, std::string_view value)>;
 
   /// Decode a complete header block fragment.
   /// Calls the callback for each decoded header field.
   /// The string_views in HeaderField are valid until the next decode() call or clear().
   ///
   /// @param data The compressed header block fragment
-  /// @param callback Called for each decoded header (name, value)
-  /// @return DecodeResult indicating success or failure with error message
-  DecodeResult decode(std::span<const std::byte> data, const DecodeCallback& callback);
+  /// @return DecodeResult indicating success or failure with headers and error message
+  DecodeResult decode(std::span<const std::byte> data);
 
   /// Update the maximum dynamic table size (from SETTINGS frame).
   void setMaxDynamicTableSize(std::size_t maxSize) { _dynamicTable.setMaxSize(maxSize); }
 
   /// Get the current dynamic table for inspection.
   [[nodiscard]] const HpackDynamicTable& dynamicTable() const noexcept { return _dynamicTable; }
-
-  /// Clear decoded strings buffer (for memory management between requests).
-  void clearDecodedStrings() noexcept { _decodedStrings.clear(); }
 
  private:
   struct DecodedString {
@@ -146,6 +145,9 @@ class HpackDecoder {
     std::size_t consumed{kInvalidConsumed};
   };
 
+  using CharStorage = ObjectArrayPool<char>;
+  using CharStorageSizeType = typename CharStorage::size_type;
+
   /// Decode a string literal (RFC 7541 §5.2).
   /// Returns the decoded string and number of bytes consumed, or nullopt on error.
   [[nodiscard]] DecodedString decodeString(std::span<const std::byte> data);
@@ -153,16 +155,22 @@ class HpackDecoder {
   /// Decode Huffman-encoded string.
   /// Returns the start pos of the decoded string in the internal buffer (end is _decodedStrings.size()),
   /// or std::numeric_limits<std::size_t>::max() on error.
-  [[nodiscard]] std::size_t decodeHuffman(std::span<const std::byte> data);
+  [[nodiscard]] std::string_view decodeHuffman(std::span<const std::byte> data);
 
   /// Look up a header by combined index (1-61 = static, 62+ = dynamic).
   /// Returns an empty header name if index is out of bounds.
   [[nodiscard]] http::HeaderView lookupIndex(std::size_t index) const;
 
+  // Store a decoded header into internal storage.
+  // Returns an error message on failure, or nullptr on success.
+  const char* storeHeader(http::HeaderView header);
+
   HpackDynamicTable _dynamicTable;
 
   // Buffer for storing decoded strings that outlive the input data (Huffman decoded or dynamic table copies)
-  RawChars _decodedStrings;
+  HeadersViewMap _decodedHeadersMap;
+  CharStorage _decodedStrings;
+  bool _mergeAllowedForUnknownRequestHeaders{true};
 };
 
 /// HPACK encoder for compressing HTTP/2 header blocks (RFC 7541).

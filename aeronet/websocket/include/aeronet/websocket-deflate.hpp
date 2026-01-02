@@ -89,24 +89,21 @@ class DeflateContext {
   /// Compress a message payload.
   /// @param input Uncompressed message data
   /// @param output Buffer to append compressed data to
-  /// @return true on success, false on compression error
-  [[nodiscard]] bool compress(std::span<const std::byte> input, RawBytes& output);
+  /// @return nullptr on success, error message on compression error
+  [[nodiscard]] const char* compress(std::span<const std::byte> input, RawBytes& output);
 
   /// Decompress a message payload.
   /// @param input Compressed message data
   /// @param output Buffer to append decompressed data to
   /// @param maxDecompressedSize Maximum allowed decompressed size (0 = unlimited)
-  /// @return true on success, false on decompression error or size limit exceeded
-  [[nodiscard]] bool decompress(std::span<const std::byte> input, RawBytes& output,
-                                std::size_t maxDecompressedSize = 0);
+  /// @return nullptr on success, error message on decompression error or size limit exceeded
+  [[nodiscard]] const char* decompress(std::span<const std::byte> input, RawBytes& output,
+                                       std::size_t maxDecompressedSize = 0);
 
   /// Check if compression should be skipped for a given payload size.
   [[nodiscard]] bool shouldSkipCompression(std::size_t payloadSize) const noexcept {
     return payloadSize < _minCompressSize;
   }
-
-  /// Get last error message (if any).
-  [[nodiscard]] std::string_view lastError() const noexcept { return _lastError; }
 
   using trivially_relocatable = std::true_type;
 
@@ -114,7 +111,6 @@ class DeflateContext {
   struct Impl;
   std::unique_ptr<Impl> _impl;
   uint32_t _minCompressSize{0};
-  std::string_view _lastError;
 };
 
 }  // namespace aeronet::websocket

@@ -247,11 +247,9 @@ FrameParseResult ParseWindowUpdateFrame(std::span<const std::byte> payload, Wind
   return FrameParseResult::Ok;
 }
 
-FrameParseResult ParseContinuationFrame(FrameHeader header, std::span<const std::byte> payload,
-                                        ContinuationFrame& out) noexcept {
+void ParseContinuationFrame(FrameHeader header, std::span<const std::byte> payload, ContinuationFrame& out) noexcept {
   out.endHeaders = header.hasFlag(FrameFlags::ContinuationEndHeaders);
   out.headerBlockFragment = payload;
-  return FrameParseResult::Ok;
 }
 
 // ============================

@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "aeronet/flat-hash-map.hpp"
+#include "aeronet/headers-view-map.hpp"
 #include "aeronet/hpack.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-frame.hpp"
@@ -217,30 +218,25 @@ class Http2Connection {
   // Callbacks
   // ============================
 
-  /// Set callback for when headers are received on a stream.
-  /// The callback receives (streamId, headerProvider, endStream).
-  /// Call headerProvider with a HeaderCallback to receive each header name/value pair.
-  void setOnHeaders(
-      std::function<void(uint32_t streamId, const HeaderProvider& headerProvider, bool endStream)> callback) {
-    _onHeaders = std::move(callback);
-  }
+  using OnHeadersCb = std::function<void(uint32_t streamId, const HeadersViewMap& headers, bool endStream)>;
+  using GoAwayCb = std::function<void(uint32_t lastStreamId, ErrorCode errorCode, std::string_view debugData)>;
+  using OnStreamCb = std::function<void(uint32_t streamId, ErrorCode errorCode)>;
+
+  /// Alternative callback that receives decoded headers as an owned vector.
+  /// This avoids the callback-of-callback pattern and is simpler for consumers.
+  void setOnHeadersDecoded(OnHeadersCb cb) { _onHeadersDecoded = std::move(cb); }
 
   /// Set callback for when data is received on a stream.
   void setOnData(DataCallback callback) { _onData = std::move(callback); }
 
   /// Set callback for when a stream is reset.
-  void setOnStreamReset(std::function<void(uint32_t streamId, ErrorCode errorCode)> callback) {
-    _onStreamReset = std::move(callback);
-  }
+  void setOnStreamReset(OnStreamCb callback) { _onStreamReset = std::move(callback); }
 
   /// Set callback for when a stream is closed.
   void setOnStreamClosed(StreamEventCallback callback) { _onStreamClosed = std::move(callback); }
 
   /// Set callback for GOAWAY received.
-  void setOnGoAway(
-      std::function<void(uint32_t lastStreamId, ErrorCode errorCode, std::string_view debugData)> callback) {
-    _onGoAway = std::move(callback);
-  }
+  void setOnGoAway(GoAwayCb callback) { _onGoAway = std::move(callback); }
 
  private:
   using StreamsMap = flat_hash_map<uint32_t, Http2Stream>;
@@ -275,7 +271,7 @@ class Http2Connection {
 
   void encodeHeaders(uint32_t streamId, const HeaderProvider& headerProvider, bool endStream, bool endHeaders);
 
-  /// Decode an HPACK header block and emit headers via `_onHeaders`.
+  /// Decode an HPACK header block and deliver decoded headers via `setOnHeadersDecoded`.
   /// Returns `CompressionError` if decoding fails, `NoError` otherwise.
   ErrorCode decodeAndEmitHeaders(uint32_t streamId, std::span<const std::byte> headerBlock, bool endStream);
 
@@ -299,16 +295,15 @@ class Http2Connection {
 
   Http2Config _localSettings;
   PeerSettings _peerSettings;
-  ConnectionState _state{ConnectionState::AwaitingPreface};
-  bool _isServer;
 
   // Stream management
   StreamsMap _streams;
+  std::deque<uint32_t> _closedStreamsFifo;
+  uint32_t _headerBlockStreamId{0};
   uint32_t _activeStreamCount{0};
   uint32_t _lastPeerStreamId{0};
   uint32_t _lastLocalStreamId{0};
   uint32_t _goAwayLastStreamId{UINT32_MAX};
-  std::deque<uint32_t> _closedStreamsFifo;
 
   // Flow control
   int32_t _connectionSendWindow;
@@ -320,24 +315,26 @@ class Http2Connection {
 
   // Header block accumulation (for CONTINUATION frames)
   RawBytes _headerBlockBuffer;
-  uint32_t _headerBlockStreamId{0};
-  bool _expectingContinuation{false};
-  bool _headerBlockEndStream{false};
 
   // Output buffer
   RawBytes _outputBuffer;
   std::size_t _outputWritePos{0};
 
   // Callbacks
-  std::function<void(uint32_t streamId, const HeaderProvider& headerProvider, bool endStream)> _onHeaders;
+  OnHeadersCb _onHeadersDecoded;
   DataCallback _onData;
-  std::function<void(uint32_t streamId, ErrorCode errorCode)> _onStreamReset;
+  OnStreamCb _onStreamReset;
   StreamEventCallback _onStreamClosed;
-  std::function<void(uint32_t lastStreamId, ErrorCode errorCode, std::string_view debugData)> _onGoAway;
+  GoAwayCb _onGoAway;
+
+  ConnectionState _state{ConnectionState::AwaitingPreface};
 
   // Settings acknowledgment tracking
   bool _settingsSent{false};
   bool _settingsAckReceived{false};
+  bool _isServer;
+  bool _expectingContinuation{false};
+  bool _headerBlockEndStream{false};
 };
 
 }  // namespace aeronet::http2

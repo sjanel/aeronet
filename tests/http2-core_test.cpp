@@ -10,6 +10,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
@@ -112,23 +113,23 @@ class Http2Loopback {
         _serverCfg(std::move(serverCfg)),
         client(_clientCfg, false),
         server(_serverCfg, true) {
-    client.setOnHeaders([this](uint32_t streamId, const HeaderProvider& provider, bool endStream) {
+    client.setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
       HeaderEvent ev;
       ev.streamId = streamId;
       ev.endStream = endStream;
-      provider([&](std::string_view name, std::string_view value) {
-        ev.headers.emplace_back(std::string(name), std::string(value));
-      });
+      for (const auto& [name, value] : headers) {
+        ev.headers.emplace_back(name, value);
+      }
       clientHeaders.push_back(std::move(ev));
     });
 
-    server.setOnHeaders([this](uint32_t streamId, const HeaderProvider& provider, bool endStream) {
+    server.setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
       HeaderEvent ev;
       ev.streamId = streamId;
       ev.endStream = endStream;
-      provider([&](std::string_view name, std::string_view value) {
-        ev.headers.emplace_back(std::string(name), std::string(value));
-      });
+      for (const auto& [name, value] : headers) {
+        ev.headers.emplace_back(name, value);
+      }
       serverHeaders.push_back(std::move(ev));
     });
 

@@ -38,10 +38,15 @@ Header::Header(const Header &rhs)
 
 Header &Header::operator=(const Header &rhs) {
   if (this != &rhs) [[likely]] {
-    _data = std::make_unique<char[]>(HeaderSep.size() + rhs._nameLen + rhs._valueLen);
+    const auto lhsTotalSize = HeaderSep.size() + _nameLen + _valueLen;
+    const auto rhsTotalSize = HeaderSep.size() + rhs._nameLen + rhs._valueLen;
+    if (lhsTotalSize < rhsTotalSize) {
+      // Reallocate if current buffer is too small
+      _data = std::make_unique<char[]>(rhsTotalSize);
+    }
     _nameLen = rhs._nameLen;
     _valueLen = rhs._valueLen;
-    std::memcpy(_data.get(), rhs._data.get(), HeaderSep.size() + rhs._nameLen + rhs._valueLen);
+    std::memcpy(_data.get(), rhs._data.get(), rhsTotalSize);
   }
   return *this;
 }

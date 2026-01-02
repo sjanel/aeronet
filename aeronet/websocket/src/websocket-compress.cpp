@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <memory>
 #include <span>
 #include <string_view>
 
@@ -27,20 +26,11 @@ constexpr std::array<std::byte, 4> kDeflateTrailer = {std::byte{0x00}, std::byte
 // WebSocketCompressor
 // ============================================================================
 
-struct WebSocketCompressor::Impl {
-  explicit Impl(int8_t compressionLevel) : stream(ZStreamRAII::Variant::deflate, compressionLevel) {}
+WebSocketCompressor::WebSocketCompressor(int8_t compressionLevel)
+    : _zs(ZStreamRAII::Variant::deflate, compressionLevel) {}
 
-  ZStreamRAII stream;
-};
-
-WebSocketCompressor::WebSocketCompressor(int8_t compressionLevel) : _impl(std::make_unique<Impl>(compressionLevel)) {}
-
-WebSocketCompressor::WebSocketCompressor(WebSocketCompressor&&) noexcept = default;
-WebSocketCompressor& WebSocketCompressor::operator=(WebSocketCompressor&&) noexcept = default;
-WebSocketCompressor::~WebSocketCompressor() = default;
-
-bool WebSocketCompressor::compress(std::span<const std::byte> input, RawBytes& output, bool resetContext) {
-  auto& deflateStream = _impl->stream.stream;
+const char* WebSocketCompressor::compress(std::span<const std::byte> input, RawBytes& output, bool resetContext) {
+  auto& deflateStream = _zs.stream;
 
   if (resetContext) {
     deflateReset(&deflateStream);
@@ -51,7 +41,6 @@ bool WebSocketCompressor::compress(std::span<const std::byte> input, RawBytes& o
 
   const std::size_t startSize = output.size();
 
-  int ret;
   do {
     output.ensureAvailableCapacityExponential(1 << 16);
 
@@ -60,10 +49,9 @@ bool WebSocketCompressor::compress(std::span<const std::byte> input, RawBytes& o
     deflateStream.avail_out = static_cast<uInt>(availableCapacity);
     deflateStream.next_out = reinterpret_cast<Bytef*>(output.data() + output.size());
 
-    ret = deflate(&deflateStream, Z_SYNC_FLUSH);
+    const auto ret = deflate(&deflateStream, Z_SYNC_FLUSH);
     if (ret == Z_STREAM_ERROR) {
-      _lastError = "deflate() failed with Z_STREAM_ERROR";
-      return false;
+      return "deflate() failed with Z_STREAM_ERROR";
     }
 
     output.addSize(availableCapacity - deflateStream.avail_out);
@@ -79,28 +67,16 @@ bool WebSocketCompressor::compress(std::span<const std::byte> input, RawBytes& o
     }
   }
 
-  return true;
+  return nullptr;
 }
 
 // ============================================================================
 // WebSocketDecompressor
 // ============================================================================
 
-struct WebSocketDecompressor::Impl {
-  Impl() : stream(ZStreamRAII::Variant::deflate) {}
-
-  ZStreamRAII stream;
-};
-
-WebSocketDecompressor::WebSocketDecompressor() : _impl(std::make_unique<Impl>()) {}
-
-WebSocketDecompressor::WebSocketDecompressor(WebSocketDecompressor&&) noexcept = default;
-WebSocketDecompressor& WebSocketDecompressor::operator=(WebSocketDecompressor&&) noexcept = default;
-WebSocketDecompressor::~WebSocketDecompressor() = default;
-
-bool WebSocketDecompressor::decompress(std::span<const std::byte> input, RawBytes& output,
-                                       std::size_t maxDecompressedSize, bool resetContext) {
-  auto& inflateStream = _impl->stream.stream;
+const char* WebSocketDecompressor::decompress(std::span<const std::byte> input, RawBytes& output,
+                                              std::size_t maxDecompressedSize, bool resetContext) {
+  auto& inflateStream = _zs.stream;
 
   if (resetContext) {
     inflateReset(&inflateStream);
@@ -126,20 +102,18 @@ bool WebSocketDecompressor::decompress(std::span<const std::byte> input, RawByte
 
     const auto ret = inflate(&inflateStream, Z_SYNC_FLUSH);
     if (ret == Z_STREAM_ERROR || ret == Z_DATA_ERROR || ret == Z_MEM_ERROR) {
-      _lastError = "inflate() failed";
-      return false;
+      return "inflate() failed";
     }
 
     output.addSize(availableCapacity - inflateStream.avail_out);
 
     // Check size limit
     if (maxDecompressedSize > 0 && (output.size() - startSize) > maxDecompressedSize) {
-      _lastError = "Decompressed size exceeds maximum";
-      return false;
+      return "Decompressed size exceeds maximum";
     }
   } while (inflateStream.avail_out == 0);
 
-  return true;
+  return nullptr;
 }
 
 }  // namespace aeronet

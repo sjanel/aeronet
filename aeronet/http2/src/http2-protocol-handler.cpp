@@ -1,5 +1,6 @@
 #include "aeronet/http2-protocol-handler.hpp"
 
+#include <cassert>
 #include <chrono>
 #include <coroutine>
 #include <cstddef>
@@ -12,6 +13,7 @@
 #include <utility>
 
 #include "aeronet/connection-state.hpp"
+#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -25,7 +27,6 @@
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/request-task.hpp"
 #include "aeronet/router.hpp"
-#include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
 
@@ -44,8 +45,8 @@ Http2ProtocolHandler::Http2ProtocolHandler(Http2ProtocolHandler&&) noexcept = de
 Http2ProtocolHandler& Http2ProtocolHandler::operator=(Http2ProtocolHandler&&) noexcept = default;
 
 void Http2ProtocolHandler::setupCallbacks() {
-  _connection.setOnHeaders([this](uint32_t streamId, const HeaderProvider& headerProvider, bool endStream) {
-    onHeadersReceived(streamId, headerProvider, endStream);
+  _connection.setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
+    onHeadersDecodedReceived(streamId, headers, endStream);
   });
 
   _connection.setOnData([this](uint32_t streamId, std::span<const std::byte> data, bool endStream) {
@@ -85,19 +86,6 @@ ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::by
   return output;
 }
 
-bool Http2ProtocolHandler::hasPendingOutput() const noexcept { return _connection.hasPendingOutput(); }
-
-std::span<const std::byte> Http2ProtocolHandler::getPendingOutput() { return _connection.getPendingOutput(); }
-
-void Http2ProtocolHandler::onOutputWritten(std::size_t bytesWritten) { _connection.onOutputWritten(bytesWritten); }
-
-void Http2ProtocolHandler::initiateClose() { _connection.initiateGoAway(ErrorCode::NoError); }
-
-void Http2ProtocolHandler::onTransportClosing() {
-  // Clean up any pending state
-  _streamRequests.clear();
-}
-
 namespace {
 
 http::Method ParseHttpMethod(std::string_view method) noexcept {
@@ -134,97 +122,64 @@ http::Method ParseHttpMethod(std::string_view method) noexcept {
 
 }  // namespace
 
-void Http2ProtocolHandler::onHeadersReceived(uint32_t streamId, const HeaderProvider& headerProvider, bool endStream) {
-  // Get or create stream request
-  StreamRequest& streamReq = _streamRequests[streamId];
+void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
+  [[maybe_unused]] auto [it, inserted] = _streamRequests.try_emplace(streamId);
+  assert(inserted);  // logic below should be adapted if we can call this multiple times per stream
+  StreamRequest& streamReq = it->second;
 
-  // Create a fresh HttpRequest - use placement new since default ctor is private but we're a friend
-  streamReq.request = HttpRequest();
   HttpRequest& req = streamReq.request;
 
-  streamReq.headersReceived = true;
+  // Pass 1 : compute total headers storage
+  std::size_t headersTotalLen = 0;
+  for (const auto& [name, value] : headers) {
+    headersTotalLen += name.size() + value.size();
+  }
 
-  // Clear previous header storage and rebuild
-  streamReq.headerStorage.clear();
+  streamReq.headerStorage = std::make_unique<char[]>(headersTotalLen);
 
-  // Temporary storage for pseudo-headers before we can set them
-  std::string_view methodStr;
-  std::string_view schemeStr;
-  std::string_view authorityStr;
-  std::string_view pathStr;
+  char* buf = streamReq.headerStorage.get();
+  for (const auto& [name, value] : headers) {
+    std::string_view storedName(buf, name.size());
 
-  // Two-pass approach to avoid use-after-free:
-  // Pass 1: Collect all headers into storage and record offsets
-  // Pass 2: Create string_views after all data is stored (no more reallocations)
+    std::memcpy(buf, name.data(), name.size());
+    buf += name.size();
 
-  struct HeaderOffsets {
-    std::size_t nameStart;
-    std::size_t nameLen;
-    std::size_t valueStart;
-    std::size_t valueLen;
-    bool isPseudo;
-  };
+    std::string_view storedValue(buf, value.size());
+    std::memcpy(buf, value.data(), value.size());
+    buf += value.size();
 
-  // TODO: looping allocations can be avoided?
-  vector<HeaderOffsets> headerOffsets;
-
-  // Pass 1: Copy all header data and record offsets
-  headerProvider([&streamReq, &headerOffsets](std::string_view name, std::string_view value) {
-    HeaderOffsets offsets;
-    offsets.nameStart = streamReq.headerStorage.size();
-    offsets.nameLen = name.size();
-    streamReq.headerStorage.append(name);
-    offsets.valueStart = streamReq.headerStorage.size();
-    offsets.valueLen = value.size();
-    streamReq.headerStorage.append(value);
-    offsets.isPseudo = !name.empty() && name[0] == ':';
-    headerOffsets.push_back(std::move(offsets));
-  });
-
-  // Pass 2: Now that storage is stable, create string_views and populate request
-  const char* storageBase = streamReq.headerStorage.data();
-  for (const auto& offsets : headerOffsets) {
-    std::string_view storedName(storageBase + offsets.nameStart, offsets.nameLen);
-    std::string_view storedValue(storageBase + offsets.valueStart, offsets.valueLen);
-
-    if (offsets.isPseudo) {
+    if (name[0] == ':') {
       if (storedName == ":method") {
-        methodStr = storedValue;
+        req._method = ParseHttpMethod(storedValue);
       } else if (storedName == ":scheme") {
-        schemeStr = storedValue;
+        req._scheme = storedValue;
       } else if (storedName == ":authority") {
-        authorityStr = storedValue;
+        req._authority = storedValue;
       } else if (storedName == ":path") {
-        pathStr = storedValue;
+        req._path = storedValue;
       }
     } else {
       req._headers[storedName] = storedValue;
     }
   }
 
-  // Set HTTP/2 specific fields on HttpRequest
   req._streamId = streamId;
-  req._scheme = schemeStr;
-  req._authority = authorityStr;
-  req._path = pathStr;
-  req._method = ParseHttpMethod(methodStr);
   req._version = http::HTTP_2_0;
   req._reqStart = std::chrono::steady_clock::now();
 
-  // If END_STREAM is set, dispatch immediately (no body expected)
   if (endStream) {
-    dispatchRequest(streamId);
+    dispatchRequest(it);
   }
 }
 
 void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
-  auto iter = _streamRequests.find(streamId);
-  if (iter == _streamRequests.end()) [[unlikely]] {
+  auto it = _streamRequests.find(streamId);
+  if (it == _streamRequests.end()) [[unlikely]] {
     log::warn("HTTP/2 DATA frame for unknown stream {}", streamId);
     return;
   }
 
-  StreamRequest& streamReq = iter->second;
+  StreamRequest& streamReq = it->second;
 
   // Accumulate body data
   streamReq.bodyBuffer.append(reinterpret_cast<const char*>(data.data()), data.size());
@@ -232,7 +187,7 @@ void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std
   if (endStream) {
     // Set body on HttpRequest
     streamReq.request._body = std::string_view(streamReq.bodyBuffer.data(), streamReq.bodyBuffer.size());
-    dispatchRequest(streamId);
+    dispatchRequest(it);
   }
 }
 
@@ -243,20 +198,15 @@ void Http2ProtocolHandler::onStreamReset(uint32_t streamId, ErrorCode errorCode)
   _streamRequests.erase(streamId);
 }
 
-void Http2ProtocolHandler::dispatchRequest(uint32_t streamId) {
-  auto iter = _streamRequests.find(streamId);
-  if (iter == _streamRequests.end()) {
-    log::error("HTTP/2 dispatchRequest for unknown stream {}", streamId);
-    return;
-  }
-
-  HttpRequest& request = iter->second.request;
+void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
+  const uint32_t streamId = it->first;
+  HttpRequest& request = it->second.request;
 
   // Validate required pseudo-headers
   if (request.path().empty() && request.method() != http::Method::CONNECT) {
     log::error("HTTP/2 stream {} missing :path", streamId);
     _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
-    _streamRequests.erase(iter);
+    _streamRequests.erase(streamId);
     return;
   }
 
@@ -277,7 +227,7 @@ void Http2ProtocolHandler::dispatchRequest(uint32_t streamId) {
   }
 
   // Clean up stream request
-  _streamRequests.erase(iter);
+  _streamRequests.erase(streamId);
 }
 
 HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {

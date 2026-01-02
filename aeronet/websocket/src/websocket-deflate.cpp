@@ -206,34 +206,25 @@ DeflateContext::DeflateContext(DeflateNegotiatedParams params, const DeflateConf
 
 DeflateContext::~DeflateContext() = default;
 
-bool DeflateContext::compress(std::span<const std::byte> input, RawBytes& output) {
+const char* DeflateContext::compress(std::span<const std::byte> input, RawBytes& output) {
 #ifdef AERONET_ENABLE_ZLIB
-  if (!_impl->compressor.compress(input, output, _impl->deflateNoContextTakeover)) {
-    _lastError = _impl->compressor.lastError();
-    return false;
-  }
-  return true;
+  return _impl->compressor.compress(input, output, _impl->deflateNoContextTakeover);
 #else
   (void)input;
   (void)output;
-  _lastError = "zlib not enabled in build";
-  return false;
+  return "zlib not enabled in build";
 #endif
 }
 
-bool DeflateContext::decompress(std::span<const std::byte> input, RawBytes& output, std::size_t maxDecompressedSize) {
+const char* DeflateContext::decompress(std::span<const std::byte> input, RawBytes& output,
+                                       std::size_t maxDecompressedSize) {
 #ifdef AERONET_ENABLE_ZLIB
-  if (!_impl->decompressor.decompress(input, output, maxDecompressedSize, _impl->inflateNoContextTakeover)) {
-    _lastError = _impl->decompressor.lastError();
-    return false;
-  }
-  return true;
+  return _impl->decompressor.decompress(input, output, maxDecompressedSize, _impl->inflateNoContextTakeover);
 #else
   (void)input;
   (void)output;
   (void)maxDecompressedSize;
-  _lastError = "zlib not enabled in build";
-  return false;
+  return "zlib not enabled in build";
 #endif
 }
 
