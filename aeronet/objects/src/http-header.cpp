@@ -1,30 +1,49 @@
 #include "aeronet/http-header.hpp"
 
 #include <algorithm>
-#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <string_view>
 
+#include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/safe-cast.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/tchars.hpp"
 
 namespace aeronet::http {
 
-Header::Header(std::string_view name, std::string_view value) : _colonPos(static_cast<uint32_t>(name.size())) {
+Header::Header(std::string_view name, std::string_view value) : _nameLen(SafeCast<uint32_t>(name.size())) {
   value = TrimOws(value);
-  std::size_t totalSize = name.size() + HeaderSep.size() + value.size();
+  _valueLen = SafeCast<uint32_t>(value.size());
   if (!IsValidHeaderName(name)) {
     throw std::invalid_argument("HTTP header name is invalid");
   }
   if (!IsValidHeaderValue(value)) {
     throw std::invalid_argument("HTTP header value is invalid");
   }
-  _data.reserve(totalSize);
-  _data.unchecked_append(name);
-  _data.unchecked_append(HeaderSep);
-  _data.unchecked_append(value);
+  _data = std::make_unique<char[]>(HeaderSep.size() + name.size() + value.size());
+
+  WriteHeader(_data.get(), name, value);
+}
+
+Header::Header(const Header &rhs)
+    : _data(std::make_unique<char[]>(HeaderSep.size() + rhs._nameLen + rhs._valueLen)),
+      _nameLen(rhs._nameLen),
+      _valueLen(rhs._valueLen) {
+  std::memcpy(_data.get(), rhs._data.get(), HeaderSep.size() + rhs._nameLen + rhs._valueLen);
+}
+
+Header &Header::operator=(const Header &rhs) {
+  if (this != &rhs) [[likely]] {
+    _data = std::make_unique<char[]>(HeaderSep.size() + rhs._nameLen + rhs._valueLen);
+    _nameLen = rhs._nameLen;
+    _valueLen = rhs._valueLen;
+    std::memcpy(_data.get(), rhs._data.get(), HeaderSep.size() + rhs._nameLen + rhs._valueLen);
+  }
+  return *this;
 }
 
 bool IsValidHeaderName(std::string_view name) noexcept {

@@ -65,7 +65,7 @@ TEST(HttpHeader, InvalidHeaderValueThrows) {
 
 TEST(HttpHeader, Raw) {
   http::Header header("X-Custom", "  Some Value  ");
-  EXPECT_EQ(header.raw(), "X-Custom: Some Value");
+  EXPECT_EQ(header.http1Raw(), "X-Custom: Some Value");
 }
 
 TEST(HttpHeader, UnreasonableHeaderLen) {
@@ -73,6 +73,32 @@ TEST(HttpHeader, UnreasonableHeaderLen) {
   std::string_view unreasonableHeaderLen(&ch, static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()));
 
   EXPECT_THROW(http::Header(unreasonableHeaderLen, "some value"), std::invalid_argument);
+}
+
+TEST(HttpHeader, CopyConstructor) {
+  http::Header original("X-Copy-Test", "CopyValue");
+  http::Header copy(original);  // NOLINT(performance-unnecessary-copy-initialization)
+
+  EXPECT_EQ(copy.name(), original.name());
+  EXPECT_EQ(copy.value(), original.value());
+  EXPECT_EQ(copy.http1Raw(), original.http1Raw());
+}
+
+TEST(HttpHeader, CopyAssignment) {
+  http::Header original("X-Assign-Test", "AssignValue");
+  http::Header assigned("Temp-Header", "TempValue");
+  assigned = original;
+  EXPECT_EQ(assigned.name(), original.name());
+  EXPECT_EQ(assigned.value(), original.value());
+  EXPECT_EQ(assigned.http1Raw(), original.http1Raw());
+}
+
+TEST(HttpHeader, SelfCopyAssignment) {
+  http::Header original("X-Self-Assign", "SelfValue");
+  auto &alias = original;
+  original = alias;  // Self-assignment
+  EXPECT_EQ(original.name(), "X-Self-Assign");
+  EXPECT_EQ(original.value(), "SelfValue");
 }
 
 }  // namespace aeronet
