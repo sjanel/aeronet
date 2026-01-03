@@ -349,13 +349,13 @@ TEST(WebSocketDeflateTest, CompressDecompress_RoundTrip) {
 
   // Compress
   RawBytes compressed;
-  ASSERT_TRUE(ctx.compress(inputSpan, compressed));
+  ASSERT_EQ(ctx.compress(inputSpan, compressed), nullptr);
   EXPECT_GT(compressed.size(), 0UL);
 
   // Decompress
   RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
-  ASSERT_TRUE(ctx.decompress(compressedSpan, decompressed));
+  ASSERT_EQ(ctx.decompress(compressedSpan, decompressed), nullptr);
 
   // Verify round-trip
   std::string_view result(reinterpret_cast<const char *>(decompressed.data()), decompressed.size());
@@ -377,7 +377,7 @@ TEST(WebSocketDeflateTest, CompressDecompress_LargeData) {
 
   // Compress
   RawBytes compressed;
-  ASSERT_TRUE(ctx.compress(inputSpan, compressed));
+  ASSERT_EQ(ctx.compress(inputSpan, compressed), nullptr);
 
   // Should achieve compression
   EXPECT_LT(compressed.size(), original.size());
@@ -385,7 +385,7 @@ TEST(WebSocketDeflateTest, CompressDecompress_LargeData) {
   // Decompress
   RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
-  ASSERT_TRUE(ctx.decompress(compressedSpan, decompressed));
+  ASSERT_EQ(ctx.decompress(compressedSpan, decompressed), nullptr);
 
   EXPECT_EQ(decompressed.size(), original.size());
   EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed.data()), decompressed.size()), original);
@@ -399,11 +399,11 @@ TEST(WebSocketDeflateTest, CompressDecompress_EmptyData) {
   auto inputSpan = sv_bytes(std::string_view());
 
   RawBytes compressed;
-  EXPECT_TRUE(ctx.compress(inputSpan, compressed));
+  EXPECT_EQ(ctx.compress(inputSpan, compressed), nullptr);
 
   RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
-  EXPECT_TRUE(ctx.decompress(compressedSpan, decompressed));
+  EXPECT_EQ(ctx.decompress(compressedSpan, decompressed), nullptr);
   EXPECT_TRUE(decompressed.empty());
 }
 
@@ -430,13 +430,13 @@ TEST(WebSocketDeflateTest, DecompressSizeLimit) {
 
   // Compress
   RawBytes compressed;
-  ASSERT_TRUE(ctx.compress(inputSpan, compressed));
+  ASSERT_EQ(ctx.compress(inputSpan, compressed), nullptr);
 
   // Try to decompress with a small limit
   RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
-  EXPECT_FALSE(ctx.decompress(compressedSpan, decompressed, 100));  // 100 byte limit
-  EXPECT_EQ(ctx.lastError(), "Decompressed size exceeds maximum");
+  EXPECT_STREQ(ctx.decompress(compressedSpan, decompressed, 100),
+               "Decompressed size exceeds maximum");  // 100 byte limit
 }
 
 // Additional coverage tests
@@ -450,11 +450,11 @@ TEST(WebSocketDeflateTest, CompressDecompress_ClientSide) {
   auto inputSpan = sv_bytes(original);
 
   RawBytes compressed;
-  ASSERT_TRUE(ctx.compress(inputSpan, compressed));
+  ASSERT_EQ(ctx.compress(inputSpan, compressed), nullptr);
 
   RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
-  ASSERT_TRUE(ctx.decompress(compressedSpan, decompressed));
+  ASSERT_EQ(ctx.decompress(compressedSpan, decompressed), nullptr);
 
   EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed.data()), decompressed.size()), original);
 }
@@ -475,13 +475,13 @@ TEST(WebSocketDeflateTest, CompressDecompress_WithNoContextTakeover) {
 
   RawBytes compressed1;
   RawBytes compressed2;
-  ASSERT_TRUE(ctx.compress(input1, compressed1));
-  ASSERT_TRUE(ctx.compress(input2, compressed2));
+  ASSERT_EQ(ctx.compress(input1, compressed1), nullptr);
+  ASSERT_EQ(ctx.compress(input2, compressed2), nullptr);
 
   RawBytes decompressed1;
   RawBytes decompressed2;
-  ASSERT_TRUE(ctx.decompress(buf_bytes(compressed1), decompressed1));
-  ASSERT_TRUE(ctx.decompress(buf_bytes(compressed2), decompressed2));
+  ASSERT_EQ(ctx.decompress(buf_bytes(compressed1), decompressed1), nullptr);
+  ASSERT_EQ(ctx.decompress(buf_bytes(compressed2), decompressed2), nullptr);
 
   EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed1.data()), decompressed1.size()), msg1);
   EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed2.data()), decompressed2.size()), msg2);
@@ -498,11 +498,11 @@ TEST(WebSocketDeflateTest, CompressDecompress_ReducedWindowBits) {
   auto inputSpan = sv_bytes(original);
 
   RawBytes compressed;
-  ASSERT_TRUE(ctx.compress(inputSpan, compressed));
+  ASSERT_EQ(ctx.compress(inputSpan, compressed), nullptr);
 
   RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
-  ASSERT_TRUE(ctx.decompress(compressedSpan, decompressed));
+  ASSERT_EQ(ctx.decompress(compressedSpan, decompressed), nullptr);
 
   EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed.data()), decompressed.size()), original);
 }
@@ -517,11 +517,11 @@ TEST(WebSocketDeflateTest, CompressDecompress_DifferentCompressionLevel) {
   auto inputSpan = sv_bytes(original);
 
   RawBytes compressed;
-  ASSERT_TRUE(ctx.compress(inputSpan, compressed));
+  ASSERT_EQ(ctx.compress(inputSpan, compressed), nullptr);
 
   RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
-  ASSERT_TRUE(ctx.decompress(compressedSpan, decompressed));
+  ASSERT_EQ(ctx.decompress(compressedSpan, decompressed), nullptr);
 
   EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed.data()), decompressed.size()), original);
 }
@@ -546,12 +546,12 @@ TEST(WebSocketDeflateTest, DecompressZeroSizeLimit) {
   auto inputSpan = sv_bytes(original);
 
   RawBytes compressed;
-  ASSERT_TRUE(ctx.compress(inputSpan, compressed));
+  ASSERT_EQ(ctx.compress(inputSpan, compressed), nullptr);
 
   // Zero limit means unlimited
   RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
-  EXPECT_TRUE(ctx.decompress(compressedSpan, decompressed, 0));
+  EXPECT_EQ(ctx.decompress(compressedSpan, decompressed, 0), nullptr);
   EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed.data()), decompressed.size()), original);
 }
 

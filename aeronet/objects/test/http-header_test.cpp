@@ -91,6 +91,10 @@ TEST(HttpHeader, CopyAssignment) {
   EXPECT_EQ(assigned.name(), original.name());
   EXPECT_EQ(assigned.value(), original.value());
   EXPECT_EQ(assigned.http1Raw(), original.http1Raw());
+
+  original = assigned;
+  EXPECT_EQ(original.name(), assigned.name());
+  EXPECT_EQ(original.value(), assigned.value());
 }
 
 TEST(HttpHeader, SelfCopyAssignment) {

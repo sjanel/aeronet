@@ -7,11 +7,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <span>
+#include <vector>
 
+#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/http2-stream.hpp"
+#include "aeronet/raw-bytes.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
@@ -191,6 +196,10 @@ TEST(Http2Connection, SendRstStreamClosesAndDecrementsActiveStreamCount) {
 
   const auto headerProvider = [](const HeaderCallback&) {};
   ASSERT_EQ(conn.sendHeaders(1, headerProvider, false), ErrorCode::NoError);
+  // Drain any output produced by sendHeaders so we can observe the RST_STREAM from WINDOW_UPDATE
+  if (conn.hasPendingOutput()) {
+    conn.onOutputWritten(conn.getPendingOutput().size());
+  }
   EXPECT_EQ(conn.activeStreamCount(), 1U);
 
   conn.sendRstStream(1, ErrorCode::Cancel);
@@ -415,7 +424,7 @@ TEST(Http2Connection, SetCallbacks) {
   bool closedCalled = false;
   bool goawayCalled = false;
 
-  conn.setOnHeaders([&](uint32_t, const HeaderProvider&, bool) { headersCalled = true; });
+  conn.setOnHeadersDecoded([&](uint32_t, const HeadersViewMap&, bool) { headersCalled = true; });
   conn.setOnData([&](uint32_t, std::span<const std::byte>, bool) { dataCalled = true; });
   conn.setOnStreamReset([&](uint32_t, ErrorCode) { resetCalled = true; });
   conn.setOnStreamClosed([&](uint32_t) { closedCalled = true; });
@@ -537,7 +546,18 @@ TEST(Http2Connection, SettingsFrameOnNonZeroStreamIsProtocolError) {
   EXPECT_TRUE(conn.hasPendingOutput());
   const auto out = conn.getPendingOutput();
   ASSERT_GE(out.size(), FrameHeader::kSize);
-  EXPECT_EQ(ParseFrameHeader(out).type, FrameType::GoAway);
+  // Search pending output for a GOAWAY frame
+  bool foundGoAway = false;
+  std::size_t pos = 0;
+  while (pos + FrameHeader::kSize <= out.size()) {
+    FrameHeader fh = ParseFrameHeader(out.subspan(pos, FrameHeader::kSize));
+    if (fh.type == FrameType::GoAway) {
+      foundGoAway = true;
+      break;
+    }
+    pos += FrameHeader::kSize + fh.length;
+  }
+  EXPECT_TRUE(foundGoAway);
 }
 
 TEST(Http2Connection, SettingsFrameInvalidLengthIsFrameSizeError) {
@@ -604,6 +624,81 @@ TEST(Http2Connection, SettingsFrameInvalidMaxFrameSizeIsProtocolError) {
   EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
 }
 
+TEST(Http2Connection, SettingsInitialWindowSizeTooLargeIsFlowControlError) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+
+  // SETTINGS_INITIAL_WINDOW_SIZE (0x04) with value 0x80000000 (> 0x7FFFFFFF)
+  std::array<std::byte, 6> entry = {std::byte{0x00}, std::byte{0x04},  // SETTINGS_INITIAL_WINDOW_SIZE
+                                    std::byte{0x80}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
+
+  FrameHeader header;
+  header.length = entry.size();
+  header.type = FrameType::Settings;
+  header.flags = FrameFlags::None;
+  header.streamId = 0;
+
+  auto bytes = SerializeFrame(header, entry);
+  auto res = conn.processInput(bytes);
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::FlowControlError);
+  EXPECT_TRUE(conn.hasPendingOutput());
+  const auto out = conn.getPendingOutput();
+  ASSERT_GE(out.size(), FrameHeader::kSize);
+  bool foundGoAway2 = false;
+  std::size_t pos2 = 0;
+  while (pos2 + FrameHeader::kSize <= out.size()) {
+    FrameHeader fh = ParseFrameHeader(out.subspan(pos2, FrameHeader::kSize));
+    if (fh.type == FrameType::GoAway) {
+      foundGoAway2 = true;
+      break;
+    }
+    pos2 += FrameHeader::kSize + fh.length;
+  }
+  EXPECT_TRUE(foundGoAway2);
+}
+
+TEST(Http2Connection, UnknownSettingsParameterIsIgnored) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+
+  // Use an unknown SETTINGS parameter ID (0xFFFF) with an arbitrary value=1
+  std::array<std::byte, 6> entry = {std::byte{0xFF}, std::byte{0xFF},  // unknown ID 0xFFFF
+                                    std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x01}};
+
+  FrameHeader header;
+  header.length = entry.size();
+  header.type = FrameType::Settings;
+  header.flags = FrameFlags::None;
+  header.streamId = 0;
+
+  auto bytes = SerializeFrame(header, entry);
+  auto res = conn.processInput(bytes);
+
+  // Should not be a connection error and connection should transition to Open
+  EXPECT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(conn.state(), ConnectionState::Open);
+
+  // A SETTINGS ACK should be emitted
+  EXPECT_TRUE(conn.hasPendingOutput());
+  const auto out = conn.getPendingOutput();
+  ASSERT_GE(out.size(), FrameHeader::kSize);
+
+  bool foundSettingsAck = false;
+  std::size_t pos = 0;
+  while (pos + FrameHeader::kSize <= out.size()) {
+    FrameHeader fh = ParseFrameHeader(out.subspan(pos, FrameHeader::kSize));
+    if (fh.type == FrameType::Settings && fh.flags == FrameFlags::SettingsAck) {
+      foundSettingsAck = true;
+      break;
+    }
+    pos += FrameHeader::kSize + fh.length;
+  }
+  EXPECT_TRUE(foundSettingsAck);
+}
+
 TEST(Http2Connection, PingFrameOnNonZeroStreamIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
@@ -642,6 +737,28 @@ TEST(Http2Connection, PingFrameInvalidLengthIsFrameSizeError) {
   EXPECT_EQ(res.errorCode, ErrorCode::FrameSizeError);
 }
 
+TEST(Http2Connection, PingAckFrameIsAcceptedAndNoResponseSent) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+
+  std::array<std::byte, 8> payload = {std::byte{0xAA}, std::byte{0xBB}, std::byte{0xCC}, std::byte{0xDD},
+                                      std::byte{0x11}, std::byte{0x22}, std::byte{0x33}, std::byte{0x44}};
+  FrameHeader header;
+  header.length = payload.size();
+  header.type = FrameType::Ping;
+  header.flags = FrameFlags::PingAck;  // ACK set
+  header.streamId = 0;
+
+  auto bytes = SerializeFrame(header, payload);
+  auto res = conn.processInput(bytes);
+
+  // Handler should accept the PING ACK and not produce output
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Continue);
+  EXPECT_EQ(res.errorCode, ErrorCode::NoError);
+  EXPECT_FALSE(conn.hasPendingOutput());
+}
+
 TEST(Http2Connection, GoAwayFrameInvalidLengthIsFrameSizeError) {
   Http2Config config;
   Http2Connection conn(config, true);
@@ -661,6 +778,26 @@ TEST(Http2Connection, GoAwayFrameInvalidLengthIsFrameSizeError) {
   EXPECT_EQ(res.errorCode, ErrorCode::FrameSizeError);
 }
 
+TEST(Http2Connection, GoAwayFrameOnNonZeroStreamIsProtocolError) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+
+  // Minimal valid GOAWAY payload is 8 bytes (last-stream-id + error-code) optionally with debug data
+  std::array<std::byte, 8> payload = {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0},
+                                      std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
+  FrameHeader header;
+  header.length = payload.size();
+  header.type = FrameType::GoAway;
+  header.flags = FrameFlags::None;
+  header.streamId = 1;  // Non-zero stream id should be protocol error
+
+  auto bytes = SerializeFrame(header, payload);
+  auto res = conn.processInput(bytes);
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
+}
+
 TEST(Http2Connection, WindowUpdateInvalidLengthIsFrameSizeError) {
   Http2Config config;
   Http2Connection conn(config, true);
@@ -677,6 +814,152 @@ TEST(Http2Connection, WindowUpdateInvalidLengthIsFrameSizeError) {
   auto res = conn.processInput(bytes);
   EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
   EXPECT_EQ(res.errorCode, ErrorCode::FrameSizeError);
+}
+
+TEST(Http2Connection, WindowUpdateConnectionOverflowIsFlowControlError) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+
+  // WINDOW_UPDATE payload is 4 bytes. Use increment 0x7FFFFFFF to cause newWindow > 0x7FFFFFFF
+  const uint32_t increment = 0x7FFFFFFFU;
+  std::array<std::byte, 4> payload = {std::byte{static_cast<uint8_t>((increment >> 24) & 0xFF)},
+                                      std::byte{static_cast<uint8_t>((increment >> 16) & 0xFF)},
+                                      std::byte{static_cast<uint8_t>((increment >> 8) & 0xFF)},
+                                      std::byte{static_cast<uint8_t>(increment & 0xFF)}};
+
+  FrameHeader header;
+  header.length = payload.size();
+  header.type = FrameType::WindowUpdate;
+  header.flags = FrameFlags::None;
+  header.streamId = 0;  // connection-level
+
+  auto bytes = SerializeFrame(header, payload);
+  auto res = conn.processInput(bytes);
+
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::FlowControlError);
+
+  // A GOAWAY should be queued as part of connectionError handling
+  EXPECT_TRUE(conn.hasPendingOutput());
+  const auto out = conn.getPendingOutput();
+  ASSERT_GE(out.size(), FrameHeader::kSize);
+  bool foundGoAway = false;
+  std::size_t pos = 0;
+  while (pos + FrameHeader::kSize <= out.size()) {
+    FrameHeader fh = ParseFrameHeader(out.subspan(pos, FrameHeader::kSize));
+    if (fh.type == FrameType::GoAway) {
+      foundGoAway = true;
+      break;
+    }
+    pos += FrameHeader::kSize + fh.length;
+  }
+  EXPECT_TRUE(foundGoAway);
+}
+
+TEST(Http2Connection, SettingsInitialWindowSizeTooSmallCausesStreamOverflow) {
+  Http2Config config;
+  config.connectionWindowSize = 1048576;  // large connection window to allow sending
+
+  Http2Connection conn(config, true);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  // Create a stream by sending headers
+  const auto headerProvider = [](const HeaderCallback&) {};
+  ASSERT_EQ(conn.sendHeaders(1, headerProvider, false), ErrorCode::NoError);
+
+  // Consume the stream send window by sending exactly the peer initial window bytes
+  const uint32_t initialWindow = conn.peerSettings().initialWindowSize;
+  std::vector<std::byte> payload(initialWindow, std::byte{0});
+
+  EXPECT_EQ(conn.sendData(1U, payload, false), ErrorCode::NoError);
+
+  // Now send SETTINGS_INITIAL_WINDOW_SIZE = 0 which should cause updateInitialWindowSize
+  // to compute newWindow < 0 for the existing stream and return FlowControlError.
+  std::array<std::byte, 6> entry = {std::byte{0x00}, std::byte{0x04},  // SETTINGS_INITIAL_WINDOW_SIZE
+                                    std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
+
+  FrameHeader header;
+  header.length = entry.size();
+  header.type = FrameType::Settings;
+  header.flags = FrameFlags::None;
+  header.streamId = 0;
+
+  auto bytes = SerializeFrame(header, entry);
+  auto res = conn.processInput(bytes);
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::FlowControlError);
+  EXPECT_TRUE(conn.hasPendingOutput());
+  const auto out = conn.getPendingOutput();
+  ASSERT_GE(out.size(), FrameHeader::kSize);
+  bool foundGoAway = false;
+  std::size_t pos = 0;
+  while (pos + FrameHeader::kSize <= out.size()) {
+    FrameHeader fh = ParseFrameHeader(out.subspan(pos, FrameHeader::kSize));
+    if (fh.type == FrameType::GoAway) {
+      foundGoAway = true;
+      break;
+    }
+    pos += FrameHeader::kSize + fh.length;
+  }
+  EXPECT_TRUE(foundGoAway);
+}
+
+TEST(Http2Connection, SettingsInitialWindowSizeStreamWindowOverflow) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  // Create a stream
+  const auto headerProvider = [](const HeaderCallback&) {};
+  ASSERT_EQ(conn.sendHeaders(1, headerProvider, false), ErrorCode::NoError);
+
+  // Bring stream send window up to INT32_MAX by issuing a single increase
+  // increment: INT32_MAX - initialWindow
+  constexpr int32_t kMaxWindow = std::numeric_limits<int32_t>::max();
+  const uint32_t initialWindow = conn.peerSettings().initialWindowSize;
+  Http2Stream* stream = conn.getStream(1);
+  ASSERT_NE(stream, nullptr);
+
+  const uint32_t increment =
+      static_cast<uint32_t>(static_cast<int64_t>(kMaxWindow) - static_cast<int64_t>(initialWindow));
+  const ErrorCode incErr = stream->increaseSendWindow(increment);
+  EXPECT_EQ(incErr, ErrorCode::NoError);
+
+  // Now apply SETTINGS_INITIAL_WINDOW_SIZE = initialWindow + 1 which will
+  // cause newWindow = kMaxWindow + 1 -> overflow and should return FlowControlError
+  const uint32_t newInitial = initialWindow + 1U;
+  std::array<std::byte, 6> entry = {std::byte{0x00},
+                                    std::byte{0x04},  // SETTINGS_INITIAL_WINDOW_SIZE
+                                    std::byte{static_cast<uint8_t>((newInitial >> 24) & 0xFF)},
+                                    std::byte{static_cast<uint8_t>((newInitial >> 16) & 0xFF)},
+                                    std::byte{static_cast<uint8_t>((newInitial >> 8) & 0xFF)},
+                                    std::byte{static_cast<uint8_t>(newInitial & 0xFF)}};
+
+  FrameHeader header;
+  header.length = entry.size();
+  header.type = FrameType::Settings;
+  header.flags = FrameFlags::None;
+  header.streamId = 0;
+
+  auto bytes = SerializeFrame(header, entry);
+  auto res = conn.processInput(bytes);
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::FlowControlError);
+  EXPECT_TRUE(conn.hasPendingOutput());
+  const auto out = conn.getPendingOutput();
+  ASSERT_GE(out.size(), FrameHeader::kSize);
+  bool foundGoAway2 = false;
+  std::size_t pos2 = 0;
+  while (pos2 + FrameHeader::kSize <= out.size()) {
+    FrameHeader fh = ParseFrameHeader(out.subspan(pos2, FrameHeader::kSize));
+    if (fh.type == FrameType::GoAway) {
+      foundGoAway2 = true;
+      break;
+    }
+    pos2 += FrameHeader::kSize + fh.length;
+  }
+  EXPECT_TRUE(foundGoAway2);
 }
 
 // ============================
@@ -712,6 +995,66 @@ TEST(Http2Connection, WindowUpdateZeroIncrementOnStreamSendsRstStream) {
   EXPECT_EQ(rst.errorCode, ErrorCode::ProtocolError);
 }
 
+TEST(Http2Connection, WindowUpdateStreamOverflowSendsRstStream) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  // Create a stream
+  const auto headerProvider = [](const HeaderCallback&) {};
+  ASSERT_EQ(conn.sendHeaders(1, headerProvider, false), ErrorCode::NoError);
+
+  // Bring stream send window up to INT32_MAX by issuing a single increase
+  // increment: INT32_MAX - initialWindow
+  constexpr int32_t kMaxWindow = std::numeric_limits<int32_t>::max();
+  const uint32_t initialWindow = conn.peerSettings().initialWindowSize;
+  Http2Stream* stream = conn.getStream(1);
+  ASSERT_NE(stream, nullptr);
+
+  const uint32_t increment =
+      static_cast<uint32_t>(static_cast<int64_t>(kMaxWindow) - static_cast<int64_t>(initialWindow));
+  const ErrorCode incErr = stream->increaseSendWindow(increment);
+  EXPECT_EQ(incErr, ErrorCode::NoError);
+
+  // Now send a WINDOW_UPDATE for the stream with increment 1 which will overflow
+  const uint32_t winInc = 1U;
+  std::array<std::byte, 4> payload = {
+      std::byte{static_cast<uint8_t>((winInc >> 24) & 0xFF)}, std::byte{static_cast<uint8_t>((winInc >> 16) & 0xFF)},
+      std::byte{static_cast<uint8_t>((winInc >> 8) & 0xFF)}, std::byte{static_cast<uint8_t>(winInc & 0xFF)}};
+
+  FrameHeader header;
+  header.length = payload.size();
+  header.type = FrameType::WindowUpdate;
+  header.flags = FrameFlags::None;
+  header.streamId = 1;
+
+  auto bytes = SerializeFrame(header, payload);
+  auto res = conn.processInput(bytes);
+
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::OutputReady);
+
+  // Search pending output for an RST_STREAM frame with FlowControlError
+  ASSERT_TRUE(conn.hasPendingOutput());
+  const auto out = conn.getPendingOutput();
+  ASSERT_GE(out.size(), FrameHeader::kSize);
+
+  bool foundRst = false;
+  std::size_t pos = 0;
+  while (pos + FrameHeader::kSize <= out.size()) {
+    FrameHeader fh = ParseFrameHeader(out.subspan(pos, FrameHeader::kSize));
+    if (fh.type == FrameType::RstStream && fh.length == 4U) {
+      RstStreamFrame rst;
+      const auto payloadView = out.subspan(pos + FrameHeader::kSize, fh.length);
+      ASSERT_EQ(ParseRstStreamFrame(fh, payloadView, rst), FrameParseResult::Ok);
+      EXPECT_EQ(rst.errorCode, ErrorCode::FlowControlError);
+      foundRst = true;
+      break;
+    }
+    pos += FrameHeader::kSize + fh.length;
+  }
+  EXPECT_TRUE(foundRst);
+}
+
 TEST(Http2Connection, UnexpectedContinuationFrameIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
@@ -728,6 +1071,63 @@ TEST(Http2Connection, UnexpectedContinuationFrameIsProtocolError) {
   auto res = conn.processInput(bytes);
   EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
   EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
+}
+
+TEST(Http2Connection, ContinuationForPrunedStreamIsInternalError) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  // Create a stream by sending a HEADERS frame WITH endHeaders=false so CONTINUATION is expected.
+  // Build a minimal HEADERS frame containing a 1-byte header block fragment and no END_HEADERS flag.
+  const auto headerProvider = [](const HeaderCallback&) {};
+  std::array<std::byte, 1> hb_fragment = {std::byte{0x00}};
+  RawBytes headersBuf;
+  WriteFrame(headersBuf, FrameType::Headers, ComputeHeaderFrameFlags(false, false), 1,
+             static_cast<uint32_t>(hb_fragment.size()));
+  headersBuf.unchecked_append(hb_fragment);
+  auto headersSpan =
+      std::span<const std::byte>(reinterpret_cast<const std::byte*>(headersBuf.data()), headersBuf.size());
+  auto resHdr = conn.processInput(headersSpan);
+  ASSERT_NE(resHdr.action, Http2Connection::ProcessResult::Action::Error);
+
+  // Close stream 1 so it becomes eligible for pruning.
+  conn.sendRstStream(1, ErrorCode::Cancel);
+
+  // Now close and prune many streams so that stream 1 is removed from _streams map.
+  // We will create and close (kClosedStreamsMaxRetainedForTest + 2) streams to force pruning.
+  const uint32_t streamCountToClose = kClosedStreamsMaxRetainedForTest + 2U;
+  for (uint32_t idx = 0; idx < streamCountToClose; ++idx) {
+    const uint32_t sid = 3U + (idx * 2U);  // odd client-initiated stream ids
+    ASSERT_EQ(conn.sendHeaders(sid, headerProvider, false), ErrorCode::NoError);
+    conn.sendRstStream(sid, ErrorCode::Cancel);
+  }
+
+  // Now send a CONTINUATION frame for stream 1 (endHeaders = true) which should trigger
+  // InternalError "Stream not found for CONTINUATION" because stream 1 has been pruned.
+  RawBytes buffer;
+  WriteContinuationFrame(buffer, 1, hb_fragment, true);
+
+  auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
+  auto res = conn.processInput(span);
+
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::InternalError);
+  EXPECT_TRUE(conn.hasPendingOutput());
+
+  // Pending output should contain GOAWAY
+  const auto out = conn.getPendingOutput();
+  bool foundGoAway = false;
+  std::size_t pos = 0;
+  while (pos + FrameHeader::kSize <= out.size()) {
+    FrameHeader fh = ParseFrameHeader(out.subspan(pos, FrameHeader::kSize));
+    if (fh.type == FrameType::GoAway) {
+      foundGoAway = true;
+      break;
+    }
+    pos += FrameHeader::kSize + fh.length;
+  }
+  EXPECT_TRUE(foundGoAway);
 }
 
 TEST(Http2Connection, UnexpectedPushPromiseIsProtocolError) {

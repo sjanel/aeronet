@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
@@ -51,26 +52,25 @@ TlsHttp2Client::TlsHttp2Client(uint16_t port, Http2Config config)
   }
 
   // Set up callbacks for response handling
-  _http2Connection->setOnHeaders(
-      [this](uint32_t streamId, const http2::HeaderProvider& headerProvider, bool endStream) {
-        auto& streamResp = _streamResponses[streamId];
-        streamResp.headersReceived = true;
+  _http2Connection->setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
+    auto& streamResp = _streamResponses[streamId];
+    streamResp.headersReceived = true;
 
-        headerProvider([&](std::string_view name, std::string_view value) {
-          if (name == ":status") {
-            streamResp.response.statusCode = 0;
-            for (char ch : value) {
-              streamResp.response.statusCode = (streamResp.response.statusCode * 10) + (ch - '0');
-            }
-          } else {
-            streamResp.response.headers.emplace_back(std::string(name), std::string(value));
-          }
-        });
-
-        if (endStream) {
-          streamResp.complete = true;
+    for (const auto& [name, value] : headers) {
+      if (name == ":status") {
+        streamResp.response.statusCode = 0;
+        for (char ch : value) {
+          streamResp.response.statusCode = (streamResp.response.statusCode * 10) + (ch - '0');
         }
-      });
+      } else {
+        streamResp.response.headers.emplace_back(name, value);
+      }
+    }
+
+    if (endStream) {
+      streamResp.complete = true;
+    }
+  });
 
   _http2Connection->setOnData([this](uint32_t streamId, std::span<const std::byte> data, bool endStream) {
     auto& streamResp = _streamResponses[streamId];
