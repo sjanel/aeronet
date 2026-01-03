@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet {
@@ -66,7 +67,7 @@ TEST(MultipartFormDataTest, ParsesTextAndFileParts) {
   ASSERT_TRUE(filePart.contentType.has_value());
   EXPECT_EQ(filePart.contentType.value_or(std::string_view{}), "text/plain");
   EXPECT_EQ(filePart.value, "file-content");
-  EXPECT_EQ(filePart.headerValueOrEmpty("Content-Type"), "text/plain");
+  EXPECT_EQ(filePart.headerValueOrEmpty(http::ContentType), "text/plain");
 }
 
 TEST(MultipartFormDataTest, QuotedBoundaryAndLookupByName) {
@@ -439,7 +440,7 @@ TEST(MultipartFormDataTest, HeaderLimitIsEnforced) {
   MultipartFormData form2("multipart/form-data; boundary=HeaderLimit", body, options);
   ASSERT_TRUE(form2.valid());
   ASSERT_EQ(form2.parts().size(), 1);
-  EXPECT_EQ(form2.parts()[0].headerValueOrEmpty("Content-Type"), "text/plain");
+  EXPECT_EQ(form2.parts()[0].headerValueOrEmpty(http::ContentType), "text/plain");
 }
 
 TEST(MultipartFormDataTest, MissingClosingBoundaryInvalid) {
@@ -604,7 +605,8 @@ TEST(MultipartFormDataTest, StripQuotes) {
   EXPECT_EQ(form.parts()[0].value, "1");
   const auto& part = form.parts()[0];
   EXPECT_EQ(part.name, "a");
-  EXPECT_EQ(part.headerValueOrEmpty("Content-Disposition"), "form-data; name=a; value=\"b; something=c\"; data=\"d\"");
+  EXPECT_EQ(part.headerValueOrEmpty(http::ContentDisposition),
+            "form-data; name=a; value=\"b; something=c\"; data=\"d\"");
 }
 
 TEST(MultipartFormDataTest, EmptyParseContentDisposition) {

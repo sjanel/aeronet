@@ -15,9 +15,11 @@
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/headers-view-map.hpp"
+#include "aeronet/http-codec.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
@@ -58,7 +60,10 @@ struct DataEvent {
 
 class Http2ProtocolLoopback {
  public:
-  explicit Http2ProtocolLoopback(Router& router) : handler(serverCfg, router), client(clientCfg, false) {
+  explicit Http2ProtocolLoopback(Router& router)
+      : compressionState(serverConfig.compression),
+        handler(serverCfg, router, serverConfig, compressionState),
+        client(clientCfg, false) {
     client.setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
       HeaderEvent ev;
       ev.streamId = streamId;
@@ -182,6 +187,9 @@ class Http2ProtocolLoopback {
   Http2Config serverCfg;
   Http2Config clientCfg;
 
+  HttpServerConfig serverConfig;
+  internal::ResponseCompressionState compressionState;
+
   Http2ProtocolHandler handler;
   Http2Connection client;
   ::aeronet::ConnectionState state;
@@ -196,12 +204,15 @@ TEST(Http2ProtocolHandler, Creation) {
   Router router;
   bool handlerCalled = false;
 
+  HttpServerConfig serverConfig;
+  internal::ResponseCompressionState compressionState(serverConfig.compression);
+
   router.setDefault([&handlerCalled](const HttpRequest& /*req*/) {
     handlerCalled = true;
     return HttpResponse(200);
   });
 
-  auto handler = CreateHttp2ProtocolHandler(config, router);
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState);
 
   ASSERT_NE(handler, nullptr);
   EXPECT_EQ(handler->type(), ProtocolType::Http2);
@@ -211,7 +222,9 @@ TEST(Http2ProtocolHandler, Creation) {
 TEST(Http2ProtocolHandler, HasNoPendingOutputInitially) {
   Http2Config config;
   Router router;
-  auto handler = CreateHttp2ProtocolHandler(config, router);
+  HttpServerConfig serverConfig;
+  internal::ResponseCompressionState compressionState(serverConfig.compression);
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState);
 
   EXPECT_FALSE(handler->hasPendingOutput());
 }
@@ -219,7 +232,9 @@ TEST(Http2ProtocolHandler, HasNoPendingOutputInitially) {
 TEST(Http2ProtocolHandler, ConnectionPreface) {
   Http2Config config;
   Router router;
-  auto handler = CreateHttp2ProtocolHandler(config, router);
+  HttpServerConfig serverConfig;
+  internal::ResponseCompressionState compressionState(serverConfig.compression);
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState);
 
   EXPECT_FALSE(handler->hasPendingOutput());
 }
@@ -227,7 +242,9 @@ TEST(Http2ProtocolHandler, ConnectionPreface) {
 TEST(Http2ProtocolHandler, InitiateClose) {
   Http2Config config;
   Router router;
-  auto handler = CreateHttp2ProtocolHandler(config, router);
+  HttpServerConfig serverConfig;
+  internal::ResponseCompressionState compressionState(serverConfig.compression);
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState);
 
   if (handler->hasPendingOutput()) {
     auto output = handler->getPendingOutput();
@@ -247,11 +264,14 @@ TEST(CreateHttp2ProtocolHandler, ReturnsValidHandler) {
   config.maxConcurrentStreams = 200;
   config.initialWindowSize = 32768;
 
+  HttpServerConfig serverConfig;
+  internal::ResponseCompressionState compressionState(serverConfig.compression);
+
   Router router;
   router.setDefault(
       [](const HttpRequest& req) { return HttpResponse().status(200).body("Hello from " + std::string(req.path())); });
 
-  auto handler = CreateHttp2ProtocolHandler(config, router);
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState);
 
   ASSERT_NE(handler, nullptr);
   EXPECT_EQ(handler->type(), ProtocolType::Http2);
@@ -262,7 +282,10 @@ TEST(CreateHttp2ProtocolHandler, SendServerPrefaceForTlsQueuesSettingsImmediatel
   Router router;
   router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
 
-  auto handlerBase = CreateHttp2ProtocolHandler(config, router, true);
+  HttpServerConfig serverConfig;
+  internal::ResponseCompressionState compressionState(serverConfig.compression);
+
+  auto handlerBase = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, true);
   auto* handler = dynamic_cast<Http2ProtocolHandler*>(handlerBase.get());
   ASSERT_NE(handler, nullptr);
 
@@ -275,7 +298,9 @@ TEST(CreateHttp2ProtocolHandler, SendServerPrefaceForTlsQueuesSettingsImmediatel
 TEST(Http2ProtocolHandler, ProcessInputInvalidPrefaceRequestsImmediateClose) {
   Http2Config config;
   Router router;
-  Http2ProtocolHandler handler(config, router);
+  HttpServerConfig serverConfig;
+  internal::ResponseCompressionState compressionState(serverConfig.compression);
+  Http2ProtocolHandler handler(config, router, serverConfig, compressionState);
   ::aeronet::ConnectionState st;
 
   std::array<std::byte, 24> invalidPreface{};
@@ -292,7 +317,9 @@ TEST(Http2ProtocolHandler, ProcessInputInvalidPrefaceRequestsImmediateClose) {
 TEST(Http2ProtocolHandler, MoveConstructAndAssignAreNoexceptAndUsable) {
   Http2Config config;
   Router router;
-  Http2ProtocolHandler original(config, router);
+  HttpServerConfig serverConfig;
+  internal::ResponseCompressionState compressionState(serverConfig.compression);
+  Http2ProtocolHandler original(config, router, serverConfig, compressionState);
 
   static_assert(noexcept(Http2ProtocolHandler(std::declval<Http2ProtocolHandler&&>())));
   static_assert(noexcept(std::declval<Http2ProtocolHandler&>() = std::declval<Http2ProtocolHandler&&>()));
@@ -300,7 +327,7 @@ TEST(Http2ProtocolHandler, MoveConstructAndAssignAreNoexceptAndUsable) {
   Http2ProtocolHandler moved(std::move(original));
   EXPECT_FALSE(moved.hasPendingOutput());
 
-  Http2ProtocolHandler assigned(config, router);
+  Http2ProtocolHandler assigned(config, router, serverConfig, compressionState);
   assigned = std::move(moved);
   EXPECT_FALSE(assigned.hasPendingOutput());
 }

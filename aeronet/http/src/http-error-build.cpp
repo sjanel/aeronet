@@ -40,20 +40,20 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
   out.unchecked_append(reason);
   out.unchecked_append(http::CRLF);
 
-  // Date: Wed, 21 Oct 2015 07:28:00 GMT
+  // date: Wed, 21 Oct 2015 07:28:00 GMT
   out.unchecked_append(http::Date);
   out.unchecked_append(http::HeaderSep);
   TimeToStringRFC7231(SysClock::now(), out.data() + datePos);
   out.addSize(kRFC7231DateStrLen);
   out.unchecked_append(http::CRLF);
 
-  // Content-Length
+  // content-length
   out.unchecked_append(http::ContentLength);
   out.unchecked_append(http::HeaderSep);
   out.unchecked_append(std::string_view(IntegralToCharVector(body.size())));
   out.unchecked_append(http::CRLF);
 
-  // Connection: close
+  // connection: close
   out.unchecked_append(http::Connection);
   out.unchecked_append(http::HeaderSep);
   out.unchecked_append(http::close);

@@ -1,11 +1,6 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
-
-#ifdef AERONET_ENABLE_ZSTD
-#include <zstd.h>
-#endif
-
 #include <string>
 #include <string_view>
 #include <utility>
@@ -15,6 +10,7 @@
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
@@ -24,6 +20,10 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+
+#ifdef AERONET_ENABLE_ZSTD
+#include <zstd.h>
+#endif
 
 using namespace aeronet;
 
@@ -55,13 +55,13 @@ TEST(HttpCompression, BrAppliedWhenEligible) {
   std::string payload(400, 'B');
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse respObj;
-    respObj.header("Content-Type", "text/plain");
+    respObj.header(http::ContentType, "text/plain");
     respObj.body(payload);
     return respObj;
   });
   auto resp = test::simpleGet(ts.port(), "/br1", {{"Accept-Encoding", "br"}});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "br");
   EXPECT_LT(resp.body.size(), payload.size());
@@ -78,14 +78,14 @@ TEST(HttpCompression, UserContentEncodingIdentityDisablesCompression) {
   std::string payload(128, 'U');
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse respObj;
-    respObj.header("Content-Type", "text/plain");
-    respObj.header("Content-Encoding", "identity");
+    respObj.header(http::ContentType, "text/plain");
+    respObj.header(http::ContentEncoding, "identity");
     respObj.body(payload);
     return respObj;
   });
   auto resp = test::simpleGet(ts.port(), "/br2", {{"Accept-Encoding", "br"}});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "identity");
   EXPECT_EQ(resp.body.size(), payload.size());
@@ -107,7 +107,7 @@ TEST(HttpCompression, BelowThresholdNotCompressed) {
   });
   auto resp = test::simpleGet(ts.port(), "/br3", {{"Accept-Encoding", "br"}});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
-  EXPECT_FALSE(resp.headers.contains("Content-Encoding"));
+  EXPECT_FALSE(resp.headers.contains(http::ContentEncoding));
   EXPECT_EQ(resp.body.size(), small.size());
 }
 
@@ -127,7 +127,7 @@ TEST(HttpCompression, NoAcceptEncodingHeaderStillCompressesDefault) {
   });
   auto resp = test::simpleGet(ts.port(), "/br4", {{"Accept-Encoding", "*"}});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "br");
 }
@@ -167,11 +167,11 @@ TEST(HttpCompression, PreservesUserContentTypeWhenCompressing) {
   auto resp = test::simpleGet(ts.port(), "/ctype", {{"Accept-Encoding", acceptEncoding}});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
 
-  auto itccc = resp.headers.find("Content-Type");
+  auto itccc = resp.headers.find(http::ContentType);
   ASSERT_NE(itccc, resp.headers.end());
   EXPECT_EQ(itccc->second, customType);
 
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, expectedEncoding);
   EXPECT_LT(resp.body.size(), payload.size());
@@ -212,11 +212,11 @@ TEST(HttpCompression, InlineBodyCompressionMovesToCapturedPayload) {
 
   auto resp = test::simpleGet(ts.port(), "/inline", {{"Accept-Encoding", acceptEncoding}});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, expectedEncoding);
 
-  auto itType = resp.headers.find("Content-Type");
+  auto itType = resp.headers.find(http::ContentType);
   ASSERT_NE(itType, resp.headers.end());
   EXPECT_EQ(itType->second, customType);
 
@@ -337,7 +337,7 @@ TEST(HttpCompression, BrActivatedOverThreshold) {
     writer.end();
   });
   auto resp = test::simpleGet(ts.port(), "/sbr1", {{"Accept-Encoding", "br"}});
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   if (it != resp.headers.end()) {
     EXPECT_EQ(it->second, "br");
   }
@@ -360,7 +360,7 @@ TEST(HttpCompression, BelowThresholdIdentity) {
     return respObj;
   });
   auto resp = test::simpleGet(ts.port(), "/sbr2", {{"Accept-Encoding", "br"}});
-  EXPECT_FALSE(resp.headers.contains("Content-Encoding"));
+  EXPECT_FALSE(resp.headers.contains(http::ContentEncoding));
   EXPECT_TRUE(resp.body.contains('x'));
 }
 
@@ -375,12 +375,12 @@ TEST(HttpCompression, UserProvidedIdentityPreventsActivation) {
   std::string payload(512, 'Y');
   ts.router().setDefault([payload]([[maybe_unused]] const HttpRequest &req, HttpResponseWriter &writer) {
     writer.status(http::StatusCodeOK);
-    writer.header("Content-Encoding", "identity");
+    writer.header(http::ContentEncoding, "identity");
     writer.writeBody(payload);
     writer.end();
   });
   auto resp = test::simpleGet(ts.port(), "/sbr3", {{"Accept-Encoding", "br"}});
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "identity");
   // Streaming identity may use chunked transfer, so body size can exceed raw payload due to framing; just ensure
@@ -405,7 +405,7 @@ TEST(HttpCompression, QValuesInfluenceSelection) {
   });
   // Client strongly prefers br
   auto resp = test::simpleGet(ts.port(), "/sbr4", {{"Accept-Encoding", "gzip;q=0.5, br;q=1.0"}});
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   if (it != resp.headers.end()) {
     EXPECT_EQ(it->second, "br");
   }
@@ -441,15 +441,15 @@ TEST(HttpCompression, GzipUserContentEncodingIdentityDisablesCompression) {
   std::string payload(128, 'B');
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
-    resp.header("Content-Encoding", "identity");  // explicit suppression
+    resp.header(http::ContentType, "text/plain");
+    resp.header(http::ContentEncoding, "identity");  // explicit suppression
     resp.body(payload);
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/o", {{"Accept-Encoding", "gzip"}});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
   // Should remain uncompressed and server must not alter user-provided identity
-  auto itCE = resp.headers.find("Content-Encoding");
+  auto itCE = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(itCE, resp.headers.end());
   EXPECT_EQ(itCE->second, "identity");
   EXPECT_EQ(resp.body.size(), payload.size());
@@ -466,13 +466,13 @@ TEST(HttpCompression, GzipBelowThresholdNotCompressed) {
   std::string smallPayload(32, 'C');
   ts.router().setDefault([smallPayload](const HttpRequest &) {
     HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.header(http::ContentType, "text/plain");
     resp.body(smallPayload);
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/s", {{"Accept-Encoding", "gzip"}});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
-  EXPECT_FALSE(resp.headers.contains("Content-Encoding"));
+  EXPECT_FALSE(resp.headers.contains(http::ContentEncoding));
   EXPECT_EQ(resp.body.size(), smallPayload.size());
 }
 
@@ -487,13 +487,13 @@ TEST(HttpCompression, GzipNoAcceptEncodingHeaderStillCompressesDefault) {
   std::string payload(128, 'D');
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.header(http::ContentType, "text/plain");
     resp.body(payload);
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/i", {});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   if (it != resp.headers.end()) {
     EXPECT_EQ(it->second, "gzip");
     EXPECT_TRUE(HasGzipMagic(resp.body));
@@ -511,7 +511,7 @@ TEST(HttpCompression, GzipIdentityForbiddenNoAlternativesReturns406) {
   std::string payload(64, 'Q');
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.header(http::ContentType, "text/plain");
     resp.body(payload);
     return resp;
   });
@@ -532,13 +532,13 @@ TEST(HttpCompression, IdentityForbiddenButGzipAvailableUsesGzip) {
   std::string payload(128, 'Z');
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.header(http::ContentType, "text/plain");
     resp.body(payload);
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/ok", {{"Accept-Encoding", "identity;q=0, gzip"}});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "gzip");
   EXPECT_TRUE(HasGzipMagic(resp.body));
@@ -555,7 +555,7 @@ TEST(HttpCompression, UnsupportedEncodingDoesNotApplyGzip) {
   std::string payload(200, 'E');
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.header(http::ContentType, "text/plain");
     resp.body(payload);
     return resp;
   });
@@ -563,7 +563,7 @@ TEST(HttpCompression, UnsupportedEncodingDoesNotApplyGzip) {
   // Use an obviously unsupported token (snappy) in that case.
   auto resp = test::simpleGet(ts.port(), "/br", {{"Accept-Encoding", brotliEnabled() ? "snappy" : "br"}});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
-  EXPECT_EQ(resp.headers.find("Content-Encoding"), resp.headers.end());
+  EXPECT_EQ(resp.headers.find(http::ContentEncoding), resp.headers.end());
 }
 
 TEST(HttpCompression, DeflateAppliedWhenPreferredAndAccepted) {
@@ -577,13 +577,13 @@ TEST(HttpCompression, DeflateAppliedWhenPreferredAndAccepted) {
   std::string largePayload(300, 'F');
   ts.router().setDefault([largePayload](const HttpRequest &) {
     HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.header(http::ContentType, "text/plain");
     resp.body(largePayload);
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/d1", {{"Accept-Encoding", "deflate,gzip"}});
   EXPECT_EQ(resp.statusCode, 200);
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "deflate");
   EXPECT_TRUE(LooksLikeZlib(resp.body));
@@ -601,12 +601,12 @@ TEST(HttpCompression, GzipChosenWhenHigherPreference) {
   std::string payload(256, 'G');
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.header(http::ContentType, "text/plain");
     resp.body(payload);
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/d2", {{"Accept-Encoding", "gzip,deflate"}});
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "gzip");
   EXPECT_TRUE(HasGzipMagic(resp.body));
@@ -623,12 +623,12 @@ TEST(HttpCompression, QValuesAffectSelection) {
   std::string payload(180, 'H');
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.header(http::ContentType, "text/plain");
     resp.body(payload);
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/d3", {{"Accept-Encoding", "gzip;q=0.1, deflate;q=0.9"}});
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "deflate");
   EXPECT_TRUE(LooksLikeZlib(resp.body));
@@ -645,12 +645,12 @@ TEST(HttpCompression, IdentityFallbackIfDeflateNotRequested) {
   std::string payload(256, 'I');
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.header(http::ContentType, "text/plain");
     resp.body(payload);
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/d4", {{"Accept-Encoding", "gzip"}});  // client does NOT list deflate
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   // Under current semantics gzip is still chosen (higher q than identity) even if not in preferredFormats.
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "gzip");
@@ -683,7 +683,7 @@ TEST(HttpCompression, StreamingGzipActivatedOverThreshold) {
   // NOTE: Current implementation emits headers before compression activation, so Content-Encoding
   // may be absent even though body bytes are compressed. Accept either presence or absence but
   // verify gzip magic appears in body to confirm activation.
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   if (it != resp.headers.end()) {
     EXPECT_EQ(it->second, "gzip");
   }
@@ -706,7 +706,7 @@ TEST(HttpCompression, StreamingDeflateActivatedOverThreshold) {
     writer.end();
   });
   auto resp = test::simpleGet(ts.port(), "/sdf", {{"Accept-Encoding", "deflate,gzip"}});
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end())
       << "Content-Encoding header should be present after delayed header emission refactor";
   EXPECT_EQ(it->second, "deflate");
@@ -730,7 +730,7 @@ TEST(HttpCompression, StreamingBelowThresholdIdentity) {
     writer.end();
   });
   auto resp = test::simpleGet(ts.port(), "/sid", {{"Accept-Encoding", "gzip"}});
-  EXPECT_FALSE(resp.headers.contains("Content-Encoding"));
+  EXPECT_FALSE(resp.headers.contains(http::ContentEncoding));
   EXPECT_TRUE(resp.body.contains(small));
 }
 
@@ -742,13 +742,13 @@ TEST(HttpCompression, StreamingUserProvidedContentEncodingIdentityPreventsActiva
   std::string big(200, 'Z');
   ts.router().setDefault([big](const HttpRequest &, HttpResponseWriter &writer) {
     writer.status(http::StatusCodeOK);
-    writer.header("Content-Encoding", "identity");  // explicit suppression
+    writer.header(http::ContentEncoding, "identity");  // explicit suppression
     writer.writeBody(big.substr(0, 50));
     writer.writeBody(big.substr(50));
     writer.end();
   });
   auto resp = test::simpleGet(ts.port(), "/soff", {{"Accept-Encoding", "gzip"}});
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "identity");
   // Body should contain literal 'Z' sequences (chunked framing around them)
@@ -772,7 +772,7 @@ TEST(HttpCompression, StreamingQValuesInfluenceStreamingSelection) {
     writer.end();
   });
   auto resp = test::simpleGet(ts.port(), "/sqv", {{"Accept-Encoding", "gzip;q=0.1, deflate;q=0.9"}});
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "deflate");
 }
@@ -804,13 +804,13 @@ TEST(HttpCompression, ZstdAppliedWhenEligible) {
   std::string payload(400, 'A');
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.header("Content-Type", "text/plain");
+    resp.header(http::ContentType, "text/plain");
     resp.body(payload);
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/z", {{"Accept-Encoding", "zstd"}});
   ASSERT_EQ(resp.statusCode, 200);
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "zstd");
   EXPECT_TRUE(test::HasZstdMagic(resp.body));
@@ -836,11 +836,11 @@ TEST(HttpCompression, WildcardSelectsZstdIfPreferred) {
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
     resp.body(payload);
-    resp.header("Content-Type", "text/plain");
+    resp.header(http::ContentType, "text/plain");
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/w", {{"Accept-Encoding", "*;q=0.9"}});
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "zstd");
   EXPECT_TRUE(test::HasZstdMagic(resp.body));
@@ -862,11 +862,11 @@ TEST(HttpCompression, TieBreakAgainstGzipHigherQ) {
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
     resp.body(payload);
-    resp.header("Content-Type", "text/plain");
+    resp.header(http::ContentType, "text/plain");
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/t", {{"Accept-Encoding", "gzip;q=0.9, zstd;q=0.9"}});
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "zstd");
 }
@@ -890,7 +890,7 @@ TEST(HttpCompression, ZstdActivatesAfterThreshold) {
     writer.end();
   });
   auto resp = test::simpleGet(ts.port(), "/zs", {{"Accept-Encoding", "zstd"}});
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "zstd");
   EXPECT_TRUE(test::HasZstdMagic(resp.plainBody));
@@ -917,7 +917,7 @@ TEST(HttpCompression, ZstdBelowThresholdIdentity) {
     writer.end();
   });
   auto resp = test::simpleGet(ts.port(), "/zi", {{"Accept-Encoding", "zstd"}});
-  auto it = resp.headers.find("Content-Encoding");
+  auto it = resp.headers.find(http::ContentEncoding);
   EXPECT_TRUE(it == resp.headers.end());  // identity
   EXPECT_TRUE(resp.plainBody == data) << "identity path should match input exactly";
 }

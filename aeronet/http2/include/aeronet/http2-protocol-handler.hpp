@@ -4,8 +4,6 @@
 #include <cstdint>
 #include <memory>
 #include <span>
-#include <string>
-#include <utility>
 
 #include "aeronet/file.hpp"
 #include "aeronet/headers-view-map.hpp"
@@ -22,6 +20,11 @@
 namespace aeronet {
 
 struct ConnectionState;
+class HttpServerConfig;
+
+namespace internal {
+struct ResponseCompressionState;
+}  // namespace internal
 class Router;
 
 namespace http2 {
@@ -45,7 +48,8 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// Create an HTTP/2 protocol handler with a request dispatcher.
   /// @param config HTTP/2 configuration
   /// @param dispatcher Callback that dispatches an HttpRequest to handlers and returns a response
-  Http2ProtocolHandler(const Http2Config& config, Router& router);
+  Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
+                       internal::ResponseCompressionState& compressionState);
 
   Http2ProtocolHandler(const Http2ProtocolHandler&) = delete;
   Http2ProtocolHandler& operator=(const Http2ProtocolHandler&) = delete;
@@ -146,6 +150,11 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   // File payload streaming state per stream (flow-control aware)
   PendingFileSendsMap _pendingFileSends;
   RawChars _fileSendBuffer;
+
+  HttpServerConfig* _pServerConfig;
+  internal::ResponseCompressionState* _pCompressionState;
+  RawChars _decompressionTmp;
+  RawChars _decompressionTrailersTmp;
 };
 
 /// Factory function for creating HTTP/2 protocol handlers.
@@ -155,6 +164,8 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 ///        For h2c (cleartext), this should be false as server waits for client preface first.
 /// @return Unique pointer to the created handler
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, Router& router,
+                                                             HttpServerConfig& serverConfig,
+                                                             internal::ResponseCompressionState& compressionState,
                                                              bool sendServerPrefaceForTls = false);
 
 }  // namespace http2

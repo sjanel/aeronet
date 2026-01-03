@@ -204,9 +204,9 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
   test::ClientConnection cnx(port);
   const int fd = cnx.fd();
 
-  const auto connectionClosedHeaderRaw = MakeHttp1HeaderLine(http::Connection, "close");
+  const auto connectionClosedHeaderRaw = MakeHttp1HeaderLine(http::Connection, http::close);
 
-  test::sendAll(fd, BuildRawHttp11("GET", "/", MakeHttp1HeaderLine(http::Connection, "keep-alive")));
+  test::sendAll(fd, BuildRawHttp11("GET", "/", MakeHttp1HeaderLine(http::Connection, http::keepalive)));
   const auto initial = test::recvWithTimeout(fd);
   ASSERT_FALSE(initial.contains(connectionClosedHeaderRaw));
 
@@ -215,7 +215,7 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
 
   // During drain, listener remains open to allow health probe connections
   // Existing keep-alive connections will receive Connection: close on next response
-  test::sendAll(fd, BuildRawHttp11("GET", "/two", MakeHttp1HeaderLine(http::Connection, "keep-alive")));
+  test::sendAll(fd, BuildRawHttp11("GET", "/two", MakeHttp1HeaderLine(http::Connection, http::keepalive)));
   const auto drained = test::recvWithTimeout(fd);
   EXPECT_TRUE(drained.contains(connectionClosedHeaderRaw));
 
