@@ -16,8 +16,6 @@
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-bytes.hpp"
-#include "aeronet/raw-chars.hpp"
-#include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
 
@@ -34,13 +32,13 @@ constexpr std::size_t kClosedStreamsMaxRetained = 16;
 
 Http2Connection::Http2Connection(const Http2Config& config, bool isServer)
     : _localSettings(config),
-      _isServer(isServer),
       _connectionSendWindow(static_cast<int32_t>(kDefaultInitialWindowSize)),
       _connectionRecvWindow(static_cast<int32_t>(config.connectionWindowSize)),
       _hpackEncoder(config.headerTableSize),
-      _hpackDecoder(config.headerTableSize),
+      _hpackDecoder(config.headerTableSize, config.mergeUnknownRequestHeaders),
       // Reserve some initial space for output buffer
-      _outputBuffer(1024) {}
+      _outputBuffer(1024),
+      _isServer(isServer) {}
 
 // ============================
 // Connection lifecycle
@@ -733,10 +731,7 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
   }
 
   ContinuationFrame frame;
-  FrameParseResult parseResult = ParseContinuationFrame(header, payload, frame);
-  if (parseResult != FrameParseResult::Ok) [[unlikely]] {
-    return connectionError(ErrorCode::ProtocolError, "Invalid CONTINUATION frame");
-  }
+  ParseContinuationFrame(header, payload, frame);
 
   // Append to header block buffer
   _headerBlockBuffer.append(frame.headerBlockFragment);
@@ -848,37 +843,20 @@ void Http2Connection::encodeHeaders(uint32_t streamId, const HeaderProvider& hea
 
 ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<const std::byte> headerBlock,
                                                 bool endStream) {
-  const bool hasOnHeadersCallback = static_cast<bool>(_onHeaders);
+  // Collect decoded headers into an intermediate storage. We always build decodedHeaders
+  // because we will invoke the new decoded-headers callback if set. Note: We must copy
+  // strings here because the HPACK dynamic table may evict entries during decode,
+  // invalidating string_views that point to evicted entries.
 
-  // Collect decoded headers only if we have a callback to deliver them
-  // Note: We must copy strings here because the HPACK dynamic table may evict entries
-  // during decode, invalidating string_views that point to evicted entries.
-  // TODO: optimize this looping allocations
-  vector<std::pair<RawChars32, RawChars32>> decodedHeaders;
-  if (hasOnHeadersCallback) {
-    decodedHeaders.reserve(16);
-  }
-
-  auto decodeResult = _hpackDecoder.decode(
-      headerBlock, [&decodedHeaders, hasOnHeadersCallback](std::string_view name, std::string_view value) {
-        if (hasOnHeadersCallback) {
-          decodedHeaders.emplace_back(name, value);
-        }
-      });
+  auto decodeResult = _hpackDecoder.decode(headerBlock);
 
   if (!decodeResult.isSuccess()) {
     return ErrorCode::CompressionError;
   }
 
-  if (hasOnHeadersCallback) {
-    _onHeaders(
-        streamId,
-        [&decodedHeaders](const HeaderCallback& emit) {
-          for (const auto& [name, value] : decodedHeaders) {
-            emit(name, value);
-          }
-        },
-        endStream);
+  // Call the decoded-headers callback if set (owned strings)
+  if (static_cast<bool>(_onHeadersDecoded)) {
+    _onHeadersDecoded(streamId, decodeResult.decodedHeaders, endStream);
   }
 
   return ErrorCode::NoError;
@@ -889,9 +867,9 @@ ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<con
 // ============================
 
 void Http2Connection::sendSettings() {
-  std::array<SettingsEntry, 6> entries = {
+  const std::array<SettingsEntry, 6> entries = {
       SettingsEntry{SettingsParameter::HeaderTableSize, _localSettings.headerTableSize},
-      SettingsEntry{SettingsParameter::EnablePush, _localSettings.enablePush ? 1U : 0U},
+      SettingsEntry{SettingsParameter::EnablePush, static_cast<uint32_t>(_localSettings.enablePush)},
       SettingsEntry{SettingsParameter::MaxConcurrentStreams, _localSettings.maxConcurrentStreams},
       SettingsEntry{SettingsParameter::InitialWindowSize, _localSettings.initialWindowSize},
       SettingsEntry{SettingsParameter::MaxFrameSize, _localSettings.maxFrameSize},

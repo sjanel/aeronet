@@ -8,14 +8,23 @@
 
 namespace aeronet::http {
 
-// From a header name in a HTTP request, provide the nominal policy indicator:
+// From a header name in an HTTP request, provide the nominal policy indicator.
+// This policy applies to both HTTP/1.x and HTTP/2 semantics. Note that HTTP/2
+// requires header field names to be transmitted in lowercase on the wire; header
+// names are still treated case-insensitively by higher-level code. Callers should
+// therefore perform ASCII-lowercasing or case-insensitive comparison before
+// encoding/decoding when interacting with HTTP/2.
+//
+// Policy indicators:
 //   ','  -> list-style merge (append comma + new non-empty value)
 //   ';'  -> Cookie multi-line merge (semicolon join) per RFC 6265 §5.4
 //   ' '  -> space join (User-Agent tokens)
 //   'O'  -> Override semantic: do NOT concatenate; caller should keep ONLY the last occurrence ("keep last")
 //   '\0'-> Disallow merge (treat duplicates as error OR ignore subsequent depending on higher-level policy)
-// Fallback for unknown headers currently returns ',' (optimistic list assumption) unless caller disables it.
-// 'O' is chosen because it's an ASCII letter not used as a list separator, so it's an unambiguous sentinel.
+//
+// Fallback for unknown headers currently returns ',' (optimistic list assumption)
+// unless caller disables it. 'O' is chosen because it's an ASCII letter not used
+// as a list separator, so it's an unambiguous sentinel.
 constexpr char ReqHeaderValueSeparator(std::string_view headerName, bool mergeAllowedForUnknownRequestHeaders) {
   struct Entry {
     std::string_view name;

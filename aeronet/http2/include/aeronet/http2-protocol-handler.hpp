@@ -5,10 +5,12 @@
 #include <memory>
 #include <span>
 
+#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
+#include "aeronet/http2-frame-types.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 
@@ -40,11 +42,9 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// @param dispatcher Callback that dispatches an HttpRequest to handlers and returns a response
   Http2ProtocolHandler(const Http2Config& config, Router& router);
 
-  // Disable copy
   Http2ProtocolHandler(const Http2ProtocolHandler&) = delete;
   Http2ProtocolHandler& operator=(const Http2ProtocolHandler&) = delete;
 
-  // Enable move
   Http2ProtocolHandler(Http2ProtocolHandler&&) noexcept;
   Http2ProtocolHandler& operator=(Http2ProtocolHandler&&) noexcept;
 
@@ -59,15 +59,15 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> data,
                                                    ::aeronet::ConnectionState& state) override;
 
-  [[nodiscard]] bool hasPendingOutput() const noexcept override;
+  [[nodiscard]] bool hasPendingOutput() const noexcept override { return _connection.hasPendingOutput(); }
 
-  [[nodiscard]] std::span<const std::byte> getPendingOutput() override;
+  [[nodiscard]] std::span<const std::byte> getPendingOutput() override { return _connection.getPendingOutput(); }
 
-  void onOutputWritten(std::size_t bytesWritten) override;
+  void onOutputWritten(std::size_t bytesWritten) override { _connection.onOutputWritten(bytesWritten); }
 
-  void initiateClose() override;
+  void initiateClose() override { _connection.initiateGoAway(ErrorCode::NoError); }
 
-  void onTransportClosing() override;
+  void onTransportClosing() override { _streamRequests.clear(); }
 
   // ============================
   // HTTP/2 specific
@@ -81,18 +81,19 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   struct StreamRequest {
     HttpRequest request;
     RawChars bodyBuffer;
-    RawChars headerStorage;  // Storage for header name/value strings
-    bool headersReceived{false};
+    std::unique_ptr<char[]> headerStorage;  // Storage for header name/value strings
   };
 
+  using StreamRequestsMap = flat_hash_map<uint32_t, StreamRequest>;
+
   void setupCallbacks();
-  void onHeadersReceived(uint32_t streamId, const HeaderProvider& headerProvider, bool endStream);
+  void onHeadersDecodedReceived(uint32_t streamId, const HeadersViewMap& headers, bool endStream);
   void onDataReceived(uint32_t streamId, std::span<const std::byte> data, bool endStream);
   void onStreamClosed(uint32_t streamId);
   void onStreamReset(uint32_t streamId, ErrorCode errorCode);
 
   /// Dispatch a completed request to the dispatcher and send response.
-  void dispatchRequest(uint32_t streamId);
+  void dispatchRequest(StreamRequestsMap::iterator it);
 
   // Creates an HTTP/2 request dispatcher that routes HTTP/2 requests through the unified Router.
   // The dispatcher receives an HttpRequest (already populated with HTTP/2 fields) and dispatches
@@ -107,7 +108,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   Router* _pRouter;
 
   // Request state per stream
-  flat_hash_map<uint32_t, StreamRequest> _streamRequests;
+  StreamRequestsMap _streamRequests;
 };
 
 /// Factory function for creating HTTP/2 protocol handlers.

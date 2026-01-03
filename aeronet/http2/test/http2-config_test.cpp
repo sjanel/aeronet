@@ -49,6 +49,7 @@ TEST(Http2Config, BuilderPatternSettings) {
   Http2Config config = Http2Config{}
                            .withHeaderTableSize(8192)
                            .withEnablePush(true)
+                           .withMergeUnknownRequestHeaders(false)
                            .withMaxConcurrentStreams(50)
                            .withInitialWindowSize(32768)
                            .withMaxFrameSize(32768)
@@ -56,6 +57,7 @@ TEST(Http2Config, BuilderPatternSettings) {
 
   EXPECT_EQ(config.headerTableSize, 8192U);
   EXPECT_TRUE(config.enablePush);
+  EXPECT_FALSE(config.mergeUnknownRequestHeaders);
   EXPECT_EQ(config.maxConcurrentStreams, 50U);
   EXPECT_EQ(config.initialWindowSize, 32768U);
   EXPECT_EQ(config.maxFrameSize, 32768U);

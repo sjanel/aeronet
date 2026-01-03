@@ -549,9 +549,8 @@ TEST(Http2Frame, ParseContinuationFrame) {
   header.streamId = 1;
 
   ContinuationFrame frame;
-  FrameParseResult result = ParseContinuationFrame(header, AsSpan(payload), frame);
+  ParseContinuationFrame(header, AsSpan(payload), frame);
 
-  EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_TRUE(frame.endHeaders);
   EXPECT_EQ(frame.headerBlockFragment.size(), 3U);
 }

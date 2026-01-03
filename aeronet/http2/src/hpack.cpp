@@ -12,8 +12,10 @@
 #include <utility>
 
 #include "aeronet/http-header.hpp"
+#include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/safe-cast.hpp"
 #include "aeronet/toupperlower.hpp"
 
 namespace aeronet::http2 {
@@ -434,8 +436,8 @@ constexpr uint16_t DecodeHuffmanSymbol(uint32_t code, uint8_t numBits) noexcept 
 
 HpackDynamicEntry::HpackDynamicEntry(std::string_view name, std::string_view value)
     : _data(std::make_unique<char[]>(name.size() + value.size())),
-      _nameLength(name.size()),
-      _valueLength(value.size()) {
+      _nameLength(SafeCast<uint32_t>(name.size())),
+      _valueLength(SafeCast<uint32_t>(value.size())) {
   std::ranges::transform(name, _data.get(), [](char ch) { return tolower(ch); });
   std::memcpy(_data.get() + name.size(), value.data(), value.size());
 }
@@ -547,12 +549,9 @@ DecodedIndex DecodeInteger(std::span<const std::byte> data, uint8_t prefixBits) 
 
 }  // namespace
 
-HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data, const DecodeCallback& callback) {
-  // Reserve space for decoded strings to prevent reallocation during decode.
-  // Huffman decoding decompresses data, so output can be larger than input.
-  // The HPACK Huffman coding has a maximum expansion factor of about 1.6x for typical data,
-  // but we reserve 2x + some margin to be safe and ensure string_views remain valid.
-  _decodedStrings.reserve(_decodedStrings.size() + (data.size() * 2) + 256);
+HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data) {
+  _decodedStrings.clear();
+  _decodedHeadersMap.clear();
 
   std::size_t pos = 0;
 
@@ -561,7 +560,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data,
                                         const char* errMsg) -> std::pair<std::string_view, const char*> {
     if (index == 0) {
       // New literal name
-      auto nameResult = decodeString(data.subspan(pos));
+      const auto nameResult = decodeString(data.subspan(pos));
       if (nameResult.consumed == DecodedString::kInvalidConsumed) {
         return {{}, errMsg};
       }
@@ -586,6 +585,8 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data,
     return {valueResult.str, nullptr};
   };
 
+  DecodeResult res{{}, _decodedHeadersMap};
+
   while (pos < data.size()) {
     const uint8_t firstByte = static_cast<uint8_t>(data[pos]);
 
@@ -593,26 +594,33 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data,
       // Indexed Header Field (RFC 7541 §6.1) - Format: 1xxxxxxx
       auto indexResult = DecodeInteger(data.subspan(pos), 7);
       if (indexResult.index == DecodedIndex::kInvalidIndex) {
-        return {"Failed to decode indexed header field index"};
+        res.errorMessage = "Failed to decode indexed header field index";
+        return res;
       }
       pos += indexResult.consumed;
 
       if (indexResult.index == 0) {
-        return {"Invalid index 0 in indexed header field"};
+        res.errorMessage = "Invalid index 0 in indexed header field";
+        return res;
       }
 
-      const auto header = lookupIndex(indexResult.index);
+      http::HeaderView header = lookupIndex(indexResult.index);
       if (header.name.empty()) {
-        return {"Index out of bounds in indexed header field"};
+        res.errorMessage = "Index out of bounds in indexed header field";
+        return res;
       }
 
-      callback(header.name, header.value);
+      res.errorMessage = storeHeader(header);
+      if (res.errorMessage != nullptr) {
+        return res;
+      }
 
     } else if ((firstByte & 0xE0) == 0x20) {
       // Dynamic Table Size Update (RFC 7541 §6.3) - Format: 001xxxxx
-      auto sizeResult = DecodeInteger(data.subspan(pos), 5);
+      const auto sizeResult = DecodeInteger(data.subspan(pos), 5);
       if (sizeResult.index == DecodedIndex::kInvalidIndex) {
-        return {"Failed to decode dynamic table size update"};
+        res.errorMessage = "Failed to decode dynamic table size update";
+        return res;
       }
       pos += sizeResult.consumed;
 
@@ -625,21 +633,27 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data,
 
       auto indexResult = DecodeInteger(data.subspan(pos), prefixBits);
       if (indexResult.index == DecodedIndex::kInvalidIndex) {
-        return {"Failed to decode literal header index"};
+        res.errorMessage = "Failed to decode literal header index";
+        return res;
       }
       pos += indexResult.consumed;
 
       auto [name, nameErr] = decodeName(indexResult.index, "Failed to decode literal header name");
       if (nameErr != nullptr) {
-        return {nameErr};
+        res.errorMessage = nameErr;
+        return res;
       }
 
       auto [value, valueErr] = decodeValue("Failed to decode literal header value");
       if (valueErr != nullptr) {
-        return {valueErr};
+        res.errorMessage = valueErr;
+        return res;
       }
 
-      callback(name, value);
+      res.errorMessage = storeHeader(http::HeaderView{name, value});
+      if (res.errorMessage != nullptr) {
+        return res;
+      }
 
       if (withIndexing) {
         // Note: add() copies name/value before evicting, so this is safe even if
@@ -649,7 +663,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data,
     }
   }
 
-  return {};
+  return res;
 }
 
 HpackDecoder::DecodedString HpackDecoder::decodeString(std::span<const std::byte> data) {
@@ -670,12 +684,11 @@ HpackDecoder::DecodedString HpackDecoder::decodeString(std::span<const std::byte
 
   const bool isHuffman = (static_cast<uint8_t>(data[0]) & 0x80) != 0;
   if (isHuffman) {
-    std::size_t pos = decodeHuffman(stringData);
-    if (pos == std::numeric_limits<std::size_t>::max()) {
+    ret.str = decodeHuffman(stringData);
+    if (ret.str.data() == nullptr) {  // error
       ret.consumed = DecodedString::kInvalidConsumed;
       return ret;
     }
-    ret.str = std::string_view(_decodedStrings.begin() + pos, _decodedStrings.end());
     return ret;
   }
   // Raw string - return view directly into buffer
@@ -683,11 +696,15 @@ HpackDecoder::DecodedString HpackDecoder::decodeString(std::span<const std::byte
   return ret;
 }
 
-std::size_t HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
+std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
   // Optimized Huffman decoding using two-level lookup table:
   // - Level 1: 9-bit lookup handles codes up to 9 bits (most common symbols)
   // - Level 2: Fallback to direct table scan for longer codes
-  const std::size_t startPos = _decodedStrings.size();
+
+  // Max decoded length for N input bytes: at most floor(8*N/5) symbols.
+  const auto maxLen = SafeCast<CharStorageSizeType>((data.size() * 8U) / 5);
+  char* buf = _decodedStrings.allocateAndDefaultConstruct(maxLen);
+  std::size_t sz = 0;
 
   // Bit buffer: accumulates bits for decoding (MSB-aligned)
   // Bits are stored left-aligned: new bytes go at position (64 - 8 - bitsInBuffer)
@@ -712,13 +729,9 @@ std::size_t HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
 
       if (entry.bitsUsed != 0 && std::cmp_less_equal(entry.bitsUsed, bitsInBuffer)) {
         // Fast path: symbol decoded in level 1
-        if (entry.symbol == 256) [[unlikely]] {
-          // EOS symbol encountered in data - this is an error
-          return std::numeric_limits<std::size_t>::max();
-        }
-
-        assert(_decodedStrings.size() < _decodedStrings.capacity());
-        _decodedStrings.unchecked_push_back(static_cast<char>(entry.symbol));
+        assert(entry.symbol != 256 && "EOS should not appear in level 1 table");
+        assert(sz < maxLen);
+        buf[sz++] = static_cast<char>(entry.symbol);
 
         bitBuffer <<= entry.bitsUsed;
         bitsInBuffer -= entry.bitsUsed;
@@ -737,11 +750,12 @@ std::size_t HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
 
       if (sym != 0xFFFF) {
         if (sym == 256) [[unlikely]] {
-          return std::numeric_limits<std::size_t>::max();  // EOS in data
+          _decodedStrings.shrinkLastAllocated(buf, 0);
+          return {};  // EOS in data
         }
 
-        assert(_decodedStrings.size() < _decodedStrings.capacity());
-        _decodedStrings.unchecked_push_back(static_cast<char>(sym));
+        assert(sz < maxLen);
+        buf[sz++] = static_cast<char>(sym);
 
         bitBuffer <<= numBits;
         bitsInBuffer -= numBits;
@@ -753,7 +767,8 @@ std::size_t HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
     if (!found) {
       if (bitsInBuffer >= 30) {
         // We have enough bits but couldn't decode - invalid encoding
-        return std::numeric_limits<std::size_t>::max();
+        _decodedStrings.shrinkLastAllocated(buf, 0);
+        return {};
       }
       // Need more data but we've consumed all input - will check padding below
       break;
@@ -763,17 +778,19 @@ std::size_t HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
   // Validate remaining bits are EOS padding (all 1s, less than 8 bits)
   if (bitsInBuffer > 0) {
     if (bitsInBuffer > 7) {
-      return std::numeric_limits<std::size_t>::max();  // Too many leftover bits
+      _decodedStrings.shrinkLastAllocated(buf, 0);
+      return {};  // Too many leftover bits
     }
     // Check that remaining bits are all 1s (EOS prefix)
     const auto remainingBits = static_cast<uint8_t>(bitBuffer >> (64 - bitsInBuffer));
     const uint8_t expectedPadding = static_cast<uint8_t>((1U << bitsInBuffer) - 1);
     if (remainingBits != expectedPadding) {
-      return std::numeric_limits<std::size_t>::max();  // Invalid padding
+      _decodedStrings.shrinkLastAllocated(buf, 0);
+      return {};  // Invalid padding
     }
   }
 
-  return startPos;
+  return {buf, sz};
 }
 
 http::HeaderView HpackDecoder::lookupIndex(std::size_t index) const {
@@ -795,6 +812,36 @@ http::HeaderView HpackDecoder::lookupIndex(std::size_t index) const {
   ret.name = entry.name();
   ret.value = entry.value();
   return ret;
+}
+
+const char* HpackDecoder::storeHeader(http::HeaderView header) {
+  char* headerPtr = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(header.name.size()));
+  std::memcpy(headerPtr, header.name.data(), header.name.size());
+
+  char* valuePtr = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(header.value.size()));
+  std::memcpy(valuePtr, header.value.data(), header.value.size());
+
+  auto [it, inserted] =
+      _decodedHeadersMap.try_emplace(std::string_view(headerPtr, header.name.size()), valuePtr, header.value.size());
+  if (!inserted) {
+    // Header already exists
+    std::string_view existingValue = it->second;
+
+    _decodedStrings.shrinkLastAllocated(valuePtr, 0);  // valuePtr not needed anymore
+
+    const char mergeSep = http::ReqHeaderValueSeparator(it->first, _mergeAllowedForUnknownRequestHeaders);
+    if (mergeSep == '\0') {
+      return "Duplicated header forbidden to merge";
+    }
+
+    const std::size_t newValueLen = existingValue.size() + 1UL + header.value.size();
+    char* newValuePtr = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(newValueLen));
+    std::memcpy(newValuePtr, existingValue.data(), existingValue.size());
+    newValuePtr[existingValue.size()] = mergeSep;
+    std::memcpy(newValuePtr + existingValue.size() + 1UL, header.value.data(), header.value.size());
+    it->second = std::string_view(newValuePtr, newValueLen);
+  }
+  return nullptr;
 }
 
 // ============================
