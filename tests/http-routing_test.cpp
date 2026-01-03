@@ -650,7 +650,7 @@ TEST(HttpRouting, AsyncLargeResponseChunks) {
   test::RequestOptions opts;
   opts.method = "GET";
   opts.target = "/async-large";
-  opts.headers.emplace_back("Connection", "close");
+  opts.headers.emplace_back(http::Connection, "close");
   opts.maxResponseBytes = kAsyncLargePayload + 1024;
 
   auto raw = test::requestOrThrow(ts.port(), opts);
@@ -675,7 +675,7 @@ TEST(HttpRouting, AsyncReadBodyBeforeBodyThrows) {
   test::RequestOptions opts;
   opts.method = "POST";
   opts.target = "/async-read-before-body";
-  opts.headers.emplace_back("Connection", "close");
+  opts.headers.emplace_back(http::Connection, "close");
   opts.body = "abc";
   opts.recvTimeout = std::chrono::milliseconds{500};
 
@@ -700,7 +700,7 @@ TEST(HttpRouting, AsyncBodyBeforeReadBodyThrows) {
   test::RequestOptions opts;
   opts.method = "POST";
   opts.target = "/async-body-before-read";
-  opts.headers.emplace_back("Connection", "close");
+  opts.headers.emplace_back(http::Connection, "close");
   opts.body = "xyz";
   opts.recvTimeout = std::chrono::milliseconds{500};
 
@@ -725,7 +725,7 @@ TEST(HttpRouting, AsyncIdentityContentLengthReadBodyStreams) {
   test::RequestOptions opts;
   opts.method = "POST";
   opts.target = "/identity-stream-cl";
-  opts.headers.emplace_back("Connection", "close");
+  opts.headers.emplace_back(http::Connection, "close");
   opts.body = "stream-this-body";
   opts.recvTimeout = std::chrono::milliseconds{500};
 
@@ -748,7 +748,7 @@ TEST(HttpRouting, AsyncReadBodyAsyncStreams) {
   test::RequestOptions opts;
   opts.method = "POST";
   opts.target = "/async-readbody-async";
-  opts.headers.emplace_back("Connection", "close");
+  opts.headers.emplace_back(http::Connection, "close");
   opts.body = "chunked-async-body-data";
   opts.recvTimeout = std::chrono::milliseconds{500};
 

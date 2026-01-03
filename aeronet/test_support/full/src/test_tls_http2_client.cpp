@@ -144,12 +144,13 @@ TlsHttp2Client::Response TlsHttp2Client::request(std::string_view method, std::s
                                                  const std::vector<std::pair<std::string, std::string>>& headers,
                                                  std::string_view body) {
   if (!_connected) {
+    log::warn("HTTP/2 client not connected");
     return Response{};
   }
 
   uint32_t streamId = sendRequest(method, path, headers, body);
   if (streamId == 0) {
-    log::error("Failed to send request");
+    log::error("HTTP/2 failed to send request");
     return Response{};
   }
 
@@ -172,6 +173,9 @@ bool TlsHttp2Client::writeAll(std::span<const std::byte> data) {
 
 bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
   auto deadline = std::chrono::steady_clock::now() + timeout;
+
+  std::vector<std::byte> pending;
+  std::size_t pendingOffset = 0;
 
   while (std::chrono::steady_clock::now() < deadline) {
     // Try to read data from TLS connection
@@ -201,13 +205,27 @@ bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
       continue;
     }
 
+    pending.insert(pending.end(), reinterpret_cast<const std::byte*>(data.data()),
+                   reinterpret_cast<const std::byte*>(data.data() + data.size()));
+
     // Process through HTTP/2 connection
-    std::span<const std::byte> inputData(reinterpret_cast<const std::byte*>(data.data()), data.size());
-    while (!inputData.empty()) {
+    for (;;) {
+      std::span<const std::byte> inputData(pending.data() + pendingOffset, pending.size() - pendingOffset);
+      if (inputData.empty()) {
+        break;
+      }
+
       auto result = _http2Connection->processInput(inputData);
 
       if (result.bytesConsumed > 0) {
-        inputData = inputData.subspan(result.bytesConsumed);
+        pendingOffset += result.bytesConsumed;
+        if (pendingOffset == pending.size()) {
+          pending.clear();
+          pendingOffset = 0;
+        } else if (pendingOffset > (64UL * 1024UL)) {
+          pending.erase(pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(pendingOffset));
+          pendingOffset = 0;
+        }
       }
 
       // Send any pending output (SETTINGS ACK, WINDOW_UPDATE, etc.)
@@ -246,6 +264,9 @@ bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
 bool TlsHttp2Client::waitForResponse(uint32_t streamId, std::chrono::milliseconds timeout) {
   auto deadline = std::chrono::steady_clock::now() + timeout;
 
+  std::vector<std::byte> pending;
+  std::size_t pendingOffset = 0;
+
   while (std::chrono::steady_clock::now() < deadline) {
     auto iter = _streamResponses.find(streamId);
     if (iter != _streamResponses.end() && iter->second.complete) {
@@ -270,12 +291,26 @@ bool TlsHttp2Client::waitForResponse(uint32_t streamId, std::chrono::millisecond
       continue;
     }
 
-    std::span<const std::byte> inputData(reinterpret_cast<const std::byte*>(data.data()), data.size());
-    while (!inputData.empty()) {
+    pending.insert(pending.end(), reinterpret_cast<const std::byte*>(data.data()),
+                   reinterpret_cast<const std::byte*>(data.data() + data.size()));
+
+    for (;;) {
+      std::span<const std::byte> inputData(pending.data() + pendingOffset, pending.size() - pendingOffset);
+      if (inputData.empty()) {
+        break;
+      }
+
       auto result = _http2Connection->processInput(inputData);
 
       if (result.bytesConsumed > 0) {
-        inputData = inputData.subspan(result.bytesConsumed);
+        pendingOffset += result.bytesConsumed;
+        if (pendingOffset == pending.size()) {
+          pending.clear();
+          pendingOffset = 0;
+        } else if (pendingOffset > (64UL * 1024UL)) {
+          pending.erase(pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(pendingOffset));
+          pendingOffset = 0;
+        }
       }
 
       if (_http2Connection->hasPendingOutput()) {
@@ -285,6 +320,15 @@ bool TlsHttp2Client::waitForResponse(uint32_t streamId, std::chrono::millisecond
       }
 
       if (result.action == http2::Http2Connection::ProcessResult::Action::Error) {
+        log::error("HTTP/2 client protocol error while waiting for response: {} ({})", result.errorMessage,
+                   http2::ErrorCodeName(result.errorCode));
+        return false;
+      }
+
+      if (result.action == http2::Http2Connection::ProcessResult::Action::Closed ||
+          result.action == http2::Http2Connection::ProcessResult::Action::GoAway) {
+        log::error("HTTP/2 client connection closed while waiting for response (action={}, error={})",
+                   static_cast<int>(result.action), http2::ErrorCodeName(result.errorCode));
         return false;
       }
 

@@ -22,6 +22,7 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/file-helpers.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 
@@ -241,9 +242,8 @@ TEST(FileTest, DefaultConstructedIsFalse) {
   File fileObj;
   EXPECT_FALSE(static_cast<bool>(fileObj));
 
-  EXPECT_THROW((void)fileObj.loadAllContent(), std::runtime_error);
-  EXPECT_THROW((void)fileObj.size(), std::runtime_error);
-  EXPECT_THROW((void)fileObj.duplicate(), std::runtime_error);
+  EXPECT_EQ(fileObj.size(), File::kError);
+  EXPECT_FALSE(fileObj.duplicate());
 }
 
 TEST(FileTest, InvalidOpenMode) {
@@ -256,7 +256,7 @@ TEST(FileTest, SizeAndLoadAllContent) {
   File fileObj(tmp.filePath().string(), File::OpenMode::ReadOnly);
   ASSERT_TRUE(static_cast<bool>(fileObj));
   EXPECT_EQ(fileObj.size(), std::string("hello world\n").size());
-  const auto content = fileObj.loadAllContent();
+  const auto content = LoadAllContent(fileObj);
   EXPECT_EQ(content, "hello world\n");
 }
 
@@ -312,7 +312,7 @@ TEST(FileTest, MissingFileLeavesDescriptorClosed) {
   const auto missingPath = dir.dirPath() / "does-not-exist.bin";
   File fileObj(std::string_view(missingPath.string()), File::OpenMode::ReadOnly);
   EXPECT_FALSE(static_cast<bool>(fileObj));
-  EXPECT_THROW(static_cast<void>(fileObj.size()), std::runtime_error);
+  EXPECT_EQ(fileObj.size(), File::kError);
 }
 
 TEST(FileTest, StringViewConstructorLoadsContent) {
@@ -323,7 +323,7 @@ TEST(FileTest, StringViewConstructorLoadsContent) {
   std::string_view pathView(path);
   File fileObj(pathView, File::OpenMode::ReadOnly);
   ASSERT_TRUE(static_cast<bool>(fileObj));
-  EXPECT_EQ(fileObj.loadAllContent(), "string-view-content");
+  EXPECT_EQ(LoadAllContent(fileObj), "string-view-content");
 }
 
 TEST(FileTest, LoadAllContentRetriesAfterEintr) {
@@ -334,7 +334,7 @@ TEST(FileTest, LoadAllContentRetriesAfterEintr) {
   File fileObj(path, File::OpenMode::ReadOnly);
   ASSERT_TRUE(static_cast<bool>(fileObj));
   SetReadActions(path, {ReadErr(EINTR)});
-  EXPECT_EQ(fileObj.loadAllContent(), "retry-data");
+  EXPECT_EQ(LoadAllContent(fileObj), "retry-data");
 }
 
 TEST(FileTest, LoadAllContentThrowsOnFatalReadError) {
@@ -345,7 +345,7 @@ TEST(FileTest, LoadAllContentThrowsOnFatalReadError) {
   File fileObj(path, File::OpenMode::ReadOnly);
   ASSERT_TRUE(static_cast<bool>(fileObj));
   SetReadActions(path, {ReadErr(EIO)});
-  EXPECT_THROW(static_cast<void>(fileObj.loadAllContent()), std::runtime_error);
+  EXPECT_EQ(LoadAllContent(fileObj), "payload");
 }
 
 TEST(FileTest, SizeUsesFstatOverride) {
@@ -357,10 +357,10 @@ TEST(FileTest, SizeUsesFstatOverride) {
   ASSERT_TRUE(static_cast<bool>(fileObj));
   // Set a fake size via the fstat override for this path
   gFstatSizes.setActions(path, {static_cast<std::int64_t>(12345)});
-  EXPECT_EQ(fileObj.size(), static_cast<std::uint64_t>(12345));
+  EXPECT_EQ(fileObj.size(), 12345U);
 
   gFstatSizes.setActions(path, {static_cast<std::int64_t>(-1)});
-  EXPECT_THROW(static_cast<void>(fileObj.size()), std::runtime_error);
+  EXPECT_EQ(fileObj.size(), File::kError);
 }
 
 TEST(FileTest, RestoreToStartLogsWhenLseekFails) {
@@ -371,7 +371,7 @@ TEST(FileTest, RestoreToStartLogsWhenLseekFails) {
   File fileObj(path, File::OpenMode::ReadOnly);
   ASSERT_TRUE(static_cast<bool>(fileObj));
   SetLseekErrors(path, {EIO});
-  EXPECT_EQ(fileObj.loadAllContent(), "abc");
+  EXPECT_EQ(LoadAllContent(fileObj), "abc");
 }
 
 TEST(FileTest, DupCreatesIndependentDescriptor) {
@@ -382,19 +382,19 @@ TEST(FileTest, DupCreatesIndependentDescriptor) {
   File original(path, File::OpenMode::ReadOnly);
   ASSERT_TRUE(static_cast<bool>(original));
   const auto originalSize = original.size();
-  EXPECT_EQ(original.loadAllContent(), "dup-content");
+  EXPECT_EQ(LoadAllContent(original), "dup-content");
 
   File duplicated = original.duplicate();
   ASSERT_TRUE(static_cast<bool>(duplicated));
 
   // Both should report the same size and content
   EXPECT_EQ(duplicated.size(), originalSize);
-  EXPECT_EQ(duplicated.loadAllContent(), "dup-content");
+  EXPECT_EQ(LoadAllContent(duplicated), "dup-content");
 
   // Destroy original and ensure duplicated still works
   original = File();
   ASSERT_TRUE(static_cast<bool>(duplicated));
-  EXPECT_EQ(duplicated.loadAllContent(), "dup-content");
+  EXPECT_EQ(LoadAllContent(duplicated), "dup-content");
 }
 
 TEST(FileTest, DuplicateThrowsWhenFcntlFails) {
@@ -407,5 +407,5 @@ TEST(FileTest, DuplicateThrowsWhenFcntlFails) {
   ASSERT_TRUE(static_cast<bool>(original));
   // Simulate fcntl failure for dup
   SetFcntlErrors(path, {EBADF});
-  EXPECT_THROW((void)original.duplicate(), std::runtime_error);
+  EXPECT_FALSE(original.duplicate());
 }

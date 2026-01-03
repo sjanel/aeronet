@@ -27,6 +27,11 @@ endif()
 if(AERONET_ENABLE_HTTP2)
 	AeronetAddProjectExecutable(aeronet-http2 http2.cpp)
 	target_link_libraries(aeronet-http2 PRIVATE aeronet)
+
+	if (AERONET_ENABLE_OPENSSL)
+		AeronetAddProjectExecutable(aeronet-static-file-http2 static-file-http2.cpp)
+		target_link_libraries(aeronet-static-file-http2 PRIVATE aeronet)
+	endif()
 endif()
 
 if (AERONET_ENABLE_WEBSOCKET)

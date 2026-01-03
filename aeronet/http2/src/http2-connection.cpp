@@ -419,6 +419,16 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
     _onData(header.streamId, frame.data, frame.endStream);
   }
 
+  // Update flow control windows.
+  // We restore the consumed bytes immediately to avoid stalling peers on large transfers.
+  // This is especially important for tests/clients which expect the connection to keep
+  // making progress without application-managed WINDOW_UPDATE.
+  if (_onData && payloadSize > 0) {
+    const auto increment = static_cast<uint32_t>(payloadSize);
+    sendWindowUpdate(header.streamId, increment);
+    sendWindowUpdate(0, increment);
+  }
+
   if (frame.endStream && it->second.isClosed()) {
     closeStream(it);
   }

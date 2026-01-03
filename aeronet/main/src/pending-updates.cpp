@@ -1,5 +1,8 @@
 #include "aeronet/internal/pending-updates.hpp"
 
+#include <atomic>
+#include <utility>
+
 namespace aeronet::internal {
 
 PendingUpdates::PendingUpdates(const PendingUpdates& other) : config(other.config), router(other.router) {

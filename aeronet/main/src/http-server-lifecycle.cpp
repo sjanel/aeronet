@@ -398,7 +398,7 @@ void SingleHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
 
   const auto nbActiveConnections = _connections.active.size();
   if (nbActiveConnections != 0) {
-    log::info("Initiating graceful drain (connections={})", nbActiveConnections);
+    log::info("Initiating graceful drain with {} active connection(s)", nbActiveConnections);
   }
 
   _lifecycle.enterDraining(deadline, hasDeadline);
