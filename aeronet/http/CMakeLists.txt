@@ -43,6 +43,7 @@ AeronetAddUnitTest(
     test/cors-policy_test.cpp
     LIBRARIES
     aeronet_http
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(
@@ -57,6 +58,7 @@ AeronetAddUnitTest(
     test/http-error-build_test.cpp
     LIBRARIES
     aeronet_http
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(
@@ -85,6 +87,7 @@ AeronetAddUnitTest(
     test/http-request_test.cpp
     LIBRARIES
     aeronet_http
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(
@@ -129,5 +132,6 @@ if (AERONET_ENABLE_HTTP2 OR AERONET_ENABLE_WEBSOCKET)
         test/upgrade-handler_test.cpp
         LIBRARIES
         aeronet_http
+        aeronet_basic_test_support
     )
 endif()

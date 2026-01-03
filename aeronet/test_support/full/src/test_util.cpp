@@ -447,7 +447,7 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
   }
   out.body = raw.substr(hEnd + http::DoubleCRLF.size());
   // Derive plainBody (dechunk if necessary)
-  auto te = out.headers.find("Transfer-Encoding");
+  auto te = out.headers.find(http::TransferEncoding);
   if (te != out.headers.end() && te->second == "chunked") {
     out.plainBody = dechunk(out.body);
   } else {
@@ -514,7 +514,7 @@ std::optional<ParsedResponse> parseResponse(std::string_view raw) {
     pr.headers.insert_or_assign(std::string(key), std::string(value));
   }
   pr.chunked = false;
-  auto teIt = pr.headers.find("Transfer-Encoding");
+  auto teIt = pr.headers.find(http::TransferEncoding);
   if (teIt != pr.headers.end() && toLower(teIt->second).contains("chunked")) {
     pr.chunked = true;
   }

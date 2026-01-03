@@ -4,6 +4,7 @@
 #include <iterator>
 #include <string_view>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet::http {
@@ -44,8 +45,8 @@ constexpr char ReqHeaderValueSeparator(std::string_view headerName, bool mergeAl
       {"Accept-Encoding", ','},
       {"Accept-Language", ','},
       {"Authorization", 'O'},
-      {"Cache-Control", ','},
-      {"Connection", ','},
+      {http::CacheControl, ','},
+      {http::Connection, ','},
       {"Content-Length", '\0'},
       {"Content-MD5", '\0'},
       {"Content-Transfer-Encoding", '\0'},

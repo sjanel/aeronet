@@ -1847,7 +1847,7 @@ The handler is designed to plug into the existing routing API: it is an invocabl
 - **Directory listings**: when `StaticFileConfig::enableDirectoryIndex` is true and no default index file is present,
   aeronet emits an HTML index with optional trailing-slash redirect, hidden-file filtering (`showHiddenFiles`),
   configurable CSS (`withDirectoryListingCss`) and a pluggable renderer (`directoryIndexRenderer`). Large directories
-  obey `maxEntriesToList` and advertise truncation via `X-Directory-Listing-Truncated: 1`.
+  obey `maxEntriesToList` and advertise truncation via `x-directory-listing-truncated: 1`.
 - **Single-range support**: `Range: bytes=N-M` (RFC 7233 §2.1) is parsed with strict validation. Valid ranges return
   `206 Partial Content` with `Content-Range`. Invalid syntax returns `416` with `Content-Range: bytes */<size>` per the
   spec. Multi-range requests (comma-separated) are rejected as invalid.
@@ -2484,6 +2484,12 @@ WebSocket handlers run on the same reactor thread as HTTP handlers. The `WebSock
 | h2c upgrade (HTTP/1.1 → HTTP/2) | ✔ | Via `Upgrade: h2c` header |
 | Server push | ✗ | Disabled (rarely used by modern clients) |
 | PRIORITY frames | ✔ | Optional, configurable |
+
+Additional notes
+
+- Static file responses created via `HttpResponse::file(...)` (used by `StaticFileHandler`) are serialized as HTTP/2 DATA frames by reading the file in bounded chunks.
+- The implementation is flow-control aware: it sends up to the available connection/stream window and continues after receiving `WINDOW_UPDATE` frames (no full in-memory file load).
+- Tests: see `tests/http-tls-io_test.cpp` (`HttpRangeStatic_H2Tls.LargeFileStreaming_H2Tls`).
 
 ### Enabling HTTP/2
 

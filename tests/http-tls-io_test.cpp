@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <openssl/evp.h>
 #include <openssl/types.h>
+
+#include "aeronet/static-file-handler.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/bio.h>
 #endif
@@ -11,6 +13,7 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <ranges>
 #include <span>
 #include <string>
 #include <thread>
@@ -21,6 +24,7 @@
 #include "aeronet/features.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
@@ -32,6 +36,10 @@
 #include "aeronet/test_server_tls_fixture.hpp"
 #include "aeronet/test_tls_client.hpp"
 #include "aeronet/test_util.hpp"
+#ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/test_server_http2_tls_fixture.hpp"
+#include "aeronet/test_tls_http2_client.hpp"
+#endif
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-ticket-key-store.hpp"
 
@@ -198,9 +206,9 @@ TEST(HttpTlsStreaming, SendFileFallbackBuffers) {
   auto raw = client.get("/file", {});
 
   ASSERT_FALSE(raw.empty());
-  ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
-  ASSERT_TRUE(raw.contains("Content-Length: " + std::to_string(kPayload.size())));
-  ASSERT_FALSE(raw.contains("Transfer-Encoding: chunked"));
+  ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
+  ASSERT_TRUE(raw.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(kPayload.size()))));
+  ASSERT_FALSE(raw.contains(http::TransferEncoding));
 
   auto headerEnd = raw.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, headerEnd);
@@ -306,6 +314,125 @@ TEST(HttpTlsSessionTickets, AutoRotationRefreshesPrimaryKeyAndRejectsUnknown) {
   ASSERT_NE(mctx.get(), nullptr);
   EXPECT_EQ(store.processTicket(bogus, iv, EVP_MAX_IV_LENGTH, ctx.get(), mctx.get(), 0), 0);
 }
+
+#ifdef AERONET_ENABLE_HTTP2
+TEST(HttpRangeStatic_H2Tls, ServeCompleteFile_H2Tls) {
+  using namespace aeronet::test;
+  test::TlsHttp2TestServer ts;
+
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "abcdefghij");
+  const std::string fileName = tmp.filename();
+
+  ts.setDefault(StaticFileHandler(tmp.dirPath()));
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+  EXPECT_EQ(client.negotiatedAlpn(), "h2");
+
+  auto resp = client.get(std::string("/" + fileName));
+  EXPECT_EQ(resp.statusCode, static_cast<int>(http::StatusCodeOK));
+  EXPECT_EQ(resp.body, "abcdefghij");
+
+  auto findHeader = [&](const auto& headers, std::string_view key) -> std::string {
+    for (const auto& [name, value] : headers) {
+      if (CaseInsensitiveEqual(name, key)) {
+        return value;
+      }
+    }
+    return {};
+  };
+
+  EXPECT_EQ(findHeader(resp.headers, "accept-ranges"), "bytes");
+  EXPECT_FALSE(findHeader(resp.headers, "etag").empty());
+  EXPECT_FALSE(findHeader(resp.headers, "last-modified").empty());
+}
+
+TEST(HttpRangeStatic_H2Tls, SingleRangePartialContent_H2Tls) {
+  using namespace aeronet::test;
+  test::TlsHttp2TestServer ts;
+
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "abcdefghij");
+  const std::string fileName = tmp.filename();
+
+  ts.setDefault(StaticFileHandler(tmp.dirPath()));
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto resp = client.request("GET", std::string("/" + fileName), {{"range", "bytes=0-3"}});
+  EXPECT_EQ(resp.statusCode, static_cast<int>(http::StatusCodePartialContent));
+  EXPECT_EQ(resp.body, "abcd");
+
+  auto findHeader = [&](const auto& headers, std::string_view key) -> std::string {
+    for (const auto& [name, value] : headers) {
+      if (CaseInsensitiveEqual(name, key)) {
+        return value;
+      }
+    }
+    return {};
+  };
+
+  EXPECT_EQ(findHeader(resp.headers, "content-range"), "bytes 0-3/10");
+}
+
+TEST(HttpRangeStatic_H2Tls, UnsatisfiableRange_H2Tls) {
+  using namespace aeronet::test;
+  test::TlsHttp2TestServer ts;
+
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "abcdefghij");
+  const std::string fileName = tmp.filename();
+
+  ts.setDefault(StaticFileHandler(tmp.dirPath()));
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto resp = client.request("GET", std::string("/" + fileName), {{"range", "bytes=100-200"}});
+  EXPECT_EQ(resp.statusCode, static_cast<int>(http::StatusCodeRangeNotSatisfiable));
+
+  auto findHeader = [&](const auto& headers, std::string_view key) -> std::string {
+    for (const auto& [name, value] : headers) {
+      if (CaseInsensitiveEqual(name, key)) {
+        return value;
+      }
+    }
+    return {};
+  };
+
+  EXPECT_EQ(findHeader(resp.headers, "content-range"), "bytes */10");
+}
+
+TEST(HttpRangeStatic_H2Tls, LargeFileStreaming_H2Tls) {
+  using namespace aeronet::test;
+  test::TlsHttp2TestServer ts;
+
+  test::ScopedTempDir tmpDir;
+
+  static constexpr std::size_t kSize = 200000;
+  std::string payload;
+  payload.resize(kSize);
+  std::ranges::transform(std::views::iota(std::size_t{0}, kSize), payload.begin(),
+                         [](std::size_t idx) { return static_cast<char>('a' + (idx % 26)); });
+
+  test::ScopedTempFile tmp(tmpDir, payload);
+  const std::string fileName = tmp.filename();
+
+  ts.setDefault(StaticFileHandler(tmp.dirPath()));
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+  EXPECT_EQ(client.negotiatedAlpn(), "h2");
+
+  auto resp = client.get(std::string("/" + fileName));
+  EXPECT_EQ(resp.statusCode, static_cast<int>(http::StatusCodeOK));
+  ASSERT_EQ(resp.body.size(), payload.size());
+  EXPECT_EQ(resp.body.substr(0, 128), payload.substr(0, 128));
+  EXPECT_EQ(resp.body.substr(resp.body.size() - 128), payload.substr(payload.size() - 128));
+}
+#endif
 
 #if defined(BIO_CTRL_GET_KTLS_SEND) && !defined(OPENSSL_NO_KTLS)
 TEST(HttpTlsKtlsMode, EnabledModeTracksStats) {
