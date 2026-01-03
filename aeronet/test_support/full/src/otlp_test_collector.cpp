@@ -23,6 +23,7 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/errno-throw.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/test_util.hpp"
@@ -53,7 +54,7 @@ std::size_t parseContentLength(std::string_view headers) {
       continue;
     }
     std::string_view name = line.substr(0, colon);
-    if (!CaseInsensitiveEqual(name, "Content-Length")) {
+    if (!CaseInsensitiveEqual(name, http::ContentLength)) {
       continue;
     }
     std::string_view value = trimLeading(line.substr(colon + 1));

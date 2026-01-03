@@ -516,7 +516,7 @@ TEST_F(HttpRequestTest, MergeConsecutiveHeaders) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
+  checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
 TEST_F(HttpRequestTest, ShrinkToFit) {
@@ -544,7 +544,7 @@ TEST_F(HttpRequestTest, ShrinkToFit) {
   checkHeaders({{"X-Test", "Value"},
                 {"Cookie", "cookie1;cookie2;cookie3;cookie4"},
                 {"X-Spaces", "abc,de,fgh"},
-                {"Content-Length", "0"}});
+                {http::ContentLength, "0"}});
 
   EXPECT_LT(originalLoadfactor, req.headers().load_factor());
 }
@@ -558,7 +558,7 @@ TEST_F(HttpRequestTest, MergeConsecutiveHeadersWithSpaces) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
+  checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
 TEST_F(HttpRequestTest, MergeNonConsecutiveHeaders) {
@@ -570,7 +570,7 @@ TEST_F(HttpRequestTest, MergeNonConsecutiveHeaders) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
+  checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
 TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithSpaces) {
@@ -582,7 +582,7 @@ TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithSpaces) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
+  checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
 TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithEmptyOnFirst) {
@@ -594,7 +594,7 @@ TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithEmptyOnFirst) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"}, {"H", "v2"}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
+  checkHeaders({{"X-Test", "Value"}, {"H", "v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
 TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithEmptyOnSecond) {
@@ -606,7 +606,7 @@ TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithEmptyOnSecond) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"}, {"H", "v1"}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
+  checkHeaders({{"X-Test", "Value"}, {"H", "v1"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
 TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersBothEmpty) {
@@ -618,7 +618,7 @@ TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersBothEmpty) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"}, {"H", ""}, {"X-Spaces", "abc"}, {"Content-Length", "0"}});
+  checkHeaders({{"X-Test", "Value"}, {"H", ""}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
 
   EXPECT_TRUE(req.headerValue("H").has_value());
 }
@@ -638,7 +638,7 @@ TEST_F(HttpRequestTest, MergeMultipleCookies) {
   checkHeaders({{"X-Test", "Value"},
                 {"Cookie", "cookie1;cookie2;cookie3;cookie4"},
                 {"X-Spaces", "abc"},
-                {"Content-Length", "0"}});
+                {http::ContentLength, "0"}});
 }
 
 TEST_F(HttpRequestTest, MergeMultipleHeaders) {
@@ -659,7 +659,7 @@ TEST_F(HttpRequestTest, MergeMultipleHeaders) {
   checkHeaders({{"X-Test", "Value"},
                 {"Cookie", "cookie1;cookie2;cookie3;cookie4"},
                 {"X-Spaces", "abc,de,fgh"},
-                {"Content-Length", "0"}});
+                {http::ContentLength, "0"}});
 
   // merge not allowed for custom header X-Spaces
   st = reqSet(std::move(raw), false);
@@ -1021,7 +1021,7 @@ TEST_F(HttpRequestTest, RangeOverrideKeepsLast) {
                             "Range: bytes=0-99\r\n"
                             "Range: bytes=100-199\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
-  EXPECT_EQ(req.headerValueOrEmpty("Range"), "bytes=100-199");
+  EXPECT_EQ(req.headerValueOrEmpty(http::Range), "bytes=100-199");
 }
 
 TEST_F(HttpRequestTest, DuplicateContentLengthProduces400) {

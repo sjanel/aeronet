@@ -277,7 +277,7 @@ void HttpServerConfig::validate() {
   }
 
   if (globalHeaders.empty()) {
-    globalHeaders.append("Server: aeronet");
+    globalHeaders.append("server: aeronet");
   } else if (globalHeaders.nbConcatenatedStrings() > kMaxGlobalHeaders) {
     throw std::invalid_argument("too many global headers");
   }

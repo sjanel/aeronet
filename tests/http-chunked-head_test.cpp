@@ -4,6 +4,7 @@
 #include <string>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -46,7 +47,7 @@ TEST(HttpHead, NoBodyReturned) {
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   // Should have Content-Length header referencing length of would-be body (which is 10: DATA-/head)
-  ASSERT_TRUE(resp.contains("Content-Length: 10"));
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "10")));
   // And not actually contain DATA-/head bytes after header terminator
   auto hdrEnd = resp.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, hdrEnd);

@@ -1031,7 +1031,7 @@ Implementation details:
 
 Security / robustness notes:
 
-- Disallowing duplicate `Content-Length` and `Host` prevents common request smuggling vectors relying on conflicting or ambiguous canonicalization across intermediaries.
+- Disallowing duplicate `content-length` and `host` prevents common request smuggling vectors relying on conflicting or ambiguous canonicalization across intermediaries.
 - A future stricter mode may treat unknown header duplicates as disallowed instead of comma‑merging; the hook for that decision exists in the classification fallback.
 - The implementation never allocates proportional to header count on a merge path; each merge performs at most one temporary copy (size of the new value) plus one tail shift.
 
@@ -1061,7 +1061,7 @@ You can define global headers applied to every response of a `SingleHttpServer` 
 
 Global headers are applied to every response including error responses generated internally by aeronet (400, 413, etc).
 
-By default, it contains a `Server: aeronet` header unless you explicitly clear it out.
+By default, it contains a `server: aeronet` header unless you explicitly clear it out.
 
 ## Path Handling
 

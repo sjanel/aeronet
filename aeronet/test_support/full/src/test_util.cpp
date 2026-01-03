@@ -587,8 +587,8 @@ std::string buildRequest(const RequestOptions &opt) {
   if (!opt.body.empty()) {
     bool haveCL = false;
     for (auto &header : opt.headers) {
-      if (header.first.size() == sizeof("Content-Length") - 1 &&
-          std::equal(header.first.begin(), header.first.end(), "Content-Length",
+      if (header.first.size() == http::ContentLength.size() - 1 &&
+          std::equal(header.first.begin(), header.first.end(), http::ContentLength.data(),
                      [](char chA, char chB) { return aeronet::tolower(chA) == aeronet::tolower(chB); })) {
         haveCL = true;
         break;

@@ -30,6 +30,10 @@
 
 namespace aeronet {
 
+namespace internal {
+class HttpCodec;
+}  // namespace internal
+
 // -----------------------------------------------------------------------------
 // HttpResponse
 // -----------------------------------------------------------------------------
@@ -834,6 +838,7 @@ class HttpResponse {
   friend class SingleHttpServer;
   friend class HttpResponseTest;
   friend class HttpResponseWriter;  // streaming writer needs access to finalize
+  friend class internal::HttpCodec;
 
   void setCapturedPayload(auto payload) {
     if (payload.empty()) {

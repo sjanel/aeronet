@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
@@ -201,7 +202,7 @@ TEST_F(HttpTrailingSlash, RedirectPolicy) {
   auto resp = rawRequest(ts.port(), "/gamma/");
   // Expect 301 and Location header
   ASSERT_TRUE(resp.contains("301"));
-  ASSERT_TRUE(resp.contains("Location: /gamma\r\n"));
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, "/gamma")));
 }
 
 // Additional matrix coverage
@@ -231,7 +232,7 @@ TEST_F(HttpTrailingSlash, RedirectPolicyRemoveSlash) {
   auto redirect = rawRequest(ts.port(), "/redir/");  // should 301 -> /redir
   auto canonical = rawRequest(ts.port(), "/redir");  // should 200
   ASSERT_TRUE(redirect.contains("301"));
-  ASSERT_TRUE(redirect.contains("Location: /redir\r\n"));
+  ASSERT_TRUE(redirect.contains(MakeHttp1HeaderLine(http::Location, "/redir")));
   ASSERT_TRUE(canonical.contains("200"));
   ASSERT_TRUE(canonical.contains("redir"));
 }
@@ -636,7 +637,7 @@ TEST(HttpRouting, AsyncBodyReadTimeout) {
   std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
   ASSERT_FALSE(resp.empty());
   EXPECT_TRUE(resp.contains("HTTP/1.1 408")) << resp;
-  EXPECT_TRUE(resp.contains("Connection: close")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, "close"))) << resp;
   EXPECT_TRUE(handlerInvoked.load(std::memory_order_relaxed));
 }
 
@@ -926,7 +927,8 @@ TEST(RouterUpdateProxy, PathEntryProxyCorsPolicy) {
   opts.headers.emplace_back("Content-Length", "0");
   const std::string preflightResp = test::requestOrThrow(ts.port(), opts);
   EXPECT_TRUE(preflightResp.contains("HTTP/1.1 204")) << preflightResp;
-  EXPECT_TRUE(preflightResp.contains("Access-Control-Allow-Origin: https://example.com")) << preflightResp;
+  EXPECT_TRUE(preflightResp.contains(MakeHttp1HeaderLine(http::AccessControlAllowOrigin, "https://example.com")))
+      << preflightResp;
 }
 
 TEST(RouterUpdateProxy, SetDefaultStreamingHandler) {

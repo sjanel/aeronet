@@ -16,9 +16,11 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/headers-view-map.hpp"
+#include "aeronet/http-codec.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/http2-config.hpp"
@@ -39,8 +41,13 @@ namespace aeronet::http2 {
 // Http2ProtocolHandler
 // ============================
 
-Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& router)
-    : _connection(config, true), _pRouter(&router), _fileSendBuffer(64UL * 1024UL) {
+Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
+                                           internal::ResponseCompressionState& compressionState)
+    : _connection(config, true),
+      _pRouter(&router),
+      _fileSendBuffer(64UL * 1024UL),
+      _pServerConfig(&serverConfig),
+      _pCompressionState(&compressionState) {
   setupCallbacks();
 }
 
@@ -201,6 +208,19 @@ void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std
   if (endStream) {
     // Set body on HttpRequest
     streamReq.request._body = std::string_view(streamReq.bodyBuffer.data(), streamReq.bodyBuffer.size());
+
+    if (!streamReq.request._body.empty()) {
+      std::size_t trailerStartPos = 0;
+      const auto res = internal::HttpCodec::MaybeDecompressRequestBody(_pServerConfig->decompression, streamReq.request,
+                                                                       streamReq.bodyBuffer, trailerStartPos,
+                                                                       _decompressionTmp, _decompressionTrailersTmp);
+      if (!res.ok) {
+        (void)sendResponse(streamId, HttpResponse(res.status).body(res.message));
+        _streamRequests.erase(streamId);
+        return;
+      }
+    }
+
     dispatchRequest(it);
   }
 }
@@ -339,7 +359,11 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
 
   // Dispatch to the callback provided by SingleHttpServer
   try {
-    err = sendResponse(streamId, reply(request));
+    HttpResponse resp = reply(request);
+    if (request.method() != http::Method::HEAD) {
+      internal::HttpCodec::TryCompressResponse(*_pCompressionState, _pServerConfig->compression, request, resp);
+    }
+    err = sendResponse(streamId, std::move(resp));
     if (err != ErrorCode::NoError) [[unlikely]] {
       log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
     }
@@ -506,8 +530,10 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
 }
 
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, Router& router,
+                                                             HttpServerConfig& serverConfig,
+                                                             internal::ResponseCompressionState& compressionState,
                                                              bool sendServerPrefaceForTls) {
-  auto protocolHandler = std::make_unique<Http2ProtocolHandler>(config, router);
+  auto protocolHandler = std::make_unique<Http2ProtocolHandler>(config, router, serverConfig, compressionState);
   if (sendServerPrefaceForTls) {
     // For TLS ALPN "h2", the server must send SETTINGS immediately after TLS handshake
     protocolHandler->connection().sendServerPreface();
