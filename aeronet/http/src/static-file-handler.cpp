@@ -194,11 +194,11 @@ struct DirectoryListingResult {
 
 [[nodiscard]] DirectoryListingResult CollectDirectoryListing(const std::filesystem::path& directory,
                                                              const StaticFileConfig& config) {
-  DirectoryListingResult result;
   const std::size_t limit = config.maxEntriesToList;
 
+  DirectoryListingResult result;
   std::error_code ec;
-  std::filesystem::directory_iterator iter(directory, ec);
+  std::filesystem::directory_iterator it(directory, ec);
   if (ec) {
     log::error("Failed to open directory for listing '{}': {}", directory.c_str(), ec.message());
     return result;
@@ -207,16 +207,16 @@ struct DirectoryListingResult {
   const auto comp = [](const DirectoryListingEntry& lhs, const DirectoryListingEntry& rhs) {
     // Directories first
     if (lhs.isDirectory != rhs.isDirectory) {
-      return lhs.isDirectory && !rhs.isDirectory;
+      return lhs.isDirectory;
     }
     return lhs.name < rhs.name;
   };
 
   const std::filesystem::directory_iterator end;
 
-  while (!ec && iter != end) {
-    const std::filesystem::directory_entry current = *iter;
-    iter.increment(ec);
+  while (!ec && it != end) {
+    const std::filesystem::directory_entry current = *it;
+    it.increment(ec);
     if (ec) {
       log::error("Failed to advance directory iterator for '{}': {}", directory.c_str(), ec.message());
     }

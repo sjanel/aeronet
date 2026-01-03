@@ -9,6 +9,7 @@
 #include <format>
 #include <fstream>
 #include <ios>
+#include <random>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -383,11 +384,23 @@ TEST_F(StaticFileHandlerTest, DirectoryListingFailsWhenDirectoryUnreadable) {
 TEST_F(StaticFileHandlerTest, DirectoryListingEnabled) {
   const auto dirPath = tmpDir.dirPath() / "assets";
   std::filesystem::create_directories(dirPath);
-  {
-    std::ofstream(dirPath / "a.txt") << "a";
-    std::ofstream(dirPath / "b.txt") << "b";
+  std::uniform_int_distribution<> dist(0, 1);
+  std::mt19937 rng(12345);
+
+  vector<std::string> elements;
+
+  for (char ch = 'a'; ch <= 'z'; ++ch) {
+    // take a uniformly random boolean to decide whether to create file or directory
+    std::string name(1, ch);
+    if (dist(rng) == 0) {
+      name += ".txt";
+      std::ofstream(dirPath / name) << ch;
+    } else {
+      name += ".dir";
+      std::filesystem::create_directory(dirPath / name);
+    }
+    elements.emplace_back(std::move(name));
   }
-  std::filesystem::create_directory(dirPath / "nested");
 
   StaticFileConfig cfg;
   cfg.enableDirectoryIndex = true;
@@ -402,11 +415,12 @@ TEST_F(StaticFileHandlerTest, DirectoryListingEnabled) {
   EXPECT_EQ(resp.headerValueOrEmpty("Cache-Control"), "no-cache");
   const std::string_view body = resp.body();
   EXPECT_TRUE(body.contains("Index of /assets/"));
-  EXPECT_TRUE(body.contains("a.txt"));
-  // The displayed name should not contain the literal '/', CSS adds it via a.dir::after.
-  EXPECT_TRUE(body.contains("nested"));
-  // But the href for directories should include the trailing slash. Find the link to "nested/".
-  ASSERT_TRUE(body.contains("href=\"nested/\"")) << "Directory listing body:\n" << body;
+  for (const auto& elem : elements) {
+    EXPECT_TRUE(body.contains(elem));
+    if (elem.ends_with(".dir")) {
+      EXPECT_TRUE(body.contains("href=\"" + elem + "/\""));
+    }
+  }
 }
 
 TEST_F(StaticFileHandlerTest, DirectoryListingRedirectsWithoutSlash) {

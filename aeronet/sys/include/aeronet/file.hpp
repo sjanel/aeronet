@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -35,11 +36,16 @@ class File {
   // Returns true when the File currently holds an opened descriptor.
   explicit operator bool() const noexcept { return static_cast<bool>(_fd); }
 
-  // Return the file size in bytes. Throws std::runtime_error on failure.
+  // Return the file size in bytes. Logs and returns 0 on failure.
   [[nodiscard]] std::size_t size() const;
 
-  // Load the entire file content into a string. Throws on error.
+  // Load the entire file content into a string. Logs and returns an empty string on failure.
   [[nodiscard]] std::string loadAllContent() const;
+
+  // Read up to dst.size() bytes starting at the given absolute offset.
+  // Uses pread() so it does not modify the file's current offset.
+  // Returns the number of bytes read (0 on EOF). Throws on error.
+  [[nodiscard]] std::size_t readAt(std::span<std::byte> dst, std::size_t offset) const;
 
   // Duplicate the underlying file descriptor and return a new File that owns the duplicate.
   // Throws std::runtime_error on failure.

@@ -7,6 +7,7 @@
 
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-status-code.hpp"
 
 using namespace aeronet;
@@ -21,12 +22,12 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorOnly) {
     EXPECT_TRUE(full.rfind(expected, 0) == 0) << "Response did not start with '" << expected << "':\n" << full;
 
     // Check required headers exist
-    EXPECT_TRUE(full.contains("Content-Length: 3\r\n")) << full;
-    EXPECT_TRUE(full.contains("Connection: close\r\n")) << full;
+    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "3"))) << full;
+    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close"))) << full;
     EXPECT_TRUE(full.ends_with("\r\n\r\nErr")) << full;
 
     // Date header should be present and of RFC7231 length (29 chars after 'Date: ')
-    auto datePos = full.find("Date: ");
+    auto datePos = full.find(MakeHttp1HeaderLine(http::Date, "", false));
     EXPECT_NE(datePos, std::string_view::npos) << full;
     auto dateEnd = full.find(http::CRLF, datePos);
     EXPECT_NE(dateEnd, std::string_view::npos) << full;

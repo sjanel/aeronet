@@ -2485,6 +2485,12 @@ WebSocket handlers run on the same reactor thread as HTTP handlers. The `WebSock
 | Server push | ✗ | Disabled (rarely used by modern clients) |
 | PRIORITY frames | ✔ | Optional, configurable |
 
+Additional notes
+
+- Static file responses created via `HttpResponse::file(...)` (used by `StaticFileHandler`) are serialized as HTTP/2 DATA frames by reading the file in bounded chunks.
+- The implementation is flow-control aware: it sends up to the available connection/stream window and continues after receiving `WINDOW_UPDATE` frames (no full in-memory file load).
+- Tests: see `tests/http-tls-io_test.cpp` (`HttpRangeStatic_H2Tls.LargeFileStreaming_H2Tls`).
+
 ### Enabling HTTP/2
 
 HTTP/2 support is controlled at build time via CMake:
