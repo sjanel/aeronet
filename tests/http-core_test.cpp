@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -114,11 +115,11 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("201 Created"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 201 Created"));
   ASSERT_TRUE(resp.contains("X-One: 1"));
   ASSERT_TRUE(resp.contains("X-Two: two"));
-  ASSERT_TRUE(resp.contains("Content-Length: 1"));  // auto generated
-  ASSERT_TRUE(resp.contains("Connection: close"));  // auto generated (keep-alive or close)
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "1")));   // auto generated
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, "close")));  // auto generated (keep-alive or close)
 }
 
 TEST(HttpHeadersCustom, LocationHeaderAllowed) {
@@ -132,8 +133,8 @@ TEST(HttpHeadersCustom, LocationHeaderAllowed) {
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("302 Found"));
-  ASSERT_TRUE(resp.contains("Location: /new"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 302 Found"));
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, "/new")));
 }
 
 TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
@@ -221,7 +222,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersCompletedAfterDeadline) {
   std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{300});
   ASSERT_FALSE(resp.empty());
   EXPECT_TRUE(resp.contains("HTTP/1.1 408")) << resp;
-  EXPECT_TRUE(resp.contains("Connection: close")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, "close"))) << resp;
 }
 
 TEST(HttpHeaderTimeout, Emits408WhenHeadersNeverComplete) {
@@ -239,7 +240,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersNeverComplete) {
   std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{300});
   ASSERT_FALSE(resp.empty());
   EXPECT_TRUE(resp.contains("HTTP/1.1 408")) << resp;
-  EXPECT_TRUE(resp.contains("Connection: close")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, "close"))) << resp;
 }
 
 TEST(HttpBasic, SimpleGet) {
@@ -276,13 +277,13 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
   test::sendAll(fd, req1);
   std::string resp1 = test::recvWithTimeout(fd);
   EXPECT_TRUE(resp1.contains("ECHO/one"));
-  EXPECT_FALSE(resp1.contains("Connection: close"));
+  EXPECT_FALSE(resp1.contains(MakeHttp1HeaderLine(http::Connection, "close")));
 
   std::string req2 = "GET /two HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";  // implicit keep-alive
   test::sendAll(fd, req2);
   std::string resp2 = test::recvWithTimeout(fd);
   EXPECT_TRUE(resp2.contains("ECHO/two"));
-  EXPECT_FALSE(resp2.contains("Connection: close"));
+  EXPECT_FALSE(resp2.contains(MakeHttp1HeaderLine(http::Connection, "close")));
 }
 
 namespace {
@@ -314,7 +315,7 @@ TEST(HttpDate, PresentAndFormat) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   auto resp = rawGet(port);
   ASSERT_FALSE(resp.empty());
-  auto date = headerValue(resp, "Date");
+  auto date = headerValue(resp, http::Date);
   ASSERT_EQ(29U, date.size()) << date;
   std::regex re("[A-Z][a-z]{2}, [0-9]{2} [A-Z][a-z]{2} [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT");
   ASSERT_TRUE(std::regex_match(date, re)) << date;
@@ -337,12 +338,12 @@ TEST(HttpDate, StableWithinSameSecond) {
   std::string anchorDate;
   std::string anchorHMS;
   for (int i = 0; i < 50; ++i) {  // up to ~500ms budget
-    anchorDate = headerValue(rawGet(port), "Date");
+    anchorDate = headerValue(rawGet(port), http::Date);
     anchorHMS = extractHMS(anchorDate);
     if (!anchorHMS.empty()) {
       // Sleep a short time and confirm we are still in same second; if not, loop and pick new anchor.
       std::this_thread::sleep_for(20ms);
-      auto confirm = headerValue(rawGet(port), "Date");
+      auto confirm = headerValue(rawGet(port), http::Date);
       if (extractHMS(confirm) == anchorHMS) {
         anchorDate = confirm;  // use the confirmed value
         break;
@@ -353,8 +354,8 @@ TEST(HttpDate, StableWithinSameSecond) {
 
   // Take two additional samples and ensure at least two out of the three share the same second.
   // (If we landed exactly on a boundary the anchor may differ, but then the other two should match.)
-  auto s2 = headerValue(rawGet(port), "Date");
-  auto s3 = headerValue(rawGet(port), "Date");
+  auto s2 = headerValue(rawGet(port), http::Date);
+  auto s3 = headerValue(rawGet(port), http::Date);
   std::string h1 = extractHMS(anchorDate);
   std::string h2 = extractHMS(s2);
   std::string h3 = extractHMS(s3);
@@ -374,13 +375,13 @@ TEST(HttpDate, ChangesAcrossSecondBoundary) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   auto first = rawGet(port);
-  auto d1 = headerValue(first, "Date");
+  auto d1 = headerValue(first, http::Date);
   ASSERT_EQ(29U, d1.size());
   // spin until date changes (max ~1500ms)
   std::string d2;
   for (int i = 0; i < 150; ++i) {
     std::this_thread::sleep_for(10ms);
-    d2 = headerValue(rawGet(port), "Date");
+    d2 = headerValue(rawGet(port), http::Date);
     if (d2 != d1 && !d2.empty()) {
       break;
     }
@@ -443,11 +444,11 @@ TEST(HttpKeepAlive10, OptInWithHeader) {
   std::string_view req = "GET /h HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req);
   std::string first = test::recvWithTimeout(fd);
-  ASSERT_TRUE(first.contains("Connection: keep-alive"));
+  ASSERT_TRUE(first.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
   std::string_view req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req2);
   std::string second = test::recvWithTimeout(fd);
-  ASSERT_TRUE(second.contains("Connection: keep-alive"));
+  ASSERT_TRUE(second.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
 }
 
 namespace {

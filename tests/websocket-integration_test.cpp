@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -204,7 +206,8 @@ TEST_F(WebSocketTest, UpgradeSuccessful) {
 
   // Verify 101 response
   EXPECT_TRUE(response.contains("HTTP/1.1 101")) << "Response: " << response;
-  EXPECT_TRUE(response.contains("Upgrade: websocket")) << "Response: " << response;
+  EXPECT_TRUE(response.contains(MakeHttp1HeaderLine(http::Upgrade, websocket::UpgradeValue)))
+      << "Response: " << response;
   EXPECT_TRUE(response.contains("Sec-WebSocket-Accept:")) << "Response: " << response;
 }
 

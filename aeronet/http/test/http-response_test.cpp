@@ -446,8 +446,8 @@ TEST_F(HttpResponseTest, ConstructorWithBody) {
 
   const auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
-  EXPECT_TRUE(full.contains("Content-Type: text/plain\r\n"));
-  EXPECT_TRUE(full.contains("Content-Length: 13\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "13")));
   EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
 }
 
@@ -460,8 +460,8 @@ TEST_F(HttpResponseTest, ConstructorWithBodyContentTypeOnly) {
 
   const auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
-  EXPECT_TRUE(full.contains("Content-Type: text/my-text\r\n"));
-  EXPECT_TRUE(full.contains("Content-Length: 13\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/my-text")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "13")));
   EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
 }
 
@@ -544,14 +544,14 @@ TEST_F(HttpResponseTest, LoopOnTrailers) {
 
 TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
   HttpResponse resp(http::StatusCodeOK, "OK");
-  resp.addHeader("Content-Type", "text/plain").addHeader("X-A", "B").body("Hello");
+  resp.addHeader(http::ContentType, "text/plain").addHeader("X-A", "B").body("Hello");
   auto full = concatenated(std::move(resp));
   ASSERT_GE(full.size(), 16U);
   auto prefix = full.substr(0, 15);
   EXPECT_EQ(prefix.substr(0, 8), "HTTP/1.1") << "Raw prefix: '" << std::string(prefix) << "'";
   EXPECT_EQ(prefix.substr(8, 1), " ");
   EXPECT_EQ(prefix.substr(9, 3), "200");
-  EXPECT_TRUE(full.contains("Content-Type: text/plain\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
   EXPECT_TRUE(full.contains("X-A: B\r\n"));
   auto posBody = full.find("Hello");
   ASSERT_NE(posBody, std::string_view::npos);
@@ -937,8 +937,7 @@ TEST_F(HttpResponseTest, BodyAssignFromInternalReasonTriggersReallocSafe) {
   resp = HttpResponse(http::StatusCodeOK, "INTERNAL-REASON");
   src = resp.reason();
   // Validate Content-Length header matches and body placed at tail.
-  std::string clNeedle = std::string("Content-Length: ") + std::to_string(src.size()) + "\r\n";
-  EXPECT_TRUE(full.contains(clNeedle)) << full;
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(src.size())))) << full;
   EXPECT_TRUE(full.ends_with(src)) << full;
 }
 
@@ -1168,7 +1167,7 @@ TEST_F(HttpResponseTest, AppendHeaderValueKeepsBodyIntact) {
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.contains("X-Trace: alpha, beta\r\n")) << full;
   EXPECT_TRUE(full.ends_with("payload")) << full;
-  EXPECT_TRUE(full.contains("Content-Length: 7\r\n")) << full;
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "7"))) << full;
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
@@ -1409,6 +1408,11 @@ TEST_F(HttpResponseTest, LargeHeaderCountStress) {
   // Count custom headers (exclude Date/Connection)
   auto pos = full.find(http::CRLF) + 2;  // after status line CRLF
   int userHeaders = 0;
+  std::string datePrefix(http::Date);
+  datePrefix += ": ";
+
+  std::string connectionPrefix(http::Connection);
+  connectionPrefix += ": ";
   while (pos < full.size()) {
     auto lineEnd = full.find(http::CRLF, pos);
     ASSERT_NE(lineEnd, std::string_view::npos);
@@ -1417,7 +1421,7 @@ TEST_F(HttpResponseTest, LargeHeaderCountStress) {
       break;
     }
     auto line = full.substr(pos, lineEnd - pos);
-    if (!line.starts_with("Date: ") && !line.starts_with("Connection: ")) {
+    if (!line.starts_with(datePrefix) && !line.starts_with(connectionPrefix)) {
       ++userHeaders;
     }
     pos = lineEnd + 2;
@@ -2038,9 +2042,12 @@ TEST(HttpResponseAppendHeaderValue, CaseInsensitiveKeyMatch) {
 
 TEST(HttpResponseAppendHeaderValue, VaryMergesAcceptEncoding) {
   HttpResponse resp;
-  resp.header("Vary", "Origin");
-  resp.appendHeaderValue("Vary", "Accept-Encoding");
-  EXPECT_EQ(resp.headerValueOrEmpty("Vary"), "Origin, Accept-Encoding");
+  resp.header(http::Vary, http::Origin);
+  resp.appendHeaderValue(http::Vary, http::AcceptEncoding);
+  std::string expectedVary(http::Origin);
+  expectedVary += ", ";
+  expectedVary += http::AcceptEncoding;
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), expectedVary);
 }
 
 }  // namespace aeronet

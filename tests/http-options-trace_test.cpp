@@ -221,7 +221,7 @@ TEST_F(HttpCorsIntegration, StreamingResponseCarriesCorsHeaders) {
 TEST_F(HttpCorsIntegration, StreamingVaryHeaderAppendsOrigin) {
   ts.router().setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.header("Vary", "Accept-Encoding");
+    writer.header(http::Vary, http::AcceptEncoding);
     writer.contentType("text/plain");
     writer.writeBody("data");
     writer.end();
@@ -495,7 +495,7 @@ TEST(HttpCorsDetailed, VaryIncludesOriginWhenMirroring) {
     ts.router() = Router{routerCfg};
     ts.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
       HttpResponse resp(http::StatusCodeOK);
-      resp.header(http::Vary, "Accept-Encoding");
+      resp.header(http::Vary, http::AcceptEncoding);
       return resp;
     });
 
@@ -524,7 +524,7 @@ TEST(HttpCorsDetailed, VaryNoDuplicateWhenOriginAlreadyPresent) {
   ts.router() = Router{routerCfg};
   ts.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
     HttpResponse resp(http::StatusCodeOK);
-    resp.addHeader(http::Vary, "Origin");
+    resp.addHeader(http::Vary, http::Origin);
     return resp;
   });
 
@@ -540,7 +540,9 @@ TEST(HttpCorsDetailed, VaryNoDuplicateWhenOriginAlreadyPresent) {
   auto varyIt = parsed.headers.find(http::Vary);
   ASSERT_NE(varyIt, parsed.headers.end());
   EXPECT_TRUE(varyIt->second.contains(http::Origin));
-  EXPECT_FALSE(varyIt->second.contains(", Origin"));
+  std::string expectedEndOrigin = ", ";
+  expectedEndOrigin += http::Origin;
+  EXPECT_FALSE(varyIt->second.contains(expectedEndOrigin));
 }
 
 TEST(HttpCorsDetailed, MultipleAllowedOriginsMirrorCorrectOne) {

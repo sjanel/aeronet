@@ -86,13 +86,16 @@ TEST_F(CorsPolicyTest, ApplyAllowListMirrorsOriginAndAddsCredentials) {
   const auto status = parse(BuildRawHttp11(http::GET, "/items", "Origin: https://api.example\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  response.addHeader(http::Vary, "Accept-Encoding");
+  response.addHeader(http::Vary, http::AcceptEncoding);
 
   const auto applyStatus = policy.applyToResponse(request, response);
   EXPECT_EQ(applyStatus, CorsPolicy::ApplyStatus::Applied);
   EXPECT_EQ(response.headerValueOrEmpty(http::AccessControlAllowOrigin), "https://api.example");
   EXPECT_EQ(response.headerValueOrEmpty(http::AccessControlAllowCredentials), "true");
-  EXPECT_EQ(response.headerValueOrEmpty(http::Vary), "Accept-Encoding, Origin");
+  std::string expectedVary(http::AcceptEncoding);
+  expectedVary += ", ";
+  expectedVary += http::Origin;
+  EXPECT_EQ(response.headerValueOrEmpty(http::Vary), expectedVary);
 }
 
 TEST_F(CorsPolicyTest, PreflightWithEmptyAccessControlRequestHeaders) {
@@ -257,12 +260,15 @@ TEST_F(CorsPolicyTest, ExposeHeadersAndVaryMerging) {
   const auto status = parse(BuildRawHttp11(http::GET, "/expose", "Origin: https://expose.example\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  response.addHeader(http::Vary, "Accept-Encoding");
+  response.addHeader(http::Vary, http::AcceptEncoding);
 
   const auto applyStatus = policy.applyToResponse(request, response);
   EXPECT_EQ(applyStatus, CorsPolicy::ApplyStatus::Applied);
   EXPECT_EQ(response.headerValueOrEmpty(http::AccessControlExposeHeaders), "X-Exposed");
-  EXPECT_EQ(response.headerValueOrEmpty(http::Vary), "Accept-Encoding, Origin");
+  std::string expectedVary(http::AcceptEncoding);
+  expectedVary += ", ";
+  expectedVary += http::Origin;
+  EXPECT_EQ(response.headerValueOrEmpty(http::Vary), expectedVary);
 }
 
 TEST_F(CorsPolicyTest, WildcardOriginWithCredentialsMirrorsOrigin) {

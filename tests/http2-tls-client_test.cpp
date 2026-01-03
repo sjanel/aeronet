@@ -1,10 +1,18 @@
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <string>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/test_server_http2_tls_fixture.hpp"
 #include "aeronet/test_tls_http2_client.hpp"
+
+#ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/raw-chars.hpp"
+#include "aeronet/zlib-decoder.hpp"
+#include "aeronet/zlib-encoder.hpp"
+#endif
 
 namespace aeronet::test {
 namespace {
@@ -71,6 +79,72 @@ TEST(TlsHttp2Client, PostRequestWithBody) {
   EXPECT_EQ(receivedBody, "Hello, HTTP/2 POST!");
   EXPECT_EQ(receivedContentType, "text/plain");
 }
+
+#ifdef AERONET_ENABLE_ZLIB
+TEST(TlsHttp2Client, AutomaticResponseCompressionRespectsConfig) {
+  TlsHttp2TestServer ts([](HttpServerConfig& cfg) {
+    cfg.compression.minBytes = 1;
+    cfg.compression.addVaryHeader = true;
+  });
+
+  const std::string plainBody = "Hello, compressed HTTP/2!";
+  ts.setDefault([&](const HttpRequest& /*req*/) { return HttpResponse().status(200).body(plainBody); });
+
+  TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/gzip", {{"accept-encoding", "gzip"}});
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.header("content-encoding"), "gzip");
+  EXPECT_EQ(response.header("vary"), http::AcceptEncoding);
+
+  RawChars out;
+  ZlibDecoder decoder(/*isGzip=*/true);
+  ASSERT_TRUE(decoder.decompressFull(response.body, std::numeric_limits<std::size_t>::max(), 32UL * 1024UL, out));
+  EXPECT_EQ(std::string_view(out), plainBody);
+}
+
+TEST(TlsHttp2Client, AutomaticRequestDecompressionDeliversCanonicalBody) {
+  TlsHttp2TestServer ts;
+
+  std::string receivedBody;
+  std::string receivedContentEncoding;
+  std::string receivedOriginalEncoding;
+  std::string receivedOriginalEncodedLen;
+  std::string receivedContentLen;
+
+  ts.setDefault([&](const HttpRequest& req) {
+    receivedBody = std::string(req.body());
+    receivedContentEncoding = std::string(req.headerValueOrEmpty("content-encoding"));
+    receivedOriginalEncoding = std::string(req.headerValueOrEmpty(http::OriginalEncodingHeaderName));
+    receivedOriginalEncodedLen = std::string(req.headerValueOrEmpty(http::OriginalEncodedLengthHeaderName));
+    receivedContentLen = std::string(req.headerValueOrEmpty("content-length"));
+    return HttpResponse().status(200).body("ok");
+  });
+
+  const std::string plain = "Hello request decompression over h2";
+
+  CompressionConfig compressionCfg;
+  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, compressionCfg);
+  RawChars compressed;
+  encoder.encodeFull(0, plain, compressed);
+  const std::string compressedBody(compressed.data(), compressed.size());
+
+  TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response =
+      client.post("/submit", compressedBody, "application/octet-stream",
+                  {{"content-encoding", "gzip"}, {"content-length", std::to_string(compressedBody.size())}});
+  EXPECT_EQ(response.statusCode, 200);
+
+  EXPECT_EQ(receivedBody, plain);
+  EXPECT_TRUE(receivedContentEncoding.empty());
+  EXPECT_EQ(receivedOriginalEncoding, "gzip");
+  EXPECT_EQ(receivedOriginalEncodedLen, std::to_string(compressedBody.size()));
+  EXPECT_EQ(receivedContentLen, std::to_string(plain.size()));
+}
+#endif
 
 TEST(TlsHttp2Client, CustomHeaders) {
   TlsHttp2TestServer ts;

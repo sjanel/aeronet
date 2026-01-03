@@ -16,6 +16,10 @@
 
 namespace aeronet {
 
+namespace internal {
+class HttpCodec;
+}  // namespace internal
+
 struct ConnectionState;
 
 namespace http2 {
@@ -202,7 +206,7 @@ class HttpRequest {
   //   * Only populated for chunked requests; empty for fixed Content-Length or bodyless requests.
   //   * Same duplicate-header merge policy as regular headers (comma-join, override, etc.).
   //   * Values are string_view slices into the connection buffer; valid only during the handler call.
-  //   * Forbidden trailer fields (Transfer-Encoding, Content-Length, Host, etc.) are rejected with 400.
+  //   * Forbidden trailer fields (transfer-encoding, content-length, host, etc.) are rejected with 400.
   //   * Trailers count toward the maxHeadersBytes limit (combined with initial headers).
   [[nodiscard]] const auto& trailers() const noexcept { return _trailers; }
 
@@ -260,6 +264,7 @@ class HttpRequest {
 #ifdef AERONET_ENABLE_HTTP2
   friend class http2::Http2ProtocolHandler;
 #endif
+  friend class internal::HttpCodec;
 
   static constexpr http::StatusCode kStatusNeedMoreData = static_cast<http::StatusCode>(0);
 
