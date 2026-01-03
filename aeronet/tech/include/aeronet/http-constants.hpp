@@ -33,6 +33,7 @@ inline constexpr std::string_view TRACE = "TRACE";
 inline constexpr std::string_view PATCH = "PATCH";
 
 // Standard Header Field Names (as they typically appear in canonical form)
+// TODO: rename all header names in lowercase to comply with HTTP/2 header field name rules (RFC 9113)
 inline constexpr std::string_view Connection = "Connection";
 inline constexpr std::string_view TransferEncoding = "Transfer-Encoding";
 inline constexpr std::string_view ContentLength = "Content-Length";

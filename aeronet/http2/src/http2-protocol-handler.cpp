@@ -1,5 +1,6 @@
 #include "aeronet/http2-protocol-handler.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <coroutine>
@@ -9,10 +10,13 @@
 #include <exception>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "aeronet/connection-state.hpp"
+#include "aeronet/file.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
@@ -35,7 +39,7 @@ namespace aeronet::http2 {
 // ============================
 
 Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& router)
-    : _connection(config, true), _pRouter(&router) {
+    : _connection(config, true), _pRouter(&router), _fileSendBuffer(64UL * 1024UL) {
   setupCallbacks();
 }
 
@@ -61,6 +65,15 @@ void Http2ProtocolHandler::setupCallbacks() {
 ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::byte> data,
                                                          [[maybe_unused]] ::aeronet::ConnectionState& state) {
   auto result = _connection.processInput(data);
+
+  // If the client granted more flow control (WINDOW_UPDATE), try to continue any pending file sends.
+  // Only do this when we don't already have pending output to avoid unbounded buffering.
+  if (!_connection.hasPendingOutput()) {
+    flushPendingFileSends();
+    if (result.action == Http2Connection::ProcessResult::Action::Continue && _connection.hasPendingOutput()) {
+      result.action = Http2Connection::ProcessResult::Action::OutputReady;
+    }
+  }
 
   ProtocolProcessResult output;
   output.bytesConsumed = result.bytesConsumed;
@@ -191,11 +204,123 @@ void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std
   }
 }
 
-void Http2ProtocolHandler::onStreamClosed(uint32_t streamId) { _streamRequests.erase(streamId); }
+void Http2ProtocolHandler::onStreamClosed(uint32_t streamId) {
+  _streamRequests.erase(streamId);
+  _pendingFileSends.erase(streamId);
+}
 
 void Http2ProtocolHandler::onStreamReset(uint32_t streamId, ErrorCode errorCode) {
   log::debug("HTTP/2 stream {} reset with error: {}", streamId, ErrorCodeName(errorCode));
   _streamRequests.erase(streamId);
+  _pendingFileSends.erase(streamId);
+}
+
+std::vector<std::pair<std::string, std::string>> Http2ProtocolHandler::copyTrailers(
+    const HttpResponse::HeadersView& trailers) {
+  std::vector<std::pair<std::string, std::string>> out;
+  for (const auto [name, value] : trailers) {
+    out.emplace_back(std::string(name), std::string(value));
+  }
+  return out;
+}
+
+ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, PendingFileSend& pending,
+                                                    bool endStreamAfterBody) {
+  const uint32_t peerMaxFrame = _connection.peerSettings().maxFrameSize;
+
+  while (pending.remaining != 0) {
+    Http2Stream* stream = _connection.getStream(streamId);
+    if (stream == nullptr) [[unlikely]] {
+      return ErrorCode::StreamClosed;
+    }
+
+    const int32_t streamWin = stream->sendWindow();
+    const int32_t connWin = _connection.connectionSendWindow();
+    if (streamWin <= 0 || connWin <= 0) {
+      return ErrorCode::NoError;  // wait for WINDOW_UPDATE
+    }
+
+    const auto windowLimit = static_cast<std::size_t>(std::min(streamWin, connWin));
+    const std::size_t chunkSize = std::min({pending.remaining, windowLimit, static_cast<std::size_t>(peerMaxFrame),
+                                            static_cast<std::size_t>(_fileSendBuffer.capacity())});
+    if (chunkSize == 0) {
+      return ErrorCode::NoError;
+    }
+
+    _fileSendBuffer.clear();
+    _fileSendBuffer.ensureAvailableCapacity(chunkSize);
+
+    const std::size_t readCount = pending.file.readAt(
+        std::span<std::byte>(reinterpret_cast<std::byte*>(_fileSendBuffer.data()), chunkSize), pending.offset);
+    if (readCount == 0) [[unlikely]] {
+      log::error("HTTP/2 file payload short read at offset {}", pending.offset);
+      return ErrorCode::InternalError;
+    }
+
+    _fileSendBuffer.setSize(static_cast<RawChars::size_type>(readCount));
+    const bool lastBodyChunk = (readCount >= pending.remaining);
+    const bool endStream = lastBodyChunk && endStreamAfterBody;
+
+    const auto bytes = std::span<const std::byte>(reinterpret_cast<const std::byte*>(_fileSendBuffer.data()),
+                                                  static_cast<std::size_t>(_fileSendBuffer.size()));
+    const ErrorCode err = _connection.sendData(streamId, bytes, endStream);
+    if (err != ErrorCode::NoError) {
+      return err;
+    }
+
+    pending.offset += readCount;
+    pending.remaining -= readCount;
+  }
+
+  return ErrorCode::NoError;
+}
+
+void Http2ProtocolHandler::flushPendingFileSends() {
+  if (_pendingFileSends.empty()) {
+    return;
+  }
+
+  for (auto it = _pendingFileSends.begin(); it != _pendingFileSends.end();) {
+    const uint32_t streamId = it->first;
+    PendingFileSend& pending = it->second;
+
+    // Stream might have been closed/reset without callback ordering guarantees.
+    if (_connection.getStream(streamId) == nullptr) {
+      it = _pendingFileSends.erase(it);
+      continue;
+    }
+
+    const bool endStreamAfterBody = !pending.hasTrailers;
+    const ErrorCode err = sendPendingFileBody(streamId, pending, endStreamAfterBody);
+    if (err != ErrorCode::NoError) [[unlikely]] {
+      log::error("HTTP/2 failed to continue file payload on stream {}: {}", streamId, ErrorCodeName(err));
+      _connection.sendRstStream(streamId, err);
+      it = _pendingFileSends.erase(it);
+      continue;
+    }
+
+    if (pending.remaining != 0) {
+      ++it;
+      continue;
+    }
+
+    if (pending.hasTrailers) {
+      const auto sendErr = _connection.sendHeaders(
+          streamId,
+          [&pending](const HeaderCallback& emit) {
+            for (const auto& [name, value] : pending.trailers) {
+              emit(name, value);
+            }
+          },
+          true);
+      if (sendErr != ErrorCode::NoError) {
+        log::error("HTTP/2 failed to send trailers on stream {}: {}", streamId, ErrorCodeName(sendErr));
+        _connection.sendRstStream(streamId, sendErr);
+      }
+    }
+
+    it = _pendingFileSends.erase(it);
+  }
 }
 
 void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
@@ -287,10 +412,11 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
 }
 
 ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse response) {
-  const auto body = response.body();
-  const bool hasBody = !body.empty();
-  const auto trailers = response.trailers();
-  const bool hasTrailers = trailers.begin() != trailers.end();
+  const auto trailersView = response.trailers();
+  const bool hasTrailers = trailersView.begin() != trailersView.end();
+  const bool hasFile = response.hasFile();
+  const std::string_view bodyView = hasFile ? std::string_view{} : response.body();
+  const bool hasBody = hasFile ? (response.fileLength() != 0) : !bodyView.empty();
 
   // Determine when to set END_STREAM:
   // - On HEADERS if no body and no trailers
@@ -317,21 +443,63 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
     return err;
   }
 
-  // Send DATA frame(s) with body if present
-  // Note: sendData() already handles splitting into multiple frames based on peer's maxFrameSize
+  // Send DATA frame(s) with body if present.
+  // For file payloads, stream the file content in chunks and respect flow control.
   if (hasBody) {
-    err = _connection.sendData(streamId, std::as_bytes(std::span<const char>(body)), endStreamOnData);
-    if (err != ErrorCode::NoError) {
-      return err;
+    if (hasFile) {
+      const File* pFile = response.file();
+      if (pFile == nullptr) [[unlikely]] {
+        return ErrorCode::InternalError;
+      }
+
+      PendingFileSend pending;
+      try {
+        pending.file = pFile->duplicate();
+      } catch (const std::exception& ex) {
+        log::error("HTTP/2 failed to duplicate file payload: {}", ex.what());
+        return ErrorCode::InternalError;
+      }
+
+      pending.offset = response.fileOffset();
+      pending.remaining = response.fileLength();
+      pending.hasTrailers = hasTrailers;
+      if (hasTrailers) {
+        pending.trailers = copyTrailers(trailersView);
+      }
+
+      err = sendPendingFileBody(streamId, pending, endStreamOnData);
+      if (err != ErrorCode::NoError) {
+        return err;
+      }
+
+      if (pending.remaining != 0) {
+        _pendingFileSends[streamId] = std::move(pending);
+      } else if (hasTrailers) {
+        err = _connection.sendHeaders(
+            streamId,
+            [&pending](const HeaderCallback& emit) {
+              for (const auto& [name, value] : pending.trailers) {
+                emit(name, value);
+              }
+            },
+            true);
+      }
+    } else {
+      // Note: sendData() already handles splitting into multiple frames based on peer's maxFrameSize
+      const auto bytes = std::as_bytes(std::span<const char>(bodyView.data(), bodyView.size()));
+      err = _connection.sendData(streamId, bytes, endStreamOnData);
+      if (err != ErrorCode::NoError) {
+        return err;
+      }
     }
   }
 
   // Send trailers as a HEADERS frame with END_STREAM (RFC 9113 §8.1)
-  if (hasTrailers) {
+  if (hasTrailers && !hasFile) {
     err = _connection.sendHeaders(
         streamId,
-        [&trailers](const HeaderCallback& emit) {
-          for (const auto [name, value] : trailers) {
+        [&trailersView](const HeaderCallback& emit) {
+          for (const auto [name, value] : trailersView) {
             emit(name, value);
           }
         },

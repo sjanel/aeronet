@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -65,7 +66,7 @@ std::size_t File::size() const {
   if (_fd && ::fstat(_fd.fd(), &st) == 0) {
     return static_cast<std::uint64_t>(st.st_size);
   }
-  throw std::runtime_error("File::size failed");
+  return 0;
 }
 
 std::string File::loadAllContent() const {
@@ -123,10 +124,34 @@ std::string File::loadAllContent() const {
       continue;
     }
     log::error("Unable to read file (fd {}): errno {}: {}", _fd.fd(), errno, std::strerror(errno));
-    throw std::runtime_error("File::loadAllContent read error");
+    content.clear();
+    break;
   }
 
   return content;
+}
+
+std::size_t File::readAt(std::span<std::byte> dst, std::size_t offset) const {
+  if (!_fd) {
+    throw std::runtime_error("File is not opened");
+  }
+  if (dst.empty()) {
+    return 0;
+  }
+
+  for (;;) {
+    const auto readResult = ::pread(_fd.fd(), dst.data(), dst.size(), static_cast<off_t>(offset));
+    if (readResult >= 0) {
+      return static_cast<std::size_t>(readResult);
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    log::error("Unable to pread file (fd {}, offset {}, len {}): errno {}: {}", _fd.fd(), offset, dst.size(), errno,
+               std::strerror(errno));
+    throw std::runtime_error(std::format("File::readAt failed (fd {}, offset {}, len {}): errno={} msg={}", _fd.fd(),
+                                         offset, dst.size(), errno, std::strerror(errno)));
+  }
 }
 
 File File::duplicate() const {

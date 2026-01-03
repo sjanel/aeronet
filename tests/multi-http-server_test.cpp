@@ -19,6 +19,7 @@
 #include <utility>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -37,20 +38,6 @@
 
 using namespace aeronet;
 using namespace std::chrono_literals;
-
-namespace {
-
-std::string SimpleGetRequest(std::string_view target, std::string_view connectionHeader = "close") {
-  std::string req;
-  req.reserve(128);
-  req.append("GET ").append(target).append(" HTTP/1.1").append(http::CRLF);
-  req.append("Host: localhost").append(http::CRLF);
-  req.append("Connection: ").append(connectionHeader).append(http::CRLF);
-  req.append("Content-Length: 0").append(http::DoubleCRLF);
-  return req;
-}
-
-}  // namespace
 
 TEST(MultiHttpServer, ConstructorChecks) {
   EXPECT_NO_THROW(MultiHttpServer(HttpServerConfig{}));
@@ -217,18 +204,20 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
   test::ClientConnection cnx(port);
   const int fd = cnx.fd();
 
-  test::sendAll(fd, SimpleGetRequest("/", "keep-alive"));
+  const auto connectionClosedHeaderRaw = MakeHttp1HeaderLine(http::Connection, "close");
+
+  test::sendAll(fd, BuildRawHttp11("GET", "/", MakeHttp1HeaderLine(http::Connection, "keep-alive")));
   const auto initial = test::recvWithTimeout(fd);
-  ASSERT_FALSE(initial.contains("Connection: close"));
+  ASSERT_FALSE(initial.contains(connectionClosedHeaderRaw));
 
   multi.beginDrain(200ms);
   EXPECT_TRUE(multi.isDraining());
 
   // During drain, listener remains open to allow health probe connections
   // Existing keep-alive connections will receive Connection: close on next response
-  test::sendAll(fd, SimpleGetRequest("/two", "keep-alive"));
+  test::sendAll(fd, BuildRawHttp11("GET", "/two", MakeHttp1HeaderLine(http::Connection, "keep-alive")));
   const auto drained = test::recvWithTimeout(fd);
-  EXPECT_TRUE(drained.contains("Connection: close"));
+  EXPECT_TRUE(drained.contains(connectionClosedHeaderRaw));
 
   EXPECT_TRUE(test::WaitForPeerClose(fd, 500ms));
 
