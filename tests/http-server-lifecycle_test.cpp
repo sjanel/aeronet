@@ -14,6 +14,8 @@
 #include <utility>
 
 #include "aeronet/builtin-probes-config.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -279,7 +281,7 @@ TEST(HttpDrain, StopsNewConnections) {
   // Baseline request to ensure server responds prior to draining.
   {
     test::ClientConnection cnx(port);
-    test::sendAll(cnx.fd(), SimpleGetRequest("/pre", "keep-alive"));
+    test::sendAll(cnx.fd(), SimpleGetRequest("/pre", http::keepalive));
     const auto resp = test::recvWithTimeout(cnx.fd());
     EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
   }
@@ -303,15 +305,15 @@ TEST(HttpDrain, KeepAliveConnectionsCloseAfterDrain) {
   test::ClientConnection cnx(port);
   const int fd = cnx.fd();
 
-  test::sendAll(fd, SimpleGetRequest("/one", "keep-alive"));
+  test::sendAll(fd, SimpleGetRequest("/one", http::keepalive));
   auto firstResponse = test::recvWithTimeout(fd);
-  ASSERT_FALSE(firstResponse.contains("Connection: close"));
+  ASSERT_FALSE(firstResponse.contains(MakeHttp1HeaderLine(http::Connection, http::close)));
 
   ts.server.beginDrain();
 
-  test::sendAll(fd, SimpleGetRequest("/two", "keep-alive"));
+  test::sendAll(fd, SimpleGetRequest("/two", http::keepalive));
   auto drainedResponse = test::recvWithTimeout(fd);
-  EXPECT_TRUE(drainedResponse.contains("Connection: close"));
+  EXPECT_TRUE(drainedResponse.contains(MakeHttp1HeaderLine(http::Connection, http::close)));
 
   EXPECT_TRUE(test::WaitForPeerClose(fd, 500ms));
 
@@ -430,7 +432,7 @@ TEST(HttpProbes, ReadinessProbleShouldReturn503WhenDrainingIfSomeConnectionsAliv
   // Launch a keep-alive connection to observe readiness probe change during drain
   test::ClientConnection cnx(ts.port());
   const int fd = cnx.fd();
-  test::sendAll(fd, SimpleGetRequest("/some-path", "keep-alive"));
+  test::sendAll(fd, SimpleGetRequest("/some-path", http::keepalive));
 
   std::this_thread::sleep_for(20ms);  // ensure request is processed
 

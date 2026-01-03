@@ -66,8 +66,8 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorWithEmptyBody) {
   auto data = BuildSimpleError(http::StatusCode{404}, {}, "");
   std::string_view full(data);
 
-  EXPECT_TRUE(full.contains("Content-Length: 0\r\n")) << full;
-  EXPECT_TRUE(full.ends_with("\r\n\r\n")) << full;
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "0"))) << full;
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF)) << full;
 }
 
 TEST(HttpErrorBuildTest, BuildSimpleErrorWithLargeBody) {
@@ -76,6 +76,6 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorWithLargeBody) {
   auto data = BuildSimpleError(http::StatusCode{413}, {}, largeBody);
   std::string_view full(data);
 
-  EXPECT_TRUE(full.contains("Content-Length: 1024\r\n")) << full;
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "1024"))) << full;
   EXPECT_TRUE(full.ends_with("\r\n\r\n" + largeBody)) << full;
 }

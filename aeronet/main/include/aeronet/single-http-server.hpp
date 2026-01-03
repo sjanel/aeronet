@@ -18,6 +18,7 @@
 #include "aeronet/encoder.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/headers-view-map.hpp"
+#include "aeronet/http-codec.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
@@ -554,17 +555,7 @@ class SingleHttpServer {
 
   internal::PendingUpdates _updates;
 
-  struct CompressionState {
-    CompressionState() noexcept = default;
-    explicit CompressionState(const CompressionConfig& cfg) : selector(cfg) {}
-
-    // Pre-allocated encoders (one per supported format), -1 to remove identity which is last (no encoding).
-    // Index corresponds to static_cast<size_t>(Encoding).
-    std::array<std::unique_ptr<Encoder>, kNbContentEncodings - 1> encoders;
-    EncodingSelector selector;
-  };
-
-  CompressionState _compression;
+  internal::ResponseCompressionState _compression;
 
   HttpServerConfig _config;
 
@@ -580,7 +571,8 @@ class SingleHttpServer {
 
   internal::ConnectionStorage _connections;
 
-  RawChars _tmpBuffer;  // can be used for any kind of temporary buffer
+  RawChars _tmpBuffer;    // can be used for any kind of temporary buffer
+  RawChars _tmpTrailers;  // scratch buffer to preserve request trailers during decompression
 
   // Telemetry context - one per SingleHttpServer instance (no global singletons)
   tracing::TelemetryContext _telemetry;

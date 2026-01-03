@@ -16,6 +16,7 @@
 #include "aeronet/features.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
@@ -151,8 +152,8 @@ TEST(HttpStreaming, SendFileFixedLengthPlain) {
   std::string resp = BlockingFetch(port, "GET", "/file");
 
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
-  ASSERT_FALSE(resp.contains("Transfer-Encoding: chunked"));
-  ASSERT_TRUE(resp.contains("Content-Length: " + std::to_string(kPayload.size())));
+  ASSERT_FALSE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(kPayload.size()))));
 
   auto headerEnd = resp.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, headerEnd);
@@ -178,8 +179,8 @@ TEST(HttpStreaming, WriteBodyAndTrailersShouldFailIfSendFileIsUsed) {
   std::string resp = BlockingFetch(port, "GET", "/file");
 
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
-  ASSERT_FALSE(resp.contains("Transfer-Encoding: chunked"));
-  ASSERT_TRUE(resp.contains("Content-Length: " + std::to_string(kPayload.size())));
+  ASSERT_FALSE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(kPayload.size()))));
 
   auto headerEnd = resp.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, headerEnd);
@@ -203,8 +204,8 @@ TEST(HttpStreaming, SendFileHeadSuppressesBody) {
   std::string resp = BlockingFetch(port, "HEAD", "/file");
 
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
-  ASSERT_TRUE(resp.contains("Content-Length: " + std::to_string(kPayload.size())));
-  ASSERT_FALSE(resp.contains("Transfer-Encoding: chunked"));
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(kPayload.size()))));
+  ASSERT_FALSE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 
   auto headerEnd = resp.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, headerEnd);
@@ -224,7 +225,7 @@ TEST(HttpStreaming, SendFileErrors) {
   std::string resp = BlockingFetch(port, "GET", "/file-after-write");
 
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
-  ASSERT_TRUE(resp.contains("Transfer-Encoding: chunked"));
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 
   auto headerEnd = resp.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, headerEnd);
@@ -248,8 +249,8 @@ TEST(HttpStreaming, SendFileOverrideContentLength) {
   std::string resp = BlockingFetch(port, "GET", "/file-override-cl");
 
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
-  ASSERT_TRUE(resp.contains("Content-Length: 35"));
-  ASSERT_FALSE(resp.contains("Transfer-Encoding: chunked"));
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "35")));
+  ASSERT_FALSE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 
   auto headerEnd = resp.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, headerEnd);
@@ -272,10 +273,10 @@ TEST(HttpStreaming, HeadSuppressedBody) {
   // The terminating chunk in a chunked response would appear as "\r\n0\r\n\r\n" (preceded by the blank line
   // after headers or previous chunk). We also assert absence of Transfer-Encoding: chunked and body payload.
   ASSERT_FALSE(resp.contains("\r\n0\r\n\r\n"));
-  ASSERT_FALSE(resp.contains("Transfer-Encoding: chunked"));
+  ASSERT_FALSE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
   ASSERT_FALSE(resp.contains("ignored body"));
   // Positive check: we do expect a Content-Length: 0 header for HEAD.
-  ASSERT_TRUE(resp.contains("Content-Length: 0\r\n"));
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "0")));
 }
 
 #ifdef AERONET_ENABLE_ZLIB
@@ -290,7 +291,7 @@ TEST(HttpStreamingCompression, StreamingWriterAppendsVaryAcceptEncoding) {
 
   ts.router().setPath(http::Method::GET, "/vary-writer", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.header("Vary", "Origin");
+    writer.header(http::Vary, http::Origin);
     writer.contentType("text/plain");
     writer.writeBody(std::string(64, 'a'));
     writer.end();
@@ -305,10 +306,10 @@ TEST(HttpStreamingCompression, StreamingWriterAppendsVaryAcceptEncoding) {
   const auto parsed = test::parseResponseOrThrow(raw);
 
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
-  auto varyIt = parsed.headers.find("Vary");
+  auto varyIt = parsed.headers.find(http::Vary);
   ASSERT_NE(varyIt, parsed.headers.end());
-  EXPECT_TRUE(varyIt->second.contains("Origin"));
-  EXPECT_TRUE(varyIt->second.contains("Accept-Encoding"));
+  EXPECT_TRUE(varyIt->second.contains(http::Origin));
+  EXPECT_TRUE(varyIt->second.contains(http::AcceptEncoding));
 
   ts.postConfigUpdate([compression](HttpServerConfig& serverCfg) { serverCfg.withCompression({}); });
 }
@@ -338,7 +339,7 @@ TEST(HttpStreamingCompression, AddHeaderContentEncodingIdentityShouldNotAutomati
   const auto parsed = test::parseResponseOrThrow(raw);
 
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
-  auto ceIt = parsed.headers.find("Content-Encoding");
+  auto ceIt = parsed.headers.find(http::ContentEncoding);
   ASSERT_NE(ceIt, parsed.headers.end());
   EXPECT_EQ(ceIt->second, "identity");
   EXPECT_EQ(parsed.body, std::string(64, 'a'));
@@ -359,12 +360,12 @@ TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
     writer.status(200);
     writer.header("X-Custom-A", "alpha");
     writer.header("X-Custom-B", "beta");
-    writer.header("Content-Type", "application/json");  // override default
+    writer.header(http::ContentType, "application/json");  // override default
     // First write sends headers implicitly.
     writer.writeBody("{\"k\":1}");
     // These should be ignored because headers already sent.
     writer.header("X-Ignored", "zzz");
-    writer.header("Content-Type", "text/plain");
+    writer.header(http::ContentType, "text/plain");
     writer.end();
   });
 
@@ -378,17 +379,17 @@ TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
   ASSERT_TRUE(getResp.contains("X-Custom-A: alpha\r\n"));
   ASSERT_TRUE(getResp.contains("X-Custom-B: beta\r\n"));
   // Overridden content type
-  ASSERT_TRUE(getResp.contains("Content-Type: application/json\r\n"));
+  ASSERT_TRUE(getResp.contains(MakeHttp1HeaderLine(http::ContentType, "application/json")));
   // Default text/plain should not appear.
-  ASSERT_FALSE(getResp.contains("Content-Type: text/plain"));
+  ASSERT_FALSE(getResp.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
   // Ignored header should not appear.
   ASSERT_FALSE(getResp.contains("X-Ignored: zzz"));
   // Body present in GET but not in HEAD.
   ASSERT_TRUE(getResp.contains("{\"k\":1}"));
   ASSERT_FALSE(headResp.contains("{\"k\":1}"));
   // HEAD: ensure Content-Length auto added (0 since body suppressed) and no chunk framing.
-  ASSERT_TRUE(headResp.contains("Content-Length: 0\r\n"));
-  ASSERT_FALSE(headResp.contains("Transfer-Encoding: chunked"));
+  ASSERT_TRUE(headResp.contains(MakeHttp1HeaderLine(http::ContentLength, "0")));
+  ASSERT_FALSE(headResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 }
 
 TEST(HttpServerMixed, MixedPerPathHandlers) {
@@ -397,7 +398,7 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
   // path /mix : GET streaming, POST normal
   ts.router().setPath(http::Method::GET, "/mix", [](const HttpRequest& /*unused*/, HttpResponseWriter& writer) {
     writer.status(200);
-    writer.header("Content-Type", "text/plain");
+    writer.header(http::ContentType, "text/plain");
     writer.writeBody("S");
     writer.writeBody("TREAM");
     writer.end();
@@ -432,7 +433,7 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(200, "OK").body("GLOBAL"); });
   ts.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
-    writer.header("Content-Type", "text/plain");
+    writer.header(http::ContentType, "text/plain");
     writer.writeBody("STREAMFALLBACK");
     writer.end();
   });
@@ -468,7 +469,7 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
   // Register streaming handler for GET; it will attempt to write a body.
   ts.router().setPath(http::Method::GET, "/head", [](const HttpRequest& /*unused*/, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.header("Content-Type", "text/plain");
+    writer.header(http::ContentType, "text/plain");
     writer.writeBody("SHOULD_NOT_APPEAR");  // for HEAD this must be suppressed by writer
     writer.end();
   });
@@ -479,7 +480,7 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
   std::string bodyPart = headResp.substr(headerEnd + http::DoubleCRLF.size());
   EXPECT_TRUE(bodyPart.empty());
   // Either explicit Content-Length: 0 is present or (future) alternate header; assert current behavior.
-  EXPECT_TRUE(headResp.contains("Content-Length: 0"));
+  EXPECT_TRUE(headResp.contains(MakeHttp1HeaderLine(http::ContentLength, "0")));
   EXPECT_FALSE(headResp.contains("SHOULD_NOT_APPEAR"));
 }
 
@@ -493,7 +494,7 @@ TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
   });
   std::string postResp = RequestMethod(port, "POST", "/m405", "data");
   // Expect 405 Method Not Allowed
-  EXPECT_TRUE(postResp.contains("405"));
+  EXPECT_TRUE(postResp.contains("HTTP/1.1 405"));
   EXPECT_TRUE(postResp.contains("Method Not Allowed"));
   // Ensure GET still works and returns streaming body
   std::string getResp2 = RequestMethod(port, "GET", "/m405");
@@ -509,7 +510,7 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
   // Register streaming GET and normal POST on same path
   ts.router().setPath(http::Method::GET, "/ka", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.header("Content-Type", "text/plain");
+    writer.header(http::ContentType, "text/plain");
     writer.writeBody("A");
     writer.writeBody("B");
     writer.end();
@@ -635,15 +636,15 @@ TEST(HttpStreamingHeadContentLength, HeadSuppressesBodyKeepsCL) {
   raw(port, "GET", getResp);
 
   ASSERT_TRUE(headResp.contains("HTTP/1.1 200"));
-  ASSERT_TRUE(headResp.contains("Content-Length: 6\r\n"));
+  ASSERT_TRUE(headResp.contains(MakeHttp1HeaderLine(http::ContentLength, "6")));
   // No chunked framing, no body.
   ASSERT_FALSE(headResp.contains("abcdef"));
-  ASSERT_FALSE(headResp.contains("Transfer-Encoding: chunked"));
+  ASSERT_FALSE(headResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
   // GET path: should carry body; since we set fixed length it should not be chunked.
   ASSERT_TRUE(getResp.contains("HTTP/1.1 200"));
-  ASSERT_TRUE(getResp.contains("Content-Length: 6\r\n"));
+  ASSERT_TRUE(getResp.contains(MakeHttp1HeaderLine(http::ContentLength, "6")));
   ASSERT_TRUE(getResp.contains("abcdef"));
-  ASSERT_FALSE(getResp.contains("Transfer-Encoding: chunked"));
+  ASSERT_FALSE(getResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 }
 
 TEST(HttpStreaming, ContentLengthAfterFirstWriteShouldBeIgnored) {
@@ -660,9 +661,9 @@ TEST(HttpStreaming, ContentLengthAfterFirstWriteShouldBeIgnored) {
   raw(port, "GET", getResp);
   ASSERT_TRUE(getResp.contains("HTTP/1.1 200"));
   // Should be chunked since we wrote body before setting length.
-  ASSERT_TRUE(getResp.contains("Transfer-Encoding: chunked"));
+  ASSERT_TRUE(getResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
   // Ensure our ignored length did not appear.
-  ASSERT_FALSE(getResp.contains("Content-Length: 9999"));
+  ASSERT_FALSE(getResp.contains(MakeHttp1HeaderLine(http::ContentLength, "9999")));
   ASSERT_TRUE(getResp.contains("hello "));
   ASSERT_TRUE(getResp.contains("world"));
   ASSERT_FALSE(getResp.contains("additional"));  // after end
@@ -680,8 +681,8 @@ TEST(HttpStreamingHeadContentLength, StreamingNoContentLengthUsesChunked) {
   raw(port, "GET", getResp);
   ASSERT_TRUE(getResp.contains("HTTP/1.1 200"));
   // No explicit Content-Length, chunked framing present.
-  ASSERT_TRUE(getResp.contains("Transfer-Encoding: chunked"));
-  ASSERT_FALSE(getResp.contains("Content-Length:"));
+  ASSERT_TRUE(getResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
+  ASSERT_FALSE(getResp.contains(http::ContentLength));
   ASSERT_TRUE(getResp.contains("abc"));
   ASSERT_TRUE(getResp.contains("def"));
 }
@@ -698,9 +699,9 @@ TEST(HttpStreamingHeadContentLength, StreamingLateContentLengthIgnoredStaysChunk
   std::string getResp;
   raw(port, "GET", getResp);
   ASSERT_TRUE(getResp.contains("HTTP/1.1 200"));
-  ASSERT_TRUE(getResp.contains("Transfer-Encoding: chunked"));
+  ASSERT_TRUE(getResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
   // Ensure our ignored length did not appear.
-  ASSERT_FALSE(getResp.contains("Content-Length: 9999"));
+  ASSERT_FALSE(getResp.contains(MakeHttp1HeaderLine(http::ContentLength, "9999")));
   ASSERT_TRUE(getResp.contains("part1"));
   ASSERT_TRUE(getResp.contains("part2"));
 }
@@ -727,12 +728,11 @@ TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDi
   rawWith(port, "GET", "Accept-Encoding: gzip\r\n", resp);
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   // We expect a fixed-length header present.
-  std::string clHeader = std::string("Content-Length: ") + std::to_string(originalSize) + "\r\n";
-  ASSERT_TRUE(resp.contains(clHeader));
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(originalSize))));
   // Compression should have activated producing a gzip header (1F 8B in hex) and Content-Encoding header.
-  ASSERT_TRUE(resp.contains("Content-Encoding: gzip"));
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentEncoding, "gzip")));
   // Body should not be chunked.
-  ASSERT_FALSE(resp.contains("Transfer-Encoding: chunked"));
+  ASSERT_FALSE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
   // Extract body (after double CRLF) and verify it differs from original (compressed) and starts with gzip magic.
   auto pos = resp.find(http::DoubleCRLF);
   ASSERT_NE(pos, std::string::npos);
@@ -845,14 +845,14 @@ TEST(HttpStreaming, CaseInsensitiveContentTypeAndEncodingSuppression) {
 TEST(HttpResponseWriterFailures, AddHeaderContentEncoding) {
   ts.router().setPath(http::Method::GET, "/content-encoding", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.addHeader("Content-Encoding", "gzip");
+    writer.addHeader(http::ContentEncoding, "gzip");
     writer.contentType("text/plain");
     writer.writeBody("test");
     writer.end();
   });
 
   const std::string response = test::simpleGet(ts.port(), "/content-encoding");
-  EXPECT_TRUE(response.contains("Content-Encoding: gzip"));
+  EXPECT_TRUE(response.contains(MakeHttp1HeaderLine(http::ContentEncoding, "gzip")));
 }
 
 // Test contentLength called after writeBody - should log warning and ignore
@@ -866,7 +866,7 @@ TEST(HttpResponseWriterFailures, ContentLengthAfterWrite) {
 
   const std::string response = test::simpleGet(ts.port(), "/len-after-write");
   EXPECT_TRUE(response.contains("HTTP/1.1 200"));
-  EXPECT_TRUE(response.contains("Transfer-Encoding: chunked"));
+  EXPECT_TRUE(response.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 }
 
 // Test file() called after writeBody - should fail

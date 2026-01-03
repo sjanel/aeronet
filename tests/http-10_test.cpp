@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -65,7 +67,7 @@ TEST(Http10, KeepAliveOptInStillWorks) {
   test::sendAll(fd, req1);
   std::string first = test::recvWithTimeout(fd, 300ms);
   ASSERT_TRUE(first.contains("HTTP/1.0 200"));
-  ASSERT_TRUE(first.contains("Connection: keep-alive"));
+  ASSERT_TRUE(first.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
   std::string req2 = "GET /k2 HTTP/1.0\r\nHost: h\r\nConnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req2);
   std::string second = test::recvWithTimeout(fd, 300ms);

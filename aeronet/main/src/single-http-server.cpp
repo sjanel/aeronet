@@ -267,7 +267,7 @@ bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
       // Verify full preface
       if (bufView.starts_with(http2::kConnectionPreface)) {
         // Switch to HTTP/2 protocol handler using unified dispatch
-        state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router);
+        state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression);
         return processSpecialProtocolHandler(cnxIt);
       }
       log::error("Invalid HTTP/2 preface, falling back to HTTP/1.1");
@@ -412,7 +412,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         state.inBuffer.erase_front(consumedBytesUpgrade);
 
         // Create HTTP/2 protocol handler using unified dispatch
-        state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router);
+        state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression);
         state.protocol = ProtocolType::Http2;
 
         // Queue the upgrade response
@@ -636,196 +636,15 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
 bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   HttpRequest& request = state.request;
-  const auto& decompressionConfig = _config.decompression;
-  auto& headersMap = request._headers;
-  const auto encodingHeaderIt = headersMap.find(http::ContentEncoding);
-  if (encodingHeaderIt == headersMap.end() || CaseInsensitiveEqual(encodingHeaderIt->second, http::identity)) {
-    return true;  // nothing to do
-  }
-  if (!decompressionConfig.enable) {
-    // Pass-through mode: leave compressed body & header intact; user code must decode manually
-    // if it cares. We intentionally skip size / ratio guards in this mode to avoid surprising
-    // rejections when opting out. Global body size limits have already been enforced.
-    return true;
-  }
-  const std::size_t originalCompressedSize = request.body().size();
-  if (decompressionConfig.maxCompressedBytes != 0 && originalCompressedSize > decompressionConfig.maxCompressedBytes) {
-    emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true, {});
+  const auto res = internal::HttpCodec::MaybeDecompressRequestBody(
+      _config.decompression, request, state.bodyAndTrailersBuffer, state.trailerStartPos, _tmpBuffer, _tmpTrailers,
+      [this](auto& trailersMap, char* bufferBeg, char* first, char* last) {
+        return this->parseHeadersUnchecked(trailersMap, bufferBeg, first, last);
+      });
+
+  if (!res.ok) {
+    emitSimpleError(cnxIt, res.status, true, res.message);
     return false;
-  }
-
-  const std::string_view encodingStr = encodingHeaderIt->second;
-
-  // We'll alternate between bodyAndTrailersBuffer (source) and _tmpBuffer (target) each stage.
-  std::string_view src = request.body();
-  RawChars* dst = &_tmpBuffer;
-
-  const auto contentLenIt = headersMap.find(http::ContentLength);
-
-#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
-  const std::size_t maxPlainBytes = decompressionConfig.maxDecompressedBytes == 0
-                                        ? std::numeric_limits<std::size_t>::max()
-                                        : decompressionConfig.maxDecompressedBytes;
-
-  bool useStreamingDecode = false;
-  std::size_t declaredLen = 0;
-  if (decompressionConfig.streamingDecompressionThresholdBytes > 0 && contentLenIt != headersMap.end()) {
-    // If Content-Length is present it has already been validated previously, so it should be valid.
-    // It is not present in chunked requests.
-    // TODO: is it possible to have originalCompressedSize != declaredLen here?
-    const std::string_view contentLenValue = contentLenIt->second;
-    declaredLen = StringToIntegral<std::size_t>(contentLenValue);
-    useStreamingDecode = declaredLen >= decompressionConfig.streamingDecompressionThresholdBytes;
-  }
-
-  const auto runDecoder = [&](Decoder& decoder) -> bool {
-    if (!useStreamingDecode) {
-      return decoder.decompressFull(src, maxPlainBytes, decompressionConfig.decoderChunkSize, *dst);
-    }
-    auto ctx = decoder.makeContext();
-    if (!ctx) {
-      return false;
-    }
-    if (src.empty()) {
-      return ctx->decompressChunk(std::string_view{}, true, maxPlainBytes, decompressionConfig.decoderChunkSize, *dst);
-    }
-    std::size_t processed = 0;
-    while (processed < src.size()) {
-      const std::size_t remaining = src.size() - processed;
-      const std::size_t chunkLen = std::min(decompressionConfig.decoderChunkSize, remaining);
-      std::string_view chunk(src.data() + processed, chunkLen);
-      processed += chunkLen;
-      const bool lastChunk = processed == src.size();
-      if (!ctx->decompressChunk(chunk, lastChunk, maxPlainBytes, decompressionConfig.decoderChunkSize, *dst)) {
-        return false;
-      }
-    }
-    return true;
-  };
-#endif
-
-  // If we have trailers, we need to exclude them in the decompression process, and avoid them
-  // being overriden during the decompression swaps.
-  RawChars trailers;
-  const std::size_t trailersSize =
-      state.trailerStartPos > 0 ? state.bodyAndTrailersBuffer.size() - state.trailerStartPos : 0;
-  if (trailersSize > 0) {
-    // We need to save trailers in another buffer as its data will be
-    // overridden during decompression swaps (they are stored at the end of bodyAndTrailersBuffer).
-    trailers.assign(state.bodyAndTrailersBuffer.data() + state.trailerStartPos, trailersSize);
-  }
-
-  // Decode in reverse order.
-  const char* first = encodingStr.data();
-  const char* last = first + encodingStr.size();
-  while (first < last) {
-    const char* encodingLast = last;
-    while (encodingLast != first && (*encodingLast == ' ' || *encodingLast == '\t')) {
-      --encodingLast;
-    }
-    if (encodingLast == first) {
-      break;
-    }
-    const char* comma = encodingLast - 1;
-    while (comma != first && *comma != ',') {
-      --comma;
-    }
-    if (comma == first) {
-      --comma;
-    }
-    const char* encodingFirst = comma + 1;
-    while (encodingFirst != encodingLast && (*encodingFirst == ' ' || *encodingFirst == '\t')) {
-      ++encodingFirst;
-    }
-    if (encodingFirst == encodingLast) {  // empty token => malformed list
-      emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Malformed Content-Encoding");
-      return false;
-    }
-
-    std::string_view encoding(encodingFirst, encodingLast);
-    dst->clear();
-    bool stageOk = false;
-    if (CaseInsensitiveEqual(encoding, http::identity)) {
-      last = comma;
-      continue;  // no-op layer
-#ifdef AERONET_ENABLE_ZLIB
-      // NOLINTNEXTLINE(readability-else-after-return)
-    } else if (CaseInsensitiveEqual(encoding, http::gzip)) {
-      ZlibDecoder decoder(/*isGzip=*/true);
-      stageOk = runDecoder(decoder);
-    } else if (CaseInsensitiveEqual(encoding, http::deflate)) {
-      ZlibDecoder decoder(/*isGzip=*/false);
-      stageOk = runDecoder(decoder);
-#endif
-#ifdef AERONET_ENABLE_ZSTD
-    } else if (CaseInsensitiveEqual(encoding, http::zstd)) {
-      ZstdDecoder decoder;
-      stageOk = runDecoder(decoder);
-#endif
-#ifdef AERONET_ENABLE_BROTLI
-    } else if (CaseInsensitiveEqual(encoding, http::br)) {
-      BrotliDecoder decoder;
-      stageOk = runDecoder(decoder);
-#endif
-    } else {
-      emitSimpleError(cnxIt, http::StatusCodeUnsupportedMediaType, true, "Unsupported Content-Encoding");
-      return false;
-    }
-    if (!stageOk) {
-      emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Decompression failed");
-      return false;
-    }
-    // Expansion guard after each stage (defensive against nested bombs).
-    if (decompressionConfig.maxExpansionRatio > 0.0 && originalCompressedSize > 0) {
-      double ratio = static_cast<double>(dst->size()) / static_cast<double>(originalCompressedSize);
-      if (ratio > decompressionConfig.maxExpansionRatio) {
-        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true, "Decompression expansion too large");
-        return false;
-      }
-    }
-
-    src = *dst;
-    dst = dst == &state.bodyAndTrailersBuffer ? &_tmpBuffer : &state.bodyAndTrailersBuffer;
-
-    last = comma;
-  }
-
-  if (src.data() == _tmpBuffer.data()) {
-    // make sure we use bodyAndTrailersBuffer and not _tmpBuffer to store the body.
-    _tmpBuffer.swap(state.bodyAndTrailersBuffer);
-  }
-  RawChars& buf = state.bodyAndTrailersBuffer;
-
-  // Append to the buffer the new Content-Length value (decompressed size). It is not seen by the body.
-  const std::size_t decompressedSizeNbChars = static_cast<std::size_t>(nchars(src.size()));
-  // Unique memory reallocation so that std::string_views that will be pointing to it are not invalidated later.
-  buf.ensureAvailableCapacity(trailers.size() + decompressedSizeNbChars);
-
-  src = state.bodyAndTrailersBuffer;
-  if (!trailers.empty()) {
-    state.trailerStartPos = buf.size();
-    // Append trailers data to the end of the buffer.
-    buf.unchecked_append(trailers);
-    // Re-parse trailers in the trailers map now that they are at the end of the buffer.
-    parseHeadersUnchecked(request._trailers, buf.data(), buf.data() + state.trailerStartPos, buf.end());
-  }
-
-  std::string_view decompressedSizeStr(buf.end(), decompressedSizeNbChars);
-  // This to_chars cannot fail as we have reserved enough space.
-  std::to_chars(buf.end(), buf.end() + decompressedSizeNbChars, src.size());
-  buf.addSize(decompressedSizeNbChars);
-
-  // Final decompressed data now resides in src after last swap.
-  request._body = src;
-
-  // Strip Content-Encoding header so user handlers observe a canonical, already-decoded body.
-  const std::string_view originalContentLenStr = contentLenIt != headersMap.end() ? contentLenIt->second : "";
-
-  headersMap.erase(encodingHeaderIt);
-  headersMap.insert_or_assign(http::ContentLength, decompressedSizeStr);
-  headersMap.insert_or_assign(http::OriginalEncodingHeaderName, encodingStr);
-  if (!originalContentLenStr.empty()) {
-    headersMap.insert_or_assign(http::OriginalEncodedLengthHeaderName, originalContentLenStr);
   }
 
   return true;
@@ -1538,7 +1357,7 @@ bool SingleHttpServer::runPreChain(HttpRequest& request, bool willStream, std::s
 void SingleHttpServer::setupHttp2Connection(ConnectionState& state) {
   // Create HTTP/2 protocol handler with unified dispatcher
   // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
-  state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, true);
+  state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, true);
   state.protocol = ProtocolType::Http2;
 
   // Immediately flush the server preface (SETTINGS frame) that was queued during handler creation

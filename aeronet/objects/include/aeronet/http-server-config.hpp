@@ -212,7 +212,7 @@ struct HttpServerConfig {
   static constexpr uint32_t kMaxGlobalHeaders = 256;
 
   // Will add all the headers defined here in all server responses, if not explicitly set by the user for a given
-  // response. Defaults to a list of one entry "Server: aeronet".
+  // response. Defaults to a list of one entry "server: aeronet".
   // The maximum number of global headers is 256.
   ConcatenatedHeaders globalHeaders;
 

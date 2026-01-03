@@ -165,10 +165,10 @@ Test with curl:
 curl -i http://localhost:8080/hello
 
 HTTP/1.1 200
-Content-Type: text/plain
-Content-Length: 151
-Date: Wed, 12 Nov 2025 18:56:52 GMT
-Server: aeronet
+content-type: text/plain
+content-length: 151
+date: Wed, 12 Nov 2025 18:56:52 GMT
+server: aeronet
 
 Hello from aeronet minimal server! You requested /hello
 ```
@@ -432,7 +432,7 @@ Blocking semantics summary:
 ```cpp
 // Install signal handlers for SIGINT/SIGTERM (typically in main before starting servers)
 std::chrono::milliseconds maxDrainPeriod{5000}; // 5s max drain
-aeronet::SignalHandler::Enable(maxDrainPeriod);
+SignalHandler::Enable(maxDrainPeriod);
 
 // All SingleHttpServer instances regularly check for stop requests in their event loops
 SingleHttpServer server(HttpServerConfig{});
@@ -512,24 +512,24 @@ their semantics would be invalid / ambiguous without deeper protocol features:
 
 Reserved now (assert if attempted in debug; ignored in release for streaming):
 
-- `Date` – generated once per second and injected automatically.
-- `Content-Length` – computed from the body (fixed) or set through `contentLength()` (streaming). Prevents
+- `date` – generated once per second and injected automatically.
+- `content-length` – computed from the body (fixed) or set through `contentLength()` (streaming). Prevents
   inconsistencies between declared and actual size.
-- `Connection` – determined by keep-alive policy (HTTP version, server config, request count, errors). User code
+- `connection` – determined by keep-alive policy (HTTP version, server config, request count, errors). User code
   supplying conflicting values could desynchronize connection reuse logic.
-- `Transfer-Encoding` – controlled by streaming writer (`chunked`) or omitted when `Content-Length` is known. Allowing
+- `transfer-encoding` – controlled by streaming writer (`chunked`) or omitted when `content-length` is known. Allowing
   arbitrary values risks illegal CL + TE combinations or unsupported encodings.
-- `Trailer`, `TE`, `Upgrade` – not yet supported by aeronet; reserving them now avoids future backward-incompatible
+- `trailer`, `te`, `upgrade` – not yet supported by aeronet; reserving them now avoids future backward-incompatible
   behavior changes when trailer / upgrade features are introduced.
 
 Allowed convenience helpers:
 
-- `Content-Type` via `contentType()` in streaming.
-- `Location` via `location()` for redirects.
+- `content-type` via `contentType()` in streaming.
+- `location` via `location()` for redirects.
 
 ##### Content-Type resolution for static files
 
-When serving files with the built-in static helpers, aeronet chooses the response `Content-Type` using the
+When serving files with the built-in static helpers, aeronet chooses the response `content-type` using the
 following precedence: (1) user-provided resolver callback if installed and non-empty, (2) the configured default
 content type in `HttpServerConfig`, and (3) `application/octet-stream` as a final fallback. The `File::detectedContentType()`
 helper is available for filename-extension based detection (the built-in mapping now includes common C/C++ extensions
@@ -575,6 +575,7 @@ Enable the builtin probes via `HttpServerConfig` and test them with curl. This e
 
 ```cpp
 #include <aeronet/aeronet.hpp>
+
 using namespace aeronet;
 
 int main() {
@@ -628,7 +629,7 @@ curl -i http://localhost:8080/static
 curl -i http://localhost:8080/stream
 ```
 
-The example demonstrates both the fixed-response (server synthesizes a `Content-Length` header) and the
+The example demonstrates both the fixed-response (server synthesizes a `content-length` header) and the
 streaming writer path. For plaintext sockets the server uses the kernel `sendfile(2)` syscall for zero-copy
 transmission. When TLS is enabled the example exercises the TLS fallback that pread()s into the connection buffer
 and writes through the TLS transport.
@@ -757,6 +758,7 @@ Configure OpenTelemetry via `HttpServerConfig`:
 
 ```cpp
 #include <aeronet/aeronet.hpp>
+
 using namespace aeronet;
 
 int main() {
@@ -861,7 +863,7 @@ router.setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
 ### Limits
 
 - **431** is returned if the header section exceeds `maxHeaderBytes`.
-- **413** is returned if the declared `Content-Length` exceeds `maxBodyBytes`.
+- **413** is returned if the declared `content-length` exceeds `maxBodyBytes`.
 - Connections exceeding `maxOutboundBufferBytes` (buffered pending write bytes) are marked to close after flush (default 4MB) to prevent unbounded memory growth if peers stop reading.
 - Slowloris protection: configure `withHeaderReadTimeout(ms)` to bound how long a client may take to send an entire request head (request line + headers) (0 to disable). `aeronet` will return HTTP error **408 Request Timeout** if exceeded.
 

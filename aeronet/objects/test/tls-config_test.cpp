@@ -42,7 +42,7 @@ TEST(TlsConfigTest, InvalidMinVersionThrows) {
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withCertPem("DUMMY").withKeyPem("DUMMY");
-  cfg.minVersion = {1, 0};  // TLS 1.0 is not supported
+  cfg.withTlsMinVersion("TLS1.0");
 
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }

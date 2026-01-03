@@ -9,11 +9,13 @@
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/websocket-constants.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include <algorithm>
@@ -66,8 +68,8 @@ TEST(UpgradeHandlerTest, ConnectionContainsUpgrade_WithWhitespace) {
 }
 
 TEST(UpgradeHandlerTest, ConnectionContainsUpgrade_NoUpgrade) {
-  EXPECT_FALSE(upgrade::ConnectionContainsUpgrade("keep-alive"));
-  EXPECT_FALSE(upgrade::ConnectionContainsUpgrade("close"));
+  EXPECT_FALSE(upgrade::ConnectionContainsUpgrade(http::keepalive));
+  EXPECT_FALSE(upgrade::ConnectionContainsUpgrade(http::close));
   EXPECT_FALSE(upgrade::ConnectionContainsUpgrade(""));
 }
 
@@ -134,7 +136,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WrongUpgradeValue) {
   WebSocketUpgradeConfig config{serverProtocols, {}};
   const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid);
-  EXPECT_TRUE(result.errorMessage.contains("websocket"));
+  EXPECT_TRUE(result.errorMessage.contains(websocket::UpgradeValue));
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingConnectionHeader) {
@@ -148,7 +150,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingConnectionHeader) 
   WebSocketUpgradeConfig config{serverProtocols, {}};
   const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid);
-  EXPECT_TRUE(result.errorMessage.contains(http::Connection));
+  EXPECT_EQ(result.errorMessage, "Connection header does not contain 'upgrade'");
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingVersion) {
@@ -582,9 +584,7 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_Basic) {
   UpgradeValidationResult validationResult;
   validationResult.valid = true;
   validationResult.targetProtocol = ProtocolType::WebSocket;
-  std::copy_n(kExpectedWebSocketAccept.data(), kExpectedWebSocketAccept.size(),
-              validationResult.secWebSocketAccept.data());
-
+  std::ranges::copy(kExpectedWebSocketAccept, validationResult.secWebSocketAccept.data());
   const auto response = upgrade::BuildWebSocketUpgradeResponse(validationResult);
   const std::string_view responseView(response.data(), response.size());
 
@@ -592,34 +592,34 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_Basic) {
   EXPECT_TRUE(responseView.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
 
   // Check required headers are present
-  EXPECT_TRUE(responseView.contains("Upgrade: websocket\r\n"));
-  EXPECT_TRUE(responseView.contains("Connection: Upgrade\r\n"));
-  EXPECT_TRUE(responseView.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"));
+  EXPECT_TRUE(responseView.contains(MakeHttp1HeaderLine(http::Upgrade, websocket::UpgradeValue)));
+  EXPECT_TRUE(responseView.contains(MakeHttp1HeaderLine(http::Connection, http::Upgrade)));
+  EXPECT_TRUE(
+      responseView.contains(MakeHttp1HeaderLine(websocket::SecWebSocketAccept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")));
 
   // Check response ends with double CRLF
-  EXPECT_TRUE(responseView.ends_with("\r\n\r\n"));
+  EXPECT_TRUE(responseView.ends_with(http::DoubleCRLF));
 }
 
 TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithProtocol) {
   UpgradeValidationResult validationResult;
   validationResult.valid = true;
   validationResult.targetProtocol = ProtocolType::WebSocket;
-  std::copy_n(kExpectedWebSocketAccept.data(), kExpectedWebSocketAccept.size(),
-              validationResult.secWebSocketAccept.data());
+  std::ranges::copy(kExpectedWebSocketAccept, validationResult.secWebSocketAccept.data());
   validationResult.selectedProtocol = "graphql-ws";
 
   const auto response = upgrade::BuildWebSocketUpgradeResponse(validationResult);
   const std::string_view responseView(response.data(), response.size());
 
-  EXPECT_TRUE(responseView.contains("Sec-WebSocket-Protocol: graphql-ws\r\n"));
+  EXPECT_TRUE(
+      responseView.contains(MakeHttp1HeaderLine(websocket::SecWebSocketProtocol, validationResult.selectedProtocol)));
 }
 
 TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflate) {
   UpgradeValidationResult validationResult;
   validationResult.valid = true;
   validationResult.targetProtocol = ProtocolType::WebSocket;
-  std::copy_n(kExpectedWebSocketAccept.data(), kExpectedWebSocketAccept.size(),
-              validationResult.secWebSocketAccept.data());
+  std::ranges::copy(kExpectedWebSocketAccept, validationResult.secWebSocketAccept.data());
   validationResult.deflateParams = websocket::DeflateNegotiatedParams{.serverMaxWindowBits = 12,
                                                                       .clientMaxWindowBits = 15,
                                                                       .serverNoContextTakeover = true,
@@ -629,9 +629,10 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflate) {
   const std::string_view responseView(response.data(), response.size());
 
   // Check extension header is present
-  EXPECT_TRUE(responseView.contains("Sec-WebSocket-Extensions: permessage-deflate"));
-  EXPECT_TRUE(responseView.contains("server_no_context_takeover"));
-  EXPECT_TRUE(responseView.contains("server_max_window_bits=12"));
+  std::string expectedExtensions(websocket::SecWebSocketExtensions);
+  expectedExtensions += http::HeaderSep;
+  expectedExtensions += "permessage-deflate; server_no_context_takeover; server_max_window_bits=12";
+  EXPECT_TRUE(responseView.contains(expectedExtensions));
   // client_max_window_bits=15 is default, should not appear
   EXPECT_FALSE(responseView.contains("client_max_window_bits"));
 }
@@ -652,7 +653,7 @@ TEST(UpgradeHandlerTest, BuildHttp2UpgradeResponse_Basic) {
 
   // Check required headers are present
   EXPECT_TRUE(responseView.contains(MakeHttp1HeaderLine(http::Upgrade, "h2c")));
-  EXPECT_TRUE(responseView.contains(MakeHttp1HeaderLine(http::Connection, "Upgrade")));
+  EXPECT_TRUE(responseView.contains(MakeHttp1HeaderLine(http::Connection, http::Upgrade)));
 
   // Check response ends with double CRLF
   EXPECT_TRUE(responseView.ends_with(http::DoubleCRLF));
@@ -732,7 +733,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionNoUpgradeToken)
   WebSocketUpgradeConfig config{serverProtocols, {}};
   const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid);
-  EXPECT_TRUE(result.errorMessage.contains("upgrade"));
+  EXPECT_TRUE(result.errorMessage.contains(http::Upgrade));
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MultipleExtensions) {
@@ -829,8 +830,8 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_NoProtocolNoDeflate) {
   const std::string_view responseView(response);
 
   // Should not contain protocol or extensions headers
-  EXPECT_FALSE(responseView.contains("Sec-WebSocket-Protocol"));
-  EXPECT_FALSE(responseView.contains("Sec-WebSocket-Extensions"));
+  EXPECT_FALSE(responseView.contains(websocket::SecWebSocketProtocol));
+  EXPECT_FALSE(responseView.contains(websocket::SecWebSocketExtensions));
 }
 
 TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflateNoContextTakeover) {

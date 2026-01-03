@@ -9,8 +9,7 @@ namespace aeronet::http {
 
 // NOTE ON CASE SENSITIVITY
 // ------------------------
-// HTTP header field names are case-insensitive per RFC 7230. We store them here
-// in their conventional canonical form for emission. Comparison in parsing code
+// HTTP header field names are case-insensitive per RFC 7230. Comparison in parsing code
 // should remain case-insensitive where required. Header values such as the
 // tokens below (e.g. "chunked", "keep-alive") are also case-insensitive in the
 // protocol; we keep them lowercase to make case-insensitive comparisons cheaper
@@ -32,54 +31,53 @@ inline constexpr std::string_view OPTIONS = "OPTIONS";
 inline constexpr std::string_view TRACE = "TRACE";
 inline constexpr std::string_view PATCH = "PATCH";
 
-// Standard Header Field Names (as they typically appear in canonical form)
-// TODO: rename all header names in lowercase to comply with HTTP/2 header field name rules (RFC 9113)
-inline constexpr std::string_view Connection = "Connection";
-inline constexpr std::string_view TransferEncoding = "Transfer-Encoding";
-inline constexpr std::string_view ContentLength = "Content-Length";
-inline constexpr std::string_view ContentType = "Content-Type";
+// Standard Header Field Names
+// They are in lowercase to comply with HTTP/2 header field name rules (RFC 9113)
+inline constexpr std::string_view Connection = "connection";
+inline constexpr std::string_view TransferEncoding = "transfer-encoding";
+inline constexpr std::string_view ContentLength = "content-length";
+inline constexpr std::string_view ContentType = "content-type";
 inline constexpr std::string_view CacheControl = "cache-control";
-inline constexpr std::string_view ContentDisposition = "Content-Disposition";
-inline constexpr std::string_view ContentEncoding = "Content-Encoding";
-inline constexpr std::string_view AcceptEncoding = "Accept-Encoding";
-inline constexpr std::string_view UserAgent = "User-Agent";
-inline constexpr std::string_view RetryAfter = "Retry-After";
-inline constexpr std::string_view TE = "TE";
-inline constexpr std::string_view Trailer = "Trailer";
-inline constexpr std::string_view Upgrade = "Upgrade";
-inline constexpr std::string_view Expect = "Expect";
-inline constexpr std::string_view Host = "Host";
-inline constexpr std::string_view Date = "Date";  // only used for writing (server side)
-inline constexpr std::string_view Location = "Location";
-inline constexpr std::string_view Vary = "Vary";
-inline constexpr std::string_view Origin = "Origin";
+inline constexpr std::string_view ContentDisposition = "content-disposition";
+inline constexpr std::string_view ContentEncoding = "content-encoding";
+inline constexpr std::string_view AcceptEncoding = "accept-encoding";
+inline constexpr std::string_view UserAgent = "user-agent";
+inline constexpr std::string_view RetryAfter = "retry-after";
+inline constexpr std::string_view TE = "te";
+inline constexpr std::string_view Trailer = "trailer";
+inline constexpr std::string_view Upgrade = "upgrade";
+inline constexpr std::string_view Expect = "expect";
+inline constexpr std::string_view Host = "host";
+inline constexpr std::string_view Date = "date";  // only used for writing (server side)
+inline constexpr std::string_view Location = "location";
+inline constexpr std::string_view Vary = "vary";
+inline constexpr std::string_view Origin = "origin";
 inline constexpr std::string_view Allow = "allow";
 inline constexpr std::string_view AcceptRanges = "accept-ranges";
 inline constexpr std::string_view ContentRange = "content-range";
 inline constexpr std::string_view ETag = "etag";
 inline constexpr std::string_view LastModified = "last-modified";
-inline constexpr std::string_view Range = "Range";
-inline constexpr std::string_view IfRange = "If-Range";
-inline constexpr std::string_view IfModifiedSince = "If-Modified-Since";
-inline constexpr std::string_view IfUnmodifiedSince = "If-Unmodified-Since";
-inline constexpr std::string_view IfNoneMatch = "If-None-Match";
-inline constexpr std::string_view IfMatch = "If-Match";
-inline constexpr std::string_view AccessControlAllowOrigin = "Access-Control-Allow-Origin";
-inline constexpr std::string_view AccessControlAllowCredentials = "Access-Control-Allow-Credentials";
-inline constexpr std::string_view AccessControlAllowMethods = "Access-Control-Allow-Methods";
-inline constexpr std::string_view AccessControlAllowHeaders = "Access-Control-Allow-Headers";
-inline constexpr std::string_view AccessControlExposeHeaders = "Access-Control-Expose-Headers";
-inline constexpr std::string_view AccessControlMaxAge = "Access-Control-Max-Age";
-inline constexpr std::string_view AccessControlAllowPrivateNetwork = "Access-Control-Allow-Private-Network";
-inline constexpr std::string_view AccessControlRequestMethod = "Access-Control-Request-Method";
-inline constexpr std::string_view AccessControlRequestHeaders = "Access-Control-Request-Headers";
-
+inline constexpr std::string_view Range = "range";
+inline constexpr std::string_view IfRange = "if-range";
+inline constexpr std::string_view IfModifiedSince = "if-modified-since";
+inline constexpr std::string_view IfUnmodifiedSince = "if-unmodified-since";
+inline constexpr std::string_view IfNoneMatch = "if-none-match";
+inline constexpr std::string_view IfMatch = "if-match";
+inline constexpr std::string_view AccessControlAllowOrigin = "access-control-allow-origin";
+inline constexpr std::string_view AccessControlAllowCredentials = "access-control-allow-credentials";
+inline constexpr std::string_view AccessControlAllowMethods = "access-control-allow-methods";
+inline constexpr std::string_view AccessControlAllowHeaders = "access-control-allow-headers";
+inline constexpr std::string_view AccessControlExposeHeaders = "access-control-expose-headers";
+inline constexpr std::string_view AccessControlMaxAge = "access-control-max-age";
+inline constexpr std::string_view AccessControlAllowPrivateNetwork = "access-control-allow-private-network";
+inline constexpr std::string_view AccessControlRequestMethod = "access-control-request-method";
+inline constexpr std::string_view AccessControlRequestHeaders = "access-control-request-headers";
 // Custom Headers for Static File Handling
 inline constexpr std::string_view XDirectoryListingTruncated = "x-directory-listing-truncated";
 
 // Special aeronet headers
-inline constexpr std::string_view OriginalEncodingHeaderName = "X-Aeronet-Original-Encoding";
-inline constexpr std::string_view OriginalEncodedLengthHeaderName = "X-Aeronet-Original-Encoded-Length";
+inline constexpr std::string_view OriginalEncodingHeaderName = "x-aeronet-original-encoding";
+inline constexpr std::string_view OriginalEncodedLengthHeaderName = "x-aeronet-original-encoded-length";
 
 inline constexpr std::string_view HeaderSep = ": ";
 inline constexpr std::string_view CRLF = "\r\n";

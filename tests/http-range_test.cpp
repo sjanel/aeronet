@@ -257,7 +257,7 @@ TEST(HttpLargeFile, ServeLargeFile) {
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
   EXPECT_EQ(parsed.body.size(), size);
   const auto headers = parsed.headers;
-  const auto it = headers.find("Content-Length");
+  const auto it = headers.find(http::ContentLength);
   ASSERT_NE(it, headers.end());
   EXPECT_EQ(StringToIntegral<std::uint64_t>(it->second), size);
   EXPECT_TRUE(parsed.body == data);
@@ -289,7 +289,7 @@ TEST(HttpLargeFile, ServeLargeFileTls) {
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
   EXPECT_EQ(parsed.body.size(), size);
   const auto headers = parsed.headers;
-  const auto it = headers.find("Content-Length");
+  const auto it = headers.find(http::ContentLength);
   ASSERT_NE(it, headers.end());
   EXPECT_EQ(StringToIntegral<std::uint64_t>(it->second), size);
   // Compare content without printing huge data on failure
