@@ -4,8 +4,12 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
+#include <utility>
 
+#include "aeronet/file.hpp"
 #include "aeronet/headers-view-map.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http2-config.hpp"
@@ -13,6 +17,7 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 
@@ -63,11 +68,26 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 
   [[nodiscard]] std::span<const std::byte> getPendingOutput() override { return _connection.getPendingOutput(); }
 
-  void onOutputWritten(std::size_t bytesWritten) override { _connection.onOutputWritten(bytesWritten); }
+  void onOutputWritten(std::size_t bytesWritten) override {
+    _connection.onOutputWritten(bytesWritten);
+    if (!_connection.hasPendingOutput()) {
+      flushPendingFileSends();
+    }
+  }
 
   void initiateClose() override { _connection.initiateGoAway(ErrorCode::NoError); }
 
-  void onTransportClosing() override { _streamRequests.clear(); }
+  void onTransportClosing() override {
+    _streamRequests.clear();
+    _pendingFileSends.clear();
+
+    // Detach callbacks to avoid generating new outbound frames while the transport is closing.
+    _connection.setOnHeadersDecoded({});
+    _connection.setOnData({});
+    _connection.setOnStreamReset({});
+    _connection.setOnStreamClosed({});
+    _connection.setOnGoAway({});
+  }
 
   // ============================
   // HTTP/2 specific
@@ -92,6 +112,19 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   void onStreamClosed(uint32_t streamId);
   void onStreamReset(uint32_t streamId, ErrorCode errorCode);
 
+  struct PendingFileSend {
+    File file;
+    std::size_t offset = 0;
+    std::size_t remaining = 0;
+    vector<http::Header> trailers;
+  };
+
+  using PendingFileSendsMap = flat_hash_map<uint32_t, PendingFileSend>;
+
+  void flushPendingFileSends();
+  [[nodiscard]] ErrorCode sendPendingFileBody(uint32_t streamId, PendingFileSend& pending, bool endStreamAfterBody);
+  [[nodiscard]] static vector<http::Header> copyTrailers(const HttpResponse::HeadersView& trailers);
+
   /// Dispatch a completed request to the dispatcher and send response.
   void dispatchRequest(StreamRequestsMap::iterator it);
 
@@ -109,6 +142,10 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 
   // Request state per stream
   StreamRequestsMap _streamRequests;
+
+  // File payload streaming state per stream (flow-control aware)
+  PendingFileSendsMap _pendingFileSends;
+  RawChars _fileSendBuffer;
 };
 
 /// Factory function for creating HTTP/2 protocol handlers.

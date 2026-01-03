@@ -6,6 +6,7 @@
 
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
@@ -28,8 +29,10 @@ TEST(HttpOptionsTrace, OptionsStarReturnsAllow) {
 
   auto resp =
       test::requestOrThrow(port, test::RequestOptions{.method = "OPTIONS", .target = "*", .body = "", .headers = {}});
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
-  ASSERT_TRUE(resp.contains("Allow:"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
+  std::string allow(http::Allow);
+  allow += http::HeaderSep;
+  ASSERT_TRUE(resp.contains(allow));
 }
 
 TEST(HttpOptionsTrace, TraceEchoWhenEnabled) {
@@ -43,7 +46,7 @@ TEST(HttpOptionsTrace, TraceEchoWhenEnabled) {
   ASSERT_FALSE(resp.empty());
 
   // TRACE response must be message/http
-  ASSERT_TRUE(resp.contains("Content-Type: message/http"));
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentType, "message/http")));
 
   // Should echo request line
   ASSERT_TRUE(resp.contains("TRACE /test HTTP/"));
@@ -58,7 +61,7 @@ TEST(HttpOptionsTrace, TraceDisabledReturns405) {
 
   auto resp =
       test::requestOrThrow(port, test::RequestOptions{.method = "TRACE", .target = "/test", .body = "", .headers = {}});
-  ASSERT_TRUE(resp.contains("405"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 405"));
 }
 
 TEST(HttpOptionsTrace, TraceEnabledPlainOnlyAllowsPlaintext) {
@@ -68,7 +71,7 @@ TEST(HttpOptionsTrace, TraceEnabledPlainOnlyAllowsPlaintext) {
   // Send TRACE over plaintext
   auto resp =
       test::requestOrThrow(port, test::RequestOptions{.method = "TRACE", .target = "/test", .body = "", .headers = {}});
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 namespace {
@@ -106,15 +109,15 @@ TEST_F(HttpCorsIntegration, PreflightUsesRouterAllowedMethods) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
 
-  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://app.example");
 
-  auto methodsIt = parsed.headers.find("Access-Control-Allow-Methods");
+  auto methodsIt = parsed.headers.find(http::AccessControlAllowMethods);
   ASSERT_NE(methodsIt, parsed.headers.end());
   EXPECT_EQ(methodsIt->second, "GET");
 
-  auto hdrsIt = parsed.headers.find("Access-Control-Allow-Headers");
+  auto hdrsIt = parsed.headers.find(http::AccessControlAllowHeaders);
   ASSERT_NE(hdrsIt, parsed.headers.end());
   EXPECT_EQ(hdrsIt->second, "*");
 }
@@ -131,7 +134,7 @@ TEST_F(HttpCorsIntegration, PreflightMethodDeniedReturns405WithAllow) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeMethodNotAllowed);
 
-  auto allowIt = parsed.headers.find("Allow");
+  auto allowIt = parsed.headers.find(http::Allow);
   ASSERT_NE(allowIt, parsed.headers.end());
   EXPECT_EQ(allowIt->second, "GET");
 }
@@ -148,7 +151,7 @@ TEST_F(HttpCorsIntegration, PreflightOriginDeniedReturns403) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
 
-  EXPECT_FALSE(parsed.headers.contains("Access-Control-Allow-Origin"));
+  EXPECT_FALSE(parsed.headers.contains(http::AccessControlAllowOrigin));
 }
 
 TEST_F(HttpCorsIntegration, ActualRequestIncludesAllowOriginHeader) {
@@ -163,7 +166,7 @@ TEST_F(HttpCorsIntegration, ActualRequestIncludesAllowOriginHeader) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://app.example");
 }
@@ -203,14 +206,14 @@ TEST_F(HttpCorsIntegration, StreamingResponseCarriesCorsHeaders) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://app.example");
 
   // Verify Vary: Origin is present for mirrored origin (credentials enabled in fixture)
-  auto varyIt = parsed.headers.find("Vary");
+  auto varyIt = parsed.headers.find(http::Vary);
   ASSERT_NE(varyIt, parsed.headers.end());
-  EXPECT_TRUE(varyIt->second.find("Origin") != std::string::npos);
+  EXPECT_TRUE(varyIt->second.contains(http::Origin));
 
   EXPECT_EQ(parsed.plainBody, "chunk-one");
 }
@@ -233,10 +236,10 @@ TEST_F(HttpCorsIntegration, StreamingVaryHeaderAppendsOrigin) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-  auto varyIt = parsed.headers.find("Vary");
+  auto varyIt = parsed.headers.find(http::Vary);
   ASSERT_NE(varyIt, parsed.headers.end());
-  EXPECT_TRUE(varyIt->second.find("Accept-Encoding") != std::string::npos);
-  EXPECT_TRUE(varyIt->second.find("Origin") != std::string::npos);
+  EXPECT_TRUE(varyIt->second.contains(http::AcceptEncoding));
+  EXPECT_TRUE(varyIt->second.contains(http::Origin));
 }
 
 TEST_F(HttpCorsIntegration, StreamingOriginDeniedSkipsHandler) {
@@ -257,7 +260,7 @@ TEST_F(HttpCorsIntegration, StreamingOriginDeniedSkipsHandler) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
   EXPECT_FALSE(handlerInvoked.load());
-  EXPECT_EQ(parsed.headers.count("Access-Control-Allow-Origin"), 0);
+  EXPECT_EQ(parsed.headers.count(http::AccessControlAllowOrigin), 0);
 }
 
 TEST_F(HttpCorsIntegration, PerRouteCorsPolicyOverridesDefault_ActualAndPreflight) {
@@ -278,7 +281,7 @@ TEST_F(HttpCorsIntegration, PerRouteCorsPolicyOverridesDefault_ActualAndPrefligh
   auto raw = test::requestOrThrow(ts.port(), opt);
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
-  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://per.example");
 
@@ -297,7 +300,7 @@ TEST_F(HttpCorsIntegration, PerRouteCorsPolicyOverridesDefault_ActualAndPrefligh
   raw = test::requestOrThrow(ts.port(), pre);
   parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
-  originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  originIt = parsed.headers.find(http::AccessControlAllowOrigin);
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://per.example");
 }
@@ -321,11 +324,11 @@ TEST(HttpCorsDetailed, PreflightWithCredentialsEmitsMirroredOriginAndCredentials
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
 
-  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://app.example");
 
-  auto credIt = parsed.headers.find("Access-Control-Allow-Credentials");
+  auto credIt = parsed.headers.find(http::AccessControlAllowCredentials);
   ASSERT_NE(credIt, parsed.headers.end());
   EXPECT_EQ(credIt->second, "true");
 }
@@ -348,11 +351,11 @@ TEST(HttpCorsDetailed, ActualRequestWithCredentialsEmitsCredentials) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://app.example");
 
-  auto credIt = parsed.headers.find("Access-Control-Allow-Credentials");
+  auto credIt = parsed.headers.find(http::AccessControlAllowCredentials);
   ASSERT_NE(credIt, parsed.headers.end());
   EXPECT_EQ(credIt->second, "true");
 }
@@ -375,11 +378,11 @@ TEST(HttpCorsDetailed, PreflightExposeHeadersAndMaxAge) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
 
-  auto exposIt = parsed.headers.find("Access-Control-Expose-Headers");
+  auto exposIt = parsed.headers.find(http::AccessControlExposeHeaders);
   ASSERT_NE(exposIt, parsed.headers.end());
   EXPECT_EQ(exposIt->second, "X-My-Header");
 
-  auto maxAgeIt = parsed.headers.find("Access-Control-Max-Age");
+  auto maxAgeIt = parsed.headers.find(http::AccessControlMaxAge);
   ASSERT_NE(maxAgeIt, parsed.headers.end());
   EXPECT_EQ(maxAgeIt->second, "600");
 }
@@ -402,7 +405,7 @@ TEST(HttpCorsDetailed, PreflightPrivateNetworkHeader) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
 
-  auto pnetIt = parsed.headers.find("Access-Control-Allow-Private-Network");
+  auto pnetIt = parsed.headers.find(http::AccessControlAllowPrivateNetwork);
   ASSERT_NE(pnetIt, parsed.headers.end());
   EXPECT_EQ(pnetIt->second, "true");
 }
@@ -428,7 +431,7 @@ TEST(HttpCorsDetailed, PreflightRequestedHeaderDeniedWhenNotAllowed) {
   auto raw = test::requestOrThrow(ts.port(), opt);
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
-  EXPECT_EQ(parsed.headers.count("Access-Control-Allow-Headers"), 0);
+  EXPECT_EQ(parsed.headers.count(http::AccessControlAllowHeaders), 0);
 }
 
 TEST(HttpCorsDetailed, PreflightEchoesRequestedHeadersWhenNoAllowedList) {
@@ -454,7 +457,7 @@ TEST(HttpCorsDetailed, PreflightEchoesRequestedHeadersWhenNoAllowedList) {
   // When no allowed-request-headers are configured and we did not call allowAnyRequestHeaders(),
   // a non-empty requested header list should be denied (HeadersDenied -> 403).
   EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
-  EXPECT_EQ(parsed.headers.count("Access-Control-Allow-Headers"), 0);
+  EXPECT_EQ(parsed.headers.count(http::AccessControlAllowHeaders), 0);
 }
 
 TEST(HttpCorsDetailed, VaryIncludesOriginWhenMirroring) {
@@ -477,9 +480,9 @@ TEST(HttpCorsDetailed, VaryIncludesOriginWhenMirroring) {
     auto parsed = test::parseResponseOrThrow(raw);
     EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-    auto varyIt = parsed.headers.find("Vary");
+    auto varyIt = parsed.headers.find(http::Vary);
     ASSERT_NE(varyIt, parsed.headers.end());
-    EXPECT_TRUE(varyIt->second.find("Origin") != std::string::npos);
+    EXPECT_TRUE(varyIt->second.contains(http::Origin));
   }
 
   // Case 2: existing Vary -> should append ', Origin'
@@ -505,10 +508,10 @@ TEST(HttpCorsDetailed, VaryIncludesOriginWhenMirroring) {
     auto parsed = test::parseResponseOrThrow(raw);
     EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-    auto varyIt = parsed.headers.find("Vary");
+    auto varyIt = parsed.headers.find(http::Vary);
     ASSERT_NE(varyIt, parsed.headers.end());
-    EXPECT_TRUE(varyIt->second.find("Accept-Encoding") != std::string::npos);
-    EXPECT_TRUE(varyIt->second.find("Origin") != std::string::npos);
+    EXPECT_TRUE(varyIt->second.contains(http::AcceptEncoding));
+    EXPECT_TRUE(varyIt->second.contains(http::Origin));
   }
 }
 
@@ -534,10 +537,10 @@ TEST(HttpCorsDetailed, VaryNoDuplicateWhenOriginAlreadyPresent) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-  auto varyIt = parsed.headers.find("Vary");
+  auto varyIt = parsed.headers.find(http::Vary);
   ASSERT_NE(varyIt, parsed.headers.end());
-  EXPECT_TRUE(varyIt->second.find("Origin") != std::string::npos);
-  EXPECT_EQ(varyIt->second.find(", Origin", 0), std::string::npos);
+  EXPECT_TRUE(varyIt->second.contains(http::Origin));
+  EXPECT_FALSE(varyIt->second.contains(", Origin"));
 }
 
 TEST(HttpCorsDetailed, MultipleAllowedOriginsMirrorCorrectOne) {
@@ -559,7 +562,7 @@ TEST(HttpCorsDetailed, MultipleAllowedOriginsMirrorCorrectOne) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://two.example");
 }
@@ -582,7 +585,7 @@ TEST(HttpCorsDetailed, OptionsWithoutAcrMethodTreatedAsSimpleCors) {
   auto raw = test::requestOrThrow(ts.port(), opt);
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
-  auto originIt = parsed.headers.find("Access-Control-Allow-Origin");
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://app.example");
 }

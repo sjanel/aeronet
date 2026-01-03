@@ -74,7 +74,7 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
             -DAERONET_BUILD_TESTS=ON \
-            -DAERONET_BUILD_EXAMPLES=ON \
+            -DAERONET_BUILD_EXAMPLES=OFF \
             -DAERONET_BUILD_BENCHMARKS=OFF \
             -DAERONET_ENABLE_ASAN=ON \
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
@@ -277,6 +277,7 @@ jobs:
           aeronet-multi \
           aeronet-sendfile \
           aeronet-static-example \
+          aeronet-static-file-http2 \
           aeronet-tls-ktls \
           aeronet-tls-session-tickets \
           aeronet-websocket-echo
@@ -358,6 +359,9 @@ jobs:
 
           run_server_and_curl static "http://127.0.0.1:18085/" -- \
             "${EXAMPLE_DIR}/aeronet-static-example" 18085 .
+
+          run_server_and_curl static-file-http2 "https://127.0.0.1:18445/" -k -- \
+            "${EXAMPLE_DIR}/aeronet-static-file-http2" ${BUILD_DIR}/certs/server.crt ${BUILD_DIR}/certs/server.key 18445 --tls .
             
           run_server_and_curl tls "https://127.0.0.1:18443/" -k -- \
             "${EXAMPLE_DIR}/aeronet-tls-ktls" ${BUILD_DIR}/certs/server.crt ${BUILD_DIR}/certs/server.key 18443
@@ -403,7 +407,7 @@ jobs:
           cmake -S . -B build-alpine -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DAERONET_BUILD_TESTS=ON \
-            -DAERONET_BUILD_EXAMPLES=ON \
+            -DAERONET_BUILD_EXAMPLES=OFF \
             -DAERONET_BUILD_BENCHMARKS=OFF \
             -DAERONET_ENABLE_ASAN=OFF \
             -DAERONET_ENABLE_SPDLOG=ON \

@@ -9,6 +9,7 @@
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/protocol-handler.hpp"
@@ -30,19 +31,6 @@ namespace {
 // Expected Sec-WebSocket-Accept for the above key (computed per RFC 6455)
 constexpr std::string_view kExpectedWebSocketAccept = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
 #endif
-
-// Helper to build a raw HTTP request
-RawChars BuildRaw(std::string_view method, std::string_view target, std::string_view extraHeaders = {}) {
-  RawChars raw;
-  raw.append(method);
-  raw.push_back(' ');
-  raw.append(target);
-  raw.append(" HTTP/1.1\r\n");
-  raw.append("Host: example\r\n");
-  raw.append(extraHeaders);
-  raw.append(http::CRLF);
-  return raw;
-}
 
 }  // namespace
 
@@ -103,11 +91,11 @@ TEST(UpgradeHandlerTest, ConnectionContainsUpgrade_TrailingComma) {
 // ============================================================================
 #ifdef AERONET_ENABLE_WEBSOCKET
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ValidRequest) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -121,10 +109,10 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ValidRequest) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingUpgradeHeader) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -135,11 +123,11 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingUpgradeHeader) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WrongUpgradeValue) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: http2\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: http2\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -150,24 +138,24 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WrongUpgradeValue) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingConnectionHeader) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
   WebSocketUpgradeConfig config{serverProtocols, {}};
   const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid);
-  EXPECT_TRUE(result.errorMessage.contains("Connection"));
+  EXPECT_TRUE(result.errorMessage.contains(http::Connection));
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingVersion) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -178,11 +166,11 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingVersion) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WrongVersion) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 8\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 8\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -193,10 +181,10 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WrongVersion) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingKey) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
   ConcatenatedStrings serverProtocols;
   WebSocketUpgradeConfig config{serverProtocols, {}};
@@ -206,11 +194,11 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingKey) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_InvalidKeyFormat) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: tooshort\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: tooshort\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -221,12 +209,12 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_InvalidKeyFormat) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithProtocol) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"
-                                     "Sec-WebSocket-Protocol: graphql-ws, chat,,\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"
+                                           "Sec-WebSocket-Protocol: graphql-ws, chat,,\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -242,12 +230,12 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithProtocol) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_SubprotocolNegotiation) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"
-                                     "Sec-WebSocket-Protocol: graphql-ws, chat, json\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"
+                                           "Sec-WebSocket-Protocol: graphql-ws, chat, json\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   // Server supports "json" and "chat", prefers "json"
@@ -264,12 +252,12 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_SubprotocolNegotiation) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_SubprotocolNoMatch) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"
-                                     "Sec-WebSocket-Protocol: graphql-ws, chat\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"
+                                           "Sec-WebSocket-Protocol: graphql-ws, chat\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   // Server supports "binary" and "xml" - no match with client
@@ -284,12 +272,12 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_SubprotocolNoMatch) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_SubprotocolCaseInsensitive) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"
-                                     "Sec-WebSocket-Protocol: GraphQL-WS\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"
+                                           "Sec-WebSocket-Protocol: GraphQL-WS\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -302,12 +290,12 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_SubprotocolCaseInsensitiv
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithExtensions) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"
-                                     "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"
+                                           "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -321,12 +309,12 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithExtensions) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithExtensionsEmptyList) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"
-                                     "Sec-WebSocket-Extensions: ,\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"
+                                           "Sec-WebSocket-Extensions: ,\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -339,12 +327,12 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithExtensionsEmptyList) 
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateNegotiation) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"
-                                     "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"
+                                           "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   websocket::DeflateConfig deflateConfig;
@@ -369,13 +357,13 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateNegotiat
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateWithParams) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"
-                                     "Sec-WebSocket-Extensions: permessage-deflate; server_max_window_bits=10; "
-                                     "client_no_context_takeover\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"
+                                           "Sec-WebSocket-Extensions: permessage-deflate; server_max_window_bits=10; "
+                                           "client_no_context_takeover\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   websocket::DeflateConfig deflateConfig;
@@ -396,12 +384,12 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateWithPara
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateDisabled) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"
-                                     "Sec-WebSocket-Extensions: permessage-deflate\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"
+                                           "Sec-WebSocket-Extensions: permessage-deflate\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -418,11 +406,11 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateDisabled
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionWithMultipleTokens) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: keep-alive, Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: keep-alive, Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -439,10 +427,10 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionWithMultipleTok
 #ifdef AERONET_ENABLE_HTTP2
 
 TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_ValidRequest) {
-  const auto status = parse(BuildRaw("GET", "/resource",
-                                     "Upgrade: h2c\r\n"
-                                     "Connection: Upgrade, HTTP2-Settings\r\n"
-                                     "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/resource",
+                                           "Upgrade: h2c\r\n"
+                                           "Connection: Upgrade, HTTP2-Settings\r\n"
+                                           "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
@@ -451,9 +439,9 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_ValidRequest) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_MissingUpgradeHeader) {
-  const auto status = parse(BuildRaw("GET", "/resource",
-                                     "Connection: Upgrade, HTTP2-Settings\r\n"
-                                     "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/resource",
+                                           "Connection: Upgrade, HTTP2-Settings\r\n"
+                                           "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
@@ -461,10 +449,10 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_MissingUpgradeHeader) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_WrongUpgradeValue) {
-  const auto status = parse(BuildRaw("GET", "/resource",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade, HTTP2-Settings\r\n"
-                                     "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/resource",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade, HTTP2-Settings\r\n"
+                                           "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
@@ -472,9 +460,9 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_WrongUpgradeValue) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_MissingConnectionHeader) {
-  const auto status = parse(BuildRaw("GET", "/resource",
-                                     "Upgrade: h2c\r\n"
-                                     "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/resource",
+                                           "Upgrade: h2c\r\n"
+                                           "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
@@ -482,10 +470,10 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_MissingConnectionHeader) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_ConnectionWithoutUpgrade) {
-  const auto status = parse(BuildRaw("GET", "/resource",
-                                     "Upgrade: h2c\r\n"
-                                     "Connection: keep-alive\r\n"
-                                     "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/resource",
+                                           "Upgrade: h2c\r\n"
+                                           "Connection: keep-alive\r\n"
+                                           "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
@@ -493,9 +481,9 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_ConnectionWithoutUpgrade) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_MissingSettings) {
-  const auto status = parse(BuildRaw("GET", "/resource",
-                                     "Upgrade: h2c\r\n"
-                                     "Connection: Upgrade, HTTP2-Settings\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/resource",
+                                           "Upgrade: h2c\r\n"
+                                           "Connection: Upgrade, HTTP2-Settings\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
@@ -503,10 +491,10 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_MissingSettings) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_EmptySettings) {
-  const auto status = parse(BuildRaw("GET", "/resource",
-                                     "Upgrade: h2c\r\n"
-                                     "Connection: Upgrade, HTTP2-Settings\r\n"
-                                     "HTTP2-Settings: \r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/resource",
+                                           "Upgrade: h2c\r\n"
+                                           "Connection: Upgrade, HTTP2-Settings\r\n"
+                                           "HTTP2-Settings: \r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
@@ -519,7 +507,7 @@ TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_EmptySettings) {
 // ============================================================================
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_WebSocket) {
-  const auto status = parse(BuildRaw("GET", "/ws", "Upgrade: websocket\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws", "Upgrade: websocket\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
 #ifdef AERONET_ENABLE_WEBSOCKET
@@ -530,7 +518,7 @@ TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_WebSocket) {
 }
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_WebSocketCaseInsensitive) {
-  const auto status = parse(BuildRaw("GET", "/ws", "Upgrade: WEBSOCKET\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws", "Upgrade: WEBSOCKET\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
 #ifdef AERONET_ENABLE_WEBSOCKET
@@ -542,21 +530,21 @@ TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_WebSocketCaseInsensitive) {
 
 #ifdef AERONET_ENABLE_HTTP2
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2) {
-  const auto status = parse(BuildRaw("GET", "/", "Upgrade: h2c\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/", "Upgrade: h2c\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http2);
 }
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2CaseInsensitive) {
-  const auto status = parse(BuildRaw("GET", "/", "Upgrade: H2C\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/", "Upgrade: H2C\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http2);
 }
 #else
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2IgnoredWhenDisabled) {
-  const auto status = parse(BuildRaw("GET", "/", "Upgrade: h2c\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/", "Upgrade: h2c\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http11);
@@ -564,21 +552,21 @@ TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2IgnoredWhenDisabled) {
 #endif
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_NoUpgrade) {
-  const auto status = parse(BuildRaw("GET", "/"));
+  const auto status = parse(BuildRawHttp11("GET", "/"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http11);
 }
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_UnknownProtocol) {
-  const auto status = parse(BuildRaw("GET", "/", "Upgrade: unknown-protocol\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/", "Upgrade: unknown-protocol\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http11);
 }
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_WithWhitespace) {
-  const auto status = parse(BuildRaw("GET", "/ws", "Upgrade:  websocket \r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws", "Upgrade:  websocket \r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
 #ifdef AERONET_ENABLE_WEBSOCKET
@@ -663,11 +651,11 @@ TEST(UpgradeHandlerTest, BuildHttp2UpgradeResponse_Basic) {
   EXPECT_TRUE(responseView.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
 
   // Check required headers are present
-  EXPECT_TRUE(responseView.contains("Upgrade: h2c\r\n"));
-  EXPECT_TRUE(responseView.contains("Connection: Upgrade\r\n"));
+  EXPECT_TRUE(responseView.contains(MakeHttp1HeaderLine(http::Upgrade, "h2c")));
+  EXPECT_TRUE(responseView.contains(MakeHttp1HeaderLine(http::Connection, "Upgrade")));
 
   // Check response ends with double CRLF
-  EXPECT_TRUE(responseView.ends_with("\r\n\r\n"));
+  EXPECT_TRUE(responseView.ends_with(http::DoubleCRLF));
 }
 #endif
 
@@ -677,11 +665,11 @@ TEST(UpgradeHandlerTest, BuildHttp2UpgradeResponse_Basic) {
 // ============================================================================
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_UpgradeHeaderWithWhitespace) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade:  websocket  \r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade:  websocket  \r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -691,11 +679,11 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_UpgradeHeaderWithWhitespa
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionUpgradeWithExtraTokens) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: keep-alive, Upgrade, HTTP2-Settings\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: keep-alive, Upgrade, HTTP2-Settings\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -705,11 +693,11 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionUpgradeWithExtr
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_VersionWithWhitespace) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version:  13  \r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version:  13  \r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -719,11 +707,11 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_VersionWithWhitespace) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_KeyWithWhitespace) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key:  dGhlIHNhbXBsZSBub25jZQ==  \r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key:  dGhlIHNhbXBsZSBub25jZQ==  \r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -733,11 +721,11 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_KeyWithWhitespace) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionNoUpgradeToken) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: keep-alive, close\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: keep-alive, close\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -748,12 +736,12 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionNoUpgradeToken)
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MultipleExtensions) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"
-                                     "Sec-WebSocket-Extensions: x-webkit-deflate-frame, permessage-deflate\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"
+                                           "Sec-WebSocket-Extensions: x-webkit-deflate-frame, permessage-deflate\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   websocket::DeflateConfig deflateConfig;
@@ -774,12 +762,12 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MultipleExtensions) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_EmptyProtocolHeader) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"
-                                     "Sec-WebSocket-Protocol: \r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"
+                                           "Sec-WebSocket-Protocol: \r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;
@@ -790,12 +778,12 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_EmptyProtocolHeader) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_EmptyExtensionsHeader) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"
-                                     "Sec-WebSocket-Extensions: \r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"
+                                           "Sec-WebSocket-Extensions: \r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   websocket::DeflateConfig deflateConfig;
@@ -808,12 +796,12 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_EmptyExtensionsHeader) {
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_NoSupportedProtocols) {
-  const auto status = parse(BuildRaw("GET", "/ws",
-                                     "Upgrade: websocket\r\n"
-                                     "Connection: Upgrade\r\n"
-                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                     "Sec-WebSocket-Version: 13\r\n"
-                                     "Sec-WebSocket-Protocol: graphql-ws, chat\r\n"));
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: websocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"
+                                           "Sec-WebSocket-Protocol: graphql-ws, chat\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   ConcatenatedStrings serverProtocols;

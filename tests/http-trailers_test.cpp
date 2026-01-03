@@ -4,6 +4,8 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
@@ -13,8 +15,7 @@
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
-using namespace std::chrono_literals;
-using namespace aeronet;
+namespace aeronet {
 
 namespace {
 test::TestServer ts(HttpServerConfig{});
@@ -485,7 +486,7 @@ TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
   std::string resp = test::recvUntilClosed(fd);
 
   // Check for chunked encoding
-  EXPECT_TRUE(resp.contains("Transfer-Encoding: chunked"));
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 
   // Check for chunks
   EXPECT_TRUE(resp.contains("chunk1"));
@@ -592,9 +593,11 @@ TEST(HttpResponseWriterTrailers, IgnoredForFixedLength) {
   std::string resp = test::recvUntilClosed(fd);
 
   // Should use Content-Length, not chunked
-  EXPECT_TRUE(resp.contains("Content-Length: 4"));
-  EXPECT_FALSE(resp.contains("Transfer-Encoding: chunked"));
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "4")));
+  EXPECT_FALSE(resp.contains(http::TransferEncoding));
 
   // Trailer should NOT appear
   EXPECT_FALSE(resp.contains("X-Ignored"));
 }
+
+}  // namespace aeronet

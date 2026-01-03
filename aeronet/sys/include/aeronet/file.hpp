@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -13,6 +15,8 @@ namespace aeronet {
 class File {
  public:
   enum class OpenMode : uint8_t { ReadOnly };
+
+  static constexpr std::size_t kError = std::numeric_limits<std::size_t>::max();
 
   // Default-constructed File is closed / empty.
   File() noexcept = default;
@@ -35,14 +39,16 @@ class File {
   // Returns true when the File currently holds an opened descriptor.
   explicit operator bool() const noexcept { return static_cast<bool>(_fd); }
 
-  // Return the file size in bytes. Throws std::runtime_error on failure.
+  // Return the file size in bytes. Logs and returns kError on failure.
   [[nodiscard]] std::size_t size() const;
 
-  // Load the entire file content into a string. Throws on error.
-  [[nodiscard]] std::string loadAllContent() const;
+  // Read up to dst.size() bytes starting at the given absolute offset.
+  // Uses pread() so it does not modify the file's current offset.
+  // Returns the number of bytes read (0 on EOF). Returns kError on error.
+  [[nodiscard]] std::size_t readAt(std::span<std::byte> dst, std::size_t offset) const;
 
   // Duplicate the underlying file descriptor and return a new File that owns the duplicate.
-  // Throws std::runtime_error on failure.
+  // Returns an invalid File on failure.
   [[nodiscard]] File duplicate() const;
 
   // Returns the probable content type based on the file extension.

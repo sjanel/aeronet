@@ -6,10 +6,9 @@
 #include <unistd.h>
 
 #include <cerrno>
-#include <cstdint>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
-#include <format>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -63,81 +62,31 @@ File::File(BaseFd&& baseFd, MIMETypeIdx idx) noexcept : _fd(std::move(baseFd)), 
 std::size_t File::size() const {
   struct stat st{};
   if (_fd && ::fstat(_fd.fd(), &st) == 0) {
-    return static_cast<std::uint64_t>(st.st_size);
+    return static_cast<std::size_t>(st.st_size);
   }
-  throw std::runtime_error("File::size failed");
+  return kError;
 }
 
-std::string File::loadAllContent() const {
-  std::string content;
-  content.reserve(size());
-
-  // Ensure we always leave the file offset at the start on return (normal or
-  // exceptional). The user wants the file to be positioned at 0 when this
-  // function exits, so use RAII to restore that state in the destructor.
-  struct RestoreToStart {
-    explicit RestoreToStart(int fd) noexcept : _fd(fd) {}
-
-    RestoreToStart(const RestoreToStart&) = delete;
-    RestoreToStart& operator=(const RestoreToStart&) = delete;
-    RestoreToStart(RestoreToStart&&) = delete;
-    RestoreToStart& operator=(RestoreToStart&&) = delete;
-
-    ~RestoreToStart() {
-      if (::lseek(_fd, 0, SEEK_SET) == -1) [[unlikely]] {
-        // Log but do not throw from a destructor.
-        log::error("File::loadAllContent: failed to restore offset for fd # {} errno={} msg={}", _fd, errno,
-                   std::strerror(errno));
-      }
-    }
-
-    int _fd;
-  };
-
-  RestoreToStart restore(_fd.fd());
-
-  static constexpr std::size_t kBufSize = 1 << 16;
+std::size_t File::readAt(std::span<std::byte> dst, std::size_t offset) const {
   for (;;) {
-    const std::size_t oldSize = content.size();
-
-    // We capture lastRead to inspect the result after the non-throwing lambda.
-    ssize_t lastRead = 0;
-    content.resize_and_overwrite(oldSize + kBufSize,
-                                 [this, oldSize, &lastRead](char* data, [[maybe_unused]] std::size_t newCap) {
-                                   lastRead = ::read(_fd.fd(), data + oldSize, kBufSize);
-                                   if (lastRead > 0) {
-                                     return oldSize + static_cast<std::size_t>(lastRead);
-                                   }
-                                   // On EOF or error, return oldSize to indicate no progress.
-                                   return oldSize;
-                                 });
-
-    if (lastRead > 0) {
-      continue;  // read more
+    const auto readResult = ::pread(_fd.fd(), dst.data(), dst.size(), static_cast<off_t>(offset));
+    if (readResult >= 0) {
+      return static_cast<std::size_t>(readResult);
     }
-    if (lastRead == 0) {
-      break;  // EOF
-    }
-    // lastRead < 0 -> error. EINTR should be retried.
     if (errno == EINTR) {
       continue;
     }
-    log::error("Unable to read file (fd {}): errno {}: {}", _fd.fd(), errno, std::strerror(errno));
-    throw std::runtime_error("File::loadAllContent read error");
+    log::error("Unable to pread file (fd {}, offset {}, len {}): errno {}: {}", _fd.fd(), offset, dst.size(), errno,
+               std::strerror(errno));
+    return kError;
   }
-
-  return content;
 }
 
 File File::duplicate() const {
-  if (!_fd) {
-    throw std::runtime_error("File is not opened");
-  }
   // Duplicate file descriptor with CLOEXEC to avoid leaking across exec
   BaseFd newFd(::fcntl(_fd.fd(), F_DUPFD_CLOEXEC, 0));
   if (!newFd) {
-    throw std::runtime_error(
-        std::format("File::dup failed to dup fd {}: errno={} msg={}", _fd.fd(), errno, std::strerror(errno)));
+    log::error("File::dup failed to dup fd {}: errno={} msg={}", _fd.fd(), errno, std::strerror(errno));
   }
   return File(std::move(newFd), _mimeMappingIdx);
 }
