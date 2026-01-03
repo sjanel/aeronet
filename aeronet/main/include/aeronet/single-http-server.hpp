@@ -1,7 +1,6 @@
 #pragma once
 
 #include <array>
-#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -10,7 +9,6 @@
 #include <functional>
 #include <future>
 #include <memory>
-#include <mutex>
 #include <span>
 #include <string_view>
 #include <thread>
@@ -28,6 +26,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/internal/lifecycle.hpp"
+#include "aeronet/internal/pending-updates.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/router-config.hpp"
@@ -37,16 +36,14 @@
 #include "aeronet/socket.hpp"
 #include "aeronet/timer-fd.hpp"
 #include "aeronet/tracing/tracer.hpp"
-#include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-protocol-handler.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_OPENSSL
-#include "aeronet/tls-context.hpp"
+#include "aeronet/internal/tls-runtime-state.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
-#include "aeronet/tls-metrics.hpp"
 #endif
 
 namespace aeronet {
@@ -555,48 +552,7 @@ class SingleHttpServer {
     ExpectationHandler expectation;
   } _callbacks;
 
-  struct PendingUpdates {
-    PendingUpdates() noexcept = default;
-
-    PendingUpdates(const PendingUpdates& other) : config(other.config), router(other.router) {
-      hasConfig.store(other.hasConfig.load(std::memory_order_relaxed), std::memory_order_relaxed);
-      hasRouter.store(other.hasRouter.load(std::memory_order_relaxed), std::memory_order_relaxed);
-    }
-
-    PendingUpdates& operator=(const PendingUpdates& other) {
-      if (this != &other) [[likely]] {
-        config = other.config;
-        router = other.router;
-        hasConfig.store(other.hasConfig.load(std::memory_order_relaxed), std::memory_order_relaxed);
-        hasRouter.store(other.hasRouter.load(std::memory_order_relaxed), std::memory_order_relaxed);
-      }
-      return *this;
-    }
-
-    PendingUpdates(PendingUpdates&& other) noexcept : config(std::move(other.config)), router(std::move(other.router)) {
-      hasConfig.store(other.hasConfig.exchange(false, std::memory_order_acq_rel), std::memory_order_release);
-      hasRouter.store(other.hasRouter.exchange(false, std::memory_order_acq_rel), std::memory_order_release);
-    }
-
-    PendingUpdates& operator=(PendingUpdates&& other) noexcept {
-      if (this != &other) [[likely]] {
-        config = std::move(other.config);
-        router = std::move(other.router);
-        hasConfig.store(other.hasConfig.exchange(false, std::memory_order_acq_rel), std::memory_order_release);
-        hasRouter.store(other.hasRouter.exchange(false, std::memory_order_acq_rel), std::memory_order_release);
-      }
-      return *this;
-    }
-
-    // Protected by lock since callers may post from other threads.
-    mutable std::mutex lock;
-    vector<std::function<void(HttpServerConfig&)>> config;
-    vector<std::function<void(Router&)>> router;
-
-    std::atomic<bool> hasConfig{false};
-    std::atomic<bool> hasRouter{false};
-
-  } _updates;
+  internal::PendingUpdates _updates;
 
   struct CompressionState {
     CompressionState() noexcept = default;
@@ -637,28 +593,7 @@ class SingleHttpServer {
   std::weak_ptr<ServerLifecycleTracker> _lifecycleTracker;
 
 #ifdef AERONET_ENABLE_OPENSSL
-  struct TlsRuntimeState {
-    // TlsContext lifetime & pointer stability:
-    // ----------------------------------------
-    // OpenSSL stores user pointers for callbacks (ALPN selection and SNI routing). These pointers must remain
-    // valid for the lifetime of the SSL_CTX and any SSL handshakes using it.
-    //
-    // For hot reload we keep contexts alive via shared_ptr and each ConnectionState holds a keep-alive to the
-    // context it was created from.
-    std::shared_ptr<TlsContext> ctxHolder;
-
-    // Optional shared session ticket key store (MultiHttpServer shares one store across instances).
-    std::shared_ptr<TlsTicketKeyStore> sharedTicketKeyStore;
-
-    // TLS handshake admission control (basic concurrency + rate limiting).
-    uint32_t handshakesInFlight{0};
-    uint32_t rateLimitTokens{0};
-    std::chrono::steady_clock::time_point rateLimitLastRefill;
-
-    TlsMetricsInternal metrics;  // defined in aeronet/tls-metrics.hpp
-  };
-
-  TlsRuntimeState _tls;
+  internal::TlsRuntimeState _tls;
 #endif
 };
 

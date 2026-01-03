@@ -45,3 +45,11 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_sys
 )
+
+AeronetAddUnitTest(
+    pending-updates_test
+    src/pending-updates.cpp
+    test/pending-updates_test.cpp
+    LIBRARIES
+    aeronet_http
+)
