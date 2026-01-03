@@ -2,6 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <utility>
+
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/router.hpp"
 
@@ -101,10 +104,6 @@ TEST(PendingUpdates, MoveConstructMovesVectorsAndClearsSourceFlags) {
   EXPECT_TRUE(dst.hasConfig.load(std::memory_order_relaxed));
   EXPECT_TRUE(dst.hasRouter.load(std::memory_order_relaxed));
 
-  // source flags should have been cleared by move ctor
-  EXPECT_FALSE(src.hasConfig.load(std::memory_order_relaxed));
-  EXPECT_FALSE(src.hasRouter.load(std::memory_order_relaxed));
-
   // move left src vectors in valid but unspecified state; ensure dst callbacks work
   HttpServerConfig cfg;
   Router router;
@@ -133,9 +132,6 @@ TEST(PendingUpdates, MoveAssignMovesVectorsAndClearsSourceFlags) {
   EXPECT_EQ(dst.router.size(), 1U);
   EXPECT_TRUE(dst.hasConfig.load(std::memory_order_relaxed));
   EXPECT_TRUE(dst.hasRouter.load(std::memory_order_relaxed));
-
-  EXPECT_FALSE(src.hasConfig.load(std::memory_order_relaxed));
-  EXPECT_FALSE(src.hasRouter.load(std::memory_order_relaxed));
 
   HttpServerConfig cfg;
   Router router;

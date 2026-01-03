@@ -18,6 +18,7 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -289,8 +290,8 @@ TEST_F(HttpRequestTest, TraceSpanNotSetWhenNoHostHeader) {
   // http.scheme but not http.host.
   RawChars raw;
   raw.append("GET /nohost HTTP/1.1\r\n");
-  raw.append("Connection: close\r\n");
-  raw.append("\r\n");
+  raw.append(MakeHttp1HeaderLine(http::Connection, "close"));
+  raw.append(http::CRLF);
 
   // Reset FakeSpan marker
   FakeSpan::sawHttpHost = false;
@@ -975,19 +976,19 @@ TEST_F(HttpRequestTest, PinHead_RemapsEntriesInsideOldSpan) {
 
 TEST_F(HttpRequestTest, WantCloseAndHasExpectContinue) {
   {  // Connection: close
-    auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1", "Connection: close\r\n"));
+    auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1", MakeHttp1HeaderLine(http::Connection, "close")));
     ASSERT_EQ(st, http::StatusCodeOK);
     EXPECT_TRUE(callWantClose());
     EXPECT_FALSE(req.hasExpectContinue());
   }
   {  // Expect: 100-continue on HTTP/1.1
-    auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1", "Expect: 100-continue\r\n"));
+    auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1", MakeHttp1HeaderLine(http::Expect, "100-continue")));
     ASSERT_EQ(st, http::StatusCodeOK);
     EXPECT_FALSE(callWantClose());
     EXPECT_TRUE(req.hasExpectContinue());
   }
   {  // Expect header on HTTP/1.0 should be ignored
-    auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.0", "Expect: 100-continue\r\n"));
+    auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.0", MakeHttp1HeaderLine(http::Expect, "100-continue")));
     ASSERT_EQ(st, http::StatusCodeOK);
     EXPECT_FALSE(req.hasExpectContinue());
   }
@@ -1353,11 +1354,13 @@ TEST_F(HttpRequestTest, HeaderParsingStress) {
     for (std::size_t headerPos = 0; headerPos < numHeaders; ++headerPos) {
       // Sometimes use known header names
       if (rng.coin()) {
-        static constexpr std::array kKnownHeaders = {
-            "Host",           "Content-Length", "Content-Type",  "Accept",     "User-Agent",        "Authorization",
-            "Cookie",         "Set-Cookie",     "Cache-Control", "Connection", "Transfer-Encoding", "Accept-Encoding",
+        static constexpr std::string_view kKnownHeaders[] = {
+            http::Host,       http::ContentLength,    http::ContentType,
+            "Accept",         "User-Agent",           "Authorization",
+            "Cookie",         "Set-Cookie",           http::CacheControl,
+            http::Connection, http::TransferEncoding, http::AcceptEncoding,
             "Accept-Language"};
-        input.append(kKnownHeaders[rng.range(0, kKnownHeaders.size())]);
+        input.append(kKnownHeaders[rng.range(0, std::size(kKnownHeaders))]);
       } else {
         std::size_t nameLen = rng.range(1, 30);
         for (std::size_t ii = 0; ii < nameLen; ++ii) {

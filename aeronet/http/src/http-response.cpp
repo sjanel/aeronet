@@ -117,6 +117,20 @@ std::size_t HttpResponse::bodyLen() const noexcept {
   return pExternPayload != nullptr ? pExternPayload->size() : internalBodyAndTrailersLen();
 }
 
+std::size_t HttpResponse::fileOffset() const noexcept {
+  if (const FilePayload* pFilePayload = filePayloadPtr(); pFilePayload != nullptr) {
+    return pFilePayload->offset;
+  }
+  return 0;
+}
+
+std::size_t HttpResponse::fileLength() const noexcept {
+  if (const FilePayload* pFilePayload = filePayloadPtr(); pFilePayload != nullptr) {
+    return pFilePayload->length;
+  }
+  return 0;
+}
+
 void HttpResponse::setStatusCode(http::StatusCode statusCode) {
   if (statusCode < 100 || statusCode > 999) [[unlikely]] {
     throw std::invalid_argument("Invalid HTTP status code, should be 3 digits");
@@ -335,11 +349,14 @@ HttpResponse& HttpResponse::file(File fileObj, std::size_t offset, std::size_t l
     throw std::invalid_argument("file requires an opened file");
   }
   const std::size_t fileSize = fileObj.size();
-  if (offset > fileSize) {
+  if (fileSize == File::kError) {
+    throw std::invalid_argument("file size is unknown");
+  }
+  if (fileSize < offset) {
     throw std::invalid_argument("file offset exceeds file size");
   }
   const std::size_t resolvedLength = length == 0 ? (fileSize - offset) : length;
-  if (offset + resolvedLength > fileSize) {
+  if (fileSize < offset + resolvedLength) {
     throw std::invalid_argument("file length exceeds file size");
   }
   if (_trailerPos != 0) {

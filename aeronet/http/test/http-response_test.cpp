@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
-#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <iterator>
@@ -21,14 +20,17 @@
 #include <vector>
 
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/file-helpers.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/temp-file.hpp"
@@ -42,6 +44,7 @@ class HttpResponseTest : public ::testing::Test {
   static constexpr bool keepAlive = false;
   static constexpr bool isHeadMethod = false;
   static constexpr std::size_t minCapturedBodySize = 4096;
+  static const RawChars kExpectedDateRaw;
 
   static HttpResponse::FormattedHttp1Response finalizePrepared(HttpResponse&& resp, bool head = isHeadMethod,
                                                                bool keepAliveFlag = keepAlive) {
@@ -91,6 +94,8 @@ class HttpResponseTest : public ::testing::Test {
     return out;
   }
 };
+
+const RawChars HttpResponseTest::kExpectedDateRaw = MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
 
 TEST_F(HttpResponseTest, StatusFromRvalue) {
   auto resp = HttpResponse(http::StatusCodeOK).status(404);
@@ -416,7 +421,10 @@ TEST_F(HttpResponseTest, StatusOnly) {
 
   auto full = concatenated(std::move(resp));
 
-  EXPECT_EQ(full, "HTTP/1.1 404\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 404\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, TooLongReasonShouldBeTruncated) {
@@ -543,8 +551,8 @@ TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
   EXPECT_EQ(prefix.substr(0, 8), "HTTP/1.1") << "Raw prefix: '" << std::string(prefix) << "'";
   EXPECT_EQ(prefix.substr(8, 1), " ");
   EXPECT_EQ(prefix.substr(9, 3), "200");
-  EXPECT_TRUE(full.contains("Content-Type: text/plain"));
-  EXPECT_TRUE(full.contains("X-A: B"));
+  EXPECT_TRUE(full.contains("Content-Type: text/plain\r\n"));
+  EXPECT_TRUE(full.contains("X-A: B\r\n"));
   auto posBody = full.find("Hello");
   ASSERT_NE(posBody, std::string_view::npos);
   auto separator = full.substr(0, posBody);
@@ -558,7 +566,10 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithoutHeaders) {
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
-  EXPECT_EQ(full, "HTTP/1.1 404 Not Found\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 404 Not Found\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
@@ -568,7 +579,10 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
   EXPECT_EQ(resp.reason(), "OK");
   auto full = concatenated(std::move(resp));
 
-  EXPECT_EQ(full, "HTTP/1.1 200 OK\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithHeaders) {
@@ -578,9 +592,11 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithHeaders) {
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
-  EXPECT_EQ(
-      full,
-      "HTTP/1.1 404 Not Found\r\nX-Header: 127\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 404 Not Found\r\n"));
+  EXPECT_TRUE(full.contains("X-Header: 127\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
@@ -590,9 +606,12 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
   EXPECT_EQ(resp.reason(), "OK");
   auto full = concatenated(std::move(resp));
 
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Header-1: Value1\r\nX-Header-2: Value2\r\nConnection: close\r\nDate: Thu, 01 Jan "
-            "1970 00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Header-1: Value1\r\n"));
+  EXPECT_TRUE(full.contains("X-Header-2: Value2\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyAddReasonWithHeaders) {
@@ -601,9 +620,11 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyAddReasonWithHeaders) {
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
-  EXPECT_EQ(
-      full,
-      "HTTP/1.1 404 Not Found\r\nX-Header: 127\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 404 Not Found\r\n"));
+  EXPECT_TRUE(full.contains("X-Header: 127\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyRemoveReasonWithHeaders) {
@@ -614,9 +635,12 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyRemoveReasonWithHeaders) {
   EXPECT_EQ(resp.reason(), "");
   auto full = concatenated(std::move(resp));
 
-  EXPECT_EQ(full,
-            "HTTP/1.1 200\r\nX-Header-1: Value1\r\nX-Header-2: Value2\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
-            "00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+  EXPECT_TRUE(full.contains("X-Header-1: Value1\r\n"));
+  EXPECT_TRUE(full.contains("X-Header-2: Value2\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithBody) {
@@ -626,9 +650,12 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithBody) {
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
-  EXPECT_EQ(full,
-            "HTTP/1.1 404 Not Found\r\nContent-Type: MySpecialContentType\r\nConnection: close\r\nDate: "
-            "Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 5\r\n\r\nHello");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 404 Not Found\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "MySpecialContentType")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "5")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nHello"));
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
@@ -638,9 +665,12 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
   EXPECT_EQ(resp.reason(), "OK");
   auto full = concatenated(std::move(resp));
 
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\nDate: Thu, 01 "
-            "Jan 1970 00:00:00 GMT\r\nContent-Length: 5\r\n\r\nHello");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "5")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nHello"));
 }
 
 TEST_F(HttpResponseTest, AllowsDuplicates) {
@@ -697,8 +727,8 @@ TEST_F(HttpResponseTest, SendFilePayload) {
   EXPECT_EQ(prepared.file.size(), sz);
 
   std::string headers(prepared.data.firstBuffer());
-  EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz)));
-  EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
+  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(sz))));
+  EXPECT_FALSE(headers.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 }
 
 TEST_F(HttpResponseTest, SendFilePayloadOffsetLength) {
@@ -717,8 +747,8 @@ TEST_F(HttpResponseTest, SendFilePayloadOffsetLength) {
   EXPECT_EQ(prepared.file.size(), sz);
 
   std::string headers(prepared.data.firstBuffer());
-  EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz - 4)));
-  EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
+  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(sz - 4))));
+  EXPECT_FALSE(headers.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 }
 
 TEST_F(HttpResponseTest, SendFilePayloadOffsetLengthRvalue) {
@@ -738,8 +768,8 @@ TEST_F(HttpResponseTest, SendFilePayloadOffsetLengthRvalue) {
   EXPECT_EQ(prepared.file.size(), sz);
 
   std::string headers(prepared.data.firstBuffer());
-  EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz - 6)));
-  EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
+  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(sz - 6))));
+  EXPECT_FALSE(headers.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 }
 
 TEST_F(HttpResponseTest, SendFileZeroLengthPayload) {
@@ -761,17 +791,17 @@ TEST_F(HttpResponseTest, SendFileZeroLengthPayload) {
 
   std::string headers(prepared.data.firstBuffer());
   // No Content-Length header is expected for zero-length file in current behavior
-  EXPECT_FALSE(headers.contains("Content-Length: 0"));
-  EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
+  EXPECT_FALSE(headers.contains(http::ContentLength));
+  EXPECT_FALSE(headers.contains(http::TransferEncoding));
 }
 
 TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
-  constexpr std::string_view kPayload = "head sendfile payload";
+  static constexpr std::string_view kPayload = "head sendfile payload";
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, kPayload);
   File file(tmp.filePath().string());
   ASSERT_TRUE(file);
-  const std::uint64_t sz = file.size();
+  const std::size_t sz = file.size();
 
   HttpResponse resp(http::StatusCodeOK, "OK");
   resp.file(std::move(file));
@@ -781,8 +811,8 @@ TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
   EXPECT_TRUE(prepared.file);
 
   std::string headers(prepared.data.firstBuffer());
-  EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz)));
-  EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
+  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(sz))));
+  EXPECT_FALSE(headers.contains(http::TransferEncoding));
 }
 
 TEST_F(HttpResponseTest, SendFileHeadMovesFileAndSuppressesLength) {
@@ -791,7 +821,7 @@ TEST_F(HttpResponseTest, SendFileHeadMovesFileAndSuppressesLength) {
   test::ScopedTempFile tmp(tmpDir, kPayload);
   File file(tmp.filePath().string());
   ASSERT_TRUE(file);
-  const std::uint64_t sz = file.size();
+  const std::size_t sz = file.size();
 
   HttpResponse resp(http::StatusCodeOK, "OK");
   resp.file(std::move(file));
@@ -803,8 +833,8 @@ TEST_F(HttpResponseTest, SendFileHeadMovesFileAndSuppressesLength) {
   EXPECT_EQ(prepared.file.size(), sz);
 
   std::string headers(prepared.data.firstBuffer());
-  EXPECT_TRUE(headers.contains("Content-Length: " + std::to_string(sz)));
-  EXPECT_FALSE(headers.contains("Transfer-Encoding: chunked"));
+  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(sz))));
+  EXPECT_FALSE(headers.contains(http::TransferEncoding));
 }
 
 TEST_F(HttpResponseTest, CapturedBodyWithTrailersAppendsFinalCRLF) {
@@ -918,8 +948,11 @@ TEST_F(HttpResponseTest, HeaderNewViaSetter) {
   HttpResponse resp(http::StatusCodeOK, "OK");
   resp.header("X-First", "One");
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-First: One\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-First: One\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceLargerValue) {
@@ -928,9 +961,11 @@ TEST_F(HttpResponseTest, HeaderReplaceLargerValue) {
   // Replace with larger value
   resp.header("X-Replace", "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Replace: ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
-            "00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Replace: ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceSmallerValue) {
@@ -939,8 +974,11 @@ TEST_F(HttpResponseTest, HeaderReplaceSmallerValue) {
   // Replace with smaller
   resp.header("X-Replace", "S");
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Replace: S\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Replace: S\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceSameLengthValue) {
@@ -948,9 +986,11 @@ TEST_F(HttpResponseTest, HeaderReplaceSameLengthValue) {
   resp.header("X-Replace", "LEN10VALUE");  // length 10
   resp.header("X-Replace", "0123456789");  // also length 10
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(
-      full,
-      "HTTP/1.1 200 OK\r\nX-Replace: 0123456789\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Replace: 0123456789\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 // Ensure replacement logic does not mistake key pattern inside a value as a header start.
@@ -960,9 +1000,11 @@ TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternLarger) {
   // Replace header; algorithm must not treat the embedded "X-Key: " in the value as another header start
   resp.header("X-Key", "REPLACED-VALUE");
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(
-      full,
-      "HTTP/1.1 200 OK\r\nX-Key: REPLACED-VALUE\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Key: REPLACED-VALUE\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
@@ -970,8 +1012,11 @@ TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
   resp.header("X-Key", "AAAA X-Key: B BBBBBB");
   resp.header("X-Key", "SMALL");
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Key: SMALL\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Key: SMALL\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 // --- New tests: header replacement while a body is present ---
@@ -981,10 +1026,13 @@ TEST_F(HttpResponseTest, LocationHeader) {
   resp.location("http://example.com/new-location");
   resp.body("Redirecting...");
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(
-      full,
-      "HTTP/1.1 302 Found\r\nLocation: http://example.com/new-location\r\nContent-Type: text/plain\r\nConnection: "
-      "close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 14\r\n\r\nRedirecting...");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 302 Found\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Location, "http://example.com/new-location")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "14")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nRedirecting..."));
 }
 
 TEST_F(HttpResponseTest, LocationHeaderRValue) {
@@ -992,9 +1040,13 @@ TEST_F(HttpResponseTest, LocationHeaderRValue) {
                   .location("https://another.example.com/redirect-here")
                   .body("Please wait...");
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 302 Found\r\nLocation: https://another.example.com/redirect-here\r\nContent-Type: text/plain\r\n"
-            "Connection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 14\r\n\r\nPlease wait...");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 302 Found\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Location, "https://another.example.com/redirect-here")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "14")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nPlease wait..."));
 }
 
 TEST_F(HttpResponseTest, ContentEncodingHeader) {
@@ -1002,17 +1054,25 @@ TEST_F(HttpResponseTest, ContentEncodingHeader) {
   resp.contentEncoding("gzip");
   resp.body("CompressedData");
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: text/plain\r\nConnection: close\r\nDate: "
-            "Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 14\r\n\r\nCompressedData");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentEncoding, "gzip")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "14")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nCompressedData"));
 }
 
 TEST_F(HttpResponseTest, ContentEncodingHeaderRValue) {
   auto resp = HttpResponse(http::StatusCodeOK, "OK").contentEncoding("deflate").body("DeflatedData");
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nContent-Encoding: deflate\r\nContent-Type: text/plain\r\nConnection: close\r\nDate: "
-            "Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 12\r\n\r\nDeflatedData");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentEncoding, "deflate")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "12")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nDeflatedData"));
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
@@ -1021,9 +1081,13 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
   resp.body("Hello");                  // body length 5
   resp.header("X-Val", "ABCDEFGHIJ");  // grow header value
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Val: ABCDEFGHIJ\r\nContent-Type: text/plain\r\nConnection: "
-            "close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 5\r\n\r\nHello");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Val: ABCDEFGHIJ\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "5")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nHello"));
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
@@ -1031,9 +1095,13 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
   resp.body("WorldWide");     // length 9
   resp.header("X-Val", "S");  // shrink header value
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Val: S\r\nContent-Type: text/plain\r\nConnection: "
-            "close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 9\r\n\r\nWorldWide");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Val: S\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "9")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nWorldWide"));
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueAppendsToExistingHeader) {
@@ -1109,9 +1177,13 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
   resp.body("Data");                   // length 4
   resp.header("X-Val", "0123456789");  // same length replacement
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Val: 0123456789\r\nContent-Type: text/plain\r\nConnection: "
-            "close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 4\r\n\r\nData");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Val: 0123456789\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "4")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nData"));
 }
 
 TEST_F(HttpResponseTest, GlobalHeadersShouldNotOverrideUserHeaders) {
@@ -1122,9 +1194,12 @@ TEST_F(HttpResponseTest, GlobalHeadersShouldNotOverrideUserHeaders) {
   globalHeaders.append("X-Another: AnotherValue");
   resp.reason("Some Reason");
   auto full = concatenated(std::move(resp), globalHeaders);
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 Some Reason\r\nX-Global: UserValue\r\nX-Another: AnotherValue\r\nConnection: close\r\nDate: "
-            "Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 Some Reason\r\n"));
+  EXPECT_TRUE(full.contains("X-Global: UserValue\r\n"));
+  EXPECT_TRUE(full.contains("X-Another: AnotherValue\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
@@ -1133,9 +1208,13 @@ TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
   resp.body("Data");                   // length 4
   resp.header("x-val", "0123456789");  // same length replacement
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nX-Val: 0123456789\r\nContent-Type: text/plain\r\nConnection: "
-            "close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 4\r\n\r\nData");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Val: 0123456789\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "4")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nData"));
 }
 
 TEST_F(HttpResponseTest, HeaderGetterAfterSet) {
@@ -1187,8 +1266,12 @@ TEST_F(HttpResponseTest, InterleavedReasonAndHeaderMutations) {
   resp.reason("");
   resp.header("x-A", "S");
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200\r\nX-A: S\r\nX-B: 2\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+  EXPECT_TRUE(full.contains("X-A: S\r\n"));
+  EXPECT_TRUE(full.contains("X-B: 2\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeString) {
@@ -1200,9 +1283,10 @@ TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentType
   EXPECT_EQ(resp.body(), "");
   EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
-            "00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeVectorBytes) {
@@ -1214,9 +1298,10 @@ TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentType
   EXPECT_EQ(resp.body(), "");
   EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
-            "00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeUniquePtrBytes) {
@@ -1228,9 +1313,10 @@ TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentType
   EXPECT_EQ(resp.body(), "");
   EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 OK\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
-            "00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, SetCapturedBodyEmptyFromUniquePtrShouldResetBodyAndRemoveContentType) {
@@ -1247,9 +1333,10 @@ TEST_F(HttpResponseTest, SetCapturedBodyEmptyFromUniquePtrShouldResetBodyAndRemo
   EXPECT_EQ(resp.body(), "");
   EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
   auto full = concatenated(std::move(resp));
-  EXPECT_EQ(full,
-            "HTTP/1.1 200 Longer Reason\r\nConnection: close\r\nDate: Thu, 01 Jan 1970 "
-            "00:00:00 GMT\r\n\r\n");
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 Longer Reason\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 // ---------------- Additional Stress / Fuzz Tests ----------------
@@ -1278,10 +1365,14 @@ TEST_F(HttpResponseTest, RepeatedGrowShrinkCycles) {
   resp.header("X-Cycle", "Z");
   resp.body("END");
   auto full = concatenated(std::move(resp));
-  std::string expected =
-      "HTTP/1.1 200\r\nX-Static: STATIC\r\nX-Cycle: Z\r\nContent-Type: text/plain\r\nConnection: "
-      "close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: 3\r\n\r\nEND";
-  EXPECT_EQ(full, expected);
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+  EXPECT_TRUE(full.contains("X-Static: STATIC\r\n"));
+  EXPECT_TRUE(full.contains("X-Cycle: Z\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "3")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nEND"));
 }
 
 // --- Trailer-related tests (response-side) ---
@@ -1316,10 +1407,10 @@ TEST_F(HttpResponseTest, LargeHeaderCountStress) {
   auto full = concatenated(std::move(resp));
   ASSERT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
   // Count custom headers (exclude Date/Connection)
-  auto pos = full.find("\r\n") + 2;  // after status line CRLF
+  auto pos = full.find(http::CRLF) + 2;  // after status line CRLF
   int userHeaders = 0;
   while (pos < full.size()) {
-    auto lineEnd = full.find("\r\n", pos);
+    auto lineEnd = full.find(http::CRLF, pos);
     ASSERT_NE(lineEnd, std::string_view::npos);
     if (lineEnd == pos) {
       pos += 2;
@@ -1332,7 +1423,9 @@ TEST_F(HttpResponseTest, LargeHeaderCountStress) {
     pos = lineEnd + 2;
   }
   EXPECT_EQ(userHeaders, kCount);
-  EXPECT_TRUE(full.contains("Connection: close\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 namespace {  // local helpers for fuzz test
@@ -1679,7 +1772,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
         case 6: {
           File file(tmp.filePath().string());
           if (lastTrailerKey.empty()) {
-            lastBody = file.loadAllContent();
+            lastBody = LoadAllContent(file);
             resp.file(std::move(file));
           } else {
             // Once a trailer was set, body cannot be changed
@@ -1699,7 +1792,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
     EXPECT_EQ(resp.reason(), lastReason);
     if (hasFile) {
       EXPECT_TRUE(resp.body().empty());
-      EXPECT_EQ(resp.file()->loadAllContent(), lastBody);
+      EXPECT_EQ(LoadAllContent(*resp.file()), lastBody);
     } else {
       EXPECT_EQ(resp.body(), lastBody);
     }

@@ -4,12 +4,14 @@
 
 #include <string>
 
+#include "aeronet/http-constants.hpp"
+
 namespace aeronet::http {
 
 TEST(ReservedHeadersTest, ReservedResponseHeaderBasic) {
   EXPECT_TRUE(IsReservedResponseHeader("content-length"));
   EXPECT_TRUE(IsReservedResponseHeader("date"));
-  EXPECT_TRUE(IsReservedResponseHeader("connection"));
+  EXPECT_TRUE(IsReservedResponseHeader(http::Connection));
   EXPECT_TRUE(IsReservedResponseHeader("transfer-encoding"));
   EXPECT_TRUE(IsReservedResponseHeader("te"));
   EXPECT_TRUE(IsReservedResponseHeader("trailer"));

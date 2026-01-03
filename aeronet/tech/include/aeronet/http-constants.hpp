@@ -33,10 +33,12 @@ inline constexpr std::string_view TRACE = "TRACE";
 inline constexpr std::string_view PATCH = "PATCH";
 
 // Standard Header Field Names (as they typically appear in canonical form)
+// TODO: rename all header names in lowercase to comply with HTTP/2 header field name rules (RFC 9113)
 inline constexpr std::string_view Connection = "Connection";
 inline constexpr std::string_view TransferEncoding = "Transfer-Encoding";
 inline constexpr std::string_view ContentLength = "Content-Length";
 inline constexpr std::string_view ContentType = "Content-Type";
+inline constexpr std::string_view CacheControl = "cache-control";
 inline constexpr std::string_view ContentDisposition = "Content-Disposition";
 inline constexpr std::string_view ContentEncoding = "Content-Encoding";
 inline constexpr std::string_view AcceptEncoding = "Accept-Encoding";
@@ -51,11 +53,11 @@ inline constexpr std::string_view Date = "Date";  // only used for writing (serv
 inline constexpr std::string_view Location = "Location";
 inline constexpr std::string_view Vary = "Vary";
 inline constexpr std::string_view Origin = "Origin";
-inline constexpr std::string_view Allow = "Allow";
-inline constexpr std::string_view AcceptRanges = "Accept-Ranges";
-inline constexpr std::string_view ContentRange = "Content-Range";
-inline constexpr std::string_view ETag = "ETag";
-inline constexpr std::string_view LastModified = "Last-Modified";
+inline constexpr std::string_view Allow = "allow";
+inline constexpr std::string_view AcceptRanges = "accept-ranges";
+inline constexpr std::string_view ContentRange = "content-range";
+inline constexpr std::string_view ETag = "etag";
+inline constexpr std::string_view LastModified = "last-modified";
 inline constexpr std::string_view Range = "Range";
 inline constexpr std::string_view IfRange = "If-Range";
 inline constexpr std::string_view IfModifiedSince = "If-Modified-Since";
@@ -72,6 +74,9 @@ inline constexpr std::string_view AccessControlAllowPrivateNetwork = "Access-Con
 inline constexpr std::string_view AccessControlRequestMethod = "Access-Control-Request-Method";
 inline constexpr std::string_view AccessControlRequestHeaders = "Access-Control-Request-Headers";
 
+// Custom Headers for Static File Handling
+inline constexpr std::string_view XDirectoryListingTruncated = "x-directory-listing-truncated";
+
 // Special aeronet headers
 inline constexpr std::string_view OriginalEncodingHeaderName = "X-Aeronet-Original-Encoding";
 inline constexpr std::string_view OriginalEncodedLengthHeaderName = "X-Aeronet-Original-Encoded-Length";
@@ -79,6 +84,7 @@ inline constexpr std::string_view OriginalEncodedLengthHeaderName = "X-Aeronet-O
 inline constexpr std::string_view HeaderSep = ": ";
 inline constexpr std::string_view CRLF = "\r\n";
 inline constexpr std::string_view DoubleCRLF = "\r\n\r\n";
+
 // Minimal syntactic request-line example (no headers):
 //   "GET / HTTP/1.1\r\n"
 // The expression below computes the minimal request-line length for a

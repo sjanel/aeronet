@@ -8,6 +8,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/static-file-handler.hpp"
@@ -51,9 +52,9 @@ TEST(HttpRangeStatic, ServeCompleteFile) {
   const auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
   EXPECT_EQ(parsed.body, "abcdefghij");
-  EXPECT_EQ(getHeader(parsed, "Accept-Ranges"), "bytes");
-  EXPECT_FALSE(getHeader(parsed, "ETag").empty());
-  EXPECT_FALSE(getHeader(parsed, "Last-Modified").empty());
+  EXPECT_EQ(getHeader(parsed, http::AcceptRanges), "bytes");
+  EXPECT_FALSE(getHeader(parsed, http::ETag).empty());
+  EXPECT_FALSE(getHeader(parsed, http::LastModified).empty());
 }
 
 TEST(HttpRangeStatic, SingleRangePartialContent) {
@@ -72,7 +73,7 @@ TEST(HttpRangeStatic, SingleRangePartialContent) {
   const auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodePartialContent);
   EXPECT_EQ(parsed.body, "abcd");
-  EXPECT_EQ(getHeader(parsed, "Content-Range"), "bytes 0-3/10");
+  EXPECT_EQ(getHeader(parsed, http::ContentRange), "bytes 0-3/10");
 }
 
 TEST(HttpRangeStatic, UnsatisfiableRange) {
@@ -90,7 +91,7 @@ TEST(HttpRangeStatic, UnsatisfiableRange) {
   const auto raw = test::requestOrThrow(ts.port(), opt);
   const auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeRangeNotSatisfiable);
-  EXPECT_EQ(getHeader(parsed, "Content-Range"), "bytes */10");
+  EXPECT_EQ(getHeader(parsed, http::ContentRange), "bytes */10");
 }
 
 TEST(HttpRangeStatic, IfNoneMatchReturns304) {
@@ -105,7 +106,7 @@ TEST(HttpRangeStatic, IfNoneMatchReturns304) {
   initial.target = "/" + fileName;
   const auto firstRaw = test::requestOrThrow(ts.port(), initial);
   const auto firstParsed = test::parseResponseOrThrow(firstRaw);
-  const auto etag = getHeader(firstParsed, "ETag");
+  const auto etag = getHeader(firstParsed, http::ETag);
   ASSERT_FALSE(etag.empty());
 
   test::RequestOptions opt;
@@ -212,7 +213,7 @@ TEST(HttpRangeInvalid, IfMatchPreconditionFailed) {
   const auto firstRaw = test::requestOrThrow(ts.port(), initial);
   const auto firstParsed = test::parseResponseOrThrow(firstRaw);
   const auto headers = firstParsed.headers;
-  const auto etag = headers.find("ETag");
+  const auto etag = headers.find(http::ETag);
   ASSERT_NE(etag, headers.end());
 
   // If-Match with a non-matching tag -> 412 Precondition Failed
