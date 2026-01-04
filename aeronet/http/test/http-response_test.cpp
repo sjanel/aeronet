@@ -21,6 +21,7 @@
 
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/file-helpers.hpp"
+#include "aeronet/file-sys-test-support.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-constants.hpp"
@@ -680,6 +681,19 @@ TEST_F(HttpResponseTest, CannotSendFileAfterTrailers) {
   File file(tmp.filePath().string());
 
   EXPECT_THROW(resp.file(std::move(file)), std::logic_error);
+}
+
+TEST_F(HttpResponseTest, SendInvalidFile) {
+  test::FileSyscallHookGuard guard;
+
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "some-data");
+  File file(tmp.filePath().string());
+
+  test::gFstatSizes.setActions(tmp.filePath().string(), {-1});
+
+  auto resp = HttpResponse(http::StatusCodeOK, "OK");
+  EXPECT_THROW(resp.file(std::move(file)), std::invalid_argument);
 }
 
 TEST_F(HttpResponseTest, SendFilePayload) {

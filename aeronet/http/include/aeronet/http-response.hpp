@@ -210,14 +210,6 @@ class HttpResponse {
   // Check if this HttpResponse has a file payload.
   [[nodiscard]] bool hasFile() const noexcept { return isFileBody(); }
 
-  // If the response contains a file payload, return the configured offset inside that file.
-  // Returns 0 if no file payload is present.
-  [[nodiscard]] std::size_t fileOffset() const noexcept;
-
-  // If the response contains a file payload, return the configured length to send.
-  // Returns 0 if no file payload is present.
-  [[nodiscard]] std::size_t fileLength() const noexcept;
-
   // Return a non-allocating, iterable view over trailer headers.
   // Each element is a HeaderView with name and value string_views.
   // Usage example:

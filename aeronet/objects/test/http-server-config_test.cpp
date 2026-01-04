@@ -33,6 +33,14 @@ TEST(HttpServerConfigTest, WithGlobalHeadersShouldReplaceAllList) {
   EXPECT_NO_THROW(config.validate());
 }
 
+TEST(HttpServerConfigTest, NoGlobalHeadersIsValidAndShouldNotAddDefaultOnes) {
+  HttpServerConfig config;
+  config.withGlobalHeaders({});
+  EXPECT_TRUE(config.globalHeaders.empty());
+  EXPECT_NO_THROW(config.validate());
+  EXPECT_TRUE(config.globalHeaders.empty());
+}
+
 TEST(HttpServerConfigTest, AddGlobalHeader) {
   HttpServerConfig config;
   config.addGlobalHeader(http::Header{"X-Test", "value"});

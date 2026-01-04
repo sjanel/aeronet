@@ -425,7 +425,8 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
 }
 
 ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod) {
-  const std::size_t contentLength = response.hasFile() ? response.fileLength() : response.body().size();
+  HttpResponse::FilePayload* pFilePayload = response.filePayloadPtr();
+  const std::size_t contentLength = pFilePayload != nullptr ? pFilePayload->length : response.body().size();
 
   // finalize headers
   WriteCRLFDateHeader(response._data.data() + response.headersStartPos(), SysClock::now());
@@ -451,10 +452,9 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
   // internal buffers that also store body/trailers.
   const auto trailersView = response.trailers();
   const bool hasTrailers = !isHeadMethod && (trailersView.begin() != trailersView.end());
-  HttpResponse::FilePayload* pFilePayload = response.filePayloadPtr();
   const bool hasFile = !isHeadMethod && pFilePayload != nullptr;
   const std::string_view bodyView = hasFile ? std::string_view{} : response.body();
-  const bool hasBody = !isHeadMethod && (hasFile ? (response.fileLength() != 0) : !bodyView.empty());
+  const bool hasBody = !isHeadMethod && (hasFile ? (pFilePayload->length != 0) : !bodyView.empty());
 
   // Determine when to set END_STREAM:
   // - On HEADERS if no body and no trailers
@@ -478,8 +478,8 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
       PendingFileSend pending;
       pending.file = std::move(pFilePayload->file);
 
-      pending.offset = response.fileOffset();
-      pending.remaining = response.fileLength();
+      pending.offset = pFilePayload->offset;
+      pending.remaining = pFilePayload->length;
 
       // Pass 1 - try to send as much as possible now
       err = sendPendingFileBody(streamId, pending, endStreamOnData);

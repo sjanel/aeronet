@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <iterator>
 #include <string_view>
 #include <type_traits>
@@ -29,6 +30,17 @@ class DynamicConcatenatedStrings {
 
   DynamicConcatenatedStrings() noexcept = default;
 
+  DynamicConcatenatedStrings(std::initializer_list<std::string_view> initList) {
+    std::size_t totalSize = 0UL;
+    for (std::string_view str : initList) {
+      totalSize += str.size() + kSep.size();
+    }
+    _buf.reserve(totalSize);
+    for (std::string_view str : initList) {
+      append(str);
+    }
+  }
+
   explicit DynamicConcatenatedStrings(size_type initialCapacity) : _buf(initialCapacity) {}
 
   // Append a new string part.
@@ -42,12 +54,15 @@ class DynamicConcatenatedStrings {
 
   // Check whether a given part is already contained.
   [[nodiscard]] bool contains(std::string_view part) const noexcept {
-    const std::string_view buf = _buf;
-    const auto pos = buf.find(part);
-    if (pos == std::string_view::npos || buf.substr(pos + part.size(), kSep.size()) != kSep) {
-      return false;
+    std::string_view buf = _buf;
+    while (!buf.empty()) {
+      const auto nextSep = buf.find(kSep);
+      if (std::string_view{buf.begin(), nextSep} == part) {
+        return true;
+      }
+      buf.remove_prefix(nextSep + kSep.size());
     }
-    return pos == 0 || (pos > kSep.size() && buf.substr(pos - kSep.size(), kSep.size()) == kSep);
+    return false;
   }
 
   // Check whether a given part is already contained (case-insensitive).
@@ -141,7 +156,6 @@ class DynamicConcatenatedStrings {
   void clear() noexcept { _buf.clear(); }
 
   // Get the number of concatenated strings
-  // The complexity is linear in the number of concatenated strings.
   [[nodiscard]] size_type nbConcatenatedStrings() const noexcept {
     size_type count = 0;
     std::string_view buf = _buf;
