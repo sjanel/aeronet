@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string_view>
+#include <type_traits>
 
 #include "aeronet/http-constants.hpp"
 

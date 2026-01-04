@@ -1026,18 +1026,33 @@ private:
                 return emplace_no_key(key, std::forward<Args>(args)...);
             }
             value_type new_value(std::forward<Args>(args)...);
+
+            // Make room by moving the chain into a free slot, updating next pointers.
+            // This mirrors emplace_direct_hit(), but uses the already-constructed new_value.
             for (LinkedListIt it = block;;)
             {
-                int8_t jump_index = it.jump_index();
-                if (jump_index == 0)
+                AllocatorTraits::construct(*this, std::addressof(*free_block.second), std::move(*it));
+                AllocatorTraits::destroy(*this, std::addressof(*it));
+                parent_block.set_next(free_block.first);
+                free_block.second.set_metadata(Constants::magic_for_list_entry);
+                if (!it.has_next())
                 {
-                    it.set_next(free_block.first);
+                    it.set_metadata(Constants::magic_for_empty);
                     break;
                 }
                 LinkedListIt next = it.next(*this);
-                swap(new_value, *next);
+                it.set_metadata(Constants::magic_for_empty);
+                block.set_metadata(Constants::magic_for_reserved);
                 it = next;
+                parent_block = free_block.second;
+                free_block = find_free_index(free_block.second);
+                if (!free_block.first)
+                {
+                    grow();
+                    return emplace(std::move(new_value));
+                }
             }
+
             AllocatorTraits::construct(*this, std::addressof(*block), std::move(new_value));
             block.set_metadata(Constants::magic_for_direct_hit);
             ++num_elements;
