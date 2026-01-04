@@ -214,7 +214,7 @@ struct HttpServerConfig {
   // Will add all the headers defined here in all server responses, if not explicitly set by the user for a given
   // response. Defaults to a list of one entry "server: aeronet".
   // The maximum number of global headers is 256.
-  ConcatenatedHeaders globalHeaders;
+  ConcatenatedHeaders globalHeaders{{"server: aeronet"}};
 
   // Enable TRACE method handling (echo) on the server. Disabled by default for safety.
   enum class TraceMethodPolicy : std::uint8_t {
