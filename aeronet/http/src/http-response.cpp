@@ -25,6 +25,7 @@
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
@@ -45,13 +46,17 @@ constexpr std::string_view::size_type kMaxReasonLength = 1024;
 // Number of digits in the status code (3 digits).
 constexpr std::size_t kNdigitsStatusCode = 3U;
 
-constexpr std::size_t HttpResponseInitialSize() {
-  return http::HTTP10Sv.size() + 1U + kNdigitsStatusCode + http::DoubleCRLF.size();
-}
+// Date header will always be present at headersStartPos.
+constexpr std::size_t kDateHeaderLenWithCRLF =
+    http::CRLF.size() + http::Date.size() + http::HeaderSep.size() + kRFC7231DateStrLen;
+
+constexpr std::size_t kStatusLineMinLenWithoutCRLF = http::HTTP10Sv.size() + 1U + kNdigitsStatusCode;
+
+constexpr std::size_t kHttpResponseInitialSize =
+    kStatusLineMinLenWithoutCRLF + kDateHeaderLenWithCRLF + http::DoubleCRLF.size();
 
 constexpr std::size_t HttpResponseInitialSize(std::size_t reasonLen) {
-  return http::HTTP10Sv.size() + 1U + kNdigitsStatusCode +
-         (reasonLen == 0 ? 0UL : std::min(reasonLen, kMaxReasonLength) + 1UL) + http::DoubleCRLF.size();
+  return kHttpResponseInitialSize + (reasonLen == 0 ? 0UL : std::min(reasonLen, kMaxReasonLength) + 1UL);
 }
 
 constexpr std::string_view AdjustReasonLen(std::string_view reason) {
@@ -67,9 +72,11 @@ HttpResponse::HttpResponse(http::StatusCode code, std::string_view reason)
     : HttpResponse(kHttpResponseMinInitialCapacity, code, reason) {}
 
 HttpResponse::HttpResponse(std::size_t initialCapacity, http::StatusCode code)
-    : _data(std::max({HttpResponseInitialSize(), initialCapacity, kHttpResponseMinInitialCapacity})) {
+    : _data(std::max({kHttpResponseInitialSize, initialCapacity, kHttpResponseMinInitialCapacity})) {
   _data[http::HTTP10Sv.size()] = ' ';
-  const auto bodyStart = HttpResponseInitialSize();
+  static constexpr auto bodyStart = kHttpResponseInitialSize;
+  _data[kReasonBeg] = '\n';
+  setHeadersStartPos(static_cast<std::uint16_t>(kStatusLineMinLenWithoutCRLF));
   setBodyStartPos(bodyStart);
   setStatusCode(code);
   std::memcpy(_data.data() + bodyStart - http::DoubleCRLF.size(), http::DoubleCRLF.data(), http::DoubleCRLF.size());
@@ -80,9 +87,12 @@ HttpResponse::HttpResponse(std::size_t initialCapacity, http::StatusCode code, s
     : _data(std::max({HttpResponseInitialSize(reason.size()), initialCapacity, kHttpResponseMinInitialCapacity})) {
   _data[http::HTTP10Sv.size()] = ' ';
   const auto bodyStart = HttpResponseInitialSize(reason.size());
+  setHeadersStartPos(static_cast<std::uint16_t>(bodyStart - http::DoubleCRLF.size() - kDateHeaderLenWithCRLF));
   setBodyStartPos(bodyStart);
   setStatusCode(code);
-  if (!reason.empty()) {
+  if (reason.empty()) {
+    _data[kReasonBeg] = '\n';
+  } else {
     reason = AdjustReasonLen(reason);
     _data[kReasonBeg - 1UL] = ' ';
     std::memcpy(_data.data() + kReasonBeg, reason.data(), reason.size());
@@ -92,7 +102,7 @@ HttpResponse::HttpResponse(std::size_t initialCapacity, http::StatusCode code, s
 }
 
 HttpResponse::HttpResponse(std::string_view body, std::string_view contentType)
-    : HttpResponse(HttpResponseInitialSize() + body.size(), http::StatusCodeOK, {}) {
+    : HttpResponse(kHttpResponseInitialSize + body.size(), http::StatusCodeOK) {
   this->body(body, contentType);
 }
 
@@ -100,10 +110,7 @@ std::size_t HttpResponse::reasonLen() const noexcept {
   if (_data[kReasonBeg] == '\n') {
     return 0UL;
   }
-  if (headersStartPos() != 0) {
-    return headersStartPos() - kReasonBeg;
-  }
-  return bodyStartPos() - kReasonBeg - http::DoubleCRLF.size();
+  return headersStartPos() - kReasonBeg;
 }
 
 std::size_t HttpResponse::bodyLen() const noexcept {
@@ -174,10 +181,10 @@ void HttpResponse::setReason(std::string_view newReason) {
       orig + diff, orig,
       _data.size() - kStatusCodeBeg - kNdigitsStatusCode - oldReasonSz - static_cast<uint32_t>(!oldReason.empty()));
   adjustBodyStart(diff);
-  if (headersStartPos() != 0) {
-    adjustHeadersStart(diff);
-  }
-  if (!newReason.empty()) {
+  adjustHeadersStart(diff);
+  if (newReason.empty()) {
+    _data[kReasonBeg] = '\n';  // needed marker for empty reason
+  } else {
     _data[kReasonBeg - 1UL] = ' ';
     std::memcpy(_data.data() + kReasonBeg, newReason.data(), newReason.size());
   }
@@ -242,11 +249,6 @@ void HttpResponse::eraseHeader(std::string_view key) {
   std::memmove(keyBeg - http::CRLF.size(), valueEnd, static_cast<std::size_t>(_data.end() - valueEnd));
 
   const std::size_t headerLineLen = static_cast<std::size_t>(valueEnd - keyBeg) + http::CRLF.size();
-
-  // If removed header was the only header, we need to reset _headersStartPos to 0
-  if (headersStartPos() + headerLineLen + http::DoubleCRLF.size() == bodyStartPos()) {
-    setHeadersStartPos(0);
-  }
 
   adjustBodyStart(-static_cast<int64_t>(headerLineLen));
   _data.setSize(_data.size() - headerLineLen);
@@ -388,21 +390,19 @@ std::string_view HttpResponse::body() const noexcept {
 }
 
 std::string_view HttpResponse::headersFlatView() const noexcept {
-  const auto headersStart = headersStartPos();
-  if (headersStart == 0) {
-    return {};
-  }
-  return {_data.data() + headersStart + http::CRLF.size(), _data.data() + bodyStartPos() - http::CRLF.size()};
+  return {_data.data() + headersStartPos() + kDateHeaderLenWithCRLF + http::CRLF.size(),
+          _data.data() + bodyStartPos() - http::CRLF.size()};
+}
+
+std::string_view HttpResponse::headersFlatViewWithDate() const noexcept {
+  return {_data.data() + headersStartPos() + http::CRLF.size(), _data.data() + bodyStartPos() - http::CRLF.size()};
 }
 
 std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) const noexcept {
   std::optional<std::string_view> ret;
-  const auto headersStart = headersStartPos();
-  if (headersStart == 0) {
-    return ret;
-  }
 
-  const char* headersBeg = _data.data() + headersStart + http::CRLF.size();
+  // Start the search after reserved headers unconditionally added at response creation
+  const char* headersBeg = _data.data() + headersStartPos() + kDateHeaderLenWithCRLF + http::CRLF.size();
   const char* headersEnd = _data.data() + bodyStartPos() - http::CRLF.size();
   const char* endKey = key.end();
 
@@ -433,11 +433,7 @@ std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) 
 }
 
 void HttpResponse::appendHeaderInternal(std::string_view key, std::string_view value) {
-  assert(http::IsValidHeaderName(key));
-
-  if (headersStartPos() == 0) {
-    setHeadersStartPos(static_cast<std::uint16_t>(bodyStartPos() - http::DoubleCRLF.size()));
-  }
+  assert(http::IsValidHeaderName(key) && !CaseInsensitiveEqual(key, http::Date));
 
   const std::size_t headerLineSize = http::CRLF.size() + key.size() + http::HeaderSep.size() + value.size();
 
@@ -492,12 +488,7 @@ void HttpResponse::appendHeaderValueInternal(std::string_view key, std::string_v
 }
 
 void HttpResponse::makeAllHeaderNamesLowerCase() {
-  const auto headersStart = headersStartPos();
-  if (headersStart == 0) {
-    return;
-  }
-
-  char* headersBeg = _data.data() + headersStart + http::CRLF.size();
+  char* headersBeg = _data.data() + headersStartPos() + kDateHeaderLenWithCRLF + http::CRLF.size();
   char* headersEnd = _data.data() + bodyStartPos() - http::CRLF.size();
 
   while (headersBeg < headersEnd) {
@@ -514,8 +505,6 @@ void HttpResponse::makeAllHeaderNamesLowerCase() {
 HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoint tp, bool isHeadMethod, bool close,
                                                const ConcatenatedHeaders& globalHeaders,
                                                std::size_t minCapturedBodySize) {
-  static constexpr std::size_t kHeaderAdditionalSize = http::CRLF.size() + http::HeaderSep.size();
-
   HttpPayload* pExternPayload = externPayloadPtr();
 
   std::string_view externBodyAndTrailers;
@@ -555,18 +544,14 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
   // HTTP/1.0 is the opposite - Connection: close is the default.
   const bool addConnectionHeader = (close && version == http::HTTP_1_1) || (!close && version == http::HTTP_1_0);
   const auto bodySzStr = IntegralToCharVector(bodySz);
-  const bool hasHeaders = headersStartPos() != 0;
+  const bool hasHeaders = !headersFlatView().empty();
 
-  std::size_t totalNewHeadersSize = http::Date.size() + kRFC7231DateStrLen + kHeaderAdditionalSize;
+  static constexpr std::size_t kHeaderAdditionalSize = http::CRLF.size() + http::HeaderSep.size();
 
-  if (!hasHeaders) {
-    setHeadersStartPos(static_cast<std::uint16_t>(bodyStartPos() - http::DoubleCRLF.size()));
-  }
-
+  std::size_t totalNewHeadersSize = 0;
   if (addConnectionHeader) {
     totalNewHeadersSize += http::Connection.size() + connectionValue.size() + kHeaderAdditionalSize;
   }
-
   if (bodySz != 0) {
     totalNewHeadersSize += http::ContentLength.size() + bodySzStr.size() + kHeaderAdditionalSize;
   }
@@ -602,6 +587,8 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
 
   _data.ensureAvailableCapacity(extraSize);
 
+  WriteCRLFDateHeader(_data.data() + headersStartPos(), tp);
+
   char* insertPtr = _data.data() + bodyStartPos() - http::DoubleCRLF.size();
 
   // TODO: can we avoid memmove for very large bodies here?
@@ -630,7 +617,6 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
   if (addConnectionHeader) {
     insertPtr = WriteCRLFHeader(insertPtr, http::Connection, connectionValue);
   }
-  insertPtr = WriteCRLFDateHeader(insertPtr, tp);
   if (bodySz != 0) {
     insertPtr = WriteCRLFHeader(insertPtr, http::ContentLength, std::string_view(bodySzStr));
   }

@@ -190,7 +190,6 @@ class HttpResponse {
   // Get a contiguous view of the current headers stored in this HttpResponse.
   // Each header line is formatted as: name + ": " + value + CRLF.
   // If no headers are present, it returns an empty view.
-  // If there is at least one header, the view ends with a single CRLF (of the last header).
   [[nodiscard]] std::string_view headersFlatView() const noexcept;
 
   // Return a non-allocating, iterable view over headers.
@@ -290,10 +289,16 @@ class HttpResponse {
   }
 
   // Inserts or replaces the Content-Encoding header.
+  // Manually setting Content-Encoding header will disable automatic compression handling.
+  // If you want to compress using codecs supported by aeronet (such as gzip, deflate, br and zstd),
+  // it's recommended to not set Content-Encoding header manually and let the library handle compression.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse& contentEncoding(std::string_view src) & { return header(http::ContentEncoding, src); }
 
   // Inserts or replaces the Content-Encoding header.
+  // Manually setting Content-Encoding header will disable automatic compression handling.
+  // If you want to compress using codecs supported by aeronet (such as gzip, deflate, br and zstd),
+  // it's recommended to not set Content-Encoding header manually and let the library handle compression.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse&& contentEncoding(std::string_view src) && {
     header(http::ContentEncoding, src);
@@ -842,6 +847,8 @@ class HttpResponse {
 
   // Convert all header names to lower-case (for HTTP/2).
   void makeAllHeaderNamesLowerCase();
+
+  [[nodiscard]] std::string_view headersFlatViewWithDate() const noexcept;
 
   void appendBodyInternal(std::string_view data, std::string_view contentType);
 

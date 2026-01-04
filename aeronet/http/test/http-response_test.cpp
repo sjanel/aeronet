@@ -1458,7 +1458,7 @@ ParsedResponse parseResponse(std::string_view full, bool hasFile) {
     if (sep == std::string_view::npos) {
       throw std::runtime_error("No separator in header line in response");
     }
-    pr.headers.emplace_back(std::string(line.substr(0, sep)), std::string(line.substr(sep + 2)));
+    pr.headers.emplace_back(line.substr(0, sep), line.substr(sep + 2));
     cursor = eol + 2;
   }
   cursor = headerEnd + http::DoubleCRLF.size();  // move past CRLFCRLF into body
@@ -1807,14 +1807,14 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
         }
         EXPECT_EQ(clVal, pr.body.size());
         ASSERT_GE(pr.headers.size(), 3U);
-        EXPECT_EQ(pr.headers[pr.headers.size() - 3].first, http::Connection);
-        EXPECT_EQ(pr.headers[pr.headers.size() - 2].first, http::Date);
+        EXPECT_EQ(pr.headers[0].first, http::Date);
+        EXPECT_EQ(pr.headers[pr.headers.size() - 2].first, http::Connection);
         EXPECT_EQ(pr.headers[pr.headers.size() - 1].first, http::ContentLength);
       } else {
         EXPECT_EQ(clCount, 0);
         ASSERT_GE(pr.headers.size(), 2U);
-        EXPECT_EQ(pr.headers[pr.headers.size() - 2].first, http::Connection);
-        EXPECT_EQ(pr.headers[pr.headers.size() - 1].first, http::Date);
+        EXPECT_EQ(pr.headers[0].first, http::Date);
+        EXPECT_EQ(pr.headers[pr.headers.size() - 1].first, http::Connection);
       }
     }
 
