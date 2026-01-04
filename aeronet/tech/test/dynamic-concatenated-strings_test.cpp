@@ -51,6 +51,33 @@ TYPED_TEST(DynamicConcatenatedStringsTest, DefaultConstructor) {
   EXPECT_EQ(pool.begin(), pool.end());
 }
 
+TYPED_TEST(DynamicConcatenatedStringsTest, InitialCapacityConstructor) {
+  constexpr std::size_t initialCapacity = 128UL;
+  TypeParam pool(initialCapacity);
+  EXPECT_TRUE(pool.empty());
+  EXPECT_EQ(pool.nbConcatenatedStrings(), 0U);
+  EXPECT_EQ(pool.fullSize(), 0U);
+  EXPECT_EQ(pool.fullSizeWithLastSep(), 0U);
+  EXPECT_GE(pool.internalBufferCapacity(), initialCapacity);
+  EXPECT_EQ(pool.fullString(), std::string_view{});
+  EXPECT_EQ(pool.fullStringWithLastSep(), std::string_view{});
+  EXPECT_EQ(pool.begin(), pool.end());
+}
+
+TYPED_TEST(DynamicConcatenatedStringsTest, InitializerListConstructor) {
+  TypeParam pool({"one", "two", "three"});
+  EXPECT_FALSE(pool.empty());
+  EXPECT_EQ(pool.nbConcatenatedStrings(), 3U);
+  EXPECT_EQ(pool.fullSize(), pool.fullString().size());
+  auto full = pool.fullString();
+  std::string expected = "one";
+  expected.append(TypeParam::kSep);
+  expected.append("two");
+  expected.append(TypeParam::kSep);
+  expected.append("three");
+  EXPECT_EQ(full, std::string_view(expected));
+}
+
 TYPED_TEST(DynamicConcatenatedStringsTest, AppendAndFullStringWithSep) {
   // instantiate with comma+space separator via string literal NTTP defined in a helper
   TypeParam pool;
@@ -97,6 +124,13 @@ TYPED_TEST(DynamicConcatenatedStringsTest, Contains) {
   EXPECT_FALSE(pool.contains("De"));
   EXPECT_FALSE(pool.contains("DeFG"));
   EXPECT_FALSE(pool.contains("ghi"));
+  pool.append("A");
+  EXPECT_TRUE(pool.contains("A"));
+  EXPECT_FALSE(pool.contains("b"));
+  EXPECT_FALSE(pool.contains("C"));
+  EXPECT_FALSE(pool.contains("D"));
+  EXPECT_FALSE(pool.contains("e"));
+  EXPECT_FALSE(pool.contains("F"));
 }
 
 TYPED_TEST(DynamicConcatenatedStringsTest, ContainsCaseInsensitive) {
@@ -116,6 +150,13 @@ TYPED_TEST(DynamicConcatenatedStringsTest, ContainsCaseInsensitive) {
   EXPECT_FALSE(pool.containsCI("De"));
   EXPECT_FALSE(pool.containsCI("DeFG"));
   EXPECT_FALSE(pool.containsCI("ghi"));
+  pool.append("A");
+  EXPECT_TRUE(pool.containsCI("a"));
+  EXPECT_FALSE(pool.containsCI("b"));
+  EXPECT_FALSE(pool.containsCI("C"));
+  EXPECT_FALSE(pool.containsCI("D"));
+  EXPECT_FALSE(pool.containsCI("e"));
+  EXPECT_FALSE(pool.containsCI("F"));
 }
 
 TYPED_TEST(DynamicConcatenatedStringsTest, IteratorEmptyAndSingle) {
