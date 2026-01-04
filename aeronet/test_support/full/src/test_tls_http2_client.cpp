@@ -2,6 +2,7 @@
 
 #include <poll.h>
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <chrono>
@@ -15,12 +16,18 @@
 #include <vector>
 
 #include "aeronet/headers-view-map.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-helpers.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/toupperlower.hpp"
 
 namespace aeronet::test {
 
@@ -136,7 +143,7 @@ TlsHttp2Client::Response TlsHttp2Client::post(std::string_view path, std::string
                                               std::string_view contentType,
                                               const std::vector<std::pair<std::string, std::string>>& extraHeaders) {
   std::vector<std::pair<std::string, std::string>> headers = extraHeaders;
-  headers.emplace_back("content-type", std::string(contentType));
+  headers.emplace_back(http::ContentType, std::string(contentType));
   return request("POST", path, headers, body);
 }
 
@@ -351,18 +358,18 @@ uint32_t TlsHttp2Client::sendRequest(std::string_view method, std::string_view p
   bool endStream = body.empty();
 
   // Send HEADERS frame
-  auto err = _http2Connection->sendHeaders(
-      streamId,
-      [&](const http2::HeaderCallback& emit) {
-        emit(":method", method);
-        emit(":scheme", "https");
-        emit(":authority", "localhost:" + std::to_string(_port));
-        emit(":path", path);
-        for (const auto& [name, value] : headers) {
-          emit(name, value);
-        }
-      },
-      endStream);
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", method));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", std::string("localhost:") + std::to_string(_port)));
+  hdrs.append(MakeHttp1HeaderLine(":path", path));
+
+  for (const auto& [name, value] : headers) {
+    std::string lname = name;
+    std::ranges::transform(lname, lname.begin(), [](char ch) { return tolower(ch); });
+    hdrs.append(MakeHttp1HeaderLine(lname, value));
+  }
+  auto err = _http2Connection->sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs), endStream);
 
   if (err != http2::ErrorCode::NoError) {
     log::error("Failed to send HEADERS: {}", http2::ErrorCodeName(err));

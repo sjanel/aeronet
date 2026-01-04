@@ -16,6 +16,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
@@ -298,9 +299,17 @@ TEST(HttpContentLength, GlobalHeaders) {
   std::string req = "POST /big HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(resp.contains("\r\nX-Global: gvalue"));
-  EXPECT_TRUE(resp.contains("\r\nX-Another: anothervalue"));
-  EXPECT_TRUE(resp.contains("\r\nX-Custom: original"));
+#ifdef AERONET_ENABLE_HTTP2
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-global", "gvalue")));
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-another", "anothervalue")));
+#else
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("X-Global", "gvalue")));
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("X-Another", "anothervalue")));
+#endif
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("X-Custom", "original")));
+  std::string datePrefix(http::Date);
+  datePrefix.append(http::HeaderSep);
+  EXPECT_TRUE(resp.contains(datePrefix));
 }
 
 TEST(HttpBasic, LargePayload) {

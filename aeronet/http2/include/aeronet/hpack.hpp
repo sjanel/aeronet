@@ -11,7 +11,6 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/object-array-pool.hpp"
 #include "aeronet/raw-bytes.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
@@ -209,7 +208,6 @@ class HpackEncoder {
 
  private:
   HpackDynamicTable _dynamicTable;
-  RawChars32 _lowerCaseBuffer;
   std::size_t _pendingTableSizeUpdate = static_cast<std::size_t>(~0ULL);
 };
 

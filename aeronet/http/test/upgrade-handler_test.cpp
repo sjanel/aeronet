@@ -9,7 +9,6 @@
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -20,6 +19,7 @@
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include <algorithm>
 #include <optional>
+#include <string>
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/websocket-deflate.hpp"
