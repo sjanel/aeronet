@@ -534,6 +534,35 @@ TEST(flat_hash_map, rehash_and_shrink_to_fit_preserve_entries) {
   EXPECT_EQ(map1, reference);
 }
 
+// Regression test: ensure flat_hash_map with std::string_view keys that point
+// into a single stable backing buffer remains consistent across rehash.
+TEST(flat_hash_map, StringViewKeysStableAcrossRehash) {
+  using KeyMap = aeronet::flat_hash_map<std::string_view, std::string_view, aeronet::CaseInsensitiveHashFunc,
+                                        aeronet::CaseInsensitiveEqualFunc>;
+
+  std::vector<std::pair<std::string_view, std::string_view>> headers = {
+      {":status", "200"},       {"content-type", "text/plain"},
+      {"x-custom", "original"}, {"x-another", "anothervalue"},
+      {"x-global", "gvalue"},   {"date", "Sun, 04 Jan 2026 10:38:25 GMT"},
+      {"content-length", "1"}};
+
+  KeyMap map;
+
+  for (std::size_t currentSize = 0; currentSize < headers.size(); ++currentSize) {
+    const auto &[key, value] = headers[currentSize];
+    EXPECT_TRUE(map.try_emplace(key, value).second);
+    EXPECT_EQ(map.size(), currentSize + 1U);
+
+    // ensure all existing entries are still present after each insert
+    for (std::size_t verifyIndex = 0; verifyIndex <= currentSize; ++verifyIndex) {
+      const auto &[vkey, vvalue] = headers[verifyIndex];
+      auto it = map.find(vkey);
+      ASSERT_NE(it, map.end());
+      EXPECT_EQ(it->second, vvalue);
+    }
+  }
+}
+
 TEST(flat_hash_map, erase_returns_iterator_to_next) {
   Map map1;
   map1["a"] = 1;
