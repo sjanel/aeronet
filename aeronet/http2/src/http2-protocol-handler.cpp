@@ -1,6 +1,7 @@
 #include "aeronet/http2-protocol-handler.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <coroutine>
@@ -17,7 +18,8 @@
 #include "aeronet/file.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
-#include "aeronet/http-header.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -33,7 +35,10 @@
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/request-task.hpp"
 #include "aeronet/router.hpp"
-#include "aeronet/vector.hpp"
+#include "aeronet/string-trim.hpp"
+#include "aeronet/stringconv.hpp"
+#include "aeronet/timedef.hpp"
+#include "aeronet/timestring.hpp"
 
 namespace aeronet::http2 {
 
@@ -215,7 +220,7 @@ void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std
                                                                        streamReq.bodyBuffer, trailerStartPos,
                                                                        _decompressionTmp, _decompressionTrailersTmp);
       if (!res.ok) {
-        (void)sendResponse(streamId, HttpResponse(res.status).body(res.message));
+        (void)sendResponse(streamId, HttpResponse(res.status).body(res.message), /*isHeadMethod=*/false);
         _streamRequests.erase(streamId);
         return;
       }
@@ -234,14 +239,6 @@ void Http2ProtocolHandler::onStreamReset(uint32_t streamId, ErrorCode errorCode)
   log::debug("HTTP/2 stream {} reset with error: {}", streamId, ErrorCodeName(errorCode));
   _streamRequests.erase(streamId);
   _pendingFileSends.erase(streamId);
-}
-
-vector<http::Header> Http2ProtocolHandler::copyTrailers(const HttpResponse::HeadersView& trailers) {
-  vector<http::Header> out;
-  for (const auto& header : trailers) {
-    out.emplace_back(header.name, header.value);
-  }
-  return out;
 }
 
 ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, PendingFileSend& pending,
@@ -296,10 +293,6 @@ ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, PendingFi
 }
 
 void Http2ProtocolHandler::flushPendingFileSends() {
-  if (_pendingFileSends.empty()) {
-    return;
-  }
-
   for (auto it = _pendingFileSends.begin(); it != _pendingFileSends.end();) {
     const uint32_t streamId = it->first;
     PendingFileSend& pending = it->second;
@@ -310,7 +303,7 @@ void Http2ProtocolHandler::flushPendingFileSends() {
       continue;
     }
 
-    const bool endStreamAfterBody = pending.trailers.empty();
+    const bool endStreamAfterBody = pending.trailersData.empty();
     const ErrorCode err = sendPendingFileBody(streamId, pending, endStreamAfterBody);
     if (err != ErrorCode::NoError) [[unlikely]] {
       log::error("HTTP/2 failed to continue file payload on stream {}: {}", streamId, ErrorCodeName(err));
@@ -325,14 +318,7 @@ void Http2ProtocolHandler::flushPendingFileSends() {
     }
 
     if (!endStreamAfterBody) {
-      const auto sendErr = _connection.sendHeaders(
-          streamId,
-          [&pending](const HeaderCallback& emit) {
-            for (const auto& header : pending.trailers) {
-              emit(header.name(), header.value());
-            }
-          },
-          true);
+      const auto sendErr = _connection.sendHeaders(streamId, http::StatusCode{}, pending.trailersView, true);
       if (sendErr != ErrorCode::NoError) {
         log::error("HTTP/2 failed to send trailers on stream {}: {}", streamId, ErrorCodeName(sendErr));
         _connection.sendRstStream(streamId, sendErr);
@@ -360,19 +346,22 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
   // Dispatch to the callback provided by SingleHttpServer
   try {
     HttpResponse resp = reply(request);
+    resp.makeAllHeaderNamesLowerCase();
     if (request.method() != http::Method::HEAD) {
       internal::HttpCodec::TryCompressResponse(*_pCompressionState, _pServerConfig->compression, request, resp);
     }
-    err = sendResponse(streamId, std::move(resp));
+    err = sendResponse(streamId, std::move(resp), request.method() == http::Method::HEAD);
     if (err != ErrorCode::NoError) [[unlikely]] {
       log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
     }
   } catch (const std::exception& ex) {
     log::error("HTTP/2 dispatcher exception on stream {}: {}", streamId, ex.what());
-    err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError).body(ex.what()));
+    err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError).body(ex.what()),
+                       /*isHeadMethod=*/false);
   } catch (...) {
     log::error("HTTP/2 unknown exception on stream {}", streamId);
-    err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError).body("Unknown error"));
+    err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError).body("Unknown error"),
+                       /*isHeadMethod=*/false);
   }
 
   // Clean up stream request
@@ -435,12 +424,39 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
   return HttpResponse(http::StatusCodeNotFound);
 }
 
-ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse response) {
+ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod) {
+  const std::size_t contentLength = response.hasFile() ? response.fileLength() : response.body().size();
+  {
+    // Inject server-managed headers into the response object so they flow through
+    // the same encoding path as other response headers.
+
+    // TODO: perf - avoid memmove of the whole body by appending reserved headers here.
+    for (std::string_view headerKeyVal : _pServerConfig->globalHeaders) {
+      const auto colonPos = headerKeyVal.find(':');
+      assert(colonPos != std::string_view::npos);
+      const std::string_view key = headerKeyVal.substr(0, colonPos);
+
+      response.setHeader(key, TrimOws(headerKeyVal.substr(colonPos + 1)), HttpResponse::OnlyIfNew::Yes);
+    }
+
+    std::array<char, kRFC7231DateStrLen> dateBuf;
+    TimeToStringRFC7231(SysClock::now(), dateBuf.data());
+    response.appendHeaderInternal(http::Date, std::string_view{dateBuf.data(), kRFC7231DateStrLen});
+
+    if (contentLength != 0) {
+      const auto lenStr = IntegralToCharVector(contentLength);
+      response.appendHeaderInternal(http::ContentLength, std::string_view{lenStr});
+    }
+  }
+
+  // IMPORTANT: take views only after mutating headers, since setHeader() may reallocate
+  // internal buffers that also store body/trailers.
   const auto trailersView = response.trailers();
-  const bool hasTrailers = trailersView.begin() != trailersView.end();
-  const bool hasFile = response.hasFile();
+  const bool hasTrailers = !isHeadMethod && (trailersView.begin() != trailersView.end());
+  HttpResponse::FilePayload* pFilePayload = response.filePayloadPtr();
+  const bool hasFile = !isHeadMethod && pFilePayload != nullptr;
   const std::string_view bodyView = hasFile ? std::string_view{} : response.body();
-  const bool hasBody = hasFile ? (response.fileLength() != 0) : !bodyView.empty();
+  const bool hasBody = !isHeadMethod && (hasFile ? (response.fileLength() != 0) : !bodyView.empty());
 
   // Determine when to set END_STREAM:
   // - On HEADERS if no body and no trailers
@@ -450,18 +466,7 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
   const bool endStreamOnData = hasBody && !hasTrailers;
 
   // Send HEADERS frame (response headers)
-  auto err = _connection.sendHeaders(
-      streamId,
-      [&response](const HeaderCallback& emit) {
-        // Emit :status pseudo-header first
-        emit(":status", response.statusStr());
-
-        // Emit regular headers
-        for (const auto [name, value] : response.headers()) {
-          emit(name, value);
-        }
-      },
-      endStreamOnHeaders);
+  auto err = _connection.sendHeaders(streamId, response.status(), response.headers(), endStreamOnHeaders);
 
   if (err != ErrorCode::NoError) {
     return err;
@@ -471,38 +476,24 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
   // For file payloads, stream the file content in chunks and respect flow control.
   if (hasBody) {
     if (hasFile) {
-      const File* pFile = response.file();
-      if (pFile == nullptr) [[unlikely]] {
-        return ErrorCode::InternalError;
-      }
-
       PendingFileSend pending;
-      pending.file = pFile->duplicate();
-      if (!pending.file) {
-        log::error("HTTP/2 failed to duplicate file payload");
-        return ErrorCode::InternalError;
-      }
+      pending.file = std::move(pFilePayload->file);
 
       pending.offset = response.fileOffset();
       pending.remaining = response.fileLength();
-      pending.trailers = copyTrailers(trailersView);
 
+      // Pass 1 - try to send as much as possible now
       err = sendPendingFileBody(streamId, pending, endStreamOnData);
       if (err != ErrorCode::NoError) {
         return err;
       }
 
       if (pending.remaining != 0) {
+        pending.trailersView = HeadersView(response.trailersFlatView());
+        pending.trailersData = std::move(response._data);
         _pendingFileSends[streamId] = std::move(pending);
       } else if (hasTrailers) {
-        err = _connection.sendHeaders(
-            streamId,
-            [&pending](const HeaderCallback& emit) {
-              for (const auto& header : pending.trailers) {
-                emit(header.name(), header.value());
-              }
-            },
-            true);
+        err = _connection.sendHeaders(streamId, http::StatusCode{}, trailersView, true);
       }
     } else {
       // Note: sendData() already handles splitting into multiple frames based on peer's maxFrameSize
@@ -516,14 +507,8 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
 
   // Send trailers as a HEADERS frame with END_STREAM (RFC 9113 §8.1)
   if (hasTrailers && !hasFile) {
-    err = _connection.sendHeaders(
-        streamId,
-        [&trailersView](const HeaderCallback& emit) {
-          for (const auto [name, value] : trailersView) {
-            emit(name, value);
-          }
-        },
-        true);  // END_STREAM must be set on trailers
+    // END_STREAM must be set on trailers
+    err = _connection.sendHeaders(streamId, http::StatusCode{}, trailersView, true);
   }
 
   return err;

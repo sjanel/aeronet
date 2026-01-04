@@ -79,6 +79,15 @@ inline constexpr std::string_view XDirectoryListingTruncated = "x-directory-list
 inline constexpr std::string_view OriginalEncodingHeaderName = "x-aeronet-original-encoding";
 inline constexpr std::string_view OriginalEncodedLengthHeaderName = "x-aeronet-original-encoded-length";
 
+#ifdef AERONET_ENABLE_HTTP2
+// HTTP2 pseudo-headers
+inline constexpr std::string_view PseudoHeaderMethod = ":method";
+inline constexpr std::string_view PseudoHeaderScheme = ":scheme";
+inline constexpr std::string_view PseudoHeaderAuthority = ":authority";
+inline constexpr std::string_view PseudoHeaderPath = ":path";
+inline constexpr std::string_view PseudoHeaderStatus = ":status";
+#endif
+
 inline constexpr std::string_view HeaderSep = ": ";
 inline constexpr std::string_view CRLF = "\r\n";
 inline constexpr std::string_view DoubleCRLF = "\r\n\r\n";

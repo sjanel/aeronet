@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <string>
 #include <utility>
 
 #include "aeronet/cors-policy.hpp"

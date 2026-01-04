@@ -9,19 +9,109 @@
 #include <iterator>
 #include <limits>
 #include <span>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "aeronet/headers-view-map.hpp"
+#include "aeronet/hpack.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-helpers.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/raw-chars.hpp"
+#include "aeronet/timedef.hpp"
+#include "aeronet/timestring.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
 
 namespace {
+
+struct WireDecodedHeadersDebug {
+  bool foundHeaders{false};
+  bool decodeSuccess{false};
+  bool hasDate{false};
+  std::vector<std::byte> headerBlockBytes;
+  std::vector<std::pair<std::string, std::string>> headers;
+};
+
+[[nodiscard]] WireDecodedHeadersDebug DecodeFirstHeadersFromOutput(std::span<const std::byte> output) {
+  HpackDecoder decoder(4096);
+
+  RawBytes headerBlock;
+  std::size_t pos = 0;
+
+  while (output.size() - pos >= FrameHeader::kSize) {
+    const auto header = ParseFrameHeader(output.subspan(pos));
+    const std::size_t totalFrameSize = FrameHeader::kSize + header.length;
+    if (output.size() - pos < totalFrameSize) {
+      break;
+    }
+
+    const auto payload = output.subspan(pos + FrameHeader::kSize, header.length);
+
+    if (header.type == FrameType::Headers) {
+      WireDecodedHeadersDebug dbg;
+      dbg.foundHeaders = true;
+
+      HeadersFrame headersFrame;
+      if (ParseHeadersFrame(header, payload, headersFrame) != FrameParseResult::Ok) {
+        return dbg;
+      }
+
+      headerBlock.assign(headersFrame.headerBlockFragment);
+
+      // Gather CONTINUATION frames if needed.
+      std::size_t nextPos = pos + totalFrameSize;
+      while (!headersFrame.endHeaders) {
+        if (output.size() - nextPos < FrameHeader::kSize) {
+          return dbg;
+        }
+        const auto contHeader = ParseFrameHeader(output.subspan(nextPos));
+        const std::size_t contTotalSize = FrameHeader::kSize + contHeader.length;
+        if (output.size() - nextPos < contTotalSize) {
+          return dbg;
+        }
+        if (contHeader.type != FrameType::Continuation || contHeader.streamId != header.streamId) {
+          return dbg;
+        }
+
+        ContinuationFrame continuation;
+        ParseContinuationFrame(contHeader, output.subspan(nextPos + FrameHeader::kSize, contHeader.length),
+                               continuation);
+        headerBlock.append(std::span<const std::byte>(continuation.headerBlockFragment));
+        headersFrame.endHeaders = continuation.endHeaders;
+
+        nextPos += contTotalSize;
+      }
+
+      dbg.headerBlockBytes.assign(headerBlock.begin(), headerBlock.end());
+
+      auto decodeResult = decoder.decode(std::span<const std::byte>(headerBlock));
+      dbg.decodeSuccess = decodeResult.isSuccess();
+      if (!dbg.decodeSuccess) {
+        return dbg;
+      }
+
+      dbg.hasDate = decodeResult.decodedHeaders.contains(http::Date);
+      dbg.headers.reserve(decodeResult.decodedHeaders.size());
+      for (const auto& [name, value] : decodeResult.decodedHeaders) {
+        dbg.headers.emplace_back(std::string{name}, std::string{value});
+      }
+      return dbg;
+    }
+
+    pos += totalFrameSize;
+  }
+
+  return {};
+}
 
 // Helper to create connection preface as bytes
 vector<std::byte> MakePreface() {
@@ -173,6 +263,134 @@ TEST(Http2Connection, OnOutputWritten) {
   EXPECT_FALSE(conn.hasPendingOutput());
 }
 
+TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
+  Http2Config config;
+  Http2Connection server(config, true);
+  Http2Connection client(config, false);
+
+  // Complete minimal HTTP/2 preface + SETTINGS exchange.
+  client.sendClientPreface();
+  ASSERT_TRUE(client.hasPendingOutput());
+  {
+    const auto out = client.getPendingOutput();
+    auto res = server.processInput(out);
+    ASSERT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
+    client.onOutputWritten(out.size());
+  }
+
+  // Server should respond with its SETTINGS.
+  ASSERT_TRUE(server.hasPendingOutput());
+  {
+    const auto out = server.getPendingOutput();
+    auto res = client.processInput(out);
+    ASSERT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
+    server.onOutputWritten(out.size());
+  }
+
+  // Drain any ACK/housekeeping output in both directions.
+  for (int iter = 0; iter < 64 && (client.hasPendingOutput() || server.hasPendingOutput()); ++iter) {
+    if (client.hasPendingOutput()) {
+      const auto out = client.getPendingOutput();
+      auto res = server.processInput(out);
+      ASSERT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
+      client.onOutputWritten(out.size());
+    }
+    if (server.hasPendingOutput()) {
+      const auto out = server.getPendingOutput();
+      auto res = client.processInput(out);
+      ASSERT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
+      server.onOutputWritten(out.size());
+    }
+  }
+
+  ASSERT_TRUE(server.isOpen());
+  ASSERT_TRUE(client.isOpen());
+
+  ASSERT_FALSE(server.hasPendingOutput());
+  ASSERT_FALSE(client.hasPendingOutput());
+
+  // Capture decoded response headers.
+  HeadersViewMap decoded;
+  bool gotHeaders = false;
+  client.setOnHeadersDecoded([&](uint32_t /*streamId*/, const HeadersViewMap& headers, bool /*endStream*/) {
+    decoded = headers;
+    gotHeaders = true;
+  });
+
+  // Send response HEADERS (no END_STREAM) + DATA (END_STREAM).
+  const uint32_t streamId = 1;
+  const std::array<char, kRFC7231DateStrLen> dateBuf = [] {
+    std::array<char, kRFC7231DateStrLen> buf{};
+    (void)TimeToStringRFC7231(SysClock::now(), buf.data());
+    return buf;
+  }();
+
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":status", "200"));
+  headers.append(MakeHttp1HeaderLine("content-type", "text/plain"));
+  headers.append(MakeHttp1HeaderLine("x-custom", "original"));
+  headers.append(MakeHttp1HeaderLine("x-another", "anothervalue"));
+  headers.append(MakeHttp1HeaderLine("x-global", "gvalue"));
+  headers.append(MakeHttp1HeaderLine("date", std::string_view{dateBuf.data(), kRFC7231DateStrLen}));
+  headers.append(MakeHttp1HeaderLine("content-length", "1"));
+
+  ASSERT_EQ(server.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
+
+  // Sanity-check: decode the outgoing HEADERS directly from the server output *before* sending DATA.
+  ASSERT_TRUE(server.hasPendingOutput());
+  {
+    const auto out = server.getPendingOutput();
+    const auto wire = DecodeFirstHeadersFromOutput(out);
+    ASSERT_TRUE(wire.foundHeaders) << "No HEADERS frame found in server output";
+    ASSERT_TRUE(wire.decodeSuccess) << "Failed to HPACK-decode server HEADERS";
+
+    // Compare the raw HPACK header block against a locally generated expected block.
+    HpackEncoder expectedEncoder(4096);
+    RawBytes expectedBlock;
+    expectedEncoder.encode(expectedBlock, ":status", "200");
+    expectedEncoder.encode(expectedBlock, "content-type", "text/plain");
+    expectedEncoder.encode(expectedBlock, "x-custom", "original");
+    expectedEncoder.encode(expectedBlock, "x-another", "anothervalue");
+    expectedEncoder.encode(expectedBlock, "x-global", "gvalue");
+    expectedEncoder.encode(expectedBlock, "date", std::string_view{dateBuf.data(), kRFC7231DateStrLen});
+    expectedEncoder.encode(expectedBlock, "content-length", "1");
+
+    ASSERT_EQ(wire.headerBlockBytes.size(), expectedBlock.size()) << "Server HPACK block size differs from expected";
+    ASSERT_TRUE(std::equal(wire.headerBlockBytes.begin(), wire.headerBlockBytes.end(), expectedBlock.begin()))
+        << "Server HPACK block bytes differ from expected";
+
+    if (!wire.hasDate) {
+      for (const auto& [name, value] : wire.headers) {
+        ADD_FAILURE() << "Wire-decoded header: '" << name << "'='" << value << "'";
+      }
+      FAIL() << "Missing 'date' in wire-decoded headers";
+    }
+  }
+
+  const std::array<std::byte, 1> body = {std::byte{'R'}};
+  ASSERT_EQ(server.sendData(streamId, body, true), ErrorCode::NoError);
+
+  // Deliver all server output to client.
+  while (server.hasPendingOutput()) {
+    const auto out = server.getPendingOutput();
+    auto res = client.processInput(out);
+    ASSERT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
+    server.onOutputWritten(out.size());
+  }
+
+  ASSERT_TRUE(gotHeaders);
+  auto it = decoded.find(http::Date);
+  if (it == decoded.end()) {
+    for (const auto& [name, value] : decoded) {
+      ADD_FAILURE() << "Decoded header: '" << name << "'='" << value << "'";
+    }
+    FAIL() << "Missing 'date' in decoded headers";
+  }
+  EXPECT_EQ(it->second.size(), kRFC7231DateStrLen);
+  EXPECT_TRUE(it->second.ends_with("GMT"));
+  EXPECT_NE(TryParseTimeRFC7231(it->second), kInvalidTimePoint);
+}
+
 // ============================
 // Stream Management Tests
 // ============================
@@ -194,8 +412,7 @@ TEST(Http2Connection, SendRstStreamClosesAndDecrementsActiveStreamCount) {
   conn.setOnStreamClosed([&](uint32_t) { ++closedCount; });
   conn.setOnStreamReset([&](uint32_t, ErrorCode) { ++resetCount; });
 
-  const auto headerProvider = [](const HeaderCallback&) {};
-  ASSERT_EQ(conn.sendHeaders(1, headerProvider, false), ErrorCode::NoError);
+  ASSERT_EQ(conn.sendHeaders(1, http::StatusCode{}, HeadersView(std::string{}), false), ErrorCode::NoError);
   // Drain any output produced by sendHeaders so we can observe the RST_STREAM from WINDOW_UPDATE
   if (conn.hasPendingOutput()) {
     conn.onOutputWritten(conn.getPendingOutput().size());
@@ -219,8 +436,7 @@ TEST(Http2Connection, RecvRstStreamClosesAndDecrementsActiveStreamCount) {
   conn.setOnStreamClosed([&](uint32_t) { ++closedCount; });
   conn.setOnStreamReset([&](uint32_t, ErrorCode) { ++resetCount; });
 
-  const auto headerProvider = [](const HeaderCallback&) {};
-  ASSERT_EQ(conn.sendHeaders(1, headerProvider, false), ErrorCode::NoError);
+  ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView(std::string{}), false), ErrorCode::NoError);
   EXPECT_EQ(conn.activeStreamCount(), 1U);
 
   const uint32_t code = static_cast<uint32_t>(ErrorCode::Cancel);
@@ -252,8 +468,7 @@ TEST(Http2Connection, DuplicateRstStreamDoesNotDoubleCloseAccounting) {
   conn.setOnStreamClosed([&](uint32_t) { ++closedCount; });
   conn.setOnStreamReset([&](uint32_t, ErrorCode) { ++resetCount; });
 
-  const auto headerProvider = [](const HeaderCallback&) {};
-  ASSERT_EQ(conn.sendHeaders(1, headerProvider, false), ErrorCode::NoError);
+  ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView(std::string{}), false), ErrorCode::NoError);
   EXPECT_EQ(conn.activeStreamCount(), 1U);
 
   const uint32_t code = static_cast<uint32_t>(ErrorCode::Cancel);
@@ -294,13 +509,11 @@ TEST(Http2Connection, ClosedStreamsArePrunedFromMapAfterRetentionLimit) {
   Http2Connection conn(config, true);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
-  const auto headerProvider = [](const HeaderCallback&) {};
-
   // Close more streams than the retention FIFO keeps.
   const uint32_t streamCountToClose = kClosedStreamsMaxRetainedForTest + 2U;
   for (uint32_t idx = 0; idx < streamCountToClose; ++idx) {
     const uint32_t streamId = 1U + (idx * 2U);
-    ASSERT_EQ(conn.sendHeaders(streamId, headerProvider, false), ErrorCode::NoError);
+    ASSERT_EQ(conn.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
     EXPECT_EQ(conn.activeStreamCount(), 1U);
     conn.sendRstStream(streamId, ErrorCode::Cancel);
     EXPECT_EQ(conn.activeStreamCount(), 0U);
@@ -865,8 +1078,7 @@ TEST(Http2Connection, SettingsInitialWindowSizeTooSmallCausesStreamOverflow) {
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Create a stream by sending headers
-  const auto headerProvider = [](const HeaderCallback&) {};
-  ASSERT_EQ(conn.sendHeaders(1, headerProvider, false), ErrorCode::NoError);
+  ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
 
   // Consume the stream send window by sending exactly the peer initial window bytes
   const uint32_t initialWindow = conn.peerSettings().initialWindowSize;
@@ -911,8 +1123,7 @@ TEST(Http2Connection, SettingsInitialWindowSizeStreamWindowOverflow) {
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Create a stream
-  const auto headerProvider = [](const HeaderCallback&) {};
-  ASSERT_EQ(conn.sendHeaders(1, headerProvider, false), ErrorCode::NoError);
+  ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
 
   // Bring stream send window up to INT32_MAX by issuing a single increase
   // increment: INT32_MAX - initialWindow
@@ -1001,8 +1212,7 @@ TEST(Http2Connection, WindowUpdateStreamOverflowSendsRstStream) {
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Create a stream
-  const auto headerProvider = [](const HeaderCallback&) {};
-  ASSERT_EQ(conn.sendHeaders(1, headerProvider, false), ErrorCode::NoError);
+  ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
 
   // Bring stream send window up to INT32_MAX by issuing a single increase
   // increment: INT32_MAX - initialWindow
@@ -1080,7 +1290,6 @@ TEST(Http2Connection, ContinuationForPrunedStreamIsInternalError) {
 
   // Create a stream by sending a HEADERS frame WITH endHeaders=false so CONTINUATION is expected.
   // Build a minimal HEADERS frame containing a 1-byte header block fragment and no END_HEADERS flag.
-  const auto headerProvider = [](const HeaderCallback&) {};
   std::array<std::byte, 1> hb_fragment = {std::byte{0x00}};
   RawBytes headersBuf;
   WriteFrame(headersBuf, FrameType::Headers, ComputeHeaderFrameFlags(false, false), 1,
@@ -1099,7 +1308,7 @@ TEST(Http2Connection, ContinuationForPrunedStreamIsInternalError) {
   const uint32_t streamCountToClose = kClosedStreamsMaxRetainedForTest + 2U;
   for (uint32_t idx = 0; idx < streamCountToClose; ++idx) {
     const uint32_t sid = 3U + (idx * 2U);  // odd client-initiated stream ids
-    ASSERT_EQ(conn.sendHeaders(sid, headerProvider, false), ErrorCode::NoError);
+    ASSERT_EQ(conn.sendHeaders(sid, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
     conn.sendRstStream(sid, ErrorCode::Cancel);
   }
 

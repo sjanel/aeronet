@@ -7,7 +7,7 @@
 
 #include "aeronet/file.hpp"
 #include "aeronet/headers-view-map.hpp"
-#include "aeronet/http-header.hpp"
+#include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http2-config.hpp"
@@ -15,12 +15,11 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/vector.hpp"
 
 namespace aeronet {
 
 struct ConnectionState;
-class HttpServerConfig;
+struct HttpServerConfig;
 
 namespace internal {
 struct ResponseCompressionState;
@@ -120,14 +119,14 @@ class Http2ProtocolHandler final : public IProtocolHandler {
     File file;
     std::size_t offset = 0;
     std::size_t remaining = 0;
-    vector<http::Header> trailers;
+    RawChars trailersData;
+    HeadersView trailersView;
   };
 
   using PendingFileSendsMap = flat_hash_map<uint32_t, PendingFileSend>;
 
   void flushPendingFileSends();
   [[nodiscard]] ErrorCode sendPendingFileBody(uint32_t streamId, PendingFileSend& pending, bool endStreamAfterBody);
-  [[nodiscard]] static vector<http::Header> copyTrailers(const HttpResponse::HeadersView& trailers);
 
   /// Dispatch a completed request to the dispatcher and send response.
   void dispatchRequest(StreamRequestsMap::iterator it);
@@ -138,7 +137,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   HttpResponse reply(HttpRequest& request);
 
   /// Send an HTTP response on a stream.
-  ErrorCode sendResponse(uint32_t streamId, HttpResponse response);
+  ErrorCode sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod);
 
   Http2Connection _connection;
 

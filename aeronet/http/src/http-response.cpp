@@ -395,29 +395,6 @@ std::string_view HttpResponse::headersFlatView() const noexcept {
   return {_data.data() + headersStart + http::CRLF.size(), _data.data() + bodyStartPos() - http::CRLF.size()};
 }
 
-HttpResponse::HeadersView::iterator::iterator(const char* beg, const char* end) noexcept : _cur(beg), _end(end) {
-  if (_cur != _end) {
-    setLen();
-  }
-}
-
-void HttpResponse::HeadersView::iterator::setLen() {
-  const char* colonPtr = std::search(_cur, _end, http::HeaderSep.begin(), http::HeaderSep.end());
-  assert(colonPtr != _end);  // should not happen in well-formed headers
-  const char* begValue = colonPtr + http::HeaderSep.size();
-
-  _nameLen = static_cast<uint32_t>(colonPtr - _cur);
-  _valueLen = static_cast<uint32_t>(std::search(begValue, _end, http::CRLF.begin(), http::CRLF.end()) - begValue);
-}
-
-HttpResponse::HeadersView::iterator& HttpResponse::HeadersView::iterator::operator++() noexcept {
-  _cur += _nameLen + http::HeaderSep.size() + _valueLen + http::CRLF.size();
-  if (_cur != _end) {
-    setLen();
-  }
-  return *this;
-}
-
 std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) const noexcept {
   std::optional<std::string_view> ret;
   const auto headersStart = headersStartPos();
@@ -441,7 +418,7 @@ std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) 
     }
 
     const char* nextCRLF =
-        std::search(headersBeg + http::CRLF.size(), headersEnd, http::CRLF.begin(), http::CRLF.end());
+        std::search(headersBeg + http::HeaderSep.size(), headersEnd, http::CRLF.begin(), http::CRLF.end());
 
     if (!icharsDiffer && *headersBeg == ':' && begKey == endKey) {
       // Found the header we are looking for
@@ -512,6 +489,26 @@ void HttpResponse::appendHeaderValueInternal(std::string_view key, std::string_v
 
   _data.addSize(extraLen);
   adjustBodyStart(static_cast<int64_t>(extraLen));
+}
+
+void HttpResponse::makeAllHeaderNamesLowerCase() {
+  const auto headersStart = headersStartPos();
+  if (headersStart == 0) {
+    return;
+  }
+
+  char* headersBeg = _data.data() + headersStart + http::CRLF.size();
+  char* headersEnd = _data.data() + bodyStartPos() - http::CRLF.size();
+
+  while (headersBeg < headersEnd) {
+    for (; *headersBeg != ':'; ++headersBeg) {
+      *headersBeg = tolower(*headersBeg);
+    }
+
+    // move headersBeg to next header
+    headersBeg = std::search(headersBeg + http::HeaderSep.size(), headersEnd, http::CRLF.begin(), http::CRLF.end()) +
+                 http::CRLF.size();
+  }
 }
 
 HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoint tp, bool isHeadMethod, bool close,
@@ -607,6 +604,7 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
 
   char* insertPtr = _data.data() + bodyStartPos() - http::DoubleCRLF.size();
 
+  // TODO: can we avoid memmove for very large bodies here?
   std::memmove(insertPtr + totalNewHeadersSize, insertPtr, http::DoubleCRLF.size() + internalBodyAndTrailersLen());
 
   if (!globalHeaders.empty()) {

@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <iterator>
 #include <memory>
 #include <optional>
 #include <span>
@@ -18,7 +17,7 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-header.hpp"
+#include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -33,6 +32,10 @@ namespace aeronet {
 namespace internal {
 class HttpCodec;
 }  // namespace internal
+
+namespace http2 {
+class Http2ProtocolHandler;
+}  // namespace http2
 
 // -----------------------------------------------------------------------------
 // HttpResponse
@@ -189,56 +192,6 @@ class HttpResponse {
   // If no headers are present, it returns an empty view.
   // If there is at least one header, the view ends with a single CRLF (of the last header).
   [[nodiscard]] std::string_view headersFlatView() const noexcept;
-
-  class HeadersView {
-   public:
-    class iterator {
-     public:
-      using value_type = http::HeaderView;
-      using reference = http::HeaderView;
-      using pointer = void;
-      using difference_type = std::ptrdiff_t;
-      using iterator_category = std::forward_iterator_tag;
-
-      iterator() noexcept : _cur(nullptr), _end(nullptr), _nameLen(0), _valueLen(0) {}
-
-      http::HeaderView operator*() const noexcept {
-        return {std::string_view(_cur, _nameLen),
-                std::string_view(_cur + _nameLen + http::HeaderSep.size(), _valueLen)};
-      }
-
-      iterator& operator++() noexcept;
-
-      iterator operator++(int) noexcept {
-        iterator tmp = *this;
-        ++(*this);
-        return tmp;
-      }
-
-      bool operator==(const iterator& rhs) const noexcept { return _cur == rhs._cur; }
-
-     private:
-      friend class HeadersView;
-
-      iterator(const char* beg, const char* end) noexcept;
-
-      void setLen();
-
-      const char* _cur;
-      const char* _end;
-      uint32_t _nameLen;
-      uint32_t _valueLen;
-    };
-
-    explicit HeadersView(std::string_view sv) noexcept : _beg(sv.data()), _end(sv.data() + sv.size()) {}
-
-    [[nodiscard]] iterator begin() const noexcept { return {_beg, _end}; }
-    [[nodiscard]] iterator end() const noexcept { return {_end, _end}; }
-
-   private:
-    const char* _beg;
-    const char* _end;
-  };
 
   // Return a non-allocating, iterable view over headers.
   // Each element is a HeaderView with name and value string_views.
@@ -839,6 +792,7 @@ class HttpResponse {
   friend class HttpResponseTest;
   friend class HttpResponseWriter;  // streaming writer needs access to finalize
   friend class internal::HttpCodec;
+  friend class http2::Http2ProtocolHandler;
 
   void setCapturedPayload(auto payload) {
     if (payload.empty()) {
@@ -885,6 +839,9 @@ class HttpResponse {
   void appendHeaderInternal(std::string_view key, std::string_view value);
 
   void appendHeaderValueInternal(std::string_view key, std::string_view value, std::string_view separator);
+
+  // Convert all header names to lower-case (for HTTP/2).
+  void makeAllHeaderNamesLowerCase();
 
   void appendBodyInternal(std::string_view data, std::string_view contentType);
 

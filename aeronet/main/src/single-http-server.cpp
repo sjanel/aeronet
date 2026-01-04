@@ -4,7 +4,6 @@
 #include <atomic>
 #include <cassert>
 #include <cerrno>
-#include <charconv>
 #include <chrono>
 #include <coroutine>
 #include <cstddef>
@@ -13,7 +12,6 @@
 #include <exception>
 #include <functional>
 #include <future>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -24,7 +22,6 @@
 #include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
-#include "aeronet/decoder.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
@@ -40,13 +37,8 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
-#ifdef AERONET_ENABLE_HTTP2
-#include "aeronet/http2-frame-types.hpp"
-#include "aeronet/http2-protocol-handler.hpp"
-#endif
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
-#include "aeronet/nchars.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -58,23 +50,10 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
-
-#ifdef AERONET_ENABLE_BROTLI
-#include "aeronet/brotli-decoder.hpp"
-#endif
-
-#ifdef AERONET_ENABLE_ZLIB
-#include "aeronet/zlib-decoder.hpp"
-#endif
-
-#ifdef AERONET_ENABLE_ZSTD
-#include "aeronet/zstd-decoder.hpp"
-#endif
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-context.hpp"
@@ -89,6 +68,11 @@
 
 #if defined(AERONET_ENABLE_HTTP2) || defined(AERONET_ENABLE_WEBSOCKET)
 #include "aeronet/upgrade-handler.hpp"
+
+#ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/http2-frame-types.hpp"
+#include "aeronet/http2-protocol-handler.hpp"
+#endif
 #endif
 
 namespace aeronet {

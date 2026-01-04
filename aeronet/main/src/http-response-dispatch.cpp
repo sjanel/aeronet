@@ -9,12 +9,9 @@
 #include <string_view>
 #include <utility>
 
-#include "aeronet/accept-encoding-negotiation.hpp"
-#include "aeronet/compression-config.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/connection.hpp"
 #include "aeronet/cors-policy.hpp"
-#include "aeronet/encoding.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"

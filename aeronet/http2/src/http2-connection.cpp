@@ -10,12 +10,16 @@
 #include <stdexcept>
 #include <utility>
 
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/simple-charconv.hpp"
 
 namespace aeronet::http2 {
 
@@ -170,7 +174,8 @@ void Http2Connection::pruneClosedStreams() {
 // Frame sending
 // ============================
 
-ErrorCode Http2Connection::sendHeaders(uint32_t streamId, const HeaderProvider& headerProvider, bool endStream) {
+ErrorCode Http2Connection::sendHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
+                                       bool endStream) {
   auto [it, inserted] = _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize);
   if (inserted) {
     // Created new stream
@@ -190,7 +195,7 @@ ErrorCode Http2Connection::sendHeaders(uint32_t streamId, const HeaderProvider& 
   }
 
   // Encode headers
-  encodeHeaders(streamId, headerProvider, endStream, true);
+  encodeHeaders(streamId, statusCode, headersView, endStream, true);
 
   return ErrorCode::NoError;
 }
@@ -786,68 +791,72 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
 // HPACK
 // ============================
 
-void Http2Connection::encodeHeaders(uint32_t streamId, const HeaderProvider& headerProvider, bool endStream,
-                                    bool endHeaders) {
+void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
+                                    bool endStream, bool endHeaders) {
   _outputBuffer.ensureAvailableCapacityExponential(FrameHeader::kSize + 512);  // Reserve some space
 
   // Make the header block be written after the frame header
   _outputBuffer.addSize(FrameHeader::kSize);
   const auto oldSize = _outputBuffer.size();
 
-  // Call the provider with an emitter callback that HPACK-encodes each header
-  headerProvider(
-      [this](std::string_view name, std::string_view value) { _hpackEncoder.encode(_outputBuffer, name, value); });
+  // Encode :status pseudo-header first if present
+  if (statusCode != 0) {
+    assert(statusCode >= 100 && statusCode <= 999);
+    char statusStr[3];
+    write3(statusStr, statusCode);
+    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderStatus, std::string_view(statusStr, sizeof(statusStr)));
+  }
+  for (const auto& [name, value] : headersView) {
+    _hpackEncoder.encode(_outputBuffer, name, value);
+  }
 
   const uint32_t headerBlockSize = static_cast<uint32_t>(_outputBuffer.size() - oldSize);
   _outputBuffer.setSize(oldSize - FrameHeader::kSize);
 
-  const auto flags = ComputeHeaderFrameFlags(endStream, endHeaders);
-
   // Check if we need to split into CONTINUATION frames
   if (headerBlockSize <= _peerSettings.maxFrameSize) {
+    const auto flags = ComputeHeaderFrameFlags(endStream, endHeaders);
     // Only write the HEADERS frame prefix without the header block which is already written at the correct position!
     WriteFrame(_outputBuffer, FrameType::Headers, flags, streamId, headerBlockSize);
     // WriteFrame already added FrameHeader::kSize, so we only add headerBlockSize here
     _outputBuffer.addSize(headerBlockSize);
-  } else {
-    // We will have at least one CONTINUATION frame.
-    // Let's start by computing the exact total size needed.
-    std::size_t totalSize = 0;
-    for (std::size_t offset = 0; offset < headerBlockSize;) {
-      const std::size_t chunkSize =
-          std::min(headerBlockSize - offset, static_cast<std::size_t>(_peerSettings.maxFrameSize));
+    return;
+  }
+  // We will have at least one CONTINUATION frame.
+  // Let's start by computing the exact total size needed.
+  std::size_t totalSize = 0;
+  for (uint32_t offset = 0; offset < headerBlockSize;) {
+    const auto chunkSize = std::min(headerBlockSize - offset, _peerSettings.maxFrameSize);
 
-      totalSize += FrameHeader::kSize + chunkSize;
-      offset += chunkSize;
-    }
+    totalSize += FrameHeader::kSize + chunkSize;
+    offset += chunkSize;
+  }
 
-    // reserve enough capacity in output buffer (no more reallocations)
-    const auto remainingHeaderBlockSize = headerBlockSize - _peerSettings.maxFrameSize;
-    _outputBuffer.ensureAvailableCapacityExponential(totalSize + remainingHeaderBlockSize);
+  // reserve enough capacity in output buffer (no more reallocations)
+  const auto remainingHeaderBlockSize = headerBlockSize - _peerSettings.maxFrameSize;
+  _outputBuffer.ensureAvailableCapacityExponential(totalSize + remainingHeaderBlockSize);
 
-    // Write the HEADERS frame WITHOUT END_HEADERS (it will be on the last CONTINUATION)
-    const auto headersFlags = ComputeHeaderFrameFlags(endStream, false);
-    WriteFrame(_outputBuffer, FrameType::Headers, headersFlags, streamId, _peerSettings.maxFrameSize);
-    _outputBuffer.addSize(_peerSettings.maxFrameSize);
+  // Write the HEADERS frame WITHOUT END_HEADERS (it will be on the last CONTINUATION)
+  const auto headersFlags = ComputeHeaderFrameFlags(endStream, false);
+  WriteFrame(_outputBuffer, FrameType::Headers, headersFlags, streamId, _peerSettings.maxFrameSize);
+  _outputBuffer.addSize(_peerSettings.maxFrameSize);
 
-    // Move the header block data to the end of the reserved space
-    const auto begRemainingHeaderBlock = _outputBuffer.data() + _outputBuffer.capacity() - remainingHeaderBlockSize;
-    std::memmove(begRemainingHeaderBlock, _outputBuffer.end(), remainingHeaderBlockSize);
+  // Move the header block data to the end of the reserved space
+  const auto begRemainingHeaderBlock = _outputBuffer.data() + _outputBuffer.capacity() - remainingHeaderBlockSize;
+  std::memmove(begRemainingHeaderBlock, _outputBuffer.end(), remainingHeaderBlockSize);
 
-    // capture the header block span (which will not move because no reallocation can occur now)
-    std::span<const std::byte> remainingHeaderBlock(begRemainingHeaderBlock, remainingHeaderBlockSize);
+  // Capture the header block span (which will stay valid because no reallocation can occur now)
+  std::span<const std::byte> remainingHeaderBlock(begRemainingHeaderBlock, remainingHeaderBlockSize);
 
-    // Write continuation frames
-    for (std::size_t offset = 0; offset < remainingHeaderBlockSize;) {
-      const std::size_t chunkSize =
-          std::min(remainingHeaderBlockSize - offset, static_cast<std::size_t>(_peerSettings.maxFrameSize));
-      const bool isLast = (offset + chunkSize >= remainingHeaderBlockSize);
-      const auto chunkSpan = remainingHeaderBlock.subspan(offset, chunkSize);
+  // Write continuation frames
+  for (uint32_t offset = 0; offset < remainingHeaderBlockSize;) {
+    const auto chunkSize = std::min(remainingHeaderBlockSize - offset, _peerSettings.maxFrameSize);
+    const bool isLast = (offset + chunkSize >= remainingHeaderBlockSize);
+    const auto chunkSpan = remainingHeaderBlock.subspan(offset, chunkSize);
 
-      WriteContinuationFrame(_outputBuffer, streamId, chunkSpan, isLast && endHeaders);
+    WriteContinuationFrame(_outputBuffer, streamId, chunkSpan, isLast && endHeaders);
 
-      offset += chunkSize;
-    }
+    offset += chunkSize;
   }
 }
 
@@ -858,7 +867,7 @@ ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<con
   // strings here because the HPACK dynamic table may evict entries during decode,
   // invalidating string_views that point to evicted entries.
 
-  auto decodeResult = _hpackDecoder.decode(headerBlock);
+  const auto decodeResult = _hpackDecoder.decode(headerBlock);
 
   if (!decodeResult.isSuccess()) {
     return ErrorCode::CompressionError;
