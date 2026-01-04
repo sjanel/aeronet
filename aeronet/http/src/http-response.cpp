@@ -124,20 +124,6 @@ std::size_t HttpResponse::bodyLen() const noexcept {
   return pExternPayload != nullptr ? pExternPayload->size() : internalBodyAndTrailersLen();
 }
 
-std::size_t HttpResponse::fileOffset() const noexcept {
-  if (const FilePayload* pFilePayload = filePayloadPtr(); pFilePayload != nullptr) {
-    return pFilePayload->offset;
-  }
-  return 0;
-}
-
-std::size_t HttpResponse::fileLength() const noexcept {
-  if (const FilePayload* pFilePayload = filePayloadPtr(); pFilePayload != nullptr) {
-    return pFilePayload->length;
-  }
-  return 0;
-}
-
 void HttpResponse::setStatusCode(http::StatusCode statusCode) {
   if (statusCode < 100 || statusCode > 999) [[unlikely]] {
     throw std::invalid_argument("Invalid HTTP status code, should be 3 digits");

@@ -11,7 +11,6 @@
 #include <utility>
 
 #include "aeronet/headers-view-map.hpp"
-#include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -21,7 +20,6 @@
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/timestring.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {

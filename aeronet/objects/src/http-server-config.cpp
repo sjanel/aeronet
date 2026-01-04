@@ -277,9 +277,7 @@ void HttpServerConfig::validate() {
     throw std::invalid_argument("Poll interval value is too large");
   }
 
-  if (globalHeaders.empty()) {
-    globalHeaders.append("server: aeronet");
-  } else if (globalHeaders.nbConcatenatedStrings() > kMaxGlobalHeaders) {
+  if (globalHeaders.nbConcatenatedStrings() > kMaxGlobalHeaders) {
     throw std::invalid_argument("too many global headers");
   }
 
