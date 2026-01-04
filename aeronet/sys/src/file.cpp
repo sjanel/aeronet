@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>

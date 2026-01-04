@@ -21,6 +21,7 @@
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-config.hpp"
+#include "aeronet/toupperlower.hpp"
 #endif
 
 namespace aeronet {
@@ -283,13 +284,12 @@ void HttpServerConfig::validate() {
   }
 
   for (std::string_view headerNameValue : globalHeaders) {
-    auto colonPos = headerNameValue.find(':');
+    const auto colonPos = headerNameValue.find(':');
     if (colonPos == std::string_view::npos) {
       throw std::invalid_argument("header missing ':' separator in global headers");
     }
 
     std::string_view headerName = headerNameValue.substr(0, colonPos);
-    std::string_view headerValue = TrimOws(headerNameValue.substr(colonPos + 1));
 
     if (http::IsReservedResponseHeader(headerName)) {
       throw std::invalid_argument(std::format("attempt to set reserved header: '{}'", headerName));
@@ -299,9 +299,20 @@ void HttpServerConfig::validate() {
       throw std::invalid_argument(std::format("header has invalid name: '{}'", headerName));
     }
 
+    std::string_view headerValue = TrimOws(headerNameValue.substr(colonPos + 1));
     if (!http::IsValidHeaderValue(headerValue)) {
       throw std::invalid_argument(std::format("header has invalid value: '{}'", headerValue));
     }
+
+#ifdef AERONET_ENABLE_HTTP2
+    // forces lower-case header names for HTTP/2
+    char* first = const_cast<char*>(headerName.data());
+    char* last = first + headerName.size();
+    while (first != last) {
+      *first = tolower(*first);
+      ++first;
+    }
+#endif
   }
 
   telemetry.validate();

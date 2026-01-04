@@ -166,11 +166,12 @@ curl -i http://localhost:8080/hello
 
 HTTP/1.1 200
 content-type: text/plain
-content-length: 151
-date: Wed, 12 Nov 2025 18:56:52 GMT
 server: aeronet
+date: Sun, 04 Jan 2026 15:49:40 GMT
+content-length: 151
 
 Hello from aeronet minimal server! You requested /hello
+...
 ```
 
 ## Detailed Documentation

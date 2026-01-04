@@ -11,11 +11,15 @@
 #include <utility>
 
 #include "aeronet/headers-view-map.hpp"
+#include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-helpers.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
@@ -330,16 +334,14 @@ TEST(Http2Core, ClientSendHeadersIsDecodedOnServer) {
 
   constexpr uint32_t streamId = 1;
 
-  ErrorCode err = h2.client.sendHeaders(
-      streamId,
-      [&](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/hello");
-        emit("x-custom", "value");
-      },
-      false);
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/hello"));
+  hdrs.append(MakeHttp1HeaderLine("x-custom", "value"));
+
+  ErrorCode err = h2.client.sendHeaders(streamId, http::StatusCodeOK, HeadersView(hdrs), false);
   ASSERT_EQ(err, ErrorCode::NoError);
 
   // Client must have output HEADERS.
@@ -375,14 +377,10 @@ TEST(Http2Core, ServerSendHeadersIsDecodedOnClient) {
 
   constexpr uint32_t streamId = 2;
 
-  ErrorCode err = h2.server.sendHeaders(
-      streamId,
-      [&](const HeaderCallback& emit) {
-        emit(":status", "200");
-        emit("content-type", "text/plain");
-        emit("x-srv", "abc");
-      },
-      false);
+  RawChars hdrs2;
+  hdrs2.append(MakeHttp1HeaderLine("content-type", "text/plain"));
+  hdrs2.append(MakeHttp1HeaderLine("x-srv", "abc"));
+  ErrorCode err = h2.server.sendHeaders(streamId, http::StatusCodeOK, HeadersView(hdrs2), false);
   ASSERT_EQ(err, ErrorCode::NoError);
 
   auto out = h2.server.getPendingOutput();
@@ -411,16 +409,14 @@ TEST(Http2Core, HeadersEndStreamClosesRemoteSideStream) {
 
   constexpr uint32_t streamId = 1;
 
-  ASSERT_EQ(h2.client.sendHeaders(
-                streamId,
-                [&](const HeaderCallback& emit) {
-                  emit(":method", "GET");
-                  emit(":scheme", "https");
-                  emit(":authority", "example.com");
-                  emit(":path", "/end");
-                },
-                true),
-            ErrorCode::NoError);
+  RawChars hdrs3;
+  hdrs3.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs3.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs3.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs3.append(MakeHttp1HeaderLine(":path", "/end"));
+
+  ErrorCode err = h2.client.sendHeaders(streamId, http::StatusCodeOK, HeadersView(hdrs3), true);
+  ASSERT_EQ(err, ErrorCode::NoError);
 
   Http2Loopback::pump(h2.client, h2.server);
 
@@ -452,21 +448,17 @@ TEST(Http2Core, ClientSplitsLargeHeaderBlockIntoContinuationFrames) {
 
   constexpr uint32_t streamId = 1;
 
-  std::string largeValue(7000, 'x');
-  ASSERT_EQ(h2.client.sendHeaders(
-                streamId,
-                [&](const HeaderCallback& emit) {
-                  emit(":method", "GET");
-                  emit(":scheme", "https");
-                  emit(":authority", "example.com");
-                  emit(":path", "/big");
-                  // Create enough payload so HPACK output likely exceeds 16KB.
-                  for (int idx = 0; idx < 20; ++idx) {
-                    emit("x-big-" + std::to_string(idx), largeValue);
-                  }
-                },
-                false),
-            ErrorCode::NoError);
+  const std::string largeValue(7000, 'x');
+  RawChars hdrs4;
+  hdrs4.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs4.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs4.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs4.append(MakeHttp1HeaderLine(":path", "/big"));
+  for (int idx = 0; idx < 20; ++idx) {
+    hdrs4.append(MakeHttp1HeaderLine("x-big-" + std::to_string(idx), largeValue));
+  }
+
+  ASSERT_EQ(h2.client.sendHeaders(streamId, http::StatusCodeOK, HeadersView(hdrs4), false), ErrorCode::NoError);
 
   auto out = h2.client.getPendingOutput();
   ASSERT_FALSE(out.empty());
@@ -573,16 +565,13 @@ TEST(Http2Core, DataIsDeliveredToPeer) {
 
   constexpr uint32_t streamId = 1;
 
-  ASSERT_EQ(h2.client.sendHeaders(
-                streamId,
-                [&](const HeaderCallback& emit) {
-                  emit(":method", "POST");
-                  emit(":scheme", "https");
-                  emit(":authority", "example.com");
-                  emit(":path", "/upload");
-                },
-                false),
-            ErrorCode::NoError);
+  RawChars hdrs4;
+  hdrs4.append(MakeHttp1HeaderLine(":method", "POST"));
+  hdrs4.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs4.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs4.append(MakeHttp1HeaderLine(":path", "/upload"));
+
+  ASSERT_EQ(h2.client.sendHeaders(streamId, http::StatusCodeOK, HeadersView(hdrs4), false), ErrorCode::NoError);
   Http2Loopback::pump(h2.client, h2.server);
   // Pump back to process any server responses (e.g., WINDOW_UPDATE).
   Http2Loopback::pump(h2.server, h2.client);
@@ -618,16 +607,14 @@ TEST(Http2Core, SendingMoreThanConnectionSendWindowFails) {
   h2.connect(true);
 
   constexpr uint32_t streamId = 1;
-  ASSERT_EQ(h2.client.sendHeaders(
-                streamId,
-                [&](const HeaderCallback& emit) {
-                  emit(":method", "GET");
-                  emit(":scheme", "https");
-                  emit(":authority", "example.com");
-                  emit(":path", "/win");
-                },
-                false),
-            ErrorCode::NoError);
+
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "GET"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", "/win"));
+
+  ASSERT_EQ(h2.client.sendHeaders(streamId, http::StatusCodeOK, HeadersView(headers), false), ErrorCode::NoError);
   Http2Loopback::pump(h2.client, h2.server);
 
   // Deplete the connection send window (starts at 65535 on every connection).
@@ -650,16 +637,14 @@ TEST(Http2Core, StreamSendWindowIsEnforced) {
   h2.connect(true);
 
   constexpr uint32_t streamId = 1;
-  ASSERT_EQ(h2.client.sendHeaders(
-                streamId,
-                [&](const HeaderCallback& emit) {
-                  emit(":method", "POST");
-                  emit(":scheme", "https");
-                  emit(":authority", "example.com");
-                  emit(":path", "/small-win");
-                },
-                false),
-            ErrorCode::NoError);
+
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "POST"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", "/small-win"));
+
+  ASSERT_EQ(h2.client.sendHeaders(streamId, http::StatusCodeOK, HeadersView(headers), false), ErrorCode::NoError);
 
   // The stream send window should now be 1024 on the client (it is created with peer initial window).
   auto* st = h2.client.getStream(streamId);
@@ -775,17 +760,14 @@ TEST(Http2Core, PriorityFrameUpdatesStream) {
   Http2Loopback h2(clientCfg, serverCfg);
   h2.connect(true);
 
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "GET"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", "/prio"));
+
   // Create a stream by sending HEADERS.
-  ASSERT_EQ(h2.client.sendHeaders(
-                1,
-                [&](const HeaderCallback& emit) {
-                  emit(":method", "GET");
-                  emit(":scheme", "https");
-                  emit(":authority", "example.com");
-                  emit(":path", "/prio");
-                },
-                false),
-            ErrorCode::NoError);
+  ASSERT_EQ(h2.client.sendHeaders(1, http::StatusCodeOK, HeadersView(headers), false), ErrorCode::NoError);
   Http2Loopback::pump(h2.client, h2.server);
 
   RawBytes pri;
@@ -921,17 +903,14 @@ TEST(Http2Core, RstStreamFromPeerTriggersStreamResetCallback) {
     resetCode = code;
   });
 
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "GET"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", "/rst"));
+
   // Create stream on server.
-  ASSERT_EQ(h2.client.sendHeaders(
-                1,
-                [&](const HeaderCallback& emit) {
-                  emit(":method", "GET");
-                  emit(":scheme", "https");
-                  emit(":authority", "example.com");
-                  emit(":path", "/rst");
-                },
-                false),
-            ErrorCode::NoError);
+  ASSERT_EQ(h2.client.sendHeaders(1, http::StatusCodeOK, HeadersView(headers), false), ErrorCode::NoError);
   Http2Loopback::pump(h2.client, h2.server);
   // Also pump server->client to ensure any server response is processed.
   Http2Loopback::pump(h2.server, h2.client);
@@ -961,16 +940,14 @@ TEST(Http2Core, MultipleConcurrentStreamsDeliverHeadersToCorrectStream) {
   h2.connect(true);
 
   for (uint32_t streamId : {1U, 3U, 5U, 7U, 9U}) {
-    auto err = h2.client.sendHeaders(
-        streamId,
-        [&](const HeaderCallback& emit) {
-          emit(":method", "GET");
-          emit(":scheme", "https");
-          emit(":authority", "example.com");
-          emit(":path", "/s" + std::to_string(streamId));
-          emit("x-id", std::to_string(streamId));
-        },
-        false);
+    RawChars headers;
+    headers.append(MakeHttp1HeaderLine(":method", "GET"));
+    headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+    headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    headers.append(MakeHttp1HeaderLine(":path", "/s" + std::to_string(streamId)));
+    headers.append(MakeHttp1HeaderLine("x-id", std::to_string(streamId)));
+
+    auto err = h2.client.sendHeaders(streamId, http::StatusCodeOK, HeadersView(headers), false);
     ASSERT_EQ(err, ErrorCode::NoError);
     // Pump after each to ensure delivery before potential flow control issues.
     Http2Loopback::pump(h2.client, h2.server);
@@ -994,28 +971,22 @@ TEST(Http2Core, RefusedStreamWhenMaxConcurrentStreamsExceededOnSender) {
   Http2Loopback h2(clientCfg, serverCfg);
   h2.connect(true);
 
-  ASSERT_EQ(h2.client.sendHeaders(
-                1,
-                [&](const HeaderCallback& emit) {
-                  emit(":method", "GET");
-                  emit(":scheme", "https");
-                  emit(":authority", "example.com");
-                  emit(":path", "/one");
-                },
-                false),
-            ErrorCode::NoError);
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "GET"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", "/one"));
+
+  ASSERT_EQ(h2.client.sendHeaders(1, http::StatusCodeOK, HeadersView(headers), false), ErrorCode::NoError);
+
+  RawChars headers2;
+  headers2.append(MakeHttp1HeaderLine(":method", "GET"));
+  headers2.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers2.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers2.append(MakeHttp1HeaderLine(":path", "/two"));
 
   // Second stream cannot be created while the first is active.
-  EXPECT_EQ(h2.client.sendHeaders(
-                3,
-                [&](const HeaderCallback& emit) {
-                  emit(":method", "GET");
-                  emit(":scheme", "https");
-                  emit(":authority", "example.com");
-                  emit(":path", "/two");
-                },
-                false),
-            ErrorCode::RefusedStream);
+  EXPECT_EQ(h2.client.sendHeaders(3, http::StatusCodeOK, HeadersView(headers2), false), ErrorCode::RefusedStream);
 }
 
 // ============================
@@ -1062,18 +1033,17 @@ TEST(Http2Core, RoundTripManyHeaderSetsClientToServer) {
 
   for (int iter = 0; iter < 50; ++iter) {
     const uint32_t streamId = static_cast<uint32_t>(1 + (iter * 2));
-    ASSERT_EQ(loopback.client.sendHeaders(
-                  streamId,
-                  [&](const HeaderCallback& emit) {
-                    emit(":method", "GET");
-                    emit(":scheme", "https");
-                    emit(":authority", "example.com");
-                    emit(":path", "/bulk/" + std::to_string(iter));
-                    for (int ii = 0; ii < 5; ++ii) {
-                      emit("x-k" + std::to_string(ii), "v" + std::to_string(iter) + "." + std::to_string(ii));
-                    }
-                  },
-                  false),
+    RawChars headers;
+    headers.append(MakeHttp1HeaderLine(":method", "GET"));
+    headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+    headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    headers.append(MakeHttp1HeaderLine(":path", "/bulk/" + std::to_string(iter)));
+    for (int ii = 0; ii < 5; ++ii) {
+      headers.append(
+          MakeHttp1HeaderLine("x-k" + std::to_string(ii), "v" + std::to_string(iter) + "." + std::to_string(ii)));
+    }
+
+    ASSERT_EQ(loopback.client.sendHeaders(streamId, http::StatusCodeOK, HeadersView(headers), false),
               ErrorCode::NoError);
   }
 
@@ -1099,16 +1069,14 @@ TEST(Http2Core, RoundTripDataChunksAcrossManyFrames) {
   h2.connect(true);
 
   constexpr uint32_t streamId = 1;
-  ASSERT_EQ(h2.client.sendHeaders(
-                streamId,
-                [&](const HeaderCallback& emit) {
-                  emit(":method", "POST");
-                  emit(":scheme", "https");
-                  emit(":authority", "example.com");
-                  emit(":path", "/data");
-                },
-                false),
-            ErrorCode::NoError);
+
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "POST"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", "/data"));
+
+  ASSERT_EQ(h2.client.sendHeaders(streamId, http::StatusCodeOK, HeadersView(headers), false), ErrorCode::NoError);
   Http2Loopback::pump(h2.client, h2.server);
   Http2Loopback::pump(h2.server, h2.client);
 
@@ -1226,16 +1194,13 @@ TEST(Http2Core, StreamClosedRejectsDataAfterEndStream) {
 
   constexpr uint32_t streamId = 1;
 
-  ASSERT_EQ(h2.client.sendHeaders(
-                streamId,
-                [&](const HeaderCallback& emit) {
-                  emit(":method", "GET");
-                  emit(":scheme", "https");
-                  emit(":authority", "example.com");
-                  emit(":path", "/close");
-                },
-                true),
-            ErrorCode::NoError);
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "GET"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", "/close"));
+
+  ASSERT_EQ(h2.client.sendHeaders(streamId, http::StatusCodeOK, HeadersView(headers), true), ErrorCode::NoError);
   Http2Loopback::pump(h2.client, h2.server);
 
   // Stream is half-closed remote on server now. DATA from peer should be ignored
@@ -1259,16 +1224,14 @@ TEST(Http2Core, FrameParserHandlesBackToBackFramesInSingleBuffer) {
 
   // Use the proper sendHeaders/sendData API which handles HPACK encoding correctly.
   constexpr uint32_t streamId = 1;
-  ASSERT_EQ(h2.client.sendHeaders(
-                streamId,
-                [&](const HeaderCallback& emit) {
-                  emit(":method", "GET");
-                  emit(":scheme", "https");
-                  emit(":authority", "example.com");
-                  emit(":path", "/backtoback");
-                },
-                false),
-            ErrorCode::NoError);
+
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "GET"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", "/backtoback"));
+
+  ASSERT_EQ(h2.client.sendHeaders(streamId, http::StatusCodeOK, HeadersView(headers), false), ErrorCode::NoError);
 
   std::array<std::byte, 3> payload = {std::byte{'a'}, std::byte{'b'}, std::byte{'c'}};
   ASSERT_EQ(h2.client.sendData(streamId, payload, true), ErrorCode::NoError);
@@ -1290,16 +1253,14 @@ TEST(Http2Core, ManyTinyFramesDontBreakStateMachine) {
 
   // Construct 100 minimal DATA frames on a single stream.
   constexpr uint32_t streamId = 1;
-  ASSERT_EQ(h2.client.sendHeaders(
-                streamId,
-                [&](const HeaderCallback& emit) {
-                  emit(":method", "GET");
-                  emit(":scheme", "https");
-                  emit(":authority", "example.com");
-                  emit(":path", "/many");
-                },
-                false),
-            ErrorCode::NoError);
+
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "GET"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", "/many"));
+
+  ASSERT_EQ(h2.client.sendHeaders(streamId, http::StatusCodeOK, HeadersView(headers), false), ErrorCode::NoError);
   Http2Loopback::pump(h2.client, h2.server);
 
   for (int ii = 0; ii < 100; ++ii) {

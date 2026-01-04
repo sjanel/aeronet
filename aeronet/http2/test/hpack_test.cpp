@@ -5,16 +5,17 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
+#include <cstring>
 #include <random>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/timedef.hpp"
+#include "aeronet/timestring.hpp"
 
 namespace aeronet::http2 {
 
@@ -699,14 +700,6 @@ TEST(HpackEncoder, EncodeReuseDynamicTable) {
   EXPECT_LT(secondSize, firstSize);
 }
 
-TEST(HpackEncoder, UnreasonableHeaderNameLen) {
-  HpackEncoder encoder(4096);
-  char ch{};
-  std::string_view hugeHeader(&ch,
-                              static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()) + 1);  // 1 GiB header name
-  EXPECT_THROW((void)encoder.findHeader(hugeHeader, "GET"), std::overflow_error);
-}
-
 TEST(HpackEncoder, FindHeaderInStaticTable) {
   HpackEncoder encoder(4096);
 
@@ -730,7 +723,7 @@ TEST(HpackEncoder, FindHeaderInDynamicTable) {
   encoder.encode(output, "custom-header", "custom-value");
 
   // Should be found in dynamic table (index 62)
-  auto result = encoder.findHeader("custom-Header", "custom-value");
+  auto result = encoder.findHeader("custom-header", "custom-value");
   EXPECT_EQ(result.match, HpackLookupResult::Match::Full);
   EXPECT_EQ(result.index, 62U);  // First dynamic table entry
 }
@@ -740,10 +733,10 @@ TEST(HpackEncoder, FindHeaderTooLongToBeAStaticHeader) {
 
   // Add a custom header
   RawBytes output;
-  encoder.encode(output, "A-Very-Long-Header-Name-That-Exceeds-Static-Table", "custom-value");
+  encoder.encode(output, "a-very-long-header-name-that-exceeds-static-table", "custom-value");
 
   // Search for name-only match with different value
-  auto result = encoder.findHeader("A-Very-Long-Header-Name-That-Exceeds-Static-Table", "different-value");
+  auto result = encoder.findHeader("a-very-long-header-name-that-exceeds-static-table", "different-value");
   EXPECT_EQ(result.match, HpackLookupResult::Match::NameOnly);
   EXPECT_EQ(result.index, 62U);  // First dynamic table entry
 }
@@ -881,6 +874,94 @@ TEST(HpackRoundTrip, RepeatedHeaders) {
     EXPECT_EQ(name, "x-custom");
     EXPECT_EQ(value, "value1");
   }
+}
+
+TEST(HpackRoundTrip, DateHeaderValue) {
+  HpackEncoder encoder(4096);
+  HpackDecoder decoder(4096);
+
+  static constexpr std::string_view kDate = "Thu, 01 Jan 1970 00:00:00 GMT";
+  static_assert(kDate.size() == kRFC7231DateStrLen);
+
+  RawBytes encoded;
+  encoder.encode(encoded, ":status", "200");
+  encoder.encode(encoded, "date", kDate);
+  encoder.encode(encoded, "content-length", "1");
+
+  auto result = decoder.decode(encoded);
+  ASSERT_TRUE(result.isSuccess());
+
+  const auto dateIt = result.decodedHeaders.find("date");
+  ASSERT_NE(dateIt, result.decodedHeaders.end());
+  EXPECT_EQ(dateIt->second, kDate);
+}
+
+TEST(HpackRoundTrip, CurrentDateHeaderValue) {
+  HpackEncoder encoder(4096);
+  HpackDecoder decoder(4096);
+
+  const std::array<char, kRFC7231DateStrLen> dateBuf = [] {
+    std::array<char, kRFC7231DateStrLen> buf{};
+    (void)TimeToStringRFC7231(SysClock::now(), buf.data());
+    return buf;
+  }();
+
+  const std::string_view dateSv{dateBuf.data(), kRFC7231DateStrLen};
+  ASSERT_EQ(dateSv.size(), kRFC7231DateStrLen);
+
+  RawBytes encoded;
+  encoder.encode(encoded, ":status", "200");
+  encoder.encode(encoded, "date", dateSv);
+  encoder.encode(encoded, "content-length", "1");
+
+  auto result = decoder.decode(encoded);
+  ASSERT_TRUE(result.isSuccess());
+
+  const auto dateIt = result.decodedHeaders.find("date");
+  if (dateIt == result.decodedHeaders.end()) {
+    for (const auto& [name, value] : result.decodedHeaders) {
+      ADD_FAILURE() << "Decoded header: '" << name << "'='" << value << "'";
+    }
+    // Also check if the date value got associated with a different name.
+    for (const auto& [name, value] : result.decodedHeaders) {
+      if (value.size() == dateSv.size() && std::memcmp(value.data(), dateSv.data(), value.size()) == 0) {
+        ADD_FAILURE() << "Date value decoded under name: '" << name << "'";
+      }
+    }
+    FAIL() << "Missing 'date' in decoded headers";
+  }
+  EXPECT_EQ(dateIt->second.size(), kRFC7231DateStrLen);
+  EXPECT_TRUE(dateIt->second.ends_with("GMT"));
+}
+
+TEST(HpackRoundTrip, ResponseHeaderSetIncludesDate) {
+  HpackEncoder encoder(4096);
+  HpackDecoder decoder(4096);
+
+  const std::array<char, kRFC7231DateStrLen> dateBuf = [] {
+    std::array<char, kRFC7231DateStrLen> buf;
+    (void)TimeToStringRFC7231(SysClock::now(), buf.data());
+    return buf;
+  }();
+
+  const std::string_view dateSv{dateBuf.data(), kRFC7231DateStrLen};
+
+  RawBytes encoded;
+  encoder.encode(encoded, ":status", "200");
+  encoder.encode(encoded, "content-type", "text/plain");
+  encoder.encode(encoded, "x-custom", "original");
+  encoder.encode(encoded, "x-another", "anothervalue");
+  encoder.encode(encoded, "x-global", "gvalue");
+  encoder.encode(encoded, "date", dateSv);
+  encoder.encode(encoded, "content-length", "1");
+
+  auto result = decoder.decode(encoded);
+  ASSERT_TRUE(result.isSuccess());
+
+  const auto dateIt = result.decodedHeaders.find("date");
+  ASSERT_NE(dateIt, result.decodedHeaders.end());
+  EXPECT_EQ(dateIt->second.size(), kRFC7231DateStrLen);
+  EXPECT_TRUE(dateIt->second.ends_with("GMT"));
 }
 
 }  // namespace

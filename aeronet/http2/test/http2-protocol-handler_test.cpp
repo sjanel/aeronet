@@ -16,16 +16,20 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
+#include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/protocol-handler.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/request-task.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/vector.hpp"
@@ -339,15 +343,12 @@ TEST(Http2ProtocolHandler, SimpleGetWithBodyProducesHeadersAndData) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/hello");
-      },
-      true);
+  RawChars hdrs1;
+  hdrs1.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs1.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs1.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs1.append(MakeHttp1HeaderLine(":path", "/hello"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs1), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -376,15 +377,12 @@ TEST(Http2ProtocolHandler, HttpRequestHttp2FieldsSetCorrectly) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/hello");
-      },
-      true);
+  RawChars hdrs2;
+  hdrs2.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs2.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs2.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs2.append(MakeHttp1HeaderLine(":path", "/hello"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs2), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -408,15 +406,12 @@ TEST(Http2ProtocolHandler, ResponseWithTrailersEndsOnTrailerHeaders) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/trailers");
-      },
-      true);
+  RawChars hdrs5;
+  hdrs5.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs5.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs5.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs5.append(MakeHttp1HeaderLine(":path", "/trailers"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs5), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -443,15 +438,12 @@ TEST(Http2ProtocolHandler, ResponseWithTrailersButNoBodyEndsOnTrailerHeadersWith
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/trailers-nobody");
-      },
-      true);
+  RawChars hdrs6;
+  hdrs6.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs6.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs6.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs6.append(MakeHttp1HeaderLine(":path", "/trailers-nobody"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs6), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -493,16 +485,13 @@ TEST(Http2ProtocolHandler, ParsesManyHttpMethodsAndFallsBackToGetForUnknown) {
   };
 
   for (const auto& tc : cases) {
-    const auto ok = loop.client.sendHeaders(
-        tc.streamId,
-        [&](const HeaderCallback& emit) {
-          emit(":method", tc.method);
-          emit(":scheme", "https");
-          emit(":authority", "example.com");
-          emit(":path", "/m");
-          emit(":unknown", "ignored");
-        },
-        true);
+    RawChars mhdrs;
+    mhdrs.append(MakeHttp1HeaderLine(":method", std::string(tc.method)));
+    mhdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+    mhdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    mhdrs.append(MakeHttp1HeaderLine(":path", "/m"));
+    mhdrs.append(MakeHttp1HeaderLine(":unknown", "ignored"));
+    const auto ok = loop.client.sendHeaders(tc.streamId, http::StatusCode{}, HeadersView(mhdrs), true);
     ASSERT_EQ(ok, ErrorCode::NoError);
     loop.pumpClientToServer();
     loop.pumpServerToClient();
@@ -527,15 +516,12 @@ TEST(Http2ProtocolHandler, SetsPathParamsFromRouterMatch) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/items/42/view");
-      },
-      true);
+  RawChars hdrs7;
+  hdrs7.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs7.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs7.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs7.append(MakeHttp1HeaderLine(":path", "/items/42/view"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs7), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -553,15 +539,12 @@ TEST(Http2ProtocolHandler, PerRouteHttp2DisableReturns404) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/h1only");
-      },
-      true);
+  RawChars hdrs8;
+  hdrs8.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs8.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs8.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs8.append(MakeHttp1HeaderLine(":path", "/h1only"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs8), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -576,15 +559,12 @@ TEST(Http2ProtocolHandler, UnknownPathReturns404) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/nope");
-      },
-      true);
+  RawChars hdrs9;
+  hdrs9.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs9.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs9.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs9.append(MakeHttp1HeaderLine(":path", "/nope"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs9), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -601,15 +581,12 @@ TEST(Http2ProtocolHandler, TransportClosingClearsPendingStreamRequests) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "POST");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/body");
-      },
-      false);
+  RawChars hdrs3;
+  hdrs3.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs3.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs3.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs3.append(MakeHttp1HeaderLine(":path", "/body"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs3), false);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -629,15 +606,12 @@ TEST(Http2ProtocolHandler, StreamResetAndClosedCallbacksEraseStreamState) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/reset");
-      },
-      false);
+  RawChars hdrs10;
+  hdrs10.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs10.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs10.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs10.append(MakeHttp1HeaderLine(":path", "/reset"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs10), false);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -654,15 +628,12 @@ TEST(Http2ProtocolHandler, AsyncHandlerRunsToCompletion) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/async");
-      },
-      true);
+  RawChars hdrs11;
+  hdrs11.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs11.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs11.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs11.append(MakeHttp1HeaderLine(":path", "/async"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs11), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -681,15 +652,12 @@ TEST(Http2ProtocolHandler, AsyncHandlerInvalidTaskReturns500) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/async-invalid");
-      },
-      true);
+  RawChars hdrs12;
+  hdrs12.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs12.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs12.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs12.append(MakeHttp1HeaderLine(":path", "/async-invalid"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs12), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -710,15 +678,12 @@ TEST(Http2ProtocolHandler, StreamingHandlerReturns501NotImplemented) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/stream");
-      },
-      true);
+  RawChars hdrs13;
+  hdrs13.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs13.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs13.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs13.append(MakeHttp1HeaderLine(":path", "/stream"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs13), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -737,15 +702,12 @@ TEST(Http2ProtocolHandler, MethodNotAllowedReturns405) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "POST");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/onlyget");
-      },
-      true);
+  RawChars hdrs4;
+  hdrs4.append(MakeHttp1HeaderLine(":method", "POST"));
+  hdrs4.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs4.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs4.append(MakeHttp1HeaderLine(":path", "/onlyget"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs4), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -763,15 +725,12 @@ TEST(Http2ProtocolHandler, HandlerExceptionReturns500WithMessage) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/boom");
-      },
-      true);
+  RawChars hdrs14;
+  hdrs14.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs14.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs14.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs14.append(MakeHttp1HeaderLine(":path", "/boom"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs14), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -790,15 +749,12 @@ TEST(Http2ProtocolHandler, HandlerUnknownExceptionReturns500UnknownError) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        emit(":path", "/boom2");
-      },
-      true);
+  RawChars hdrs15;
+  hdrs15.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs15.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs15.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs15.append(MakeHttp1HeaderLine(":path", "/boom2"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs15), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -819,15 +775,11 @@ TEST(Http2ProtocolHandler, MissingPathSendsRstStream) {
   loop.connect();
 
   // Send headers without :path pseudo-header
-  const auto ok = loop.client.sendHeaders(
-      1,
-      [](const HeaderCallback& emit) {
-        emit(":method", "GET");
-        emit(":scheme", "https");
-        emit(":authority", "example.com");
-        // omit :path
-      },
-      true);
+  RawChars hdrs16;
+  hdrs16.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs16.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs16.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs16), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
