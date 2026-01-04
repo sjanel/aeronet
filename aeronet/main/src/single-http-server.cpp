@@ -26,6 +26,7 @@
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/flat-hash-map.hpp"
+#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-error-build.hpp"
 #include "aeronet/http-header.hpp"
@@ -622,8 +623,8 @@ bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
   HttpRequest& request = state.request;
   const auto res = internal::HttpCodec::MaybeDecompressRequestBody(
       _config.decompression, request, state.bodyAndTrailersBuffer, state.trailerStartPos, _tmpBuffer, _tmpTrailers,
-      [this](auto& trailersMap, char* bufferBeg, char* first, char* last) {
-        return this->parseHeadersUnchecked(trailersMap, bufferBeg, first, last);
+      [this](HeadersViewMap& trailersMap, char* bufferBeg, char* first, char* last) {
+        this->parseHeadersUnchecked(trailersMap, bufferBeg, first, last);
       });
 
   if (!res.ok) {
