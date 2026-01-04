@@ -16,6 +16,7 @@
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/header-write.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
@@ -38,7 +39,6 @@
 #include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/timedef.hpp"
-#include "aeronet/timestring.hpp"
 
 namespace aeronet::http2 {
 
@@ -426,27 +426,25 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
 
 ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod) {
   const std::size_t contentLength = response.hasFile() ? response.fileLength() : response.body().size();
-  {
-    // Inject server-managed headers into the response object so they flow through
-    // the same encoding path as other response headers.
 
-    // TODO: perf - avoid memmove of the whole body by appending reserved headers here.
-    for (std::string_view headerKeyVal : _pServerConfig->globalHeaders) {
-      const auto colonPos = headerKeyVal.find(':');
-      assert(colonPos != std::string_view::npos);
-      const std::string_view key = headerKeyVal.substr(0, colonPos);
+  // finalize headers
+  WriteCRLFDateHeader(response._data.data() + response.headersStartPos(), SysClock::now());
 
-      response.setHeader(key, TrimOws(headerKeyVal.substr(colonPos + 1)), HttpResponse::OnlyIfNew::Yes);
-    }
+  // Inject server-managed headers into the response object so they flow through
+  // the same encoding path as other response headers.
 
-    std::array<char, kRFC7231DateStrLen> dateBuf;
-    TimeToStringRFC7231(SysClock::now(), dateBuf.data());
-    response.appendHeaderInternal(http::Date, std::string_view{dateBuf.data(), kRFC7231DateStrLen});
+  // TODO: perf - avoid memmove of the whole body by appending reserved headers here.
+  for (std::string_view headerKeyVal : _pServerConfig->globalHeaders) {
+    const auto colonPos = headerKeyVal.find(':');
+    assert(colonPos != std::string_view::npos);
+    const std::string_view key = headerKeyVal.substr(0, colonPos);
 
-    if (contentLength != 0) {
-      const auto lenStr = IntegralToCharVector(contentLength);
-      response.appendHeaderInternal(http::ContentLength, std::string_view{lenStr});
-    }
+    response.setHeader(key, TrimOws(headerKeyVal.substr(colonPos + 1)), HttpResponse::OnlyIfNew::Yes);
+  }
+
+  if (contentLength != 0) {
+    const auto lenStr = IntegralToCharVector(contentLength);
+    response.appendHeaderInternal(http::ContentLength, std::string_view{lenStr});
   }
 
   // IMPORTANT: take views only after mutating headers, since setHeader() may reallocate
@@ -466,7 +464,8 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
   const bool endStreamOnData = hasBody && !hasTrailers;
 
   // Send HEADERS frame (response headers)
-  auto err = _connection.sendHeaders(streamId, response.status(), response.headers(), endStreamOnHeaders);
+  auto err = _connection.sendHeaders(streamId, response.status(), HeadersView(response.headersFlatViewWithDate()),
+                                     endStreamOnHeaders);
 
   if (err != ErrorCode::NoError) {
     return err;
