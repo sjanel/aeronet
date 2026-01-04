@@ -10,6 +10,8 @@
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/hpack.hpp"
+#include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-stream.hpp"
@@ -32,13 +34,6 @@ enum class ConnectionState : uint8_t {
   /// Connection closed.
   Closed
 };
-
-/// Callback for handling decoded headers.
-using HeaderCallback = std::function<void(std::string_view name, std::string_view value)>;
-
-/// Callback for providing headers to encode.
-/// The provider is called with an emitter callback that it should call for each header.
-using HeaderProvider = std::function<void(const HeaderCallback& emitter)>;
 
 /// Callback for handling stream data.
 using DataCallback = std::function<void(uint32_t streamId, std::span<const std::byte> data, bool endStream)>;
@@ -158,10 +153,11 @@ class Http2Connection {
 
   /// Send HEADERS frame to start a new request/response.
   /// @param streamId Stream ID (must be valid for new stream creation)
-  /// @param headerProvider Callback that provides headers by calling the emitter for each header
+  /// @param headers Headers to send
   /// @param endStream True to set END_STREAM flag
   /// @return ErrorCode if the operation failed, NoError otherwise
-  [[nodiscard]] ErrorCode sendHeaders(uint32_t streamId, const HeaderProvider& headerProvider, bool endStream);
+  [[nodiscard]] ErrorCode sendHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
+                                      bool endStream);
 
   /// Send DATA frame.
   /// @param streamId Stream ID
@@ -269,7 +265,8 @@ class Http2Connection {
   // HPACK
   // ============================
 
-  void encodeHeaders(uint32_t streamId, const HeaderProvider& headerProvider, bool endStream, bool endHeaders);
+  void encodeHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView, bool endStream,
+                     bool endHeaders);
 
   /// Decode an HPACK header block and deliver decoded headers via `setOnHeadersDecoded`.
   /// Returns `CompressionError` if decoding fails, `NoError` otherwise.

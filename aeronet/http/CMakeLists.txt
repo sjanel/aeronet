@@ -62,6 +62,14 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    http-headers-view_test
+    test/http-headers-view_test.cpp
+    LIBRARIES
+    aeronet_http
+    aeronet_basic_test_support
+)
+
+AeronetAddUnitTest(
     http-method_test
     test/http-method_test.cpp
     LIBRARIES

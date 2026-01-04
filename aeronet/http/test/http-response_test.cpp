@@ -93,6 +93,8 @@ class HttpResponseTest : public ::testing::Test {
     out.append(httpResponseData.secondBuffer());
     return out;
   }
+
+  static void MakeAllHeaderNamesLowerCase(HttpResponse& resp) { resp.makeAllHeaderNamesLowerCase(); }
 };
 
 const RawChars HttpResponseTest::kExpectedDateRaw = MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
@@ -468,35 +470,6 @@ TEST_F(HttpResponseTest, ConstructorWithBodyContentTypeOnly) {
 TEST_F(HttpResponseTest, BadStatusCode) {
   EXPECT_THROW(HttpResponse(42), std::invalid_argument);
   EXPECT_THROW(HttpResponse(1000), std::invalid_argument);
-}
-
-TEST_F(HttpResponseTest, LoopOnHeaders) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
-  auto headers = resp.headers();
-
-  EXPECT_EQ(headers.begin(), headers.end());
-  EXPECT_EQ(HttpResponse::HeadersView::iterator(), HttpResponse::HeadersView::iterator());
-
-  resp.addHeader("Header-1", "Value1");
-
-  headers = resp.headers();
-  EXPECT_EQ(std::distance(headers.begin(), headers.end()), 1);
-  EXPECT_EQ((*headers.begin()).name, "Header-1");
-  EXPECT_EQ((*headers.begin()).value, "Value1");
-
-  resp.addHeader("Header-2", "Value2").addHeader("Header-3", "Value3");
-
-  headers = resp.headers();
-  EXPECT_EQ(std::distance(headers.begin(), headers.end()), 3);
-  auto it = headers.begin();
-  EXPECT_EQ((*it).name, "Header-1");
-  EXPECT_EQ((*it++).value, "Value1");  // test post-increment
-  EXPECT_EQ((*it).name, "Header-2");
-  EXPECT_EQ((*it).value, "Value2");
-  ++it;
-  EXPECT_EQ((*it).name, "Header-3");
-  EXPECT_EQ((*it).value, "Value3");
-  EXPECT_EQ(++it, headers.end());
 }
 
 TEST_F(HttpResponseTest, HeadersRange) {
@@ -2048,6 +2021,56 @@ TEST(HttpResponseAppendHeaderValue, VaryMergesAcceptEncoding) {
   expectedVary += ", ";
   expectedVary += http::AcceptEncoding;
   EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), expectedVary);
+}
+
+TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_NoHeadersIsNoop) {
+  HttpResponse resp(http::StatusCodeOK);
+  // No headers added -> no-op
+  MakeAllHeaderNamesLowerCase(resp);
+  EXPECT_TRUE(resp.headersFlatView().empty());
+}
+
+TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_LowercasesNamesOnly) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.addHeader("X-CaSe-Header", "VaLuE");
+  resp.addHeader("Another-Header", "Val:With:Colon");
+
+  MakeAllHeaderNamesLowerCase(resp);
+
+  std::string headers(resp.headersFlatView());
+  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-case-header", "VaLuE")));
+  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("another-header", "Val:With:Colon")));
+  // Ensure values were not lowercased
+  EXPECT_TRUE(headers.contains("VaLuE"));
+  EXPECT_TRUE(headers.contains("Val:With:Colon"));
+}
+
+TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_Idempotent) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.addHeader("X-Repeat", "V");
+  resp.addHeader("Mixed-Case", "Value");
+
+  MakeAllHeaderNamesLowerCase(resp);
+  std::string first(resp.headersFlatView());
+
+  MakeAllHeaderNamesLowerCase(resp);
+  std::string second(resp.headersFlatView());
+
+  EXPECT_EQ(first, second);
+}
+
+TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_MultipleHeadersAndValuesPreserved) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.addHeader("X-One", "ONE");
+  resp.addHeader("X-Two", "Two:COLON:IN:VALUE");
+  resp.addHeader("Already-Lower", "MixedValue:ABC");
+
+  MakeAllHeaderNamesLowerCase(resp);
+  std::string headers(resp.headersFlatView());
+
+  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-one", "ONE")));
+  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-two", "Two:COLON:IN:VALUE")));
+  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("already-lower", "MixedValue:ABC")));
 }
 
 }  // namespace aeronet

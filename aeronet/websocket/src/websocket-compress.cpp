@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <cstring>
 #include <span>
-#include <string_view>
 
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"

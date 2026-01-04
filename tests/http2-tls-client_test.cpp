@@ -1,21 +1,35 @@
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <limits>
 #include <string>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/test_server_http2_tls_fixture.hpp"
 #include "aeronet/test_tls_http2_client.hpp"
-
+#include "aeronet/timestring.hpp"
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
+#include "aeronet/zlib-stream-raii.hpp"
 #endif
 
 namespace aeronet::test {
 namespace {
+
+std::string DumpResponseHeaders(const TlsHttp2Client::Response& response) {
+  std::string out;
+  for (const auto& [name, value] : response.headers) {
+    out.append(name);
+    out.append(": ");
+    out.append(value);
+    out.push_back('\n');
+  }
+  return out;
+}
 
 TEST(TlsHttp2Client, BasicGetRequest) {
   // Create TLS server with HTTP/2 support
@@ -161,6 +175,54 @@ TEST(TlsHttp2Client, CustomHeaders) {
   EXPECT_EQ(response.statusCode, 200);
   EXPECT_EQ(receivedCustomHeader, "custom-value");
   EXPECT_EQ(response.header("x-response-header"), "response-value");
+}
+
+TEST(TlsHttp2Client, GlobalHeadersAndDateAreInjected) {
+  TlsHttp2TestServer ts([](HttpServerConfig& cfg) {
+    cfg.addGlobalHeader(http::Header{"X-Global", "gvalue"});
+    cfg.addGlobalHeader(http::Header{"X-Another", "anothervalue"});
+    cfg.addGlobalHeader(http::Header{"X-Custom", "global"});
+  });
+
+  ts.setDefault([](const HttpRequest& /*req*/) {
+    HttpResponse resp;
+    resp.addHeader("x-custom", "original");
+    resp.body("R");
+    return resp;
+  });
+
+  TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/global-headers");
+  EXPECT_EQ(response.statusCode, 200);
+
+  EXPECT_EQ(response.header("x-global"), "gvalue");
+  EXPECT_EQ(response.header("x-another"), "anothervalue");
+  EXPECT_EQ(response.header("x-custom"), "original");
+
+  const auto date = response.header("date");
+  ASSERT_FALSE(date.empty()) << "Received headers:\n" << DumpResponseHeaders(response);
+  EXPECT_EQ(date.size(), kRFC7231DateStrLen);
+  EXPECT_TRUE(date.ends_with("GMT"));
+  EXPECT_NE(TryParseTimeRFC7231(date), kInvalidTimePoint);
+}
+
+TEST(TlsHttp2Client, HeadOmitsBodyButSetsContentLengthAndDate) {
+  TlsHttp2TestServer ts;
+  ts.setDefault([](const HttpRequest& /*req*/) { return HttpResponse().status(200).body("abc"); });
+
+  TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.request("HEAD", "/head-test");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_TRUE(response.body.empty());
+  EXPECT_EQ(response.header("content-length"), "3");
+
+  const auto date = response.header("date");
+  EXPECT_EQ(date.size(), kRFC7231DateStrLen);
+  EXPECT_TRUE(date.ends_with("GMT"));
 }
 
 TEST(TlsHttp2Client, StatusCodes) {

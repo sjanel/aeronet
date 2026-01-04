@@ -14,7 +14,6 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-bytes.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/toupperlower.hpp"
 
@@ -823,6 +822,7 @@ const char* HpackDecoder::storeHeader(http::HeaderView header) {
 
   auto [it, inserted] =
       _decodedHeadersMap.try_emplace(std::string_view(headerPtr, header.name.size()), valuePtr, header.value.size());
+
   if (!inserted) {
     // Header already exists
     std::string_view existingValue = it->second;
@@ -841,6 +841,7 @@ const char* HpackDecoder::storeHeader(http::HeaderView header) {
     std::memcpy(newValuePtr + existingValue.size() + 1UL, header.value.data(), header.value.size());
     it->second = std::string_view(newValuePtr, newValueLen);
   }
+
   return nullptr;
 }
 
@@ -867,34 +868,36 @@ void EncodeInteger(RawBytes& output, uint64_t value, uint8_t prefixBits, uint8_t
   output.push_back(static_cast<std::byte>(value));
 }
 
-void EncodeHuffman(RawBytes& output, std::string_view str) {
-  uint64_t currentCode = 0;
-  uint8_t currentBits = 0;
-
-  for (const char ch : str) {
-    const uint8_t sym = static_cast<uint8_t>(ch);
-    currentCode = (currentCode << kHuffmanCodes[sym].bitLength) | kHuffmanCodes[sym].code;
-    currentBits += kHuffmanCodes[sym].bitLength;
-
-    while (currentBits >= 8) {
-      currentBits -= 8;
-      output.push_back(static_cast<std::byte>((currentCode >> currentBits) & 0xFF));
-    }
-  }
-
-  // Pad with EOS prefix (all 1s)
-  if (currentBits > 0) {
-    const uint8_t padding = static_cast<uint8_t>((1U << (8 - currentBits)) - 1);
-    output.push_back(static_cast<std::byte>((currentCode << (8 - currentBits)) | padding));
-  }
-}
-
 std::size_t HuffmanEncodedLength(std::string_view str) noexcept {
   std::size_t totalBits = 0;
   for (const char ch : str) {
     totalBits += kHuffmanCodes[static_cast<uint8_t>(ch)].bitLength;
   }
   return (totalBits + 7) / 8;  // Round up to bytes
+}
+
+void EncodeHuffman(RawBytes& output, std::string_view str) {
+  uint64_t currentCode = 0;
+  uint8_t currentBits = 0;
+
+  output.ensureAvailableCapacityExponential(HuffmanEncodedLength(str));
+
+  for (char ch : str) {
+    const auto code = kHuffmanCodes[static_cast<uint8_t>(ch)];
+    currentCode = (currentCode << code.bitLength) | code.code;
+    currentBits += code.bitLength;
+
+    while (currentBits >= 8) {
+      currentBits -= 8;
+      output.unchecked_push_back(static_cast<std::byte>((currentCode >> currentBits) & 0xFF));
+    }
+  }
+
+  // Pad with EOS prefix (all 1s)
+  if (currentBits > 0) {
+    const uint8_t padding = static_cast<uint8_t>((1U << (8 - currentBits)) - 1);
+    output.unchecked_push_back(static_cast<std::byte>((currentCode << (8 - currentBits)) | padding));
+  }
 }
 
 void EncodeString(RawBytes& output, std::string_view str) {
@@ -976,12 +979,7 @@ void HpackEncoder::encodeDynamicTableSizeUpdate(RawBytes& output, std::size_t ne
 }
 
 HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_view value) {
-  _lowerCaseBuffer.reserve(name.size());
-  _lowerCaseBuffer.setSize(static_cast<uint32_t>(name.size()));
-
-  std::ranges::transform(name, _lowerCaseBuffer.data(), [](char ch) { return tolower(ch); });
-
-  name = _lowerCaseBuffer;
+  assert(std::ranges::none_of(name, [](char ch) { return ch >= 'A' && ch <= 'Z'; }));
 
   HpackLookupResult result;
 

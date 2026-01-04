@@ -13,6 +13,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet::internal {
@@ -24,7 +25,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
     return;
   }
   const std::string_view encHeader = request.headerValueOrEmpty(http::AcceptEncoding);
-  auto [encoding, reject] = compressionState.selector.negotiateAcceptEncoding(encHeader);
+  const auto [encoding, reject] = compressionState.selector.negotiateAcceptEncoding(encHeader);
   // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
   // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
   if (reject) {
