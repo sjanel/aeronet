@@ -258,6 +258,46 @@ TEST(HttpRequestDecompression, MultiGzipBrotli) {
   EXPECT_EQ(resp.status, 200);
 }
 
+// Friend helper to access HttpRequest private members for testing.
+namespace aeronet {
+class HttpRequestTest {
+ public:
+  static HttpRequest make() { return HttpRequest(); }
+  static void setHeader(HttpRequest& r, std::string_view k, std::string_view v) { r._headers.insert_or_assign(k, v); }
+  static void setBody(HttpRequest& r, std::string_view b) { r._body = b; }
+};
+}  // namespace aeronet
+
+TEST(HttpRequestDecompression, StreamingDecoderEmptySrcCallsContext) {
+  if constexpr (!zlibEnabled()) {
+    GTEST_SKIP();
+  }
+
+  // Configure decompression to force streaming mode (threshold 1)
+  DecompressionConfig cfg{};
+  cfg.enable = true;
+  cfg.streamingDecompressionThresholdBytes = 1;
+  cfg.decoderChunkSize = 16;
+
+  // Prepare buffers passed into MaybeDecompressRequestBody
+  RawChars bodyAndTrailersBuffer;
+  std::size_t trailerStartPos = 0;
+  RawChars tmpBuffer;
+  RawChars trailersScratch;
+
+  // Construct an HttpRequest with an empty body but a declared Content-Length >= threshold
+  auto req = HttpRequestTest::make();
+  HttpRequestTest::setHeader(req, http::ContentEncoding, http::gzip);
+  HttpRequestTest::setHeader(req, http::ContentLength, "1");
+  HttpRequestTest::setBody(req, std::string_view{});  // empty src
+
+  // Call the helper — this should exercise the src.empty() streaming branch (no crash).
+  const auto res = internal::HttpCodec::MaybeDecompressRequestBody(cfg, req, bodyAndTrailersBuffer, trailerStartPos,
+                                                                   tmpBuffer, trailersScratch);
+
+  EXPECT_EQ(res.status, http::StatusCodeOK);
+}
+
 TEST(HttpRequestDecompression, MultiZstdBrotli) {
   if constexpr (!(zstdEnabled() && brotliEnabled())) {
     GTEST_SKIP();
@@ -341,6 +381,23 @@ TEST(HttpRequestDecompression, DisabledFeaturePassThrough) {
   EXPECT_EQ(resp.body, std::string_view(gz));
   EXPECT_NE(resp.body, plain);
 }
+
+#ifdef AERONET_ENABLE_ZLIB
+TEST(HttpRequestDecompression, MaxCompressedBytesExceededEarlyReturn) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.decompression = {};
+    cfg.decompression.enable = true;
+    cfg.decompression.maxCompressedBytes = 1;  // very small cap to trigger the guard
+  });
+
+  // Any non-empty Content-Encoding header will cause the decompression path to be considered.
+  // We send a body larger than `maxCompressedBytes` to hit the early PayloadTooLarge return.
+  std::string plain = "abcdefghijkl";
+  auto comp = gzipCompress(plain);
+  auto resp = rawPost(ts.port(), "/too_big", {{"Content-Encoding", "gzip"}}, comp);
+  EXPECT_EQ(resp.status, http::StatusCodePayloadTooLarge);
+}
+#endif
 
 TEST(HttpRequestDecompression, ExpansionRatioGuard) {
   if constexpr (!zlibEnabled()) {
