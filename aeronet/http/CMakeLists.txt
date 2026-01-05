@@ -54,6 +54,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    http-codec_test
+    test/http-codec_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+AeronetAddUnitTest(
     http-error-build_test
     test/http-error-build_test.cpp
     LIBRARIES
