@@ -2,7 +2,6 @@
 
 #include <array>
 #include <cstddef>
-#include <functional>
 #include <memory>
 
 #include "aeronet/accept-encoding-negotiation.hpp"
@@ -28,15 +27,12 @@ struct ResponseCompressionState {
 };
 
 struct RequestDecompressionResult {
-  bool ok{true};
   http::StatusCode status{http::StatusCodeOK};
   const char* message = nullptr;
 };
 
 class HttpCodec {
  public:
-  using ParseTrailersFn = std::function<void(HeadersViewMap&, char*, char*, char*)>;
-
   static void TryCompressResponse(ResponseCompressionState& compressionState,
                                   const CompressionConfig& compressionConfig, const HttpRequest& request,
                                   HttpResponse& resp);
@@ -44,8 +40,7 @@ class HttpCodec {
   static RequestDecompressionResult MaybeDecompressRequestBody(const DecompressionConfig& decompressionConfig,
                                                                HttpRequest& request, RawChars& bodyAndTrailersBuffer,
                                                                std::size_t& trailerStartPos, RawChars& tmpBuffer,
-                                                               RawChars& trailersScratch,
-                                                               const ParseTrailersFn& parseTrailers = {});
+                                                               RawChars& trailersScratch);
 };
 
 }  // namespace aeronet::internal

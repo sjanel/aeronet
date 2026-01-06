@@ -56,9 +56,9 @@ struct RequestOptions {
   std::string host{"localhost"};
   std::string connection{"close"};
   std::string body;
-  std::vector<std::pair<std::string, std::string>> headers;  // additional headers
-  std::chrono::milliseconds recvTimeout{1000ms};             // socket receive timeout
-  std::size_t maxResponseBytes{1 << 20};                     // 1 MiB safety cap
+  std::vector<std::pair<std::string_view, std::string_view>> headers;  // additional headers
+  std::chrono::milliseconds recvTimeout{1000ms};                       // socket receive timeout
+  std::size_t maxResponseBytes{1 << 20};                               // 1 MiB safety cap
 };
 
 void sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeout = 500ms);
@@ -88,7 +88,7 @@ std::string simpleGet(uint16_t port, std::string_view path);
 
 // Minimal GET request helper used across compression streaming tests. Parses headers into a map and returns body raw.
 ParsedResponse simpleGet(uint16_t port, std::string_view target,
-                         std::vector<std::pair<std::string, std::string>> extraHeaders);
+                         std::vector<std::pair<std::string_view, std::string_view>> extraHeaders);
 
 std::string toLower(std::string input);
 

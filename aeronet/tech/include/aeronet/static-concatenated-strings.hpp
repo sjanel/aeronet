@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "aeronet/internal/raw-bytes-base.hpp"
+#include "aeronet/log.hpp"
 
 namespace aeronet {
 
@@ -87,20 +88,12 @@ class StaticConcatenatedStrings {
         (idx + 1 == kParts ? _buf.size() : _offsets[static_cast<Offsets::size_type>(idx)]) - size_type{1};
     const size_type oldSize = oldEndPos - oldBegPos;
 
-    if constexpr (sizeof(size_type) < sizeof(std::string_view::size_type)) {
-      if (static_cast<std::string_view::size_type>(_buf.size()) - static_cast<std::string_view::size_type>(oldSize) +
-              str.size() >
-          std::numeric_limits<size_type>::max()) {
-        throw std::length_error("StaticConcatenatedStrings: new part size exceeds maximum");
-      }
-    }
-
-    const auto newSize = static_cast<size_type>(str.size());
-    const auto tailSize = static_cast<size_type>(_buf.size() - oldEndPos);
+    const std::size_t newSize = str.size();
+    const size_type tailSize = _buf.size() - oldEndPos;
     char *data = _buf.data();
 
-    if (newSize > oldSize) {
-      const auto delta = static_cast<size_type>(newSize - oldSize);
+    if (oldSize < newSize) {
+      const std::size_t delta = newSize - oldSize;
       _buf.ensureAvailableCapacity(delta);
       // pointers may have changed after ensureAvailableCapacity
       data = _buf.data();
@@ -109,7 +102,7 @@ class StaticConcatenatedStrings {
       // copy new part
       // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
       std::memcpy(data + oldBegPos, str.data(), newSize);
-      _buf.addSize(delta);
+      _buf.addSize(static_cast<size_type>(delta));
       // update offsets for subsequent parts
       for (auto offsetIdx = static_cast<typename Offsets::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
         _offsets[offsetIdx] += static_cast<size_type>(delta);

@@ -2,13 +2,9 @@
 
 #include <gtest/gtest.h>
 
-#include <cstddef>
-#include <memory>
 #include <type_traits>
 
-#include "aeronet/decoder.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 
@@ -58,35 +54,6 @@ TEST(EncodingTest, IsEncodingEnabledReflectsBuildConfiguration) {
   EXPECT_TRUE(IsEncodingEnabled(Encoding::none));
 
   EXPECT_FALSE(IsEncodingEnabled(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1))));
-}
-
-class NonTriviallyDestructibleDecoder : public Decoder {
- public:
-  NonTriviallyDestructibleDecoder() = default;
-  ~NonTriviallyDestructibleDecoder() override {
-    // non-trivial destructor
-    ++_destructionCount;
-  }
-
-  bool decompressFull([[maybe_unused]] std::string_view input, [[maybe_unused]] std::size_t maxDecompressedBytes,
-                      [[maybe_unused]] std::size_t decoderChunkSize, [[maybe_unused]] RawChars& out) override {
-    return true;
-  }
-
-  std::unique_ptr<DecoderContext> makeContext() override { return {}; }
-
-  static int destructionCount() { return _destructionCount; }
-
- private:
-  static inline int _destructionCount = 0;
-};
-
-TEST(DecoderTest, MakeSureThatDestructorIsVirtual) {
-  {
-    std::unique_ptr<Decoder> dec = std::make_unique<NonTriviallyDestructibleDecoder>();
-    // when dec goes out of scope, destructor must be called
-  }
-  EXPECT_EQ(NonTriviallyDestructibleDecoder::destructionCount(), 1);
 }
 
 }  // namespace aeronet

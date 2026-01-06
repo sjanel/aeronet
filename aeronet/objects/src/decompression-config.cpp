@@ -11,7 +11,7 @@ void DecompressionConfig::validate() const {
   if (decoderChunkSize == 0) {
     throw std::invalid_argument("decoderChunkSize must be > 0");
   }
-  if (maxDecompressedBytes != 0 && maxDecompressedBytes < decoderChunkSize) {
+  if (maxDecompressedBytes < decoderChunkSize) {
     throw std::invalid_argument("maxDecompressedBytes must be >= decoderChunkSize");
   }
   if (maxExpansionRatio < 0.0) {
