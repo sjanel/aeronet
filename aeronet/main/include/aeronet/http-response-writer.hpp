@@ -43,13 +43,13 @@ class HttpResponseWriter {
   // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
   // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  void addHeader(std::string_view name, std::string_view value);
+  void headerAddLine(std::string_view name, std::string_view value);
 
   // Set or replace a header value ensuring at most one instance.
-  // Performs a linear scan (slower than addHeader()) using case-insensitive comparison of header names per
+  // Performs a linear scan (slower than headerAddLine()) using case-insensitive comparison of header names per
   // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
-  // If not found, falls back to addHeader(). Use only when you must guarantee uniqueness; otherwise prefer
-  // addHeader().
+  // If not found, falls back to headerAddLine(). Use only when you must guarantee uniqueness; otherwise prefer
+  // headerAddLine().
   // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   void header(std::string_view name, std::string_view value);
@@ -121,7 +121,7 @@ class HttpResponseWriter {
   // IMPORTANT CONSTRAINTS:
   //   - Trailers are ONLY supported for chunked responses (the default for streaming).
   //   - If contentLength() was called (fixed-length response), trailers are NOT sent.
-  //   - addTrailer() must be called BEFORE end() is called.
+  //   - trailerAddLine() must be called BEFORE end() is called.
   //
   // Trailer semantics (per RFC 7230 §4.1.2):
   //   - Certain headers MUST NOT appear as trailers (e.g., Transfer-Encoding, Content-Length,
@@ -134,8 +134,8 @@ class HttpResponseWriter {
   //     w.status(200);
   //     w.writeBody("chunk 1");
   //     w.writeBody("chunk 2");
-  //     w.addTrailer("X-Checksum", computeChecksum());  // Computed after body
-  //     w.addTrailer("X-Processing-Time-Ms", "42");
+  //     w.trailerAddLine("X-Checksum", computeChecksum());  // Computed after body
+  //     w.trailerAddLine("X-Processing-Time-Ms", "42");
   //     w.end();  // Trailers emitted here
   //   }
   //
@@ -145,7 +145,7 @@ class HttpResponseWriter {
   //     X-Checksum: abc123\r\n
   //     X-Processing-Time-Ms: 42\r\n
   //     \r\n
-  void addTrailer(std::string_view name, std::string_view value);
+  void trailerAddLine(std::string_view name, std::string_view value);
 
   // Finalize the streaming response.
   // Responsibilities:

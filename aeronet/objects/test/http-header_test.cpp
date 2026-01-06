@@ -75,6 +75,25 @@ TEST(HttpHeader, UnreasonableHeaderLen) {
   EXPECT_THROW(http::Header(unreasonableHeaderLen, "some value"), std::invalid_argument);
 }
 
+TEST(HttpHeader, MoveConstructor) {
+  http::Header original("X-Move-Test", "MoveValue");
+  http::Header moved(std::move(original));
+
+  EXPECT_EQ(moved.name(), "X-Move-Test");
+  EXPECT_EQ(moved.value(), "MoveValue");
+  EXPECT_EQ(moved.http1Raw(), "X-Move-Test: MoveValue");
+}
+
+TEST(HttpHeader, MoveAssignment) {
+  http::Header original("X-Move-Assign", "MoveAssignValue");
+  http::Header toBeMoved("Temp-Header", "TempValue");
+  toBeMoved = std::move(original);
+
+  EXPECT_EQ(toBeMoved.name(), "X-Move-Assign");
+  EXPECT_EQ(toBeMoved.value(), "MoveAssignValue");
+  EXPECT_EQ(toBeMoved.http1Raw(), "X-Move-Assign: MoveAssignValue");
+}
+
 TEST(HttpHeader, CopyConstructor) {
   http::Header original("X-Copy-Test", "CopyValue");
   http::Header copy(original);  // NOLINT(performance-unnecessary-copy-initialization)

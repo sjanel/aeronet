@@ -87,7 +87,7 @@ TEST_F(CorsPolicyTest, ApplyAllowListMirrorsOriginAndAddsCredentials) {
   const auto status = parse(BuildRawHttp11(http::GET, "/items", "Origin: https://api.example\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  response.addHeader(http::Vary, http::AcceptEncoding);
+  response.headerAddLine(http::Vary, http::AcceptEncoding);
 
   const auto applyStatus = policy.applyToResponse(request, response);
   EXPECT_EQ(applyStatus, CorsPolicy::ApplyStatus::Applied);
@@ -261,7 +261,7 @@ TEST_F(CorsPolicyTest, ExposeHeadersAndVaryMerging) {
   const auto status = parse(BuildRawHttp11(http::GET, "/expose", "Origin: https://expose.example\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
-  response.addHeader(http::Vary, http::AcceptEncoding);
+  response.headerAddLine(http::Vary, http::AcceptEncoding);
 
   const auto applyStatus = policy.applyToResponse(request, response);
   EXPECT_EQ(applyStatus, CorsPolicy::ApplyStatus::Applied);
@@ -358,7 +358,7 @@ TEST_F(CorsPolicyTest, VaryWithEmptyValue) {
   policy.allowAnyOrigin();
 
   // existing Vary header with empty value
-  response.addHeader(http::Vary, "");
+  response.headerAddLine(http::Vary, "");
 
   const auto applyStatus = policy.applyToResponse(request, response);
   EXPECT_EQ(applyStatus, CorsPolicy::ApplyStatus::NotCors);
@@ -373,7 +373,7 @@ TEST_F(CorsPolicyTest, VaryAlreadyContainsOriginNotDuplicated) {
   ASSERT_EQ(status, http::StatusCodeOK);
 
   // existing Vary already lists origin (lower-case), should not be duplicated
-  response.addHeader(http::Vary, ",,Accept-Encoding, origin");
+  response.headerAddLine(http::Vary, ",,Accept-Encoding, origin");
 
   const auto applyStatus = policy.applyToResponse(request, response);
   EXPECT_EQ(applyStatus, CorsPolicy::ApplyStatus::Applied);

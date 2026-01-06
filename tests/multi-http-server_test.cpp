@@ -630,7 +630,7 @@ TEST(MultiHttpServer, AggregatedStatsJsonAndSetters) {
     return resp;
   });
 
-  testCbHandler.after([](const HttpRequest&, HttpResponse& resp) { resp.addHeader("X-After-CB", "Yes"); });
+  testCbHandler.after([](const HttpRequest&, HttpResponse& resp) { resp.headerAddLine("X-After-CB", "Yes"); });
 
   cfg.withNbThreads(8U);
   MultiHttpServer multi(cfg, std::move(router));

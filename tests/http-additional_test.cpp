@@ -410,7 +410,7 @@ TEST(HttpBasic, ManyHeadersResponse) {
     HttpResponse respObj;
     // Add 3000 custom headers to response
     for (int i = 0; i < 3000; ++i) {
-      respObj.addHeader("X-Response-" + std::to_string(i), "value" + std::to_string(i));
+      respObj.headerAddLine("X-Response-" + std::to_string(i), "value" + std::to_string(i));
     }
     respObj.body("Response with many headers");
     return respObj;
@@ -825,7 +825,7 @@ TEST(SingleHttpServer, DecompressionConfigurable) {
 TEST(SingleHttpServer, HeadMethodNoBody) {
   ts.router().setDefault([](const HttpRequest&) {
     HttpResponse resp("This is the body content");
-    resp.addHeader("X-Custom", "value");
+    resp.headerAddLine("X-Custom", "value");
     return resp;
   });
 
@@ -908,10 +908,10 @@ TEST(SingleHttpServer, ResponseMiddlewareException) {
 // Test multiple response middleware
 TEST(SingleHttpServer, MultipleResponseMiddleware) {
   ts.router().addResponseMiddleware(
-      [](const HttpRequest&, HttpResponse& resp) { resp.addHeader("X-Middleware-1", "first"); });
+      [](const HttpRequest&, HttpResponse& resp) { resp.headerAddLine("X-Middleware-1", "first"); });
 
   ts.router().addResponseMiddleware(
-      [](const HttpRequest&, HttpResponse& resp) { resp.addHeader("X-Middleware-2", "second"); });
+      [](const HttpRequest&, HttpResponse& resp) { resp.headerAddLine("X-Middleware-2", "second"); });
 
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
 

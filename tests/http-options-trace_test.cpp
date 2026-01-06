@@ -525,7 +525,7 @@ TEST(HttpCorsDetailed, VaryNoDuplicateWhenOriginAlreadyPresent) {
   ts.router() = Router{routerCfg};
   ts.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) {
     HttpResponse resp(http::StatusCodeOK);
-    resp.addHeader(http::Vary, http::Origin);
+    resp.headerAddLine(http::Vary, http::Origin);
     return resp;
   });
 
