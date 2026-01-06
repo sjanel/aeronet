@@ -387,7 +387,7 @@ std::string dechunk(std::string_view raw) {
 
 // Minimal GET request helper used across compression streaming tests. Parses headers into a map and returns body raw.
 ParsedResponse simpleGet(uint16_t port, std::string_view target,
-                         std::vector<std::pair<std::string, std::string>> extraHeaders) {
+                         std::vector<std::pair<std::string_view, std::string_view>> extraHeaders) {
   RequestOptions opt;
   opt.target = std::string(target);
   opt.headers = std::move(extraHeaders);
@@ -677,8 +677,9 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
 #ifdef AERONET_ENABLE_ZLIB
     if (encLower.contains("gzip") || encLower.contains("deflate")) {
       RawChars tmp;
-      if (ZlibDecoder::Decompress(out.body, /*isGzip=*/encLower.contains("gzip"),
-                                  /*maxDecompressedBytes=*/(1 << 20), /*decoderChunkSize=*/65536, tmp)) {
+      if (ZlibDecoder{encLower.contains("gzip")}.decompressFull(out.body,
+                                                                /*maxDecompressedBytes=*/(1 << 20),
+                                                                /*decoderChunkSize=*/65536, tmp)) {
         out.body.assign(tmp.data(), tmp.data() + tmp.size());
         return out;
       }
@@ -688,8 +689,8 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
 #ifdef AERONET_ENABLE_ZSTD
     if (encLower.contains("zstd")) {
       RawChars tmp;
-      if (ZstdDecoder::Decompress(out.body, /*maxDecompressedBytes=*/(1 << 20),
-                                  /*decoderChunkSize=*/65536, tmp)) {
+      if (ZstdDecoder::decompressFull(out.body, /*maxDecompressedBytes=*/(1 << 20),
+                                      /*decoderChunkSize=*/65536, tmp)) {
         out.body.assign(tmp.data(), tmp.data() + tmp.size());
         return out;
       }
@@ -697,10 +698,10 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
 #endif
 
 #ifdef AERONET_ENABLE_BROTLI
-    if (encLower.contains("br") || encLower.contains("brotli")) {
+    if (encLower.contains("br")) {
       RawChars tmp;
-      if (BrotliDecoder::Decompress(out.body, /*maxDecompressedBytes=*/(1 << 20),
-                                    /*decoderChunkSize=*/65536, tmp)) {
+      if (BrotliDecoder::decompressFull(out.body, /*maxDecompressedBytes=*/(1 << 20),
+                                        /*decoderChunkSize=*/65536, tmp)) {
         out.body.assign(tmp.data(), tmp.data() + tmp.size());
         return out;
       }

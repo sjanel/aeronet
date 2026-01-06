@@ -28,6 +28,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeBodyIfReady(Connectio
   if (isChunked) {
     return decodeChunkedBody(cnxIt, expectContinue, consumedBytes);
   }
+  // For fixed-length, non-chunked HTTP/1.1 requests there are no trailers per RFC 7230 §4.1.2
   return decodeFixedLengthBody(cnxIt, expectContinue, consumedBytes);
 }
 
@@ -160,14 +161,13 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
         // Parse trailer field: name:value
         auto* colonPtr = std::find(lineStart, lineLast, ':');
         if (colonPtr == lineLast) {
-          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true);
+          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Malformed trailer header");
           return BodyDecodeStatus::Error;
         }
 
         // Check forbidden headers
-        std::string_view trailerNameCheck(lineStart, colonPtr);
-        if (http::IsForbiddenTrailerHeader(trailerNameCheck)) {
-          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true);
+        if (http::IsForbiddenTrailerHeader(std::string_view(lineStart, colonPtr))) {
+          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Forbidden trailer header");
           return BodyDecodeStatus::Error;
         }
 
@@ -183,7 +183,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       char* trailerDataEnd = bodyAndTrailers.data() + bodyAndTrailers.size();
 
       if (!parseHeadersUnchecked(request._trailers, bodyAndTrailers.data(), trailerDataBeg, trailerDataEnd)) {
-        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true);
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Invalid trailer headers");
         return BodyDecodeStatus::Error;
       }
 
@@ -191,6 +191,8 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
 
       break;
     }
+
+    // Append chunk data to body buffer
     bodyAndTrailers.append(state.inBuffer.data() + pos, std::min(chunkSize, state.inBuffer.size() - pos));
     if (bodyAndTrailers.size() > _config.maxBodyBytes) {
       emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);

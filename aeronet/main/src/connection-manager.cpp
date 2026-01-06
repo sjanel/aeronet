@@ -444,18 +444,8 @@ void SingleHttpServer::handleReadableClient(int fd) {
   ConnectionState& cnx = *cnxIt->second;
   cnx.lastActivity = std::chrono::steady_clock::now();
 
-  // If there's buffered outbound data, try to flush it FIRST. This handles the case where
-  // TLS needs to read before it can continue writing (SSL_ERROR_WANT_READ during SSL_write).
-  // We must attempt flush before reading new data to unblock the write operation.
-  // TODO: is this still useful ? This code path is actually unreachable in our tests.
-  if (!cnx.outBuffer.empty()) {
-    flushOutbound(cnxIt);
-    // Check if connection was closed during flush
-    if (cnx.canCloseImmediately()) {
-      closeConnection(cnxIt);
-      return;
-    }
-  }
+  // outBuffer should always be flushed at the end of this function
+  assert(cnx.outBuffer.empty());
 
   // If in tunneling mode, read raw bytes and forward to peer
   if (cnx.isTunneling()) {

@@ -26,7 +26,6 @@
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/flat-hash-map.hpp"
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-error-build.hpp"
 #include "aeronet/http-header.hpp"
@@ -622,14 +621,20 @@ bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   HttpRequest& request = state.request;
   const auto res = internal::HttpCodec::MaybeDecompressRequestBody(
-      _config.decompression, request, state.bodyAndTrailersBuffer, state.trailerStartPos, _tmpBuffer, _tmpTrailers,
-      [this](HeadersViewMap& trailersMap, char* bufferBeg, char* first, char* last) {
-        this->parseHeadersUnchecked(trailersMap, bufferBeg, first, last);
-      });
+      _config.decompression, request, state.bodyAndTrailersBuffer, state.trailerStartPos, _tmpBuffer, _tmpTrailers);
 
-  if (!res.ok) {
+  if (res.message != nullptr) {
     emitSimpleError(cnxIt, res.status, true, res.message);
     return false;
+  }
+
+  // Parse trailers if present
+  if (state.trailerStartPos != 0) {
+    auto* buf = state.bodyAndTrailersBuffer.data();
+    [[maybe_unused]] const bool isSuccess = parseHeadersUnchecked(request._trailers, buf, buf + state.trailerStartPos,
+                                                                  buf + state.bodyAndTrailersBuffer.size());
+    // trailers should have been validated in decodeChunkedBody
+    assert(isSuccess);
   }
 
   return true;

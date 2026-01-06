@@ -103,7 +103,7 @@ TEST(ConcatenatedStrings, GuardAgainstOverflowSet) {
   std::string aa(128UL, 'A');
   std::string_view bb(&ch, std::numeric_limits<uint32_t>::max() - 50UL);
   tooSmall.set(0, aa);
-  EXPECT_THROW(tooSmall.set(1, bb), std::length_error);
+  EXPECT_THROW(tooSmall.set(1, bb), std::overflow_error);
 }
 
 TEST(ConcatenatedStrings, CopyAndAssign) {
@@ -130,6 +130,11 @@ TEST(ConcatenatedStrings, SetLarger) {
   EXPECT_STREQ(cs.c_str(0), "a");
   EXPECT_STREQ(cs.c_str(1), "BBBBBBBB");
   EXPECT_STREQ(cs.c_str(2), "ccc");
+
+  cs.set(2U, std::string_view("DDDDDDDDDDDDDD"));
+  EXPECT_EQ(cs[0], "a");
+  EXPECT_EQ(cs[1], "BBBBBBBB");
+  EXPECT_EQ(cs[2], "DDDDDDDDDDDDDD");
 }
 
 TEST(ConcatenatedStrings, SetShorter) {
@@ -142,6 +147,11 @@ TEST(ConcatenatedStrings, SetShorter) {
   EXPECT_STREQ(cs.c_str(0), "X");
   EXPECT_STREQ(cs.c_str(1), "bbbbbb");
   EXPECT_STREQ(cs.c_str(2), "cccccc");
+
+  cs.set(1, std::string_view("YY"));
+  EXPECT_EQ(cs[0], "X");
+  EXPECT_EQ(cs[1], "YY");
+  EXPECT_EQ(cs[2], "cccccc");
 }
 
 TEST(ConcatenatedStrings, SetEqualSize) {
@@ -154,6 +164,17 @@ TEST(ConcatenatedStrings, SetEqualSize) {
   EXPECT_STREQ(cs.c_str(0), "one");
   EXPECT_STREQ(cs.c_str(1), "two");
   EXPECT_STREQ(cs.c_str(2), "XXX");
+}
+
+TEST(ConcatenatedStrings, SetEqualSizeEmpty) {
+  TestType cs({"first", "", "third"});
+  EXPECT_EQ(cs[0], "first");
+  EXPECT_EQ(cs[1], "");
+  EXPECT_EQ(cs[2], "third");
+  cs.set(1, std::string_view(""));
+  EXPECT_EQ(cs[0], "first");
+  EXPECT_EQ(cs[1], "");
+  EXPECT_EQ(cs[2], "third");
 }
 
 TEST(ConcatenatedStrings, SetFirstGrowAndShrink) {

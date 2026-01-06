@@ -51,8 +51,7 @@ void ExpectOneShotRoundTrip(ZStreamRAII::Variant variant, std::string_view paylo
 
   const bool isGzip = variant == ZStreamRAII::Variant::gzip;
   RawChars decompressed;
-  ASSERT_TRUE(
-      ZlibDecoder::Decompress(std::string_view(compressed), isGzip, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  ASSERT_TRUE(ZlibDecoder{isGzip}.decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
@@ -73,8 +72,7 @@ void ExpectStreamingRoundTrip(ZStreamRAII::Variant variant, std::string_view pay
 
   const bool isGzip = variant == ZStreamRAII::Variant::gzip;
   RawChars decompressed;
-  ASSERT_TRUE(
-      ZlibDecoder::Decompress(std::string_view(compressed), isGzip, maxPlainBytes, kDecoderChunkSize, decompressed));
+  ASSERT_TRUE(ZlibDecoder{isGzip}.decompressFull(compressed, maxPlainBytes, kDecoderChunkSize, decompressed));
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
@@ -104,7 +102,6 @@ void ExpectStreamingDecoderRoundTrip(ZStreamRAII::Variant variant, std::string_v
   const auto compressed = BuildStreamingCompressed(variant, payload);
   ZlibDecoder decoder(variant == ZStreamRAII::Variant::gzip);
   auto ctx = decoder.makeContext();
-  ASSERT_TRUE(ctx);
   RawChars decompressed;
   std::string_view view(compressed);
   std::size_t offset = 0;
@@ -113,10 +110,10 @@ void ExpectStreamingDecoderRoundTrip(ZStreamRAII::Variant variant, std::string_v
     const std::string_view chunk = view.substr(offset, take);
     offset += take;
     const bool finalChunk = offset >= view.size();
-    ASSERT_TRUE(ctx->decompressChunk(chunk, finalChunk, kMaxPlainBytes, kDecoderChunkSize, decompressed));
-    ASSERT_TRUE(ctx->decompressChunk({}, finalChunk, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+    ASSERT_TRUE(ctx.decompressChunk(chunk, finalChunk, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+    ASSERT_TRUE(ctx.decompressChunk({}, finalChunk, kMaxPlainBytes, kDecoderChunkSize, decompressed));
   }
-  ASSERT_TRUE(ctx->decompressChunk({}, true, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  ASSERT_TRUE(ctx.decompressChunk({}, true, kMaxPlainBytes, kDecoderChunkSize, decompressed));
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
@@ -147,7 +144,7 @@ TEST_P(ZlibEncoderDecoderTest, MaxDecompressedBytes) {
     const bool isGzip = variant == ZStreamRAII::Variant::gzip;
     RawChars decompressed;
     const std::size_t limit = payload.empty() ? 0 : payload.size() - 1;
-    const bool isOK = ZlibDecoder::Decompress(compressed, isGzip, limit, kDecoderChunkSize, decompressed);
+    const bool isOK = ZlibDecoder{isGzip}.decompressFull(compressed, limit, kDecoderChunkSize, decompressed);
     EXPECT_EQ(isOK, payload.empty());
     EXPECT_EQ(decompressed, std::string_view(payload).substr(0, limit));
   }
@@ -157,10 +154,9 @@ TEST_P(ZlibEncoderDecoderTest, EmptyChunksShouldAlwaysSucceed) {
   const auto variant = GetParam();
   ZlibDecoder decoder(variant == ZStreamRAII::Variant::gzip);
   auto ctx = decoder.makeContext();
-  ASSERT_TRUE(ctx);
   RawChars decompressed;
-  EXPECT_TRUE(ctx->decompressChunk({}, false, kMaxPlainBytes, kDecoderChunkSize, decompressed));
-  EXPECT_TRUE(ctx->decompressChunk({}, true, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_TRUE(ctx.decompressChunk({}, false, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_TRUE(ctx.decompressChunk({}, true, kMaxPlainBytes, kDecoderChunkSize, decompressed));
   EXPECT_TRUE(decompressed.empty());
 }
 
@@ -169,8 +165,7 @@ TEST_P(ZlibEncoderDecoderTest, InflateErrorOnInvalidData) {
   RawChars invalidData("NotAValidZlibStream");
   RawChars decompressed;
   const bool isGzip = variant == ZStreamRAII::Variant::gzip;
-  EXPECT_FALSE(
-      ZlibDecoder::Decompress(std::string_view(invalidData), isGzip, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_FALSE(ZlibDecoder{isGzip}.decompressFull(invalidData, kMaxPlainBytes, kDecoderChunkSize, decompressed));
 }
 
 TEST_P(ZlibEncoderDecoderTest, StreamingRoundTripsAcrossChunkSplits) {
@@ -237,8 +232,7 @@ TEST(ZlibEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
   compressed.append(tail);
 
   RawChars decompressed;
-  ASSERT_TRUE(
-      ZlibDecoder::Decompress(std::string_view(compressed), true, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  ASSERT_TRUE(ZlibDecoder{true}.decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
@@ -262,7 +256,7 @@ TEST(ZlibEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIteratio
   ASSERT_GT(compressed.size(), kChunkSize);
 
   RawChars decompressed;
-  ASSERT_TRUE(ZlibDecoder::Decompress(compressed, true, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  ASSERT_TRUE(ZlibDecoder{true}.decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
 
   EXPECT_EQ(decompressed.size(), payload.size());
   EXPECT_EQ(std::memcmp(decompressed.data(), payload.data(), payload.size()), 0);

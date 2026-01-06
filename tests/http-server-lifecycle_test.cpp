@@ -128,7 +128,7 @@ TEST(HttpServerMove, MoveConstructProbesCapturesThis) {
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
 }
 
-TEST(HttpServerMove, ReRegisterHandlersAfterMove) {
+TEST(HttpServerMove, SingleHttpServerMove) {
   std::atomic_bool stop{false};
   SingleHttpServer original(HttpServerConfig{});
   auto port = original.port();
@@ -149,6 +149,9 @@ TEST(HttpServerMove, ReRegisterHandlersAfterMove) {
   stop.store(true);
 
   ASSERT_TRUE(resp.contains("MOVED"));
+
+  // Attempting to moved from a running server should throw
+  EXPECT_THROW(SingleHttpServer(std::move(moved)), std::logic_error);
 }
 
 // Disabled by default: demonstrates the hazard when a handler captures `this` and is not re-registered
