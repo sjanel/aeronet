@@ -23,15 +23,18 @@ class DecoderBufferManager {
   bool nextReserve() {
     const auto alreadyDecompressed = _buf.size() - _initialSize;
     const bool forceEnd = alreadyDecompressed + _decoderChunkSize > _maxDecompressedBytes;
-    std::size_t capacity;
-    if (forceEnd) {
-      // Reached the maximum allowed decompressed size - force end if current chunk does not reach the end.
-      capacity = _initialSize + _maxDecompressedBytes;
-    } else {
-      capacity = std::min(std::max(_buf.size() + _decoderChunkSize, _buf.capacity() * 2UL),
-                          _initialSize + _maxDecompressedBytes);
+    const std::size_t desired = _buf.size() + _decoderChunkSize;
+
+    // Only grow when we actually need more capacity.
+    if (_buf.capacity() < desired) {
+      std::size_t capacity = _initialSize + _maxDecompressedBytes;
+      // If reached the maximum allowed decompressed size - force end if current chunk does not reach the end.
+      if (!forceEnd) {
+        const std::size_t doubled = (_buf.capacity() * 2UL) + 1UL;
+        capacity = std::min(std::max(desired, doubled), capacity);
+      }
+      _buf.reserve(capacity);
     }
-    _buf.reserve(capacity);
     return forceEnd;
   }
 

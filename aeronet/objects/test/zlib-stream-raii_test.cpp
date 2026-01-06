@@ -118,7 +118,6 @@ TEST(ZStreamRAII, RoundTripCompressDecompress) {
       }
     }
 
-    // Decompress
     ZStreamRAII decompressor(variant);
     decompressor.stream.next_in = compressed.empty() ? nullptr : reinterpret_cast<Bytef *>(compressed.data());
     decompressor.stream.avail_in = static_cast<uInt>(compressed.size());

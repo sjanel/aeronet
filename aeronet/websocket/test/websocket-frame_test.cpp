@@ -601,6 +601,24 @@ TEST_F(WebSocketFrameTest, ParseClosePayloadSingleByte) {
   EXPECT_EQ(closePayload.code, CloseCode::ProtocolError);
 }
 
+TEST_F(WebSocketFrameTest, BuildMediumLengthFrame) {
+  // Create a payload of 126 bytes to trigger 16-bit length encoding
+  std::vector<std::byte> mediumPayload(126);
+  for (std::size_t idx = 0; idx < mediumPayload.size(); ++idx) {
+    mediumPayload[idx] = static_cast<std::byte>(idx & 0xFF);
+  }
+
+  BuildFrame(buffer, Opcode::Binary, mediumPayload);
+
+  auto data = buf_bytes(buffer);
+  auto result = ParseFrame(data, 0, false);
+
+  ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
+  EXPECT_EQ(result.payload.size(), mediumPayload.size());
+  // HeaderSize should be 4 (2 + 2 extended length)
+  EXPECT_EQ(result.header.headerSize(), 4);
+}
+
 TEST_F(WebSocketFrameTest, Build64BitLengthFrame) {
   // Create a large payload that requires 64-bit length encoding
   std::vector<std::byte> largePayload(70000);
@@ -614,7 +632,8 @@ TEST_F(WebSocketFrameTest, Build64BitLengthFrame) {
   auto result = ParseFrame(data, 0, false);
 
   ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
-  EXPECT_EQ(result.payload.size(), 70000);
+  EXPECT_EQ(result.payload.size(), largePayload.size());
+  EXPECT_EQ(result.header.headerSize(), 10);  // 2 + 8 extended length
 }
 
 TEST_F(WebSocketFrameTest, BuildMasked64BitLengthFrame) {

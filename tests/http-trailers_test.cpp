@@ -52,7 +52,7 @@ TEST(HttpTrailers, BasicTrailer) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 // Multiple trailer headers

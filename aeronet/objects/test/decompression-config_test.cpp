@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <stdexcept>
 
 namespace aeronet {
@@ -50,7 +51,7 @@ TEST(DecompressionConfigTest, MaxDecompressedBytesZeroIsInfinite) {
 
   cfg.enable = true;
   cfg.decoderChunkSize = 1024;
-  cfg.maxDecompressedBytes = 0;
+  cfg.maxDecompressedBytes = std::numeric_limits<std::size_t>::max();
 
   EXPECT_NO_THROW(cfg.validate());
 }
