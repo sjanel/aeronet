@@ -5,6 +5,7 @@
 #include <cstring>
 #include <ios>
 #include <optional>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -14,17 +15,19 @@
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
-#include "aeronet/features.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/toupperlower.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-encoder.hpp"
@@ -39,47 +42,86 @@
 #include "aeronet/brotli-encoder.hpp"
 #endif
 
-using namespace aeronet;
+namespace aeronet {
 
 namespace {
 
-RawChars gzipCompress([[maybe_unused]] std::string_view input, [[maybe_unused]] std::size_t extraCapacity = 0) {
-  RawChars buf;
-#ifdef AERONET_ENABLE_ZLIB
-  CompressionConfig cc;  // defaults; level taken from cfg.zlib.level
-  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, cc);
-  encoder.encodeFull(extraCapacity, input, buf);
-#endif
-  return buf;
+std::mt19937 rng(12345);
+std::uniform_int_distribution<std::size_t> nbSpaces(0, 3);
+std::uniform_int_distribution<int> toUpper(0, 1);
+
+std::string ContentEncodingConcat(std::span<const std::string_view> encodings) {
+  std::string contentEncodingValue;
+
+  for (std::string_view encoding : encodings) {
+    if (!contentEncodingValue.empty()) {
+      contentEncodingValue.append(",");
+      contentEncodingValue.append(nbSpaces(rng), '\t');
+    }
+    contentEncodingValue.append(nbSpaces(rng), ' ');
+    contentEncodingValue.append(encoding);
+    contentEncodingValue.append(nbSpaces(rng), ' ');
+  }
+
+  return contentEncodingValue;
 }
 
-RawChars deflateCompress([[maybe_unused]] std::string_view input, [[maybe_unused]] std::size_t extraCapacity = 0) {
-  RawChars buf;
+// Not constexpr because it could be empty depending on build flags
+const std::vector<std::string_view> kKnownEncodings = []() {
+  std::vector<std::string_view> vec;
 #ifdef AERONET_ENABLE_ZLIB
-  CompressionConfig cc;
-  ZlibEncoder encoder(ZStreamRAII::Variant::deflate, cc);
-  encoder.encodeFull(extraCapacity, input, buf);
+  vec.push_back(http::gzip);
+  vec.push_back(http::deflate);
 #endif
-  return buf;
-}
-
-RawChars zstdCompress([[maybe_unused]] std::string_view input, [[maybe_unused]] std::size_t extraCapacity = 0) {
-  RawChars buf;
 #ifdef AERONET_ENABLE_ZSTD
-  CompressionConfig cc;  // zstd tuning from default config
-  ZstdEncoder zencoder(cc);
-  zencoder.encodeFull(extraCapacity, input, buf);
+  vec.push_back(http::zstd);
 #endif
-  return buf;
-}
-
-RawChars brotliCompress([[maybe_unused]] std::string_view input, [[maybe_unused]] std::size_t extraCapacity = 0) {
-  RawChars buf;
 #ifdef AERONET_ENABLE_BROTLI
-  CompressionConfig cc;  // defaults; quality/window from cfg.brotli
-  BrotliEncoder encoder(cc);
-  encoder.encodeFull(extraCapacity, input, buf);
+  vec.push_back(http::br);
 #endif
+  return vec;
+}();
+
+constexpr std::string_view kKnownEncodingsWithIdentity[] = {
+    http::identity,
+#ifdef AERONET_ENABLE_ZLIB
+    http::gzip,     http::deflate,
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+    http::zstd,
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+    http::br,
+#endif
+};
+
+RawChars compress(std::string_view alg, std::string_view input, [[maybe_unused]] std::size_t extraCapacity = 0) {
+  RawChars buf;
+  CompressionConfig cc;
+  if (CaseInsensitiveEqual(alg, "identity")) {
+    buf.assign(input);
+#ifdef AERONET_ENABLE_ZLIB
+    // NOLINTNEXTLINE(readability-else-after-return)
+  } else if (CaseInsensitiveEqual(alg, "gzip")) {
+    ZlibEncoder encoder(ZStreamRAII::Variant::gzip, cc);
+    encoder.encodeFull(extraCapacity, input, buf);
+  } else if (CaseInsensitiveEqual(alg, "deflate")) {
+    ZlibEncoder encoder(ZStreamRAII::Variant::deflate, cc);
+    encoder.encodeFull(extraCapacity, input, buf);
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+  } else if (CaseInsensitiveEqual(alg, "zstd")) {
+    ZstdEncoder zencoder(cc);
+    zencoder.encodeFull(extraCapacity, input, buf);
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+  } else if (CaseInsensitiveEqual(alg, "br")) {
+    BrotliEncoder encoder(cc);
+    encoder.encodeFull(extraCapacity, input, buf);
+#endif
+  } else {
+    // Unsupported algorithm, do not compress
+  }
   return buf;
 }
 
@@ -90,13 +132,13 @@ struct ClientRawResponse {
 };
 
 ClientRawResponse rawPost(uint16_t port, std::string_view target,
-                          const std::vector<std::pair<std::string, std::string>>& headers, std::string_view body) {
+                          std::vector<std::pair<std::string_view, std::string_view>> headers, std::string_view body) {
   test::RequestOptions opt;
   opt.method = http::POST;
   opt.target = target;
   opt.connection = http::close;
   opt.body = body;
-  opt.headers = headers;
+  opt.headers = std::move(headers);
   auto raw = test::request(port, opt);
   if (!raw) {
     throw std::runtime_error("request failed");
@@ -128,329 +170,274 @@ test::TestServer ts(HttpServerConfig{});
 
 }  // namespace
 
-TEST(HttpRequestDecompression, SingleGzip) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
-  }
+TEST(HttpRequestDecompression, SingleSmallPayload) {
+  std::string_view plain = "HelloCompressedWorld";
+
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = "HelloCompressedWorld";
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    EXPECT_FALSE(req.headerValue(http::ContentEncoding));
-    HttpResponse resp;
-    resp.body("OK");
-    return resp;
+  ts.postRouterUpdate([](Router& router) {
+    router.setDefault([](const HttpRequest& req) {
+      EXPECT_TRUE(req.headerValue(http::ContentEncoding) == http::identity ||
+                  !req.headerValue(http::ContentEncoding).has_value());
+      return HttpResponse(req.body());
+    });
   });
-  auto comp = gzipCompress(plain);
-  auto resp = rawPost(ts.port(), "/g", {{"Content-Encoding", "gzip"}}, comp);
-  EXPECT_EQ(resp.status, 200) << resp.headersRaw;
+
+  for (std::string_view encoding : kKnownEncodingsWithIdentity) {
+    auto comp = compress(encoding, plain);
+    auto resp = rawPost(ts.port(), "/single", {{"Content-Encoding", encoding}}, comp);
+    EXPECT_EQ(resp.status, http::StatusCodeOK) << "Failed for encoding: " << encoding;
+    EXPECT_EQ(resp.body, plain) << "Failed for encoding: " << encoding;
+  }
 }
 
-TEST(HttpRequestDecompression, SingleDeflate) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
+TEST(HttpRequestDecompression, SingleNoContentEncoding) {
+  std::string_view plain = "HelloCompressedWorld";
+
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  ts.postRouterUpdate(
+      [](Router& router) { router.setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); }); });
+
+  for (std::string_view encoding : kKnownEncodingsWithIdentity) {
+    auto comp = compress(encoding, plain);
+    auto resp = rawPost(ts.port(), "/single", {}, comp);
+    EXPECT_EQ(resp.status, http::StatusCodeOK);
+    EXPECT_EQ(resp.body, std::string_view(comp));
   }
+}
+
+TEST(HttpRequestDecompression, SingleLargePayloadWithHeadersCheck) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   const std::string plain(10000, 'A');
-  const auto comp = deflateCompress(plain);
-  const std::size_t compressedSize = comp.size();
 
-  ts.router().setDefault([plain, compressedSize](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    EXPECT_FALSE(req.headerValue(http::ContentEncoding));
-    EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodingHeaderName), "deflate");
-    EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodedLengthHeaderName), std::to_string(compressedSize));
-    EXPECT_EQ(req.body().size(), StringToIntegral<std::size_t>(req.headerValueOrEmpty(http::ContentLength)));
-    HttpResponse resp;
-    resp.body("Z");
-    return resp;
-  });
-  auto resp = rawPost(ts.port(), "/d", {{"Content-Encoding", "deflate"}}, comp);
-  EXPECT_EQ(resp.status, 200);
-}
+  for (std::string_view encoding : kKnownEncodings) {
+    const auto comp = compress(encoding, plain);
+    const std::size_t compressedSize = comp.size();
 
-TEST(HttpRequestDecompression, SingleZstd) {
-  if constexpr (!zstdEnabled()) {
-    GTEST_SKIP();
+    ts.resetRouterAndGet().setDefault([plain, compressedSize, encoding](const HttpRequest& req) {
+      EXPECT_EQ(req.body(), plain);
+      EXPECT_FALSE(req.headerValue(http::ContentEncoding));
+      EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodingHeaderName), encoding);
+      EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodedLengthHeaderName), std::to_string(compressedSize));
+
+      EXPECT_EQ(req.body().size(), StringToIntegral<std::size_t>(req.headerValueOrEmpty(http::ContentLength)));
+
+      return HttpResponse("Z");
+    });
+    auto resp = rawPost(ts.port(), "/d", {{"Content-Encoding", encoding}}, comp);
+    EXPECT_EQ(resp.status, 200);
   }
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = std::string(10000, 'Z');
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    EXPECT_FALSE(req.headerValue(http::ContentEncoding));
-    HttpResponse resp;
-    resp.body("S");
-    return resp;
-  });
-  auto comp = zstdCompress(plain);
-  auto resp = rawPost(ts.port(), "/z", {{"Content-Encoding", "zstd"}}, comp);
-  EXPECT_EQ(resp.status, 200);
 }
 
-TEST(HttpRequestDecompression, SingleBrotli) {
-  if constexpr (!brotliEnabled()) {
-    GTEST_SKIP();
+TEST(HttpRequestDecompression, DualCompressionWithSpaces) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  std::string plain(1000, 'A');
+  std::ranges::iota(plain.begin(), plain.end(), 'A');
+
+  // Loop on all pairs of known encodings (there will be duplicates, but it's ok, we test that also)
+  for (std::string_view firstEnc : kKnownEncodingsWithIdentity) {
+    for (std::string_view secondEnc : kKnownEncodingsWithIdentity) {
+      const auto firstComp = compress(firstEnc, plain);
+      const auto dualComp = compress(secondEnc, firstComp);
+
+      const bool testHeaders = firstEnc != http::identity || secondEnc != http::identity;
+
+      std::string contentEncodingValue = ContentEncodingConcat(std::vector<std::string_view>{firstEnc, secondEnc});
+
+      ts.resetRouterAndGet().setDefault(
+          [testHeaders, contentEncodingTrimmed = TrimOws(contentEncodingValue)](const HttpRequest& req) {
+            if (testHeaders) {
+              EXPECT_FALSE(req.headerValue(http::ContentEncoding).has_value());
+              EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodingHeaderName), contentEncodingTrimmed);
+            }
+            return HttpResponse(req.body());
+          });
+      auto resp = rawPost(ts.port(), "/dd", {{"Content-Encoding", contentEncodingValue}}, dualComp);
+      ASSERT_EQ(resp.status, 200) << "Failed for encoding chain: " << contentEncodingValue;
+      EXPECT_EQ(resp.body, plain) << "Failed for encoding chain: " << contentEncodingValue;
+    }
   }
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = std::string(10000, 'B');
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    HttpResponse resp;
-    resp.body("BR");
-    return resp;
-  });
-  auto comp = brotliCompress(plain);
-  auto resp = rawPost(ts.port(), "/br_single", {{"Content-Encoding", "br"}}, comp);
-  EXPECT_EQ(resp.status, 200) << resp.headersRaw;
 }
 
-TEST(HttpRequestDecompression, MultiGzipDeflateNoSpaces) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
+TEST(HttpRequestDecompression, TripleCompressionWithSpaces) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  std::string plain(1000, 'A');
+  std::ranges::iota(plain.begin(), plain.end(), 'A');
+
+  std::mt19937 rng(12345);
+  std::uniform_int_distribution<std::size_t> nbSpaces(0, 3);
+
+  // Loop on all tuples of known encodings (there will be duplicates, but it's ok, we test that also)
+  for (std::string_view firstEnc : kKnownEncodingsWithIdentity) {
+    for (std::string_view secondEnc : kKnownEncodingsWithIdentity) {
+      for (std::string_view thirdEnc : kKnownEncodingsWithIdentity) {
+        const auto firstComp = compress(firstEnc, plain);
+        const auto dualComp = compress(secondEnc, firstComp);
+        const auto tripleComp = compress(thirdEnc, dualComp);
+
+        const bool testHeaders =
+            firstEnc != http::identity || secondEnc != http::identity || thirdEnc != http::identity;
+
+        std::string contentEncodingValue =
+            ContentEncodingConcat(std::vector<std::string_view>{firstEnc, secondEnc, thirdEnc});
+
+        ts.resetRouterAndGet().setDefault(
+            [testHeaders, contentEncodingTrimmed = TrimOws(contentEncodingValue)](const HttpRequest& req) {
+              if (testHeaders) {
+                EXPECT_FALSE(req.headerValue(http::ContentEncoding).has_value());
+                EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodingHeaderName), contentEncodingTrimmed);
+              }
+              return HttpResponse(req.body());
+            });
+        auto resp = rawPost(ts.port(), "/dd", {{"Content-Encoding", contentEncodingValue}}, tripleComp);
+        ASSERT_EQ(resp.status, 200) << "Failed for encoding chain: " << contentEncodingValue;
+        EXPECT_EQ(resp.body, plain) << "Failed for encoding chain: " << contentEncodingValue;
+      }
+    }
   }
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = "MultiStagePayload";
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    HttpResponse resp;
-    resp.body("M");
-    return resp;
-  });
-  auto deflated = deflateCompress(plain);
-  auto gzipped = gzipCompress(deflated);
-  auto resp = rawPost(ts.port(), "/m1", {{"Content-Encoding", "deflate,gzip"}}, gzipped);
-  EXPECT_EQ(resp.status, 200);
 }
 
-TEST(HttpRequestDecompression, MultiZstdGzipWithSpaces) {
-  if constexpr (!(zstdEnabled() && zlibEnabled())) {
-    GTEST_SKIP();
-  }
+TEST(HttpRequestDecompression, SingleUnknownCodingRejected) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = std::string(10000, 'Q');
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    HttpResponse resp;
-    resp.body("M2");
-    return resp;
-  });
-  auto gz = gzipCompress(plain);
-  auto zstd = zstdCompress(gz);
-  auto resp = rawPost(ts.port(), "/m2", {{"Content-Encoding", "gzip, zstd"}}, zstd);
-  EXPECT_EQ(resp.status, 200);
-}
-
-TEST(HttpRequestDecompression, MultiGzipBrotli) {
-  if constexpr (!(zlibEnabled() && brotliEnabled())) {
-    GTEST_SKIP();
-  }
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = std::string(10000, 'R');
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    HttpResponse resp;
-    resp.body("GB");
-    return resp;
-  });
-  auto gz = gzipCompress(plain);  // first stage
-  auto br = brotliCompress(gz);   // second (header lists first-applied first)
-  auto resp = rawPost(ts.port(), "/gb", {{"Content-Encoding", "gzip, br"}}, br);
-  EXPECT_EQ(resp.status, 200);
-}
-
-// Friend helper to access HttpRequest private members for testing.
-namespace aeronet {
-class HttpRequestTest {
- public:
-  static HttpRequest make() { return HttpRequest(); }
-  static void setHeader(HttpRequest& r, std::string_view k, std::string_view v) { r._headers.insert_or_assign(k, v); }
-  static void setBody(HttpRequest& r, std::string_view b) { r._body = b; }
-};
-}  // namespace aeronet
-
-TEST(HttpRequestDecompression, StreamingDecoderEmptySrcCallsContext) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
-  }
-
-  // Configure decompression to force streaming mode (threshold 1)
-  DecompressionConfig cfg{};
-  cfg.enable = true;
-  cfg.streamingDecompressionThresholdBytes = 1;
-  cfg.decoderChunkSize = 16;
-
-  // Prepare buffers passed into MaybeDecompressRequestBody
-  RawChars bodyAndTrailersBuffer;
-  std::size_t trailerStartPos = 0;
-  RawChars tmpBuffer;
-  RawChars trailersScratch;
-
-  // Construct an HttpRequest with an empty body but a declared Content-Length >= threshold
-  auto req = HttpRequestTest::make();
-  HttpRequestTest::setHeader(req, http::ContentEncoding, http::gzip);
-  HttpRequestTest::setHeader(req, http::ContentLength, "1");
-  HttpRequestTest::setBody(req, std::string_view{});  // empty src
-
-  // Call the helper — this should exercise the src.empty() streaming branch (no crash).
-  const auto res = internal::HttpCodec::MaybeDecompressRequestBody(cfg, req, bodyAndTrailersBuffer, trailerStartPos,
-                                                                   tmpBuffer, trailersScratch);
-
-  EXPECT_EQ(res.status, http::StatusCodeOK);
-}
-
-TEST(HttpRequestDecompression, MultiZstdBrotli) {
-  if constexpr (!(zstdEnabled() && brotliEnabled())) {
-    GTEST_SKIP();
-  }
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = std::string(10000, 'Z');
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    HttpResponse resp;
-    resp.body("ZB");
-    return resp;
-  });
-  auto zs = zstdCompress(plain);  // first stage (zstd)
-  auto br = brotliCompress(zs);   // second
-  auto resp = rawPost(ts.port(), "/zb", {{"Content-Encoding", "zstd, br"}}, br);
-  EXPECT_EQ(resp.status, 200);
-}
-
-TEST(HttpRequestDecompression, IdentitySkippedInChain) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
-  }
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = "SkipIdentity";
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    HttpResponse resp;
-    resp.body("I");
-    return resp;
-  });
-  auto deflated = deflateCompress(plain);
-  auto gzipped = gzipCompress(deflated);
-  auto resp = rawPost(ts.port(), "/i", {{"Content-Encoding", "deflate, identity, gzip"}}, gzipped);
-  EXPECT_EQ(resp.status, 200);
-}
-
-TEST(HttpRequestDecompression, UnknownCodingRejected) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
-    HttpResponse resp;
-    resp.body("U");
-    return resp;
-  });
+  ts.resetRouterAndGet().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("U"); });
   std::string body = "abc";  // not used
   auto resp = rawPost(ts.port(), "/u", {{"Content-Encoding", "snappy"}}, body);
   EXPECT_EQ(resp.status, http::StatusCodeUnsupportedMediaType);
+}
+
+TEST(HttpRequestDecompression, UnknownCodingRejectedInChain) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  ts.resetRouterAndGet().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("U"); });
+  std::string body = "abc";
+  for (std::string_view encoding : kKnownEncodings) {
+    auto compressed = compress(encoding, body);
+    std::string contentEncodingValue("snappy, ");
+    contentEncodingValue.append(encoding);
+    auto resp = rawPost(ts.port(), "/u", {{"Content-Encoding", contentEncodingValue}}, compressed);
+    EXPECT_EQ(resp.status, http::StatusCodeUnsupportedMediaType);
+    contentEncodingValue.append(", identity");
+    resp = rawPost(ts.port(), "/u", {{"Content-Encoding", contentEncodingValue}}, compressed);
+    EXPECT_EQ(resp.status, http::StatusCodeUnsupportedMediaType);
+  }
 }
 
 TEST(HttpRequestDecompression, EmptyTokenRejected) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string body = "xyz";
   auto resp = rawPost(ts.port(), "/e", {{"Content-Encoding", "identity,,identity"}}, body);
-  // empty token forbidden
-  EXPECT_EQ(resp.status, 400);
+  EXPECT_EQ(resp.status, http::StatusCodeBadRequest);
+  resp = rawPost(ts.port(), "/e", {{"Content-Encoding", "identity,,"}}, body);
+  EXPECT_EQ(resp.status, http::StatusCodeBadRequest);
+  resp = rawPost(ts.port(), "/e", {{"Content-Encoding", ","}}, body);
+  EXPECT_EQ(resp.status, http::StatusCodeBadRequest);
+  resp = rawPost(ts.port(), "/e", {{"Content-Encoding", ""}}, body);
+  EXPECT_EQ(resp.status, http::StatusCodeBadRequest);
 }
 
 TEST(HttpRequestDecompression, DisabledFeaturePassThrough) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
-  }
-
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.decompression = {};
     cfg.decompression.enable = false;
   });
+  const std::string plain(100, 'A');
 
-  std::string plain = "ABC";
-  auto gz = gzipCompress(plain);
-  ts.router().setDefault([](const HttpRequest& req) {
-    // With feature disabled the body should still be compressed (gzip header 0x1f 0x8b)
-    EXPECT_GE(req.body().size(), 2U);
-    EXPECT_EQ(static_cast<unsigned char>(req.body()[0]), 0x1f);
-    EXPECT_EQ(static_cast<unsigned char>(req.body()[1]), 0x8b);
-    HttpResponse resp;
-    resp.body(std::string(req.body()));  // echo raw compressed bytes back
-    return resp;
-  });
-  auto resp = rawPost(ts.port(), "/ds", {{"Content-Encoding", "gzip"}}, gz);
-  EXPECT_EQ(resp.status, 200);
-  // Response body should match original compressed payload, not decompressed plain text.
-  EXPECT_EQ(resp.body, std::string_view(gz));
-  EXPECT_NE(resp.body, plain);
+  for (std::string_view encoding : kKnownEncodings) {
+    const auto comp = compress(encoding, plain);
+
+    ts.resetRouterAndGet().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+    auto resp = rawPost(ts.port(), "/d", {{"Content-Encoding", encoding}}, comp);
+    EXPECT_EQ(resp.status, http::StatusCodeOK);
+
+    EXPECT_EQ(resp.body, std::string_view(comp));
+  }
 }
 
-#ifdef AERONET_ENABLE_ZLIB
 TEST(HttpRequestDecompression, MaxCompressedBytesExceededEarlyReturn) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.decompression = {};
-    cfg.decompression.enable = true;
-    cfg.decompression.maxCompressedBytes = 1;  // very small cap to trigger the guard
-  });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
 
   // Any non-empty Content-Encoding header will cause the decompression path to be considered.
   // We send a body larger than `maxCompressedBytes` to hit the early PayloadTooLarge return.
   std::string plain = "abcdefghijkl";
-  auto comp = gzipCompress(plain);
-  auto resp = rawPost(ts.port(), "/too_big", {{"Content-Encoding", "gzip"}}, comp);
-  EXPECT_EQ(resp.status, http::StatusCodePayloadTooLarge);
+
+  for (std::string_view encoding : kKnownEncodings) {
+    auto comp = compress(encoding, plain);
+    ts.postConfigUpdate([&comp](HttpServerConfig& cfg) { cfg.decompression.maxCompressedBytes = comp.size() - 1; });
+    auto resp = rawPost(ts.port(), "/too_big", {{"Content-Encoding", encoding}}, comp);
+    EXPECT_EQ(resp.status, http::StatusCodePayloadTooLarge);
+
+    ts.postConfigUpdate([&comp](HttpServerConfig& cfg) { cfg.decompression.maxCompressedBytes = comp.size(); });
+    resp = rawPost(ts.port(), "/nowok", {{"Content-Encoding", encoding}}, comp);
+    EXPECT_EQ(resp.status, http::StatusCodeOK);
+    EXPECT_EQ(resp.body, plain);
+  }
 }
-#endif
 
 TEST(HttpRequestDecompression, ExpansionRatioGuard) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
-  }
-
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.decompression = {};
     cfg.decompression.maxExpansionRatio = 2.0;
     cfg.decompression.maxDecompressedBytes = 100000;
   });
+  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
   // Highly compressible large input -> gzip then send; expect rejection if ratio >2
   std::string large(100000, 'A');
-  auto gz = gzipCompress(large);
-  // Ensure it actually compresses well
-  ASSERT_LT(gz.size() * 2, large.size());
-  auto resp = rawPost(ts.port(), "/rg", {{"Content-Encoding", "gzip"}}, gz);
-  EXPECT_EQ(resp.status, 413);
+
+  for (std::string_view encoding : kKnownEncodings) {
+    auto comp = compress(encoding, large);
+    // Ensure it actually compresses well
+    ASSERT_LT(comp.size() * 2, large.size());
+    auto resp = rawPost(ts.port(), "/rg", {{"Content-Encoding", encoding}}, comp);
+    EXPECT_EQ(resp.status, http::StatusCodePayloadTooLarge);
+
+    // Now send with a bigger maxExpansionRatio and expect success
+    const double actualExpansionRatio = static_cast<double>(large.size()) / static_cast<double>(comp.size());
+    ts.postConfigUpdate([actualExpansionRatio](HttpServerConfig& cfg) {
+      cfg.decompression.maxExpansionRatio = actualExpansionRatio + 1;
+    });
+    resp = rawPost(ts.port(), "/rg_ok", {{"Content-Encoding", encoding}}, comp);
+    EXPECT_EQ(resp.status, http::StatusCodeOK);
+    EXPECT_EQ(resp.body, large);
+  }
 }
 
-TEST(HttpRequestDecompression, StreamingThresholdGzipLargeBody) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
-  }
+TEST(HttpRequestDecompression, StreamingThresholdLargeBody) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.decompression = {};
-    cfg.decompression.streamingDecompressionThresholdBytes = 32;
     cfg.decompression.decoderChunkSize = 16;
   });
+  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+
   std::string plain(4096, 'S');
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    HttpResponse resp;
-    resp.body("streamed");
-    return resp;
-  });
-  auto gz = gzipCompress(plain);
-  ASSERT_GT(gz.size(), 32U);
-  auto resp = rawPost(ts.port(), "/stream_gzip", {{"Content-Encoding", "gzip"}}, gz);
-  EXPECT_EQ(resp.status, 200);
+
+  for (std::string_view encoding : kKnownEncodings) {
+    auto comp = compress(encoding, plain);
+    ts.postConfigUpdate(
+        [&comp](HttpServerConfig& cfg) { cfg.decompression.streamingDecompressionThresholdBytes = comp.size(); });
+    auto resp = rawPost(ts.port(), "/stream", {{"Content-Encoding", encoding}}, comp);
+    EXPECT_EQ(resp.status, http::StatusCodeOK);
+
+    // disable streaming
+    ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression.streamingDecompressionThresholdBytes = 0; });
+
+    resp = rawPost(ts.port(), "/stream", {{"Content-Encoding", encoding}}, comp);
+    EXPECT_EQ(resp.status, http::StatusCodeOK);
+
+    // disable streaming based on size smaller than threshold
+    ts.postConfigUpdate(
+        [&comp](HttpServerConfig& cfg) { cfg.decompression.streamingDecompressionThresholdBytes = comp.size() + 1; });
+
+    resp = rawPost(ts.port(), "/stream", {{"Content-Encoding", encoding}}, comp);
+    EXPECT_EQ(resp.status, http::StatusCodeOK);
+  }
 }
 
-TEST(HttpRequestDecompression, GzipLargeBodyWithTrailers) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
-  }
-
+namespace {
+void ExpectTrailers(std::vector<std::string_view> encodings, bool insertBadTrailer = false) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
 
-  std::string plain(100, 'L');
-  auto gz = gzipCompress(plain);
+  std::string plain(10000, 'L');
 
-  ts.router().setDefault([plain](const HttpRequest& req) {
+  ts.router().setDefault([&plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
     // Expect two trailers preserved
     EXPECT_EQ(req.trailers().size(), 2U);
@@ -464,313 +451,144 @@ TEST(HttpRequestDecompression, GzipLargeBodyWithTrailers) {
     if (it2 != req.trailers().end()) {
       EXPECT_EQ(it2->second, "final");
     }
-    return HttpResponse("GzipLargeBodyWithTrailers OK");
+    return HttpResponse("CompressLargeBodyWithTrailers OK");
   });
 
   test::ClientConnection sock(ts.port());
   int fd = sock.fd();
 
-  // Build a single-chunk chunked request where the chunk payload is the
-  // gzip-compressed bytes. Then append trailers after the terminating 0 chunk.
+  std::string contentEncodingValue = ContentEncodingConcat(encodings);
+
+  RawChars comp(plain.data(), plain.size());
+  for (std::string_view encoding : encodings) {
+    comp = compress(encoding, comp);
+  }
+
   std::ostringstream hdr;
-  hdr << "POST /trail_gzip_large HTTP/1.1\r\n";
+  hdr << "POST /trail_compress_large HTTP/1.1\r\n";
   hdr << "Host: example.com\r\n";
   hdr << "Transfer-Encoding: chunked\r\n";
-  hdr << "Content-Encoding: gzip\r\n";
+  hdr << "Content-Encoding: " << contentEncodingValue << "\r\n";
   hdr << "Connection: close\r\n";
   hdr << "\r\n";
   // chunk size in hex
-  hdr << std::hex << gz.size() << "\r\n";
+  hdr << std::hex << comp.size() << "\r\n";
 
   std::string req = hdr.str();
-  req.append(std::string_view(gz));
-  req += "\r\n0\r\nX-Checksum: abc123\r\nX-Note: final\r\n\r\n";
+  req.append(comp);
+  req += "\r\n0\r\n";
+  req += MakeHttp1HeaderLine("X-Checksum", "abc123");
+  if (insertBadTrailer) {
+    // Insert a malformed trailer (no colon)
+    req += "Bad-Trailer-Entry\r\n";
+  }
+  req += MakeHttp1HeaderLine("X-Note", "final");
+  req += "\r\n";
 
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("GzipLargeBodyWithTrailers OK"));
+
+  if (insertBadTrailer) {
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 400"))
+        << "Failed for encoding: " << contentEncodingValue << ", response: " << resp;
+  } else {
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"))
+        << "Failed for encoding: " << contentEncodingValue << ", response: " << resp;
+    EXPECT_TRUE(resp.contains("\r\n\r\nCompressLargeBodyWithTrailers OK"))
+        << "Failed for encoding: " << contentEncodingValue << ", response: " << resp;
+  }
+}
+}  // namespace
+
+TEST(HttpRequestDecompression, SingleCompressLargeBodyWithBadTrailers) {
+  for (std::string_view encoding : kKnownEncodings) {
+    ExpectTrailers({encoding}, true);
+  }
 }
 
-TEST(HttpRequestDecompression, GzipZstdLargeBodyWithTrailers) {
-  if constexpr (!zlibEnabled() || !zstdEnabled()) {
-    GTEST_SKIP();
+TEST(HttpRequestDecompression, SingleCompressLargeBodyWithTrailers) {
+  for (std::string_view encoding : kKnownEncodings) {
+    ExpectTrailers({encoding});
   }
+}
 
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-
-  std::string plain(1000, 'L');
-  auto gz = gzipCompress(plain);
-  auto zstd = zstdCompress(gz);
-
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    // Expect two trailers preserved
-    EXPECT_EQ(req.trailers().size(), 2U);
-    auto it = req.trailers().find("X-Checksum");
-    EXPECT_NE(it, req.trailers().end());
-    if (it != req.trailers().end()) {
-      EXPECT_EQ(it->second, "abc123");
+TEST(HttpRequestDecompression, DualCompressLargeBodyWithTrailers) {
+  for (std::string_view first : kKnownEncodings) {
+    for (std::string_view second : kKnownEncodings) {
+      ExpectTrailers({first, second});
     }
-    auto it2 = req.trailers().find("X-Note");
-    EXPECT_NE(it2, req.trailers().end());
-    if (it2 != req.trailers().end()) {
-      EXPECT_EQ(it2->second, "final");
+  }
+}
+
+TEST(HttpRequestDecompression, TripleCompressLargeBodyWithTrailers) {
+  for (std::string_view first : kKnownEncodings) {
+    for (std::string_view second : kKnownEncodings) {
+      for (std::string_view third : kKnownEncodings) {
+        ExpectTrailers({first, second, third});
+      }
     }
-    return HttpResponse("GzipZstdLargeBodyWithTrailers OK");
-  });
-
-  test::ClientConnection sock(ts.port());
-  int fd = sock.fd();
-
-  // Build a single-chunk chunked request where the chunk payload is the
-  // gzip-compressed bytes. Then append trailers after the terminating 0 chunk.
-  std::ostringstream hdr;
-  hdr << "POST /trail_gzip_large HTTP/1.1\r\n";
-  hdr << "Host: example.com\r\n";
-  hdr << "Transfer-Encoding: chunked\r\n";
-  hdr << "Content-Encoding: gzip, zstd\r\n";
-  hdr << "Connection: close\r\n";
-  hdr << "\r\n";
-  // chunk size in hex
-  hdr << std::hex << zstd.size() << "\r\n";
-
-  std::string req = hdr.str();
-  req.append(std::string_view(zstd));
-  req += "\r\n0\r\nX-Checksum: abc123\r\nX-Note: final\r\n\r\n";
-
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("GzipZstdLargeBodyWithTrailers OK"));
-}
-
-TEST(HttpRequestDecompression, StreamingRatioGuard) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
   }
-  ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.decompression = {};
-    cfg.decompression.maxExpansionRatio = 1.5;
-    cfg.decompression.maxDecompressedBytes = 200000;
-    cfg.decompression.streamingDecompressionThresholdBytes = 1;
-  });
-  std::string large(120000, 'R');
-  auto gz = gzipCompress(large);
-  ASSERT_LT(gz.size(), large.size() / 2);
-  auto resp = rawPost(ts.port(), "/stream_ratio", {{"Content-Encoding", "gzip"}}, gz);
-  EXPECT_EQ(resp.status, http::StatusCodePayloadTooLarge);
-}
-
-TEST(HttpRequestDecompression, StreamingMultiStageGzipZstd) {
-  if constexpr (!(zlibEnabled() && zstdEnabled())) {
-    GTEST_SKIP();
-  }
-  ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.decompression = {};
-    cfg.decompression.streamingDecompressionThresholdBytes = 1;
-    cfg.decompression.decoderChunkSize = 32;
-  });
-  std::string plain(6000, 'T');
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    return HttpResponse("OK");
-  });
-  auto gz = gzipCompress(plain);
-  auto zstd = zstdCompress(gz);
-  auto resp = rawPost(ts.port(), "/stream_chain", {{"Content-Encoding", "gzip, zstd"}}, zstd);
-  EXPECT_EQ(resp.status, 200);
-}
-
-// ---------------- Additional whitespace / casing / edge chain tests ----------------
-
-TEST(HttpRequestDecompression, MultiZstdGzipMultiSpaces) {
-  if constexpr (!(zstdEnabled() && zlibEnabled())) {
-    GTEST_SKIP();
-  }
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = std::string(3200, 'S');
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    return HttpResponse("OK");
-  });
-  auto gz = gzipCompress(plain);  // first stage
-  auto zstd = zstdCompress(gz);   // second stage (listed last in header)
-  auto resp = rawPost(ts.port(), "/mspaces", {{"Content-Encoding", "gzip,   zstd"}}, zstd);
-  EXPECT_EQ(resp.status, 200);
-}
-
-TEST(HttpRequestDecompression, TripleChainSpacesTabs) {
-  if constexpr (!(zstdEnabled() && zlibEnabled())) {
-    GTEST_SKIP();
-  }
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = "TripleChain";
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    return HttpResponse("OK");
-  });
-  auto d1 = deflateCompress(plain);  // applied first
-  auto g2 = gzipCompress(d1);        // applied second
-  auto z3 = zstdCompress(g2);        // applied third (header last token)
-  auto resp = rawPost(ts.port(), "/triple", {{"Content-Encoding", "deflate,  gzip,\t zstd"}}, z3);
-  EXPECT_EQ(resp.status, 200);
 }
 
 TEST(HttpRequestDecompression, MixedCaseTokens) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
-  }
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "CaseCheck";
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    return HttpResponse("OK");
-  });
-  auto defl = deflateCompress(plain);  // first (leftmost)
-  auto gz = gzipCompress(defl);        // second (rightmost)
-  auto resp = rawPost(ts.port(), "/case", {{"Content-Encoding", "deflate, GZip"}}, gz);
-  EXPECT_EQ(resp.status, 200);
-}
+  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
 
-TEST(HttpRequestDecompression, IdentityRepeated) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
-  }
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = "IdentityRepeat";
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    return HttpResponse("OK");
-  });
-  auto defl = deflateCompress(plain);
-  auto gz = gzipCompress(defl);
-  auto resp = rawPost(ts.port(), "/idrep", {{"Content-Encoding", "deflate, identity, gzip, identity"}}, gz);
-  EXPECT_EQ(resp.status, 200);
-}
-
-TEST(HttpRequestDecompression, TabsBetweenTokens) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
-  }
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = "TabsBetween";
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    return HttpResponse("OK");
-  });
-  auto defl = deflateCompress(plain);
-  auto gz = gzipCompress(defl);
-  auto resp = rawPost(ts.port(), "/tabs", {{"Content-Encoding", "deflate,\tgzip"}}, gz);
-  EXPECT_EQ(resp.status, 200);
-}
-
-TEST(HttpRequestDecompression, UnknownCodingWithSpacesRejected) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = "UnknownSpace";
-  // Apply first encoding so that unknown token appears last.
-  auto gz = [&] {
-    if constexpr (zlibEnabled()) {
-      return gzipCompress(plain);
+  for (std::string_view encoding : kKnownEncodings) {
+    std::string mixedCaseEnc(encoding);
+    for (char& ch : mixedCaseEnc) {
+      if (toUpper(rng) == 1) {
+        ch = toupper(ch);
+      }
     }
-    return RawChars(plain);
-  }();
-  if constexpr (brotliEnabled()) {
-    auto resp = rawPost(ts.port(), "/ubr", {{"Content-Encoding", "gzip,  snappy"}}, gz);
-    EXPECT_EQ(resp.status, http::StatusCodeUnsupportedMediaType);
-  } else {
-    auto resp = rawPost(ts.port(), "/ubr", {{"Content-Encoding", "gzip,  br"}}, gz);
-    EXPECT_EQ(resp.status, http::StatusCodeUnsupportedMediaType);
+    auto comp = compress(encoding, plain);
+    auto resp = rawPost(ts.port(), "/case", {{"Content-Encoding", mixedCaseEnc}}, comp);
+    EXPECT_EQ(resp.status, http::StatusCodeOK);
+    EXPECT_EQ(resp.body, plain);
   }
-}
-
-TEST(HttpRequestDecompression, EmptyTokenWithSpacesRejected) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string body = "abc123";  // intentionally not compressed
-  auto resp = rawPost(ts.port(), "/emptsp", {{"Content-Encoding", "identity,  ,identity"}}, body);
-  EXPECT_EQ(resp.status, 400);
 }
 
 // ---------------- Corruption / truncated frame tests ----------------
 
-TEST(HttpRequestDecompression, CorruptedGzipTruncatedTail) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
-  }
+namespace {
+
+constexpr std::size_t kStreamingThresholds[]{0, 1};
+
+}
+
+TEST(HttpRequestDecompression, CorruptedCompressedData) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(200, 'G');
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    return HttpResponse("OK");
-  });
-  auto full = gzipCompress(plain);
-  ASSERT_GT(full.size(), 12U);
-  // Remove trailing bytes (part of CRC/ISIZE) to induce inflate failure.
-  auto full_sv = std::string_view(full);
-  auto truncated = full_sv.substr(0, full_sv.size() - 6);
-  // Server may either send 400 or close connection immediately for corrupted data
-  try {
-    auto resp = rawPost(ts.port(), "/cgzip", {{"Content-Encoding", "gzip"}}, truncated);
-    EXPECT_EQ(resp.status, 400) << "Expected 400 for truncated gzip frame";
-  } catch (const std::runtime_error& ex) {
-    // Connection closed without response is also acceptable for corrupted data
-    std::string msg = ex.what();
-    EXPECT_TRUE(msg.find("empty response") != std::string::npos || msg.find("request failed") != std::string::npos)
-        << "Unexpected error: " << msg;
+  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+
+  for (std::size_t threshold : kStreamingThresholds) {
+    ts.postConfigUpdate(
+        [threshold](HttpServerConfig& cfg) { cfg.decompression.streamingDecompressionThresholdBytes = threshold; });
+    for (std::string_view encoding : kKnownEncodings) {
+      auto comp = compress(encoding, plain);
+      if (encoding == http::gzip || encoding == http::deflate) {
+        ASSERT_GT(comp.size(), 6U);
+        // Remove trailing bytes (part of CRC/ISIZE) to induce inflate failure.
+        comp.setSize(comp.size() - 6);
+      } else if (encoding == http::zstd) {
+        ASSERT_GT(comp.size(), 4U);
+        // Flip all bits of first byte of magic number via unsigned char to avoid -Wconversion warning
+        {
+          unsigned char* bytePtr = reinterpret_cast<unsigned char*>(comp.data());
+          bytePtr[0] ^= 0xFFU;  // corrupt magic (0x28 -> ~0x28)
+        }
+      } else if (encoding == http::br) {
+        ASSERT_GT(comp.size(), 8U);
+        // Truncate last 4 bytes to corrupt brotli stream
+        comp.setSize(comp.size() - 4);
+      } else {
+        continue;
+      }
+      auto resp = rawPost(ts.port(), "/corrupt", {{"Content-Encoding", encoding}}, comp);
+      EXPECT_EQ(resp.status, http::StatusCodeBadRequest) << "Expected 400 for corrupted encoding: " << encoding;
+    }
   }
 }
 
-TEST(HttpRequestDecompression, CorruptedZstdBadMagic) {
-  if constexpr (!zstdEnabled()) {
-    GTEST_SKIP();
-  }
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = std::string(512, 'Z');
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);
-    return HttpResponse("OK");
-  });
-  auto full = zstdCompress(plain);
-  ASSERT_GE(full.size(), 4U);  // need room for magic number
-  auto full_sv = std::string_view(full);
-  std::string corrupted(full_sv);
-  // Flip all bits of first byte of magic number via unsigned char to avoid -Wconversion warning
-  {
-    unsigned char* bytePtr = reinterpret_cast<unsigned char*>(corrupted.data());
-    bytePtr[0] ^= 0xFFU;  // corrupt magic (0x28 -> ~0x28)
-  }
-  // Server may either send 400 or close connection immediately for corrupted data
-  try {
-    auto resp = rawPost(ts.port(), "/czstd", {{"Content-Encoding", "zstd"}}, corrupted);
-    EXPECT_EQ(resp.status, 400) << "Expected 400 for corrupted zstd (bad magic)";
-  } catch (const std::runtime_error& ex) {
-    // Connection closed without response is also acceptable for corrupted data
-    std::string msg = ex.what();
-    EXPECT_TRUE(msg.find("empty response") != std::string::npos || msg.find("request failed") != std::string::npos)
-        << "Unexpected error: " << msg;
-  }
-}
-
-TEST(HttpRequestDecompression, CorruptedBrotliTruncated) {
-  if constexpr (!brotliEnabled()) {
-    GTEST_SKIP();
-  }
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string plain = std::string(300, 'B');
-  ts.router().setDefault([plain](const HttpRequest& req) {
-    EXPECT_EQ(req.body(), plain);  // Not reached for corrupted case
-    return HttpResponse("OK");
-  });
-  auto full = brotliCompress(plain);
-  ASSERT_GT(full.size(), 8U);
-  auto full_sv = std::string_view(full);
-  auto truncated = full_sv.substr(0, full_sv.size() - 4);
-  // Server may either send 400 or close connection immediately for corrupted data
-  try {
-    auto resp = rawPost(ts.port(), "/cbr", {{"Content-Encoding", "br"}}, truncated);
-    EXPECT_EQ(resp.status, 400) << "Expected 400 for truncated brotli stream";
-  } catch (const std::runtime_error& ex) {
-    // Connection closed without response is also acceptable for corrupted data
-    std::string msg = ex.what();
-    EXPECT_TRUE(msg.find("empty response") != std::string::npos || msg.find("request failed") != std::string::npos)
-        << "Unexpected error: " << msg;
-  }
-}
+}  // namespace aeronet

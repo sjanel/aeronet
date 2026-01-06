@@ -219,7 +219,7 @@ void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std
       const auto res = internal::HttpCodec::MaybeDecompressRequestBody(_pServerConfig->decompression, streamReq.request,
                                                                        streamReq.bodyBuffer, trailerStartPos,
                                                                        _decompressionTmp, _decompressionTrailersTmp);
-      if (!res.ok) {
+      if (res.message != nullptr) {
         (void)sendResponse(streamId, HttpResponse(res.status).body(res.message), /*isHeadMethod=*/false);
         _streamRequests.erase(streamId);
         return;

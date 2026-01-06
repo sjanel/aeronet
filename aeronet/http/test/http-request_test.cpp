@@ -151,14 +151,14 @@ class HttpRequestTest : public ::testing::Test {
 
   // Helper to set a header view pointing at arbitrary bytes (fixture has friend access)
   void setHeaderViewToPtr(std::string_view key, const char* dataPtr, std::size_t len) {
-    req._headers.emplace(key, std::string_view(dataPtr, len));
+    req._headers.try_emplace(key, dataPtr, len);
   }
   void setTrailerViewToPtr(std::string_view key, const char* dataPtr, std::size_t len) {
-    req._trailers.emplace(key, std::string_view(dataPtr, len));
+    req._trailers.try_emplace(key, dataPtr, len);
   }
 
   void setPathParamToPtr(std::string_view key, const char* dataPtr, std::size_t len) {
-    req._pathParams.emplace(key, std::string_view(dataPtr, len));
+    req._pathParams.try_emplace(key, dataPtr, len);
   }
 
   [[nodiscard]] bool callWantClose() const { return req.wantClose(); }

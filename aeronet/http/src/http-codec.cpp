@@ -1,15 +1,14 @@
 #include "aeronet/http-codec.hpp"
 
 #include <array>
+#include <cassert>
 #include <cstddef>
-#include <limits>
 #include <memory>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/compression-config.hpp"
-#include "aeronet/decoder.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/encoding.hpp"
@@ -108,60 +107,58 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
 RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(const DecompressionConfig& decompressionConfig,
                                                                  HttpRequest& request, RawChars& bodyAndTrailersBuffer,
                                                                  std::size_t& trailerStartPos, RawChars& tmpBuffer,
-                                                                 RawChars& trailersScratch,
-                                                                 const ParseTrailersFn& parseTrailers) {
-  auto& headersMap = request._headers;
-  const auto encodingHeaderIt = headersMap.find(http::ContentEncoding);
-  if (encodingHeaderIt == headersMap.end() || CaseInsensitiveEqual(encodingHeaderIt->second, http::identity)) {
-    return {};
-  }
-
+                                                                 RawChars& trailersScratch) {
   if (!decompressionConfig.enable) {
     return {};
   }
 
+  auto& headersMap = request._headers;
+  const auto encodingHeaderIt = headersMap.find(http::ContentEncoding);
+  if (encodingHeaderIt == headersMap.end()) {
+    return {};
+  }
+
   const std::size_t originalCompressedSize = request.body().size();
+  assert(originalCompressedSize > 0);
   if (decompressionConfig.maxCompressedBytes != 0 && originalCompressedSize > decompressionConfig.maxCompressedBytes) {
-    return {.ok = false, .status = http::StatusCodePayloadTooLarge, .message = "Payload too large"};
+    return {.status = http::StatusCodePayloadTooLarge, .message = "Payload too large"};
   }
 
   const std::string_view encodingStr = encodingHeaderIt->second;
+  if (encodingStr.empty()) {
+    // Strict RFC compliance: empty Content-Encoding header is malformed.
+    return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
+  }
+
   std::string_view src = request.body();
   RawChars* dst = &tmpBuffer;
 
   const auto contentLenIt = headersMap.find(http::ContentLength);
 
 #if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
-  const std::size_t maxPlainBytes = decompressionConfig.maxDecompressedBytes == 0
-                                        ? std::numeric_limits<std::size_t>::max()
-                                        : decompressionConfig.maxDecompressedBytes;
-
   bool useStreamingDecode = false;
   if (decompressionConfig.streamingDecompressionThresholdBytes > 0 && contentLenIt != headersMap.end()) {
     const std::string_view contentLenValue = contentLenIt->second;
     const std::size_t declaredLen = StringToIntegral<std::size_t>(contentLenValue);
+
     useStreamingDecode = declaredLen >= decompressionConfig.streamingDecompressionThresholdBytes;
   }
 
-  const auto runDecoder = [&](Decoder& decoder) -> bool {
+  const auto runDecoder = [&, maxPlainBytes = decompressionConfig.maxDecompressedBytes](auto& decoder) {
+    dst->clear();
     if (!useStreamingDecode) {
       return decoder.decompressFull(src, maxPlainBytes, decompressionConfig.decoderChunkSize, *dst);
     }
     auto ctx = decoder.makeContext();
-    if (!ctx) {
-      return false;
-    }
-    if (src.empty()) {
-      return ctx->decompressChunk(std::string_view{}, true, maxPlainBytes, decompressionConfig.decoderChunkSize, *dst);
-    }
-    std::size_t processed = 0;
-    while (processed < src.size()) {
+    // The decompress body function cannot be called without body
+    assert(!src.empty());
+    for (std::size_t processed = 0; processed < src.size();) {
       const std::size_t remaining = src.size() - processed;
       const std::size_t chunkLen = std::min(decompressionConfig.decoderChunkSize, remaining);
-      std::string_view chunk(src.data() + processed, chunkLen);
+      const std::string_view chunk(src.data() + processed, chunkLen);
       processed += chunkLen;
       const bool lastChunk = processed == src.size();
-      if (!ctx->decompressChunk(chunk, lastChunk, maxPlainBytes, decompressionConfig.decoderChunkSize, *dst)) {
+      if (!ctx.decompressChunk(chunk, lastChunk, maxPlainBytes, decompressionConfig.decoderChunkSize, *dst)) {
         return false;
       }
     }
@@ -170,43 +167,47 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(const Decompres
 #endif
 
   // Preserve request trailers (HTTP/1 chunked only). Trailer bytes are stored at the end of the buffer.
-  trailersScratch.clear();
   const std::size_t trailersSize = trailerStartPos > 0 ? bodyAndTrailersBuffer.size() - trailerStartPos : 0;
-  if (trailersSize > 0) {
-    trailersScratch.assign(bodyAndTrailersBuffer.data() + trailerStartPos, trailersSize);
-  }
+  trailersScratch.assign(bodyAndTrailersBuffer.data() + trailerStartPos, trailersSize);
 
-  // Decode in reverse order.
+  bool onlyIdentity = true;
+
+  // Decode in reverse order, algorithm by algorithm, switching src/dst buffers each time.
   const char* first = encodingStr.data();
   const char* last = first + encodingStr.size();
   while (first < last) {
-    const char* encodingLast = last;
-    while (encodingLast != first && http::IsHeaderWhitespace(*encodingLast)) {
-      --encodingLast;
-    }
-    if (encodingLast == first) {
-      break;
-    }
-    const char* comma = encodingLast - 1;
-    while (comma != first && *comma != ',') {
-      --comma;
-    }
-    if (comma == first) {
-      --comma;
-    }
-    const char* encodingFirst = comma + 1;
-    while (encodingFirst != encodingLast && http::IsHeaderWhitespace(*encodingFirst)) {
-      ++encodingFirst;
-    }
-    if (encodingFirst == encodingLast) {
-      return {.ok = false, .status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
+    // Header values are already trimmed, so we should not start with an OWS char.
+    assert(!http::IsHeaderWhitespace(*(last - 1)));
+
+    // Let's find the next separator to the left, that is the next comma, or OWS, or last.
+    const char* nextSep = last - 1;
+    while (nextSep >= first && *nextSep != ',' && !http::IsHeaderWhitespace(*nextSep)) {
+      --nextSep;
     }
 
-    std::string_view encoding(encodingFirst, encodingLast);
-    dst->clear();
+    std::string_view encoding(nextSep + 1, last);
+    if (encoding.empty()) {
+      // empty token forbidden
+      return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
+    }
+
+    // go to next non-OWS/comma char to the left and reject multiple commas in a row
+    bool seenComma = false;
+    while (nextSep >= first && (http::IsHeaderWhitespace(*nextSep) || *nextSep == ',')) {
+      if (*nextSep == ',') {
+        if (seenComma) {
+          // two commas in a row, malformed
+          return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
+        }
+        seenComma = true;
+      }
+      --nextSep;
+    }
+    last = nextSep + 1;
+
+    // Perform the decoding stage
     bool stageOk = false;
     if (CaseInsensitiveEqual(encoding, http::identity)) {
-      last = comma;
       continue;
 #ifdef AERONET_ENABLE_ZLIB
       // NOLINTNEXTLINE(readability-else-after-return)
@@ -228,48 +229,55 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(const Decompres
       stageOk = runDecoder(decoder);
 #endif
     } else {
-      return {.ok = false, .status = http::StatusCodeUnsupportedMediaType, .message = "Unsupported Content-Encoding"};
+      return {.status = http::StatusCodeUnsupportedMediaType, .message = "Unsupported Content-Encoding"};
     }
 
     if (!stageOk) {
-      return {.ok = false, .status = http::StatusCodeBadRequest, .message = "Decompression failed"};
+      return {.status = http::StatusCodeBadRequest, .message = "Decompression failed"};
     }
 
-    if (decompressionConfig.maxExpansionRatio > 0.0 && originalCompressedSize > 0) {
-      double ratio = static_cast<double>(dst->size()) / static_cast<double>(originalCompressedSize);
+    if (decompressionConfig.maxExpansionRatio > 0.0) {
+      const double ratio = static_cast<double>(dst->size()) / static_cast<double>(originalCompressedSize);
       if (ratio > decompressionConfig.maxExpansionRatio) {
-        return {.ok = false, .status = http::StatusCodePayloadTooLarge, .message = "Decompression expansion too large"};
+        return {.status = http::StatusCodePayloadTooLarge, .message = "Decompression expansion too large"};
       }
     }
 
+    onlyIdentity = false;
+
     src = *dst;
     dst = dst == &bodyAndTrailersBuffer ? &tmpBuffer : &bodyAndTrailersBuffer;
-    last = comma;
   }
 
+  // at this point, src points to the final decompressed data buffer (either tmpBuffer or bodyAndTrailersBuffer)
+
   if (src.data() == tmpBuffer.data()) {
+    // make sure the final result is in bodyAndTrailersBuffer
     tmpBuffer.swap(bodyAndTrailersBuffer);
+  } else if (onlyIdentity) {
+    // No decoding was actually performed (only identity codings)
+    return {};
   }
+
   RawChars& buf = bodyAndTrailersBuffer;
 
   const std::size_t decompressedSizeNbChars = static_cast<std::size_t>(nchars(src.size()));
   buf.ensureAvailableCapacity(trailersScratch.size() + decompressedSizeNbChars);
 
-  src = bodyAndTrailersBuffer;
+  // Warning: set the new decompressed body AFTER reallocating the buffer above.
+  request._body = bodyAndTrailersBuffer;
+
   if (!trailersScratch.empty()) {
     trailerStartPos = buf.size();
     buf.unchecked_append(trailersScratch);
-    if (parseTrailers) {
-      parseTrailers(request._trailers, buf.data(), buf.data() + trailerStartPos, buf.end());
-    }
   }
 
   std::string_view decompressedSizeStr(buf.end(), decompressedSizeNbChars);
-  std::to_chars(buf.end(), buf.end() + decompressedSizeNbChars, src.size());
+  [[maybe_unused]] const auto [ptr, errc] = std::to_chars(buf.end(), buf.end() + decompressedSizeNbChars, src.size());
+  assert(errc == std::errc{} && ptr == buf.end() + decompressedSizeNbChars);
   buf.addSize(decompressedSizeNbChars);
 
-  request._body = src;
-
+  // Update Content encoding and Content-Length headers, and set special aeronet headers containing orignal values.
   const std::string_view originalContentLenStr = contentLenIt != headersMap.end() ? contentLenIt->second : "";
   headersMap.erase(encodingHeaderIt);
   headersMap.insert_or_assign(http::ContentLength, decompressedSizeStr);
