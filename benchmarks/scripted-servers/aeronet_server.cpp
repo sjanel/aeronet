@@ -143,9 +143,9 @@ int main(int argc, char* argv[]) {
         headerSize = StringToIntegral<std::size_t>(qp.value);
       }
     }
-    HttpResponse resp(200);
+    HttpResponse resp(count * HttpResponse::HeaderSize(20U, headerSize), http::StatusCodeOK);
     for (std::size_t headerPos = 0; headerPos < count; ++headerPos) {
-      resp.addHeader(std::format("X-Bench-Header-{}", headerPos), bench::GenerateRandomString(headerSize));
+      resp.headerAddLine(std::format("X-Bench-Header-{}", headerPos), bench::GenerateRandomString(headerSize));
     }
     resp.body(std::format("Generated {} headers", count));
     return resp;
@@ -157,8 +157,8 @@ int main(int argc, char* argv[]) {
   // ============================================================
   router.setPath(http::Method::POST, "/uppercase", [](const HttpRequest& req) {
     std::string_view body = req.body();
-    HttpResponse resp(200);
-    resp.appendBody(body.size(), [body](char* buf) {
+    HttpResponse resp(HttpResponse::BodySize(body.size()), http::StatusCodeOK);
+    resp.bodyInlineSet(body.size(), [body](char* buf) {
       std::ranges::transform(body, buf, [](char ch) { return toupper(ch); });
       return body.size();
     });
@@ -186,11 +186,12 @@ int main(int argc, char* argv[]) {
     // Hash computation
     const std::string data = std::format("benchmark-data-{}", complexity);
     const uint64_t hashResult = bench::ComputeHash(data, hashIters);
+    auto body = std::format("fib({})={}, hash={}", complexity, fibResult, hashResult);
 
-    HttpResponse resp(200);
-    resp.addHeader("X-Fib-Result", fibResult);
-    resp.addHeader("X-Hash-Result", hashResult);
-    resp.body(std::format("fib({})={}, hash={}", complexity, fibResult, hashResult));
+    HttpResponse resp(64UL + HttpResponse::BodySize(body.size()), http::StatusCodeOK);
+    resp.headerAddLine("X-Fib-Result", fibResult);
+    resp.headerAddLine("X-Hash-Result", hashResult);
+    resp.body(std::move(body));
     return resp;
   });
 
@@ -201,14 +202,14 @@ int main(int argc, char* argv[]) {
     const std::size_t items = GetQueryParamOrThrow<std::size_t>(req, "items");
 
     HttpResponse resp(200);
-    resp.appendBody("{\"items\":[", "application/json");
+    resp.bodyAppend("{\"items\":[", "application/json");
     for (std::size_t itemPos = 0; itemPos < items; ++itemPos) {
       if (itemPos > 0) {
-        resp.appendBody(",");
+        resp.bodyAppend(",");
       }
-      resp.appendBody(std::format(R"({{"id":{},"name":"item-{}","value":{}}})", itemPos, itemPos, itemPos * 100));
+      resp.bodyAppend(std::format(R"({{"id":{},"name":"item-{}","value":{}}})", itemPos, itemPos, itemPos * 100));
     }
-    resp.appendBody("]}");
+    resp.bodyAppend("]}");
 
     return resp;
   });
@@ -230,9 +231,7 @@ int main(int argc, char* argv[]) {
   // Returns body of size ?size=N bytes
   // ============================================================
   router.setPath(http::Method::GET, "/body", [](const HttpRequest& req) {
-    HttpResponse resp(200);
-    resp.body(bench::GenerateRandomString(GetQueryParamOrThrow<std::size_t>(req, "size")));
-    return resp;
+    return HttpResponse(bench::GenerateRandomString(GetQueryParamOrThrow<std::size_t>(req, "size")));
   });
 
   // ============================================================
@@ -273,8 +272,7 @@ int main(int argc, char* argv[]) {
   // Endpoint 10+: /r{N} - Routing stress test (N literal routes)
   // ============================================================
   for (int routeIdx = 0; routeIdx < benchCfg.routeCount; ++routeIdx) {
-    std::string path = std::format("/r{}", routeIdx);
-    router.setPath(http::Method::GET, path,
+    router.setPath(http::Method::GET, std::format("/r{}", routeIdx),
                    [routeIdx](const HttpRequest&) { return HttpResponse(std::format("route-{}", routeIdx)); });
   }
   std::cout << "Registered " << benchCfg.routeCount << " literal routes (/r0 to /r" << (benchCfg.routeCount - 1)

@@ -165,7 +165,7 @@ TEST(TlsHttp2Client, CustomHeaders) {
   std::string receivedCustomHeader;
   ts.setDefault([&](const HttpRequest& req) {
     receivedCustomHeader = std::string(req.headerValueOrEmpty("x-custom-header"));
-    return HttpResponse().status(200).addHeader("x-response-header", "response-value").body("Headers received");
+    return HttpResponse().status(200).headerAddLine("x-response-header", "response-value").body("Headers received");
   });
 
   TlsHttp2Client client(ts.port());
@@ -186,7 +186,7 @@ TEST(TlsHttp2Client, GlobalHeadersAndDateAreInjected) {
 
   ts.setDefault([](const HttpRequest& /*req*/) {
     HttpResponse resp;
-    resp.addHeader("x-custom", "original");
+    resp.headerAddLine("x-custom", "original");
     resp.body("R");
     return resp;
   });
@@ -257,8 +257,8 @@ TEST(TlsHttp2Client, TrailersAreSentAfterBody) {
     return HttpResponse()
         .status(200)
         .body("Body content")
-        .addTrailer("x-checksum", "abc123")
-        .addTrailer("x-processing-time-ms", "42");
+        .trailerAddLine("x-checksum", "abc123")
+        .trailerAddLine("x-processing-time-ms", "42");
   });
 
   TlsHttp2Client client(ts.port());

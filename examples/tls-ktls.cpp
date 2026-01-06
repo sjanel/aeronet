@@ -29,10 +29,10 @@ int main(int argc, char** argv) {
     aeronet::Router router;
     router.setDefault([](const aeronet::HttpRequest& req) {
       aeronet::HttpResponse resp(aeronet::http::StatusCodeOK);
-      resp.appendBody("Hello from aeronet with kernel TLS!\n");
-      resp.appendBody("Path: ");
-      resp.appendBody(req.path());
-      resp.appendBody("\n");
+      resp.bodyAppend("Hello from aeronet with kernel TLS!\n");
+      resp.bodyAppend("Path: ");
+      resp.bodyAppend(req.path());
+      resp.bodyAppend("\n");
       return resp;
     });
 

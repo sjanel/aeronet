@@ -80,14 +80,14 @@ int main(int argc, char** argv) {
     aeronet::Router router;
     router.setDefault([](const aeronet::HttpRequest& req) {
       aeronet::HttpResponse resp(256U, aeronet::http::StatusCodeOK);
-      resp.appendBody("Hello from aeronet with TLS session tickets!\n");
-      resp.appendBody("Path: ");
-      resp.appendBody(req.path());
-      resp.appendBody("\nTLS Version: ");
-      resp.appendBody(req.tlsVersion());
-      resp.appendBody("\nCipher: ");
-      resp.appendBody(req.tlsCipher());
-      resp.appendBody("\n");
+      resp.bodyAppend("Hello from aeronet with TLS session tickets!\n");
+      resp.bodyAppend("Path: ");
+      resp.bodyAppend(req.path());
+      resp.bodyAppend("\nTLS Version: ");
+      resp.bodyAppend(req.tlsVersion());
+      resp.bodyAppend("\nCipher: ");
+      resp.bodyAppend(req.tlsCipher());
+      resp.bodyAppend("\n");
       return resp;
     });
 

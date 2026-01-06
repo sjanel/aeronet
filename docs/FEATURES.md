@@ -75,7 +75,7 @@ Where to look: see "Inbound Request Decompression (Config Details)" for decompre
 - [x] Basic fixed body responses
 - [x] HEAD method (suppressed body, correct Content-Length)
 - [x] Outgoing chunked / streaming responses (basic API: status/headers + incremental write + end, keep-alive capable)
-- [x] Outbound trailer headers (buffered via HttpResponse::addTrailer, streaming via HttpResponseWriter::addTrailer)
+- [x] Outbound trailer headers (buffered via HttpResponse::trailerAddLine, streaming via HttpResponseWriter::trailerAddLine)
 - [x] Mixed-mode dispatch (simultaneous registration of streaming and fixed handlers with precedence)
 - [x] Compression (gzip & deflate) (phase 1: zlib) – streaming + buffered with threshold & q-values
 - [x] Large-body optimization (zero-copy capture for large fixed responses)
@@ -294,7 +294,7 @@ for large responses.
 
 ### Appending body data
 
-The `HttpResponse::appendBody(...)` overloads allows appending additional data to an existing body.
+The `HttpResponse::bodyAppend(...)` overloads allows appending additional data to an existing body.
 
 For maximum efficiency, use the overloads taking a `writer` lambda to write directly into the response's internal
 buffer without intermediate copies.
@@ -302,14 +302,14 @@ buffer without intermediate copies.
 Example:
 
 ```cpp
-HttpResponse resp(200, "OK");
+HttpResponse resp(200);
 
 // Append a simple string line
-resp.appendBody("Header line\n");
+resp.bodyAppend("Header line\n");
 
 // Append generated data via writer lambda for maximum efficiency
 std::size_t maxLen = 256;
-resp.appendBody(maxLen, [](char* buf) -> std::size_t {
+resp.bodyInlineAppend(maxLen, [](char* buf) -> std::size_t {
   // write directly into buf up to bufSize bytes
   std::string_view data = "Body data generated on the fly...\n";
   std::memcpy(buf, data.data(), data.size());
@@ -761,22 +761,21 @@ aeronet supports sending HTTP trailers in responses, allowing metadata to be tra
 
 **Two APIs for different response patterns**:
 
-1. **Buffered responses** (`HttpResponse`): Trailers added via `addTrailer()` after body is set
+1. **Buffered responses** (`HttpResponse`): Trailers added via `trailerAddLine()` after body is set
 2. **Streaming responses** (`HttpResponseWriter`): Trailers added during streaming, emitted in final chunk
 
 #### Buffered Response Trailers (HttpResponse)
 
-For fixed/buffered responses, use `HttpResponse::addTrailer()`:
+For fixed/buffered responses, use `HttpResponse::trailerAddLine()`:
 
 ```cpp
 Router router;
 router.setPath(http::Method::GET, "/data", [](const HttpRequest& req) {
-  HttpResponse resp(200);
-  resp.body("response data");
+  HttpResponse resp("response data");
   
   // Add trailers after body (required)
-  resp.addTrailer("X-Checksum", "abc123");
-  resp.addTrailer("X-Timestamp", "2025-10-20T12:00:00Z");
+  resp.trailerAddLine("X-Checksum", "abc123");
+  resp.trailerAddLine("X-Timestamp", "2025-10-20T12:00:00Z");
   
   return resp;
 });
@@ -801,13 +800,13 @@ router.setPath(http::Method::GET, "/data", [](const HttpRequest& req) {
 HttpResponse(200)
     .header("X-Custom", "value")
     .body("data")
-    .addTrailer("X-Checksum", "xyz")
-    .addTrailer("X-Signature", "sig123");
+    .trailerAddLine("X-Checksum", "xyz")
+    .trailerAddLine("X-Signature", "sig123");
 ```
 
 #### Streaming Response Trailers (HttpResponseWriter)
 
-For chunked/streaming responses, use `HttpResponseWriter::addTrailer()`:
+For chunked/streaming responses, use `HttpResponseWriter::trailerAddLine()`:
 
 ```cpp
 Router router;
@@ -818,8 +817,8 @@ router.setPath(http::Method::GET, "/stream",
   w.writeBody("chunk2");
   
   // Add trailers during streaming
-  w.addTrailer("X-Checksum", "computed-hash");
-  w.addTrailer("X-Row-Count", "12345");
+  w.trailerAddLine("X-Checksum", "computed-hash");
+  w.trailerAddLine("X-Row-Count", "12345");
   
   w.end();  // Trailers emitted in final chunk
 });
