@@ -564,23 +564,26 @@ void SingleHttpServer::handleWritableClient(int fd) {
   // If this connection was created for an upstream non-blocking connect, and connect is pending,
   // check SO_ERROR to determine whether connect completed successfully or failed.
   if (state.connectPending) {
-    int soerr = 0;
-    socklen_t len = sizeof(soerr);
-    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &len) == 0) {
-      state.connectPending = false;
-      if (soerr != 0) {
-        // Upstream connect failed. Attempt to notify the client side (peerFd) with 502 and close both.
-        const auto peerIt = _connections.active.find(state.peerFd);
-        if (peerIt != _connections.active.end()) {
-          emitSimpleError(peerIt, http::StatusCodeBadGateway, true, "Upstream connect failed");
-        } else {
-          log::error("Unable to notify client of upstream connect failure: peer fd # {} not found", state.peerFd);
-        }
-        closeConnection(cnxIt);
-        return;
-      }
-      // otherwise connect succeeded; continue to normal writable handling
+    int err = 0;
+    socklen_t len = sizeof(err);
+    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == -1) [[unlikely]] {
+      log::error("getsockopt(SO_ERROR) failed for fd # {} errno={} ({})", fd, errno, std::strerror(errno));
+      // Treat as connect failure
+      err = errno;
     }
+    state.connectPending = false;
+    if (err != 0) {
+      // Upstream connect failed. Attempt to notify the client side (peerFd) with 502 and close both.
+      const auto peerIt = _connections.active.find(state.peerFd);
+      if (peerIt != _connections.active.end()) {
+        emitSimpleError(peerIt, http::StatusCodeBadGateway, true, "Upstream connect failed");
+      } else {
+        log::error("Unable to notify client of upstream connect failure: peer fd # {} not found", state.peerFd);
+      }
+      closeConnection(cnxIt);
+      return;
+    }
+    // otherwise connect succeeded; continue to normal writable handling
   }
   // If tunneling, flush tunnelOutBuffer first
   if (state.isTunneling() && !state.tunnelOrFileBuffer.empty()) {
@@ -624,11 +627,9 @@ void SingleHttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
       break;
     }
   }
-  if (state.inBuffer.empty()) {
-    return;
-  }
+  assert(!state.inBuffer.empty());
   auto peerIt = _connections.active.find(state.peerFd);
-  if (peerIt == _connections.active.end()) {
+  if (peerIt == _connections.active.end()) [[unlikely]] {
     closeConnection(cnxIt);
     return;
   }

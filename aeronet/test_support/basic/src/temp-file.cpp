@@ -143,8 +143,6 @@ ScopedTempFile &ScopedTempFile::operator=(ScopedTempFile &&other) noexcept {
   return *this;
 }
 
-ScopedTempFile::~ScopedTempFile() { cleanup(); }
-
 void ScopedTempFile::cleanup() noexcept {
   // Remove only the file we created. Do not touch directories — ScopedTempDir
   // is responsible for removing its directory contents.
@@ -156,6 +154,7 @@ void ScopedTempFile::cleanup() noexcept {
     } else if (!removed) {
       log::error("ScopedTempFile::cleanup: expected to remove file {}, but nothing was removed", _path.string());
     }
+    _path.clear();
   }
 }
 
