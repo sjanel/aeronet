@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -215,7 +216,7 @@ struct DirectoryListingResult {
   const std::filesystem::directory_iterator end;
 
   while (!ec && it != end) {
-    const std::filesystem::directory_entry current = *it;
+    std::filesystem::directory_entry current = *it;
     it.increment(ec);
     if (ec) {
       log::error("Failed to advance directory iterator for '{}': {}", directory.c_str(), ec.message());
@@ -226,7 +227,7 @@ struct DirectoryListingResult {
       continue;
     }
 
-    DirectoryListingEntry& info = result.entries.emplace_back(std::move(name), current);
+    DirectoryListingEntry& info = result.entries.emplace_back(std::move(name));
 
     std::error_code stepEc;
     const auto entryStatus = current.symlink_status(stepEc);
@@ -253,6 +254,8 @@ struct DirectoryListingResult {
     } else {
       info.lastModified = std::chrono::clock_cast<SysClock>(writeTime);
     }
+
+    info.entry = std::move(current);
 
     // Order of directory exploration is file system dependent.
     // So we start to keep an up to date ordered list of elements once it reaches the limit so that the list stays
@@ -290,9 +293,8 @@ struct DirectoryListingResult {
 void AddLastModifiedHeader(HttpResponse& resp, SysTimePoint tp) {
   std::array<char, kRFC7231DateStrLen> buf;
   auto* end = TimeToStringRFC7231(tp, buf.data());
-  const std::size_t len = static_cast<std::size_t>(end - buf.data());
-  assert(len == kRFC7231DateStrLen);
-  resp.headerAddLine(http::LastModified, std::string_view(buf.data(), len));
+  assert(static_cast<std::size_t>(end - buf.data()) == kRFC7231DateStrLen);
+  resp.headerAddLine(http::LastModified, std::string_view(buf.data(), end));
 }
 
 inline constexpr std::size_t kMaxHexChars = sizeof(std::uint64_t) * 2;
@@ -303,10 +305,8 @@ struct EtagBuf {
   std::uint8_t len{0};
 };
 
-[[nodiscard]] EtagBuf MakeStrongEtag(std::uint64_t fileSize, SysTimePoint lastModified) {
+void MakeStrongEtag(std::uint64_t fileSize, SysTimePoint lastModified, EtagBuf& etag) {
   const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(lastModified.time_since_epoch()).count();
-
-  EtagBuf etag;
 
   static constexpr char kHexits[] = "0123456789abcdef";
 
@@ -342,30 +342,29 @@ struct EtagBuf {
   write_hex_direct(static_cast<std::uint64_t>(nanos));
   // closing quote
   etag.buf[etag.len++] = '"';
-  return etag;
 }
 
 struct RangeSelection {
   enum class State : std::uint8_t { None, Valid, Invalid, Unsatisfiable };
 
   State state{State::None};
-  std::uint64_t offset{0};
-  std::uint64_t length{0};
+  std::size_t offset{0};
+  std::size_t length{0};
 };
 
-inline constexpr std::uint64_t kInvalidUint64 = std::numeric_limits<std::uint64_t>::max();
+inline constexpr std::size_t kInvalidSize = std::numeric_limits<std::size_t>::max();
 
-std::uint64_t ParseUint(std::string_view token) {
-  token = TrimOws(token);
+std::size_t ParseSize(std::string_view token) {
+  assert(token == TrimOws(token));
   if (token.empty()) {
-    return kInvalidUint64;
+    return kInvalidSize;
   }
-  std::uint64_t value;
+  std::size_t value;
   const auto first = token.data();
-  const auto last = token.data() + token.size();
+  const auto last = first + token.size();
   const auto [ptr, ec] = std::from_chars(first, last, value);
   if (ec != std::errc{} || ptr != last) {
-    return kInvalidUint64;
+    return kInvalidSize;
   }
   return value;
 }
@@ -380,7 +379,7 @@ std::uint64_t ParseUint(std::string_view token) {
 // (prefixed with "W/") are treated as non-matching for strong comparisons. We
 // derive ETags from file size and modification time and require exact (strong)
 // matches for conditional semantics (304/412 decisions).
-RangeSelection ParseRange(std::string_view raw, std::uint64_t fileSize) {
+RangeSelection ParseRange(std::string_view raw, std::size_t fileSize) {
   RangeSelection result;
   if (raw.empty()) {
     return result;
@@ -416,8 +415,8 @@ RangeSelection ParseRange(std::string_view raw, std::uint64_t fileSize) {
 
   if (firstPart.empty()) {
     // suffix-byte-range-spec: bytes=-N (last N bytes)
-    const auto suffixLen = ParseUint(secondPart);
-    if (suffixLen == kInvalidUint64 || suffixLen == 0) {
+    const std::size_t suffixLen = ParseSize(secondPart);
+    if (suffixLen == kInvalidSize || suffixLen == 0) {
       result.state = RangeSelection::State::Invalid;
       return result;
     }
@@ -428,8 +427,8 @@ RangeSelection ParseRange(std::string_view raw, std::uint64_t fileSize) {
     return result;
   }
 
-  auto firstValue = ParseUint(firstPart);
-  if (firstValue == kInvalidUint64) {
+  auto firstValue = ParseSize(firstPart);
+  if (firstValue == kInvalidSize) {
     result.state = RangeSelection::State::Invalid;
     return result;
   }
@@ -445,8 +444,8 @@ RangeSelection ParseRange(std::string_view raw, std::uint64_t fileSize) {
     return result;
   }
 
-  auto secondValue = ParseUint(secondPart);
-  if (secondValue == kInvalidUint64) {
+  auto secondValue = ParseSize(secondPart);
+  if (secondValue == kInvalidSize) {
     result.state = RangeSelection::State::Invalid;
     return result;
   }
@@ -507,12 +506,12 @@ ConditionalOutcome EvaluateConditionals(const HttpRequest& request, bool isGetOr
                                         SysTimePoint lastModified) {
   ConditionalOutcome outcome;
 
-  if (etag.empty() && lastModified == kInvalidTimePoint) {
+  if (etag.empty()) {
     return outcome;
   }
 
   if (auto ifMatch = request.headerValue(http::IfMatch); ifMatch.has_value()) {
-    if (etag.empty() || !EtagListMatches(*ifMatch, etag)) {
+    if (!EtagListMatches(*ifMatch, etag)) {
       outcome.kind = ConditionalOutcome::Kind::PreconditionFailed;
       outcome.status = http::StatusCodePreconditionFailed;
       outcome.rangeAllowed = false;
@@ -710,10 +709,11 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   const bool isGet = request.method() == http::Method::GET;
   const bool isHead = request.method() == http::Method::HEAD;
 
+  HttpResponse resp(http::StatusCodeNotFound);
+
   if (!isGet && !isHead) {
-    HttpResponse resp(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
+    resp.status(http::StatusCodeMethodNotAllowed);
     resp.headerAddLine(http::Allow, "GET, HEAD");
-    resp.body("Method Not Allowed\n");
     return resp;
   }
 
@@ -722,18 +722,18 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
 
   std::filesystem::path targetPath;
   if (!resolveTarget(request, targetPath)) {
-    return HttpResponse(http::StatusCodeNotFound);
+    return resp;
   }
 
   std::error_code ec;
   const auto status = std::filesystem::symlink_status(targetPath, ec);
   if (ec) {
-    return HttpResponse(http::StatusCodeNotFound);
+    return resp;
   }
 
   if (std::filesystem::is_directory(status)) {
     if (!_config.enableDirectoryIndex) {
-      return HttpResponse(http::StatusCodeNotFound);
+      return resp;
     }
 
     if (!requestedTrailingSlash) {
@@ -743,7 +743,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
       if (appendSlash != 0) {
         location.unchecked_push_back('/');
       }
-      HttpResponse resp(http::StatusCodeMovedPermanently);
+      resp.status(http::StatusCodeMovedPermanently);
       resp.location(location);
       resp.headerAddLine(http::CacheControl, "no-cache");
       resp.body("Moved Permanently\n");
@@ -752,18 +752,19 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
 
     auto listing = CollectDirectoryListing(targetPath, _config);
     if (!listing.isValid) {
-      return HttpResponse(http::StatusCodeInternalServerError);
+      resp.status(http::StatusCodeInternalServerError);
+      return resp;
     }
 
-    HttpResponse resp(http::StatusCodeOK);
+    resp.status(http::StatusCodeOK);
     resp.headerAddLine(http::CacheControl, "no-cache");
     resp.headerAddLine(http::XDirectoryListingTruncated, listing.truncated ? "1" : "0");
 
     static constexpr std::string_view kContentType = "text/html; charset=utf-8";
     if (_config.directoryIndexRenderer) {
       vector<std::filesystem::directory_entry> rawEntries(listing.entries.size());
-      std::ranges::transform(listing.entries, rawEntries.begin(),
-                             [](const DirectoryListingEntry& entry) { return entry.entry; });
+      std::transform(std::make_move_iterator(listing.entries.begin()), std::make_move_iterator(listing.entries.end()),
+                     rawEntries.begin(), [](DirectoryListingEntry&& entry) { return std::move(entry.entry); });
       resp.body(_config.directoryIndexRenderer(targetPath, rawEntries), kContentType);
     } else {
       resp.body(
@@ -773,105 +774,55 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     return resp;
   }
 
-  if (!std::filesystem::exists(status) || !std::filesystem::is_regular_file(status)) {
-    return HttpResponse(http::StatusCodeNotFound);
+  std::string_view targetPathString(targetPath.c_str());
+
+  File file(targetPath.c_str(), File::OpenMode::ReadOnly);
+  if (!file) {
+    resp.body("Unable to open file\n");
+    return resp;
   }
 
-  const auto fileSize = std::filesystem::file_size(targetPath, ec);
-  if (ec) {
-    return HttpResponse(http::StatusCodeNotFound);
+  const std::size_t fileSize = file.size();
+  if (fileSize == File::kError) {
+    resp.body("Unable to read file size\n");
+    return resp;
   }
 
   SysTimePoint lastModified = kInvalidTimePoint;
-  if ((_config.addLastModified || _config.enableConditional) && !ec) {
+  if (_config.addLastModified || _config.enableConditional || _config.addEtag) {
     const auto writeTime = std::filesystem::last_write_time(targetPath, ec);
     if (!ec) {
       lastModified = std::chrono::clock_cast<SysClock>(writeTime);
     }
   }
 
-  const std::string targetPathString = targetPath.string();
-
-  File file(targetPathString, File::OpenMode::ReadOnly);
-  if (!file) {
-    return HttpResponse(http::StatusCodeNotFound);
-  }
-
   EtagBuf etag;
   if ((_config.addEtag || _config.enableConditional) && lastModified != kInvalidTimePoint) {
-    etag = MakeStrongEtag(fileSize, lastModified);
+    MakeStrongEtag(fileSize, lastModified, etag);
   }
 
   std::string_view etagView{etag.buf.data(), etag.len};
 
-  const bool isConditional = _config.enableConditional;
-  ConditionalOutcome conditionalOutcome;
-  if (isConditional) {
-    conditionalOutcome = EvaluateConditionals(request, isGet || isHead, etagView, lastModified);
-    if (conditionalOutcome.kind == ConditionalOutcome::Kind::PreconditionFailed) {
-      HttpResponse resp(conditionalOutcome.status);
-      if (!etagView.empty()) {
-        resp.headerAddLine(http::ETag, etagView);
-      }
-      if (_config.addLastModified && lastModified != kInvalidTimePoint) {
-        AddLastModifiedHeader(resp, lastModified);
-      }
-      resp.headerAddLine(http::AcceptRanges, "bytes");
-      resp.body("Precondition Failed\n");
-      return resp;
-    }
-    if (conditionalOutcome.kind == ConditionalOutcome::Kind::NotModified) {
-      HttpResponse resp(http::StatusCodeNotModified);
-      if (!etagView.empty()) {
-        resp.headerAddLine(http::ETag, etagView);
-      }
-      if (_config.addLastModified && lastModified != kInvalidTimePoint) {
-        AddLastModifiedHeader(resp, lastModified);
-      }
-      resp.headerAddLine(http::AcceptRanges, "bytes");
-      return resp;
-    }
-  }
-
-  const bool allowRanges = _config.enableRange && conditionalOutcome.rangeAllowed;
-  RangeSelection rangeSelection;
-  if (allowRanges) {
-    if (auto rangeHeader = request.headerValue(http::Range); rangeHeader.has_value()) {
-      bool allowed = true;
-      if (auto ifRange = request.headerValue(http::IfRange); ifRange.has_value()) {
-        allowed = IfRangeAllowsPartial(*ifRange, etagView, lastModified);
-      }
-      if (allowed) {
-        rangeSelection = ParseRange(*rangeHeader, fileSize);
-      }
-    }
-  }
-
-  if (rangeSelection.state == RangeSelection::State::Invalid) {
-    HttpResponse resp(http::StatusCodeRangeNotSatisfiable);
-    const auto rangeHeader = BuildUnsatisfiedRangeHeader(fileSize);
-    resp.headerAddLine(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
-    resp.headerAddLine(http::AcceptRanges, "bytes");
-    resp.body("Invalid Range\n");
-    return resp;
-  }
-
-  if (rangeSelection.state == RangeSelection::State::Unsatisfiable) {
-    HttpResponse resp(http::StatusCodeRangeNotSatisfiable);
-    const auto rangeHeader = BuildUnsatisfiedRangeHeader(fileSize);
-    resp.headerAddLine(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
-    resp.headerAddLine(http::AcceptRanges, "bytes");
-    resp.body("Range Not Satisfiable\n");
-    return resp;
-  }
-
-  HttpResponse resp(http::StatusCodeOK);
   resp.headerAddLine(http::AcceptRanges, "bytes");
-  if (!etagView.empty()) {
+  if (_config.addEtag && !etagView.empty()) {
     resp.headerAddLine(http::ETag, etagView);
   }
   if (_config.addLastModified && lastModified != kInvalidTimePoint) {
     AddLastModifiedHeader(resp, lastModified);
+  }
+
+  ConditionalOutcome conditionalOutcome;
+  if (_config.enableConditional) {
+    conditionalOutcome = EvaluateConditionals(request, isGet || isHead, etagView, lastModified);
+    if (conditionalOutcome.kind == ConditionalOutcome::Kind::PreconditionFailed) {
+      resp.status(conditionalOutcome.status);
+      resp.body("Precondition Failed\n");
+      return resp;
+    }
+    if (conditionalOutcome.kind == ConditionalOutcome::Kind::NotModified) {
+      resp.status(http::StatusCodeNotModified);
+      return resp;
+    }
   }
 
   // Resolve content type.
@@ -891,18 +842,43 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     }
   }
 
-  if (rangeSelection.state == RangeSelection::State::Valid) {
-    const auto rangeHeader = BuildRangeHeader(rangeSelection.offset, rangeSelection.length, fileSize);
+  const bool allowRanges = _config.enableRange && conditionalOutcome.rangeAllowed;
+  if (allowRanges) {
+    if (auto rangeHeader = request.headerValue(http::Range); rangeHeader.has_value()) {
+      bool allowed = true;
+      if (auto ifRange = request.headerValue(http::IfRange); ifRange.has_value()) {
+        allowed = IfRangeAllowsPartial(*ifRange, etagView, lastModified);
+      }
+      if (allowed) {
+        RangeSelection rangeSelection = ParseRange(*rangeHeader, fileSize);
 
-    resp.status(http::StatusCodePartialContent);
-    resp.headerAddLine(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
-    resp.file(std::move(file), static_cast<std::size_t>(rangeSelection.offset),
-              static_cast<std::size_t>(rangeSelection.length), contentTypeForFile);
-    return resp;
+        if (rangeSelection.state == RangeSelection::State::Invalid ||
+            rangeSelection.state == RangeSelection::State::Unsatisfiable) {
+          const auto rangeHeader = BuildUnsatisfiedRangeHeader(fileSize);
+          resp.status(http::StatusCodeRangeNotSatisfiable);
+          resp.headerAddLine(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
+          if (rangeSelection.state == RangeSelection::State::Invalid) {
+            resp.body("Invalid Range\n");
+          } else {
+            resp.body("Range Not Satisfiable\n");
+          }
+          return resp;
+        }
+        if (rangeSelection.state == RangeSelection::State::Valid) {
+          const auto rangeHeader = BuildRangeHeader(rangeSelection.offset, rangeSelection.length, fileSize);
+
+          resp.status(http::StatusCodePartialContent);
+          resp.headerAddLine(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
+          resp.file(std::move(file), rangeSelection.offset, rangeSelection.length, contentTypeForFile);
+          return resp;
+        }
+      }
+    }
   }
 
+  resp.status(http::StatusCodeOK);
   resp.file(std::move(file), contentTypeForFile);
   return resp;
-}  // namespace
+}
 
 }  // namespace aeronet

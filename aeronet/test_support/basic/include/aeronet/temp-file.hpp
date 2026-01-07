@@ -52,7 +52,7 @@ class ScopedTempFile {
   ScopedTempFile(ScopedTempFile&& other) noexcept;
   ScopedTempFile& operator=(ScopedTempFile&& other) noexcept;
 
-  ~ScopedTempFile();
+  ~ScopedTempFile() { cleanup(); }
 
   // Directory containing the file
   [[nodiscard]] const std::filesystem::path& dirPath() const noexcept { return _dir; }
@@ -63,9 +63,9 @@ class ScopedTempFile {
   // If constructed with the size overload, returns the generated content.
   [[nodiscard]] std::string_view content() const noexcept { return _content; }
 
- private:
   void cleanup() noexcept;
 
+ private:
   std::filesystem::path _dir;
   std::filesystem::path _path;
   std::string _content;
