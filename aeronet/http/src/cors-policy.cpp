@@ -264,10 +264,10 @@ void CorsPolicy::applyResponseHeaders(HttpResponse& response, std::string_view o
     const auto optVary = response.headerValue(http::Vary);
     if (optVary) {
       if (!ListContainsToken(*optVary, http::Origin)) {
-        response.appendHeaderValue(http::Vary, http::Origin);
+        response.headerAppendValue(http::Vary, http::Origin);
       }
     } else {
-      response.addHeader(http::Vary, http::Origin);
+      response.headerAddLine(http::Vary, http::Origin);
     }
   } else {
     response.header(http::AccessControlAllowOrigin, "*");

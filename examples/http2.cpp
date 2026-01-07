@@ -82,18 +82,18 @@ int main(int argc, char** argv) {
     router.setDefault([](const HttpRequest& req) {
       HttpResponse resp(200);
       if (req.isHttp2()) {
-        resp.appendBody("Hello from aeronet HTTP/2!\n");
-        resp.appendBody("Stream ID: ");
-        resp.appendBody(std::to_string(req.streamId()));
-        resp.appendBody("\n");
+        resp.bodyAppend("Hello from aeronet HTTP/2!\n");
+        resp.bodyAppend("Stream ID: ");
+        resp.bodyAppend(std::to_string(req.streamId()));
+        resp.bodyAppend("\n");
       } else {
-        resp.appendBody("Hello from aeronet HTTP/1.1!\n");
+        resp.bodyAppend("Hello from aeronet HTTP/1.1!\n");
       }
-      resp.appendBody("Path: ");
-      resp.appendBody(req.path());
-      resp.appendBody("\nMethod: ");
-      resp.appendBody(http::MethodToStr(req.method()));
-      resp.appendBody("\n");
+      resp.bodyAppend("Path: ");
+      resp.bodyAppend(req.path());
+      resp.bodyAppend("\nMethod: ");
+      resp.bodyAppend(http::MethodToStr(req.method()));
+      resp.bodyAppend("\n");
       return resp;
     });
 

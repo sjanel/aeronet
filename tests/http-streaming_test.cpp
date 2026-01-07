@@ -117,10 +117,10 @@ TEST(HttpStreaming, ChunkedSimple) {
   ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
     writer.status(200);
     writer.contentType("text/plain");
-    writer.addHeader("X-Custom", "value");
+    writer.headerAddLine("X-Custom", "value");
     writer.writeBody("hello ");
-    writer.status(400);                         // should be ignored after headers sent
-    writer.addHeader("X-Custom-2", "value 2");  // should be ignored after headers sent
+    writer.status(400);                             // should be ignored after headers sent
+    writer.headerAddLine("X-Custom-2", "value 2");  // should be ignored after headers sent
     writer.writeBody("world");
     writer.end();
     writer.end();  // second end() should be no-op
@@ -172,7 +172,7 @@ TEST(HttpStreaming, WriteBodyAndTrailersShouldFailIfSendFileIsUsed) {
     writer.status(200);
     writer.file(File(path));
     EXPECT_FALSE(writer.writeBody("extra data"));  // should be no-op
-    writer.addTrailer("X-Trailer", "value");       // should be no-op
+    writer.trailerAddLine("X-Trailer", "value");   // should be no-op
     writer.end();
   });
 
@@ -841,11 +841,11 @@ TEST(HttpStreaming, CaseInsensitiveContentTypeAndEncodingSuppression) {
   EXPECT_TRUE(resp.contains(std::string(50, 'Z'))) << "Body appears compressed when it should not";
 }
 
-// Test addHeader with Content-Encoding - sets _contentEncodingHeaderPresent
+// Test headerAddLine with Content-Encoding - sets _contentEncodingHeaderPresent
 TEST(HttpResponseWriterFailures, AddHeaderContentEncoding) {
   ts.router().setPath(http::Method::GET, "/content-encoding", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.addHeader(http::ContentEncoding, "gzip");
+    writer.headerAddLine(http::ContentEncoding, "gzip");
     writer.contentType("text/plain");
     writer.writeBody("test");
     writer.end();
@@ -890,7 +890,7 @@ TEST(HttpResponseWriterFailures, FileAfterWriteBody) {
   EXPECT_TRUE(response.contains("HTTP/1.1 200"));
 }
 
-// Test writeBody/addTrailer/end after end() - State::Ended checks
+// Test writeBody/trailerAddLine/end after end() - State::Ended checks
 TEST(HttpResponseWriterFailures, OperationsAfterEnd) {
   ts.router().setPath(http::Method::GET, "/after-end", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
@@ -899,7 +899,7 @@ TEST(HttpResponseWriterFailures, OperationsAfterEnd) {
 
     // These should all be ignored (State::Ended)
     EXPECT_FALSE(writer.writeBody("more"));
-    writer.addTrailer("X-Ignored", "value");
+    writer.trailerAddLine("X-Ignored", "value");
     writer.end();  // Second end() should be harmless
   });
 
@@ -916,10 +916,10 @@ TEST(HttpResponseWriterFailures, ModifyAfterHeadersSent) {
     writer.writeBody("chunk1");  // This sends headers
 
     // These should be ignored (State::HeadersSent)
-    writer.status(http::StatusCodeNotFound);  // Ignored
-    writer.header("X-After", "value2");       // Ignored
-    writer.addHeader("X-After2", "value3");   // Ignored
-    writer.contentLength(50);                 // Ignored
+    writer.status(http::StatusCodeNotFound);     // Ignored
+    writer.header("X-After", "value2");          // Ignored
+    writer.headerAddLine("X-After2", "value3");  // Ignored
+    writer.contentLength(50);                    // Ignored
 
     writer.writeBody("chunk2");
     writer.end();
@@ -931,14 +931,14 @@ TEST(HttpResponseWriterFailures, ModifyAfterHeadersSent) {
   EXPECT_FALSE(response.contains("X-After"));
 }
 
-// Test addTrailer for fixed-length response (non-chunked) - should be ignored
+// Test trailerAddLine for fixed-length response (non-chunked) - should be ignored
 TEST(HttpResponseWriterFailures, TrailerForFixedLength) {
   ts.router().setPath(http::Method::GET, "/trailer-fixed-len", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.contentLength(4);  // Fixed length = non-chunked
 
-    // addTrailer should be ignored for fixed-length responses
-    writer.addTrailer("X-Trailer", "ignored");
+    // trailerAddLine should be ignored for fixed-length responses
+    writer.trailerAddLine("X-Trailer", "ignored");
 
     writer.writeBody("test");
     writer.end();
