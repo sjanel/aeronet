@@ -94,7 +94,6 @@ TEST(FileTest, DetectedContentTypeCaseInsensitiveExtension) {
 }
 
 TEST(FileTest, MissingFileLeavesDescriptorClosed) {
-  test::FileSyscallHookGuard guard;
   ScopedTempDir dir("aeronet-file-missing");
   const auto missingPath = dir.dirPath() / "does-not-exist.bin";
   File fileObj(std::string_view(missingPath.string()), File::OpenMode::ReadOnly);
@@ -103,7 +102,6 @@ TEST(FileTest, MissingFileLeavesDescriptorClosed) {
 }
 
 TEST(FileTest, StringViewConstructorLoadsContent) {
-  test::FileSyscallHookGuard guard;
   ScopedTempDir dir("aeronet-file-sv");
   ScopedTempFile tmp(dir, "string-view-content");
   const std::string path = tmp.filePath().string();
