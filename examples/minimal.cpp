@@ -30,18 +30,18 @@ int main(int argc, char **argv) {
   try {
     router.setDefault([](const HttpRequest &req) {
       HttpResponse resp(200);
-      resp.appendBody("Hello from aeronet minimal server! You requested ");
-      resp.appendBody(req.path());
-      resp.appendBody("\nMethod: ");
-      resp.appendBody(http::MethodToStr(req.method()));
-      resp.appendBody("\nVersion: ");
-      resp.appendBody(std::string_view(req.version().str()));
-      resp.appendBody("\nHeaders:\n");
+      resp.bodyAppend("Hello from aeronet minimal server! You requested ");
+      resp.bodyAppend(req.path());
+      resp.bodyAppend("\nMethod: ");
+      resp.bodyAppend(http::MethodToStr(req.method()));
+      resp.bodyAppend("\nVersion: ");
+      resp.bodyAppend(std::string_view(req.version().str()));
+      resp.bodyAppend("\nHeaders:\n");
       for (const auto &[headerKey, headerValue] : req.headers()) {
-        resp.appendBody(headerKey);
-        resp.appendBody(": ");
-        resp.appendBody(headerValue);
-        resp.appendBody("\n");
+        resp.bodyAppend(headerKey);
+        resp.bodyAppend(": ");
+        resp.bodyAppend(headerValue);
+        resp.bodyAppend("\n");
       }
       return resp;
     });

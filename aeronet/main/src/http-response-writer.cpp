@@ -63,7 +63,7 @@ void HttpResponseWriter::status(http::StatusCode code, std::string_view reason) 
   _fixedResponse.status(code, reason);
 }
 
-void HttpResponseWriter::addHeader(std::string_view name, std::string_view value) {
+void HttpResponseWriter::headerAddLine(std::string_view name, std::string_view value) {
   if (_state != State::Opened) {
     log::warn("Streaming: cannot add header after headers sent");
     return;
@@ -71,7 +71,7 @@ void HttpResponseWriter::addHeader(std::string_view name, std::string_view value
   if (CaseInsensitiveEqual(http::ContentEncoding, name)) {
     _contentEncodingHeaderPresent = true;
   }
-  _fixedResponse.addHeader(name, value);
+  _fixedResponse.headerAddLine(name, value);
 }
 
 void HttpResponseWriter::header(std::string_view name, std::string_view value) {
@@ -108,9 +108,9 @@ void HttpResponseWriter::ensureHeadersSent() {
   }
   // For HEAD requests never emit chunked framing; force zero Content-Length if not provided.
   if (chunked()) {
-    _fixedResponse.appendHeaderInternal(http::TransferEncoding, "chunked");
+    _fixedResponse.headerAddLine(http::TransferEncoding, "chunked");
   } else if (!_fixedResponse.hasFile() && _declaredLength == 0) {
-    _fixedResponse.appendHeaderInternal(http::ContentLength, "0");
+    _fixedResponse.headerAddLine(http::ContentLength, "0");
   }
 
   // If Content-Type has not been set, set to 'application/octet-stream' by default.
@@ -119,7 +119,7 @@ void HttpResponseWriter::ensureHeadersSent() {
   if (_compressionActivated) {
     _fixedResponse.setHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
     if (_server->_config.compression.addVaryHeader) {
-      _fixedResponse.appendHeaderValue(http::Vary, http::AcceptEncoding);
+      _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
     }
   }
   _server->applyResponseMiddleware(*_request, _fixedResponse, _routeResponseMiddleware, true);
@@ -236,24 +236,23 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
   return _state != State::Failed;  // backpressure signaled via connection close flag, failure sets failed state
 }
 
-void HttpResponseWriter::addTrailer(std::string_view name, std::string_view value) {
+void HttpResponseWriter::trailerAddLine(std::string_view name, std::string_view value) {
   if (_state == State::Ended || _state == State::Failed) {
-    log::warn("Streaming: addTrailer ignored fd # {} name={} reason={}", _fd, name,
+    log::warn("Streaming: trailerAddLine ignored fd # {} name={} reason={}", _fd, name,
               _state == State::Failed ? "writer-failed" : "already-ended");
     return;
   }
   if (_fixedResponse.hasFile()) {
-    log::warn("Streaming: addTrailer ignored fd # {} name={} reason=sendfile-active", _fd, name);
+    log::warn("Streaming: trailerAddLine ignored fd # {} name={} reason=sendfile-active", _fd, name);
     return;
   }
   if (!chunked()) {
-    log::warn("Streaming: addTrailer ignored fd # {} name={} reason=fixed-length-response (contentLength was set)", _fd,
-              name);
+    log::warn("Streaming: trailerAddLine ignored fd # {} name={} reason=fixed-length-response (contentLength was set)",
+              _fd, name);
     return;
   }
 
-  // Trailer format: name ": " value CRLF
-  const std::size_t lineSize = name.size() + http::HeaderSep.size() + value.size() + http::CRLF.size();
+  const std::size_t lineSize = HttpResponse::HeaderSize(name.size(), value.size());
 
   if (_trailers.empty()) {
     _trailers.ensureAvailableCapacityExponential(lineSize + 1UL + http::DoubleCRLF.size());
@@ -382,11 +381,11 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
   _activeEncoderCtx = encoderPtr->makeContext();
   _compressionActivated = true;
   // Set Content-Encoding prior to emitting headers.
-  // We can use addHeader instead of header because at this point the user has not set it.
+  // We can use headerAddLine instead of header because at this point the user has not set it.
   if (_state != HttpResponseWriter::State::HeadersSent) {
-    _fixedResponse.addHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
+    _fixedResponse.headerAddLine(http::ContentEncoding, GetEncodingStr(_compressionFormat));
     if (_server->_config.compression.addVaryHeader) {
-      _fixedResponse.appendHeaderValue(http::Vary, http::AcceptEncoding);
+      _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
     }
   }
   ensureHeadersSent();

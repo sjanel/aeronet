@@ -445,7 +445,7 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
 
   if (contentLength != 0) {
     const auto lenStr = IntegralToCharVector(contentLength);
-    response.appendHeaderInternal(http::ContentLength, std::string_view{lenStr});
+    response.headerAddLine(http::ContentLength, std::string_view{lenStr});
   }
 
   // IMPORTANT: take views only after mutating headers, since setHeader() may reallocate

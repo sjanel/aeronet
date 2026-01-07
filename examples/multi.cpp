@@ -24,9 +24,9 @@ int main(int argc, char** argv) {
   try {
     router.setDefault([](const HttpRequest& req) {
       HttpResponse resp(200);
-      resp.appendBody("multi reactor response ");
-      resp.appendBody(req.path());
-      resp.appendBody("\n");
+      resp.bodyAppend("multi reactor response ");
+      resp.bodyAppend(req.path());
+      resp.bodyAppend("\n");
       return resp;
     });
 

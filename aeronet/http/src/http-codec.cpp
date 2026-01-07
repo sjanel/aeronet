@@ -65,9 +65,9 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   }
 
   // First, write the needed headers.
-  resp.addHeader(http::ContentEncoding, GetEncodingStr(encoding));
+  resp.headerAddLine(http::ContentEncoding, GetEncodingStr(encoding));
   if (compressionConfig.addVaryHeader) {
-    resp.appendHeaderValue(http::Vary, http::AcceptEncoding);
+    resp.headerAppendValue(http::Vary, http::AcceptEncoding);
   }
 
   auto& encoder = compressionState.encoders[static_cast<std::size_t>(encoding)];
@@ -77,15 +77,12 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
     const auto externView = pExternPayload->view();
     const auto externTrailers = resp.externalTrailers(*pExternPayload);
     const std::string_view externBody(externView.data(), externView.size() - externTrailers.size());
-    const auto oldSize = resp._data.size();
 
     encoder->encodeFull(externTrailers.size(), externBody, resp._data);
 
-    const std::size_t compressedBodyLen = resp._data.size() - oldSize;
-
     if (!externTrailers.empty()) {
       resp._data.append(externTrailers);
-      resp._trailerPos = compressedBodyLen;
+      resp._trailerLen = externTrailers.size();
     }
 
     resp._payloadVariant = {};
@@ -94,10 +91,8 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
     RawChars out;
     encoder->encodeFull(internalTrailers.size(), resp.body(), out);
 
-    if (resp._trailerPos != 0) {
-      resp._trailerPos = out.size();
-      out.append(internalTrailers);
-    }
+    assert(out.availableCapacity() >= internalTrailers.size());
+    out.unchecked_append(internalTrailers);
 
     resp._data.setSize(resp._data.size() - resp.internalBodyAndTrailersLen());
     resp._payloadVariant = HttpPayload(std::move(out));

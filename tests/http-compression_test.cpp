@@ -246,8 +246,8 @@ TEST(HttpCompression, CapturedBodyWithTrailers) {
     // supply body as captured payload directly (simulate handler that sets captured payload)
     respObj.body(payload);
     // add trailers after body
-    respObj.addTrailer("X-Checksum", "cksum");
-    respObj.addTrailer("X-Extra", "val");
+    respObj.trailerAddLine("X-Checksum", "cksum");
+    respObj.trailerAddLine("X-Extra", "val");
     return respObj;
   });
 
@@ -284,7 +284,7 @@ TEST(HttpCompression, InlineBodyWithTrailers) {
     // create inline body (string_view) to force inline storage
     respObj.body(std::string_view(inlinePayload));
     // trailers must be added after body
-    respObj.addTrailer("X-Inline", "ok");
+    respObj.trailerAddLine("X-Inline", "ok");
     return respObj;
   });
 

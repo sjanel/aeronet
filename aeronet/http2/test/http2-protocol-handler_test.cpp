@@ -401,7 +401,7 @@ TEST(Http2ProtocolHandler, HttpRequestHttp2FieldsSetCorrectly) {
 TEST(Http2ProtocolHandler, ResponseWithTrailersEndsOnTrailerHeaders) {
   Router router;
   router.setPath(http::Method::GET, "/trailers",
-                 [](const HttpRequest&) { return HttpResponse(200).body("abc").addTrailer("x-check", "ok"); });
+                 [](const HttpRequest&) { return HttpResponse(200).body("abc").trailerAddLine("x-check", "ok"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -433,7 +433,7 @@ TEST(Http2ProtocolHandler, ResponseWithTrailersEndsOnTrailerHeaders) {
 TEST(Http2ProtocolHandler, ResponseWithTrailersButNoBodyEndsOnTrailerHeadersWithoutData) {
   Router router;
   router.setPath(http::Method::GET, "/trailers-nobody",
-                 [](const HttpRequest&) { return HttpResponse(200).addTrailer("x-check", "ok"); });
+                 [](const HttpRequest&) { return HttpResponse(200).trailerAddLine("x-check", "ok"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();

@@ -490,20 +490,23 @@ The router expects callback functions returning a `HttpResponse`. You can build 
 |--------------------|----------------------|----------------------------------------|
 | `status()`         | O(1)                 | Overwrites 3 digits                    |
 | `reason()`         | O(trailing)          | One tail `memmove` if size delta       |
-| `addHeader()`      | O(bodyLen)           | Shift tail once; no scan               |
 | `header()`         | O(headers + bodyLen) | Linear scan + maybe one shift          |
+| `headerAddLine()`      | O(bodyLen)           | Shift tail once; no scan               |
 | `body()` (inline)  | O(delta) + realloc   | Exponential growth strategy            |
 | `body()` (capture) | O(1)                 | Zero copy client buffer capture        |
-| `appendBody()` (inline) | O(delta) + realloc   | Exponential growth strategy, zero-copy support            |
+| `bodyAppend()` (inline) | O(delta) + realloc   | Exponential growth strategy, zero-copy support            |
+| `bodyInlineAppend()` | O(delta) + realloc   | Exponential growth strategy            |
+| `bodyInlineSet()` | O(1) + realloc   | Exact growth strategy            |
 | `file()`           | O(1)                 | Zero-copy sendfile helper              |
-| `addTrailer()`     | O(1)                 | Append-only; no scan (only after body) |
+| `trailerAddLine()`     | O(1)                 | Append-only; no scan (only after body) |
 
 Usage guidelines:
 
-- Use `addHeader()` when duplicates are acceptable or not possible from the client code (cheapest path).
+- Use `headerAddLine()` when duplicates are acceptable or not possible from the client code (cheapest path).
 - Use `header()` only when you must guarantee uniqueness. Matching is case‑insensitive; prefer a canonical style (e.g.
   `Content-Type`) for readability, but behavior is the same regardless of input casing.
 - Chain on temporaries for concise construction; the rvalue-qualified overloads keep the object movable.
+- For maximum performance, fill the response in order, starting with status/reason, then headers, then body, to minimize memory shifts and reallocations.
 
 #### Reserved Headers
 
