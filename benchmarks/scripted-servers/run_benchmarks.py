@@ -124,6 +124,9 @@ class BenchmarkRunner:
         self.servers_to_test = self._resolve_server_filter(args.server)
         self.scenarios_to_test = self._resolve_scenario_filter(args.scenario)
 
+        # Track whether any Aeronet scenario reported wrk errors
+        self._aeronet_errors_found: bool = False
+
         self.needs_static = any(
             self.SCENARIOS[s].requires_static
             for s in self.scenarios_to_test
@@ -373,6 +376,11 @@ class BenchmarkRunner:
         self._write_memory_summary_table()
         self._write_summary_table()
         self._write_json_summary()
+        # Fail the CI if Aeronet had any wrk-reported errors
+        if self._aeronet_errors_found:
+            print("\nBenchmarks complete (Aeronet reported errors)\n")
+            # Non-zero exit code to fail CI
+            sys.exit(1)
         print("\nBenchmarks complete!\n")
 
     # -------------------------- Resource Preparation ------------------------ #
@@ -522,7 +530,14 @@ class BenchmarkRunner:
 
     # ---------------------------- Benchmark logic --------------------------- #
 
-    def _run_single(self, server: str, scenario_name: str, *, warmup: bool = True, warmup_only: bool = False) -> None:
+    def _run_single(
+        self,
+        server: str,
+        scenario_name: str,
+        *,
+        warmup: bool = True,
+        warmup_only: bool = False,
+    ) -> None:
         scenario = self.SCENARIOS[scenario_name]
         lua_script = self.script_dir / scenario.lua_script
         if not lua_script.is_file():
@@ -543,7 +558,9 @@ class BenchmarkRunner:
                 str(lua_script),
                 url,
             ]
-            subprocess.run(warmup_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                warmup_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
             if warmup_only:
                 return
         print(f">>> Running: {server} / {scenario_name}")
@@ -574,6 +591,17 @@ class BenchmarkRunner:
             self._record_memory_usage(server, scenario_name)
             return
         metrics = self._parse_wrk_output(output)
+        # Extract wrk error counters printed by lua scripts
+        err_connect, err_read, err_write, err_timeout = self._extract_wrk_errors(output)
+        any_errs = (
+            (err_connect > 0) or (err_read > 0) or (err_write > 0) or (err_timeout > 0)
+        )
+        if server == "aeronet" and any_errs:
+            self._aeronet_errors_found = True
+            print(
+                f"ERROR: Aeronet reported errors (connect/read/write/timeout) = "
+                f"{err_connect}/{err_read}/{err_write}/{err_timeout} for scenario '{scenario_name}'"
+            )
         self._store_result(
             server,
             scenario_name,
@@ -582,7 +610,9 @@ class BenchmarkRunner:
             metrics["transfer"],
         )
         print(output)
-        self._append_result_block(server, scenario_name, output, error=False)
+        self._append_result_block(
+            server, scenario_name, output, error=(server == "aeronet" and any_errs)
+        )
         self._record_memory_usage(server, scenario_name)
 
     def _parse_wrk_output(self, output: str) -> Dict[str, str]:
@@ -607,6 +637,41 @@ class BenchmarkRunner:
             print(f"WARNING: wrk reported {non2xx} non-2xx responses; ignoring metrics")
             return {"rps": "-", "latency": "-", "transfer": "-"}
         return values
+
+    def _extract_wrk_errors(self, output: str) -> Tuple[int, int, int, int]:
+        """Parse wrk Lua script summary lines for error counts.
+
+        Looks for lines like:
+          "Errors (connect): X"
+          "Errors (read): X"
+          "Errors (write): X"
+          "Errors (timeout): X"
+        Returns a tuple: (connect, read, write, timeout). Missing lines default to 0.
+        """
+        e_connect = e_read = e_write = e_timeout = 0
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("Errors (connect):"):
+                try:
+                    e_connect = int(line.split(":", 1)[1].strip())
+                except Exception:
+                    e_connect = e_connect or 1
+            elif line.startswith("Errors (read):"):
+                try:
+                    e_read = int(line.split(":", 1)[1].strip())
+                except Exception:
+                    e_read = e_read or 1
+            elif line.startswith("Errors (write):"):
+                try:
+                    e_write = int(line.split(":", 1)[1].strip())
+                except Exception:
+                    e_write = e_write or 1
+            elif line.startswith("Errors (timeout):"):
+                try:
+                    e_timeout = int(line.split(":", 1)[1].strip())
+                except Exception:
+                    e_timeout = e_timeout or 1
+        return e_connect, e_read, e_write, e_timeout
 
     def _store_result(
         self, server: str, scenario: str, rps: str, latency: str, transfer: str
@@ -1028,8 +1093,8 @@ class BenchmarkRunner:
         static_dir = self.script_dir / "static"
         static_dir.mkdir(exist_ok=True)
         file_names_and_sizes = [
-            ("large.bin", 1 * 1024 * 1024 * 1024),
-            ("medium.bin", 10 * 1024 * 1024),
+            ("large.bin", 25 * 1024 * 1024),
+            ("medium.bin", 1 * 1024 * 1024),
         ]
         for file_name, size_bytes in file_names_and_sizes:
             target = static_dir / file_name

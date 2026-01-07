@@ -282,15 +282,9 @@ int main(int argc, char* argv[]) {
   // Endpoint: /users/{id}/posts/{post} - Pattern matching stress test
   // ============================================================
   router.setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const HttpRequest& req) {
-    std::string_view userId;
-    std::string_view postId;
-    for (auto [key, value] : req.pathParams()) {
-      if (key == "id") {
-        userId = value;
-      } else if (key == "post") {
-        postId = value;
-      }
-    }
+    const auto& params = req.pathParams();
+    std::string_view userId = params.find("id")->second;
+    std::string_view postId = params.find("post")->second;
     return HttpResponse(std::format("user={},post={}", userId, postId));
   });
 
@@ -298,15 +292,9 @@ int main(int argc, char* argv[]) {
   // Endpoint: /api/v{version}/items/{item} - Another pattern route
   // ============================================================
   router.setPath(http::Method::GET, "/api/v{version}/items/{item}", [](const HttpRequest& req) {
-    std::string_view version;
-    std::string_view item;
-    for (auto [key, value] : req.pathParams()) {
-      if (key == "version") {
-        version = value;
-      } else if (key == "item") {
-        item = value;
-      }
-    }
+    const auto& params = req.pathParams();
+    std::string_view version = params.find("version")->second;
+    std::string_view item = params.find("item")->second;
     return HttpResponse(std::format("v={},item={}", version, item));
   });
 
