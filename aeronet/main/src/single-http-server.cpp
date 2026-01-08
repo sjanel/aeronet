@@ -606,7 +606,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
 
         consumedBytes = 0;  // already advanced
       } else if (routingResult.methodNotAllowed) {
-        resp.status(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed).body(resp.reason());
+        resp.status(http::StatusCodeMethodNotAllowed).body(http::ReasonMethodNotAllowed);
       } else {
         resp.status(http::StatusCodeNotFound);
       }

@@ -426,7 +426,6 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
 
 ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod) {
   HttpResponse::FilePayload* pFilePayload = response.filePayloadPtr();
-  const std::size_t contentLength = pFilePayload != nullptr ? pFilePayload->length : response.body().size();
 
   // finalize headers
   WriteCRLFDateHeader(response._data.data() + response.headersStartPos(), SysClock::now());
@@ -441,11 +440,6 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
     const std::string_view key = headerKeyVal.substr(0, colonPos);
 
     response.setHeader(key, TrimOws(headerKeyVal.substr(colonPos + 1)), HttpResponse::OnlyIfNew::Yes);
-  }
-
-  if (contentLength != 0) {
-    const auto lenStr = IntegralToCharVector(contentLength);
-    response.headerAddLine(http::ContentLength, std::string_view{lenStr});
   }
 
   // IMPORTANT: take views only after mutating headers, since setHeader() may reallocate
