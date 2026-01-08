@@ -1343,10 +1343,11 @@ TEST_F(HttpRequestTest, LongInputs) {
 TEST_F(HttpRequestTest, HeaderParsingStress) {
   constexpr std::size_t kIterations = 100;
 
+  RawChars input;
   for (std::size_t seed = 0; seed < kIterations; ++seed) {
     FuzzRng rng(seed + 3000000);
 
-    RawChars input;
+    input.clear();
     input.append("GET / HTTP/1.1\r\n");
 
     // Generate many headers
