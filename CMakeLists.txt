@@ -67,6 +67,9 @@ option(AERONET_SPDLOG_USE_STD_FORMAT "Use std::format instead of fmt::format in 
 
 # Linting
 option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" ${ASAN_DEFAULT})
+# Below option will notably replace all exponential growths of RawBytes buffers into exact sized allocations
+# to help catch memory issues in tests that may be hidden by overallocation.
+option(AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS "Enable miscellaneous additional memory checks to complement ASAN" OFF)
 option(AERONET_ENABLE_CLANG_TIDY "Enable clang-tidy analysis" OFF)
 option(AERONET_ENABLE_WARNINGS "Enable extra compiler warnings" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)

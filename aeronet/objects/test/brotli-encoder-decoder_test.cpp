@@ -239,7 +239,11 @@ TEST(BrotliEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIterat
   // Incompressible payload to force encoder to iterate and grow output as needed.
   const RawBytes payload = test::MakeRandomPayload(256UL * 1024);
 
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+  static constexpr std::size_t kChunkSize = 8UL;
+#else
   static constexpr std::size_t kChunkSize = 1UL;  // small to force multiple iterations; encoder will grow as needed
+#endif
   CompressionConfig cfg;
   BrotliEncoder encoder(cfg, kChunkSize);
   auto ctx = encoder.makeContext();

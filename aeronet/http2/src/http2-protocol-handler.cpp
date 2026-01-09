@@ -19,7 +19,6 @@
 #include "aeronet/header-write.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
-#include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
@@ -37,7 +36,6 @@
 #include "aeronet/request-task.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/string-trim.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/timedef.hpp"
 
 namespace aeronet::http2 {

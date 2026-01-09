@@ -1,10 +1,13 @@
 #include "aeronet/http-codec.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
+#include <charconv>
 #include <cstddef>
 #include <memory>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "aeronet/accept-encoding-negotiation.hpp"
