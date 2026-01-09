@@ -23,6 +23,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/nchars.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/stringconv.hpp"
@@ -198,32 +199,6 @@ void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
   adjustBodyStart(diff);
 }
 
-void HttpResponse::setContentTypeHeader(std::string_view contentTypeValue, bool isEmpty) {
-  if (isEmpty) {
-    eraseHeader(http::ContentType);
-  } else {
-    setHeader(http::ContentType, contentTypeValue);
-  }
-}
-
-void HttpResponse::eraseHeader(std::string_view key) {
-  auto optHeaderValue = headerValue(key);
-  if (!optHeaderValue) {
-    return;
-  }
-
-  const char* valueEnd = optHeaderValue->end();
-  char* keyBeg = _data.data() + (optHeaderValue->data() - _data.data()) - static_cast<std::ptrdiff_t>(key.size()) -
-                 http::HeaderSep.size();
-
-  std::memmove(keyBeg - http::CRLF.size(), valueEnd, static_cast<std::size_t>(_data.end() - valueEnd));
-
-  const std::size_t headerLineLen = static_cast<std::size_t>(valueEnd - keyBeg) + http::CRLF.size();
-
-  adjustBodyStart(-static_cast<int64_t>(headerLineLen));
-  _data.setSize(_data.size() - headerLineLen);
-}
-
 namespace {
 inline void SetBodyEnsureNoTrailers(std::size_t trailerLen) {
   if (trailerLen != 0) [[unlikely]] {
@@ -233,14 +208,51 @@ inline void SetBodyEnsureNoTrailers(std::size_t trailerLen) {
 
 }  // namespace
 
-void HttpResponse::setBodyInternal(std::string_view newBody) {
+void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize,
+                                  bool setContentTypeIfPresent) {
   SetBodyEnsureNoTrailers(_trailerLen);
+
+  const auto newBodyLenCharVec = IntegralToCharVector(newBodySize);
+  const auto oldBodyLen = bodyLen();
+  if (newBodySize == 0) {
+    if (oldBodyLen != 0) {
+      char* contentTypeHeaderLinePtr = getContentTypeHeaderLinePtr(oldBodyLen);
+      assert(std::string_view(contentTypeHeaderLinePtr + http::CRLF.size(), http::ContentType.size()) ==
+             http::ContentType);
+      _data.setSize(static_cast<std::size_t>(contentTypeHeaderLinePtr - _data.data()) + http::CRLF.size());
+      _data.unchecked_append(http::CRLF);
+      setBodyStartPos(_data.size());
+    }
+  } else {
+    const auto newContentTypeHeaderSize = HeaderSize(http::ContentType.size(), contentTypeValue.size());
+    const auto newContentLengthHeaderSize = HeaderSize(http::ContentLength.size(), newBodyLenCharVec.size());
+    const auto neededNewSize = newContentTypeHeaderSize + newContentLengthHeaderSize + newBodySize;
+    if (oldBodyLen == 0) {
+      _data.ensureAvailableCapacityExponential(neededNewSize);
+      headerAddLine(http::ContentType, contentTypeValue);
+      headerAddLine(http::ContentLength, std::string_view(newBodyLenCharVec));
+    } else {
+      const auto oldContentTypeAndLengthSize =
+          bodyStartPos() - static_cast<std::size_t>(getContentTypeHeaderLinePtr(oldBodyLen) - _data.data()) -
+          http::DoubleCRLF.size();
+
+      if (neededNewSize > oldContentTypeAndLengthSize + oldBodyLen) {
+        _data.ensureAvailableCapacityExponential(neededNewSize - oldContentTypeAndLengthSize - oldBodyLen);
+      }
+      if (setContentTypeIfPresent) {
+        replaceHeaderValueNoRealloc(getContentTypeValuePtr(oldBodyLen), contentTypeValue);
+      }
+      replaceHeaderValueNoRealloc(getContentLengthValuePtr(oldBodyLen), std::string_view(newBodyLenCharVec));
+    }
+  }
+}
+
+void HttpResponse::setBodyInternal(std::string_view newBody) {
   const int64_t diff = static_cast<int64_t>(newBody.size()) - static_cast<int64_t>(internalBodyAndTrailersLen());
   if (diff > 0) {
     int64_t newBodyInternalPos = -1;
     if (newBody.data() > _data.data() && newBody.data() <= _data.data() + _data.size()) {
-      // the memory pointed by newBody is internal to HttpResponse. We need to save the position before
-      // realloc
+      // the memory pointed by newBody is internal to HttpResponse. We need to save the position before realloc
       newBodyInternalPos = newBody.data() - _data.data();
     }
     _data.ensureAvailableCapacityExponential(static_cast<std::size_t>(diff));
@@ -264,16 +276,15 @@ HttpResponse& HttpResponse::bodyAppend(std::string_view body, std::string_view c
   if (!body.empty()) {
     HttpPayload* pExternPayload = externPayloadPtr();
     if (pExternPayload == nullptr) {
-      if (isFileBody()) [[unlikely]] {
+      if (hasFileBody()) [[unlikely]] {
         throw std::logic_error("Cannot append to a captured file body");
       }
-      SetBodyEnsureNoTrailers(_trailerLen);
+      const bool setContentTypeIfPresent = !contentType.empty();
 
-      _data.ensureAvailableCapacityExponential(
-          body.size() +
-          HeaderSize(http::ContentType.size(), std::max(http::ContentTypeTextPlain.size(), contentType.size())));
-
-      appendBodyResetContentType(contentType, http::ContentTypeTextPlain);
+      if (contentType.empty()) {
+        contentType = http::ContentTypeTextPlain;
+      }
+      setBodyHeaders(contentType, internalBodyAndTrailersLen() + body.size(), setContentTypeIfPresent);
 
       _data.unchecked_append(body);
     } else {
@@ -290,6 +301,9 @@ HttpResponse& HttpResponse::file(File fileObj, std::size_t offset, std::size_t l
   if (!fileObj) {
     throw std::invalid_argument("file requires an opened file");
   }
+  if (_trailerLen != 0) [[unlikely]] {
+    throw std::logic_error("Cannot set body after the first trailer");
+  }
   const std::size_t fileSize = fileObj.size();
   if (fileSize == File::kError) {
     throw std::invalid_argument("file size is unknown");
@@ -301,14 +315,16 @@ HttpResponse& HttpResponse::file(File fileObj, std::size_t offset, std::size_t l
   if (fileSize < offset + resolvedLength) {
     throw std::invalid_argument("file length exceeds file size");
   }
-  if (_trailerLen != 0) {
-    throw std::logic_error("Cannot call file after adding trailers");
-  }
   if (contentType.empty()) {
     setHeader(http::ContentType, fileObj.detectedContentType());
   } else {
     setHeader(http::ContentType, contentType);
   }
+  // If file is empty, we emit on purpose Content-Length: 0 and no body.
+  // This is to distinguish an empty file response from a response with no body at all.
+  // This is valid per HTTP semantics.
+  setHeader(http::ContentLength, std::string_view(IntegralToCharVector(resolvedLength)));
+
   setBodyInternal(std::string_view());
   _payloadVariant.emplace<FilePayload>(std::move(fileObj), offset, resolvedLength);
   return *this;
@@ -394,11 +410,21 @@ HttpResponse& HttpResponse::headerAddLine(std::string_view key, std::string_view
 
   char* insertPtr = _data.data() + bodyStartPos() - http::DoubleCRLF.size();
 
-  std::memmove(insertPtr + headerLineSize, insertPtr, http::DoubleCRLF.size() + internalBodyAndTrailersLen());
+  const auto bodySz = bodyLen();
 
+  if (bodySz == 0) {
+    std::memmove(insertPtr + headerLineSize, insertPtr, http::DoubleCRLF.size());
+  } else {
+    // We want to keep Content-Type and Content-Length together with the body (we use this property for optimization)
+    // so we insert new headers before them. Of course, this code takes time, but it should be rare to add headers
+    // after setting the body, so we can consider this as a 'slow' path.
+    // Find the position of the Content-Type header going backwards from body start.
+    insertPtr = getContentTypeHeaderLinePtr(bodySz);
+    std::memmove(insertPtr + headerLineSize, insertPtr, static_cast<std::size_t>(_data.end() - insertPtr));
+  }
   WriteCRLFHeader(insertPtr, key, value);
-
   _data.addSize(headerLineSize);
+
   adjustBodyStart(static_cast<int64_t>(headerLineSize));
 
   return *this;
@@ -474,7 +500,7 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
     moveBodyInline = false;
 
     // erase body and trailers (but keep headers, especially Content-Length / Content-Type)
-    if (isInlineBody()) {
+    if (hasNoCapturedNorFileBody()) {
       _data.setSize(_data.size() - bodySz);
     } else {
       _payloadVariant = {};
@@ -485,7 +511,7 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
     // intact so ownership can be transferred by finalizeForHttp1. For inline
     // bodies we still erase the inline bytes.
     moveBodyInline = false;
-    if (isInlineBody()) {
+    if (hasNoCapturedNorFileBody()) {
       _data.setSize(_data.size() - bodySz - _trailerLen);
     }
     // A HEAD response must not have trailers
@@ -501,15 +527,11 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
   // HTTP/1.1 (RFC 7230 / RFC 9110) specifies that Connection: keep-alive is the default.
   // HTTP/1.0 is the opposite - Connection: close is the default.
   const bool addConnectionHeader = (close && version == http::HTTP_1_1) || (!close && version == http::HTTP_1_0);
-  const auto bodySzStr = IntegralToCharVector(bodySz);
   const bool hasHeaders = !headersFlatView().empty();
 
   std::size_t totalNewHeadersSize = 0;
   if (addConnectionHeader) {
     totalNewHeadersSize += HeaderSize(http::Connection.size(), connectionValue.size());
-  }
-  if (bodySz != 0) {
-    totalNewHeadersSize += HeaderSize(http::ContentLength.size(), bodySzStr.size());
   }
 
   std::bitset<HttpServerConfig::kMaxGlobalHeaders> globalHeadersToSkipBmp;
@@ -547,8 +569,9 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
 
   char* insertPtr = _data.data() + bodyStartPos() - http::DoubleCRLF.size();
 
-  // TODO: can we avoid memmove for very large bodies here?
-  std::memmove(insertPtr + totalNewHeadersSize, insertPtr, http::DoubleCRLF.size() + internalBodyAndTrailersLen());
+  if (totalNewHeadersSize != 0) {
+    std::memmove(insertPtr + totalNewHeadersSize, insertPtr, http::DoubleCRLF.size() + internalBodyAndTrailersLen());
+  }
 
   if (!globalHeaders.empty()) {
     if (writeAllGlobalHeaders) {
@@ -572,9 +595,6 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
 
   if (addConnectionHeader) {
     insertPtr = WriteCRLFHeader(insertPtr, http::Connection, connectionValue);
-  }
-  if (bodySz != 0) {
-    insertPtr = WriteCRLFHeader(insertPtr, http::ContentLength, std::string_view(bodySzStr));
   }
 
   _data.addSize(extraSize);
@@ -608,14 +628,13 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
 
 HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_view value) & {
   assert(http::IsValidHeaderName(name));
-  if (isFileBody()) {
+  if (hasFileBody()) {
     throw std::logic_error("Cannot add trailers when response body uses sendfile");
   }
   if (bodyLen() == 0) {
     throw std::logic_error("Trailers must be added after non empty body is set");
   }
 
-  // Trailer format: name ": " value CRLF
   const std::size_t lineSize = HeaderSize(name.size(), value.size());
 
   HttpPayload* pExternPayload = externPayloadPtr();
@@ -667,12 +686,40 @@ HttpResponse::FormattedHttp1Response HttpResponse::finalizeForHttp1(http::Versio
   return prepared;
 }
 
-void HttpResponse::appendBodyResetContentType(std::string_view givenContentType, std::string_view defaultContentType) {
-  assert(isInlineBody());
-  if (givenContentType.empty()) {
-    setHeader(http::ContentType, defaultContentType, OnlyIfNew::Yes);
+void HttpResponse::bodyAppendUpdateHeaders(std::string_view givenContentType, std::string_view defaultContentType,
+                                           std::size_t totalBodyLen) {
+  assert(_trailerLen == 0);
+  const auto bodySz = bodyLen();
+  const auto newBodyLenCharVec = IntegralToCharVector(totalBodyLen);
+  if (bodySz == 0) {
+    if (givenContentType.empty()) {
+      headerAddLine(http::ContentType, defaultContentType);
+    } else {
+      headerAddLine(http::ContentType, givenContentType);
+    }
+    headerAddLine(http::ContentLength, std::string_view(newBodyLenCharVec));
   } else {
-    setHeader(http::ContentType, givenContentType, OnlyIfNew::No);
+    if (!givenContentType.empty()) {
+      replaceHeaderValueNoRealloc(getContentTypeValuePtr(bodySz), givenContentType);
+    }
+    replaceHeaderValueNoRealloc(getContentLengthValuePtr(bodySz), std::string_view(newBodyLenCharVec));
+  }
+}
+
+void HttpResponse::replaceHeaderValueNoRealloc(char* first, std::string_view newValue) {
+  char* last = first;
+  while (*last != '\r') {
+    ++last;
+  }
+  const auto oldValueLen = static_cast<std::size_t>(last - first);
+  if (newValue.size() != oldValueLen) {
+    const auto diff = static_cast<int64_t>(newValue.size()) - static_cast<int64_t>(oldValueLen);
+    std::memmove(last + diff, last, static_cast<std::size_t>(_data.end() - last));
+    _data.addSize(static_cast<std::size_t>(diff));
+    adjustBodyStart(diff);
+  }
+  if (newValue.size() != 0) {
+    std::memcpy(first, newValue.data(), newValue.size());
   }
 }
 
