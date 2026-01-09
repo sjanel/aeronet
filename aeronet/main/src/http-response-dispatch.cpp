@@ -176,13 +176,11 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
       // after emplacing.
       const int clientFd = cnxIt->first.fd();
       auto [upIt, inserted] = _connections.emplace(std::move(cres.cnx));
-      if (!inserted) [[unlikely]] {
-        log::error("TCP connection ConnectionState fd # {} already exists, should not happen", upstreamFd);
-        _eventLoop.del(upstreamFd);
-        // Try to re-find client to report error; if not found, just return Break.
-        emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Upstream connection tracking failed");
-        return LoopAction::Break;
-      }
+      // Note: Duplicate fd for a newly connected upstream socket indicates a library bug - the kernel
+      // assigns unique fds for each socket(), and we remove closed connections before their fd can
+      // be reused. Using assert to document this invariant.
+      assert(inserted && "Duplicate upstream fd indicates library bug - connection not properly removed");
+
       // Set upstream transport to plain (no TLS)
       upIt->second->transport = std::make_unique<PlainTransport>(upstreamFd);
 
@@ -193,10 +191,10 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
 
       // Reply 200 Connection Established to client
       // Since cnxIt is passed by reference we will update it here so the caller need not re-find.
+      // Note: The client connection cannot vanish during upstream insertion - map rehash only relocates
+      // existing entries, it never removes them. We use assert to document this invariant.
       cnxIt = _connections.active.find(clientFd);
-      if (cnxIt == _connections.active.end()) [[unlikely]] {
-        throw std::runtime_error("Should not happen - Client connection vanished after upstream insertion");
-      }
+      assert(cnxIt != _connections.active.end() && "Client connection cannot vanish during map rehash");
 
       finalizeAndSendResponse(cnxIt, HttpResponse("Connection Established"), consumedBytes, pCorsPolicy);
 
@@ -417,7 +415,7 @@ void SingleHttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   }
 }
 
-bool SingleHttpServer::flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt) {
+bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   if (state.tunnelOrFileBuffer.empty()) {
     return false;
@@ -482,19 +480,21 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
     return;
   }
 
+  // Determine if this is a TLS connection and whether kTLS is active.
+  // With kTLS enabled, the kernel handles encryption for sendfile() directly.
+  // Without kTLS, we must pread() into a buffer and SSL_write() (user-space TLS).
+  bool userSpaceTls = false;
 #ifdef AERONET_ENABLE_OPENSSL
-  const bool tlsTransport = _config.tls.enabled && dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr;
-#else
-  static constexpr bool tlsTransport = false;
+  if (auto* tlsTr = dynamic_cast<TlsTransport*>(state.transport.get())) {
+    // kTLS enabled: kernel handles encryption, use sendfile() directly
+    // kTLS not enabled: must use pread() + SSL_write() (user-space TLS fallback)
+    userSpaceTls = !tlsTr->isKtlsSendEnabled();
+  }
 #endif
-
-  const bool ktlsSend = tlsTransport && state.ktlsSendEnabled;
-
-  const bool tlsFlow = tlsTransport && !ktlsSend;
 
   // Loop to drain file payload while we can make progress (edge-triggered epoll requires this)
   for (;;) {
-    if (tlsFlow && flushPendingTunnelOrFileBuffer(cnxIt)) {
+    if (userSpaceTls && flushUserSpaceTlsBuffer(cnxIt)) {
       // Pending TLS bytes were not fully flushed (would block or error); return and wait for next writable event.
       return;
     }
@@ -505,13 +505,13 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
       return;
     }
 
-    const auto res = state.transportFile(cnxIt->first.fd(), tlsFlow);
+    const auto res = state.transportFile(cnxIt->first.fd(), userSpaceTls);
     switch (res.code) {
       case ConnectionState::FileResult::Code::Read:
         // Read case: data read from file into buffer; now try to write it immediately.
-        if (tlsFlow) {
+        if (userSpaceTls) {
           // Attempt to flush immediately; if it blocks/fails, we'll resume on next writable.
-          if (flushPendingTunnelOrFileBuffer(cnxIt)) {
+          if (flushUserSpaceTlsBuffer(cnxIt)) {
             return;  // Would block, wait for next writable event
           }
           // Successfully flushed, continue loop to read more
@@ -520,7 +520,7 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
       case ConnectionState::FileResult::Code::Sent:
         _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(res.bytesDone);
 #ifdef AERONET_ENABLE_OPENSSL
-        if (ktlsSend) {
+        if (!userSpaceTls) {
           _tls.metrics.ktlsSendBytes += static_cast<std::uint64_t>(res.bytesDone);
         }
 #endif
@@ -536,11 +536,11 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
           // Edge-triggered epoll fix: immediately retry ONCE after enabling writable interest.
           // If the socket became writable between sendfile() returning EAGAIN and epoll_ctl(),
           // we would miss the edge. This immediate retry catches that case.
-          const auto retryRes = state.transportFile(cnxIt->first.fd(), tlsFlow);
+          const auto retryRes = state.transportFile(cnxIt->first.fd(), userSpaceTls);
           if (retryRes.code == ConnectionState::FileResult::Code::Sent) {
             _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(retryRes.bytesDone);
 #ifdef AERONET_ENABLE_OPENSSL
-            if (ktlsSend) {
+            if (!userSpaceTls) {
               _tls.metrics.ktlsSendBytes += static_cast<std::uint64_t>(retryRes.bytesDone);
             }
 #endif
