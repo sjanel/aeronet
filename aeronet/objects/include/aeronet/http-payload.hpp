@@ -168,6 +168,9 @@ class HttpPayload {
             _data = RawChars(capa);
           } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
                                std::is_same_v<T, std::vector<std::byte>>) {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+            val.reserve(val.size() + capa);
+#else
             auto neededCapa = val.size() + capa;
             if (val.capacity() < neededCapa) {
               const auto doubledCapa = val.capacity() * 2U;
@@ -176,6 +179,7 @@ class HttpPayload {
               }
               val.reserve(neededCapa);
             }
+#endif
           } else if constexpr (std::is_same_v<T, RawChars>) {
             val.ensureAvailableCapacityExponential(capa);
           } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {

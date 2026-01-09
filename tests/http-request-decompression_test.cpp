@@ -4,8 +4,10 @@
 #include <cstdint>
 #include <cstring>
 #include <ios>
+#include <numeric>
 #include <optional>
 #include <random>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -22,7 +24,9 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/test_server_fixture.hpp"

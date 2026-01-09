@@ -81,6 +81,11 @@ RawBytesBase<T, ViewType, SizeType> &RawBytesBase<T, ViewType, SizeType>::operat
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType>::~RawBytesBase() {
   std::free(_buf);
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+  _buf = nullptr;
+  _size = 0;
+  _capacity = 0;
+#endif
 }
 
 template <class T, class ViewType, class SizeType>
@@ -91,6 +96,7 @@ void RawBytesBase<T, ViewType, SizeType>::unchecked_append(const_pointer data, u
         throw std::overflow_error("capacity overflow");
       }
     }
+    assert(sz + _size <= _capacity);
     std::memcpy(_buf + _size, data, sz);
     _size += static_cast<size_type>(sz);
   }
@@ -117,7 +123,7 @@ void RawBytesBase<T, ViewType, SizeType>::append(ViewType data) {
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::push_back(value_type byte) {
   ensureAvailableCapacityExponential(1U);
-  _buf[_size++] = byte;
+  unchecked_push_back(byte);
 }
 
 template <class T, class ViewType, class SizeType>
@@ -181,6 +187,9 @@ void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacity(uint64_t avail
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacityExponential(uint64_t availableCapacity) {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+  ensureAvailableCapacity(availableCapacity);
+#else
   const uintmax_t required = availableCapacity + _size;
 
   if (_capacity < required) {
@@ -197,6 +206,7 @@ void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacityExponential(uin
     // Safe to cast now
     reallocUp(static_cast<size_type>(target));
   }
+#endif
 }
 
 template <class T, class ViewType, class SizeType>

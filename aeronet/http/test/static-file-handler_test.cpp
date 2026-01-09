@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <format>
@@ -11,6 +12,7 @@
 #include <ios>
 #include <random>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -27,8 +29,8 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/static-file-config.hpp"
-#include "aeronet/string-trim.hpp"
 #include "aeronet/temp-file.hpp"
+#include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
 #include "aeronet/vector.hpp"
 
@@ -686,9 +688,9 @@ TEST_F(StaticFileHandlerTest, IfRangeHonorsEtagsAndDates) {
               }
             }
 
-            auto makeHex = [](unsigned long long v) {
+            auto makeHex = [](unsigned long long val) {
               std::ostringstream ss;
-              ss << std::hex << std::nouppercase << v;
+              ss << std::hex << std::nouppercase << val;
               return ss.str();
             };
 
