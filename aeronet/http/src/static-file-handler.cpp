@@ -293,7 +293,7 @@ struct DirectoryListingResult {
 void AddLastModifiedHeader(HttpResponse& resp, SysTimePoint tp) {
   std::array<char, kRFC7231DateStrLen> buf;
   auto* end = TimeToStringRFC7231(tp, buf.data());
-  assert(static_cast<std::size_t>(end - buf.data()) == kRFC7231DateStrLen);
+  assert(std::cmp_equal(end - buf.data(), kRFC7231DateStrLen));
   resp.headerAddLine(http::LastModified, std::string_view(buf.data(), end));
 }
 

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <iterator>
 #include <memory>
@@ -30,11 +31,13 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 
@@ -283,6 +286,12 @@ TEST_F(HttpResponseTest, AppendBodyAfterTrailersShouldThrow) {
   EXPECT_THROW(resp.bodyInlineAppend(1U, kAppendZeroOrOneABytes), std::logic_error);
 }
 
+TEST_F(HttpResponseTest, EmptyContentTypeIsDisallowed) {
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_THROW(resp.body("some body", ""), std::invalid_argument);
+  EXPECT_NO_THROW(resp.body("", ""));  // empty body with empty content type is allowed
+}
+
 TEST_F(HttpResponseTest, AppendBodyFromNonEmpty) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body("initial body ");
@@ -378,7 +387,7 @@ TEST_F(HttpResponseTest, AppendBodyInlineCstr) {
 
 TEST_F(HttpResponseTest, AppendBodyBytesSpan) {
   // span of bytes
-  const std::vector<std::byte> vec = {std::byte{'X'}, std::byte{'Y'}};
+  static constexpr std::byte vec[]{std::byte{'X'}, std::byte{'Y'}};
   HttpResponse resp(http::StatusCodeOK);
   resp.bodyAppend(std::span<const std::byte>(vec));
   resp.bodyAppend(std::span<const std::byte>{}, "text/another");
@@ -388,14 +397,14 @@ TEST_F(HttpResponseTest, AppendBodyBytesSpan) {
 }
 
 TEST_F(HttpResponseTest, AppendBodyRvalueSpanBytesDefaultContentType) {
-  const std::vector<std::byte> vec = {std::byte{'A'}, std::byte{'B'}, std::byte{'C'}};
+  static constexpr std::byte vec[]{std::byte{'A'}, std::byte{'B'}, std::byte{'C'}};
   auto resp = HttpResponse(http::StatusCodeOK).bodyAppend(std::span<const std::byte>(vec));
   EXPECT_EQ(resp.body(), "ABC");
   EXPECT_EQ(resp.headerValue(http::ContentType), "application/octet-stream");
 }
 
 TEST_F(HttpResponseTest, AppendBodyRvalueSpanBytesContentType) {
-  const std::vector<std::byte> vec = {std::byte{'A'}, std::byte{'B'}, std::byte{'C'}};
+  static constexpr std::byte vec[]{std::byte{'A'}, std::byte{'B'}, std::byte{'C'}};
   auto resp = HttpResponse(http::StatusCodeOK)
                   .bodyAppend(std::span<const std::byte>(vec))
                   .bodyAppend(std::span<const std::byte>(vec), "text/type")
@@ -414,7 +423,7 @@ TEST_F(HttpResponseTest, AppendBodyMultipleFlavorsAndRvalueChaining) {
   resp.bodyAppend(std::string_view("middle "));
 
   // append with span
-  const std::vector<std::byte> tail = {std::byte{'t'}, std::byte{'e'}, std::byte{'r'}};
+  static constexpr std::byte tail[]{std::byte{'t'}, std::byte{'e'}, std::byte{'r'}};
   resp.bodyAppend(std::span<const std::byte>(tail));
 
   EXPECT_EQ(resp.body(), "start middle ter");
@@ -1247,6 +1256,23 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
   EXPECT_TRUE(full.ends_with("\r\n\r\nData"));
 }
 
+TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
+  HttpResponse resp(http::StatusCodeOK, "OK");
+  resp.header("X-Custom", "Value");
+  resp.body("BodyContent");
+  resp.trailerAddLine("X-Trailer", "TrailerValue");
+
+  auto prepared = finalizePrepared(std::move(resp), ConcatenatedHeaders{}, false, true);
+  std::string all(prepared.data.firstBuffer());
+  EXPECT_TRUE(all.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Custom", "Value")));
+  EXPECT_TRUE(all.contains("\r\n\r\nBodyContent"));
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Trailer", "TrailerValue")));
+  EXPECT_FALSE(all.contains(MakeHttp1HeaderLine(http::Connection, http::close)));
+  EXPECT_FALSE(all.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
+  EXPECT_TRUE(all.contains(kExpectedDateRaw));
+}
+
 TEST_F(HttpResponseTest, GlobalHeadersShouldNotOverrideUserHeaders) {
   HttpResponse resp(http::StatusCodeOK, "OK");
   resp.header("X-Global", "UserValue");
@@ -1728,14 +1754,14 @@ TEST_F(HttpResponseTest, ALotOfGlobalHeaders) {
 }
 
 TEST_F(HttpResponseTest, FuzzStructuralValidation) {
-  static constexpr int kNbHttpResponses = 300;
+  static constexpr int kNbHttpResponses = 500;
   static constexpr int kNbOperationsPerHttpResponse = 50;
 
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, "some data");
 
   std::mt19937 rng(12345);
-  std::uniform_int_distribution<int> opDist(0, 8);
+  std::uniform_int_distribution<int> opDist(0, 9);
   std::uniform_int_distribution<int> smallLen(0, 12);
   std::uniform_int_distribution<int> midLen(0, 24);
   std::uniform_int_distribution<int> globalHeaderCountDist(0, 32);
@@ -1795,7 +1821,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
         EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), std::to_string(lastBody.size()));
       } else {
         EXPECT_EQ(resp.body(), lastBody);
-        if (resp.body().size() != 0) {
+        if (!resp.body().empty()) {
           EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/plain");
           EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), std::to_string(lastBody.size()));
         } else {
@@ -1891,6 +1917,17 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
           } else {
             // Once a trailer was set, body cannot be changed
             EXPECT_THROW(resp.bodyInlineSet(1UL, kAppendZeroOrOneA), std::logic_error);
+          }
+          break;
+        }
+        case 9: {  // body append string
+          if (!resp.hasFileBody() && lastTrailerKey.empty()) {
+            std::string toAppend = makeValue(static_cast<int>(midLen(rng)));
+            resp.bodyAppend(toAppend);
+            lastBody.append(toAppend);
+          } else {
+            // Once a trailer was set, body cannot be changed
+            EXPECT_THROW(resp.bodyAppend("data"), std::logic_error);
           }
           break;
         }

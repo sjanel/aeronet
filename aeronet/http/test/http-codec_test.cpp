@@ -2,16 +2,23 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
+#include <memory>
+
 #include "aeronet/compression-config.hpp"
 #include "aeronet/connection-state.hpp"
+#include "aeronet/encoding.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-status-code.hpp"
 
 #ifdef AERONET_ENABLE_BROTLI
 #include "aeronet/brotli-encoder.hpp"
 #endif
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-encoder.hpp"
+#include "aeronet/zlib-stream-raii.hpp"
 #endif
 #ifdef AERONET_ENABLE_ZSTD
 #include "aeronet/zstd-encoder.hpp"
@@ -121,7 +128,7 @@ TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
 
 #ifdef AERONET_ENABLE_ZLIB
   EXPECT_FALSE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
-  if (resp.headerValueOrEmpty(http::Vary).find("accept-encoding") == std::string::npos) {
+  if (!resp.headerValueOrEmpty(http::Vary).contains("accept-encoding")) {
     ADD_FAILURE() << "Vary header missing; response headers: " << resp.headersFlatView();
   }
 #else
