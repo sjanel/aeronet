@@ -189,7 +189,7 @@ void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacityExponential(uin
 
     if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
       static constexpr uintmax_t kMaxCapacity = static_cast<uintmax_t>(std::numeric_limits<size_type>::max());
-      if (kMaxCapacity < target) {
+      if (kMaxCapacity < target) [[unlikely]] {
         throw std::overflow_error("capacity overflow");
       }
     }

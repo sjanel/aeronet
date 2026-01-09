@@ -23,6 +23,7 @@
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/stringconv.hpp"
@@ -219,17 +220,17 @@ class HttpResponse {
   [[nodiscard]] HeadersView headers() const noexcept { return HeadersView(headersFlatView()); }
 
   // Get a view of the current body stored in this HttpResponse.
-  // If the body is not present, it returns an empty view.
+  // The returned view will be empty if no body nor file is present.
   [[nodiscard]] std::string_view body() const noexcept;
-
-  // Check if this HttpResponse has a body.
-  [[nodiscard]] bool hasBody() const noexcept { return bodyLen() > 0; }
 
   // Get the current file stored in this HttpResponse, or nullptr if no file is set.
   [[nodiscard]] const File* file() const noexcept;
 
+  // Check if this HttpResponse has a captured body.
+  [[nodiscard]] bool hasCapturedBody() const noexcept { return _payloadVariant.index() == 1; }
+
   // Check if this HttpResponse has a file payload.
-  [[nodiscard]] bool hasFile() const noexcept { return isFileBody(); }
+  [[nodiscard]] bool hasFileBody() const noexcept { return _payloadVariant.index() == 2; }
 
   // Retrieves the value of the first occurrence of the given trailer key (case-insensitive search per RFC 7230).
   // If the trailer is not found, returns std::nullopt.
@@ -406,12 +407,9 @@ class HttpResponse {
   // Empty body is allowed - this will remove any existing body.
   // The whole buffer is copied internally in the HttpResponse. If the body is large, prefer the capture by value of
   // body() overloads to avoid a copy (and possibly an allocation).
-  // Body referencing internal memory of this HttpResponse is allowed.
-  // Example:
-  //   HttpResponse resp(404, "Not Found");
-  //   resp.body(resp.reason()); // OK
+  // Body referencing internal memory of this HttpResponse is undefined behavior.
   HttpResponse& body(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain) & {
-    setContentTypeHeader(contentType, body.empty());
+    setBodyHeaders(contentType, body.size());
     setBodyInternal(body);
     return *this;
   }
@@ -420,12 +418,9 @@ class HttpResponse {
   // Empty body is allowed - this will remove any existing body.
   // The whole buffer is copied internally in the HttpResponse. If the body is large, prefer the capture by value of
   // body() overloads to avoid a copy (and possibly an allocation).
-  // Body referencing internal memory of this HttpResponse is allowed.
-  // Example:
-  //   HttpResponse resp(404, "Not Found");
-  //   resp.body(resp.reason()); // OK
+  // Body referencing internal memory of this HttpResponse is undefined behavior.
   HttpResponse&& body(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain) && {
-    setContentTypeHeader(contentType, body.empty());
+    setBodyHeaders(contentType, body.size());
     setBodyInternal(body);
     return std::move(*this);
   }
@@ -434,10 +429,7 @@ class HttpResponse {
   // Empty body is allowed - this will remove any existing body.
   // The whole buffer is copied internally in the HttpResponse. If the body is large, prefer the capture by value of
   // body() overloads to avoid a copy (and possibly an allocation).
-  // Body referencing internal memory of this HttpResponse is allowed.
-  // Example:
-  //   HttpResponse resp(404, "Not Found");
-  //   resp.body(resp.reason()); // OK
+  // Body referencing internal memory of this HttpResponse is undefined behavior.
   HttpResponse& body(std::span<const std::byte> body,
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
     return this->body(std::string_view{reinterpret_cast<const char*>(body.data()), body.size()}, contentType);
@@ -447,10 +439,7 @@ class HttpResponse {
   // Empty body is allowed - this will remove any existing body.
   // The whole buffer is copied internally in the HttpResponse. If the body is large, prefer the capture by value of
   // body() overloads to avoid a copy (and possibly an allocation).
-  // Body referencing internal memory of this HttpResponse is allowed.
-  // Example:
-  //   HttpResponse resp(404, "Not Found");
-  //   resp.body(resp.reason()); // OK
+  // Body referencing internal memory of this HttpResponse is undefined behavior.
   HttpResponse&& body(std::span<const std::byte> body,
                       std::string_view contentType = http::ContentTypeApplicationOctetStream) && {
     return std::move(
@@ -461,10 +450,7 @@ class HttpResponse {
   // Empty body is allowed (Both "" and nullptr will be considered as empty body).
   // The whole buffer is copied internally in the HttpResponse. If the body is large, prefer the capture by value of
   // body() overloads to avoid a copy (and possibly an allocation).
-  // Body referencing internal memory of this HttpResponse is allowed.
-  // Example:
-  //   HttpResponse resp(404, "Not Found");
-  //   resp.body(resp.reason()); // OK
+  // Body referencing internal memory of this HttpResponse is undefined behavior.
   HttpResponse& body(const char* body, std::string_view contentType = http::ContentTypeTextPlain) & {
     return this->body(body == nullptr ? std::string_view() : std::string_view(body), contentType);
   }
@@ -473,10 +459,7 @@ class HttpResponse {
   // Empty body is allowed - this will remove any existing body.
   // The whole buffer is copied internally in the HttpResponse. If the body is large, prefer the capture by value of
   // body() overloads to avoid a copy (and possibly an allocation).
-  // Body referencing internal memory of this HttpResponse is allowed.
-  // Example:
-  //   HttpResponse resp(404, "Not Found");
-  //   resp.body(resp.reason()); // OK
+  // Body referencing internal memory of this HttpResponse is undefined behavior.
   HttpResponse&& body(const char* body, std::string_view contentType = http::ContentTypeTextPlain) && {
     return std::move(this->body(body, contentType));
   }
@@ -485,7 +468,7 @@ class HttpResponse {
   // Empty body is allowed - this will remove any existing body.
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::string body, std::string_view contentType = http::ContentTypeTextPlain) & {
-    setContentTypeHeader(contentType, body.empty());
+    setBodyHeaders(contentType, body.size());
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body));
     return *this;
@@ -502,7 +485,7 @@ class HttpResponse {
   // Empty body is allowed - this will remove any existing body.
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::vector<char> body, std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
-    setContentTypeHeader(contentType, body.empty());
+    setBodyHeaders(contentType, body.size());
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body));
     return *this;
@@ -521,7 +504,7 @@ class HttpResponse {
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::vector<std::byte> body,
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
-    setContentTypeHeader(contentType, body.empty());
+    setBodyHeaders(contentType, body.size());
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body));
     return *this;
@@ -540,7 +523,7 @@ class HttpResponse {
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::unique_ptr<char[]> body, std::size_t size,
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
-    setContentTypeHeader(contentType, size == 0);
+    setBodyHeaders(contentType, size);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body), size);
     return *this;
@@ -559,7 +542,7 @@ class HttpResponse {
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::unique_ptr<std::byte[]> body, std::size_t size,
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
-    setContentTypeHeader(contentType, size == 0);
+    setBodyHeaders(contentType, size);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body), size);
     return *this;
@@ -618,7 +601,7 @@ class HttpResponse {
   // Appends directly inside the body up to 'maxLen' bytes of data.
   // 'writer' provides as a single argument the start of the buffer where to append body data and
   // should return the actual number of bytes written (should be <= 'maxLen').
-  // If body was previously captured, this will throw std::logic_error.
+  // If body was previously captured (including files), this will throw std::logic_error.
   // It is undefined behavior to write more than 'maxLen' bytes of data into the writer (for one call).
   // This is the most efficient way to set the inline body as it avoids copies and limits allocations.
   // Growing of the internal buffer is exponential. You can call this method several times (it will append data to
@@ -628,7 +611,7 @@ class HttpResponse {
   // Otherwise, initializes content type to 'application/octet-stream' if content type is not already set.
   template <class Writer>
   HttpResponse& bodyInlineAppend(std::size_t maxLen, Writer&& writer, std::string_view contentType = {}) & {
-    if (!isInlineBody()) [[unlikely]] {
+    if (!hasNoCapturedNorFileBody()) [[unlikely]] {
       throw std::logic_error("bodyInlineAppend can only be used with inline body responses");
     }
     if (_trailerLen != 0) [[unlikely]] {
@@ -638,25 +621,52 @@ class HttpResponse {
     using W = std::remove_reference_t<Writer>;
     // Accept writers callable as either: std::size_t(char*) or std::size_t(std::byte*)
     // and select a sensible default Content-Type based on the pointer type.
-    std::size_t written;
+    std::string_view defaultContentType;
     if constexpr (std::is_invocable_r_v<std::size_t, W, std::byte*>) {
-      prepareAppendToInlineBody(maxLen, http::ContentTypeApplicationOctetStream, contentType);
-      written = static_cast<std::size_t>(
-          std::invoke(std::forward<Writer>(writer), reinterpret_cast<std::byte*>(_data.data() + _data.size())));
+      defaultContentType = http::ContentTypeApplicationOctetStream;
     } else if constexpr (std::is_invocable_r_v<std::size_t, W, char*>) {
-      prepareAppendToInlineBody(maxLen, http::ContentTypeTextPlain, contentType);
-      written = static_cast<std::size_t>(std::invoke(std::forward<Writer>(writer), _data.data() + _data.size()));
+      defaultContentType = http::ContentTypeTextPlain;
     } else {
       static_assert(false, "Writer must be callable with either (char*) or (std::byte*) and return std::size_t");
     }
+
+    const auto contentTypeValueSize = contentType.empty() ? defaultContentType.size() : contentType.size();
+    const auto contentTypeHeaderSize = HeaderSize(http::ContentType.size(), contentTypeValueSize);
+    const auto maxBodyLen = internalBodyAndTrailersLen() + maxLen;
+    const auto contentLengthHeaderSize =
+        HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(maxBodyLen)));
+
+    _data.ensureAvailableCapacityExponential(maxLen + contentTypeHeaderSize + contentLengthHeaderSize);
+
+    bodyAppendUpdateHeaders(contentType, defaultContentType, maxBodyLen);
+
+    std::size_t written;
+    if constexpr (std::is_invocable_r_v<std::size_t, W, std::byte*>) {
+      written = static_cast<std::size_t>(
+          std::invoke(std::forward<Writer>(writer), reinterpret_cast<std::byte*>(_data.data() + _data.size())));
+    } else if constexpr (std::is_invocable_r_v<std::size_t, W, char*>) {
+      written = static_cast<std::size_t>(std::invoke(std::forward<Writer>(writer), _data.data() + _data.size()));
+    }
+
     if (written == 0) {
       // No data written, remove the content-type header we just added if there is no body
       if (bodyStartPos() == _data.size()) {
-        eraseHeader(http::ContentType);
+        // erase both content-length and content-type headers
+        _data.setSize(_data.size() - contentLengthHeaderSize - contentTypeHeaderSize - http::CRLF.size());
+        _data.unchecked_append(http::CRLF);
+        adjustBodyStart(-static_cast<int64_t>(contentLengthHeaderSize) - static_cast<int64_t>(contentTypeHeaderSize));
+      } else {
+        // we need to restore the previous content-length value
+        const auto newBodyLenCharVec = IntegralToCharVector(maxBodyLen - (maxLen - written));
+        replaceHeaderValueNoRealloc(getContentLengthValuePtr(maxBodyLen), std::string_view(newBodyLenCharVec));
       }
     } else {
       _data.addSize(written);
+
+      const auto newBodyLenCharVec = IntegralToCharVector(maxBodyLen - (maxLen - written));
+      replaceHeaderValueNoRealloc(getContentLengthValuePtr(maxBodyLen), std::string_view(newBodyLenCharVec));
     }
+
     return *this;
   }
 
@@ -696,14 +706,18 @@ class HttpResponse {
     } else {
       static_assert(false, "Writer must be callable with either (char*) or (std::byte*) and return std::size_t");
     }
+    if (contentType.empty()) {
+      contentType = defaultContentType;
+    }
+    const auto contentTypeValueSize = contentType.size();
+    const auto contentTypeHeaderSize = HeaderSize(http::ContentType.size(), contentTypeValueSize);
+    const auto contentLengthHeaderSize =
+        HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(maxLen)));
 
     // Reserve exact capacity (no exponential growth)
-    const auto contentTypeValueSize = contentType.empty() ? defaultContentType.size() : contentType.size();
-    _data.ensureAvailableCapacity(bodyStartPos() + HeaderSize(http::ContentType.size(), contentTypeValueSize) + maxLen);
+    _data.reserve(bodyStartPos() + contentTypeHeaderSize + contentLengthHeaderSize + maxLen);
 
-    // Set/replace content type header
-    const auto activeContentType = contentType.empty() ? defaultContentType : contentType;
-    setHeader(http::ContentType, activeContentType, OnlyIfNew::No);
+    bodyAppendUpdateHeaders(contentType, defaultContentType, maxLen);
 
     // Call writer at body start position
     std::size_t written;
@@ -714,12 +728,19 @@ class HttpResponse {
       written = static_cast<std::size_t>(std::invoke(std::forward<Writer>(writer), _data.data() + bodyStartPos()));
     }
 
-    // Set final size
-    _data.setSize(bodyStartPos() + written);
-
     // If nothing was written, remove the content-type header
     if (written == 0) {
-      eraseHeader(http::ContentType);
+      const auto oldBodyLen = internalBodyAndTrailersLen();
+      // erase both content-length and content-type headers
+      _data.setSize(_data.size() - contentLengthHeaderSize - contentTypeHeaderSize - http::CRLF.size() - oldBodyLen);
+      _data.unchecked_append(http::CRLF);
+      adjustBodyStart(-static_cast<int64_t>(contentLengthHeaderSize) - static_cast<int64_t>(contentTypeHeaderSize));
+    } else {
+      // Set final size
+      _data.setSize(bodyStartPos() + written);
+
+      const auto newBodyLenCharVec = IntegralToCharVector(written);
+      replaceHeaderValueNoRealloc(getContentLengthValuePtr(maxLen), std::string_view(newBodyLenCharVec));
     }
 
     // Clear any payload variant
@@ -862,6 +883,12 @@ class HttpResponse {
     return {data.view().end() - _trailerLen, data.view().end()};
   }
 
+  // Check if this HttpResponse has an inline body stored in its internal buffer.
+  // Can be empty.
+  [[nodiscard]] bool hasNoCapturedNorFileBody() const noexcept { return _payloadVariant.index() == 0; }
+
+  // Get the length of the current body stored in this HttpResponse, should it be inlined or captured.
+  // It will return 0 if no body or a file is present.
   [[nodiscard]] std::size_t bodyLen() const noexcept;
 
   [[nodiscard]] std::size_t internalBodyAndTrailersLen() const noexcept { return _data.size() - bodyStartPos(); }
@@ -872,9 +899,7 @@ class HttpResponse {
 
   void setHeader(std::string_view key, std::string_view value, OnlyIfNew onlyIfNew = OnlyIfNew::No);
 
-  void setContentTypeHeader(std::string_view contentTypeValue, bool isEmpty);
-
-  void eraseHeader(std::string_view key);
+  void setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize, bool setContentTypeIfPresent = true);
 
   // Convert all header names to lower-case (for HTTP/2).
   void makeAllHeaderNamesLowerCase();
@@ -916,10 +941,8 @@ class HttpResponse {
     return std::get_if<FilePayload>(&_payloadVariant);
   }
 
-  [[nodiscard]] bool isInlineBody() const noexcept { return _payloadVariant.index() == 0; }
-  [[nodiscard]] bool isFileBody() const noexcept { return _payloadVariant.index() == 2; }
-
-  void appendBodyResetContentType(std::string_view givenContentType, std::string_view defaultContentType);
+  void bodyAppendUpdateHeaders(std::string_view givenContentType, std::string_view defaultContentType,
+                               std::size_t totalBodyLen);
 
   // header pos is stored in lower 16 bits, body pos in upper 48 bits
   static constexpr unsigned kHeaderPosNbBits = 16U;
@@ -955,12 +978,32 @@ class HttpResponse {
     setBodyStartPos(static_cast<std::uint64_t>(next));
   }
 
-  void prepareAppendToInlineBody(std::size_t maxLen, std::string_view defaultContentType,
-                                 std::string_view contentType) {
-    const auto contentTypeValueSize = contentType.empty() ? defaultContentType.size() : contentType.size();
-    _data.ensureAvailableCapacityExponential(maxLen + HeaderSize(http::ContentType.size(), contentTypeValueSize));
-    appendBodyResetContentType(contentType, defaultContentType);
+  char* getContentLengthHeaderLinePtr(std::size_t bodyLen) {
+    const auto bodyStart = bodyStartPos();
+    const auto contentLengthHeaderLineSize =
+        HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(bodyLen)));
+    return _data.data() + bodyStart - http::DoubleCRLF.size() - contentLengthHeaderLineSize;
   }
+
+  char* getContentLengthValuePtr(std::size_t bodyLen) {
+    return getContentLengthHeaderLinePtr(bodyLen) + http::CRLF.size() + http::ContentLength.size() +
+           http::HeaderSep.size();
+  }
+
+  // Returns a pointer to the beginning of the Content-Type header line (starting on CRLF before the header name).
+  char* getContentTypeHeaderLinePtr(std::size_t bodyLen) {
+    char* ptr = getContentLengthHeaderLinePtr(bodyLen) - HeaderSize(http::ContentType.size(), 0U);
+    while (*ptr != '\r') {
+      --ptr;
+    }
+    return ptr;
+  }
+
+  char* getContentTypeValuePtr(std::size_t bodyLen) {
+    return getContentTypeHeaderLinePtr(bodyLen) + http::CRLF.size() + http::ContentType.size() + http::HeaderSep.size();
+  }
+
+  void replaceHeaderValueNoRealloc(char* first, std::string_view newValue);
 
   RawChars _data;
   // Bitmap layout: [48 bits bodyStartPos][16 bits headersStartPos]

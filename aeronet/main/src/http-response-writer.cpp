@@ -109,7 +109,7 @@ void HttpResponseWriter::ensureHeadersSent() {
   // For HEAD requests never emit chunked framing; force zero Content-Length if not provided.
   if (chunked()) {
     _fixedResponse.headerAddLine(http::TransferEncoding, "chunked");
-  } else if (!_fixedResponse.hasFile() && _declaredLength == 0) {
+  } else if (!_fixedResponse.hasFileBody() && _declaredLength == 0) {
     _fixedResponse.headerAddLine(http::ContentLength, "0");
   }
 
@@ -198,7 +198,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
               _state == State::Failed ? "writer-failed" : "already-ended");
     return false;
   }
-  if (_fixedResponse.hasFile()) {
+  if (_fixedResponse.hasFileBody()) {
     log::warn("Streaming: write ignored fd # {} size={} reason=sendfile-active", _fd, data.size());
     return false;
   }
@@ -242,7 +242,7 @@ void HttpResponseWriter::trailerAddLine(std::string_view name, std::string_view 
               _state == State::Failed ? "writer-failed" : "already-ended");
     return;
   }
-  if (_fixedResponse.hasFile()) {
+  if (_fixedResponse.hasFileBody()) {
     log::warn("Streaming: trailerAddLine ignored fd # {} name={} reason=sendfile-active", _fd, name);
     return;
   }
@@ -273,7 +273,7 @@ void HttpResponseWriter::end() {
                _state == State::Failed ? "writer-failed" : "already-ended");
     return;
   }
-  if (_fixedResponse.hasFile()) {
+  if (_fixedResponse.hasFileBody()) {
     ensureHeadersSent();
     if (_state != State::Failed) {
       _state = State::Ended;

@@ -65,24 +65,23 @@ constexpr std::size_t kAsyncLargePayload = 16 << 20;
 }  // namespace
 
 TEST(HttpRouting, BasicPathDispatch) {
-  ts.router().setPath(http::Method::GET, "/hello",
-                      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("world"); });
+  ts.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&) { return HttpResponse("world"); });
   ts.router().setPath(http::Method::GET | http::Method::POST, "/multi", [](const HttpRequest& req) {
-    return HttpResponse(http::StatusCodeOK, "OK").body(std::string(http::MethodToStr(req.method())) + "!");
+    return HttpResponse(std::string(http::MethodToStr(req.method())) + "!");
   });
 
   test::RequestOptions getHello;
   getHello.method = "GET";
   getHello.target = "/hello";
   auto resp1 = test::requestOrThrow(ts.port(), getHello);
-  EXPECT_TRUE(resp1.contains("200 OK"));
+  EXPECT_TRUE(resp1.contains("HTTP/1.1 200"));
   EXPECT_TRUE(resp1.contains("world"));
   test::RequestOptions postHello;
   postHello.method = "POST";
   postHello.target = "/hello";
   postHello.headers.emplace_back("Content-Length", "0");
   auto resp2 = test::requestOrThrow(ts.port(), postHello);
-  EXPECT_TRUE(resp2.contains("405 Method Not Allowed"));
+  EXPECT_TRUE(resp2.contains("HTTP/1.1 405"));
   test::RequestOptions getMissing;
   getMissing.method = "GET";
   getMissing.target = "/missing";
@@ -95,7 +94,7 @@ TEST(HttpRouting, BasicPathDispatch) {
   postMulti.target = "/multi";
   postMulti.headers.emplace_back("Content-Length", "0");
   auto resp4 = test::requestOrThrow(ts.port(), postMulti);
-  EXPECT_TRUE(resp4.contains("200 OK"));
+  EXPECT_TRUE(resp4.contains("HTTP/1.1 200"));
   EXPECT_TRUE(resp4.contains("POST!"));
 }
 

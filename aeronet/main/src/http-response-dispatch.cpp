@@ -80,8 +80,8 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
             return LoopAction::Continue;
           }
           case CorsPolicy::PreflightResult::Status::MethodDenied: {
-            HttpResponse resp(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
-            resp.body(resp.reason());
+            HttpResponse resp(http::StatusCodeMethodNotAllowed);
+            resp.body(http::ReasonMethodNotAllowed);
             const auto allowedForPath = buildAllowHeader(routeMethods);
             if (!allowedForPath.empty()) {
               resp.header(http::Allow, allowedForPath);
@@ -121,14 +121,14 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
         // Reconstruct the request head from HttpRequest
         std::string_view reqDataEchoed(cnxIt->second->inBuffer.data(), consumedBytes);
 
-        HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
+        HttpResponse resp(http::StatusCodeOK);
         resp.body(reqDataEchoed, http::ContentTypeMessageHttp);
         finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
         return LoopAction::Continue;
       }
       // TRACE disabled -> Method Not Allowed
-      HttpResponse resp(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
-      resp.body(resp.reason());
+      HttpResponse resp(http::StatusCodeMethodNotAllowed);
+      resp.body(http::ReasonMethodNotAllowed);
       finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
       return LoopAction::Continue;
     }
