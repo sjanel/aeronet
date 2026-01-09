@@ -140,8 +140,7 @@ struct ConnectionState {
   CloseMode closeMode{CloseMode::None};
   bool waitingWritable{false};  // EPOLLOUT registered
   bool tlsEstablished{false};   // true once TLS handshake completed (if TLS enabled)
-  bool ktlsSendEnabled{false};
-  bool waitingForBody{false};  // true when awaiting missing body bytes (bodyReadTimeout enforcement)
+  bool waitingForBody{false};   // true when awaiting missing body bytes (bodyReadTimeout enforcement)
   // Tunnel state: true when peerFd != -1. Use accessor isTunneling() to query.
   // True when a non-blocking connect() was issued and completion is pending (EPOLLOUT will signal).
   bool connectPending{false};

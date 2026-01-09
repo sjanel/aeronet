@@ -32,7 +32,11 @@ class TlsTransport final : public ITransport {
 
   void logErrorIfAny() const noexcept;
 
+  /// Attempt to enable kTLS send offload. Call once after handshake completion.
   KtlsEnableResult enableKtlsSend();
+
+  /// Returns true if kTLS send was successfully enabled (kernel handles encryption for sendfile).
+  [[nodiscard]] bool isKtlsSendEnabled() const noexcept { return _ktlsResult == KtlsEnableResult::Enabled; }
 
  private:
   TransportHint handshake(TransportHint want);
