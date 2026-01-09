@@ -172,15 +172,10 @@ void SingleHttpServer::acceptNewConnections() {
     }
 
     auto [cnxIt, inserted] = _connections.emplace(std::move(cnx));
-    if (!inserted) [[unlikely]] {
-      // This should not happen, if it does, it's probably a bug in the library or a very weird usage of
-      // SingleHttpServer.
-      log::error("Internal error: accepted connection fd # {} already present in connection map", cnxFd);
-      // Close the newly accepted connection immediately to avoid fd leak.
-      _eventLoop.del(cnxFd);
-      _telemetry.counterAdd("aeronet.connections.errors.duplicate_accept", 1UL);
-      continue;
-    }
+    // Note: Duplicate fd on accept indicates a library bug - the kernel assigns unique fds for each
+    // accept(), and we remove closed connections from the map before their fd can be reused.
+    // Using assert to document this invariant rather than silently handling an impossible case.
+    assert(inserted && "Duplicate fd on accept indicates library bug - connection not properly removed");
 
     // Track new connection acceptance
     _telemetry.counterAdd("aeronet.connections.accepted", 1UL);
@@ -529,6 +524,14 @@ void SingleHttpServer::handleReadableClient(int fd) {
       break;
     }
     if (cnx.inBuffer.size() > _config.maxHeaderBytes + _config.maxBodyBytes) {
+      // Distinguish header-only overflow (431) from payload/body overflow (413).
+      // If we have not yet parsed the header (no DoubleCRLF found) or the buffer
+      // already exceeds the configured header limit, treat this as header-field overflow.
+      if (std::ranges::search(cnx.inBuffer, http::DoubleCRLF).empty() || cnx.inBuffer.size() > _config.maxHeaderBytes) {
+        emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, false, {});
+      } else {
+        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, false, {});
+      }
       cnx.requestImmediateClose();
       break;
     }

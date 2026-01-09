@@ -468,9 +468,10 @@ class SingleHttpServer {
   bool queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData, std::uint64_t extraQueuedBytes = 0);
   void flushOutbound(ConnectionMapIt cnxIt);
   void flushFilePayload(ConnectionMapIt cnxIt);
-  // Helper: attempt to flush any pending bytes in tunnelOrFileBuffer for a connection.
-  // Returns true if the caller should return early because the buffer is still non-empty or write is pending.
-  bool flushPendingTunnelOrFileBuffer(ConnectionMapIt cnxIt);
+  // Helper: flush pending bytes in tunnelOrFileBuffer via user-space TLS (SSL_write).
+  // Used when kTLS is not available and file data must be encrypted in user-space.
+  // Returns true if the caller should return early because the buffer is still non-empty.
+  bool flushUserSpaceTlsBuffer(ConnectionMapIt cnxIt);
 
   void handleWritableClient(int fd);
 

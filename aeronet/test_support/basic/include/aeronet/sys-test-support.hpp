@@ -380,6 +380,15 @@ class KeyedActionQueue {
     return front;
   }
 
+  [[nodiscard]] std::size_t size(const Key& key) {
+    std::scoped_lock<std::mutex> lock(_mutex);
+    auto it = _queues.find(key);
+    if (it == _queues.end()) {
+      return 0;
+    }
+    return it->second.size();
+  }
+
  private:
   std::mutex _mutex;
   std::unordered_map<Key, std::deque<Action>, Hash, Eq> _queues;
@@ -403,13 +412,30 @@ class QueueResetGuard {
 // Action type for socket syscalls: return value (-1 for error) and errno.
 using SyscallAction = std::pair<int, int>;  // (return value, errno)
 
+// Simple action type for IO overrides: first = return value (bytes or -1), second = errno to set when returning -1.
+using IoAction = std::pair<ssize_t, int>;
+
 namespace aeronet::test {
 inline ActionQueue<SyscallAction> g_socket_actions;
 inline ActionQueue<SyscallAction> g_setsockopt_actions;
 inline ActionQueue<SyscallAction> g_bind_actions;
 inline ActionQueue<SyscallAction> g_listen_actions;
+inline ActionQueue<SyscallAction> g_accept_actions;
 inline ActionQueue<SyscallAction> g_getsockname_actions;
 inline ActionQueue<std::pair<ssize_t, int>> g_send_actions;  // (ret, errno)
+
+// Install IO actions on the next accepted client socket.
+// This is required because tests create a client-side fd, but the server writes on the
+// server-side accepted fd (same process, different fd number).
+struct AcceptInstallActions {
+  std::vector<IoAction> writeActions;
+  std::vector<IoAction> writevActions;
+  std::vector<IoAction> sendfileActions;
+};
+
+inline ActionQueue<AcceptInstallActions> g_on_accept_install_actions;
+inline std::atomic<int> g_last_accepted_fd{-1};
+inline std::atomic<std::size_t> g_accept_count{0};
 
 // Epoll control action for MOD failures
 struct EpollCtlAction {
@@ -418,6 +444,8 @@ struct EpollCtlAction {
 };
 
 inline ActionQueue<EpollCtlAction> g_epoll_ctl_actions;
+// Action queue for failing epoll_ctl ADD operations (used to test accept-path error handling)
+inline ActionQueue<EpollCtlAction> g_epoll_ctl_add_actions;
 // Global flag to fail all epoll_ctl MOD operations for testing error handling
 inline std::atomic<bool> g_epoll_ctl_mod_fail{false};
 inline int g_epoll_ctl_mod_fail_errno = 0;
@@ -531,9 +559,14 @@ inline void ResetSocketActions() {
   g_setsockopt_actions.reset();
   g_bind_actions.reset();
   g_listen_actions.reset();
+  g_accept_actions.reset();
   g_getsockname_actions.reset();
   g_send_actions.reset();
+  g_on_accept_install_actions.reset();
+  g_last_accepted_fd.store(-1, std::memory_order_release);
+  g_accept_count.store(0, std::memory_order_release);
   g_epoll_ctl_actions.reset();
+  g_epoll_ctl_add_actions.reset();
   g_epoll_create_actions.reset();
   g_epoll_wait_actions.reset();
   ResetEpollCtlModFail();
@@ -543,9 +576,11 @@ inline void PushSocketAction(SyscallAction action) { g_socket_actions.push(actio
 inline void PushSetsockoptAction(SyscallAction action) { g_setsockopt_actions.push(action); }
 inline void PushBindAction(SyscallAction action) { g_bind_actions.push(action); }
 inline void PushListenAction(SyscallAction action) { g_listen_actions.push(action); }
+inline void PushAcceptAction(SyscallAction action) { g_accept_actions.push(action); }
 inline void PushGetsocknameAction(SyscallAction action) { g_getsockname_actions.push(action); }
 inline void PushSendAction(std::pair<ssize_t, int> action) { g_send_actions.push(action); }
 inline void PushEpollCtlAction(EpollCtlAction action) { g_epoll_ctl_actions.push(action); }
+inline void PushEpollCtlAddAction(EpollCtlAction action) { g_epoll_ctl_add_actions.push(action); }
 inline void PushEpollCreateAction(EpollCreateAction action) { g_epoll_create_actions.push(action); }
 inline void PushEpollWaitAction(EpollWaitAction action) { g_epoll_wait_actions.push(std::move(action)); }
 
@@ -553,6 +588,8 @@ using SocketFn = int (*)(int, int, int);
 using SetsockoptFn = int (*)(int, int, int, const void*, socklen_t);
 using BindFn = int (*)(int, const struct sockaddr*, socklen_t);
 using ListenFn = int (*)(int, int);
+using AcceptFn = int (*)(int, struct sockaddr*, socklen_t*);
+using Accept4Fn = int (*)(int, struct sockaddr*, socklen_t*, int);
 using GetsocknameFn = int (*)(int, struct sockaddr*, socklen_t*);
 using SendFn = ssize_t (*)(int, const void*, size_t, int);
 using EpollCtlFn = int (*)(int, int, int, struct epoll_event*);
@@ -592,6 +629,24 @@ inline ListenFn ResolveRealListen() {
     return fn;
   }
   fn = aeronet::test::ResolveNext<ListenFn>("listen");
+  return fn;
+}
+
+inline AcceptFn ResolveRealAccept() {
+  static AcceptFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<AcceptFn>("accept");
+  return fn;
+}
+
+inline Accept4Fn ResolveRealAccept4() {
+  static Accept4Fn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<Accept4Fn>("accept4");
   return fn;
 }
 
@@ -700,9 +755,6 @@ epoll_event inline MakeEvent(int fd, uint32_t mask) {
 }  // namespace aeronet::test
 
 // IO override control: enable/disable replacement of ::read/::write for tests.
-
-// Simple action type: first = return value (bytes or -1), second = errno to set when returning -1
-using IoAction = std::pair<ssize_t, int>;
 
 namespace aeronet::test {
 inline KeyedActionQueue<int, IoAction> g_read_actions;
@@ -1006,6 +1058,75 @@ extern "C" __attribute__((no_sanitize("address"))) int listen(int sockfd, int ba
 }
 
 // NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) int accept(int sockfd, struct sockaddr* addr, socklen_t* addrlen) {
+  auto act = aeronet::test::g_accept_actions.pop();
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+
+  auto real = aeronet::test::ResolveRealAccept();
+  const int fd = real(sockfd, addr, addrlen);
+  if (fd >= 0) {
+    aeronet::test::g_last_accepted_fd.store(fd, std::memory_order_release);
+    aeronet::test::g_accept_count.fetch_add(1, std::memory_order_acq_rel);
+    if (auto install = aeronet::test::g_on_accept_install_actions.pop()) {
+      if (!install->writeActions.empty()) {
+        aeronet::test::g_write_actions.setActions(fd, install->writeActions);
+      }
+      if (!install->writevActions.empty()) {
+        aeronet::test::g_writev_actions.setActions(fd, install->writevActions);
+      }
+#ifdef AERONET_WANT_SENDFILE_PREAD_OVERRIDES
+      if (!install->sendfileActions.empty()) {
+        aeronet::test::g_sendfile_actions.setActions(fd, install->sendfileActions);
+      }
+#endif
+    }
+  }
+  return fd;
+}
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) int accept4(int sockfd, struct sockaddr* addr, socklen_t* addrlen,
+                                                               int flags) {
+  auto act = aeronet::test::g_accept_actions.pop();
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+
+  auto real = aeronet::test::ResolveRealAccept4();
+  const int fd = real(sockfd, addr, addrlen, flags);
+  if (fd >= 0) {
+    aeronet::test::g_last_accepted_fd.store(fd, std::memory_order_release);
+    aeronet::test::g_accept_count.fetch_add(1, std::memory_order_acq_rel);
+    if (auto install = aeronet::test::g_on_accept_install_actions.pop()) {
+      if (!install->writeActions.empty()) {
+        aeronet::test::g_write_actions.setActions(fd, install->writeActions);
+      }
+      if (!install->writevActions.empty()) {
+        aeronet::test::g_writev_actions.setActions(fd, install->writevActions);
+      }
+#ifdef AERONET_WANT_SENDFILE_PREAD_OVERRIDES
+      if (!install->sendfileActions.empty()) {
+        aeronet::test::g_sendfile_actions.setActions(fd, install->sendfileActions);
+      }
+#endif
+    }
+  }
+  return fd;
+}
+
+// NOLINTNEXTLINE
 extern "C" __attribute__((no_sanitize("address"))) int connect(int sockfd, const struct sockaddr* addr,
                                                                socklen_t addrlen) {
   auto act = aeronet::test::g_connect_actions.pop();
@@ -1054,6 +1175,14 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t send(int sockfd, cons
 
 // NOLINTNEXTLINE
 extern "C" __attribute__((no_sanitize("address"))) int epoll_ctl(int epfd, int op, int fd, struct epoll_event* event) {
+  if (op == EPOLL_CTL_ADD) {
+    // Allow tests to fail a specific ADD operation without impacting unrelated setup/teardown.
+    auto act = aeronet::test::g_epoll_ctl_add_actions.pop();
+    if (act && act->ret != 0) {
+      errno = act->err;
+      return -1;
+    }
+  }
   // Only inject failures for MOD operations to allow normal ADD/DEL for setup/teardown
   if (op == EPOLL_CTL_MOD) {
     // Check global persistent fail flag first
