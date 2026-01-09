@@ -1,11 +1,7 @@
 #include <gtest/gtest.h>
+#include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/types.h>
-
-#include "aeronet/static-file-handler.hpp"
-#ifdef AERONET_ENABLE_OPENSSL
-#include <openssl/bio.h>
-#endif
 
 #include <algorithm>
 #include <cerrno>
@@ -31,17 +27,19 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/static-file-handler.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_tls_fixture.hpp"
 #include "aeronet/test_tls_client.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/tls-config.hpp"
+#include "aeronet/tls-ticket-key-store.hpp"
+
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/test_server_http2_tls_fixture.hpp"
 #include "aeronet/test_tls_http2_client.hpp"
 #endif
-#include "aeronet/tls-config.hpp"
-#include "aeronet/tls-ticket-key-store.hpp"
 
 namespace aeronet {
 using namespace std::chrono_literals;
@@ -520,6 +518,56 @@ TEST(HttpTlsKtlsMode, ForcedModeEnabledOrForcedShutdown) {
 
   const auto stats = ts.stats();
   EXPECT_GE(stats.ktlsSendEnabledConnections + stats.ktlsSendForcedShutdowns, 1U);
+}
+
+// Test file serving over TLS with kTLS explicitly disabled.
+// This exercises the user-space TLS path (pread + SSL_write) via flushUserSpaceTlsBuffer.
+TEST(HttpTlsKtlsMode, DisabledModeFileServing) {
+  // Create a file large enough to require multiple chunk iterations
+  static constexpr std::size_t kFileSize = 256UL * 1024;  // 256KB
+  std::string largePayload(kFileSize, 'F');
+  // Add some variety to detect corruption
+  for (std::size_t pos = 0; pos < kFileSize; pos += 1024) {
+    largePayload[pos] = static_cast<char>('A' + ((pos / 1024) % 26));
+  }
+
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmpFile(tmpDir, largePayload);
+  std::string filePath = tmpFile.filePath().string();
+
+  // Explicitly disable kTLS to force user-space TLS path
+  test::TlsTestServer ts({"http/1.1"},
+                         [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled); });
+
+  ts.setDefault([filePath](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.file(File(filePath));
+    writer.end();
+  });
+
+  test::TlsClient client(ts.port());
+  ASSERT_TRUE(client.handshakeOk());
+  auto raw = client.get("/largefile", {});
+
+  ASSERT_FALSE(raw.empty());
+  ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
+
+  auto headerEnd = raw.find(http::DoubleCRLF);
+  ASSERT_NE(std::string::npos, headerEnd);
+  std::string body = raw.substr(headerEnd + http::DoubleCRLF.size());
+
+  // Verify the full file was received correctly
+  EXPECT_EQ(body.size(), kFileSize);
+  EXPECT_EQ(body, largePayload);
+
+  // Verify kTLS was NOT used - when Disabled mode, enableKtlsSend() is not called
+  // so neither ktlsSendEnabledConnections nor ktlsSendEnableFallbacks are incremented.
+  const auto stats = ts.stats();
+  EXPECT_EQ(stats.ktlsSendEnabledConnections, 0U);
+  EXPECT_EQ(stats.ktlsSendEnableFallbacks, 0U);
+  EXPECT_EQ(stats.ktlsSendForcedShutdowns, 0U);
+  // But ktlsSendBytes should be 0 since kTLS was not used
+  EXPECT_EQ(stats.ktlsSendBytes, 0U);
 }
 
 // When OpenSSL headers do not expose BIO_CTRL_SET_KTLS_SEND, TlsTransport::enableKtlsSend()

@@ -183,12 +183,13 @@ bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(int fd, const TlsHands
 
   const auto ktlsMode = cfg.ktlsMode;
   if (ktlsMode != TLSConfig::KtlsMode::Disabled) {
+    // Attempt to enable kTLS send offload. The transport caches the result so
+    // isKtlsSendEnabled() can be queried later without re-checking the BIO.
     const auto application = MaybeEnableKtlsSend(tlsTr->enableKtlsSend(), fd, ktlsMode, metrics);
     if (application == KtlsApplication::CloseConnection) {
       requestImmediateClose();
-    } else if (application == KtlsApplication::Enabled) {
-      ktlsSendEnabled = true;
     }
+    // No need to store ktlsSendEnabled separately - query tlsTr->isKtlsSendEnabled() when needed
   }
 
   return true;
@@ -213,7 +214,6 @@ void ConnectionState::clear() {
   closeMode = CloseMode::None;
   waitingWritable = false;
   tlsEstablished = false;
-  ktlsSendEnabled = false;
   waitingForBody = false;
   connectPending = false;
   tlsInfo = {};
