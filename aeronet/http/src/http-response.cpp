@@ -23,7 +23,6 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/nchars.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/stringconv.hpp"
@@ -211,6 +210,9 @@ inline void SetBodyEnsureNoTrailers(std::size_t trailerLen) {
 void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize,
                                   bool setContentTypeIfPresent) {
   SetBodyEnsureNoTrailers(_trailerLen);
+  if (contentTypeValue.empty() && newBodySize != 0) [[unlikely]] {
+    throw std::invalid_argument("Content-Type value cannot be empty for non-empty body");
+  }
 
   const auto newBodyLenCharVec = IntegralToCharVector(newBodySize);
   const auto oldBodyLen = bodyLen();
@@ -718,9 +720,10 @@ void HttpResponse::replaceHeaderValueNoRealloc(char* first, std::string_view new
     _data.addSize(static_cast<std::size_t>(diff));
     adjustBodyStart(diff);
   }
-  if (newValue.size() != 0) {
-    std::memcpy(first, newValue.data(), newValue.size());
-  }
+  // This function is only called to set reserved headers Content-Length (which is never empty) and Content-Type
+  // (which we never set to empty, it would be rejected by a std::invalid_argument).
+  assert(!newValue.empty());
+  std::memcpy(first, newValue.data(), newValue.size());
 }
 
 }  // namespace aeronet

@@ -179,9 +179,10 @@ void HttpResponseWriter::emitLastChunk() {
   if (_trailers.empty()) {
     _trailers.ensureAvailableCapacity(1UL + http::DoubleCRLF.size());
     _trailers.unchecked_push_back('0');
-    _trailers.unchecked_append(http::CRLF);
+    _trailers.unchecked_append(http::DoubleCRLF);
+  } else {
+    _trailers.unchecked_append(http::CRLF);  // Final blank line (memory already reserved)
   }
-  _trailers.unchecked_append(http::CRLF);  // Final blank line (memory already reserved)
 
   if (!enqueue(HttpResponseData(std::move(_trailers)))) [[unlikely]] {
     _state = HttpResponseWriter::State::Failed;
@@ -259,7 +260,7 @@ void HttpResponseWriter::trailerAddLine(std::string_view name, std::string_view 
     _trailers.unchecked_push_back('0');
     _trailers.unchecked_append(http::CRLF);
   } else {
-    _trailers.ensureAvailableCapacityExponential(lineSize);
+    _trailers.ensureAvailableCapacityExponential(lineSize + http::CRLF.size());
   }
 
   WriteHeaderCRLF(_trailers.data() + _trailers.size(), name, value);

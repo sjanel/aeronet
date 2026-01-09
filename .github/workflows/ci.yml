@@ -77,6 +77,7 @@ jobs:
             -DAERONET_BUILD_EXAMPLES=OFF \
             -DAERONET_BUILD_BENCHMARKS=OFF \
             -DAERONET_ENABLE_ASAN=ON \
+            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
             -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
             -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \

@@ -38,21 +38,26 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req);
-  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{1000}, 93UL);
+  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{5000}, 93UL);
   EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
 
   // Now send data through the tunnel and expect echo
   std::string_view simpleHello = "hello-tunnel";
   test::sendAll(fd, simpleHello);
-  auto echoedHello = test::recvWithTimeout(fd, std::chrono::milliseconds{1000}, simpleHello.size());
+  auto echoedHello = test::recvWithTimeout(fd, std::chrono::milliseconds{5000}, simpleHello.size());
   EXPECT_TRUE(echoedHello.contains(simpleHello));
 
-  // Send payload that upstream will partially echo
+// Send payload that upstream will partially echo
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+  // We need a much smaller payload here otherwise the tests takes too long with additional memory checks
+  std::string payload(1024UL * 1024, 'a');
+#else
   std::string payload(16UL * 1024 * 1024, 'a');
+#endif
   test::sendAll(fd, payload);
 
   // Wait to receive the full payload (some arrives quickly, remainder after upstream sleeps)
-  auto echoed = test::recvWithTimeout(fd, std::chrono::milliseconds{5000}, payload.size());
+  auto echoed = test::recvWithTimeout(fd, std::chrono::milliseconds{10000}, payload.size());
   EXPECT_TRUE(echoed.contains(payload));
 
   // now simulate some epoll mod failures, server should be able to recover from these
