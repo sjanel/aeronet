@@ -17,7 +17,6 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/timedef.hpp"
-#include "aeronet/year-week.hpp"
 
 namespace aeronet {
 
@@ -119,69 +118,6 @@ SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
   }
 
   return ts;
-}
-
-std::pair<SysTimePoint, SysTimePoint> ParseTimeWindow(std::string_view str) {
-  if (str.size() < 4) {
-    log::critical("Invalid time window string '{}' - expected at least a year YYYY", str);
-    throw std::invalid_argument("Invalid time window string - too short");
-  }
-
-  const char* ptr = str.data();
-  const char* endPtr = str.data() + str.size();
-
-  // year
-  const int yearNum = read4(ptr);
-  ptr += 4;
-  if (ptr == endPtr) {
-    const std::chrono::year_month_day from{std::chrono::year{yearNum}, std::chrono::January, std::chrono::day{1}};
-    const std::chrono::year_month_day to = from + std::chrono::years{1};
-    const std::chrono::sys_days fromSysDays = from;
-    const std::chrono::sys_days toSysDays = to;
-
-    return {SysTimePoint(fromSysDays), SysTimePoint(toSysDays)};
-  }
-  if (*ptr != '-') {
-    throw std::invalid_argument("Invalid time window string - expected dash after year YYYY");
-  }
-
-  // month or week number
-  const auto dashPtr = std::find(++ptr, endPtr, '-');
-  if (dashPtr == ptr) {
-    log::critical("Invalid time window string '{}' - expected a single dash after the year YYYY", str);
-    throw std::invalid_argument("Invalid time window string - unexpected dash");
-  }
-
-  if (*ptr == 'W') {
-    const iso_week_date isoWeekYear(static_cast<std::uint16_t>(yearNum), static_cast<unsigned int>(read2(ptr + 1)),
-                                    std::chrono::Monday);
-    const std::chrono::sys_days isoWeekFirstDay = isoWeekYear;
-
-    return {SysTimePoint(isoWeekFirstDay), SysTimePoint(isoWeekFirstDay + std::chrono::days{7})};
-  }
-
-  // month
-  const auto monthOfYear = read2(ptr);
-  ptr = dashPtr;
-
-  if (ptr == endPtr) {
-    const std::chrono::year_month_day from{std::chrono::year{yearNum},
-                                           std::chrono::month{static_cast<unsigned>(monthOfYear)}, std::chrono::day{1}};
-    const std::chrono::year_month_day to = from + std::chrono::months{1};
-    const std::chrono::sys_days fromSysDays = from;
-    const std::chrono::sys_days toSysDays = to;
-
-    return {SysTimePoint(fromSysDays), SysTimePoint(toSysDays)};
-  }
-  // day
-  const auto dayOfMonth = read2(ptr + 1);
-  const std::chrono::year_month_day from{std::chrono::year{yearNum},
-                                         std::chrono::month{static_cast<unsigned>(monthOfYear)},
-                                         std::chrono::day{static_cast<unsigned>(dayOfMonth)}};
-  const std::chrono::sys_days fromSysDays = from;
-  const std::chrono::sys_days toSysDays = fromSysDays + std::chrono::days{1};
-
-  return {SysTimePoint(fromSysDays), SysTimePoint(toSysDays)};
 }
 
 SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {

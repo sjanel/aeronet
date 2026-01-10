@@ -251,7 +251,8 @@ bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
       // Verify full preface
       if (bufView.starts_with(http2::kConnectionPreface)) {
         // Switch to HTTP/2 protocol handler using unified dispatch
-        state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression);
+        state.protocolHandler =
+            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmpBuffer, _tmpTrailers);
         return processSpecialProtocolHandler(cnxIt);
       }
       log::error("Invalid HTTP/2 preface, falling back to HTTP/1.1");
@@ -396,7 +397,8 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         state.inBuffer.erase_front(consumedBytesUpgrade);
 
         // Create HTTP/2 protocol handler using unified dispatch
-        state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression);
+        state.protocolHandler =
+            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmpBuffer, _tmpTrailers);
         state.protocol = ProtocolType::Http2;
 
         // Queue the upgrade response
@@ -1347,7 +1349,8 @@ bool SingleHttpServer::runPreChain(HttpRequest& request, bool willStream, std::s
 void SingleHttpServer::setupHttp2Connection(ConnectionState& state) {
   // Create HTTP/2 protocol handler with unified dispatcher
   // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
-  state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, true);
+  state.protocolHandler =
+      http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmpBuffer, _tmpTrailers, true);
   state.protocol = ProtocolType::Http2;
 
   // Immediately flush the server preface (SETTINGS frame) that was queued during handler creation

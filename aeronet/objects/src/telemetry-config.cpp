@@ -33,7 +33,7 @@ void TelemetryConfig::validate() {
   if (!otelEnabled) {
     return;
   }
-  if (sampleRate < 0.0 || sampleRate > 1.0) {
+  if (sampleRate < 0.0F || sampleRate > 1.0F) {
     log::critical("Invalid sample rate {}, must be between 0 and 1", sampleRate);
     throw std::invalid_argument("Invalid sample rate");
   }
@@ -88,7 +88,7 @@ TelemetryConfig& TelemetryConfig::addDogStatsdTag(std::string_view tag) {
 }
 
 TelemetryConfig& TelemetryConfig::withSampleRate(double sampleRate) {
-  this->sampleRate = sampleRate;
+  this->sampleRate = static_cast<float>(sampleRate);
   return *this;
 }
 

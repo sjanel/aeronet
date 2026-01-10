@@ -40,7 +40,7 @@ class HttpCodec {
   static RequestDecompressionResult MaybeDecompressRequestBody(const DecompressionConfig& decompressionConfig,
                                                                HttpRequest& request, RawChars& bodyAndTrailersBuffer,
                                                                std::size_t& trailerStartPos, RawChars& tmpBuffer,
-                                                               RawChars& trailersScratch);
+                                                               RawChars32& trailersScratch);
 };
 
 }  // namespace aeronet::internal
