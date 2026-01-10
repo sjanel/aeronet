@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "aeronet/compression-config.hpp"
+#include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -445,10 +446,9 @@ TEST(HttpRequestDecompression, StreamingThresholdLargeBody) {
 }
 
 namespace {
-void ExpectTrailers(std::vector<std::string_view> encodings, bool insertBadTrailer = false) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-
+void ExpectTrailers(std::vector<std::string_view> encodings, bool insertBadTrailer = false, bool corruptData = false) {
   std::string plain(10000, 'L');
+  std::ranges::iota(plain, 'A');
 
   ts.router().setDefault([&plain](const HttpRequest& req) {
     EXPECT_EQ(req.body(), plain);
@@ -467,25 +467,25 @@ void ExpectTrailers(std::vector<std::string_view> encodings, bool insertBadTrail
     return HttpResponse("CompressLargeBodyWithTrailers OK");
   });
 
-  test::ClientConnection sock(ts.port());
-  int fd = sock.fd();
-
   std::string contentEncodingValue = ContentEncodingConcat(encodings);
 
-  RawChars comp(plain.data(), plain.size());
+  RawChars comp(plain);
   for (std::string_view encoding : encodings) {
     comp = compress(encoding, comp);
+    if (corruptData && encoding == encodings.back() && encoding != http::identity) {
+      test::CorruptData(encoding, comp);
+    }
   }
 
   std::ostringstream hdr;
   hdr << "POST /trail_compress_large HTTP/1.1\r\n";
   hdr << "Host: example.com\r\n";
   hdr << "Transfer-Encoding: chunked\r\n";
-  hdr << "Content-Encoding: " << contentEncodingValue << "\r\n";
+  hdr << "Content-Encoding: " << contentEncodingValue << http::CRLF;
   hdr << "Connection: close\r\n";
-  hdr << "\r\n";
+  hdr << http::CRLF;
   // chunk size in hex
-  hdr << std::hex << comp.size() << "\r\n";
+  hdr << std::hex << comp.size() << http::CRLF;
 
   std::string req = hdr.str();
   req.append(comp);
@@ -496,48 +496,74 @@ void ExpectTrailers(std::vector<std::string_view> encodings, bool insertBadTrail
     req += "Bad-Trailer-Entry\r\n";
   }
   req += MakeHttp1HeaderLine("X-Note", "final");
-  req += "\r\n";
+  req += http::CRLF;
+
+  test::ClientConnection sock(ts.port());
+  int fd = sock.fd();
 
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
 
-  if (insertBadTrailer) {
+  if (insertBadTrailer || corruptData) {
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 400"))
         << "Failed for encoding: " << contentEncodingValue << ", response: " << resp;
   } else {
-    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"))
-        << "Failed for encoding: " << contentEncodingValue << ", response: " << resp;
-    EXPECT_TRUE(resp.contains("\r\n\r\nCompressLargeBodyWithTrailers OK"))
-        << "Failed for encoding: " << contentEncodingValue << ", response: " << resp;
+    const auto maxCompressedBytes = ts.server.config().decompression.maxCompressedBytes;
+    const auto maxBodyBytes = ts.server.config().maxBodyBytes;
+    if (comp.size() > maxBodyBytes || (maxCompressedBytes != 0 && comp.size() > maxCompressedBytes)) {
+      EXPECT_TRUE(resp.starts_with("HTTP/1.1 413"))
+          << "Failed for encoding: " << contentEncodingValue << ", response: " << resp;
+    } else {
+      EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"))
+          << "Failed for encoding: " << contentEncodingValue << ", response: " << resp;
+      EXPECT_TRUE(resp.contains("\r\n\r\nCompressLargeBodyWithTrailers OK"))
+          << "Failed for encoding: " << contentEncodingValue << ", response: " << resp;
+    }
   }
 }
 }  // namespace
 
 TEST(HttpRequestDecompression, SingleCompressLargeBodyWithBadTrailers) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   for (std::string_view encoding : kKnownEncodings) {
     ExpectTrailers({encoding}, true);
   }
 }
 
 TEST(HttpRequestDecompression, SingleCompressLargeBodyWithTrailers) {
-  for (std::string_view encoding : kKnownEncodings) {
-    ExpectTrailers({encoding});
+  static constexpr std::size_t kMaxCompressedBytes[]{0, 128, 1024};
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  for (std::size_t maxCompressedBytes : kMaxCompressedBytes) {
+    ts.postConfigUpdate(
+        [maxCompressedBytes](HttpServerConfig& cfg) { cfg.decompression.maxCompressedBytes = maxCompressedBytes; });
+    for (std::string_view encoding : kKnownEncodings) {
+      ExpectTrailers({encoding});
+    }
   }
 }
 
 TEST(HttpRequestDecompression, DualCompressLargeBodyWithTrailers) {
-  for (std::string_view first : kKnownEncodings) {
-    for (std::string_view second : kKnownEncodings) {
-      ExpectTrailers({first, second});
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  static constexpr bool kCorruptDataOptions[]{false, true};
+  for (bool corruptData : kCorruptDataOptions) {
+    for (std::string_view first : kKnownEncodings) {
+      for (std::string_view second : kKnownEncodings) {
+        ExpectTrailers({first, second}, false, corruptData);
+      }
     }
   }
 }
 
 TEST(HttpRequestDecompression, TripleCompressLargeBodyWithTrailers) {
-  for (std::string_view first : kKnownEncodings) {
-    for (std::string_view second : kKnownEncodings) {
-      for (std::string_view third : kKnownEncodings) {
-        ExpectTrailers({first, second, third});
+  static constexpr std::size_t kMaxBodyBytes[]{1, 128, 1024};
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  for (std::size_t maxBodyBytes : kMaxBodyBytes) {
+    ts.postConfigUpdate([maxBodyBytes](HttpServerConfig& cfg) { cfg.maxBodyBytes = maxBodyBytes; });
+    for (std::string_view first : kKnownEncodings) {
+      for (std::string_view second : kKnownEncodings) {
+        for (std::string_view third : kKnownEncodings) {
+          ExpectTrailers({first, second, third});
+        }
       }
     }
   }
@@ -580,24 +606,12 @@ TEST(HttpRequestDecompression, CorruptedCompressedData) {
         [threshold](HttpServerConfig& cfg) { cfg.decompression.streamingDecompressionThresholdBytes = threshold; });
     for (std::string_view encoding : kKnownEncodings) {
       auto comp = compress(encoding, plain);
-      if (encoding == http::gzip || encoding == http::deflate) {
-        ASSERT_GT(comp.size(), 6U);
-        // Remove trailing bytes (part of CRC/ISIZE) to induce inflate failure.
-        comp.setSize(comp.size() - 6);
-      } else if (encoding == http::zstd) {
-        ASSERT_GT(comp.size(), 4U);
-        // Flip all bits of first byte of magic number via unsigned char to avoid -Wconversion warning
-        {
-          unsigned char* bytePtr = reinterpret_cast<unsigned char*>(comp.data());
-          bytePtr[0] ^= 0xFFU;  // corrupt magic (0x28 -> ~0x28)
-        }
-      } else if (encoding == http::br) {
-        ASSERT_GT(comp.size(), 8U);
-        // Truncate last 4 bytes to corrupt brotli stream
-        comp.setSize(comp.size() - 4);
-      } else {
+      if (encoding == http::identity) {
+        // identity compression cannot be corrupted
         continue;
       }
+      test::CorruptData(encoding, comp);
+
       auto resp = rawPost(ts.port(), "/corrupt", {{"Content-Encoding", encoding}}, comp);
       EXPECT_EQ(resp.status, http::StatusCodeBadRequest) << "Expected 400 for corrupted encoding: " << encoding;
     }

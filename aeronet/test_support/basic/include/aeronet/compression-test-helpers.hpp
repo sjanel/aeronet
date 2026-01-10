@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet::test {
 
@@ -25,5 +26,8 @@ std::string MakePatternedPayload(std::size_t size);
 
 // Create a random payload of given size so that it's very difficult to compress.
 RawBytes MakeRandomPayload(std::size_t size);
+
+// Corrupt the compressed data in-place for the given encoding.
+void CorruptData(std::string_view encoding, RawChars &data);
 
 }  // namespace aeronet::test

@@ -252,7 +252,7 @@ bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
       if (bufView.starts_with(http2::kConnectionPreface)) {
         // Switch to HTTP/2 protocol handler using unified dispatch
         state.protocolHandler =
-            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmp.buf, _tmp.trailers);
+            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmp.buf);
         return processSpecialProtocolHandler(cnxIt);
       }
       log::error("Invalid HTTP/2 preface, falling back to HTTP/1.1");
@@ -398,7 +398,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
 
         // Create HTTP/2 protocol handler using unified dispatch
         state.protocolHandler =
-            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmp.buf, _tmp.trailers);
+            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmp.buf);
         state.protocol = ProtocolType::Http2;
 
         // Queue the upgrade response
@@ -622,8 +622,8 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
 bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   HttpRequest& request = state.request;
-  const auto res = internal::HttpCodec::MaybeDecompressRequestBody(
-      _config.decompression, request, state.bodyAndTrailersBuffer, state.trailerStartPos, _tmp.buf, _tmp.trailers);
+  const auto res = internal::HttpCodec::MaybeDecompressRequestBody(_config.decompression, request,
+                                                                   state.bodyAndTrailersBuffer, _tmp.buf);
 
   if (res.message != nullptr) {
     emitSimpleError(cnxIt, res.status, true, res.message);
@@ -1350,7 +1350,7 @@ void SingleHttpServer::setupHttp2Connection(ConnectionState& state) {
   // Create HTTP/2 protocol handler with unified dispatcher
   // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
   state.protocolHandler =
-      http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmp.buf, _tmp.trailers, true);
+      http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmp.buf, true);
   state.protocol = ProtocolType::Http2;
 
   // Immediately flush the server preface (SETTINGS frame) that was queued during handler creation
