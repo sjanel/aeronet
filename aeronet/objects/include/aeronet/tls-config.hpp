@@ -42,14 +42,6 @@ class TLSConfig {
   static constexpr Version TLS_1_2 = Version{1, 2};
   static constexpr Version TLS_1_3 = Version{1, 3};
 
-  struct SessionTicketsConfig {
-    bool operator==(const SessionTicketsConfig&) const noexcept = default;
-
-    bool enabled{false};
-    std::uint32_t maxKeys{2};
-    std::chrono::seconds lifetime{std::chrono::hours{24}};
-  } sessionTickets;
-
   struct SniCertificate {
     [[nodiscard]] std::string_view pattern() const noexcept { return _strings[0]; }
     void setPattern(std::string_view value) { _strings.set(0, value); }
@@ -225,6 +217,14 @@ class TLSConfig {
     return {_trustedClientCertsPem.begin(), _trustedClientCertsPem.end()};
   }
 
+  struct SessionTicketsConfig {
+    bool operator==(const SessionTicketsConfig&) const noexcept = default;
+
+    bool enabled{false};
+    std::uint32_t maxKeys{2};
+    std::chrono::seconds lifetime{std::chrono::hours{24}};
+  } sessionTickets;
+
   // Protective timeout for TLS handshakes (time from accept to handshake completion). 0 => disabled.
   std::chrono::milliseconds handshakeTimeout{std::chrono::milliseconds{0}};
 
@@ -242,8 +242,13 @@ class TLSConfig {
   Version minVersion;  // If set, enforce minimum TLS protocol version.
   Version maxVersion;  // If set, enforce maximum TLS protocol version.
 
+  // Maximum number of concurrent TLS handshakes allowed. 0 => unlimited.
   std::uint32_t maxConcurrentHandshakes{0};
+
+  // TLS handshake rate limiting (to mitigate DoS attacks)
   std::uint32_t handshakeRateLimitPerSecond{0};
+
+  // Maximum burst size for handshake rate limiting
   std::uint32_t handshakeRateLimitBurst{0};
 
   bool operator==(const TLSConfig&) const noexcept = default;

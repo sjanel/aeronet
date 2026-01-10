@@ -49,14 +49,14 @@ TEST(TelemetryConfigTest, AddDogStatsD) {
 TEST(TelemetryConfigTest, TelemetryConfigSampleRateValidation) {
   TelemetryConfig cfg;
   cfg.otelEnabled = true;
-  cfg.sampleRate = -0.1;
+  cfg.withSampleRate(-0.1);
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 
-  cfg.sampleRate = 1.5;
+  cfg.withSampleRate(1.5);
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 
   cfg.otelEnabled = false;
-  cfg.sampleRate = -0.1;
+  cfg.withSampleRate(-0.1);
   EXPECT_NO_THROW(cfg.validate());  // sample rate not validated when otel is disabled
 }
 

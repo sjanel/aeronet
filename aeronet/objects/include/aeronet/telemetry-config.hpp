@@ -96,7 +96,7 @@ class TelemetryConfig {
   bool dogStatsDEnabled{false};
 
   // Sampling ratio [0.0, 1.0]. 1.0 = sample all, 0.0 = sample none. Default: 1.0
-  double sampleRate{1.0};
+  float sampleRate{1.0F};
 
   // Interval between metric exports (default: 10000ms)
   std::chrono::milliseconds exportInterval{std::chrono::milliseconds{10000}};

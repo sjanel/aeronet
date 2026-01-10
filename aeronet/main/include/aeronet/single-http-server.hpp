@@ -572,8 +572,8 @@ class SingleHttpServer {
 
   internal::ConnectionStorage _connections;
 
-  RawChars _tmpBuffer;    // can be used for any kind of temporary buffer
-  RawChars _tmpTrailers;  // scratch buffer to preserve request trailers during decompression
+  RawChars _tmpBuffer;      // can be used for any kind of temporary buffer
+  RawChars32 _tmpTrailers;  // scratch buffer to preserve request trailers during decompression
 
   // Telemetry context - one per SingleHttpServer instance (no global singletons)
   tracing::TelemetryContext _telemetry;

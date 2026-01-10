@@ -160,7 +160,7 @@ TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
 }
 
 TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
-  const std::size_t cap = ts.server.config().initialReadChunkBytes * 2;
+  const std::size_t cap = 2UL * ts.server.config().minReadChunkBytes;
   MaxPerEventReadBytesScope scope(cap);
 
   const std::size_t payloadSize = cap * 3;

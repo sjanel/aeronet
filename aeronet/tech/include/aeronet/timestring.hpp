@@ -2,7 +2,6 @@
 
 #include <chrono>
 #include <string_view>
-#include <utility>
 
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/timedef.hpp"
@@ -79,14 +78,6 @@ SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr);
 inline SysTimePoint StringToTimeISO8601UTC(std::string_view timeStr) {
   return StringToTimeISO8601UTC(timeStr.data(), timeStr.data() + timeStr.size());
 }
-
-/// Parse a string representation of a calendar period (duration), in the following possible formats:
-///  - YYYY        (example: '2025')
-///  - YYYY-MM     (example: '2025-06')
-///  - YYYY-Www    (example: '2025-W22')
-///  - YYYY-MM-DD  (example: '2025-06-15')
-/// Returns a pair of time points [a, b) representing the start (inclusive) and end (exclusive) of the period.
-std::pair<SysTimePoint, SysTimePoint> ParseTimeWindow(std::string_view str);
 
 /// Format a time point to an RFC7231 IMF-fixdate string (e.g. "Sun, 06 Nov 1994 08:49:37 GMT").
 /// Buffer must have space for at least 29 characters (no null terminator added):

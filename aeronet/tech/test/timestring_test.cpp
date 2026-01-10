@@ -7,7 +7,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 #include "aeronet/timedef.hpp"
@@ -376,34 +375,6 @@ TEST_F(StringToTimeISO8601UTCTest, Handles10DigitSubsecondWithZonedTimeMinus) {
   dur -= std::chrono::hours{14} + std::chrono::minutes{4} + std::chrono::seconds{56};
 
   EXPECT_EQ(duration_cast<nanoseconds>(dur).count() % 10000000000, 350819188);
-}
-
-TEST(TimeString, InvalidTimeWindow) {
-  EXPECT_THROW(ParseTimeWindow("202"), std::invalid_argument);
-  EXPECT_THROW(ParseTimeWindow("2025--26"), std::invalid_argument);
-  EXPECT_THROW(ParseTimeWindow("2025|13"), std::invalid_argument);
-}
-
-TEST(TimeString, ParseTimeWindowTest) {
-  using ymd = std::chrono::year_month_day;
-  using sys_days = std::chrono::sys_days;
-
-  EXPECT_EQ(
-      ParseTimeWindow("2025"),
-      std::make_pair(SysTimePoint{sys_days{ymd{std::chrono::year{2025}, std::chrono::January, std::chrono::day{1}}}},
-                     SysTimePoint{sys_days{ymd{std::chrono::year{2026}, std::chrono::January, std::chrono::day{1}}}}));
-  EXPECT_EQ(ParseTimeWindow("2025-W34"),
-            std::make_pair(
-                SysTimePoint{sys_days{ymd{std::chrono::year{2025}, std::chrono::month{8}, std::chrono::day{18}}}},
-                SysTimePoint{sys_days{ymd{std::chrono::year{2025}, std::chrono::month{8}, std::chrono::day{25}}}}));
-  EXPECT_EQ(
-      ParseTimeWindow("2025-08"),
-      std::make_pair(SysTimePoint{sys_days{ymd{std::chrono::year{2025}, std::chrono::month{8}, std::chrono::day{1}}}},
-                     SysTimePoint{sys_days{ymd{std::chrono::year{2025}, std::chrono::month{9}, std::chrono::day{1}}}}));
-  EXPECT_EQ(ParseTimeWindow("2025-08-14"),
-            std::make_pair(
-                SysTimePoint{sys_days{ymd{std::chrono::year{2025}, std::chrono::month{8}, std::chrono::day{14}}}},
-                SysTimePoint{sys_days{ymd{std::chrono::year{2025}, std::chrono::month{8}, std::chrono::day{15}}}}));
 }
 
 TEST(DateIso8601UTCTest, BasicDate) {
