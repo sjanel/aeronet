@@ -183,7 +183,7 @@ jobs:
           echo "Running ctest with -j=${JOBS} (NUM_PROC=${NUM_PROC})"
           # Use LLVM profile file per-process. Pattern will create one .profraw per test process
           export LLVM_PROFILE_FILE="${{ github.workspace }}/coverage-%p.profraw"
-          ctest --test-dir ${BUILD_DIR} --timeout 100 -j ${JOBS}
+          ctest --test-dir ${BUILD_DIR} --timeout 100 -j ${JOBS} --output-on-failure
 
       - name: Merge profile data and generate coverage reports
         run: |
