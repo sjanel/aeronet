@@ -159,13 +159,6 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    year-week_test
-    test/year-week_test.cpp
-    LIBRARIES
-    aeronet_tech
-)
-
-AeronetAddUnitTest(
     malloc-fail-after_test
     test/malloc-fail-after_test.cpp
     LIBRARIES

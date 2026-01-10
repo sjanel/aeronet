@@ -12,7 +12,6 @@
 #include <utility>
 
 #include "aeronet/internal/raw-bytes-base.hpp"
-#include "aeronet/log.hpp"
 
 namespace aeronet {
 

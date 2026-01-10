@@ -1,5 +1,6 @@
 #include "aeronet/http-server-config.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -201,16 +202,20 @@ HttpServerConfig& HttpServerConfig::withTelemetryConfig(TelemetryConfig cfg) {
   return *this;
 }
 
-// Configure adaptive read chunk sizing (two tier). Returns *this.
-HttpServerConfig& HttpServerConfig::withReadChunkStrategy(std::size_t initialBytes, std::size_t bodyBytes) {
-  initialReadChunkBytes = initialBytes;
-  bodyReadChunkBytes = bodyBytes;
+HttpServerConfig& HttpServerConfig::withMinReadChunkBytes(std::size_t minReadChunkBytes) {
+  if (std::cmp_greater(minReadChunkBytes, std::numeric_limits<std::uint32_t>::max())) {
+    throw std::invalid_argument("minReadChunkBytes value too large");
+  }
+  this->minReadChunkBytes = static_cast<std::uint32_t>(minReadChunkBytes);
   return *this;
 }
 
 // Configure a per-event read fairness cap (0 => unlimited)
 HttpServerConfig& HttpServerConfig::withMaxPerEventReadBytes(std::size_t capBytes) {
-  maxPerEventReadBytes = capBytes;
+  if (std::cmp_greater(capBytes, std::numeric_limits<std::uint32_t>::max())) {
+    throw std::invalid_argument("maxPerEventReadBytes value too large");
+  }
+  maxPerEventReadBytes = static_cast<std::uint32_t>(capBytes);
   return *this;
 }
 
@@ -224,9 +229,7 @@ HttpServerConfig& HttpServerConfig::withGlobalHeaders(std::span<const http::Head
     throw std::invalid_argument("too many global headers");
   }
   globalHeaders.clear();
-  for (const auto& header : headers) {
-    globalHeaders.append(header.http1Raw());
-  }
+  std::ranges::for_each(headers, [this](const http::Header& header) { globalHeaders.append(header.http1Raw()); });
   return *this;
 }
 
@@ -268,8 +271,12 @@ void HttpServerConfig::validate() {
   compression.validate();
   decompression.validate();
 
-  if (maxPerEventReadBytes != 0 && maxPerEventReadBytes < initialReadChunkBytes) {
-    throw std::invalid_argument("maxPerEventReadBytes must be 0 or >= initialReadChunkBytes");
+  if (minReadChunkBytes == 0) {
+    throw std::invalid_argument("minReadChunkBytes must be > 0");
+  }
+
+  if (maxPerEventReadBytes != 0 && maxPerEventReadBytes < minReadChunkBytes) {
+    throw std::invalid_argument("maxPerEventReadBytes must be 0 or >= minReadChunkBytes");
   }
 
   if (std::cmp_less(std::numeric_limits<int>::max(),

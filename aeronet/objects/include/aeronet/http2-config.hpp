@@ -26,6 +26,22 @@ struct Http2Config {
   /// Default: false.
   bool enablePush{false};
 
+  /// Enable cleartext HTTP/2 (h2c) via prior knowledge.
+  /// When enabled, the server accepts HTTP/2 connections on non-TLS ports
+  /// if the client sends the HTTP/2 connection preface directly.
+  /// Default: true (useful for internal microservices).
+  bool enableH2c{true};
+
+  /// Enable cleartext HTTP/2 (h2c) via HTTP/1.1 Upgrade mechanism.
+  /// Allows clients to upgrade from HTTP/1.1 to HTTP/2 on plaintext connections.
+  /// Default: true.
+  bool enableH2cUpgrade{true};
+
+  /// Enable HTTP/2 priority handling (PRIORITY frames and stream dependencies).
+  /// When disabled, PRIORITY frames are acknowledged but not processed.
+  /// Default: true (principle of least surprise).
+  bool enablePriority{true};
+
   /// Whether to merge multiple header values for unknown request headers.
   /// If true, multiple values for unknown headers are concatenated with commas,
   /// per RFC 9113 §8.1.2. If false, only the last value is kept.
@@ -87,25 +103,9 @@ struct Http2Config {
   /// Default: 0 (unlimited).
   uint32_t maxStreamsPerConnection{0};
 
-  /// Enable cleartext HTTP/2 (h2c) via prior knowledge.
-  /// When enabled, the server accepts HTTP/2 connections on non-TLS ports
-  /// if the client sends the HTTP/2 connection preface directly.
-  /// Default: true (useful for internal microservices).
-  bool enableH2c{true};
-
-  /// Enable cleartext HTTP/2 (h2c) via HTTP/1.1 Upgrade mechanism.
-  /// Allows clients to upgrade from HTTP/1.1 to HTTP/2 on plaintext connections.
-  /// Default: true.
-  bool enableH2cUpgrade{true};
-
   // ============================
   // Priority (RFC 9218 / RFC 9113 §5.3)
   // ============================
-
-  /// Enable HTTP/2 priority handling (PRIORITY frames and stream dependencies).
-  /// When disabled, PRIORITY frames are acknowledged but not processed.
-  /// Default: true (principle of least surprise).
-  bool enablePriority{true};
 
   /// Maximum depth of the priority dependency tree.
   /// Limits resource usage for malicious deep dependency chains.

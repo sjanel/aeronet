@@ -2,25 +2,22 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstddef>
 #include <stdexcept>
-#include <string>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/log.hpp"
 #include "aeronet/major-minor-version.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/toupperlower.hpp"
 
 namespace aeronet {
 
 namespace {
-std::string NormalizeHostname(std::string_view host) {
-  std::string normalized;
-  normalized.resize_and_overwrite(host.size(), [host](char* data, std::size_t size) {
-    std::ranges::transform(host, data, [](char ch) { return tolower(ch); });
-    return size;
-  });
+auto NormalizeHostname(std::string_view host) {
+  RawChars normalized(host.size());
+  std::ranges::transform(host, normalized.data(), [](char ch) { return tolower(ch); });
+  normalized.setSize(host.size());
   return normalized;
 }
 

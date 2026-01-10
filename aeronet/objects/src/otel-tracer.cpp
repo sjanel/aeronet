@@ -24,19 +24,12 @@
     <opentelemetry/sdk/trace/tracer_provider.h>) && __has_include(<opentelemetry/sdk/trace/simple_processor.h>)
 #define AERONET_HAVE_OTEL_SDK 1
 #include <opentelemetry/sdk/resource/resource.h>
+#include <opentelemetry/sdk/trace/samplers/trace_id_ratio.h>
 #include <opentelemetry/sdk/trace/simple_processor.h>
 #include <opentelemetry/sdk/trace/tracer_provider.h>
 #include <opentelemetry/trace/span.h>
 #include <opentelemetry/trace/tracer_provider.h>
 
-// Conditionally include TraceIdRatioBased sampler header (path differs across versions)
-#if __has_include(<opentelemetry/sdk/trace/samplers/trace_id_ratio_based.h>)
-#define AERONET_HAVE_TRACEID_RATIO 1
-#include <opentelemetry/sdk/trace/samplers/trace_id_ratio_based.h>
-#elif __has_include(<opentelemetry/sdk/trace/samplers/trace_id_ratio_based_sampler.h>)
-#define AERONET_HAVE_TRACEID_RATIO 1
-#include <opentelemetry/sdk/trace/samplers/trace_id_ratio_based_sampler.h>
-#endif
 #endif
 
 // Prefer OTLP HTTP exporter (requires curl client). Fallback to ostream exporter.
@@ -201,16 +194,11 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) {
       new opentelemetry::sdk::trace::SimpleSpanProcessor(std::move(exporter)));
 
   // Create provider - NO global singleton, keep it in this instance
-#ifdef AERONET_HAVE_TRACEID_RATIO
   auto sampler = std::unique_ptr<opentelemetry::sdk::trace::Sampler>(
       new opentelemetry::sdk::trace::TraceIdRatioBasedSampler(cfg.sampleRate));
 
   ctx._tracerProvider = opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider>(
       new opentelemetry::sdk::trace::TracerProvider(std::move(processor), telemetryResource, std::move(sampler)));
-#else
-  ctx._tracerProvider = opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider>(
-      new opentelemetry::sdk::trace::TracerProvider(std::move(processor), telemetryResource));
-#endif
 
   // Get tracer from this provider (NOT from global)
   ctx._tracer = ctx._tracerProvider->GetTracer("aeronet", AERONET_VERSION_STR);

@@ -271,14 +271,7 @@ void SingleHttpServer::acceptNewConnections() {
     ConnectionState* pCnx = &state;
     std::size_t bytesReadThisEvent = 0;
     while (true) {
-      // Determine adaptive chunk size: if we have not yet parsed a full header for the current pending request
-      // (heuristic: headerStart set OR buffer missing CRLFCRLF), use initialReadChunkBytes; otherwise use
-      // bodyReadChunkBytes.
-      std::size_t chunkSize = _config.bodyReadChunkBytes;
-      if (pCnx->headerStartTp.time_since_epoch().count() != 0 ||
-          std::ranges::search(pCnx->inBuffer, http::DoubleCRLF).empty()) {
-        chunkSize = _config.initialReadChunkBytes;
-      }
+      std::size_t chunkSize = _config.minReadChunkBytes;
       if (_config.maxPerEventReadBytes != 0) {
         std::size_t remainingBudget = (_config.maxPerEventReadBytes > bytesReadThisEvent)
                                           ? (_config.maxPerEventReadBytes - bytesReadThisEvent)
@@ -450,11 +443,7 @@ void SingleHttpServer::handleReadableClient(int fd) {
 
   std::size_t bytesReadThisEvent = 0;
   while (true) {
-    std::size_t chunkSize = _config.bodyReadChunkBytes;
-    if (cnx.headerStartTp.time_since_epoch().count() != 0 ||
-        std::ranges::search(cnx.inBuffer, http::DoubleCRLF).empty()) {
-      chunkSize = _config.initialReadChunkBytes;
-    }
+    std::size_t chunkSize = _config.minReadChunkBytes;
     if (_config.maxPerEventReadBytes != 0) {
       std::size_t remainingBudget =
           (_config.maxPerEventReadBytes > bytesReadThisEvent) ? (_config.maxPerEventReadBytes - bytesReadThisEvent) : 0;
@@ -613,7 +602,7 @@ void SingleHttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   std::size_t bytesReadThisEvent = 0;
   while (true) {
-    std::size_t chunk = _config.bodyReadChunkBytes;
+    const std::size_t chunk = _config.minReadChunkBytes;
     const auto [bytesRead, want] = state.transportRead(chunk);
     if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
       closeConnection(cnxIt);
