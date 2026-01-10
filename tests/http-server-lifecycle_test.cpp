@@ -186,8 +186,8 @@ TEST(HttpServerMove, DISABLED_CapturedThisAfterMoveHazard) {
 
 // Validates that moving a running SingleHttpServer (move-construction or move-assignment) throws std::runtime_error
 // per the documented semantics (moves only allowed while stopped).
-// We cannot test with determinism the move constructor throw because we first move construct the fields before checking
-// running status, so the moved-from object may be left in a valid but stopped state.
+// Note: move-construction now performs the running-state check before transferring members, so attempting to
+// move-construct from a running server deterministically throws without partially moving internal state.
 
 TEST(SingleHttpServer, MoveAssignOrDoubleRunWhileRunningThrows) {
   HttpServerConfig cfg;

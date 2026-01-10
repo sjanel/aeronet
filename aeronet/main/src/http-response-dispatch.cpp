@@ -1,11 +1,11 @@
 #include <algorithm>
+#include <cassert>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <span>
-#include <stdexcept>
 #include <string_view>
 #include <utility>
 

@@ -60,16 +60,16 @@ class LifecycleTrackerGuard {
     }
   }
 
+  LifecycleTrackerGuard(const LifecycleTrackerGuard&) = delete;
+  LifecycleTrackerGuard& operator=(const LifecycleTrackerGuard&) = delete;
+  LifecycleTrackerGuard(LifecycleTrackerGuard&&) = delete;
+  LifecycleTrackerGuard& operator=(LifecycleTrackerGuard&&) = delete;
+
   ~LifecycleTrackerGuard() {
     if (auto locked = _tracker.lock()) {
       locked->notifyServerStopped();
     }
   }
-
-  LifecycleTrackerGuard(const LifecycleTrackerGuard&) = delete;
-  LifecycleTrackerGuard& operator=(const LifecycleTrackerGuard&) = delete;
-  LifecycleTrackerGuard(LifecycleTrackerGuard&&) = delete;
-  LifecycleTrackerGuard& operator=(LifecycleTrackerGuard&&) = delete;
 
  private:
   std::weak_ptr<ServerLifecycleTracker> _tracker;
@@ -115,7 +115,15 @@ SingleHttpServer::SingleHttpServer(HttpServerConfig cfg, Router router)
 }
 
 SingleHttpServer::SingleHttpServer(const SingleHttpServer& other)
-    : _callbacks(other._callbacks),
+    : _callbacks([&other] {
+        // Must validate *before* moving any members.
+        // Otherwise we can move out (and destroy) connection storage while the event-loop
+        // thread is still running against the source object, causing UAF.
+        if (!other._lifecycle.isIdle()) {
+          throw std::logic_error("Cannot copy-construct from a running SingleHttpServer");
+        }
+        return other._callbacks;
+      }()),
       _updates(other._updates),
       _compression(other._config.compression),
       _config(other._config),
@@ -124,10 +132,6 @@ SingleHttpServer::SingleHttpServer(const SingleHttpServer& other)
       _eventLoop(_config.pollInterval),
       _router(other._router),
       _telemetry(_config.telemetry) {
-  if (!other._lifecycle.isIdle()) {
-    throw std::logic_error("Cannot copy-construct from a running SingleHttpServer");
-  }
-
 #ifdef AERONET_ENABLE_OPENSSL
   // Copy-constructor inherits the shared ticket key store for MultiHttpServer fan-out.
   _tls.sharedTicketKeyStore = other._tls.sharedTicketKeyStore;
@@ -157,7 +161,15 @@ SingleHttpServer& SingleHttpServer::operator=(const SingleHttpServer& other) {
 
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
 SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
-    : _stats(std::exchange(other._stats, {})),
+    : _stats([&other] {
+        // Must validate *before* moving any members.
+        // Otherwise we can move out (and destroy) connection storage while the event-loop
+        // thread is still running against the source object, causing UAF.
+        if (!other._lifecycle.isIdle()) {
+          throw std::logic_error("Cannot move-construct a running SingleHttpServer");
+        }
+        return std::exchange(other._stats, {});
+      }()),
       _callbacks(std::move(other._callbacks)),
       _updates(std::move(other._updates)),
       _compression(std::move(other._compression)),
@@ -178,10 +190,6 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
       _tls(std::move(other._tls))
 #endif
 {
-  if (!_lifecycle.isIdle()) {
-    throw std::logic_error("Cannot move-construct a running SingleHttpServer");
-  }
-
   other._lifecycle.reset();
 }
 
@@ -218,8 +226,6 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
   }
   return *this;
 }
-
-SingleHttpServer::~SingleHttpServer() { stop(); }
 
 // Performs full listener initialization (RAII style) so that port() is valid immediately after construction.
 // Steps (in order) and rationale / failure characteristics:

@@ -216,7 +216,7 @@ class SingleHttpServer {
   SingleHttpServer(SingleHttpServer&& other);             // NOLINT(performance-noexcept-move-constructor)
   SingleHttpServer& operator=(SingleHttpServer&& other);  // NOLINT(performance-noexcept-move-constructor)
 
-  ~SingleHttpServer();
+  ~SingleHttpServer() { stop(); }
 
   // Obtain a proxy enabling fluent router updates without accessing the router directly while running.
   // Allows call chaining and implicit conversion to Router& for inspection during setup.
