@@ -9,13 +9,6 @@ namespace aeronet {
 struct RouterConfig {
   enum class TrailingSlashPolicy : std::int8_t { Strict, Normalize, Redirect };
 
-  // Behavior for resolving paths that differ only by a trailing slash.
-  // Default: Normalize
-  TrailingSlashPolicy trailingSlashPolicy{TrailingSlashPolicy::Normalize};
-
-  // Optional default CORS policy applied when no per-route policy exists but a router-level default was configured
-  CorsPolicy defaultCorsPolicy;
-
   // Policy for handling a trailing slash difference between registered path handlers and incoming requests.
   // Resolution algorithm (independent of policy):
   //   1. ALWAYS attempt an exact match on the incoming target string first. If found, dispatch that handler.
@@ -41,6 +34,13 @@ struct RouterConfig {
   // Sets a default CORS policy applied to all routes that do not have a per-route CORS policy configured.
   // If a route has its own CORS policy, that one takes precedence over the router-level default.
   RouterConfig& withDefaultCorsPolicy(CorsPolicy policy);
+
+  // Behavior for resolving paths that differ only by a trailing slash.
+  // Default: Normalize
+  TrailingSlashPolicy trailingSlashPolicy{TrailingSlashPolicy::Normalize};
+
+  // Optional default CORS policy applied when no per-route policy exists but a router-level default was configured
+  CorsPolicy defaultCorsPolicy;
 };
 
 }  // namespace aeronet

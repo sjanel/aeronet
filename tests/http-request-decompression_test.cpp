@@ -305,7 +305,11 @@ TEST(HttpRequestDecompression, SingleUnknownCodingRejected) {
   ts.resetRouterAndGet().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("U"); });
   std::string body = "abc";  // not used
   auto resp = rawPost(ts.port(), "/u", {{"Content-Encoding", "snappy"}}, body);
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
   EXPECT_EQ(resp.status, http::StatusCodeUnsupportedMediaType);
+#else
+  EXPECT_EQ(resp.status, http::StatusCodeOK);  // decompression disabled, pass-through
+#endif
 }
 
 TEST(HttpRequestDecompression, UnknownCodingRejectedInChain) {
@@ -327,14 +331,19 @@ TEST(HttpRequestDecompression, UnknownCodingRejectedInChain) {
 TEST(HttpRequestDecompression, EmptyTokenRejected) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string body = "xyz";
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
+  static constexpr http::StatusCode kExpectedStatus = http::StatusCodeBadRequest;
+#else
+  static constexpr http::StatusCode kExpectedStatus = http::StatusCodeOK;  // decompression disabled, pass-through
+#endif
   auto resp = rawPost(ts.port(), "/e", {{"Content-Encoding", "identity,,identity"}}, body);
-  EXPECT_EQ(resp.status, http::StatusCodeBadRequest);
+  EXPECT_EQ(resp.status, kExpectedStatus);
   resp = rawPost(ts.port(), "/e", {{"Content-Encoding", "identity,,"}}, body);
-  EXPECT_EQ(resp.status, http::StatusCodeBadRequest);
+  EXPECT_EQ(resp.status, kExpectedStatus);
   resp = rawPost(ts.port(), "/e", {{"Content-Encoding", ","}}, body);
-  EXPECT_EQ(resp.status, http::StatusCodeBadRequest);
+  EXPECT_EQ(resp.status, kExpectedStatus);
   resp = rawPost(ts.port(), "/e", {{"Content-Encoding", ""}}, body);
-  EXPECT_EQ(resp.status, http::StatusCodeBadRequest);
+  EXPECT_EQ(resp.status, kExpectedStatus);
 }
 
 TEST(HttpRequestDecompression, DisabledFeaturePassThrough) {

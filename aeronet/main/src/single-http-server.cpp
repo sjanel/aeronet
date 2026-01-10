@@ -252,7 +252,7 @@ bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
       if (bufView.starts_with(http2::kConnectionPreface)) {
         // Switch to HTTP/2 protocol handler using unified dispatch
         state.protocolHandler =
-            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmpBuffer, _tmpTrailers);
+            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmp.buf, _tmp.trailers);
         return processSpecialProtocolHandler(cnxIt);
       }
       log::error("Invalid HTTP/2 preface, falling back to HTTP/1.1");
@@ -343,7 +343,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       break;  // need more bytes for at least the request line
     }
     const auto statusCode =
-        request.initTrySetHead(state, _tmpBuffer, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders,
+        request.initTrySetHead(state, _tmp.buf, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders,
                                _telemetry.createSpan("http.request"));
     if (statusCode == HttpRequest::kStatusNeedMoreData) {
       break;
@@ -398,7 +398,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
 
         // Create HTTP/2 protocol handler using unified dispatch
         state.protocolHandler =
-            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmpBuffer, _tmpTrailers);
+            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmp.buf, _tmp.trailers);
         state.protocol = ProtocolType::Http2;
 
         // Queue the upgrade response
@@ -487,15 +487,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       break;
     }
     const bool bodyReady = decodeStatus == BodyDecodeStatus::Ready;
-    if (!bodyReady) {
-      if (_config.bodyReadTimeout.count() > 0) {
-        state.waitingForBody = true;
-        state.bodyLastActivity = std::chrono::steady_clock::now();
-      }
-      if (routingResult.asyncRequestHandler() == nullptr) {
-        break;
-      }
-    } else {
+    if (bodyReady) {
       if (_config.bodyReadTimeout.count() > 0) {
         state.waitingForBody = false;
         state.bodyLastActivity = {};
@@ -504,6 +496,14 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         break;
       }
       state.installAggregatedBodyBridge();
+    } else {
+      if (_config.bodyReadTimeout.count() > 0) {
+        state.waitingForBody = true;
+        state.bodyLastActivity = std::chrono::steady_clock::now();
+      }
+      if (routingResult.asyncRequestHandler() == nullptr) {
+        break;
+      }
     }
 
     // Handle OPTIONS and TRACE per RFC 7231 §4.3
@@ -599,9 +599,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         // Emit 301 redirect to canonical form.
         resp.status(http::StatusCodeMovedPermanently, http::MovedPermanently).body("Redirecting");
         if (routingResult.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
-          _tmpBuffer.assign(request.path());
-          _tmpBuffer.push_back('/');
-          resp.location(_tmpBuffer);
+          _tmp.buf.assign(request.path());
+          _tmp.buf.push_back('/');
+          resp.location(_tmp.buf);
         } else {
           resp.location(request.path().substr(0, request.path().size() - 1));
         }
@@ -623,7 +623,7 @@ bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   HttpRequest& request = state.request;
   const auto res = internal::HttpCodec::MaybeDecompressRequestBody(
-      _config.decompression, request, state.bodyAndTrailersBuffer, state.trailerStartPos, _tmpBuffer, _tmpTrailers);
+      _config.decompression, request, state.bodyAndTrailersBuffer, state.trailerStartPos, _tmp.buf, _tmp.trailers);
 
   if (res.message != nullptr) {
     emitSimpleError(cnxIt, res.status, true, res.message);
@@ -1014,7 +1014,7 @@ void SingleHttpServer::eventLoop() {
     if (_lifecycle.isStopping() || (_lifecycle.isDraining() && nbActiveConnections == 0)) {
       closeAllConnections();
       _lifecycle.reset();
-      if (!_isInMultiHttpServer) {
+      if (!isInMultiHttpServer()) {
         log::info("Server stopped");
       }
     } else if (_lifecycle.isDraining()) {
@@ -1350,7 +1350,7 @@ void SingleHttpServer::setupHttp2Connection(ConnectionState& state) {
   // Create HTTP/2 protocol handler with unified dispatcher
   // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
   state.protocolHandler =
-      http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmpBuffer, _tmpTrailers, true);
+      http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmp.buf, _tmp.trailers, true);
   state.protocol = ProtocolType::Http2;
 
   // Immediately flush the server preface (SETTINGS frame) that was queued during handler creation

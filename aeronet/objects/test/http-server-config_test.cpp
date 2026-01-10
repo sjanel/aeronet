@@ -233,7 +233,11 @@ TEST(HttpServerConfigTest, WithDecompressionConfig) {
   decfg.decoderChunkSize = 1024;
   decfg.maxDecompressedBytes = 10UL * 1024 * 1024;
   config.withRequestDecompression(decfg);
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
   EXPECT_NO_THROW(config.validate());
+#else
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+#endif
 
   EXPECT_EQ(config.decompression.enable, true);
   EXPECT_EQ(config.decompression.decoderChunkSize, 1024U);

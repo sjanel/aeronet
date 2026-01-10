@@ -629,7 +629,7 @@ HttpPayload* HttpResponse::finalizeHeadersBody(http::Version version, SysTimePoi
 }
 
 HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_view value) & {
-  assert(http::IsValidHeaderName(name));
+  assert(http::IsValidHeaderName(name) && !http::IsForbiddenTrailerHeader(name));
   if (hasFileBody()) {
     throw std::logic_error("Cannot add trailers when response body uses sendfile");
   }
