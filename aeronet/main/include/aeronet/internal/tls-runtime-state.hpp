@@ -27,7 +27,7 @@ struct TlsRuntimeState {
   uint32_t rateLimitTokens{0};
   std::chrono::steady_clock::time_point rateLimitLastRefill;
 
-  TlsMetricsInternal metrics;  // defined in aeronet/tls-metrics.hpp
+  TlsMetricsInternal metrics;
 };
 
 }  // namespace aeronet::internal

@@ -8,6 +8,9 @@ void DecompressionConfig::validate() const {
   if (!enable) {
     return;
   }
+#if !defined(AERONET_ENABLE_ZLIB) && !defined(AERONET_ENABLE_BROTLI) && !defined(AERONET_ENABLE_ZSTD)
+  throw std::invalid_argument("Cannot enable automatic decompression when no decoder is compiled in");
+#endif
   if (decoderChunkSize == 0) {
     throw std::invalid_argument("decoderChunkSize must be > 0");
   }

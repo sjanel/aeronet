@@ -17,16 +17,28 @@ TEST(DecompressionConfigTest, ValidDefault) {
   EXPECT_NO_THROW(cfg.validate());
 
   cfg.enable = true;
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
   EXPECT_NO_THROW(cfg.validate());
+#else
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+#endif
 }
 
 TEST(DecompressionConfigTest, DecompressionChecks) {
   DecompressionConfig cfg;
   cfg.decoderChunkSize = 0;
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
+#else
+  EXPECT_NO_THROW(cfg.validate());
+#endif
   cfg.decoderChunkSize = 1024;
   cfg.maxDecompressedBytes = 512;
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
+#else
+  EXPECT_NO_THROW(cfg.validate());
+#endif
 }
 
 TEST(DecompressionConfigTest, InvalidDecoderChunkSize) {
@@ -54,7 +66,11 @@ TEST(DecompressionConfigTest, MaxDecompressedBytesZeroIsInfinite) {
   cfg.decoderChunkSize = 1024;
   cfg.maxDecompressedBytes = std::numeric_limits<std::size_t>::max();
 
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
   EXPECT_NO_THROW(cfg.validate());
+#else
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+#endif
 }
 
 TEST(DecompressionConfigTest, InvalidMaxDecompressedBytes) {
@@ -82,7 +98,11 @@ TEST(DecompressionConfigTest, ValidMaxCompressedBytes) {
   cfg.enable = true;
   cfg.maxCompressedBytes = 1UL * 1024UL * 1024UL * 1024UL;  // 1 GB
 
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
   EXPECT_NO_THROW(cfg.validate());
+#else
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+#endif
 }
 
 TEST(DecompressionConfigTest, InvalidMaxCompressedBytes) {

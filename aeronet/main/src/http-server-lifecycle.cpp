@@ -128,7 +128,6 @@ SingleHttpServer::SingleHttpServer(const SingleHttpServer& other)
       _compression(other._config.compression),
       _config(other._config),
       _listenSocket(Socket::Type::StreamNonBlock),
-      _isInMultiHttpServer(other._isInMultiHttpServer),
       _eventLoop(_config.pollInterval),
       _router(other._router),
       _telemetry(_config.telemetry) {
@@ -148,12 +147,10 @@ SingleHttpServer& SingleHttpServer::operator=(const SingleHttpServer& other) {
 
     stop();
 
-    const bool wasInMulti = _isInMultiHttpServer;
     auto lifecycleTracker = _lifecycleTracker;
 
     *this = SingleHttpServer(other);
 
-    _isInMultiHttpServer = wasInMulti;
     _lifecycleTracker = std::move(lifecycleTracker);
   }
   return *this;
@@ -175,13 +172,12 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
       _compression(std::move(other._compression)),
       _config(std::move(other._config)),
       _listenSocket(std::move(other._listenSocket)),
-      _isInMultiHttpServer(other._isInMultiHttpServer),
-      _eventLoop(std::move(other._eventLoop)),
       _maintenanceTimer(std::move(other._maintenanceTimer)),
+      _eventLoop(std::move(other._eventLoop)),
       _lifecycle(std::move(other._lifecycle)),
       _router(std::move(other._router)),
       _connections(std::move(other._connections)),
-      _tmpBuffer(std::move(other._tmpBuffer)),
+      _tmp(std::move(other._tmp)),
       _telemetry(std::move(other._telemetry)),
       _internalHandle(std::move(other._internalHandle)),
       _lifecycleTracker(std::move(other._lifecycleTracker))
@@ -208,20 +204,19 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
     _compression = std::move(other._compression);
     _config = std::move(other._config);
     _listenSocket = std::move(other._listenSocket);
-    _isInMultiHttpServer = other._isInMultiHttpServer;
-    _eventLoop = std::move(other._eventLoop);
     _maintenanceTimer = std::move(other._maintenanceTimer);
+    _eventLoop = std::move(other._eventLoop);
     _lifecycle = std::move(other._lifecycle);
     _router = std::move(other._router);
     _connections = std::move(other._connections);
-    _tmpBuffer = std::move(other._tmpBuffer);
+    _tmp = std::move(other._tmp);
     _telemetry = std::move(other._telemetry);
     _internalHandle = std::move(other._internalHandle);
     _lifecycleTracker = std::move(other._lifecycleTracker);
-
 #ifdef AERONET_ENABLE_OPENSSL
     _tls = std::move(other._tls);
 #endif
+
     other._lifecycle.reset();
   }
   return *this;
@@ -301,7 +296,7 @@ void SingleHttpServer::prepareRun() {
   if (!_listenSocket) {
     initListener();
   }
-  if (!_isInMultiHttpServer) {
+  if (!isInMultiHttpServer()) {
     // In MultiHttpServer, logging is done at that level instead.
     log::info("Server running on port :{}", port());
   }

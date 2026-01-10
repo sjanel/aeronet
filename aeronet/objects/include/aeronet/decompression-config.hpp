@@ -13,11 +13,15 @@ namespace aeronet {
 struct DecompressionConfig {
   void validate() const;
 
-  // Master enable flag. When false the server performs NO automatic decompression. Bodies with
-  // Content-Encoding remain compressed and are delivered verbatim to handlers (pass-through).
-  // No 415 is generated solely due to compression; application code may inspect/decode manually.
-  // Default: enabled if any decoder is compiled in; disabled otherwise.
+// Master enable flag. When false the server performs NO automatic decompression. Bodies with
+// Content-Encoding remain compressed and are delivered verbatim to handlers (pass-through).
+// No 415 is generated solely due to compression; application code may inspect/decode manually.
+// Default: enabled if any decoder is compiled in; disabled otherwise.
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
   bool enable{true};
+#else
+  bool enable{false};
+#endif
 
   // Maximum compressed size (post framing decode, i.e. after chunked decoding) we are willing to
   // attempt to decompress. Protects against extremely large compressed blobs that would otherwise
