@@ -25,6 +25,11 @@ RawBytesBase<T, ViewType, SizeType>::RawBytesBase(uint64_t capacity)
   if (capacity != 0 && _buf == nullptr) [[unlikely]] {
     throw std::bad_alloc();
   }
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+  if (_capacity != 0) {
+    std::memset(_buf, 255, _capacity);
+  }
+#endif
 }
 
 template <class T, class ViewType, class SizeType>
@@ -83,8 +88,6 @@ RawBytesBase<T, ViewType, SizeType>::~RawBytesBase() {
   std::free(_buf);
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
   _buf = nullptr;
-  _size = 0;
-  _capacity = 0;
 #endif
 }
 
@@ -234,6 +237,9 @@ void RawBytesBase<T, ViewType, SizeType>::reallocUp(size_type newCapacity) {
   }
   _buf = newBuf;
   _capacity = newCapacity;
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+  std::memset(_buf + _size, 255, _capacity - _size);
+#endif
 }
 
 // Explicit instantiations for commonly used concrete types
