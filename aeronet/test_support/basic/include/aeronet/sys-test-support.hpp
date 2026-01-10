@@ -5,11 +5,14 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
+#include <sys/types.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -891,6 +894,8 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t pread(int fd, void* b
   if (auto act = aeronet::test::g_pread_actions.pop(fd)) {
     auto [ret, err] = *act;
     if (ret >= 0) {
+      // Real pread(2) never returns more than 'count'. Clamp to avoid UB in callers.
+      ret = std::min<ssize_t>(ret, static_cast<ssize_t>(count));
       if (buf != nullptr && ret > 0) {
         std::memset(buf, 'B', static_cast<size_t>(std::min<ssize_t>(ret, static_cast<ssize_t>(count))));
       }
@@ -923,6 +928,8 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t sendfile(int out_fd, 
   if (auto act = aeronet::test::g_sendfile_actions.pop(out_fd)) {
     auto [ret, err] = *act;
     if (ret >= 0) {
+      // Real sendfile(2) never returns more than 'count'. Clamp for caller invariants.
+      ret = std::min<ssize_t>(ret, static_cast<ssize_t>(count));
       // pretend we sent ret bytes by advancing offset if provided
       if (offset != nullptr) {
         *offset += ret;
@@ -946,8 +953,11 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t read(int fd, void* bu
   if (act) {
     auto [ret, err] = *act;
     if (ret >= 0) {
+      // Real read(2) never returns more than 'count'. Clamp to avoid corrupting buffers
+      // when tests enqueue an oversized action.
+      ret = std::min<ssize_t>(ret, static_cast<ssize_t>(count));
       if ((buf != nullptr) && ret > 0) {
-        size_t fill = static_cast<size_t>(std::min<ssize_t>(ret, static_cast<ssize_t>(count)));
+        size_t fill = static_cast<size_t>(ret);
         std::memset(buf, 'A', fill);
       }
       return ret;
@@ -965,7 +975,8 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t write(int fd, const v
   if (act) {
     auto [ret, err] = *act;
     if (ret >= 0) {
-      // pretend we wrote ret bytes
+      // Real write(2) never returns more than 'count'. Clamp for caller invariants.
+      ret = std::min<ssize_t>(ret, static_cast<ssize_t>(count));
       return ret;
     }
     errno = err;
@@ -981,7 +992,12 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t writev(int fd, const 
   if (act) {
     auto [ret, err] = *act;
     if (ret >= 0) {
-      // pretend we wrote ret bytes
+      // Real writev(2) never returns more than the sum of iov lengths.
+      std::size_t total = 0;
+      for (int idx = 0; idx < iovcnt; ++idx) {
+        total += iov[idx].iov_len;
+      }
+      ret = std::min<ssize_t>(ret, static_cast<ssize_t>(total));
       return ret;
     }
     errno = err;
