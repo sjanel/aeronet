@@ -168,7 +168,6 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
   auto& firstServer = _servers.emplace_back(std::move(cfg), std::move(router));
 
   firstServer._lifecycleTracker = _lifecycleTracker;
-  firstServer._isInMultiHttpServer = true;
 }
 
 MultiHttpServer::MultiHttpServer(const MultiHttpServer& other)

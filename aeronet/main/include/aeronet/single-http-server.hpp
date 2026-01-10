@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -13,9 +12,7 @@
 #include <string_view>
 #include <thread>
 
-#include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/connection-state.hpp"
-#include "aeronet/encoder.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
@@ -475,8 +472,6 @@ class SingleHttpServer {
 
   void handleWritableClient(int fd);
 
-  void tryCompressResponse(const HttpRequest& request, HttpResponse& resp);
-
   ConnectionMapIt closeConnection(ConnectionMapIt cnxIt);
 
   // Invoke a registered streaming handler. Returns true if the connection should be closed after handling
@@ -527,6 +522,8 @@ class SingleHttpServer {
   void onAsyncHandlerCompleted(ConnectionMapIt cnxIt);
   bool tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt);
 
+  [[nodiscard]] bool isInMultiHttpServer() const noexcept { return _lifecycleTracker.use_count() != 0; }
+
 #ifdef AERONET_ENABLE_HTTP2
   // Sets up HTTP/2 protocol handler for a connection after ALPN "h2" negotiation.
   // Initializes the protocol handler, sends the server preface (SETTINGS frame), and flushes output.
@@ -560,11 +557,9 @@ class SingleHttpServer {
 
   HttpServerConfig _config;
 
-  Socket _listenSocket;  // listening socket
-  bool _isInMultiHttpServer{false};
-  EventLoop _eventLoop;  // epoll-based event loop
-
+  Socket _listenSocket;
   TimerFd _maintenanceTimer;
+  EventLoop _eventLoop;
 
   internal::Lifecycle _lifecycle;
 
@@ -572,8 +567,10 @@ class SingleHttpServer {
 
   internal::ConnectionStorage _connections;
 
-  RawChars _tmpBuffer;      // can be used for any kind of temporary buffer
-  RawChars32 _tmpTrailers;  // scratch buffer to preserve request trailers during decompression
+  struct TempBuffers {
+    RawChars buf;         // can be used for any kind of temporary buffer
+    RawChars32 trailers;  // scratch buffer to preserve request trailers during decompression
+  } _tmp;
 
   // Telemetry context - one per SingleHttpServer instance (no global singletons)
   tracing::TelemetryContext _telemetry;
@@ -583,6 +580,7 @@ class SingleHttpServer {
   // When startDetached() is called, the handle is returned to the caller.
   AsyncHandle _internalHandle;
 
+  // Used by MultiHttpServer to track lifecycle without strong ownership.
   std::weak_ptr<ServerLifecycleTracker> _lifecycleTracker;
 
 #ifdef AERONET_ENABLE_OPENSSL
