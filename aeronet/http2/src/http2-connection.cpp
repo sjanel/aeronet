@@ -811,10 +811,11 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
   }
 
   const uint32_t headerBlockSize = static_cast<uint32_t>(_outputBuffer.size() - oldSize);
-  _outputBuffer.setSize(oldSize - FrameHeader::kSize);
+  const auto outputSizeBeforeHeaders = oldSize - FrameHeader::kSize;
 
   // Check if we need to split into CONTINUATION frames
   if (headerBlockSize <= _peerSettings.maxFrameSize) {
+    _outputBuffer.setSize(outputSizeBeforeHeaders);
     const auto flags = ComputeHeaderFrameFlags(endStream, endHeaders);
     // Only write the HEADERS frame prefix without the header block which is already written at the correct position!
     WriteFrame(_outputBuffer, FrameType::Headers, flags, streamId, headerBlockSize);
@@ -834,7 +835,14 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
 
   // reserve enough capacity in output buffer (no more reallocations)
   const auto remainingHeaderBlockSize = headerBlockSize - _peerSettings.maxFrameSize;
-  _outputBuffer.ensureAvailableCapacityExponential(totalSize + remainingHeaderBlockSize);
+  // IMPORTANT:
+  // - The HPACK-encoded header block bytes currently live *past* outputSizeBeforeHeaders.
+  // - In AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS mode, RawBytesBase::reallocUp() fills
+  //   bytes from `_size` to `_capacity` with 0xFF.
+  // - If we shrink `_size` first and then grow capacity, we'd overwrite the encoded bytes.
+  // So reserve required capacity before shrinking size.
+  _outputBuffer.reserve(outputSizeBeforeHeaders + totalSize + remainingHeaderBlockSize);
+  _outputBuffer.setSize(outputSizeBeforeHeaders);
 
   // Write the HEADERS frame WITHOUT END_HEADERS (it will be on the last CONTINUATION)
   const auto headersFlags = ComputeHeaderFrameFlags(endStream, false);
