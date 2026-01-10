@@ -31,7 +31,7 @@ namespace aeronet {
 ITransport::TransportResult ConnectionState::transportRead(std::size_t chunkSize) {
   inBuffer.ensureAvailableCapacityExponential(chunkSize);
 
-  const auto result = transport->read(inBuffer.data() + inBuffer.size(), chunkSize);
+  const auto result = transport->read(inBuffer.data() + inBuffer.size(), inBuffer.availableCapacity());
   inBuffer.addSize(result.bytesProcessed);
   if (headerStartTp.time_since_epoch().count() == 0) {
     headerStartTp = std::chrono::steady_clock::now();
