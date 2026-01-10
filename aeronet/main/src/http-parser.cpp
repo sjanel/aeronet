@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstring>
 #include <iterator>
+#include <span>
 #include <string_view>
 #include <system_error>
 
@@ -11,6 +12,7 @@
 #include "aeronet/header-line-parse.hpp"
 #include "aeronet/header-merge.hpp"
 #include "aeronet/headers-view-map.hpp"
+#include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
@@ -40,13 +42,12 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(Conne
   const std::size_t headerEnd = request.headSpanSize();
   if (!optContentLength) {
     // No Content-Length and not chunked: treat as no body (common for GET/HEAD). Ready immediately.
-    // TODO: we should reject the query if body is non empty and ContentLength not specified
     request._body = std::string_view{};
     consumedBytes = headerEnd;
     return BodyDecodeStatus::Ready;
   }
   std::string_view lenViewAll = *optContentLength;
-  // Note: in HTTP/1.1, there cannot be trailers for non-chunked bodies.
+  // Note: in HTTP/1.1, trailers are not allowed for non-chunked bodies.
   std::size_t declaredContentLen = 0;
   auto [ptr, err] = std::from_chars(lenViewAll.data(), lenViewAll.data() + lenViewAll.size(), declaredContentLen);
   if (err != std::errc() || ptr != lenViewAll.data() + lenViewAll.size()) {
@@ -80,6 +81,18 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
   RawChars& bodyAndTrailers = state.bodyAndTrailersBuffer;
   bodyAndTrailers.clear();
   state.trailerStartPos = 0;
+
+  // Check if we should use direct decompression (avoids copying compressed chunks to bodyAndTrailers)
+  const http::StatusCode decompressCode = internal::HttpCodec::WillDecompress(_config.decompression, request.headers());
+  if (decompressCode == http::StatusCodeBadRequest) {
+    emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Malformed Content-Encoding");
+    return BodyDecodeStatus::Error;
+  }
+
+  // For direct decompression, we collect chunk positions instead of copying data
+  _tmp.sv.clear();
+  std::size_t totalCompressedSize = 0;
+
   while (true) {
     auto first = state.inBuffer.begin() + pos;
     auto last = state.inBuffer.end();
@@ -114,7 +127,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       // Trailers are terminated by a blank line (CRLF).
 
       // Store body size before appending trailers to the same buffer
-      const std::size_t bodySize = bodyAndTrailers.size();
+      const std::size_t bodySize = decompressCode == http::StatusCodeOK ? 0 : bodyAndTrailers.size();
 
       // First, check if we have at least the immediate terminating CRLF
       if (state.inBuffer.size() < pos + http::CRLF.size()) {
@@ -192,11 +205,24 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       break;
     }
 
-    // Append chunk data to body buffer
-    bodyAndTrailers.append(state.inBuffer.data() + pos, std::min(chunkSize, state.inBuffer.size() - pos));
-    if (bodyAndTrailers.size() > _config.maxBodyBytes) {
-      emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
-      return BodyDecodeStatus::Error;
+    if (decompressCode == http::StatusCodeOK) {
+      // Just record chunk position for later direct decompression
+      _tmp.sv.emplace_back(state.inBuffer.data() + pos, chunkSize);
+      totalCompressedSize += chunkSize;
+
+      if (totalCompressedSize > _config.maxBodyBytes ||
+          (_config.decompression.maxCompressedBytes != 0 &&
+           totalCompressedSize > _config.decompression.maxCompressedBytes)) {
+        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
+        return BodyDecodeStatus::Error;
+      }
+    } else {
+      // Append chunk data to body buffer (original path)
+      bodyAndTrailers.append(state.inBuffer.data() + pos, std::min(chunkSize, state.inBuffer.size() - pos));
+      if (bodyAndTrailers.size() > _config.maxBodyBytes) {
+        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
+        return BodyDecodeStatus::Error;
+      }
     }
     pos += chunkSize;
     if (std::memcmp(state.inBuffer.data() + pos, http::CRLF.data(), http::CRLF.size()) != 0) {
@@ -204,9 +230,37 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     }
     pos += http::CRLF.size();
   }
-  // Body is everything before trailerStartPos (or entire buffer if no trailers)
-  std::size_t bodyLen = (state.trailerStartPos > 0) ? state.trailerStartPos : bodyAndTrailers.size();
-  request._body = std::string_view(bodyAndTrailers.data(), bodyLen);
+
+  if (decompressCode == http::StatusCodeOK && !_tmp.sv.empty()) {
+    // Perform direct decompression from inBuffer chunks to bodyAndTrailersBuffer
+    // Save trailers if present (they were appended to bodyAndTrailers with trailerStartPos = 0)
+    // In direct decompression mode, bodyAndTrailers only contains trailers (no body chunks were copied)
+    const bool hasTrailers = !bodyAndTrailers.empty();
+    _tmp.trailers.clear();
+    if (hasTrailers) {
+      _tmp.trailers.assign(bodyAndTrailers);
+    }
+
+    const auto res = internal::HttpCodec::DecompressChunkedBody(_config.decompression, request, _tmp.sv,
+                                                                totalCompressedSize, bodyAndTrailers, _tmp.buf);
+    if (res.message != nullptr) {
+      emitSimpleError(cnxIt, res.status, true, res.message);
+      return BodyDecodeStatus::Error;
+    }
+
+    // Restore trailers if present
+    if (hasTrailers) {
+      state.trailerStartPos = bodyAndTrailers.size();
+      bodyAndTrailers.append(_tmp.trailers);
+    }
+
+    // Body is set by DecompressChunkedBodyDirect, trailers are appended after
+  } else {
+    // Body is everything before trailerStartPos (or entire buffer if no trailers)
+    std::size_t bodyLen = (state.trailerStartPos > 0) ? state.trailerStartPos : bodyAndTrailers.size();
+    request._body = std::string_view(bodyAndTrailers.data(), bodyLen);
+  }
+
   consumedBytes = pos;
   return BodyDecodeStatus::Ready;
 }

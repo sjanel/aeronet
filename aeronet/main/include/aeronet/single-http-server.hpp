@@ -34,6 +34,7 @@
 #include "aeronet/socket.hpp"
 #include "aeronet/timer-fd.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-protocol-handler.hpp"
@@ -568,8 +569,9 @@ class SingleHttpServer {
   internal::ConnectionStorage _connections;
 
   struct TempBuffers {
-    RawChars buf;         // can be used for any kind of temporary buffer
-    RawChars32 trailers;  // scratch buffer to preserve request trailers during decompression
+    RawChars buf;                 // can be used for any kind of temporary buffer
+    RawChars32 trailers;          // scratch buffer to preserve request trailers during decompression
+    vector<std::string_view> sv;  // scratch vector for chunked decoding
   } _tmp;
 
   // Telemetry context - one per SingleHttpServer instance (no global singletons)
