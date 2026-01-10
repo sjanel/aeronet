@@ -216,10 +216,6 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
   return LoopAction::Nothing;
 }
 
-void SingleHttpServer::tryCompressResponse(const HttpRequest& request, HttpResponse& resp) {
-  internal::HttpCodec::TryCompressResponse(_compression, _config.compression, request, resp);
-}
-
 void SingleHttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
                                                const CorsPolicy* pCorsPolicy) {
   const auto respStatusCode = resp.status();
@@ -252,7 +248,7 @@ void SingleHttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRespon
     if (respStatusCode == http::StatusCodeNotFound && resp.body().empty()) {
       resp.body(k404NotFoundTemplate2, http::ContentTypeTextHtml);
     }
-    tryCompressResponse(request, resp);
+    internal::HttpCodec::TryCompressResponse(_compression, _config.compression, request, resp);
   }
 
   queueFormattedHttp1Response(cnxIt, resp.finalizeForHttp1(request.version(), SysClock::now(), !keepAlive,

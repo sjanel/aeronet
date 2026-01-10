@@ -87,7 +87,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     if (lineEnd == last) {
       return BodyDecodeStatus::NeedMore;
     }
-    auto sizeLineEnd = std::find(first, lineEnd, ';');  // ignore chunk extensions per RFC 7230 section 4.1.1
+    const auto sizeLineEnd = std::find(first, lineEnd, ';');  // ignore chunk extensions per RFC 7230 section 4.1.1
     std::size_t chunkSize = 0;
     for (auto it = first; it != sizeLineEnd; ++it) {
       int digit = from_hex_digit(*it);
@@ -114,7 +114,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       // Trailers are terminated by a blank line (CRLF).
 
       // Store body size before appending trailers to the same buffer
-      std::size_t bodySize = bodyAndTrailers.size();
+      const std::size_t bodySize = bodyAndTrailers.size();
 
       // First, check if we have at least the immediate terminating CRLF
       if (state.inBuffer.size() < pos + http::CRLF.size()) {
@@ -143,7 +143,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
         }
 
         // Check total trailer size limit
-        std::size_t trailerSize = static_cast<std::size_t>((state.inBuffer.data() + tempPos) - trailerStart);
+        const std::size_t trailerSize = static_cast<std::size_t>((state.inBuffer.data() + tempPos) - trailerStart);
         if (trailerSize > _config.maxHeaderBytes) {
           emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, true);
           return BodyDecodeStatus::Error;
@@ -224,7 +224,7 @@ bool SingleHttpServer::parseHeadersUnchecked(HeadersViewMap& headersMap, char* b
     const auto [headerName, headerValue] = http::ParseHeaderLine(first, lineEnd);
 
     // Store trailer using the in-place merge helper so semantics/pointer updates match request parsing.
-    if (!http::AddOrMergeHeaderInPlace(headersMap, headerName, headerValue, _tmpBuffer, bufferBeg, first,
+    if (!http::AddOrMergeHeaderInPlace(headersMap, headerName, headerValue, _tmp.buf, bufferBeg, first,
                                        _config.mergeUnknownRequestHeaders)) {
       return false;
     }
