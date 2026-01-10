@@ -193,7 +193,7 @@ void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacityExponential(uin
   const uintmax_t required = availableCapacity + _size;
 
   if (_capacity < required) {
-    const uintmax_t doubled = (static_cast<uintmax_t>(_capacity) * 2UL) + 1UL;
+    const uintmax_t doubled = 2ULL * _capacity;
     const uintmax_t target = std::max(required, doubled);
 
     if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {

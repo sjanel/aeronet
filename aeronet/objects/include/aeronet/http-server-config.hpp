@@ -75,6 +75,17 @@ struct HttpServerConfig {
   // to avoid accidentally merging custom singleton semantics.
   bool mergeUnknownRequestHeaders{true};
 
+  enum class TraceMethodPolicy : std::uint8_t {
+    Disabled,
+    // Allow on both plaintext and TLS
+    EnabledPlainAndTLS,
+    // Allow only on plaintext connections (disable on TLS)
+    EnabledPlainOnly
+  };
+
+  // Enable TRACE method handling (echo) on the server. Disabled by default for safety.
+  TraceMethodPolicy traceMethodPolicy{TraceMethodPolicy::Disabled};
+
   // Maximum number of HTTP requests to serve over a single persistent connection before forcing close.
   // A high value improves connection reuse at the cost of potential resource exhaustion from slow clients.
   // A low value limits resource usage but may increase latency due to more frequent connection establishment.
@@ -105,8 +116,8 @@ struct HttpServerConfig {
   // For requests with a captured body, HttpResponse will concatenate the captured body contents with the head in the
   // same buffer if their size is below this threshold. This can be efficient for small bodies because it
   // improves cache locality and will probably save one system socket call. Larger bodies will be kept separate.
-  // Default: 8 KiB.
-  std::size_t minCapturedBodySize{8192};  // 8 KiB
+  // Default: 1 KiB.
+  std::size_t minCapturedBodySize{1024};  // 1 KiB
 
   // =============================================
   // Outbound buffering & backpressure management
@@ -194,18 +205,14 @@ struct HttpServerConfig {
   // ===========================================
   // The server initially used a fixed 4096 byte read() size for all inbound socket reads. To better balance
   // header latency and bulk body throughput we expose a two‑tier strategy:
-  //   * initialReadChunkBytes : used while parsing the current request headers (request line + headers) until a full
-  //                             head is parsed. Smaller keeps per-connection latency fair under high concurrency.
-  //   * bodyReadChunkBytes    : used once headers are complete (while aggregating the body or after a full request); a
-  //                             larger value improves throughput for large uploads. Applies also between requests
-  //                             until the next header read begins (heuristic based on partial head detection).
+  //   * minReadChunkBytes     : the minimum transport read size chunk used while parsing request data.
+  //                             The buffer grows exponentially as needed up to this size while parsing headers.
   //   * maxPerEventReadBytes  : optional fairness cap. 0 => unlimited (loop continues until EAGAIN / short read).
   //                             When >0 the server stops reading from a connection once this many bytes were
   //                             successfully read in the current epoll event, yielding back to the event loop.
   // Defaults chosen to preserve prior behavior (4K) unless body phase tuning is explicitly desired.
-  std::size_t initialReadChunkBytes{4096};
-  std::size_t bodyReadChunkBytes{8192};
-  std::size_t maxPerEventReadBytes{0};
+  std::uint32_t minReadChunkBytes{4096};
+  std::uint32_t maxPerEventReadBytes{0};
 
   // Hard limit to avoid pathological cases with excessive global headers, which would bloat response size
   // and waste CPU serializing them.
@@ -215,16 +222,6 @@ struct HttpServerConfig {
   // response. Defaults to a list of one entry "server: aeronet".
   // The maximum number of global headers is 256.
   ConcatenatedHeaders globalHeaders{{"server: aeronet"}};
-
-  // Enable TRACE method handling (echo) on the server. Disabled by default for safety.
-  enum class TraceMethodPolicy : std::uint8_t {
-    Disabled,
-    // Allow on both plaintext and TLS
-    EnabledPlainAndTLS,
-    // Allow only on plaintext connections (disable on TLS)
-    EnabledPlainOnly
-  };
-  TraceMethodPolicy traceMethodPolicy{TraceMethodPolicy::Disabled};
 
   // ===========================================
   // Builtin Kubernetes-style probes configuration
@@ -368,8 +365,8 @@ struct HttpServerConfig {
   // Set the telemetry configuration for this server instance
   HttpServerConfig& withTelemetryConfig(TelemetryConfig cfg);
 
-  // Configure adaptive read chunk sizing (two tier). Returns *this.
-  HttpServerConfig& withReadChunkStrategy(std::size_t initialBytes, std::size_t bodyBytes);
+  // Configure the minimum read chunk size when receiving request data. Returns *this.
+  HttpServerConfig& withMinReadChunkBytes(std::size_t minReadChunkBytes);
 
   // Configure a per-event read fairness cap (0 => unlimited)
   HttpServerConfig& withMaxPerEventReadBytes(std::size_t capBytes);

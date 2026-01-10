@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
+#include <sys/types.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>

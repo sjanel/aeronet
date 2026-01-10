@@ -105,7 +105,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
 RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(const DecompressionConfig& decompressionConfig,
                                                                  HttpRequest& request, RawChars& bodyAndTrailersBuffer,
                                                                  std::size_t& trailerStartPos, RawChars& tmpBuffer,
-                                                                 RawChars& trailersScratch) {
+                                                                 RawChars32& trailersScratch) {
   if (!decompressionConfig.enable) {
     return {};
   }
@@ -260,7 +260,7 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(const Decompres
   RawChars& buf = bodyAndTrailersBuffer;
 
   const std::size_t decompressedSizeNbChars = static_cast<std::size_t>(nchars(src.size()));
-  buf.ensureAvailableCapacity(trailersScratch.size() + decompressedSizeNbChars);
+  buf.ensureAvailableCapacity(decompressedSizeNbChars + trailersScratch.size());
 
   // Warning: set the new decompressed body AFTER reallocating the buffer above.
   request._body = bodyAndTrailersBuffer;
