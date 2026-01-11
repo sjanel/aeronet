@@ -15,7 +15,7 @@ static_assert(EAGAIN == EWOULDBLOCK, "Add handling for EWOULDBLOCK if different 
 ITransport::TransportResult PlainTransport::read(char* buf, std::size_t len) {
   const auto nbRead = ::read(_fd, buf, len);
   TransportResult ret{static_cast<std::size_t>(nbRead), TransportHint::None};
-  if (nbRead == -1) [[unlikely]] {
+  if (nbRead == -1) {
     ret.bytesProcessed = 0;
 
     if (errno == EINTR || errno == EAGAIN) {
@@ -32,7 +32,7 @@ ITransport::TransportResult PlainTransport::write(std::string_view data) {
 
   while (ret.bytesProcessed < data.size()) {
     const auto nbWritten = ::write(_fd, data.data() + ret.bytesProcessed, data.size() - ret.bytesProcessed);
-    if (nbWritten == -1) [[unlikely]] {
+    if (nbWritten == -1) {
       if (errno == EINTR) {
         // Interrupted by signal, retry immediately
         continue;
@@ -85,7 +85,7 @@ ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std
     }
 
     const auto nbWritten = ::writev(_fd, iov.data() + iovIdx, static_cast<int>(iov.size()) - iovIdx);
-    if (nbWritten == -1) [[unlikely]] {
+    if (nbWritten == -1) {
       if (errno == EINTR) {
         continue;
       }

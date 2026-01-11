@@ -906,9 +906,6 @@ class HttpResponse {
 
   [[nodiscard]] std::string_view headersFlatViewWithDate() const noexcept;
 
-  HttpPayload* finalizeHeadersBody(http::Version version, SysTimePoint tp, bool isHeadMethod, bool close,
-                                   const ConcatenatedHeaders& globalHeaders, std::size_t minCapturedBodySize);
-
   struct FormattedHttp1Response {
     HttpResponseData data;
     File file;
@@ -925,7 +922,7 @@ class HttpResponse {
   // IMPORTANT: This method finalizes the response by appending reserved headers,
   // and returns the internal buffers stolen from this HttpResponse instance.
   // So this instance must not be used anymore after this call.
-  FormattedHttp1Response finalizeForHttp1(http::Version version, SysTimePoint tp, bool close,
+  FormattedHttp1Response finalizeForHttp1(SysTimePoint tp, http::Version version, bool close,
                                           const ConcatenatedHeaders& globalHeaders, bool isHeadMethod,
                                           std::size_t minCapturedBodySize);
 

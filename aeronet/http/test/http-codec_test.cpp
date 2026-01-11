@@ -4,10 +4,13 @@
 
 #include <cstddef>
 #include <memory>
+#include <span>
+#include <string>
 #include <string_view>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/connection-state.hpp"
+#include "aeronet/decompression-config.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"

@@ -24,6 +24,7 @@
     <opentelemetry/sdk/trace/tracer_provider.h>) && __has_include(<opentelemetry/sdk/trace/simple_processor.h>)
 #define AERONET_HAVE_OTEL_SDK 1
 #include <opentelemetry/sdk/resource/resource.h>
+#include <opentelemetry/sdk/trace/sampler.h>
 #include <opentelemetry/sdk/trace/samplers/trace_id_ratio.h>
 #include <opentelemetry/sdk/trace/simple_processor.h>
 #include <opentelemetry/sdk/trace/tracer_provider.h>
