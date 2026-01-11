@@ -502,8 +502,7 @@ struct ConditionalOutcome {
   http::StatusCode status{http::StatusCodeOK};
 };
 
-ConditionalOutcome EvaluateConditionals(const HttpRequest& request, bool isGetOrHead, std::string_view etag,
-                                        SysTimePoint lastModified) {
+ConditionalOutcome EvaluateConditionals(const HttpRequest& request, std::string_view etag, SysTimePoint lastModified) {
   ConditionalOutcome outcome;
 
   if (etag.empty()) {
@@ -538,13 +537,13 @@ ConditionalOutcome EvaluateConditionals(const HttpRequest& request, bool isGetOr
   if (auto ifNoneMatch = request.headerValue(http::IfNoneMatch); ifNoneMatch.has_value()) {
     if (EtagListMatches(*ifNoneMatch, etag)) {
       outcome.rangeAllowed = false;
-      outcome.kind = isGetOrHead ? ConditionalOutcome::Kind::NotModified : ConditionalOutcome::Kind::PreconditionFailed;
-      outcome.status = isGetOrHead ? http::StatusCodeNotModified : http::StatusCodePreconditionFailed;
+      outcome.kind = ConditionalOutcome::Kind::NotModified;
+      outcome.status = http::StatusCodeNotModified;
     }
     return outcome;
   }
 
-  if (auto ifModified = request.headerValue(http::IfModifiedSince); ifModified.has_value() && isGetOrHead) {
+  if (auto ifModified = request.headerValue(http::IfModifiedSince); ifModified.has_value()) {
     if (lastModified == kInvalidTimePoint) {
       return outcome;
     }
@@ -706,12 +705,9 @@ bool StaticFileHandler::resolveTarget(const HttpRequest& request, std::filesyste
 }
 
 HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
-  const bool isGet = request.method() == http::Method::GET;
-  const bool isHead = request.method() == http::Method::HEAD;
-
   HttpResponse resp(http::StatusCodeNotFound);
 
-  if (!isGet && !isHead) {
+  if (request.method() != http::Method::GET && request.method() != http::Method::HEAD) {
     resp.status(http::StatusCodeMethodNotAllowed);
     resp.headerAddLine(http::Allow, "GET, HEAD");
     return resp;
@@ -813,7 +809,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
 
   ConditionalOutcome conditionalOutcome;
   if (_config.enableConditional) {
-    conditionalOutcome = EvaluateConditionals(request, isGet || isHead, etagView, lastModified);
+    conditionalOutcome = EvaluateConditionals(request, etagView, lastModified);
     if (conditionalOutcome.kind == ConditionalOutcome::Kind::PreconditionFailed) {
       resp.status(conditionalOutcome.status);
       resp.body("Precondition Failed\n");
