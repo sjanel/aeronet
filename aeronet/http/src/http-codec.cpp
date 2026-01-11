@@ -227,6 +227,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   }
 
   // First, write the needed headers.
+  // TODO: can we avoid the memmove of the full body here?
   resp.headerAddLine(http::ContentEncoding, GetEncodingStr(encoding));
   if (compressionConfig.addVaryHeader) {
     resp.headerAppendValue(http::Vary, http::AcceptEncoding);
@@ -250,6 +251,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
     resp._payloadVariant = {};
   } else {
     const auto internalTrailers = resp.internalTrailers();
+    // TODO: avoid this new buffer. We could use tmp buffer and then encode directly into resp._data.
     RawChars out;
     encoder->encodeFull(internalTrailers.size(), resp.body(), out);
 

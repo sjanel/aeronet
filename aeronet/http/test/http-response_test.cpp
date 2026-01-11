@@ -43,37 +43,30 @@ namespace aeronet {
 
 class HttpResponseTest : public ::testing::Test {
  protected:
-  static constexpr SysTimePoint tp{};
-  static constexpr bool keepAlive = false;
-  static constexpr bool isHeadMethod = false;
-  static constexpr std::size_t minCapturedBodySize = 4096;
+  static constexpr SysTimePoint kTp{};
+  static constexpr bool kKeepAlive = false;
+  static constexpr bool kIsHeadMethod = false;
+  static constexpr std::size_t kMinCapturedBodySize = 4096;
   static const RawChars kExpectedDateRaw;
 
-  static HttpResponse::FormattedHttp1Response finalizePrepared(HttpResponse&& resp, bool head = isHeadMethod,
-                                                               bool keepAliveFlag = keepAlive) {
-    return finalizePrepared(std::move(resp), {}, head, keepAliveFlag);
+  static HttpResponse::FormattedHttp1Response finalizePrepared(HttpResponse&& resp, bool head = kIsHeadMethod,
+                                                               bool keepAliveFlag = kKeepAlive) {
+    return finalizePrepared(std::move(resp), {}, head, keepAliveFlag, kMinCapturedBodySize);
   }
 
   static HttpResponse::FormattedHttp1Response finalizePrepared(HttpResponse&& resp,
-                                                               const ConcatenatedHeaders& globalHeaders,
-                                                               bool head = isHeadMethod,
-                                                               bool keepAliveFlag = keepAlive) {
-    return resp.finalizeForHttp1(http::HTTP_1_1, tp, !keepAliveFlag, globalHeaders, head, minCapturedBodySize);
+                                                               const ConcatenatedHeaders& globalHeaders, bool head,
+                                                               bool keepAliveFlag, std::size_t minCapturedBodySize) {
+    return resp.finalizeForHttp1(kTp, http::HTTP_1_1, !keepAliveFlag, globalHeaders, head, minCapturedBodySize);
   }
 
-  static HttpResponseData finalize(HttpResponse&& resp) {
-    auto prepared = finalizePrepared(std::move(resp));
-    EXPECT_EQ(prepared.fileLength, 0U);
-    return std::move(prepared.data);
-  }
-
-  static HttpResponseData finalize(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders,
-                                   bool head = isHeadMethod, bool keepAliveFlag = keepAlive) {
+  static HttpResponseData finalize(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders, bool head,
+                                   bool keepAliveFlag, std::size_t minCapturedBodySize) {
     std::size_t expectedFileLen = 0;
     if (resp.hasFileBody()) {
       expectedFileLen = resp.file()->size();
     }
-    auto prepared = finalizePrepared(std::move(resp), globalHeaders, head, keepAliveFlag);
+    auto prepared = finalizePrepared(std::move(resp), globalHeaders, head, keepAliveFlag, minCapturedBodySize);
     EXPECT_EQ(prepared.fileLength, expectedFileLen);
     return std::move(prepared.data);
   }
@@ -82,18 +75,17 @@ class HttpResponseTest : public ::testing::Test {
     return prepared.file ? &prepared.file : nullptr;
   }
 
-  static std::string concatenated(HttpResponse&& resp) {
-    HttpResponseData httpResponseData = finalize(std::move(resp));
-    std::string out(httpResponseData.firstBuffer());
-    out.append(httpResponseData.secondBuffer());
-    return out;
-  }
-
-  static std::string concatenated(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders,
-                                  bool head = isHeadMethod, bool keepAliveFlag = keepAlive) {
-    HttpResponseData httpResponseData = finalize(std::move(resp), globalHeaders, head, keepAliveFlag);
-    std::string out(httpResponseData.firstBuffer());
-    out.append(httpResponseData.secondBuffer());
+  static std::string concatenated(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders = {},
+                                  bool head = kIsHeadMethod, bool keepAliveFlag = kKeepAlive,
+                                  std::size_t minCapturedBodySize = kMinCapturedBodySize) {
+    HttpResponseData httpResponseData =
+        finalize(std::move(resp), globalHeaders, head, keepAliveFlag, minCapturedBodySize);
+    auto firstBuf = httpResponseData.firstBuffer();
+    auto secondBuf = httpResponseData.secondBuffer();
+    std::string out;
+    out.reserve(firstBuf.size() + secondBuf.size());
+    out.append(firstBuf);
+    out.append(secondBuf);
     return out;
   }
 
@@ -596,6 +588,29 @@ TEST_F(HttpResponseTest, LoopOnTrailers) {
   EXPECT_EQ(++it, trailers.end());
 }
 
+TEST_F(HttpResponseTest, HeadBodyWithoutGlobalHeaders) {
+  HttpResponse resp("Hello, World!");
+  auto full = concatenated(std::move(resp), {}, true, true);
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "13")));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+  EXPECT_FALSE(full.contains("Hello, World!"));
+}
+
+TEST_F(HttpResponseTest, SimpleBodyWithoutGlobalHeaders) {
+  static constexpr std::size_t kMinCapturedBodySize[] = {1ULL, 13ULL, 4096ULL};
+  for (const auto minCapturedBodySize : kMinCapturedBodySize) {
+    HttpResponse resp;
+    resp.body(std::string("Hello, World!"));
+    auto full = concatenated(std::move(resp), {}, false, true, minCapturedBodySize);
+    EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "13")));
+    EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
+  }
+}
+
 TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
   HttpResponse resp(http::StatusCodeOK, "OK");
   resp.headerAddLine(http::ContentType, "text/plain").headerAddLine("X-A", "B").body("Hello");
@@ -855,9 +870,8 @@ TEST_F(HttpResponseTest, SendFileZeroLengthPayload) {
   resp.file(std::move(file));
 
   auto prepared = finalizePrepared(std::move(resp));
-  // Zero-length file: prepared.fileLength should be 0 and no file moved out
   EXPECT_EQ(prepared.fileLength, 0U);
-  EXPECT_FALSE(prepared.file);
+  EXPECT_TRUE(prepared.file);
 
   std::string headers(prepared.data.firstBuffer());
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, "0")));
@@ -1262,11 +1276,16 @@ TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
   resp.body("BodyContent");
   resp.trailerAddLine("X-Trailer", "TrailerValue");
 
-  auto prepared = finalizePrepared(std::move(resp), ConcatenatedHeaders{}, false, true);
+  auto prepared = finalizePrepared(std::move(resp), {}, false, true, kMinCapturedBodySize);
   std::string all(prepared.data.firstBuffer());
+  all.append(prepared.data.secondBuffer());
   EXPECT_TRUE(all.starts_with("HTTP/1.1 200 OK\r\n"));
   EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Custom", "Value")));
-  EXPECT_TRUE(all.contains("\r\n\r\nBodyContent"));
+  // When trailers are present, body is chunked encoded per RFC 7230 §4.1.2
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
+  EXPECT_FALSE(all.contains(http::ContentLength));
+  // Body should be in chunked format: "b\r\nBodyContent\r\n0\r\n" (b = 11 in hex)
+  EXPECT_TRUE(all.contains("b\r\nBodyContent\r\n0\r\n"));
   EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Trailer", "TrailerValue")));
   EXPECT_FALSE(all.contains(MakeHttp1HeaderLine(http::Connection, http::close)));
   EXPECT_FALSE(all.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
@@ -1970,7 +1989,15 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
     EXPECT_EQ(dateCount, 1);
     EXPECT_EQ(connCount, 1);
     if (!hasFile) {
-      if (!pr.body.empty()) {
+      // When trailers are present, chunked transfer encoding is used instead of Content-Length
+      // per RFC 7230 §4.1.2
+      const bool hasTrailers = !lastTrailerKey.empty();
+      if (hasTrailers) {
+        // With trailers, we use Transfer-Encoding: chunked, not Content-Length
+        EXPECT_EQ(clCount, 0);
+        EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)))
+            << "Missing Transfer-Encoding: chunked when trailers present";
+      } else if (!pr.body.empty()) {
         EXPECT_EQ(clCount, 1);
         if (clVal != pr.body.size()) {
           // Diagnostic: content-length mismatch
@@ -2253,6 +2280,242 @@ TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_MultipleHeadersAndValue
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-one", "ONE")));
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-two", "Two:COLON:IN:VALUE")));
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("already-lower", "MixedValue:ABC")));
+}
+
+// =============================================================================
+// Tests for automatic chunked encoding conversion when trailers are present
+// Per RFC 7230 §4.1.2, trailers require chunked transfer encoding
+// =============================================================================
+
+TEST_F(HttpResponseTest, TrailersAutoChunkedWithoutGlobalHeaders) {
+  static constexpr std::size_t kMinCapturedBodySz[] = {1UL, 4096UL};
+
+  for (std::size_t minCapturedBodySz : kMinCapturedBodySz) {
+    // Captured body
+    HttpResponse resp(http::StatusCodeOK);
+    resp.body(std::string("CapturedData12345"));  // 17 bytes = 0x11
+    resp.trailerAddLine("X-Sig", "sig-value");
+
+    const std::string result = concatenated(std::move(resp), {}, false, true, minCapturedBodySz);
+
+    std::string exp;
+    exp.reserve(result.size());
+    exp += "HTTP/1.1 200\r\n";
+
+    exp += MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
+    exp += MakeHttp1HeaderLine(http::ContentType, "text/plain");
+    exp += MakeHttp1HeaderLine(http::TransferEncoding, http::chunked);
+    exp += "\r\n";
+    // 17 in hex = 0x11 = "11"
+    exp += "11\r\n";
+    exp += "CapturedData12345\r\n";
+    exp += "0\r\n";
+    exp += "X-Sig: sig-value\r\n";
+    exp += "\r\n";
+
+    EXPECT_EQ(result, exp);
+
+    // Inline body
+    resp = HttpResponse(http::StatusCodeOK).body("CapturedData12345").trailerAddLine("X-Sig", "sig-value");
+    EXPECT_EQ(concatenated(std::move(resp), {}, false, true, minCapturedBodySz), exp);
+  }
+}
+
+TEST_F(HttpResponseTest, TrailersAutoChunkedWithGlobalHeaders) {
+  static constexpr std::size_t kMinCapturedBodySz[] = {1UL, 4096UL};
+
+  for (std::size_t minCapturedBodySz : kMinCapturedBodySz) {
+    // Captured body
+    HttpResponse resp(http::StatusCodeOK);
+    resp.body(std::string("CapturedData12345"));  // 17 bytes = 0x11
+    resp.trailerAddLine("X-Sig", "sig-value");
+
+    const std::string result = concatenated(std::move(resp), {"server: aeronet"}, false, false, minCapturedBodySz);
+
+    std::string exp;
+    exp.reserve(result.size());
+    exp += "HTTP/1.1 200\r\n";
+
+    exp += MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
+    exp += MakeHttp1HeaderLine(http::ContentType, "text/plain");
+    exp += MakeHttp1HeaderLine(http::TransferEncoding, http::chunked);
+    exp += MakeHttp1HeaderLine("server", "aeronet");
+    exp += MakeHttp1HeaderLine(http::Connection, http::close);
+    exp += "\r\n";
+    // 17 in hex = 0x11 = "11"
+    exp += "11\r\n";
+    exp += "CapturedData12345\r\n";
+    exp += "0\r\n";
+    exp += "X-Sig: sig-value\r\n";
+    exp += "\r\n";
+
+    EXPECT_EQ(result, exp);
+
+    // Inline body
+    resp = HttpResponse(http::StatusCodeOK).body("CapturedData12345").trailerAddLine("X-Sig", "sig-value");
+    EXPECT_EQ(concatenated(std::move(resp), {"server: aeronet"}, false, false, minCapturedBodySz), exp);
+  }
+}
+
+TEST_F(HttpResponseTest, TrailersAutoChunkedMultipleTrailers) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("test");
+  resp.trailerAddLine("Trailer-One", "value1");
+  resp.trailerAddLine("Trailer-Two", "value2");
+  resp.trailerAddLine("Trailer-Three", "value3");
+
+  const std::string result = concatenated(std::move(resp));
+
+  EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
+  EXPECT_TRUE(result.contains("4\r\ntest\r\n0\r\n"));
+  EXPECT_TRUE(result.contains("Trailer-One: value1\r\n"));
+  EXPECT_TRUE(result.contains("Trailer-Two: value2\r\n"));
+  EXPECT_TRUE(result.contains("Trailer-Three: value3\r\n"));
+}
+
+TEST_F(HttpResponseTest, TrailersAutoChunkedPreservesOtherHeaders) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.header("X-Custom", "custom-value");
+  resp.header(http::ContentType, "application/json");
+  resp.body(R"({"key":"value"})");
+  resp.trailerAddLine("X-Hash", "sha256:...");
+
+  const std::string result = concatenated(std::move(resp));
+
+  // Other headers should be preserved
+  EXPECT_TRUE(result.contains(MakeHttp1HeaderLine("X-Custom", "custom-value")));
+  EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::ContentType, "application/json")));
+  // But Content-Length should be replaced with Transfer-Encoding
+  EXPECT_FALSE(result.contains(http::ContentLength));
+  EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
+}
+
+TEST_F(HttpResponseTest, TrailersAutoChunkedLargeBody) {
+  // Test with body large enough to require multiple hex digits
+  const std::string largeBody(0x1234, 'X');  // 4660 bytes
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(largeBody);
+  resp.trailerAddLine("X-Size", "large");
+
+  const std::string result = concatenated(std::move(resp));
+
+  EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
+  EXPECT_FALSE(result.contains(http::ContentLength));
+  // Should have correct hex length "1234" followed by CRLF and the body data
+  EXPECT_TRUE(result.contains("1234\r\n" + largeBody + "\r\n0\r\n")) << "Body should be chunked with hex length";
+}
+
+TEST_F(HttpResponseTest, TrailersAutoChunkedEmptyTrailerValue) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("data");
+  resp.trailerAddLine("X-Empty", "");
+
+  const std::string result = concatenated(std::move(resp));
+
+  EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
+  EXPECT_TRUE(result.contains("X-Empty: \r\n"));
+}
+
+TEST_F(HttpResponseTest, NoTrailersNoChunkedConversion) {
+  static constexpr bool kConnection[] = {true, false};
+
+  for (bool keepAlive : kConnection) {
+    // Verify that responses without trailers still use Content-Length
+    const std::string result = concatenated(HttpResponse("no-trailers-body"), {}, false, keepAlive);
+
+    EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::ContentLength, "16")));
+    if (!keepAlive) {
+      EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::Connection, http::close)));
+    }
+    EXPECT_FALSE(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
+    // Body should not be chunked
+    EXPECT_FALSE(result.contains("10\r\nno-trailers-body\r\n"));
+    EXPECT_TRUE(result.ends_with("\r\n\r\nno-trailers-body"));
+  }
+}
+
+TEST_F(HttpResponseTest, NoTrailersNoChunkedConversionCapturedBody) {
+  static constexpr bool kConnection[] = {true, false};
+
+  static constexpr std::size_t kMinCapturedBodySz[] = {1UL};
+
+  for (std::size_t minCapturedBodySz : kMinCapturedBodySz) {
+    for (bool keepAlive : kConnection) {
+      // Verify that responses without trailers still use Content-Length
+      const std::string result =
+          concatenated(HttpResponse{}.body(std::string("no-trailers-body")), {}, false, keepAlive, minCapturedBodySz);
+
+      EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::ContentLength, "16")));
+      if (!keepAlive) {
+        EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::Connection, http::close)));
+      }
+      EXPECT_FALSE(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
+      // Body should not be chunked
+      EXPECT_FALSE(result.contains("10\r\nno-trailers-body\r\n"));
+      EXPECT_TRUE(result.ends_with("\r\n\r\nno-trailers-body"));
+    }
+  }
+}
+
+TEST_F(HttpResponseTest, TrailersAutoChunkedVectorBody) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::vector<char>{'A', 'B', 'C', 'D'});
+  resp.trailerAddLine("X-Check", "done");
+
+  const std::string result = concatenated(std::move(resp));
+
+  EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
+  EXPECT_TRUE(result.contains("4\r\nABCD\r\n0\r\n"));
+  EXPECT_TRUE(result.contains("X-Check: done\r\n"));
+}
+
+TEST_F(HttpResponseTest, TrailersAutoChunkedUniquePtrBody) {
+  const char data[] = "Hello";
+  auto bodyPtr = std::make_unique<char[]>(sizeof(data));
+  std::ranges::copy(data, bodyPtr.get());
+
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::move(bodyPtr), sizeof(data) - 1);
+  resp.trailerAddLine("X-Final", "yes");
+
+  const std::string result = concatenated(std::move(resp));
+
+  EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
+  EXPECT_FALSE(result.contains(http::ContentLength));
+  EXPECT_TRUE(result.contains("5\r\nHello\r\n0\r\n"));
+  EXPECT_TRUE(result.contains("X-Final: yes\r\n"));
+}
+
+TEST_F(HttpResponseTest, TrailersAutoChunkedBytesSpanBody) {
+  // Use bytes span which is handled correctly
+  const char data[] = "Hello";
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::span<const std::byte>(reinterpret_cast<const std::byte*>(data), 5));
+  resp.trailerAddLine("X-Final", "yes");
+
+  const std::string result = concatenated(std::move(resp));
+
+  EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
+  EXPECT_TRUE(result.contains("5\r\nHello\r\n0\r\n"));
+  EXPECT_TRUE(result.contains("X-Final: yes\r\n"));
+}
+
+TEST_F(HttpResponseTest, TrailersAutoChunkedBodySizeEdgeCases) {
+  // Test with body sizes that are powers of 16 to verify hex encoding
+  for (int sz : {1, 15, 16, 255, 256, 4095, 4096}) {
+    const std::string body(static_cast<std::size_t>(sz), 'X');
+    HttpResponse resp(http::StatusCodeOK);
+    resp.body(body);
+    resp.trailerAddLine("X-Size", std::to_string(sz));
+
+    const std::string result = concatenated(std::move(resp));
+
+    EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)))
+        << "Failed for size " << sz;
+    EXPECT_FALSE(result.contains(http::ContentLength)) << "Failed for size " << sz;
+    // Verify the last-chunk marker is present
+    EXPECT_TRUE(result.contains("\r\n0\r\n")) << "Missing last-chunk for size " << sz;
+  }
 }
 
 }  // namespace aeronet
