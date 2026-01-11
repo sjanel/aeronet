@@ -48,8 +48,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// @param config HTTP/2 configuration
   /// @param dispatcher Callback that dispatches an HttpRequest to handlers and returns a response
   Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
-                       internal::ResponseCompressionState& compressionState, RawChars& tmpBuffer,
-                       RawChars32& tmpTrailerBuffer);
+                       internal::ResponseCompressionState& compressionState, RawChars& tmpBuffer);
 
   Http2ProtocolHandler(const Http2ProtocolHandler&) = delete;
   Http2ProtocolHandler& operator=(const Http2ProtocolHandler&) = delete;
@@ -154,7 +153,6 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   HttpServerConfig* _pServerConfig;
   internal::ResponseCompressionState* _pCompressionState;
   RawChars* _pTmpBuffer;
-  RawChars32* _pTmpTrailerBuffer;
 };
 
 /// Factory function for creating HTTP/2 protocol handlers.
@@ -166,8 +164,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, Router& router,
                                                              HttpServerConfig& serverConfig,
                                                              internal::ResponseCompressionState& compressionState,
-                                                             RawChars& tmpBuffer, RawChars32& tmpTrailerBuffer,
-                                                             bool sendServerPrefaceForTls = false);
+                                                             RawChars& tmpBuffer, bool sendServerPrefaceForTls = false);
 
 }  // namespace http2
 }  // namespace aeronet

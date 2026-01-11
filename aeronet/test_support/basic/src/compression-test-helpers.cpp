@@ -1,19 +1,19 @@
 #include "aeronet/compression-test-helpers.hpp"
 
+#include <cstddef>
+#include <numeric>
 #include <random>
-
-#include "aeronet/raw-bytes.hpp"
+#include <stdexcept>
+#include <string>
+#include <string_view>
 
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
-
-#include <stdexcept>
 #endif
 
-#include <cstddef>
-#include <numeric>
-#include <string>
-#include <string_view>
+#include "aeronet/http-constants.hpp"
+#include "aeronet/raw-bytes.hpp"
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet::test {
 
@@ -70,6 +70,31 @@ RawBytes MakeRandomPayload(std::size_t size) {
   }
   payload.setSize(size);
   return payload;
+}
+
+void CorruptData(std::string_view encoding, RawChars& data) {
+  if (encoding == http::gzip || encoding == http::deflate) {
+    if (data.size() < 6) {
+      throw std::invalid_argument("Data too small to corrupt for gzip/deflate");
+    }
+    // Remove trailing bytes (part of CRC/ISIZE) to induce inflate failure.
+    data.setSize(data.size() - 6);
+  } else if (encoding == http::zstd) {
+    if (data.size() < 4) {
+      throw std::invalid_argument("Data too small to corrupt for zstd");
+    }
+    // Flip all bits of first byte of magic number via unsigned char to avoid -Wconversion warning
+    unsigned char* bytePtr = reinterpret_cast<unsigned char*>(data.data());
+    bytePtr[0] ^= 0xFFU;  // corrupt magic (0x28 -> ~0x28)
+  } else if (encoding == http::br) {
+    if (data.size() < 8) {
+      throw std::invalid_argument("Data too small to corrupt for brotli");
+    }
+    // Truncate last 4 bytes to corrupt brotli stream
+    data.setSize(data.size() - 4);
+  } else {
+    throw std::invalid_argument("Unsupported encoding for corruption");
+  }
 }
 
 }  // namespace aeronet::test
