@@ -20,7 +20,6 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-lifecycle-tracker.hpp"

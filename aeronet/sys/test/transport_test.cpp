@@ -176,4 +176,31 @@ TEST(PlainTransport, TwoBufWriteHandlesPartialWrite) {
   EXPECT_EQ(res.want, TransportHint::WriteReady);
 }
 
+TEST(PlainTransport, TwoBufWriteRetriesOnEINTR) {
+  int fds[2];
+  ASSERT_EQ(::pipe(fds), 0);
+  const int readFd = fds[0];
+  const int writeFd = fds[1];
+
+  BaseFd readFdGuard(readFd);
+  BaseFd writeFdGuard(writeFd);
+
+  // Simulate writev first returning EINTR, then succeed writing full payload
+  // We emulate this by installing actions: first (-1, EINTR), then (total_bytes, 0)
+  const std::string_view head("HEAD");
+  const std::string_view body("BODY");
+  const ssize_t total = static_cast<ssize_t>(head.size() + body.size());
+  test::SetWritevActions(writeFd, {IoAction{-1, EINTR}, IoAction{total, 0}});
+
+  PlainTransport transport(writeFd);
+  auto res = transport.write(head, body);
+
+  // After EINTR the transport should retry internally and eventually report full write
+  EXPECT_EQ(res.bytesProcessed, static_cast<std::size_t>(total));
+  EXPECT_EQ(res.want, TransportHint::None);
+
+  // Note: the test support overrides return synthetic success values and do not
+  // actually copy data into the fd. We therefore only verify reported progress.
+}
+
 }  // namespace aeronet

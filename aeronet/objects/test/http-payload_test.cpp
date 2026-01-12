@@ -17,14 +17,14 @@ using namespace aeronet;
 
 TEST(HttpPayload, DefaultConstructedIsUnset) {
   HttpPayload body;
-  EXPECT_FALSE(body.set());
+  EXPECT_TRUE(body.empty());
   EXPECT_EQ(body.size(), 0U);
   EXPECT_EQ(body.view().size(), 0U);
   EXPECT_EQ(body.view(), std::string_view{});
   EXPECT_EQ(body.data(), nullptr);
 
   body.append(std::string_view("data"));
-  EXPECT_TRUE(body.set());
+  EXPECT_FALSE(body.empty());
   EXPECT_EQ(body.size(), 4U);
   EXPECT_EQ(body.view(), "data");
   EXPECT_EQ(body.data(), reinterpret_cast<const char*>(body.view().data()));
@@ -32,7 +32,7 @@ TEST(HttpPayload, DefaultConstructedIsUnset) {
 
 TEST(HttpPayload, ConstructFromString) {
   HttpPayload body(std::string("hello"));
-  EXPECT_TRUE(body.set());
+  EXPECT_FALSE(body.empty());
   EXPECT_EQ(body.size(), 5U);
   EXPECT_EQ(body.view(), "hello");
 }
@@ -40,7 +40,7 @@ TEST(HttpPayload, ConstructFromString) {
 TEST(HttpPayload, ConstructFromVectorChar) {
   std::vector<char> vec{'a', 'b', 'c'};
   HttpPayload body(std::move(vec));
-  EXPECT_TRUE(body.set());
+  EXPECT_FALSE(body.empty());
   EXPECT_EQ(body.size(), 3U);
   EXPECT_EQ(body.view(), "abc");
 }
@@ -49,7 +49,7 @@ TEST(HttpPayload, ConstructFromUniqueBuffer) {
   auto buf = std::make_unique<char[]>(4);
   std::memcpy(buf.get(), "abcd", 4);
   HttpPayload body(std::move(buf), 4);
-  EXPECT_TRUE(body.set());
+  EXPECT_FALSE(body.empty());
   EXPECT_EQ(body.size(), 4U);
   EXPECT_EQ(body.view(), std::string_view("abcd", 4));
 }
@@ -57,7 +57,7 @@ TEST(HttpPayload, ConstructFromUniqueBuffer) {
 TEST(HttpPayload, ConstructFromRawChars) {
   RawChars rawChars(std::string_view("xyz", 3));
   HttpPayload body(std::move(rawChars));
-  EXPECT_TRUE(body.set());
+  EXPECT_FALSE(body.empty());
   EXPECT_EQ(body.size(), 3U);
   EXPECT_EQ(body.view(), "xyz");
 }
@@ -94,7 +94,7 @@ TEST(HttpPayload, AppendHttpBodyToMonostateAdopts) {
   HttpPayload body1;  // monostate
   HttpPayload body2(std::string("adopted"));
   body1.append(body2);
-  EXPECT_TRUE(body1.set());
+  EXPECT_FALSE(body1.empty());
   EXPECT_EQ(body1.view(), "adopted");
 }
 
@@ -187,7 +187,7 @@ TEST(HttpPayload, VectorChar) {
   std::vector<char> vec{char{0x01}, char{0x02}, char{0x03}};
   HttpPayload body(vec);
 
-  EXPECT_TRUE(body.set());
+  EXPECT_FALSE(body.empty());
   EXPECT_EQ(body.size(), 3U);
   EXPECT_EQ(std::memcmp(body.data(), "\x01\x02\x03", 3), 0);
   EXPECT_EQ(body.view(), std::string_view("\x01\x02\x03", 3));
@@ -207,7 +207,7 @@ TEST(HttpPayload, VectorByteData) {
   std::vector<std::byte> vec{std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
   HttpPayload body(vec);
 
-  EXPECT_TRUE(body.set());
+  EXPECT_FALSE(body.empty());
   EXPECT_EQ(body.size(), 3U);
   EXPECT_EQ(std::memcmp(body.data(), "\x01\x02\x03", 3), 0);
   EXPECT_EQ(body.view(), std::string_view("\x01\x02\x03", 3));
@@ -231,7 +231,7 @@ TEST(HttpPayload, CharBuffer) {
   buf[2] = char{0x0C};
   HttpPayload body(std::move(buf), 3);
 
-  EXPECT_TRUE(body.set());
+  EXPECT_FALSE(body.empty());
   EXPECT_EQ(body.size(), 3U);
   EXPECT_EQ(std::memcmp(body.data(), "\x0A\x0B\x0C", 3), 0);
   EXPECT_EQ(body.view(), std::string_view("\x0A\x0B\x0C", 3));
@@ -257,7 +257,7 @@ TEST(HttpPayload, ByteBuffer) {
   buf[2] = std::byte{0x1C};
   HttpPayload body(std::move(buf), 3);
 
-  EXPECT_TRUE(body.set());
+  EXPECT_FALSE(body.empty());
   EXPECT_EQ(body.size(), 3U);
   EXPECT_EQ(std::memcmp(body.data(), "\x1A\x1B\x1C", 3), 0);
   EXPECT_EQ(body.view(), std::string_view("\x1A\x1B\x1C", 3));
@@ -276,67 +276,90 @@ TEST(HttpPayload, ByteBuffer) {
   EXPECT_EQ(body.view(), std::string_view("\x1A\x1B\x1C\x1D\x1E\x1F\x20", 7));
 }
 
-// Additional tests: ensureAvailableCapacityExponential coverage for all storage variants
+namespace {
+
+constexpr bool kExponential[] = {false, true};
+
+void EnsureAvailableCapacity(HttpPayload& body, std::size_t capa, bool exponential) {
+  if (exponential) {
+    body.ensureAvailableCapacityExponential(capa);
+  } else {
+    body.ensureAvailableCapacity(capa);
+  }
+}
+
+}  // namespace
+
 TEST(HttpPayload, EnsureAvailableCapacity_Monostate) {
-  HttpPayload body;  // monostate
-  body.ensureAvailableCapacityExponential(4);
-  // after ensure, addSize should work (monostate becomes RawChars)
-  body.addSize(3);
-  EXPECT_EQ(body.size(), 3U);
+  for (bool exponential : kExponential) {
+    HttpPayload body;  // monostate
+    EnsureAvailableCapacity(body, 4, exponential);
+    // after ensure, addSize should work (monostate becomes RawChars)
+    body.addSize(3);
+    EXPECT_EQ(body.size(), 3U);
+  }
 }
 
 TEST(HttpPayload, EnsureAvailableCapacity_String) {
-  HttpPayload body(std::string("x"));
-  // current size 1, request capacity for +4
-  body.ensureAvailableCapacityExponential(4);
-  body.addSize(4);
-  EXPECT_EQ(body.size(), 5U);
+  for (bool exponential : kExponential) {
+    HttpPayload body(std::string("x"));
+    // current size 1, request capacity for +4
+    EnsureAvailableCapacity(body, 4, exponential);
+    body.addSize(4);
+    EXPECT_EQ(body.size(), 5U);
+  }
 }
 
 TEST(HttpPayload, EnsureAvailableCapacity_VectorChar) {
-  HttpPayload body(std::vector<char>{'a'});
+  for (bool exponential : kExponential) {
+    HttpPayload body(std::vector<char>{'a'});
 
-  body.ensureAvailableCapacityExponential(4);
-  body.ensureAvailableCapacityExponential(4);
-  body.ensureAvailableCapacityExponential(5);
-  body.addSize(2);
-  EXPECT_EQ(body.size(), 3U);
+    EnsureAvailableCapacity(body, 4, exponential);
+    body.addSize(2);
+    EXPECT_EQ(body.size(), 3U);
+  }
 }
 
 TEST(HttpPayload, EnsureAvailableCapacity_VectorByte) {
-  std::vector<std::byte> vec{std::byte{0x01}};
-  HttpPayload body(vec);
-  body.ensureAvailableCapacityExponential(4);
-  body.ensureAvailableCapacityExponential(4);
-  body.ensureAvailableCapacityExponential(5);
-  body.addSize(3);
-  EXPECT_EQ(body.size(), 4U);
+  for (bool exponential : kExponential) {
+    std::vector<std::byte> vec{std::byte{0x01}};
+    HttpPayload body(std::move(vec));
+    EnsureAvailableCapacity(body, 4, exponential);
+    EnsureAvailableCapacity(body, 4, exponential);
+    EnsureAvailableCapacity(body, 5, exponential);
+    body.addSize(3);
+    EXPECT_EQ(body.size(), 4U);
+  }
 }
 
 TEST(HttpPayload, EnsureAvailableCapacity_RawChars) {
-  RawChars raw(1);
-  HttpPayload body(std::move(raw));
-  body.ensureAvailableCapacityExponential(5);
-  body.addSize(4);
-  EXPECT_EQ(body.size(), 4U);
+  for (bool exponential : kExponential) {
+    RawChars raw(1);
+    HttpPayload body(std::move(raw));
+    EnsureAvailableCapacity(body, 5, exponential);
+    body.addSize(4);
+    EXPECT_EQ(body.size(), 4U);
+  }
 }
 
 TEST(HttpPayload, EnsureAvailableCapacity_CharBufferAndBytesBuffer) {
-  auto cbuf = std::make_unique<char[]>(3);
-  std::memcpy(cbuf.get(), "ABC", 3);
-  HttpPayload hb(std::move(cbuf), 3);
-  // calling ensure should convert CharBuffer -> RawChars so append works
-  hb.ensureAvailableCapacityExponential(0);
-  hb.append(std::string_view("D"));
-  EXPECT_EQ(hb.view(), "ABCD");
+  for (bool exponential : kExponential) {
+    auto cbuf = std::make_unique<char[]>(3);
+    std::memcpy(cbuf.get(), "ABC", 3);
+    HttpPayload body(std::move(cbuf), 3);
+    // calling ensure should convert CharBuffer -> RawChars so append works
+    EnsureAvailableCapacity(body, 0, exponential);
+    body.append(std::string_view("D"));
+    EXPECT_EQ(body.view(), "ABCD");
 
-  auto bbuf = std::make_unique<std::byte[]>(2);
-  bbuf[0] = std::byte{'X'};
-  bbuf[1] = std::byte{'Y'};
-  HttpPayload pb(std::move(bbuf), 2);
-  pb.ensureAvailableCapacityExponential(0);
-  pb.append(std::string_view("Z"));
-  EXPECT_EQ(pb.size(), 3U);
+    auto bbuf = std::make_unique<std::byte[]>(2);
+    bbuf[0] = std::byte{'X'};
+    bbuf[1] = std::byte{'Y'};
+    body = HttpPayload(std::move(bbuf), 2);
+    EnsureAvailableCapacity(body, 0, exponential);
+    body.append(std::string_view("Z"));
+    EXPECT_EQ(body.size(), 3U);
+  }
 }
 
 TEST(HttpPayload, ShrinkToFitReducesNonEmptyPayload) {
@@ -355,10 +378,90 @@ TEST(HttpPayload, ShrinkToFitReducesNonEmptyPayload) {
 
 TEST(HttpPayload, ShrinkToFitOnEmptyPayloadYieldsZeroCapacity) {
   HttpPayload empty;
-  EXPECT_FALSE(empty.set());
+  EXPECT_TRUE(empty.empty());
   // Ensure calling shrink on empty payload results in zero capacity storage
   empty.shrink_to_fit();
   // After shrink, empty payload should still be unset and size zero
   EXPECT_EQ(empty.size(), 0U);
   EXPECT_EQ(empty.view().size(), 0U);
+}
+
+TEST(HttpPayload, InsertEmptyDataDoesNothing) {
+  HttpPayload body(std::string("abcd"));
+
+  body.insert(2, "");
+  EXPECT_EQ(body.view(), "abcd");
+}
+
+TEST(HttpPayload, InsertFromEmpty) {
+  HttpPayload body;
+
+  body.insert(0, "data");
+  EXPECT_EQ(body.view(), "data");
+}
+
+TEST(HttpPayload, InsertFromCharVector) {
+  HttpPayload body(std::vector<char>{'a', 'b', 'c'});
+
+  body.insert(1, "data");
+  EXPECT_EQ(body.view(), "adatabc");
+}
+
+TEST(HttpPayload, InsertFromByteVector) {
+  HttpPayload body(std::vector<std::byte>{std::byte{'a'}, std::byte{'b'}, std::byte{'c'}});
+
+  body.insert(1, "data");
+  EXPECT_EQ(body.view(), "adatabc");
+}
+
+TEST(HttpPayload, InsertFromRawChars) {
+  RawChars rawChars(std::string_view("xyz", 3));
+  HttpPayload body(std::move(rawChars));
+
+  body.insert(2, "123");
+  EXPECT_EQ(body.view(), "xy123z");
+}
+
+TEST(HttpPayload, InsertOnString) {
+  HttpPayload body(std::string("abcd"));
+
+  body.insert(2, "XX");
+  EXPECT_EQ(body.view(), "abXXcd");
+}
+
+TEST(HttpPayload, InsertConvertsUniquePtrBufferToRawChars) {
+  auto buf = std::make_unique<char[]>(3);
+  std::memcpy(buf.get(), "abc", 3);
+  HttpPayload body(std::move(buf), 3);
+
+  body.insert(1, "XYZ");
+  EXPECT_EQ(body.view(), "aXYZbc");
+}
+
+TEST(HttpPayload, EnsureAvailableCapacity_CharBufferReserveAllowsAddSize) {
+  for (bool exponential : kExponential) {
+    auto buf = std::make_unique<char[]>(3);
+    std::memcpy(buf.get(), "ABC", 3);
+    HttpPayload body(std::move(buf), 3);
+
+    EnsureAvailableCapacity(body, 8, exponential);
+    body.addSize(5);
+
+    EXPECT_EQ(body.size(), 8U);
+    EXPECT_EQ(body.view().substr(0, 3), "ABC");
+  }
+}
+
+TEST(HttpPayload, EnsureAvailableCapacity_BytesBufferReserveAllowsAddSize) {
+  for (bool exponential : kExponential) {
+    auto buf = std::make_unique<std::byte[]>(2);
+    buf[0] = std::byte{'X'};
+    buf[1] = std::byte{'Y'};
+    HttpPayload body(std::move(buf), 2);
+    EnsureAvailableCapacity(body, 6, exponential);
+    body.addSize(4);
+
+    EXPECT_EQ(body.size(), 6U);
+    EXPECT_EQ(body.view().substr(0, 2), "XY");
+  }
 }

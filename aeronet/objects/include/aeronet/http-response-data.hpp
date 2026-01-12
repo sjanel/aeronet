@@ -43,20 +43,20 @@ class HttpResponseData {
   void addOffset(std::size_t sz) noexcept { _offset += sz; }
 
   void append(HttpResponseData other) {
-    if (_capturedBody.set()) {  // If our captured body is already set, we can only append other's data to it.
-      _capturedBody.append(other._headAndOptionalBody);
-      _capturedBody.append(other._capturedBody);
-    } else {
+    if (_capturedBody.empty()) {  // If our captured body is already set, we can only append other's data to it.
       _headAndOptionalBody.append(other._headAndOptionalBody);
       _capturedBody = std::move(other._capturedBody);
+    } else {
+      _capturedBody.append(other._headAndOptionalBody);
+      _capturedBody.append(other._capturedBody);
     }
   }
 
   void append(std::string_view data) {
-    if (_capturedBody.set()) {
-      _capturedBody.append(data);
-    } else {
+    if (_capturedBody.empty()) {
       _headAndOptionalBody.append(data);
+    } else {
+      _capturedBody.append(data);
     }
   }
 

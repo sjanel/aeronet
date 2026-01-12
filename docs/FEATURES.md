@@ -64,6 +64,7 @@ Where to look: see the "CONNECT (HTTP tunneling)" subsection and the Connection 
 - [x] Chunked Transfer-Encoding decoding (request) with trailer header support (RFC 7230 §4.1.2)
 - [x] Trailer header exposure (incoming chunked trailers)
 - [x] Outbound trailer headers (response trailers for both buffered and streaming responses)
+- [x] Automatic chunked encoding for buffered responses with trailers (RFC 7230 §4.1.2)
 - [x] Content-Encoding request body decompression (gzip, deflate, zstd, multi-layer, identity skip, safety limits)
 - [x] Multipart/form-data convenience utilities
 - [x] Forbidden trailer headers rejected for incoming chunked trailers (security)
@@ -781,6 +782,31 @@ router.setPath(http::Method::GET, "/data", [](const HttpRequest& req) {
 });
 ```
 
+**Automatic Chunked Encoding (RFC 7230 §4.1.2 compliance)**:
+
+When a buffered `HttpResponse` has trailers, aeronet **automatically converts** the response to chunked transfer encoding during finalization. This is required because:
+
+- Per RFC 7230 §4.1.2, trailers can only appear in chunked-encoded messages
+- The `Content-Length` header is **replaced** with `Transfer-Encoding: chunked`
+- The body is wrapped in chunked format: `hex(len)\r\n body \r\n 0\r\n trailers \r\n`
+
+This conversion is **transparent** to application code — simply set the body and add trailers, and aeronet handles the encoding conversion automatically.
+
+**Wire format example**:
+
+```text
+HTTP/1.1 200 OK
+Content-Type: text/plain
+Transfer-Encoding: chunked
+
+d\r\n
+response data\r\n
+0\r\n
+X-Checksum: abc123\r\n
+X-Timestamp: 2025-10-20T12:00:00Z\r\n
+\r\n
+```
+
 **Constraints**:
 
 - **Trailers MUST be added AFTER the body** is set (via `body()` or `bodyOwned()`)
@@ -876,6 +902,7 @@ Sending forbidden headers as trailers is **undefined behavior** and may break cl
 Comprehensive test coverage includes:
 
 - Buffered response trailers: 7 tests validating constraints, multiple trailers, empty values, chaining
+- Automatic chunked encoding: 10 tests validating RFC 7230 §4.1.2 compliance, inline/captured bodies, edge cases
 - Streaming response trailers: 5 tests validating chunked emission, fixed-length rejection, late addition
 - Integration tests verifying wire format compliance with RFC 7230 §4.1.2
 
@@ -2443,7 +2470,7 @@ router.setWebSocket("/ws",
                                                               websocket::WebSocketCallbacks{
                                                                 .onMessage =
                                                                     [](std::span<const std::byte> payload, bool isBinary) {
-                                                                      // TODO: handle message
+                                                                      // handle message
                                                                     },
                                                                 .onPing = {},
                                                                 .onPong = {},
