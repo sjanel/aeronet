@@ -1289,7 +1289,7 @@ void SingleHttpServer::applyPendingUpdates() {
     _eventLoop.updatePollTimeout(_config.pollInterval);
     updateMaintenanceTimer();
     registerBuiltInProbes();
-    createEncoders();
+    _compression.createEncoders(_config.compression);
 
 #ifdef AERONET_ENABLE_OPENSSL
     // If TLS config changed, rebuild the OpenSSL context.

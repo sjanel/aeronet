@@ -34,6 +34,11 @@
 #include "aeronet/test_util.hpp"
 #include "aeronet/toupperlower.hpp"
 
+#ifdef AERONET_ENABLE_BROTLI
+#include "aeronet/brotli-encoder.hpp"
+#include "brotli/encode.h"
+#endif
+
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-encoder.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
@@ -43,13 +48,11 @@
 #include "aeronet/zstd-encoder.hpp"
 #endif
 
-#ifdef AERONET_ENABLE_BROTLI
-#include "aeronet/brotli-encoder.hpp"
-#endif
-
 namespace aeronet {
 
 namespace {
+
+RawChars buf;
 
 std::mt19937 rng(12345);
 std::uniform_int_distribution<std::size_t> nbSpaces(0, 3);
@@ -100,7 +103,7 @@ constexpr std::string_view kKnownEncodingsWithIdentity[] = {
 #endif
 };
 
-RawChars compress(std::string_view alg, std::string_view input, [[maybe_unused]] std::size_t extraCapacity = 0) {
+RawChars compress(std::string_view alg, std::string_view input) {
   RawChars buf;
   CompressionConfig cc;
   if (CaseInsensitiveEqual(alg, "identity")) {
@@ -108,21 +111,41 @@ RawChars compress(std::string_view alg, std::string_view input, [[maybe_unused]]
 #ifdef AERONET_ENABLE_ZLIB
     // NOLINTNEXTLINE(readability-else-after-return)
   } else if (CaseInsensitiveEqual(alg, "gzip")) {
-    ZlibEncoder encoder(ZStreamRAII::Variant::gzip, cc);
-    encoder.encodeFull(extraCapacity, input, buf);
+    ZlibEncoder encoder(ZStreamRAII::Variant::gzip, buf, cc);
+    buf.reserve(64UL + deflateBound(nullptr, input.size()));
+    const std::size_t written = encoder.encodeFull(input, buf.capacity(), buf.data());
+    if (written == 0) {
+      throw std::runtime_error("gzip compression failed");
+    }
+    buf.setSize(written);
   } else if (CaseInsensitiveEqual(alg, "deflate")) {
-    ZlibEncoder encoder(ZStreamRAII::Variant::deflate, cc);
-    encoder.encodeFull(extraCapacity, input, buf);
+    ZlibEncoder encoder(ZStreamRAII::Variant::deflate, buf, cc);
+    buf.reserve(64UL + deflateBound(nullptr, input.size()));
+    const std::size_t written = encoder.encodeFull(input, buf.capacity(), buf.data());
+    if (written == 0) {
+      throw std::runtime_error("deflate compression failed");
+    }
+    buf.setSize(written);
 #endif
 #ifdef AERONET_ENABLE_ZSTD
   } else if (CaseInsensitiveEqual(alg, "zstd")) {
-    ZstdEncoder zencoder(cc);
-    zencoder.encodeFull(extraCapacity, input, buf);
+    ZstdEncoder encoder(buf, cc);
+    buf.reserve(ZSTD_compressBound(input.size()));
+    const std::size_t written = encoder.encodeFull(input, buf.capacity(), buf.data());
+    if (written == 0) {
+      throw std::runtime_error("zstd compression failed");
+    }
+    buf.setSize(written);
 #endif
 #ifdef AERONET_ENABLE_BROTLI
   } else if (CaseInsensitiveEqual(alg, "br")) {
-    BrotliEncoder encoder(cc);
-    encoder.encodeFull(extraCapacity, input, buf);
+    BrotliEncoder encoder(buf, cc);
+    buf.reserve(BrotliEncoderMaxCompressedSize(input.size()));
+    const std::size_t written = encoder.encodeFull(input, buf.capacity(), buf.data());
+    if (written == 0) {
+      throw std::runtime_error("brotli compression failed");
+    }
+    buf.setSize(written);
 #endif
   } else {
     // Unsupported algorithm, do not compress

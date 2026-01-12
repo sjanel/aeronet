@@ -175,16 +175,16 @@ HttpResponse& HttpResponse::reason(std::string_view newReason) & {
   return *this;
 }
 
-void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue, OnlyIfNew onlyIfNew) {
+bool HttpResponse::setHeader(std::string_view newKey, std::string_view newValue, OnlyIfNew onlyIfNew) {
   assert(http::IsValidHeaderName(newKey));
 
   auto optValue = headerValue(newKey);
   if (!optValue) {
     headerAddLine(newKey, newValue);
-    return;
+    return true;
   }
   if (onlyIfNew == OnlyIfNew::Yes) {
-    return;
+    return false;
   }
 
   char* valueFirst = _data.data() + (optValue->data() - _data.data());
@@ -193,7 +193,7 @@ void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
   const auto diff = static_cast<int64_t>(newValue.size()) - static_cast<int64_t>(oldHeaderValueSz);
   if (diff == 0) {
     std::memcpy(valueFirst, newValue.data(), newValue.size());
-    return;
+    return true;
   }
 
   const auto valuePos = static_cast<std::size_t>(valueFirst - _data.data());
@@ -210,6 +210,8 @@ void HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
   _data.addSize(static_cast<std::size_t>(diff));
 
   adjustBodyStart(diff);
+
+  return true;
 }
 
 namespace {
@@ -420,6 +422,8 @@ std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) 
 HttpResponse& HttpResponse::headerAddLine(std::string_view key, std::string_view value) & {
   assert(http::IsValidHeaderName(key) && !CaseInsensitiveEqual(key, http::Date));
 
+  // TODO: Trim value ? Same for trailers.
+
   const std::size_t headerLineSize = HeaderSize(key.size(), value.size());
 
   _data.ensureAvailableCapacityExponential(headerLineSize);
@@ -434,7 +438,6 @@ HttpResponse& HttpResponse::headerAddLine(std::string_view key, std::string_view
     // We want to keep Content-Type and Content-Length together with the body (we use this property for optimization)
     // so we insert new headers before them. Of course, this code takes time, but it should be rare to add headers
     // after setting the body, so we can consider this as a 'slow' path.
-    // Find the position of the Content-Type header going backwards from body start.
     insertPtr = getContentTypeHeaderLinePtr(bodySz);
     std::memmove(insertPtr + headerLineSize, insertPtr, static_cast<std::size_t>(_data.end() - insertPtr));
   }
