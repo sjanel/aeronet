@@ -26,9 +26,10 @@ BrotliEncoderContext::BrotliEncoderContext(RawChars &sharedBuf, int quality, int
   assert(res == BROTLI_TRUE);
 }
 
-std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) {
+std::string_view BrotliEncoderContext::encodeChunk(std::string_view chunk) {
   const uint8_t *nextIn = reinterpret_cast<const uint8_t *>(chunk.data());
   const BrotliEncoderOperation op = chunk.empty() ? BROTLI_OPERATION_FINISH : BROTLI_OPERATION_PROCESS;
+  const auto chunkCapacity = BrotliEncoderMaxCompressedSize(chunk.size());
   std::size_t availIn = chunk.size();
 
   // Semantics:
@@ -36,7 +37,7 @@ std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize,
   //  - If finish == true: keep invoking the encoder until the stream reports finished (all input consumed and flush
   //  complete).
   for (_buf.clear();;) {
-    _buf.ensureAvailableCapacityExponential(encoderChunkSize);
+    _buf.ensureAvailableCapacityExponential(chunkCapacity);
 
     uint8_t *nextOut = reinterpret_cast<uint8_t *>(_buf.data() + _buf.size());
     std::size_t availOut = _buf.availableCapacity();
@@ -64,22 +65,17 @@ std::string_view BrotliEncoderContext::encodeChunk(std::size_t encoderChunkSize,
   return _buf;
 }
 
-void BrotliEncoder::encodeFull(std::size_t extraCapacity, std::string_view data, RawChars &buf) {
-  const auto oldSize = buf.size();
-  const std::size_t maxCompressedSize = BrotliEncoderMaxCompressedSize(data.size());
-
-  buf.ensureAvailableCapacity(maxCompressedSize + extraCapacity);
-
-  auto *dst = reinterpret_cast<uint8_t *>(buf.data() + oldSize);
-  std::size_t outSize = maxCompressedSize;
+std::size_t BrotliEncoder::encodeFull(std::string_view data, std::size_t availableCapacity, char *buf) const {
+  uint8_t *dst = reinterpret_cast<uint8_t *>(buf);
+  std::size_t outSize = availableCapacity;
 
   if (BrotliEncoderCompress(_quality, _window, BROTLI_MODE_GENERIC, data.size(),
                             reinterpret_cast<const uint8_t *>(data.data()), &outSize, dst) == BROTLI_FALSE)
       [[unlikely]] {
-    throw std::runtime_error("BrotliEncoderCompress failed");
+    outSize = 0;
   }
 
-  buf.setSize(oldSize + outSize);
+  return outSize;
 }
 
 }  // namespace aeronet

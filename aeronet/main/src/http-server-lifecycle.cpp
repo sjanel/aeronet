@@ -10,7 +10,6 @@
 #include <thread>
 #include <utility>
 
-#include "aeronet/encoding.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/http-method.hpp"
@@ -29,19 +28,6 @@
 #include "aeronet/timer-fd.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
-
-#ifdef AERONET_ENABLE_BROTLI
-#include "aeronet/brotli-encoder.hpp"
-#endif
-
-#ifdef AERONET_ENABLE_ZLIB
-#include "aeronet/zlib-encoder.hpp"
-#include "aeronet/zlib-stream-raii.hpp"
-#endif
-
-#ifdef AERONET_ENABLE_ZSTD
-#include "aeronet/zstd-encoder.hpp"
-#endif
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-context.hpp"
@@ -285,7 +271,7 @@ void SingleHttpServer::initListener() {
   _eventLoop.addOrThrow(EventLoop::EventFd{_maintenanceTimer.fd(), EventIn});
 
   // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
-  createEncoders();
+  _compression.createEncoders(_config.compression);
 }
 
 void SingleHttpServer::prepareRun() {
@@ -443,21 +429,6 @@ void SingleHttpServer::registerBuiltInProbes() {
     }
     return resp;
   });
-}
-
-void SingleHttpServer::createEncoders() {
-#ifdef AERONET_ENABLE_ZLIB
-  _compression.encoders[static_cast<std::size_t>(Encoding::gzip)] =
-      std::make_unique<ZlibEncoder>(ZStreamRAII::Variant::gzip, _config.compression);
-  _compression.encoders[static_cast<std::size_t>(Encoding::deflate)] =
-      std::make_unique<ZlibEncoder>(ZStreamRAII::Variant::deflate, _config.compression);
-#endif
-#ifdef AERONET_ENABLE_ZSTD
-  _compression.encoders[static_cast<std::size_t>(Encoding::zstd)] = std::make_unique<ZstdEncoder>(_config.compression);
-#endif
-#ifdef AERONET_ENABLE_BROTLI
-  _compression.encoders[static_cast<std::size_t>(Encoding::br)] = std::make_unique<BrotliEncoder>(_config.compression);
-#endif
 }
 
 }  // namespace aeronet
