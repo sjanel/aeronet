@@ -3,11 +3,16 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
+#include <ios>
+#include <sstream>
+#include <string>
+
 using namespace aeronet;
 
 TEST(CharHexConverter, ToLowerHexBasic) {
   char buf[3] = {};
-  char *end = to_lower_hex(',', buf);
+  char* end = to_lower_hex(',', buf);
   EXPECT_EQ(end, buf + 2);
   buf[2] = '\0';
   EXPECT_STREQ(buf, "2c");
@@ -20,7 +25,7 @@ TEST(CharHexConverter, ToLowerHexBasic) {
 
 TEST(CharHexConverter, ToUpperHexBasic) {
   char buf[3] = {};
-  char *end = to_upper_hex(',', buf);
+  char* end = to_upper_hex(',', buf);
   EXPECT_EQ(end, buf + 2);
   buf[2] = '\0';
   EXPECT_STREQ(buf, "2C");
@@ -97,4 +102,52 @@ TEST(CharHexConverter, RoundTrip) {
     int value = (hi << 4) | lo;
     EXPECT_EQ(value, i);
   }
+}
+
+TEST(CharHexConverterSizeT, HexDigitsAndToLower) {
+  EXPECT_EQ(kMaxHexDigitsSizeT, 2UL * sizeof(size_t));
+
+  static constexpr std::size_t vals[]{0U,   1U,    15U,   16U,     255U,
+                                      256U, 4095U, 4096U, 0x1234U, static_cast<std::size_t>(-1)};
+  for (std::size_t val : vals) {
+    std::ostringstream oss;
+    oss << std::hex << std::nouppercase << val;
+    const std::string expect = oss.str();
+
+    const std::size_t digits = hex_digits(val);
+    EXPECT_EQ(digits, expect.size());
+
+    char buf[kMaxHexDigitsSizeT + 1];
+    char* end = to_lower_hex(val, buf);
+    *end = '\0';
+    EXPECT_STREQ(buf, expect.c_str());
+    EXPECT_EQ(static_cast<std::size_t>(end - buf), expect.size());
+  }
+}
+
+TEST(CharHexConverterSizeT, ToUpperHexAndRoundTrip) {
+  static constexpr std::size_t vals[]{0U, 1U, 0xAU, 0x10U, 0xFFU, 0x100U, 0xDEADBEEFU};
+  for (std::size_t val : vals) {
+    char buf[kMaxHexDigitsSizeT + 1];
+    char* end = to_upper_hex(val, buf);
+    *end = '\0';
+
+    // Reconstruct numeric value from hex digits using from_hex_digit
+    std::size_t reconstructed = 0;
+    for (char* ptr = buf; ptr < end; ++ptr) {
+      int dec = from_hex_digit(*ptr);
+      EXPECT_GE(dec, 0);
+      reconstructed = (reconstructed << 4) | static_cast<std::size_t>(dec);
+    }
+    EXPECT_EQ(reconstructed, val);
+  }
+}
+
+TEST(CharHexConverterSizeT, LargeValueFormatting) {
+  const std::size_t maxv = static_cast<std::size_t>(-1);
+  char buf[kMaxHexDigitsSizeT + 1];
+  char* end = to_lower_hex(maxv, buf);
+  *end = '\0';
+  // Expect length equals kMaxHexDigitsSizeT
+  EXPECT_EQ(static_cast<std::size_t>(end - buf), kMaxHexDigitsSizeT);
 }

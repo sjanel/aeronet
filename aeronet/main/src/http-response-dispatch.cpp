@@ -251,7 +251,7 @@ void SingleHttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRespon
     internal::HttpCodec::TryCompressResponse(_compression, _config.compression, request, resp);
   }
 
-  queueFormattedHttp1Response(cnxIt, resp.finalizeForHttp1(request.version(), SysClock::now(), !keepAlive,
+  queueFormattedHttp1Response(cnxIt, resp.finalizeForHttp1(SysClock::now(), request.version(), !keepAlive,
                                                            _config.globalHeaders, isHead, _config.minCapturedBodySize));
 
   state.inBuffer.erase_front(consumedBytes);
