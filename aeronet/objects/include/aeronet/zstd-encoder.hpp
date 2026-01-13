@@ -14,10 +14,16 @@ namespace aeronet {
 
 namespace details {
 
+struct ZstdCtxDeleter {
+  void operator()(ZSTD_CCtx* ctx) const noexcept { ZSTD_freeCCtx(ctx); }
+};
+
 struct ZstdContextRAII {
+  ZstdContextRAII() noexcept = default;
+
   ZstdContextRAII(int level, int windowLog);
 
-  std::unique_ptr<ZSTD_CCtx, void (*)(ZSTD_CCtx*)> ctx;
+  std::unique_ptr<ZSTD_CCtx, ZstdCtxDeleter> ctx;
   int level{0};
 };
 
@@ -28,24 +34,26 @@ class ZstdEncoderContext final : public EncoderContext {
   ZstdEncoderContext(RawChars& sharedBuf, const CompressionConfig::Zstd& cfg)
       : _buf(sharedBuf), _zs(cfg.compressionLevel, cfg.windowLog) {}
 
-  std::string_view encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) override;
+  std::string_view encodeChunk(std::string_view chunk) override;
 
  private:
   RawChars& _buf;
   details::ZstdContextRAII _zs;
 };
 
-class ZstdEncoder final : public Encoder {
+class ZstdEncoder {
  public:
-  explicit ZstdEncoder(const CompressionConfig& cfg, std::size_t initialCapacity = 4096UL)
-      : _buf(initialCapacity), _cfg(cfg.zstd), _zs(_cfg.compressionLevel, _cfg.windowLog) {}
+  ZstdEncoder() noexcept = default;
 
-  void encodeFull(std::size_t extraCapacity, std::string_view data, RawChars& buf) override;
+  explicit ZstdEncoder(RawChars& buf, const CompressionConfig& cfg)
+      : pBuf(&buf), _cfg(cfg.zstd), _zs(_cfg.compressionLevel, _cfg.windowLog) {}
 
-  std::unique_ptr<EncoderContext> makeContext() override { return std::make_unique<ZstdEncoderContext>(_buf, _cfg); }
+  std::size_t encodeFull(std::string_view data, std::size_t availableCapacity, char* buf) const;
+
+  std::unique_ptr<EncoderContext> makeContext() { return std::make_unique<ZstdEncoderContext>(*pBuf, _cfg); }
 
  private:
-  RawChars _buf;
+  RawChars* pBuf{nullptr};
   CompressionConfig::Zstd _cfg;
   details::ZstdContextRAII _zs;
 };

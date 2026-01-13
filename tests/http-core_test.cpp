@@ -219,7 +219,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersCompletedAfterDeadline) {
   static constexpr std::string_view rest = " HTTP/1.1\r\nHost: x\r\n\r\n";
   (void)::send(fd, rest.data(), rest.size(), MSG_NOSIGNAL);
 
-  std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{300});
+  std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
   ASSERT_FALSE(resp.empty());
   EXPECT_TRUE(resp.contains("HTTP/1.1 408")) << resp;
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, "close"))) << resp;

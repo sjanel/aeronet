@@ -819,10 +819,6 @@ class HttpResponse {
   //   Trailers MUST be added AFTER the body has been set (via body() or its overloads).
   //   If called before body is set, throws std::logic_error.
   //
-  // Rationale:
-  //   To avoid additional allocations, trailers are appended directly to the body buffer:
-  //   This zero-allocation design requires the body to be finalized first.
-  //
   // Trailer semantics (per RFC 7230 §4.1.2):
   //   - Trailers are sent after the message body in chunked transfer encoding.
   //   - Certain headers MUST NOT appear as trailers (e.g., Transfer-Encoding, Content-Length,
@@ -831,6 +827,10 @@ class HttpResponse {
   //     validation may be added in debug builds).
   //   - Typical use: computed metadata available only after body generation (checksums,
   //     signatures, etc.).
+  //   - Adding trailers for HTTP/1.1 has an additional transformation cost of the response.
+  //     We need to switch to chunked transfer encoding and this will move internal parts
+  //     of the buffer. If you use trailers frequently, consider using HTTP/2 which has a
+  //     more efficient encoding for trailers, or HttpResponseWriter which manages this better.
   HttpResponse& trailerAddLine(std::string_view name, std::string_view value) &;
 
   // Adds a trailer header to be sent after the response body (RFC 7230 §4.1.2).
@@ -897,7 +897,8 @@ class HttpResponse {
 
   enum class OnlyIfNew : std::uint8_t { No, Yes };
 
-  void setHeader(std::string_view key, std::string_view value, OnlyIfNew onlyIfNew = OnlyIfNew::No);
+  // Return true if a new header was added or replaced.
+  bool setHeader(std::string_view key, std::string_view value, OnlyIfNew onlyIfNew = OnlyIfNew::No);
 
   void setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize, bool setContentTypeIfPresent = true);
 

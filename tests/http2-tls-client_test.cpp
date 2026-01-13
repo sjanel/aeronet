@@ -97,11 +97,11 @@ TEST(TlsHttp2Client, PostRequestWithBody) {
 #ifdef AERONET_ENABLE_ZLIB
 TEST(TlsHttp2Client, AutomaticResponseCompressionRespectsConfig) {
   TlsHttp2TestServer ts([](HttpServerConfig& cfg) {
-    cfg.compression.minBytes = 1;
-    cfg.compression.addVaryHeader = true;
+    cfg.compression.minBytes = 16UL;
+    cfg.compression.addVaryAcceptEncodingHeader = true;
   });
 
-  const std::string plainBody = "Hello, compressed HTTP/2!";
+  const std::string plainBody(16UL * 1024UL, 'A');
   ts.setDefault([&](const HttpRequest& /*req*/) { return HttpResponse().status(200).body(plainBody); });
 
   TlsHttp2Client client(ts.port());
@@ -139,9 +139,12 @@ TEST(TlsHttp2Client, AutomaticRequestDecompressionDeliversCanonicalBody) {
   const std::string plain = "Hello request decompression over h2";
 
   CompressionConfig compressionCfg;
-  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, compressionCfg);
-  RawChars compressed;
-  encoder.encodeFull(0, plain, compressed);
+  RawChars buf;
+  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, buf, compressionCfg);
+  RawChars compressed(64UL + plain.size());
+  const std::size_t written = encoder.encodeFull(plain, compressed.capacity(), compressed.data());
+  ASSERT_GT(written, 0UL);
+  compressed.setSize(static_cast<std::size_t>(written));
   const std::string compressedBody(compressed.data(), compressed.size());
 
   TlsHttp2Client client(ts.port());

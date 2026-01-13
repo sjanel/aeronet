@@ -16,28 +16,30 @@ class BrotliEncoderContext final : public EncoderContext {
  public:
   BrotliEncoderContext(RawChars &sharedBuf, int quality, int window);
 
-  std::string_view encodeChunk(std::size_t encoderChunkSize, std::string_view chunk) override;
+  std::string_view encodeChunk(std::string_view chunk) override;
 
  private:
   std::unique_ptr<BrotliEncoderState, void (*)(BrotliEncoderState *)> _state;
   RawChars &_buf;
 };
 
-class BrotliEncoder final : public Encoder {
+class BrotliEncoder {
  public:
-  explicit BrotliEncoder(const CompressionConfig &cfg, std::size_t initialCapacity = 4096UL)
-      : _buf(initialCapacity), _quality(cfg.brotli.quality), _window(cfg.brotli.window) {}
+  BrotliEncoder() noexcept = default;
 
-  void encodeFull(std::size_t extraCapacity, std::string_view data, RawChars &buf) override;
+  explicit BrotliEncoder(RawChars &buf, const CompressionConfig &cfg)
+      : pBuf(&buf), _quality(cfg.brotli.quality), _window(cfg.brotli.window) {}
 
-  std::unique_ptr<EncoderContext> makeContext() override {
-    return std::make_unique<BrotliEncoderContext>(_buf, _quality, _window);
+  std::size_t encodeFull(std::string_view data, std::size_t availableCapacity, char *buf) const;
+
+  std::unique_ptr<EncoderContext> makeContext() {
+    return std::make_unique<BrotliEncoderContext>(*pBuf, _quality, _window);
   }
 
  private:
-  RawChars _buf;
-  int _quality;
-  int _window;
+  RawChars *pBuf{nullptr};
+  int _quality{};
+  int _window{};
 };
 
 }  // namespace aeronet

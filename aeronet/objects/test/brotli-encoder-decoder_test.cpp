@@ -15,6 +15,7 @@
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "brotli/encode.h"
 
 #if AERONET_WANT_MALLOC_OVERRIDES
 #include <new>
@@ -23,8 +24,8 @@
 namespace aeronet {
 
 namespace {
+RawChars buf;
 
-constexpr std::size_t kEncoderChunkSize = 512;
 constexpr std::size_t kDecoderChunkSize = 256;
 constexpr std::size_t kExtraCapacity = 0;
 constexpr std::size_t kMaxPlainBytes = 2UL * 1024 * 1024;
@@ -38,9 +39,17 @@ std::vector<std::string> SamplePayloads() {
   return payloads;
 }
 
+void EncodeFull(BrotliEncoder& encoder, std::string_view payload, RawChars& out, std::size_t extraCapacity = 0) {
+  out.clear();
+  out.reserve(BrotliEncoderMaxCompressedSize(payload.size()) + extraCapacity);
+  const std::size_t written = encoder.encodeFull(payload, out.capacity(), out.data());
+  ASSERT_GT(written, 0UL);
+  out.setSize(static_cast<RawChars::size_type>(written));
+}
+
 void ExpectOneShotRoundTrip(BrotliEncoder& encoder, std::string_view payload) {
   RawChars compressed;
-  encoder.encodeFull(kExtraCapacity, payload, compressed);
+  EncodeFull(encoder, payload, compressed, kExtraCapacity);
   RawChars decompressed;
   ASSERT_TRUE(
       BrotliDecoder::decompressFull(std::string_view(compressed), kMaxPlainBytes, kDecoderChunkSize, decompressed));
@@ -55,12 +64,12 @@ RawChars BuildStreamingCompressed(BrotliEncoder& encoder, std::string_view paylo
     const std::size_t take = std::min(split, remaining.size());
     const auto chunk = remaining.substr(0, take);
     remaining.remove_prefix(take);
-    const auto produced = ctx->encodeChunk(kEncoderChunkSize, chunk);
+    const auto produced = ctx->encodeChunk(chunk);
     if (!produced.empty()) {
       compressed.append(produced);
     }
   }
-  const auto tail = ctx->encodeChunk(kEncoderChunkSize, {});
+  const auto tail = ctx->encodeChunk({});
   if (!tail.empty()) {
     compressed.append(tail);
   }
@@ -108,12 +117,25 @@ TEST(BrotliDecoderTest, MallocConstructorFails) {
 
 #endif
 
+TEST(BrotliEncoderDecoderTest, EncodeChunkAfterFinalizationThrows) {
+  // Finish the stream, then try to encode more data: should error deterministically.
+  CompressionConfig cfg;
+  BrotliEncoder encoder(buf, cfg);
+  auto ctx = encoder.makeContext();
+  // Produce some initial data.
+  (void)ctx->encodeChunk("Test data");
+  // Finalize the stream.
+  (void)ctx->encodeChunk({});
+  // Encoding after finalization should result in a brotli stream error.
+  EXPECT_THROW(ctx->encodeChunk("More data"), std::runtime_error);
+}
+
 TEST(BrotliEncoderDecoderTest, EncodeFullHandlesEmptyPayload) {
   CompressionConfig cfg;
-  BrotliEncoder encoder(cfg);
+  BrotliEncoder encoder(buf, cfg);
 
   RawChars compressed;
-  encoder.encodeFull(kExtraCapacity, std::string_view{}, compressed);
+  EncodeFull(encoder, std::string_view{}, compressed, kExtraCapacity);
   EXPECT_GT(compressed.size(), 0U);  // should produce some output even for empty input
 
   RawChars decompressed;
@@ -124,9 +146,9 @@ TEST(BrotliEncoderDecoderTest, EncodeFullHandlesEmptyPayload) {
 TEST(BrotliEncoderDecoderTest, MaxDecompressedBytes) {
   for (const auto& payload : SamplePayloads()) {
     CompressionConfig cfg;
-    BrotliEncoder encoder(cfg);
+    BrotliEncoder encoder(buf, cfg);
     RawChars compressed;
-    encoder.encodeFull(kExtraCapacity, payload, compressed);
+    EncodeFull(encoder, payload, compressed, kExtraCapacity);
 
     RawChars decompressed;
     const std::size_t limit = payload.empty() ? 0 : payload.size() - 1;
@@ -138,7 +160,7 @@ TEST(BrotliEncoderDecoderTest, MaxDecompressedBytes) {
 
 TEST(BrotliEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
   CompressionConfig cfg;
-  BrotliEncoder encoder(cfg);
+  BrotliEncoder encoder(buf, cfg);
 
   for (const auto& payload : SamplePayloads()) {
     SCOPED_TRACE(testing::Message() << "payload bytes=" << payload.size());
@@ -148,7 +170,7 @@ TEST(BrotliEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
 
 TEST(BrotliEncoderDecoderTest, StreamingRoundTripsAcrossChunkSplits) {
   CompressionConfig cfg;
-  BrotliEncoder encoder(cfg);
+  BrotliEncoder encoder(buf, cfg);
 
   static constexpr std::array kSplits{1ULL, 5ULL, 113ULL, 4096ULL, 10000ULL};
   for (const auto& payload : SamplePayloads()) {
@@ -161,7 +183,7 @@ TEST(BrotliEncoderDecoderTest, StreamingRoundTripsAcrossChunkSplits) {
 
 TEST(BrotliEncoderDecoderTest, StreamingDecoderHandlesChunkSplits) {
   CompressionConfig cfg;
-  BrotliEncoder encoder(cfg);
+  BrotliEncoder encoder(buf, cfg);
   static constexpr std::array<std::size_t, 4> kDecodeSplits{1U, 7U, 257U, 4096U};
   for (const auto& payload : SamplePayloads()) {
     for (const auto split : kDecodeSplits) {
@@ -173,11 +195,11 @@ TEST(BrotliEncoderDecoderTest, StreamingDecoderHandlesChunkSplits) {
 
 TEST(BrotliEncoderDecoderTest, StreamingAndOneShotProduceSameOutput) {
   CompressionConfig cfg;
-  BrotliEncoder encoder(cfg);
+  BrotliEncoder encoder(buf, cfg);
 
   for (const auto& payload : SamplePayloads()) {
     RawChars oneShotCompressed;
-    encoder.encodeFull(kExtraCapacity, payload, oneShotCompressed);
+    EncodeFull(encoder, payload, oneShotCompressed, kExtraCapacity);
 
     RawChars streamingCompressed;
     static constexpr std::size_t kSplit = 128U;
@@ -187,12 +209,12 @@ TEST(BrotliEncoderDecoderTest, StreamingAndOneShotProduceSameOutput) {
       const std::size_t take = std::min(kSplit, remaining.size());
       const auto chunk = remaining.substr(0, take);
       remaining.remove_prefix(take);
-      const auto produced = ctx->encodeChunk(kEncoderChunkSize, chunk);
+      const auto produced = ctx->encodeChunk(chunk);
       if (!produced.empty()) {
         streamingCompressed.append(produced);
       }
     }
-    const auto tail = ctx->encodeChunk(kEncoderChunkSize, {});
+    const auto tail = ctx->encodeChunk({});
     if (!tail.empty()) {
       streamingCompressed.append(tail);
     }
@@ -221,12 +243,12 @@ TEST(BrotliEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
   const std::string payload = test::MakePatternedPayload(1024);
 
   CompressionConfig cfg;
-  BrotliEncoder encoder(cfg, 1);
+  BrotliEncoder encoder(buf, cfg);
   auto ctx = encoder.makeContext();
   RawChars compressed;
-  const auto produced = ctx->encodeChunk(1, std::string_view(payload));
+  const auto produced = ctx->encodeChunk(std::string_view(payload));
   compressed.append(produced);
-  const auto tail = ctx->encodeChunk(1, {});
+  const auto tail = ctx->encodeChunk({});
   compressed.append(tail);
 
   RawChars decompressed;
@@ -245,14 +267,14 @@ TEST(BrotliEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIterat
   static constexpr std::size_t kChunkSize = 1UL;  // small to force multiple iterations; encoder will grow as needed
 #endif
   CompressionConfig cfg;
-  BrotliEncoder encoder(cfg, kChunkSize);
+  BrotliEncoder encoder(buf, cfg);
   auto ctx = encoder.makeContext();
   RawChars compressed;
 
   const auto produced =
-      ctx->encodeChunk(kChunkSize, std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()));
+      ctx->encodeChunk(std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()));
   compressed.append(produced);
-  const auto tail = ctx->encodeChunk(kChunkSize, {});
+  const auto tail = ctx->encodeChunk({});
   compressed.append(tail);
 
   // Expect more than one chunk worth of output, implying multiple loop iterations.
@@ -267,9 +289,9 @@ TEST(BrotliEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIterat
 
 TEST(BrotliEncoderDecoderTest, RepeatedDecompressDoesNotGrowCapacity) {
   CompressionConfig cfg;
-  BrotliEncoder encoder(cfg);
+  BrotliEncoder encoder(buf, cfg);
   RawChars compressed;
-  encoder.encodeFull(kExtraCapacity, "Hello, Brotli compression!", compressed);
+  EncodeFull(encoder, "Hello, Brotli compression!", compressed, kExtraCapacity);
 
   RawChars decompressed;
   ASSERT_TRUE(

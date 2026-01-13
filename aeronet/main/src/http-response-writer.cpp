@@ -118,7 +118,7 @@ void HttpResponseWriter::ensureHeadersSent() {
   // If compression already activated (delayed strategy) but header not sent yet, add Content-Encoding now.
   if (_compressionActivated) {
     _fixedResponse.setHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
-    if (_server->_config.compression.addVaryHeader) {
+    if (_server->_config.compression.addVaryAcceptEncodingHeader) {
       _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
     }
   }
@@ -218,7 +218,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
   ensureHeadersSent();
 
   if (_activeEncoderCtx) {
-    data = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, data);
+    data = _activeEncoderCtx->encodeChunk(data);
     if (data.empty()) {
       return true;
     }
@@ -285,8 +285,7 @@ void HttpResponseWriter::end() {
   // Otherwise we may still have buffered identity bytes (below threshold case) — emit headers now then flush.
   ensureHeadersSent();
   if (_compressionActivated) {
-    const auto& compressionConfig = _server->_config.compression;
-    auto last = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, std::string_view{});
+    auto last = _activeEncoderCtx->encodeChunk(std::string_view{});
     if (!last.empty()) {
       if (chunked()) {
         emitChunk(last);
@@ -378,20 +377,19 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
     return true;
   }
   // Threshold reached exactly or exceeded: activate encoder.
-  auto& encoderPtr = _server->_compression.encoders[static_cast<std::size_t>(_compressionFormat)];
-  _activeEncoderCtx = encoderPtr->makeContext();
+  _activeEncoderCtx = _server->_compression.makeContext(_compressionFormat);
   _compressionActivated = true;
   // Set Content-Encoding prior to emitting headers.
   // We can use headerAddLine instead of header because at this point the user has not set it.
   if (_state != HttpResponseWriter::State::HeadersSent) {
     _fixedResponse.headerAddLine(http::ContentEncoding, GetEncodingStr(_compressionFormat));
-    if (_server->_config.compression.addVaryHeader) {
+    if (_server->_config.compression.addVaryAcceptEncodingHeader) {
       _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
     }
   }
   ensureHeadersSent();
   // Compress buffered bytes.
-  auto firstOut = _activeEncoderCtx->encodeChunk(compressionConfig.encoderChunkSize, _preCompressBuffer);
+  auto firstOut = _activeEncoderCtx->encodeChunk(_preCompressBuffer);
   _preCompressBuffer.clear();
   if (!firstOut.empty()) {
     if (chunked()) {

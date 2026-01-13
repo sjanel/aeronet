@@ -432,8 +432,19 @@ void SingleHttpServer::handleReadableClient(int fd) {
   ConnectionState& cnx = *cnxIt->second;
   cnx.lastActivity = std::chrono::steady_clock::now();
 
-  // outBuffer should always be flushed at the end of this function
-  assert(cnx.outBuffer.empty());
+  // NOTE: cnx.outBuffer can legitimately be non-empty when we get EPOLLIN.
+  // This happens with partial writes and very commonly with TLS (SSL_read/handshake progress
+  // can generate outbound records that must be written before further progress).
+  // Opportunistically flush here; if still blocked on write, yield and wait for EPOLLOUT.
+  if (!cnx.outBuffer.empty()) {
+    flushOutbound(cnxIt);
+    if (!cnx.outBuffer.empty()) {
+      if (!cnx.waitingWritable) {
+        enableWritableInterest(cnxIt);
+      }
+      return;
+    }
+  }
 
   // If in tunneling mode, read raw bytes and forward to peer
   if (cnx.isTunneling()) {

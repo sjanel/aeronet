@@ -285,7 +285,7 @@ TEST(HttpStreamingCompression, StreamingWriterAppendsVaryAcceptEncoding) {
   compression.minBytes = 8;
   compression.preferredFormats.clear();
   compression.preferredFormats.push_back(Encoding::gzip);
-  compression.addVaryHeader = true;
+  compression.addVaryAcceptEncodingHeader = true;
 
   ts.postConfigUpdate([compression](HttpServerConfig& serverCfg) { serverCfg.withCompression(compression); });
 
@@ -318,7 +318,7 @@ TEST(HttpStreamingCompression, AddHeaderContentEncodingIdentityShouldNotAutomati
   CompressionConfig compression;
   compression.minBytes = 8;
   compression.preferredFormats = {Encoding::gzip};
-  compression.addVaryHeader = false;
+  compression.addVaryAcceptEncodingHeader = false;
 
   ts.postConfigUpdate([compression](HttpServerConfig& serverCfg) { serverCfg.withCompression(compression); });
 
