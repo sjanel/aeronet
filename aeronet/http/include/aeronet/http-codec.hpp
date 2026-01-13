@@ -1,8 +1,6 @@
 #pragma once
 
-#include <array>
 #include <cstddef>
-#include <memory>
 #include <span>
 #include <string_view>
 
@@ -10,12 +8,23 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoder.hpp"
-#include "aeronet/encoding.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
+
+#ifdef AERONET_ENABLE_BROTLI
+#include "aeronet/brotli-encoder.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/zlib-encoder.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_ZSTD
+#include "aeronet/zstd-encoder.hpp"
+#endif
 
 namespace aeronet::internal {
 
@@ -24,10 +33,28 @@ struct ResponseCompressionState {
 
   explicit ResponseCompressionState(const CompressionConfig& cfg) : selector(cfg) {}
 
-  // Pre-allocated encoders (one per supported format), -1 to remove identity which is last (no encoding).
-  // Index corresponds to static_cast<size_t>(Encoding).
-  std::array<std::unique_ptr<Encoder>, kNbContentEncodings - 1> encoders;
+  void createEncoders(const CompressionConfig& cfg);
+
+  std::size_t encodeFull(Encoding encoding, std::string_view data, std::size_t availableCapacity, char* buf);
+
+  std::unique_ptr<EncoderContext> makeContext(Encoding encoding);
+
   EncodingSelector selector;
+
+  RawChars sharedBuffer;
+
+#ifdef AERONET_ENABLE_BROTLI
+  BrotliEncoder brotliEncoder;
+#endif
+
+#ifdef AERONET_ENABLE_ZLIB
+  ZlibEncoder gzipEncoder;
+  ZlibEncoder deflateEncoder;
+#endif
+
+#ifdef AERONET_ENABLE_ZSTD
+  ZstdEncoder zstdEncoder;
+#endif
 };
 
 struct RequestDecompressionResult {

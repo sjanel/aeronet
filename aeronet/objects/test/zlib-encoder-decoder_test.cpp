@@ -1,11 +1,11 @@
 #include <gtest/gtest.h>
+#include <zlib.h>
 
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstring>
-#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -24,10 +24,10 @@ namespace aeronet {
 
 namespace {
 
-constexpr std::size_t kEncoderChunkSize = 1536;
 constexpr std::size_t kDecoderChunkSize = 512;
-constexpr std::size_t kExtraCapacity = 0;
 constexpr std::size_t kMaxPlainBytes = 2UL * 1024 * 1024;
+
+RawChars buf;
 
 std::vector<std::string> SamplePayloads() {
   std::vector<std::string> payloads;
@@ -43,11 +43,19 @@ const char* VariantName(ZStreamRAII::Variant variant) {
   return variant == ZStreamRAII::Variant::gzip ? "gzip" : "deflate";
 }
 
-void ExpectOneShotRoundTrip(ZStreamRAII::Variant variant, std::string_view payload) {
+void EncodeFull(ZlibEncoder& encoder, std::string_view payload, RawChars& out, std::size_t extraCapacity = 0) {
+  out.clear();
+  out.reserve(deflateBound(nullptr, payload.size()) + extraCapacity);
+  const std::size_t written = encoder.encodeFull(payload, out.capacity(), out.data());
+  ASSERT_GT(written, 0UL);
+  out.setSize(static_cast<RawChars::size_type>(written));
+}
+
+void ExpectOneShotRoundTrip(ZStreamRAII::Variant variant, std::string_view payload, std::size_t extraCapacity = 0) {
   CompressionConfig cfg;
-  ZlibEncoder encoder(variant, cfg);
+  ZlibEncoder encoder(variant, buf, cfg);
   RawChars compressed;
-  encoder.encodeFull(kExtraCapacity, payload, compressed);
+  EncodeFull(encoder, payload, compressed, extraCapacity);
 
   const bool isGzip = variant == ZStreamRAII::Variant::gzip;
   RawChars decompressed;
@@ -56,9 +64,9 @@ void ExpectOneShotRoundTrip(ZStreamRAII::Variant variant, std::string_view paylo
 }
 
 void ExpectStreamingRoundTrip(ZStreamRAII::Variant variant, std::string_view payload, std::size_t split,
-                              std::size_t chunkSize = kEncoderChunkSize, std::size_t maxPlainBytes = kMaxPlainBytes) {
+                              std::size_t maxPlainBytes = kMaxPlainBytes) {
   CompressionConfig cfg;
-  ZlibEncoder encoder(variant, cfg);
+  ZlibEncoder encoder(variant, buf, cfg);
   RawChars compressed;
   auto ctx = encoder.makeContext();
   std::string_view remaining = payload;
@@ -66,9 +74,9 @@ void ExpectStreamingRoundTrip(ZStreamRAII::Variant variant, std::string_view pay
     const std::size_t take = std::min(split, remaining.size());
     const std::string_view chunk = remaining.substr(0, take);
     remaining.remove_prefix(take);
-    compressed.append(ctx->encodeChunk(chunkSize, chunk));
+    compressed.append(ctx->encodeChunk(chunk));
   }
-  compressed.append(ctx->encodeChunk(chunkSize, {}));
+  compressed.append(ctx->encodeChunk({}));
 
   const bool isGzip = variant == ZStreamRAII::Variant::gzip;
   RawChars decompressed;
@@ -78,7 +86,7 @@ void ExpectStreamingRoundTrip(ZStreamRAII::Variant variant, std::string_view pay
 
 RawChars BuildStreamingCompressed(ZStreamRAII::Variant variant, std::string_view payload) {
   CompressionConfig cfg;
-  ZlibEncoder encoder(variant, cfg);
+  ZlibEncoder encoder(variant, buf, cfg);
   RawChars compressed;
   auto ctx = encoder.makeContext();
   std::string_view remaining = payload;
@@ -86,12 +94,12 @@ RawChars BuildStreamingCompressed(ZStreamRAII::Variant variant, std::string_view
     const std::size_t take = std::min<std::size_t>(remaining.size(), 4096U);
     const auto chunk = remaining.substr(0, take);
     remaining.remove_prefix(take);
-    const auto produced = ctx->encodeChunk(kEncoderChunkSize, chunk);
+    const auto produced = ctx->encodeChunk(chunk);
     if (!produced.empty()) {
       compressed.append(produced);
     }
   }
-  const auto tail = ctx->encodeChunk(kEncoderChunkSize, {});
+  const auto tail = ctx->encodeChunk({});
   if (!tail.empty()) {
     compressed.append(tail);
   }
@@ -128,7 +136,7 @@ TEST_P(ZlibEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
   const auto variant = GetParam();
   for (const auto& payload : SamplePayloads()) {
     SCOPED_TRACE(testing::Message() << VariantName(variant) << " payload bytes=" << payload.size());
-    ExpectOneShotRoundTrip(variant, payload);
+    ExpectOneShotRoundTrip(variant, payload, 64UL);
   }
 }
 
@@ -137,9 +145,9 @@ TEST_P(ZlibEncoderDecoderTest, MaxDecompressedBytes) {
   for (const auto& payload : SamplePayloads()) {
     SCOPED_TRACE(testing::Message() << VariantName(variant) << " payload bytes=" << payload.size());
     CompressionConfig cfg;
-    ZlibEncoder encoder(variant, cfg);
+    ZlibEncoder encoder(variant, buf, cfg);
     RawChars compressed;
-    encoder.encodeFull(kExtraCapacity, payload, compressed);
+    EncodeFull(encoder, payload, compressed, 64UL);
 
     const bool isGzip = variant == ZStreamRAII::Variant::gzip;
     RawChars decompressed;
@@ -197,24 +205,20 @@ TEST(ZlibEncoderDecoderTest, SmallEncoderChunkSizeLargeChunks) {
   const auto largePayload = test::MakePatternedPayload(kChunkSize);
   // This test validates handling of very large streaming chunk sizes; it must not be
   // constrained by the small default max-decompressed limit used by other tests.
-  ExpectStreamingRoundTrip(ZStreamRAII::Variant::deflate, largePayload, kChunkSize, 8, kChunkSize);
+  ExpectStreamingRoundTrip(ZStreamRAII::Variant::deflate, largePayload, 8, kChunkSize);
 }
 
-TEST(ZlibEncoderDecoderTest, EncodeChunkAfterContextDestroyed) {
-  // This code is ugly - but it's the only way I found to simulate a zlib error in encodeChunk without triggering asan
+TEST(ZlibEncoderDecoderTest, EncodeChunkAfterFinalizationThrows) {
+  // Finish the stream, then try to encode more data: should error deterministically.
   CompressionConfig cfg;
-  alignas(ZlibEncoderContext) std::array<std::byte, sizeof(ZlibEncoderContext)> ctxBuf1;
-  alignas(ZlibEncoderContext) std::array<std::byte, sizeof(ZlibEncoderContext)> ctxBuf2;
-  RawChars buf(1024);
-  ZlibEncoderContext* ctx = std::construct_at(reinterpret_cast<ZlibEncoderContext*>(ctxBuf1.data()),
-                                              ZStreamRAII::Variant::gzip, buf, cfg.zlib.level);
-
-  std::memcpy(ctxBuf2.data(), ctxBuf1.data(), sizeof(ZlibEncoderContext));
-  std::destroy_at(ctx);
-
-  ctx = reinterpret_cast<ZlibEncoderContext*>(ctxBuf2.data());
-
-  EXPECT_THROW(ctx->encodeChunk(kEncoderChunkSize, "Test data"), std::runtime_error);
+  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, buf, cfg);
+  auto ctx = encoder.makeContext();
+  // Produce some initial data.
+  (void)ctx->encodeChunk("Test data");
+  // Finalize the stream.
+  (void)ctx->encodeChunk({});
+  // Encoding after finalization should result in a zlib stream error.
+  EXPECT_THROW(ctx->encodeChunk("More data"), std::runtime_error);
 }
 
 TEST(ZlibEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
@@ -223,12 +227,12 @@ TEST(ZlibEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
   const std::string payload = test::MakePatternedPayload(1024);
 
   CompressionConfig cfg;
-  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, cfg, 1);
+  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, buf, cfg);
   auto ctx = encoder.makeContext();
   RawChars compressed;
-  const auto produced = ctx->encodeChunk(1, std::string_view(payload));
+  const auto produced = ctx->encodeChunk(std::string_view(payload));
   compressed.append(produced);
-  const auto tail = ctx->encodeChunk(1, {});
+  const auto tail = ctx->encodeChunk({});
   compressed.append(tail);
 
   RawChars decompressed;
@@ -246,14 +250,14 @@ TEST(ZlibEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIteratio
   static constexpr std::size_t kChunkSize = 1UL;  // small to force multiple iterations; encoder will grow as needed
 #endif
   CompressionConfig cfg;
-  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, cfg, kChunkSize);
+  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, buf, cfg);
   auto ctx = encoder.makeContext();
   RawChars compressed;
 
   const auto produced =
-      ctx->encodeChunk(kChunkSize, std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()));
+      ctx->encodeChunk(std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()));
   compressed.append(produced);
-  const auto tail = ctx->encodeChunk(kChunkSize, {});
+  const auto tail = ctx->encodeChunk({});
   compressed.append(tail);
 
   // Expect more than one chunk worth of output, implying multiple loop iterations.

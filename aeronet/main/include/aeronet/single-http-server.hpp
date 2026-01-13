@@ -493,8 +493,6 @@ class SingleHttpServer {
 
   void registerBuiltInProbes();
 
-  void createEncoders();
-
   void updateMaintenanceTimer();
 
   void submitRouterUpdate(std::function<void(Router&)> updater,

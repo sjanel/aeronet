@@ -25,8 +25,8 @@ namespace aeronet {
 
 namespace {
 
-constexpr std::size_t kEncoderChunkSize = 2048;
-constexpr std::size_t kChunkSizes[] = {1, 8, 64, 128, 512, 2048, 8192};
+RawChars buf;
+
 constexpr std::size_t kDecoderChunkSize = 512;
 constexpr std::size_t kExtraCapacity = 0;
 constexpr std::size_t kMaxPlainBytes = 4UL * 1024 * 1024;
@@ -41,11 +41,19 @@ std::vector<std::string> SamplePayloads() {
   return payloads;
 }
 
+void EncodeFull(ZstdEncoder& encoder, std::string_view payload, RawChars& out, std::size_t extraCapacity = 0) {
+  out.clear();
+  out.reserve(ZSTD_compressBound(payload.size()) + extraCapacity);
+  const std::size_t written = encoder.encodeFull(payload, out.capacity(), out.data());
+  ASSERT_GT(written, 0UL);
+  out.setSize(static_cast<RawChars::size_type>(written));
+}
+
 void ExpectOneShotRoundTrip(std::string_view payload) {
   CompressionConfig cfg;
-  ZstdEncoder encoder(cfg);
+  ZstdEncoder encoder(buf, cfg);
   RawChars compressed;
-  encoder.encodeFull(kExtraCapacity, payload, compressed);
+  EncodeFull(encoder, payload, compressed, kExtraCapacity);
 
   RawChars decompressed;
   ASSERT_TRUE(
@@ -53,10 +61,9 @@ void ExpectOneShotRoundTrip(std::string_view payload) {
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
-RawChars BuildStreamingCompressed(std::string_view payload, std::size_t split,
-                                  std::size_t chunkSize = kEncoderChunkSize) {
+RawChars BuildStreamingCompressed(std::string_view payload, std::size_t split) {
   CompressionConfig cfg;
-  ZstdEncoder encoder(cfg);
+  ZstdEncoder encoder(buf, cfg);
   RawChars compressed;
   auto ctx = encoder.makeContext();
   std::string_view remaining = payload;
@@ -64,24 +71,23 @@ RawChars BuildStreamingCompressed(std::string_view payload, std::size_t split,
     const std::size_t take = std::min(split, remaining.size());
     const auto chunk = remaining.substr(0, take);
     remaining.remove_prefix(take);
-    const auto produced = ctx->encodeChunk(chunkSize, chunk);
+    const auto produced = ctx->encodeChunk(chunk);
     compressed.append(produced);
   }
-  const auto tail = ctx->encodeChunk(chunkSize, {});
+  const auto tail = ctx->encodeChunk({});
   compressed.append(tail);
   return compressed;
 }
 
-void ExpectStreamingRoundTrip(std::string_view payload, std::size_t split, std::size_t chunkSize = kEncoderChunkSize) {
-  const auto compressed = BuildStreamingCompressed(payload, split, chunkSize);
+void ExpectStreamingRoundTrip(std::string_view payload, std::size_t split) {
+  const auto compressed = BuildStreamingCompressed(payload, split);
   RawChars decompressed;
   ASSERT_TRUE(ZstdDecoder::decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
-void ExpectStreamingDecoderRoundTrip(std::string_view payload, std::size_t split,
-                                     std::size_t chunkSize = kEncoderChunkSize) {
-  const auto compressed = BuildStreamingCompressed(payload, 4096U, chunkSize);
+void ExpectStreamingDecoderRoundTrip(std::string_view payload, std::size_t split) {
+  const auto compressed = BuildStreamingCompressed(payload, 4096U);
   auto ctx = ZstdDecoder::makeContext();
   RawChars decompressed;
   std::string_view view(compressed);
@@ -116,14 +122,13 @@ TEST(ZstdEncoderDecoderTest, ZstdContext) {
 
 TEST(ZstdEncoderDecoderTest, EncodeFails) {
   CompressionConfig cfg;
-  ZstdEncoder encoder(cfg);
-  RawChars buf(1024);
-  test::FailNextMalloc();
-  EXPECT_THROW(encoder.encodeFull(0, "some-data", buf), std::runtime_error);
+  ZstdEncoder encoder(buf, cfg);
+  RawChars buf(std::string_view{"some-data"}.size());
+  EXPECT_EQ(encoder.encodeFull("some-data", 0UL, buf.data()), 0UL);
 
   auto ctx = encoder.makeContext();
   test::FailNextMalloc();
-  EXPECT_THROW(ctx->encodeChunk(1, "some-data"), std::runtime_error);
+  EXPECT_THROW(ctx->encodeChunk("some-data"), std::runtime_error);
 }
 
 #endif
@@ -138,9 +143,9 @@ TEST(ZstdEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
 TEST(ZstdEncoderDecoderTest, MaxDecompressedBytesFull) {
   for (const auto& payload : SamplePayloads()) {
     CompressionConfig cfg;
-    ZstdEncoder encoder(cfg);
+    ZstdEncoder encoder(buf, cfg);
     RawChars compressed;
-    encoder.encodeFull(kExtraCapacity, payload, compressed);
+    EncodeFull(encoder, payload, compressed, kExtraCapacity);
 
     RawChars decompressed;
     const std::size_t limit = payload.empty() ? 0 : payload.size() - 1;
@@ -149,13 +154,11 @@ TEST(ZstdEncoderDecoderTest, MaxDecompressedBytesFull) {
 }
 
 TEST(ZstdEncoderDecoderTest, MaxDecompressedBytesStreaming) {
-  for (std::size_t chunkSize : kChunkSizes) {
-    for (const auto& payload : SamplePayloads()) {
-      const auto compressed = BuildStreamingCompressed(payload, 8U, chunkSize);
-      RawChars decompressed;
-      const std::size_t limit = payload.empty() ? 0 : payload.size() - 1;
-      EXPECT_EQ(ZstdDecoder::decompressFull(compressed, limit, kDecoderChunkSize, decompressed), payload.empty());
-    }
+  for (const auto& payload : SamplePayloads()) {
+    const auto compressed = BuildStreamingCompressed(payload, 8U);
+    RawChars decompressed;
+    const std::size_t limit = payload.empty() ? 0 : payload.size() - 1;
+    EXPECT_EQ(ZstdDecoder::decompressFull(compressed, limit, kDecoderChunkSize, decompressed), payload.empty());
   }
 }
 
@@ -187,9 +190,9 @@ TEST(ZstdEncoderDecoderTest, DecodeInvalidDataFailsFullContentSizeError) {
 
 TEST(ZstdEncoderDecoderTest, DecodeInvalidDataFailsFull) {
   CompressionConfig cfg;
-  ZstdEncoder encoder(cfg);
+  ZstdEncoder encoder(buf, cfg);
   RawChars compressed;
-  encoder.encodeFull(kExtraCapacity, std::string(512, 'A'), compressed);
+  EncodeFull(encoder, std::string(512, 'A'), compressed, kExtraCapacity);
 
   // Corrupt the compressed data
   ASSERT_GT(compressed.size(), 13U);
@@ -214,12 +217,12 @@ TEST(ZstdEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
   const std::string payload = test::MakePatternedPayload(1024);
 
   CompressionConfig cfg;
-  ZstdEncoder encoder(cfg, 1);
+  ZstdEncoder encoder(buf, cfg);
   auto ctx = encoder.makeContext();
   RawChars compressed;
-  const auto produced = ctx->encodeChunk(1, std::string_view(payload));
+  const auto produced = ctx->encodeChunk(std::string_view(payload));
   compressed.append(produced);
-  const auto tail = ctx->encodeChunk(1, {});
+  const auto tail = ctx->encodeChunk({});
   compressed.append(tail);
 
   RawChars decompressed;
@@ -237,14 +240,14 @@ TEST(ZstdEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIteratio
   static constexpr std::size_t kChunkSize = 1UL;  // small to force multiple iterations; encoder will grow as needed
 #endif
   CompressionConfig cfg;
-  ZstdEncoder encoder(cfg, kChunkSize);
+  ZstdEncoder encoder(buf, cfg);
   auto ctx = encoder.makeContext();
   RawChars compressed;
 
   const auto produced =
-      ctx->encodeChunk(kChunkSize, std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()));
+      ctx->encodeChunk(std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()));
   compressed.append(produced);
-  const auto tail = ctx->encodeChunk(kChunkSize, {});
+  const auto tail = ctx->encodeChunk({});
   compressed.append(tail);
 
   // Expect more than one chunk worth of output, implying multiple loop iterations.
@@ -259,9 +262,9 @@ TEST(ZstdEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIteratio
 
 TEST(ZstdEncoderDecoderTest, RepeatedDecompressDoesNotGrowCapacity) {
   CompressionConfig cfg;
-  ZstdEncoder encoder(cfg);
+  ZstdEncoder encoder(buf, cfg);
   RawChars compressed;
-  encoder.encodeFull(kExtraCapacity, "Zstd keeps strings sharp.", compressed);
+  EncodeFull(encoder, "Zstd keeps strings sharp.", compressed, kExtraCapacity);
 
   RawChars decompressed;
   ASSERT_TRUE(ZstdDecoder::decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));

@@ -15,16 +15,16 @@ TEST(CompressionConfigTest, DefaultIsValid) {
   EXPECT_NO_THROW(config.validate());
 }
 
-TEST(CompressionConfigTest, InvalidPreferredFormatsThrows) {
+TEST(CompressionConfigTest, MinBytesZeroThrows) {
   CompressionConfig config;
-  config.preferredFormats.push_back(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1)));
+  config.minBytes = 0;
+
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
-TEST(CompressionConfigTest, ZeroEncoderChunkSizeThrows) {
+TEST(CompressionConfigTest, InvalidPreferredFormatsThrows) {
   CompressionConfig config;
-  config.encoderChunkSize = 0;
-
+  config.preferredFormats.push_back(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1)));
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
@@ -63,12 +63,6 @@ TEST(CompressionConfigTest, ZstdInvalidLevelThrows) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
-TEST(CompressionConfigTest, ZstdTooSmallEncoderChunkSizeShouldLogWarning) {
-  CompressionConfig config;
-  config.encoderChunkSize = 1;
-
-  EXPECT_NO_THROW(config.validate());
-}
 #endif
 
 TEST(CompressionConfigTest, BrotliOK) {
@@ -77,6 +71,27 @@ TEST(CompressionConfigTest, BrotliOK) {
   config.brotli.window = 22;
 
   EXPECT_NO_THROW(config.validate());
+}
+
+TEST(CompressionConfigTest, NonFiniteMinCompressRatioThrows) {
+  CompressionConfig config;
+  config.minCompressRatio = std::numeric_limits<double>::infinity();
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+
+  config.minCompressRatio = -std::numeric_limits<double>::infinity();
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+
+  config.minCompressRatio = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(CompressionConfigTest, BoundaryMinCompressRatioThrows) {
+  CompressionConfig config;
+  config.minCompressRatio = 0.0;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+
+  config.minCompressRatio = 1.0;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 #ifdef AERONET_ENABLE_BROTLI

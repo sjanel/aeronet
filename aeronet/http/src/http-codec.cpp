@@ -3,15 +3,22 @@
 #include <algorithm>
 #include <cassert>
 #include <charconv>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <memory>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 #include <system_error>
 #include <utility>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
+#include "aeronet/encoder.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/header-write.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
@@ -20,6 +27,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/stringconv.hpp"
 
@@ -29,6 +37,7 @@
 
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-decoder.hpp"
+#include "aeronet/zlib-stream-raii.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_ZSTD
@@ -40,15 +49,15 @@ namespace aeronet::internal {
 namespace {
 
 // Helper to iterate Content-Encoding header values in reverse order.
-class EncodingReverseIterator {
+class CSVReverseTokensIterator {
  public:
-  explicit EncodingReverseIterator(std::string_view headerValue)
+  explicit CSVReverseTokensIterator(std::string_view headerValue)
       : first(headerValue.data()), last(first + headerValue.size()) {}
 
-  // Returns true if there is another encoding to read.
+  // Returns true if there is another value to read.
   [[nodiscard]] bool hasNext() const noexcept { return first < last; }
 
-  // Returns the next encoding token (trimmed), or empty string_view if malformed.
+  // Returns the next value token (trimmed), or empty string_view if malformed.
   std::string_view next() {
     // Header values are already trimmed, so we should not start with an OWS char.
     assert(!http::IsHeaderWhitespace(*(last - 1)));
@@ -59,10 +68,10 @@ class EncodingReverseIterator {
       --nextSep;
     }
 
-    std::string_view encoding(nextSep + 1, last);
-    if (encoding.empty()) {
+    std::string_view value(nextSep + 1, last);
+    if (value.empty()) {
       // empty token forbidden
-      return encoding;
+      return value;
     }
 
     // go to next non-OWS/comma char to the left and reject multiple commas in a row
@@ -71,8 +80,8 @@ class EncodingReverseIterator {
       if (*nextSep == ',') {
         if (seenComma) {
           // two commas in a row, malformed
-          encoding = {};
-          return encoding;
+          value = {};
+          return value;
         }
         seenComma = true;
       }
@@ -80,13 +89,62 @@ class EncodingReverseIterator {
     }
     last = nextSep + 1;
 
-    return encoding;
+    return value;
   }
 
  private:
   const char* first;
   const char* last;
 };
+
+constexpr std::size_t kNoVaryHeader = 0;
+constexpr std::size_t kVaryAcceptEncodingNotNeeded = 1;
+
+constexpr std::string_view kVaryHeaderValueSep = ", ";
+
+struct VaryResult {
+  [[nodiscard]] bool absent() const noexcept { return valueFirst == kNoVaryHeader; }
+  [[nodiscard]] bool notNeeded() const noexcept { return valueFirst == kVaryAcceptEncodingNotNeeded; }
+
+  std::size_t valueFirst;
+  std::size_t valueLast;
+};
+
+// Returns:
+// - 0: no Vary header exists
+// - npos: Vary already covers Accept-Encoding (either explicitly or via '*')
+// - otherwise: insertion offset (from resp._data.data()) at the end of the Vary value,
+//   suitable for inserting either ", Accept-Encoding" or "Accept-Encoding".
+[[nodiscard]] VaryResult VaryContainsAcceptEncoding(const HttpResponse& resp, const char* base) {
+  VaryResult res{.valueFirst = kNoVaryHeader, .valueLast = kNoVaryHeader};
+
+  for (const auto& hdr : resp.headers()) {
+    if (!CaseInsensitiveEqual(hdr.name, http::Vary)) {
+      continue;
+    }
+
+    // Response headers are guaranteed to be trimmed on the extreme sides.
+    // We can therefore use the reverse CSV iterator (order doesn't matter).
+    const std::string_view value = hdr.value;
+    for (CSVReverseTokensIterator it(value); it.hasNext();) {
+      const std::string_view token = it.next();
+      assert(!token.empty() && "Malformed Vary header value");
+      if (token == "*" || CaseInsensitiveEqual(token, http::AcceptEncoding)) {
+        res.valueFirst = kVaryAcceptEncodingNotNeeded;
+        return res;
+      }
+    }
+
+    res.valueFirst = static_cast<std::size_t>(value.data() - base);
+    res.valueLast = static_cast<std::size_t>(res.valueFirst + value.size());
+
+    // HttpResponse's public API cannot create multiple headers with the same name,
+    // so we can stop here.
+    break;
+  }
+
+  return res;
+}
 
 inline std::string_view FinalizeDecompressedBody(HeadersViewMap& headersMap, HeadersViewMap::iterator encodingHeaderIt,
                                                  std::string_view src, RawChars& buf) {
@@ -115,7 +173,7 @@ inline std::string_view FinalizeDecompressedBody(HeadersViewMap& headersMap, Hea
   return body;
 }
 
-inline RequestDecompressionResult DualBufferDecodeLoop(auto&& runDecoder, double maxExpansionRatio,
+inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] auto&& runDecoder, double maxExpansionRatio,
                                                        std::string_view& src, HeadersViewMap::iterator encodingHeaderIt,
                                                        std::size_t compressedSize, RawChars& bodyAndTrailersBuffer,
                                                        RawChars& tmpBuffer) {
@@ -125,7 +183,7 @@ inline RequestDecompressionResult DualBufferDecodeLoop(auto&& runDecoder, double
 
   // Decode in reverse order, algorithm by algorithm.
   // For the first stage, we read from chunks. For subsequent stages, we read from the previous output buffer.
-  for (EncodingReverseIterator encIt(encodingHeaderIt->second); encIt.hasNext();) {
+  for (CSVReverseTokensIterator encIt(encodingHeaderIt->second); encIt.hasNext();) {
     auto encoding = encIt.next();
     if (encoding.empty()) {
       return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
@@ -198,10 +256,72 @@ inline bool UseStreamingDecompression(const HeadersViewMap& headersMap,
 
 }  // namespace
 
+void ResponseCompressionState::createEncoders([[maybe_unused]] const CompressionConfig& cfg) {
+#ifdef AERONET_ENABLE_ZLIB
+  gzipEncoder = ZlibEncoder(ZStreamRAII::Variant::gzip, sharedBuffer, cfg);
+  deflateEncoder = ZlibEncoder(ZStreamRAII::Variant::deflate, sharedBuffer, cfg);
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+  zstdEncoder = ZstdEncoder(sharedBuffer, cfg);
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+  brotliEncoder = BrotliEncoder(sharedBuffer, cfg);
+#endif
+}
+
+std::size_t ResponseCompressionState::encodeFull(Encoding encoding, [[maybe_unused]] std::string_view data,
+                                                 [[maybe_unused]] std::size_t availableCapacity,
+                                                 [[maybe_unused]] char* buf) {
+  switch (encoding) {
+#ifdef AERONET_ENABLE_BROTLI
+    case Encoding::br:
+      return brotliEncoder.encodeFull(data, availableCapacity, buf);
+#endif
+#ifdef AERONET_ENABLE_ZLIB
+    case Encoding::gzip:
+      return gzipEncoder.encodeFull(data, availableCapacity, buf);
+    case Encoding::deflate:
+      return deflateEncoder.encodeFull(data, availableCapacity, buf);
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+    case Encoding::zstd:
+      return zstdEncoder.encodeFull(data, availableCapacity, buf);
+#endif
+    case Encoding::none:
+      [[fallthrough]];
+    default:
+      throw std::invalid_argument("No encoder for 'none' encoding");
+  }
+}
+
+std::unique_ptr<EncoderContext> ResponseCompressionState::makeContext(Encoding encoding) {
+  switch (encoding) {
+#ifdef AERONET_ENABLE_BROTLI
+    case Encoding::br:
+      return brotliEncoder.makeContext();
+#endif
+#ifdef AERONET_ENABLE_ZLIB
+    case Encoding::gzip:
+      return gzipEncoder.makeContext();
+    case Encoding::deflate:
+      return deflateEncoder.makeContext();
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+    case Encoding::zstd:
+      return zstdEncoder.makeContext();
+#endif
+    case Encoding::none:
+      [[fallthrough]];
+    default:
+      throw std::invalid_argument("No encoder for 'none' encoding");
+  }
+}
+
 void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
                                     const CompressionConfig& compressionConfig, const HttpRequest& request,
                                     HttpResponse& resp) {
-  if (resp.body().size() < compressionConfig.minBytes) {
+  const auto bodySz = resp.body().size();
+  if (bodySz < compressionConfig.minBytes) {
     return;
   }
   const std::string_view encHeader = request.headerValueOrEmpty(http::AcceptEncoding);
@@ -210,57 +330,200 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
   if (reject) {
     resp.status(http::StatusCodeNotAcceptable).body("No acceptable content-coding available");
+    return;
   }
   if (encoding == Encoding::none) {
     return;
   }
 
   if (!compressionConfig.contentTypeAllowList.empty()) {
-    std::string_view contentType = request.headerValueOrEmpty(http::ContentType);
+    const std::string_view contentType = resp.headerValueOrEmpty(http::ContentType);
     if (!compressionConfig.contentTypeAllowList.containsCI(contentType)) {
       return;
     }
   }
 
-  if (resp.headerValue(http::ContentEncoding)) {
+  if (resp.hasHeader(http::ContentEncoding)) {
     return;
   }
 
-  // First, write the needed headers.
-  // TODO: can we avoid the memmove of the full body here?
-  resp.headerAddLine(http::ContentEncoding, GetEncodingStr(encoding));
-  if (compressionConfig.addVaryHeader) {
-    resp.headerAppendValue(http::Vary, http::AcceptEncoding);
+  const std::string_view contentEncodingStr = GetEncodingStr(encoding);
+
+  // Sanity check: Content-Type header must be present to consider compression.
+  // Normally handled by HttpResponse automatically when user adds a body.
+  assert(resp.hasHeader(http::ContentType));
+
+  const bool hasExternalPayload = resp.externPayloadPtr() != nullptr;
+  const std::size_t trailersLen = resp._trailerLen;
+
+  const char* const basePtr = resp._data.data();
+  const VaryResult varyResult =
+      compressionConfig.addVaryAcceptEncodingHeader
+          ? VaryContainsAcceptEncoding(resp, basePtr)
+          : VaryResult{.valueFirst = kVaryAcceptEncodingNotNeeded, .valueLast = kVaryAcceptEncodingNotNeeded};
+  const bool needVaryAcceptEncoding = !varyResult.notNeeded();
+  const bool addVaryHeaderLine = varyResult.absent();
+  const std::size_t upperVaryAppendLen =
+      (needVaryAcceptEncoding && !addVaryHeaderLine) ? (http::AcceptEncoding.size() + kVaryHeaderValueSep.size()) : 0UL;
+  const std::size_t contentEncodingHeaderLineSz =
+      HttpResponse::HeaderSize(http::ContentEncoding.size(), contentEncodingStr.size());
+
+  static constexpr std::string_view kVaryHeaderLine =
+      JoinStringView_v<http::CRLF, http::Vary, http::HeaderSep, http::AcceptEncoding>;
+
+  const std::size_t varyHeaderLineSz = addVaryHeaderLine ? kVaryHeaderLine.size() : 0UL;
+
+  // Compute offsets for the reserved tail (Content-Type + Content-Length + DoubleCRLF).
+  const std::size_t contentTypeLinePos =
+      static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr(bodySz) - resp._data.data());
+  const std::size_t contentLengthLinePos =
+      static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr(bodySz) - resp._data.data());
+
+  const std::size_t oldDataSz = resp._data.size();
+
+  // Reserve once (no realloc after we start reading internal body).
+  // We reserve for:
+  //   - worst-case tail growth (using current body digit count as upper bound)
+  //   - temp compressed output (capped by maxAllowedCompressed + 1)
+  //   - final compressed output (capped by maxAllowedCompressed)
+  const std::size_t contentTypeLineLen = contentLengthLinePos - contentTypeLinePos;
+  const auto upperContentLengthLineLen =
+      HttpResponse::HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(bodySz)));
+  const std::size_t upperTailLen = varyHeaderLineSz + contentEncodingHeaderLineSz + contentTypeLineLen +
+                                   upperContentLengthLineLen + http::DoubleCRLF.size();
+
+  // We will only commit compression if the configured compression ratio is satisfied,
+  // and if the actual compressed size is smaller than the original.
+  const std::size_t maxAllowedCompressed =
+      std::min(bodySz - 1U,
+               static_cast<std::size_t>(std::ceil(static_cast<double>(bodySz) * compressionConfig.minCompressRatio)));
+  assert(maxAllowedCompressed != 0);
+
+  const std::size_t tmpAreaStartPos =
+      std::max(oldDataSz + upperVaryAppendLen, contentTypeLinePos + upperTailLen + upperVaryAppendLen);
+  const std::size_t upperFinalSize =
+      contentTypeLinePos + upperTailLen + maxAllowedCompressed + trailersLen + upperVaryAppendLen;
+  const std::size_t upperTempEnd = tmpAreaStartPos + maxAllowedCompressed + trailersLen;
+  const std::size_t upperNeededEnd = std::max(upperFinalSize, upperTempEnd);
+
+  assert(oldDataSz < upperNeededEnd);
+
+  resp._data.ensureAvailableCapacity(upperNeededEnd - oldDataSz);
+
+  char* pTmpCompressed = resp._data.data() + tmpAreaStartPos;
+  const std::size_t compressedSize =
+      compressionState.encodeFull(encoding, resp.body(), maxAllowedCompressed, pTmpCompressed);
+  if (compressedSize == 0) {
+    // compression failed or did not fit in maxAllowedCompressed
+    // abort compression, it's not worth it
+    return;
   }
 
-  auto& encoder = compressionState.encoders[static_cast<std::size_t>(encoding)];
-
-  auto* pExternPayload = resp.externPayloadPtr();
-  if (pExternPayload != nullptr) {
-    const auto externView = pExternPayload->view();
-    const auto externTrailers = resp.externalTrailers(*pExternPayload);
-    const std::string_view externBody(externView.data(), externView.size() - externTrailers.size());
-
-    encoder->encodeFull(externTrailers.size(), externBody, resp._data);
-
-    if (!externTrailers.empty()) {
-      resp._data.append(externTrailers);
-      resp._trailerLen = externTrailers.size();
+  // If the trailers view are internal resp._data, it may be overwritten when we move back the new body + headers to
+  // their final position. So we copy them to a temporary buffer before starting compression.
+  const char* pTrailers = nullptr;
+  if (trailersLen != 0) {
+    pTrailers = resp.trailersFlatView().data();
+    if (hasExternalPayload) {
+      char* const pTmpTrailers = resp._data.data() + (tmpAreaStartPos + maxAllowedCompressed);
+      std::memcpy(pTmpTrailers, pTrailers, trailersLen);
+      pTrailers = pTmpTrailers;
     }
-
-    resp._payloadVariant = {};
-  } else {
-    const auto internalTrailers = resp.internalTrailers();
-    // TODO: avoid this new buffer. We could use tmp buffer and then encode directly into resp._data.
-    RawChars out;
-    encoder->encodeFull(internalTrailers.size(), resp.body(), out);
-
-    assert(out.availableCapacity() >= internalTrailers.size());
-    out.unchecked_append(internalTrailers);
-
-    resp._data.setSize(resp._data.size() - resp.internalBodyAndTrailersLen());
-    resp._payloadVariant = HttpPayload(std::move(out));
   }
+
+  // Apply Vary: Accept-Encoding addition only once we know compression is committed.
+  // IMPORTANT: This can shift the whole response buffer, so the temporary compressed bytes must
+  // live strictly beyond (oldDataSz + potential insertion length).
+  if (needVaryAcceptEncoding) {
+    if (addVaryHeaderLine) {
+      // Handled later by inserting a new header line next to Content-Type.
+    } else {
+      // Merge into existing Vary value.
+      char* const base = resp._data.data();
+      const auto insertPos = varyResult.valueLast;
+      assert(insertPos != kNoVaryHeader && insertPos != kVaryAcceptEncodingNotNeeded);
+
+      const bool hasValue = varyResult.valueFirst != varyResult.valueLast;
+
+      const std::size_t extraLen = (hasValue ? kVaryHeaderValueSep.size() : 0UL) + http::AcceptEncoding.size();
+
+      // Insert at insertPos (end of Vary value).
+      char* const moveSrc = base + insertPos;
+      const std::size_t tailLen = resp._data.size() - insertPos;
+      std::memmove(moveSrc + extraLen, moveSrc, tailLen);
+      char* out = moveSrc;
+      if (hasValue) {
+        std::memcpy(out, kVaryHeaderValueSep.data(), kVaryHeaderValueSep.size());
+        out += kVaryHeaderValueSep.size();
+      }
+      std::memcpy(out, http::AcceptEncoding.data(), http::AcceptEncoding.size());
+      resp._data.addSize(extraLen);
+      resp.adjustBodyStart(static_cast<int64_t>(extraLen));
+    }
+  }
+
+  // Recompute tail offsets after the optional Vary merge above (it can shift Content-Type/Length positions).
+  const std::size_t contentTypeLinePos2 =
+      static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr(bodySz) - resp._data.data());
+  const std::size_t contentLengthLinePos2 =
+      static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr(bodySz) - resp._data.data());
+
+  const std::size_t contentTypeLineLen2 = contentLengthLinePos2 - contentTypeLinePos2;
+
+  const uint32_t nbCharsCompressedSize = static_cast<uint32_t>(nchars(compressedSize));
+  const std::size_t newContentLengthLineLen =
+      HttpResponse::HeaderSize(http::ContentLength.size(), nbCharsCompressedSize);
+  const std::size_t newTailLen = varyHeaderLineSz + contentEncodingHeaderLineSz + contentTypeLineLen2 +
+                                 newContentLengthLineLen + http::DoubleCRLF.size();
+
+  const std::size_t newContentTypeLinePos = contentTypeLinePos2 + varyHeaderLineSz + contentEncodingHeaderLineSz;
+  const std::size_t newContentLengthLinePos = newContentTypeLinePos + contentTypeLineLen2;
+  const std::size_t newBodyStartPos = contentTypeLinePos2 + newTailLen;
+
+  // Move existing Content-Type line away from the insertion zone
+  std::memmove(resp._data.data() + newContentTypeLinePos, resp._data.data() + contentTypeLinePos2, contentTypeLineLen2);
+
+  // Write the newly inserted headers
+  char* out = resp._data.data() + contentTypeLinePos2;
+  if (addVaryHeaderLine) {
+    std::memcpy(out, kVaryHeaderLine.data(), kVaryHeaderLine.size());
+    out += kVaryHeaderLine.size();
+  }
+  out = WriteCRLFHeader(out, http::ContentEncoding, contentEncodingStr);
+
+  // Write updated Content-Length and double CRLF after the moved Content-Type line
+  out = resp._data.data() + newContentLengthLinePos;
+
+  static constexpr std::string_view kContentLengthPrefix =
+      JoinStringView_v<http::CRLF, http::ContentLength, http::HeaderSep>;
+
+  std::memcpy(out, kContentLengthPrefix.data(), kContentLengthPrefix.size());
+  out += kContentLengthPrefix.size();
+  [[maybe_unused]] const auto tcRes = std::to_chars(out, out + nbCharsCompressedSize, compressedSize);
+  assert(tcRes.ec == std::errc{} && tcRes.ptr == out + nbCharsCompressedSize);
+  out += nbCharsCompressedSize;
+
+  std::memcpy(out, http::DoubleCRLF.data(), http::DoubleCRLF.size());
+  out += http::DoubleCRLF.size();
+  assert(std::cmp_equal(out - resp._data.data(), newBodyStartPos));
+
+  // Move compressed body to its final position.
+  char* newBodyStartPtr = resp._data.data() + newBodyStartPos;
+  std::memmove(newBodyStartPtr, pTmpCompressed, compressedSize);
+
+  // Move/copy trailers to final position without heap temps.
+  if (trailersLen != 0) {
+    char* newTrailerStartPtr = newBodyStartPtr + compressedSize;
+    if (hasExternalPayload) {
+      std::memcpy(newTrailerStartPtr, pTrailers, trailersLen);
+    } else {
+      std::memmove(newTrailerStartPtr, resp._data.data() + oldDataSz - trailersLen, trailersLen);
+    }
+  }
+
+  resp.setBodyStartPos(newBodyStartPos);
+  resp._data.setSize(newBodyStartPos + compressedSize + trailersLen);
+  resp._payloadVariant = {};
 }
 
 RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(const DecompressionConfig& decompressionConfig,
@@ -347,7 +610,7 @@ http::StatusCode HttpCodec::WillDecompress(const DecompressionConfig& decompress
   }
 
   // Parse the encoding string to check for non-identity encodings
-  EncodingReverseIterator encIt(encodingHeaderIt->second);
+  CSVReverseTokensIterator encIt(encodingHeaderIt->second);
   assert(encIt.hasNext());
   do {
     auto encoding = encIt.next();

@@ -1,6 +1,7 @@
 #include "aeronet/compression-config.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include <stdexcept>
 
@@ -9,18 +10,19 @@
 
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
-
-#include <utility>
-
-#include "aeronet/log.hpp"
-#include "aeronet/zstd-encoder.hpp"
 #endif
 
 namespace aeronet {
 
 void CompressionConfig::validate() const {
-  if (encoderChunkSize == 0) {
-    throw std::invalid_argument("Invalid encoder chunk size");
+  if (!std::isfinite(minCompressRatio)) {
+    throw std::invalid_argument("Invalid minCompressRatio (expected finite value)");
+  }
+  if (minCompressRatio <= 0.0 || minCompressRatio >= 1.0) {
+    throw std::invalid_argument(std::format("Invalid minCompressRatio {} (expected 0 < ratio < 1)", minCompressRatio));
+  }
+  if (minBytes < 16U) {
+    throw std::invalid_argument("minBytes must be at least 16");
   }
   if constexpr (zlibEnabled()) {
     if (zlib.level != Zlib::kDefaultLevel && (zlib.level < Zlib::kMinLevel || zlib.level > Zlib::kMaxLevel)) {
@@ -35,11 +37,6 @@ void CompressionConfig::validate() const {
 #ifdef AERONET_ENABLE_ZSTD
   if (zstd.compressionLevel < ZSTD_minCLevel() || zstd.compressionLevel > ZSTD_maxCLevel()) {
     throw std::invalid_argument(std::format("Invalid ZSTD compression level {}", zstd.compressionLevel));
-  }
-  details::ZstdContextRAII testConstruction(zstd.compressionLevel, zstd.windowLog);
-  if (std::cmp_less(encoderChunkSize, ZSTD_CStreamOutSize())) {
-    log::warn("Encoder chunk size {} is less than recommended minimum {} for ZSTD; performance may be degraded",
-              encoderChunkSize, ZSTD_CStreamOutSize());
   }
 #endif
 

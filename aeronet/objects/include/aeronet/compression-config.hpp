@@ -21,9 +21,6 @@
 
 namespace aeronet {
 
-// NOTE: Compression is optional at build time. When AERONET_ENABLE_ZLIB is not defined, only the
-// Format::None mode is honored; attempts to select gzip/deflate should be ignored or cause a
-// graceful fallback. Additional formats (brotli, zstd) are added behind their own build flags.
 struct CompressionConfig {
   void validate() const;
 
@@ -32,7 +29,7 @@ struct CompressionConfig {
   FixedCapacityVector<Encoding, kNbContentEncodings> preferredFormats;
 
   // If true, adds/merges a Vary: Accept-Encoding header whenever compression is applied.
-  bool addVaryHeader{true};
+  bool addVaryAcceptEncodingHeader{true};
 
   struct Zlib {
 #ifdef AERONET_ENABLE_ZLIB
@@ -78,16 +75,19 @@ struct CompressionConfig {
 
   // Only responses whose (uncompressed) size is >= this threshold are considered for compression.
   // For streaming responses (unknown size), compression begins once cumulative bytes reach threshold.
-  std::size_t minBytes{1024UL};
+  std::size_t minBytes{1024U};
+
+  // Compression is applied only if:
+  //   compressedSize <= uncompressedSize * minCompressRatio
+  // and the compressed size is strictly smaller than the original size.
+  //
+  // Example: 0.95 requires at least 5% savings.
+  // Should be in the range (0.0, 1.0), exclusive.
+  float minCompressRatio{0.5};
 
   // Simple allowlist of content-types (prefix match) eligible for compression. If empty, any content type will be
   // eligible for compression.
   ConcatenatedStrings32 contentTypeAllowList;
-
-  // Chunk size of buffer growths during compression.
-  // Prefer a large size if you expect big payloads in average, prefer a small size if you want to limit memory
-  // overhead.
-  std::size_t encoderChunkSize{256UL * 1024UL};
 };
 
 }  // namespace aeronet
