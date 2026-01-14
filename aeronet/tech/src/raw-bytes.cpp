@@ -146,7 +146,9 @@ void RawBytesBase<T, ViewType, SizeType>::assign(ViewType data) {
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::erase_front(size_type n) noexcept {
-  if (n != 0) {
+  if (n == _size) {
+    _size = 0;
+  } else if (n != 0) {
     assert(n <= _size);
     _size -= n;
     std::memmove(_buf, _buf + n, _size);
