@@ -19,6 +19,7 @@
 #include "aeronet/header-write.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
@@ -345,8 +346,9 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
   try {
     HttpResponse resp = reply(request);
     resp.makeAllHeaderNamesLowerCase();
-    if (request.method() != http::Method::HEAD) {
-      internal::HttpCodec::TryCompressResponse(*_pCompressionState, _pServerConfig->compression, request, resp);
+    if (request.method() != http::Method::HEAD && resp.hasBodyInMemory()) {
+      internal::HttpCodec::TryCompressResponse(*_pCompressionState, _pServerConfig->compression,
+                                               request.headerValueOrEmpty(http::AcceptEncoding), resp);
     }
     err = sendResponse(streamId, std::move(resp), request.method() == http::Method::HEAD);
     if (err != ErrorCode::NoError) [[unlikely]] {
@@ -445,7 +447,7 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
   const auto trailersView = response.trailers();
   const bool hasTrailers = !isHeadMethod && (trailersView.begin() != trailersView.end());
   const bool hasFile = !isHeadMethod && pFilePayload != nullptr;
-  const std::string_view bodyView = hasFile ? std::string_view{} : response.body();
+  const std::string_view bodyView = response.bodyInMemory();
   const bool hasBody = !isHeadMethod && (hasFile ? (pFilePayload->length != 0) : !bodyView.empty());
 
   // Determine when to set END_STREAM:

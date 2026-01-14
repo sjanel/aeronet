@@ -245,10 +245,14 @@ void SingleHttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRespon
 
   const bool isHead = (request.method() == http::Method::HEAD);
   if (!isHead) {
-    if (respStatusCode == http::StatusCodeNotFound && resp.body().empty()) {
+    if (respStatusCode == http::StatusCodeNotFound && !resp.hasBody()) {
       resp.body(k404NotFoundTemplate2, http::ContentTypeTextHtml);
     }
-    internal::HttpCodec::TryCompressResponse(_compression, _config.compression, request, resp);
+
+    if (resp.hasBodyInMemory()) {
+      internal::HttpCodec::TryCompressResponse(_compression, _config.compression,
+                                               request.headerValueOrEmpty(http::AcceptEncoding), resp);
+    }
   }
 
   queueFormattedHttp1Response(cnxIt, resp.finalizeForHttp1(SysClock::now(), request.version(), !keepAlive,

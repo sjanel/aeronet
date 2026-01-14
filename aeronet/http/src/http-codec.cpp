@@ -272,60 +272,57 @@ void ResponseCompressionState::createEncoders([[maybe_unused]] const Compression
 std::size_t ResponseCompressionState::encodeFull(Encoding encoding, [[maybe_unused]] std::string_view data,
                                                  [[maybe_unused]] std::size_t availableCapacity,
                                                  [[maybe_unused]] char* buf) {
-  switch (encoding) {
 #ifdef AERONET_ENABLE_BROTLI
-    case Encoding::br:
-      return brotliEncoder.encodeFull(data, availableCapacity, buf);
+  if (encoding == Encoding::br) {
+    return brotliEncoder.encodeFull(data, availableCapacity, buf);
+  }
 #endif
 #ifdef AERONET_ENABLE_ZLIB
-    case Encoding::gzip:
-      return gzipEncoder.encodeFull(data, availableCapacity, buf);
-    case Encoding::deflate:
-      return deflateEncoder.encodeFull(data, availableCapacity, buf);
+  if (encoding == Encoding::gzip) {
+    return gzipEncoder.encodeFull(data, availableCapacity, buf);
+  }
+  if (encoding == Encoding::deflate) {
+    return deflateEncoder.encodeFull(data, availableCapacity, buf);
+  }
 #endif
 #ifdef AERONET_ENABLE_ZSTD
-    case Encoding::zstd:
-      return zstdEncoder.encodeFull(data, availableCapacity, buf);
-#endif
-    case Encoding::none:
-      [[fallthrough]];
-    default:
-      throw std::invalid_argument("No encoder for 'none' encoding");
+  if (encoding == Encoding::zstd) {
+    return zstdEncoder.encodeFull(data, availableCapacity, buf);
   }
+#endif
+  throw std::invalid_argument("No encoder for 'none' encoding");
 }
 
 std::unique_ptr<EncoderContext> ResponseCompressionState::makeContext(Encoding encoding) {
-  switch (encoding) {
 #ifdef AERONET_ENABLE_BROTLI
-    case Encoding::br:
-      return brotliEncoder.makeContext();
+  if (encoding == Encoding::br) {
+    return brotliEncoder.makeContext();
+  }
 #endif
 #ifdef AERONET_ENABLE_ZLIB
-    case Encoding::gzip:
-      return gzipEncoder.makeContext();
-    case Encoding::deflate:
-      return deflateEncoder.makeContext();
+  if (encoding == Encoding::gzip) {
+    return gzipEncoder.makeContext();
+  }
+  if (encoding == Encoding::deflate) {
+    return deflateEncoder.makeContext();
+  }
 #endif
 #ifdef AERONET_ENABLE_ZSTD
-    case Encoding::zstd:
-      return zstdEncoder.makeContext();
-#endif
-    case Encoding::none:
-      [[fallthrough]];
-    default:
-      throw std::invalid_argument("No encoder for 'none' encoding");
+  if (encoding == Encoding::zstd) {
+    return zstdEncoder.makeContext();
   }
+#endif
+  throw std::invalid_argument("No encoder for 'none' encoding");
 }
 
 void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
-                                    const CompressionConfig& compressionConfig, const HttpRequest& request,
+                                    const CompressionConfig& compressionConfig, std::string_view requestAcceptEncoding,
                                     HttpResponse& resp) {
-  const auto bodySz = resp.body().size();
+  const auto bodySz = resp.bodyInMemoryLength();
   if (bodySz < compressionConfig.minBytes) {
     return;
   }
-  const std::string_view encHeader = request.headerValueOrEmpty(http::AcceptEncoding);
-  const auto [encoding, reject] = compressionState.selector.negotiateAcceptEncoding(encHeader);
+  const auto [encoding, reject] = compressionState.selector.negotiateAcceptEncoding(requestAcceptEncoding);
   // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
   // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
   if (reject) {
@@ -392,11 +389,9 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   const std::size_t upperTailLen = varyHeaderLineSz + contentEncodingHeaderLineSz + contentTypeLineLen +
                                    upperContentLengthLineLen + http::DoubleCRLF.size();
 
-  // We will only commit compression if the configured compression ratio is satisfied,
-  // and if the actual compressed size is smaller than the original.
+  // We will only commit compression if the configured compression ratio is satisfied.
   const std::size_t maxAllowedCompressed =
-      std::min(bodySz - 1U,
-               static_cast<std::size_t>(std::ceil(static_cast<double>(bodySz) * compressionConfig.minCompressRatio)));
+      static_cast<std::size_t>(std::ceil(static_cast<double>(bodySz) * compressionConfig.maxCompressRatio));
   assert(maxAllowedCompressed != 0);
 
   const std::size_t tmpAreaStartPos =
@@ -412,7 +407,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
 
   char* pTmpCompressed = resp._data.data() + tmpAreaStartPos;
   const std::size_t compressedSize =
-      compressionState.encodeFull(encoding, resp.body(), maxAllowedCompressed, pTmpCompressed);
+      compressionState.encodeFull(encoding, resp.bodyInMemory(), maxAllowedCompressed, pTmpCompressed);
   if (compressedSize == 0) {
     // compression failed or did not fit in maxAllowedCompressed
     // abort compression, it's not worth it

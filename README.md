@@ -484,7 +484,7 @@ Notes:
 
 ### Building the HTTP response
 
-The router expects callback functions returning a `HttpResponse`. You can build it thanks to the numerous provided methods to store the main components of a HTTP 1 response (status code, reason, headers and body):
+The router expects callback functions returning a `HttpResponse`. You can build it thanks to the numerous provided methods to store the main components of a HTTP response (status code, reason, headers, body and trailers):
 
 | Operation          | Complexity           | Notes                                  |
 |--------------------|----------------------|----------------------------------------|
@@ -506,7 +506,7 @@ Usage guidelines:
 - Use `header()` only when you must guarantee uniqueness. Matching is case‑insensitive; prefer a canonical style (e.g.
   `Content-Type`) for readability, but behavior is the same regardless of input casing.
 - Chain on temporaries for concise construction; the rvalue-qualified overloads keep the object movable.
-- For maximum performance, fill the response in order, starting with status/reason, then headers, then body, to minimize memory shifts and reallocations.
+- For maximum performance, fill the response in order, starting with status/reason, then headers, then body and trailers, to minimize memory shifts and reallocations.
 
 #### Reserved Headers
 

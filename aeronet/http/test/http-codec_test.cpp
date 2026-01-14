@@ -14,6 +14,7 @@
 #include <type_traits>
 
 #include "aeronet/compression-config.hpp"
+#include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoding.hpp"
@@ -97,16 +98,7 @@ TEST(HttpCodecCompression, ContentTypeAllowListBlocksCompression) {
   cfg.contentTypeAllowList.append("text/plain");
 
   ResponseCompressionState state(cfg);
-
   state.createEncoders(cfg);
-
-  // Construct a request via ConnectionState parsing helpers used in other tests.
-  ConnectionState cs;
-  HttpRequest& req = cs.request;
-  // Mutate headers map directly (tests in this directory commonly mutate request internals via friendship in
-  // other fixtures). We can safely mutate the non-const request by const_casting the view reference returned by
-  // headers().
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::AcceptEncoding, "gzip, deflate");
 
   const std::string body(4096, 'A');
 
@@ -114,20 +106,20 @@ TEST(HttpCodecCompression, ContentTypeAllowListBlocksCompression) {
   resp.body(body, http::ContentTypeApplicationJson);
 
   // Try compress - application/json response Content-Type is not in allowlist -> no compression
-  HttpCodec::TryCompressResponse(state, cfg, req, resp);
+  HttpCodec::TryCompressResponse(state, cfg, "gzip, deflate", resp);
   EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
 
   // Now use an allowed response Content-Type
   HttpResponse resp2(http::StatusCodeOK);
   resp2.body(body, http::ContentTypeTextPlain);
-  HttpCodec::TryCompressResponse(state, cfg, req, resp2);
+  HttpCodec::TryCompressResponse(state, cfg, "gzip, deflate", resp2);
 
   // If encoders present, compression should be applied (Content-Encoding set). Otherwise no-op.
 #ifdef AERONET_ENABLE_ZLIB
   EXPECT_FALSE(resp2.headerValueOrEmpty(http::ContentEncoding).empty());
   const auto contentLen = resp2.headerValueOrEmpty(http::ContentLength);
   ASSERT_FALSE(contentLen.empty());
-  EXPECT_EQ(ParseContentLength(contentLen), resp2.body().size());
+  EXPECT_EQ(ParseContentLength(contentLen), resp2.bodyInMemoryLength());
 #else
   EXPECT_TRUE(resp2.headerValueOrEmpty(http::ContentEncoding).empty());
 #endif
@@ -163,10 +155,7 @@ TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
   ResponseCompressionState state(cfg);
   state.createEncoders(cfg);
 
-  ConnectionState cs;
-  HttpRequest& req = cs.request;
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::AcceptEncoding, "gzip");
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentType, "text/plain");
+  std::string_view acceptEncoding = "gzip";
 
   for (std::string_view varyContent : kVaryHeaderContent) {
     HttpResponse resp(http::StatusCodeOK);
@@ -175,18 +164,18 @@ TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
       resp.header(http::Vary, varyContent);
     }
     // Diagnostics: ensure negotiation chooses gzip and encoder is present when expected.
-    [[maybe_unused]] auto neg = state.selector.negotiateAcceptEncoding(req.headerValueOrEmpty(http::AcceptEncoding));
+    [[maybe_unused]] auto neg = state.selector.negotiateAcceptEncoding(acceptEncoding);
 #ifdef AERONET_ENABLE_ZLIB
     EXPECT_EQ(neg.encoding, Encoding::gzip);
 #endif
 
-    HttpCodec::TryCompressResponse(state, cfg, req, resp);
+    HttpCodec::TryCompressResponse(state, cfg, acceptEncoding, resp);
 
 #ifdef AERONET_ENABLE_ZLIB
-    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), "gzip");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), acceptEncoding);
     const auto contentLen = resp.headerValueOrEmpty(http::ContentLength);
     ASSERT_FALSE(contentLen.empty());
-    EXPECT_EQ(ParseContentLength(contentLen), resp.body().size());
+    EXPECT_EQ(ParseContentLength(contentLen), resp.bodyInMemoryLength());
 
     // If a Vary header exists, merge ", Accept-Encoding" into its value.
     // If Vary already contains Accept-Encoding or '*', it must be left untouched.
@@ -233,17 +222,12 @@ TEST(HttpCodecCompression, VaryHeaderNotAddedWhenDisabled) {
 
   state.createEncoders(cfg);
 
-  ConnectionState cs;
-  HttpRequest& req = cs.request;
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::AcceptEncoding, "gzip");
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentType, "text/plain");
-
   const std::string body(4096, 'A');
 
   HttpResponse resp(http::StatusCodeOK);
   resp.body(body, http::ContentTypeTextPlain);
 
-  HttpCodec::TryCompressResponse(state, cfg, req, resp);
+  HttpCodec::TryCompressResponse(state, cfg, "gzip", resp);
 
 #ifdef AERONET_ENABLE_ZLIB
   // Compression should be applied but Vary must NOT be set because addVaryHeader == false
@@ -251,7 +235,7 @@ TEST(HttpCodecCompression, VaryHeaderNotAddedWhenDisabled) {
   EXPECT_TRUE(resp.headerValueOrEmpty(http::Vary).empty());
   const auto contentLen = resp.headerValueOrEmpty(http::ContentLength);
   ASSERT_FALSE(contentLen.empty());
-  EXPECT_EQ(ParseContentLength(contentLen), resp.body().size());
+  EXPECT_EQ(ParseContentLength(contentLen), resp.bodyInMemoryLength());
 #else
   SUCCEED();
 #endif
@@ -269,10 +253,6 @@ TEST(HttpCodecCompression, GzipCompressedBodyRoundTrips) {
   ResponseCompressionState state(cfg);
   state.createEncoders(cfg);
 
-  ConnectionState cs;
-  HttpRequest& req = cs.request;
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::AcceptEncoding, "gzip");
-
   const std::string body(16UL * 1024UL, 'A');
   HttpResponse resp(http::StatusCodeOK);
   resp.body(body, http::ContentTypeTextPlain);
@@ -289,10 +269,10 @@ TEST(HttpCodecCompression, GzipCompressedBodyRoundTrips) {
     EXPECT_EQ(static_cast<unsigned char>(direct[1]), 0x8bU);
   }
 
-  HttpCodec::TryCompressResponse(state, cfg, req, resp);
+  HttpCodec::TryCompressResponse(state, cfg, "gzip", resp);
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), http::gzip);
 
-  const std::string_view compressedBody = resp.body();
+  const std::string_view compressedBody = resp.bodyInMemory();
   ASSERT_GE(compressedBody.size(), 2UL);
   EXPECT_EQ(static_cast<unsigned char>(compressedBody[0]), 0x1fU);
   EXPECT_EQ(static_cast<unsigned char>(compressedBody[1]), 0x8bU);
@@ -305,54 +285,64 @@ TEST(HttpCodecCompression, GzipCompressedBodyRoundTrips) {
 #endif
 
 #ifdef AERONET_ENABLE_ZLIB
-TEST(HttpCodecCompression, MinCompressRatioCanDisableCompression) {
+TEST(HttpCodecCompression, MaxCompressRatioCanDisableCompression) {
   CompressionConfig cfg;
-  cfg.minBytes = 16U;
+  cfg.minBytes = 1024UL;
   cfg.addVaryAcceptEncodingHeader = false;
   cfg.contentTypeAllowList.clear();
   cfg.contentTypeAllowList.append("text/plain");
   cfg.preferredFormats.clear();
   cfg.preferredFormats.push_back(Encoding::gzip);
-  cfg.minCompressRatio = 0.999F;
+  cfg.maxCompressRatio = std::nextafter(1.0F, 0.0F);  // just below 1.0 to allow any compression
 
   ResponseCompressionState state(cfg);
   state.createEncoders(cfg);
-  ConnectionState cs;
-  HttpRequest& req = cs.request;
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::AcceptEncoding, "gzip");
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentType, "text/plain");
 
-  std::string body;
-  body.reserve(16UL * 1024);
-  for (std::size_t idx = 0; idx < 16UL * 1024; ++idx) {
-    char ch = 'A';
-    if ((idx % 8) == 0) {
-      ch = static_cast<char>('A' + ((idx / 8) % 26));
-    }
-    body.push_back(ch);
-  }
+  auto body = test::MakePatternedPayload(cfg.minBytes);
 
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body(body, http::ContentTypeTextPlain);
-  HttpCodec::TryCompressResponse(state, cfg, req, resp);
+  HttpResponse resp(body);
+  HttpCodec::TryCompressResponse(state, cfg, "gzip", resp);
 
   ASSERT_FALSE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
-  const std::size_t compressedSize = resp.body().size();
+  const std::size_t compressedSize = resp.bodyInMemoryLength();
   ASSERT_GT(compressedSize, 0UL);
 
   // Configure a ratio that makes the previous compressedSize just too large.
   CompressionConfig cfg2 = cfg;
   const float tightRatio = static_cast<float>(compressedSize - 1) / static_cast<float>(body.size());
-  cfg2.minCompressRatio = std::nextafter(tightRatio, 0.0F);
+  cfg2.maxCompressRatio = std::nextafter(tightRatio, 0.0F);
 
   ResponseCompressionState state2(cfg2);
   state2.createEncoders(cfg2);
 
-  HttpResponse resp2(http::StatusCodeOK);
-  resp2.body(body, http::ContentTypeTextPlain);
-  HttpCodec::TryCompressResponse(state2, cfg2, req, resp2);
+  HttpResponse resp2(body);
+  HttpCodec::TryCompressResponse(state2, cfg2, "gzip", resp2);
 
   EXPECT_TRUE(resp2.headerValueOrEmpty(http::ContentEncoding).empty());
+}
+#endif
+
+#ifdef AERONET_ENABLE_ZSTD
+TEST(HttpCodecCompression, ImpossibleCompressionZstd) {
+  CompressionConfig cfg;
+  cfg.minBytes = 1024UL;
+  cfg.addVaryAcceptEncodingHeader = false;
+  cfg.contentTypeAllowList.clear();
+  cfg.contentTypeAllowList.append("text/plain");
+  cfg.preferredFormats.clear();
+  cfg.preferredFormats.push_back(Encoding::zstd);
+  cfg.maxCompressRatio = std::nextafter(1.0F, 0.0F);  // just below 1.0 to allow any compression
+
+  ResponseCompressionState state(cfg);
+  state.createEncoders(cfg);
+
+  auto body = test::MakeRandomPayload(cfg.minBytes);
+
+  HttpResponse resp(body);
+  HttpCodec::TryCompressResponse(state, cfg, "zstd", resp);
+
+  EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));
+  EXPECT_EQ(resp.bodyInMemoryLength(), body.size());
 }
 #endif
 
