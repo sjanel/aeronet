@@ -18,6 +18,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -122,7 +123,10 @@ void HttpResponseWriter::ensureHeadersSent() {
       _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
     }
   }
-  _server->applyResponseMiddleware(*_request, _fixedResponse, _routeResponseMiddleware, true);
+
+  ApplyResponseMiddleware(*_request, _fixedResponse, _routeResponseMiddleware,
+                          _server->_router.globalResponseMiddleware(), _server->_telemetry, true,
+                          _server->_callbacks.middlewareMetrics);
 
   if (_pCorsPolicy != nullptr) {
     (void)_pCorsPolicy->applyToResponse(*_request, _fixedResponse);

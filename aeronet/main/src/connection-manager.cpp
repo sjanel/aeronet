@@ -423,14 +423,69 @@ SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMa
 #endif
 }
 
+void SingleHttpServer::handleWritableClient(int fd) {
+  auto cnxIt = _connections.active.find(fd);
+  if (cnxIt == _connections.active.end()) [[unlikely]] {
+    log::error("Received an invalid fd # {} from the event loop (or already removed?)", fd);
+    return;
+  }
+
+  ConnectionState& state = *cnxIt->second;
+  // If this connection was created for an upstream non-blocking connect, and connect is pending,
+  // check SO_ERROR to determine whether connect completed successfully or failed.
+  if (state.connectPending) {
+    int err = 0;
+    socklen_t len = sizeof(err);
+    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == -1) [[unlikely]] {
+      log::error("getsockopt(SO_ERROR) failed for fd # {} errno={} ({})", fd, errno, std::strerror(errno));
+      // Treat as connect failure
+      err = errno;
+    }
+    state.connectPending = false;
+    if (err != 0) {
+      // Upstream connect failed. Attempt to notify the client side (peerFd) with 502 and close both.
+      const auto peerIt = _connections.active.find(state.peerFd);
+      if (peerIt != _connections.active.end()) {
+        emitSimpleError(peerIt, http::StatusCodeBadGateway, true, "Upstream connect failed");
+      } else {
+        log::error("Unable to notify client of upstream connect failure: peer fd # {} not found", state.peerFd);
+      }
+      closeConnection(cnxIt);
+      return;
+    }
+    // otherwise connect succeeded; continue to normal writable handling
+  }
+  // If tunneling, flush tunnelOutBuffer first
+  if (state.isTunneling() && !state.tunnelOrFileBuffer.empty()) {
+    const auto [written, want] = state.transportWrite(state.tunnelOrFileBuffer);
+    if (want == TransportHint::Error) [[unlikely]] {
+      // Fatal error writing tunnel data: close this connection
+      closeConnection(cnxIt);
+      return;
+    }
+    state.tunnelOrFileBuffer.erase_front(written);
+    // If still has data, keep EPOLLOUT registered
+    if (!state.tunnelOrFileBuffer.empty()) {
+      return;
+    }
+    // Tunnel buffer drained: fall through to normal flushOutbound handling
+  }
+  flushOutbound(cnxIt);
+  if (state.canCloseImmediately()) {
+    closeConnection(cnxIt);
+  }
+}
+
 void SingleHttpServer::handleReadableClient(int fd) {
   auto cnxIt = _connections.active.find(fd);
   if (cnxIt == _connections.active.end()) [[unlikely]] {
     log::error("Received an invalid fd # {} from the event loop (or already removed?)", fd);
     return;
   }
+
+  const auto nowTime = std::chrono::steady_clock::now();
   ConnectionState& cnx = *cnxIt->second;
-  cnx.lastActivity = std::chrono::steady_clock::now();
+  cnx.lastActivity = nowTime;
 
   // NOTE: cnx.outBuffer can legitimately be non-empty when we get EPOLLIN.
   // This happens with partial writes and very commonly with TLS (SSL_read/handshake progress
@@ -483,7 +538,7 @@ void SingleHttpServer::handleReadableClient(int fd) {
       }
     }
     if (cnx.waitingForBody && count > 0) {
-      cnx.bodyLastActivity = std::chrono::steady_clock::now();
+      cnx.bodyLastActivity = nowTime;
     }
     if (want == TransportHint::Error) [[unlikely]] {
 #ifdef AERONET_ENABLE_OPENSSL
@@ -527,11 +582,13 @@ void SingleHttpServer::handleReadableClient(int fd) {
       // Distinguish header-only overflow (431) from payload/body overflow (413).
       // If we have not yet parsed the header (no DoubleCRLF found) or the buffer
       // already exceeds the configured header limit, treat this as header-field overflow.
+      http::StatusCode code;
       if (std::ranges::search(cnx.inBuffer, http::DoubleCRLF).empty() || cnx.inBuffer.size() > _config.maxHeaderBytes) {
-        emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, false, {});
+        code = http::StatusCodeRequestHeaderFieldsTooLarge;
       } else {
-        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, false, {});
+        code = http::StatusCodePayloadTooLarge;
       }
+      emitSimpleError(cnxIt, code, false, {});
       cnx.requestImmediateClose();
       break;
     }
@@ -541,7 +598,7 @@ void SingleHttpServer::handleReadableClient(int fd) {
     // Header read timeout enforcement: if headers of current pending request are not complete yet
     // (heuristic: no full request parsed and buffer not empty) and duration exceeded -> close.
     if (_config.headerReadTimeout.count() > 0 && cnx.headerStartTp.time_since_epoch().count() != 0) {
-      if (std::chrono::steady_clock::now() - cnx.headerStartTp > _config.headerReadTimeout) {
+      if (nowTime - cnx.headerStartTp > _config.headerReadTimeout) {
         emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, false, {});
         cnx.requestImmediateClose();
         break;
@@ -553,58 +610,6 @@ void SingleHttpServer::handleReadableClient(int fd) {
     flushOutbound(cnxIt);
   }
   if (cnx.canCloseImmediately()) {
-    closeConnection(cnxIt);
-  }
-}
-
-void SingleHttpServer::handleWritableClient(int fd) {
-  const auto cnxIt = _connections.active.find(fd);
-  if (cnxIt == _connections.active.end()) [[unlikely]] {
-    log::error("Received an invalid fd # {} from the event loop (or already removed?)", fd);
-    return;
-  }
-  ConnectionState& state = *cnxIt->second;
-  // If this connection was created for an upstream non-blocking connect, and connect is pending,
-  // check SO_ERROR to determine whether connect completed successfully or failed.
-  if (state.connectPending) {
-    int err = 0;
-    socklen_t len = sizeof(err);
-    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == -1) [[unlikely]] {
-      log::error("getsockopt(SO_ERROR) failed for fd # {} errno={} ({})", fd, errno, std::strerror(errno));
-      // Treat as connect failure
-      err = errno;
-    }
-    state.connectPending = false;
-    if (err != 0) {
-      // Upstream connect failed. Attempt to notify the client side (peerFd) with 502 and close both.
-      const auto peerIt = _connections.active.find(state.peerFd);
-      if (peerIt != _connections.active.end()) {
-        emitSimpleError(peerIt, http::StatusCodeBadGateway, true, "Upstream connect failed");
-      } else {
-        log::error("Unable to notify client of upstream connect failure: peer fd # {} not found", state.peerFd);
-      }
-      closeConnection(cnxIt);
-      return;
-    }
-    // otherwise connect succeeded; continue to normal writable handling
-  }
-  // If tunneling, flush tunnelOutBuffer first
-  if (state.isTunneling() && !state.tunnelOrFileBuffer.empty()) {
-    const auto [written, want] = state.transportWrite(state.tunnelOrFileBuffer);
-    if (want == TransportHint::Error) [[unlikely]] {
-      // Fatal error writing tunnel data: close this connection
-      closeConnection(cnxIt);
-      return;
-    }
-    state.tunnelOrFileBuffer.erase_front(written);
-    // If still has data, keep EPOLLOUT registered
-    if (!state.tunnelOrFileBuffer.empty()) {
-      return;
-    }
-    // Tunnel buffer drained: fall through to normal flushOutbound handling
-  }
-  flushOutbound(cnxIt);
-  if (state.canCloseImmediately()) {
     closeConnection(cnxIt);
   }
 }

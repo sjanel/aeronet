@@ -652,7 +652,7 @@ TEST(MultiHttpServer, AggregatedStatsJsonAndSetters) {
       });
 
   std::atomic<int> middlewareCbCount{0};
-  multi.setMiddlewareMetricsCallback([&](const SingleHttpServer::MiddlewareMetrics& metrics) {
+  multi.setMiddlewareMetricsCallback([&](const MiddlewareMetrics& metrics) {
     EXPECT_EQ(metrics.requestPath, "/test-cb");
     middlewareCbCount.fetch_add(1, std::memory_order_relaxed);
   });

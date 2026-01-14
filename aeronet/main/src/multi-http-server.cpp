@@ -277,7 +277,7 @@ void MultiHttpServer::setExpectationHandler(SingleHttpServer::ExpectationHandler
   _servers.front().setExpectationHandler(std::move(handler));
 }
 
-void MultiHttpServer::setMiddlewareMetricsCallback(SingleHttpServer::MiddlewareMetricsCallback cb) {
+void MultiHttpServer::setMiddlewareMetricsCallback(MiddlewareMetricsCallback cb) {
   canSetCallbacks();
   _servers.front().setMiddlewareMetricsCallback(std::move(cb));
 }

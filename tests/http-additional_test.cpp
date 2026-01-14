@@ -919,12 +919,36 @@ TEST(SingleHttpServer, MiddlewareExceptionHandling) {
   ts.router() = Router();  // Clear middlewares for other tests
 }
 
-// Test exception in response middleware
-TEST(SingleHttpServer, ResponseMiddlewareException) {
-  ts.router().addResponseMiddleware(
-      [](const HttpRequest&, HttpResponse&) { throw std::runtime_error("response middleware error"); });
+TEST(SingleHttpServer, RequestMiddlewareStdExceptionInGlobalMiddleware) {
+  ts.resetRouterAndGet().addRequestMiddleware(
+      [](const HttpRequest&) -> MiddlewareResult { throw std::runtime_error("request middleware error"); });
 
-  ts.router().addResponseMiddleware([](const HttpRequest&, HttpResponse&) { throw 42; });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+
+  test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  auto resp = test::recvUntilClosed(fd);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 500"));
+}
+
+TEST(SingleHttpServer, RequestMiddlewareCustomExceptionInGlobalMiddleware) {
+  ts.resetRouterAndGet().addRequestMiddleware([](const HttpRequest&) -> MiddlewareResult { throw 42; });
+
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+
+  test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  auto resp = test::recvUntilClosed(fd);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 500"));
+}
+
+TEST(SingleHttpServer, ResponseMiddlewareStdExceptionInGlobalMiddleware) {
+  ts.resetRouterAndGet().addResponseMiddleware(
+      [](const HttpRequest&, HttpResponse&) { throw std::runtime_error("response middleware error"); });
 
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
 
@@ -936,19 +960,77 @@ TEST(SingleHttpServer, ResponseMiddlewareException) {
 
   test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
   EXPECT_FALSE(test::recvUntilClosed(fd).empty());
+}
 
-  clientConnection = test::ClientConnection(ts.port());
-  fd = clientConnection.fd();
+TEST(SingleHttpServer, ResponseMiddlewareCustomExceptionInGlobalMiddleware) {
+  ts.resetRouterAndGet().addResponseMiddleware([](const HttpRequest&, HttpResponse&) { throw 42; });
+
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  ts.router().setPath(http::Method::GET, "/test",
+                      [](const HttpRequest&, HttpResponseWriter& writer) { writer.writeBody("test"); });
+
+  test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+
+  test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  EXPECT_FALSE(test::recvUntilClosed(fd).empty());
+}
+
+TEST(SingleHttpServer, RequestMiddlewareStdExceptionInPathMiddleware) {
+  auto entry = ts.resetRouterAndGet().setPath(
+      http::Method::GET, "/test", [](const HttpRequest&, HttpResponseWriter& writer) { writer.writeBody("test"); });
+  entry.before([](const HttpRequest&) -> MiddlewareResult { throw std::runtime_error("request middleware error"); });
+
+  test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+
+  test::sendAll(fd, "GET /test HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  auto resp = test::recvUntilClosed(fd);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 500"));
+}
+
+TEST(SingleHttpServer, RequestMiddlewareCustomExceptionInPathMiddleware) {
+  auto entry = ts.resetRouterAndGet().setPath(
+      http::Method::GET, "/test", [](const HttpRequest&, HttpResponseWriter& writer) { writer.writeBody("test"); });
+  entry.before([](const HttpRequest&) -> MiddlewareResult { throw 42; });
+
+  test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+
+  test::sendAll(fd, "GET /test HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  auto resp = test::recvUntilClosed(fd);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 500"));
+}
+
+TEST(SingleHttpServer, ResponseMiddlewareStdExceptionInPathMiddleware) {
+  auto entry = ts.resetRouterAndGet().setPath(
+      http::Method::GET, "/test", [](const HttpRequest&, HttpResponseWriter& writer) { writer.writeBody("test"); });
+
+  entry.after([](const HttpRequest&, HttpResponse&) { throw std::runtime_error("response middleware error"); });
+
+  test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
 
   test::sendAll(fd, "GET /test HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
   EXPECT_FALSE(test::recvUntilClosed(fd).empty());
+}
 
-  ts.router() = Router();  // Clear middlewares for other tests
+TEST(SingleHttpServer, ResponseMiddlewareCustomExceptionInPathMiddleware) {
+  auto entry =
+      ts.resetRouterAndGet().setPath(http::Method::GET, "/test", [](const HttpRequest&) { return HttpResponse("OK"); });
+  entry.after([](const HttpRequest&, HttpResponse&) { throw 42; });
+
+  test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+
+  test::sendAll(fd, "GET /test HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  EXPECT_FALSE(test::recvUntilClosed(fd).empty());
 }
 
 // Test multiple response middleware
 TEST(SingleHttpServer, MultipleResponseMiddleware) {
-  ts.router().addResponseMiddleware(
+  ts.resetRouterAndGet().addResponseMiddleware(
       [](const HttpRequest&, HttpResponse& resp) { resp.headerAddLine("X-Middleware-1", "first"); });
 
   ts.router().addResponseMiddleware(

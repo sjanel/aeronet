@@ -15,7 +15,9 @@
 #include "aeronet/event.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/http-response-prefinalize.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -24,7 +26,6 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/tcp-connector.hpp"
-#include "aeronet/template-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
@@ -36,190 +37,120 @@ namespace aeronet {
 SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionMapIt& cnxIt, std::size_t consumedBytes,
                                                                      const CorsPolicy* pCorsPolicy) {
   HttpRequest& request = cnxIt->second->request;
-  switch (request.method()) {
-    case http::Method::OPTIONS: {
-      // OPTIONS * request (target="*") should return an Allow header listing supported methods.
-      const auto buildAllowHeader = [](http::MethodBmp mask) {
-        RawChars32 allowValue;
-        for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
-          if (!http::IsMethodIdxSet(mask, methodIdx)) {
-            continue;
-          }
-          if (!allowValue.empty()) {
-            allowValue.push_back(',');
-          }
-          allowValue.append(http::MethodIdxToStr(methodIdx));
-        }
-        return allowValue;
-      };
 
-      if (request.path() == "*") {
-        HttpResponse resp(http::StatusCodeOK, http::ReasonOK);
-        const http::MethodBmp allowed = _router.allowedMethods("*");
-        auto allowVal = buildAllowHeader(allowed);
-        if (!allowVal.empty()) {
-          resp.header(http::Allow, allowVal);
-        }
-        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
-        return LoopAction::Continue;
-      }
+  // Handle OPTIONS and TRACE via shared protocol-agnostic code
+  if (request.method() == http::Method::OPTIONS || request.method() == http::Method::TRACE) {
+    const SpecialMethodConfig config{
+        .tracePolicy = _config.traceMethodPolicy,
+        .isTls = !request.tlsVersion().empty(),
+    };
 
-      const auto routeMethods = _router.allowedMethods(request.path());
-      if (pCorsPolicy != nullptr) {
-        auto preflight = pCorsPolicy->handlePreflight(request, routeMethods);
-        switch (preflight.status) {
-          case CorsPolicy::PreflightResult::Status::NotPreflight:
-            break;
-          case CorsPolicy::PreflightResult::Status::Allowed:
-            finalizeAndSendResponse(cnxIt, std::move(preflight.response), consumedBytes, pCorsPolicy);
-            return LoopAction::Continue;
-          case CorsPolicy::PreflightResult::Status::OriginDenied: {
-            HttpResponse resp(http::StatusCodeForbidden, http::ReasonForbidden);
-            resp.body(http::ReasonForbidden);
-            finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
-            return LoopAction::Continue;
-          }
-          case CorsPolicy::PreflightResult::Status::MethodDenied: {
-            HttpResponse resp(http::StatusCodeMethodNotAllowed);
-            resp.body(http::ReasonMethodNotAllowed);
-            const auto allowedForPath = buildAllowHeader(routeMethods);
-            if (!allowedForPath.empty()) {
-              resp.header(http::Allow, allowedForPath);
-            }
-            finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
-            return LoopAction::Continue;
-          }
-          case CorsPolicy::PreflightResult::Status::HeadersDenied: {
-            HttpResponse resp(http::StatusCodeForbidden, http::ReasonForbidden);
-            resp.body(http::ReasonForbidden);
-            finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
-            return LoopAction::Continue;
-          }
-        }
-      }
+    // For TRACE, we need to pass the raw request data
+    const std::string_view requestData = (request.method() == http::Method::TRACE)
+                                             ? std::string_view(cnxIt->second->inBuffer.data(), consumedBytes)
+                                             : std::string_view{};
 
-      break;
-    }
-    case http::Method::TRACE: {
-      // TRACE: echo the received request message as the body with Content-Type: message/http
-      // Respect configured TracePolicy. Default: Disabled.
-      bool allowTrace;
-      switch (_config.traceMethodPolicy) {
-        case HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS:
-          allowTrace = true;
-          break;
-        case HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly:
-          // If this request arrived over TLS, disallow TRACE
-          allowTrace = request.tlsVersion().empty();
-          break;
-        case HttpServerConfig::TraceMethodPolicy::Disabled:
-        default:
-          allowTrace = false;
-          break;
-      }
-      if (allowTrace) {
-        // Reconstruct the request head from HttpRequest
-        std::string_view reqDataEchoed(cnxIt->second->inBuffer.data(), consumedBytes);
-
-        HttpResponse resp(http::StatusCodeOK);
-        resp.body(reqDataEchoed, http::ContentTypeMessageHttp);
-        finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
-        return LoopAction::Continue;
-      }
-      // TRACE disabled -> Method Not Allowed
-      HttpResponse resp(http::StatusCodeMethodNotAllowed);
-      resp.body(http::ReasonMethodNotAllowed);
-      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
+    auto result = ProcessSpecialMethods(request, _router, config, pCorsPolicy, requestData);
+    if (result.handled()) {
+      finalizeAndSendResponseForHttp1(cnxIt, std::move(*result.response), consumedBytes, pCorsPolicy);
       return LoopAction::Continue;
     }
-    case http::Method::CONNECT: {
-      // CONNECT: establish a TCP tunnel to target (host:port). On success reply 200 and
-      // proxy bytes bidirectionally between client and upstream.
-      // Parse authority form in request.path() (host:port)
-      const std::string_view target = request.path();
-      const auto colonPos = target.find(':');
-      if (colonPos == std::string_view::npos) {
-        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Malformed CONNECT target");
-        return LoopAction::Break;
-      }
-      const std::string_view host(target.begin(), target.begin() + static_cast<size_t>(colonPos));
-      const std::string_view portStr(target.data() + colonPos + 1, static_cast<size_t>(target.size() - colonPos - 1));
-
-      // Enforce CONNECT allowlist if present
-      const auto& connectAllowList = _config.connectAllowlist();
-      if (!connectAllowList.empty() && !connectAllowList.containsCI(host)) {
-        emitSimpleError(cnxIt, http::StatusCodeForbidden, true, "CONNECT target not allowed");
-        return LoopAction::Break;
-      }
-
-      // Use helper to resolve and initiate a non-blocking connect. The helper
-      // returns a ConnectResult with an owned BaseFd and flags indicating
-      // whether the connect is pending or failed.
-      char* data = cnxIt->second->inBuffer.data();
-      ConnectResult cres = ConnectTCP(std::span<char>(data + (host.data() - data), host.size()),
-                                      std::span<char>(data + (portStr.data() - data), portStr.size()));
-      if (cres.failure) {
-        emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Unable to resolve CONNECT target");
-        return LoopAction::Break;
-      }
-
-      int upstreamFd = cres.cnx.fd();
-      // Register upstream in event loop for edge-triggered reads and writes so we can detect
-      // completion of non-blocking connect (EPOLLOUT) as well as incoming data.
-      if (!_eventLoop.add(EventLoop::EventFd{upstreamFd, EventIn | EventOut | EventRdHup | EventEt})) [[unlikely]] {
-        emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Failed to register upstream fd");
-        return LoopAction::Break;
-      }
-
-      // Insert upstream connection state. Inserting may rehash and invalidate the
-      // caller's iterator; save the client's fd and re-resolve the client iterator
-      // after emplacing.
-      const int clientFd = cnxIt->first.fd();
-      auto [upIt, inserted] = _connections.emplace(std::move(cres.cnx));
-      // Note: Duplicate fd for a newly connected upstream socket indicates a library bug - the kernel
-      // assigns unique fds for each socket(), and we remove closed connections before their fd can
-      // be reused. Using assert to document this invariant.
-      assert(inserted && "Duplicate upstream fd indicates library bug - connection not properly removed");
-
-      // Set upstream transport to plain (no TLS)
-      upIt->second->transport = std::make_unique<PlainTransport>(upstreamFd);
-
-      // If the connector indicated the connect is still in progress on this
-      // non-blocking socket, mark state so the event loop's writable handler
-      // can check SO_ERROR and surface failures. Use the connector's flag
-      // rather than relying on errno here (errno may have been overwritten).
-
-      // Reply 200 Connection Established to client
-      // Since cnxIt is passed by reference we will update it here so the caller need not re-find.
-      // Note: The client connection cannot vanish during upstream insertion - map rehash only relocates
-      // existing entries, it never removes them. We use assert to document this invariant.
-      cnxIt = _connections.active.find(clientFd);
-      assert(cnxIt != _connections.active.end() && "Client connection cannot vanish during map rehash");
-
-      finalizeAndSendResponse(cnxIt, HttpResponse("Connection Established"), consumedBytes, pCorsPolicy);
-
-      // Enter tunneling mode: link peer fds
-      cnxIt->second->peerFd = upstreamFd;
-      upIt->second->peerFd = cnxIt->first.fd();
-      upIt->second->connectPending = cres.connectPending;
-
-      // From now on, both connections bypass HTTP parsing; we simply proxy bytes. We'll rely on handleReadableClient
-      // to read from each side and forward to the other by writing into the peer's transport directly.
-      // Erase any partially parsed buffers for the client (we already replied)
-      cnxIt->second->inBuffer.clear();
-      upIt->second->inBuffer.clear();
-      return LoopAction::Continue;
-    }
-    default:
-      break;
+    // Not handled (e.g., not a preflight), fall through to normal processing
+    return LoopAction::Nothing;
   }
+
+  // CONNECT requires protocol-specific handling (TCP tunnel setup)
+  if (request.method() == http::Method::CONNECT) {
+    return processConnectMethod(cnxIt, consumedBytes, pCorsPolicy);
+  }
+
   return LoopAction::Nothing;
 }
 
-void SingleHttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
-                                               const CorsPolicy* pCorsPolicy) {
-  const auto respStatusCode = resp.status();
+SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionMapIt& cnxIt, std::size_t consumedBytes,
+                                                                    const CorsPolicy* pCorsPolicy) {
+  HttpRequest& request = cnxIt->second->request;
 
+  // CONNECT: establish a TCP tunnel to target (host:port). On success reply 200 and
+  // proxy bytes bidirectionally between client and upstream.
+  // Parse authority form in request.path() (host:port)
+  const std::string_view target = request.path();
+  const auto colonPos = target.find(':');
+  if (colonPos == std::string_view::npos) {
+    emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Malformed CONNECT target");
+    return LoopAction::Break;
+  }
+  const std::string_view host(target.begin(), target.begin() + static_cast<size_t>(colonPos));
+  const std::string_view portStr(target.data() + colonPos + 1, static_cast<size_t>(target.size() - colonPos - 1));
+
+  // Enforce CONNECT allowlist if present
+  const auto& connectAllowList = _config.connectAllowlist();
+  if (!connectAllowList.empty() && !connectAllowList.containsCI(host)) {
+    emitSimpleError(cnxIt, http::StatusCodeForbidden, true, "CONNECT target not allowed");
+    return LoopAction::Break;
+  }
+
+  // Use helper to resolve and initiate a non-blocking connect. The helper
+  // returns a ConnectResult with an owned BaseFd and flags indicating
+  // whether the connect is pending or failed.
+  char* data = cnxIt->second->inBuffer.data();
+  ConnectResult cres = ConnectTCP(std::span<char>(data + (host.data() - data), host.size()),
+                                  std::span<char>(data + (portStr.data() - data), portStr.size()));
+  if (cres.failure) {
+    emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Unable to resolve CONNECT target");
+    return LoopAction::Break;
+  }
+
+  int upstreamFd = cres.cnx.fd();
+  // Register upstream in event loop for edge-triggered reads and writes so we can detect
+  // completion of non-blocking connect (EPOLLOUT) as well as incoming data.
+  if (!_eventLoop.add(EventLoop::EventFd{upstreamFd, EventIn | EventOut | EventRdHup | EventEt})) [[unlikely]] {
+    emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Failed to register upstream fd");
+    return LoopAction::Break;
+  }
+
+  // Insert upstream connection state. Inserting may rehash and invalidate the
+  // caller's iterator; save the client's fd and re-resolve the client iterator
+  // after emplacing.
+  const int clientFd = cnxIt->first.fd();
+  auto [upIt, inserted] = _connections.emplace(std::move(cres.cnx));
+  // Note: Duplicate fd for a newly connected upstream socket indicates a library bug - the kernel
+  // assigns unique fds for each socket(), and we remove closed connections before their fd can
+  // be reused. Using assert to document this invariant.
+  assert(inserted && "Duplicate upstream fd indicates library bug - connection not properly removed");
+
+  // Set upstream transport to plain (no TLS)
+  upIt->second->transport = std::make_unique<PlainTransport>(upstreamFd);
+
+  // If the connector indicated the connect is still in progress on this
+  // non-blocking socket, mark state so the event loop's writable handler
+  // can check SO_ERROR and surface failures. Use the connector's flag
+  // rather than relying on errno here (errno may have been overwritten).
+
+  // Reply 200 Connection Established to client
+  // Since cnxIt is passed by reference we will update it here so the caller need not re-find.
+  // Note: The client connection cannot vanish during upstream insertion - map rehash only relocates
+  // existing entries, it never removes them. We use assert to document this invariant.
+  cnxIt = _connections.active.find(clientFd);
+  assert(cnxIt != _connections.active.end() && "Client connection cannot vanish during map rehash");
+
+  finalizeAndSendResponseForHttp1(cnxIt, HttpResponse("Connection Established"), consumedBytes, pCorsPolicy);
+
+  // Enter tunneling mode: link peer fds
+  cnxIt->second->peerFd = upstreamFd;
+  upIt->second->peerFd = cnxIt->first.fd();
+  upIt->second->connectPending = cres.connectPending;
+
+  // From now on, both connections bypass HTTP parsing; we simply proxy bytes. We'll rely on handleReadableClient
+  // to read from each side and forward to the other by writing into the peer's transport directly.
+  // Erase any partially parsed buffers for the client (we already replied)
+  cnxIt->second->inBuffer.clear();
+  upIt->second->inBuffer.clear();
+  return LoopAction::Continue;
+}
+
+void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, HttpResponse&& resp,
+                                                       std::size_t consumedBytes, const CorsPolicy* pCorsPolicy) {
   ConnectionState& state = *cnxIt->second;
   HttpRequest& request = state.request;
   request._ownerState = nullptr;
@@ -227,8 +158,12 @@ void SingleHttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRespon
     (void)pCorsPolicy->applyToResponse(request, resp);
   }
 
+  // TODO: metrics should also be updated in HTTP/2
   ++state.requestsServed;
   ++_stats.totalRequestsServed;
+
+  const bool isHead = (request.method() == http::Method::HEAD);
+  internal::PrefinalizeHttpResponse(request, resp, isHead, _compression, _config);
 
   // keep-alive logic
   bool keepAlive =
@@ -243,17 +178,7 @@ void SingleHttpServer::finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpRespon
     }
   }
 
-  const bool isHead = (request.method() == http::Method::HEAD);
-  if (!isHead) {
-    if (respStatusCode == http::StatusCodeNotFound && !resp.hasBody()) {
-      resp.body(k404NotFoundTemplate2, http::ContentTypeTextHtml);
-    }
-
-    if (resp.hasBodyInMemory()) {
-      internal::HttpCodec::TryCompressResponse(_compression, _config.compression,
-                                               request.headerValueOrEmpty(http::AcceptEncoding), resp);
-    }
-  }
+  const auto respStatusCode = resp.status();
 
   queueFormattedHttp1Response(cnxIt, resp.finalizeForHttp1(SysClock::now(), request.version(), !keepAlive,
                                                            _config.globalHeaders, isHead, _config.minCapturedBodySize));

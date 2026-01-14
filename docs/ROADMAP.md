@@ -13,6 +13,7 @@ This file lists planned features and near-term priorities. Implemented features 
 - Middleware helpers (lightweight routing/middleware layer)
 - Multipart / multiple-range responses (`multipart/byteranges`) support (RFC 7233 multi-range)
 - Performance benchmarking & CI perf tests (microbenchmarks for sendfile vs TLS fallback)
+- **HTTP/2 CONNECT tunneling** (RFC 7540 §8.3): Currently returns 405 Method Not Allowed. Full implementation requires per-stream tunnel state tracking, upstream TCP connections, and bidirectional DATA frame forwarding. Users needing CONNECT tunneling should use HTTP/1.1 instead, which has full support.
 
 ### Performance improvement ideas
 

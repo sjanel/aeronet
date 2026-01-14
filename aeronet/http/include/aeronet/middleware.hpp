@@ -2,8 +2,10 @@
 
 #include <cstdint>
 #include <functional>
+#include <string_view>
 #include <utility>
 
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 
@@ -39,6 +41,21 @@ class MiddlewareResult {
   Decision _decision{Decision::Continue};
   HttpResponse _response;
 };
+
+struct MiddlewareMetrics {
+  enum class Phase : uint8_t { Pre, Post };
+
+  Phase phase;
+  bool isGlobal;
+  bool shortCircuited;
+  bool threw;
+  bool streaming;
+  http::Method method;
+  uint32_t index;
+  std::string_view requestPath;
+};
+
+using MiddlewareMetricsCallback = std::function<void(const MiddlewareMetrics&)>;
 
 // Middleware invoked before the route handler executes. It may mutate the request and
 // return a short-circuit response to skip subsequent middleware and the handler.

@@ -885,6 +885,12 @@ class HttpResponse {
   friend class http2::Http2ProtocolHandler;
 #endif
 
+  enum class Empty : std::uint8_t { Yes };
+
+  // Private constructor to avoid allocating memory for the data buffer when not needed immediately.
+  // Use with care! All setters take the assumption that the internal buffer is available.
+  explicit HttpResponse([[maybe_unused]] Empty empty) noexcept {}
+
   void setCapturedPayload(auto payload) {
     if (payload.empty()) {
       _payloadVariant = {};
@@ -1032,6 +1038,7 @@ class HttpResponse {
   std::uint64_t _posBitmap{0};
   // Variant holding either an external captured payload (HttpPayload) or a FilePayload.
   // monostate represents "no external payload".
+  // TODO: we could remove one variant layer by making HttpPayload able to represent FilePayload too.
   std::variant<std::monostate, HttpPayload, FilePayload> _payloadVariant;
   std::size_t _trailerLen{0};  // trailer length
 };
