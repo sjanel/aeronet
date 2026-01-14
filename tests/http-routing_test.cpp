@@ -419,9 +419,9 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
 
 TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
   std::mutex metricsMutex;
-  std::vector<SingleHttpServer::MiddlewareMetrics> captured;
+  std::vector<MiddlewareMetrics> captured;
   std::vector<std::string> requestPaths;
-  ts.server.setMiddlewareMetricsCallback([&](const SingleHttpServer::MiddlewareMetrics& metrics) {
+  ts.server.setMiddlewareMetricsCallback([&](const MiddlewareMetrics& metrics) {
     std::scoped_lock lock(metricsMutex);
     captured.push_back(metrics);
     requestPaths.emplace_back(metrics.requestPath);
@@ -445,7 +445,7 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
 
   ts.server.setMiddlewareMetricsCallback({});
 
-  std::vector<SingleHttpServer::MiddlewareMetrics> metrics;
+  std::vector<MiddlewareMetrics> metrics;
   {
     std::scoped_lock lock(metricsMutex);
     metrics = captured;
@@ -453,7 +453,7 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
 
   ASSERT_EQ(metrics.size(), 4U);
 
-  EXPECT_EQ(metrics[0].phase, SingleHttpServer::MiddlewareMetrics::Phase::Pre);
+  EXPECT_EQ(metrics[0].phase, MiddlewareMetrics::Phase::Pre);
   EXPECT_TRUE(metrics[0].isGlobal);
   EXPECT_FALSE(metrics[0].shortCircuited);
   EXPECT_FALSE(metrics[0].threw);
@@ -462,7 +462,7 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
   EXPECT_EQ(metrics[0].method, http::Method::GET);
   EXPECT_EQ(requestPaths[0], "/mw-metrics");
 
-  EXPECT_EQ(metrics[1].phase, SingleHttpServer::MiddlewareMetrics::Phase::Pre);
+  EXPECT_EQ(metrics[1].phase, MiddlewareMetrics::Phase::Pre);
   EXPECT_FALSE(metrics[1].isGlobal);
   EXPECT_FALSE(metrics[1].shortCircuited);
   EXPECT_FALSE(metrics[1].threw);
@@ -470,14 +470,14 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
   EXPECT_EQ(metrics[1].index, 0U);
   EXPECT_EQ(requestPaths[1], "/mw-metrics");
 
-  EXPECT_EQ(metrics[2].phase, SingleHttpServer::MiddlewareMetrics::Phase::Post);
+  EXPECT_EQ(metrics[2].phase, MiddlewareMetrics::Phase::Post);
   EXPECT_FALSE(metrics[2].isGlobal);
   EXPECT_FALSE(metrics[2].shortCircuited);
   EXPECT_FALSE(metrics[2].threw);
   EXPECT_FALSE(metrics[2].streaming);
   EXPECT_EQ(metrics[2].index, 0U);
 
-  EXPECT_EQ(metrics[3].phase, SingleHttpServer::MiddlewareMetrics::Phase::Post);
+  EXPECT_EQ(metrics[3].phase, MiddlewareMetrics::Phase::Post);
   EXPECT_TRUE(metrics[3].isGlobal);
   EXPECT_FALSE(metrics[3].shortCircuited);
   EXPECT_FALSE(metrics[3].threw);
@@ -487,8 +487,8 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
 
 TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
   std::mutex metricsMutex;
-  std::vector<SingleHttpServer::MiddlewareMetrics> captured;
-  ts.server.setMiddlewareMetricsCallback([&](const SingleHttpServer::MiddlewareMetrics& metrics) {
+  std::vector<MiddlewareMetrics> captured;
+  ts.server.setMiddlewareMetricsCallback([&](const MiddlewareMetrics& metrics) {
     std::scoped_lock lock(metricsMutex);
     captured.push_back(metrics);
   });
@@ -504,51 +504,46 @@ TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
   });
 
   entry.before([](HttpRequest&) {
-    HttpResponse resp(http::StatusCodeServiceUnavailable, "blocked");
+    HttpResponse resp(http::StatusCodeServiceUnavailable);
     resp.body("shorted");
     return MiddlewareResult::ShortCircuit(std::move(resp));
   });
   entry.after([](const HttpRequest&, HttpResponse&) {});
 
   const std::string response = test::simpleGet(ts.port(), "/mw-short-metrics");
-  ASSERT_TRUE(response.contains("HTTP/1.1 503")) << response;
-  ASSERT_FALSE(handlerInvoked.load(std::memory_order_relaxed));
+  EXPECT_TRUE(response.contains("HTTP/1.1 503")) << response;
+  EXPECT_FALSE(handlerInvoked.load(std::memory_order_relaxed));
 
   ts.server.setMiddlewareMetricsCallback({});
 
-  std::vector<SingleHttpServer::MiddlewareMetrics> metrics;
+  std::vector<MiddlewareMetrics> metrics;
   {
     std::scoped_lock lock(metricsMutex);
     metrics = captured;
   }
 
-  ASSERT_EQ(metrics.size(), 4U);
-  EXPECT_EQ(metrics[0].phase, SingleHttpServer::MiddlewareMetrics::Phase::Pre);
+  ASSERT_EQ(metrics.size(), 3U);
+  EXPECT_EQ(metrics[0].phase, MiddlewareMetrics::Phase::Pre);
   EXPECT_TRUE(metrics[0].isGlobal);
   EXPECT_FALSE(metrics[0].shortCircuited);
   EXPECT_FALSE(metrics[0].streaming);
 
-  EXPECT_EQ(metrics[1].phase, SingleHttpServer::MiddlewareMetrics::Phase::Pre);
+  EXPECT_EQ(metrics[1].phase, MiddlewareMetrics::Phase::Post);
   EXPECT_FALSE(metrics[1].isGlobal);
-  EXPECT_TRUE(metrics[1].shortCircuited);
+  EXPECT_FALSE(metrics[1].shortCircuited);
   EXPECT_FALSE(metrics[1].streaming);
 
-  EXPECT_EQ(metrics[2].phase, SingleHttpServer::MiddlewareMetrics::Phase::Post);
-  EXPECT_FALSE(metrics[2].isGlobal);
+  EXPECT_EQ(metrics[2].phase, MiddlewareMetrics::Phase::Post);
+  EXPECT_TRUE(metrics[2].isGlobal);
   EXPECT_FALSE(metrics[2].shortCircuited);
   EXPECT_FALSE(metrics[2].streaming);
-
-  EXPECT_EQ(metrics[3].phase, SingleHttpServer::MiddlewareMetrics::Phase::Post);
-  EXPECT_TRUE(metrics[3].isGlobal);
-  EXPECT_FALSE(metrics[3].shortCircuited);
-  EXPECT_FALSE(metrics[3].streaming);
 }
 
 TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
   std::mutex metricsMutex;
-  std::vector<SingleHttpServer::MiddlewareMetrics> captured;
+  std::vector<MiddlewareMetrics> captured;
   std::vector<std::string> requestPaths;
-  ts.server.setMiddlewareMetricsCallback([&](const SingleHttpServer::MiddlewareMetrics& metrics) {
+  ts.server.setMiddlewareMetricsCallback([&](const MiddlewareMetrics& metrics) {
     std::scoped_lock lock(metricsMutex);
     captured.push_back(metrics);
     requestPaths.emplace_back(metrics.requestPath);
@@ -574,16 +569,25 @@ TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
 
   ts.server.setMiddlewareMetricsCallback({});
 
-  std::vector<SingleHttpServer::MiddlewareMetrics> metrics;
+  std::vector<MiddlewareMetrics> metrics;
   {
     std::scoped_lock lock(metricsMutex);
     metrics = captured;
   }
 
   ASSERT_EQ(metrics.size(), 4U);
-  for (const auto& metric : metrics) {
-    EXPECT_TRUE(metric.streaming);
-  }
+
+  EXPECT_TRUE(metrics[0].isGlobal);
+  EXPECT_TRUE(metrics[0].streaming);
+
+  EXPECT_FALSE(metrics[1].isGlobal);
+  EXPECT_TRUE(metrics[1].streaming);
+
+  EXPECT_FALSE(metrics[2].isGlobal);
+  EXPECT_TRUE(metrics[2].streaming);
+
+  EXPECT_TRUE(metrics[3].isGlobal);
+  EXPECT_TRUE(metrics[3].streaming);
   for (const auto& path : requestPaths) {
     EXPECT_EQ(path, "/mw-stream-metrics");
   }

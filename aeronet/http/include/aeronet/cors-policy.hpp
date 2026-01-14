@@ -68,6 +68,9 @@ class CorsPolicy {
   // If false, no need to call applyToResponse.
   [[nodiscard]] bool active() const noexcept { return _active; }
 
+  // Determine if CORS headers would be applied to a normal (non-preflight) response.
+  [[nodiscard]] ApplyStatus wouldApply(const HttpRequest& request) const noexcept;
+
   // Apply CORS headers to a normal (non-preflight) response if the request is a CORS request.
   [[nodiscard]] ApplyStatus applyToResponse(const HttpRequest& request, HttpResponse& response) const;
 
