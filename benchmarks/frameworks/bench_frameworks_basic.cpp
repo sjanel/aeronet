@@ -620,8 +620,8 @@ void AeronetResponseBuild(benchmark::State &state) {
     resp.body(std::move(body));
     // Finalization occurs when serialized for send; emulate by calling body() + reserved header injection via copy
     // We approximate work by measuring the total constructed response buffer size.
-    bytesSynthesized += resp.body().size();
-    benchmark::DoNotOptimize(resp.body().data());
+    bytesSynthesized += resp.bodyLength();
+    benchmark::DoNotOptimize(resp);
   }
   if (state.iterations() > 0) {
     double iterCount = static_cast<double>(state.iterations());

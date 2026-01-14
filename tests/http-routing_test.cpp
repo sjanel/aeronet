@@ -336,7 +336,7 @@ TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("route-post");
     resp.header("X-Route-Middleware", "post");
-    const std::string existingBody(resp.body());
+    const std::string existingBody(resp.bodyInMemory());
     std::string updatedBody("route:");
     updatedBody += existingBody;
     resp.body(updatedBody);

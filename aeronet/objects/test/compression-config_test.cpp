@@ -73,24 +73,24 @@ TEST(CompressionConfigTest, BrotliOK) {
   EXPECT_NO_THROW(config.validate());
 }
 
-TEST(CompressionConfigTest, NonFiniteMinCompressRatioThrows) {
+TEST(CompressionConfigTest, NonFiniteMaxCompressRatioThrows) {
   CompressionConfig config;
-  config.minCompressRatio = std::numeric_limits<double>::infinity();
+  config.maxCompressRatio = std::numeric_limits<double>::infinity();
   EXPECT_THROW(config.validate(), std::invalid_argument);
 
-  config.minCompressRatio = -std::numeric_limits<double>::infinity();
+  config.maxCompressRatio = -std::numeric_limits<double>::infinity();
   EXPECT_THROW(config.validate(), std::invalid_argument);
 
-  config.minCompressRatio = std::numeric_limits<double>::quiet_NaN();
+  config.maxCompressRatio = std::numeric_limits<double>::quiet_NaN();
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
-TEST(CompressionConfigTest, BoundaryMinCompressRatioThrows) {
+TEST(CompressionConfigTest, BoundaryMaxCompressRatioThrows) {
   CompressionConfig config;
-  config.minCompressRatio = 0.0;
+  config.maxCompressRatio = 0.0;
   EXPECT_THROW(config.validate(), std::invalid_argument);
 
-  config.minCompressRatio = 1.0;
+  config.maxCompressRatio = 1.0;
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 

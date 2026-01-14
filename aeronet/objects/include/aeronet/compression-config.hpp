@@ -78,15 +78,15 @@ struct CompressionConfig {
   std::size_t minBytes{1024U};
 
   // Compression is applied only if:
-  //   compressedSize <= uncompressedSize * minCompressRatio
-  // and the compressed size is strictly smaller than the original size.
+  //   compressedSize <= uncompressedSize * maxCompressRatio
   //
-  // Example: 0.95 requires at least 5% savings.
+  // Example: 0.75 requires at least 25% savings. This value represents the maximum
+  // allowed compressed/uncompressed ratio (i.e. compressedSize/uncompressedSize).
   // Should be in the range (0.0, 1.0), exclusive.
-  float minCompressRatio{0.5};
+  float maxCompressRatio{0.5};
 
-  // Simple allowlist of content-types (prefix match) eligible for compression. If empty, any content type will be
-  // eligible for compression.
+  // Simple allowlist of content-types (prefix match) eligible for response body compression. If empty, any content type
+  // will be eligible for compression.
   ConcatenatedStrings32 contentTypeAllowList;
 };
 
