@@ -174,6 +174,11 @@ class HttpResponse {
   // The content type defaults to "text/plain"
   explicit HttpResponse(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain);
 
+  // Same as above, but with a byte span for the body.
+  explicit HttpResponse(std::span<const std::byte> body,
+                        std::string_view contentType = http::ContentTypeApplicationOctetStream)
+      : HttpResponse(std::string_view(reinterpret_cast<const char*>(body.data()), body.size()), contentType) {}
+
   // --------/
   // GETTERS /
   // --------/
@@ -219,18 +224,41 @@ class HttpResponse {
   //   }
   [[nodiscard]] HeadersView headers() const noexcept { return HeadersView(headersFlatView()); }
 
-  // Get a view of the current body stored in this HttpResponse.
-  // The returned view will be empty if no body nor file is present.
-  [[nodiscard]] std::string_view body() const noexcept;
+  // Get a view of the current in memory body (no file) stored in this HttpResponse.
+  // The returned view will be empty if there is either no body, or a file body.
+  [[nodiscard]] std::string_view bodyInMemory() const noexcept;
 
   // Get the current file stored in this HttpResponse, or nullptr if no file is set.
   [[nodiscard]] const File* file() const noexcept;
 
-  // Check if this HttpResponse has a captured body.
-  [[nodiscard]] bool hasCapturedBody() const noexcept { return _payloadVariant.index() == 1; }
+  // Checks if this HttpResponse has a body (either inlined, captured or file).
+  [[nodiscard]] bool hasBody() const noexcept { return _payloadVariant.index() != 0 || hasBodyInlined(); }
+
+  // Checks if this HttpResponse has a body in memory (either internal buffer or captured, but no file).
+  [[nodiscard]] bool hasBodyInMemory() const noexcept { return _payloadVariant.index() == 1 || hasBodyInlined(); }
+
+  // Checks if this HttpResponse has an inlined body (appended to the main buffer after headers).
+  [[nodiscard]] bool hasBodyInlined() const noexcept { return bodyStartPos() < _data.size(); }
+
+  // Check if this HttpResponse has a captured body (no file).
+  [[nodiscard]] bool hasBodyCaptured() const noexcept { return _payloadVariant.index() == 1; }
 
   // Check if this HttpResponse has a file payload.
-  [[nodiscard]] bool hasFileBody() const noexcept { return _payloadVariant.index() == 2; }
+  [[nodiscard]] bool hasBodyFile() const noexcept { return _payloadVariant.index() == 2; }
+
+  // Get the length of the current body stored in this HttpResponse, if any (including file).
+  [[nodiscard]] std::size_t bodyLength() const noexcept;
+
+  // Get the length of the current inlined or captured (but no file) body stored in this HttpResponse.
+  [[nodiscard]] std::size_t bodyInMemoryLength() const noexcept {
+    if (const HttpPayload* pExternPayload = externPayloadPtr(); pExternPayload != nullptr) {
+      return pExternPayload->size() - _trailerLen;
+    }
+    return bodyInlinedLength();
+  }
+
+  // Get the length of the current inlined body stored in this HttpResponse.
+  [[nodiscard]] std::size_t bodyInlinedLength() const noexcept { return _data.size() - bodyStartPos() - _trailerLen; }
 
   // Retrieves the value of the first occurrence of the given trailer key (case-insensitive search per RFC 7230).
   // If the trailer is not found, returns std::nullopt.
@@ -886,10 +914,6 @@ class HttpResponse {
   // Check if this HttpResponse has an inline body stored in its internal buffer.
   // Can be empty.
   [[nodiscard]] bool hasNoCapturedNorFileBody() const noexcept { return _payloadVariant.index() == 0; }
-
-  // Get the length of the current body stored in this HttpResponse, should it be inlined or captured.
-  // It will return 0 if no body or a file is present.
-  [[nodiscard]] std::size_t bodyLen() const noexcept;
 
   [[nodiscard]] std::size_t internalBodyAndTrailersLen() const noexcept { return _data.size() - bodyStartPos(); }
 

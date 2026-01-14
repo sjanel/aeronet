@@ -121,12 +121,11 @@ HttpResponse::HttpResponse(std::string_view body, std::string_view contentType)
   this->body(body, contentType);
 }
 
-std::size_t HttpResponse::bodyLen() const noexcept {
+std::size_t HttpResponse::bodyLength() const noexcept {
   if (const FilePayload* pFilePayload = filePayloadPtr(); pFilePayload != nullptr) {
     return static_cast<std::size_t>(pFilePayload->length);
   }
-  const HttpPayload* pExternPayload = externPayloadPtr();
-  return (pExternPayload != nullptr ? pExternPayload->size() : internalBodyAndTrailersLen()) - _trailerLen;
+  return bodyInMemoryLength();
 }
 
 HttpResponse& HttpResponse::status(http::StatusCode statusCode) & {
@@ -231,7 +230,7 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
   }
 
   const auto newBodyLenCharVec = IntegralToCharVector(newBodySize);
-  const auto oldBodyLen = bodyLen();
+  const auto oldBodyLen = bodyLength();
   if (newBodySize == 0) {
     if (oldBodyLen != 0) {
       char* contentTypeHeaderLinePtr = getContentTypeHeaderLinePtr(oldBodyLen);
@@ -294,7 +293,7 @@ HttpResponse& HttpResponse::bodyAppend(std::string_view body, std::string_view c
   if (!body.empty()) {
     HttpPayload* pExternPayload = externPayloadPtr();
     if (pExternPayload == nullptr) {
-      if (hasFileBody()) [[unlikely]] {
+      if (hasBodyFile()) [[unlikely]] {
         throw std::logic_error("Cannot append to a captured file body");
       }
       const bool setContentTypeIfPresent = !contentType.empty();
@@ -353,7 +352,7 @@ const File* HttpResponse::file() const noexcept {
   return pFilePayload == nullptr ? nullptr : &pFilePayload->file;
 }
 
-std::string_view HttpResponse::body() const noexcept {
+std::string_view HttpResponse::bodyInMemory() const noexcept {
   const HttpPayload* pExternPayload = externPayloadPtr();
   auto ret = pExternPayload != nullptr ? pExternPayload->view()
                                        : std::string_view{_data.begin() + bodyStartPos(), _data.end()};
@@ -430,7 +429,7 @@ HttpResponse& HttpResponse::headerAddLine(std::string_view key, std::string_view
 
   char* insertPtr = _data.data() + bodyStartPos() - http::DoubleCRLF.size();
 
-  const auto bodySz = bodyLen();
+  const auto bodySz = bodyLength();
 
   if (bodySz == 0) {
     std::memmove(insertPtr + headerLineSize, insertPtr, http::DoubleCRLF.size());
@@ -507,11 +506,8 @@ void HttpResponse::makeAllHeaderNamesLowerCase() {
 
 HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_view value) & {
   assert(http::IsValidHeaderName(name) && !http::IsForbiddenTrailerHeader(name));
-  if (hasFileBody()) {
-    throw std::logic_error("Cannot add trailers when response body uses sendfile");
-  }
-  if (bodyLen() == 0) {
-    throw std::logic_error("Trailers must be added after non empty body is set");
+  if (!hasBodyInMemory()) {
+    throw std::logic_error("Trailers must be added after non empty (nor file) body is set");
   }
 
   const std::size_t lineSize = HeaderSize(name.size(), value.size());
@@ -569,7 +565,7 @@ HttpResponse::FormattedHttp1Response HttpResponse::finalizeForHttp1(SysTimePoint
   const auto versionStr = version.str();
   std::memcpy(_data.data(), versionStr.data(), versionStr.size());
 
-  const auto bodySz = bodyLen();
+  const auto bodySz = bodyLength();
 
   const std::string_view connectionValue = close ? http::close : http::keepalive;
   // HTTP/1.1 (RFC 7230 / RFC 9110) specifies that Connection: keep-alive is the default.
@@ -605,7 +601,7 @@ HttpResponse::FormattedHttp1Response HttpResponse::finalizeForHttp1(SysTimePoint
 
   char* headersInsertPtr = nullptr;
 
-  if (bodySz == 0 || isHeadMethod || hasFileBody()) {
+  if (bodySz == 0 || isHeadMethod || hasBodyFile()) {
     // For HEAD responses we must not transmit the body, but keep file payloads
     // intact so ownership can be transferred by finalizeForHttp1. For inline
     // bodies we still erase the inline bytes.
@@ -842,7 +838,7 @@ HttpResponse::FormattedHttp1Response HttpResponse::finalizeForHttp1(SysTimePoint
 void HttpResponse::bodyAppendUpdateHeaders(std::string_view givenContentType, std::string_view defaultContentType,
                                            std::size_t totalBodyLen) {
   assert(_trailerLen == 0);
-  const auto bodySz = bodyLen();
+  const auto bodySz = bodyLength();
   const auto newBodyLenCharVec = IntegralToCharVector(totalBodyLen);
   if (bodySz == 0) {
     if (givenContentType.empty()) {

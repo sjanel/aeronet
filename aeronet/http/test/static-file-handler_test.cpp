@@ -119,7 +119,7 @@ TEST_F(StaticFileHandlerTest, Basic) {
   HttpResponse resp = handler(req);
 
   EXPECT_EQ(resp.status(), http::StatusCodeOK);
-  EXPECT_EQ(resp.body(), "");  // Body is not set directly when using file responses
+  EXPECT_EQ(resp.bodyInMemory(), "");  // Body is not set directly when using file responses
 
   EXPECT_EQ(resp.headerValueOrEmpty(http::AcceptRanges), "bytes");
   // Other expected headers to be checked
@@ -145,7 +145,7 @@ TEST_F(StaticFileHandlerTest, HeadRequests) {
 
   HttpResponse resp = handler(req);
   EXPECT_EQ(resp.status(), http::StatusCodeOK);
-  EXPECT_EQ(resp.body(), "");
+  EXPECT_EQ(resp.bodyInMemory(), "");
   const File* pFile = resp.file();
   ASSERT_NE(pFile, nullptr);
   EXPECT_EQ(pFile->size(), fileContent.size());
@@ -303,7 +303,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingEscapesAndFormatsSizes) {
     HttpResponse resp = handler(req);
     ASSERT_EQ(resp.status(), http::StatusCodeOK);
 
-    const std::string_view body = resp.body();
+    const std::string_view body = resp.bodyInMemory();
     if (maxEntriesToList < 4U) {
       EXPECT_EQ(resp.headerValueOrEmpty(http::XDirectoryListingTruncated), "1");
       EXPECT_TRUE(body.contains(std::format("Listing truncated after {} entries.", maxEntriesToList)));
@@ -337,7 +337,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingFormatsLargeSizesWithoutDecimals) 
 
   HttpResponse resp = handler(req);
   ASSERT_EQ(resp.status(), http::StatusCodeOK);
-  const std::string_view body = resp.body();
+  const std::string_view body = resp.bodyInMemory();
   EXPECT_TRUE(body.contains("24 KiB"));
   EXPECT_EQ(resp.headerValueOrEmpty(http::XDirectoryListingTruncated), "0");
 
@@ -372,7 +372,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingUsesCustomRenderer) {
 
   HttpResponse resp = handler(req);
   ASSERT_TRUE(rendererCalled);
-  EXPECT_EQ(resp.body(), "<html>custom</html>");
+  EXPECT_EQ(resp.bodyInMemory(), "<html>custom</html>");
   EXPECT_EQ(resp.headerValueOrEmpty(http::XDirectoryListingTruncated), "0");
 }
 
@@ -393,7 +393,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingFormatsOneMegabyteWithDecimal) {
 
   HttpResponse resp = handler(req);
   ASSERT_EQ(resp.status(), http::StatusCodeOK);
-  const std::string_view body = resp.body();
+  const std::string_view body = resp.bodyInMemory();
 
   // The listing should contain the size formatted as "1.0 MiB"
   EXPECT_TRUE(body.contains("1.0 MiB"));
@@ -452,7 +452,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingEnabled) {
 
   EXPECT_EQ(resp.status(), http::StatusCodeOK);
   EXPECT_EQ(resp.headerValueOrEmpty(http::CacheControl), "no-cache");
-  const std::string_view body = resp.body();
+  const std::string_view body = resp.bodyInMemory();
   EXPECT_TRUE(body.contains("Index of /assets/"));
   for (const auto& elem : elements) {
     EXPECT_TRUE(body.contains(elem));
@@ -493,7 +493,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingHonorsHiddenFilesFlag) {
   buildReq("assets/");
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse respHidden = handlerNoHidden(req);
-  const std::string_view bodyHidden = respHidden.body();
+  const std::string_view bodyHidden = respHidden.bodyInMemory();
   EXPECT_EQ(respHidden.status(), http::StatusCodeOK);
   EXPECT_FALSE(bodyHidden.contains(".secret"));
   EXPECT_TRUE(bodyHidden.contains("visible.txt"));
@@ -507,7 +507,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingHonorsHiddenFilesFlag) {
   buildReq("assets/");
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse respShow = handlerShowHidden(req);
-  const std::string_view bodyShow = respShow.body();
+  const std::string_view bodyShow = respShow.bodyInMemory();
   EXPECT_EQ(respShow.status(), http::StatusCodeOK);
   EXPECT_TRUE(bodyShow.contains(".secret"));
 }
@@ -598,7 +598,7 @@ TEST_F(StaticFileHandlerTest, RangeInvalidFormsReturnErrors) {
     ASSERT_EQ(setHead(), http::StatusCodeOK);
     HttpResponse resp = handler(req);
     EXPECT_EQ(resp.status(), http::StatusCodeRangeNotSatisfiable) << testCase.header;
-    EXPECT_EQ(resp.body(), testCase.expectedBody) << testCase.header;
+    EXPECT_EQ(resp.bodyInMemory(), testCase.expectedBody) << testCase.header;
   }
 }
 
@@ -612,7 +612,7 @@ TEST_F(StaticFileHandlerTest, RangeEndBeforeStartIsUnsatisfiable) {
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
   EXPECT_EQ(resp.status(), http::StatusCodeRangeNotSatisfiable);
-  EXPECT_EQ(resp.body(), "Range Not Satisfiable\n");
+  EXPECT_EQ(resp.bodyInMemory(), "Range Not Satisfiable\n");
 }
 
 TEST_F(StaticFileHandlerTest, RangeRequestsOnEmptyFileAreUnsatisfiable) {
@@ -627,7 +627,7 @@ TEST_F(StaticFileHandlerTest, RangeRequestsOnEmptyFileAreUnsatisfiable) {
   EXPECT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
   EXPECT_EQ(resp.status(), http::StatusCodeRangeNotSatisfiable);
-  EXPECT_EQ(resp.body(), "Range Not Satisfiable\n");
+  EXPECT_EQ(resp.bodyInMemory(), "Range Not Satisfiable\n");
 }
 
 TEST_F(StaticFileHandlerTest, EmptyRangeHeaderIsIgnored) {
@@ -836,7 +836,7 @@ TEST_F(StaticFileHandlerTest, ConditionalIfUnmodifiedSinceFailsWhenOutdated) {
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
   EXPECT_EQ(resp.status(), http::StatusCodePreconditionFailed);
-  EXPECT_EQ(resp.body(), "Precondition Failed\n");
+  EXPECT_EQ(resp.bodyInMemory(), "Precondition Failed\n");
 }
 
 TEST_F(StaticFileHandlerTest, ConditionalIfModifiedSinceReturnsNotModified) {
@@ -848,7 +848,7 @@ TEST_F(StaticFileHandlerTest, ConditionalIfModifiedSinceReturnsNotModified) {
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
   EXPECT_EQ(resp.status(), http::StatusCodeNotModified);
-  EXPECT_EQ(resp.body(), "");
+  EXPECT_EQ(resp.bodyInMemory(), "");
 }
 
 TEST_F(StaticFileHandlerTest, ConditionalIfNoneMatchParsesTokenLists) {

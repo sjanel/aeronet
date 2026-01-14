@@ -15,11 +15,11 @@
 namespace aeronet {
 
 void CompressionConfig::validate() const {
-  if (!std::isfinite(minCompressRatio)) {
-    throw std::invalid_argument("Invalid minCompressRatio (expected finite value)");
+  if (!std::isfinite(maxCompressRatio)) {
+    throw std::invalid_argument("Invalid maxCompressRatio (expected finite value)");
   }
-  if (minCompressRatio <= 0.0 || minCompressRatio >= 1.0) {
-    throw std::invalid_argument(std::format("Invalid minCompressRatio {} (expected 0 < ratio < 1)", minCompressRatio));
+  if (maxCompressRatio <= 0.0 || maxCompressRatio >= 1.0) {
+    throw std::invalid_argument(std::format("Invalid maxCompressRatio {} (expected 0 < ratio < 1)", maxCompressRatio));
   }
   if (minBytes < 16U) {
     throw std::invalid_argument("minBytes must be at least 16");
