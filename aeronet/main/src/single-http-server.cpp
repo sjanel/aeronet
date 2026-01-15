@@ -30,6 +30,7 @@
 #include "aeronet/http-error-build.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response-writer.hpp"
@@ -252,7 +253,7 @@ bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
       if (bufView.starts_with(http2::kConnectionPreface)) {
         // Switch to HTTP/2 protocol handler using unified dispatch
         state.protocolHandler =
-            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmp.buf);
+            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _telemetry, _tmp.buf);
         return processSpecialProtocolHandler(cnxIt);
       }
       log::error("Invalid HTTP/2 preface, falling back to HTTP/1.1");
@@ -392,17 +393,16 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       const auto upgradeValidation = upgrade::ValidateHttp2Upgrade(request.headers());
       if (upgradeValidation.valid) {
         // Generate and send 101 Switching Protocols response
-        RawChars upgradeResponse = upgrade::BuildHttp2UpgradeResponse(upgradeValidation);
         const std::size_t consumedBytesUpgrade = request.headSpanSize();
         state.inBuffer.erase_front(consumedBytesUpgrade);
 
         // Create HTTP/2 protocol handler using unified dispatch
         state.protocolHandler =
-            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmp.buf);
+            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _telemetry, _tmp.buf);
         state.protocol = ProtocolType::Http2;
 
         // Queue the upgrade response
-        state.outBuffer.append(HttpResponseData(std::move(upgradeResponse)));
+        state.outBuffer.append(HttpResponseData(upgrade::BuildHttp2UpgradeResponse(upgradeValidation)));
         flushOutbound(cnxIt);
 
         log::debug("HTTP/2 connection established via h2c upgrade on fd {}", cnxIt->first.fd());
@@ -517,7 +517,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       break;
     }
 
-    // Set path params map view
+    // Populate path params map view from router captures
     request._pathParams.clear();
     for (const auto& capture : routingResult.pathParams) {
       request._pathParams.emplace(capture.key, capture.value);
@@ -526,33 +526,32 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
     auto requestMiddlewareRange = routingResult.requestMiddlewareRange;
     auto responseMiddlewareRange = routingResult.responseMiddlewareRange;
 
-    auto sendResponse = [this, responseMiddlewareRange, cnxIt, consumedBytes, pCorsPolicy](HttpResponse&& resp) {
-      applyResponseMiddleware(cnxIt->second->request, resp, responseMiddlewareRange, false);
-      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
+    const bool isStreaming = routingResult.streamingHandler() != nullptr;
+
+    auto sendResponse = [this, isStreaming, responseMiddlewareRange, cnxIt, consumedBytes,
+                         pCorsPolicy](HttpResponse&& resp) {
+      ApplyResponseMiddleware(cnxIt->second->request, resp, responseMiddlewareRange, _router.globalResponseMiddleware(),
+                              _telemetry, isStreaming, _callbacks.middlewareMetrics);
+      finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
     };
 
     auto corsRejected = [&]() {
       if (pCorsPolicy == nullptr) {
         return false;
       }
-      HttpResponse corsProbe;
-      if (pCorsPolicy->applyToResponse(request, corsProbe) == CorsPolicy::ApplyStatus::OriginDenied) {
-        sendResponse(std::move(corsProbe));
+      if (pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
+        sendResponse(HttpResponse(http::StatusCodeForbidden).body("Forbidden by CORS policy"));
         return true;
       }
       return false;
     };
 
-    const bool isStreaming = routingResult.streamingHandler() != nullptr;
+    auto shortCircuitedResponse =
+        RunRequestMiddleware(request, _router.globalRequestMiddleware(), requestMiddlewareRange, _telemetry,
+                             isStreaming, _callbacks.middlewareMetrics);
 
-    HttpResponse middlewareResponse;
-    const auto globalPreChain = _router.globalRequestMiddleware();
-    bool shortCircuited = runPreChain(request, isStreaming, globalPreChain, middlewareResponse, true);
-    if (!shortCircuited) {
-      shortCircuited = runPreChain(request, isStreaming, requestMiddlewareRange, middlewareResponse, false);
-    }
-    if (shortCircuited) {
-      sendResponse(std::move(middlewareResponse));
+    if (shortCircuitedResponse.has_value()) {
+      sendResponse(std::move(*shortCircuitedResponse));
       continue;
     }
 
@@ -594,7 +593,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         sendResponse(std::move(resp));
       }
     } else {
-      HttpResponse resp;
+      HttpResponse resp(http::StatusCodeNotFound);
       if (routingResult.redirectPathIndicator != Router::RoutingResult::RedirectSlashMode::None) {
         // Emit 301 redirect to canonical form.
         resp.status(http::StatusCodeMovedPermanently, http::MovedPermanently).body("Redirecting");
@@ -609,8 +608,6 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         consumedBytes = 0;  // already advanced
       } else if (routingResult.methodNotAllowed) {
         resp.status(http::StatusCodeMethodNotAllowed).body(http::ReasonMethodNotAllowed);
-      } else {
-        resp.status(http::StatusCodeNotFound);
       }
       sendResponse(std::move(resp));
     }
@@ -653,10 +650,12 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
 
   // Determine active CORS policy (route-specific if provided, otherwise global)
   if (pCorsPolicy != nullptr) {
-    HttpResponse corsProbe;
-    if (pCorsPolicy->applyToResponse(request, corsProbe) == CorsPolicy::ApplyStatus::OriginDenied) {
-      applyResponseMiddleware(request, corsProbe, postMiddleware, false);
-      finalizeAndSendResponse(cnxIt, std::move(corsProbe), consumedBytes, pCorsPolicy);
+    if (pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
+      HttpResponse corsProbe(http::StatusCodeForbidden);
+      corsProbe.body("Forbidden by CORS policy");
+      ApplyResponseMiddleware(request, corsProbe, postMiddleware, _router.globalResponseMiddleware(), _telemetry, true,
+                              _callbacks.middlewareMetrics);
+      finalizeAndSendResponseForHttp1(cnxIt, std::move(corsProbe), consumedBytes, pCorsPolicy);
       return state.isAnyCloseRequested();
     }
   }
@@ -668,8 +667,9 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
       HttpResponse resp(http::StatusCodeNotAcceptable);
       resp.body("No acceptable content-coding available");
-      applyResponseMiddleware(request, resp, postMiddleware, false);
-      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
+      ApplyResponseMiddleware(request, resp, postMiddleware, _router.globalResponseMiddleware(), _telemetry, true,
+                              _callbacks.middlewareMetrics);
+      finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
       return state.isAnyCloseRequested();
     }
     compressionFormat = negotiated.encoding;
@@ -720,8 +720,9 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRe
     if (bodyReady) {
       HttpResponse resp(http::StatusCodeInternalServerError);
       resp.body(kMessage);
-      applyResponseMiddleware(state.request, resp, responseMiddleware, false);
-      finalizeAndSendResponse(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
+      ApplyResponseMiddleware(state.request, resp, responseMiddleware, _router.globalResponseMiddleware(), _telemetry,
+                              false, _callbacks.middlewareMetrics);
+      finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
     } else {
       emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true, kMessage);
     }
@@ -826,19 +827,19 @@ void SingleHttpServer::onAsyncHandlerCompleted(ConnectionMapIt cnxIt) {
 
   auto typedHandle =
       std::coroutine_handle<RequestTask<HttpResponse>::promise_type>::from_address(async.handle.address());
-  HttpResponse resp;
   bool fromException = false;
+  HttpResponse resp(HttpResponse::Empty::Yes);  // do not allocate memory yet
   try {
     resp = std::move(typedHandle.promise().consume_result());
   } catch (const std::exception& ex) {
     fromException = true;
     log::error("Exception in async path handler: {}", ex.what());
-    resp = HttpResponse(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
+    resp = HttpResponse(http::StatusCodeInternalServerError);
     resp.body(ex.what());
   } catch (...) {
     fromException = true;
     log::error("Unknown exception in async path handler");
-    resp = HttpResponse(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
+    resp = HttpResponse(http::StatusCodeInternalServerError);
     resp.body("Unknown error");
   }
   typedHandle.destroy();
@@ -855,8 +856,9 @@ void SingleHttpServer::onAsyncHandlerCompleted(ConnectionMapIt cnxIt) {
 
   auto middlewareSpan = std::span<const ResponseMiddleware>(
       static_cast<const ResponseMiddleware*>(async.responseMiddleware), async.responseMiddlewareCount);
-  applyResponseMiddleware(state.request, resp, middlewareSpan, false);
-  finalizeAndSendResponse(cnxIt, std::move(resp), async.consumedBytes, async.corsPolicy);
+  ApplyResponseMiddleware(state.request, resp, middlewareSpan, _router.globalResponseMiddleware(), _telemetry, false,
+                          _callbacks.middlewareMetrics);
+  finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), async.consumedBytes, async.corsPolicy);
   state.asyncState.clear();
 }
 
@@ -869,8 +871,9 @@ bool SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt) {
 
   auto middlewareSpan = std::span<const ResponseMiddleware>(
       static_cast<const ResponseMiddleware*>(async.responseMiddleware), async.responseMiddlewareCount);
-  applyResponseMiddleware(state.request, async.pendingResponse, middlewareSpan, false);
-  finalizeAndSendResponse(cnxIt, std::move(async.pendingResponse), async.consumedBytes, async.corsPolicy);
+  ApplyResponseMiddleware(state.request, async.pendingResponse, middlewareSpan, _router.globalResponseMiddleware(),
+                          _telemetry, false, _callbacks.middlewareMetrics);
+  finalizeAndSendResponseForHttp1(cnxIt, std::move(async.pendingResponse), async.consumedBytes, async.corsPolicy);
   state.asyncState.clear();
   return true;
 }
@@ -885,75 +888,6 @@ void SingleHttpServer::emitRequestMetrics(const HttpRequest& request, http::Stat
   metrics.path = request.path();
   metrics.duration = std::chrono::steady_clock::now() - request.reqStart();
   _callbacks.metrics(metrics);
-}
-
-void SingleHttpServer::applyResponseMiddleware(const HttpRequest& request, HttpResponse& response,
-                                               std::span<const ResponseMiddleware> routeChain, bool streaming) {
-  auto runChain = [&](std::span<const ResponseMiddleware> postMiddleware, bool isGlobal) {
-    for (uint32_t hookIdx = 0; hookIdx < postMiddleware.size(); ++hookIdx) {
-      auto spanScope = startMiddlewareSpan(request, MiddlewareMetrics::Phase::Post, isGlobal, hookIdx, streaming);
-      const auto start = std::chrono::steady_clock::now();
-      bool threwEx = false;
-      try {
-        postMiddleware[hookIdx](request, response);
-      } catch (const std::exception& ex) {
-        threwEx = true;
-        log::error("Exception in {} response middleware: {}", isGlobal ? "global" : "route", ex.what());
-      } catch (...) {
-        threwEx = true;
-        log::error("Unknown exception in {} response middleware", isGlobal ? "global" : "route");
-      }
-      const auto duration =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
-      if (spanScope.span) {
-        spanScope.span->setAttribute("aeronet.middleware.exception", threwEx ? int64_t{1} : int64_t{0});
-        spanScope.span->setAttribute("aeronet.middleware.short_circuit", int64_t{0});
-        spanScope.span->setAttribute("aeronet.middleware.duration_ns", static_cast<int64_t>(duration.count()));
-      }
-      if (_callbacks.middlewareMetrics) {
-        emitMiddlewareMetrics(request, MiddlewareMetrics::Phase::Post, isGlobal, hookIdx,
-                              static_cast<uint64_t>(duration.count()), false, threwEx, streaming);
-      }
-    }
-  };
-  runChain(routeChain, false);
-  runChain(_router.globalResponseMiddleware(), true);
-}
-
-void SingleHttpServer::emitMiddlewareMetrics(const HttpRequest& request, MiddlewareMetrics::Phase phase, bool isGlobal,
-                                             uint32_t index, uint64_t durationNs, bool shortCircuited, bool threw,
-                                             bool streaming) const {
-  MiddlewareMetrics metrics;
-  metrics.phase = phase;
-  metrics.isGlobal = isGlobal;
-  metrics.shortCircuited = shortCircuited;
-  metrics.threw = threw;
-  metrics.streaming = streaming;
-  metrics.index = index;
-  metrics.durationNs = durationNs;
-  metrics.method = request.method();
-  metrics.requestPath = request.path();
-
-  _callbacks.middlewareMetrics(metrics);
-}
-
-tracing::SpanRAII SingleHttpServer::startMiddlewareSpan(const HttpRequest& request, MiddlewareMetrics::Phase phase,
-                                                        bool isGlobal, uint32_t index, bool streaming) {
-  tracing::SpanRAII spanScope(_telemetry.createSpan("http.middleware"));
-
-  if (spanScope.span) {
-    spanScope.span->setAttribute("aeronet.middleware.phase", phase == MiddlewareMetrics::Phase::Pre
-                                                                 ? std::string_view("request")
-                                                                 : std::string_view("response"));
-    spanScope.span->setAttribute("aeronet.middleware.scope",
-                                 isGlobal ? std::string_view("global") : std::string_view("route"));
-    spanScope.span->setAttribute("aeronet.middleware.index", static_cast<int64_t>(index));
-    spanScope.span->setAttribute("aeronet.middleware.streaming", static_cast<int64_t>(streaming));
-    spanScope.span->setAttribute("http.method", http::MethodToStr(request.method()));
-    spanScope.span->setAttribute("http.target", request.path());
-  }
-
-  return spanScope;
 }
 
 void SingleHttpServer::eventLoop() {
@@ -1228,7 +1162,7 @@ bool SingleHttpServer::handleExpectHeader(ConnectionMapIt cnxIt, std::string_vie
         }
         case ExpectationResultKind::FinalResponse:
           // Send the provided final response immediately and skip body processing.
-          finalizeAndSendResponse(cnxIt, std::move(expectationResult.finalResponse), headerEnd, pCorsPolicy);
+          finalizeAndSendResponseForHttp1(cnxIt, std::move(expectationResult.finalResponse), headerEnd, pCorsPolicy);
           return true;
         case ExpectationResultKind::Continue:
           break;
@@ -1308,49 +1242,12 @@ void SingleHttpServer::applyPendingUpdates() {
   }
 }
 
-bool SingleHttpServer::runPreChain(HttpRequest& request, bool willStream, std::span<const RequestMiddleware> chain,
-                                   HttpResponse& out, bool isGlobal) {
-  for (uint32_t chainPos = 0; chainPos < chain.size(); ++chainPos) {
-    const auto start = std::chrono::steady_clock::now();
-    auto spanScope = startMiddlewareSpan(request, MiddlewareMetrics::Phase::Pre, isGlobal, chainPos, willStream);
-    MiddlewareResult decision;
-    bool threwEx = false;
-    try {
-      decision = chain[chainPos](request);
-    } catch (const std::exception& ex) {
-      log::error("Exception while applying pre middleware: {}", ex.what());
-      threwEx = true;
-    } catch (...) {
-      log::error("Unknown exception while applying pre middleware");
-      threwEx = true;
-    }
-
-    const auto duration =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
-    const bool shortCircuited = decision.shouldShortCircuit();
-    if (spanScope.span) {
-      spanScope.span->setAttribute("aeronet.middleware.exception", threwEx ? int64_t{1} : int64_t{0});
-      spanScope.span->setAttribute("aeronet.middleware.short_circuit", shortCircuited ? int64_t{1} : int64_t{0});
-      spanScope.span->setAttribute("aeronet.middleware.duration_ns", static_cast<int64_t>(duration.count()));
-    }
-    if (_callbacks.middlewareMetrics) {
-      emitMiddlewareMetrics(request, MiddlewareMetrics::Phase::Pre, isGlobal, chainPos,
-                            static_cast<uint64_t>(duration.count()), shortCircuited, false, willStream);
-    }
-    if (shortCircuited) {
-      out = std::move(decision).takeResponse();
-      return true;
-    }
-  }
-  return false;
-}
-
 #ifdef AERONET_ENABLE_HTTP2
 void SingleHttpServer::setupHttp2Connection(ConnectionState& state) {
   // Create HTTP/2 protocol handler with unified dispatcher
   // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
   state.protocolHandler =
-      http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _tmp.buf, true);
+      http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _telemetry, _tmp.buf, true);
   state.protocol = ProtocolType::Http2;
 
   // Immediately flush the server preface (SETTINGS frame) that was queued during handler creation

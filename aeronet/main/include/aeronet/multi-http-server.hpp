@@ -143,7 +143,7 @@ class MultiHttpServer {
 
   // Install a middleware metrics callback on all underlying servers. Copied into each
   // SingleHttpServer at start() time. Must be set before start().
-  void setMiddlewareMetricsCallback(SingleHttpServer::MiddlewareMetricsCallback cb);
+  void setMiddlewareMetricsCallback(MiddlewareMetricsCallback cb);
 
 #ifdef AERONET_ENABLE_OPENSSL
   // Install a TLS handshake callback on all underlying servers.

@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "aeronet/connection-state.hpp"
+#include "aeronet/cors-policy.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/headers-view-map.hpp"
@@ -22,7 +23,9 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/http-response-prefinalize.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -39,6 +42,7 @@
 #include "aeronet/router.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/tracing/tracer.hpp"
 
 namespace aeronet::http2 {
 
@@ -47,13 +51,15 @@ namespace aeronet::http2 {
 // ============================
 
 Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
-                                           internal::ResponseCompressionState& compressionState, RawChars& tmpBuffer)
+                                           internal::ResponseCompressionState& compressionState,
+                                           tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer)
     : _connection(config, true),
       _pRouter(&router),
       _fileSendBuffer(64UL * 1024UL),
       _pServerConfig(&serverConfig),
       _pCompressionState(&compressionState),
-      _pTmpBuffer(&tmpBuffer) {
+      _pTmpBuffer(&tmpBuffer),
+      _pTelemetryContext(&telemetryContext) {
   setupCallbacks();
 }
 
@@ -344,13 +350,15 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
 
   // Dispatch to the callback provided by SingleHttpServer
   try {
+    const bool isHead = (request.method() == http::Method::HEAD);
     HttpResponse resp = reply(request);
+
+    internal::PrefinalizeHttpResponse(request, resp, isHead, *_pCompressionState, *_pServerConfig);
+
+    // HTTP/2 requires lowercase header names. Do this after all response mutations (incl. compression).
     resp.makeAllHeaderNamesLowerCase();
-    if (request.method() != http::Method::HEAD && resp.hasBodyInMemory()) {
-      internal::HttpCodec::TryCompressResponse(*_pCompressionState, _pServerConfig->compression,
-                                               request.headerValueOrEmpty(http::AcceptEncoding), resp);
-    }
-    err = sendResponse(streamId, std::move(resp), request.method() == http::Method::HEAD);
+
+    err = sendResponse(streamId, std::move(resp), isHead);
     if (err != ErrorCode::NoError) [[unlikely]] {
       log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
     }
@@ -369,10 +377,38 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
 }
 
 HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
+  // For CONNECT, HTTP/2 support is not yet implemented.
+  // Per RFC 7540 §8.3, CONNECT omits :scheme and :path, but tunneling requires bidirectional stream setup.
+  // For now, return 405 Method Not Allowed and recommend HTTP/1.1 CONNECT.
+  if (request.method() == http::Method::CONNECT) {
+    return HttpResponse(http::StatusCodeMethodNotAllowed).body("CONNECT tunneling not yet implemented in HTTP/2");
+  }
+
   auto routingResult = _pRouter->match(request.method(), request.path());
-  // Set path parameters if any
-  for (const auto& param : routingResult.pathParams) {
-    request._pathParams[param.key] = param.value;
+
+  // Determine active CORS policy for this route (if any)
+  const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
+
+  // Handle OPTIONS and TRACE via shared protocol-agnostic code
+  // Per RFC 7540 §8.3, CONNECT is handled separately (see above) since it omits :path
+  if (request.method() == http::Method::OPTIONS || request.method() == http::Method::TRACE) {
+    const SpecialMethodConfig config{
+        .tracePolicy = _pServerConfig->traceMethodPolicy,
+        .isTls = !request.scheme().empty() && request.scheme() == "https",
+    };
+    // Note: For HTTP/2, TRACE cannot echo raw request data (no wire format available)
+    // So we pass empty requestData, which will result in 405 Method Not Allowed
+    auto result = ProcessSpecialMethods(request, *_pRouter, config, pCorsPolicy, {});
+    if (result.handled()) {
+      if (pCorsPolicy != nullptr) {
+        (void)pCorsPolicy->applyToResponse(request, *result.response);
+      }
+      return std::move(*result.response);
+    }
+    if (result.rejected()) {
+      return std::move(*result.response);
+    }
+    // Not handled (e.g., not a preflight), fall through to normal processing
   }
 
   // Check path-specific HTTP/2 configuration
@@ -382,9 +418,40 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
     return HttpResponse(http::StatusCodeNotFound);
   }
 
+  // Execute request middleware chain
+  auto requestMiddlewareRange = routingResult.requestMiddlewareRange;
+  auto responseMiddlewareRange = routingResult.responseMiddlewareRange;
+
+  // Run global request middleware first
+  auto globalResult = RunRequestMiddleware(request, _pRouter->globalRequestMiddleware(), requestMiddlewareRange,
+                                           *_pTelemetryContext, routingResult.streamingHandler() != nullptr, {});
+  if (globalResult.has_value()) {
+    if (pCorsPolicy != nullptr) {
+      (void)pCorsPolicy->applyToResponse(request, *globalResult);
+    }
+    return std::move(*globalResult);
+  }
+
+  // Helper to apply response middleware and CORS
+  auto finalizeResponse = [&, responseMiddlewareRange](HttpResponse& resp) {
+    ApplyResponseMiddleware(request, resp, responseMiddlewareRange, _pRouter->globalResponseMiddleware(),
+                            *_pTelemetryContext, false, {});
+    if (pCorsPolicy != nullptr) {
+      (void)pCorsPolicy->applyToResponse(request, resp);
+    }
+  };
+
+  // Populate path params map view from router captures
+  request._pathParams.clear();
+  for (const auto& capture : routingResult.pathParams) {
+    request._pathParams.emplace(capture.key, capture.value);
+  }
+
   // Handle the request based on handler type
   if (const auto* reqHandler = routingResult.requestHandler(); reqHandler != nullptr) {
-    return (*reqHandler)(request);
+    HttpResponse resp = (*reqHandler)(request);
+    finalizeResponse(resp);
+    return resp;
   }
 
   if (const auto* asyncHandler = routingResult.asyncRequestHandler(); asyncHandler != nullptr) {
@@ -399,6 +466,7 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
       auto typedHandle = std::coroutine_handle<RequestTask<HttpResponse>::promise_type>::from_address(handle.address());
       HttpResponse resp = std::move(typedHandle.promise().consume_result());
       typedHandle.destroy();
+      finalizeResponse(resp);
       return resp;
     }
     log::error("HTTP/2 async handler returned invalid task for path {}", request._path);
@@ -414,14 +482,21 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
     // 4. Emit trailers as final HEADERS frame with END_STREAM
     // 5. Integrate with the event loop for backpressure handling
     log::warn("Streaming handlers not yet fully supported for HTTP/2, path: {}", request._path);
-    return HttpResponse(http::StatusCodeNotImplemented).body("Streaming handlers not yet supported for HTTP/2");
+    HttpResponse resp =
+        HttpResponse(http::StatusCodeNotImplemented).body("Streaming handlers not yet supported for HTTP/2");
+    finalizeResponse(resp);
+    return resp;
   }
 
   if (routingResult.methodNotAllowed) {
-    return HttpResponse(http::StatusCodeMethodNotAllowed);
+    HttpResponse resp(http::StatusCodeMethodNotAllowed);
+    finalizeResponse(resp);
+    return resp;
   }
 
-  return HttpResponse(http::StatusCodeNotFound);
+  HttpResponse resp(http::StatusCodeNotFound);
+  finalizeResponse(resp);
+  return resp;
 }
 
 ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod) {
@@ -510,9 +585,10 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, Router& router,
                                                              HttpServerConfig& serverConfig,
                                                              internal::ResponseCompressionState& compressionState,
+                                                             tracing::TelemetryContext& telemetryContext,
                                                              RawChars& tmpBuffer, bool sendServerPrefaceForTls) {
-  auto protocolHandler =
-      std::make_unique<Http2ProtocolHandler>(config, router, serverConfig, compressionState, tmpBuffer);
+  auto protocolHandler = std::make_unique<Http2ProtocolHandler>(config, router, serverConfig, compressionState,
+                                                                telemetryContext, tmpBuffer);
   if (sendServerPrefaceForTls) {
     // For TLS ALPN "h2", the server must send SETTINGS immediately after TLS handshake
     protocolHandler->connection().sendServerPreface();

@@ -76,22 +76,6 @@ class SingleHttpServer {
     std::chrono::nanoseconds duration{0};
   };
 
-  struct MiddlewareMetrics {
-    enum class Phase : uint8_t { Pre, Post };
-
-    Phase phase{Phase::Pre};
-    bool isGlobal{false};
-    bool shortCircuited{false};
-    bool threw{false};
-    bool streaming{false};
-    http::Method method{http::Method::GET};
-    uint32_t index{0};
-    uint64_t durationNs{0};
-    std::string_view requestPath;
-  };
-
-  using MiddlewareMetricsCallback = std::function<void(const MiddlewareMetrics&)>;
-
   // Expectation handling API
   // ------------------------
   // The server will honour the standard "Expect: 100-continue" behaviour by default.
@@ -427,7 +411,10 @@ class SingleHttpServer {
   void sweepIdleConnections();
   void applyPendingUpdates();
   void acceptNewConnections();
+
+  void handleWritableClient(int fd);
   void handleReadableClient(int fd);
+
   // Dispatches input to appropriate handler based on protocol.
   // For HTTP/1.1, calls processHttp1Requests.
   // For WebSocket, routes through the protocol handler.
@@ -446,8 +433,8 @@ class SingleHttpServer {
   BodyDecodeStatus decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
   bool parseHeadersUnchecked(HeadersViewMap& headersMap, char* bufferBeg, char* first, char* last);
   bool maybeDecompressRequestBody(ConnectionMapIt cnxIt);
-  void finalizeAndSendResponse(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
-                               const CorsPolicy* pCorsPolicy);
+  void finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
+                                       const CorsPolicy* pCorsPolicy);
   // Handle Expect header tokens other than the built-in 100-continue.
   // Returns true if processing should stop for this request (response already queued/sent).
   bool handleExpectHeader(ConnectionMapIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
@@ -455,8 +442,7 @@ class SingleHttpServer {
   // Helper to populate and invoke the metrics callback for a completed request.
   void emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
                           bool reusedConnection) const;
-  void applyResponseMiddleware(const HttpRequest& request, HttpResponse& response,
-                               std::span<const ResponseMiddleware> routeChain, bool streaming);
+
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // If immediate=true the connection will be closed without waiting for buffered writes to drain.
   void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, bool immediate = false,
@@ -471,8 +457,6 @@ class SingleHttpServer {
   // Returns true if the caller should return early because the buffer is still non-empty.
   bool flushUserSpaceTlsBuffer(ConnectionMapIt cnxIt);
 
-  void handleWritableClient(int fd);
-
   ConnectionMapIt closeConnection(ConnectionMapIt cnxIt);
 
   // Invoke a registered streaming handler. Returns true if the connection should be closed after handling
@@ -485,6 +469,9 @@ class SingleHttpServer {
   enum class LoopAction : uint8_t { Nothing, Continue, Break };
 
   LoopAction processSpecialMethods(ConnectionMapIt& cnxIt, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy);
+
+  // HTTP/1.1-specific CONNECT handling (TCP tunnel setup).
+  LoopAction processConnectMethod(ConnectionMapIt& cnxIt, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy);
 
   void handleInTunneling(ConnectionMapIt cnxIt);
 
@@ -503,15 +490,6 @@ class SingleHttpServer {
   // consistently. Return true on success, false on failure (caller should handle close).
   bool enableWritableInterest(ConnectionMapIt cnxIt);
   bool disableWritableInterest(ConnectionMapIt cnxIt);
-
-  void emitMiddlewareMetrics(const HttpRequest& request, MiddlewareMetrics::Phase phase, bool isGlobal, uint32_t index,
-                             uint64_t durationNs, bool shortCircuited, bool threw, bool streaming) const;
-
-  [[nodiscard]] tracing::SpanRAII startMiddlewareSpan(const HttpRequest& request, MiddlewareMetrics::Phase phase,
-                                                      bool isGlobal, uint32_t index, bool streaming);
-
-  bool runPreChain(HttpRequest& request, bool willStream, std::span<const RequestMiddleware> chain, HttpResponse& out,
-                   bool isGlobal);
 
   bool dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady, bool isChunked,
                             bool expectContinue, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,

@@ -117,7 +117,7 @@ CorsPolicy& CorsPolicy::allowPrivateNetwork(bool enable) {
   return *this;
 }
 
-CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequest& request, HttpResponse& response) const {
+[[nodiscard]] CorsPolicy::ApplyStatus CorsPolicy::wouldApply(const HttpRequest& request) const noexcept {
   if (!_active || isPreflightRequest(request)) {
     return ApplyStatus::NotCors;
   }
@@ -126,12 +126,22 @@ CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequest& request, 
     return ApplyStatus::NotCors;
   }
   if (!originAllowed(origin)) {
-    response.status(http::StatusCodeForbidden, http::ReasonForbidden);
-    response.body(http::ReasonForbidden);
     return ApplyStatus::OriginDenied;
   }
-  applyResponseHeaders(response, origin);
   return ApplyStatus::Applied;
+}
+
+CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequest& request, HttpResponse& response) const {
+  const auto applyStatus = wouldApply(request);
+
+  if (applyStatus == ApplyStatus::Applied) {
+    applyResponseHeaders(response, request.headerValueOrEmpty(http::Origin));
+  } else if (applyStatus == ApplyStatus::OriginDenied) {
+    response.status(http::StatusCodeForbidden);
+    response.body("Forbidden by CORS policy");
+  }
+
+  return applyStatus;
 }
 
 CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequest& request,
@@ -283,12 +293,6 @@ void CorsPolicy::applyResponseHeaders(HttpResponse& response, std::string_view o
 }
 
 http::MethodBmp CorsPolicy::effectiveAllowedMethods(http::MethodBmp routeMethods) const noexcept {
-  // if (_allowedMethods == 0 || routeMethods == 0) {
-  //   return 0;
-  // }
-  // if (routeMethods == kAllMethodsMask) {
-  //   return _allowedMethods;
-  // }
   return _allowedMethods & routeMethods;
 }
 
