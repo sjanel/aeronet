@@ -318,6 +318,24 @@ resp.bodyInlineAppend(maxLen, [](char* buf) -> std::size_t {
 });
 ```
 
+### Static body capture (zero-copy for static buffers)
+
+For static buffers known at compile time, `HttpResponse::bodyStatic(...)` enables zero-copy capture without allocation.
+This is especially useful for serving constant payloads such as small JSON responses or HTML snippets.
+
+Example:
+
+```cpp
+HttpResponse resp(200);
+
+// Works with string literals
+resp.bodyStatic(R"({"status":"ok", "message":"Hello, World!"})");
+
+// or with bytes span
+static constexpr std::byte kLargeStaticBytes[]{ std::byte{'A'} /* ... large static data ... */ };
+resp.bodyStatic(kLargeStaticBytes);
+```
+
 ## Compression & Negotiation
 
 Supported (build‑flag gated): gzip, deflate (zlib), zstd, brotli.
