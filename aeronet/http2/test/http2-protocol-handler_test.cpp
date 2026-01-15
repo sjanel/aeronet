@@ -34,6 +34,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/request-task.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {

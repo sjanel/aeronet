@@ -13,6 +13,7 @@
 #include "aeronet/connection.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/event.hpp"
+#include "aeronet/file-payload.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
@@ -51,8 +52,8 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
                                              : std::string_view{};
 
     auto result = ProcessSpecialMethods(request, _router, config, pCorsPolicy, requestData);
-    if (result.handled()) {
-      finalizeAndSendResponseForHttp1(cnxIt, std::move(*result.response), consumedBytes, pCorsPolicy);
+    if (result) {
+      finalizeAndSendResponseForHttp1(cnxIt, std::move(*result), consumedBytes, pCorsPolicy);
       return LoopAction::Continue;
     }
     // Not handled (e.g., not a preflight), fall through to normal processing
@@ -180,8 +181,8 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, Ht
 
   const auto respStatusCode = resp.status();
 
-  queueFormattedHttp1Response(cnxIt, resp.finalizeForHttp1(SysClock::now(), request.version(), !keepAlive,
-                                                           _config.globalHeaders, isHead, _config.minCapturedBodySize));
+  queueData(cnxIt, resp.finalizeForHttp1(SysClock::now(), request.version(), !keepAlive, _config.globalHeaders, isHead,
+                                         _config.minCapturedBodySize));
 
   state.inBuffer.erase_front(consumedBytes);
   if (!keepAlive && state.outBuffer.empty()) {
@@ -195,37 +196,20 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, Ht
   request.end(respStatusCode);
 }
 
-bool SingleHttpServer::queueFormattedHttp1Response(ConnectionMapIt cnxIt,
-                                                   HttpResponse::FormattedHttp1Response prepared) {
-  const bool hasFile = prepared.fileLength > 0;
-  const std::uint64_t fileBytes = hasFile ? prepared.fileLength : 0;
-
-  if (!queueData(cnxIt, std::move(prepared.data), fileBytes)) {
-    return false;
-  }
-
-  if (hasFile) {
-    ConnectionState& state = *cnxIt->second;
-    state.fileSend.file = std::move(prepared.file);
-    state.fileSend.offset = prepared.fileOffset;
-    state.fileSend.remaining = prepared.fileLength;
-    state.fileSend.active = state.fileSend.remaining > 0;
-    state.fileSend.headersPending = !state.outBuffer.empty();
-    if (state.isSendingFile()) {
-      // Don't enable writable interest here - let flushFilePayload do it when it actually blocks.
-      // Enabling it prematurely (when the socket is already writable) causes us to miss the edge
-      // in edge-triggered epoll mode.
-      if (!state.fileSend.headersPending) {
-        flushFilePayload(cnxIt);
-      }
-    }
-  }
-  return true;
-}
-
-bool SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData,
-                                 std::uint64_t extraQueuedBytes) {
+bool SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData) {
   ConnectionState& state = *cnxIt->second;
+
+  // Extract file payload early so we can move the File once and avoid double-moves
+  // when the response writes immediately.
+  auto* pFilePayload = httpResponseData.getIfFilePayload();
+  FilePayload filePayload;
+  bool haveFilePayload = false;
+  if (pFilePayload != nullptr) {
+    filePayload = std::move(*pFilePayload);
+    haveFilePayload = true;
+  }
+
+  const std::uint64_t extraQueuedBytes = haveFilePayload ? filePayload.length : 0;
 
   const auto bufferedSz = httpResponseData.remainingSize();
 
@@ -244,6 +228,9 @@ bool SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpRes
         if (written == bufferedSz) {
           _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
           _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
+          if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
+            flushFilePayload(cnxIt);
+          }
           return true;
         }
         // partial write, capture the buffer in the connection state
@@ -269,6 +256,10 @@ bool SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpRes
   // If we buffered data, try flushing it immediately
   if (!state.outBuffer.empty()) {
     flushOutbound(cnxIt);
+  }
+
+  if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
+    flushFilePayload(cnxIt);
   }
 
   return true;

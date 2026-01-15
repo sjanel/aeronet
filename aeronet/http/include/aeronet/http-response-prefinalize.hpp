@@ -7,7 +7,7 @@ class HttpResponse;
 struct HttpServerConfig;
 
 namespace internal {
-class ResponseCompressionState;
+struct ResponseCompressionState;
 
 /// Applies server-side response adjustments prior to sending:
 /// - increments per-connection and global request counters (if provided)

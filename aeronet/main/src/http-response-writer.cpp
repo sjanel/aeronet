@@ -135,10 +135,9 @@ void HttpResponseWriter::ensureHeadersSent() {
 
   auto cnxIt = _server->_connections.active.find(_fd);
   if (cnxIt == _server->_connections.active.end() ||
-      !_server->queueFormattedHttp1Response(
-          cnxIt, _fixedResponse.finalizeForHttp1(SysClock::now(), http::HTTP_1_1, _requestConnClose,
-                                                 _server->config().globalHeaders, _head,
-                                                 _server->config().minCapturedBodySize))) {
+      !_server->queueData(cnxIt, _fixedResponse.finalizeForHttp1(SysClock::now(), http::HTTP_1_1, _requestConnClose,
+                                                                 _server->config().globalHeaders, _head,
+                                                                 _server->config().minCapturedBodySize))) {
     _state = HttpResponseWriter::State::Failed;
     log::error("Streaming: failed to enqueue headers fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
     return;
