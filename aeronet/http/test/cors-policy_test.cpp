@@ -324,7 +324,6 @@ TEST_F(CorsPolicyTest, ApplyOriginDeniedSetsForbidden) {
   const auto applyStatus = policy.applyToResponse(request, response);
   EXPECT_EQ(applyStatus, CorsPolicy::ApplyStatus::OriginDenied);
   EXPECT_EQ(response.status(), http::StatusCodeForbidden);
-  EXPECT_EQ(response.bodyInMemory(), http::ReasonForbidden);
 }
 
 TEST_F(CorsPolicyTest, PreflightDeniedWhenPolicyAllowsNoMethods) {

@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "aeronet/connection-state.hpp"
+#include "aeronet/cors-policy.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-headers-view.hpp"
@@ -27,6 +28,7 @@
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -38,6 +40,7 @@ namespace aeronet::http2 {
 namespace {
 
 RawChars tmpBuffer;
+tracing::TelemetryContext telemetry;
 
 struct HeaderEvent {
   uint32_t streamId{0};
@@ -63,12 +66,13 @@ struct DataEvent {
   }
   return {};
 }
+}  // namespace
 
 class Http2ProtocolLoopback {
  public:
   explicit Http2ProtocolLoopback(Router& router)
       : compressionState(serverConfig.compression),
-        handler(serverCfg, router, serverConfig, compressionState, tmpBuffer),
+        handler(serverCfg, router, serverConfig, compressionState, telemetry, tmpBuffer),
         client(clientCfg, false) {
     client.setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
       HeaderEvent ev;
@@ -218,7 +222,7 @@ TEST(Http2ProtocolHandler, Creation) {
     return HttpResponse(200);
   });
 
-  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, tmpBuffer);
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
 
   ASSERT_NE(handler, nullptr);
   EXPECT_EQ(handler->type(), ProtocolType::Http2);
@@ -230,7 +234,7 @@ TEST(Http2ProtocolHandler, HasNoPendingOutputInitially) {
   Router router;
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState(serverConfig.compression);
-  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, tmpBuffer);
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
 
   EXPECT_FALSE(handler->hasPendingOutput());
 }
@@ -240,7 +244,7 @@ TEST(Http2ProtocolHandler, ConnectionPreface) {
   Router router;
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState(serverConfig.compression);
-  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, tmpBuffer);
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
 
   EXPECT_FALSE(handler->hasPendingOutput());
 }
@@ -250,7 +254,7 @@ TEST(Http2ProtocolHandler, InitiateClose) {
   Router router;
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState(serverConfig.compression);
-  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, tmpBuffer);
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
 
   if (handler->hasPendingOutput()) {
     auto output = handler->getPendingOutput();
@@ -274,10 +278,9 @@ TEST(CreateHttp2ProtocolHandler, ReturnsValidHandler) {
   internal::ResponseCompressionState compressionState(serverConfig.compression);
 
   Router router;
-  router.setDefault(
-      [](const HttpRequest& req) { return HttpResponse().status(200).body("Hello from " + std::string(req.path())); });
+  router.setDefault([](const HttpRequest& req) { return HttpResponse("Hello from " + std::string(req.path())); });
 
-  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, tmpBuffer);
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
 
   ASSERT_NE(handler, nullptr);
   EXPECT_EQ(handler->type(), ProtocolType::Http2);
@@ -291,7 +294,8 @@ TEST(CreateHttp2ProtocolHandler, SendServerPrefaceForTlsQueuesSettingsImmediatel
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState(serverConfig.compression);
 
-  auto handlerBase = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, tmpBuffer, true);
+  auto handlerBase =
+      CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, telemetry, tmpBuffer, true);
   auto* handler = dynamic_cast<Http2ProtocolHandler*>(handlerBase.get());
   ASSERT_NE(handler, nullptr);
 
@@ -306,7 +310,7 @@ TEST(Http2ProtocolHandler, ProcessInputInvalidPrefaceRequestsImmediateClose) {
   Router router;
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState(serverConfig.compression);
-  Http2ProtocolHandler handler(config, router, serverConfig, compressionState, tmpBuffer);
+  Http2ProtocolHandler handler(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
   ::aeronet::ConnectionState st;
 
   std::array<std::byte, 24> invalidPreface{};
@@ -325,7 +329,7 @@ TEST(Http2ProtocolHandler, MoveConstructAndAssignAreNoexceptAndUsable) {
   Router router;
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState(serverConfig.compression);
-  Http2ProtocolHandler original(config, router, serverConfig, compressionState, tmpBuffer);
+  Http2ProtocolHandler original(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
 
   static_assert(noexcept(Http2ProtocolHandler(std::declval<Http2ProtocolHandler&&>())));
   static_assert(noexcept(std::declval<Http2ProtocolHandler&>() = std::declval<Http2ProtocolHandler&&>()));
@@ -333,7 +337,7 @@ TEST(Http2ProtocolHandler, MoveConstructAndAssignAreNoexceptAndUsable) {
   Http2ProtocolHandler moved(std::move(original));
   EXPECT_FALSE(moved.hasPendingOutput());
 
-  Http2ProtocolHandler assigned(config, router, serverConfig, compressionState, tmpBuffer);
+  Http2ProtocolHandler assigned(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
   assigned = std::move(moved);
   EXPECT_FALSE(assigned.hasPendingOutput());
 }
@@ -363,6 +367,30 @@ TEST(Http2ProtocolHandler, SimpleGetWithBodyProducesHeadersAndData) {
   ASSERT_FALSE(loop.clientData.empty());
   EXPECT_EQ(loop.clientData[0].data, "abc");
   EXPECT_TRUE(loop.clientData[0].endStream);
+}
+
+TEST(Http2ProtocolHandler, ConnectReturns405InHttp2) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  // Per RFC 7540 §8.3, CONNECT establishes a tunnel, but aeronet does not yet implement tunneling in HTTP/2.
+  // Note: :scheme and :path are omitted in CONNECT, :authority contains the target.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  const auto& resp = loop.clientHeaders.back();
+  // CONNECT is not implemented in HTTP/2, so it returns 405 Method Not Allowed
+  EXPECT_EQ(GetHeaderValue(resp, ":status"), "405");
 }
 
 TEST(Http2ProtocolHandler, HttpRequestHttp2FieldsSetCorrectly) {
@@ -476,14 +504,18 @@ TEST(Http2ProtocolHandler, ParsesManyHttpMethodsAndFallsBackToGetForUnknown) {
     uint32_t streamId;
     std::string_view method;
     http::Method expected;
+    bool reachesHandler;  // false for methods handled before reaching handler
   };
 
+  // TRACE in HTTP/2 returns 405 since there's no wire format to echo (per RFC 9113).
+  // It gets handled by ProcessSpecialMethods and never reaches the default handler.
+  // CONNECT also does not reach the handler; it returns 405 since tunneling is not yet implemented.
   const std::array<MethodCase, 9> cases = {
-      MethodCase{1, "PUT", http::Method::PUT},      MethodCase{3, "DELETE", http::Method::DELETE},
-      MethodCase{5, "HEAD", http::Method::HEAD},    MethodCase{7, "OPTIONS", http::Method::OPTIONS},
-      MethodCase{9, "PATCH", http::Method::PATCH},  MethodCase{11, "CONNECT", http::Method::CONNECT},
-      MethodCase{13, "TRACE", http::Method::TRACE}, MethodCase{15, "POST", http::Method::POST},
-      MethodCase{17, "BREW", http::Method::GET},
+      MethodCase{1, "PUT", http::Method::PUT, true},       MethodCase{3, "DELETE", http::Method::DELETE, true},
+      MethodCase{5, "HEAD", http::Method::HEAD, true},     MethodCase{7, "OPTIONS", http::Method::OPTIONS, true},
+      MethodCase{9, "PATCH", http::Method::PATCH, true},   MethodCase{11, "CONNECT", http::Method::CONNECT, false},
+      MethodCase{13, "TRACE", http::Method::TRACE, false},  // HTTP/2 TRACE -> 405 before handler
+      MethodCase{15, "POST", http::Method::POST, true},    MethodCase{17, "BREW", http::Method::GET, true},
   };
 
   for (const auto& tc : cases) {
@@ -491,7 +523,10 @@ TEST(Http2ProtocolHandler, ParsesManyHttpMethodsAndFallsBackToGetForUnknown) {
     mhdrs.append(MakeHttp1HeaderLine(":method", std::string(tc.method)));
     mhdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
     mhdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
-    mhdrs.append(MakeHttp1HeaderLine(":path", "/m"));
+    // CONNECT omits :path per RFC 7540 §8.3, but other methods require it
+    if (tc.method != "CONNECT") {
+      mhdrs.append(MakeHttp1HeaderLine(":path", "/m"));
+    }
     mhdrs.append(MakeHttp1HeaderLine(":unknown", "ignored"));
     const auto ok = loop.client.sendHeaders(tc.streamId, http::StatusCode{}, HeadersView(mhdrs), true);
     ASSERT_EQ(ok, ErrorCode::NoError);
@@ -499,10 +534,17 @@ TEST(Http2ProtocolHandler, ParsesManyHttpMethodsAndFallsBackToGetForUnknown) {
     loop.pumpServerToClient();
   }
 
-  ASSERT_EQ(seen.size(), cases.size());
-  const auto caseCount = static_cast<decltype(seen)::size_type>(cases.size());
-  for (decltype(seen)::size_type idx = 0; idx < caseCount; ++idx) {
-    EXPECT_EQ(seen[idx], cases[idx].expected);
+  // Count expected handler invocations (methods that reach the handler)
+  const auto expectedCount = std::ranges::count_if(cases, [](const auto& tc) { return tc.reachesHandler; });
+  ASSERT_EQ(seen.size(), static_cast<size_t>(expectedCount));
+
+  // Verify the methods that do reach the handler
+  size_t seenIdx = 0;
+  for (const auto& tc : cases) {
+    if (tc.reachesHandler) {
+      EXPECT_EQ(seen[static_cast<uint32_t>(seenIdx)], tc.expected);
+      ++seenIdx;
+    }
   }
 }
 
@@ -797,5 +839,245 @@ TEST(Http2ProtocolHandler, MissingPathSendsRstStream) {
   EXPECT_EQ(code, ErrorCode::ProtocolError);
 }
 
-}  // namespace
+// ============== HTTP/2 Special Methods Tests ==============
+
+TEST(Http2ProtocolHandler, OptionsStarReturnsAllowedMethods) {
+  Router router;
+  // Need a default handler for OPTIONS * to return all methods
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setPath(http::Method::GET, "/a", [](const HttpRequest&) { return HttpResponse(200); });
+  router.setPath(http::Method::POST, "/b", [](const HttpRequest&) { return HttpResponse(201); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "OPTIONS"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "*"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  const auto& resp = loop.clientHeaders.back();
+  EXPECT_EQ(GetHeaderValue(resp, ":status"), "200");
+  const auto allow = GetHeaderValue(resp, "allow");
+  // With a default handler, all methods should be allowed
+  EXPECT_FALSE(allow.empty());
+}
+
+TEST(Http2ProtocolHandler, OptionsPathWithoutHandlerReturns405) {
+  Router router;
+  // Register GET and POST for /users but NOT OPTIONS
+  router.setPath(http::Method::GET, "/users", [](const HttpRequest&) { return HttpResponse(200); });
+  router.setPath(http::Method::POST, "/users", [](const HttpRequest&) { return HttpResponse(201); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  // OPTIONS /users without a registered handler and no CORS returns 405
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "OPTIONS"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/users"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  const auto& resp = loop.clientHeaders.back();
+  // Without CORS preflight or a registered OPTIONS handler, 405 is expected
+  EXPECT_EQ(GetHeaderValue(resp, ":status"), "405");
+}
+
+TEST(Http2ProtocolHandler, TraceReturns405InHttp2) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  // TRACE must return 405 in HTTP/2 because there's no wire format to echo
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "TRACE"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/test"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  const auto& resp = loop.clientHeaders.back();
+  EXPECT_EQ(GetHeaderValue(resp, ":status"), "405");
+}
+
+TEST(Http2ProtocolHandler, CorsPreflightReturnsAllowOrigin) {
+  Router router;
+
+  CorsPolicy cors(CorsPolicy::Active::On);
+  cors.allowOrigin("https://allowed.example.com").allowMethods(http::Method::POST);
+
+  router.setPath(http::Method::POST, "/api/data", [](const HttpRequest&) { return HttpResponse(201); })
+      .cors(std::move(cors));
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  // Send CORS preflight
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "OPTIONS"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/api/data"));
+  hdrs.append(MakeHttp1HeaderLine("origin", "https://allowed.example.com"));
+  hdrs.append(MakeHttp1HeaderLine("access-control-request-method", "POST"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  const auto& resp = loop.clientHeaders.back();
+  EXPECT_EQ(GetHeaderValue(resp, ":status"), "204");
+  EXPECT_EQ(GetHeaderValue(resp, "access-control-allow-origin"), "https://allowed.example.com");
+}
+
+TEST(Http2ProtocolHandler, CorsPreflightDeniesUnallowedOrigin) {
+  Router router;
+
+  CorsPolicy cors(CorsPolicy::Active::On);
+  cors.allowOrigin("https://allowed.example.com");
+
+  router.setPath(http::Method::POST, "/api/data", [](const HttpRequest&) { return HttpResponse(201); })
+      .cors(std::move(cors));
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  // Send CORS preflight from non-allowed origin
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "OPTIONS"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/api/data"));
+  hdrs.append(MakeHttp1HeaderLine("origin", "https://evil.example.com"));
+  hdrs.append(MakeHttp1HeaderLine("access-control-request-method", "POST"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  const auto& resp = loop.clientHeaders.back();
+  EXPECT_EQ(GetHeaderValue(resp, ":status"), "403");
+}
+
+TEST(Http2ProtocolHandler, RequestMiddlewareExecutes) {
+  Router router;
+  bool middlewareCalled = false;
+  bool handlerCalled = false;
+
+  router.addRequestMiddleware([&middlewareCalled](HttpRequest&) {
+    middlewareCalled = true;
+    return MiddlewareResult::Continue();
+  });
+
+  router.setPath(http::Method::GET, "/test", [&handlerCalled](const HttpRequest&) {
+    handlerCalled = true;
+    return HttpResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/test"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_TRUE(middlewareCalled);
+  EXPECT_TRUE(handlerCalled);
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+}
+
+TEST(Http2ProtocolHandler, RequestMiddlewareCanShortCircuit) {
+  Router router;
+  bool handlerCalled = false;
+
+  router.addRequestMiddleware([](HttpRequest&) {
+    // Short-circuit with 403
+    return MiddlewareResult::ShortCircuit(HttpResponse(403));
+  });
+
+  router.setPath(http::Method::GET, "/test", [&handlerCalled](const HttpRequest&) {
+    handlerCalled = true;
+    return HttpResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/test"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_FALSE(handlerCalled);  // Handler should NOT be called
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "403");
+}
+
+TEST(Http2ProtocolHandler, ResponseMiddlewareExecutes) {
+  Router router;
+
+  router.addResponseMiddleware(
+      [](const HttpRequest&, HttpResponse& resp) { resp.header("X-Middleware-Added", "test-value"); });
+
+  router.setPath(http::Method::GET, "/test", [](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/test"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  const auto& resp = loop.clientHeaders.back();
+  EXPECT_EQ(GetHeaderValue(resp, ":status"), "200");
+  EXPECT_EQ(GetHeaderValue(resp, "x-middleware-added"), "test-value");
+}
+
 }  // namespace aeronet::http2
