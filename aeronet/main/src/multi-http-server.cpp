@@ -19,6 +19,7 @@
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-lifecycle-tracker.hpp"

@@ -12,7 +12,6 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "aeronet/concatenated-headers.hpp"
@@ -232,29 +231,26 @@ class HttpResponse {
   [[nodiscard]] const File* file() const noexcept;
 
   // Checks if this HttpResponse has a body (either inlined, captured or file).
-  [[nodiscard]] bool hasBody() const noexcept { return _payloadVariant.index() != 0 || hasBodyInlined(); }
+  [[nodiscard]] bool hasBody() const noexcept { return !_payloadVariant.empty() || hasBodyInlined(); }
 
   // Checks if this HttpResponse has a body in memory (either internal buffer or captured, but no file).
-  [[nodiscard]] bool hasBodyInMemory() const noexcept { return _payloadVariant.index() == 1 || hasBodyInlined(); }
+  [[nodiscard]] bool hasBodyInMemory() const noexcept { return hasBodyCaptured() || hasBodyInlined(); }
 
   // Checks if this HttpResponse has an inlined body (appended to the main buffer after headers).
   [[nodiscard]] bool hasBodyInlined() const noexcept { return bodyStartPos() < _data.size(); }
 
   // Check if this HttpResponse has a captured body (no file).
-  [[nodiscard]] bool hasBodyCaptured() const noexcept { return _payloadVariant.index() == 1; }
+  [[nodiscard]] bool hasBodyCaptured() const noexcept { return _payloadVariant.hasCapturedBody(); }
 
   // Check if this HttpResponse has a file payload.
-  [[nodiscard]] bool hasBodyFile() const noexcept { return _payloadVariant.index() == 2; }
+  [[nodiscard]] bool hasBodyFile() const noexcept { return _payloadVariant.isFilePayload(); }
 
   // Get the length of the current body stored in this HttpResponse, if any (including file).
   [[nodiscard]] std::size_t bodyLength() const noexcept;
 
   // Get the length of the current inlined or captured (but no file) body stored in this HttpResponse.
   [[nodiscard]] std::size_t bodyInMemoryLength() const noexcept {
-    if (const HttpPayload* pExternPayload = externPayloadPtr(); pExternPayload != nullptr) {
-      return pExternPayload->size() - _trailerLen;
-    }
-    return bodyInlinedLength();
+    return hasBodyCaptured() ? (_payloadVariant.size() - _trailerLen) : bodyInlinedLength();
   }
 
   // Get the length of the current inlined body stored in this HttpResponse.
@@ -279,8 +275,7 @@ class HttpResponse {
   // Each trailer line is formatted as: name + ": " + value + CRLF.
   // If no trailers are present, it returns an empty view.
   [[nodiscard]] std::string_view trailersFlatView() const noexcept {
-    const auto* pExternPayload = externPayloadPtr();
-    return pExternPayload != nullptr ? externalTrailers(*pExternPayload) : internalTrailers();
+    return hasBodyCaptured() ? externalTrailers() : internalTrailers();
   }
 
   // Return a non-allocating, iterable view over trailer headers.
@@ -913,13 +908,14 @@ class HttpResponse {
 
   [[nodiscard]] std::string_view internalTrailers() const noexcept { return {_data.end() - _trailerLen, _data.end()}; }
 
-  [[nodiscard]] std::string_view externalTrailers(const HttpPayload& data) const noexcept {
-    return {data.view().end() - _trailerLen, data.view().end()};
+  [[nodiscard]] std::string_view externalTrailers() const noexcept {
+    const char* last = _payloadVariant.view().end();
+    return {last - _trailerLen, last};
   }
 
   // Check if this HttpResponse has an inline body stored in its internal buffer.
   // Can be empty.
-  [[nodiscard]] bool hasNoCapturedNorFileBody() const noexcept { return _payloadVariant.index() == 0; }
+  [[nodiscard]] bool hasNoCapturedNorFileBody() const noexcept { return _payloadVariant.empty(); }
 
   [[nodiscard]] std::size_t internalBodyAndTrailersLen() const noexcept { return _data.size() - bodyStartPos(); }
 
@@ -937,37 +933,16 @@ class HttpResponse {
 
   [[nodiscard]] std::string_view headersFlatViewWithDate() const noexcept;
 
-  struct FormattedHttp1Response {
-    HttpResponseData data;
-    File file;
-    std::uint64_t fileOffset{0};
-    std::uint64_t fileLength{0};
-  };
-
-  struct FilePayload {
-    File file;
-    std::size_t offset{0};
-    std::size_t length{0};
-  };
-
   // IMPORTANT: This method finalizes the response by appending reserved headers,
   // and returns the internal buffers stolen from this HttpResponse instance.
   // So this instance must not be used anymore after this call.
-  FormattedHttp1Response finalizeForHttp1(SysTimePoint tp, http::Version version, bool close,
-                                          const ConcatenatedHeaders& globalHeaders, bool isHeadMethod,
-                                          std::size_t minCapturedBodySize);
+  HttpResponseData finalizeForHttp1(SysTimePoint tp, http::Version version, bool close,
+                                    const ConcatenatedHeaders& globalHeaders, bool isHeadMethod,
+                                    std::size_t minCapturedBodySize);
 
-  HttpPayload* externPayloadPtr() noexcept { return std::get_if<HttpPayload>(&_payloadVariant); }
+  auto* filePayloadPtr() noexcept { return _payloadVariant.getIfFilePayload(); }
 
-  [[nodiscard]] const HttpPayload* externPayloadPtr() const noexcept {
-    return std::get_if<HttpPayload>(&_payloadVariant);
-  }
-
-  FilePayload* filePayloadPtr() noexcept { return std::get_if<FilePayload>(&_payloadVariant); }
-
-  [[nodiscard]] const FilePayload* filePayloadPtr() const noexcept {
-    return std::get_if<FilePayload>(&_payloadVariant);
-  }
+  [[nodiscard]] const auto* filePayloadPtr() const noexcept { return _payloadVariant.getIfFilePayload(); }
 
   void bodyAppendUpdateHeaders(std::string_view givenContentType, std::string_view defaultContentType,
                                std::size_t totalBodyLen);
@@ -1036,10 +1011,8 @@ class HttpResponse {
   RawChars _data;
   // Bitmap layout: [48 bits bodyStartPos][16 bits headersStartPos]
   std::uint64_t _posBitmap{0};
-  // Variant holding either an external captured payload (HttpPayload) or a FilePayload.
-  // monostate represents "no external payload".
-  // TODO: we could remove one variant layer by making HttpPayload able to represent FilePayload too.
-  std::variant<std::monostate, HttpPayload, FilePayload> _payloadVariant;
+  // Variant that can hold an external captured payload (HttpPayload).
+  HttpPayload _payloadVariant;
   std::size_t _trailerLen{0};  // trailer length
 };
 
