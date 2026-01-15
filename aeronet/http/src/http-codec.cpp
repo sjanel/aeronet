@@ -350,7 +350,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   // Normally handled by HttpResponse automatically when user adds a body.
   assert(resp.hasHeader(http::ContentType));
 
-  const bool hasExternalPayload = resp.externPayloadPtr() != nullptr;
+  const bool hasExternalPayload = resp.hasBodyCaptured();
   const std::size_t trailersLen = resp._trailerLen;
 
   const char* const basePtr = resp._data.data();

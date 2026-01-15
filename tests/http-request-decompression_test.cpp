@@ -40,6 +40,8 @@
 #endif
 
 #ifdef AERONET_ENABLE_ZLIB
+#include <zlib.h>
+
 #include "aeronet/zlib-encoder.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
 #endif

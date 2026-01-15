@@ -8,6 +8,7 @@
 #include <variant>
 #include <vector>
 
+#include "aeronet/file-payload.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
@@ -43,6 +44,8 @@ class HttpPayload {
 
   explicit HttpPayload(RawChars rawChars) noexcept : _data(std::move(rawChars)) {}
 
+  explicit HttpPayload(FilePayload filePayload) noexcept : _data(std::move(filePayload)) {}
+
   HttpPayload(const HttpPayload&) = delete;
   HttpPayload(HttpPayload&&) noexcept = default;
   HttpPayload& operator=(const HttpPayload&) = delete;
@@ -52,12 +55,24 @@ class HttpPayload {
 
   [[nodiscard]] bool empty() const noexcept { return _data.index() == 0; }
 
+  [[nodiscard]] bool isFilePayload() const noexcept { return std::holds_alternative<FilePayload>(_data); }
+
+  [[nodiscard]] bool hasCapturedBody() const noexcept { return _data.index() > 1U; }
+
+  FilePayload* getIfFilePayload() noexcept { return std::get_if<FilePayload>(&_data); }
+
+  [[nodiscard]] const FilePayload* getIfFilePayload() const noexcept { return std::get_if<FilePayload>(&_data); }
+
+  // does not work for file payloads
   [[nodiscard]] std::size_t size() const noexcept;
 
+  // does not work for file payloads
   [[nodiscard]] char* data() noexcept;
 
+  // does not work for file payloads
   [[nodiscard]] std::string_view view() const noexcept;
 
+  // Appends data to the body (internal or captured) from a `const char*` and size.
   void append(std::string_view data);
 
   void append(const HttpPayload& other);
@@ -78,8 +93,8 @@ class HttpPayload {
   void shrink_to_fit();
 
  private:
-  std::variant<std::monostate, std::string, std::vector<char>, std::vector<std::byte>, CharBuffer, BytesBuffer,
-               RawChars>
+  std::variant<std::monostate, FilePayload, std::string, std::vector<char>, std::vector<std::byte>, CharBuffer,
+               BytesBuffer, RawChars>
       _data;
 };
 

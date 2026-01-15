@@ -20,7 +20,6 @@
 #include "aeronet/header-write.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
-#include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
@@ -399,14 +398,11 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
     // Note: For HTTP/2, TRACE cannot echo raw request data (no wire format available)
     // So we pass empty requestData, which will result in 405 Method Not Allowed
     auto result = ProcessSpecialMethods(request, *_pRouter, config, pCorsPolicy, {});
-    if (result.handled()) {
+    if (result) {
       if (pCorsPolicy != nullptr) {
-        (void)pCorsPolicy->applyToResponse(request, *result.response);
+        (void)pCorsPolicy->applyToResponse(request, *result);
       }
-      return std::move(*result.response);
-    }
-    if (result.rejected()) {
-      return std::move(*result.response);
+      return std::move(*result);
     }
     // Not handled (e.g., not a preflight), fall through to normal processing
   }
@@ -500,7 +496,7 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
 }
 
 ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod) {
-  HttpResponse::FilePayload* pFilePayload = response.filePayloadPtr();
+  auto* pFilePayload = response.filePayloadPtr();
 
   // finalize headers
   WriteCRLFDateHeader(response._data.data() + response.headersStartPos(), SysClock::now());
@@ -546,7 +542,6 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
     if (hasFile) {
       PendingFileSend pending;
       pending.file = std::move(pFilePayload->file);
-
       pending.offset = pFilePayload->offset;
       pending.remaining = pFilePayload->length;
 

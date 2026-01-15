@@ -448,8 +448,7 @@ class SingleHttpServer {
   void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, bool immediate = false,
                        std::string_view body = {});
   // Outbound write helpers
-  bool queueFormattedHttp1Response(ConnectionMapIt cnxIt, HttpResponse::FormattedHttp1Response prepared);
-  bool queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData, std::uint64_t extraQueuedBytes = 0);
+  bool queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData);
   void flushOutbound(ConnectionMapIt cnxIt);
   void flushFilePayload(ConnectionMapIt cnxIt);
   // Helper: flush pending bytes in tunnelOrFileBuffer via user-space TLS (SSL_write).

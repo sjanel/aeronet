@@ -31,7 +31,7 @@ std::size_t HttpPayload::size() const noexcept {
         } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
           return val.second;
         } else {
-          return {};
+          return 0;
         }
       },
       _data);
@@ -52,7 +52,7 @@ char* HttpPayload::data() noexcept {
         } else if constexpr (std::is_same_v<T, BytesBuffer>) {
           return reinterpret_cast<char*>(val.first.get());
         } else {
-          return {};
+          return nullptr;
         }
       },
       _data);
@@ -81,6 +81,7 @@ std::string_view HttpPayload::view() const noexcept {
 }
 
 void HttpPayload::append(std::string_view data) {
+  assert(!isFilePayload());
   std::visit(
       [this, data](auto& val) -> void {
         using T = std::decay_t<decltype(val)>;
@@ -107,6 +108,7 @@ void HttpPayload::append(std::string_view data) {
 }
 
 void HttpPayload::append(const HttpPayload& other) {
+  assert(!isFilePayload());
   std::visit(
       [&other, this](auto& val) {
         using T = std::decay_t<decltype(val)>;
@@ -136,6 +138,7 @@ void HttpPayload::append(const HttpPayload& other) {
 }
 
 void HttpPayload::ensureAvailableCapacity(std::size_t capa) {
+  assert(!isFilePayload());
   std::visit(
       [this, capa](auto& val) -> void {
         using T = std::decay_t<decltype(val)>;
@@ -158,6 +161,7 @@ void HttpPayload::ensureAvailableCapacity(std::size_t capa) {
 }
 
 void HttpPayload::ensureAvailableCapacityExponential(std::size_t capa) {
+  assert(!isFilePayload());
   std::visit(
       [this, capa](auto& val) -> void {
         using T = std::decay_t<decltype(val)>;
@@ -197,6 +201,7 @@ void HttpPayload::insert(std::size_t pos, std::string_view data) {
     return;
   }
   assert(pos <= size());
+  assert(!isFilePayload());
   std::visit(
       [this, pos, data](auto& val) -> void {
         using T = std::decay_t<decltype(val)>;
@@ -229,6 +234,7 @@ void HttpPayload::insert(std::size_t pos, std::string_view data) {
 }
 
 void HttpPayload::addSize(std::size_t sz) {
+  assert(!isFilePayload());
   std::visit(
       [sz](auto& val) -> void {
         using T = std::decay_t<decltype(val)>;
@@ -258,6 +264,8 @@ void HttpPayload::clear() noexcept {
           val.clear();
         } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
           val.second = 0;
+        } else {
+          val = {};
         }
       },
       _data);

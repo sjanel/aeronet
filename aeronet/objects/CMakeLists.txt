@@ -278,18 +278,16 @@ AeronetAddUnitTest(
 
 AeronetAddUnitTest(
     http-payload_test
-    src/http-payload.cpp
     test/http-payload_test.cpp
     LIBRARIES
-    aeronet_tech
+    aeronet_objects
 )
 
 AeronetAddUnitTest(
     http-response-data_test
-    src/http-payload.cpp
     test/http-response-data_test.cpp
     LIBRARIES
-    aeronet_tech
+    aeronet_objects
 )
 
 AeronetAddUnitTest(
