@@ -26,7 +26,7 @@ class HttpResponseData {
   [[nodiscard]] std::string_view firstBuffer() const noexcept {
     return _offset >= _headAndOptionalBody.size()
                ? std::string_view{}
-               : std::string_view(_headAndOptionalBody.data() + _offset, _headAndOptionalBody.size() - _offset);
+               : std::string_view(_headAndOptionalBody.begin() + _offset, _headAndOptionalBody.end());
   }
 
   [[nodiscard]] std::string_view secondBuffer() const noexcept {
@@ -39,6 +39,14 @@ class HttpResponseData {
   }
 
   [[nodiscard]] bool empty() const noexcept { return remainingSize() == 0; }
+
+  [[nodiscard]] const File &file() const noexcept { return _capturedBody.getIfFilePayload()->file; }
+  [[nodiscard]] std::size_t fileLength() const noexcept { return _capturedBody.getIfFilePayload()->length; }
+  [[nodiscard]] std::size_t fileOffset() const noexcept { return _capturedBody.getIfFilePayload()->offset; }
+
+  auto *getIfFilePayload() noexcept { return _capturedBody.getIfFilePayload(); }
+
+  [[nodiscard]] const auto *getIfFilePayload() const noexcept { return _capturedBody.getIfFilePayload(); }
 
   void addOffset(std::size_t sz) noexcept { _offset += sz; }
 

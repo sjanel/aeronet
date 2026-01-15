@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstdint>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -14,25 +13,6 @@
 #include "aeronet/tracing/tracer.hpp"
 
 namespace aeronet {
-
-/// Result of processing a special HTTP method (OPTIONS, TRACE, CONNECT).
-/// Allows protocol-agnostic handling shared between HTTP/1.1 and HTTP/2.
-struct SpecialMethodResult {
-  enum class Action : std::uint8_t {
-    NotSpecial,  ///< Not a special method, continue normal processing
-    Handled,     ///< Response ready in 'response' field
-    Rejected     ///< Request rejected (e.g., CONNECT not allowed)
-  };
-
-  Action action{Action::NotSpecial};
-  std::optional<HttpResponse> response;
-
-  /// Returns true if the method was handled (response ready to send).
-  [[nodiscard]] bool handled() const noexcept { return action == Action::Handled; }
-
-  /// Returns true if request was rejected and connection should close.
-  [[nodiscard]] bool rejected() const noexcept { return action == Action::Rejected; }
-};
 
 /// Configuration for special method processing.
 struct SpecialMethodConfig {
@@ -55,10 +35,10 @@ struct SpecialMethodConfig {
 /// @param pCorsPolicy Optional CORS policy (can be nullptr)
 /// @param requestData Raw request data for TRACE echo (only needed for HTTP/1.1 TRACE)
 /// @return Result indicating action taken
-[[nodiscard]] SpecialMethodResult ProcessSpecialMethods(const HttpRequest& request, Router& router,
-                                                        const SpecialMethodConfig& config,
-                                                        const CorsPolicy* pCorsPolicy,
-                                                        std::string_view requestData = {});
+[[nodiscard]] std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequest& request, Router& router,
+                                                                const SpecialMethodConfig& config,
+                                                                const CorsPolicy* pCorsPolicy,
+                                                                std::string_view requestData = {});
 
 /// Run a chain of request middleware.
 /// Executes each middleware in order until one short-circuits or all complete.

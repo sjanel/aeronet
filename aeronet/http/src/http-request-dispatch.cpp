@@ -1,10 +1,20 @@
 #include "aeronet/http-request-dispatch.hpp"
 
 #include <cassert>
+#include <cstdint>
 #include <exception>
+#include <optional>
+#include <span>
+#include <string_view>
+#include <utility>
 
+#include "aeronet/cors-policy.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-method.hpp"
+#include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/router.hpp"
@@ -61,17 +71,17 @@ void BuildAllowHeader(http::MethodBmp methodBitmap, HttpResponse& response) {
 
 }  // namespace
 
-SpecialMethodResult ProcessSpecialMethods(const HttpRequest& request, Router& router, const SpecialMethodConfig& config,
-                                          const CorsPolicy* pCorsPolicy, std::string_view requestData) {
-  SpecialMethodResult result;
+std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequest& request, Router& router,
+                                                  const SpecialMethodConfig& config, const CorsPolicy* pCorsPolicy,
+                                                  std::string_view requestData) {
+  std::optional<HttpResponse> result;
 
   if (request.method() == http::Method::OPTIONS) {
     if (request.path() == "*") {
       // OPTIONS * request (target="*") should return an Allow header listing supported methods.
-      result.response = HttpResponse(http::StatusCodeOK);
+      result = HttpResponse(http::StatusCodeOK);
       const http::MethodBmp allowed = router.allowedMethods("*");
-      BuildAllowHeader(allowed, *result.response);
-      result.action = SpecialMethodResult::Action::Handled;
+      BuildAllowHeader(allowed, *result);
       return result;
     }
 
@@ -80,24 +90,20 @@ SpecialMethodResult ProcessSpecialMethods(const HttpRequest& request, Router& ro
       auto preflight = pCorsPolicy->handlePreflight(request, routeMethods);
       switch (preflight.status) {
         case CorsPolicy::PreflightResult::Status::Allowed:
-          result.response = std::move(preflight.response);
-          result.action = SpecialMethodResult::Action::Handled;
+          result = std::move(preflight.response);
           return result;
         case CorsPolicy::PreflightResult::Status::OriginDenied:
-          result.response = HttpResponse(http::StatusCodeForbidden);
-          result.response->body(http::ReasonForbidden);
-          result.action = SpecialMethodResult::Action::Handled;
+          result = HttpResponse(http::StatusCodeForbidden);
+          result->body(http::ReasonForbidden);
           return result;
         case CorsPolicy::PreflightResult::Status::MethodDenied:
-          result.response = HttpResponse(http::StatusCodeMethodNotAllowed);
-          result.response->body(http::ReasonMethodNotAllowed);
-          BuildAllowHeader(routeMethods, *result.response);
-          result.action = SpecialMethodResult::Action::Handled;
+          result = HttpResponse(http::StatusCodeMethodNotAllowed);
+          result->body(http::ReasonMethodNotAllowed);
+          BuildAllowHeader(routeMethods, *result);
           return result;
         case CorsPolicy::PreflightResult::Status::HeadersDenied:
-          result.response = HttpResponse(http::StatusCodeForbidden);
-          result.response->body(http::ReasonForbidden);
-          result.action = SpecialMethodResult::Action::Handled;
+          result = HttpResponse(http::StatusCodeForbidden);
+          result->body(http::ReasonForbidden);
           return result;
         default:
           // Not a preflight, fall through to normal processing
@@ -128,15 +134,13 @@ SpecialMethodResult ProcessSpecialMethods(const HttpRequest& request, Router& ro
 
     if (allowTrace && !requestData.empty()) {
       // Echo the raw request data
-      result.response = HttpResponse(requestData, http::ContentTypeMessageHttp);
-      result.action = SpecialMethodResult::Action::Handled;
+      result = HttpResponse(requestData, http::ContentTypeMessageHttp);
       return result;
     }
 
     // TRACE disabled or no request data -> Method Not Allowed
-    result.response = HttpResponse(http::StatusCodeMethodNotAllowed);
-    result.response->body(http::ReasonMethodNotAllowed);
-    result.action = SpecialMethodResult::Action::Handled;
+    result = HttpResponse(http::StatusCodeMethodNotAllowed);
+    result->body(http::ReasonMethodNotAllowed);
   }
   return result;
 }

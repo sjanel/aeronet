@@ -7,6 +7,7 @@
 #include <memory>
 #include <string_view>
 
+#include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
@@ -99,6 +100,9 @@ struct ConnectionState {
 
   // Attempt to reduce memory usage by shrinking internal buffers to fit their current content.
   void shrink_to_fit();
+
+  // Returns true if we should flush file now
+  bool attachFilePayload(FilePayload filePayload);
 
   struct AggregatedBodyStreamContext {
     std::string_view body;

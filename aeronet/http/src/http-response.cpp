@@ -10,7 +10,6 @@
 #include <stdexcept>
 #include <string_view>
 #include <utility>
-#include <variant>
 
 #include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/concatenated-headers.hpp"
@@ -122,7 +121,7 @@ HttpResponse::HttpResponse(std::string_view body, std::string_view contentType)
 }
 
 std::size_t HttpResponse::bodyLength() const noexcept {
-  if (const FilePayload* pFilePayload = filePayloadPtr(); pFilePayload != nullptr) {
+  if (const auto* pFilePayload = filePayloadPtr(); pFilePayload != nullptr) {
     return static_cast<std::size_t>(pFilePayload->length);
   }
   return bodyInMemoryLength();
@@ -291,24 +290,24 @@ void HttpResponse::setBodyInternal(std::string_view newBody) {
 
 HttpResponse& HttpResponse::bodyAppend(std::string_view body, std::string_view contentType) & {
   if (!body.empty()) {
-    HttpPayload* pExternPayload = externPayloadPtr();
-    if (pExternPayload == nullptr) {
-      if (hasBodyFile()) [[unlikely]] {
-        throw std::logic_error("Cannot append to a captured file body");
+    if (hasBodyFile()) [[unlikely]] {
+      throw std::logic_error("Cannot append to a captured file body");
+    }
+    if (hasBodyCaptured()) {
+      if (!contentType.empty()) {
+        setHeader(http::ContentType, contentType);
       }
+      _payloadVariant.append(body);
+    } else {
       const bool setContentTypeIfPresent = !contentType.empty();
 
       if (contentType.empty()) {
         contentType = http::ContentTypeTextPlain;
       }
+
       setBodyHeaders(contentType, internalBodyAndTrailersLen() + body.size(), setContentTypeIfPresent);
 
       _data.unchecked_append(body);
-    } else {
-      if (!contentType.empty()) {
-        setHeader(http::ContentType, contentType);
-      }
-      pExternPayload->append(body);
     }
   }
   return *this;
@@ -343,19 +342,17 @@ HttpResponse& HttpResponse::file(File fileObj, std::size_t offset, std::size_t l
   setHeader(http::ContentLength, std::string_view(IntegralToCharVector(resolvedLength)));
 
   setBodyInternal(std::string_view());
-  _payloadVariant.emplace<FilePayload>(std::move(fileObj), offset, resolvedLength);
+  _payloadVariant = HttpPayload(FilePayload(std::move(fileObj), offset, resolvedLength));
   return *this;
 }
 
 const File* HttpResponse::file() const noexcept {
-  const auto* pFilePayload = std::get_if<FilePayload>(&_payloadVariant);
+  const auto* pFilePayload = _payloadVariant.getIfFilePayload();
   return pFilePayload == nullptr ? nullptr : &pFilePayload->file;
 }
 
 std::string_view HttpResponse::bodyInMemory() const noexcept {
-  const HttpPayload* pExternPayload = externPayloadPtr();
-  auto ret = pExternPayload != nullptr ? pExternPayload->view()
-                                       : std::string_view{_data.begin() + bodyStartPos(), _data.end()};
+  auto ret = hasBodyCaptured() ? _payloadVariant.view() : std::string_view{_data.begin() + bodyStartPos(), _data.end()};
   ret.remove_suffix(_trailerLen);
   return ret;
 }
@@ -539,13 +536,13 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
   // It is the responsibility of the finalization code to ensure that the body is in chunked format if trailers are
   // present.
 
-  HttpPayload* pExternPayload = externPayloadPtr();
   char* insertPtr;
-  if (pExternPayload != nullptr) {
+  if (hasBodyCaptured()) {
+    assert(!_payloadVariant.isFilePayload());
     // Add an extra CRLF space for the last CRLF that will terminate trailers in finalize
-    pExternPayload->ensureAvailableCapacityExponential(lineSize + http::CRLF.size());
-    insertPtr = pExternPayload->data() + pExternPayload->size();
-    pExternPayload->addSize(lineSize);
+    _payloadVariant.ensureAvailableCapacityExponential(lineSize + http::CRLF.size());
+    insertPtr = _payloadVariant.data() + _payloadVariant.size();
+    _payloadVariant.addSize(lineSize);
   } else {
     _data.ensureAvailableCapacityExponential(lineSize + http::CRLF.size());
     insertPtr = _data.data() + _data.size();
@@ -558,10 +555,9 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
   return *this;
 }
 
-HttpResponse::FormattedHttp1Response HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version version, bool close,
-                                                                    const ConcatenatedHeaders& globalHeaders,
-                                                                    bool isHeadMethod,
-                                                                    std::size_t minCapturedBodySize) {
+HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version version, bool close,
+                                                const ConcatenatedHeaders& globalHeaders, bool isHeadMethod,
+                                                std::size_t minCapturedBodySize) {
   const auto versionStr = version.str();
   std::memcpy(_data.data(), versionStr.data(), versionStr.size());
 
@@ -597,8 +593,6 @@ HttpResponse::FormattedHttp1Response HttpResponse::finalizeForHttp1(SysTimePoint
 
   assert(totalNewHeadersSize + bodyStartPos() <= kBodyStartMask);
 
-  HttpPayload* pExternPayload = externPayloadPtr();
-
   char* headersInsertPtr = nullptr;
 
   if (bodySz == 0 || isHeadMethod || hasBodyFile()) {
@@ -616,7 +610,7 @@ HttpResponse::FormattedHttp1Response HttpResponse::finalizeForHttp1(SysTimePoint
     }
   } else {
     // body > 0 && !isHeadMethod && !hasFileBody()
-    bool moveBodyInline = pExternPayload != nullptr && bodySz + _trailerLen <= minCapturedBodySize;
+    bool moveBodyInline = hasBodyCaptured() && bodySz + _trailerLen <= minCapturedBodySize;
     if (_trailerLen == 0) {
       _data.ensureAvailableCapacity((moveBodyInline ? bodySz : 0) + totalNewHeadersSize);
       char* oldBodyStart = _data.data() + bodyStartPos();
@@ -626,15 +620,14 @@ HttpResponse::FormattedHttp1Response HttpResponse::finalizeForHttp1(SysTimePoint
           // Move \r\n\r\n to its final place
           std::memmove(headersInsertPtr + totalNewHeadersSize, headersInsertPtr, http::DoubleCRLF.size());
         }
-        auto bodyAndTrailersView = pExternPayload->view();
+        auto bodyAndTrailersView = _payloadVariant.view();
         std::memcpy(oldBodyStart + totalNewHeadersSize, bodyAndTrailersView.data(), bodyAndTrailersView.size());
 
         _data.addSize(bodySz);
 
         _payloadVariant = {};
-        pExternPayload = nullptr;
       } else if (totalNewHeadersSize != 0) {
-        if (pExternPayload == nullptr) {
+        if (!hasBodyCaptured()) {
           // Move inline body to its final place
           std::memmove(oldBodyStart + totalNewHeadersSize, oldBodyStart, bodySz);
         }
@@ -668,7 +661,7 @@ HttpResponse::FormattedHttp1Response HttpResponse::finalizeForHttp1(SysTimePoint
       // After body (before trailers): \r\n0\r\n
       const auto hexDigits = hex_digits(bodySz);
 
-      if (pExternPayload != nullptr) {
+      if (hasBodyCaptured()) {
         // External payload case: body is in captured buffer, trailers are also there
         // We need to:
         // 1. Replace Content-Length header with Transfer-Encoding: chunked in _data
@@ -677,7 +670,7 @@ HttpResponse::FormattedHttp1Response HttpResponse::finalizeForHttp1(SysTimePoint
         // Works even if headerSizeDiff is negative
         std::size_t neededSize = http::CRLF.size() + hexDigits + static_cast<std::size_t>(headerSizeDiff);
         if (moveBodyInline) {
-          neededSize += pExternPayload->size() + kEndChunkedBody.size() + http::CRLF.size();
+          neededSize += _payloadVariant.size() + kEndChunkedBody.size() + http::CRLF.size();
         }
         _data.ensureAvailableCapacity(neededSize + totalNewHeadersSize);
 
@@ -700,7 +693,7 @@ HttpResponse::FormattedHttp1Response HttpResponse::finalizeForHttp1(SysTimePoint
         insertPtr += http::CRLF.size();
 
         if (moveBodyInline) {
-          auto bodyAndTrailersView = pExternPayload->view();
+          auto bodyAndTrailersView = _payloadVariant.view();
 
           // Body only without trailers
           std::memcpy(insertPtr, bodyAndTrailersView.data(), bodySz);
@@ -718,13 +711,12 @@ HttpResponse::FormattedHttp1Response HttpResponse::finalizeForHttp1(SysTimePoint
           std::memcpy(insertPtr, http::CRLF.data(), http::CRLF.size());
 
           _payloadVariant = {};
-          pExternPayload = nullptr;
         } else {
           // Now, the rest will be done in the external payload. The body does not move, only the chunk headers/footers
           // are added.
-          pExternPayload->ensureAvailableCapacity(kEndChunkedBody.size() + http::CRLF.size());
-          pExternPayload->insert(bodySz, kEndChunkedBody);
-          pExternPayload->append(http::CRLF);
+          _payloadVariant.ensureAvailableCapacity(kEndChunkedBody.size() + http::CRLF.size());
+          _payloadVariant.insert(bodySz, kEndChunkedBody);
+          _payloadVariant.append(http::CRLF);
         }
         _data.addSize(neededSize);
       } else {
@@ -814,21 +806,13 @@ HttpResponse::FormattedHttp1Response HttpResponse::finalizeForHttp1(SysTimePoint
 
   _data.addSize(totalNewHeadersSize);
 
-  FormattedHttp1Response prepared;
-
   WriteCRLFDateHeader(_data.data() + headersStartPos(), tp);
+  HttpResponseData prepared(std::move(_data), std::move(_payloadVariant));
 
-  prepared.data = HttpResponseData{std::move(_data)};
-  if (pExternPayload != nullptr) {
-    // Move captured body out of the variant into a temporary HttpResponseData and append it.
-    prepared.data.append(HttpResponseData{RawChars{}, std::move(*pExternPayload)});
-  } else {
-    FilePayload* pFilePayload = filePayloadPtr();
+  if (isHeadMethod) {
+    auto* pFilePayload = prepared.getIfFilePayload();
     if (pFilePayload != nullptr) {
-      prepared.file = std::move(pFilePayload->file);
-      prepared.fileOffset = pFilePayload->offset;
-      // HEAD responses must not transmit the body; still close the descriptor via moved File.
-      prepared.fileLength = isHeadMethod ? 0 : pFilePayload->length;
+      pFilePayload->length = 0;
     }
   }
 

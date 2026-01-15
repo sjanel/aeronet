@@ -11,7 +11,9 @@
 #include <cstddef>
 #include <cstring>
 #include <string_view>
+#include <utility>
 
+#include "aeronet/file-payload.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/log.hpp"
@@ -239,6 +241,23 @@ void ConnectionState::shrink_to_fit() {
   headBuffer.shrink_to_fit();
   request.shrink_to_fit();
   outBuffer.shrink_to_fit();
+}
+
+bool ConnectionState::attachFilePayload(FilePayload filePayload) {
+  fileSend.file = std::move(filePayload.file);
+  fileSend.offset = filePayload.offset;
+  fileSend.remaining = filePayload.length;
+  fileSend.active = fileSend.remaining > 0;
+  fileSend.headersPending = !outBuffer.empty();
+  if (isSendingFile()) {
+    // Don't enable writable interest here - let flushFilePayload do it when it actually blocks.
+    // Enabling it prematurely (when the socket is already writable) causes us to miss the edge
+    // in edge-triggered epoll mode.
+    if (!fileSend.headersPending) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void ConnectionState::AsyncHandlerState::clear() {
