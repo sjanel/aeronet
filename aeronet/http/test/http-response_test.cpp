@@ -352,6 +352,36 @@ TEST_F(HttpResponseTest, AppendBodyInlineStringView) {
   EXPECT_EQ(resp.bodyInMemory(), "hello");
 }
 
+TEST_F(HttpResponseTest, BodyStaticSv) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.bodyStatic("This is a static body", "text/static");
+  EXPECT_EQ(resp.bodyInMemory(), "This is a static body");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/static");
+  EXPECT_EQ(resp.headerValue(http::ContentLength), std::to_string(std::string_view("This is a static body").size()));
+
+  resp = HttpResponse{}.bodyStatic("Another static body, it's great because it does not allocate memory", "text/empty");
+  EXPECT_EQ(resp.bodyInMemory(), "Another static body, it's great because it does not allocate memory");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/empty");
+  EXPECT_EQ(
+      resp.headerValue(http::ContentLength),
+      std::to_string(std::string_view("Another static body, it's great because it does not allocate memory").size()));
+}
+
+TEST_F(HttpResponseTest, BodyStaticBytes) {
+  static constexpr std::byte bodyBytes[]{std::byte{'S'}, std::byte{'t'}, std::byte{'a'},
+                                         std::byte{'t'}, std::byte{'i'}, std::byte{'c'}};
+  HttpResponse resp(http::StatusCodeOK);
+  resp.bodyStatic(std::span<const std::byte>(bodyBytes), "application/octet-stream");
+  EXPECT_EQ(resp.bodyInMemory(), "Static");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "application/octet-stream");
+  EXPECT_EQ(resp.headerValue(http::ContentLength), std::to_string(sizeof(bodyBytes)));
+
+  resp = HttpResponse{}.bodyStatic(std::span<const std::byte>(bodyBytes), "application/data");
+  EXPECT_EQ(resp.bodyInMemory(), "Static");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "application/data");
+  EXPECT_EQ(resp.headerValue(http::ContentLength), std::to_string(sizeof(bodyBytes)));
+}
+
 TEST_F(HttpResponseTest, AppendBodyCapturedStringView) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body(std::string{"captured body"}, "text/captured");

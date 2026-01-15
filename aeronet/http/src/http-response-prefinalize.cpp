@@ -17,7 +17,7 @@ void PrefinalizeHttpResponse(const HttpRequest& request, HttpResponse& response,
   }
 
   if (response.status() == http::StatusCodeNotFound && !response.hasBody()) {
-    response.body(k404NotFoundTemplate2, http::ContentTypeTextHtml);
+    response.bodyStatic(k404NotFoundTemplate2, http::ContentTypeTextHtml);
   }
 
   if (response.hasBodyInMemory()) {

@@ -44,6 +44,8 @@ class HttpPayload {
 
   explicit HttpPayload(RawChars rawChars) noexcept : _data(std::move(rawChars)) {}
 
+  explicit HttpPayload(std::string_view sv) noexcept : _data(sv) {}
+
   explicit HttpPayload(FilePayload filePayload) noexcept : _data(std::move(filePayload)) {}
 
   HttpPayload(const HttpPayload&) = delete;
@@ -93,8 +95,8 @@ class HttpPayload {
   void shrink_to_fit();
 
  private:
-  std::variant<std::monostate, FilePayload, std::string, std::vector<char>, std::vector<std::byte>, CharBuffer,
-               BytesBuffer, RawChars>
+  std::variant<std::monostate, FilePayload, std::string, std::string_view, std::vector<char>, std::vector<std::byte>,
+               CharBuffer, BytesBuffer, RawChars>
       _data;
 };
 

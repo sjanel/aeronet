@@ -116,6 +116,18 @@ TEST(HttpPayload, AppendLargeToCharBuffer) {
   EXPECT_EQ(body.view(), "ABCDEF");
 }
 
+TEST(HttpPayload, AppendSvFromStaticStringView) {
+  HttpPayload body(std::string_view("start"));
+  body.append("-end");
+  EXPECT_EQ(body.view(), "start-end");
+}
+
+TEST(HttpPayload, AppendDataFromStaticStringView) {
+  HttpPayload body(std::string_view("start"));
+  body.append(HttpPayload(std::string_view("-end")));
+  EXPECT_EQ(body.view(), "start-end");
+}
+
 TEST(HttpPayload, ClearResetsSizeOrZeroesBuffer) {
   HttpPayload body(std::string("toreset"));
   EXPECT_EQ(body.size(), 7U);
@@ -283,7 +295,9 @@ constexpr bool kExponential[] = {false, true};
 void EnsureAvailableCapacity(HttpPayload& body, std::size_t capa, bool exponential) {
   if (exponential) {
     body.ensureAvailableCapacityExponential(capa);
+    body.ensureAvailableCapacityExponential(capa);
   } else {
+    body.ensureAvailableCapacity(capa);
     body.ensureAvailableCapacity(capa);
   }
 }
@@ -339,6 +353,15 @@ TEST(HttpPayload, EnsureAvailableCapacity_RawChars) {
     EnsureAvailableCapacity(body, 5, exponential);
     body.addSize(4);
     EXPECT_EQ(body.size(), 4U);
+  }
+}
+
+TEST(HttpPayload, EnsureAvailableCapacity_Sv) {
+  for (bool exponential : kExponential) {
+    HttpPayload body(std::string_view("some-static-payload"));
+    EnsureAvailableCapacity(body, 5, exponential);
+    body.addSize(4);
+    EXPECT_EQ(body.size(), std::string_view("some-static-payload").size() + 4U);
   }
 }
 
@@ -433,6 +456,13 @@ TEST(HttpPayload, InsertConvertsUniquePtrBufferToRawChars) {
   auto buf = std::make_unique<char[]>(3);
   std::memcpy(buf.get(), "abc", 3);
   HttpPayload body(std::move(buf), 3);
+
+  body.insert(1, "XYZ");
+  EXPECT_EQ(body.view(), "aXYZbc");
+}
+
+TEST(HttpPayload, InsertConvertsSvToRawChars) {
+  HttpPayload body(std::string_view("abc"));
 
   body.insert(1, "XYZ");
   EXPECT_EQ(body.view(), "aXYZbc");
