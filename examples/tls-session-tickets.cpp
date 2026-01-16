@@ -44,10 +44,10 @@ int main(int argc, char** argv) {
     }
   }
 
-  aeronet::SignalHandler::Enable();
+  SignalHandler::Enable();
 
   try {
-    aeronet::HttpServerConfig cfg;
+    HttpServerConfig cfg;
     cfg.withPort(port).withTlsCertKey(certPath, keyPath);
 
     if (useStaticKey) {
@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
       //
       // In production, load this from a secrets manager or encrypted storage.
       // Key must be exactly 48 bytes: 16B name + 16B AES + 16B HMAC.
-      aeronet::TLSConfig::SessionTicketKey staticKey;
+      TLSConfig::SessionTicketKey staticKey;
 
       // For demo purposes only - use RAND_bytes() or secure key storage in production
       for (auto& bt : staticKey) {
@@ -77,9 +77,9 @@ int main(int argc, char** argv) {
       std::cout << "  Max keys in rotation: 4\n";
     }
 
-    aeronet::Router router;
-    router.setDefault([](const aeronet::HttpRequest& req) {
-      aeronet::HttpResponse resp(256U, aeronet::http::StatusCodeOK);
+    Router router;
+    router.setDefault([](const HttpRequest& req) {
+      HttpResponse resp(128U, http::StatusCodeOK);
       resp.bodyAppend("Hello from aeronet with TLS session tickets!\n");
       resp.bodyAppend("Path: ");
       resp.bodyAppend(req.path());
@@ -91,7 +91,7 @@ int main(int argc, char** argv) {
       return resp;
     });
 
-    aeronet::SingleHttpServer server(std::move(cfg), std::move(router));
+    SingleHttpServer server(std::move(cfg), std::move(router));
 
     std::cout << "Server listening on port " << port << "\n";
     std::cout << "\nTest session resumption:\n";

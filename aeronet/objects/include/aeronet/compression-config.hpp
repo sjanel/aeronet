@@ -24,8 +24,9 @@ namespace aeronet {
 struct CompressionConfig {
   void validate() const;
 
-  // Preferred order of formats to negotiate (first supported & accepted wins). If empty, defaults
-  // to enumeration order of Encoding.
+  // Preferred order of formats to negotiate (first supported & accepted wins).
+  // If empty, defaults to enumeration order of Encoding.
+  // Duplicates are not allowed, and it should contain a maximum of one of each encoding.
   FixedCapacityVector<Encoding, kNbContentEncodings> preferredFormats;
 
   // If true, adds/merges a Vary: Accept-Encoding header whenever compression is applied.

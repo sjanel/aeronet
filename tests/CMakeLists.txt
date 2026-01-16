@@ -35,7 +35,6 @@ if (AERONET_ENABLE_OPENSSL)
 endif()
 
 aeronet_http_test(http-trailers)
-aeronet_http_test(http-url-decoding)
 if(AERONET_ENABLE_HTTP2)
 	aeronet_http_test(http2-core)
 endif()

@@ -102,7 +102,7 @@ void TestServer::waitReady(std::chrono::milliseconds timeout) const {
       } catch (const std::exception& ex) {
         log::error("Readiness probe request failed, retrying... {}", ex.what());
       }
-      std::this_thread::sleep_for(5ms);
+      std::this_thread::sleep_for(5ms);  // NOLINT(misc-include-cleaner)
     }
     throw std::runtime_error("server readiness probe did not return 200 within timeout");
   }
@@ -118,7 +118,7 @@ void TestServer::waitReady(std::chrono::milliseconds timeout) const {
 bool WaitForServer(SingleHttpServer& server, bool running, std::chrono::milliseconds timeout) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(1ms);
+    std::this_thread::sleep_for(1ms);  // NOLINT(misc-include-cleaner)
     if (server.isRunning() == running) {
       return true;
     }
