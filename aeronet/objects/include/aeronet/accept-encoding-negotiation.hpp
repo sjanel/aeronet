@@ -1,11 +1,12 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string_view>
+#include <type_traits>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
-#include "aeronet/fixedcapacityvector.hpp"
 
 namespace aeronet {
 
@@ -47,11 +48,12 @@ class EncodingSelector {
   void initDefault() noexcept;
 
   // final ordered list
-  FixedCapacityVector<Encoding, kNbContentEncodings, amc::vec::UncheckedGrowingPolicy> _preferenceOrdered;
+  std::array<Encoding, kNbContentEncodings> _preferenceOrdered;
+  std::underlying_type_t<Encoding> _nbPreferences;
   // Build server preference ordering: if preferredFormats provided (non-empty) we use that
   // sequence first (deduplicated, valid encodings only) followed by any remaining supported
   // encodings not explicitly listed. Otherwise fall back to the static enumeration order.
-  int8_t _serverPrefIndex[kNbContentEncodings];
+  std::array<int8_t, kNbContentEncodings> _serverPrefIndex;
 };
 
 }  // namespace aeronet

@@ -17,6 +17,7 @@ EncodingSelector MakeSelector(std::initializer_list<Encoding> prefs) {
   for (auto enc : prefs) {
     cfg.preferredFormats.push_back(enc);
   }
+  cfg.validate();
   return EncodingSelector(cfg);
 }
 
@@ -39,98 +40,6 @@ TEST(AcceptEncodingNegotiationTest, EmptyOrWhitespace) {
     EXPECT_EQ(resultWs.encoding, Encoding::none);
     EXPECT_FALSE(resultWs.reject);
   }
-}
-
-TEST(AcceptEncodingNegotiationTest, SimpleExactMatches) {
-  if constexpr (!aeronet::zlibEnabled()) {
-    GTEST_SKIP();
-  }
-  CompressionConfig cfg;
-  cfg.preferredFormats.push_back(Encoding::gzip);
-  cfg.preferredFormats.push_back(Encoding::deflate);
-  if constexpr (aeronet::zstdEnabled()) {
-    cfg.preferredFormats.push_back(Encoding::zstd);
-  }
-  if constexpr (aeronet::brotliEnabled()) {
-    cfg.preferredFormats.push_back(Encoding::br);
-  }
-  auto sel = EncodingSelector(cfg);
-  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip").encoding, Encoding::gzip);
-  EXPECT_EQ(sel.negotiateAcceptEncoding("deflate").encoding, Encoding::deflate);
-  if constexpr (aeronet::zstdEnabled()) {
-    EXPECT_EQ(sel.negotiateAcceptEncoding("zstd").encoding, Encoding::zstd);
-  }
-  if constexpr (aeronet::brotliEnabled()) {
-    EXPECT_EQ(sel.negotiateAcceptEncoding("br").encoding, Encoding::br);
-  }
-}
-
-TEST(AcceptEncodingNegotiationTest, CaseInsensitive) {
-  if constexpr (!aeronet::zlibEnabled()) {
-    GTEST_SKIP();
-  }
-  auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
-  EXPECT_EQ(sel.negotiateAcceptEncoding("GZIP").encoding, Encoding::gzip);
-}
-
-TEST(AcceptEncodingNegotiationTest, WithParametersOrderAndQ) {
-  if constexpr (!aeronet::zlibEnabled()) {
-    GTEST_SKIP();
-  }
-  // Prefer higher q even if later
-  {
-    CompressionConfig cfg;
-    cfg.preferredFormats.push_back(Encoding::gzip);
-    cfg.preferredFormats.push_back(Encoding::deflate);
-    if constexpr (aeronet::zstdEnabled()) {
-      cfg.preferredFormats.push_back(Encoding::zstd);
-    }
-    if constexpr (aeronet::brotliEnabled()) {
-      cfg.preferredFormats.push_back(Encoding::br);
-    }
-    auto sel = EncodingSelector(cfg);
-    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.5, deflate;q=0.9").encoding, Encoding::deflate);
-    // Tie in q -> server preference order (gzip preferred over deflate when equal q with current prefs)
-    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.8, deflate;q=0.8").encoding, Encoding::gzip);
-    if constexpr (aeronet::zstdEnabled()) {
-      // Higher q for zstd should select it
-      EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.8, deflate;q=0.8, zstd;q=0.95").encoding, Encoding::zstd);
-    }
-    if constexpr (aeronet::brotliEnabled()) {
-      EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.8, deflate;q=0.8, br;q=0.96").encoding, Encoding::br);
-    }
-  }
-}
-
-TEST(AcceptEncodingNegotiationTest, IdentityFallback) {
-  if constexpr (!aeronet::zlibEnabled()) {
-    GTEST_SKIP();
-  }
-  // All unsupported or q=0 -> identity. Use a definitely unsupported token sequence.
-  auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
-  if constexpr (aeronet::brotliEnabled()) {
-    EXPECT_EQ(sel.negotiateAcceptEncoding("snappy, lz4").encoding, Encoding::none);
-  } else {
-    EXPECT_EQ(sel.negotiateAcceptEncoding("br, lz4").encoding, Encoding::none);
-  }
-  {
-    auto resultAllZero = sel.negotiateAcceptEncoding("gzip;q=0, deflate;q=0");
-    EXPECT_EQ(resultAllZero.encoding, Encoding::none);
-    EXPECT_FALSE(resultAllZero.reject) << "Identity not explicitly forbidden so reject flag must be false";
-  }
-}
-
-TEST(AcceptEncodingNegotiationTest, Wildcard) {
-  if constexpr (!aeronet::zlibEnabled()) {
-    GTEST_SKIP();
-  }
-  // Wildcard picks first server preference not explicitly mentioned
-  auto sel = MakeSelector({Encoding::deflate, Encoding::gzip});
-  EXPECT_EQ(sel.negotiateAcceptEncoding("*;q=0.9").encoding, Encoding::deflate);
-  // Explicit better q wins
-  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.4, *;q=0.3").encoding, Encoding::gzip);
-  // Wildcard lower q than explicit
-  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.9, *;q=0.1").encoding, Encoding::gzip);
 }
 
 TEST(AcceptEncodingNegotiationTest, IgnoreUnsupportedWithWildcard) {
@@ -184,51 +93,6 @@ TEST(AcceptEncodingNegotiationTest, TieBreakNoPreferencesUsesEnumOrder) {
   }
 }
 
-TEST(AcceptEncodingNegotiationTest, TieBreakWithReversedPreferencesPicksDeflate) {
-  if constexpr (aeronet::zlibEnabled()) {
-    auto sel = MakeSelector({Encoding::deflate, Encoding::gzip});
-    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.7, deflate;q=0.7").encoding, Encoding::deflate);
-  } else {
-    GTEST_SKIP() << "zlib disabled";
-  }
-}
-
-TEST(AcceptEncodingNegotiationTest, HigherQOverridesPreferenceList) {
-  if constexpr (aeronet::zlibEnabled()) {
-    auto sel = MakeSelector({Encoding::deflate});
-    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.9, deflate;q=0.8").encoding, Encoding::gzip);
-  } else {
-    GTEST_SKIP() << "zlib disabled";
-  }
-}
-
-TEST(AcceptEncodingNegotiationTest, HigherQForPreferredBeatsUnlisted) {
-  if constexpr (aeronet::zlibEnabled()) {
-    auto sel = MakeSelector({Encoding::gzip});
-    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.6, deflate;q=0.5").encoding, Encoding::gzip);
-  } else {
-    GTEST_SKIP() << "zlib disabled";
-  }
-}
-
-TEST(AcceptEncodingNegotiationTest, WildcardSelectsFirstPreferenceWhenNoExplicit) {
-  if constexpr (aeronet::zlibEnabled()) {
-    auto sel = MakeSelector({Encoding::deflate, Encoding::gzip});
-    EXPECT_EQ(sel.negotiateAcceptEncoding("*;q=0.8").encoding, Encoding::deflate);
-  } else {
-    GTEST_SKIP() << "zlib disabled";
-  }
-}
-
-TEST(AcceptEncodingNegotiationTest, WildcardDoesNotOverrideBetterExplicitQ) {
-  if constexpr (aeronet::zlibEnabled()) {
-    auto sel = MakeSelector({Encoding::deflate, Encoding::gzip});
-    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.9, *;q=0.5").encoding, Encoding::gzip);
-  } else {
-    GTEST_SKIP() << "zlib disabled";
-  }
-}
-
 TEST(AcceptEncodingNegotiationTest, WildcardZeroPreventsUnlistedSelection) {
   CompressionConfig cfg;
   if constexpr (aeronet::zlibEnabled()) {
@@ -244,10 +108,108 @@ TEST(AcceptEncodingNegotiationTest, WildcardZeroPreventsUnlistedSelection) {
   }
 }
 
-TEST(AcceptEncodingNegotiationTest, WildcardFillsForUnlistedWhenPositive) {
-  if constexpr (!aeronet::zlibEnabled()) {
-    GTEST_SKIP() << "zlib disabled";
+#ifdef AERONET_ENABLE_ZLIB
+TEST(AcceptEncodingNegotiationTest, SimpleExactMatches) {
+  CompressionConfig cfg;
+  cfg.preferredFormats.push_back(Encoding::gzip);
+  cfg.preferredFormats.push_back(Encoding::deflate);
+  if constexpr (aeronet::zstdEnabled()) {
+    cfg.preferredFormats.push_back(Encoding::zstd);
   }
+  if constexpr (aeronet::brotliEnabled()) {
+    cfg.preferredFormats.push_back(Encoding::br);
+  }
+  auto sel = EncodingSelector(cfg);
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip").encoding, Encoding::gzip);
+  EXPECT_EQ(sel.negotiateAcceptEncoding("deflate").encoding, Encoding::deflate);
+  if constexpr (aeronet::zstdEnabled()) {
+    EXPECT_EQ(sel.negotiateAcceptEncoding("zstd").encoding, Encoding::zstd);
+  }
+  if constexpr (aeronet::brotliEnabled()) {
+    EXPECT_EQ(sel.negotiateAcceptEncoding("br").encoding, Encoding::br);
+  }
+}
+
+TEST(AcceptEncodingNegotiationTest, CaseInsensitive) {
+  auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
+  EXPECT_EQ(sel.negotiateAcceptEncoding("GZIP").encoding, Encoding::gzip);
+}
+
+TEST(AcceptEncodingNegotiationTest, WithParametersOrderAndQ) {
+  // Prefer higher q even if later
+  CompressionConfig cfg;
+  cfg.preferredFormats.push_back(Encoding::gzip);
+  cfg.preferredFormats.push_back(Encoding::deflate);
+  if constexpr (aeronet::zstdEnabled()) {
+    cfg.preferredFormats.push_back(Encoding::zstd);
+  }
+  if constexpr (aeronet::brotliEnabled()) {
+    cfg.preferredFormats.push_back(Encoding::br);
+  }
+  auto sel = EncodingSelector(cfg);
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.5, deflate;q=0.9").encoding, Encoding::deflate);
+  // Tie in q -> server preference order (gzip preferred over deflate when equal q with current prefs)
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.8, deflate;q=0.8").encoding, Encoding::gzip);
+  if constexpr (aeronet::zstdEnabled()) {
+    // Higher q for zstd should select it
+    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.8, deflate;q=0.8, zstd;q=0.95").encoding, Encoding::zstd);
+  }
+  if constexpr (aeronet::brotliEnabled()) {
+    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.8, deflate;q=0.8, br;q=0.96").encoding, Encoding::br);
+  }
+}
+
+TEST(AcceptEncodingNegotiationTest, IdentityFallback) {
+  // All unsupported or q=0 -> identity. Use a definitely unsupported token sequence.
+  auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
+  if constexpr (aeronet::brotliEnabled()) {
+    EXPECT_EQ(sel.negotiateAcceptEncoding("snappy, lz4").encoding, Encoding::none);
+  } else {
+    EXPECT_EQ(sel.negotiateAcceptEncoding("br, lz4").encoding, Encoding::none);
+  }
+  {
+    auto resultAllZero = sel.negotiateAcceptEncoding("gzip;q=0, deflate;q=0");
+    EXPECT_EQ(resultAllZero.encoding, Encoding::none);
+    EXPECT_FALSE(resultAllZero.reject) << "Identity not explicitly forbidden so reject flag must be false";
+  }
+}
+
+TEST(AcceptEncodingNegotiationTest, Wildcard) {
+  // Wildcard picks first server preference not explicitly mentioned
+  auto sel = MakeSelector({Encoding::deflate, Encoding::gzip});
+  EXPECT_EQ(sel.negotiateAcceptEncoding("*;q=0.9").encoding, Encoding::deflate);
+  // Explicit better q wins
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.4, *;q=0.3").encoding, Encoding::gzip);
+  // Wildcard lower q than explicit
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.9, *;q=0.1").encoding, Encoding::gzip);
+}
+
+TEST(AcceptEncodingNegotiationTest, TieBreakWithReversedPreferencesPicksDeflate) {
+  auto sel = MakeSelector({Encoding::deflate, Encoding::gzip});
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.7, deflate;q=0.7").encoding, Encoding::deflate);
+}
+
+TEST(AcceptEncodingNegotiationTest, HigherQOverridesPreferenceList) {
+  auto sel = MakeSelector({Encoding::deflate});
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.9, deflate;q=0.8").encoding, Encoding::gzip);
+}
+
+TEST(AcceptEncodingNegotiationTest, HigherQForPreferredBeatsUnlisted) {
+  auto sel = MakeSelector({Encoding::gzip});
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.6, deflate;q=0.5").encoding, Encoding::gzip);
+}
+
+TEST(AcceptEncodingNegotiationTest, WildcardSelectsFirstPreferenceWhenNoExplicit) {
+  auto sel = MakeSelector({Encoding::deflate, Encoding::gzip});
+  EXPECT_EQ(sel.negotiateAcceptEncoding("*;q=0.8").encoding, Encoding::deflate);
+}
+
+TEST(AcceptEncodingNegotiationTest, WildcardDoesNotOverrideBetterExplicitQ) {
+  auto sel = MakeSelector({Encoding::deflate, Encoding::gzip});
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.9, *;q=0.5").encoding, Encoding::gzip);
+}
+
+TEST(AcceptEncodingNegotiationTest, WildcardFillsForUnlistedWhenPositive) {
   CompressionConfig cfg;
   cfg.preferredFormats.push_back(Encoding::gzip);
   auto sel = EncodingSelector(cfg);
@@ -255,58 +217,35 @@ TEST(AcceptEncodingNegotiationTest, WildcardFillsForUnlistedWhenPositive) {
 }
 
 TEST(AcceptEncodingNegotiationTest, ExplicitQZeroSkipsEncoding) {
-#ifdef AERONET_ENABLE_ZLIB
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0, deflate;q=0.5").encoding, Encoding::deflate);
-#else
-  GTEST_SKIP() << "zlib disabled";
-#endif
 }
 
 TEST(AcceptEncodingNegotiationTest, DuplicatesFirstOccurrenceWinsEvenIfLaterHigherQ) {
-#ifdef AERONET_ENABLE_ZLIB
   auto sel = MakeSelector({Encoding::deflate, Encoding::gzip});
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.2, gzip;q=0.9, deflate;q=0.2").encoding, Encoding::deflate);
-#else
-  GTEST_SKIP() << "zlib disabled";
-#endif
 }
 
 TEST(AcceptEncodingNegotiationTest, DuplicateWithLowerQLaterDoesNotChangeChoice) {
-#ifdef AERONET_ENABLE_ZLIB
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
   EXPECT_EQ(sel.negotiateAcceptEncoding("deflate;q=0.8, deflate;q=0.1, gzip;q=0.9").encoding, Encoding::gzip);
-#else
-  GTEST_SKIP() << "zlib disabled";
-#endif
 }
 
 TEST(AcceptEncodingNegotiationTest, InvalidQParsesAsZero) {
-#ifdef AERONET_ENABLE_ZLIB
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=abc, deflate;q=0.4").encoding, Encoding::deflate);
-#else
-  GTEST_SKIP() << "zlib disabled";
-#endif
 }
 
 TEST(AcceptEncodingNegotiationTest, QGreaterThanOneClamped) {
-#ifdef AERONET_ENABLE_ZLIB
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
   EXPECT_EQ(sel.negotiateAcceptEncoding("deflate;q=5, gzip;q=0.9").encoding, Encoding::deflate);
-#else
-  GTEST_SKIP() << "zlib disabled";
-#endif
 }
 
 TEST(AcceptEncodingNegotiationTest, NegativeQClampedToZero) {
-#ifdef AERONET_ENABLE_ZLIB
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=-1, deflate;q=0.3").encoding, Encoding::deflate);
-#else
-  GTEST_SKIP() << "zlib disabled";
-#endif
 }
+#endif
 
 TEST(AcceptEncodingNegotiationTest, IdentityExplicitHigherQChosenIfHigherQ) {
 #ifdef AERONET_ENABLE_ZLIB
@@ -325,7 +264,10 @@ TEST(AcceptEncodingNegotiationTest, IdentityPreferredInConfigWins) {
   // selected when q values allow it even if other encodings are present.
   CompressionConfig cfg;
   cfg.preferredFormats.push_back(Encoding::none);
-  cfg.preferredFormats.push_back(Encoding::gzip);
+  if constexpr (aeronet::zlibEnabled()) {
+    cfg.preferredFormats.push_back(Encoding::gzip);
+  }
+  cfg.validate();
   auto sel = EncodingSelector(cfg);
   // Client prefers gzip slightly more, so gzip should be chosen despite server listing
   // identity first in its preference list.
@@ -336,7 +278,10 @@ TEST(AcceptEncodingNegotiationTest, IdentityPreferredInConfigWins) {
 TEST(AcceptEncodingNegotiationTest, IdentityPreferredButForbiddenSetsReject) {
   CompressionConfig cfg;
   cfg.preferredFormats.push_back(Encoding::none);
-  cfg.preferredFormats.push_back(Encoding::gzip);
+  if constexpr (aeronet::zlibEnabled()) {
+    cfg.preferredFormats.push_back(Encoding::gzip);
+  }
+  cfg.validate();
   auto sel = EncodingSelector(cfg);
   // If identity explicitly has q=0 and no alternatives acceptable, negotiation should set reject
   auto res = sel.negotiateAcceptEncoding("identity;q=0, gzip;q=0");
@@ -347,7 +292,10 @@ TEST(AcceptEncodingNegotiationTest, IdentityPreferredButForbiddenSetsReject) {
 TEST(AcceptEncodingNegotiationTest, IdentityPreferredAndChosenWhenHigherQ) {
   CompressionConfig cfg;
   cfg.preferredFormats.push_back(Encoding::none);
-  cfg.preferredFormats.push_back(Encoding::gzip);
+  if constexpr (aeronet::zlibEnabled()) {
+    cfg.preferredFormats.push_back(Encoding::gzip);
+  }
+  cfg.validate();
   auto sel = EncodingSelector(cfg);
   // If identity has a higher q than gzip, identity should be selected per client preference.
   auto res = sel.negotiateAcceptEncoding("identity;q=0.95, gzip;q=0.8");
@@ -368,6 +316,17 @@ TEST(AcceptEncodingNegotiationTest, AllCompressionQZeroFallsBackToIdentity) {
 #endif
 }
 
+#ifdef AERONET_ENABLE_ZLIB
+TEST(AcceptEncodingNegotiationTest, IdentityExplicitButAcceptableWhenAlternativesForbidden) {
+  // identity explicitly present with q>0, but all compression encodings have q=0.
+  // This should select identity (Encoding::none) and not set reject.
+  auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
+  auto res = sel.negotiateAcceptEncoding("identity;q=0.5, gzip;q=0, deflate;q=0");
+  EXPECT_EQ(res.encoding, Encoding::none);
+  EXPECT_FALSE(res.reject);
+}
+#endif
+
 TEST(AcceptEncodingNegotiationTest, MixedCaseAndSpacesRobust) {
 #ifdef AERONET_ENABLE_ZLIB
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
@@ -385,6 +344,7 @@ TEST(AcceptEncodingNegotiationTest, UnsupportedGzipIgnored) {
 }
 #endif
 
+#ifdef AERONET_ENABLE_ZLIB
 TEST(AcceptEncodingNegotiationTest, TrailingCommasAndEmptyTokensIgnored) {
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
   EXPECT_EQ(sel.negotiateAcceptEncoding(",,,gzip;q=0.4,,deflate;q=0.4,,,").encoding, kDefaultEncodingGzipEnabled);
@@ -397,7 +357,14 @@ TEST(AcceptEncodingNegotiationTest, IdentityExplicitlyForbiddenAndNoAlternatives
   EXPECT_TRUE(resultReject.reject);
 }
 
-// Additional tests targeting ParseQ edge branches uncovered by coverage.
+TEST(AcceptEncodingNegotiationTest, SingleCharQParameterIsIgnored) {
+  auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
+  // The parameter list contains a single-character `q` (no '='), which should
+  // not be treated as a q-value. ParseQ should therefore return the default
+  // quality (1.0) for gzip and gzip should be preferred over deflate.
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q, deflate;q=0.9").encoding, Encoding::gzip);
+}
+
 TEST(AcceptEncodingNegotiationTest, ParseQEmptyValueTreatedAsZero) {
   // q= with no value should be treated as 0
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
@@ -442,39 +409,21 @@ TEST(AcceptEncodingNegotiationTest, ParseQNoQParamsReturnsDefaultOne) {
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;foo=bar, deflate;q=0.5").encoding, kDefaultEncodingGzipEnabled);
 }
 
+#ifdef AERONET_ENABLE_ZSTD
 TEST(AcceptEncodingNegotiationTest, ZstdPreferredWhenHighestQ) {
-  if constexpr (!aeronet::zstdEnabled()) {
-    GTEST_SKIP();
-  }
-  CompressionConfig cfg;
-  cfg.preferredFormats.push_back(Encoding::gzip);
-  cfg.preferredFormats.push_back(Encoding::deflate);
-  cfg.preferredFormats.push_back(Encoding::zstd);
-  auto sel = EncodingSelector(cfg);
+  auto sel = MakeSelector({Encoding::gzip, Encoding::deflate, Encoding::zstd});
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.7, zstd;q=0.9, deflate;q=0.8").encoding, Encoding::zstd);
 }
 
 TEST(AcceptEncodingNegotiationTest, ZstdViaWildcard) {
-  if constexpr (!aeronet::zstdEnabled()) {
-    GTEST_SKIP();
-  }
-  CompressionConfig cfg;
-  cfg.preferredFormats.push_back(Encoding::zstd);
-  cfg.preferredFormats.push_back(Encoding::gzip);
-  auto sel = EncodingSelector(cfg);
+  auto sel = MakeSelector({Encoding::zstd, Encoding::gzip});
   // zstd not explicitly listed -> wildcard applies; chosen because first preference
   EXPECT_EQ(sel.negotiateAcceptEncoding("*;q=0.5, gzip;q=0.5").encoding, Encoding::zstd);
 }
 
 TEST(AcceptEncodingNegotiationTest, WildcardMultiTierZstdDeflateTieBreak) {
-  if constexpr (!aeronet::zstdEnabled()) {
-    GTEST_SKIP();
-  }
   // Server prefers gzip > zstd > deflate (enum order mirrored by explicit list missing gzip)
-  CompressionConfig cfg;
-  cfg.preferredFormats.push_back(Encoding::zstd);
-  cfg.preferredFormats.push_back(Encoding::deflate);
-  auto sel = EncodingSelector(cfg);
+  auto sel = MakeSelector({Encoding::zstd, Encoding::deflate});
   // Client: wildcard gives q=0.8 to both unlisted (zstd, deflate); explicit deflate at same q as wildcard.
   // Result should pick zstd (higher server preference among tied q encodings that are candidates via wildcard or
   // explicit).
@@ -484,6 +433,8 @@ TEST(AcceptEncodingNegotiationTest, WildcardMultiTierZstdDeflateTieBreak) {
     EXPECT_EQ(sel.negotiateAcceptEncoding("deflate;q=0.9, *;q=0.8").encoding, Encoding::deflate);
   }
 }
+#endif
+
 #ifdef AERONET_ENABLE_BROTLI
 TEST(AcceptEncodingNegotiationTest, BrotliPreferredWhenHighestQ) {
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate, Encoding::br});
@@ -493,6 +444,14 @@ TEST(AcceptEncodingNegotiationTest, BrotliPreferredWhenHighestQ) {
 TEST(AcceptEncodingNegotiationTest, BrotliViaWildcard) {
   auto sel = MakeSelector({Encoding::br, Encoding::gzip});
   EXPECT_EQ(sel.negotiateAcceptEncoding("*;q=0.5, gzip;q=0.5").encoding, Encoding::br);
+}
+#endif
+
+TEST(AcceptEncodingNegotiationTest, QCharFollowedByNonEqualsIsIgnored) {
+  auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
+  // Parameter begins with 'q' but second char is not '=' (e.g. 'q1=0.5').
+  // This should NOT be treated as a q-value; gzip remains at default q=1.0.
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q1=0.5, deflate;q=0.9").encoding, Encoding::gzip);
 }
 #endif
 

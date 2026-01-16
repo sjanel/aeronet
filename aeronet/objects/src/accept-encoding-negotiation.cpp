@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <charconv>
 #include <climits>
 #include <cstddef>
@@ -24,6 +25,8 @@
 
 namespace aeronet {
 namespace {
+
+using EncodingInt = std::underlying_type_t<Encoding>;
 
 constexpr std::string_view kWhitespace = " \t";
 
@@ -73,16 +76,45 @@ double ParseQ(std::string_view token) {
   return 1.0;
 }
 
+constexpr std::array<Encoding, kNbContentEncodings> kPreferredEncodingsDefault = [] {
+  std::array<Encoding, kNbContentEncodings> arr{};
+  EncodingInt sz = 0;
+  for (EncodingInt pos = 0; pos < kNbContentEncodings; ++pos) {
+    auto enc = static_cast<Encoding>(pos);
+    if (IsEncodingEnabled(enc)) {
+      arr[sz++] = enc;
+    }
+  }
+  return arr;
+}();
+
+constexpr EncodingInt kNbSupportedEncodings = [] {
+  EncodingInt count = 0;
+  for (EncodingInt pos = 0; pos < kNbContentEncodings; ++pos) {
+    if (IsEncodingEnabled(static_cast<Encoding>(pos))) {
+      ++count;
+    }
+  }
+  return count;
+}();
+
 // Compile-time construction of supported encodings array from reflected keys
 struct Sup {
   std::string_view name;
   Encoding enc;
 };
 
-template <std::size_t... I>
-consteval auto MakeSupported(std::index_sequence<I...> /*unused*/) {
-  return std::array<Sup, sizeof...(I)>{{{GetEncodingStr(static_cast<Encoding>(I)), static_cast<Encoding>(I)}...}};
-}
+constexpr auto kSupportedEncodings = []() {
+  std::array<Sup, kNbSupportedEncodings> arr;
+  EncodingInt sz = 0;
+  for (EncodingInt pos = 0; pos < kNbContentEncodings; ++pos) {
+    auto enc = static_cast<Encoding>(pos);
+    if (IsEncodingEnabled(enc)) {
+      arr[sz++] = Sup{GetEncodingStr(enc), enc};
+    }
+  }
+  return arr;
+}();
 
 }  // namespace
 
@@ -90,33 +122,30 @@ EncodingSelector::EncodingSelector() noexcept { initDefault(); }
 
 void EncodingSelector::initDefault() noexcept {
   std::ranges::iota(_serverPrefIndex, 0);
-  for (std::underlying_type_t<Encoding> pos = 0; pos < kNbContentEncodings; ++pos) {
-    auto enc = static_cast<Encoding>(pos);
-    if (IsEncodingEnabled(enc)) {
-      _preferenceOrdered.push_back(enc);
-    }
-  }
+  _preferenceOrdered = kPreferredEncodingsDefault;
+  _nbPreferences = kNbSupportedEncodings;
 }
 
 EncodingSelector::EncodingSelector(const CompressionConfig &compressionConfig) {
   if (compressionConfig.preferredFormats.empty()) {
     initDefault();
   } else {
-    std::ranges::fill(_serverPrefIndex, -1);
     int8_t next = 0;
+    _nbPreferences = 0;
+    // preferredFormats should not contain duplicates
+    assert(std::ranges::all_of(compressionConfig.preferredFormats, [&compressionConfig](Encoding enc) {
+      return std::ranges::count(compressionConfig.preferredFormats, enc) == 1;
+    }));
+
     for (Encoding enc : compressionConfig.preferredFormats) {
-      if (!IsEncodingEnabled(enc)) {
-        continue;
-      }
-      auto idx = static_cast<std::underlying_type_t<Encoding>>(enc);
-      if (_serverPrefIndex[idx] == -1) {  // dedupe
-        _serverPrefIndex[idx] = next;
-        ++next;
-        _preferenceOrdered.push_back(enc);
-      }
+      assert(IsEncodingEnabled(enc));  // config should have been validated
+      auto idx = static_cast<EncodingInt>(enc);
+      _serverPrefIndex[idx] = next;
+      ++next;
+      _preferenceOrdered[_nbPreferences++] = enc;
     }
-    // Do NOT append remaining encodings: preferredFormats defines the full server-advertised order.
   }
+  // Do NOT append remaining encodings: preferredFormats defines the full server-advertised order.
 }
 
 EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std::string_view acceptEncoding) const {
@@ -125,8 +154,6 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
   if (acceptEncoding.empty()) {
     return ret;
   }
-
-  static constexpr auto kSupportedEncodings = MakeSupported(std::make_index_sequence<kNbContentEncodings>{});
 
   struct ParsedToken {
     std::string_view name;
@@ -137,14 +164,13 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
   bool sawWildcard = false;
   double wildcardQ = 0.0;
 
-  using SeenBmp = uint8_t;  // accommodate additional encodings (gzip, deflate, zstd, none)
+  using SeenBmp = EncodingInt;  // accommodate additional encodings (gzip, deflate, zstd, none)
 
   static_assert(sizeof(SeenBmp) * CHAR_BIT >= kNbContentEncodings);
 
   SeenBmp seenMask = 0;  // bit i set => supported[i] already stored
 
   bool identityExplicit = false;
-  double identityQ = 0.0;
   for (auto part : acceptEncoding | std::views::split(',')) {
     std::string_view raw{&*part.begin(), static_cast<std::size_t>(std::ranges::distance(part))};
     raw = TrimOws(raw);
@@ -163,8 +189,8 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
       if ((seenMask & (1 << pos)) != 0) {
         continue;  // already captured earliest occurrence
       }
-      if (CaseInsensitiveEqual(name, kSupportedEncodings[pos].name) &&
-          IsEncodingEnabled(kSupportedEncodings[pos].enc)) {
+      assert(IsEncodingEnabled(kSupportedEncodings[pos].enc));
+      if (CaseInsensitiveEqual(name, kSupportedEncodings[pos].name)) {
         knownEncodings.emplace_back(kSupportedEncodings[pos].name, quality);
         seenMask |= static_cast<SeenBmp>(1 << pos);
         break;
@@ -172,7 +198,6 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
     }
     if (CaseInsensitiveEqual(name, http::identity)) {
       identityExplicit = true;
-      identityQ = quality;  // capture last; earliest identity suffices but we update for clarity
     }
   }
 
@@ -194,27 +219,20 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
   // Evaluate explicitly listed supported encodings. We map back to server preference index (via _serverPrefIndex)
   // and pick highest q; ties resolved by lower preference index instead of client header order.
   for (const auto &pt : knownEncodings) {
-    for (const auto &kSupportedEncoding : kSupportedEncodings) {
-      if (CaseInsensitiveEqual(pt.name, kSupportedEncoding.name) && IsEncodingEnabled(kSupportedEncoding.enc)) {
-        auto idx = static_cast<int>(kSupportedEncoding.enc);
-        consider(kSupportedEncoding.enc, pt.quality, _serverPrefIndex[idx]);
-        break;
-      }
-    }
+    const auto it = std::ranges::find_if(kSupportedEncodings,
+                                         [&](const Sup &sup) { return CaseInsensitiveEqual(pt.name, sup.name); });
+    assert(it != kSupportedEncodings.end());
+    consider(it->enc, pt.quality, _serverPrefIndex[static_cast<EncodingInt>(it->enc)]);
   }
 
   // Apply wildcard to any supported encoding not explicitly mentioned, iterating in server preference order.
   if (sawWildcard) {
-    for (Encoding enc : _preferenceOrdered) {
-      bool mentioned = false;
-      for (const auto &pt : knownEncodings) {
-        if (CaseInsensitiveEqual(pt.name, GetEncodingStr(enc))) {
-          mentioned = true;
-          break;
-        }
-      }
-      if (!mentioned) {
-        consider(enc, wildcardQ, _serverPrefIndex[static_cast<int>(enc)]);
+    for (EncodingInt pos = 0; pos < _nbPreferences; ++pos) {
+      const Encoding enc = _preferenceOrdered[pos];
+
+      if (std::ranges::none_of(knownEncodings,
+                               [enc](const auto &pt) { return CaseInsensitiveEqual(pt.name, GetEncodingStr(enc)); })) {
+        consider(enc, wildcardQ, _serverPrefIndex[static_cast<EncodingInt>(enc)]);
       }
     }
   }
@@ -222,7 +240,7 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
   if (bestQ < 0.0) {
     // No acceptable compression encodings selected.
     ret.encoding = Encoding::none;
-    if (identityExplicit && identityQ <= 0.0) {
+    if (identityExplicit) {
       // Client explicitly forbids identity and offered no acceptable alternative.
       ret.reject = true;
     }

@@ -31,7 +31,13 @@ void CompressionConfig::validate() const {
   }
   auto it = std::ranges::find_if_not(preferredFormats, [](Encoding enc) { return IsEncodingEnabled(enc); });
   if (it != preferredFormats.end()) {
-    throw std::invalid_argument(std::format("Unsupported encoding {} in preferredFormats", static_cast<int>(*it)));
+    throw std::invalid_argument("Unsupported encoding in preferredFormats");
+  }
+
+  // check if preferredFormats has duplicates (forbidden)
+  if (std::ranges::any_of(preferredFormats,
+                          [this](Encoding enc) { return std::ranges::count(preferredFormats, enc) > 1; })) {
+    throw std::invalid_argument("preferredFormats contains duplicate encodings");
   }
 
 #ifdef AERONET_ENABLE_ZSTD

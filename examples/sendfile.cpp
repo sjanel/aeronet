@@ -10,6 +10,8 @@
 
 #include "aeronet/file.hpp"
 
+using namespace aeronet;
+
 int main(int argc, char** argv) {
   uint16_t port = 0;
   if (argc > 1) {
@@ -29,24 +31,22 @@ int main(int argc, char** argv) {
     path = tmp.string();
   }
 
-  aeronet::SignalHandler::Enable();
+  SignalHandler::Enable();
 
-  aeronet::Router router;
+  Router router;
 
   // Fixed response (HttpResponse::file) on /static
-  router.setPath(aeronet::http::Method::GET, "/static", [path = path](const aeronet::HttpRequest& /*req*/) {
-    return aeronet::HttpResponse(aeronet::http::StatusCodeOK).file(aeronet::File(path));
-  });
+  router.setPath(http::Method::GET, "/static",
+                 [path = path](const HttpRequest& /*req*/) { return HttpResponse().file(File(path)); });
 
   // Streaming response using HttpResponseWriter::file on /stream
-  router.setPath(aeronet::http::Method::GET, "/stream",
-                 [path = path](const aeronet::HttpRequest& /*req*/, aeronet::HttpResponseWriter& writer) {
-                   writer.status(aeronet::http::StatusCodeOK);
-                   writer.file(aeronet::File(path), "text/plain");
-                   writer.end();
-                 });
+  router.setPath(http::Method::GET, "/stream", [path = path](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.file(File(path), "text/plain");
+    writer.end();
+  });
 
-  aeronet::SingleHttpServer srv(aeronet::HttpServerConfig{}.withPort(port), std::move(router));
+  SingleHttpServer srv(HttpServerConfig{}.withPort(port), std::move(router));
 
   std::cout << "Serving on port " << srv.port() << " - GET /static or /stream to fetch file: " << path << "\n";
   srv.run();

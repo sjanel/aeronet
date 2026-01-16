@@ -29,7 +29,7 @@ int main(int argc, char** argv) {
   router.setPath(http::Method::GET, "/async", [](HttpRequest&) -> RequestTask<HttpResponse> {
     // Simulate an async suspension point
     co_await Yield{};
-    co_return HttpResponse(200).body("Hello from async world!\n");
+    co_return HttpResponse("Hello from async world!\n");
   });
 
   // 2. Async handler reading the body asynchronously
@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
     // Asynchronously wait for the full body
     std::string_view body = co_await req.bodyAwaitable();
 
-    co_return HttpResponse(200).body(body).header("X-Echo-Type", "Async");
+    co_return HttpResponse(body.size(), 200).header("X-Echo-Type", "Async").body(body);
   });
 
   // 3. Async handler with path parameters
@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
     msg += id;
     msg += "\n";
 
-    co_return HttpResponse(200).body(msg);
+    co_return HttpResponse(msg);
   });
 
   SingleHttpServer server(HttpServerConfig{}.withPort(port), std::move(router));
