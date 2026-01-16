@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -202,7 +203,7 @@ TEST_F(WebSocketTest, UpgradeSuccessful) {
   test::sendAll(conn.fd(), upgradeReq);
 
   // Read response
-  std::string response = test::recvWithTimeout(conn.fd(), 1000ms, 129UL);
+  std::string response = test::recvWithTimeout(conn.fd(), 1000ms, 129UL);  // NOLINT(misc-include-cleaner)
 
   // Verify 101 response
   EXPECT_TRUE(response.contains("HTTP/1.1 101")) << "Response: " << response;
@@ -229,7 +230,7 @@ TEST_F(WebSocketTest, UpgradeWithInvalidKey) {
   std::string upgradeReq = BuildUpgradeRequest("/ws", "shortkey");
   test::sendAll(conn.fd(), upgradeReq);
 
-  std::string response = test::recvWithTimeout(conn.fd(), 500ms);
+  std::string response = test::recvWithTimeout(conn.fd(), 500ms);  // NOLINT(misc-include-cleaner)
 
   // Should get 400 Bad Request
   EXPECT_TRUE(response.contains("HTTP/1.1 400")) << "Response: " << response;
@@ -295,7 +296,7 @@ TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
   test::sendAll(conn.fd(), std::string_view(reinterpret_cast<const char*>(textFrame.data()), textFrame.size()));
 
   // Wait for echo response
-  std::this_thread::sleep_for(50ms);
+  std::this_thread::sleep_for(50ms);  // NOLINT(misc-include-cleaner)
 
   // Read response frame
   std::string response = test::recvWithTimeout(conn.fd(), 1000ms, 19UL);

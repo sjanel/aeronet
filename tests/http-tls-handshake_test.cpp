@@ -87,7 +87,7 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
       } else {
         capturedAlpn.clear();
       }
-      return HttpResponse(200, "OK").body("NS");
+      return HttpResponse("NS");
     });
     test::TlsClient::Options opts;
     opts.alpn = {"foo"};  // no overlap
@@ -644,7 +644,7 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
 
   SingleHttpServer original(cfg);
   original.router().setDefault([](const HttpRequest& req) {
-    return HttpResponse(http::StatusCodeOK, "OK")
+    return HttpResponse(http::StatusCodeOK)
         .body(std::string("MOVEALPN:") + (req.alpnProtocol().empty() ? "-" : std::string(req.alpnProtocol())));
   });
 

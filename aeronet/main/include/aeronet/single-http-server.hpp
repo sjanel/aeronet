@@ -496,7 +496,7 @@ class SingleHttpServer {
   void resumeAsyncHandler(ConnectionMapIt cnxIt);
   void handleAsyncBodyProgress(ConnectionMapIt cnxIt);
   void onAsyncHandlerCompleted(ConnectionMapIt cnxIt);
-  bool tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt);
+  void tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt);
 
   [[nodiscard]] bool isInMultiHttpServer() const noexcept { return _lifecycleTracker.use_count() != 0; }
 

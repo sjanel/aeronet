@@ -106,10 +106,10 @@ TEST(OpenTelemetryEndToEnd, EmitsTracesAndMetrics) {
 
   // Collect requests until we have both trace and metrics exports or timeout
   std::vector<test::CapturedOtlpRequest> captured;
-  const auto deadline = std::chrono::steady_clock::now() + 3s;
+  const auto deadline = std::chrono::steady_clock::now() + 3s;  // NOLINT(misc-include-cleaner)
   while (captured.size() < 2 && std::chrono::steady_clock::now() < deadline) {
     try {
-      captured.emplace_back(collector.waitForRequest(500ms));
+      captured.emplace_back(collector.waitForRequest(500ms));  // NOLINT(misc-include-cleaner)
     } catch (const std::exception&) {
       log::error("timed out waiting for a single request; loop and check overall deadline");
     }

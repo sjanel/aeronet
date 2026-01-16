@@ -21,7 +21,9 @@
 #include <utility>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
@@ -467,7 +469,6 @@ TEST(ConnectionStateAsyncStateTest, AsyncHandlerStateClearResetsState) {
   st.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::WaitingForBody;
   st.active = true;
   st.needsBody = true;
-  st.responsePending = true;
   st.isChunked = true;
   st.expectContinue = true;
   st.consumedBytes = 42;
@@ -483,16 +484,13 @@ TEST(ConnectionStateAsyncStateTest, AsyncHandlerStateClearResetsState) {
   EXPECT_EQ(st.awaitReason, ConnectionState::AsyncHandlerState::AwaitReason::None);
   EXPECT_FALSE(st.active);
   EXPECT_FALSE(st.needsBody);
-  EXPECT_FALSE(st.responsePending);
   EXPECT_FALSE(st.isChunked);
   EXPECT_FALSE(st.expectContinue);
   EXPECT_EQ(st.consumedBytes, 0U);
   EXPECT_EQ(st.corsPolicy, nullptr);
   EXPECT_EQ(st.responseMiddleware, nullptr);
   EXPECT_EQ(st.responseMiddlewareCount, 0U);
-  // pendingResponse should be default constructed; accept status 0 or OK depending on implementation
-  auto prStatus = st.pendingResponse.status();
-  EXPECT_TRUE(prStatus == static_cast<http::StatusCode>(0) || prStatus == http::StatusCodeOK);
+  EXPECT_FALSE(st.pendingResponse.has_value());
 }
 
 TEST(ConnectionStateAsyncStateTest, ClearDestroysNonNullHandle) {

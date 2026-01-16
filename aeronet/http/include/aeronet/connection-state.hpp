@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string_view>
 
 #include "aeronet/file-payload.hpp"
@@ -194,14 +195,13 @@ struct ConnectionState {
     AwaitReason awaitReason{AwaitReason::None};
     bool active{false};
     bool needsBody{false};
-    bool responsePending{false};
     bool isChunked{false};
     bool expectContinue{false};
     std::size_t consumedBytes{0};
     const CorsPolicy* corsPolicy{nullptr};
     const void* responseMiddleware{nullptr};
     std::size_t responseMiddlewareCount{0};
-    HttpResponse pendingResponse;
+    std::optional<HttpResponse> pendingResponse;
   } asyncState;
 };
 

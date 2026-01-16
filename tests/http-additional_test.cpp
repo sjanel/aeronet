@@ -760,7 +760,7 @@ TEST(SingleHttpServer, KeepAliveTimeoutNotTiedToPollInterval) {
   test::ClientConnection cnx(ts.port());
 
   // The server should proactively close the idle keep-alive connection quickly.
-  EXPECT_TRUE(test::WaitForPeerClose(cnx.fd(), 500ms));
+  EXPECT_TRUE(test::WaitForPeerClose(cnx.fd(), 500ms));  // NOLINT(misc-include-cleaner)
 
   ts.postConfigUpdate([oldPollInterval](HttpServerConfig& cfg) { cfg.withPollInterval(oldPollInterval); });
 }
