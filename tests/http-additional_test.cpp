@@ -130,7 +130,7 @@ int FindServerSideFdForClientOrThrow(int clientFd, std::chrono::milliseconds tim
     }
 
     ::closedir(dir);
-    std::this_thread::sleep_for(1ms);
+    std::this_thread::sleep_for(1ms);  // NOLINT(misc-include-cleaner)
   }
 
   // One last pass to provide diagnostics in the failure message.
@@ -241,12 +241,12 @@ TEST(Http10, KeepAliveOptInStillWorks) {
   ASSERT_GE(fd, 0);
   std::string req1 = "GET /k1 HTTP/1.0\r\nHost: h\r\nConnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req1);
-  std::string first = test::recvWithTimeout(fd, 300ms);
+  std::string first = test::recvWithTimeout(fd, 300ms);  // NOLINT(misc-include-cleaner)
   ASSERT_TRUE(first.contains("HTTP/1.0 200"));
   ASSERT_TRUE(first.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
   std::string req2 = "GET /k2 HTTP/1.0\r\nHost: h\r\nConnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req2);
-  std::string second = test::recvWithTimeout(fd, 300ms);
+  std::string second = test::recvWithTimeout(fd, 300ms);  // NOLINT(misc-include-cleaner)
   ASSERT_TRUE(second.contains("HTTP/1.0 200"));
 }
 
@@ -668,7 +668,7 @@ TEST(SingleHttpServer, ImmutableConfigChangeNbThreadsIgnored) {
   auto origThreadCount = ts.server.config().nbThreads;
   ts.postConfigUpdate([origThreadCount](HttpServerConfig& cfg) { cfg.nbThreads = origThreadCount + 1; });
   // Give the server time to process the config update
-  std::this_thread::sleep_for(10ms);
+  std::this_thread::sleep_for(10ms);  // NOLINT(misc-include-cleaner)
   ASSERT_EQ(origThreadCount, ts.server.config().nbThreads);
 }
 
@@ -720,17 +720,17 @@ TEST(SingleHttpServer, RequestHandlerNonStdException) {
 
 // Test body read timeout is set when configured and body not ready
 TEST(SingleHttpServer, BodyReadTimeoutSetWhenNotReady) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withBodyReadTimeout(1s); });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withBodyReadTimeout(1s); });  // NOLINT(misc-include-cleaner)
   ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
   // Send headers indicating body but don't send body yet
   std::string req = "POST /test HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n";
   test::sendAll(fd, req);
-  std::this_thread::sleep_for(50ms);
+  std::this_thread::sleep_for(50ms);  // NOLINT(misc-include-cleaner)
   // Now send body
   test::sendAll(fd, "1234567890");
-  std::string resp = test::recvWithTimeout(fd, 1000ms, 187);
+  std::string resp = test::recvWithTimeout(fd, 1000ms, 187);  // NOLINT(misc-include-cleaner)
   ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
 }
 
@@ -753,7 +753,7 @@ TEST(SingleHttpServer, KeepAliveTimeoutNotTiedToPollInterval) {
 
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.withKeepAliveMode(true);
-    cfg.withKeepAliveTimeout(5ms);
+    cfg.withKeepAliveTimeout(5ms);  // NOLINT(misc-include-cleaner)
     cfg.withPollInterval(std::chrono::milliseconds{100});
   });
 

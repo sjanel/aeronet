@@ -22,7 +22,7 @@ int main(int argc, char** argv) {
     // Create server with router
     Router router;
     router.setDefault(
-        [](const HttpRequest&) { return HttpResponse(200).body("Hello from SingleHttpServer with AsyncHandle!\n"); });
+        [](const HttpRequest&) { return HttpResponse("Hello from SingleHttpServer with AsyncHandle!\n"); });
 
     SingleHttpServer server(HttpServerConfig{}.withPort(port), std::move(router));
 

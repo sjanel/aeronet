@@ -29,6 +29,15 @@ TEST(CompressionConfigTest, InvalidPreferredFormatsThrows) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
+#ifdef AERONET_ENABLE_ZLIB
+TEST(CompressionConfigTest, DuplicatesInPreferredFormatsThrows) {
+  CompressionConfig config;
+  config.preferredFormats.push_back(Encoding::gzip);
+  config.preferredFormats.push_back(Encoding::gzip);
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+#endif
+
 TEST(CompressionConfigTest, ZlibOK) {
   CompressionConfig config;
   config.zlib.level = 5;

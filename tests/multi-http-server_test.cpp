@@ -25,6 +25,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
 #include "aeronet/telemetry-config.hpp"
