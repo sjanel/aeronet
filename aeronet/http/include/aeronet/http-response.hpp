@@ -579,6 +579,35 @@ class HttpResponse {
     return std::move(this->body(std::move(body), size, contentType));
   }
 
+  // Sets the body of this HttpResponse to point to a static buffer.
+  // No copy is performed, the lifetime of pointed storage must be constant.
+  HttpResponse& bodyStatic(std::string_view staticBody, std::string_view contentType = http::ContentTypeTextPlain) & {
+    setBodyHeaders(contentType, staticBody.size());
+    setBodyInternal(std::string_view{});
+    setCapturedPayload(staticBody);
+    return *this;
+  }
+
+  // Sets the body of this HttpResponse to point to a static buffer.
+  // No copy is performed, the lifetime of pointed storage must be constant.
+  HttpResponse&& bodyStatic(std::string_view staticBody, std::string_view contentType = http::ContentTypeTextPlain) && {
+    return std::move(this->bodyStatic(staticBody, contentType));
+  }
+
+  // Same as string_view-based static body, but accepts a span of bytes, and defaults content type to
+  // 'application/octet-stream' if not specified.
+  HttpResponse& bodyStatic(std::span<const std::byte> staticBody,
+                           std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
+    return this->bodyStatic(std::string_view{reinterpret_cast<const char*>(staticBody.data()), staticBody.size()},
+                            contentType);
+  }
+
+  // Rvalue overload for span-based static body.
+  HttpResponse&& bodyStatic(std::span<const std::byte> staticBody,
+                            std::string_view contentType = http::ContentTypeApplicationOctetStream) && {
+    return std::move(this->bodyStatic(staticBody, contentType));
+  }
+
   // Appends data to the body (internal or captured) from a `std::string_view`.
   // Not compatible with captured file bodies, it will throw std::logic_error if the current body is a file.
   // - If `body` is empty this call appends nothing and does NOT clear any existing body.

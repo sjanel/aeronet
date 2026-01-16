@@ -714,3 +714,12 @@ TEST(ConnectionStateSendfileTest, TlsPreadErrorTriggersImmediateCloseAndClearsAc
   EXPECT_FALSE(state.fileSend.active);
   EXPECT_TRUE(state.isImmediateCloseRequested());
 }
+
+TEST(ConnectionStateTest, AttachFilePayloadMustReturnFalseIfNoFile) {
+  ConnectionState state;
+
+  state.outBuffer = HttpResponseData{"response data"};
+
+  // With file attached, attachFilePayload should return false for non-empty output buffer
+  EXPECT_FALSE(state.attachFilePayload(FilePayload{File{}, 2, 4}));
+}

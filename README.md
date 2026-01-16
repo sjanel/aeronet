@@ -494,6 +494,7 @@ The router expects callback functions returning a `HttpResponse`. You can build 
 | `headerAddLine()`      | O(bodyLen)           | Shift tail once; no scan               |
 | `body()` (inline)  | O(delta) + realloc   | Exponential growth strategy            |
 | `body()` (capture) | O(1)                 | Zero copy client buffer capture        |
+| `bodyStatic()` (capture) | O(1)                 | Zero copy client buffer capture        |
 | `bodyAppend()` (inline) | O(delta) + realloc   | Exponential growth strategy, zero-copy support            |
 | `bodyInlineAppend()` | O(delta) + realloc   | Exponential growth strategy            |
 | `bodyInlineSet()` | O(1) + realloc   | Exact growth strategy            |

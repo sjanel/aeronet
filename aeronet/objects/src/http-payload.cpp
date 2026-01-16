@@ -25,8 +25,9 @@ std::size_t HttpPayload::size() const noexcept {
   return std::visit(
       [](const auto& val) -> std::size_t {
         using T = std::decay_t<decltype(val)>;
-        if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
-                      std::is_same_v<T, std::vector<std::byte>> || std::is_same_v<T, RawChars>) {
+        if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::string_view> ||
+                      std::is_same_v<T, std::vector<char>> || std::is_same_v<T, std::vector<std::byte>> ||
+                      std::is_same_v<T, RawChars>) {
           return val.size();
         } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
           return val.second;
@@ -63,8 +64,9 @@ std::string_view HttpPayload::view() const noexcept {
   return std::visit(
       [](auto const& val) -> std::string_view {
         using T = std::decay_t<decltype(val)>;
-        if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, RawChars>) {
-          return std::string_view(val);
+        if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::string_view> ||
+                      std::is_same_v<T, RawChars>) {
+          return val;
         } else if constexpr (std::is_same_v<T, std::vector<char>>) {
           return std::string_view(val.data(), val.size());
         } else if constexpr (std::is_same_v<T, std::vector<std::byte>>) {
@@ -102,6 +104,14 @@ void HttpPayload::append(std::string_view data) {
           rawChars.unchecked_append(data);
 
           _data = std::move(rawChars);
+        } else if constexpr (std::is_same_v<T, std::string_view>) {
+          // switch to RawChars to simplify appending
+          RawChars rawChars(val.size() + data.size());
+
+          rawChars.unchecked_append(val);
+          rawChars.unchecked_append(data);
+
+          _data = std::move(rawChars);
         }
       },
       _data);
@@ -132,6 +142,15 @@ void HttpPayload::append(const HttpPayload& other) {
           rawChars.unchecked_append(otherView);
 
           _data = std::move(rawChars);
+        } else if constexpr (std::is_same_v<T, std::string_view>) {
+          // switch to RawChars to simplify appending
+          const auto otherView = other.view();
+          RawChars rawChars(val.size() + otherView.size());
+
+          rawChars.unchecked_append(val);
+          rawChars.unchecked_append(otherView);
+
+          _data = std::move(rawChars);
         }
       },
       _data);
@@ -155,6 +174,13 @@ void HttpPayload::ensureAvailableCapacity(std::size_t capa) {
           RawChars buf(val.second + capa);
           buf.unchecked_append(beg, val.second);
           _data = std::move(buf);
+        } else if constexpr (std::is_same_v<T, std::string_view>) {
+          // switch to RawChars to simplify appending
+          RawChars rawChars(val.size() + capa);
+
+          rawChars.unchecked_append(val);
+
+          _data = std::move(rawChars);
         }
       },
       _data);
@@ -189,6 +215,13 @@ void HttpPayload::ensureAvailableCapacityExponential(std::size_t capa) {
           RawChars buf(val.second + capa);
           buf.unchecked_append(beg, val.second);
           _data = std::move(buf);
+        } else if constexpr (std::is_same_v<T, std::string_view>) {
+          // switch to RawChars to simplify appending
+          RawChars rawChars(val.size() + capa);
+
+          rawChars.unchecked_append(val);
+
+          _data = std::move(rawChars);
         }
       },
       _data);
@@ -228,6 +261,13 @@ void HttpPayload::insert(std::size_t pos, std::string_view data) {
           buf.unchecked_append(data);
           buf.unchecked_append(beg + pos, val.second - pos);
           _data = std::move(buf);
+        } else if constexpr (std::is_same_v<T, std::string_view>) {
+          // switch to RawChars to simplify appending
+          RawChars buf(val.size() + data.size());
+          buf.unchecked_append(val.data(), pos);  // NOLINT(bugprone-suspicious-stringview-data-usage)
+          buf.unchecked_append(data);
+          buf.unchecked_append(val.data() + pos, val.size() - pos);
+          _data = std::move(buf);
         }
       },
       _data);
@@ -238,17 +278,13 @@ void HttpPayload::addSize(std::size_t sz) {
   std::visit(
       [sz](auto& val) -> void {
         using T = std::decay_t<decltype(val)>;
-        if constexpr (std::is_same_v<T, std::monostate>) {
-          throw std::logic_error("Cannot call addSize on a monostate");
-        } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
-                             std::is_same_v<T, std::vector<std::byte>>) {
+        if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
+                      std::is_same_v<T, std::vector<std::byte>>) {
           val.resize(val.size() + sz);
         } else if constexpr (std::is_same_v<T, RawChars>) {
           val.addSize(sz);
-        } else if constexpr (std::is_same_v<T, CharBuffer>) {
-          throw std::logic_error("Cannot call addSize on a CharBuffer");
-        } else if constexpr (std::is_same_v<T, BytesBuffer>) {
-          throw std::logic_error("Cannot call addSize on a BytesBuffer");
+        } else {
+          throw std::logic_error("Cannot call addSize on this HttpPayload representation");
         }
       },
       _data);
