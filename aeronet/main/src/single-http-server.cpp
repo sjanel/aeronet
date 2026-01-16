@@ -402,7 +402,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         state.protocol = ProtocolType::Http2;
 
         // Queue the upgrade response
-        state.outBuffer.append(HttpResponseData(upgrade::BuildHttp2UpgradeResponse(upgradeValidation)));
+        state.outBuffer.append(upgrade::BuildHttp2UpgradeResponse(upgradeValidation));
         flushOutbound(cnxIt);
 
         log::debug("HTTP/2 connection established via h2c upgrade on fd {}", cnxIt->first.fd());
@@ -456,7 +456,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         state.protocol = ProtocolType::WebSocket;
 
         // Queue the upgrade response
-        state.outBuffer.append(HttpResponseData(upgrade::BuildWebSocketUpgradeResponse(upgradeValidation)));
+        state.outBuffer.append(upgrade::BuildWebSocketUpgradeResponse(upgradeValidation));
         flushOutbound(cnxIt);
 
         ++state.requestsServed;
