@@ -97,10 +97,7 @@ struct ConnectionState {
                                            const TLSConfig& cfg);
 #endif
   // Reset the connection state usable for a new connection without freeing allocated buffers.
-  void clear();
-
-  // Attempt to reduce memory usage by shrinking internal buffers to fit their current content.
-  void shrink_to_fit();
+  void reset();
 
   // Returns true if we should flush file now
   bool attachFilePayload(FilePayload filePayload);

@@ -72,7 +72,7 @@ class HttpRequestTest : public ::testing::Test {
 
   void rehash(std::size_t capacity) { req._headers.rehash(capacity); }
 
-  void shrink_to_fit() { req.shrink_to_fit(); }
+  void shrinkAndMaybeClear() { req.shrinkAndMaybeClear(); }
 
   // Helpers that exercise private internals via friendship with HttpRequest.
   void setBodyAccessAggregated() { req._bodyAccessMode = HttpRequest::BodyAccessMode::Aggregated; }
@@ -532,21 +532,17 @@ TEST_F(HttpRequestTest, ShrinkToFit) {
                       "X-Spaces:fgh \t  \r\n"
                       "Cookie: cookie4\r\n");
 
-  rehash(100);
+  rehash(1000);
 
   const auto originalLoadfactor = req.headers().load_factor();
+  ASSERT_LT(originalLoadfactor, 0.25F);
 
   auto st = reqSet(std::move(raw));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  shrink_to_fit();
+  shrinkAndMaybeClear();
 
-  checkHeaders({{"X-Test", "Value"},
-                {"Cookie", "cookie1;cookie2;cookie3;cookie4"},
-                {"X-Spaces", "abc,de,fgh"},
-                {http::ContentLength, "0"}});
-
-  EXPECT_LT(originalLoadfactor, req.headers().load_factor());
+  EXPECT_TRUE(req.headers().empty());
 }
 
 TEST_F(HttpRequestTest, MergeConsecutiveHeadersWithSpaces) {

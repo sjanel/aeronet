@@ -33,11 +33,6 @@ RawBytesBase<T, ViewType, SizeType>::RawBytesBase(uint64_t capacity)
 }
 
 template <class T, class ViewType, class SizeType>
-RawBytesBase<T, ViewType, SizeType>::RawBytesBase(ViewType data)
-    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-    : RawBytesBase(data.data(), SafeCast<size_type>(data.size())) {}
-
-template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const_pointer data, uint64_t sz) : RawBytesBase(sz) {
   if (sz != 0) {
     std::memcpy(_buf, data, _capacity);
@@ -106,21 +101,9 @@ void RawBytesBase<T, ViewType, SizeType>::unchecked_append(const_pointer data, u
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::unchecked_append(ViewType data) {
-  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-  unchecked_append(data.data(), SafeCast<size_type>(data.size()));
-}
-
-template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::append(const_pointer data, uint64_t sz) {
   ensureAvailableCapacityExponential(sz);
   unchecked_append(data, sz);
-}
-
-template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::append(ViewType data) {
-  ensureAvailableCapacityExponential(data.size());
-  unchecked_append(data.data(), data.size());
 }
 
 template <class T, class ViewType, class SizeType>
@@ -136,12 +119,6 @@ void RawBytesBase<T, ViewType, SizeType>::assign(const_pointer data, uint64_t si
     std::memcpy(_buf, data, size);
   }
   _size = static_cast<size_type>(size);
-}
-
-template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::assign(ViewType data) {
-  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-  assign(data.data(), SafeCast<size_type>(data.size()));
 }
 
 template <class T, class ViewType, class SizeType>
@@ -164,17 +141,12 @@ void RawBytesBase<T, ViewType, SizeType>::reserve(uint64_t newCapacity) {
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() noexcept {
-  if (_size < _capacity) {
-    if (_size == 0) {
-      std::free(_buf);
-      _buf = nullptr;
-      _capacity = 0;
-    } else {
-      pointer newBuf = static_cast<pointer>(std::realloc(_buf, _size));
-      if (newBuf != nullptr) [[likely]] {
-        _buf = newBuf;
-        _capacity = _size;
-      }
+  static constexpr std::size_t kMinCapacity = 1024;
+  if (kMinCapacity < _capacity && 4UL * _size < _capacity) {
+    pointer newBuf = static_cast<pointer>(std::realloc(_buf, _capacity / 2));
+    if (newBuf != nullptr) [[likely]] {
+      _buf = newBuf;
+      _capacity /= 2;
     }
   }
 }

@@ -146,8 +146,10 @@ void SingleHttpServer::sweepIdleConnections() {
     ++cnxIt;
   }
 
+  _telemetry.gauge("aeronet.connections.cached_count", static_cast<int64_t>(_connections.nbCachedConnections()));
+
   // Clean up cached connections that have been idle for too long
-  _connections.sweepCachedConnections(std::chrono::hours{1});
+  _connections.sweepCachedConnections(now, std::chrono::hours{1});
 }
 
 void SingleHttpServer::acceptNewConnections() {
