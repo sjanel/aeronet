@@ -51,9 +51,7 @@ TEST(HttpTlsBasic, LargePayload) {
     cfg.withMaxOutboundBufferBytes(largeBody.size() + 512);  // +512 for headers
     cfg.withKeepAliveTimeout(std::chrono::hours(1));
   });
-  ts.setDefault([&largeBody]([[maybe_unused]] const HttpRequest& req) {
-    return HttpResponse(http::StatusCodeOK, "OK").body(largeBody);
-  });
+  ts.setDefault([&largeBody]([[maybe_unused]] const HttpRequest& req) { return HttpResponse(largeBody); });
   test::TlsClient client(ts.port());
   auto raw = client.get("/hello", {http::Header{"X-Test", "tls"}});
   ASSERT_FALSE(raw.empty());
@@ -131,7 +129,7 @@ std::string tlsGetLarge(auto port) {
 TEST(HttpTlsNegative, LargeResponseFragmentation) {
   test::TlsTestServer ts;  // basic TLS
   auto port = ts.port();
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(200, "OK").body(std::string(300000, 'A')); });
+  ts.setDefault([](const HttpRequest&) { return HttpResponse(200).body(std::string(300000, 'A')); });
   std::string resp = tlsGetLarge(port);
   // helper freed temporary key/cert
   ASSERT_FALSE(resp.empty());
@@ -455,7 +453,7 @@ TEST(HttpTlsKtlsMode, EnabledModeTracksStats) {
 // Disabled: should not attempt kTLS (no counters incremented).
 TEST(HttpTlsKtlsMode, DisabledModeDoesNotAttemptKtls) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled); });
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK"); });
+  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
@@ -472,7 +470,7 @@ TEST(HttpTlsKtlsMode, DisabledModeDoesNotAttemptKtls) {
 // Opportunistic — expect either enabled or fallback, but never forced shutdowns.
 TEST(HttpTlsKtlsMode, OpportunisticModeEnabledOrFallbackNoForcedClose) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Opportunistic); });
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK"); });
+  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
@@ -490,7 +488,7 @@ TEST(HttpTlsKtlsMode, OpportunisticModeEnabledOrFallbackNoForcedClose) {
 // Enabled: similar to Opportunistic for warnings on fallback — ensure no forced shutdowns.
 TEST(HttpTlsKtlsMode, EnabledModeEnabledOrFallbackNoForcedClose) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled); });
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK"); });
+  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
@@ -508,7 +506,7 @@ TEST(HttpTlsKtlsMode, EnabledModeEnabledOrFallbackNoForcedClose) {
 // Forced: treat failure as fatal — expect either enabled OR forced shutdown recorded.
 TEST(HttpTlsKtlsMode, ForcedModeEnabledOrForcedShutdown) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Required); });
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK"); });
+  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
@@ -575,13 +573,13 @@ TEST(HttpTlsKtlsMode, DisabledModeFileServing) {
 #ifndef BIO_CTRL_SET_KTLS_SEND
 TEST(HttpTlsKtlsUnsupported, AutoOrEnabledFallBackWithoutForcedClose) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled); });
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK"); });
+  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
   auto raw = client.get("/unsupported", {});
   ASSERT_FALSE(raw.empty());
-  ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
 }
 #endif
 #endif

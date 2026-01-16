@@ -56,12 +56,12 @@ void HttpResponseWriter::status(http::StatusCode code) {
   _fixedResponse.status(code);
 }
 
-void HttpResponseWriter::status(http::StatusCode code, std::string_view reason) {
+void HttpResponseWriter::reason(std::string_view reason) {
   if (_state != State::Opened) {
-    log::warn("Streaming: cannot set status after headers sent");
+    log::warn("Streaming: cannot set reason after headers sent");
     return;
   }
-  _fixedResponse.status(code, reason);
+  _fixedResponse.reason(reason);
 }
 
 void HttpResponseWriter::headerAddLine(std::string_view name, std::string_view value) {

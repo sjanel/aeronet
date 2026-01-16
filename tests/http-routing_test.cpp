@@ -102,7 +102,7 @@ TEST(HttpRouting, AsyncHandlerDispatch) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/async-route", [](HttpRequest& req) -> RequestTask<HttpResponse> {
     std::string payload("async:");
     payload.append(req.path());
-    co_return HttpResponse(http::StatusCodeOK, http::ReasonOK).body(std::move(payload));
+    co_return HttpResponse(http::StatusCodeOK).body(std::move(payload));
   });
 
   const std::string response = test::simpleGet(ts.port(), "/async-route");
@@ -111,7 +111,7 @@ TEST(HttpRouting, AsyncHandlerDispatch) {
 }
 
 TEST(HttpRouting, GlobalFallbackWithPathHandlers) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(200, "OK"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(200); });
   // Adding path handler after global handler is now allowed (Phase 2 mixing model)
   EXPECT_NO_THROW(ts.router().setPath(http::Method::GET, "/x", [](const HttpRequest&) { return HttpResponse(200); }));
 }
@@ -127,14 +127,14 @@ TEST(HttpRouting, PathParametersInjectedIntoRequest) {
     if (const auto itPost = params.find("postId"); itPost != params.end()) {
       seenPost.assign(itPost->second);
     }
-    return HttpResponse(200, "OK").body("ok");
+    return HttpResponse(200).reason("ok");
   });
 
   test::RequestOptions reqOpts;
   reqOpts.method = "GET";
   reqOpts.target = "/users/42/posts/abcd";
   auto resp = test::requestOrThrow(ts.server.port(), reqOpts);
-  EXPECT_TRUE(resp.contains("200 OK"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200 ok"));
   EXPECT_EQ(seenUser, "42");
   EXPECT_EQ(seenPost, "abcd");
 }
@@ -281,9 +281,7 @@ TEST(HttpMiddleware, GlobalRequestShortCircuit) {
 
   ts.router().addRequestMiddleware([](HttpRequest& req) {
     if (req.path() == "/mw-short") {
-      HttpResponse resp(http::StatusCodeServiceUnavailable, "Service Unavailable");
-      resp.body("short-circuited");
-      return MiddlewareResult::ShortCircuit(std::move(resp));
+      return MiddlewareResult::ShortCircuit(HttpResponse(http::StatusCodeServiceUnavailable, "short-circuited"));
     }
     auto cont = MiddlewareResult::Continue();
     EXPECT_TRUE(cont.shouldContinue());
@@ -291,14 +289,15 @@ TEST(HttpMiddleware, GlobalRequestShortCircuit) {
   });
 
   const std::string response = test::simpleGet(ts.port(), "/mw-short");
-  EXPECT_TRUE(response.contains("HTTP/1.1 503")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 503")) << response;
   EXPECT_TRUE(response.contains("short-circuited")) << response;
   EXPECT_TRUE(response.contains("X-Global-Middleware: applied")) << response;
   EXPECT_FALSE(handlerCalled.load(std::memory_order_relaxed));
 
   const std::string response2 = test::simpleGet(ts.port(), "/other-path");
-  EXPECT_TRUE(response2.contains("HTTP/1.1 200")) << response2;
+  EXPECT_TRUE(response2.starts_with("HTTP/1.1 200")) << response2;
   EXPECT_TRUE(response2.contains("handler")) << response2;
+  EXPECT_TRUE(response2.contains("X-Global-Middleware: applied")) << response2;
   EXPECT_TRUE(handlerCalled.load(std::memory_order_relaxed));
 }
 
@@ -379,7 +378,8 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
           std::scoped_lock lock(seqMutex);
           sequence.emplace_back("handler");
         }
-        writer.status(http::StatusCodeOK, http::ReasonOK);
+        writer.status(http::StatusCodeOK);
+        writer.reason("OK");
         writer.header("X-Handler", "emitted");
         writer.contentType("text/plain");
         EXPECT_TRUE(writer.writeBody("chunk-1"));
@@ -396,7 +396,8 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
   entry.after([&](const HttpRequest&, HttpResponse& resp) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("route-post");
-    resp.status(http::StatusCodeAccepted, "Accepted by middleware");
+    resp.status(http::StatusCodeAccepted);
+    resp.reason("Accepted by middleware");
     resp.header("X-Route-Streaming", "post");
   });
 
@@ -555,7 +556,8 @@ TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
 
   auto entry =
       router.setPath(http::Method::GET, "/mw-stream-metrics", [](const HttpRequest&, HttpResponseWriter& writer) {
-        writer.status(http::StatusCodeOK, http::ReasonOK);
+        writer.status(http::StatusCodeOK);
+        writer.reason("OK");
         writer.header("X", "1");
         EXPECT_TRUE(writer.writeBody("chunk"));
         writer.end();
@@ -854,7 +856,7 @@ TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete_ReadBodyAsync) {
 TEST(RouterUpdateProxy, ClearRemovesAllHandlers) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   router.setPath(http::Method::GET, "/will-be-cleared",
-                 [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "should not see this"); });
+                 [](const HttpRequest&) { return HttpResponse("should not see this"); });
 
   router.clear();
 
@@ -887,11 +889,11 @@ TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndStreamingHandler) {
 TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndAsyncHandler) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   router.setDefault([](HttpRequest& req) -> RequestTask<HttpResponse> {
-    co_return HttpResponse(http::StatusCodeOK, "async-default-" + std::string(http::MethodToStr(req.method())));
+    co_return HttpResponse().reason("async-default-" + std::string(http::MethodToStr(req.method())));
   });
   router.setPath(http::Method::GET | http::Method::PUT, "/async-multi",
                  [](HttpRequest& req) -> RequestTask<HttpResponse> {
-                   co_return HttpResponse(http::StatusCodeOK, "async-" + std::string(http::MethodToStr(req.method())));
+                   co_return HttpResponse().reason("async-" + std::string(http::MethodToStr(req.method())));
                  });
 
   const std::string getResp = test::simpleGet(ts.port(), "/async-multi");

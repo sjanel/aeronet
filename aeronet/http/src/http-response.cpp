@@ -58,10 +58,6 @@ constexpr std::size_t kHttpResponseInitialSize =
 static_assert(kHttpResponseInitialSize <= HttpResponse::kHttpResponseMinInitialCapacity,
               "Initial size should be less than or equal to min initial capacity");
 
-constexpr std::size_t HttpResponseInitialSize(std::size_t reasonLen) {
-  return kHttpResponseInitialSize + (reasonLen == 0 ? 0UL : std::min(reasonLen, kMaxReasonLength) + 1UL);
-}
-
 constexpr std::string_view AdjustReasonLen(std::string_view reason) {
   if (reason.size() > kMaxReasonLength) [[unlikely]] {
     log::warn("Provided reason is too long ({} bytes), truncating it to {} bytes", reason.length(), kMaxReasonLength);
@@ -70,49 +66,59 @@ constexpr std::string_view AdjustReasonLen(std::string_view reason) {
   return reason;
 }
 
-}  // namespace
+constexpr auto kInitialBodyStart = kHttpResponseInitialSize;
 
-HttpResponse::HttpResponse(http::StatusCode code, std::string_view reason)
-    : HttpResponse(kHttpResponseMinInitialCapacity, code, reason) {}
-
-HttpResponse::HttpResponse(std::size_t expectedUserCapacity, http::StatusCode code)
-    : _data(kHttpResponseInitialSize + expectedUserCapacity) {
-  _data[http::HTTP10Sv.size()] = ' ';
-  static constexpr auto bodyStart = kHttpResponseInitialSize;
-  _data[kReasonBeg] = '\n';
-  setHeadersStartPos(static_cast<std::uint16_t>(kStatusLineMinLenWithoutCRLF));
-  setBodyStartPos(bodyStart);
-  status(code);
-  std::memcpy(_data.data() + bodyStart - http::DoubleCRLF.size(), http::DoubleCRLF.data(), http::DoubleCRLF.size());
-  _data.setSize(bodyStart);
+constexpr void InitData(char* data) {
+  data[http::HTTP10Sv.size()] = ' ';
+  data[HttpResponse::kReasonBeg] = '\n';
 #ifndef NDEBUG
   // In debug, this allows for easier inspection of the response data.
-  std::memcpy(_data.data(), http::HTTP_1_1.str().data(), http::HTTP_1_1.str().size());
-  WriteCRLFDateHeader(_data.data() + headersStartPos(), SysClock::now());
+  std::memcpy(data, http::HTTP_1_1.str().data(), http::HTTP_1_1.str().size());
+  WriteCRLFDateHeader(data + kStatusLineMinLenWithoutCRLF, SysClock::now());
 #endif
 }
 
-HttpResponse::HttpResponse(std::size_t expectedUserCapacity, http::StatusCode code, std::string_view reason)
-    : _data(HttpResponseInitialSize(reason.size()) + expectedUserCapacity) {
-  _data[http::HTTP10Sv.size()] = ' ';
-  const auto bodyStart = HttpResponseInitialSize(reason.size());
-  setHeadersStartPos(static_cast<std::uint16_t>(bodyStart - http::DoubleCRLF.size() - kDateHeaderLenWithCRLF));
-  setBodyStartPos(bodyStart);
-  status(code);
-  if (reason.empty()) {
-    _data[kReasonBeg] = '\n';
-  } else {
-    reason = AdjustReasonLen(reason);
-    _data[kReasonBeg - 1UL] = ' ';
-    std::memcpy(_data.data() + kReasonBeg, reason.data(), reason.size());
+constexpr std::size_t NeededBodyHeadersSize(std::size_t bodySize, std::size_t contentTypeSize) {
+  if (bodySize == 0) {
+    return 0;
   }
-  std::memcpy(_data.data() + bodyStart - http::DoubleCRLF.size(), http::DoubleCRLF.data(), http::DoubleCRLF.size());
-  _data.setSize(bodyStart);
-#ifndef NDEBUG
-  // In debug, this allows for easier inspection of the response data.
-  std::memcpy(_data.data(), http::HTTP_1_1.str().data(), http::HTTP_1_1.str().size());
-  WriteCRLFDateHeader(_data.data() + headersStartPos(), SysClock::now());
-#endif
+  return HttpResponse::HeaderSize(http::ContentType.size(), contentTypeSize) +
+         HttpResponse::HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(bodySize)));
+}
+
+}  // namespace
+
+HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::string_view contentType)
+    : _data(kHttpResponseInitialSize + NeededBodyHeadersSize(body.size(), contentType.size()) + body.size()) {
+  InitData(_data.data());
+  status(code);
+  setHeadersStartPos(static_cast<std::uint16_t>(kStatusLineMinLenWithoutCRLF));
+  if (body.empty()) {
+    setBodyStartPos(kInitialBodyStart);
+    std::memcpy(_data.data() + kInitialBodyStart - http::DoubleCRLF.size(), http::DoubleCRLF.data(),
+                http::DoubleCRLF.size());
+    _data.setSize(kInitialBodyStart);
+  } else {
+    char* insertPtr = WriteCRLFHeader(_data.data() + kStatusLineMinLenWithoutCRLF + kDateHeaderLenWithCRLF,
+                                      http::ContentType, contentType);
+    insertPtr = WriteCRLFHeader(insertPtr, http::ContentLength, body.size());
+    std::memcpy(insertPtr, http::DoubleCRLF.data(), http::DoubleCRLF.size());
+    const auto bodyStartPos = static_cast<std::uint64_t>(insertPtr + http::DoubleCRLF.size() - _data.data());
+    setBodyStartPos(bodyStartPos);
+    std::memcpy(insertPtr + http::DoubleCRLF.size(), body.data(), body.size());
+    _data.setSize(bodyStartPos + body.size());
+  }
+}
+
+HttpResponse::HttpResponse(std::size_t expectedUserCapacity, http::StatusCode code)
+    : _data(kHttpResponseInitialSize + expectedUserCapacity) {
+  InitData(_data.data());
+  status(code);
+  setHeadersStartPos(static_cast<std::uint16_t>(kStatusLineMinLenWithoutCRLF));
+  setBodyStartPos(kInitialBodyStart);
+  std::memcpy(_data.data() + kInitialBodyStart - http::DoubleCRLF.size(), http::DoubleCRLF.data(),
+              http::DoubleCRLF.size());
+  _data.setSize(kInitialBodyStart);
 }
 
 HttpResponse::HttpResponse(std::string_view body, std::string_view contentType)
@@ -228,7 +234,6 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
     throw std::invalid_argument("Content-Type value cannot be empty for non-empty body");
   }
 
-  const auto newBodyLenCharVec = IntegralToCharVector(newBodySize);
   const auto oldBodyLen = bodyLength();
   if (newBodySize == 0) {
     if (oldBodyLen != 0) {
@@ -240,6 +245,7 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
       setBodyStartPos(_data.size());
     }
   } else {
+    const auto newBodyLenCharVec = IntegralToCharVector(newBodySize);
     const auto newContentTypeHeaderSize = HeaderSize(http::ContentType.size(), contentTypeValue.size());
     const auto newContentLengthHeaderSize = HeaderSize(http::ContentLength.size(), newBodyLenCharVec.size());
     const auto neededNewSize = newContentTypeHeaderSize + newContentLengthHeaderSize + newBodySize;
@@ -265,21 +271,13 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
 
 void HttpResponse::setBodyInternal(std::string_view newBody) {
   const int64_t diff = static_cast<int64_t>(newBody.size()) - static_cast<int64_t>(internalBodyAndTrailersLen());
-  if (diff > 0) {
-    int64_t newBodyInternalPos = -1;
-    if (newBody.data() > _data.data() && newBody.data() <= _data.data() + _data.size()) {
-      // the memory pointed by newBody is internal to HttpResponse. We need to save the position before realloc
-      newBodyInternalPos = newBody.data() - _data.data();
-    }
-    _data.ensureAvailableCapacityExponential(static_cast<std::size_t>(diff));
-    if (newBodyInternalPos != -1) {
-      // restore the original data
-      newBody = std::string_view(_data.data() + newBodyInternalPos, newBody.size());
-    }
-    _data.addSize(static_cast<std::size_t>(diff));
-  } else {
-    _data.setSize(_data.size() - static_cast<std::size_t>(-diff));
-  }
+  // Capacity should already have been ensured in setBodyHeaders
+  assert(_data.size() + static_cast<std::size_t>(diff) <= _data.capacity());
+
+  // should not point to internal memory
+  assert(newBody.empty() || newBody.data() <= _data.data() || newBody.data() > _data.data() + _data.size());
+
+  _data.addSize(static_cast<std::size_t>(diff));
   if (!newBody.empty()) {
     // Because calling memcpy with a null pointer is undefined behavior even if size is 0
     std::memcpy(_data.data() + bodyStartPos(), newBody.data(), newBody.size());
