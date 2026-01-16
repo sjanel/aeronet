@@ -36,7 +36,7 @@ TEST_F(RouterTest, RegisterAndMatchNormalHandler) {
   bool called = false;
   router.setPath(http::Method::GET, "/hello", [&called](const HttpRequest &) {
     called = true;
-    return HttpResponse(http::StatusCodeOK, "OK");
+    return HttpResponse(http::StatusCodeOK);
   });
 
   auto res = router.match(http::Method::GET, "/hello");

@@ -132,7 +132,7 @@ TEST_F(HttpResponseTest, TooLongReasonShouldBeTruncated) {
   resp.reason(longReason);
   EXPECT_LT(resp.reason().size(), longReason.size());
 
-  resp = HttpResponse(http::StatusCodeOK, longReason);
+  resp = HttpResponse(http::StatusCodeOK).reason(longReason);
   EXPECT_LT(resp.reason().size(), longReason.size());
 }
 
@@ -170,7 +170,8 @@ TEST_F(HttpResponseTest, BadStatusCode) {
 }
 
 TEST_F(HttpResponseTest, HeadersRange) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.headerAddLine("Header-1", "Value1");
   resp.headerAddLine("Header-2", "Value2");
   auto headers = resp.headers();
@@ -647,7 +648,8 @@ TEST_F(HttpResponseTest, SimpleBodyWithoutGlobalHeaders) {
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.headerAddLine(http::ContentType, "text/plain").headerAddLine("X-A", "B").body("Hello");
   auto full = concatenated(std::move(resp));
   ASSERT_GE(full.size(), 16U);
@@ -664,7 +666,8 @@ TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithoutHeaders) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(200);
+  resp.reason("OK");
   EXPECT_EQ(resp.reason(), "OK");
   EXPECT_TRUE(resp.hasReason());
   resp.status(404).reason("Not Found");
@@ -679,9 +682,9 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithoutHeaders) {
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
-  HttpResponse resp(404, "Not Found");
-  EXPECT_EQ(resp.reason(), http::NotFound);
-  resp = HttpResponse{}.status(200, "OK");
+  HttpResponse resp(404, http::NotFound);
+  EXPECT_EQ(resp.bodyInMemory(), http::NotFound);
+  resp = HttpResponse{}.status(200).reason("OK");
   EXPECT_EQ(resp.reason(), "OK");
   auto full = concatenated(std::move(resp));
 
@@ -692,9 +695,11 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithHeaders) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(200);
+  resp.reason("OK");
   resp.headerAddLine("X-Header", 127);
-  resp.status(404, "Not Found");
+  resp.status(404);
+  resp.reason("Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
@@ -706,7 +711,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithHeaders) {
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
-  auto resp = HttpResponse(404, "Not Found").headerAddLine("X-Header-1", "Value1");
+  auto resp = HttpResponse(404).reason("Not Found").headerAddLine("X-Header-1", "Value1");
   resp.headerAddLine("X-Header-2", "Value2");
   resp.status(200).reason("OK");
   EXPECT_EQ(resp.reason(), "OK");
@@ -722,7 +727,8 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyAddReasonWithHeaders) {
   auto resp = HttpResponse(200).headerAddLine("X-Header", 127);
-  resp.status(404, "Not Found");
+  resp.status(404);
+  resp.reason("Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
@@ -734,7 +740,8 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyAddReasonWithHeaders) {
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyRemoveReasonWithHeaders) {
-  HttpResponse resp(404, "Not Found");
+  HttpResponse resp(404);
+  resp.reason("Not Found");
   resp.headerAddLine("X-Header-1", "Value1");
   resp.headerAddLine("X-Header-2", "Value2");
   resp.status(200).reason("");
@@ -751,7 +758,8 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyRemoveReasonWithHeaders) {
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithBody) {
-  HttpResponse resp(200, "OK");
+  HttpResponse resp(200);
+  resp.reason("OK");
   resp.body("Hello", "MySpecialContentType");
   resp.status(404).reason("Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
@@ -766,7 +774,8 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithBody) {
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
-  HttpResponse resp(http::StatusCodeNotFound, "Not Found");
+  HttpResponse resp(http::StatusCodeNotFound);
+  resp.reason("Not Found");
   resp.body("Hello");
   resp.status(http::StatusCodeOK).reason("OK");
   EXPECT_EQ(resp.reason(), "OK");
@@ -781,6 +790,17 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
 }
 
 TEST_F(HttpResponseTest, AllowsDuplicates) {
+  HttpResponse resp;
+  resp.headerAddLine("X-Dup", "1").headerAddLine("X-Dup", "2");
+  auto full = concatenated(std::move(resp));
+  auto first = full.find("X-Dup: 1\r\n");
+  auto second = full.find("X-Dup: 2\r\n");
+  ASSERT_NE(first, std::string_view::npos);
+  ASSERT_NE(second, std::string_view::npos);
+  EXPECT_LT(first, second);
+}
+
+TEST_F(HttpResponseTest, AllowsDuplicatesAfterResettingBody) {
   HttpResponse resp(204, "No Content");
   resp.headerAddLine("X-Dup", "1").headerAddLine("X-Dup", "2").body("");
   auto full = concatenated(std::move(resp));
@@ -792,7 +812,8 @@ TEST_F(HttpResponseTest, AllowsDuplicates) {
 }
 
 TEST_F(HttpResponseTest, ProperTermination) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   auto full = concatenated(std::move(resp));
   ASSERT_TRUE(full.size() >= 4);
   EXPECT_EQ(full.substr(full.size() - 4), http::DoubleCRLF);
@@ -804,7 +825,8 @@ TEST_F(HttpResponseTest, SendFileEmptyShouldReturnNullptr) {
 }
 
 TEST_F(HttpResponseTest, CannotSendFileAfterTrailers) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.body("some body");
   resp.trailerAddLine("X-trailer", "value");
   constexpr std::string_view kPayload = "static file payload";
@@ -887,7 +909,8 @@ TEST_F(HttpResponseTest, SendFilePayloadOffsetLengthRvalue) {
   ASSERT_TRUE(file);
   const auto sz = file.size();
 
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.file(std::move(file), 3, sz - 6);
 
   auto prepared = finalizePrepared(std::move(resp));
@@ -929,7 +952,8 @@ TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
   ASSERT_TRUE(file);
   const std::size_t sz = file.size();
 
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.file(std::move(file));
 
   auto prepared = finalizePrepared(std::move(resp), true /*head*/);
@@ -949,7 +973,8 @@ TEST_F(HttpResponseTest, SendFileHeadMovesFileAndSuppressesLength) {
   ASSERT_TRUE(file);
   const std::size_t sz = file.size();
 
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.file(std::move(file));
 
   EXPECT_TRUE(resp.hasBodyFile());
@@ -1023,7 +1048,8 @@ TEST_F(HttpResponseTest, HeaderValueFindsLastHeader) {
 }
 
 TEST_F(HttpResponseTest, SingleTerminatingCRLF) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.headerAddLine("X-Header", "v1");
   auto full = concatenated(std::move(resp));
   ASSERT_TRUE(full.size() >= 4);
@@ -1049,33 +1075,9 @@ TEST_F(HttpResponseTest, ReplaceDifferentSizes) {
   EXPECT_TRUE(thirdFull.contains("Yo"));
 }
 
-// --- New test: body() called with a std::string_view referencing internal buffer memory
-// This exercises the safety logic in mutateBody that detects when the source view
-// points inside the existing buffer and may become invalid after a reallocation.
-// Prior to the fix, this scenario could read from stale memory if ensureAvailableCapacityExponential
-// triggered a reallocation.
-TEST_F(HttpResponseTest, BodyAssignFromInternalReasonTriggersReallocSafe) {
-  // Choose a non-empty reason so we have internal bytes to reference.
-  HttpResponse resp(http::StatusCodeOK, "INTERNAL-REASON");
-  std::string_view src = resp.reason();  // points into resp's internal buffer
-  EXPECT_EQ(src, "INTERNAL-REASON");
-  // Body currently empty -> diff = src.size() => ensureAvailableCapacityExponential likely reallocates
-  resp.body(src);       // must be safe even if reallocation occurs
-  src = resp.reason();  // reset reason after realloc
-  EXPECT_EQ(src, "INTERNAL-REASON");
-  EXPECT_EQ(resp.bodyInMemory(), src);
-  auto full = concatenated(std::move(resp));
-  resp = HttpResponse(http::StatusCodeOK, "INTERNAL-REASON");
-  src = resp.reason();
-  // Validate Content-Length header matches and body placed at tail.
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(src.size())))) << full;
-  EXPECT_TRUE(full.ends_with(src)) << full;
-}
-
-// --- New tests for header(K,V) replacement logic ---
-
 TEST_F(HttpResponseTest, HeaderNewViaSetter) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-First", "One");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
@@ -1086,7 +1088,8 @@ TEST_F(HttpResponseTest, HeaderNewViaSetter) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceLargerValue) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-Replace", "AA");
   // Replace with larger value
   resp.header("X-Replace", "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
@@ -1099,7 +1102,8 @@ TEST_F(HttpResponseTest, HeaderReplaceLargerValue) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceSmallerValue) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-Replace", "LONG-LONG-VALUE");
   // Replace with smaller
   resp.header("X-Replace", "S");
@@ -1112,7 +1116,8 @@ TEST_F(HttpResponseTest, HeaderReplaceSmallerValue) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceSameLengthValue) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-Replace", "LEN10VALUE");  // length 10
   resp.header("X-Replace", "0123456789");  // also length 10
   auto full = concatenated(std::move(resp));
@@ -1125,7 +1130,8 @@ TEST_F(HttpResponseTest, HeaderReplaceSameLengthValue) {
 
 // Ensure replacement logic does not mistake key pattern inside a value as a header start.
 TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternLarger) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-Key", "before X-Key: should-not-trigger");
   // Replace header; algorithm must not treat the embedded "X-Key: " in the value as another header start
   resp.header("X-Key", "REPLACED-VALUE");
@@ -1138,7 +1144,8 @@ TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternLarger) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-Key", "AAAA X-Key: B BBBBBB");
   resp.header("X-Key", "SMALL");
   auto full = concatenated(std::move(resp));
@@ -1152,7 +1159,8 @@ TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
 // --- New tests: header replacement while a body is present ---
 
 TEST_F(HttpResponseTest, LocationHeader) {
-  HttpResponse resp(http::StatusCodeFound, "Found");
+  HttpResponse resp(http::StatusCodeFound);
+  resp.reason("Found");
   resp.location("http://example.com/new-location");
   resp.body("Redirecting...");
   auto full = concatenated(std::move(resp));
@@ -1166,7 +1174,8 @@ TEST_F(HttpResponseTest, LocationHeader) {
 }
 
 TEST_F(HttpResponseTest, LocationHeaderRValue) {
-  auto resp = HttpResponse(http::StatusCodeFound, "Found")
+  auto resp = HttpResponse(http::StatusCodeFound)
+                  .reason("Found")
                   .location("https://another.example.com/redirect-here")
                   .body("Please wait...");
   auto full = concatenated(std::move(resp));
@@ -1180,7 +1189,8 @@ TEST_F(HttpResponseTest, LocationHeaderRValue) {
 }
 
 TEST_F(HttpResponseTest, ContentEncodingHeader) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.contentEncoding("gzip");
   resp.body("CompressedData");
   auto full = concatenated(std::move(resp));
@@ -1194,7 +1204,7 @@ TEST_F(HttpResponseTest, ContentEncodingHeader) {
 }
 
 TEST_F(HttpResponseTest, ContentEncodingHeaderRValue) {
-  auto resp = HttpResponse(http::StatusCodeOK, "OK").contentEncoding("deflate").body("DeflatedData");
+  auto resp = HttpResponse(http::StatusCodeOK).reason("OK").contentEncoding("deflate").body("DeflatedData");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentEncoding, "deflate")));
@@ -1206,7 +1216,8 @@ TEST_F(HttpResponseTest, ContentEncodingHeaderRValue) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-Val", "AA");
   resp.body("Hello");                  // body length 5
   resp.header("X-Val", "ABCDEFGHIJ");  // grow header value
@@ -1221,7 +1232,7 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
-  auto resp = HttpResponse(http::StatusCodeOK, "OK").header("X-Val", "SOME-LONG-VALUE");
+  auto resp = HttpResponse(http::StatusCodeOK).reason("OK").header("X-Val", "SOME-LONG-VALUE");
   resp.body("WorldWide");     // length 9
   resp.header("X-Val", "S");  // shrink header value
   auto full = concatenated(std::move(resp));
@@ -1248,7 +1259,8 @@ TEST_F(HttpResponseTest, AppendHeaderValueCreatesHeaderWhenMissing) {
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueHonorsCustomSeparator) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-List", "first");
   resp.headerAppendValue("X-List", "second", "; ");
   auto full = concatenated(std::move(resp));
@@ -1256,7 +1268,8 @@ TEST_F(HttpResponseTest, AppendHeaderValueHonorsCustomSeparator) {
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueEmptySeparator) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-List", "first");
   resp.headerAppendValue("X-List", "second", "");
 
@@ -1265,7 +1278,8 @@ TEST_F(HttpResponseTest, AppendHeaderValueEmptySeparator) {
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueEmptyValue) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-List", "first");
   resp.headerAppendValue("X-List", "", ", ");
 
@@ -1274,7 +1288,8 @@ TEST_F(HttpResponseTest, AppendHeaderValueEmptyValue) {
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueEmptyValueAndSeparator) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-List", "first");
   resp.headerAppendValue("X-List", "", "");
 
@@ -1283,7 +1298,8 @@ TEST_F(HttpResponseTest, AppendHeaderValueEmptyValueAndSeparator) {
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueSupportsNumericOverload) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-Numeric", "1");
   resp.headerAppendValue("X-Numeric", 42, "|");
   auto full = concatenated(std::move(resp));
@@ -1291,7 +1307,8 @@ TEST_F(HttpResponseTest, AppendHeaderValueSupportsNumericOverload) {
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueKeepsBodyIntact) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-Trace", "alpha");
   resp.body("payload");
   resp.headerAppendValue("X-Trace", "beta");
@@ -1302,7 +1319,8 @@ TEST_F(HttpResponseTest, AppendHeaderValueKeepsBodyIntact) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-Val", "LEN10VALUE");  // length 10
   resp.body("Data");                   // length 4
   resp.header("X-Val", "0123456789");  // same length replacement
@@ -1317,7 +1335,8 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
 }
 
 TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-Custom", "Value");
   resp.body("BodyContent");
   resp.trailerAddLine("X-Trailer", "TrailerValue");
@@ -1339,7 +1358,8 @@ TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
 }
 
 TEST_F(HttpResponseTest, GlobalHeadersShouldNotOverrideUserHeaders) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-Global", "UserValue");
   ConcatenatedHeaders globalHeaders;
   globalHeaders.append("X-Global: GlobalValue");
@@ -1355,7 +1375,8 @@ TEST_F(HttpResponseTest, GlobalHeadersShouldNotOverrideUserHeaders) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.header("X-Val", "LEN10VALUE");  // length 10
   resp.body("Data");                   // length 4
   resp.header("x-val", "0123456789");  // same length replacement
@@ -1370,7 +1391,8 @@ TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
 }
 
 TEST_F(HttpResponseTest, HeaderGetterAfterSet) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   // Mix of headers to exercise several lookup cases:
   // - customHeader replaces case-insensitively
   // - addCustomHeader allows duplicates (first occurrence should be returned by headerValue)
@@ -1427,7 +1449,8 @@ TEST_F(HttpResponseTest, InterleavedReasonAndHeaderMutations) {
 }
 
 TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeString) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.body("Non-empty body");
   EXPECT_EQ(resp.bodyInMemory(), "Non-empty body");
   EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
@@ -1444,7 +1467,8 @@ TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentType
 }
 
 TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeVectorBytes) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.body("Non-empty body");
   EXPECT_EQ(resp.bodyInMemory(), "Non-empty body");
   EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
@@ -1459,7 +1483,8 @@ TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentType
 }
 
 TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeUniquePtrBytes) {
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   resp.body("Non-empty body");
   EXPECT_EQ(resp.bodyInMemory(), "Non-empty body");
   EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
@@ -1474,7 +1499,8 @@ TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentType
 }
 
 TEST_F(HttpResponseTest, SetCapturedBodyEmptyFromUniquePtrShouldResetBodyAndRemoveContentType) {
-  HttpResponse resp(http::StatusCodeOK, "Longer Reason");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("Longer Reason");
   static constexpr const char text[] = "UniquePtrBody";
   auto bodyPtr = std::make_unique<std::byte[]>(sizeof(text) - 1);
   for (size_t i = 0; i < sizeof(text) - 1; ++i) {
@@ -1554,7 +1580,8 @@ TEST_F(HttpResponseTest, SetBodyAfterTrailerThrows) {
 
 TEST_F(HttpResponseTest, LargeHeaderCountStress) {
   constexpr int kCount = 600;
-  HttpResponse resp(http::StatusCodeOK, "OK");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
   for (int i = 0; i < kCount; ++i) {
     resp.headerAddLine("X-" + std::to_string(i), std::to_string(i));
   }

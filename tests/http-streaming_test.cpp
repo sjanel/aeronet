@@ -146,12 +146,13 @@ TEST(HttpStreaming, SendFileFixedLengthPlain) {
     writer.status(200);
     writer.file(File(path));
     writer.end();
-    writer.status(404, "Not Found");  // should be ignored after end
+    writer.status(404);          // should be ignored after end
+    writer.reason("Not Found");  // should be ignored after end
   });
 
   std::string resp = BlockingFetch(port, "GET", "/file");
 
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_FALSE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(kPayload.size()))));
 
@@ -413,7 +414,7 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
 }
 
 TEST(HttpServerMixed, ConflictRegistrationNormalThenStreaming) {
-  ts.router().setPath(http::Method::GET, "/c", [](const HttpRequest&) { return HttpResponse(200, "OK").body("X"); });
+  ts.router().setPath(http::Method::GET, "/c", [](const HttpRequest&) { return HttpResponse("X"); });
   EXPECT_THROW(ts.router().setPath(http::Method::GET, "/c", [](const HttpRequest&, HttpResponseWriter&) {}),
                std::logic_error);
 }
@@ -423,14 +424,13 @@ TEST(HttpServerMixed, ConflictRegistrationStreamingThenNormal) {
     writer.status(200);
     writer.end();
   });
-  EXPECT_THROW(ts.router().setPath(http::Method::GET, "/c2",
-                                   [](const HttpRequest&) { return HttpResponse(200, "OK").body("Y"); }),
+  EXPECT_THROW(ts.router().setPath(http::Method::GET, "/c2", [](const HttpRequest&) { return HttpResponse("Y"); }),
                std::logic_error);
 }
 
 TEST(HttpServerMixed, GlobalFallbackPrecedence) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = false; });
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(200, "OK").body("GLOBAL"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("GLOBAL"); });
   ts.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
     writer.header(http::ContentType, "text/plain");
@@ -444,8 +444,7 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
     writer.end();
   });
   // path-specific normal overrides global fallbacks
-  ts.router().setPath(http::Method::GET, "/n",
-                      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("PN"); });
+  ts.router().setPath(http::Method::GET, "/n", [](const HttpRequest&) { return HttpResponse("PN"); });
 
   std::string pathStreamResp = RequestMethod(port, "GET", "/s");
   EXPECT_TRUE(pathStreamResp.contains("PS"));
@@ -458,7 +457,7 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
 
 TEST(HttpServerMixed, GlobalNormalOnlyWhenNoStreaming) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = false; });
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("GN"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("GN"); });
 
   std::string result = RequestMethod(port, "GET", "/x");
   EXPECT_TRUE(result.contains("GN"));
@@ -1049,8 +1048,9 @@ TEST(HttpResponseWriterFailures, HeadRequestSuppressesBody) {
 TEST(HttpResponseWriterFailures, MultipleStatusCalls) {
   ts.router().setPath(http::Method::GET, "/multi-status", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.status(http::StatusCodeNotFound);                              // Should override
-    writer.status(http::StatusCodeInternalServerError, "Custom Reason");  // Should override again
+    writer.status(http::StatusCodeNotFound);  // Should override
+    writer.status(http::StatusCodeInternalServerError);
+    writer.reason("Custom Reason");  // Should override again
     writer.end();
   });
 

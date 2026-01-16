@@ -278,16 +278,16 @@ Short examples:
 ```cpp
 // Move a std::string into the response
 std::string big /* = generate_large_string() */;
-HttpResponse(200, "OK").body(std::move(big), "application/octet-stream");
+HttpResponse(200).body(std::move(big), "application/octet-stream");
 
 // Move a vector<char>
 std::vector<char> v /* = read_file_bytes(path) */;
-HttpResponse(200, "OK").body(std::move(v), "application/octet-stream");
+HttpResponse(200).body(std::move(v), "application/octet-stream");
 
 // Move a unique_ptr<char[]> for raw blob ownership
 std::unique_ptr<char[]> blob /* = load_blob() */;
 std::size_t blobSize /* = known size */;
-HttpResponse(200, "OK").body(std::move(blob), blobSize, "application/octet-stream");
+HttpResponse(200).body(std::move(blob), blobSize, "application/octet-stream");
 ```
 
 These patterns hand ownership to the server without duplicating the payload, enabling efficient zero-copy handoff
@@ -472,7 +472,7 @@ HttpServerConfig cfg; cfg.withCompression(c);
 
 Router router;
 router.setDefault([](const HttpRequest&) {
-  return HttpResponse(200, "OK").body(std::string(1024,'A'));
+  return HttpResponse(200).body(std::string(1024,'A'));
 });
 
 SingleHttpServer server(cfg, std::move(router));
@@ -619,7 +619,7 @@ Typical handler setup:
 HttpServerConfig serverCfg; serverCfg.withRequestDecompression(DecompressionConfig{});
 Router router;
 router.setDefault([](const HttpRequest& req){
-  return HttpResponse(200, "OK").body(std::string(req.body()));
+  return HttpResponse(200).body(std::string(req.body()));
 });
 SingleHttpServer server(std::move(serverCfg), std::move(router));
 ```
@@ -1370,7 +1370,7 @@ router.setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const HttpReque
     std::string_view userId = it->second; // points into request buffer
     // copy if you need to keep it beyond request lifetime: std::string(userId)
   }
-  return HttpResponse(200, "OK");
+  return HttpResponse(200);
 });
 ```
 
@@ -1379,7 +1379,7 @@ router.setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const HttpReque
 ```cpp
 Router router;
 router.setPath(http::Method::GET, "/files/{}/chunk/{}", [](const HttpRequest&) {
-  return HttpResponse(200, "OK");
+  return HttpResponse(200);
 });
 // In handler: req.pathParams().at("0"), req.pathParams().at("1")
 ```
@@ -1860,7 +1860,7 @@ Example:
 ```cpp
 Router router;
 router.setDefault([](const HttpRequest&, HttpResponseWriter& w){
-  w.status(200, "OK");
+  w.status(200);
   w.header("Content-Type", "text/plain");
   for (int i=0;i<5;++i) {
     if (!w.writeBody("chunk-" + std::to_string(i) + "\n")) break;
@@ -1987,13 +1987,13 @@ Example precedence illustration:
 Router router;
 router.setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("GLOBAL"); });
 router.setDefault([](const HttpRequest&, HttpResponseWriter& w){ 
-  w.status(200,"OK");
+  w.status(200);
   w.contentType("text/plain");
   w.writeBody("STREAMFALLBACK"); 
   w.end(); 
 });
 router.setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& w){ 
-  w.status(200,"OK"); 
+  w.status(200); 
   w.contentType("text/plain"); 
   w.writeBody("PS"); 
   w.end(); 

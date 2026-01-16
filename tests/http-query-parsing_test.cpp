@@ -41,9 +41,7 @@ TEST(HttpQueryParsing, SimpleQuery) {
       body.append(val);
     }
 
-    HttpResponse resp(200, "OK");
-    resp.body(body);
-    return resp;
+    return HttpResponse(body);
   });
   auto resp = test::simpleGet(ts.port(), "/p?a=1&b=2");
   EXPECT_TRUE(resp.contains("a=1&b=2"));
@@ -105,12 +103,14 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeAtEndShouldBeAccepted) {
     EXPECT_NE(it, req.queryParams().end());
     EXPECT_EQ((*it).key, "x");
     EXPECT_EQ((*it).value, "%");
-    HttpResponse resp(200, "OK");
+    HttpResponse resp(200);
+    resp.reason("OK");
     resp.body("EDGE1");
     return resp;
   });
   std::string out = test::simpleGet(ts.port(), "/e?x=%");
-  EXPECT_TRUE(out.contains("200 OK"));
+  EXPECT_TRUE(out.contains("HTTP/1.1 200 OK"));
+  EXPECT_TRUE(out.ends_with("\r\n\r\nEDGE1"));
 }
 
 TEST(HttpQueryParsingEdge, IncompleteEscapeOneHexShouldBeAccepted) {
@@ -120,13 +120,12 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeOneHexShouldBeAccepted) {
     EXPECT_EQ((*it).key, "a");
     // Invalid -> left as literal
     EXPECT_EQ((*it).value, "%A");
-    HttpResponse resp(200, "OK");
-    resp.body("EDGE2");
-    return resp;
+    return HttpResponse("EDGE2");
   });
   std::string resp = test::simpleGet(ts.port(), "/e2?a=%A");
 
-  EXPECT_TRUE(resp.contains("200 OK"));
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.ends_with("\r\n\r\nEDGE2"));
 }
 
 TEST(HttpQueryParsingEdge, MultiplePairsAndEmptyValue) {
@@ -146,12 +145,10 @@ TEST(HttpQueryParsingEdge, MultiplePairsAndEmptyValue) {
     EXPECT_EQ((*it).value, "");
     ++it;
     EXPECT_EQ(it, range.end());
-    HttpResponse resp(200, "OK");
-    resp.body("EDGE3");
-    return resp;
+    return HttpResponse("EDGE3");
   });
   std::string resp = test::simpleGet(ts.port(), "/m?k=1&empty=&novalue");
-  EXPECT_TRUE(resp.contains("EDGE3"));
+  EXPECT_TRUE(resp.ends_with("\r\n\r\nEDGE3"));
 }
 
 TEST(HttpQueryParsingEdge, PercentDecodingKeyAndValue) {
@@ -197,9 +194,7 @@ TEST(HttpQueryStructuredBindings, IterateKeyValues) {
     }
     EXPECT_EQ(count, 4);
     EXPECT_TRUE(sawA && sawB && sawEmpty && sawNoValue);
-    HttpResponse resp(200, "OK");
-    resp.body("OK");
-    return resp;
+    return HttpResponse("OK");
   });
   // Build raw HTTP request using helpers
   test::ClientConnection client(ts.port());

@@ -17,13 +17,13 @@
 - **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths and minimal copies, horizontal scaling with port reuse. In CI benchmarks `aeronet` ranks among the [fastest tested implementations](#performance-at-a-glance) across multiple realistic scenarios.
 - **Modular & opt‑in**: enable only the features you need at compile time to minimize binary size and dependencies
 - **Ergonomic**: easy API, automatic features (encoding, telemetry), RAII listener setup with sync / async server lifetime control, developer friendly with no hidden global state, no macros
-- **Configurable**: extensive dynamic configuration with reasonable defaults (principle of least surprise)
+- **Configurable**: extensive dynamic configuration with reasonable defaults (principle of least surprise), per path options and middleware helpers, run-time router / config updates
 - **Standards compliant**: HTTP/1.1, HTTP/2, WebSocket, Compression, Streaming, Trailers, TLS, CORS, Range & Conditional Requests, Static files, URL Decoding, multipart/form-data, etc.
-- **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing), dogstatsd support, perfect for micro-services
+- **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing) with built-in spans and metrics, dogstatsd support, perfect for micro-services
 
 ### Performance at a glance
 
-`aeronet` is designed to be **very fast**. In our automated [wrk](https://github.com/wg/wrk)-based benchmarks against other popular frameworks (run in CI against a fixed set of competitors such as [drogon](https://github.com/drogonframework/drogon), [pistache](https://github.com/pistacheio/pistache), a Rust Axum server, Java Undertow, Go and Python), `aeronet`:
+`aeronet` is designed to be **very fast**. In our automated [wrk](https://github.com/wg/wrk)-based benchmarks (HTTP/1.1 based) against other popular frameworks (run in CI against a fixed set of competitors such as [drogon](https://github.com/drogonframework/drogon), [pistache](https://github.com/pistacheio/pistache), a Rust Axum server, Java Undertow, Go and Python), `aeronet`:
 
 - Achieves the **highest requests/sec** in most scenarios
 - Consistently delivers **lower average latency** in those same scenarios
@@ -41,6 +41,7 @@ You can browse the latest rendered benchmark tables directly on GitHub Pages:
 ## Minimal Examples
 
 Spin up a basic HTTP server that responds on `/hello` in just a few lines. If you pass `0` as the port (or omit it), the kernel picks an ephemeral port which you can query immediately.
+**All code examples** in the `README` and the `FEATURES.md` files are guaranteed to compile as they are covered by a CI check.
 
 ### Immediate response
 
@@ -302,7 +303,7 @@ using namespace aeronet;
 
 int main() {
   Router router;
-  router.setDefault([](const HttpRequest&){ return HttpResponse(200, "OK").body("hi"); });
+  router.setDefault([](const HttpRequest&){ return HttpResponse(200).body("hi"); });
   SingleHttpServer srv(HttpServerConfig{}, std::move(router));
   // Launch in background thread and capture lifetime handle
   auto handle = srv.startDetached();
@@ -590,7 +591,7 @@ int main() {
   Router router;
   // Register application handlers as usual (optional)
   router.setPath(http::Method::GET, "/hello", [](const HttpRequest&){
-    return HttpResponse(200, "OK").body("hello\n");
+    return HttpResponse(200).body("hello\n");
   });
 
   SingleHttpServer server(std::move(cfg), std::move(router));
@@ -854,14 +855,14 @@ Example:
 ```cpp
 Router router;
 router.setPath(http::Method::GET | http::Method::PUT, "/hello", [](const HttpRequest&){
-  return HttpResponse(200, "OK").body("world");
+  return HttpResponse(200).body("world");
 });
 router.setPath(http::Method::POST, "/echo", [](const HttpRequest& req){
-  return HttpResponse(200, "OK").body(req.body());
+  return HttpResponse(200).body(req.body());
 });
 // Add another method later (merges method mask, replaces handler)
 router.setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
-  return HttpResponse(200, "OK").body("Echo via GET");
+  return HttpResponse(200).body("Echo via GET");
 });
 ```
 

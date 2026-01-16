@@ -583,20 +583,16 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         sendResponse((*routingResult.requestHandler())(request));
       } catch (const std::exception& ex) {
         log::error("Exception in path handler: {}", ex.what());
-        HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
-        resp.body(ex.what());
-        sendResponse(std::move(resp));
+        sendResponse(HttpResponse(http::StatusCodeInternalServerError, ex.what()));
       } catch (...) {
         log::error("Unknown exception in path handler");
-        HttpResponse resp(http::StatusCodeInternalServerError, http::ReasonInternalServerError);
-        resp.body("Unknown error");
-        sendResponse(std::move(resp));
+        sendResponse(HttpResponse(http::StatusCodeInternalServerError, "Unknown error"));
       }
     } else {
       HttpResponse resp(http::StatusCodeNotFound);
       if (routingResult.redirectPathIndicator != Router::RoutingResult::RedirectSlashMode::None) {
         // Emit 301 redirect to canonical form.
-        resp.status(http::StatusCodeMovedPermanently, http::MovedPermanently).body("Redirecting");
+        resp.status(http::StatusCodeMovedPermanently).body("Redirecting");
         if (routingResult.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
           _tmp.buf.assign(request.path());
           _tmp.buf.push_back('/');
@@ -739,14 +735,13 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRe
   asyncState.handle = handle;
   asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::None;
   asyncState.needsBody = !bodyReady;
-  asyncState.responsePending = false;
   asyncState.isChunked = isChunked;
   asyncState.expectContinue = expectContinue;
   asyncState.consumedBytes = bodyReady ? consumedBytes : 0;
   asyncState.corsPolicy = pCorsPolicy;
   asyncState.responseMiddleware = responseMiddleware.data();
   asyncState.responseMiddlewareCount = responseMiddleware.size();
-  asyncState.pendingResponse = HttpResponse{};
+  asyncState.pendingResponse = {};
 
   if (asyncState.needsBody) {
     state.request.pinHeadStorage(state);
@@ -813,7 +808,7 @@ void SingleHttpServer::handleAsyncBodyProgress(ConnectionMapIt cnxIt) {
     }
   }
 
-  if (async.responsePending) {
+  if (async.pendingResponse.has_value()) {
     tryFlushPendingAsyncResponse(cnxIt);
   }
 }
@@ -844,38 +839,30 @@ void SingleHttpServer::onAsyncHandlerCompleted(ConnectionMapIt cnxIt) {
   }
   typedHandle.destroy();
   async.handle = {};
+  async.pendingResponse = std::move(resp);
 
   if (async.needsBody) {
-    async.responsePending = true;
-    async.pendingResponse = std::move(resp);
     if (fromException) {
       // Body will still be drained before response is flushed; nothing else to do here.
     }
-    return;
+  } else {
+    tryFlushPendingAsyncResponse(cnxIt);
   }
-
-  auto middlewareSpan = std::span<const ResponseMiddleware>(
-      static_cast<const ResponseMiddleware*>(async.responseMiddleware), async.responseMiddlewareCount);
-  ApplyResponseMiddleware(state.request, resp, middlewareSpan, _router.globalResponseMiddleware(), _telemetry, false,
-                          _callbacks.middlewareMetrics);
-  finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), async.consumedBytes, async.corsPolicy);
-  state.asyncState.clear();
 }
 
-bool SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt) {
+void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   auto& async = state.asyncState;
-  if (!async.responsePending || async.needsBody) {
-    return false;
-  }
+
+  assert(!async.needsBody);
+  assert(async.pendingResponse.has_value());
 
   auto middlewareSpan = std::span<const ResponseMiddleware>(
       static_cast<const ResponseMiddleware*>(async.responseMiddleware), async.responseMiddlewareCount);
-  ApplyResponseMiddleware(state.request, async.pendingResponse, middlewareSpan, _router.globalResponseMiddleware(),
+  ApplyResponseMiddleware(state.request, *async.pendingResponse, middlewareSpan, _router.globalResponseMiddleware(),
                           _telemetry, false, _callbacks.middlewareMetrics);
-  finalizeAndSendResponseForHttp1(cnxIt, std::move(async.pendingResponse), async.consumedBytes, async.corsPolicy);
+  finalizeAndSendResponseForHttp1(cnxIt, std::move(*async.pendingResponse), async.consumedBytes, async.corsPolicy);
   state.asyncState.clear();
-  return true;
 }
 
 void SingleHttpServer::emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
