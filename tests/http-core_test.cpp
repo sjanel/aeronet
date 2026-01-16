@@ -124,7 +124,8 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
 
 TEST(HttpHeadersCustom, LocationHeaderAllowed) {
   ts.router().setDefault([](const HttpRequest&) {
-    HttpResponse resp(302, "Found");
+    HttpResponse resp(302);
+    resp.reason("Found");
     resp.location("/new").body("");
     return resp;
   });
@@ -207,7 +208,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersCompletedAfterDeadline) {
   static constexpr std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
   HeaderReadTimeoutScope headerTimeout(readTimeout);
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("hi"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("hi"); });
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   test::ClientConnection cnx(ts.port());
   int fd = cnx.fd();
@@ -229,7 +230,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersNeverComplete) {
   static constexpr std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
   HeaderReadTimeoutScope headerTimeout(readTimeout);
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "OK").body("hi"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("hi"); });
   test::ClientConnection cnx(ts.port());
   int fd = cnx.fd();
   ASSERT_GE(fd, 0) << "connect failed";

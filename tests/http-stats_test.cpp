@@ -16,10 +16,10 @@ TEST(HttpStats, BasicCountersIncrement) {
   HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(5);
   test::TestServer ts(cfg);
-  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse(200, "OK").body("hello"); });
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse(200).body("hello"); });
   // Single request via throwing helper
   auto resp = test::requestOrThrow(ts.port());
-  ASSERT_TRUE(resp.contains("200 OK"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ts.stop();
   auto st = ts.server.stats();
   EXPECT_GT(st.totalBytesQueued, 0U);  // headers+body accounted

@@ -31,9 +31,6 @@ class HttpResponseWriter {
   // Replaces the status code. Must be a 3 digits integer.
   void status(http::StatusCode code);
 
-  // Convenience overload: set both status code and reason phrase in one call.
-  void status(http::StatusCode code, std::string_view reason);
-
   // Sets or replace the reason phrase for this instance.
   // Inserting empty reason is allowed.
   // If the data to be inserted references internal instance memory, the behavior is undefined.

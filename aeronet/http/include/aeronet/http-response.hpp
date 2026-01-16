@@ -123,13 +123,12 @@ class Http2ProtocolHandler;
 //     after the final zero-length chunk (see `HttpResponseWriter` docs).
 // -----------------------------------------------------------------------------
 class HttpResponse {
- private:
+ public:
   // "HTTP/x.y". Should be changed if version major / minor exceed 1 digit
   static constexpr std::size_t kHttp1VersionLen = http::HTTP10Sv.size();
   static constexpr std::size_t kStatusCodeBeg = kHttp1VersionLen + 1;  // index of first status code digit
   static constexpr std::size_t kReasonBeg = kStatusCodeBeg + 3 + 1;    // index of first reason phrase character
 
- public:
   // Minimum initial capacity for HttpResponse internal buffer to avoid too-small allocations.
   // The minimal valid HTTP response that will be returned by aeronet is
   // "HTTP/1.1 200\r\nDate: Tue, 07 Jan 2025 12:34:56 GMT\r\n\r\n" (53 bytes).
@@ -154,18 +153,13 @@ class HttpResponse {
   // Constructs an HttpResponse with the given status code and a default initial capacity.
   explicit HttpResponse(http::StatusCode code) : HttpResponse(kHttpResponseMinInitialCapacity, code) {}
 
-  // Constructs an HttpResponse with the given status code and reason phrase (ignored in HTTP/2), and a default
-  // minimal initial capacity.
-  HttpResponse(http::StatusCode code, std::string_view reason);
+  // Constructs an HttpResponse with the given status code and body, that will be copied into the internal buffer.
+  HttpResponse(http::StatusCode code, std::string_view body, std::string_view contentType = http::ContentTypeTextPlain);
 
   // Constructs an HttpResponse with an additional initial capacity for the internal buffer.
   // The provided capacity will be added to the minimal required size to hold the status line and reserved headers.
   // Give an approximate sum of added reason, headers, body size and trailers to minimize reallocations.
   HttpResponse(std::size_t expectedUserCapacity, http::StatusCode code);
-
-  // Constructs an HttpResponse with an additional initial capacity for the internal buffer, a status code and a reason
-  // phrase (ignored in HTTP/2).
-  HttpResponse(std::size_t expectedUserCapacity, http::StatusCode code, std::string_view reason);
 
   // Constructs an HttpResponse with a 200 status code, no reason phrase and given body.
   // The body is copied into the internal buffer, and the content type header is set if the body is not empty.
@@ -190,7 +184,7 @@ class HttpResponse {
   // Get the current status code string view stored in this HttpResponse
   [[nodiscard]] std::string_view statusStr() const noexcept { return {_data.data() + kStatusCodeBeg, 3UL}; }
 
-  // Get the current reason stored in this HttpResponse.
+  // Get the current reason stored in this HttpResponse, or an empty string_view if no reason is set.
   [[nodiscard]] std::string_view reason() const noexcept { return {_data.data() + kReasonBeg, reasonLen()}; }
 
   // Check if a reason phrase is present.
@@ -297,19 +291,6 @@ class HttpResponse {
   // Rvalue overload of status(statusCode).
   HttpResponse&& status(http::StatusCode statusCode) && { return std::move(this->status(statusCode)); }
 
-  // Replaces the status code and the reason phrase. Must be a 3 digits integer.
-  // Throws std::invalid_argument if the status code is not in the range [100, 999].
-  HttpResponse& status(http::StatusCode statusCode, std::string_view reason) & {
-    status(statusCode);
-    return this->reason(reason);
-  }
-
-  // Rvalue overload of status(statusCode, reason).
-  HttpResponse&& status(http::StatusCode statusCode, std::string_view reason) && {
-    status(statusCode);
-    return std::move(this->reason(reason));
-  }
-
   // ---------------/
   // REASON SETTERS /
   // ---------------/
@@ -317,11 +298,11 @@ class HttpResponse {
   // Sets or replace the reason phrase for this instance.
   // Inserting empty reason is allowed - this will remove any existing reason.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
+  // Note that in modern HTTP, the reason phrase is optional and often omitted.
+  // In HTTP/2, the reason phrase is not transmitted at all.
   HttpResponse& reason(std::string_view reason) &;
 
-  // Sets or replace the reason phrase for this instance.
-  // Inserting empty reason is allowed - this will remove any existing reason.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  // Rvalue overload of reason(reason).
   HttpResponse&& reason(std::string_view reason) && { return std::move(this->reason(reason)); }
 
   // ---------------/
