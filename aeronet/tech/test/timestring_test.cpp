@@ -108,7 +108,7 @@ class StringToTimeISO8601UTCTest : public ::testing::Test {};
 // ------------------------ Valid cases ------------------------
 TEST_F(StringToTimeISO8601UTCTest, ParsesBasicISO8601UTC) {
   auto tp = StringToTimeISO8601UTC("2025-08-14T12:34:56Z");
-  auto sys_days = floor<days>(tp);
+  auto sys_days = floor<days>(tp);  // NOLINT(misc-include-cleaner)
   auto ymd = year_month_day(sys_days);
   EXPECT_EQ(int(ymd.year()), 2025);
   EXPECT_EQ(unsigned(ymd.month()), 8);

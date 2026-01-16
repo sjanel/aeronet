@@ -269,7 +269,8 @@ void ResponseCompressionState::createEncoders([[maybe_unused]] const Compression
 #endif
 }
 
-std::size_t ResponseCompressionState::encodeFull(Encoding encoding, [[maybe_unused]] std::string_view data,
+std::size_t ResponseCompressionState::encodeFull([[maybe_unused]] Encoding encoding,
+                                                 [[maybe_unused]] std::string_view data,
                                                  [[maybe_unused]] std::size_t availableCapacity,
                                                  [[maybe_unused]] char* buf) {
 #ifdef AERONET_ENABLE_BROTLI
@@ -293,7 +294,7 @@ std::size_t ResponseCompressionState::encodeFull(Encoding encoding, [[maybe_unus
   throw std::invalid_argument("No encoder for 'none' encoding");
 }
 
-std::unique_ptr<EncoderContext> ResponseCompressionState::makeContext(Encoding encoding) {
+std::unique_ptr<EncoderContext> ResponseCompressionState::makeContext([[maybe_unused]] Encoding encoding) {
 #ifdef AERONET_ENABLE_BROTLI
   if (encoding == Encoding::br) {
     return brotliEncoder.makeContext();
