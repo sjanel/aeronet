@@ -241,7 +241,7 @@ void HttpRequest::pinHeadStorage(ConnectionState& state) {
   const char* newBase = storage.data();
   const char* oldLimit = oldBase + _headSpanSize;
 
-  auto remap = [&](std::string_view view) -> std::string_view {
+  auto remap = [newBase, oldBase, oldLimit](std::string_view view) -> std::string_view {
     if (view.empty()) {
       return view;
     }
@@ -256,7 +256,7 @@ void HttpRequest::pinHeadStorage(ConnectionState& state) {
   _path = remap(_path);
   _decodedQueryParams = remap(_decodedQueryParams);
 
-  auto remapMap = [&](auto& map) {
+  auto remapMap = [&remap](auto& map) {
     for (auto& entry : map) {
       entry.first = remap(entry.first);
       entry.second = remap(entry.second);
@@ -270,10 +270,22 @@ void HttpRequest::pinHeadStorage(ConnectionState& state) {
   _headPinned = true;
 }
 
-void HttpRequest::shrink_to_fit() {
-  _headers.rehash(0);
-  _trailers.rehash(0);
-  _pathParams.rehash(0);
+void HttpRequest::shrinkAndMaybeClear() {
+  // we cannot simply rehash(0) for std::string_view maps because if the maps are not empty,
+  // rehashing would call the hash function on the string_views, which may point to
+  // deallocated memory if the connection buffer was shrunk. So we check the load factor and if it's low,
+  // we clear the map to free memory.
+  auto shrinkMap = [](auto& map) {
+    if (!map.empty()) {
+      if (map.load_factor() < 0.25F) {
+        map = {};  // clear and free memory
+      }
+    }
+  };
+
+  shrinkMap(_headers);
+  shrinkMap(_trailers);
+  shrinkMap(_pathParams);
 }
 
 void HttpRequest::end(http::StatusCode respStatusCode) {

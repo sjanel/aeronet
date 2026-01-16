@@ -128,6 +128,7 @@ inline constexpr std::string_view h100_continue = "100-continue";  // value of E
 
 // Preformatted interim response line
 inline constexpr std::string_view HTTP11_100_CONTINUE = "HTTP/1.1 100 Continue\r\n\r\n";
+inline constexpr std::string_view HTTP11_102_PROCESSING = "HTTP/1.1 102 Processing\r\n\r\n";
 
 // Reason Phrases (only those we currently emit explicitly)
 inline constexpr std::string_view ReasonSwitchingProtocols = "Switching Protocols";              // 101

@@ -280,7 +280,7 @@ class HttpRequest {
 
   void pinHeadStorage(ConnectionState& state);
 
-  void shrink_to_fit();
+  void shrinkAndMaybeClear();
 
   void end(http::StatusCode respStatusCode);
 

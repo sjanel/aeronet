@@ -1127,20 +1127,20 @@ bool SingleHttpServer::handleExpectHeader(ConnectionMapIt cnxIt, std::string_vie
               queueData(cnxIt, HttpResponseData(http::HTTP11_100_CONTINUE));
               break;
             case 102: {
-              static constexpr std::string_view k102Processing = "HTTP/1.1 102 Processing\r\n\r\n";
-              queueData(cnxIt, HttpResponseData(k102Processing));
+              queueData(cnxIt, HttpResponseData(http::HTTP11_102_PROCESSING));
               break;
             }
             default: {
               static constexpr std::string_view kHttpResponseLinePrefix = "HTTP/1.1 ";
 
-              char buf[kHttpResponseLinePrefix.size() + 3U + http::DoubleCRLF.size()];
+              RawChars buf(kHttpResponseLinePrefix.size() + 3U + http::DoubleCRLF.size());
 
-              std::memcpy(buf, kHttpResponseLinePrefix.data(), kHttpResponseLinePrefix.size());
-              std::memcpy(write3(buf + kHttpResponseLinePrefix.size(), status), http::DoubleCRLF.data(),
+              std::memcpy(buf.data(), kHttpResponseLinePrefix.data(), kHttpResponseLinePrefix.size());
+              std::memcpy(write3(buf.data() + kHttpResponseLinePrefix.size(), status), http::DoubleCRLF.data(),
                           http::DoubleCRLF.size());
+              buf.setSize(buf.capacity());
 
-              queueData(cnxIt, HttpResponseData(std::string_view(buf, sizeof(buf))));
+              queueData(cnxIt, HttpResponseData(std::move(buf)));
               break;
             }
           }
