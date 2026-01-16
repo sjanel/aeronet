@@ -4,6 +4,8 @@
 #include <string_view>
 #include <type_traits>
 
+#include "aeronet/safe-cast.hpp"
+
 namespace aeronet {
 
 /**
@@ -31,12 +33,12 @@ class RawBytesBase {
   // Constructs an empty buffer, without any allocated storage.
   RawBytesBase() noexcept = default;
 
-  // Constructs a buffer with the specified capacity.
+  // Constructs an empty buffer with the specified capacity.
   // Warning: unlike std::string or std::vector, the size is set to 0, not to capacity.
   explicit RawBytesBase(uint64_t capacity);
 
   // Constructs a buffer initialized with the specified data.
-  explicit RawBytesBase(ViewType data);
+  explicit RawBytesBase(ViewType data) : RawBytesBase(data.data(), SafeCast<size_type>(data.size())) {}
 
   // Constructs a buffer initialized with the specified data.
   RawBytesBase(const_pointer data, uint64_t sz);
@@ -53,13 +55,13 @@ class RawBytesBase {
   void unchecked_append(const_pointer data, uint64_t sz);
 
   // Appends data to the end of the buffer without checking capacity.
-  void unchecked_append(ViewType data);
+  void unchecked_append(ViewType data) { unchecked_append(data.data(), SafeCast<size_type>(data.size())); }
 
   // Appends data to the end of the buffer, reallocating if necessary.
   void append(const_pointer data, uint64_t sz);
 
   // Appends data to the end of the buffer, reallocating if necessary.
-  void append(ViewType data);
+  void append(ViewType data) { append(data.data(), SafeCast<size_type>(data.size())); }
 
   // Appends a single byte to the end of the buffer without checking capacity.
   void unchecked_push_back(value_type byte) noexcept { _buf[_size++] = byte; }
@@ -71,7 +73,7 @@ class RawBytesBase {
   void assign(const_pointer data, uint64_t size);
 
   // Assigns new data to the buffer, replacing its current contents.
-  void assign(ViewType data);
+  void assign(ViewType data) { assign(data.data(), SafeCast<size_type>(data.size())); }
 
   // Clears the buffer, setting its size to zero.
   void clear() noexcept { _size = 0; }
@@ -97,8 +99,8 @@ class RawBytesBase {
   // Reserves capacity for at least newCapacity bytes.
   void reserve(uint64_t newCapacity);
 
-  // Shrinks the capacity of the buffer to fit its current size.
-  // Frees memory completely if the buffer is empty.
+  // Heuristically reduces unused capacity.
+  // The current implementation algorithm is to halve the capacity if the size is less than a quarter of the capacity.
   void shrink_to_fit() noexcept;
 
   // Ensures that the buffer has at least the specified available capacity.

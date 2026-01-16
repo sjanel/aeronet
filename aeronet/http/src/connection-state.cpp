@@ -198,7 +198,16 @@ bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(int fd, const TlsHands
 }
 #endif
 
-void ConnectionState::clear() {
+void ConnectionState::reset() {
+  // In order to avoid retaining large buffers in cached ConnectionState objects,
+  // we shrink (before clear, otherwise it would free all memory) and clear them before reuse.
+  tunnelOrFileBuffer.shrink_to_fit();
+  inBuffer.shrink_to_fit();
+  bodyAndTrailersBuffer.shrink_to_fit();
+  headBuffer.shrink_to_fit();
+  request.shrinkAndMaybeClear();
+  outBuffer.shrink_to_fit();
+
   tunnelOrFileBuffer.clear();
   inBuffer.clear();
   bodyAndTrailersBuffer.clear();
@@ -232,15 +241,6 @@ void ConnectionState::clear() {
   protocol = ProtocolType::Http11;
 
   asyncState.clear();
-}
-
-void ConnectionState::shrink_to_fit() {
-  tunnelOrFileBuffer.shrink_to_fit();
-  inBuffer.shrink_to_fit();
-  bodyAndTrailersBuffer.shrink_to_fit();
-  headBuffer.shrink_to_fit();
-  request.shrink_to_fit();
-  outBuffer.shrink_to_fit();
 }
 
 bool ConnectionState::attachFilePayload(FilePayload filePayload) {

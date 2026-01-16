@@ -42,11 +42,8 @@ class HttpResponseData {
 
   [[nodiscard]] const File &file() const noexcept { return _capturedBody.getIfFilePayload()->file; }
   [[nodiscard]] std::size_t fileLength() const noexcept { return _capturedBody.getIfFilePayload()->length; }
-  [[nodiscard]] std::size_t fileOffset() const noexcept { return _capturedBody.getIfFilePayload()->offset; }
 
   auto *getIfFilePayload() noexcept { return _capturedBody.getIfFilePayload(); }
-
-  [[nodiscard]] const auto *getIfFilePayload() const noexcept { return _capturedBody.getIfFilePayload(); }
 
   void addOffset(std::size_t sz) noexcept { _offset += sz; }
 
