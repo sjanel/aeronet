@@ -359,13 +359,13 @@ TEST(ConnectionStateBufferTest, ShrinkToFitReducesNonEmptyBuffers) {
   ConnectionState state;
 
   // Grow buffers to have extra capacity
-  state.inBuffer.reserve(1024);
+  state.inBuffer.reserve(2048);
   state.inBuffer.append(std::string_view("hello world"));
 
-  state.bodyAndTrailersBuffer.reserve(2048);
+  state.bodyAndTrailersBuffer.reserve(1025);
   state.bodyAndTrailersBuffer.append(std::string_view("chunked body"));
 
-  state.headBuffer.reserve(512);
+  state.headBuffer.reserve(4096);
   state.headBuffer.append(std::string_view("GET / HTTP/1.1\r\nHost: a\r\n\r\n"));
 
   // Sanity: capacities should be larger than sizes prior to shrink
@@ -373,12 +373,16 @@ TEST(ConnectionStateBufferTest, ShrinkToFitReducesNonEmptyBuffers) {
   EXPECT_GT(state.bodyAndTrailersBuffer.capacity(), state.bodyAndTrailersBuffer.size());
   EXPECT_GT(state.headBuffer.capacity(), state.headBuffer.size());
 
-  state.shrink_to_fit();
+  const auto oldCapacityInBuffer = state.inBuffer.capacity();
+  const auto oldCapacityBodyBuffer = state.bodyAndTrailersBuffer.capacity();
+  const auto oldCapacityHeadBuffer = state.headBuffer.capacity();
 
-  // After shrink, capacity should be reduced to current size
-  EXPECT_EQ(state.inBuffer.capacity(), state.inBuffer.size());
-  EXPECT_EQ(state.bodyAndTrailersBuffer.capacity(), state.bodyAndTrailersBuffer.size());
-  EXPECT_EQ(state.headBuffer.capacity(), state.headBuffer.size());
+  state.reset();
+
+  // After shrink and clear, capacities should be bounded by sizes
+  EXPECT_LT(state.inBuffer.capacity(), oldCapacityInBuffer);
+  EXPECT_LT(state.bodyAndTrailersBuffer.capacity(), oldCapacityBodyBuffer);
+  EXPECT_LT(state.headBuffer.capacity(), oldCapacityHeadBuffer);
 }
 
 TEST(ConnectionStateBufferTest, ShrinkToFitOnEmptyBuffersYieldsZeroCapacity) {
@@ -390,7 +394,7 @@ TEST(ConnectionStateBufferTest, ShrinkToFitOnEmptyBuffersYieldsZeroCapacity) {
   state.bodyAndTrailersBuffer.clear();
   state.headBuffer.clear();
 
-  state.shrink_to_fit();
+  state.reset();
 
   // Empty buffers should have capacity 0 after shrink_to_fit
   EXPECT_EQ(state.tunnelOrFileBuffer.capacity(), 0U);
@@ -527,7 +531,7 @@ TEST(ConnectionStateAsyncStateTest, ClearDestroysNonNullHandle) {
   EXPECT_TRUE(static_cast<bool>(state.asyncState.handle));
 
   // clear() should destroy the handle and set it to null
-  state.clear();
+  state.reset();
   EXPECT_EQ(state.asyncState.handle, std::coroutine_handle<>());
 }
 

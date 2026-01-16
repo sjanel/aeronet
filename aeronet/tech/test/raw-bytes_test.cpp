@@ -9,6 +9,7 @@
 #include <limits>
 #include <list>
 #include <new>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -464,41 +465,38 @@ TYPED_TEST(RawBaseTest, MallocFails) {
 }
 
 TYPED_TEST(RawBaseTest, ShrinkToFit) {
+  static constexpr std::size_t kCapacities[]{0, 1UL << 4, 1UL << 8, 1UL << 12, 1UL << 16};
+
   using RawT = TypeParam;
   using Type = typename RawT::value_type;
 
-  RawT buf;
+  std::string data;
 
-  EXPECT_EQ(buf.size(), 0U);
-  EXPECT_EQ(buf.capacity(), 0U);
-  buf.shrink_to_fit();
-  EXPECT_EQ(buf.size(), 0U);
-  EXPECT_EQ(buf.capacity(), 0U);
+  for (std::size_t capacity : kCapacities) {
+    for (std::size_t dataSz = 0; dataSz <= capacity; dataSz = (2UL * dataSz) + 1) {
+      RawT buf(capacity);
+      data.assign(dataSz, 'A');
+      std::ranges::iota(data, 'A');
 
-  buf.assign(reinterpret_cast<const Type *>("abcdefghij"), 10);
+      buf.assign(reinterpret_cast<const Type *>(data.data()), dataSz);
+      EXPECT_EQ(std::memcmp(buf.data(), data.data(), dataSz), 0);
+      EXPECT_EQ(buf.size(), dataSz);
 
-  buf.ensureAvailableCapacityExponential(100);
+      auto oldCap = buf.capacity();
+      EXPECT_EQ(oldCap, capacity);
 
-  auto oldCap = buf.capacity();
-  EXPECT_GT(oldCap, 10U);
+      buf.shrink_to_fit();
 
-  buf.shrink_to_fit();
-  EXPECT_EQ(buf.size(), 10U);
-  EXPECT_EQ(buf.capacity(), 10U);
-  EXPECT_EQ(std::memcmp(buf.data(), "abcdefghij", 10), 0);
+      EXPECT_EQ(buf.size(), dataSz);
+      EXPECT_EQ(std::memcmp(buf.data(), data.data(), dataSz), 0);
 
-  // Shrink when size == capacity is no-op
-  buf.shrink_to_fit();
-  EXPECT_EQ(buf.size(), 10U);
-  EXPECT_EQ(buf.capacity(), 10U);
-  EXPECT_EQ(std::memcmp(buf.data(), "abcdefghij", 10), 0);
-
-  buf.clear();
-  EXPECT_EQ(buf.size(), 0U);
-  EXPECT_GT(buf.capacity(), 0);
-  buf.shrink_to_fit();
-  EXPECT_EQ(buf.size(), 0U);
-  EXPECT_EQ(buf.capacity(), 0U);
+      if (1024UL < oldCap && dataSz * 4 < oldCap) {
+        EXPECT_EQ(buf.capacity(), oldCap / 2);
+      } else {
+        EXPECT_EQ(buf.capacity(), oldCap);
+      }
+    }
+  }
 }
 
 TYPED_TEST(RawBaseTest, EraseFrontSetSizeAndAddSize) {

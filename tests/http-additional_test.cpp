@@ -502,6 +502,33 @@ TEST(HttpExpectation, MultipleTokensWithUnknownShouldReturn417) {
   ASSERT_TRUE(resp.contains("417")) << resp;
 }
 
+TEST(HttpExpectation, HandlerCanEmit100Continue) {
+  // Register handler that emits 100 Continue for token "100-continue-custom"
+  ts.server.setExpectationHandler([](const HttpRequest& /*req*/, std::string_view token) {
+    SingleHttpServer::ExpectationResult res;
+    if (token == "100-continue-custom") {
+      res.kind = SingleHttpServer::ExpectationResultKind::Interim;
+      res.interimStatus = 100;
+      return res;
+    }
+    res.kind = SingleHttpServer::ExpectationResultKind::Continue;
+    return res;
+  });
+
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+  ASSERT_GE(fd, 0);
+  std::string req =
+      "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue-custom\r\nConnection: "
+      "close\r\n\r\nHELLO";
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
+  ASSERT_TRUE(resp.contains("100 Continue")) << resp;
+  ASSERT_TRUE(resp.contains("200")) << resp;
+}
+
 TEST(HttpExpectation, HandlerCanEmit102Interim) {
   // Register handler that emits 102 Processing for token "102-processing"
   ts.server.setExpectationHandler([](const HttpRequest& /*req*/, std::string_view token) {
@@ -528,13 +555,54 @@ TEST(HttpExpectation, HandlerCanEmit102Interim) {
   ASSERT_TRUE(resp.contains("200")) << resp;
 }
 
-TEST(HttpExpectation, HandlerInvalidInterimStatusReturns500) {
-  // Handler emits an invalid interim status (not 1xx)
+TEST(HttpExpectation, HandlerCanEmitArbitraryInterimStatus) {
+  // Register handler that emits 103 Early Hints (default case handling)
   ts.server.setExpectationHandler([](const HttpRequest& /*req*/, std::string_view token) {
     SingleHttpServer::ExpectationResult res;
-    if (token == "bad-interim") {
+    if (token == "103-early-hints") {
+      res.kind = SingleHttpServer::ExpectationResultKind::Interim;
+      res.interimStatus = 103;
+      return res;
+    }
+    res.kind = SingleHttpServer::ExpectationResultKind::Continue;
+    return res;
+  });
+
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+  ASSERT_GE(fd, 0);
+  std::string req =
+      "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 103-early-hints\r\nConnection: close\r\n\r\nHELLO";
+  test::sendAll(fd, req);
+  std::string resp = test::recvUntilClosed(fd);
+  ASSERT_TRUE(resp.contains("HTTP/1.1 103")) << resp;
+  ASSERT_TRUE(resp.contains("200")) << resp;
+}
+
+TEST(HttpExpectation, ExpectationHandlerErrors) {
+  // Handler throws an exception
+  ts.server.setExpectationHandler([](const HttpRequest&, std::string_view token) {
+    if (token == "throwsStdException") {
+      throw std::runtime_error("boom");
+    }
+    if (token == "throwsCustomException") {
+      throw 42;
+    }
+    SingleHttpServer::ExpectationResult res;
+    if (token == "bad-interim1") {
       res.kind = SingleHttpServer::ExpectationResultKind::Interim;
       res.interimStatus = 250;  // invalid: not 1xx
+      return res;
+    }
+    if (token == "bad-interim2") {
+      res.kind = SingleHttpServer::ExpectationResultKind::Interim;
+      res.interimStatus = 99;  // invalid: not 1xx
+      return res;
+    }
+    if (token == "expectation-failure") {
+      res.kind = SingleHttpServer::ExpectationResultKind::Reject;
       return res;
     }
     res.kind = SingleHttpServer::ExpectationResultKind::Continue;
@@ -543,43 +611,28 @@ TEST(HttpExpectation, HandlerInvalidInterimStatusReturns500) {
 
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("SHOULD NOT SEE"); });
 
-  test::ClientConnection clientConnection(ts.port());
-  int fd = clientConnection.fd();
-  ASSERT_GE(fd, 0);
-  std::string req =
-      "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: bad-interim\r\nConnection: close\r\n\r\nHELLO";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  // Server should return 500 due to invalid interim status and not invoke handler body
-  ASSERT_TRUE(resp.contains("500")) << resp;
-  ASSERT_TRUE(resp.contains("Invalid interim status")) << resp;
-  ASSERT_FALSE(resp.contains("SHOULD NOT SEE")) << resp;
-}
+  for (std::string_view token :
+       {"throwsStdException", "throwsCustomException", "bad-interim1", "bad-interim2", "expectation-failure"}) {
+    auto req = std::format(
+        "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: {}\r\nConnection: close\r\n\r\nHELLO", token);
 
-TEST(HttpExpectation, HandlerThrowsReturns500AndSkipsBody) {
-  // Handler throws an exception
-  ts.server.setExpectationHandler([](const HttpRequest&, std::string_view token) {
-    if (token == "throws") {
-      throw std::runtime_error("boom");
+    test::ClientConnection clientConnection(ts.port());
+    int fd = clientConnection.fd();
+    test::sendAll(fd, req);
+    std::string resp = test::recvUntilClosed(fd);
+    // Server should return 500 due to exception in handler and not invoke handler body
+    if (token.starts_with("throws")) {
+      EXPECT_TRUE(resp.starts_with("HTTP/1.1 500")) << resp;
+      EXPECT_TRUE(resp.contains("Internal Server Error")) << resp;
+    } else if (token.starts_with("bad")) {
+      EXPECT_TRUE(resp.starts_with("HTTP/1.1 500")) << resp;
+      EXPECT_TRUE(resp.contains("Server Error")) << resp;
+    } else {
+      EXPECT_EQ(token, "expectation-failure");
+      EXPECT_TRUE(resp.starts_with("HTTP/1.1 417")) << resp;
     }
-    SingleHttpServer::ExpectationResult res;
-    res.kind = SingleHttpServer::ExpectationResultKind::Continue;
-    return res;
-  });
-
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("SHOULD NOT SEE"); });
-
-  test::ClientConnection clientConnection(ts.port());
-  int fd = clientConnection.fd();
-  ASSERT_GE(fd, 0);
-  std::string req =
-      "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: throws\r\nConnection: close\r\n\r\nHELLO";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  // Server should return 500 due to exception in handler and not invoke handler body
-  ASSERT_TRUE(resp.contains("500")) << resp;
-  ASSERT_TRUE(resp.contains("Internal Server Error")) << resp;
-  ASSERT_FALSE(resp.contains("SHOULD NOT SEE")) << resp;
+    EXPECT_FALSE(resp.contains("SHOULD NOT SEE")) << resp;
+  }
 }
 
 TEST(HttpExpectation, HandlerFinalResponseSkipsBody) {
