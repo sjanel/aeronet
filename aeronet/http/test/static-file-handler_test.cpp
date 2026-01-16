@@ -72,7 +72,7 @@ class StaticFileHandlerTest : public ::testing::Test {
     cs.inBuffer.assign(raw);
   }
 
-  auto setHead() { return req.initTrySetHead(cs, tmpBuffer, 4096UL, true, nullptr); }
+  auto setHead() { return req.initTrySetHead(cs.inBuffer, tmpBuffer, 4096UL, true, nullptr); }
 
   static void writeFileWithSize(const std::filesystem::path& path, std::size_t size, char fill = 'x') {
     std::ofstream ofs(path, std::ios::binary | std::ios::trunc);

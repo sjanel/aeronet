@@ -154,7 +154,6 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, Ht
                                                        std::size_t consumedBytes, const CorsPolicy* pCorsPolicy) {
   ConnectionState& state = *cnxIt->second;
   HttpRequest& request = state.request;
-  request._ownerState = nullptr;
   if (pCorsPolicy != nullptr) {
     (void)pCorsPolicy->applyToResponse(request, resp);
   }

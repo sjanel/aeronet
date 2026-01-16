@@ -184,11 +184,14 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
       if (storedName == ":method") {
         req._method = ParseHttpMethod(storedValue);
       } else if (storedName == ":scheme") {
-        req._scheme = storedValue;
+        req._pScheme = storedValue.data();
+        req._schemeLength = SafeCast<decltype(req._schemeLength)>(storedValue.size());
       } else if (storedName == ":authority") {
-        req._authority = storedValue;
+        req._pAuthority = storedValue.data();
+        req._authorityLength = SafeCast<decltype(req._authorityLength)>(storedValue.size());
       } else if (storedName == ":path") {
-        req._path = storedValue;
+        req._pPath = storedValue.data();
+        req._pathLength = SafeCast<decltype(req._pathLength)>(storedValue.size());
       }
     } else {
       req._headers[storedName] = storedValue;
@@ -465,8 +468,8 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
       finalizeResponse(resp);
       return resp;
     }
-    log::error("HTTP/2 async handler returned invalid task for path {}", request._path);
-    return HttpResponse(http::StatusCodeInternalServerError).body("Async handler inactive");
+    log::error("HTTP/2 async handler returned invalid task for path {}", request.path());
+    return {http::StatusCodeInternalServerError, "Async handler inactive"};
   }
 
   if (routingResult.streamingHandler() != nullptr) {
@@ -477,9 +480,8 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
     // 3. Handle HTTP/2 flow control (may need to pause/resume when window exhausted)
     // 4. Emit trailers as final HEADERS frame with END_STREAM
     // 5. Integrate with the event loop for backpressure handling
-    log::warn("Streaming handlers not yet fully supported for HTTP/2, path: {}", request._path);
-    HttpResponse resp =
-        HttpResponse(http::StatusCodeNotImplemented).body("Streaming handlers not yet supported for HTTP/2");
+    log::warn("Streaming handlers not yet fully supported for HTTP/2, path: {}", request.path());
+    HttpResponse resp(http::StatusCodeNotImplemented, "Streaming handlers not yet supported for HTTP/2");
     finalizeResponse(resp);
     return resp;
   }
