@@ -87,7 +87,9 @@ class ConnectionStorage {
       statePtr->reset();
       return statePtr;
     }
-    return _connectionStatePool.allocateAndConstruct();
+    auto* pObj = _connectionStatePool.allocateAndConstruct();
+    pObj->request._ownerState = pObj;
+    return pObj;
   }
 
   ObjectPool<ConnectionState> _connectionStatePool;

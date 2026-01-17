@@ -337,14 +337,13 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
     return state.isAnyCloseRequested();
   }
   HttpRequest& request = state.request;
-  request._ownerState = &state;
   do {
     // If we don't yet have a full request line (no '\n' observed) wait for more data
     if (state.inBuffer.size() < http::kHttpReqLineMinLen) {
       break;  // need more bytes for at least the request line
     }
     const auto statusCode =
-        request.initTrySetHead(state, _tmp.buf, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders,
+        request.initTrySetHead(state.inBuffer, _tmp.buf, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders,
                                _telemetry.createSpan("http.request"));
     if (statusCode == HttpRequest::kStatusNeedMoreData) {
       break;

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string_view>
 
 #include "aeronet/headers-view-map.hpp"
@@ -17,6 +18,7 @@
 namespace aeronet {
 
 namespace internal {
+class ConnectionStorage;
 class HttpCodec;
 }  // namespace internal
 
@@ -99,7 +101,7 @@ class HttpRequest {
   //  GET /path               -> '/path'
   //  GET /path?key=val       -> '/path'
   //  GET /path%2Caaa?key=val -> '/path,aaa'
-  [[nodiscard]] std::string_view path() const noexcept { return _path; }
+  [[nodiscard]] std::string_view path() const noexcept { return {_pPath, _pathLength}; }
 
   // Get the HTTP version of the request.
   [[nodiscard]] http::Version version() const noexcept { return _version; }
@@ -139,7 +141,7 @@ class HttpRequest {
         return *this;
       }
 
-      bool operator==(const iterator& other) const { return _begKey == other._begKey; }
+      bool operator==(iterator other) const noexcept { return _begKey == other._begKey; }
 
      private:
       void advance();
@@ -148,18 +150,17 @@ class HttpRequest {
       const char* _endFullQuery;
     };
 
-    [[nodiscard]] iterator begin() const noexcept { return {_fullQuery.data(), _fullQuery.data() + _fullQuery.size()}; }
+    [[nodiscard]] iterator begin() const noexcept { return {_first, _first + _length}; }
 
-    [[nodiscard]] iterator end() const noexcept {
-      return {_fullQuery.data() + _fullQuery.size(), _fullQuery.data() + _fullQuery.size()};
-    }
+    [[nodiscard]] iterator end() const noexcept { return {_first + _length, _first + _length}; }
 
    private:
     friend class HttpRequest;
 
-    explicit QueryParamRange(std::string_view fullQuery) noexcept : _fullQuery(fullQuery) {}
+    explicit QueryParamRange(const char* first, uint32_t length) noexcept : _first(first), _length(length) {}
 
-    std::string_view _fullQuery;
+    const char* _first{nullptr};
+    uint32_t _length{0};
   };
 
   // Get an iterable range on URL decoded query params.
@@ -169,7 +170,9 @@ class HttpRequest {
   //    for (const auto &[queryParamKey, queryParamValue] : httpRequest.queryParams()) {
   //       // do something with queryParamKey and queryParamValue
   //    }
-  [[nodiscard]] QueryParamRange queryParams() const noexcept { return QueryParamRange(_decodedQueryParams); }
+  [[nodiscard]] QueryParamRange queryParams() const noexcept {
+    return QueryParamRange(_pDecodedQueryParams, _decodedQueryParamsLength);
+  }
 
   // Get the (already received) body of the request.
   // Throws if readBody() was previously called on this request.
@@ -219,13 +222,13 @@ class HttpRequest {
   [[nodiscard]] const auto& pathParams() const noexcept { return _pathParams; }
 
   // Selected ALPN protocol (if negotiated); empty if none or not TLS.
-  [[nodiscard]] std::string_view alpnProtocol() const noexcept { return _alpnProtocol; }
+  [[nodiscard]] std::string_view alpnProtocol() const noexcept;
 
   // Negotiated TLS cipher suite; empty if connection not using TLS.
-  [[nodiscard]] std::string_view tlsCipher() const noexcept { return _tlsCipher; }
+  [[nodiscard]] std::string_view tlsCipher() const noexcept;
 
   // Negotiated TLS protocol version string (e.g. "TLSv1.3"); empty if not TLS.
-  [[nodiscard]] std::string_view tlsVersion() const noexcept { return _tlsVersion; }
+  [[nodiscard]] std::string_view tlsVersion() const noexcept;
 
   // ============================
   // HTTP/2-specific accessors
@@ -238,11 +241,11 @@ class HttpRequest {
   [[nodiscard]] uint32_t streamId() const noexcept { return _streamId; }
 
   // HTTP/2 :scheme pseudo-header ("https" or "http"); empty for HTTP/1.x.
-  [[nodiscard]] std::string_view scheme() const noexcept { return _scheme; }
+  [[nodiscard]] std::string_view scheme() const noexcept { return {_pScheme, _schemeLength}; }
 
   // HTTP/2 :authority pseudo-header (equivalent to Host header); empty for HTTP/1.x.
   // For HTTP/1.x requests, use headerValueOrEmpty("Host") instead.
-  [[nodiscard]] std::string_view authority() const noexcept { return _authority; }
+  [[nodiscard]] std::string_view authority() const noexcept { return {_pAuthority, _authorityLength}; }
 
   // Tells whether this request has a 'Expect: 100-continue' header.
   [[nodiscard]] bool hasExpectContinue() const noexcept;
@@ -261,6 +264,7 @@ class HttpRequest {
   friend class CorsPolicyTest;
   friend class UpgradeHandlerHarness;
   friend struct ConnectionState;
+  friend class internal::ConnectionStorage;
 #ifdef AERONET_ENABLE_HTTP2
   friend class http2::Http2ProtocolHandler;
 #endif
@@ -275,7 +279,7 @@ class HttpRequest {
   // Attempts to set this HttpRequest (except body) from given ConnectionState.
   // Returns StatusCode OK if the request is good (it will be fully set) or an HTTP error status to forward.
   // If 0 is returned, it means the connection state buffer is not filled up to the first newline.
-  http::StatusCode initTrySetHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
+  http::StatusCode initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
                                   bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan);
 
   void pinHeadStorage(ConnectionState& state);
@@ -297,33 +301,32 @@ class HttpRequest {
     HasMoreFn hasMore{nullptr};
   };
 
-  std::string_view _path;
+  const char* _pPath{nullptr};
+  const char* _pScheme{nullptr};     // :scheme pseudo-header ("http" or "https")
+  const char* _pAuthority{nullptr};  // :authority pseudo-header (equivalent to Host)
+
+  // Raw query component (excluding '?') retained as-is; per-key/value decoding happens on iteration.
+  // Lifetime: valid only during handler invocation (points into connection buffer / in-place decode area).
+  const char* _pDecodedQueryParams{nullptr};
 
   HeadersViewMap _headers;
   HeadersViewMap _trailers;  // Trailer headers (RFC 7230 §4.1.2) from chunked requests
   flat_hash_map<std::string_view, std::string_view> _pathParams;
-
-  // Raw query component (excluding '?') retained as-is; per-key/value decoding happens on iteration.
-  // Lifetime: valid only during handler invocation (points into connection buffer / in-place decode area).
-  std::string_view _decodedQueryParams;
 
   std::string_view _body;
   std::string_view _activeStreamingChunk;
   const BodyAccessBridge* _bodyAccessBridge{nullptr};
   void* _bodyAccessContext{nullptr};
   ConnectionState* _ownerState{nullptr};
-  std::string_view _alpnProtocol;  // Selected ALPN protocol (if any) for this connection, empty if none/unsupported
-  std::string_view _tlsCipher;     // Negotiated cipher suite (empty if not TLS)
-  std::string_view _tlsVersion;    // Negotiated TLS protocol version (e.g. TLSv1.3) empty if not TLS
-
-  // HTTP/2 specific fields (populated only for HTTP/2 requests)
-  std::string_view _scheme;     // :scheme pseudo-header ("http" or "https")
-  std::string_view _authority;  // :authority pseudo-header (equivalent to Host)
-  uint32_t _streamId{0};        // HTTP/2 stream ID (0 indicates HTTP/1.x)
 
   std::chrono::steady_clock::time_point _reqStart;
   std::size_t _headSpanSize{0};
   tracing::SpanPtr _traceSpan;
+  uint32_t _streamId{0};  // HTTP/2 stream ID (0 indicates HTTP/1.x)
+  uint32_t _pathLength{0};
+  uint32_t _schemeLength{0};
+  uint32_t _authorityLength{0};
+  uint32_t _decodedQueryParamsLength{0};
   http::Version _version;
   http::Method _method;
   BodyAccessMode _bodyAccessMode{BodyAccessMode::Undecided};
