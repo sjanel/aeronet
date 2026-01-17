@@ -14,18 +14,15 @@
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/file-payload.hpp"
-#include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-prefinalize.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
-#include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/tcp-connector.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
@@ -165,18 +162,8 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, Ht
   const bool isHead = (request.method() == http::Method::HEAD);
   internal::PrefinalizeHttpResponse(request, resp, isHead, _compression, _config);
 
-  // keep-alive logic
   bool keepAlive =
-      _config.enableKeepAlive && state.requestsServed < _config.maxRequestsPerConnection && _lifecycle.isRunning();
-  if (keepAlive) {
-    const std::string_view connVal = request.headerValueOrEmpty(http::Connection);
-    if (connVal.empty()) {
-      // Default is keep-alive for HTTP/1.1, close for HTTP/1.0
-      keepAlive = request.version() == http::HTTP_1_1;
-    } else if (CaseInsensitiveEqual(connVal, http::close)) {
-      keepAlive = false;
-    }
-  }
+      request.isKeepAliveForHttp1(_config.enableKeepAlive, _config.maxRequestsPerConnection, _lifecycle.isRunning());
 
   const auto respStatusCode = resp.status();
 

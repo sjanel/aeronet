@@ -18,6 +18,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -36,17 +37,21 @@
 
 namespace aeronet {
 
-HttpResponseWriter::HttpResponseWriter(SingleHttpServer& srv, int fd, const HttpRequest& request, bool headRequest,
-                                       bool requestConnClose, Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
+HttpResponseWriter::HttpResponseWriter(SingleHttpServer& srv, int fd, const HttpRequest& request, bool requestConnClose,
+                                       Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
                                        std::span<const ResponseMiddleware> routeResponseMiddleware)
     : _server(&srv),
       _request(&request),
       _fd(fd),
-      _head(headRequest),
+      _head(request.method() == http::Method::HEAD),
       _requestConnClose(requestConnClose),
       _compressionFormat(compressionFormat),
+      // 64UL for Transfer-Encoding: chunked, Content-Length and other headers
+      _fixedResponse(64UL, http::StatusCodeOK, srv.config().globalHeaders.fullStringWithLastSep()),
       _pCorsPolicy(pCorsPolicy),
-      _routeResponseMiddleware(routeResponseMiddleware) {}
+      _routeResponseMiddleware(routeResponseMiddleware) {
+  _fixedResponse._alreadyPrepared = true;
+}
 
 void HttpResponseWriter::status(http::StatusCode code) {
   if (_state != State::Opened) {
@@ -135,9 +140,8 @@ void HttpResponseWriter::ensureHeadersSent() {
 
   auto cnxIt = _server->_connections.active.find(_fd);
   if (cnxIt == _server->_connections.active.end() ||
-      !_server->queueData(cnxIt, _fixedResponse.finalizeForHttp1(SysClock::now(), http::HTTP_1_1, _requestConnClose,
-                                                                 _server->config().globalHeaders, _head,
-                                                                 _server->config().minCapturedBodySize))) {
+      !_server->queueData(cnxIt, _fixedResponse.finalizeForHttp1(SysClock::now(), http::HTTP_1_1, _requestConnClose, {},
+                                                                 _head, _server->config().minCapturedBodySize))) {
     _state = HttpResponseWriter::State::Failed;
     log::error("Streaming: failed to enqueue headers fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
     return;
@@ -146,9 +150,8 @@ void HttpResponseWriter::ensureHeadersSent() {
 }
 
 void HttpResponseWriter::emitChunk(std::string_view data) {
-  if (_head || _state == State::Failed) {
-    return;
-  }
+  assert(_state != State::Failed && _state != State::Ended);
+  assert(chunked());
 
   // enough for 64-bit length in hex + CRLF
   static constexpr std::size_t kMaxHexLen = 2UL * sizeof(uint64_t);
@@ -293,7 +296,7 @@ void HttpResponseWriter::end() {
       if (chunked()) {
         emitChunk(last);
       } else if (!_head) {
-        if (!enqueue(HttpResponseData(last))) {
+        if (!enqueue(HttpResponseData(last))) [[unlikely]] {
           _state = HttpResponseWriter::State::Failed;
           log::error("Streaming: failed enqueuing final encoder output fd # {} errno={} msg={}", _fd, errno,
                      std::strerror(errno));
@@ -307,7 +310,7 @@ void HttpResponseWriter::end() {
       if (chunked()) {
         emitChunk(_preCompressBuffer);
       } else if (!_head) {
-        if (!enqueue(HttpResponseData(std::move(_preCompressBuffer)))) {
+        if (!enqueue(HttpResponseData(std::move(_preCompressBuffer)))) [[unlikely]] {
           _state = HttpResponseWriter::State::Failed;
           log::error("Streaming: failed enqueuing buffered body fd # {} errno={} msg={}", _fd, errno,
                      std::strerror(errno));
@@ -336,7 +339,6 @@ void HttpResponseWriter::end() {
     }
   }
 #endif
-  log::debug("Streaming: end fd # {} bytesWritten={} chunked={}", _fd, _bytesWritten, chunked());
 }
 
 bool HttpResponseWriter::enqueue(HttpResponseData httpResponseData) {

@@ -711,7 +711,7 @@ TEST(HttpRouting, AsyncBodyBeforeReadBodyThrows) {
   opts.recvTimeout = std::chrono::milliseconds{500};
 
   auto resp = test::requestOrThrow(ts.port(), opts);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   EXPECT_TRUE(sawException.load(std::memory_order_relaxed));
 }
 
@@ -725,7 +725,7 @@ TEST(HttpRouting, AsyncIdentityContentLengthReadBodyStreams) {
                                      collected.append(chunk);
                                    }
                                    EXPECT_FALSE(req.hasMoreBody());
-                                   co_return HttpResponse(collected);
+                                   co_return req.makeResponse(collected);
                                  });
 
   test::RequestOptions opts;
@@ -736,8 +736,8 @@ TEST(HttpRouting, AsyncIdentityContentLengthReadBodyStreams) {
   opts.recvTimeout = std::chrono::milliseconds{500};
 
   auto resp = test::requestOrThrow(ts.port(), opts);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
-  EXPECT_TRUE(resp.contains("stream-this-body")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\nstream-this-body")) << resp;
 }
 
 TEST(HttpRouting, AsyncReadBodyAsyncStreams) {
@@ -759,8 +759,8 @@ TEST(HttpRouting, AsyncReadBodyAsyncStreams) {
   opts.recvTimeout = std::chrono::milliseconds{500};
 
   auto resp = test::requestOrThrow(ts.port(), opts);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
-  EXPECT_TRUE(resp.contains("chunked-async-body-data")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\nchunked-async-body-data")) << resp;
 }
 
 TEST(HttpRouting, AsyncIdentityChunkedReadBodyStreams) {
@@ -772,7 +772,7 @@ TEST(HttpRouting, AsyncIdentityChunkedReadBodyStreams) {
                                      EXPECT_FALSE(chunk.empty());
                                      collected.append(chunk);
                                    }
-                                   co_return HttpResponse(http::StatusCodeOK).body(collected);
+                                   co_return req.makeResponse(collected);
                                  });
 
   test::ClientConnection client(ts.port());
@@ -787,8 +787,8 @@ TEST(HttpRouting, AsyncIdentityChunkedReadBodyStreams) {
       "0\r\n\r\n";
   test::sendAll(client.fd(), request);
   const std::string response = test::recvUntilClosed(client.fd());
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
-  EXPECT_TRUE(response.contains("first-second!")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.ends_with("\r\n\r\nfirst-second!")) << response;
 }
 
 TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete) {
@@ -814,8 +814,8 @@ TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete) {
 
   test::sendAll(client.fd(), "67890");
   const std::string response = test::recvUntilClosed(client.fd());
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
-  EXPECT_TRUE(response.contains("1234567890")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.ends_with("\r\n\r\n1234567890")) << response;
 }
 
 TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete_ReadBodyAsync) {
@@ -828,7 +828,7 @@ TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete_ReadBodyAsync) {
                                      std::string_view chunk = co_await req.readBodyAsync();
                                      collected.append(chunk);
                                    }
-                                   co_return HttpResponse(std::move(collected));
+                                   co_return req.makeResponse(std::move(collected));
                                  });
 
   test::ClientConnection client(ts.port());
@@ -849,8 +849,8 @@ TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete_ReadBodyAsync) {
 
   test::sendAll(client.fd(), "5\r\n67890\r\n0\r\n\r\n");
   const std::string response = test::recvUntilClosed(client.fd());
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
-  EXPECT_TRUE(response.contains("1234567890")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.ends_with("\r\n\r\n1234567890")) << response;
 }
 
 TEST(RouterUpdateProxy, ClearRemovesAllHandlers) {
@@ -861,7 +861,7 @@ TEST(RouterUpdateProxy, ClearRemovesAllHandlers) {
   router.clear();
 
   const std::string response = test::simpleGet(ts.port(), "/will-be-cleared");
-  EXPECT_TRUE(response.contains("HTTP/1.1 404")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 404")) << response;
 }
 
 TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndStreamingHandler) {
@@ -874,7 +874,7 @@ TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndStreamingHandler) {
                  });
 
   const std::string getResp = test::simpleGet(ts.port(), "/stream-multi");
-  EXPECT_TRUE(getResp.contains("HTTP/1.1 200")) << getResp;
+  EXPECT_TRUE(getResp.starts_with("HTTP/1.1 200")) << getResp;
   EXPECT_TRUE(getResp.contains("GET")) << getResp;
 
   test::RequestOptions postOpts;
@@ -882,7 +882,7 @@ TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndStreamingHandler) {
   postOpts.target = "/stream-multi";
   postOpts.headers.emplace_back("Content-Length", "0");
   const std::string postResp = test::requestOrThrow(ts.port(), postOpts);
-  EXPECT_TRUE(postResp.contains("HTTP/1.1 200")) << postResp;
+  EXPECT_TRUE(postResp.starts_with("HTTP/1.1 200")) << postResp;
   EXPECT_TRUE(postResp.contains("POST")) << postResp;
 }
 
@@ -897,21 +897,21 @@ TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndAsyncHandler) {
                  });
 
   const std::string getResp = test::simpleGet(ts.port(), "/async-multi");
-  EXPECT_TRUE(getResp.contains("HTTP/1.1 200 async-GET")) << getResp;
+  EXPECT_TRUE(getResp.starts_with("HTTP/1.1 200 async-GET")) << getResp;
 
   test::RequestOptions putOpts;
   putOpts.method = "PUT";
   putOpts.target = "/async-multi";
   putOpts.headers.emplace_back("Content-Length", "0");
   const std::string putResp = test::requestOrThrow(ts.port(), putOpts);
-  EXPECT_TRUE(putResp.contains("HTTP/1.1 200 async-PUT")) << putResp;
+  EXPECT_TRUE(putResp.starts_with("HTTP/1.1 200 async-PUT")) << putResp;
   // test default for other methods
   test::RequestOptions postOpts;
   postOpts.method = "POST";
   postOpts.target = "/async-default";
   postOpts.headers.emplace_back("Content-Length", "0");
   const std::string postResp = test::requestOrThrow(ts.port(), postOpts);
-  EXPECT_TRUE(postResp.contains("HTTP/1.1 200 async-default-POST")) << postResp;
+  EXPECT_TRUE(postResp.starts_with("HTTP/1.1 200 async-default-POST")) << postResp;
 }
 
 TEST(RouterUpdateProxy, PathEntryProxyCorsPolicy) {

@@ -202,11 +202,9 @@ void SingleHttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
 }
 
 bool SingleHttpServer::enableWritableInterest(ConnectionMapIt cnxIt) {
-  static constexpr EventBmp kEvents = EventIn | EventOut | EventRdHup | EventEt;
-
   ConnectionState* state = cnxIt->second;
   assert(!state->waitingWritable);
-  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) [[likely]] {
+  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), EventIn | EventOut | EventRdHup | EventEt})) [[likely]] {
     state->waitingWritable = true;
     ++_stats.deferredWriteEvents;
     return true;
@@ -217,10 +215,9 @@ bool SingleHttpServer::enableWritableInterest(ConnectionMapIt cnxIt) {
 }
 
 bool SingleHttpServer::disableWritableInterest(ConnectionMapIt cnxIt) {
-  static constexpr EventBmp kEvents = EventIn | EventRdHup | EventEt;
   ConnectionState* state = cnxIt->second;
   assert(state->waitingWritable);
-  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), kEvents})) [[likely]] {
+  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), EventIn | EventRdHup | EventEt})) [[likely]] {
     state->waitingWritable = false;
     return true;
   }
@@ -671,7 +668,7 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
   }
 
   // Pass the resolved activeCors pointer to the streaming writer so it can apply headers lazily
-  HttpResponseWriter writer(*this, cnxIt->first.fd(), request, isHead, wantClose, compressionFormat, pCorsPolicy,
+  HttpResponseWriter writer(*this, cnxIt->first.fd(), request, wantClose, compressionFormat, pCorsPolicy,
                             postMiddleware);
   try {
     streamingHandler(request, writer);

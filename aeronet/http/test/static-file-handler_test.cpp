@@ -19,6 +19,7 @@
 #include <system_error>
 #include <utility>
 
+#include "aeronet/concatenated-headers.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/file-helpers.hpp"
 #include "aeronet/file-sys-test-support.hpp"
@@ -43,8 +44,14 @@ class StaticFileHandlerTest : public ::testing::Test {
 
  protected:
   HttpRequest req;
+  ConcatenatedHeaders globalHeaders;
 
   test::ScopedTempDir tmpDir;
+
+  void SetUp() override {
+    req._ownerState = &cs;
+    req._pGlobalHeaders = &globalHeaders;
+  }
 
   void buildReq(std::string_view filePath) {
     std::string raw;
@@ -56,9 +63,9 @@ class StaticFileHandlerTest : public ::testing::Test {
     std::string raw;
     raw.append("GET ").append("/").append(filePath).append(" HTTP/1.1\r\nHost: h\r\n");
     if (!extraHeaders.empty()) {
-      raw.append(extraHeaders).append("\r\n");
+      raw.append(extraHeaders).append(http::CRLF);
     }
-    raw.append("\r\n");
+    raw.append(http::CRLF);
     cs.inBuffer.assign(raw);
   }
 
@@ -66,9 +73,9 @@ class StaticFileHandlerTest : public ::testing::Test {
     std::string raw;
     raw.append(method).append(" ").append("/").append(filePath).append(" HTTP/1.1\r\nHost: h\r\n");
     if (!extraHeaders.empty()) {
-      raw.append(extraHeaders).append("\r\n");
+      raw.append(extraHeaders).append(http::CRLF);
     }
-    raw.append("\r\n");
+    raw.append(http::CRLF);
     cs.inBuffer.assign(raw);
   }
 

@@ -127,7 +127,7 @@ int main(int argc, char* argv[]) {
   // ============================================================
   // Endpoint 1: /ping - Minimal latency test
   // ============================================================
-  router.setPath(http::Method::GET, "/ping", [](const HttpRequest&) { return HttpResponse("pong"); });
+  router.setPath(http::Method::GET, "/ping", [](const HttpRequest& req) { return req.makeResponse("pong"); });
 
   // ============================================================
   // Endpoint 2: /headers - Header stress test
@@ -143,7 +143,7 @@ int main(int argc, char* argv[]) {
         headerSize = StringToIntegral<std::size_t>(qp.value);
       }
     }
-    HttpResponse resp(count * HttpResponse::HeaderSize(20U, headerSize), http::StatusCodeOK);
+    HttpResponse resp = req.makeResponse(count * HttpResponse::HeaderSize(20U, headerSize), http::StatusCodeOK);
     for (std::size_t headerPos = 0; headerPos < count; ++headerPos) {
       resp.headerAddLine(std::format("X-Bench-Header-{}", headerPos), bench::GenerateRandomString(headerSize));
     }
@@ -157,7 +157,7 @@ int main(int argc, char* argv[]) {
   // ============================================================
   router.setPath(http::Method::POST, "/uppercase", [](const HttpRequest& req) {
     std::string_view body = req.body();
-    HttpResponse resp(HttpResponse::BodySize(body.size()), http::StatusCodeOK);
+    HttpResponse resp = req.makeResponse(HttpResponse::BodySize(body.size()), http::StatusCodeOK);
     resp.bodyInlineSet(body.size(), [body](char* buf) {
       std::ranges::transform(body, buf, [](char ch) { return toupper(ch); });
       return body.size();
@@ -188,7 +188,7 @@ int main(int argc, char* argv[]) {
     const uint64_t hashResult = bench::ComputeHash(data, hashIters);
     auto body = std::format("fib({})={}, hash={}", complexity, fibResult, hashResult);
 
-    HttpResponse resp(64UL + HttpResponse::BodySize(body.size()), http::StatusCodeOK);
+    HttpResponse resp = req.makeResponse(64UL + HttpResponse::BodySize(body.size()), http::StatusCodeOK);
     resp.headerAddLine("X-Fib-Result", fibResult);
     resp.headerAddLine("X-Hash-Result", hashResult);
     resp.body(std::move(body));
@@ -201,7 +201,7 @@ int main(int argc, char* argv[]) {
   router.setPath(http::Method::GET, "/json", [](const HttpRequest& req) {
     const std::size_t items = GetQueryParamOrThrow<std::size_t>(req, "items");
 
-    HttpResponse resp(200);
+    HttpResponse resp = req.makeResponse(200);
     resp.bodyAppend("{\"items\":[", "application/json");
     for (std::size_t itemPos = 0; itemPos < items; ++itemPos) {
       if (itemPos > 0) {
@@ -223,7 +223,7 @@ int main(int argc, char* argv[]) {
 
     std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
 
-    return HttpResponse(std::format("Delayed {} ms", delayMs));
+    return req.makeResponse(std::format("Delayed {} ms", delayMs));
   });
 
   // ============================================================
@@ -231,16 +231,16 @@ int main(int argc, char* argv[]) {
   // Returns body of size ?size=N bytes
   // ============================================================
   router.setPath(http::Method::GET, "/body", [](const HttpRequest& req) {
-    return HttpResponse(bench::GenerateRandomString(GetQueryParamOrThrow<std::size_t>(req, "size")));
+    return req.makeResponse(bench::GenerateRandomString(GetQueryParamOrThrow<std::size_t>(req, "size")));
   });
 
   // ============================================================
   // Endpoint 8: /status - Health check
   // ============================================================
-  router.setPath(http::Method::GET, "/status", [&benchCfg](const HttpRequest&) {
-    return HttpResponse(std::format(R"({{"server":"aeronet","threads":{},"tls":{},"status":"ok"}})",
-                                    benchCfg.numThreads, benchCfg.tlsEnabled),
-                        "application/json");
+  router.setPath(http::Method::GET, "/status", [&benchCfg](const HttpRequest& req) {
+    return req.makeResponse(std::format(R"({{"server":"aeronet","threads":{},"tls":{},"status":"ok"}})",
+                                        benchCfg.numThreads, benchCfg.tlsEnabled),
+                            "application/json");
   });
 
   // ============================================================
@@ -273,7 +273,7 @@ int main(int argc, char* argv[]) {
   // ============================================================
   for (int routeIdx = 0; routeIdx < benchCfg.routeCount; ++routeIdx) {
     router.setPath(http::Method::GET, std::format("/r{}", routeIdx),
-                   [routeIdx](const HttpRequest&) { return HttpResponse(std::format("route-{}", routeIdx)); });
+                   [routeIdx](const HttpRequest& req) { return req.makeResponse(std::format("route-{}", routeIdx)); });
   }
   std::cout << "Registered " << benchCfg.routeCount << " literal routes (/r0 to /r" << (benchCfg.routeCount - 1)
             << ")\n";
@@ -285,7 +285,7 @@ int main(int argc, char* argv[]) {
     const auto& params = req.pathParams();
     std::string_view userId = params.find("id")->second;
     std::string_view postId = params.find("post")->second;
-    return HttpResponse(std::format("user={},post={}", userId, postId));
+    return req.makeResponse(std::format("user={},post={}", userId, postId));
   });
 
   // ============================================================
@@ -295,7 +295,7 @@ int main(int argc, char* argv[]) {
     const auto& params = req.pathParams();
     std::string_view version = params.find("version")->second;
     std::string_view item = params.find("item")->second;
-    return HttpResponse(std::format("v={},item={}", version, item));
+    return req.makeResponse(std::format("v={},item={}", version, item));
   });
 
   std::cout << "aeronet benchmark server starting on port " << benchCfg.port << " with " << benchCfg.numThreads
