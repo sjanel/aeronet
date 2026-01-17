@@ -202,11 +202,25 @@ class HttpResponse {
   // Get the current status code string view stored in this HttpResponse
   [[nodiscard]] std::string_view statusStr() const noexcept { return {_data.data() + kStatusCodeBeg, 3UL}; }
 
+  // Get the size of the status line including CRLF (with HTTP version, status code, reason if any).
+  [[nodiscard]] std::size_t statusLineSize() const noexcept { return headersStartPos() + http::CRLF.size(); }
+
+  // Synonym for statusLineSize().
+  [[nodiscard]] std::size_t statusLineLength() const noexcept { return statusLineSize(); }
+
   // Get the current reason stored in this HttpResponse, or an empty string_view if no reason is set.
-  [[nodiscard]] std::string_view reason() const noexcept { return {_data.data() + kReasonBeg, reasonLen()}; }
+  [[nodiscard]] std::string_view reason() const noexcept { return {_data.data() + kReasonBeg, reasonLength()}; }
 
   // Check if a reason phrase is present.
-  [[nodiscard]] bool hasReason() const noexcept { return reasonLen() > 0; }
+  [[nodiscard]] bool hasReason() const noexcept { return _data[kReasonBeg] != '\n'; }
+
+  // Get the length of the current reason stored in this HttpResponse.
+  [[nodiscard]] std::size_t reasonLength() const noexcept {
+    return (headersStartPos() - kReasonBeg) * static_cast<std::size_t>(hasReason());
+  }
+
+  // Synonym for reasonLength().
+  [[nodiscard]] std::size_t reasonSize() const noexcept { return reasonLength(); }
 
   // Checks if the given header key is present (case-insensitive search per RFC 7230).
   [[nodiscard]] bool hasHeader(std::string_view key) const noexcept { return headerValue(key).has_value(); }
@@ -235,6 +249,20 @@ class HttpResponse {
   //   }
   [[nodiscard]] HeadersView headers() const noexcept { return HeadersView(headersFlatView()); }
 
+  // Get the total size of all headers, counting exactly one CRLF per header line (excluding final CRLF before body).
+  [[nodiscard]] std::size_t headersSize() const noexcept {
+    return bodyStartPos() - headersStartPos() - http::DoubleCRLF.size();
+  }
+
+  // Synonym for headersSize().
+  [[nodiscard]] std::size_t headersLength() const noexcept { return headersSize(); }
+
+  // Get the size of the head (status line + headers), excluding body, but with final CRLF before body.
+  [[nodiscard]] std::size_t headSize() const noexcept { return bodyStartPos(); }
+
+  // Synonym for headSize().
+  [[nodiscard]] std::size_t headLength() const noexcept { return headSize(); }
+
   // Get a view of the current in memory body (no file) stored in this HttpResponse.
   // The returned view will be empty if there is either no body, or a file body.
   [[nodiscard]] std::string_view bodyInMemory() const noexcept;
@@ -260,15 +288,31 @@ class HttpResponse {
   // Get the length of the current body stored in this HttpResponse, if any (including file).
   [[nodiscard]] std::size_t bodyLength() const noexcept;
 
+  // Synonym for bodyLength().
+  [[nodiscard]] std::size_t bodySize() const noexcept { return bodyLength(); }
+
   // Get the length of the current inlined or captured (but no file) body stored in this HttpResponse.
   [[nodiscard]] std::size_t bodyInMemoryLength() const noexcept {
     return hasBodyCaptured() ? (_payloadVariant.size() - _trailerLen) : bodyInlinedLength();
   }
 
-  // TODO: add buffer / size, capacity of inline buffer, status line length, headers length, total length?
+  // Synonym for bodyInMemoryLength().
+  [[nodiscard]] std::size_t bodyInMemorySize() const noexcept { return bodyInMemoryLength(); }
+
+  // Total size of the HttpResponse when serialized, excluding file payload size (if any).
+  [[nodiscard]] std::size_t sizeInMemory() const noexcept { return _data.size() + _payloadVariant.size(); }
+
+  // Get the current size of the internal buffer.
+  [[nodiscard]] std::size_t sizeInlined() const noexcept { return _data.size(); }
+
+  // Get the current capacity of the internal buffer.
+  [[nodiscard]] std::size_t capacityInlined() const noexcept { return _data.capacity(); }
 
   // Get the length of the current inlined body stored in this HttpResponse.
   [[nodiscard]] std::size_t bodyInlinedLength() const noexcept { return _data.size() - bodyStartPos() - _trailerLen; }
+
+  // Synonym for bodyInlinedLength().
+  [[nodiscard]] std::size_t bodyInlinedSize() const noexcept { return bodyInlinedLength(); }
 
   // Retrieves the value of the first occurrence of the given trailer key (case-insensitive search per RFC 7230).
   // If the trailer is not found, returns std::nullopt.
@@ -901,6 +945,10 @@ class HttpResponse {
     return std::move(trailerAddLine(key, std::string_view(IntegralToCharVector(value))));
   }
 
+  // Pre-allocate internal buffer capacity to avoid multiple allocations when building the response with headers and
+  // inlined body.
+  void reserve(std::size_t capacity) { _data.reserve(capacity); }
+
  private:
   friend class SingleHttpServer;
   friend class HttpRequest;
@@ -931,10 +979,6 @@ class HttpResponse {
     } else {
       _payloadVariant = HttpPayload(std::move(payload), size);
     }
-  }
-
-  [[nodiscard]] std::size_t reasonLen() const noexcept {
-    return _data[kReasonBeg] == '\n' ? 0UL : (headersStartPos() - kReasonBeg);
   }
 
   [[nodiscard]] std::string_view internalTrailers() const noexcept { return {_data.end() - _trailerLen, _data.end()}; }
@@ -1034,6 +1078,8 @@ class HttpResponse {
   void replaceHeaderValueNoRealloc(char* first, std::string_view newValue);
 
   RawChars _data;
+  // headersStartPos: the status line length, excluding CRLF.
+  // bodyStartPos: position where the body starts (immediately after CRLFCRLF).
   // Bitmap layout: [48 bits bodyStartPos][16 bits headersStartPos]
   std::uint64_t _posBitmap{0};
   // Variant that can hold an external captured payload (HttpPayload).

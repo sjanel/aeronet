@@ -72,7 +72,7 @@ constexpr auto kInitialBodyStart = kHttpResponseInitialSize;
 
 constexpr void InitData(char* data) {
   data[http::HTTP10Sv.size()] = ' ';
-  data[HttpResponse::kReasonBeg] = '\n';
+  data[HttpResponse::kReasonBeg] = '\n';  // marker for no reason
 #ifndef NDEBUG
   // In debug, this allows for easier inspection of the response data.
   std::memcpy(data, http::HTTP_1_1.str().data(), http::HTTP_1_1.str().size());
@@ -168,7 +168,7 @@ HttpResponse& HttpResponse::status(http::StatusCode statusCode) & {
 
 HttpResponse& HttpResponse::reason(std::string_view newReason) & {
   newReason = AdjustReasonLen(newReason);
-  auto oldReasonSz = reasonLen();
+  auto oldReasonSz = reasonLength();
   int32_t diff = static_cast<int32_t>(newReason.size()) - static_cast<int32_t>(oldReasonSz);
   if (diff == 0) {
     if (!newReason.empty()) {

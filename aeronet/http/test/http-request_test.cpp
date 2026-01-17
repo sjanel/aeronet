@@ -1411,9 +1411,16 @@ TEST_F(HttpRequestTest, MakeResponseAdditionalCapacityStatusCodeOnly) {
   auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  auto resp = req.makeResponse(64UL, http::StatusCodeAccepted);
+  static constexpr std::size_t kExtraCapacity = 64UL;
+  auto resp = req.makeResponse(kExtraCapacity, http::StatusCodeAccepted);
   EXPECT_EQ(resp.status(), http::StatusCodeAccepted);
   EXPECT_TRUE(resp.bodyInMemory().empty());
+
+  auto resp2 = req.makeResponse(http::StatusCodeAccepted);
+
+  EXPECT_GE(resp.capacityInlined() + kExtraCapacity, resp2.capacityInlined());
+  resp2.reserve(resp2.sizeInlined() + kExtraCapacity);
+  EXPECT_EQ(resp.capacityInlined(), resp2.capacityInlined());
 
   // Check that global headers are present
   EXPECT_TRUE(resp.hasHeader("server"));

@@ -150,6 +150,36 @@ TEST_F(HttpResponseTest, ConstructorWithBody) {
   EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
 }
 
+TEST_F(HttpResponseTest, HttpPartsSizes) {
+  HttpResponse resp("Hello, World!");
+
+  EXPECT_EQ(resp.statusLineSize(), std::string_view("HTTP/1.1 200\r\n").size());
+  EXPECT_EQ(resp.statusLineSize(), resp.statusLineLength());
+
+  EXPECT_EQ(resp.headersSize(), std::string_view("Date: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
+                                                 "Content-Type: text/plain\r\n"
+                                                 "Content-Length: 13\r\n")
+                                    .size());
+  EXPECT_EQ(resp.headersSize(), resp.headersLength());
+
+  EXPECT_EQ(resp.headSize(), std::string_view("HTTP/1.1 200\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
+                                              "Content-Type: text/plain\r\n"
+                                              "Content-Length: 13\r\n\r\n")
+                                 .size());
+  EXPECT_EQ(resp.headSize(), resp.headLength());
+
+  EXPECT_EQ(resp.sizeInMemory(), std::string_view("HTTP/1.1 200\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
+                                                  "Content-Type: text/plain\r\n"
+                                                  "Content-Length: 13\r\n\r\n"
+                                                  "Hello, World!")
+                                     .size());
+
+  resp.reason("Not Found");
+  EXPECT_EQ(resp.reason(), "Not Found");
+  EXPECT_EQ(resp.statusLineSize(), std::string_view("HTTP/1.1 200 Not Found\r\n").size());
+  EXPECT_EQ(resp.statusLineSize(), resp.statusLineLength());
+}
+
 TEST_F(HttpResponseTest, ConstructorWithBodyContentTypeOnly) {
   HttpResponse resp("Hello, World!", "text/my-text");
   EXPECT_EQ(resp.status(), http::StatusCodeOK);
@@ -401,8 +431,11 @@ TEST_F(HttpResponseTest, SeveralBodyAppend) {
             "Some body data that takes roughly 50 characters.\n Additional data to be appended And some more to reach "
             "more than 100 characters in total. Lorem ipsum dolor sit amet, consectetur adipiscing elit.");
   EXPECT_EQ(resp.bodyLength(), 195UL);
+  EXPECT_EQ(resp.bodySize(), 195UL);
   EXPECT_EQ(resp.bodyInMemoryLength(), 195UL);
+  EXPECT_EQ(resp.bodyInMemorySize(), 195UL);
   EXPECT_EQ(resp.bodyInlinedLength(), 195UL);
+  EXPECT_EQ(resp.bodyInlinedSize(), 195UL);
   EXPECT_EQ(resp.headerValue(http::ContentType), "text/custom");
   EXPECT_EQ(resp.headerValue(http::ContentLength), "195");
 }
@@ -710,6 +743,10 @@ TEST_F(HttpResponseTest, SimpleBodyWithoutGlobalHeaders) {
 TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
+  EXPECT_EQ(resp.reasonLength(), 2U);
+  EXPECT_EQ(resp.reason(), "OK");
+  EXPECT_TRUE(resp.hasReason());
+  EXPECT_EQ(resp.reasonSize(), resp.reasonLength());
   resp.headerAddLine(http::ContentType, "text/plain").headerAddLine("X-A", "B").body("Hello");
   auto full = concatenated(std::move(resp));
   ASSERT_GE(full.size(), 16U);
