@@ -25,6 +25,7 @@
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/timedef.hpp"
 
@@ -715,6 +716,8 @@ class HttpResponse {
       throw std::logic_error("Cannot set body after the first trailer");
     }
 
+    contentType = TrimOws(contentType);
+
     using W = std::remove_reference_t<Writer>;
     // Accept writers callable as either: std::size_t(char*) or std::size_t(std::byte*)
     // and select a sensible default Content-Type based on the pointer type.
@@ -793,7 +796,7 @@ class HttpResponse {
     if (_trailerLen != 0) [[unlikely]] {
       throw std::logic_error("Cannot set body after trailers have been added");
     }
-
+    contentType = TrimOws(contentType);
     // Determine default content type based on writer signature
     std::string_view defaultContentType;
     if constexpr (std::is_invocable_r_v<std::size_t, W, std::byte*>) {
