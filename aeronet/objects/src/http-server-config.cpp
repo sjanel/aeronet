@@ -14,6 +14,7 @@
 #include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/string-trim.hpp"
@@ -289,9 +290,9 @@ void HttpServerConfig::validate() {
   }
 
   for (std::string_view headerNameValue : globalHeaders) {
-    const auto colonPos = headerNameValue.find(':');
+    const auto colonPos = headerNameValue.find(http::HeaderSep);
     if (colonPos == std::string_view::npos) {
-      throw std::invalid_argument("header missing ':' separator in global headers");
+      throw std::invalid_argument("header missing http::HeaderSep separator in global headers");
     }
 
     std::string_view headerName = headerNameValue.substr(0, colonPos);

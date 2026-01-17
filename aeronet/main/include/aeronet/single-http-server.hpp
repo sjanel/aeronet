@@ -447,7 +447,7 @@ class SingleHttpServer {
   // If immediate=true the connection will be closed without waiting for buffered writes to drain.
   void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, bool immediate = false,
                        std::string_view body = {});
-  // Outbound write helpers
+  // Outbound write helpers. TODO: check return values for all callers, or just close connection on failure?
   bool queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData);
   void flushOutbound(ConnectionMapIt cnxIt);
   void flushFilePayload(ConnectionMapIt cnxIt);

@@ -357,6 +357,39 @@ TEST(HttpContentLength, GlobalHeaders) {
   EXPECT_TRUE(resp.contains(datePrefix));
 }
 
+TEST(HttpMakeResponse, PrefillsGlobalHeadersHttp11) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.addGlobalHeader(http::Header{"X-Global", "gvalue"});
+    cfg.addGlobalHeader(http::Header{"X-Another", "anothervalue"});
+    cfg.addGlobalHeader(http::Header{"X-Custom", "from-global"});
+  });
+
+  ts.router().setDefault([](const HttpRequest& req) {
+    auto resp = req.makeResponse(http::StatusCodeAccepted, "body-from-make", "text/custom");
+    // Local header should override the global one when names collide
+    resp.header("X-Custom", "local");
+    return resp;
+  });
+
+  test::ClientConnection clientConnection(ts.port());
+  int fd = clientConnection.fd();
+  std::string req = "GET /make-response HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+  test::sendAll(fd, req);
+  const std::string resp = test::recvUntilClosed(fd);
+
+  EXPECT_TRUE(resp.contains("HTTP/1.1 202"));
+#ifdef AERONET_ENABLE_HTTP2
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-global", "gvalue")));
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-another", "anothervalue")));
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-custom", "local")));
+#else
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("X-Global", "gvalue")));
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("X-Another", "anothervalue")));
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("X-Custom", "local")));
+#endif
+  EXPECT_TRUE(resp.contains("body-from-make"));
+}
+
 TEST(HttpBasic, LargePayload) {
   const std::string largeBody(1 << 24, 'a');
 

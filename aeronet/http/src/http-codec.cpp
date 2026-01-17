@@ -352,7 +352,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   assert(resp.hasHeader(http::ContentType));
 
   const bool hasExternalPayload = resp.hasBodyCaptured();
-  const std::size_t trailersLen = resp._trailerLen;
+  const auto trailersLen = resp._trailerLen;
 
   const char* const basePtr = resp._data.data();
   const VaryResult varyResult =

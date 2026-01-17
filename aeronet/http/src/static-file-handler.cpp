@@ -705,7 +705,7 @@ bool StaticFileHandler::resolveTarget(const HttpRequest& request, std::filesyste
 }
 
 HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
-  HttpResponse resp(http::StatusCodeNotFound);
+  HttpResponse resp = request.makeResponse(32UL, http::StatusCodeNotFound);
 
   if (request.method() != http::Method::GET && request.method() != http::Method::HEAD) {
     resp.status(http::StatusCodeMethodNotAllowed);
@@ -778,6 +778,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     return resp;
   }
 
+  // TODO: is it possible to make only one system call to open file and get its size/metadata?
   const std::size_t fileSize = file.size();
   if (fileSize == File::kError) {
     resp.body("Unable to read file size\n");

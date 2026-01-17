@@ -1,5 +1,9 @@
 # aeronet Roadmap — Planned / Not Implemented
 
+## Recently completed
+
+- `makeResponse` helpers from the handlers to reduce memory moves by adding all global headers at once.
+
 ## High priority
 
 - **HTTP/2 CONNECT tunneling** (RFC 7540 §8.3): Currently returns 405 Method Not Allowed. Full implementation requires per-stream tunnel state tracking, upstream TCP connections, and bidirectional DATA frame forwarding. Users needing CONNECT tunneling should use HTTP/1.1 instead, which has full support.
@@ -33,7 +37,6 @@
 - `MSG_ZEROCOPY` for large payloads on Linux (requires fallback path).
 - Profile and optimize HTTP/2 HPACK decoding (currently identified as optimization candidate).
 - Reduce memmove overhead in HTTP/2 body handling (see TODOs in http2-protocol-handler.cpp).
-- `makeResponse` helpers from the handlers to reduce memory moves by adding all global headers at once.
 
 ## Long-term / Nice-to-have
 

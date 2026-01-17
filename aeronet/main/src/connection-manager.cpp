@@ -179,10 +179,10 @@ void SingleHttpServer::acceptNewConnections() {
     // Using assert to document this invariant rather than silently handling an impossible case.
     assert(inserted && "Duplicate fd on accept indicates library bug - connection not properly removed");
 
-    // Track new connection acceptance
     _telemetry.counterAdd("aeronet.connections.accepted", 1UL);
 
     ConnectionState& state = *cnxIt->second;
+    state.request._pGlobalHeaders = &_config.globalHeaders;
 #ifdef AERONET_ENABLE_OPENSSL
     if (_tls.ctxHolder) {
       // TLS handshake admission control (Phase 2): concurrency and basic token bucket rate limiting.

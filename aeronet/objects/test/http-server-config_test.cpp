@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "aeronet/decompression-config.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/tls-config.hpp"
 
@@ -64,37 +65,50 @@ TEST(HttpServerConfigTest, HeaderKey2) {
 
 TEST(HttpServerConfigTest, HeaderKey3) {
   HttpServerConfig config;
-  config.globalHeaders.append("Invalid Char!:value");
+  config.globalHeaders.append("Invalid Char!: value");
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 TEST(HttpServerConfigTest, HeaderKey4) {
   HttpServerConfig config;
-  config.globalHeaders.append("Another@Invalid:value");  // invalid char '@'
+  config.globalHeaders.append("Another@Invalid: value");  // invalid char '@'
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 TEST(HttpServerConfigTest, ReservedGlobalHeaderShouldThrow) {
   HttpServerConfig config;
-  config.globalHeaders.append("Content-Length:10");
+  config.globalHeaders.append("Content-Length: 10");
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 TEST(HttpServerConfigTest, InvalidGlobalHeaderShouldThrow1) {
   HttpServerConfig config;
-  config.globalHeaders.append("Invalid\nHeader:value");
+  config.globalHeaders.append("Invalid\nHeader: value");
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 TEST(HttpServerConfigTest, InvalidGlobalHeaderShouldThrow2) {
   HttpServerConfig config;
-  config.globalHeaders.append("InvalidNoColon");
+  config.globalHeaders.append("X-Custom: value\x7F");  // DEL control char
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 TEST(HttpServerConfigTest, InvalidGlobalHeaderShouldThrow3) {
   HttpServerConfig config;
-  config.globalHeaders.append("X-Custom: value\x7F");  // DEL control char
+  config.globalHeaders.append("X-Cust:om: value");
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(HttpServerConfigTest, GlobalHeaderShouldContainHeaderSep1) {
+  HttpServerConfig config;
+  config.globalHeaders.append("InvalidNoColon");
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(HttpServerConfigTest, GlobalHeaderShouldContainHeaderSep2) {
+  HttpServerConfig config;
+  config.globalHeaders.append("X-Custom:value");
+  ASSERT_FALSE(config.globalHeaders.contains(http::HeaderSep));
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 

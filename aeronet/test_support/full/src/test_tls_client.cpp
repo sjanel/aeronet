@@ -242,11 +242,11 @@ std::string TlsClient::get(std::string_view target, const std::vector<http::Head
 void TlsClient::init() {
   // Avoid test process termination when writing to a closed TLS socket.
   // OpenSSL ultimately writes to the underlying fd, which can raise SIGPIPE on Linux.
-  static const int _sigpipeIgnored = []() {
+  static const int kSigpipeIgnored = []() {
     ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
     return 0;
   }();
-  (void)_sigpipeIgnored;
+  (void)kSigpipeIgnored;
 
   ::SSL_library_init();
   ::SSL_load_error_strings();

@@ -7,6 +7,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/test_server_http2_tls_fixture.hpp"
 #include "aeronet/test_tls_http2_client.hpp"
 #include "aeronet/timestring.hpp"
@@ -35,7 +36,7 @@ TEST(TlsHttp2Client, BasicGetRequest) {
   // Create TLS server with HTTP/2 support
   TlsHttp2TestServer ts;
   ts.setDefault([](const HttpRequest& req) {
-    return HttpResponse().status(200).body("Hello from HTTP/2 server! Path: " + std::string(req.path()));
+    return HttpResponse().status(http::StatusCodeOK).body("Hello from HTTP/2 server! Path: " + std::string(req.path()));
   });
 
   // Create HTTP/2 client and verify connection
@@ -209,6 +210,29 @@ TEST(TlsHttp2Client, GlobalHeadersAndDateAreInjected) {
   EXPECT_EQ(date.size(), kRFC7231DateStrLen);
   EXPECT_TRUE(date.ends_with("GMT"));
   EXPECT_NE(TryParseTimeRFC7231(date), kInvalidTimePoint);
+}
+
+TEST(TlsHttp2Client, MakeResponsePrefillsGlobalHeaders) {
+  TlsHttp2TestServer ts([](HttpServerConfig& cfg) {
+    cfg.addGlobalHeader(http::Header{"X-Global", "gvalue"});
+    cfg.addGlobalHeader(http::Header{"X-Another", "anothervalue"});
+  });
+
+  ts.setDefault([](const HttpRequest& req) {
+    auto resp = req.makeResponse(http::StatusCodeAccepted, "h2-body", "text/custom");
+    resp.header("X-Local", "local-value");
+    return resp;
+  });
+
+  TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/make-response");
+  EXPECT_EQ(response.statusCode, 202);
+  EXPECT_EQ(response.body, "h2-body");
+  EXPECT_EQ(response.header("x-global"), "gvalue");
+  EXPECT_EQ(response.header("x-another"), "anothervalue");
+  EXPECT_EQ(response.header("x-local"), "local-value");
 }
 
 TEST(TlsHttp2Client, HeadOmitsBodyButSetsContentLengthAndDate) {
