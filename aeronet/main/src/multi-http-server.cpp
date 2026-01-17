@@ -78,7 +78,7 @@ MultiHttpServer::AsyncHandle::AsyncHandle(AsyncHandle&& other) noexcept
       _stopCalled(other._stopCalled.exchange(true, std::memory_order_relaxed)) {}
 
 MultiHttpServer::AsyncHandle& MultiHttpServer::AsyncHandle::operator=(AsyncHandle&& other) noexcept {
-  if (this != &other) {
+  if (this != &other) [[likely]] {
     stop();
 
     _serverHandles = std::move(other._serverHandles);
@@ -197,7 +197,7 @@ MultiHttpServer::MultiHttpServer(MultiHttpServer&& other) noexcept
 }
 
 MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
-  if (this != &other) {
+  if (this != &other) [[likely]] {
     // Ensure we are not leaking running threads; stop existing group first.
     stop();
 

@@ -148,7 +148,7 @@ We include a small helper script at `scripts/profile_benchmark.sh` that automate
 ./scripts/profile_benchmark.sh --build -- ./build/benchmarks/aeronet-bench-throughput --duration 10
 ```
 
-2) Profile an already-built binary (sample frequency 400Hz):
+1) Profile an already-built binary (sample frequency 400Hz):
 
 ```bash
 ./scripts/profile_benchmark.sh --freq 400 -- ./build/benchmarks/aeronet-bench-throughput --duration 10
@@ -185,13 +185,13 @@ If you prefer to do things by hand:
 sudo perf record -F 200 -g -o perf.data -- ./build/benchmarks/aeronet-bench-throughput --duration 10
 ```
 
-2. Export perf script:
+1. Export perf script:
 
 ```bash
 perf script -i perf.data > perf_script.txt
 ```
 
-3. Convert to callgrind (one of):
+1. Convert to callgrind (one of):
 
 ```bash
 # If perf2calltree present
@@ -202,7 +202,7 @@ perf script -i perf.data > perf_for_gprof.txt
 gprof2calltree -i perf_for_gprof.txt -o callgrind.out
 ```
 
-4. Open callgrind in kcachegrind:
+1. Open callgrind in kcachegrind:
 
 ```bash
 kcachegrind callgrind.out
@@ -229,3 +229,255 @@ If you'd like, I can:
 
 - Add a small CMake target to build all benchmark binaries in `build/benchmarks` in one step
 - Run a sample profiling pass here and attach the generated `callgrind.out` and `flamegraph.svg` (if you consent to uploading artifacts)
+
+## HTTP/2 Performance Testing Plan with h2load
+
+**Purpose:** Establish performance baseline and regression detection for HTTP/2
+
+### Overview
+
+This document outlines HTTP/2 performance testing scenarios using h2load, a benchmark tool specifically designed for HTTP/2 load testing.
+
+### h2load Test Scenarios
+
+#### Scenario 1: Baseline RPC-Style (Default)
+
+**Test:** Simple JSON request/response with stream multiplexing
+
+```bash
+h2load -n 100000 -c 100 -m 100 \
+  -H 'Content-Type: application/json' \
+  https://localhost:8443/api/users/1
+```
+
+- **-n 100000** : Total requests
+- **-c 100** : Concurrent connections
+- **-m 100** : Max streams per connection (multiplexing)
+
+**Metrics to Track:**
+
+- Requests per second (req/s)
+- Average latency (ms)
+- Min/Max latency
+- Memory usage per connection
+- CPU utilization
+
+**Baseline Goal:** Establish baseline metrics for future regression detection
+
+---
+
+#### Scenario 2: Large Body Streaming
+
+**Test:** Large payload response (e.g., 10 MiB download)
+
+```bash
+h2load -n 1000 -c 50 -m 50 \
+  -H 'Accept-Encoding: gzip,zstd' \
+  https://localhost:8443/files/large.bin
+```
+
+**Metrics to Track:**
+
+- Throughput (bytes/sec)
+- Latency under streaming
+- Compression efficiency
+- Memory allocation patterns during streaming
+
+**Expected:** Zero-copy sendfile should be observable via strace/perf
+
+---
+
+#### Scenario 3: Compression Efficiency
+
+**Test:** Compression negotiation and throughput
+
+```bash
+h2load -n 10000 -c 100 -m 100 \
+  -H 'Accept-Encoding: zstd' \
+  https://localhost:8443/api/small-payload
+```
+
+**Metrics to Track:**
+
+- Compression ratio (bytes sent / original)
+- CPU overhead of compression
+- Throughput (req/s) with/without compression
+- Wall-clock time
+
+**Expected:** zstd to have best compression/speed tradeoff
+
+---
+
+#### Scenario 4: High Stream Multiplexing
+
+**Test:** Maximum concurrent streams stress
+
+```bash
+h2load -n 50000 -c 10 -m 500 \
+  https://localhost:8443/api/echo
+```
+
+- **-m 500** : Max concurrent streams (high multiplexing)
+- **-c 10** : Fewer connections (more multiplexing per conn)
+
+**Metrics to Track:**
+
+- Requests per second
+- Stream state management overhead
+- Flow control window utilization
+- HPACK decoder efficiency
+
+**Expected:** Near-linear performance scaling with streams (no bottlenecks)
+
+---
+
+#### Scenario 5: Small Payload Latency
+
+**Test:** Ultra-low-latency requests (e.g., health checks, metrics)
+
+```bash
+h2load -n 100000 -c 100 -m 100 \
+  https://localhost:8443/health
+```
+
+**Metrics to Track:**
+
+- Tail latencies (p50, p95, p99)
+- Min latency (event loop responsiveness)
+- GC/allocation pauses
+
+**Expected:** Sub-millisecond latencies (< 1ms p99)
+
+---
+
+#### Scenario 6: TLS Handshake Overhead
+
+**Test:** Connection establishment with TLS
+
+```bash
+# Warm handshakes (reused connections)
+h2load -n 10000 -c 100 -m 100 \
+  https://localhost:8443/api/echo
+
+# Cold handshakes (new connections every N requests)
+h2load -n 10000 -c 100 -m 1 \
+  https://localhost:8443/api/echo
+```
+
+**Metrics to Track:**
+
+- Handshake time (ms)
+- Time to first byte (TTFB) with/without handshake
+- TLS 1.3 0-RTT impact (if enabled)
+- Session ticket resumption benefit
+
+**Expected:** <50ms handshake, <10ms TTFB for subsequent requests
+
+---
+
+#### Scenario 7: Header Compression (HPACK)
+
+**Test:** Header compression efficiency
+
+```bash
+# Small headers (default)
+h2load -n 10000 -c 100 -m 100 \
+  https://localhost:8443/api/echo
+
+# Large headers (many custom headers)
+h2load -n 10000 -c 100 -m 100 \
+  -H 'X-Custom-1: value-1' \
+  -H 'X-Custom-2: value-2' \
+  ... (repeat 50+ custom headers) \
+  https://localhost:8443/api/echo
+```
+
+**Metrics to Track:**
+
+- Bytes per request (with large headers)
+- Compression ratio (static + dynamic table)
+- Dynamic table eviction rate
+- HPACK encoder/decoder CPU time
+
+**Expected:** >60% header compression ratio
+
+---
+
+#### Scenario 8: Flow Control Behavior
+
+**Test:** Slow client reading (flow control window exhaustion)
+
+```bash
+# Simulate slow reading: --rate-period=1ms (one read per millisecond)
+h2load -n 1000 -c 10 -m 10 \
+  --rate=1000 \
+  https://localhost:8443/files/medium-file
+```
+
+**Metrics to Track:**
+
+- Throughput under flow control constraints
+- WINDOW_UPDATE frame frequency
+- Buffer memory usage
+- Stream stall time
+
+**Expected:** Proper backpressure (no excessive buffering)
+
+### Performance Regression Detection (ideas)
+
+#### Baseline Metrics
+
+To be established in first run:
+
+```json
+{
+  "scenario": "baseline_rpc",
+  "date": "2026-01-17",
+  "metrics": {
+    "req_per_sec": 45000,  // Expected value
+    "avg_latency_ms": 2.3,
+    "p99_latency_ms": 5.1,
+    "memory_per_conn_kb": 128
+  }
+}
+```
+
+#### Regression Threshold
+
+Fail build if:
+
+- req/s < baseline * 0.95 (5% regression)
+- p99_latency_ms > baseline * 1.1 (10% increase)
+- memory_per_conn > baseline * 1.2 (20% increase)
+
+---
+
+### Profiling & Diagnostics
+
+When performance regressions are detected:
+
+#### 1. CPU Profiling with perf
+
+```bash
+perf record -F 99 -p <server_pid> -- h2load ... 
+perf report
+```
+
+#### 2. Flame Graph Generation
+
+```bash
+perf script | inferno-collapse-perf | inferno-flamegraph > /tmp/perf.svg
+```
+
+#### 3. Memory Profiling with Valgrind/Massif
+
+```bash
+valgrind --tool=massif --massif-out-file=massif.out <aeronet_server>
+ms_print massif.out
+```
+
+#### 4. strace for Syscall Overhead
+
+```bash
+strace -e trace=sendfile,writev,write -c <aeronet_server>
+```

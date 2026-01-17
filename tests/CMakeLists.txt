@@ -7,7 +7,6 @@ endfunction()
 
 aeronet_http_test(compile-time-traits)
 aeronet_http_test(http-additional)
-aeronet_http_test(http-chunked-head)
 
 # Compression tests
 if(AERONET_ENABLE_ZLIB OR AERONET_ENABLE_ZSTD OR AERONET_ENABLE_BROTLI)

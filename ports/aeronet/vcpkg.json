@@ -1,6 +1,6 @@
 {
   "name": "aeronet",
-  "version-string": "0.8.0",
+  "version-string": "1.0.0",
   "description": "C++ HTTP server library (Linux, TLS optional)",
   "homepage": "https://github.com/sjanel/aeronet",
   "license": "MIT",
