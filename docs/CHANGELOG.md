@@ -2,6 +2,16 @@
 
 All notable changes to aeronet are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- New `HttpRequest::makeResponse()` factory methods for simplified response creation with body and content-type.
+
+### Breaking Changes
+
+- Minor validation enforcement: HttpServerConfig::globalHeaders now MUST be key value separated by http::HeaderSep.
+
 ## [1.0.0] - 2026-01-17
 
 ### Release Overview

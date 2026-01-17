@@ -24,6 +24,7 @@
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/nchars.hpp"
+#include "aeronet/safe-cast.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -40,18 +41,19 @@ namespace aeronet {
 
 namespace {
 // The RFC does not specify a maximum length for the reason phrase,
-// but in practice it should be reasonable. If you need a longer reason,
-// consider using headers / body instead.
+// but in practice it should be reasonable. It's not really used by clients,
+// as they mostly rely on the status code instead.
 constexpr std::string_view::size_type kMaxReasonLength = 1024;
 
 // Number of digits in the status code (3 digits).
-constexpr std::size_t kNdigitsStatusCode = 3U;
+constexpr std::size_t kStatusCodeLen = 3U;
 
 // Date header will always be present at headersStartPos.
 constexpr std::size_t kDateHeaderLenWithCRLF = HttpResponse::HeaderSize(http::Date.size(), kRFC7231DateStrLen);
 
-constexpr std::size_t kStatusLineMinLenWithoutCRLF = http::HTTP10Sv.size() + 1U + kNdigitsStatusCode;
+constexpr std::size_t kStatusLineMinLenWithoutCRLF = http::HTTP10Sv.size() + 1U + kStatusCodeLen;
 
+// Initial size of the HttpResponse internal buffer, including the status line, Date header and DoubleCRLF.
 constexpr std::size_t kHttpResponseInitialSize =
     kStatusLineMinLenWithoutCRLF + kDateHeaderLenWithCRLF + http::DoubleCRLF.size();
 
@@ -110,8 +112,8 @@ HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::st
   }
 }
 
-HttpResponse::HttpResponse(std::size_t expectedUserCapacity, http::StatusCode code)
-    : _data(kHttpResponseInitialSize + expectedUserCapacity) {
+HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code)
+    : _data(kHttpResponseInitialSize + additionalCapacity) {
   InitData(_data.data());
   status(code);
   setHeadersStartPos(static_cast<std::uint16_t>(kStatusLineMinLenWithoutCRLF));
@@ -121,9 +123,32 @@ HttpResponse::HttpResponse(std::size_t expectedUserCapacity, http::StatusCode co
   _data.setSize(kInitialBodyStart);
 }
 
-HttpResponse::HttpResponse(std::string_view body, std::string_view contentType)
-    : HttpResponse(BodySize(body.size(), contentType.size()), http::StatusCodeOK) {
-  this->body(body, contentType);
+HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
+                           std::string_view body, std::string_view contentType)
+    : _data(kHttpResponseInitialSize + concatenatedHeaders.size() +
+            NeededBodyHeadersSize(body.size(), contentType.size()) + body.size() + additionalCapacity) {
+  assert(concatenatedHeaders.empty() || concatenatedHeaders.ends_with(http::CRLF));
+  InitData(_data.data());
+  status(code);
+  setHeadersStartPos(static_cast<std::uint16_t>(kStatusLineMinLenWithoutCRLF));
+  std::size_t bodyStartPos = kInitialBodyStart - http::CRLF.size();
+  if (!concatenatedHeaders.empty()) {
+    char* insertPtr = _data.data() + kHttpResponseInitialSize - http::DoubleCRLF.size();
+    std::memcpy(insertPtr, http::CRLF.data(), http::CRLF.size());
+    std::memcpy(insertPtr + http::CRLF.size(), concatenatedHeaders.data(), concatenatedHeaders.size());
+    bodyStartPos += concatenatedHeaders.size();
+  }
+  if (body.empty()) {
+    bodyStartPos += http::CRLF.size();
+  } else {
+    char* insertPtr = WriteCRLFHeader(_data.data() + bodyStartPos - http::CRLF.size(), http::ContentType, contentType);
+    insertPtr = WriteCRLFHeader(insertPtr, http::ContentLength, body.size());
+    bodyStartPos = static_cast<std::uint64_t>(insertPtr + http::DoubleCRLF.size() - _data.data());
+    std::memcpy(insertPtr + http::DoubleCRLF.size(), body.data(), body.size());
+  }
+  std::memcpy(_data.data() + bodyStartPos - http::DoubleCRLF.size(), http::DoubleCRLF.data(), http::DoubleCRLF.size());
+  setBodyStartPos(bodyStartPos);
+  _data.setSize(bodyStartPos + body.size());
 }
 
 std::size_t HttpResponse::bodyLength() const noexcept {
@@ -166,7 +191,7 @@ HttpResponse& HttpResponse::reason(std::string_view newReason) & {
   }
   std::memmove(
       orig + diff, orig,
-      _data.size() - kStatusCodeBeg - kNdigitsStatusCode - oldReasonSz - static_cast<uint32_t>(!oldReason.empty()));
+      _data.size() - kStatusCodeBeg - kStatusCodeLen - oldReasonSz - static_cast<uint32_t>(!oldReason.empty()));
   adjustBodyStart(diff);
   adjustHeadersStart(diff);
   if (newReason.empty()) {
@@ -505,8 +530,6 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
     throw std::logic_error("Trailers must be added after non empty (nor file) body is set");
   }
 
-  const std::size_t lineSize = HeaderSize(name.size(), value.size());
-
   /*
 
   Example of a full HTTP/1.1 response with chunked transfer encoding and trailers:
@@ -534,6 +557,9 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
   // It is the responsibility of the finalization code to ensure that the body is in chunked format if trailers are
   // present.
 
+  const std::size_t lineSize = HeaderSize(name.size(), value.size());
+  const auto newTrailerLen = SafeCast<decltype(_trailerLen)>(lineSize + _trailerLen);
+
   char* insertPtr;
   if (hasBodyCaptured()) {
     assert(!_payloadVariant.isFilePayload());
@@ -547,7 +573,7 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
     _data.addSize(lineSize);
   }
 
-  _trailerLen += lineSize;
+  _trailerLen = newTrailerLen;
 
   WriteHeaderCRLF(insertPtr, name, value);
   return *this;
@@ -573,7 +599,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
   std::bitset<HttpServerConfig::kMaxGlobalHeaders> globalHeadersToSkipBmp;
 
   bool writeAllGlobalHeaders = true;
-  {
+  if (!_alreadyPrepared) {
     std::size_t pos = 0;
     for (std::string_view headerKeyVal : globalHeaders) {
       std::string_view key = headerKeyVal.substr(0, headerKeyVal.find(':'));
@@ -778,7 +804,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
     }
   }
 
-  if (!globalHeaders.empty()) {
+  if (!_alreadyPrepared && !globalHeaders.empty()) {
     if (writeAllGlobalHeaders) {
       // Optim: single memcpy for all global headers
       std::memcpy(headersInsertPtr, http::CRLF.data(), http::CRLF.size());

@@ -161,6 +161,7 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
   StreamRequest& streamReq = it->second;
 
   HttpRequest& req = streamReq.request;
+  req._pGlobalHeaders = &_pServerConfig->globalHeaders;
 
   // Pass 1 : compute total headers storage
   std::size_t headersTotalLen = 0;
@@ -507,13 +508,15 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
   // Inject server-managed headers into the response object so they flow through
   // the same encoding path as other response headers.
 
-  // TODO: perf - avoid memmove of the whole body by appending reserved headers here.
-  for (std::string_view headerKeyVal : _pServerConfig->globalHeaders) {
-    const auto colonPos = headerKeyVal.find(':');
-    assert(colonPos != std::string_view::npos);
-    const std::string_view key = headerKeyVal.substr(0, colonPos);
+  if (!response._alreadyPrepared) {
+    // TODO: perf - avoid memmove of the whole body by appending reserved headers here.
+    for (std::string_view headerKeyVal : _pServerConfig->globalHeaders) {
+      const auto colonPos = headerKeyVal.find(':');
+      assert(colonPos != std::string_view::npos);
+      const std::string_view key = headerKeyVal.substr(0, colonPos);
 
-    response.setHeader(key, TrimOws(headerKeyVal.substr(colonPos + 1)), HttpResponse::OnlyIfNew::Yes);
+      response.setHeader(key, TrimOws(headerKeyVal.substr(colonPos + 1)), HttpResponse::OnlyIfNew::Yes);
+    }
   }
 
   // IMPORTANT: take views only after mutating headers, since setHeader() may reallocate

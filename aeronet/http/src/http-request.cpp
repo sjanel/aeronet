@@ -19,6 +19,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/major-minor-version.hpp"
@@ -89,13 +90,9 @@ bool HttpRequest::hasMoreBody() const {
     // body bytes arrive. In that intermediate state, treat the request as
     // having more body so loops using hasMoreBody()+readBodyAsync() will
     // execute and suspend correctly.
-    if (_ownerState != nullptr) {
-      const auto& async = _ownerState->asyncState;
-      if (async.active && async.needsBody) {
-        return true;
-      }
-    }
-    return false;
+    assert(_ownerState != nullptr);
+    const auto& async = _ownerState->asyncState;
+    return async.active && async.needsBody;
   }
   return _bodyAccessBridge->hasMore(*this, _bodyAccessContext);
 }
@@ -110,28 +107,77 @@ std::string_view HttpRequest::readBody(std::size_t maxBytes) {
 }
 
 [[nodiscard]] std::string_view HttpRequest::alpnProtocol() const noexcept {
+  assert(_ownerState != nullptr);
   return _ownerState->tlsInfo.selectedAlpn();
 }
 
 [[nodiscard]] std::string_view HttpRequest::tlsCipher() const noexcept {
+  assert(_ownerState != nullptr);
   return _ownerState->tlsInfo.negotiatedCipher();
 }
 
 [[nodiscard]] std::string_view HttpRequest::tlsVersion() const noexcept {
+  assert(_ownerState != nullptr);
   return _ownerState->tlsInfo.negotiatedVersion();
 }
 
 bool HttpRequest::wantClose() const { return CaseInsensitiveEqual(headerValueOrEmpty(http::Connection), http::close); }
 
+HttpResponse HttpRequest::makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const {
+  HttpResponse resp(additionalCapacity, statusCode, _pGlobalHeaders->fullStringWithLastSep());
+  resp._alreadyPrepared = true;
+  return resp;
+}
+
+HttpResponse HttpRequest::makeResponse(std::string_view body, std::string_view contentType) const {
+  HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), body, contentType);
+  resp._alreadyPrepared = true;
+  return resp;
+}
+
+HttpResponse HttpRequest::makeResponse(http::StatusCode statusCode, std::string_view body,
+                                       std::string_view contentType) const {
+  HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), body, contentType);
+  resp._alreadyPrepared = true;
+  return resp;
+}
+
+HttpResponse HttpRequest::makeResponse(std::span<const std::byte> body, std::string_view contentType) const {
+  std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
+  HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType);
+  resp._alreadyPrepared = true;
+  return resp;
+}
+
+HttpResponse HttpRequest::makeResponse(http::StatusCode statusCode, std::span<const std::byte> body,
+                                       std::string_view contentType) const {
+  std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
+  HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType);
+  resp._alreadyPrepared = true;
+  return resp;
+}
+
 bool HttpRequest::hasExpectContinue() const noexcept {
   return version() == http::HTTP_1_1 && CaseInsensitiveEqual(headerValueOrEmpty(http::Expect), http::h100_continue);
+}
+
+bool HttpRequest::isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequestsPerConnection,
+                                      bool isServerRunning) const {
+  if (!enableKeepAlive || _ownerState->requestsServed >= maxRequestsPerConnection || !isServerRunning) {
+    return false;
+  }
+  const std::string_view connVal = headerValueOrEmpty(http::Connection);
+  if (connVal.empty()) {
+    // Default is keep-alive for HTTP/1.1, close for HTTP/1.0
+    return version() == http::HTTP_1_1;
+  }
+  return !CaseInsensitiveEqual(connVal, http::close);
 }
 
 http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
                                              bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan) {
   char* first = inBuffer.data();
   char* last = first + inBuffer.size();
-  _headPinned = false;
 
   _reqStart = std::chrono::steady_clock::now();
 
@@ -239,6 +285,8 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
   _bodyAccessContext = nullptr;
   _trailers.clear();
   _pathParams.clear();
+
+  _headPinned = false;
 
   return http::StatusCodeOK;
 }

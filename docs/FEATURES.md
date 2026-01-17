@@ -2303,7 +2303,7 @@ apiCors.allowOrigin("https://app.example.com")
 
 Router router;
 router.setPath(http::Method::GET | http::Method::POST, "/api/*", 
-               [](const HttpRequest& req) { return HttpResponse(200); })
+               [](const HttpRequest& req) { return req.makeResponse(200); })
       .cors(std::move(apiCors));
 ```
 
@@ -2560,9 +2560,9 @@ int main() {
   // Use req.isHttp2() and req.streamId() to detect HTTP/2 if needed
   router.setDefault([](const HttpRequest& req) {
     if (req.isHttp2()) {
-      return HttpResponse(200).body("Hello from HTTP/2! Stream " + std::to_string(req.streamId()) + "\n");
+      return req.makeResponse("Hello from HTTP/2! Stream " + std::to_string(req.streamId()) + "\n");
     }
-    return HttpResponse(200).body("Hello from HTTP/1.1\n");
+    return req.makeResponse("Hello from HTTP/1.1\n");
   });
 
   // HTTP/2 configuration
@@ -2594,14 +2594,14 @@ Router router;
 router.setDefault([](const HttpRequest& req) {
   if (req.isHttp2()) {
     // HTTP/2-specific logic using req.streamId(), req.scheme(), etc.
-    return HttpResponse(200).body("HTTP/2 stream " + std::to_string(req.streamId()) + "\n");
+    return req.makeResponse(200, "HTTP/2 stream " + std::to_string(req.streamId()) + "\n");
   }
-  return HttpResponse(200).body("HTTP/1.1 response\n");
+  return req.makeResponse(200, "HTTP/1.1 response\n");
 });
 
 // Per-path handlers work identically for both protocols
 router.setPath(http::Method::GET, "/api/{resource}", [](const HttpRequest& req) {
-  return HttpResponse(200).body("Resource: " + std::string(req.pathParams().at("resource")) + "\n");
+  return req.makeResponse(200, "Resource: " + std::string(req.pathParams().at("resource")) + "\n");
 });
 
 HttpServerConfig config;
@@ -2684,10 +2684,6 @@ curl --http2-prior-knowledge http://localhost:8080/hello
 # h2c via upgrade
 curl --http2 http://localhost:8080/hello
 ```
-
-### Thread Safety
-
-HTTP/2 handlers execute on the same reactor thread as HTTP/1.1. The `HttpRequest` references are valid only during handler execution. For long-running operations, copy any needed data before returning.
 
 ## Future Expansions
 

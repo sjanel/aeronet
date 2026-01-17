@@ -8,8 +8,11 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/concatenated-headers.hpp"
 #include "aeronet/headers-view-map.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -257,6 +260,40 @@ class HttpRequest {
   // This is the sum of the lengths of the request line and all headers including CRLFs.
   [[nodiscard]] std::size_t headSpanSize() const noexcept { return _headSpanSize; }
 
+  // ============================
+  // Make Response helpers
+  // ============================
+
+  // Creates an HttpResponse with the given status code (200 by default).
+  // Compared to the direct constructor, using this method may enable some optimizations,
+  // as it prepares some work usually done at finalization step which avoids memory moves.
+  // For instance, if you use global headers, the allocated memory will be correctly sized and
+  // all HTTP response components correctly placed in the buffer from the start.
+  // The returned HttpResponse can be further modified, but for best performance, avoid adding headers
+  // after body like usual.
+  [[nodiscard]] HttpResponse makeResponse(http::StatusCode statusCode = http::StatusCodeOK) const {
+    return makeResponse(0UL, statusCode);
+  }
+
+  // Same as makeResponse(statusCode) but with additional capacity for the internal buffer.
+  [[nodiscard]] HttpResponse makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const;
+
+  // Same as makeResponse(200) but also sets the body and content type.
+  [[nodiscard]] HttpResponse makeResponse(std::string_view body,
+                                          std::string_view contentType = http::ContentTypeTextPlain) const;
+
+  // Same as makeResponse(statusCode) but also sets the body and content type.
+  [[nodiscard]] HttpResponse makeResponse(http::StatusCode statusCode, std::string_view body,
+                                          std::string_view contentType = http::ContentTypeTextPlain) const;
+
+  // Same as makeResponse(200) but also sets the body from given bytes span and content type.
+  [[nodiscard]] HttpResponse makeResponse(std::span<const std::byte> body,
+                                          std::string_view contentType = http::ContentTypeApplicationOctetStream) const;
+
+  // Same as makeResponse(statusCode) but also sets the body from given bytes span and content type.
+  [[nodiscard]] HttpResponse makeResponse(http::StatusCode statusCode, std::span<const std::byte> body,
+                                          std::string_view contentType = http::ContentTypeApplicationOctetStream) const;
+
  private:
   friend class SingleHttpServer;
   friend class HttpRequestTest;
@@ -275,6 +312,9 @@ class HttpRequest {
   HttpRequest() noexcept = default;
 
   [[nodiscard]] bool wantClose() const;
+
+  [[nodiscard]] bool isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequestsPerConnection,
+                                         bool isServerRunning) const;
 
   // Attempts to set this HttpRequest (except body) from given ConnectionState.
   // Returns StatusCode OK if the request is good (it will be fully set) or an HTTP error status to forward.
@@ -304,10 +344,9 @@ class HttpRequest {
   const char* _pPath{nullptr};
   const char* _pScheme{nullptr};     // :scheme pseudo-header ("http" or "https")
   const char* _pAuthority{nullptr};  // :authority pseudo-header (equivalent to Host)
-
   // Raw query component (excluding '?') retained as-is; per-key/value decoding happens on iteration.
-  // Lifetime: valid only during handler invocation (points into connection buffer / in-place decode area).
   const char* _pDecodedQueryParams{nullptr};
+  const ConcatenatedHeaders* _pGlobalHeaders{nullptr};
 
   HeadersViewMap _headers;
   HeadersViewMap _trailers;  // Trailer headers (RFC 7230 §4.1.2) from chunked requests

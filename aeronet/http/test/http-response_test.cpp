@@ -164,6 +164,66 @@ TEST_F(HttpResponseTest, ConstructorWithBodyContentTypeOnly) {
   EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
 }
 
+TEST_F(HttpResponseTest, ConstructorWithConcatenatedHeaders) {
+  static constexpr std::string_view kConcatenatedHeaders[] = {
+      "",
+      "X-Custom-Header: CustomValue\r\n",
+      "X-1: Salut\r\nX-2: Bonjour\r\nX-3: Hola\r\n",
+  };
+
+  static constexpr std::string_view kBodies[] = {
+      "",
+      "Hello!",
+      "This is a longer body to test the HttpResponse constructor with concatenated headers.",
+  };
+
+  static constexpr std::size_t kAdditionalCapacities[] = {
+      0U,
+      16U,
+      64U,
+  };
+
+  for (std::string_view body : kBodies) {
+    for (std::size_t additionalCapacity : kAdditionalCapacities) {
+      for (std::string_view concatenatedHeaders : kConcatenatedHeaders) {
+        HttpResponse resp(additionalCapacity, 200, concatenatedHeaders, body, "text/custom");
+        EXPECT_EQ(resp.status(), 200);
+        EXPECT_EQ(resp.reason(), "");
+        EXPECT_EQ(resp.bodyInMemory(), body);
+        if (concatenatedHeaders.contains("X-Custom-Header: ")) {
+          EXPECT_EQ(resp.headerValueOrEmpty("X-Custom-Header"), "CustomValue");
+        } else {
+          EXPECT_FALSE(resp.hasHeader("X-Custom-Header"));
+        }
+        if (concatenatedHeaders.contains("X-1: ")) {
+          EXPECT_EQ(resp.headerValueOrEmpty("X-1"), "Salut");
+          EXPECT_EQ(resp.headerValueOrEmpty("X-2"), "Bonjour");
+          EXPECT_EQ(resp.headerValueOrEmpty("X-3"), "Hola");
+        } else {
+          EXPECT_FALSE(resp.hasHeader("X-1"));
+        }
+        if (!body.empty()) {
+          EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/custom");
+          EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), std::to_string(body.size()));
+        } else {
+          EXPECT_FALSE(resp.hasHeader(http::ContentType));
+          EXPECT_FALSE(resp.hasHeader(http::ContentLength));
+        }
+
+        const auto full = concatenated(std::move(resp));
+        EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+        EXPECT_EQ(full.contains(MakeHttp1HeaderLine("X-Custom-Header", "CustomValue")),
+                  concatenatedHeaders.contains("X-Custom-Header: "));
+        EXPECT_EQ(full.contains(MakeHttp1HeaderLine("X-Another-Header", "AnotherValue")),
+                  concatenatedHeaders.contains("X-Another-Header: "));
+        EXPECT_EQ(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/custom")), !body.empty());
+        EXPECT_EQ(full.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(body.size()))), !body.empty());
+        EXPECT_TRUE(full.ends_with("\r\n\r\n" + std::string(body)));
+      }
+    }
+  }
+}
+
 TEST_F(HttpResponseTest, BadStatusCode) {
   EXPECT_THROW(HttpResponse(42), std::invalid_argument);
   EXPECT_THROW(HttpResponse(1000), std::invalid_argument);

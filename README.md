@@ -486,7 +486,14 @@ Notes:
 
 ### Building the HTTP response
 
-The router expects callback functions returning a `HttpResponse`. You can build it thanks to the numerous provided methods to store the main components of a HTTP response (status code, reason, headers, body and trailers):
+The router expects callback functions returning a `HttpResponse`.
+
+You have two ways to construct a `HttpResponse`:
+
+- Direct construction thanks to its numerous constructors taking status **code**, **body** & `content-type`, **headers**, additional capacity for headers/body/trailers
+- [Optimized](#optimize-httpresponse-construction) construction from `HttpRequest::makeResponse()` that pre-applies server-global headers and other optimizations
+
+You can build it thanks to the numerous provided methods to store the main components of a HTTP response (status code, reason, headers, body and trailers):
 
 | Operation          | Complexity           | Notes                                  |
 |--------------------|----------------------|----------------------------------------|
@@ -510,6 +517,23 @@ Usage guidelines:
   `Content-Type`) for readability, but behavior is the same regardless of input casing.
 - Chain on temporaries for concise construction; the rvalue-qualified overloads keep the object movable.
 - For maximum performance, fill the response in order, starting with status/reason, then headers, then body and trailers, to minimize memory shifts and reallocations.
+
+#### Optimize HttpResponse construction
+
+You can use `HttpRequest::makeResponse()` methods to optimize some job usually made at finalization time, directly at construction time.
+This is especially useful when you have configured `globalHeaders` in the server config that you want to apply to all responses, as it avoids copying them again before the body (that would also shift the whole body, if inlined) at response finalization time.
+
+Example:
+
+```cpp
+Router router;
+router.setDefault([](const HttpRequest& req) {
+  // Pre-applies global headers from server config
+  return req.makeResponse("hello\n"); // response already contains global headers (for instance: 'server: aeronet')
+});
+```
+
+Overloads make it possible to pass status and / or body & content-type, very useful for one-shot responses.
 
 #### Reserved Headers
 
