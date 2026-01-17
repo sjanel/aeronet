@@ -9,6 +9,7 @@
 [![Packaging](https://github.com/sjanel/aeronet/actions/workflows/packaging.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/packaging.yml)
 [![clang-format](https://github.com/sjanel/aeronet/actions/workflows/clang-format-check.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/clang-format-check.yml)
 [![Benchmarks](https://img.shields.io/endpoint?url=https%3A%2F%2Fsjanel.github.io%2Faeronet%2Fbenchmarks%2Fbenchmark_badge.json)](https://sjanel.github.io/aeronet/benchmarks/)
+[![Release](https://img.shields.io/github/v/release/sjanel/aeronet?style=flat-square)](https://github.com/sjanel/aeronet/releases/latest)
 
 ## Why aeronet?
 
@@ -40,7 +41,7 @@ You can browse the latest rendered benchmark tables directly on GitHub Pages:
 
 ## Minimal Examples
 
-Spin up a basic HTTP server that responds on `/hello` in just a few lines. If you pass `0` as the port (or omit it), the kernel picks an ephemeral port which you can query immediately.
+Spin up a basic HTTP server that responds on `/hello` in just a few lines.
 **All code examples** in the `README` and the `FEATURES.md` files are guaranteed to compile as they are covered by a CI check.
 
 ### Immediate response
@@ -48,7 +49,7 @@ Spin up a basic HTTP server that responds on `/hello` in just a few lines. If yo
 Return a complete, immediate `HttpResponse` from the handler:
 
 ```cpp
-#include <aeronet/aeronet.hpp>
+#include <aeronet/aeronet.hpp> // unique 'umbrella' header, includes all public API
 
 using namespace aeronet;
 
@@ -57,7 +58,7 @@ int main() {
   router.setPath(http::Method::GET, "/hello", [](const HttpRequest& req) {
     return HttpResponse(200).header("X-Req-Body", req.body()).body("hello from aeronet\n");
   });
-  HttpServer server(HttpServerConfig{}, std::move(router));
+  HttpServer server(HttpServerConfig{}, std::move(router)); // default port is ephemeral, OS will pick an available one
   server.run(); // blocking. Use start() for non-blocking
 }
 ```
@@ -66,7 +67,7 @@ See the [full program](examples/minimal.cpp).
 
 ### Streaming response
 
-For a large, unknown size response body, reply with multiple body chunks using `HttpResponseWriter`:
+For a large, unknown size response body, reply with multiple body chunks using `HttpResponseWriter`, that will use HTTP chunked transfer encoding automatically:
 
 ```cpp
 Router router;

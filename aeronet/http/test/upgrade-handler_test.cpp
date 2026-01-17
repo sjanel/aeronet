@@ -14,7 +14,6 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/websocket-constants.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include <algorithm>
@@ -22,6 +21,7 @@
 #include <string>
 
 #include "aeronet/concatenated-strings.hpp"
+#include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-upgrade.hpp"
 #endif

@@ -39,6 +39,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/request-task.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/safe-cast.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/tracing/tracer.hpp"
