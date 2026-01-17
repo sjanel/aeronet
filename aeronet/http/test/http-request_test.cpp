@@ -9,6 +9,7 @@
 #include <initializer_list>
 #include <memory>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -50,6 +51,12 @@ RawChars BuildRaw(std::string_view method, std::string_view target, std::string_
 
 class HttpRequestTest : public ::testing::Test {
  protected:
+  void SetUp() override {
+    globalHeaders.append("server: aeronet");
+    req._ownerState = &cs;
+    req._pGlobalHeaders = &globalHeaders;
+  }
+
   http::StatusCode reqSet(RawChars raw, bool mergeAllowedForUnknownRequestHeaders = true,
                           std::size_t maxHeaderSize = 4096UL) {
     cs.inBuffer = std::move(raw);
@@ -179,6 +186,7 @@ class HttpRequestTest : public ::testing::Test {
     }
   }
 
+  ConcatenatedHeaders globalHeaders;
   HttpRequest req;
   ConnectionState cs;
 };
@@ -1379,6 +1387,168 @@ TEST_F(HttpRequestTest, HeaderParsingStress) {
 
     ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(input));
   }
+}
+
+// ============================
+// HttpRequest::makeResponse tests
+// ============================
+
+TEST_F(HttpRequestTest, MakeResponseStatusCodeOnly) {
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  auto resp = req.makeResponse(http::StatusCodeAccepted);
+
+  EXPECT_EQ(resp.status(), http::StatusCodeAccepted);
+  EXPECT_TRUE(resp.bodyInMemory().empty());
+
+  // Check that global headers are present
+  EXPECT_TRUE(resp.hasHeader("server"));
+  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+}
+
+TEST_F(HttpRequestTest, MakeResponseAdditionalCapacityStatusCodeOnly) {
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  auto resp = req.makeResponse(64UL, http::StatusCodeAccepted);
+  EXPECT_EQ(resp.status(), http::StatusCodeAccepted);
+  EXPECT_TRUE(resp.bodyInMemory().empty());
+
+  // Check that global headers are present
+  EXPECT_TRUE(resp.hasHeader("server"));
+  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+}
+
+TEST_F(HttpRequestTest, MakeResponseStatusCodeDefault200) {
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  auto resp = req.makeResponse();
+
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_TRUE(resp.bodyInMemory().empty());
+  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+}
+
+TEST_F(HttpRequestTest, MakeResponseBodyAndDefaultContentType) {
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  auto resp = req.makeResponse("Hello World");
+
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_EQ(resp.bodyInMemory(), "Hello World");
+  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
+}
+
+TEST_F(HttpRequestTest, MakeResponseBodyAndCustomContentType) {
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  auto resp = req.makeResponse(R"({"key":"value"})", "application/json");
+
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_EQ(resp.bodyInMemory(), "{\"key\":\"value\"}");
+  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "application/json");
+}
+
+TEST_F(HttpRequestTest, MakeResponseStatusCodeBodyAndContentType) {
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  auto resp = req.makeResponse(http::StatusCodeCreated, "<html>OK</html>", "text/html");
+
+  EXPECT_EQ(resp.status(), http::StatusCodeCreated);
+  EXPECT_EQ(resp.bodyInMemory(), "<html>OK</html>");
+  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/html");
+}
+
+TEST_F(HttpRequestTest, MakeResponseBytesBodyAndDefaultContentType) {
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  const std::array<std::byte, 5> binaryData = {std::byte{0x48}, std::byte{0x65}, std::byte{0x6c}, std::byte{0x6c},
+                                               std::byte{0x6f}};
+  auto resp = req.makeResponse(std::span<const std::byte>{binaryData});
+
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_EQ(resp.bodyInMemory(), "Hello");
+  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeApplicationOctetStream);
+}
+
+TEST_F(HttpRequestTest, MakeResponseBytesBodyAndCustomContentType) {
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  const std::array<std::byte, 8> pngHeader = {std::byte{0x89}, std::byte{0x50}, std::byte{0x4e}, std::byte{0x47},
+                                              std::byte{0x0d}, std::byte{0x0a}, std::byte{0x1a}, std::byte{0x0a}};
+  auto resp = req.makeResponse(std::span<const std::byte>{pngHeader}, "image/png");
+
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_EQ(resp.bodyInMemory().size(), 8UL);
+  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "image/png");
+}
+
+TEST_F(HttpRequestTest, MakeResponseStatusCodeBytesBodyAndContentType) {
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  const std::array<std::byte, 4> data = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+  auto resp = req.makeResponse(http::StatusCodePartialContent, std::span<const std::byte>{data}, "application/binary");
+
+  EXPECT_EQ(resp.status(), http::StatusCodePartialContent);
+  EXPECT_EQ(resp.bodyInMemory().size(), 4UL);
+  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "application/binary");
+}
+
+TEST_F(HttpRequestTest, MakeResponseCanBeModifiedAfterCreation) {
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  auto resp = req.makeResponse(http::StatusCodeOK, "initial");
+  resp.header("X-Custom", "value");
+  resp.header("X-Another", "data");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "value");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Another"), "data");
+  EXPECT_EQ(resp.bodyInMemory(), "initial");
+}
+
+TEST_F(HttpRequestTest, MakeResponseEmptyBodyStillPrefillesGlobalHeaders) {
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  auto resp = req.makeResponse(http::StatusCodeNoContent);
+
+  EXPECT_EQ(resp.status(), http::StatusCodeNoContent);
+  EXPECT_TRUE(resp.bodyInMemory().empty());
+  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+}
+
+TEST_F(HttpRequestTest, MakeResponseWithMultipleGlobalHeaders) {
+  // Add multiple global headers
+  globalHeaders.clear();
+  globalHeaders.append("server: aeronet");
+  globalHeaders.append("x-powered-by: aeronet");
+  globalHeaders.append("x-version: 1.0");
+
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  auto resp = req.makeResponse(http::StatusCodeOK, "test");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-powered-by"), "aeronet");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-version"), "1.0");
+  EXPECT_EQ(resp.bodyInMemory(), "test");
 }
 
 }  // namespace aeronet

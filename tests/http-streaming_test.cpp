@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -9,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 #include "aeronet/compression-config.hpp"
@@ -1057,4 +1062,238 @@ TEST(HttpResponseWriterFailures, MultipleStatusCalls) {
   const std::string response = test::simpleGet(ts.port(), "/multi-status");
   EXPECT_TRUE(response.contains("500"));
   EXPECT_TRUE(response.contains("Custom Reason"));
+}
+
+// Test contentLength called when writer is in Failed state - should log "writer-failed" reason
+// Note: The Failed state is difficult to trigger in integration tests as it requires connection failure.
+// This test attempts to trigger failure by rapidly closing/aborting the connection while the handler
+// tries to write large amounts of data that might exceed socket buffers.
+// Ignore SIGPIPE to prevent process termination on broken pipe
+static const int kSigpipeIgnored = []() {
+  ::signal(SIGPIPE, SIG_IGN);
+  return 0;
+}();
+
+// Test: ensureHeadersSent() enqueue failure (line 141)
+// Trigger failure when first sending headers by closing connection immediately
+TEST(HttpResponseWriterFailures, EnsureHeadersSentFailure) {
+  (void)kSigpipeIgnored;
+  ts.router().setPath(http::Method::GET, "/ensure-headers-sent-fail",
+                      [](const HttpRequest&, HttpResponseWriter& writer) {
+                        writer.status(http::StatusCodeOK);
+                        // writeBody triggers ensureHeadersSent internally
+                        writer.writeBody("data");
+                        writer.end();
+                      });
+
+  test::ClientConnection sock(ts.port());
+  int fd = sock.fd();
+  std::string req = "GET /ensure-headers-sent-fail HTTP/1.1\r\nHost: test\r\n\r\n";
+  test::sendAll(fd, req);
+  // Close immediately to cause header enqueue to fail
+  close(fd);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+}
+
+// Test: emitLastChunk() enqueue failure (line 190)
+// Chunked response with trailer, close connection to fail last chunk
+TEST(HttpResponseWriterFailures, EmitLastChunkFailure) {
+  (void)kSigpipeIgnored;
+  ts.router().setPath(http::Method::GET, "/last-chunk-fail", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.writeBody("chunk1");
+    writer.trailerAddLine("X-Trailer", "value");
+    // end() calls emitLastChunk
+    writer.end();
+  });
+
+  test::ClientConnection sock(ts.port());
+  int fd = sock.fd();
+  std::string req = "GET /last-chunk-fail HTTP/1.1\r\nHost: test\r\n\r\n";
+  test::sendAll(fd, req);
+  // Read some data first
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  char buf[1024];
+  ::recv(fd, buf, sizeof(buf), 0);
+  // Close before last chunk
+  close(fd);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+}
+
+// Test: writeBody() fixed-length enqueue failure (line 233)
+// Non-chunked response with HEAD request (fixed length path), close to fail body write
+TEST(HttpResponseWriterFailures, WriteBodyFixedLengthFailure) {
+  (void)kSigpipeIgnored;
+  ts.router().setPath(http::Method::HEAD, "/fixed-body-fail", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.contentLength(1000);
+    // HEAD request uses fixed-length path (not chunked)
+    // Try to write body data (will be suppressed for HEAD)
+    for (int i = 0; i < 100; ++i) {
+      writer.writeBody("data");
+    }
+    writer.end();
+  });
+
+  test::ClientConnection sock(ts.port());
+  int fd = sock.fd();
+  std::string req = "HEAD /fixed-body-fail HTTP/1.1\r\nHost: test\r\n\r\n";
+  test::sendAll(fd, req);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  close(fd);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+}
+
+// Enable compression, close connection to fail final compressed output
+TEST(HttpResponseWriterFailures, EndCompressionFailure) {
+  (void)kSigpipeIgnored;
+  // Enable compression in server config
+  HttpServerConfig cfg;
+  cfg.compression.minBytes = 16;
+  test::TestServer ts2(cfg);
+
+  ts2.router().setPath(http::Method::GET, "/compress-end-fail", [](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    // Write enough to trigger compression
+    writer.writeBody("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");  // 30 bytes
+    // end() calls encoder flush which may produce output
+    writer.end();
+  });
+
+  test::ClientConnection sock(ts2.port());
+  int fd = sock.fd();
+  std::string req = "GET /compress-end-fail HTTP/1.1\r\nHost: test\r\nAccept-Encoding: gzip\r\n\r\n";
+  test::sendAll(fd, req);
+  // Read headers
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  char buf[512];
+  ::recv(fd, buf, sizeof(buf), 0);
+  // Close before final encoder output
+  close(fd);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+}
+
+// Small write below compression threshold, close to fail buffered flush
+TEST(HttpResponseWriterFailures, EndIdentityBufferedFailure) {
+  (void)kSigpipeIgnored;
+  // Enable compression but write below threshold
+  HttpServerConfig cfg;
+  cfg.compression.minBytes = 100;  // High threshold
+  test::TestServer ts3(cfg);
+
+  ts3.router().setPath(http::Method::GET, "/identity-buffered-fail",
+                       [](const HttpRequest&, HttpResponseWriter& writer) {
+                         writer.status(http::StatusCodeOK);
+                         // Write small amount (below compression threshold)
+                         writer.writeBody("small");  // Only 5 bytes, below 100
+                         // end() flushes buffered identity data
+                         writer.end();
+                       });
+
+  test::ClientConnection sock(ts3.port());
+  int fd = sock.fd();
+  std::string req = "GET /identity-buffered-fail HTTP/1.1\r\nHost: test\r\n\r\n";
+  test::sendAll(fd, req);
+  // Read headers
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  char buf[512];
+  ::recv(fd, buf, sizeof(buf), 0);
+  // Close before buffered flush
+  close(fd);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+}
+
+// This was covered by the original ContentLengthWhenFailed test
+TEST(HttpResponseWriterFailures, EmitChunkFailure) {
+  (void)kSigpipeIgnored;
+  std::string largeData(10000, 'x');
+  ts.router().setPath(http::Method::GET, "/emit-chunk-fail",
+                      [largeData](const HttpRequest&, HttpResponseWriter& writer) {
+                        writer.status(http::StatusCodeOK);
+                        for (int i = 0; i < 100; ++i) {
+                          if (!writer.writeBody(largeData)) {
+                            writer.contentLength(999);
+                            writer.trailerAddLine("X-Fail", "yes");
+                            writer.end();
+                            return;
+                          }
+                        }
+                        writer.end();
+                      });
+
+  test::ClientConnection sock(ts.port());
+  int fd = sock.fd();
+  std::string req = "GET /emit-chunk-fail HTTP/1.1\r\nHost: test\r\n\r\n";
+  test::sendAll(fd, req);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  close(fd);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+}
+
+// Test contentLength called when writer is in Ended state
+TEST(HttpResponseWriterFailures, ContentLengthWhenEnded) {
+  ts.router().setPath(http::Method::GET, "/content-length-after-ended",
+                      [](const HttpRequest&, HttpResponseWriter& writer) {
+                        writer.status(http::StatusCodeOK);
+                        writer.writeBody("body-data");
+                        writer.end();
+                        writer.contentLength(50);
+                      });
+
+  const std::string response = test::simpleGet(ts.port(), "/content-length-after-ended");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(response.contains("body-data"));
+}
+
+// Test contentLength called when writer is in HeadersSent state
+TEST(HttpResponseWriterFailures, ContentLengthAfterHeadersSent) {
+  ts.router().setPath(http::Method::GET, "/content-length-headers-sent",
+                      [](const HttpRequest&, HttpResponseWriter& writer) {
+                        writer.status(http::StatusCodeOK);
+                        writer.writeBody("first-chunk");
+                        writer.contentLength(200);
+                        writer.writeBody("second-chunk");
+                        writer.end();
+                      });
+
+  const std::string response = test::simpleGet(ts.port(), "/content-length-headers-sent");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(response.contains("first-chunk"));
+  EXPECT_TRUE(response.contains("second-chunk"));
+}
+
+TEST(HttpStreamingMakeResponse, PrefillsGlobalHeadersHttp11) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.addGlobalHeader(http::Header{"X-Global", "gvalue"});
+    cfg.addGlobalHeader(http::Header{"X-Another", "anothervalue"});
+  });
+
+  ts.router().setPath(http::Method::GET, "/stream-make-response",
+                      [](const HttpRequest& req, HttpResponseWriter& writer) {
+                        auto base = req.makeResponse(http::StatusCodeAccepted, "ignored", http::ContentTypeTextPlain);
+
+                        writer.status(base.status());
+                        if (auto val = base.headerValue("X-Global")) {
+                          writer.headerAddLine("X-Global", *val);
+                        }
+                        if (auto val = base.headerValue("X-Another")) {
+                          writer.headerAddLine("X-Another", *val);
+                        }
+                        writer.headerAddLine("X-Stream", "yes");
+
+                        writer.writeBody("stream-body");
+                        writer.end();
+                      });
+
+  test::ClientConnection client(ts.port());
+  const int fd = client.fd();
+  std::string req = "GET /stream-make-response HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+  test::sendAll(fd, req);
+  const std::string resp = test::recvUntilClosed(fd);
+
+  EXPECT_TRUE(resp.contains("HTTP/1.1 202"));
+  EXPECT_TRUE(resp.contains("X-Global: gvalue"));
+  EXPECT_TRUE(resp.contains("X-Another: anothervalue"));
+  EXPECT_TRUE(resp.contains("X-Stream: yes"));
+  EXPECT_TRUE(resp.contains("stream-body"));
 }

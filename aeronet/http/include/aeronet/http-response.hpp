@@ -147,6 +147,10 @@ class HttpResponse {
            HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(bodyLen)));
   }
 
+  // -------------/
+  // CONSTRUCTORS /
+  // -------------/
+
   // Constructs an HttpResponse with a StatusCode OK (200) and a default initial capacity.
   HttpResponse() : HttpResponse(http::StatusCodeOK) {}
 
@@ -159,18 +163,32 @@ class HttpResponse {
   // Constructs an HttpResponse with an additional initial capacity for the internal buffer.
   // The provided capacity will be added to the minimal required size to hold the status line and reserved headers.
   // Give an approximate sum of added reason, headers, body size and trailers to minimize reallocations.
-  HttpResponse(std::size_t expectedUserCapacity, http::StatusCode code);
+  HttpResponse(std::size_t additionalCapacity, http::StatusCode code);
 
   // Constructs an HttpResponse with a 200 status code, no reason phrase and given body.
   // The body is copied into the internal buffer, and the content type header is set if the body is not empty.
   // If the body is large, prefer the capture by value of body() overloads to avoid a copy (and possibly an allocation).
   // The content type defaults to "text/plain"
-  explicit HttpResponse(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain);
+  explicit HttpResponse(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain)
+      : HttpResponse(http::StatusCodeOK, body, contentType) {}
 
   // Same as above, but with a byte span for the body.
   explicit HttpResponse(std::span<const std::byte> body,
                         std::string_view contentType = http::ContentTypeApplicationOctetStream)
       : HttpResponse(std::string_view(reinterpret_cast<const char*>(body.data()), body.size()), contentType) {}
+
+  // Constructs an HttpResponse with the given additional capacity, status code, concatenated headers,
+  // body and content type. The body is copied into the internal buffer.
+  // The concatenatedHeaders should follow a strict format. Each header key value pair MUST be formatted as:
+  //   <HeaderName>http::HeaderSep<HeaderValue>http::CRLF
+  // Examples of concatenatedHeaders, for http::HeaderSep = ": " and http::CRLF = "\r\n":
+  //   ""
+  //   "HeaderName: Value\r\n"
+  //   "HeaderName1: Value1\r\nHeaderName2: Value2\r\n"
+  // Empty concatenatedHeaders are allowed.
+  // It is undefined behavior to provide incorrectly formatted concatenated headers.
+  HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
+               std::string_view body = {}, std::string_view contentType = http::ContentTypeTextPlain);
 
   // --------/
   // GETTERS /
@@ -246,6 +264,8 @@ class HttpResponse {
   [[nodiscard]] std::size_t bodyInMemoryLength() const noexcept {
     return hasBodyCaptured() ? (_payloadVariant.size() - _trailerLen) : bodyInlinedLength();
   }
+
+  // TODO: add buffer / size, capacity of inline buffer, status line length, headers length, total length?
 
   // Get the length of the current inlined body stored in this HttpResponse.
   [[nodiscard]] std::size_t bodyInlinedLength() const noexcept { return _data.size() - bodyStartPos() - _trailerLen; }
@@ -883,6 +903,7 @@ class HttpResponse {
 
  private:
   friend class SingleHttpServer;
+  friend class HttpRequest;
   friend class HttpResponseTest;
   friend class HttpResponseWriter;  // streaming writer needs access to finalize
   friend class internal::HttpCodec;
@@ -958,9 +979,9 @@ class HttpResponse {
                                std::size_t totalBodyLen);
 
   // header pos is stored in lower 16 bits, body pos in upper 48 bits
-  static constexpr unsigned kHeaderPosNbBits = 16U;
+  static constexpr std::uint32_t kHeaderPosNbBits = 16U;
 
-  static constexpr unsigned kBodyPosNbBits = 64U - kHeaderPosNbBits;
+  static constexpr std::uint32_t kBodyPosNbBits = 64U - kHeaderPosNbBits;
 
   static constexpr std::uint64_t kHeadersStartMask = (std::uint64_t{1} << kHeaderPosNbBits) - 1;
   static constexpr std::uint64_t kBodyStartMask = (std::uint64_t{1} << kBodyPosNbBits) - 1;
@@ -971,31 +992,26 @@ class HttpResponse {
   }
 
   void setHeadersStartPos(std::uint16_t pos) noexcept {
-    const std::uint64_t bodyBits = _posBitmap & (kBodyStartMask << kHeaderPosNbBits);
-    _posBitmap = bodyBits | static_cast<std::uint64_t>(pos);
+    _posBitmap = (_posBitmap & (kBodyStartMask << kHeaderPosNbBits)) | static_cast<std::uint64_t>(pos);
   }
 
   void setBodyStartPos(std::uint64_t pos) {
     assert(pos <= kBodyStartMask);
-    const std::uint64_t headerBits = _posBitmap & kHeadersStartMask;
-    _posBitmap = headerBits | (pos << kHeaderPosNbBits);
+    _posBitmap = (_posBitmap & kHeadersStartMask) | (pos << kHeaderPosNbBits);
   }
 
   void adjustHeadersStart(int32_t diff) {
-    const auto next = static_cast<int64_t>(headersStartPos()) + diff;
-    setHeadersStartPos(static_cast<std::uint16_t>(next));
+    setHeadersStartPos(static_cast<std::uint16_t>(static_cast<int64_t>(headersStartPos()) + diff));
   }
 
   void adjustBodyStart(int64_t diff) {
-    const auto next = static_cast<int64_t>(bodyStartPos()) + diff;
-    setBodyStartPos(static_cast<std::uint64_t>(next));
+    setBodyStartPos(static_cast<std::uint64_t>(static_cast<int64_t>(bodyStartPos()) + diff));
   }
 
   char* getContentLengthHeaderLinePtr(std::size_t bodyLen) {
-    const auto bodyStart = bodyStartPos();
     const auto contentLengthHeaderLineSize =
         HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(bodyLen)));
-    return _data.data() + bodyStart - http::DoubleCRLF.size() - contentLengthHeaderLineSize;
+    return _data.data() + bodyStartPos() - http::DoubleCRLF.size() - contentLengthHeaderLineSize;
   }
 
   char* getContentLengthValuePtr(std::size_t bodyLen) {
@@ -1006,8 +1022,7 @@ class HttpResponse {
   // Returns a pointer to the beginning of the Content-Type header line (starting on CRLF before the header name).
   char* getContentTypeHeaderLinePtr(std::size_t bodyLen) {
     char* ptr = getContentLengthHeaderLinePtr(bodyLen) - HeaderSize(http::ContentType.size(), 0U);
-    while (*ptr != '\r') {
-      --ptr;
+    for (; *ptr != '\r'; --ptr) {
     }
     return ptr;
   }
@@ -1023,7 +1038,8 @@ class HttpResponse {
   std::uint64_t _posBitmap{0};
   // Variant that can hold an external captured payload (HttpPayload).
   HttpPayload _payloadVariant;
-  std::size_t _trailerLen{0};  // trailer length
+  std::uint32_t _trailerLen{0};  // trailer length
+  bool _alreadyPrepared{false};  // true if HttpResponse was created from HttpRequest::makeResponse
 };
 
 }  // namespace aeronet

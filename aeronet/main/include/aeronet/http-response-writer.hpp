@@ -184,7 +184,7 @@ class HttpResponseWriter {
  private:
   friend class SingleHttpServer;
 
-  HttpResponseWriter(SingleHttpServer& srv, int fd, const HttpRequest& request, bool headRequest, bool requestConnClose,
+  HttpResponseWriter(SingleHttpServer& srv, int fd, const HttpRequest& request, bool requestConnClose,
                      Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
                      std::span<const ResponseMiddleware> routeResponseMiddleware);
 
@@ -212,7 +212,7 @@ class HttpResponseWriter {
 
   // Internal fixed HttpResponse used solely for header accumulation and status/reason/body placeholder.
   // We never finalize until ensureHeadersSent(); body remains empty (streaming chunks / writes follow separately).
-  HttpResponse _fixedResponse{http::StatusCodeOK};
+  HttpResponse _fixedResponse;
   std::size_t _declaredLength{0};
   std::size_t _bytesWritten{0};
   std::unique_ptr<EncoderContext> _activeEncoderCtx;  // streaming context
