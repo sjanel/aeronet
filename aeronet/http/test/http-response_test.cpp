@@ -740,6 +740,58 @@ TEST_F(HttpResponseTest, SimpleBodyWithoutGlobalHeaders) {
   }
 }
 
+TEST_F(HttpResponseTest, HeaderValuesAreTrimmedHeaderAddLine) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Trimmed-Header-1", "   Value1   ");
+  resp.headerAddLine("X-Trimmed-Header-2", "\tValue2\t");
+  resp.headerAddLine("X-Trimmed-Header-3", " \t  Value3 \t ");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-1"), "Value1");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-2"), "Value2");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-3"), "Value3");
+}
+
+TEST_F(HttpResponseTest, HeaderValuesAreTrimmedHeaderSet) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.header("X-Trimmed-Header-1", "   Value1   ");
+  resp.header("X-Trimmed-Header-2", "\tValue2\t");
+  resp.header("X-Trimmed-Header-3", " \t  Value3 \t ");
+  resp.header("X-Trimmed-Header-3", " \t  Value33 \t ");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-1"), "Value1");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-2"), "Value2");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-3"), "Value33");
+}
+
+TEST_F(HttpResponseTest, HeaderAppendValuesAreTrimmed) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAppendValue("X-Trimmed-Header", "   Value1   ", ", ");
+  resp.headerAppendValue("X-Trimmed-Header", "\tValue2\t", ", ");
+  resp.headerAppendValue("X-Trimmed-Header", " \t  Value3 \t ", ", ");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header"), "Value1, Value2, Value3");
+}
+
+TEST_F(HttpResponseTest, HeaderValueContentTypeAreTrimmed) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("Some body", "   text/custom   ");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/custom");
+
+  resp.bodyAppend(" More body", "\ttext/another\t");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/another");
+
+  resp.bodyInlineSet(16U, kAppendZeroOrOneA, " \t  text/inline \t ");
+  resp.bodyInlineSet(16U, kAppendZeroOrOneA, " \t  text/inline \t ");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/inline");
+
+  resp.bodyInlineAppend(16, kAppendZeroOrOneA, " \t  text/append \t ");
+  resp.bodyInlineAppend(16, kAppendZeroOrOneA, " \t  text/append \t ");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/append");
+
+  resp.bodyStatic("Static body", "   text/static   ");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/static");
+}
+
 TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");

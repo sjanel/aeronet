@@ -28,6 +28,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/timedef.hpp"
 
@@ -74,6 +75,7 @@ void HttpResponseWriter::headerAddLine(std::string_view name, std::string_view v
     log::warn("Streaming: cannot add header after headers sent");
     return;
   }
+  value = TrimOws(value);
   if (CaseInsensitiveEqual(http::ContentEncoding, name)) {
     _contentEncodingHeaderPresent = true;
   }
@@ -85,6 +87,7 @@ void HttpResponseWriter::header(std::string_view name, std::string_view value) {
     log::warn("Streaming: cannot add header after headers sent");
     return;
   }
+  value = TrimOws(value);
   if (CaseInsensitiveEqual(http::ContentEncoding, name)) {
     _contentEncodingHeaderPresent = true;
   }
