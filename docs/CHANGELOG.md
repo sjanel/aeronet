@@ -8,10 +8,11 @@ All notable changes to aeronet are documented in this file.
 
 - New `HttpRequest::makeResponse()` factory methods for simplified response creation with body and content-type.
 - New size / length method helpers in `HttpResponse`, with `reserve` and capacity getters.
+- All Header values stored in `HttpResponse` and `HttpResponseWriter` are now trimmed of leading/trailing whitespace on set.
 
 ### Breaking Changes
 
-- Minor validation enforcement: HttpServerConfig::globalHeaders now MUST be key value separated by http::HeaderSep.
+- Minor validation enforcement: `HttpServerConfig::globalHeaders` now MUST be key value separated by `http::HeaderSep`.
 
 ## [1.0.0] - 2026-01-17
 

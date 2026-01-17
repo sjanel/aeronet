@@ -28,6 +28,7 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
@@ -216,6 +217,8 @@ bool HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
     return false;
   }
 
+  newValue = TrimOws(newValue);
+
   char* valueFirst = _data.data() + (optValue->data() - _data.data());
   const std::size_t oldHeaderValueSz = optValue->size();
 
@@ -255,6 +258,7 @@ inline void SetBodyEnsureNoTrailers(std::size_t trailerLen) {
 void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize,
                                   bool setContentTypeIfPresent) {
   SetBodyEnsureNoTrailers(_trailerLen);
+  contentTypeValue = TrimOws(contentTypeValue);
   if (contentTypeValue.empty() && newBodySize != 0) [[unlikely]] {
     throw std::invalid_argument("Content-Type value cannot be empty for non-empty body");
   }
@@ -441,7 +445,7 @@ std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) 
 HttpResponse& HttpResponse::headerAddLine(std::string_view key, std::string_view value) & {
   assert(http::IsValidHeaderName(key) && !CaseInsensitiveEqual(key, http::Date));
 
-  // TODO: Trim value ? Same for trailers.
+  value = TrimOws(value);
 
   const std::size_t headerLineSize = HeaderSize(key.size(), value.size());
 
@@ -478,6 +482,8 @@ HttpResponse& HttpResponse::headerAppendValue(std::string_view key, std::string_
     headerAddLine(key, value);
     return *this;
   }
+
+  value = TrimOws(value);
 
   const std::size_t extraLen = separator.size() + value.size();
   if (extraLen == 0) {
@@ -556,6 +562,8 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
   // Important note - trailers are stored in the same payload as the body, at the end of it, not separated by a CRLF.
   // It is the responsibility of the finalization code to ensure that the body is in chunked format if trailers are
   // present.
+
+  value = TrimOws(value);
 
   const std::size_t lineSize = HeaderSize(name.size(), value.size());
   const auto newTrailerLen = SafeCast<decltype(_trailerLen)>(lineSize + _trailerLen);
