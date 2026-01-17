@@ -1,19 +1,28 @@
 # aeronet Roadmap — Planned / Not Implemented
 
-This file lists planned features and near-term priorities. Implemented features are documented in `docs/FEATURES.md` and `README.md` (notably: zero-copy `sendfile()` support and the lightweight `file` helper are implemented in v0.4.x).
-
 ## High priority
 
-- _(none – recent milestones addressed)_
+- **HTTP/2 CONNECT tunneling** (RFC 7540 §8.3): Currently returns 405 Method Not Allowed. Full implementation requires per-stream tunnel state tracking, upstream TCP connections, and bidirectional DATA frame forwarding. Users needing CONNECT tunneling should use HTTP/1.1 instead, which has full support.
+- **HTTP/2 Performance Optimization & Testing** (h2load benchmarks):
+  - Micro-benchmarks for stream multiplexing efficiency
+  - h2load-based load testing scenarios (concurrent streams, various payload sizes)
+  - Performance regression detection in CI
+  - Identify and optimize hot paths in HPACK, flow control, and frame processing
+- **Security Hardening Audit**:
+  - TLS fingerprinting hardening (avoid leaking version/cipher info in edge cases)
+  - Memory scrubbing for sensitive data (handshake keys, session tickets)
+  - Formal security review of HTTP/2 frame handling and state machines
+  - Fuzzing harness integration (libFuzzer + AFL)
 
 ## Medium priority
 
-- Structured logging / pluggable sinks
-- Enhanced parser diagnostics (byte offset in parse errors)
-- Middleware helpers (lightweight routing/middleware layer)
-- Multipart / multiple-range responses (`multipart/byteranges`) support (RFC 7233 multi-range)
-- Performance benchmarking & CI perf tests (microbenchmarks for sendfile vs TLS fallback)
-- **HTTP/2 CONNECT tunneling** (RFC 7540 §8.3): Currently returns 405 Method Not Allowed. Full implementation requires per-stream tunnel state tracking, upstream TCP connections, and bidirectional DATA frame forwarding. Users needing CONNECT tunneling should use HTTP/1.1 instead, which has full support.
+- **Multipart / multiple-range responses** (`multipart/byteranges`) support (RFC 7233 multi-range)
+- **Structured logging / pluggable sinks** - Basic logging functional; advanced hooks allow custom formatters/destinations
+- **Enhanced parser diagnostics** (byte offset in parse errors for better debugging)
+- **Performance improvements**:
+  - `MSG_ZEROCOPY` support for large payloads on Linux (with fallback)
+  - `TCP_CORK` / `TCP_NOPUSH` for response header/body coalescing
+  - Further hot-path cache locality optimization
 
 ### Performance improvement ideas
 
@@ -22,16 +31,17 @@ This file lists planned features and near-term priorities. Implemented features 
 - Enforce backpressure correctness to avoid overload and wasted work.
 - Focus on cache locality in hot paths; measure before/after.
 - `MSG_ZEROCOPY` for large payloads on Linux (requires fallback path).
+- Profile and optimize HTTP/2 HPACK decoding (currently identified as optimization candidate).
+- Reduce memmove overhead in HTTP/2 body handling (see TODOs in http2-protocol-handler.cpp).
+- `makeResponse` helpers from the handlers to reduce memory moves by adding all global headers at once.
 
 ## Long-term / Nice-to-have
 
-- Fuzz harness integration (libFuzzer targets)
-- OCSP stapling / advanced TLS features
-- QUIC / HTTP/3 support (likely separate transport layer)
-
-## Recently Completed
-
-- **HTTP/2** (RFC 9113): HPACK header compression, stream multiplexing, flow control, ALPN "h2" negotiation, h2c cleartext (prior knowledge + HTTP/1.1 Upgrade). See [HTTP/2 documentation](FEATURES.md#http2-rfc-9113).
+- **HTTP/3 / QUIC Support** - Likely separate transport layer implementation (future major feature)
+- **Fuzz Harness Integration** - libFuzzer targets for HTTP/1.1 and HTTP/2 parsing
+- **OCSP Stapling & Advanced TLS** - Passive stapling with cached responses, CRL hooks, key logging (debug only)
+- **Per-SNI mTLS Policies** - Different client cert requirements per SNI hostname
+- **Advanced Metrics** - Histogram/percentile latency buckets, per-route stats
 
 ### TLS enhancements (detailed roadmap)
 

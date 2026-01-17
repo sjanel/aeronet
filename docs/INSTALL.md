@@ -29,6 +29,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 | `AERONET_ENABLE_OPENSSL` | ON* | Enable TLS module (`aeronet_tls`) |
 | `AERONET_ENABLE_OPENTELEMETRY` | ON* | Enable OpenTelemetry instrumentation (build-time flag; opt-in) |
 | `AERONET_ENABLE_WEBSOCKET` | ON | Enable WebSocket protocol support |
+| `AERONET_ENABLE_HTTP2` | ON | Enable HTTP/2 protocol support |
 | `AERONET_ENABLE_ZLIB` | ON* | Enable gzip/deflate (zlib) compression + decompression |
 | `AERONET_ENABLE_ZSTD` | ON* | Enable zstd compression + decompression |
 | `AERONET_ENABLE_BROTLI` | ON* | Enable brotli compression + decompression |
@@ -36,6 +37,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 | `AERONET_ENABLE_CLANG_TIDY` | OFF | Run clang-tidy on targets |
 | `AERONET_WARNINGS_AS_ERRORS` | OFF | Treat warnings as errors |
 | `AERONET_ASAN_OPTIONS` | (preset) | Override sanitizer flags |
+| `AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS` | OFF | Extra custom runtime memory checks |
 
 *Defaults apply when aeronet is the top-level project; they flip to OFF when used as a dependency.
 
@@ -230,21 +232,3 @@ vcpkg install aeronet --overlay-ports=./ports --triplet x64-linux-dynamic
 ```
 
 The port maps `VCPKG_LIBRARY_LINKAGE=dynamic` to `-DAERONET_BUILD_SHARED=ON` automatically.
-
-## CI Matrix (Suggested)
-
-| Compiler | TLS | Build | Notes |
-|----------|-----|-------|-------|
-| Clang 21 | ON  | Debug | Sanitizers + tests |
-| GCC 13   | ON  | Release | Production profile |
-| Clang 21 | OFF | Release | TLS-off regression guard |
-
-## Troubleshooting
-
-| Symptom | Cause / Resolution |
-|---------|--------------------|
-| Missing `aeronet_tls` | Built with `AERONET_ENABLE_OPENSSL=OFF` or OpenSSL not found |
-| Link errors (spdlog) | Enable `AERONET_ENABLE_SPDLOG` in both producer & consumer or disable it everywhere |
-| Compression feature missing | Ensure corresponding `AERONET_ENABLE_ZLIB/ZSTD/BROTLI` flag ON in producer and consumer (or vcpkg feature enabled) |
-| Sanitizer libs missing | Install compiler runtime packages (e.g. `libasan`, `libubsan`) |
-| Tests not built | Built via root project only (Conan package omits tests/examples) |
