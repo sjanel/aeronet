@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstring>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -21,6 +22,7 @@
 #include "aeronet/http-version.hpp"
 #include "aeronet/major-minor-version.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/safe-cast.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/url-decode.hpp"
@@ -106,16 +108,28 @@ std::string_view HttpRequest::readBody(std::size_t maxBytes) {
   return _activeStreamingChunk;
 }
 
+[[nodiscard]] std::string_view HttpRequest::alpnProtocol() const noexcept {
+  return _ownerState->tlsInfo.selectedAlpn();
+}
+
+[[nodiscard]] std::string_view HttpRequest::tlsCipher() const noexcept {
+  return _ownerState->tlsInfo.negotiatedCipher();
+}
+
+[[nodiscard]] std::string_view HttpRequest::tlsVersion() const noexcept {
+  return _ownerState->tlsInfo.negotiatedVersion();
+}
+
 bool HttpRequest::wantClose() const { return CaseInsensitiveEqual(headerValueOrEmpty(http::Connection), http::close); }
 
 bool HttpRequest::hasExpectContinue() const noexcept {
   return version() == http::HTTP_1_1 && CaseInsensitiveEqual(headerValueOrEmpty(http::Expect), http::h100_continue);
 }
 
-http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
+http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
                                              bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan) {
-  char* first = state.inBuffer.data();
-  char* last = first + state.inBuffer.size();
+  char* first = inBuffer.data();
+  char* last = first + inBuffer.size();
   _headPinned = false;
 
   _reqStart = std::chrono::steady_clock::now();
@@ -146,15 +160,17 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
   char* questionMark = std::find(first, nextSep, '?');
   if (questionMark != nextSep) {
     const char* paramsEnd = url::DecodeQueryParamsInPlace(questionMark + 1, nextSep);
-    _decodedQueryParams = std::string_view(questionMark + 1, paramsEnd);
+    _pDecodedQueryParams = questionMark + 1;
+    _decodedQueryParamsLength = SafeCast<uint32_t>(paramsEnd - _pDecodedQueryParams);
   } else {
-    _decodedQueryParams = {};
+    _decodedQueryParamsLength = 0;
   }
   const char* pathLast = url::DecodeInPlace(first, questionMark);
   if (pathLast == nullptr || first == pathLast) {
     return http::StatusCodeBadRequest;
   }
-  _path = std::string_view(first, pathLast);
+  _pPath = first;
+  _pathLength = SafeCast<uint32_t>(pathLast - first);
 
   // Version (allow trailing CR; parseVersion tolerates it via from_chars behavior)
   first = nextSep + 1;
@@ -193,7 +209,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
     }
 
     // Store header using in-place merge helper (headers live inside connection buffer).
-    if (!http::AddOrMergeHeaderInPlace(_headers, nameView, valueView, tmpBuffer, state.inBuffer.data(), first,
+    if (!http::AddOrMergeHeaderInPlace(_headers, nameView, valueView, tmpBuffer, inBuffer.data(), first,
                                        mergeAllowedForUnknownRequestHeaders)) {
       return http::StatusCodeBadRequest;
     }
@@ -203,7 +219,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
 
   if (traceSpan) {
     traceSpan->setAttribute("http.method", http::MethodToStr(_method));
-    traceSpan->setAttribute("http.target", _path);
+    traceSpan->setAttribute("http.target", path());
     traceSpan->setAttribute("http.scheme", "http");
 
     const auto hostIt = _headers.find("Host");
@@ -213,12 +229,7 @@ http::StatusCode HttpRequest::initTrySetHead(ConnectionState& state, RawChars& t
   }
 
   _traceSpan = std::move(traceSpan);
-  _headSpanSize = static_cast<std::size_t>(first + http::CRLF.size() - state.inBuffer.data());
-
-  // Propagate negotiated ALPN (if any) from connection state into per-request object.
-  _alpnProtocol = state.tlsInfo.selectedAlpn();
-  _tlsCipher = state.tlsInfo.negotiatedCipher();
-  _tlsVersion = state.tlsInfo.negotiatedVersion();
+  _headSpanSize = static_cast<std::size_t>(first + http::CRLF.size() - inBuffer.data());
 
   _body = {};
   _activeStreamingChunk = {};
@@ -236,30 +247,23 @@ void HttpRequest::pinHeadStorage(ConnectionState& state) {
     return;
   }
   const char* oldBase = state.inBuffer.data();
-  RawChars& storage = state.headBuffer;
-  storage.assign(oldBase, _headSpanSize);
-  const char* newBase = storage.data();
-  const char* oldLimit = oldBase + _headSpanSize;
+  state.headBuffer.assign(oldBase, _headSpanSize);
 
-  auto remap = [newBase, oldBase, oldLimit](std::string_view view) -> std::string_view {
-    if (view.empty()) {
-      return view;
+  const auto remapPtr = [newBase = state.headBuffer.data(), oldBase,
+                         oldLimit = oldBase + _headSpanSize](const char* ptr) -> const char* {
+    if (ptr < oldBase || ptr >= oldLimit) {
+      return ptr;
     }
-    const char* begin = view.data();
-    if (begin < oldBase || begin >= oldLimit) {
-      return view;
-    }
-    const auto offset = static_cast<std::size_t>(begin - oldBase);
-    return {newBase + offset, view.size()};
+    return newBase + static_cast<std::size_t>(ptr - oldBase);
   };
 
-  _path = remap(_path);
-  _decodedQueryParams = remap(_decodedQueryParams);
+  _pPath = remapPtr(_pPath);
+  _pDecodedQueryParams = remapPtr(_pDecodedQueryParams);
 
-  auto remapMap = [&remap](auto& map) {
-    for (auto& entry : map) {
-      entry.first = remap(entry.first);
-      entry.second = remap(entry.second);
+  auto remapMap = [&remapPtr](auto& map) {
+    for (auto& [key, val] : map) {
+      key = {remapPtr(key.data()), key.size()};
+      val = {remapPtr(val.data()), val.size()};
     }
   };
 

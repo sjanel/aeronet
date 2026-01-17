@@ -54,14 +54,15 @@ class HttpRequestTest : public ::testing::Test {
                           std::size_t maxHeaderSize = 4096UL) {
     cs.inBuffer = std::move(raw);
     RawChars tmpBuffer;
-    return req.initTrySetHead(cs, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders, nullptr);
+    return req.initTrySetHead(cs.inBuffer, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders, nullptr);
   }
 
   http::StatusCode reqSetWithSpan(RawChars raw, tracing::SpanPtr span, bool mergeAllowedForUnknownRequestHeaders = true,
                                   std::size_t maxHeaderSize = 4096UL) {
     cs.inBuffer = std::move(raw);
     RawChars tmpBuffer;
-    return req.initTrySetHead(cs, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders, std::move(span));
+    return req.initTrySetHead(cs.inBuffer, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders,
+                              std::move(span));
   }
 
   void checkHeaders(std::initializer_list<http::HeaderView> headers) {

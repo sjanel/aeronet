@@ -23,7 +23,7 @@ class CorsPolicyTest : public ::testing::Test {
   http::StatusCode parse(RawChars raw) {
     connState.inBuffer = std::move(raw);
     RawChars tmp;
-    return request.initTrySetHead(connState, tmp, 4096U, true, nullptr);
+    return request.initTrySetHead(connState.inBuffer, tmp, 4096U, true, nullptr);
   }
 
   HttpRequest request;
