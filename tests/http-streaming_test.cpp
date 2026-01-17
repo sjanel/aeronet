@@ -140,6 +140,20 @@ TEST(HttpStreaming, ChunkedSimple) {
   ASSERT_TRUE(resp.contains("0\r\n\r\n"));
 }
 
+TEST(HttpStreaming, HttpHeaderValuesAreTrimmed) {
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+    writer.status(200);
+    writer.header("X-Trimmed", "   trimmed-value   ");
+    writer.headerAddLine("X-Also-Trimmed", "  another-trim  ");
+    writer.writeBody("data");
+    writer.end();
+  });
+  std::string resp = BlockingFetch(port, "GET", "/trim-headers");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.contains("X-Trimmed: trimmed-value\r\n"));
+  EXPECT_TRUE(resp.contains("X-Also-Trimmed: another-trim\r\n"));
+}
+
 TEST(HttpStreaming, SendFileFixedLengthPlain) {
   constexpr std::string_view kPayload = "static sendfile response body";
   test::ScopedTempDir tmpDir;
