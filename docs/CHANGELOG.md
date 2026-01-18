@@ -13,6 +13,7 @@ All notable changes to aeronet are documented in this file.
 - New `HttpRequest::makeResponse()` factory methods for simplified response creation with body and content-type.
 - New size / length method helpers in `HttpResponse`, with `reserve` and capacity getters.
 - All Header values stored in `HttpResponse` and `HttpResponseWriter` are now trimmed of leading/trailing whitespace on set.
+- New option `HttpServerConfig::addTrailerHeader` to automatically emit `trailer` header when trailers are added to responses in `HTTP/1.1` only.
 
 ### Breaking Changes
 

@@ -183,6 +183,7 @@ void SingleHttpServer::acceptNewConnections() {
 
     ConnectionState& state = *cnxIt->second;
     state.request._pGlobalHeaders = &_config.globalHeaders;
+    state.request._addTrailerHeader = _config.addTrailerHeader;
 #ifdef AERONET_ENABLE_OPENSSL
     if (_tls.ctxHolder) {
       // TLS handshake admission control (Phase 2): concurrency and basic token bucket rate limiting.

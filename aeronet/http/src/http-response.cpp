@@ -17,6 +17,7 @@
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -89,6 +90,8 @@ constexpr std::size_t NeededBodyHeadersSize(std::size_t bodySize, std::size_t co
          HttpResponse::HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(bodySize)));
 }
 
+constexpr std::string_view kTrailerValueSep = ", ";
+
 constexpr std::string_view kTransferEncodingChunkedCRLF =
     JoinStringView_v<http::TransferEncoding, http::HeaderSep, http::chunked, http::CRLF>;
 constexpr std::string_view kEndChunkedBody = "\r\n0\r\n";
@@ -111,8 +114,26 @@ constexpr int64_t TransferEncodingHeaderSizeDiff(std::size_t bodySz) {
   return static_cast<int64_t>(kTransferEncodingChunkedCRLF.size()) - static_cast<int64_t>(oldContentLengthHeaderSize);
 }
 
-constexpr char* ReplaceContentLengthWithTransferEncoding(char* insertPtr) {
+constexpr char* ReplaceContentLengthWithTransferEncoding(char* insertPtr, std::string_view newTrailersFlatView,
+                                                         bool addTrailerHeader) {
   insertPtr = insertPtr + http::CRLF.size();
+
+  // If adding Trailer header, write it now
+  if (addTrailerHeader) {
+    insertPtr = Append(http::Trailer, insertPtr);
+    insertPtr = Append(http::HeaderSep, insertPtr);
+
+    bool isFirst = true;
+    for (const auto& [name, value] : HeadersView(newTrailersFlatView)) {
+      if (isFirst) {
+        isFirst = false;
+      } else {
+        insertPtr = Append(kTrailerValueSep, insertPtr);
+      }
+      insertPtr = Append(name, insertPtr);
+    }
+    insertPtr = Append(http::CRLF, insertPtr);
+  }
 
   // Write Transfer-Encoding: chunked header
   insertPtr = Append(kTransferEncodingChunkedCRLF, insertPtr);
@@ -595,10 +616,18 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
   const std::size_t lineSize = HeaderSize(name.size(), value.size());
   const auto newTrailerLen = SafeCast<decltype(_trailerLen)>(lineSize + _trailerLen);
 
+  // Optim - if we know that option is not set, no need to pre-reserve additional capacity for Trailer header
+  const bool addTrailerHeader = !_knownOptions.isPrepared() || _knownOptions.isAddTrailerHeader();
+
   // Add an extra CRLF space for the last CRLF that will terminate trailers in finalize
   int64_t neededCapacity = static_cast<int64_t>(lineSize + http::CRLF.size());
   if (_trailerLen == 0) {
+    if (addTrailerHeader) {
+      neededCapacity += static_cast<int64_t>(HeaderSize(http::Trailer.size(), name.size()));
+    }
     neededCapacity += TransferEncodingHeaderSizeDiff(bodyInMemoryLength());
+  } else if (addTrailerHeader) {
+    neededCapacity += static_cast<int64_t>(name.size() + kTrailerValueSep.size());
   }
 
   char* insertPtr;
@@ -619,18 +648,21 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
   return *this;
 }
 
-HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version version, bool close,
-                                                const ConcatenatedHeaders* pGlobalHeaders, bool isHeadMethod,
+HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version version, Options opts,
+                                                const ConcatenatedHeaders* pGlobalHeaders,
                                                 std::size_t minCapturedBodySize) {
   version.writeFull(_data.data());
 
   const auto bodySz = bodyLength();
 
-  const std::string_view connectionValue = close ? http::close : http::keepalive;
+  const std::string_view connectionValue = opts.isClose() ? http::close : http::keepalive;
   // HTTP/1.1 (RFC 7230 / RFC 9110) specifies that Connection: keep-alive is the default.
   // HTTP/1.0 is the opposite - Connection: close is the default.
-  const bool addConnectionHeader = (close && version == http::HTTP_1_1) || (!close && version == http::HTTP_1_0);
+  const bool addConnectionHeader =
+      (opts.isClose() && version == http::HTTP_1_1) || (!opts.isClose() && version == http::HTTP_1_0);
   const bool hasHeaders = !headersFlatView().empty();
+  const bool addTrailerHeader = _trailerLen != 0 && opts.isAddTrailerHeader();
+  const bool isHeadMethod = opts.isHeadMethod();
 
   std::size_t totalNewHeadersSize =
       addConnectionHeader ? HeaderSize(http::Connection.size(), connectionValue.size()) : 0;
@@ -638,7 +670,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
   std::bitset<HttpServerConfig::kMaxGlobalHeaders> globalHeadersToSkipBmp;
 
   bool writeAllGlobalHeaders = true;
-  if (!_alreadyPrepared) {
+  if (!_knownOptions.isPrepared()) {
     std::size_t pos = 0;
     assert(pGlobalHeaders != nullptr);
     for (std::string_view headerKeyVal : *pGlobalHeaders) {
@@ -659,7 +691,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
 
   char* headersInsertPtr = nullptr;
 
-  if (bodySz == 0 || (isHeadMethod && _trailerLen == 0) || hasBodyFile()) {
+  if (bodySz == 0 || (opts.isHeadMethod() && _trailerLen == 0) || hasBodyFile()) {
     // For HEAD responses we must not transmit the body, but keep file payloads
     // intact so ownership can be transferred by finalizeForHttp1. For inline
     // bodies we still erase the inline bytes.
@@ -676,7 +708,6 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
     // body > 0 && (!isHeadMethod || _trailerLen != 0) && !hasFileBody()
     bool moveBodyInline = hasBodyCaptured() && bodySz + _trailerLen <= minCapturedBodySize;
     if (_trailerLen == 0) {
-      assert(!isHeadMethod);
       _data.ensureAvailableCapacity((moveBodyInline ? bodySz : 0) + totalNewHeadersSize);
       char* oldBodyStart = _data.data() + bodyStartPos();
       headersInsertPtr = oldBodyStart - http::DoubleCRLF.size();
@@ -711,6 +742,19 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
       // New header size: CRLF + "transfer-encoding" + ": " + "chunked"
       int64_t headerSizeDiff = TransferEncodingHeaderSizeDiff(bodySz);
 
+      if (addTrailerHeader) {
+        // We need to add the Trailer header as well
+        std::size_t trailerHeaderValueSz = 0;
+
+        for (const auto& [name, value] : trailers()) {
+          trailerHeaderValueSz += name.size() + kTrailerValueSep.size();
+        }
+        assert(trailerHeaderValueSz != 0);
+        trailerHeaderValueSz -= kTrailerValueSep.size();
+
+        headerSizeDiff += static_cast<int64_t>(HeaderSize(http::Trailer.size(), trailerHeaderValueSz));
+      }
+
       // Calculate extra space needed for chunked framing:
       // Before body: hex(len)\r\n
       // After body (before trailers): \r\n0\r\n
@@ -737,7 +781,8 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
 
         // Now update headers in _data: replace Content-Length with Transfer-Encoding: chunked
         // Find and replace Content-Length header
-        headersInsertPtr = ReplaceContentLengthWithTransferEncoding(getContentLengthHeaderLinePtr(bodySz));
+        headersInsertPtr = ReplaceContentLengthWithTransferEncoding(getContentLengthHeaderLinePtr(bodySz),
+                                                                    trailersFlatView(), addTrailerHeader);
 
         if (isHeadMethod) {
           Copy(http::DoubleCRLF, headersInsertPtr + totalNewHeadersSize);
@@ -827,7 +872,8 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
         // Move and update headers: replace Content-Length with Transfer-Encoding: chunked
         // Move everything before body (headers and DoubleCRLF)
         // Find Content-Length header position (relative to start)
-        headersInsertPtr = ReplaceContentLengthWithTransferEncoding(getContentLengthHeaderLinePtr(bodySz));
+        headersInsertPtr = ReplaceContentLengthWithTransferEncoding(getContentLengthHeaderLinePtr(bodySz),
+                                                                    newTrailersFlatView, addTrailerHeader);
 
         Copy(http::DoubleCRLF, headersInsertPtr + totalNewHeadersSize);
 
@@ -837,7 +883,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
     }
   }
 
-  if (!_alreadyPrepared && !pGlobalHeaders->empty()) {
+  if (!_knownOptions.isPrepared() && !pGlobalHeaders->empty()) {
     if (writeAllGlobalHeaders) {
       // Optim: single copy for all global headers
       headersInsertPtr = Append(http::CRLF, headersInsertPtr);

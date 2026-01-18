@@ -330,6 +330,8 @@ class HttpRequest {
 
   void markAwaitingBody() const noexcept;
 
+  [[nodiscard]] HttpResponse::Options makeResponseOptions() const noexcept;
+
   enum class BodyAccessMode : uint8_t { Undecided, Streaming, Aggregated };
   struct BodyAccessBridge {
     using AggregateFn = std::string_view (*)(HttpRequest&, void* context);
@@ -370,6 +372,7 @@ class HttpRequest {
   http::Method _method;
   BodyAccessMode _bodyAccessMode{BodyAccessMode::Undecided};
   bool _headPinned{false};
+  bool _addTrailerHeader{false};
 };
 
 }  // namespace aeronet

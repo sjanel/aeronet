@@ -58,6 +58,11 @@ HttpServerConfig& HttpServerConfig::withTcpNoDelay(bool on) {
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withTrailerHeader(bool on) {
+  this->addTrailerHeader = on;
+  return *this;
+}
+
 HttpServerConfig& HttpServerConfig::withMaxHeaderBytes(std::size_t maxHeaderBytes) {
   this->maxHeaderBytes = maxHeaderBytes;
   return *this;
