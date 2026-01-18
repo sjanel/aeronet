@@ -136,7 +136,7 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout, std:
       if (tePos != std::string_view::npos) {
         if (out.size() >= bodyStart + 5) {
           std::string_view body(out.data() + bodyStart, out.size() - bodyStart);
-          if (body.contains("0\r\n\r\n")) {
+          if (body.contains(http::EndChunk)) {
             return out;
           }
         }

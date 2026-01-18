@@ -4,6 +4,10 @@ All notable changes to aeronet are documented in this file.
 
 ## [Unreleased]
 
+### Bug fixes
+
+- Correctly format the HttpResponse when using HEAD method with trailers (previously erroneously kept the full payload).
+
 ### Added
 
 - New `HttpRequest::makeResponse()` factory methods for simplified response creation with body and content-type.

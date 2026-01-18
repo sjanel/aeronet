@@ -167,7 +167,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, Ht
 
   const auto respStatusCode = resp.status();
 
-  queueData(cnxIt, resp.finalizeForHttp1(SysClock::now(), request.version(), !keepAlive, _config.globalHeaders, isHead,
+  queueData(cnxIt, resp.finalizeForHttp1(SysClock::now(), request.version(), !keepAlive, &_config.globalHeaders, isHead,
                                          _config.minCapturedBodySize));
 
   state.inBuffer.erase_front(consumedBytes);

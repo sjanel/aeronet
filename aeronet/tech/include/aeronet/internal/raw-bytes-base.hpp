@@ -110,6 +110,13 @@ class RawBytesBase {
   // growing the capacity exponentially.
   void ensureAvailableCapacityExponential(uint64_t availableCapacity);
 
+  // Overload to accept int64_t for convenience.
+  void ensureAvailableCapacityExponential(int64_t capa) {
+    if (capa > 0) {
+      ensureAvailableCapacityExponential(static_cast<uint64_t>(capa));
+    }
+  }
+
   // Returns a pointer to the buffer data.
   [[nodiscard]] pointer data() noexcept { return _buf; }
 

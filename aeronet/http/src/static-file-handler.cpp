@@ -381,10 +381,10 @@ std::size_t ParseSize(std::string_view token) {
 // matches for conditional semantics (304/412 decisions).
 RangeSelection ParseRange(std::string_view raw, std::size_t fileSize) {
   RangeSelection result;
+  raw = TrimOws(raw);
   if (raw.empty()) {
     return result;
   }
-  raw = TrimOws(raw);
   static constexpr std::string_view kBytesEqual = "bytes=";
   if (!StartsWithCaseInsensitive(raw, kBytesEqual)) {
     result.state = RangeSelection::State::Invalid;

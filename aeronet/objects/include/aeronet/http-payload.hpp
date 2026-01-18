@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -82,6 +83,12 @@ class HttpPayload {
   void ensureAvailableCapacity(std::size_t capa);
 
   void ensureAvailableCapacityExponential(std::size_t capa);
+
+  void ensureAvailableCapacityExponential(int64_t capa) {
+    if (capa > 0) {
+      ensureAvailableCapacityExponential(static_cast<std::size_t>(capa));
+    }
+  }
 
   // Inserts bytes at position 'pos'.
   // May switch representation to RawChars for unsupported storage types.

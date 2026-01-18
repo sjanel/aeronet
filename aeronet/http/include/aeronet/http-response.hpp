@@ -1015,7 +1015,7 @@ class HttpResponse {
   // and returns the internal buffers stolen from this HttpResponse instance.
   // So this instance must not be used anymore after this call.
   HttpResponseData finalizeForHttp1(SysTimePoint tp, http::Version version, bool close,
-                                    const ConcatenatedHeaders& globalHeaders, bool isHeadMethod,
+                                    const ConcatenatedHeaders* pGlobalHeaders, bool isHeadMethod,
                                     std::size_t minCapturedBodySize);
 
   auto* filePayloadPtr() noexcept { return _payloadVariant.getIfFilePayload(); }

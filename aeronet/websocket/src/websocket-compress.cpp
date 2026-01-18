@@ -41,7 +41,7 @@ const char* WebSocketCompressor::compress(std::span<const std::byte> input, RawB
   const std::size_t startSize = output.size();
 
   do {
-    output.ensureAvailableCapacityExponential(1 << 16);
+    output.ensureAvailableCapacityExponential(1UL << 16);
 
     const auto availableCapacity = output.availableCapacity();
 
@@ -92,7 +92,7 @@ const char* WebSocketDecompressor::decompress(std::span<const std::byte> input, 
   const std::size_t startSize = output.size();
 
   do {
-    output.ensureAvailableCapacityExponential(1 << 16);
+    output.ensureAvailableCapacityExponential(1UL << 16);
 
     const auto availableCapacity = output.availableCapacity();
 

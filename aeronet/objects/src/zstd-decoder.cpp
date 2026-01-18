@@ -3,6 +3,7 @@
 #include <zstd.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <new>
 #include <string_view>
 
@@ -67,7 +68,7 @@ bool ZstdDecoder::decompressFull(std::string_view input, std::size_t maxDecompre
         return false;
       }
 
-      out.ensureAvailableCapacityExponential(rSize);
+      out.ensureAvailableCapacityExponential(static_cast<uint64_t>(rSize));
       const std::size_t ret = ZSTD_decompress(out.data() + out.size(), rSize, input.data(), input.size());
       if (ZSTD_isError(ret) != 0U) [[unlikely]] {
         log::error("ZSTD_decompress failed with error {}", ZSTD_getErrorName(ret));

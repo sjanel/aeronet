@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -84,7 +85,7 @@ std::string ExtractBody(std::string_view resp) {
   }
   std::string body(resp.substr(headerEnd + http::DoubleCRLF.size()));
   // If not chunked just return remaining.
-  if (!body.contains("\r\n0\r\n") && !body.contains("0\r\n\r\n")) {
+  if (!body.contains("\r\n0\r\n") && !body.contains(http::EndChunk)) {
     return body;
   }  // heuristic
   std::string out;
@@ -137,7 +138,7 @@ TEST(HttpStreaming, ChunkedSimple) {
   // Should contain chunk sizes in hex (6 and 5) and terminating 0 chunk.
   ASSERT_TRUE(resp.contains("6\r\nhello "));
   ASSERT_TRUE(resp.contains("5\r\nworld"));
-  ASSERT_TRUE(resp.contains("0\r\n\r\n"));
+  ASSERT_TRUE(resp.contains(http::EndChunk));
 }
 
 TEST(HttpStreaming, HttpHeaderValuesAreTrimmed) {
