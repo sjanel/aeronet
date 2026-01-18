@@ -91,6 +91,7 @@ inline constexpr std::string_view PseudoHeaderStatus = ":status";
 inline constexpr std::string_view HeaderSep = ": ";
 inline constexpr std::string_view CRLF = "\r\n";
 inline constexpr std::string_view DoubleCRLF = "\r\n\r\n";
+inline constexpr std::string_view EndChunk = "0\r\n\r\n";
 
 // Minimal syntactic request-line example (no headers):
 //   "GET / HTTP/1.1\r\n"
@@ -101,17 +102,7 @@ inline constexpr std::string_view DoubleCRLF = "\r\n\r\n";
 // complete HTTP/1.1 request unless a Host header field is present. We
 // therefore expose two compile-time minima:
 //  - kHttpReqLineMinLen: minimal request-line length (HTTP/1.0 or 1.1)
-//  - kHttpReqHeadersMinLenHttp11: minimal complete HTTP/1.1 request including
-//    a one-character Host header (e.g. "Host: h\r\n").
 inline constexpr std::size_t kHttpReqLineMinLen = GET.size() + 3UL + HTTP11Sv.size() + CRLF.size();
-
-// Minimal complete HTTP/1.0 request (no Host header required by the spec):
-inline constexpr std::size_t kHttpReqHeadersMinLenHttp10 = kHttpReqLineMinLen;
-
-// Minimal complete HTTP/1.1 request: include a minimal Host header value of
-// one character. Host header length = "Host" + ": " + value (1 byte) + CRLF
-inline constexpr std::size_t kHttpReqHeadersMinLenHttp11 =
-    kHttpReqLineMinLen + Host.size() + HeaderSep.size() + 1UL + CRLF.size();
 
 // Compression
 inline constexpr std::string_view identity = "identity";

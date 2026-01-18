@@ -173,9 +173,9 @@ TEST(HttpParserErrors, ChunkIncrementalFuzz) {
     }
   }
   // terminating chunk
-  test::sendAll(fd, "0\r\n\r\n");
+  test::sendAll(fd, http::EndChunk);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains(original.substr(0, 3))) << resp;  // sanity partial check
 }
 

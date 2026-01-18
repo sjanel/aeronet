@@ -397,20 +397,36 @@ TYPED_TEST(RawBaseTest, EnsureAndOverflowCheck) {
   }
 }
 
+TYPED_TEST(RawBaseTest, SignedEnsureCapacityExponential) {
+  using RawT = TypeParam;
+
+  RawT buf;
+  EXPECT_EQ(buf.capacity(), 0U);
+
+  buf.ensureAvailableCapacityExponential(int64_t{0});  // should do nothing
+  EXPECT_EQ(buf.capacity(), 0U);
+  buf.ensureAvailableCapacityExponential(int64_t{-1});  // should do nothing
+  EXPECT_EQ(buf.capacity(), 0U);
+
+  buf.ensureAvailableCapacityExponential(int64_t{16});
+  EXPECT_EQ(buf.capacity(), 16UL);
+}
+
 TYPED_TEST(RawBaseTest, EnsureExponentialAndOverflowCheck) {
   using RawT = TypeParam;
   using SizeType = typename RawT::size_type;
 
   RawT buf;
 
-  buf.ensureAvailableCapacityExponential(16);
+  buf.ensureAvailableCapacityExponential(16UL);
   EXPECT_GE(buf.capacity(), 16U);
 
   buf.unchecked_append(reinterpret_cast<const typename RawT::value_type *>("1234567890"), 10U);
 
   if constexpr (sizeof(SizeType) < sizeof(uintmax_t)) {
-    EXPECT_THROW(buf.ensureAvailableCapacityExponential(std::numeric_limits<SizeType>::max() - 5U),
-                 std::overflow_error);
+    EXPECT_THROW(
+        buf.ensureAvailableCapacityExponential(static_cast<uint64_t>(std::numeric_limits<SizeType>::max() - 5U)),
+        std::overflow_error);
   }
 }
 
@@ -509,7 +525,7 @@ TYPED_TEST(RawBaseTest, EraseFrontSetSizeAndAddSize) {
   ASSERT_EQ(buf.size(), 5U);
   EXPECT_EQ(std::memcmp(buf.data(), "defgh", 5), 0);
 
-  buf.ensureAvailableCapacityExponential(10);
+  buf.ensureAvailableCapacityExponential(10UL);
   buf.setSize(2);
   EXPECT_EQ(buf.size(), 2U);
 
@@ -587,7 +603,7 @@ TYPED_TEST(RawBaseTest, Swap) {
   if (!AERONET_WANT_MALLOC_OVERRIDES) {
     GTEST_SKIP() << "malloc overrides disabled on this toolchain; skipping";
   }
-  buf2.ensureAvailableCapacity(1024);
+  buf2.ensureAvailableCapacity(1024UL);
   test::FailNextRealloc();
   EXPECT_NO_THROW(buf2.shrink_to_fit());  // should not throw even if realloc fails
 }
