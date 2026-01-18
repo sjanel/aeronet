@@ -716,7 +716,7 @@ router.setPath(http::Method::GET, "/upload", [](const HttpRequest& req) {
     // Validate checksum against body...
   }
   
-  return HttpResponse(200).body("OK");
+  return HttpResponse("OK");
 });
 ```
 
@@ -846,6 +846,13 @@ HttpResponse(200)
     .body("data")
     .trailerAddLine("X-Checksum", "xyz")
     .trailerAddLine("X-Signature", "sig123");
+```
+
+[Trailer header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Trailer) can be added in normal handler (not yet supported in `HttpResponseWriter` streaming responses):
+
+```cpp
+HttpServerConfig cfg;
+cfg.withTrailerHeader();  // Will emit header line 'trailer: <trailer names>' in response headers
 ```
 
 #### Streaming Response Trailers (HttpResponseWriter)

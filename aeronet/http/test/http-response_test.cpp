@@ -46,26 +46,54 @@ class HttpResponseTest : public ::testing::Test {
   static constexpr SysTimePoint kTp{};
   static constexpr bool kKeepAlive = false;
   static constexpr bool kIsHeadMethod = false;
+  static constexpr bool kAddTrailerHeader = false;
   static constexpr std::size_t kMinCapturedBodySize = 4096;
   static const RawChars kExpectedDateRaw;
 
+  static HttpResponse MakePrepared(bool isPrepared, const ConcatenatedHeaders& globalHeaders = {}) {
+    HttpResponse resp;
+    if (isPrepared) {
+      resp._knownOptions.setPrepared();
+      for (std::string_view headerNameAndValue : globalHeaders) {
+        const auto sepPos = headerNameAndValue.find(http::HeaderSep);
+        if (sepPos == std::string_view::npos) {
+          throw std::invalid_argument("Invalid header in global headers");
+        }
+        resp.headerAddLine(headerNameAndValue.substr(0, sepPos),
+                           headerNameAndValue.substr(sepPos + http::HeaderSep.size()));
+      }
+    }
+    return resp;
+  }
+
+  static void AddTrailerHeader(HttpResponse& resp, bool knownAddTrailerAtConstruction) {
+    resp._knownOptions.addTrailerHeader(knownAddTrailerAtConstruction);
+  }
+
   static HttpResponseData finalizePrepared(HttpResponse&& resp, bool head = kIsHeadMethod,
                                            bool keepAliveFlag = kKeepAlive) {
-    return finalizePrepared(std::move(resp), {}, head, keepAliveFlag, kMinCapturedBodySize);
+    return finalizePrepared(std::move(resp), {}, head, kAddTrailerHeader, keepAliveFlag, kMinCapturedBodySize);
   }
 
   static HttpResponseData finalizePrepared(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders, bool head,
-                                           bool keepAliveFlag, std::size_t minCapturedBodySize) {
-    return resp.finalizeForHttp1(kTp, http::HTTP_1_1, !keepAliveFlag, &globalHeaders, head, minCapturedBodySize);
+                                           bool addTrailerHeader, bool keepAliveFlag, std::size_t minCapturedBodySize) {
+    HttpResponse::Options opts;
+
+    opts.close(!keepAliveFlag);
+    opts.addTrailerHeader(addTrailerHeader);
+    opts.headMethod(head);
+
+    return resp.finalizeForHttp1(kTp, http::HTTP_1_1, opts, &globalHeaders, minCapturedBodySize);
   }
 
   static HttpResponseData finalize(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders, bool head,
-                                   bool keepAliveFlag, std::size_t minCapturedBodySize) {
+                                   bool keepAliveFlag, bool addTrailerHeader, std::size_t minCapturedBodySize) {
     std::size_t expectedFileLen = 0;
     if (resp.hasBodyFile()) {
       expectedFileLen = resp.file()->size();
     }
-    auto prepared = finalizePrepared(std::move(resp), globalHeaders, head, keepAliveFlag, minCapturedBodySize);
+    auto prepared =
+        finalizePrepared(std::move(resp), globalHeaders, head, addTrailerHeader, keepAliveFlag, minCapturedBodySize);
     if (prepared.getIfFilePayload() != nullptr) {
       EXPECT_EQ(prepared.fileLength(), expectedFileLen);
     }
@@ -74,9 +102,10 @@ class HttpResponseTest : public ::testing::Test {
 
   static std::string concatenated(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders = {},
                                   bool head = kIsHeadMethod, bool keepAliveFlag = kKeepAlive,
-                                  std::size_t minCapturedBodySize = kMinCapturedBodySize) {
+                                  std::size_t minCapturedBodySize = kMinCapturedBodySize,
+                                  bool addTrailerHeader = kAddTrailerHeader) {
     HttpResponseData httpResponseData =
-        finalize(std::move(resp), globalHeaders, head, keepAliveFlag, minCapturedBodySize);
+        finalize(std::move(resp), globalHeaders, head, keepAliveFlag, addTrailerHeader, minCapturedBodySize);
     auto firstBuf = httpResponseData.firstBuffer();
     auto secondBuf = httpResponseData.secondBuffer();
     std::string out;
@@ -1492,8 +1521,9 @@ TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
   resp.trailerAddLine("X-Trailer-2", "TrailerValue-2");
 
   static constexpr bool kHead = false;
+  static constexpr bool kAddTrailerHeader = true;
 
-  auto prepared = finalizePrepared(std::move(resp), {}, kHead, true, kMinCapturedBodySize);
+  auto prepared = finalizePrepared(std::move(resp), {}, kHead, kAddTrailerHeader, true, kMinCapturedBodySize);
   std::string all(prepared.firstBuffer());
   all.append(prepared.secondBuffer());
 
@@ -1501,6 +1531,7 @@ TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
   EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Custom", "Value")));
   // When trailers are present, body is chunked encoded per RFC 7230 §4.1.2
   EXPECT_TRUE(all.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine(http::Trailer, "X-Trailer, X-Trailer-2")));
   EXPECT_FALSE(all.contains(http::ContentLength));
   // Body should be in chunked format: "b\r\nBodyContent\r\n0\r\n" (b = 11 in hex)
   EXPECT_TRUE(all.contains("b\r\nBodyContent\r\n0\r\n"));
@@ -2524,12 +2555,20 @@ TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_MultipleHeadersAndValue
 // Per RFC 7230 §4.1.2, trailers require chunked transfer encoding
 // =============================================================================
 
-TEST_F(HttpResponseTest, TrailersAutoChunked) {
+TEST_F(HttpResponseTest, FinalizationCombinations) {
   static constexpr std::size_t kMinCapturedBodySz[] = {1UL, 4096UL};
   static constexpr bool kBools[] = {true, false};
   static constexpr std::string_view kConcatenatedGlobalHeaders[] = {"", "server: aeronet\r\n",
                                                                     "x-custom: value\r\nx-another: another-value\r\n"};
 
+  // This test covers ALL combinations of:
+  // - prepared vs non-prepared response
+  // - knownAddTrailerAtConstruction true/false
+  // - HEAD vs non-HEAD request
+  // - keep-alive vs close connection
+  // - addTrailerHeader true/false
+  // - minCapturedBodySz small/large (inline vs captured body)
+  // - various global headers (none, one, multiple)
   for (std::string_view globalHeaders : kConcatenatedGlobalHeaders) {
     ConcatenatedHeaders gh;
     for (std::string_view tmp = globalHeaders; !tmp.empty();) {
@@ -2538,51 +2577,72 @@ TEST_F(HttpResponseTest, TrailersAutoChunked) {
       gh.append(tmp.substr(0, crlfPos));
       tmp.remove_prefix(crlfPos + http::CRLF.size());
     }
-    for (bool head : kBools) {
-      for (bool keepAlive : kBools) {
-        for (std::size_t minCapturedBodySz : kMinCapturedBodySz) {
-          // Captured body
-          HttpResponse resp(http::StatusCodeOK);
-          resp.body(std::string("CapturedData12345"));  // 17 bytes = 0x11
-          resp.trailerAddLine("X-Sig", "sig-value");
-          resp.trailerAddLine("X-Sig-2", "sig-value-2");
+    for (bool isPrepared : kBools) {
+      for (bool knownAddTrailerAtConstruction : kBools) {
+        for (bool head : kBools) {
+          for (bool keepAlive : kBools) {
+            for (bool addTrailerHeader : kBools) {
+              for (std::size_t minCapturedBodySz : kMinCapturedBodySz) {
+                // Captured body
+                HttpResponse resp = MakePrepared(isPrepared, gh);
+                AddTrailerHeader(resp, knownAddTrailerAtConstruction);
+                resp.body(std::string("CapturedData12345"));  // 17 bytes = 0x11
+                resp.trailerAddLine("X-Sig", "sig-value");
+                resp.trailerAddLine("X-Sig-2", "sig-value-2");
 
-          std::string result = concatenated(std::move(resp), gh, head, keepAlive, minCapturedBodySz);
+                std::string result =
+                    concatenated(std::move(resp), gh, head, keepAlive, minCapturedBodySz, addTrailerHeader);
 
-          std::string exp;
-          exp.reserve(result.size());
-          exp += "HTTP/1.1 200\r\n";
+                std::string exp;
+                exp.reserve(result.size());
+                exp += "HTTP/1.1 200\r\n";
 
-          exp += MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
-          exp += MakeHttp1HeaderLine(http::ContentType, "text/plain");
-          exp += MakeHttp1HeaderLine(http::TransferEncoding, http::chunked);
-          if (!globalHeaders.empty()) {
-            exp += globalHeaders;
+                exp += MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
+                if (isPrepared) {
+                  exp += globalHeaders;
+                }
+                exp += MakeHttp1HeaderLine(http::ContentType, "text/plain");
+                if (addTrailerHeader) {
+                  exp += MakeHttp1HeaderLine(http::Trailer, "X-Sig, X-Sig-2");
+                }
+                exp += MakeHttp1HeaderLine(http::TransferEncoding, http::chunked);
+                if (!isPrepared) {
+                  exp += globalHeaders;
+                }
+                if (!keepAlive) {
+                  exp += MakeHttp1HeaderLine(http::Connection, http::close);
+                }
+                exp += "\r\n";
+
+                if (!head) {
+                  // 17 in hex = 0x11 = "11"
+                  exp += "11\r\n";
+                  exp += "CapturedData12345\r\n";
+                  exp += "0\r\n";
+                  exp += "X-Sig: sig-value\r\n";
+                  exp += "X-Sig-2: sig-value-2\r\n";
+                  exp += "\r\n";
+                }
+
+                ASSERT_EQ(result, exp) << "Failed with keepAlive=" << keepAlive
+                                       << " addTrailerHeader=" << addTrailerHeader
+                                       << " inlineBody=" << (minCapturedBodySz == 1) << " globalHeaders=["
+                                       << globalHeaders << "]" << " head=" << head;
+
+                // Inline body
+                resp = MakePrepared(isPrepared, gh);
+                AddTrailerHeader(resp, knownAddTrailerAtConstruction);
+                resp.body("CapturedData12345")
+                    .trailerAddLine("X-Sig", "sig-value")
+                    .trailerAddLine("X-Sig-2", "sig-value-2");
+                result = concatenated(std::move(resp), gh, head, keepAlive, minCapturedBodySz, addTrailerHeader);
+                ASSERT_EQ(result, exp) << "Failed with keepAlive=" << keepAlive
+                                       << " addTrailerHeader=" << addTrailerHeader
+                                       << " inlineBody=" << (minCapturedBodySz == 1) << " globalHeaders=["
+                                       << globalHeaders << "]" << " head=" << head;
+              }
+            }
           }
-          if (!keepAlive) {
-            exp += MakeHttp1HeaderLine(http::Connection, http::close);
-          }
-          exp += "\r\n";
-
-          if (!head) {
-            // 17 in hex = 0x11 = "11"
-            exp += "11\r\n";
-            exp += "CapturedData12345\r\n";
-            exp += "0\r\n";
-            exp += "X-Sig: sig-value\r\n";
-            exp += "X-Sig-2: sig-value-2\r\n";
-            exp += "\r\n";
-          }
-
-          ASSERT_EQ(result, exp);
-
-          // Inline body
-          resp = HttpResponse(http::StatusCodeOK)
-                     .body("CapturedData12345")
-                     .trailerAddLine("X-Sig", "sig-value")
-                     .trailerAddLine("X-Sig-2", "sig-value-2");
-          result = concatenated(std::move(resp), gh, head, keepAlive, minCapturedBodySz);
-          ASSERT_EQ(result, exp);
         }
       }
     }

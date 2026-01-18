@@ -125,27 +125,27 @@ bool HttpRequest::wantClose() const { return CaseInsensitiveEqual(headerValueOrE
 
 HttpResponse HttpRequest::makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const {
   HttpResponse resp(additionalCapacity, statusCode, _pGlobalHeaders->fullStringWithLastSep());
-  resp._alreadyPrepared = true;
+  resp._knownOptions = makeResponseOptions();
   return resp;
 }
 
 HttpResponse HttpRequest::makeResponse(std::string_view body, std::string_view contentType) const {
   HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), body, contentType);
-  resp._alreadyPrepared = true;
+  resp._knownOptions = makeResponseOptions();
   return resp;
 }
 
 HttpResponse HttpRequest::makeResponse(http::StatusCode statusCode, std::string_view body,
                                        std::string_view contentType) const {
   HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), body, contentType);
-  resp._alreadyPrepared = true;
+  resp._knownOptions = makeResponseOptions();
   return resp;
 }
 
 HttpResponse HttpRequest::makeResponse(std::span<const std::byte> body, std::string_view contentType) const {
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
   HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType);
-  resp._alreadyPrepared = true;
+  resp._knownOptions = makeResponseOptions();
   return resp;
 }
 
@@ -153,7 +153,7 @@ HttpResponse HttpRequest::makeResponse(http::StatusCode statusCode, std::span<co
                                        std::string_view contentType) const {
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
   HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType);
-  resp._alreadyPrepared = true;
+  resp._knownOptions = makeResponseOptions();
   return resp;
 }
 
@@ -359,6 +359,15 @@ void HttpRequest::end(http::StatusCode respStatusCode) {
 void HttpRequest::markAwaitingBody() const noexcept {
   assert(_ownerState->asyncState.active);
   _ownerState->asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::WaitingForBody;
+}
+
+HttpResponse::Options HttpRequest::makeResponseOptions() const noexcept {
+  HttpResponse::Options opts;
+  opts.close(wantClose());
+  opts.addTrailerHeader(_addTrailerHeader);
+  opts.headMethod(method() == http::Method::HEAD);
+  opts.setPrepared();
+  return opts;
 }
 
 }  // namespace aeronet
