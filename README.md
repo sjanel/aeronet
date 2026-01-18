@@ -756,6 +756,35 @@ streaming writer path. For plaintext sockets the server uses the kernel `sendfil
 transmission. When TLS is enabled the example exercises the TLS fallback that pread()s into the connection buffer
 and writes through the TLS transport.
 
+### C++ modules support
+
+Using the `AERONET_BUILD_MODULES` setting in CMake, the library supports C++ modules (C++20 and onwards).
+
+Module support requires CMake 3.28+, a module-supporting build system (such as Ninja), and is supported by the following compiler (minimum) versions:
+- GCC 15
+- Clang 18
+- MSVC 17.6
+```cpp
+import std;
+import aeronet;
+
+using aeronet::HttpRequest;
+using aeronet::HttpResponse;
+using aeronet::HttpServer;
+using aeronet::HttpServerConfig;;
+using aeronet::Router;
+using aeronet::http::Method;
+
+int main() {
+    Router router;
+    router.setPath(Method::GET, "/hello", [](const HttpRequest& req) {
+        return HttpResponse(200).header("X-Req-Body", req.body()).body("hello from aeronet\n");
+    });
+    HttpServer server(HttpServerConfig{}, std::move(router)); // default port is ephemeral, OS will pick an available one
+    server.run(); // blocking. Use start() for non-blocking
+}
+```
+
 ## Test Coverage Matrix
 
 Summary of current automated test coverage (see `tests/` directory). Legend: ✅ covered by explicit test(s), ⚠ partial / indirect, ❌ not yet.
