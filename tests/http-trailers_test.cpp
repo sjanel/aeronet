@@ -6,6 +6,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
@@ -99,7 +100,7 @@ TEST(HttpTrailers, MultipleTrailers) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 // Empty trailers (just zero chunk and terminating CRLF)
@@ -124,7 +125,7 @@ TEST(HttpTrailers, NoTrailers) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 // Trailer with whitespace trimming
@@ -153,7 +154,7 @@ TEST(HttpTrailers, TrailerWhitespaceTrim) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 // Forbidden trailer: Transfer-Encoding
@@ -174,7 +175,7 @@ TEST(HttpTrailers, ForbiddenTrailerTransferEncoding) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 400"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
 }
 
 // Forbidden trailer: Content-Length
@@ -195,7 +196,7 @@ TEST(HttpTrailers, ForbiddenTrailerContentLength) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 400"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
 }
 
 // Forbidden trailer: Host
@@ -216,7 +217,7 @@ TEST(HttpTrailers, ForbiddenTrailerHost) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 400"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
 }
 
 // Forbidden trailer: Authorization
@@ -237,7 +238,7 @@ TEST(HttpTrailers, ForbiddenTrailerAuthorization) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 400"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
 }
 
 // Trailer size exceeds limit
@@ -265,7 +266,7 @@ TEST(HttpTrailers, TrailerSizeLimit) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 431"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 431"));
 }
 
 // Trailer with empty value
@@ -294,7 +295,7 @@ TEST(HttpTrailers, TrailerEmptyValue) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 // Case-insensitive trailer lookup
@@ -330,7 +331,7 @@ TEST(HttpTrailers, TrailerCaseInsensitive) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 // Duplicate trailers that should be merged using list semantics (comma)
@@ -361,7 +362,7 @@ TEST(HttpTrailers, DuplicateMergeTrailers) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 // Duplicate trailers with override semantics (keep last)
@@ -392,7 +393,7 @@ TEST(HttpTrailers, DuplicateOverrideTrailers) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 // Unknown header duplicates when mergeUnknownRequestHeaders is disabled -> should be rejected
@@ -417,7 +418,7 @@ TEST(HttpTrailers, UnknownHeaderNoMergeTrailers) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 400"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
 }
 
 // Malformed trailer (no colon)
@@ -438,7 +439,7 @@ TEST(HttpTrailers, MalformedTrailerNoColon) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 400"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
 }
 
 // Non-chunked request should have empty trailers
@@ -461,39 +462,55 @@ TEST(HttpTrailers, NonChunkedNoTrailers) {
       "test";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 // Test streaming response with trailers
 TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
-  ts.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
+    writer.contentType("text/custom");
     writer.writeBody("chunk1");
     writer.writeBody("chunk2");
-    writer.trailerAddLine("X-Checksum", "abc123");
+    writer.trailerAddLine("x-checksum", "abc123");
     writer.end();
   });
 
-  test::ClientConnection sock(port);
-  int fd = sock.fd();
+  ts.router().setPath(http::Method::GET, "/normal", [](const HttpRequest& req) {
+    auto resp = req.makeResponse("chunk1chunk2", "text/custom");
+    resp.trailerAddLine("x-checksum", "abc123");
+    return resp;
+  });
 
-  std::string req =
-      "GET /stream HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Connection: close\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  for (std::string_view path : {"/stream", "/normal"}) {
+    test::ClientConnection sock(port);
+    int fd = sock.fd();
 
-  // Check for chunked encoding
-  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
+    std::string req = "GET ";
+    req += path;
+    req +=
+        " HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Connection: close\r\n"
+        "\r\n";
 
-  // Check for chunks
-  EXPECT_TRUE(resp.contains("chunk1"));
-  EXPECT_TRUE(resp.contains("chunk2"));
+    test::sendAll(fd, req);
+    std::string resp = test::recvUntilClosed(fd);
 
-  // Check for trailer (appears after the 0-size chunk)
-  EXPECT_TRUE(resp.contains("X-Checksum: abc123"));
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
+
+    // Check for chunked encoding
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentType, "text/custom")));
+    EXPECT_FALSE(resp.contains(http::ContentLength));
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
+
+    // Check for chunks
+    EXPECT_TRUE(resp.contains("chunk1"));
+    EXPECT_TRUE(resp.contains("chunk2"));
+
+    // Check for trailer (appears after the 0-size chunk)
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-checksum", "abc123")));
+  }
 }
 
 // Test multiple trailers

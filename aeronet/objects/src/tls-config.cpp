@@ -7,7 +7,6 @@
 #include <utility>
 
 #include "aeronet/log.hpp"
-#include "aeronet/major-minor-version.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/toupperlower.hpp"
 
@@ -57,13 +56,17 @@ void TLSConfig::validate() {
   // Validate min/max version allowed tokens (if set)
   if (minVersion != Version{}) {
     if (minVersion != TLS_1_2 && minVersion != TLS_1_3) {
-      log::critical("Unsupported tls minVersion '{}', allowed: TLS1.2, TLS1.3", std::string_view(minVersion.str()));
+      char buf[Version::kStrLen];
+      minVersion.writeFull(buf);
+      log::critical("Unsupported tls minVersion '{}', allowed: TLS1.2, TLS1.3", std::string_view(buf, sizeof(buf)));
       throw std::invalid_argument("Unsupported tls minVersion");
     }
   }
   if (maxVersion != Version{}) {
     if (maxVersion != TLS_1_2 && maxVersion != TLS_1_3) {
-      log::critical("Unsupported tls maxVersion '{}', allowed: TLS1.2, TLS1.3", std::string_view(maxVersion.str()));
+      char buf[Version::kStrLen];
+      maxVersion.writeFull(buf);
+      log::critical("Unsupported tls maxVersion '{}', allowed: TLS1.2, TLS1.3", std::string_view(buf, sizeof(buf)));
       throw std::invalid_argument("Unsupported tls maxVersion");
     }
   }
@@ -93,12 +96,18 @@ void TLSConfig::validate() {
 }
 
 TLSConfig& TLSConfig::withTlsMinVersion(std::string_view ver) {
-  ParseVersion(ver.data(), ver.data() + ver.size(), minVersion);
+  minVersion = Version(ver);
+  if (minVersion == Version{}) {
+    throw std::invalid_argument("Invalid TLS minVersion string");
+  }
   return *this;
 }
 
 TLSConfig& TLSConfig::withTlsMaxVersion(std::string_view ver) {
-  ParseVersion(ver.data(), ver.data() + ver.size(), maxVersion);
+  maxVersion = Version(ver);
+  if (maxVersion == Version{}) {
+    throw std::invalid_argument("Invalid TLS maxVersion string");
+  }
   return *this;
 }
 

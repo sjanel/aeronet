@@ -219,13 +219,14 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
   _pPath = first;
   _pathLength = SafeCast<uint32_t>(pathLast - first);
 
-  // Version (allow trailing CR; parseVersion tolerates it via from_chars behavior)
+  // Version
   first = nextSep + 1;
-  if (!ParseVersion(first, lineLast, _version)) {
+  _version = http::Version{std::string_view{first, lineLast}};
+  if (!_version.isValid()) {
     // malformed version token
     return http::StatusCodeBadRequest;
   }
-  if (_version.major != 1 || _version.minor > 1U) {
+  if (_version.major() != 1 || _version.minor() > 1U) {
     return http::StatusCodeHTTPVersionNotSupported;
   }
 

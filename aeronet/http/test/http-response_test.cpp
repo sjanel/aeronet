@@ -56,7 +56,7 @@ class HttpResponseTest : public ::testing::Test {
 
   static HttpResponseData finalizePrepared(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders, bool head,
                                            bool keepAliveFlag, std::size_t minCapturedBodySize) {
-    return resp.finalizeForHttp1(kTp, http::HTTP_1_1, !keepAliveFlag, globalHeaders, head, minCapturedBodySize);
+    return resp.finalizeForHttp1(kTp, http::HTTP_1_1, !keepAliveFlag, &globalHeaders, head, minCapturedBodySize);
   }
 
   static HttpResponseData finalize(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders, bool head,
@@ -1488,11 +1488,15 @@ TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
   resp.reason("OK");
   resp.header("X-Custom", "Value");
   resp.body("BodyContent");
-  resp.trailerAddLine("X-Trailer", "TrailerValue");
+  resp.trailerAddLine("X-Trailer", "TrailerValue1");
+  resp.trailerAddLine("X-Trailer-2", "TrailerValue-2");
 
-  auto prepared = finalizePrepared(std::move(resp), {}, false, true, kMinCapturedBodySize);
+  static constexpr bool kHead = false;
+
+  auto prepared = finalizePrepared(std::move(resp), {}, kHead, true, kMinCapturedBodySize);
   std::string all(prepared.firstBuffer());
   all.append(prepared.secondBuffer());
+
   EXPECT_TRUE(all.starts_with("HTTP/1.1 200 OK\r\n"));
   EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Custom", "Value")));
   // When trailers are present, body is chunked encoded per RFC 7230 §4.1.2
@@ -1500,7 +1504,8 @@ TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
   EXPECT_FALSE(all.contains(http::ContentLength));
   // Body should be in chunked format: "b\r\nBodyContent\r\n0\r\n" (b = 11 in hex)
   EXPECT_TRUE(all.contains("b\r\nBodyContent\r\n0\r\n"));
-  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Trailer", "TrailerValue")));
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Trailer", "TrailerValue1")));
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Trailer-2", "TrailerValue-2")));
   EXPECT_FALSE(all.contains(MakeHttp1HeaderLine(http::Connection, http::close)));
   EXPECT_FALSE(all.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
   EXPECT_TRUE(all.contains(kExpectedDateRaw));
@@ -2519,73 +2524,68 @@ TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_MultipleHeadersAndValue
 // Per RFC 7230 §4.1.2, trailers require chunked transfer encoding
 // =============================================================================
 
-TEST_F(HttpResponseTest, TrailersAutoChunkedWithoutGlobalHeaders) {
+TEST_F(HttpResponseTest, TrailersAutoChunked) {
   static constexpr std::size_t kMinCapturedBodySz[] = {1UL, 4096UL};
+  static constexpr bool kBools[] = {true, false};
+  static constexpr std::string_view kConcatenatedGlobalHeaders[] = {"", "server: aeronet\r\n",
+                                                                    "x-custom: value\r\nx-another: another-value\r\n"};
 
-  for (std::size_t minCapturedBodySz : kMinCapturedBodySz) {
-    // Captured body
-    HttpResponse resp(http::StatusCodeOK);
-    resp.body(std::string("CapturedData12345"));  // 17 bytes = 0x11
-    resp.trailerAddLine("X-Sig", "sig-value");
+  for (std::string_view globalHeaders : kConcatenatedGlobalHeaders) {
+    ConcatenatedHeaders gh;
+    for (std::string_view tmp = globalHeaders; !tmp.empty();) {
+      const auto crlfPos = tmp.find(http::CRLF);
+      ASSERT_NE(crlfPos, std::string_view::npos);
+      gh.append(tmp.substr(0, crlfPos));
+      tmp.remove_prefix(crlfPos + http::CRLF.size());
+    }
+    for (bool head : kBools) {
+      for (bool keepAlive : kBools) {
+        for (std::size_t minCapturedBodySz : kMinCapturedBodySz) {
+          // Captured body
+          HttpResponse resp(http::StatusCodeOK);
+          resp.body(std::string("CapturedData12345"));  // 17 bytes = 0x11
+          resp.trailerAddLine("X-Sig", "sig-value");
+          resp.trailerAddLine("X-Sig-2", "sig-value-2");
 
-    const std::string result = concatenated(std::move(resp), {}, false, true, minCapturedBodySz);
+          std::string result = concatenated(std::move(resp), gh, head, keepAlive, minCapturedBodySz);
 
-    std::string exp;
-    exp.reserve(result.size());
-    exp += "HTTP/1.1 200\r\n";
+          std::string exp;
+          exp.reserve(result.size());
+          exp += "HTTP/1.1 200\r\n";
 
-    exp += MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
-    exp += MakeHttp1HeaderLine(http::ContentType, "text/plain");
-    exp += MakeHttp1HeaderLine(http::TransferEncoding, http::chunked);
-    exp += "\r\n";
-    // 17 in hex = 0x11 = "11"
-    exp += "11\r\n";
-    exp += "CapturedData12345\r\n";
-    exp += "0\r\n";
-    exp += "X-Sig: sig-value\r\n";
-    exp += "\r\n";
+          exp += MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
+          exp += MakeHttp1HeaderLine(http::ContentType, "text/plain");
+          exp += MakeHttp1HeaderLine(http::TransferEncoding, http::chunked);
+          if (!globalHeaders.empty()) {
+            exp += globalHeaders;
+          }
+          if (!keepAlive) {
+            exp += MakeHttp1HeaderLine(http::Connection, http::close);
+          }
+          exp += "\r\n";
 
-    EXPECT_EQ(result, exp);
+          if (!head) {
+            // 17 in hex = 0x11 = "11"
+            exp += "11\r\n";
+            exp += "CapturedData12345\r\n";
+            exp += "0\r\n";
+            exp += "X-Sig: sig-value\r\n";
+            exp += "X-Sig-2: sig-value-2\r\n";
+            exp += "\r\n";
+          }
 
-    // Inline body
-    resp = HttpResponse(http::StatusCodeOK).body("CapturedData12345").trailerAddLine("X-Sig", "sig-value");
-    EXPECT_EQ(concatenated(std::move(resp), {}, false, true, minCapturedBodySz), exp);
-  }
-}
+          ASSERT_EQ(result, exp);
 
-TEST_F(HttpResponseTest, TrailersAutoChunkedWithGlobalHeaders) {
-  static constexpr std::size_t kMinCapturedBodySz[] = {1UL, 4096UL};
-
-  for (std::size_t minCapturedBodySz : kMinCapturedBodySz) {
-    // Captured body
-    HttpResponse resp(http::StatusCodeOK);
-    resp.body(std::string("CapturedData12345"));  // 17 bytes = 0x11
-    resp.trailerAddLine("X-Sig", "sig-value");
-
-    const std::string result = concatenated(std::move(resp), {"server: aeronet"}, false, false, minCapturedBodySz);
-
-    std::string exp;
-    exp.reserve(result.size());
-    exp += "HTTP/1.1 200\r\n";
-
-    exp += MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
-    exp += MakeHttp1HeaderLine(http::ContentType, "text/plain");
-    exp += MakeHttp1HeaderLine(http::TransferEncoding, http::chunked);
-    exp += MakeHttp1HeaderLine("server", "aeronet");
-    exp += MakeHttp1HeaderLine(http::Connection, http::close);
-    exp += "\r\n";
-    // 17 in hex = 0x11 = "11"
-    exp += "11\r\n";
-    exp += "CapturedData12345\r\n";
-    exp += "0\r\n";
-    exp += "X-Sig: sig-value\r\n";
-    exp += "\r\n";
-
-    EXPECT_EQ(result, exp);
-
-    // Inline body
-    resp = HttpResponse(http::StatusCodeOK).body("CapturedData12345").trailerAddLine("X-Sig", "sig-value");
-    EXPECT_EQ(concatenated(std::move(resp), {"server: aeronet"}, false, false, minCapturedBodySz), exp);
+          // Inline body
+          resp = HttpResponse(http::StatusCodeOK)
+                     .body("CapturedData12345")
+                     .trailerAddLine("X-Sig", "sig-value")
+                     .trailerAddLine("X-Sig-2", "sig-value-2");
+          result = concatenated(std::move(resp), gh, head, keepAlive, minCapturedBodySz);
+          ASSERT_EQ(result, exp);
+        }
+      }
+    }
   }
 }
 

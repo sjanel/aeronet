@@ -29,7 +29,7 @@ TEST(HttpTlsVersionBounds, ValidMinVersion) {
   EXPECT_NO_THROW(cfg.validate());
 }
 
-TEST(HttpTlsVersionBounds, InvalidMinVersionThrows) {
+TEST(HttpTlsVersionBounds, UnsupportedMinVersionThrows) {
   // Provide unsupported version token -> validate() should throw
   TLSConfig cfg;
   cfg.enabled = true;
@@ -37,8 +37,21 @@ TEST(HttpTlsVersionBounds, InvalidMinVersionThrows) {
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
+TEST(HttpTlsVersionBounds, InvalidMinVersionThrows) {
+  // Provide unsupported version token -> validate() should throw
+  TLSConfig cfg;
+  cfg.enabled = true;
+  EXPECT_THROW(cfg.withTlsMinVersion("TLS1.10"), std::invalid_argument);
+}
+
+TEST(HttpTlsVersionBounds, InvalidMaxVersionThrows) {
+  // Provide unsupported version token -> validate() should throw
+  TLSConfig cfg;
+  cfg.enabled = true;
+  EXPECT_THROW(cfg.withTlsMaxVersion("TLS2."), std::invalid_argument);
+}
+
 TEST(TlsConfigTest, InvalidMinVersionThrows) {
-  // Covers tls-config.cpp lines 59-60
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withCertPem("DUMMY").withKeyPem("DUMMY");
@@ -48,7 +61,6 @@ TEST(TlsConfigTest, InvalidMinVersionThrows) {
 }
 
 TEST(TlsConfigTest, InvalidMaxVersionThrows) {
-  // Covers tls-config.cpp lines 65-66
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withCertPem("DUMMY").withKeyPem("DUMMY");

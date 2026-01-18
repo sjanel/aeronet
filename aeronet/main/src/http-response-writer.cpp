@@ -143,8 +143,9 @@ void HttpResponseWriter::ensureHeadersSent() {
 
   auto cnxIt = _server->_connections.active.find(_fd);
   if (cnxIt == _server->_connections.active.end() ||
-      !_server->queueData(cnxIt, _fixedResponse.finalizeForHttp1(SysClock::now(), http::HTTP_1_1, _requestConnClose, {},
-                                                                 _head, _server->config().minCapturedBodySize))) {
+      !_server->queueData(
+          cnxIt, _fixedResponse.finalizeForHttp1(SysClock::now(), http::HTTP_1_1, _requestConnClose, nullptr, _head,
+                                                 _server->config().minCapturedBodySize))) {
     _state = HttpResponseWriter::State::Failed;
     log::error("Streaming: failed to enqueue headers fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
     return;
@@ -186,9 +187,8 @@ void HttpResponseWriter::emitLastChunk() {
   //   [trailer-name: value\r\n]*
   //   \r\n
   if (_trailers.empty()) {
-    _trailers.ensureAvailableCapacity(1UL + http::DoubleCRLF.size());
-    _trailers.unchecked_push_back('0');
-    _trailers.unchecked_append(http::DoubleCRLF);
+    _trailers.ensureAvailableCapacity(http::EndChunk.size());
+    _trailers.unchecked_append(http::EndChunk);
   } else {
     _trailers.unchecked_append(http::CRLF);  // Final blank line (memory already reserved)
   }
