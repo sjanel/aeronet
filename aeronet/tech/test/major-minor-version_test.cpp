@@ -2,7 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#include <cstdint>
 #include <cstring>
 #include <string_view>
 
@@ -11,32 +10,48 @@ using namespace aeronet;
 // helper prefix storage with static lifetime for template parameter
 static constexpr char kHttpPrefix[] = "HTTP/";
 
-using HttpVer = MajorMinorVersion<kHttpPrefix, uint8_t>;
+using HttpVer = MajorMinorVersion<kHttpPrefix>;
 
 TEST(MajorMinorVersion, ParseValid) {
   HttpVer vers{};
-  const char *str = "HTTP/1.1";
-  EXPECT_TRUE(ParseVersion<kHttpPrefix>(str, str + std::strlen(str), vers));
-  EXPECT_EQ(vers.major, 1);
-  EXPECT_EQ(vers.minor, 1);
+  std::string_view str = "HTTP/1.1";
+  vers = HttpVer{str};
+  EXPECT_EQ(vers.major(), 1);
+  EXPECT_EQ(vers.minor(), 1);
 }
 
 TEST(MajorMinorVersion, ParseInvalidPrefix) {
   HttpVer vers{};
-  const char *str = "NOTHTTP/1.1";
-  EXPECT_FALSE(ParseVersion<kHttpPrefix>(str, str + std::strlen(str), vers));
+  std::string_view str = "NOTHTTP/1.1";
+  vers = HttpVer{str};
+  EXPECT_EQ(vers, HttpVer{});
 }
 
 TEST(MajorMinorVersion, ParseInvalidFormat) {
   HttpVer vers{};
-  const char *s1 = "HTTP/1";  // missing minor
-  EXPECT_FALSE(ParseVersion<kHttpPrefix>(s1, s1 + std::strlen(s1), vers));
+  std::string_view s1 = "HTTP/1";  // missing minor
+  vers = HttpVer{s1};
+  EXPECT_EQ(vers, HttpVer{});
 
-  const char *s2 = "HTTP/114";  // no dot
-  EXPECT_FALSE(ParseVersion<kHttpPrefix>(s2, s2 + std::strlen(s2), vers));
+  std::string_view s2 = "HTTP/114";  // no dot
+  vers = HttpVer{s2};
+  EXPECT_EQ(vers, HttpVer{});
 
-  const char *s3 = "HTTP/x.y";  // non-numeric
-  EXPECT_FALSE(ParseVersion<kHttpPrefix>(s3, s3 + std::strlen(s3), vers));
+  std::string_view s3 = "HTTP/1.y";  // non-numeric minor
+  vers = HttpVer{s3};
+  EXPECT_EQ(vers, HttpVer{});
+
+  std::string_view s4 = "HTTP/11.0";  // major > 9
+  vers = HttpVer{s4};
+  EXPECT_EQ(vers, HttpVer{});
+
+  std::string_view s5 = "HTTP/1.10";  // minor > 9
+  vers = HttpVer{s5};
+  EXPECT_EQ(vers, HttpVer{});
+
+  std::string_view s6 = "HTTP/0.1";  // major == 0
+  vers = HttpVer{s6};
+  EXPECT_EQ(vers, HttpVer{});
 }
 
 TEST(MajorMinorVersion, StrAndCompare) {
@@ -48,9 +63,37 @@ TEST(MajorMinorVersion, StrAndCompare) {
   EXPECT_LT(vers1, vers2);
   EXPECT_LT(vers2, vers3);
   EXPECT_NE(vers1, vers2);
+}
 
-  // str() produces a FixedCapacityVector that can be wrapped in string_view
-  auto sv = vers1.str();
-  std::string_view sview(sv);
-  EXPECT_EQ(sview, "HTTP/1.0");
+TEST(MajorMinorVersion, WriteFull) {
+  HttpVer vers{1, 1};
+  char buf[HttpVer::kStrLen + 1] = {};
+  char *endPtr = vers.writeFull(buf);
+  EXPECT_EQ(std::string_view(buf, static_cast<std::size_t>(endPtr - buf)), "HTTP/1.1");
+
+  HttpVer vers2{2, 0};
+  endPtr = vers2.writeFull(buf);
+  EXPECT_EQ(std::string_view(buf, static_cast<std::size_t>(endPtr - buf)), "HTTP/2.0");
+}
+
+TEST(MajorMinorVersion, InvalidVersion) {
+  HttpVer vers{};
+  EXPECT_FALSE(vers.isValid());
+
+  HttpVer vers2{10, 0};  // major > 9
+  EXPECT_FALSE(vers2.isValid());
+
+  HttpVer vers3{1, 10};  // minor > 9
+  EXPECT_FALSE(vers3.isValid());
+
+  HttpVer vers4{0, 140};  // major == 0
+  EXPECT_FALSE(vers4.isValid());
+}
+
+TEST(MajorMinorVersion, ValidVersion) {
+  HttpVer vers{1, 1};
+  EXPECT_TRUE(vers.isValid());
+
+  HttpVer vers2{9, 9};
+  EXPECT_TRUE(vers2.isValid());
 }

@@ -108,7 +108,7 @@ void RawBytesBase<T, ViewType, SizeType>::append(const_pointer data, uint64_t sz
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::push_back(value_type byte) {
-  ensureAvailableCapacityExponential(1U);
+  ensureAvailableCapacityExponential(1UL);
   unchecked_push_back(byte);
 }
 
@@ -171,17 +171,7 @@ void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacityExponential(uin
 
   if (_capacity < required) {
     const uintmax_t doubled = 2ULL * _capacity;
-    const uintmax_t target = std::max(required, doubled);
-
-    if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
-      static constexpr uintmax_t kMaxCapacity = static_cast<uintmax_t>(std::numeric_limits<size_type>::max());
-      if (kMaxCapacity < target) [[unlikely]] {
-        throw std::overflow_error("capacity overflow");
-      }
-    }
-
-    // Safe to cast now
-    reallocUp(static_cast<size_type>(target));
+    reallocUp(SafeCast<size_type>(std::max(required, doubled)));
   }
 #endif
 }
@@ -197,10 +187,7 @@ void RawBytesBase<T, ViewType, SizeType>::swap(RawBytesBase &rhs) noexcept {
 
 template <class T, class ViewType, class SizeType>
 bool RawBytesBase<T, ViewType, SizeType>::operator==(const RawBytesBase &rhs) const noexcept {
-  if (size() != rhs.size()) {
-    return false;
-  }
-  return empty() || std::memcmp(data(), rhs.data(), size()) == 0;
+  return (size() == rhs.size()) && (empty() || std::memcmp(data(), rhs.data(), size()) == 0);
 }
 
 template <class T, class ViewType, class SizeType>
