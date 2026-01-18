@@ -1,5 +1,4 @@
 #include <gtest/gtest.h>
-#include <signal.h>
 #include <sys/socket.h>
 #include <unistd.h>
 

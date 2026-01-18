@@ -1011,16 +1011,63 @@ class HttpResponse {
 
   [[nodiscard]] std::string_view headersFlatViewWithDate() const noexcept;
 
+  // Simple bitmap class to pass finalization options with strong typing and better readability (passing several bools
+  // is easy to get it wrong).
+  class Options {
+   public:
+    static constexpr uint8_t Close = 1U << 0;
+    static constexpr uint8_t AddTrailerHeader = 1U << 1;
+    static constexpr uint8_t IsHeadMethod = 1U << 2;
+    static constexpr uint8_t Prepared = 1U << 3;
+
+    [[nodiscard]] bool isClose() const noexcept { return (_optionsBitmap & Close) != 0; }
+    [[nodiscard]] bool isAddTrailerHeader() const noexcept { return (_optionsBitmap & AddTrailerHeader) != 0; }
+    [[nodiscard]] bool isHeadMethod() const noexcept { return (_optionsBitmap & IsHeadMethod) != 0; }
+
+    // Tells whether the response has been pre-configured already.
+    // If it's the case, then global headers have already been applied, addTrailerHeader and headMethod options
+    // are known. Close is only best effort - it may still be changed later (from not close to close).
+    [[nodiscard]] bool isPrepared() const noexcept { return (_optionsBitmap & Prepared) != 0; }
+
+    void close(bool val) noexcept {
+      if (val) {
+        _optionsBitmap |= Close;
+      } else {
+        _optionsBitmap &= static_cast<uint8_t>(~Close);
+      }
+    }
+
+    void addTrailerHeader(bool val) noexcept {
+      if (val) {
+        _optionsBitmap |= AddTrailerHeader;
+      } else {
+        _optionsBitmap &= static_cast<uint8_t>(~AddTrailerHeader);
+      }
+    }
+
+    void headMethod(bool val) noexcept {
+      if (val) {
+        _optionsBitmap |= IsHeadMethod;
+      } else {
+        _optionsBitmap &= static_cast<uint8_t>(~IsHeadMethod);
+      }
+    }
+
+    void setPrepared() noexcept { _optionsBitmap |= Prepared; }
+
+   private:
+    uint8_t _optionsBitmap{};
+  };
+
   // IMPORTANT: This method finalizes the response by appending reserved headers,
   // and returns the internal buffers stolen from this HttpResponse instance.
   // So this instance must not be used anymore after this call.
-  HttpResponseData finalizeForHttp1(SysTimePoint tp, http::Version version, bool close,
-                                    const ConcatenatedHeaders* pGlobalHeaders, bool isHeadMethod,
-                                    std::size_t minCapturedBodySize);
+  HttpResponseData finalizeForHttp1(SysTimePoint tp, http::Version version, Options opts,
+                                    const ConcatenatedHeaders* pGlobalHeaders, std::size_t minCapturedBodySize);
 
-  auto* filePayloadPtr() noexcept { return _payloadVariant.getIfFilePayload(); }
+  FilePayload* filePayloadPtr() noexcept { return _payloadVariant.getIfFilePayload(); }
 
-  [[nodiscard]] const auto* filePayloadPtr() const noexcept { return _payloadVariant.getIfFilePayload(); }
+  [[nodiscard]] const FilePayload* filePayloadPtr() const noexcept { return _payloadVariant.getIfFilePayload(); }
 
   void bodyAppendUpdateHeaders(std::string_view givenContentType, std::string_view defaultContentType,
                                std::size_t totalBodyLen);
@@ -1088,7 +1135,8 @@ class HttpResponse {
   // Variant that can hold an external captured payload (HttpPayload).
   HttpPayload _payloadVariant;
   std::uint32_t _trailerLen{0};  // trailer length
-  bool _alreadyPrepared{false};  // true if HttpResponse was created from HttpRequest::makeResponse
+  // TODO: if we know that method is HEAD, we could avoid storing body / trailers.
+  Options _knownOptions;
 };
 
 }  // namespace aeronet

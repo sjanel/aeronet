@@ -205,7 +205,6 @@ class HttpResponseWriter {
   // Combine transient booleans into a single state machine to reduce memory and make transitions explicit.
   enum class State : std::uint8_t { Opened, HeadersSent, Ended, Failed };
   State _state{State::Opened};
-  bool _requestConnClose{false};
   Encoding _compressionFormat{Encoding::none};
   bool _compressionActivated{false};
   bool _contentEncodingHeaderPresent{false};

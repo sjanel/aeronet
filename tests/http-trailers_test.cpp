@@ -482,34 +482,45 @@ TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
     return resp;
   });
 
-  for (std::string_view path : {"/stream", "/normal"}) {
-    test::ClientConnection sock(port);
-    int fd = sock.fd();
+  for (bool withTrailerHeader : {true, false}) {
+    ts.postConfigUpdate([withTrailerHeader](HttpServerConfig& cfg) { cfg.withTrailerHeader(withTrailerHeader); });
 
-    std::string req = "GET ";
-    req += path;
-    req +=
-        " HTTP/1.1\r\n"
-        "Host: example.com\r\n"
-        "Connection: close\r\n"
-        "\r\n";
+    for (std::string_view path : {"/stream", "/normal"}) {
+      test::ClientConnection sock(port);
+      int fd = sock.fd();
 
-    test::sendAll(fd, req);
-    std::string resp = test::recvUntilClosed(fd);
+      std::string req = "GET ";
+      req += path;
+      req +=
+          " HTTP/1.1\r\n"
+          "Host: example.com\r\n"
+          "Connection: close\r\n"
+          "\r\n";
 
-    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
+      test::sendAll(fd, req);
+      std::string resp = test::recvUntilClosed(fd);
 
-    // Check for chunked encoding
-    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentType, "text/custom")));
-    EXPECT_FALSE(resp.contains(http::ContentLength));
-    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
+      ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 
-    // Check for chunks
-    EXPECT_TRUE(resp.contains("chunk1"));
-    EXPECT_TRUE(resp.contains("chunk2"));
+      // Check for chunked encoding
+      EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentType, "text/custom")));
+      EXPECT_FALSE(resp.contains(http::ContentLength));
+      EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 
-    // Check for trailer (appears after the 0-size chunk)
-    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-checksum", "abc123")));
+      // Check for Trailer header
+      if (withTrailerHeader && path == "/normal") {
+        // aeronet does not support adding Trailer header in HttpResponseWriter streaming mode for now.
+        // It could in the future, if we propose a HttpResponseWriter::declareTrailers() method before headers are sent.
+        EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Trailer, "x-checksum")));
+      }
+
+      // Check for chunks
+      EXPECT_TRUE(resp.contains("chunk1"));
+      EXPECT_TRUE(resp.contains("chunk2"));
+
+      // Check for trailer (appears after the 0-size chunk)
+      EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-checksum", "abc123")));
+    }
   }
 }
 

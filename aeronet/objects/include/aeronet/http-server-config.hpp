@@ -86,6 +86,12 @@ struct HttpServerConfig {
   // Enable TRACE method handling (echo) on the server. Disabled by default for safety.
   TraceMethodPolicy traceMethodPolicy{TraceMethodPolicy::Disabled};
 
+  // When trailers are used in HttpResponse / HttpResponseWriter, whether to automatically add the "Trailer" header
+  // listing the trailer fields before sending headers. Default: true.
+  // Not yet supported by HttpResponseWriter (streaming mode), as we send headers before knowing trailer names.
+  // Note that this setting only applies to HTTP/1.1 responses that use transfer encoding (ignored in HTTP/2).
+  bool addTrailerHeader{true};
+
   // Maximum number of HTTP requests to serve over a single persistent connection before forcing close.
   // A high value improves connection reuse at the cost of potential resource exhaustion from slow clients.
   // A low value limits resource usage but may increase latency due to more frequent connection establishment.
@@ -258,6 +264,10 @@ struct HttpServerConfig {
 
   // Toggle TCP_NODELAY (disable the Nagle algorithm). Default: false.
   HttpServerConfig& withTcpNoDelay(bool on = true);
+
+  // Toggle addition of Trailer header for responses with trailers. Default: true.
+  // Not yet supported by HttpResponseWriter (streaming mode), as we send headers before knowing trailers exist.
+  HttpServerConfig& withTrailerHeader(bool on = true);
 
   // Adjust header size ceiling
   HttpServerConfig& withMaxHeaderBytes(std::size_t maxHeaderBytes);
