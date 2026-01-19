@@ -146,9 +146,10 @@ void HttpResponseWriter::ensureHeadersSent() {
   }
 
   auto cnxIt = _server->_connections.active.find(_fd);
-  if (!_server->queueData(
-          cnxIt, _fixedResponse.finalizeForHttp1(SysClock::now(), http::HTTP_1_1, _fixedResponse._knownOptions, nullptr,
-                                                 _server->config().minCapturedBodySize))) {
+  _server->queueData(
+      cnxIt, _fixedResponse.finalizeForHttp1(SysClock::now(), http::HTTP_1_1, _fixedResponse._knownOptions, nullptr,
+                                             _server->config().minCapturedBodySize));
+  if (cnxIt->second->isAnyCloseRequested()) {
     _state = HttpResponseWriter::State::Failed;
     log::error("Streaming: failed to enqueue headers fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
     return;
@@ -353,7 +354,8 @@ bool HttpResponseWriter::enqueue(HttpResponseData httpResponseData) {
   if (cnxIt == _server->_connections.active.end()) {
     return false;
   }
-  return _server->queueData(cnxIt, std::move(httpResponseData)) && !cnxIt->second->isAnyCloseRequested();
+  _server->queueData(cnxIt, std::move(httpResponseData));
+  return !cnxIt->second->isAnyCloseRequested();
 }
 
 bool HttpResponseWriter::file(File fileObj, std::uint64_t offset, std::uint64_t length, std::string_view contentType) {

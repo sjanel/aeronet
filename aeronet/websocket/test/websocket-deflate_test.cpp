@@ -141,7 +141,6 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_AllParameters) {
 #endif
 }
 
-// Additional coverage tests for ParseDeflateOffer
 TEST(WebSocketDeflateTest, ParseDeflateOffer_ClientMaxWindowBitsNoValue) {
   // client_max_window_bits without a value means client is advertising capability
   DeflateConfig serverConfig;
@@ -151,6 +150,20 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_ClientMaxWindowBitsNoValue) {
   ASSERT_TRUE(result.has_value());
   // Server can set the value, defaults to server's configured max
   EXPECT_EQ(result.value_or(DeflateNegotiatedParams{}).clientMaxWindowBits, 15);
+#else
+  EXPECT_FALSE(result.has_value());
+#endif
+}
+
+TEST(WebSocketDeflateTest, ParseDeflateOffer_ServerMaxWindowBitsNoValue) {
+  // server_max_window_bits without a value means server is advertising capability
+  DeflateConfig serverConfig;
+  auto result = ParseDeflateOffer("permessage-deflate; server_max_window_bits", serverConfig);
+
+#ifdef AERONET_ENABLE_ZLIB
+  ASSERT_TRUE(result.has_value());
+  // Server can set the value, defaults to server's configured max
+  EXPECT_EQ(result.value_or(DeflateNegotiatedParams{}).serverMaxWindowBits, 15);
 #else
   EXPECT_FALSE(result.has_value());
 #endif
