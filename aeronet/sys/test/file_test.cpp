@@ -1,7 +1,11 @@
+#define AERONET_WANT_SENDFILE_PREAD_OVERRIDES
+#define AERONET_FILE_SYS_TEST_SUPPORT_USE_EXISTING_PATHFORFD
+
 #include "aeronet/file.hpp"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cerrno>
 #include <cstdarg>
 #include <cstdint>
@@ -131,6 +135,38 @@ TEST(FileTest, LoadAllContentThrowsOnFatalReadError) {
   ASSERT_TRUE(static_cast<bool>(fileObj));
   test::SetReadActions(path, {test::ReadErr(EIO)});
   EXPECT_EQ(LoadAllContent(fileObj), "payload");
+}
+
+TEST(FileTest, ReadAtRetriesOnEintr) {
+  test::FileSyscallHookGuard guard;
+  ScopedTempDir dir("aeronet-file-readat-eintr");
+  ScopedTempFile tmp(dir, "abcdefgh");
+  const std::string path = tmp.filePath().string();
+  File fileObj(path, File::OpenMode::ReadOnly);
+  ASSERT_TRUE(static_cast<bool>(fileObj));
+
+  // First pread returns EINTR, second succeeds with 3 bytes read.
+  aeronet::test::SetPreadPathActions(path, {IoAction{-1, EINTR}, IoAction{3, 0}});
+
+  std::array<std::byte, 4> buf{};
+  const auto readBytes = fileObj.readAt(buf, 0);
+  EXPECT_EQ(readBytes, 3U);
+}
+
+TEST(FileTest, ReadAtReturnsErrorOnFatalPread) {
+  test::FileSyscallHookGuard guard;
+  ScopedTempDir dir("aeronet-file-readat-fatal");
+  ScopedTempFile tmp(dir, "abcdef");
+  const std::string path = tmp.filePath().string();
+  File fileObj(path, File::OpenMode::ReadOnly);
+  ASSERT_TRUE(static_cast<bool>(fileObj));
+
+  // Fatal pread error should return kError.
+  aeronet::test::SetPreadPathActions(path, {IoAction{-1, EIO}});
+
+  std::array<std::byte, 2> buf{};
+  const auto readBytes = fileObj.readAt(buf, 1);
+  EXPECT_EQ(readBytes, File::kError);
 }
 
 TEST(FileTest, SizeUsesFstatOverride) {
