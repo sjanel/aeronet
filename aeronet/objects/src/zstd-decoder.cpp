@@ -7,9 +7,9 @@
 #include <new>
 #include <string_view>
 
+#include "aeronet/decoder-buffer-manager.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "decoder-helpers.hpp"
 
 namespace aeronet {
 

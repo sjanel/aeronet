@@ -15,6 +15,7 @@ All notable changes to aeronet are documented in this file.
 - All Header values stored in `HttpResponse` and `HttpResponseWriter` are now trimmed of leading/trailing whitespace on set.
 - New option `HttpServerConfig::addTrailerHeader` to automatically emit `trailer` header when trailers are added to responses in `HTTP/1.1` only.
 - `DogStatsD` is now able to reconnect automatically if the UDS socket becomes unavailable. The client is also more efficient.
+- Make sure that `WebSocketConfig.maxMessageSize` is strictly respected when decompressing a `WebSocket` message
 
 ### Breaking Changes
 
