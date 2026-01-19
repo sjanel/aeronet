@@ -56,7 +56,8 @@ class TelemetryContext {
  public:
   TelemetryContext() noexcept;
 
-  explicit TelemetryContext(const aeronet::TelemetryConfig &cfg);
+  // Constructs a new telemetry context from configuration.
+  explicit TelemetryContext(const TelemetryConfig &cfg);
 
   // Non-copyable, movable
   TelemetryContext(const TelemetryContext &) = delete;
@@ -83,7 +84,7 @@ class TelemetryContext {
 
   // Access underlying DogStatsD client, or nullptr if not enabled.
   // You can use it to emit custom DogStatsD metrics.
-  [[nodiscard]] const DogStatsD *dogstatsdClient() const noexcept;
+  [[nodiscard]] DogStatsD *dogstatsdClient() const noexcept;
 
  private:
   std::unique_ptr<TelemetryContextImpl> _impl;

@@ -67,7 +67,7 @@ std::string UnixDogstatsdSink::recvMessage(int timeoutMs) const {
   if (ready <= 0 || (pfd.revents & POLLIN) == 0) {
     return {};
   }
-  std::array<char, 512> buf{};
+  std::array<char, 512> buf;
   const ssize_t bytes = ::recv(_fd.fd(), buf.data(), buf.size(), 0);
   if (bytes <= 0) {
     return {};

@@ -30,7 +30,7 @@ class TelemetryConfig {
   // Service name to attach to traces. If empty, the application may supply a default.
   [[nodiscard]] std::string_view serviceName() const { return _staticStrings[1]; }
 
-  // DogStatsD socket path (e.g. /var/run/datadog/dsd.socket). Empty => consult environment.
+  // DogStatsD socket path (e.g. /var/run/datadog/dsd.socket). Empty => disabled.
   [[nodiscard]] std::string_view dogstatsdSocketPath() const { return _staticStrings[2]; }
 
   // Optional namespace prefix for DogStatsD metrics (defaults to serviceName when empty).

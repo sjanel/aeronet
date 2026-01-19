@@ -21,7 +21,7 @@ namespace aeronet {
 //  - If socket creation/send fails, construction of the object throws.
 //  - This is intentionally minimal and dependency-free; it focuses on non-blocking sends and simple
 //    formatting (tags as dogstatsd format: |#tag1,tag2:value).
-//  - It is thread-safe to call the metric methods from multiple threads concurrently.
+//  - It is not thread-safe.
 class DogStatsD {
  private:
   static constexpr const char kCommaSep[] = ",";
@@ -29,28 +29,49 @@ class DogStatsD {
  public:
   using DogStatsDTags = DynamicConcatenatedStrings<kCommaSep, uint32_t>;
 
+  // Creates a disabled DogStatsD client.
+  DogStatsD() noexcept = default;
+
   // socketPath: path to unix datagram socket used by the agent (e.g. /var/run/datadog/dsd.socket)
   // ns: optional metric namespace prefix (e.g. "myapp.")
   // Disables the client if socketPath is empty.
-  explicit DogStatsD(std::string_view socketPath = {}, std::string_view ns = {},
-                     std::chrono::milliseconds connectTimeout = std::chrono::milliseconds{5000});
+  explicit DogStatsD(std::string_view socketPath, std::string_view ns = {});
 
-  void increment(std::string_view metric, uint64_t value = 1UL, const DogStatsDTags& tags = {}) const noexcept;
+  void increment(std::string_view metric, uint64_t value = 1UL, const DogStatsDTags& tags = {}) noexcept;
 
-  void gauge(std::string_view metric, int64_t value, const DogStatsDTags& tags = {}) const noexcept;
+  void gauge(std::string_view metric, int64_t value, const DogStatsDTags& tags = {}) noexcept;
 
-  void histogram(std::string_view metric, double value, const DogStatsDTags& tags = {}) const noexcept;
+  void histogram(std::string_view metric, double value, const DogStatsDTags& tags = {}) noexcept;
 
-  void timing(std::string_view metric, std::chrono::milliseconds ms, const DogStatsDTags& tags = {}) const noexcept;
+  void timing(std::string_view metric, std::chrono::milliseconds ms, const DogStatsDTags& tags = {}) noexcept;
 
-  void set(std::string_view metric, std::string_view value, const DogStatsDTags& tags = {}) const noexcept;
+  void set(std::string_view metric, std::string_view value, const DogStatsDTags& tags = {}) noexcept;
+
+  [[nodiscard]] std::string_view socketPath() const noexcept { return {_buf.data(), _socketPathLength}; }
+
+  [[nodiscard]] std::string_view ns() const noexcept { return {_buf.begin() + _socketPathLength, _buf.end()}; }
+
+  [[nodiscard]] bool enabled() const noexcept { return _socketPathLength != 0; }
 
  private:
   void sendMetricMessage(std::string_view metric, std::string_view value, std::string_view typeSuffix,
-                         const DogStatsDTags& tags) const noexcept;
+                         const DogStatsDTags& tags) noexcept;
 
-  RawChars32 _ns;
+  bool tryReconnect() noexcept;
+
+  [[nodiscard]] bool ensureConnected() noexcept {
+    return enabled() && (_retryConnectionCounter == 0 || tryReconnect());
+  }
+
+  [[nodiscard]] int connect() noexcept;
+
+  // To avoid trying to reconnect for every message if there is a durable issue
+  static constexpr uint8_t kReconnectionThreshold = 50U;  // A very arbitrary number to avoid reconnecting too often
+
+  RawChars32 _buf;
   BaseFd _fd;
+  uint16_t _socketPathLength{0};
+  uint8_t _retryConnectionCounter{kReconnectionThreshold};
 };
 
 }  // namespace aeronet

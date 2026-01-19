@@ -267,7 +267,8 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_CaseInsensitiveParams) {
 
 TEST(WebSocketDeflateTest, BuildDeflateResponse_Defaults) {
   DeflateNegotiatedParams params;
-  auto response = BuildDeflateResponse(params);
+  RawChars response;
+  BuildDeflateResponse(params, response);
 
   // With all defaults, should just be the extension name
   EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(response.data()), response.size()), "permessage-deflate");
@@ -276,7 +277,8 @@ TEST(WebSocketDeflateTest, BuildDeflateResponse_Defaults) {
 TEST(WebSocketDeflateTest, BuildDeflateResponse_ServerNoContextTakeover) {
   DeflateNegotiatedParams params;
   params.serverNoContextTakeover = true;
-  auto response = BuildDeflateResponse(params);
+  RawChars response;
+  BuildDeflateResponse(params, response);
 
   EXPECT_TRUE(std::string_view(reinterpret_cast<const char *>(response.data()), response.size())
                   .starts_with("permessage-deflate"));
@@ -287,7 +289,8 @@ TEST(WebSocketDeflateTest, BuildDeflateResponse_ServerNoContextTakeover) {
 TEST(WebSocketDeflateTest, BuildDeflateResponse_ClientNoContextTakeover) {
   DeflateNegotiatedParams params;
   params.clientNoContextTakeover = true;
-  auto response = BuildDeflateResponse(params);
+  RawChars response;
+  BuildDeflateResponse(params, response);
 
   EXPECT_TRUE(std::string_view(reinterpret_cast<const char *>(response.data()), response.size())
                   .contains("client_no_context_takeover"));
@@ -297,7 +300,8 @@ TEST(WebSocketDeflateTest, BuildDeflateResponse_ReducedWindowBits) {
   DeflateNegotiatedParams params;
   params.serverMaxWindowBits = 10;
   params.clientMaxWindowBits = 12;
-  auto response = BuildDeflateResponse(params);
+  RawChars response;
+  BuildDeflateResponse(params, response);
 
   EXPECT_TRUE(std::string_view(reinterpret_cast<const char *>(response.data()), response.size())
                   .contains("server_max_window_bits=10"));
@@ -311,7 +315,8 @@ TEST(WebSocketDeflateTest, BuildDeflateResponse_AllParams) {
   params.clientNoContextTakeover = true;
   params.serverMaxWindowBits = 9;
   params.clientMaxWindowBits = 10;
-  auto response = BuildDeflateResponse(params);
+  RawChars response;
+  BuildDeflateResponse(params, response);
 
   EXPECT_TRUE(std::string_view(reinterpret_cast<const char *>(response.data()), response.size())
                   .contains("server_no_context_takeover"));
@@ -327,7 +332,8 @@ TEST(WebSocketDeflateTest, BuildDeflateResponse_DefaultWindowBitsNotIncluded) {
   DeflateNegotiatedParams params;
   params.serverMaxWindowBits = 15;  // Default
   params.clientMaxWindowBits = 15;  // Default
-  auto response = BuildDeflateResponse(params);
+  RawChars response;
+  BuildDeflateResponse(params, response);
 
   // Default window bits should not be included
   EXPECT_TRUE(

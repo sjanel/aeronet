@@ -3,10 +3,11 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
-#include <array>
+#include <cassert>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -14,48 +15,60 @@
 #include <new>
 #include <stdexcept>
 #include <string_view>
-#include <thread>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/stringconv.hpp"
+
+#ifndef NDEBUG
+#include <system_error>
+#endif
 
 namespace aeronet {
+
 namespace {
+
 constexpr std::string_view kTagsPrefix{"|#"};
 constexpr std::string_view kCounterSuffix{"|c"};
 constexpr std::string_view kGaugeSuffix{"|g"};
 constexpr std::string_view kHistogramSuffix{"|h"};
 constexpr std::string_view kTimingSuffix{"|ms"};
 constexpr std::string_view kSetSuffix{"|s"};
-constexpr std::size_t kFloatingBufferSize = std::numeric_limits<double>::max_digits10 + 12;
 
-std::string_view FormatFloating(double value, std::array<char, kFloatingBufferSize>& buffer) {
-  const auto [ptr, ec] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value, std::chars_format::general);
-  return {buffer.data(), ptr};
+constexpr std::size_t kFloatingBufferSize = std::numeric_limits<double>::max_digits10 + 12;
+constexpr std::size_t kMaxIntegerStrBufferSize = std::numeric_limits<uint64_t>::digits10 + 2;  // sign + left-most digit
+
+constexpr std::string_view FormatFloating(double value, char* buffer) {
+  const auto [ptr, ec] = std::to_chars(buffer, buffer + kFloatingBufferSize, value, std::chars_format::general);
+  assert(ec == std::errc{});
+  return {buffer, ptr};
 }
+
+constexpr std::string_view FormatInteger(std::integral auto value, char* buffer) {
+  const auto [ptr, ec] = std::to_chars(buffer, buffer + kMaxIntegerStrBufferSize, value);
+  assert(ec == std::errc{});
+  return {buffer, ptr};
+}
+
+constexpr void Copy(std::string_view sv, char* dst) noexcept { std::memcpy(dst, sv.data(), sv.size()); }
+
+[[nodiscard]] constexpr char* Append(std::string_view sv, char* dst) {
+  Copy(sv, dst);
+  return dst + sv.size();
+}
+
 }  // namespace
 
-DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns, std::chrono::milliseconds connectTimeout) {
+DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns) {
   if (socketPath.size() >= sizeof(sockaddr_un{}.sun_path)) {
     throw std::invalid_argument("DogStatsD: socket path too long");
   }
   if (ns.size() >= 256UL) {
     throw std::invalid_argument("DogStatsD: namespace too long");
   }
-
   if (socketPath.empty()) {
     return;
-  }
-
-  uint32_t dotAppendSz = !ns.empty() && ns.back() != '.' ? 1U : 0U;
-
-  _ns.reserve(ns.size() + dotAppendSz);
-  _ns.unchecked_append(ns);
-  if (dotAppendSz != 0) {
-    _ns.unchecked_push_back('.');
   }
 
   _fd = BaseFd(::socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
@@ -63,77 +76,138 @@ DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns, std::chro
     throw_errno("DogStatsD: socket creation failed");
   }
 
-  sockaddr_un addr{};
-  addr.sun_family = AF_UNIX;
-  std::memcpy(addr.sun_path, socketPath.data(), socketPath.size());
-  addr.sun_path[socketPath.size()] = '\0';
-  auto addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + socketPath.size() + 1);
+  static_assert(sizeof(sockaddr_un{}.sun_path) <= std::numeric_limits<uint16_t>::max(),
+                "uint16_t is not large enough to hold sockaddr_un.sun_path");
 
-  bool connected = false;
-  const auto stepWait = connectTimeout / 10;
-  for (const auto deadline = std::chrono::steady_clock::now() + connectTimeout;
-       std::chrono::steady_clock::now() < deadline; std::this_thread::sleep_for(stepWait)) {
-    if (::connect(_fd.fd(), reinterpret_cast<sockaddr*>(&addr), addrlen) == 0) {
-      connected = true;
-      break;
-    }
-    log::debug("DogStatsD: connect failed for fd # {}: {}", _fd.fd(), std::strerror(errno));
+  _socketPathLength = static_cast<uint16_t>(socketPath.size());
+
+  uint32_t dotAppendSz = !ns.empty() && ns.back() != '.' ? 1U : 0U;
+
+  _buf.reserve(socketPath.size() + ns.size() + dotAppendSz + 64UL);  // additional buffer for metric messages
+  _buf.unchecked_append(socketPath);
+  _buf.unchecked_append(ns);
+  if (dotAppendSz != 0) {
+    _buf.unchecked_push_back('.');
   }
-  if (!connected) {
-    throw std::runtime_error("DogStatsD: connect timeout");
+
+  // Perform a single connect attempt to validate the socket path format.
+  // Some errors indicate a structural/problematic path (treat as fatal),
+  // while others (ENOENT) mean the agent isn't present yet and should be
+  // retried later.
+  if (connect() == -1) {
+    const int serr = errno;
+    // Treat these as configuration / syntax / structural errors and throw.
+    if (serr == ENOTDIR || serr == EISDIR || serr == ELOOP || serr == EINVAL || serr == ENOTSOCK || serr == EACCES ||
+        serr == EPERM) {
+      throw std::invalid_argument("DogStatsD: invalid or unusable socket path");
+    }
+    // Otherwise treat as transient (e.g., ENOENT) and fall back to retry logic.
+    // mark as disconnected, but with immediate retry at first message.
+    _retryConnectionCounter = kReconnectionThreshold;
   }
 }
 
 void DogStatsD::sendMetricMessage(std::string_view metric, std::string_view value, std::string_view typeSuffix,
-                                  const DogStatsDTags& tags) const noexcept {
-  if (!_fd) {
-    return;
-  }
-
+                                  const DogStatsDTags& tags) noexcept {
   const auto tagsSize = tags.empty() ? 0UL : kTagsPrefix.size() + tags.fullSize();
+  const auto nsSize = _buf.size() - _socketPathLength;
+  const auto dataSize = nsSize + metric.size() + 1U + value.size() + typeSuffix.size() + tagsSize;
 
   try {
-    RawChars msg(_ns.size() + metric.size() + 1U + value.size() + typeSuffix.size() + tagsSize);
-
-    msg.unchecked_append(_ns);
-    msg.unchecked_append(metric);
-    msg.unchecked_push_back(':');
-    msg.unchecked_append(value);
-    msg.unchecked_append(typeSuffix);
-    if (tagsSize != 0) {
-      msg.unchecked_append(kTagsPrefix);
-      msg.unchecked_append(tags.fullString());
-    }
-
-    if (::send(_fd.fd(), msg.data(), msg.size(), MSG_DONTWAIT | MSG_NOSIGNAL) == -1) {
-      log::error("DogStatsD: unable to send message of size {} with error : {}", msg.size(), std::strerror(errno));
-    }
+    _buf.ensureAvailableCapacity(dataSize);
   } catch (const std::bad_alloc&) {
     log::error("DogStatsD: unable to allocate memory for metric message");
     return;
   }
+
+  char* data = _buf.data() + _buf.size();
+
+  data = Append(ns(), data);
+  data = Append(metric, data);
+  *data++ = ':';
+  data = Append(value, data);
+  data = Append(typeSuffix, data);
+  if (tagsSize != 0) {
+    data = Append(kTagsPrefix, data);
+    data = Append(tags.fullString(), data);
+  }
+
+  if (::send(_fd.fd(), _buf.data() + _buf.size(), dataSize, MSG_DONTWAIT | MSG_NOSIGNAL) == -1) {
+    const int serr = errno;
+    static_assert(EAGAIN == EWOULDBLOCK, "EAGAIN and EWOULDBLOCK should have the same value");
+    // If the socket would block (EAGAIN / EWOULDBLOCK), treat the metric as dropped
+    // and do not mark the connection for immediate reconnect. Other errors indicate
+    // a more serious problem with the socket and should trigger a reconnect attempt.
+    if (serr == EAGAIN) {
+      log::debug("DogStatsD: dropping metric of size {} due to EAGAIN/EWOULDBLOCK", dataSize);
+    } else {
+      log::error("DogStatsD: unable to send message of size {} with error : {}", dataSize, std::strerror(serr));
+      _retryConnectionCounter = kReconnectionThreshold;  // mark as disconnected but retry immediately on next send
+    }
+  }
 }
 
-void DogStatsD::increment(std::string_view metric, uint64_t value, const DogStatsDTags& tags) const noexcept {
-  sendMetricMessage(metric, std::string_view(IntegralToCharVector(value)), kCounterSuffix, tags);
+void DogStatsD::increment(std::string_view metric, uint64_t value, const DogStatsDTags& tags) noexcept {
+  if (ensureConnected()) {
+    char buffer[kMaxIntegerStrBufferSize];
+    sendMetricMessage(metric, FormatInteger(value, buffer), kCounterSuffix, tags);
+  }
 }
 
-void DogStatsD::gauge(std::string_view metric, int64_t value, const DogStatsDTags& tags) const noexcept {
-  sendMetricMessage(metric, std::string_view(IntegralToCharVector(value)), kGaugeSuffix, tags);
+void DogStatsD::gauge(std::string_view metric, int64_t value, const DogStatsDTags& tags) noexcept {
+  if (ensureConnected()) {
+    char buffer[kMaxIntegerStrBufferSize];
+    sendMetricMessage(metric, FormatInteger(value, buffer), kGaugeSuffix, tags);
+  }
 }
 
-void DogStatsD::histogram(std::string_view metric, double value, const DogStatsDTags& tags) const noexcept {
-  std::array<char, kFloatingBufferSize> buffer{};
-  sendMetricMessage(metric, FormatFloating(value, buffer), kHistogramSuffix, tags);
+void DogStatsD::histogram(std::string_view metric, double value, const DogStatsDTags& tags) noexcept {
+  if (ensureConnected()) {
+    char buffer[kFloatingBufferSize];
+    sendMetricMessage(metric, FormatFloating(value, buffer), kHistogramSuffix, tags);
+  }
 }
 
-void DogStatsD::timing(std::string_view metric, std::chrono::milliseconds ms,
-                       const DogStatsDTags& tags) const noexcept {
-  sendMetricMessage(metric, std::string_view(IntegralToCharVector(ms.count())), kTimingSuffix, tags);
+void DogStatsD::timing(std::string_view metric, std::chrono::milliseconds ms, const DogStatsDTags& tags) noexcept {
+  if (ensureConnected()) {
+    char buffer[kMaxIntegerStrBufferSize];
+    sendMetricMessage(metric, FormatInteger(ms.count(), buffer), kTimingSuffix, tags);
+  }
 }
 
-void DogStatsD::set(std::string_view metric, std::string_view value, const DogStatsDTags& tags) const noexcept {
-  sendMetricMessage(metric, value, kSetSuffix, tags);
+void DogStatsD::set(std::string_view metric, std::string_view value, const DogStatsDTags& tags) noexcept {
+  if (ensureConnected()) {
+    sendMetricMessage(metric, value, kSetSuffix, tags);
+  }
+}
+
+bool DogStatsD::tryReconnect() noexcept {
+  assert(_retryConnectionCounter != 0);
+  if (++_retryConnectionCounter < kReconnectionThreshold) {
+    return false;
+  }
+  return connect() == 0;
+}
+
+int DogStatsD::connect() noexcept {
+  std::string_view socketPath = this->socketPath();
+
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  *Append(socketPath, addr.sun_path) = '\0';
+  auto addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + socketPath.size() + 1);
+
+  assert(_fd);
+
+  const int ret = ::connect(_fd.fd(), reinterpret_cast<sockaddr*>(&addr), addrlen);
+  if (ret == -1) {
+    log::error("DogStatsD: unable to connect to socket '{}'. Full error: {}", socketPath, std::strerror(errno));
+    _retryConnectionCounter = 1;
+  } else {
+    _retryConnectionCounter = 0;
+  }
+
+  return ret;
 }
 
 }  // namespace aeronet

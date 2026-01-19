@@ -613,6 +613,7 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithProtocol) {
 
   EXPECT_TRUE(
       responseView.contains(MakeHttp1HeaderLine(websocket::SecWebSocketProtocol, validationResult.selectedProtocol)));
+  EXPECT_TRUE(responseView.ends_with(http::DoubleCRLF));
 }
 
 TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflate) {
@@ -635,6 +636,7 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflate) {
   EXPECT_TRUE(responseView.contains(expectedExtensions));
   // client_max_window_bits=15 is default, should not appear
   EXPECT_FALSE(responseView.contains("client_max_window_bits"));
+  EXPECT_TRUE(responseView.ends_with(http::DoubleCRLF));
 }
 #endif
 
@@ -832,6 +834,7 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_NoProtocolNoDeflate) {
   // Should not contain protocol or extensions headers
   EXPECT_FALSE(responseView.contains(websocket::SecWebSocketProtocol));
   EXPECT_FALSE(responseView.contains(websocket::SecWebSocketExtensions));
+  EXPECT_TRUE(responseView.ends_with(http::DoubleCRLF));
 }
 
 TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflateNoContextTakeover) {
@@ -850,6 +853,7 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflateNoContextTakeo
 
   EXPECT_TRUE(responseView.contains("server_no_context_takeover"));
   EXPECT_TRUE(responseView.contains("client_no_context_takeover"));
+  EXPECT_TRUE(responseView.ends_with(http::DoubleCRLF));
 }
 #endif
 

@@ -367,7 +367,7 @@ void TelemetryContext::timing(std::string_view name, std::chrono::milliseconds m
   }
 }
 
-const DogStatsD* TelemetryContext::dogstatsdClient() const noexcept {
+DogStatsD* TelemetryContext::dogstatsdClient() const noexcept {
   return _impl ? &_impl->_dogstatsd.dogstatsdClient() : nullptr;
 }
 

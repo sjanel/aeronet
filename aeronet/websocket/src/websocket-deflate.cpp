@@ -66,6 +66,8 @@ struct ExtensionParam {
 }
 #endif
 
+constexpr std::string_view kSemicolonSpace = "; ";
+
 }  // namespace
 
 std::optional<DeflateNegotiatedParams> ParseDeflateOffer(std::string_view extensionOffer,
@@ -138,36 +140,53 @@ std::optional<DeflateNegotiatedParams> ParseDeflateOffer(std::string_view extens
 #endif
 }
 
-RawBytes BuildDeflateResponse(DeflateNegotiatedParams params) {
-  RawBytes response(64);
-  response.unchecked_append(std::as_bytes(std::span(kPermessageDeflate)));
-
-  static constexpr std::byte kSemicolonSpace[] = {std::byte{';'}, std::byte{' '}};
-
+std::size_t ComputeDeflateResponseSize(DeflateNegotiatedParams params) {
+  std::size_t size = kPermessageDeflate.size();
   if (params.serverNoContextTakeover) {
-    response.append(kSemicolonSpace);
-    response.append(std::as_bytes(std::span(kServerNoContextTakeover)));
+    size += kSemicolonSpace.size() + kServerNoContextTakeover.size();
   }
   if (params.clientNoContextTakeover) {
-    response.append(kSemicolonSpace);
-    response.append(std::as_bytes(std::span(kClientNoContextTakeover)));
+    size += kSemicolonSpace.size() + kClientNoContextTakeover.size();
   }
   if (params.serverMaxWindowBits < 15) {
-    response.append(kSemicolonSpace);
-    response.append(std::as_bytes(std::span(kServerMaxWindowBits)));
-    response.push_back(std::byte{'='});
-    const auto serverWindowBitsVec = IntegralToCharVector(params.serverMaxWindowBits);
-    response.append(std::as_bytes(std::span(serverWindowBitsVec)));
+    size += kSemicolonSpace.size() + kServerMaxWindowBits.size() + 1U +
+            static_cast<std::size_t>(nchars(params.serverMaxWindowBits));
   }
   if (params.clientMaxWindowBits < 15) {
-    response.append(kSemicolonSpace);
-    response.append(std::as_bytes(std::span(kClientMaxWindowBits)));
-    response.push_back(std::byte{'='});
-    const auto clientWindowBitsVec = IntegralToCharVector(params.clientMaxWindowBits);
-    response.append(std::as_bytes(std::span(clientWindowBitsVec)));
+    size += kSemicolonSpace.size() + kClientMaxWindowBits.size() + 1U +
+            static_cast<std::size_t>(nchars(params.clientMaxWindowBits));
   }
+  return size;
+}
 
-  return response;
+void BuildDeflateResponse(DeflateNegotiatedParams params, RawChars& output) {
+  output.ensureAvailableCapacity(ComputeDeflateResponseSize(params));
+  output.unchecked_append(kPermessageDeflate);
+
+  if (params.serverNoContextTakeover) {
+    output.unchecked_append(kSemicolonSpace);
+    output.unchecked_append(kServerNoContextTakeover);
+  }
+  if (params.clientNoContextTakeover) {
+    output.unchecked_append(kSemicolonSpace);
+    output.unchecked_append(kClientNoContextTakeover);
+  }
+  if (params.serverMaxWindowBits < 15) {
+    output.unchecked_append(kSemicolonSpace);
+    output.unchecked_append(kServerMaxWindowBits);
+    output.unchecked_push_back('=');
+    auto bytesBuf = output.data() + output.size();
+    auto out = AppendIntegralToCharBuf(bytesBuf, params.serverMaxWindowBits);
+    output.addSize(static_cast<std::size_t>(out - bytesBuf));
+  }
+  if (params.clientMaxWindowBits < 15) {
+    output.unchecked_append(kSemicolonSpace);
+    output.unchecked_append(kClientMaxWindowBits);
+    output.unchecked_push_back('=');
+    auto bytesBuf = output.data() + output.size();
+    auto out = AppendIntegralToCharBuf(bytesBuf, params.clientMaxWindowBits);
+    output.addSize(static_cast<std::size_t>(out - bytesBuf));
+  }
 }
 
 struct DeflateContext::Impl {
