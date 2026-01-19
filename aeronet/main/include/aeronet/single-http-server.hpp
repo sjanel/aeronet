@@ -363,11 +363,6 @@ class SingleHttpServer {
   // connections closed after current response), false otherwise.
   [[nodiscard]] bool isDraining() const { return _lifecycle.isDraining(); }
 
-  // Access the telemetry context for custom tracing/spans.
-  // The returned reference is valid for the lifetime of the SingleHttpServer instance,
-  // but is invalidated if the server is moved.
-  [[nodiscard]] const tracing::TelemetryContext& telemetryContext() const noexcept { return _telemetry; }
-
   // Retrieve current server statistics snapshot.
   [[nodiscard]] ServerStats stats() const;
 

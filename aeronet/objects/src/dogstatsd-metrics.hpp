@@ -22,31 +22,31 @@ class DogStatsdMetrics {
     }
   }
 
-  void increment(std::string_view metric, uint64_t delta = 1UL) const noexcept {
+  void increment(std::string_view metric, uint64_t delta = 1UL) noexcept {
     if (_pTags != nullptr) {
       _client.increment(metric, delta, *_pTags);
     }
   }
 
-  void gauge(std::string_view metric, int64_t value) const noexcept {
+  void gauge(std::string_view metric, int64_t value) noexcept {
     if (_pTags != nullptr) {
       _client.gauge(metric, value, *_pTags);
     }
   }
 
-  void histogram(std::string_view metric, double value) const noexcept {
+  void histogram(std::string_view metric, double value) noexcept {
     if (_pTags != nullptr) {
       _client.histogram(metric, value, *_pTags);
     }
   }
 
-  void timing(std::string_view metric, std::chrono::milliseconds ms) const noexcept {
+  void timing(std::string_view metric, std::chrono::milliseconds ms) noexcept {
     if (_pTags != nullptr) {
       _client.timing(metric, ms, *_pTags);
     }
   }
 
-  [[nodiscard]] const DogStatsD& dogstatsdClient() const noexcept { return _client; }
+  [[nodiscard]] DogStatsD& dogstatsdClient() noexcept { return _client; }
 
  private:
   DogStatsD _client;

@@ -119,7 +119,7 @@ namespace upgrade {
 ///
 /// @param validationResult  Result from ValidateHttp2Upgrade() (must be valid)
 /// @return                  Complete 101 response as raw bytes
-[[nodiscard]] RawChars BuildHttp2UpgradeResponse(const UpgradeValidationResult& validationResult);
+[[nodiscard]] std::string_view BuildHttp2UpgradeResponse(const UpgradeValidationResult& validationResult);
 #endif
 
 }  // namespace upgrade
