@@ -188,7 +188,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, Ht
   request.end(respStatusCode);
 }
 
-bool SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData) {
+void SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData) {
   ConnectionState& state = *cnxIt->second;
 
   // Extract file payload early so we can move the File once and avoid double-moves
@@ -211,7 +211,7 @@ bool SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpRes
     switch (want) {
       case TransportHint::Error:
         state.requestImmediateClose();
-        return false;
+        return;
       case TransportHint::ReadReady:
         [[fallthrough]];
       case TransportHint::WriteReady:
@@ -223,7 +223,7 @@ bool SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpRes
           if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
             flushFilePayload(cnxIt);
           }
-          return true;
+          return;
         }
         // partial write, capture the buffer in the connection state
         httpResponseData.addOffset(static_cast<std::size_t>(written));
@@ -253,8 +253,6 @@ bool SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpRes
   if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
     flushFilePayload(cnxIt);
   }
-
-  return true;
 }
 
 void SingleHttpServer::flushOutbound(ConnectionMapIt cnxIt) {
