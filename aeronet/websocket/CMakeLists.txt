@@ -35,6 +35,13 @@ if(AERONET_ENABLE_OPENSSL AND AERONET_BUILD_TESTS)
 endif()
 
 AeronetAddUnitTest(
+    websocket-compress_test
+    test/websocket-compress_test.cpp
+    LIBRARIES
+    aeronet_websocket
+)
+
+AeronetAddUnitTest(
     websocket-deflate_test
     test/websocket-deflate_test.cpp
     LIBRARIES
