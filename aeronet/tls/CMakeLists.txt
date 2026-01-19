@@ -33,6 +33,14 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    tls-handshake_test
+    test/tls-handshake_test.cpp
+    LIBRARIES
+    aeronet_tls
+    aeronet_test_support
+)
+
+AeronetAddUnitTest(
     tls-ticket-key-store_test
     src/tls-ticket-key-store.cpp
     test/tls-ticket-key-store_test.cpp
