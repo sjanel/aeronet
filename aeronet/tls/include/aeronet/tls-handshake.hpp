@@ -18,14 +18,13 @@ namespace aeronet {
 
 // Full helper: performs collection, optional logging, populates connection state strings and updates metrics.
 // selectedAlpn / negotiatedCipher / negotiatedVersion are mutated in-place.
-TLSInfo FinalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake, bool& tlsHandshakeEventEmitted,
+TLSInfo FinalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake, bool tlsHandshakeEventEmitted,
                              const TlsHandshakeCallback& cb, std::chrono::steady_clock::time_point handshakeStart,
                              TlsMetricsInternal& metrics);
 
-// Emit TLS handshake event if not already emitted.
-void EmitTlsHandshakeEvent(bool& tlsHandshakeEventEmitted, const TLSInfo& tlsInfo, const TlsHandshakeCallback& cb,
-                           TlsHandshakeEvent::Result result, int fd, std::string_view reason = {}, bool resumed = false,
-                           bool clientCertPresent = false);
+// Emit TLS handshake event.
+void EmitTlsHandshakeEvent(const TLSInfo& tlsInfo, const TlsHandshakeCallback& cb, TlsHandshakeEvent::Result result,
+                           int fd, std::string_view reason = {}, bool resumed = false, bool clientCertPresent = false);
 
 enum class KtlsApplication : std::uint8_t { Enabled, Disabled, CloseConnection };
 

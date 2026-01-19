@@ -703,6 +703,41 @@ TEST(TlsHandshakeTest, FinalizeTlsHandshakeLogsHandshake) {
   EXPECT_EQ(metrics.handshakesSucceeded, 1U);
 }
 
+TEST(TlsHandshakeTest, CollectTlsHandshakeInfoBeforeHandshake) {
+  // Covers the branches where SSL has not completed handshake yet: no ALPN selected,
+  // no negotiated cipher/version and no peer certificate.
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+
+  // Do NOT perform the handshake - inspect the values collected from an unnegotiated SSL
+  auto start = std::chrono::steady_clock::now();
+  TlsMetricsInternal metrics{};
+
+  bool tlsHandshakeEventEmitted = false;
+  auto tlsInfo = FinalizeTlsHandshake(pair.serverSsl.get(), pair.serverFd.fd(), false, tlsHandshakeEventEmitted, {},
+                                      start, metrics);
+
+  // Before handshake, ALPN and peer subject should be empty. Cipher/version may be present
+  // (derived from the SSL_METHOD) so we don't assert on them.
+  EXPECT_TRUE(tlsInfo.selectedAlpn().empty());
+  EXPECT_TRUE(tlsInfo.peerSubject().empty());
+  EXPECT_EQ(metrics.handshakesSucceeded, 1U);
+}
+
+TEST(TlsHandshakeTest, CollectTlsHandshakeInfoNoAlpn) {
+  // Server configured with no ALPN (empty list) should produce empty selectedAlpn after handshake
+  SslTestPair pair({}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+
+  TlsMetricsInternal metrics{};
+  bool tlsHandshakeEventEmitted = false;
+  auto tlsInfo = FinalizeTlsHandshake(pair.serverSsl.get(), pair.serverFd.fd(), false, tlsHandshakeEventEmitted, {},
+                                      std::chrono::steady_clock::now(), metrics);
+
+  EXPECT_TRUE(tlsInfo.selectedAlpn().empty());
+  EXPECT_FALSE(tlsInfo.negotiatedCipher().empty());
+  EXPECT_FALSE(tlsInfo.negotiatedVersion().empty());
+}
+
 TEST(TlsHandshakeTest, PeerSubjectNonEmptyAfterHandshake) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
 

@@ -37,7 +37,9 @@ struct TlsHandshakeResult {
 // Collect negotiated TLS parameters and (optionally) peer subject. The handshakeStart timestamp
 // should be the moment the TLS handshake began (steady clock). If it equals the epoch (count()==0)
 // durationNs remains 0.
-TlsHandshakeResult CollectTlsHandshakeInfo(const SSL* ssl, std::chrono::steady_clock::time_point handshakeStart) {
+//  Logging format aligns with server's prior implementation.
+TlsHandshakeResult CollectAndLogTlsHandshake(const SSL* ssl, int fd, bool logHandshake,
+                                             std::chrono::steady_clock::time_point handshakeStart) {
   TlsHandshakeResult res(TLSInfo::Parts(64U));
 
   // ALPN
@@ -50,9 +52,10 @@ TlsHandshakeResult CollectTlsHandshakeInfo(const SSL* ssl, std::chrono::steady_c
   if (const char* cipher = ::SSL_get_cipher_name(ssl)) {
     res.parts.set(1, cipher);
   }
-  if (const char* vers = ::SSL_get_version(ssl)) {
-    res.parts.set(2, vers);
-  }
+
+  const char* vers = ::SSL_get_version(ssl);
+  assert(vers != nullptr);  // SSL_get_version should not return nullptr after handshake
+  res.parts.set(2, vers);
 
   if (X509* peerRaw = ::SSL_get_peer_certificate(ssl)) {
     auto peer = MakeX509(peerRaw);
@@ -73,13 +76,6 @@ TlsHandshakeResult CollectTlsHandshakeInfo(const SSL* ssl, std::chrono::steady_c
     auto dur = std::chrono::steady_clock::now() - handshakeStart;
     res.durationNs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(dur).count());
   }
-  return res;
-}
-
-// Convenience: collect + optionally log in one call. Logging format aligns with server's prior implementation.
-TlsHandshakeResult CollectAndLogTlsHandshake(const SSL* ssl, int fd, bool logHandshake,
-                                             std::chrono::steady_clock::time_point handshakeStart) {
-  auto res = CollectTlsHandshakeInfo(ssl, handshakeStart);
   if (logHandshake) {
     log::info("TLS handshake fd # {} ver={} cipher={} alpn={} peer={}", fd, res.parts[2], res.parts[1], res.parts[0],
               res.parts[3]);
@@ -88,7 +84,7 @@ TlsHandshakeResult CollectAndLogTlsHandshake(const SSL* ssl, int fd, bool logHan
 }
 }  // namespace
 
-TLSInfo FinalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake, bool& tlsHandshakeEventEmitted,
+TLSInfo FinalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake, bool tlsHandshakeEventEmitted,
                              const TlsHandshakeCallback& cb, std::chrono::steady_clock::time_point handshakeStart,
                              TlsMetricsInternal& metrics) {
   TlsHandshakeResult hs = CollectAndLogTlsHandshake(ssl, fd, logHandshake, handshakeStart);
@@ -133,8 +129,9 @@ TLSInfo FinalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake, bool& tl
     metrics.handshakeDurationMaxNs = std::max(metrics.handshakeDurationMaxNs, hs.durationNs);
   }
 
-  EmitTlsHandshakeEvent(tlsHandshakeEventEmitted, tlsInfo, cb, TlsHandshakeEvent::Result::Succeeded, fd, {}, resumed,
-                        clientCertPresent);
+  if (!tlsHandshakeEventEmitted) {
+    EmitTlsHandshakeEvent(tlsInfo, cb, TlsHandshakeEvent::Result::Succeeded, fd, {}, resumed, clientCertPresent);
+  }
 
   return tlsInfo;
 }
@@ -151,14 +148,8 @@ inline uint64_t DurationNs(std::chrono::steady_clock::time_point start) {
 
 }  // namespace
 
-void EmitTlsHandshakeEvent(bool& tlsHandshakeEventEmitted, const TLSInfo& tlsInfo, const TlsHandshakeCallback& cb,
-                           TlsHandshakeEvent::Result result, int fd, std::string_view reason, bool resumed,
-                           bool clientCertPresent) {
-  if (tlsHandshakeEventEmitted) {
-    return;
-  }
-  tlsHandshakeEventEmitted = true;
-
+void EmitTlsHandshakeEvent(const TLSInfo& tlsInfo, const TlsHandshakeCallback& cb, TlsHandshakeEvent::Result result,
+                           int fd, std::string_view reason, bool resumed, bool clientCertPresent) {
   if (cb) {
     TlsHandshakeEvent ev;
     ev.result = result;
@@ -194,24 +185,26 @@ KtlsApplication MaybeEnableKtlsSend(KtlsEnableResult ktlsResult, int fd, TLSConf
       return KtlsApplication::Enabled;
     case KtlsEnableResult::Unsupported:
       reason = "unsupported";
-      [[fallthrough]];
+      break;
     case KtlsEnableResult::Disabled:
       reason = "disabled";
-      [[fallthrough]];
+      break;
     default:
-      ++metrics.ktlsSendEnableFallbacks;
-      if (force) {
-        ++metrics.ktlsSendForcedShutdowns;
-        log::error("kTLS send {} on fd # {} while forced", reason, fd);
-        return KtlsApplication::CloseConnection;
-      }
-      if (warnOnFailure) {
-        log::warn("kTLS send {} on fd # {} (falling back to user-space TLS)", reason, fd);
-      } else {
-        log::debug("kTLS send {} on fd # {} (fallback)", reason, fd);
-      }
-      return KtlsApplication::Disabled;
+      break;
   }
+
+  ++metrics.ktlsSendEnableFallbacks;
+  if (force) {
+    ++metrics.ktlsSendForcedShutdowns;
+    log::error("kTLS send {} on fd # {} while forced", reason, fd);
+    return KtlsApplication::CloseConnection;
+  }
+  if (warnOnFailure) {
+    log::warn("kTLS send {} on fd # {} (falling back to user-space TLS)", reason, fd);
+  } else {
+    log::debug("kTLS send {} on fd # {} (fallback)", reason, fd);
+  }
+  return KtlsApplication::Disabled;
 }
 
 }  // namespace aeronet

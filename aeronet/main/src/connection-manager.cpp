@@ -67,8 +67,8 @@ inline void FailTlsHandshakeOnce(ConnectionState& state, TlsMetricsInternal& met
   }
   ++metrics.handshakesFailed;
   IncrementTlsFailureReason(metrics, reason);
-  EmitTlsHandshakeEvent(state.tlsHandshakeEventEmitted, state.tlsInfo, cb, TlsHandshakeEvent::Result::Failed, fd,
-                        reason, resumed, clientCertPresent);
+  EmitTlsHandshakeEvent(state.tlsInfo, cb, TlsHandshakeEvent::Result::Failed, fd, reason, resumed, clientCertPresent);
+  state.tlsHandshakeEventEmitted = true;
 }
 
 }  // namespace
@@ -192,8 +192,7 @@ void SingleHttpServer::acceptNewConnections() {
           [[unlikely]] {
         ++_tls.metrics.handshakesRejectedConcurrency;
         IncrementTlsFailureReason(_tls.metrics, kTlsHandshakeFailureReasonRejectedConcurrency);
-        EmitTlsHandshakeEvent(state.tlsHandshakeEventEmitted, state.tlsInfo, _callbacks.tlsHandshake,
-                              TlsHandshakeEvent::Result::Rejected, cnxFd,
+        EmitTlsHandshakeEvent(state.tlsInfo, _callbacks.tlsHandshake, TlsHandshakeEvent::Result::Rejected, cnxFd,
                               kTlsHandshakeFailureReasonRejectedConcurrency);
         closeConnection(cnxIt);
         continue;
@@ -216,8 +215,7 @@ void SingleHttpServer::acceptNewConnections() {
         if (_tls.rateLimitTokens == 0) [[unlikely]] {
           ++_tls.metrics.handshakesRejectedRateLimit;
           IncrementTlsFailureReason(_tls.metrics, kTlsHandshakeFailureReasonRejectedRateLimit);
-          EmitTlsHandshakeEvent(state.tlsHandshakeEventEmitted, state.tlsInfo, _callbacks.tlsHandshake,
-                                TlsHandshakeEvent::Result::Rejected, cnxFd,
+          EmitTlsHandshakeEvent(state.tlsInfo, _callbacks.tlsHandshake, TlsHandshakeEvent::Result::Rejected, cnxFd,
                                 kTlsHandshakeFailureReasonRejectedRateLimit);
           closeConnection(cnxIt);
           continue;

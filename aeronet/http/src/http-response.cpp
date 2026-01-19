@@ -96,7 +96,7 @@ constexpr std::string_view kTransferEncodingChunkedCRLF =
     JoinStringView_v<http::TransferEncoding, http::HeaderSep, http::chunked, http::CRLF>;
 constexpr std::string_view kEndChunkedBody = "\r\n0\r\n";
 
-void Copy(std::string_view sv, char* dst) noexcept { std::memcpy(dst, sv.data(), sv.size()); }
+constexpr void Copy(std::string_view sv, char* dst) noexcept { std::memcpy(dst, sv.data(), sv.size()); }
 
 // Using std::memcpy for better performance
 [[nodiscard]] constexpr char* Append(std::string_view sv, char* dst) {
