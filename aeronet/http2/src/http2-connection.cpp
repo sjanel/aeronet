@@ -918,15 +918,14 @@ void Http2Connection::sendSettingsAck() { WriteSettingsAckFrame(_outputBuffer); 
 // Error handling
 // ============================
 
-Http2Connection::ProcessResult Http2Connection::connectionError(ErrorCode code, std::string_view message) {
+Http2Connection::ProcessResult Http2Connection::connectionError(ErrorCode code, const char* message) {
   initiateGoAway(code, message);
   _state = ConnectionState::Closed;
 
   return ProcessResult{ProcessResult::Action::Error, code, 0, message};
 }
 
-Http2Connection::ProcessResult Http2Connection::streamError(uint32_t streamId, ErrorCode code,
-                                                            std::string_view message) {
+Http2Connection::ProcessResult Http2Connection::streamError(uint32_t streamId, ErrorCode code, const char* message) {
   sendRstStream(streamId, code);
 
   return ProcessResult{ProcessResult::Action::OutputReady, code, 0, message};

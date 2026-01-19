@@ -68,7 +68,7 @@ class Http2Connection {
     Action action{Action::Continue};
     ErrorCode errorCode{ErrorCode::NoError};
     std::size_t bytesConsumed{0};
-    std::string_view errorMessage;  // TODO: maybe could be a simple const char * ?
+    const char* errorMessage;
   };
 
   /// Create a new HTTP/2 connection with the specified configuration.
@@ -283,8 +283,8 @@ class Http2Connection {
   // Error handling
   // ============================
 
-  ProcessResult connectionError(ErrorCode code, std::string_view message);
-  ProcessResult streamError(uint32_t streamId, ErrorCode code, std::string_view message);
+  ProcessResult connectionError(ErrorCode code, const char* message);
+  ProcessResult streamError(uint32_t streamId, ErrorCode code, const char* message);
 
   // ============================
   // Member variables

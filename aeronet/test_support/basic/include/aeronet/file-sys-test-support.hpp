@@ -54,6 +54,9 @@ inline void SetFcntlErrors(std::string_view path, std::initializer_list<int> err
   gFcntlErrnos.setActions(std::string(path), errs);
 }
 
+#ifdef AERONET_FILE_SYS_TEST_SUPPORT_USE_EXISTING_PATHFORFD
+using aeronet::test::PathForFd;
+#else
 inline std::optional<std::string> PathForFd(int fd) {
   std::array<char, 64> linkBuf{};
   std::snprintf(linkBuf.data(), linkBuf.size(), "/proc/self/fd/%d", fd);
@@ -65,6 +68,7 @@ inline std::optional<std::string> PathForFd(int fd) {
   pathBuf[static_cast<std::size_t>(len)] = '\0';
   return std::string(pathBuf.data());
 }
+#endif
 
 inline ReadAction PopReadAction(int fd, bool& hasAction) {
   const auto pathOpt = PathForFd(fd);
