@@ -387,31 +387,31 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
     if (_config.http2.enable && !state.tlsEstablished &&
         upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)) == ProtocolType::Http2) {
       const auto upgradeValidation = upgrade::ValidateHttp2Upgrade(request.headers());
-      if (upgradeValidation.valid) {
-        // Generate and send 101 Switching Protocols response
-        const std::size_t consumedBytesUpgrade = request.headSpanSize();
-        state.inBuffer.erase_front(consumedBytesUpgrade);
-
-        // Create HTTP/2 protocol handler using unified dispatch
-        state.protocolHandler =
-            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _telemetry, _tmp.buf);
-        state.protocol = ProtocolType::Http2;
-
-        // Queue the upgrade response
-        state.outBuffer.append(upgrade::BuildHttp2UpgradeResponse(upgradeValidation));
-        flushOutbound(cnxIt);
-
-        log::debug("HTTP/2 connection established via h2c upgrade on fd {}", cnxIt->first.fd());
-
-        ++state.requestsServed;
-        ++_stats.totalRequestsServed;
-
-        // Return - the connection is now HTTP/2 and will be handled differently
-        return false;
+      if (!upgradeValidation.valid) {
+        // If h2c upgrade validation failed, respond with error
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, upgradeValidation.errorMessage);
+        break;
       }
-      // If h2c upgrade validation failed, respond with error
-      emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, upgradeValidation.errorMessage);
-      break;
+      // Generate and send 101 Switching Protocols response
+      const std::size_t consumedBytesUpgrade = request.headSpanSize();
+      state.inBuffer.erase_front(consumedBytesUpgrade);
+
+      // Create HTTP/2 protocol handler using unified dispatch
+      state.protocolHandler =
+          http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _telemetry, _tmp.buf);
+      state.protocol = ProtocolType::Http2;
+
+      // Queue the upgrade response
+      state.outBuffer.append(upgrade::BuildHttp2UpgradeResponse(upgradeValidation));
+      flushOutbound(cnxIt);
+
+      log::debug("HTTP/2 connection established via h2c upgrade on fd {}", cnxIt->first.fd());
+
+      ++state.requestsServed;
+      ++_stats.totalRequestsServed;
+
+      // Return - the connection is now HTTP/2 and will be handled differently
+      return false;
     }
 #endif
 

@@ -14,10 +14,13 @@ All notable changes to aeronet are documented in this file.
 - New size / length method helpers in `HttpResponse`, with `reserve` and capacity getters.
 - All Header values stored in `HttpResponse` and `HttpResponseWriter` are now trimmed of leading/trailing whitespace on set.
 - New option `HttpServerConfig::addTrailerHeader` to automatically emit `trailer` header when trailers are added to responses in `HTTP/1.1` only.
+- `DogStatsD` is now able to reconnect automatically if the UDS socket becomes unavailable. The client is also more efficient.
 
 ### Breaking Changes
 
 - Minor validation enforcement: `HttpServerConfig::globalHeaders` now MUST be key value separated by `http::HeaderSep`.
+- Removed `telemetryContext()` methods from `HttpServer` and `SingleHttpServer`. You can construct a custom `TelemetryContext` instead if needed.
+- Telemetry metric methods (including `DogStatsD` ones) are no more `const` qualified
 
 ## [1.0.0] - 2026-01-17
 

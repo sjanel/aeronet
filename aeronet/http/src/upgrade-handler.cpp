@@ -10,6 +10,7 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 
@@ -28,7 +29,7 @@ namespace aeronet {
 namespace {
 
 // Helper to write a header line to RawChars
-void AppendHeader(RawChars& buf, std::string_view name, std::string_view value) {
+void AppendHeaderCRLF(RawChars& buf, std::string_view name, std::string_view value) {
   const auto headerSize = name.size() + http::HeaderSep.size() + value.size() + http::CRLF.size();
   buf.ensureAvailableCapacityExponential(headerSize);
   WriteHeaderCRLF(buf.data() + buf.size(), name, value);
@@ -257,21 +258,31 @@ RawChars BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validation
   response.unchecked_append(kSwitchingProtocolsHttp11HeaderLine);
 
   // Headers
-  AppendHeader(response, http::Upgrade, websocket::UpgradeValue);
-  AppendHeader(response, http::Connection, http::Upgrade);
-  AppendHeader(
+  AppendHeaderCRLF(response, http::Upgrade, websocket::UpgradeValue);
+  AppendHeaderCRLF(response, http::Connection, http::Upgrade);
+  AppendHeaderCRLF(
       response, websocket::SecWebSocketAccept,
       std::string_view(validationResult.secWebSocketAccept.data(), validationResult.secWebSocketAccept.size()));
 
   if (!validationResult.selectedProtocol.empty()) {
-    AppendHeader(response, websocket::SecWebSocketProtocol, validationResult.selectedProtocol);
+    AppendHeaderCRLF(response, websocket::SecWebSocketProtocol, validationResult.selectedProtocol);
   }
 
   // Include negotiated extensions
   if (validationResult.deflateParams.has_value()) {
-    const auto deflateResponse = websocket::BuildDeflateResponse(*validationResult.deflateParams);
-    AppendHeader(response, websocket::SecWebSocketExtensions,
-                 std::string_view(reinterpret_cast<const char*>(deflateResponse.data()), deflateResponse.size()));
+    const auto valueSize = ComputeDeflateResponseSize(*validationResult.deflateParams);
+    response.ensureAvailableCapacityExponential(websocket::SecWebSocketExtensions.size() + http::HeaderSep.size() +
+                                                valueSize + http::CRLF.size() + http::CRLF.size());
+
+    char* insertPtr = response.data() + response.size();
+    std::memcpy(insertPtr, websocket::SecWebSocketExtensions.data(), websocket::SecWebSocketExtensions.size());
+    std::memcpy(insertPtr + websocket::SecWebSocketExtensions.size(), http::HeaderSep.data(), http::HeaderSep.size());
+    response.addSize(websocket::SecWebSocketExtensions.size() + http::HeaderSep.size());
+
+    websocket::BuildDeflateResponse(*validationResult.deflateParams, response);
+
+    std::memcpy(response.data() + response.size(), http::CRLF.data(), http::CRLF.size());
+    response.addSize(http::CRLF.size());
   }
 
   // End of headers
@@ -282,23 +293,14 @@ RawChars BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validation
 #endif
 
 #ifdef AERONET_ENABLE_HTTP2
-RawChars BuildHttp2UpgradeResponse(const UpgradeValidationResult& validationResult) {
+std::string_view BuildHttp2UpgradeResponse(const UpgradeValidationResult& validationResult) {
   (void)validationResult;  // Used for future extension
 
-  // Build raw HTTP response: "HTTP/1.1 101 Switching Protocols\r\n" + headers + "\r\n"
-  RawChars response(kSwitchingProtocolsHttp11HeaderLine.size() + 96);
+  static constexpr std::string_view kHttpUpgradeResponse =
+      JoinStringView_v<kSwitchingProtocolsHttp11HeaderLine, http::Upgrade, http::HeaderSep, http2::kAlpnH2c, http::CRLF,
+                       http::Connection, http::HeaderSep, http::Upgrade, http::DoubleCRLF>;
 
-  // Status line
-  response.unchecked_append(kSwitchingProtocolsHttp11HeaderLine);
-
-  // Headers
-  AppendHeader(response, http::Upgrade, http2::kAlpnH2c);
-  AppendHeader(response, http::Connection, http::Upgrade);
-
-  // End of headers
-  response.append(http::CRLF);
-
-  return response;
+  return kHttpUpgradeResponse;
 }
 #endif
 
