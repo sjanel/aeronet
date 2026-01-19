@@ -9,6 +9,7 @@
 #include <type_traits>
 
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet::websocket {
 
@@ -64,10 +65,13 @@ struct DeflateNegotiatedParams {
 [[nodiscard]] std::optional<DeflateNegotiatedParams> ParseDeflateOffer(std::string_view extensionOffer,
                                                                        const DeflateConfig& serverConfig);
 
+/// Compute the size of the Sec-WebSocket-Extensions response header value for permessage-deflate.
+std::size_t ComputeDeflateResponseSize(DeflateNegotiatedParams params);
+
 /// Build the Sec-WebSocket-Extensions response header value for permessage-deflate.
 /// @param params The negotiated parameters
-/// @return Extension response string
-[[nodiscard]] RawBytes BuildDeflateResponse(DeflateNegotiatedParams params);
+/// @param output Output buffer to append the response string to
+void BuildDeflateResponse(DeflateNegotiatedParams params, RawChars& output);
 
 /// RAII wrapper for zlib deflate/inflate context.
 /// This is an internal implementation detail.

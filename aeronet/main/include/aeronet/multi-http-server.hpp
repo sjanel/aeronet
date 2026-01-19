@@ -235,14 +235,6 @@ class MultiHttpServer {
   // isDraining(): true if all underlying servers are currently draining.
   [[nodiscard]] bool isDraining() const;
 
-  // Access the telemetry context for custom tracing/spans.
-  // The returned reference is valid for the lifetime of the MultiHttpServer instance,
-  // but is invalidated if the server is moved.
-  // Precondition: empty() is false, otherwise undefined behavior.
-  [[nodiscard]] const tracing::TelemetryContext& telemetryContext() const noexcept {
-    return _servers[0].telemetryContext();
-  }
-
   // port(): The resolved listening port shared by all underlying servers.
   // If the port was ephemeral (0) at construction time, this returns the concrete port chosen by
   // the first server.

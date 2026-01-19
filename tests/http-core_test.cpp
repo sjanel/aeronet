@@ -27,6 +27,7 @@
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/tracing/tracer.hpp"
 #include "aeronet/unix-dogstatsd-sink.hpp"
 
 using namespace std::chrono_literals;
@@ -556,7 +557,8 @@ TEST(HttpServerTelemetry, DogStatsDClientSendsMetricsWithServiceName) {
 
   SingleHttpServer server(cfg);
 
-  auto& telemetryContext = server.telemetryContext();
+  tracing::TelemetryContext telemetryContext(cfg.telemetry);
+
   auto* pDogStatsDClient = telemetryContext.dogstatsdClient();
   ASSERT_NE(pDogStatsDClient, nullptr);
 
@@ -585,7 +587,7 @@ TEST(HttpServerTelemetry, DogStatsDClientSendsMetricsWithoutServiceName) {
 
   SingleHttpServer server(cfg);
 
-  auto& telemetryContext = server.telemetryContext();
+  tracing::TelemetryContext telemetryContext(cfg.telemetry);
   auto* pDogStatsDClient = telemetryContext.dogstatsdClient();
   ASSERT_NE(pDogStatsDClient, nullptr);
 
