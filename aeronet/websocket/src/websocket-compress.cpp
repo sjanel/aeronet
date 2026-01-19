@@ -82,6 +82,7 @@ const char* WebSocketDecompressor::decompress(std::span<const std::byte> input, 
   }
 
   // We need to append the trailing 0x00 0x00 0xff 0xff that was stripped per RFC 7692
+  // TODO: we don't need the RawChars here, we can just call inflate with two input buffers
   RawChars inputWithTrailer(input.size() + kDeflateTrailer.size());
   inputWithTrailer.unchecked_append(reinterpret_cast<const char*>(input.data()), input.size());
   inputWithTrailer.unchecked_append(reinterpret_cast<const char*>(kDeflateTrailer.data()), kDeflateTrailer.size());
