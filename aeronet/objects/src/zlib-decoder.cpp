@@ -6,10 +6,10 @@
 #include <cstddef>
 #include <string_view>
 
+#include "aeronet/decoder-buffer-manager.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
-#include "decoder-helpers.hpp"
 
 namespace aeronet {
 
