@@ -387,29 +387,42 @@ TYPED_TEST(RawBaseTest, EnsureAndOverflowCheck) {
 
   RawT buf;
 
-  buf.ensureAvailableCapacity(16);
+  buf.ensureAvailableCapacity(16UL);
   EXPECT_GE(buf.capacity(), 16U);
 
   buf.unchecked_append(reinterpret_cast<const typename RawT::value_type *>("1234567890"), 10U);
 
   if constexpr (sizeof(SizeType) < sizeof(uintmax_t)) {
-    EXPECT_THROW(buf.ensureAvailableCapacity(std::numeric_limits<SizeType>::max() - 5U), std::overflow_error);
+    EXPECT_THROW(buf.ensureAvailableCapacity(static_cast<uint64_t>(std::numeric_limits<SizeType>::max() - 5U)),
+                 std::overflow_error);
   }
 }
 
-TYPED_TEST(RawBaseTest, SignedEnsureCapacityExponential) {
+TYPED_TEST(RawBaseTest, SignedEnsureCapacity) {
   using RawT = TypeParam;
 
   RawT buf;
   EXPECT_EQ(buf.capacity(), 0U);
 
-  buf.ensureAvailableCapacityExponential(int64_t{0});  // should do nothing
+  buf.ensureAvailableCapacity(int64_t{0});  // should do nothing
   EXPECT_EQ(buf.capacity(), 0U);
-  buf.ensureAvailableCapacityExponential(int64_t{-1});  // should do nothing
+  buf.ensureAvailableCapacity(int64_t{-1});  // should do nothing
   EXPECT_EQ(buf.capacity(), 0U);
 
+  buf.ensureAvailableCapacity(int64_t{12});
+  EXPECT_EQ(buf.capacity(), 12UL);
+
+  buf.ensureAvailableCapacityExponential(int64_t{0});  // should do nothing
+  EXPECT_EQ(buf.capacity(), 12UL);
+  buf.ensureAvailableCapacityExponential(int64_t{-1});  // should do nothing
+  EXPECT_EQ(buf.capacity(), 12UL);
+
   buf.ensureAvailableCapacityExponential(int64_t{16});
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
   EXPECT_EQ(buf.capacity(), 16UL);
+#else
+  EXPECT_EQ(buf.capacity(), 24UL);
+#endif
 }
 
 TYPED_TEST(RawBaseTest, EnsureExponentialAndOverflowCheck) {
