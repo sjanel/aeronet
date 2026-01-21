@@ -124,6 +124,7 @@ TEST(HttpStreaming, ChunkedSimple) {
     writer.contentType("text/plain");
     EXPECT_THROW(writer.header("Invalid Header", "value"), std::invalid_argument);
     EXPECT_THROW(writer.headerAddLine("Invalid Header", "value"), std::invalid_argument);
+    EXPECT_THROW(writer.headerAddLine("X-Header", "value\r\n"), std::invalid_argument);
     writer.headerAddLine("X-Custom", "value");
     writer.writeBody("hello ");
     writer.status(400);                             // should be ignored after headers sent
@@ -1120,6 +1121,7 @@ TEST(HttpResponseWriterFailures, EmitLastChunkFailure) {
     writer.writeBody("chunk1");
     writer.trailerAddLine("X-Trailer", "value");
     EXPECT_THROW(writer.trailerAddLine("Invalid:header", "value"), std::invalid_argument);
+    EXPECT_THROW(writer.trailerAddLine("X-Trailer", "value\r\n"), std::invalid_argument);
     // end() calls emitLastChunk
     writer.end();
   });

@@ -277,6 +277,11 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    http-header-is-valid_test
+    test/http-header-is-valid_test.cpp
+)
+
+AeronetAddUnitTest(
     http-payload_test
     test/http-payload_test.cpp
     LIBRARIES
@@ -335,6 +340,11 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     string-trim_test
     test/string-trim_test.cpp
+)
+
+AeronetAddUnitTest(
+    tchars_test
+    test/tchars_test.cpp
 )
 
 AeronetAddUnitTest(

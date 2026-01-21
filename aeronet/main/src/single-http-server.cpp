@@ -819,7 +819,7 @@ void SingleHttpServer::onAsyncHandlerCompleted(ConnectionMapIt cnxIt) {
   auto typedHandle =
       std::coroutine_handle<RequestTask<HttpResponse>::promise_type>::from_address(async.handle.address());
   bool fromException = false;
-  HttpResponse resp(HttpResponse::Empty::Yes);  // do not allocate memory yet
+  HttpResponse resp(HttpResponse::Check::No);  // do not allocate memory yet
   try {
     resp = std::move(typedHandle.promise().consume_result());
   } catch (const std::exception& ex) {
