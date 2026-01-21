@@ -18,6 +18,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-response-data.hpp"
@@ -75,6 +76,9 @@ void HttpResponseWriter::reason(std::string_view reason) {
 }
 
 void HttpResponseWriter::headerAddLine(std::string_view name, std::string_view value) {
+  if (!http::IsValidHeaderName(name)) [[unlikely]] {
+    throw std::invalid_argument("Invalid HTTP header name");
+  }
   if (_state != State::Opened) {
     log::warn("Streaming: cannot add header after headers sent");
     return;
@@ -87,6 +91,9 @@ void HttpResponseWriter::headerAddLine(std::string_view name, std::string_view v
 }
 
 void HttpResponseWriter::header(std::string_view name, std::string_view value) {
+  if (!http::IsValidHeaderName(name)) [[unlikely]] {
+    throw std::invalid_argument("Invalid HTTP header name");
+  }
   if (_state != State::Opened) {
     log::warn("Streaming: cannot add header after headers sent");
     return;
@@ -251,6 +258,9 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
 }
 
 void HttpResponseWriter::trailerAddLine(std::string_view name, std::string_view value) {
+  if (!http::IsValidHeaderName(name)) [[unlikely]] {
+    throw std::invalid_argument("Invalid HTTP header name");
+  }
   if (_state == State::Ended || _state == State::Failed) {
     log::warn("Streaming: trailerAddLine ignored fd # {} name={} reason={}", _fd, name,
               _state == State::Failed ? "writer-failed" : "already-ended");
