@@ -1,6 +1,5 @@
 #include "aeronet/http-header.hpp"
 
-#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -9,9 +8,9 @@
 
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/string-trim.hpp"
-#include "aeronet/tchars.hpp"
 
 namespace aeronet::http {
 
@@ -49,23 +48,6 @@ Header &Header::operator=(const Header &rhs) {
     std::memcpy(_data.get(), rhs._data.get(), rhsTotalSize);
   }
   return *this;
-}
-
-bool IsValidHeaderName(std::string_view name) noexcept {
-  return !name.empty() && std::ranges::all_of(name, [](char ch) { return is_tchar(ch); });
-}
-
-bool IsValidHeaderValue(std::string_view value) noexcept {
-  return std::ranges::all_of(value, [](unsigned char ch) {
-    if (ch == '\r' || ch == '\n') {
-      return false;
-    }
-    if (ch == '\t') {
-      return true;
-    }
-    // Visible ASCII characters
-    return ch >= 0x20 && ch <= 0x7E;
-  });
 }
 
 }  // namespace aeronet::http

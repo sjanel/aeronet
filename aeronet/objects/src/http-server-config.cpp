@@ -15,6 +15,7 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/string-trim.hpp"

@@ -17,6 +17,7 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
@@ -124,6 +125,9 @@ class Http2ProtocolHandler;
 //     after the final zero-length chunk (see `HttpResponseWriter` docs).
 // -----------------------------------------------------------------------------
 class HttpResponse {
+ private:
+  enum class Check : std::uint8_t { Yes, No };
+
  public:
   // "HTTP/x.y". Should be changed if version major / minor exceed 1 digit
   static constexpr std::size_t kHttp1VersionLen = http::HTTP10Sv.size();
@@ -169,7 +173,7 @@ class HttpResponse {
   // Constructs an HttpResponse with a 200 status code, no reason phrase and given body.
   // The body is copied into the internal buffer, and the content type header is set if the body is not empty.
   // If the body is large, prefer the capture by value of body() overloads to avoid a copy (and possibly an allocation).
-  // The content type defaults to "text/plain"
+  // The content type must be valid. Defaults to "text/plain"
   explicit HttpResponse(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain)
       : HttpResponse(http::StatusCodeOK, body, contentType) {}
 
@@ -181,15 +185,16 @@ class HttpResponse {
   // Constructs an HttpResponse with the given additional capacity, status code, concatenated headers,
   // body and content type. The body is copied into the internal buffer.
   // The concatenatedHeaders should follow a strict format. Each header key value pair MUST be formatted as:
-  //   <HeaderName>http::HeaderSep<HeaderValue>http::CRLF
+  //   <HeaderName><http::HeaderSep><HeaderValue><http::CRLF>
   // Examples of concatenatedHeaders, for http::HeaderSep = ": " and http::CRLF = "\r\n":
   //   ""
   //   "HeaderName: Value\r\n"
   //   "HeaderName1: Value1\r\nHeaderName2: Value2\r\n"
   // Empty concatenatedHeaders are allowed.
-  // It is undefined behavior to provide incorrectly formatted concatenated headers.
+  // Throws std::invalid_argument if the concatenatedHeaders format is invalid.
   HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
-               std::string_view body = {}, std::string_view contentType = http::ContentTypeTextPlain);
+               std::string_view body = {}, std::string_view contentType = http::ContentTypeTextPlain)
+      : HttpResponse(additionalCapacity, code, concatenatedHeaders, body, contentType, Check::Yes) {}
 
   // --------/
   // GETTERS /
@@ -378,8 +383,7 @@ class HttpResponse {
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse& location(std::string_view src) & { return header(http::Location, src); }
 
-  // Inserts or replaces the Location header.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  // RValue overload of location(src).
   HttpResponse&& location(std::string_view src) && { return std::move(header(http::Location, src)); }
 
   // Inserts or replaces the Content-Encoding header.
@@ -389,15 +393,12 @@ class HttpResponse {
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse& contentEncoding(std::string_view enc) & { return header(http::ContentEncoding, enc); }
 
-  // Inserts or replaces the Content-Encoding header.
-  // Manually setting Content-Encoding header will disable automatic compression handling.
-  // If you want to compress using codecs supported by aeronet (such as gzip, deflate, br and zstd),
-  // it's recommended to not set Content-Encoding header manually and let the library handle compression.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  // RValue overload of contentEncoding(enc).
   HttpResponse&& contentEncoding(std::string_view enc) && { return std::move(header(http::ContentEncoding, enc)); }
 
   // Append a header line (duplicates allowed, fastest path).
   // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
+  // Header name and value must be valid per HTTP specifications.
   // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse& headerAddLine(std::string_view key, std::string_view value) &;
@@ -417,14 +418,16 @@ class HttpResponse {
     return std::move(headerAddLine(key, std::string_view(IntegralToCharVector(value))));
   }
 
-  // Append a value to an existing header, inserting the header if it is currently missing.
-  // The existing header value is expanded in-place by inserting `separator` followed by `value`.
-  // If the header does not exist yet this behaves like headerAddLine(key, value).
-  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  // Append 'value' to an existing header value, separated with separator, or call headerAddLine(key, value) if header
+  // is missing. Example, from an empty HttpResponse, calling successively
+  //   headerAppendValue("accept", "text/html", ", ")
+  //   headerAppendValue("Accept", "application/json", ", ")
+  // will produce:
+  //   "Accept: text/html"
+  //   "Accept: text/html, application/json"
   HttpResponse& headerAppendValue(std::string_view key, std::string_view value, std::string_view separator = ", ") &;
 
-  // Append a value to an existing header, inserting the header if it is currently missing.
+  // Rvalue overload of headerAppendValue.
   HttpResponse&& headerAppendValue(std::string_view key, std::string_view value, std::string_view separator = ", ") && {
     return std::move(headerAppendValue(key, value, separator));
   }
@@ -442,26 +445,22 @@ class HttpResponse {
 
   // Add or replace first header 'key' with 'value'.
   // Performs a linear scan (slower than headerAddLine()) using case-insensitive comparison of header names per
-  // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
-  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
+  // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved in
+  // HTTP1.x, but in HTTP/2 header names will be lowercased during serialization.
+  // The header name and value must be valid per HTTP specifications.
   HttpResponse& header(std::string_view key, std::string_view value) & {
     setHeader(key, value, OnlyIfNew::No);
     return *this;
   }
+
+  // RValue overload of header(key, value).
+  HttpResponse&& header(std::string_view key, std::string_view value) && { return std::move(header(key, value)); }
 
   // Convenient overload setting a header to a numeric value.
   HttpResponse& header(std::string_view key, std::integral auto value) & {
     setHeader(key, std::string_view(IntegralToCharVector(value)), OnlyIfNew::No);
     return *this;
   }
-
-  // Add or replace a header value entirely ensuring at most one instance.
-  // Performs a linear scan (slower than headerAddLine()) using case-insensitive comparison of header names per
-  // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
-  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
-  // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse&& header(std::string_view key, std::string_view value) && { return std::move(header(key, value)); }
 
   // Convenient overload setting a header to a numeric value.
   HttpResponse&& header(std::string_view key, std::integral auto value) && {
@@ -636,7 +635,7 @@ class HttpResponse {
   }
 
   // Sets the body of this HttpResponse to point to a static buffer.
-  // No copy is performed, the lifetime of pointed storage must be constant.
+  // No copy is performed, the lifetime of pointed storage MUST be constant.
   HttpResponse& bodyStatic(std::string_view staticBody, std::string_view contentType = http::ContentTypeTextPlain) & {
     setBodyHeaders(contentType, staticBody.size());
     setBodyInternal(std::string_view{});
@@ -644,8 +643,7 @@ class HttpResponse {
     return *this;
   }
 
-  // Sets the body of this HttpResponse to point to a static buffer.
-  // No copy is performed, the lifetime of pointed storage must be constant.
+  // Rvalue overload for string_view-based static body.
   HttpResponse&& bodyStatic(std::string_view staticBody, std::string_view contentType = http::ContentTypeTextPlain) && {
     return std::move(this->bodyStatic(staticBody, contentType));
   }
@@ -727,6 +725,9 @@ class HttpResponse {
     }
 
     contentType = TrimOws(contentType);
+    if (!contentType.empty() && !http::IsValidHeaderValue(contentType)) [[unlikely]] {
+      throw std::invalid_argument("Invalid Content-Type header value");
+    }
 
     using W = std::remove_reference_t<Writer>;
     // Accept writers callable as either: std::size_t(char*) or std::size_t(std::byte*)
@@ -811,6 +812,9 @@ class HttpResponse {
       throw std::logic_error("Cannot set body after trailers have been added");
     }
     contentType = TrimOws(contentType);
+    if (!contentType.empty() && !http::IsValidHeaderValue(contentType)) [[unlikely]] {
+      throw std::invalid_argument("Invalid Content-Type header value");
+    }
     // Determine default content type based on writer signature
     std::string_view defaultContentType;
     if constexpr (std::is_invocable_r_v<std::size_t, W, std::byte*>) {
@@ -898,7 +902,8 @@ class HttpResponse {
   //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
   //   - Errors: filesystem read/write errors are surfaced during transmission; callers should expect the connection
   //     to be closed on fatal I/O failures.
-  //   - Content Type header: if non-empty, sets given content type value. Otherwise, attempt to guess it from the file
+  //   - Content Type header: if non-empty, sets given content type value. Otherwise, attempt to guess it from the
+  //   file
   //     object. If the MIME type is unknown, sets 'application/octet-stream' as Content type.
   HttpResponse&& file(File fileObj, std::string_view contentType = {}) && {
     return std::move(file(std::move(fileObj), 0, 0, contentType));
@@ -913,7 +918,8 @@ class HttpResponse {
   //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
   //   - Errors: filesystem read/write errors are surfaced during transmission; callers should expect the connection
   //     to be closed on fatal I/O failures.
-  //   - Content Type header: if non-empty, sets given content type value. Otherwise, attempt to guess it from the file
+  //   - Content Type header: if non-empty, sets given content type value. Otherwise, attempt to guess it from the
+  //   file
   //     object. If the MIME type is unknown, sets 'application/octet-stream' as Content type.
   HttpResponse& file(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType = {}) &;
 
@@ -926,13 +932,15 @@ class HttpResponse {
   //     transfer encoding. For HEAD requests the Content-Length header will be present but the body is suppressed.
   //   - Errors: filesystem read/write errors are surfaced during transmission; callers should expect the connection
   //     to be closed on fatal I/O failures.
-  //   - Content Type header: if non-empty, sets given content type value. Otherwise, attempt to guess it from the file
+  //   - Content Type header: if non-empty, sets given content type value. Otherwise, attempt to guess it from the
+  //   file
   //     object. If the MIME type is unknown, sets 'application/octet-stream' as Content type.
   HttpResponse&& file(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType = {}) && {
     return std::move(file(std::move(fileObj), offset, length, contentType));
   }
 
   // Adds a trailer header to be sent after the response body (RFC 7230 §4.1.2).
+  // The header name and value must be valid per HTTP specifications.
   //
   // IMPORTANT ORDERING CONSTRAINT:
   //   Trailers MUST be added AFTER the body has been set (via body() or its overloads).
@@ -949,7 +957,7 @@ class HttpResponse {
   //   - Adding trailers for HTTP/1.1 has an additional transformation cost of the response.
   //     We need to switch to chunked transfer encoding and this will move internal parts
   //     of the buffer. If you use trailers frequently, consider using HTTP/2 which has a
-  //     more efficient encoding for trailers, or HttpResponseWriter which manages this better.
+  //     more efficient encoding for trailers, or HttpResponseWriter which manages this natively
   HttpResponse& trailerAddLine(std::string_view name, std::string_view value) &;
 
   // Adds a trailer header to be sent after the response body (RFC 7230 §4.1.2).
@@ -981,11 +989,13 @@ class HttpResponse {
   friend class http2::Http2ProtocolHandler;
 #endif
 
-  enum class Empty : std::uint8_t { Yes };
-
   // Private constructor to avoid allocating memory for the data buffer when not needed immediately.
-  // Use with care! All setters take the assumption that the internal buffer is available.
-  explicit constexpr HttpResponse([[maybe_unused]] Empty empty) noexcept {}
+  // Use with care! All setters currently take the assumption that the internal buffer is allocated.
+  explicit constexpr HttpResponse([[maybe_unused]] Check check) noexcept {}
+
+  // Private constructor bypassing checks for internal use only.
+  HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
+               std::string_view body, std::string_view contentType, Check check);
 
   [[nodiscard]] constexpr bool isHead() const noexcept { return _knownOptions.isHeadMethod(); }
 

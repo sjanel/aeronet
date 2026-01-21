@@ -124,27 +124,31 @@ std::string_view HttpRequest::readBody(std::size_t maxBytes) {
 bool HttpRequest::wantClose() const { return CaseInsensitiveEqual(headerValueOrEmpty(http::Connection), http::close); }
 
 HttpResponse HttpRequest::makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const {
-  HttpResponse resp(additionalCapacity, statusCode, _pGlobalHeaders->fullStringWithLastSep());
+  HttpResponse resp(additionalCapacity, statusCode, _pGlobalHeaders->fullStringWithLastSep(), {}, {},
+                    HttpResponse::Check::No);
   resp._knownOptions = makeResponseOptions();
   return resp;
 }
 
 HttpResponse HttpRequest::makeResponse(std::string_view body, std::string_view contentType) const {
-  HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), body, contentType);
+  HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), body, contentType,
+                    HttpResponse::Check::No);
   resp._knownOptions = makeResponseOptions();
   return resp;
 }
 
 HttpResponse HttpRequest::makeResponse(http::StatusCode statusCode, std::string_view body,
                                        std::string_view contentType) const {
-  HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), body, contentType);
+  HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), body, contentType,
+                    HttpResponse::Check::No);
   resp._knownOptions = makeResponseOptions();
   return resp;
 }
 
 HttpResponse HttpRequest::makeResponse(std::span<const std::byte> body, std::string_view contentType) const {
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
-  HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType);
+  HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType,
+                    HttpResponse::Check::No);
   resp._knownOptions = makeResponseOptions();
   return resp;
 }
@@ -152,7 +156,8 @@ HttpResponse HttpRequest::makeResponse(std::span<const std::byte> body, std::str
 HttpResponse HttpRequest::makeResponse(http::StatusCode statusCode, std::span<const std::byte> body,
                                        std::string_view contentType) const {
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
-  HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType);
+  HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType,
+                    HttpResponse::Check::No);
   resp._knownOptions = makeResponseOptions();
   return resp;
 }

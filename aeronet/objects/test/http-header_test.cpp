@@ -18,28 +18,6 @@ TEST(HttpHeader, IsHeaderWhitespace) {
   EXPECT_FALSE(http::IsHeaderWhitespace('\n'));
 }
 
-TEST(HttpHeader, IsValidHeaderName) {
-  EXPECT_TRUE(http::IsValidHeaderName("Content-Type"));
-  EXPECT_TRUE(http::IsValidHeaderName("X-Custom-Header_123"));
-  EXPECT_FALSE(http::IsValidHeaderName("Invalid<Header"));  // invalid character
-  EXPECT_FALSE(http::IsValidHeaderName(""));                // empty
-  EXPECT_FALSE(http::IsValidHeaderName("Invalid Header"));  // space not allowed
-  EXPECT_FALSE(http::IsValidHeaderName("Invalid:Header"));  // colon not allowed
-  EXPECT_FALSE(http::IsValidHeaderName(""));                // empty name not allowed
-}
-
-TEST(HttpHeader, IsValidHeaderValue) {
-  EXPECT_TRUE(http::IsValidHeaderValue("This is a valid header value."));
-  EXPECT_TRUE(http::IsValidHeaderValue("Value with\ttab character."));
-  EXPECT_FALSE(http::IsValidHeaderValue("Invalid value with \r carriage return."));
-  EXPECT_FALSE(http::IsValidHeaderValue("Invalid value with \n line feed."));
-  EXPECT_TRUE(http::IsValidHeaderValue(""));  // empty value is valid
-
-  // Test some control characters (obs)
-  EXPECT_FALSE(http::IsValidHeaderValue(std::string_view("\x01\x02\x03", 3)));  // control characters
-  EXPECT_TRUE(http::IsValidHeaderValue(std::string_view("\x09\x20\x7E", 3)));   // HTAB and visible ASCII
-}
-
 TEST(HttpHeader, HeaderName) {
   EXPECT_EQ(http::Header("X-Test", "ValidValue ").name(), "X-Test");
   EXPECT_EQ(http::Header("Content-Length", " \t12345 ").name(), "Content-Length");

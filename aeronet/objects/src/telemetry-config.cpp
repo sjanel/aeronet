@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <string_view>
 
-#include "aeronet/http-header.hpp"
+#include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-trim.hpp"
