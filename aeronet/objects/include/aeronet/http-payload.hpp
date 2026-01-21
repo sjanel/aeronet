@@ -24,7 +24,7 @@ class HttpPayload {
   using BytesBuffer = std::pair<std::unique_ptr<std::byte[]>, std::size_t>;
 
  public:
-  HttpPayload() noexcept = default;
+  constexpr HttpPayload() noexcept = default;
 
   // Constructs a HttpPayload by taking ownership of the given std::string.
   explicit HttpPayload(std::string str) noexcept : _data(std::move(str)) {}
@@ -45,22 +45,23 @@ class HttpPayload {
 
   explicit HttpPayload(RawChars rawChars) noexcept : _data(std::move(rawChars)) {}
 
-  explicit HttpPayload(std::string_view sv) noexcept : _data(sv) {}
+  explicit constexpr HttpPayload(std::string_view sv) noexcept : _data(sv) {}
 
   explicit HttpPayload(FilePayload filePayload) noexcept : _data(std::move(filePayload)) {}
 
-  HttpPayload(const HttpPayload&) = delete;
-  HttpPayload(HttpPayload&&) noexcept = default;
-  HttpPayload& operator=(const HttpPayload&) = delete;
-  HttpPayload& operator=(HttpPayload&&) noexcept = default;
+  [[nodiscard]] constexpr bool empty() const noexcept { return _data.index() == 0; }
 
-  ~HttpPayload() = default;
+  [[nodiscard]] constexpr bool isFilePayload() const noexcept { return std::holds_alternative<FilePayload>(_data); }
 
-  [[nodiscard]] bool empty() const noexcept { return _data.index() == 0; }
+  // Used only for HEAD responses where only the size matters.
+  [[nodiscard]] constexpr bool isSizeOnly() const noexcept {
+    if (auto sv = std::get_if<std::string_view>(&_data)) {
+      return sv->data() == nullptr;
+    }
+    return false;
+  }
 
-  [[nodiscard]] bool isFilePayload() const noexcept { return std::holds_alternative<FilePayload>(_data); }
-
-  [[nodiscard]] bool hasCapturedBody() const noexcept { return _data.index() > 1U; }
+  [[nodiscard]] constexpr bool hasCapturedBody() const noexcept { return _data.index() > 1U; }
 
   FilePayload* getIfFilePayload() noexcept { return std::get_if<FilePayload>(&_data); }
 

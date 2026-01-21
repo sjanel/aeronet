@@ -288,6 +288,13 @@ TEST(HttpPayload, ByteBuffer) {
   EXPECT_EQ(body.view(), std::string_view("\x1A\x1B\x1C\x1D\x1E\x1F\x20", 7));
 }
 
+TEST(HttpPayload, EnsureCapacityWithNegativeValueDoesNothing) {
+  HttpPayload body(std::string("abcd"));
+
+  body.ensureAvailableCapacityExponential(-5L);
+  EXPECT_EQ(body.view(), "abcd");
+}
+
 namespace {
 
 constexpr bool kExponential[] = {false, true};

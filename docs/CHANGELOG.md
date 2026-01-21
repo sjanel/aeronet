@@ -8,8 +8,15 @@ All notable changes to aeronet are documented in this file.
 
 - Correctly update the `Content-Length` header when using `bodyAppend()` on `HttpResponse` from captured body.
 - Correctly format the HttpResponse when using HEAD method with trailers (previously erroneously kept the full payload).
+- **HEAD** responses with trailers now correctly omit the body as per RFC 7230 Section 4.3.2, and do not switch to chunked encoding.
 
-### Added
+### Breaking Changes
+
+- Minor validation enforcement: `HttpServerConfig::globalHeaders` now MUST be key value separated by `http::HeaderSep`.
+- Removed `telemetryContext()` methods from `HttpServer` and `SingleHttpServer`. You can construct a custom `TelemetryContext` instead if needed.
+- Telemetry metric methods (including `DogStatsD` ones) are no more `const` qualified
+
+### Improvements
 
 - New `HttpRequest::makeResponse()` factory methods for simplified response creation with body and content-type.
 - New size / length method helpers in `HttpResponse`, with `reserve` and capacity getters.
@@ -17,12 +24,7 @@ All notable changes to aeronet are documented in this file.
 - New option `HttpServerConfig::addTrailerHeader` to automatically emit `trailer` header when trailers are added to responses in `HTTP/1.1` only.
 - `DogStatsD` is now able to reconnect automatically if the UDS socket becomes unavailable. The client is also more efficient.
 - Make sure that `WebSocketConfig.maxMessageSize` is strictly respected when decompressing a `WebSocket` message
-
-### Breaking Changes
-
-- Minor validation enforcement: `HttpServerConfig::globalHeaders` now MUST be key value separated by `http::HeaderSep`.
-- Removed `telemetryContext()` methods from `HttpServer` and `SingleHttpServer`. You can construct a custom `TelemetryContext` instead if needed.
-- Telemetry metric methods (including `DogStatsD` ones) are no more `const` qualified
+- Optimized *prepared* (built from `makeResponse()`) `HttpResponse` to avoid allocating body and trailers memory for **HEAD** requests.
 
 ## [1.0.0] - 2026-01-17
 
