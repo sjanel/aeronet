@@ -259,8 +259,6 @@ HttpResponse& HttpResponse::reason(std::string_view newReason) & {
 }
 
 bool HttpResponse::setHeader(std::string_view newKey, std::string_view newValue, OnlyIfNew onlyIfNew) {
-  assert(http::IsValidHeaderName(newKey));
-
   auto optValue = headerValue(newKey);
   if (!optValue) {
     headerAddLine(newKey, newValue);
@@ -473,6 +471,7 @@ namespace {
 constexpr std::optional<std::string_view> HeadersLinearSearch(std::string_view flatHeaders,
                                                               std::string_view key) noexcept {
   std::optional<std::string_view> ret;
+
   const char* endKey = key.end();
   const char* headersBeg = flatHeaders.data();
   const char* headersEnd = headersBeg + flatHeaders.size();
@@ -524,7 +523,10 @@ std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) 
 }
 
 HttpResponse& HttpResponse::headerAddLine(std::string_view key, std::string_view value) & {
-  assert(http::IsValidHeaderName(key) && !CaseInsensitiveEqual(key, http::Date));
+  assert(!CaseInsensitiveEqual(key, http::Date));
+  if (!http::IsValidHeaderName(key)) [[unlikely]] {
+    throw std::invalid_argument("HTTP header name is invalid");
+  }
 
   value = TrimOws(value);
 
@@ -555,8 +557,6 @@ HttpResponse& HttpResponse::headerAddLine(std::string_view key, std::string_view
 
 HttpResponse& HttpResponse::headerAppendValue(std::string_view key, std::string_view value,
                                               std::string_view separator) & {
-  assert(http::IsValidHeaderName(key));
-
   auto optValue = headerValue(key);
   if (!optValue) {
     headerAddLine(key, value);
@@ -610,8 +610,11 @@ void HttpResponse::makeAllHeaderNamesLowerCase() {
 }
 
 HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_view value) & {
-  assert(http::IsValidHeaderName(name) && !http::IsForbiddenTrailerHeader(name));
-  if (!hasBodyInMemory()) {
+  assert(!http::IsForbiddenTrailerHeader(name));
+  if (!http::IsValidHeaderName(name)) [[unlikely]] {
+    throw std::invalid_argument("Invalid trailer header name");
+  }
+  if (!hasBodyInMemory()) [[unlikely]] {
     throw std::logic_error("Trailers must be added after non empty (nor file) body is set");
   }
 
