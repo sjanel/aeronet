@@ -104,7 +104,14 @@ class RawBytesBase {
   void shrink_to_fit() noexcept;
 
   // Ensures that the buffer has at least the specified available capacity.
-  void ensureAvailableCapacity(uint64_t availableCapacity);
+  void ensureAvailableCapacity(uint64_t availableCapacity) { reserve(availableCapacity + _size); }
+
+  // Overload to accept int64_t for convenience.
+  void ensureAvailableCapacity(int64_t capa) {
+    if (capa > 0) {
+      ensureAvailableCapacity(static_cast<uint64_t>(capa));
+    }
+  }
 
   // Ensures that the buffer has at least the specified available capacity,
   // growing the capacity exponentially.
