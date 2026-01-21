@@ -6,6 +6,7 @@ All notable changes to aeronet are documented in this file.
 
 ### Bug fixes
 
+- Correctly update the `Content-Length` header when using `bodyAppend()` on `HttpResponse` from captured body.
 - Correctly format the HttpResponse when using HEAD method with trailers (previously erroneously kept the full payload).
 
 ### Added

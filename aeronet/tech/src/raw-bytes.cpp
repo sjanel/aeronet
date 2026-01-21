@@ -152,17 +152,6 @@ void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() noexcept {
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacity(uint64_t availableCapacity) {
-  if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
-    if (static_cast<uintmax_t>(std::numeric_limits<size_type>::max()) <
-        static_cast<uintmax_t>(_size) + availableCapacity) [[unlikely]] {
-      throw std::overflow_error("capacity overflow");
-    }
-  }
-  reserve(_size + availableCapacity);
-}
-
-template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacityExponential(uint64_t availableCapacity) {
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
   ensureAvailableCapacity(availableCapacity);
