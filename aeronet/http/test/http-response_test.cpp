@@ -341,17 +341,740 @@ constexpr auto kAppendZeroOrOneABytes = [](std::byte* buf) {
 };
 
 }  // namespace
+// =============================================================================
+// STATUS TESTS
+// =============================================================================
 
-TEST_F(HttpResponseTest, AppendToInlineBodyFromEmptyShouldNotAddContentTypeIfNoDataWritten) {
+// =============================================================================
+// REASON TESTS
+// =============================================================================
+
+TEST_F(HttpResponseTest, InterleavedReasonAndHeaderMutations) {
+  HttpResponse resp(http::StatusCodeOK, "");
+  resp.headerAddLine("X-A", "1");
+  resp.headerAddLine("X-B", "2");
+  resp.reason("LONGER-REASON");
+  resp.header("X-a", "LARGER-VALUE-123");
+  resp.reason("");
+  resp.header("x-A", "S");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+  EXPECT_TRUE(full.contains("X-A: S\r\n"));
+  EXPECT_TRUE(full.contains("X-B: 2\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, StatusReasonAndBodyAddReasonWithHeaders) {
+  auto resp = HttpResponse(200).headerAddLine("X-Header", 127);
+  resp.status(404);
+  resp.reason("Not Found");
+  EXPECT_EQ(resp.reason(), "Not Found");
+  auto full = concatenated(std::move(resp));
+
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 404 Not Found\r\n"));
+  EXPECT_TRUE(full.contains("X-Header: 127\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithBody) {
+  HttpResponse resp(200);
+  resp.reason("OK");
+  resp.body("Hello", "MySpecialContentType");
+  resp.status(404).reason("Not Found");
+  EXPECT_EQ(resp.reason(), "Not Found");
+  auto full = concatenated(std::move(resp));
+
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 404 Not Found\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "MySpecialContentType")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "5")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nHello"));
+}
+
+TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithHeaders) {
+  HttpResponse resp(200);
+  resp.reason("OK");
+  resp.headerAddLine("X-Header", 127);
+  resp.status(404);
+  resp.reason("Not Found");
+  EXPECT_EQ(resp.reason(), "Not Found");
+  auto full = concatenated(std::move(resp));
+
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 404 Not Found\r\n"));
+  EXPECT_TRUE(full.contains("X-Header: 127\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithoutHeaders) {
+  HttpResponse resp(200);
+  resp.reason("OK");
+  EXPECT_EQ(resp.reason(), "OK");
+  EXPECT_TRUE(resp.hasReason());
+  resp.status(404).reason("Not Found");
+  EXPECT_EQ(resp.reason(), "Not Found");
+  EXPECT_TRUE(resp.hasReason());
+  auto full = concatenated(std::move(resp));
+
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 404 Not Found\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
+  HttpResponse resp(http::StatusCodeNotFound);
+  resp.reason("Not Found");
+  resp.body("Hello");
+  resp.status(http::StatusCodeOK).reason("OK");
+  EXPECT_EQ(resp.reason(), "OK");
+  auto full = concatenated(std::move(resp));
+
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "5")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nHello"));
+}
+
+TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
+  auto resp = HttpResponse(404).reason("Not Found").headerAddLine("X-Header-1", "Value1");
+  resp.headerAddLine("X-Header-2", "Value2");
+  resp.status(200).reason("OK");
+  EXPECT_EQ(resp.reason(), "OK");
+  auto full = concatenated(std::move(resp));
+
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Header-1: Value1\r\n"));
+  EXPECT_TRUE(full.contains("X-Header-2: Value2\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
+  HttpResponse resp(404, http::NotFound);
+  EXPECT_EQ(resp.bodyInMemory(), http::NotFound);
+  resp = HttpResponse{}.status(200).reason("OK");
+  EXPECT_EQ(resp.reason(), "OK");
+  auto full = concatenated(std::move(resp));
+
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, StatusReasonAndBodyRemoveReasonWithHeaders) {
+  HttpResponse resp(404);
+  resp.reason("Not Found");
+  resp.headerAddLine("X-Header-1", "Value1");
+  resp.headerAddLine("X-Header-2", "Value2");
+  resp.status(200).reason("");
+  EXPECT_EQ(resp.reason(), "");
+  EXPECT_FALSE(resp.hasReason());
+  auto full = concatenated(std::move(resp));
+
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+  EXPECT_TRUE(full.contains("X-Header-1: Value1\r\n"));
+  EXPECT_TRUE(full.contains("X-Header-2: Value2\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.bodyInlineAppend(16U, kAppendZeroOrOneA);
-  counter = 0;
-  EXPECT_EQ(resp.bodyInMemory(), "");
-  EXPECT_FALSE(resp.headerValue(http::ContentType));
-  resp.bodyInlineAppend(16U, kAppendZeroOrOneABytes);
-  counter = 0;
-  EXPECT_EQ(resp.bodyInMemory(), "");
-  EXPECT_FALSE(resp.headerValue(http::ContentType));
+  resp.reason("OK");
+  EXPECT_EQ(resp.reasonLength(), 2U);
+  EXPECT_EQ(resp.reason(), "OK");
+  EXPECT_TRUE(resp.hasReason());
+  EXPECT_EQ(resp.reasonSize(), resp.reasonLength());
+  resp.headerAddLine(http::ContentType, "text/plain").headerAddLine("X-A", "B").body("Hello");
+  auto full = concatenated(std::move(resp));
+  ASSERT_GE(full.size(), 16U);
+  auto prefix = full.substr(0, 15);
+  EXPECT_EQ(prefix.substr(0, 8), "HTTP/1.1") << "Raw prefix: '" << std::string(prefix) << "'";
+  EXPECT_EQ(prefix.substr(8, 1), " ");
+  EXPECT_EQ(prefix.substr(9, 3), "200");
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains("X-A: B\r\n"));
+  auto posBody = full.find("Hello");
+  ASSERT_NE(posBody, std::string_view::npos);
+  auto separator = full.substr(0, posBody);
+  EXPECT_TRUE(separator.contains(http::DoubleCRLF));
+}
+
+// =============================================================================
+// HEADERS TESTS
+// =============================================================================
+
+TEST_F(HttpResponseTest, EmptyHeaderSearchShouldReturnNullopt) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Test", "value");
+  auto val = resp.headerValue("");
+  EXPECT_FALSE(val.has_value());
+}
+
+TEST_F(HttpResponseTest, InsertingInvalidHeaderNameShouldThrow) {
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_THROW(resp.headerAddLine("Invalid Header", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAddLine("Another:Invalid", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAddLine("", "value"), std::invalid_argument);
+
+  EXPECT_THROW(resp.headerAppendValue("Invalid Header", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAppendValue("Another:Invalid", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAppendValue("", "value"), std::invalid_argument);
+
+  resp.body("some body");
+  EXPECT_THROW(resp.trailerAddLine("Invalid Trailer", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.trailerAddLine("Another:Invalid", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.trailerAddLine("", "value"), std::invalid_argument);
+
+  EXPECT_THROW(resp.header("Invalid Header", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.header("Another:Invalid", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.header("", "value"), std::invalid_argument);
+}
+
+TEST_F(HttpResponseTest, AllowsDuplicates) {
+  HttpResponse resp;
+  resp.headerAddLine("X-Dup", "1").headerAddLine("X-Dup", "2");
+  auto full = concatenated(std::move(resp));
+  auto first = full.find("X-Dup: 1\r\n");
+  auto second = full.find("X-Dup: 2\r\n");
+  ASSERT_NE(first, std::string_view::npos);
+  ASSERT_NE(second, std::string_view::npos);
+  EXPECT_LT(first, second);
+}
+
+TEST_F(HttpResponseTest, AppendHeaderValueAppendsToExistingHeader) {
+  auto resp = HttpResponse(http::StatusCodeOK, "OK").header("X-Custom", "value1");
+  resp.headerAppendValue("X-Custom", "value2");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-Custom: value1, value2\r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, AppendHeaderValueCreatesHeaderWhenMissing) {
+  auto resp = HttpResponse(http::StatusCodeOK, "OK").headerAppendValue("X-Missing", "v1");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-Missing: v1\r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, AppendHeaderValueEmptySeparator) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-List", "first");
+  resp.headerAppendValue("X-List", "second", "");
+
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-List: firstsecond\r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, AppendHeaderValueEmptyValue) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-List", "first");
+  resp.headerAppendValue("X-List", "", ", ");
+
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-List: first, \r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, AppendHeaderValueEmptyValueAndSeparator) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-List", "first");
+  resp.headerAppendValue("X-List", "", "");
+
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-List: first\r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, AppendHeaderValueHonorsCustomSeparator) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-List", "first");
+  resp.headerAppendValue("X-List", "second", "; ");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-List: first; second\r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, AppendHeaderValueSupportsNumericOverload) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-Numeric", "1");
+  resp.headerAppendValue("X-Numeric", 42, "|");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-Numeric: 1|42\r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, ContentEncodingHeader) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.contentEncoding("gzip");
+  resp.body("CompressedData");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentEncoding, "gzip")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "14")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nCompressedData"));
+}
+
+TEST_F(HttpResponseTest, ContentEncodingHeaderRValue) {
+  auto resp = HttpResponse(http::StatusCodeOK).reason("OK").contentEncoding("deflate").body("DeflatedData");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentEncoding, "deflate")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "12")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nDeflatedData"));
+}
+
+TEST_F(HttpResponseTest, EmptyContentTypeIsDisallowed) {
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_THROW(resp.body("some body", ""), std::invalid_argument);
+  EXPECT_NO_THROW(resp.body("", ""));  // empty body with empty content type is allowed
+}
+
+TEST_F(HttpResponseTest, FileOffsetExceedsSizeThrows) {
+  static constexpr std::string_view kPayload = "small";
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_THROW(resp.file(std::move(file), static_cast<std::size_t>(kPayload.size() + 1), 0), std::invalid_argument);
+}
+
+TEST_F(HttpResponseTest, FileOffsetPlusLengthExceedsSizeThrows) {
+  static constexpr std::string_view kPayload = "12345";
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+  HttpResponse resp(http::StatusCodeOK);
+  // offset 3, length 5 -> 8 > size(5)
+  EXPECT_THROW(resp.file(std::move(file), 3, 5), std::invalid_argument);
+}
+
+TEST_F(HttpResponseTest, GlobalHeadersShouldNotOverrideUserHeaders) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-Global", "UserValue");
+  ConcatenatedHeaders globalHeaders;
+  globalHeaders.append("X-Global: GlobalValue");
+  globalHeaders.append("X-Another: AnotherValue");
+  resp.reason("Some Reason");
+  auto full = concatenated(std::move(resp), globalHeaders);
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 Some Reason\r\n"));
+  EXPECT_TRUE(full.contains("X-Global: UserValue\r\n"));
+  EXPECT_TRUE(full.contains("X-Another: AnotherValue\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, HeaderAppendValuesAreTrimmed) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAppendValue("X-Trimmed-Header", "   Value1   ", ", ");
+  resp.headerAppendValue("X-Trimmed-Header", "\tValue2\t", ", ");
+  resp.headerAppendValue("X-Trimmed-Header", " \t  Value3 \t ", ", ");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header"), "Value1, Value2, Value3");
+}
+
+TEST_F(HttpResponseTest, HeaderGetterAfterSet) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  // Mix of headers to exercise several lookup cases:
+  // - customHeader replaces case-insensitively
+  // - addCustomHeader allows duplicates (first occurrence should be returned by headerValue)
+  // - empty value is a present-but-empty header
+  resp.header("X-Simple", "hello");
+  resp.headerAddLine("X-Dup", "1");
+  resp.headerAddLine("X-Dup", "2");
+  // Replace X-Simple with different casing (should replace existing header)
+  resp.header("x-simple", "HELLO2");
+  // Present but empty value
+  resp.header("X-Empty", "");
+
+  // headerValue should see the replaced value (case-insensitive replace)
+  auto opt = resp.headerValue("X-Simple");
+  EXPECT_EQ(opt.value_or(""), "HELLO2");
+
+  // duplicate headers: headerValue returns the first occurrence
+  auto dup = resp.headerValue("X-Dup");
+  EXPECT_EQ(dup.value_or(""), "1");
+
+  // empty-but-present header: headerValue returns an empty string_view but present
+  auto emptyOpt = resp.headerValue("X-Empty");
+  EXPECT_EQ(emptyOpt.value_or("something"), std::string_view{});
+
+  // missing header should return nullopt via headerValue and empty view via headerValueOrEmpty
+  auto missing = resp.headerValue("No-Such-Header");
+  EXPECT_FALSE(missing.has_value());
+  EXPECT_EQ(resp.headerValueOrEmpty("No-Such-Header"), std::string_view{});
+}
+
+TEST_F(HttpResponseTest, HeaderNewViaSetter) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-First", "One");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-First: One\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-Val", "LEN10VALUE");  // length 10
+  resp.body("Data");                   // length 4
+  resp.header("x-val", "0123456789");  // same length replacement
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Val: 0123456789\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "4")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nData"));
+}
+
+TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternLarger) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-Key", "before X-Key: should-not-trigger");
+  // Replace header; algorithm must not treat the embedded "X-Key: " in the value as another header start
+  resp.header("X-Key", "REPLACED-VALUE");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Key: REPLACED-VALUE\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-Key", "AAAA X-Key: B BBBBBB");
+  resp.header("X-Key", "SMALL");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Key: SMALL\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, HeaderReplaceLargerValue) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-Replace", "AA");
+  // Replace with larger value
+  resp.header("X-Replace", "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Replace: ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, HeaderReplaceSameLengthValue) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-Replace", "LEN10VALUE");  // length 10
+  resp.header("X-Replace", "0123456789");  // also length 10
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Replace: 0123456789\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, HeaderReplaceSmallerValue) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-Replace", "LONG-LONG-VALUE");
+  // Replace with smaller
+  resp.header("X-Replace", "S");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Replace: S\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, HeaderValueContentTypeAreTrimmed) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("Some body", "   text/custom   ");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/custom");
+
+  resp.bodyAppend(" More body", "\ttext/another\t");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/another");
+
+  resp.bodyInlineSet(16U, kAppendZeroOrOneA, " \t  text/inline \t ");
+  resp.bodyInlineSet(16U, kAppendZeroOrOneA, " \t  text/inline \t ");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/inline");
+
+  resp.bodyInlineAppend(16, kAppendZeroOrOneABytes, " \t  text/append \t ");
+  resp.bodyInlineAppend(16, kAppendZeroOrOneABytes, " \t  text/append \t ");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/append");
+
+  resp.bodyStatic("Static body", "   text/static   ");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/static");
+}
+
+TEST_F(HttpResponseTest, HeaderValueFindsLastHeader) {
+  HttpResponse resp(http::StatusCodeOK);
+  // Add multiple headers and ensure headerValue finds the last one when searching
+  resp.headerAddLine("X-A", "one");
+  resp.headerAddLine("X-B", "two");
+  resp.headerAddLine("X-C", "three");
+
+  EXPECT_EQ(resp.headerValue("X-C").value_or(""), "three");
+  EXPECT_EQ(resp.headerValue("X-D"), std::nullopt);
+  EXPECT_TRUE(resp.hasHeader("X-C"));
+  EXPECT_FALSE(resp.hasHeader("X-D"));
+}
+
+TEST_F(HttpResponseTest, HeaderValuesAreTrimmedHeaderAddLine) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Trimmed-Header-1", "   Value1   ");
+  resp.headerAddLine("X-Trimmed-Header-2", "\tValue2\t");
+  resp.headerAddLine("X-Trimmed-Header-3", " \t  Value3 \t ");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-1"), "Value1");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-2"), "Value2");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-3"), "Value3");
+}
+
+TEST_F(HttpResponseTest, HeaderValuesAreTrimmedHeaderSet) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.header("X-Trimmed-Header-1", "   Value1   ");
+  resp.header("X-Trimmed-Header-2", "\tValue2\t");
+  resp.header("X-Trimmed-Header-3", " \t  Value3 \t ");
+  resp.header("X-Trimmed-Header-3", " \t  Value33 \t ");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-1"), "Value1");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-2"), "Value2");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-3"), "Value33");
+}
+
+TEST_F(HttpResponseTest, LargeHeaderCountStress) {
+  constexpr int kCount = 600;
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  for (int i = 0; i < kCount; ++i) {
+    resp.headerAddLine("X-" + std::to_string(i), std::to_string(i));
+  }
+  auto full = concatenated(std::move(resp));
+  ASSERT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  // Count custom headers (exclude Date/Connection)
+  auto pos = full.find(http::CRLF) + 2;  // after status line CRLF
+  int userHeaders = 0;
+  std::string datePrefix(http::Date);
+  datePrefix += ": ";
+
+  std::string connectionPrefix(http::Connection);
+  connectionPrefix += ": ";
+  while (pos < full.size()) {
+    auto lineEnd = full.find(http::CRLF, pos);
+    ASSERT_NE(lineEnd, std::string_view::npos);
+    if (lineEnd == pos) {
+      pos += 2;
+      break;
+    }
+    auto line = full.substr(pos, lineEnd - pos);
+    if (!line.starts_with(datePrefix) && !line.starts_with(connectionPrefix)) {
+      ++userHeaders;
+    }
+    pos = lineEnd + 2;
+  }
+  EXPECT_EQ(userHeaders, kCount);
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
+
+TEST_F(HttpResponseTest, LocationHeader) {
+  HttpResponse resp(http::StatusCodeFound);
+  resp.reason("Found");
+  resp.location("http://example.com/new-location");
+  resp.body("Redirecting...");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 302 Found\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Location, "http://example.com/new-location")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "14")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nRedirecting..."));
+}
+
+TEST_F(HttpResponseTest, LocationHeaderRValue) {
+  auto resp = HttpResponse(http::StatusCodeFound)
+                  .reason("Found")
+                  .location("https://another.example.com/redirect-here")
+                  .body("Please wait...");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 302 Found\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Location, "https://another.example.com/redirect-here")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "14")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nPlease wait..."));
+}
+
+TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-Custom", "Value");
+  resp.body("BodyContent");
+  resp.trailerAddLine("X-Trailer", "TrailerValue1");
+  resp.trailerAddLine("X-Trailer-2", "TrailerValue-2");
+
+  static constexpr bool kHead = false;
+  static constexpr bool kAddTrailerHeader = true;
+
+  auto prepared = finalizePrepared(std::move(resp), {}, kHead, kAddTrailerHeader, true, kMinCapturedBodySize);
+  std::string all(prepared.firstBuffer());
+  all.append(prepared.secondBuffer());
+
+  EXPECT_TRUE(all.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Custom", "Value")));
+  // When trailers are present, body is chunked encoded per RFC 7230 §4.1.2
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine(http::Trailer, "X-Trailer, X-Trailer-2")));
+  EXPECT_FALSE(all.contains(http::ContentLength));
+  // Body should be in chunked format: "b\r\nBodyContent\r\n0\r\n" (b = 11 in hex)
+  EXPECT_TRUE(all.contains("b\r\nBodyContent\r\n0\r\n"));
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Trailer", "TrailerValue1")));
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Trailer-2", "TrailerValue-2")));
+  EXPECT_FALSE(all.contains(MakeHttp1HeaderLine(http::Connection, http::close)));
+  EXPECT_FALSE(all.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
+  EXPECT_TRUE(all.contains(kExpectedDateRaw));
+}
+
+TEST_F(HttpResponseTest, ReplaceDifferentSizes) {
+  HttpResponse resp1(http::StatusCodeOK, "OK");
+  resp1.headerAddLine("X-A", "1").body("Hello");
+  HttpResponse resp2(http::StatusCodeOK, "OK");
+  resp2.headerAddLine("X-A", "1").body("Hello");
+  HttpResponse resp3(http::StatusCodeOK, "OK");
+  resp3.headerAddLine("X-A", "1").body("Hello");
+  auto firstFull = concatenated(std::move(resp1));
+  auto firstLen = firstFull.size();
+  resp2.body("WorldWide");
+  auto secondFull = concatenated(std::move(resp2));
+  EXPECT_GT(secondFull.size(), firstLen);
+  EXPECT_TRUE(secondFull.contains("WorldWide"));
+  resp3.body("Yo");
+  auto thirdFull = concatenated(std::move(resp3));
+  EXPECT_TRUE(thirdFull.contains("Yo"));
+}
+
+TEST_F(HttpResponseTest, SendInvalidFile) {
+  test::FileSyscallHookGuard guard;
+
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "some-data");
+  File file(tmp.filePath().string());
+
+  test::gFstatSizes.setActions(tmp.filePath().string(), {-1});
+
+  auto resp = HttpResponse(http::StatusCodeOK, "OK");
+  EXPECT_THROW(resp.file(std::move(file)), std::invalid_argument);
+}
+
+// =============================================================================
+// BODY TESTS
+// =============================================================================
+
+TEST_F(HttpResponseTest, AllowsDuplicatesAfterResettingBody) {
+  HttpResponse resp(204, "No Content");
+  resp.headerAddLine("X-Dup", "1").headerAddLine("X-Dup", "2").body("");
+  auto full = concatenated(std::move(resp));
+  auto first = full.find("X-Dup: 1\r\n");
+  auto second = full.find("X-Dup: 2\r\n");
+  ASSERT_NE(first, std::string_view::npos);
+  ASSERT_NE(second, std::string_view::npos);
+  EXPECT_LT(first, second);
+}
+
+TEST_F(HttpResponseTest, AppendBodyAfterCapturedPayloadShouldThrow) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::string{"some body"}, "text/captured");
+  EXPECT_THROW(resp.bodyInlineAppend(16U, kAppendZeroOrOneA), std::logic_error);
+  EXPECT_THROW(resp.bodyInlineAppend(1U, kAppendZeroOrOneABytes), std::logic_error);
+}
+
+TEST_F(HttpResponseTest, AppendBodyAfterFileCapturedIsLogicError) {
+  HttpResponse resp(http::StatusCodeOK);
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "data");
+  File file(tmp.filePath().string());
+
+  resp.file(std::move(file));
+
+  EXPECT_THROW(resp.bodyAppend("additional body"), std::logic_error);
+}
+
+TEST_F(HttpResponseTest, AppendBodyBytesSpan) {
+  // span of bytes
+  static constexpr std::byte vec[]{std::byte{'X'}, std::byte{'Y'}};
+  HttpResponse resp(http::StatusCodeOK);
+  resp.bodyAppend(std::span<const std::byte>(vec));
+  resp.bodyAppend(std::span<const std::byte>{}, "text/another");
+  resp.bodyAppend(std::span<const std::byte>{vec}, "text/another2");
+  EXPECT_EQ(resp.bodyInMemory(), "XYXY");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/another2");
+  EXPECT_EQ(resp.headerValue(http::ContentLength), "4");
+
+  while (resp.bodyInMemoryLength() != 10) {
+    resp.bodyAppend(std::span<const std::byte>(vec));
+  }
+  EXPECT_EQ(resp.bodyInMemory(), "XYXYXYXYXY");
+  EXPECT_EQ(resp.headerValue(http::ContentLength), "10");
+}
+
+TEST_F(HttpResponseTest, AppendBodyCStrRvalue) {
+  auto resp =
+      HttpResponse(http::StatusCodeOK).bodyAppend("Hello, C-String!").bodyAppend(static_cast<const char*>(nullptr));
+  EXPECT_EQ(resp.bodyInMemory(), "Hello, C-String!");
+}
+
+TEST_F(HttpResponseTest, AppendBodyCapturedStringView) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::string{"captured body"}, "text/captured");
+
+  resp.bodyAppend(std::string_view(" appended body"), "");
+  EXPECT_EQ(resp.bodyInMemory(), "captured body appended body");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/captured");  // unchanged since contentType was empty
+
+  resp.bodyAppend(std::string_view(" more"), "text/appended");
+  EXPECT_EQ(resp.bodyInMemory(), "captured body appended body more");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/appended");
 }
 
 TEST_F(HttpResponseTest, AppendBodyFromEmpty) {
@@ -387,27 +1110,6 @@ TEST_F(HttpResponseTest, AppendBodyFromEmpty) {
   EXPECT_EQ(resp.bodyInMemory(), "AA");
 }
 
-TEST_F(HttpResponseTest, AppendBodyAfterCapturedPayloadShouldThrow) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body(std::string{"some body"}, "text/captured");
-  EXPECT_THROW(resp.bodyInlineAppend(16U, kAppendZeroOrOneA), std::logic_error);
-  EXPECT_THROW(resp.bodyInlineAppend(1U, kAppendZeroOrOneABytes), std::logic_error);
-}
-
-TEST_F(HttpResponseTest, AppendBodyAfterTrailersShouldThrow) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body("some body");
-  resp.trailerAddLine("X-Trailer", "value");
-  EXPECT_THROW(resp.bodyInlineAppend(16U, kAppendZeroOrOneA), std::logic_error);
-  EXPECT_THROW(resp.bodyInlineAppend(1U, kAppendZeroOrOneABytes), std::logic_error);
-}
-
-TEST_F(HttpResponseTest, EmptyContentTypeIsDisallowed) {
-  HttpResponse resp(http::StatusCodeOK);
-  EXPECT_THROW(resp.body("some body", ""), std::invalid_argument);
-  EXPECT_NO_THROW(resp.body("", ""));  // empty body with empty content type is allowed
-}
-
 TEST_F(HttpResponseTest, AppendBodyFromNonEmpty) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body("initial body ");
@@ -417,156 +1119,6 @@ TEST_F(HttpResponseTest, AppendBodyFromNonEmpty) {
   resp.bodyInlineAppend(16U, kAppendZeroOrOneABytes, "text/custom");
   EXPECT_EQ(resp.bodyInMemory(), "initial body AA");
   EXPECT_EQ(resp.headerValue(http::ContentType), "text/custom");
-}
-
-TEST_F(HttpResponseTest, AppendBodyRValue) {
-  auto resp = HttpResponse{}
-                  .bodyInlineAppend(16U, kAppendZeroOrOneA)
-                  .bodyInlineAppend(16U, kAppendZeroOrOneA)
-                  .bodyInlineAppend(16U, kAppendZeroOrOneABytes)
-                  .bodyInlineAppend(16U, kAppendZeroOrOneABytes);
-  EXPECT_EQ(resp.bodyInMemory(), "AA");
-}
-
-TEST_F(HttpResponseTest, AppendBodyFromStringAfterTrailersIsLogicError) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body("some body");
-  resp.trailerAddLine("X-Trailer", "value");
-  EXPECT_THROW(resp.bodyAppend("additional body"), std::logic_error);
-}
-
-TEST_F(HttpResponseTest, BodyAppendToCapturedBody) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body(std::string{"captured"}, "text/captured");
-  EXPECT_EQ(resp.bodyInMemory(), "captured");
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "8");
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/captured");
-
-  resp.bodyAppend(" appended body", "");
-  EXPECT_EQ(resp.bodyInMemory(), "captured appended body");
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "22");           // updated content-length
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/captured");  // unchanged since contentType was empty
-
-  resp.bodyAppend(" more", "text/more");
-  EXPECT_EQ(resp.bodyInMemory(), "captured appended body more");
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "27");       // updated content-length
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/more");  // changed since contentType was provided
-}
-
-TEST_F(HttpResponseTest, AppendBodyAfterFileCapturedIsLogicError) {
-  HttpResponse resp(http::StatusCodeOK);
-  test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp(tmpDir, "data");
-  File file(tmp.filePath().string());
-
-  resp.file(std::move(file));
-
-  EXPECT_THROW(resp.bodyAppend("additional body"), std::logic_error);
-}
-
-TEST_F(HttpResponseTest, SeveralBodyAppend) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.bodyAppend("Some body data that takes roughly 50 characters.\n", "text/plain");
-  EXPECT_EQ(resp.bodyInMemory(), "Some body data that takes roughly 50 characters.\n");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "text/plain");
-  EXPECT_EQ(resp.headerValue(http::ContentLength), "49");
-  resp.bodyAppend(" Additional data to be appended");
-  EXPECT_EQ(resp.bodyInMemory(), "Some body data that takes roughly 50 characters.\n Additional data to be appended");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "text/plain");
-  EXPECT_EQ(resp.headerValue(http::ContentLength), "80");
-  resp.bodyAppend(
-      " And some more to reach more than 100 characters in total. Lorem ipsum dolor sit amet, "
-      "consectetur adipiscing elit.",
-      "text/custom");
-  EXPECT_EQ(resp.bodyInMemory(),
-            "Some body data that takes roughly 50 characters.\n Additional data to be appended And some more to reach "
-            "more than 100 characters in total. Lorem ipsum dolor sit amet, consectetur adipiscing elit.");
-  EXPECT_EQ(resp.bodyLength(), 195UL);
-  EXPECT_EQ(resp.bodySize(), 195UL);
-  EXPECT_EQ(resp.bodyInMemoryLength(), 195UL);
-  EXPECT_EQ(resp.bodyInMemorySize(), 195UL);
-  EXPECT_EQ(resp.bodyInlinedLength(), 195UL);
-  EXPECT_EQ(resp.bodyInlinedSize(), 195UL);
-  EXPECT_EQ(resp.headerValue(http::ContentType), "text/custom");
-  EXPECT_EQ(resp.headerValue(http::ContentLength), "195");
-}
-
-TEST_F(HttpResponseTest, AppendBodyInlineStringView) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.bodyAppend(std::string_view("hello"));
-  EXPECT_EQ(resp.bodyInMemory(), "hello");
-  // Check content-length and content-type headers
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "5");
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/plain");
-
-  resp.bodyAppend(std::string_view(" world"), "text/greeting");
-  EXPECT_EQ(resp.bodyInMemory(), "hello world");
-  // Check content-length and content-type headers
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "11");
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/greeting");
-}
-
-TEST_F(HttpResponseTest, BodyStaticSv) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.bodyStatic("This is a static body", "text/static");
-  EXPECT_EQ(resp.bodyInMemory(), "This is a static body");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "text/static");
-  EXPECT_EQ(resp.headerValue(http::ContentLength), std::to_string(std::string_view("This is a static body").size()));
-
-  resp = HttpResponse{}.bodyStatic("Another static body, it's great because it does not allocate memory", "text/empty");
-  EXPECT_EQ(resp.bodyInMemory(), "Another static body, it's great because it does not allocate memory");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "text/empty");
-  EXPECT_EQ(
-      resp.headerValue(http::ContentLength),
-      std::to_string(std::string_view("Another static body, it's great because it does not allocate memory").size()));
-
-  resp = HttpResponse{}.bodyStatic("", "text/empty");
-  EXPECT_EQ(resp.bodyInMemory(), "");
-  EXPECT_FALSE(resp.hasHeader(http::ContentType));
-  EXPECT_FALSE(resp.hasHeader(http::ContentLength));
-
-  // Even for HEAD method, static body should not be visible
-  resp = MakePrepared(true, true).bodyStatic("Head method static body", "text/head");
-  EXPECT_EQ(resp.bodyInMemory(), "");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "text/head");
-
-  resp.bodyStatic("", "text/empty");
-  EXPECT_EQ(resp.bodyInMemory(), "");
-  EXPECT_FALSE(resp.hasHeader(http::ContentType));
-  EXPECT_FALSE(resp.hasHeader(http::ContentLength));
-}
-
-TEST_F(HttpResponseTest, BodyStaticBytes) {
-  static constexpr std::byte bodyBytes[]{std::byte{'S'}, std::byte{'t'}, std::byte{'a'},
-                                         std::byte{'t'}, std::byte{'i'}, std::byte{'c'}};
-  HttpResponse resp(http::StatusCodeOK);
-  resp.bodyStatic(std::span<const std::byte>(bodyBytes), "application/octet-stream");
-  EXPECT_EQ(resp.bodyInMemory(), "Static");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "application/octet-stream");
-  EXPECT_EQ(resp.headerValue(http::ContentLength), std::to_string(sizeof(bodyBytes)));
-
-  resp = HttpResponse{}.bodyStatic(std::span<const std::byte>(bodyBytes), "application/data");
-  EXPECT_EQ(resp.bodyInMemory(), "Static");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "application/data");
-  EXPECT_EQ(resp.headerValue(http::ContentLength), std::to_string(sizeof(bodyBytes)));
-
-  resp = HttpResponse{}.bodyStatic(std::span<const std::byte>{}, "text/empty");
-  EXPECT_EQ(resp.bodyInMemory(), "");
-  EXPECT_FALSE(resp.hasHeader(http::ContentType));
-  EXPECT_FALSE(resp.hasHeader(http::ContentLength));
-}
-
-TEST_F(HttpResponseTest, AppendBodyCapturedStringView) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body(std::string{"captured body"}, "text/captured");
-
-  resp.bodyAppend(std::string_view(" appended body"), "");
-  EXPECT_EQ(resp.bodyInMemory(), "captured body appended body");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "text/captured");  // unchanged since contentType was empty
-
-  resp.bodyAppend(std::string_view(" more"), "text/appended");
-  EXPECT_EQ(resp.bodyInMemory(), "captured body appended body more");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "text/appended");
 }
 
 TEST_F(HttpResponseTest, AppendBodyInlineCstr) {
@@ -583,40 +1135,19 @@ TEST_F(HttpResponseTest, AppendBodyInlineCstr) {
   EXPECT_EQ(resp.headerValue(http::ContentType), "text/x-test");
 }
 
-TEST_F(HttpResponseTest, AppendBodyBytesSpan) {
-  // span of bytes
-  static constexpr std::byte vec[]{std::byte{'X'}, std::byte{'Y'}};
+TEST_F(HttpResponseTest, AppendBodyInlineStringView) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.bodyAppend(std::span<const std::byte>(vec));
-  resp.bodyAppend(std::span<const std::byte>{}, "text/another");
-  resp.bodyAppend(std::span<const std::byte>{vec}, "text/another2");
-  EXPECT_EQ(resp.bodyInMemory(), "XYXY");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "text/another2");
-  EXPECT_EQ(resp.headerValue(http::ContentLength), "4");
+  resp.bodyAppend(std::string_view("hello"));
+  EXPECT_EQ(resp.bodyInMemory(), "hello");
+  // Check content-length and content-type headers
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "5");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/plain");
 
-  while (resp.bodyInMemoryLength() != 10) {
-    resp.bodyAppend(std::span<const std::byte>(vec));
-  }
-  EXPECT_EQ(resp.bodyInMemory(), "XYXYXYXYXY");
-  EXPECT_EQ(resp.headerValue(http::ContentLength), "10");
-}
-
-TEST_F(HttpResponseTest, AppendBodyRvalueSpanBytesDefaultContentType) {
-  static constexpr std::byte vec[]{std::byte{'A'}, std::byte{'B'}, std::byte{'C'}};
-  auto resp = HttpResponse(http::StatusCodeOK).bodyAppend(std::span<const std::byte>(vec));
-  EXPECT_EQ(resp.bodyInMemory(), "ABC");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "application/octet-stream");
-}
-
-TEST_F(HttpResponseTest, AppendBodyRvalueSpanBytesContentType) {
-  static constexpr std::byte vec[]{std::byte{'A'}, std::byte{'B'}, std::byte{'C'}};
-  auto resp = HttpResponse(http::StatusCodeOK)
-                  .bodyAppend(std::span<const std::byte>(vec))
-                  .bodyAppend(std::span<const std::byte>(vec), "text/type")
-                  .bodyAppend(std::span<const std::byte>{}, "some/type")
-                  .bodyAppend(std::span<const std::byte>{});
-  EXPECT_EQ(resp.bodyInMemory(), "ABCABC");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "text/type");
+  resp.bodyAppend(std::string_view(" world"), "text/greeting");
+  EXPECT_EQ(resp.bodyInMemory(), "hello world");
+  // Check content-length and content-type headers
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "11");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/greeting");
 }
 
 TEST_F(HttpResponseTest, AppendBodyMultipleFlavorsAndRvalueChaining) {
@@ -639,55 +1170,43 @@ TEST_F(HttpResponseTest, AppendBodyMultipleFlavorsAndRvalueChaining) {
   EXPECT_EQ(chained.bodyInMemory(), "onetwo");
 }
 
-TEST_F(HttpResponseTest, SetInlineBodyFromWriterShouldThrowAfterTrailers) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body("some body");
-  resp.trailerAddLine("X-Trailer", "value");
-  EXPECT_THROW(resp.bodyInlineSet(8U, kAppendZeroOrOneA), std::logic_error);
-  EXPECT_THROW(resp.bodyInlineSet(8U, kAppendZeroOrOneABytes), std::logic_error);
+TEST_F(HttpResponseTest, AppendBodyRValue) {
+  auto resp = HttpResponse{}
+                  .bodyInlineAppend(16U, kAppendZeroOrOneA)
+                  .bodyInlineAppend(16U, kAppendZeroOrOneA)
+                  .bodyInlineAppend(16U, kAppendZeroOrOneABytes)
+                  .bodyInlineAppend(16U, kAppendZeroOrOneABytes);
+  EXPECT_EQ(resp.bodyInMemory(), "AA");
 }
 
-TEST_F(HttpResponseTest, SetInlineBodyFromWriterEmptyWriteNoContentType) {
-  HttpResponse resp(http::StatusCodeOK);
-  // writer that writes nothing - should not add any content type header
-  resp.bodyInlineSet(8U, kAppendZeroOrOneA);
-  counter = 0;
-  resp.bodyInlineSet(8U, kAppendZeroOrOneABytes);
-  counter = 0;
-  EXPECT_EQ(resp.bodyInMemory(), "");
-  EXPECT_FALSE(resp.headerValue(http::ContentType));
+TEST_F(HttpResponseTest, AppendBodyRvalueSpanBytesContentType) {
+  static constexpr std::byte vec[]{std::byte{'A'}, std::byte{'B'}, std::byte{'C'}};
+  auto resp = HttpResponse(http::StatusCodeOK)
+                  .bodyAppend(std::span<const std::byte>(vec))
+                  .bodyAppend(std::span<const std::byte>(vec), "text/type")
+                  .bodyAppend(std::span<const std::byte>{}, "some/type")
+                  .bodyAppend(std::span<const std::byte>{});
+  EXPECT_EQ(resp.bodyInMemory(), "ABCABC");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/type");
 }
 
-TEST_F(HttpResponseTest, SetInlineBodyFromWriterCharPtrDefaultContentType) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.bodyInlineSet(8U, kAppendZeroOrOneA);
-  EXPECT_FALSE(resp.headerValue(http::ContentType));
-  EXPECT_EQ(resp.bodyInMemory(), "");
-  resp.bodyInlineSet(8U, kAppendZeroOrOneA, "text/custom");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "text/custom");
-  EXPECT_EQ(resp.bodyInMemory(), "A");
-  resp.bodyInlineSet(8U, kAppendZeroOrOneABytes);
-  EXPECT_FALSE(resp.headerValue(http::ContentType));
-  EXPECT_EQ(resp.bodyInMemory(), "");
-
-  resp.bodyInlineSet(8U, kAppendZeroOrOneABytes, "text/custom");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "text/custom");
-  EXPECT_EQ(resp.bodyInMemory(), "A");
-
-  // should be ok after captured payload
-  resp.body(std::string{"captured body"}, "text/captured");
-  resp.bodyInlineSet(8U, kAppendZeroOrOneA);
-  resp.bodyInlineSet(8U, kAppendZeroOrOneA);
-  EXPECT_EQ(resp.bodyInMemory(), "A");
-  resp.bodyInlineSet(8U, kAppendZeroOrOneABytes);
-  resp.bodyInlineSet(8U, kAppendZeroOrOneABytes);
-  EXPECT_EQ(resp.bodyInMemory(), "A");
+TEST_F(HttpResponseTest, AppendBodyRvalueSpanBytesDefaultContentType) {
+  static constexpr std::byte vec[]{std::byte{'A'}, std::byte{'B'}, std::byte{'C'}};
+  auto resp = HttpResponse(http::StatusCodeOK).bodyAppend(std::span<const std::byte>(vec));
+  EXPECT_EQ(resp.bodyInMemory(), "ABC");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "application/octet-stream");
 }
 
-TEST_F(HttpResponseTest, AppendBodyCStrRvalue) {
-  auto resp =
-      HttpResponse(http::StatusCodeOK).bodyAppend("Hello, C-String!").bodyAppend(static_cast<const char*>(nullptr));
-  EXPECT_EQ(resp.bodyInMemory(), "Hello, C-String!");
+TEST_F(HttpResponseTest, AppendHeaderValueKeepsBodyIntact) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-Trace", "alpha");
+  resp.body("payload");
+  resp.headerAppendValue("X-Trace", "beta");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("X-Trace: alpha, beta\r\n")) << full;
+  EXPECT_TRUE(full.ends_with("payload")) << full;
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "7"))) << full;
 }
 
 TEST_F(HttpResponseTest, AppendToCapturedBody) {
@@ -699,11 +1218,34 @@ TEST_F(HttpResponseTest, AppendToCapturedBody) {
   EXPECT_EQ(resp.headerValue(http::ContentLength), "23");
 }
 
-TEST_F(HttpResponseTest, BodyFromSpanBytesRValue) {
-  auto resp = HttpResponse(http::StatusCodeOK)
-                  .body(std::span<const std::byte>(std::vector<std::byte>{
-                      std::byte{'W'}, std::byte{'o'}, std::byte{'r'}, std::byte{'l'}, std::byte{'d'}}));
-  EXPECT_EQ(resp.bodyInMemory(), "World");
+TEST_F(HttpResponseTest, AppendToInlineBodyFromEmptyShouldNotAddContentTypeIfNoDataWritten) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.bodyInlineAppend(16U, kAppendZeroOrOneA);
+  counter = 0;
+  EXPECT_EQ(resp.bodyInMemory(), "");
+  EXPECT_FALSE(resp.headerValue(http::ContentType));
+  resp.bodyInlineAppend(16U, kAppendZeroOrOneABytes);
+  counter = 0;
+  EXPECT_EQ(resp.bodyInMemory(), "");
+  EXPECT_FALSE(resp.headerValue(http::ContentType));
+}
+
+TEST_F(HttpResponseTest, BodyAppendToCapturedBody) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::string{"captured"}, "text/captured");
+  EXPECT_EQ(resp.bodyInMemory(), "captured");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "8");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/captured");
+
+  resp.bodyAppend(" appended body", "");
+  EXPECT_EQ(resp.bodyInMemory(), "captured appended body");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "22");           // updated content-length
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/captured");  // unchanged since contentType was empty
+
+  resp.bodyAppend(" more", "text/more");
+  EXPECT_EQ(resp.bodyInMemory(), "captured appended body more");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "27");       // updated content-length
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/more");  // changed since contentType was provided
 }
 
 TEST_F(HttpResponseTest, BodyFromConstCharStar) {
@@ -716,6 +1258,51 @@ TEST_F(HttpResponseTest, BodyFromConstCharStar) {
 
   auto resp2 = HttpResponse(http::StatusCodeOK).body(nullPtr);
   EXPECT_EQ(resp2.bodyInMemory(), "");
+}
+
+TEST_F(HttpResponseTest, BodyFromSpanBytesRValue) {
+  auto resp = HttpResponse(http::StatusCodeOK)
+                  .body(std::span<const std::byte>(std::vector<std::byte>{
+                      std::byte{'W'}, std::byte{'o'}, std::byte{'r'}, std::byte{'l'}, std::byte{'d'}}));
+  EXPECT_EQ(resp.bodyInMemory(), "World");
+}
+
+TEST_F(HttpResponseTest, BodyFromUniquePtrByte) {
+  const char text[] = "UniquePtrByte";
+  auto bodyPtr = std::make_unique<std::byte[]>(sizeof(text));
+  for (std::size_t i = 0; i < sizeof(text); ++i) {
+    bodyPtr[i] = static_cast<std::byte>(text[i]);
+  }
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::move(bodyPtr), sizeof(text) - 1);
+  EXPECT_EQ(resp.bodyInMemory(), "UniquePtrByte");
+}
+
+TEST_F(HttpResponseTest, BodyFromUniquePtrByteRValue) {
+  const char text[] = "UniquePtrByteRValue";
+  auto bodyPtr = std::make_unique<std::byte[]>(sizeof(text));
+  for (std::size_t i = 0; i < sizeof(text); ++i) {
+    bodyPtr[i] = static_cast<std::byte>(text[i]);
+  }
+  auto resp = HttpResponse(http::StatusCodeOK).body(std::move(bodyPtr), sizeof(text) - 1);
+  EXPECT_EQ(resp.bodyInMemory(), "UniquePtrByteRValue");
+}
+
+TEST_F(HttpResponseTest, BodyFromUniquePtrChar) {
+  const char text[] = "UniquePtrChar";
+  auto bodyPtr = std::make_unique<char[]>(sizeof(text));
+  std::ranges::copy(text, bodyPtr.get());
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::move(bodyPtr), sizeof(text) - 1);
+  EXPECT_EQ(resp.bodyInMemory(), "UniquePtrChar");
+}
+
+TEST_F(HttpResponseTest, BodyFromUniquePtrCharRValue) {
+  const char text[] = "UniquePtrCharRValue";
+  auto bodyPtr = std::make_unique<char[]>(sizeof(text));
+  std::ranges::copy(text, bodyPtr.get());
+  auto resp = HttpResponse(http::StatusCodeOK).body(std::move(bodyPtr), sizeof(text) - 1);
+  EXPECT_EQ(resp.bodyInMemory(), "UniquePtrCharRValue");
 }
 
 TEST_F(HttpResponseTest, BodyFromVectorBytes) {
@@ -749,70 +1336,60 @@ TEST_F(HttpResponseTest, BodyFromVectorCharRValue) {
   EXPECT_EQ(resp.bodyInMemory(), "RValue");
 }
 
-TEST_F(HttpResponseTest, BodyFromUniquePtrChar) {
-  const char text[] = "UniquePtrChar";
-  auto bodyPtr = std::make_unique<char[]>(sizeof(text));
-  std::ranges::copy(text, bodyPtr.get());
+TEST_F(HttpResponseTest, BodyStaticBytes) {
+  static constexpr std::byte bodyBytes[]{std::byte{'S'}, std::byte{'t'}, std::byte{'a'},
+                                         std::byte{'t'}, std::byte{'i'}, std::byte{'c'}};
   HttpResponse resp(http::StatusCodeOK);
-  resp.body(std::move(bodyPtr), sizeof(text) - 1);
-  EXPECT_EQ(resp.bodyInMemory(), "UniquePtrChar");
+  resp.bodyStatic(std::span<const std::byte>(bodyBytes), "application/octet-stream");
+  EXPECT_EQ(resp.bodyInMemory(), "Static");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "application/octet-stream");
+  EXPECT_EQ(resp.headerValue(http::ContentLength), std::to_string(sizeof(bodyBytes)));
+
+  resp = HttpResponse{}.bodyStatic(std::span<const std::byte>(bodyBytes), "application/data");
+  EXPECT_EQ(resp.bodyInMemory(), "Static");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "application/data");
+  EXPECT_EQ(resp.headerValue(http::ContentLength), std::to_string(sizeof(bodyBytes)));
+
+  resp = HttpResponse{}.bodyStatic(std::span<const std::byte>{}, "text/empty");
+  EXPECT_EQ(resp.bodyInMemory(), "");
+  EXPECT_FALSE(resp.hasHeader(http::ContentType));
+  EXPECT_FALSE(resp.hasHeader(http::ContentLength));
 }
 
-TEST_F(HttpResponseTest, BodyFromUniquePtrCharRValue) {
-  const char text[] = "UniquePtrCharRValue";
-  auto bodyPtr = std::make_unique<char[]>(sizeof(text));
-  std::ranges::copy(text, bodyPtr.get());
-  auto resp = HttpResponse(http::StatusCodeOK).body(std::move(bodyPtr), sizeof(text) - 1);
-  EXPECT_EQ(resp.bodyInMemory(), "UniquePtrCharRValue");
-}
-
-TEST_F(HttpResponseTest, BodyFromUniquePtrByte) {
-  const char text[] = "UniquePtrByte";
-  auto bodyPtr = std::make_unique<std::byte[]>(sizeof(text));
-  for (std::size_t i = 0; i < sizeof(text); ++i) {
-    bodyPtr[i] = static_cast<std::byte>(text[i]);
-  }
+TEST_F(HttpResponseTest, BodyStaticSv) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.body(std::move(bodyPtr), sizeof(text) - 1);
-  EXPECT_EQ(resp.bodyInMemory(), "UniquePtrByte");
+  resp.bodyStatic("This is a static body", "text/static");
+  EXPECT_EQ(resp.bodyInMemory(), "This is a static body");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/static");
+  EXPECT_EQ(resp.headerValue(http::ContentLength), std::to_string(std::string_view("This is a static body").size()));
+
+  resp = HttpResponse{}.bodyStatic("Another static body, it's great because it does not allocate memory", "text/empty");
+  EXPECT_EQ(resp.bodyInMemory(), "Another static body, it's great because it does not allocate memory");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/empty");
+  EXPECT_EQ(
+      resp.headerValue(http::ContentLength),
+      std::to_string(std::string_view("Another static body, it's great because it does not allocate memory").size()));
+
+  resp = HttpResponse{}.bodyStatic("", "text/empty");
+  EXPECT_EQ(resp.bodyInMemory(), "");
+  EXPECT_FALSE(resp.hasHeader(http::ContentType));
+  EXPECT_FALSE(resp.hasHeader(http::ContentLength));
+
+  // Even for HEAD method, static body should not be visible
+  resp = MakePrepared(true, true).bodyStatic("Head method static body", "text/head");
+  EXPECT_EQ(resp.bodyInMemory(), "");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/head");
+
+  resp.bodyStatic("", "text/empty");
+  EXPECT_EQ(resp.bodyInMemory(), "");
+  EXPECT_FALSE(resp.hasHeader(http::ContentType));
+  EXPECT_FALSE(resp.hasHeader(http::ContentLength));
 }
 
-TEST_F(HttpResponseTest, BodyFromUniquePtrByteRValue) {
-  const char text[] = "UniquePtrByteRValue";
-  auto bodyPtr = std::make_unique<std::byte[]>(sizeof(text));
-  for (std::size_t i = 0; i < sizeof(text); ++i) {
-    bodyPtr[i] = static_cast<std::byte>(text[i]);
-  }
-  auto resp = HttpResponse(http::StatusCodeOK).body(std::move(bodyPtr), sizeof(text) - 1);
-  EXPECT_EQ(resp.bodyInMemory(), "UniquePtrByteRValue");
-}
-
-TEST_F(HttpResponseTest, LoopOnTrailers) {
-  HttpResponse resp("some body");
-  auto trailers = resp.trailers();
-
-  EXPECT_EQ(trailers.begin(), trailers.end());
-  resp.trailerAddLine("Header-1", "Value1");
-
-  trailers = resp.trailers();
-  EXPECT_EQ(std::distance(trailers.begin(), trailers.end()), 1);
-  EXPECT_EQ((*trailers.begin()).name, "Header-1");
-  EXPECT_EQ((*trailers.begin()).value, "Value1");
-
-  resp.trailerAddLine("Header-2", "Value2").trailerAddLine("Header-3", "Value3");
-
-  trailers = resp.trailers();
-  EXPECT_EQ(std::distance(trailers.begin(), trailers.end()), 3);
-  auto it = trailers.begin();
-  EXPECT_EQ((*it).name, "Header-1");
-  EXPECT_EQ((*it).value, "Value1");
-  ++it;
-  EXPECT_EQ((*it).name, "Header-2");
-  EXPECT_EQ((*it).value, "Value2");
-  ++it;
-  EXPECT_EQ((*it).name, "Header-3");
-  EXPECT_EQ((*it).value, "Value3");
-  EXPECT_EQ(++it, trailers.end());
+TEST_F(HttpResponseTest, FileWithClosedFileThrows) {
+  File file;  // default-constructed, closed
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_THROW(resp.file(std::move(file)), std::invalid_argument);
 }
 
 TEST_F(HttpResponseTest, HeadBodyWithoutGlobalHeaders) {
@@ -825,213 +1402,15 @@ TEST_F(HttpResponseTest, HeadBodyWithoutGlobalHeaders) {
   EXPECT_FALSE(full.contains("Hello, World!"));
 }
 
-TEST_F(HttpResponseTest, SimpleBodyWithoutGlobalHeaders) {
-  static constexpr std::size_t kMinCapturedBodySize[] = {1ULL, 13ULL, 4096ULL};
-  for (const auto minCapturedBodySize : kMinCapturedBodySize) {
-    HttpResponse resp;
-    resp.body(std::string("Hello, World!"));
-    EXPECT_FALSE(resp.hasBodyFile());
-    EXPECT_TRUE(resp.hasBody());
-    EXPECT_TRUE(resp.hasBodyCaptured());
-    auto full = concatenated(std::move(resp), {}, false, true, minCapturedBodySize);
-    EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
-    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
-    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "13")));
-    EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
-  }
-}
-
-TEST_F(HttpResponseTest, HeaderValuesAreTrimmedHeaderAddLine) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Trimmed-Header-1", "   Value1   ");
-  resp.headerAddLine("X-Trimmed-Header-2", "\tValue2\t");
-  resp.headerAddLine("X-Trimmed-Header-3", " \t  Value3 \t ");
-
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-1"), "Value1");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-2"), "Value2");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-3"), "Value3");
-}
-
-TEST_F(HttpResponseTest, HeaderValuesAreTrimmedHeaderSet) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.header("X-Trimmed-Header-1", "   Value1   ");
-  resp.header("X-Trimmed-Header-2", "\tValue2\t");
-  resp.header("X-Trimmed-Header-3", " \t  Value3 \t ");
-  resp.header("X-Trimmed-Header-3", " \t  Value33 \t ");
-
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-1"), "Value1");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-2"), "Value2");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-3"), "Value33");
-}
-
-TEST_F(HttpResponseTest, HeaderAppendValuesAreTrimmed) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.headerAppendValue("X-Trimmed-Header", "   Value1   ", ", ");
-  resp.headerAppendValue("X-Trimmed-Header", "\tValue2\t", ", ");
-  resp.headerAppendValue("X-Trimmed-Header", " \t  Value3 \t ", ", ");
-
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header"), "Value1, Value2, Value3");
-}
-
-TEST_F(HttpResponseTest, HeaderValueContentTypeAreTrimmed) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body("Some body", "   text/custom   ");
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/custom");
-
-  resp.bodyAppend(" More body", "\ttext/another\t");
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/another");
-
-  resp.bodyInlineSet(16U, kAppendZeroOrOneA, " \t  text/inline \t ");
-  resp.bodyInlineSet(16U, kAppendZeroOrOneA, " \t  text/inline \t ");
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/inline");
-
-  resp.bodyInlineAppend(16, kAppendZeroOrOneABytes, " \t  text/append \t ");
-  resp.bodyInlineAppend(16, kAppendZeroOrOneABytes, " \t  text/append \t ");
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/append");
-
-  resp.bodyStatic("Static body", "   text/static   ");
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/static");
-}
-
-TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
+TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  EXPECT_EQ(resp.reasonLength(), 2U);
-  EXPECT_EQ(resp.reason(), "OK");
-  EXPECT_TRUE(resp.hasReason());
-  EXPECT_EQ(resp.reasonSize(), resp.reasonLength());
-  resp.headerAddLine(http::ContentType, "text/plain").headerAddLine("X-A", "B").body("Hello");
+  resp.header("X-Val", "AA");
+  resp.body("Hello");                  // body length 5
+  resp.header("X-Val", "ABCDEFGHIJ");  // grow header value
   auto full = concatenated(std::move(resp));
-  ASSERT_GE(full.size(), 16U);
-  auto prefix = full.substr(0, 15);
-  EXPECT_EQ(prefix.substr(0, 8), "HTTP/1.1") << "Raw prefix: '" << std::string(prefix) << "'";
-  EXPECT_EQ(prefix.substr(8, 1), " ");
-  EXPECT_EQ(prefix.substr(9, 3), "200");
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
-  EXPECT_TRUE(full.contains("X-A: B\r\n"));
-  auto posBody = full.find("Hello");
-  ASSERT_NE(posBody, std::string_view::npos);
-  auto separator = full.substr(0, posBody);
-  EXPECT_TRUE(separator.contains(http::DoubleCRLF));
-}
-
-TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithoutHeaders) {
-  HttpResponse resp(200);
-  resp.reason("OK");
-  EXPECT_EQ(resp.reason(), "OK");
-  EXPECT_TRUE(resp.hasReason());
-  resp.status(404).reason("Not Found");
-  EXPECT_EQ(resp.reason(), "Not Found");
-  EXPECT_TRUE(resp.hasReason());
-  auto full = concatenated(std::move(resp));
-
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 404 Not Found\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
-
-TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
-  HttpResponse resp(404, http::NotFound);
-  EXPECT_EQ(resp.bodyInMemory(), http::NotFound);
-  resp = HttpResponse{}.status(200).reason("OK");
-  EXPECT_EQ(resp.reason(), "OK");
-  auto full = concatenated(std::move(resp));
-
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
-
-TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithHeaders) {
-  HttpResponse resp(200);
-  resp.reason("OK");
-  resp.headerAddLine("X-Header", 127);
-  resp.status(404);
-  resp.reason("Not Found");
-  EXPECT_EQ(resp.reason(), "Not Found");
-  auto full = concatenated(std::move(resp));
-
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 404 Not Found\r\n"));
-  EXPECT_TRUE(full.contains("X-Header: 127\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
-
-TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
-  auto resp = HttpResponse(404).reason("Not Found").headerAddLine("X-Header-1", "Value1");
-  resp.headerAddLine("X-Header-2", "Value2");
-  resp.status(200).reason("OK");
-  EXPECT_EQ(resp.reason(), "OK");
-  auto full = concatenated(std::move(resp));
-
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Header-1: Value1\r\n"));
-  EXPECT_TRUE(full.contains("X-Header-2: Value2\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
-
-TEST_F(HttpResponseTest, StatusReasonAndBodyAddReasonWithHeaders) {
-  auto resp = HttpResponse(200).headerAddLine("X-Header", 127);
-  resp.status(404);
-  resp.reason("Not Found");
-  EXPECT_EQ(resp.reason(), "Not Found");
-  auto full = concatenated(std::move(resp));
-
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 404 Not Found\r\n"));
-  EXPECT_TRUE(full.contains("X-Header: 127\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
-
-TEST_F(HttpResponseTest, StatusReasonAndBodyRemoveReasonWithHeaders) {
-  HttpResponse resp(404);
-  resp.reason("Not Found");
-  resp.headerAddLine("X-Header-1", "Value1");
-  resp.headerAddLine("X-Header-2", "Value2");
-  resp.status(200).reason("");
-  EXPECT_EQ(resp.reason(), "");
-  EXPECT_FALSE(resp.hasReason());
-  auto full = concatenated(std::move(resp));
-
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
-  EXPECT_TRUE(full.contains("X-Header-1: Value1\r\n"));
-  EXPECT_TRUE(full.contains("X-Header-2: Value2\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
-
-TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithBody) {
-  HttpResponse resp(200);
-  resp.reason("OK");
-  resp.body("Hello", "MySpecialContentType");
-  resp.status(404).reason("Not Found");
-  EXPECT_EQ(resp.reason(), "Not Found");
-  auto full = concatenated(std::move(resp));
-
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 404 Not Found\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "MySpecialContentType")));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "5")));
-  EXPECT_TRUE(full.ends_with("\r\n\r\nHello"));
-}
-
-TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
-  HttpResponse resp(http::StatusCodeNotFound);
-  resp.reason("Not Found");
-  resp.body("Hello");
-  resp.status(http::StatusCodeOK).reason("OK");
-  EXPECT_EQ(resp.reason(), "OK");
-  auto full = concatenated(std::move(resp));
-
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Val: ABCDEFGHIJ\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
@@ -1039,26 +1418,34 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
   EXPECT_TRUE(full.ends_with("\r\n\r\nHello"));
 }
 
-TEST_F(HttpResponseTest, AllowsDuplicates) {
-  HttpResponse resp;
-  resp.headerAddLine("X-Dup", "1").headerAddLine("X-Dup", "2");
+TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("X-Val", "LEN10VALUE");  // length 10
+  resp.body("Data");                   // length 4
+  resp.header("X-Val", "0123456789");  // same length replacement
   auto full = concatenated(std::move(resp));
-  auto first = full.find("X-Dup: 1\r\n");
-  auto second = full.find("X-Dup: 2\r\n");
-  ASSERT_NE(first, std::string_view::npos);
-  ASSERT_NE(second, std::string_view::npos);
-  EXPECT_LT(first, second);
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Val: 0123456789\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "4")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nData"));
 }
 
-TEST_F(HttpResponseTest, AllowsDuplicatesAfterResettingBody) {
-  HttpResponse resp(204, "No Content");
-  resp.headerAddLine("X-Dup", "1").headerAddLine("X-Dup", "2").body("");
+TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
+  auto resp = HttpResponse(http::StatusCodeOK).reason("OK").header("X-Val", "SOME-LONG-VALUE");
+  resp.body("WorldWide");     // length 9
+  resp.header("X-Val", "S");  // shrink header value
   auto full = concatenated(std::move(resp));
-  auto first = full.find("X-Dup: 1\r\n");
-  auto second = full.find("X-Dup: 2\r\n");
-  ASSERT_NE(first, std::string_view::npos);
-  ASSERT_NE(second, std::string_view::npos);
-  EXPECT_LT(first, second);
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains("X-Val: S\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "9")));
+  EXPECT_TRUE(full.ends_with("\r\n\r\nWorldWide"));
 }
 
 TEST_F(HttpResponseTest, ProperTermination) {
@@ -1074,31 +1461,51 @@ TEST_F(HttpResponseTest, SendFileEmptyShouldReturnNullptr) {
   EXPECT_EQ(resp.file(), nullptr);
 }
 
-TEST_F(HttpResponseTest, CannotSendFileAfterTrailers) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.body("some body");
-  resp.trailerAddLine("X-trailer", "value");
-  constexpr std::string_view kPayload = "static file payload";
-
+TEST_F(HttpResponseTest, SendFileHeadMovesFileAndSuppressesLength) {
+  constexpr std::string_view kPayload = "head sendfile payload move";
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, kPayload);
   File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+  const std::size_t sz = file.size();
 
-  EXPECT_THROW(resp.file(std::move(file)), std::logic_error);
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.file(std::move(file));
+
+  EXPECT_TRUE(resp.hasBodyFile());
+  EXPECT_TRUE(resp.hasBody());
+
+  auto prepared = finalizePrepared(std::move(resp), true /*head*/);
+  // The file should be moved out, but head suppresses payload length to 0
+  ASSERT_NE(prepared.getIfFilePayload(), nullptr);
+  EXPECT_EQ(prepared.fileLength(), 0U);
+  EXPECT_EQ(prepared.file().size(), sz);
+
+  std::string headers(prepared.firstBuffer());
+  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(sz))));
+  EXPECT_FALSE(headers.contains(http::TransferEncoding));
 }
 
-TEST_F(HttpResponseTest, SendInvalidFile) {
-  test::FileSyscallHookGuard guard;
-
+TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
+  static constexpr std::string_view kPayload = "head sendfile payload";
   test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp(tmpDir, "some-data");
+  test::ScopedTempFile tmp(tmpDir, kPayload);
   File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+  const std::size_t sz = file.size();
 
-  test::gFstatSizes.setActions(tmp.filePath().string(), {-1});
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.file(std::move(file));
 
-  auto resp = HttpResponse(http::StatusCodeOK, "OK");
-  EXPECT_THROW(resp.file(std::move(file)), std::invalid_argument);
+  auto prepared = finalizePrepared(std::move(resp), true /*head*/);
+  ASSERT_NE(prepared.getIfFilePayload(), nullptr);
+  EXPECT_EQ(prepared.fileLength(), 0U);
+
+  std::string headers(prepared.firstBuffer());
+  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(sz))));
+  EXPECT_FALSE(headers.contains(http::TransferEncoding));
 }
 
 TEST_F(HttpResponseTest, SendFilePayload) {
@@ -1194,515 +1601,32 @@ TEST_F(HttpResponseTest, SendFileZeroLengthPayload) {
   EXPECT_FALSE(headers.contains(http::TransferEncoding));
 }
 
-TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
-  static constexpr std::string_view kPayload = "head sendfile payload";
-  test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp(tmpDir, kPayload);
-  File file(tmp.filePath().string());
-  ASSERT_TRUE(file);
-  const std::size_t sz = file.size();
+TEST_F(HttpResponseTest, SetCapturedBodyEmptyFromUniquePtrShouldResetBodyAndRemoveContentType) {
+  for (bool head : {false, true}) {
+    auto resp = MakePrepared(head, head);
+    resp.reason("Longer Reason");
+    static constexpr const char text[] = "UniquePtrBody";
+    auto bodyPtr = std::make_unique<std::byte[]>(sizeof(text) - 1);
+    for (size_t i = 0; i < sizeof(text) - 1; ++i) {
+      bodyPtr[i] = static_cast<std::byte>(text[i]);
+    }
+    resp.body(std::move(bodyPtr), sizeof(text) - 1);
+    if (head) {
+      EXPECT_EQ(resp.bodyInMemory(), "");
+    } else {
+      EXPECT_EQ(resp.bodyInMemory(), "UniquePtrBody");
+    }
 
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.file(std::move(file));
-
-  auto prepared = finalizePrepared(std::move(resp), true /*head*/);
-  ASSERT_NE(prepared.getIfFilePayload(), nullptr);
-  EXPECT_EQ(prepared.fileLength(), 0U);
-
-  std::string headers(prepared.firstBuffer());
-  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(sz))));
-  EXPECT_FALSE(headers.contains(http::TransferEncoding));
-}
-
-TEST_F(HttpResponseTest, SendFileHeadMovesFileAndSuppressesLength) {
-  constexpr std::string_view kPayload = "head sendfile payload move";
-  test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp(tmpDir, kPayload);
-  File file(tmp.filePath().string());
-  ASSERT_TRUE(file);
-  const std::size_t sz = file.size();
-
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.file(std::move(file));
-
-  EXPECT_TRUE(resp.hasBodyFile());
-  EXPECT_TRUE(resp.hasBody());
-
-  auto prepared = finalizePrepared(std::move(resp), true /*head*/);
-  // The file should be moved out, but head suppresses payload length to 0
-  ASSERT_NE(prepared.getIfFilePayload(), nullptr);
-  EXPECT_EQ(prepared.fileLength(), 0U);
-  EXPECT_EQ(prepared.file().size(), sz);
-
-  std::string headers(prepared.firstBuffer());
-  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(sz))));
-  EXPECT_FALSE(headers.contains(http::TransferEncoding));
-}
-
-TEST_F(HttpResponseTest, FileWithClosedFileThrows) {
-  File file;  // default-constructed, closed
-  HttpResponse resp(http::StatusCodeOK);
-  EXPECT_THROW(resp.file(std::move(file)), std::invalid_argument);
-}
-
-TEST_F(HttpResponseTest, FileOffsetExceedsSizeThrows) {
-  static constexpr std::string_view kPayload = "small";
-  test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp(tmpDir, kPayload);
-  File file(tmp.filePath().string());
-  ASSERT_TRUE(file);
-  HttpResponse resp(http::StatusCodeOK);
-  EXPECT_THROW(resp.file(std::move(file), static_cast<std::size_t>(kPayload.size() + 1), 0), std::invalid_argument);
-}
-
-TEST_F(HttpResponseTest, FileOffsetPlusLengthExceedsSizeThrows) {
-  static constexpr std::string_view kPayload = "12345";
-  test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp(tmpDir, kPayload);
-  File file(tmp.filePath().string());
-  ASSERT_TRUE(file);
-  HttpResponse resp(http::StatusCodeOK);
-  // offset 3, length 5 -> 8 > size(5)
-  EXPECT_THROW(resp.file(std::move(file), 3, 5), std::invalid_argument);
-}
-
-TEST_F(HttpResponseTest, CapturedBodyWithTrailersAppendsFinalCRLF) {
-  // Create a captured body larger than minCapturedBodySize (4096) so it remains external
-  std::string bigBody(5000, 'x');
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body(std::move(bigBody));
-  resp.trailerAddLine("X-Custom-Trail", "trail-value");
-
-  // Finalize and inspect the serialized response which concatenates head + external payload
-  auto prepared = finalizePrepared(std::move(resp));
-  std::string tail(prepared.secondBuffer());
-
-  // The external payload (tail) should contain the body followed by the trailer line and a terminating CRLF
-  EXPECT_TRUE(tail.contains("X-Custom-Trail: trail-value\r\n"));
-  EXPECT_TRUE(tail.size() >= 2 && tail.substr(tail.size() - 2) == "\r\n");
-}
-
-TEST_F(HttpResponseTest, HeaderValueFindsLastHeader) {
-  HttpResponse resp(http::StatusCodeOK);
-  // Add multiple headers and ensure headerValue finds the last one when searching
-  resp.headerAddLine("X-A", "one");
-  resp.headerAddLine("X-B", "two");
-  resp.headerAddLine("X-C", "three");
-
-  EXPECT_EQ(resp.headerValue("X-C").value_or(""), "three");
-  EXPECT_EQ(resp.headerValue("X-D"), std::nullopt);
-  EXPECT_TRUE(resp.hasHeader("X-C"));
-  EXPECT_FALSE(resp.hasHeader("X-D"));
-}
-
-TEST_F(HttpResponseTest, SingleTerminatingCRLF) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.headerAddLine("X-Header", "v1");
-  auto full = concatenated(std::move(resp));
-  ASSERT_TRUE(full.size() >= 4);
-  EXPECT_EQ(full.substr(full.size() - 4), http::DoubleCRLF);
-  EXPECT_TRUE(full.contains("X-Header: v1"));
-}
-
-TEST_F(HttpResponseTest, ReplaceDifferentSizes) {
-  HttpResponse resp1(http::StatusCodeOK, "OK");
-  resp1.headerAddLine("X-A", "1").body("Hello");
-  HttpResponse resp2(http::StatusCodeOK, "OK");
-  resp2.headerAddLine("X-A", "1").body("Hello");
-  HttpResponse resp3(http::StatusCodeOK, "OK");
-  resp3.headerAddLine("X-A", "1").body("Hello");
-  auto firstFull = concatenated(std::move(resp1));
-  auto firstLen = firstFull.size();
-  resp2.body("WorldWide");
-  auto secondFull = concatenated(std::move(resp2));
-  EXPECT_GT(secondFull.size(), firstLen);
-  EXPECT_TRUE(secondFull.contains("WorldWide"));
-  resp3.body("Yo");
-  auto thirdFull = concatenated(std::move(resp3));
-  EXPECT_TRUE(thirdFull.contains("Yo"));
-}
-
-TEST_F(HttpResponseTest, HeaderNewViaSetter) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-First", "One");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-First: One\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
-
-TEST_F(HttpResponseTest, HeaderReplaceLargerValue) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-Replace", "AA");
-  // Replace with larger value
-  resp.header("X-Replace", "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Replace: ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
-
-TEST_F(HttpResponseTest, HeaderReplaceSmallerValue) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-Replace", "LONG-LONG-VALUE");
-  // Replace with smaller
-  resp.header("X-Replace", "S");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Replace: S\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
-
-TEST_F(HttpResponseTest, HeaderReplaceSameLengthValue) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-Replace", "LEN10VALUE");  // length 10
-  resp.header("X-Replace", "0123456789");  // also length 10
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Replace: 0123456789\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
-
-// Ensure replacement logic does not mistake key pattern inside a value as a header start.
-TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternLarger) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-Key", "before X-Key: should-not-trigger");
-  // Replace header; algorithm must not treat the embedded "X-Key: " in the value as another header start
-  resp.header("X-Key", "REPLACED-VALUE");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Key: REPLACED-VALUE\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
-
-TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-Key", "AAAA X-Key: B BBBBBB");
-  resp.header("X-Key", "SMALL");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Key: SMALL\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
-
-// --- New tests: header replacement while a body is present ---
-
-TEST_F(HttpResponseTest, LocationHeader) {
-  HttpResponse resp(http::StatusCodeFound);
-  resp.reason("Found");
-  resp.location("http://example.com/new-location");
-  resp.body("Redirecting...");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 302 Found\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Location, "http://example.com/new-location")));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "14")));
-  EXPECT_TRUE(full.ends_with("\r\n\r\nRedirecting..."));
-}
-
-TEST_F(HttpResponseTest, LocationHeaderRValue) {
-  auto resp = HttpResponse(http::StatusCodeFound)
-                  .reason("Found")
-                  .location("https://another.example.com/redirect-here")
-                  .body("Please wait...");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 302 Found\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Location, "https://another.example.com/redirect-here")));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "14")));
-  EXPECT_TRUE(full.ends_with("\r\n\r\nPlease wait..."));
-}
-
-TEST_F(HttpResponseTest, ContentEncodingHeader) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.contentEncoding("gzip");
-  resp.body("CompressedData");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentEncoding, "gzip")));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "14")));
-  EXPECT_TRUE(full.ends_with("\r\n\r\nCompressedData"));
-}
-
-TEST_F(HttpResponseTest, ContentEncodingHeaderRValue) {
-  auto resp = HttpResponse(http::StatusCodeOK).reason("OK").contentEncoding("deflate").body("DeflatedData");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentEncoding, "deflate")));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "12")));
-  EXPECT_TRUE(full.ends_with("\r\n\r\nDeflatedData"));
-}
-
-TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-Val", "AA");
-  resp.body("Hello");                  // body length 5
-  resp.header("X-Val", "ABCDEFGHIJ");  // grow header value
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Val: ABCDEFGHIJ\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "5")));
-  EXPECT_TRUE(full.ends_with("\r\n\r\nHello"));
-}
-
-TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
-  auto resp = HttpResponse(http::StatusCodeOK).reason("OK").header("X-Val", "SOME-LONG-VALUE");
-  resp.body("WorldWide");     // length 9
-  resp.header("X-Val", "S");  // shrink header value
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Val: S\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "9")));
-  EXPECT_TRUE(full.ends_with("\r\n\r\nWorldWide"));
-}
-
-TEST_F(HttpResponseTest, AppendHeaderValueAppendsToExistingHeader) {
-  auto resp = HttpResponse(http::StatusCodeOK, "OK").header("X-Custom", "value1");
-  resp.headerAppendValue("X-Custom", "value2");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-Custom: value1, value2\r\n")) << full;
-}
-
-TEST_F(HttpResponseTest, AppendHeaderValueCreatesHeaderWhenMissing) {
-  auto resp = HttpResponse(http::StatusCodeOK, "OK").headerAppendValue("X-Missing", "v1");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-Missing: v1\r\n")) << full;
-}
-
-TEST_F(HttpResponseTest, AppendHeaderValueHonorsCustomSeparator) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-List", "first");
-  resp.headerAppendValue("X-List", "second", "; ");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-List: first; second\r\n")) << full;
-}
-
-TEST_F(HttpResponseTest, AppendHeaderValueEmptySeparator) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-List", "first");
-  resp.headerAppendValue("X-List", "second", "");
-
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-List: firstsecond\r\n")) << full;
-}
-
-TEST_F(HttpResponseTest, AppendHeaderValueEmptyValue) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-List", "first");
-  resp.headerAppendValue("X-List", "", ", ");
-
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-List: first, \r\n")) << full;
-}
-
-TEST_F(HttpResponseTest, AppendHeaderValueEmptyValueAndSeparator) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-List", "first");
-  resp.headerAppendValue("X-List", "", "");
-
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-List: first\r\n")) << full;
-}
-
-TEST_F(HttpResponseTest, AppendHeaderValueSupportsNumericOverload) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-Numeric", "1");
-  resp.headerAppendValue("X-Numeric", 42, "|");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-Numeric: 1|42\r\n")) << full;
-}
-
-TEST_F(HttpResponseTest, AppendHeaderValueKeepsBodyIntact) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-Trace", "alpha");
-  resp.body("payload");
-  resp.headerAppendValue("X-Trace", "beta");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-Trace: alpha, beta\r\n")) << full;
-  EXPECT_TRUE(full.ends_with("payload")) << full;
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "7"))) << full;
-}
-
-TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-Val", "LEN10VALUE");  // length 10
-  resp.body("Data");                   // length 4
-  resp.header("X-Val", "0123456789");  // same length replacement
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Val: 0123456789\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "4")));
-  EXPECT_TRUE(full.ends_with("\r\n\r\nData"));
-}
-
-TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-Custom", "Value");
-  resp.body("BodyContent");
-  resp.trailerAddLine("X-Trailer", "TrailerValue1");
-  resp.trailerAddLine("X-Trailer-2", "TrailerValue-2");
-
-  static constexpr bool kHead = false;
-  static constexpr bool kAddTrailerHeader = true;
-
-  auto prepared = finalizePrepared(std::move(resp), {}, kHead, kAddTrailerHeader, true, kMinCapturedBodySize);
-  std::string all(prepared.firstBuffer());
-  all.append(prepared.secondBuffer());
-
-  EXPECT_TRUE(all.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Custom", "Value")));
-  // When trailers are present, body is chunked encoded per RFC 7230 §4.1.2
-  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
-  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine(http::Trailer, "X-Trailer, X-Trailer-2")));
-  EXPECT_FALSE(all.contains(http::ContentLength));
-  // Body should be in chunked format: "b\r\nBodyContent\r\n0\r\n" (b = 11 in hex)
-  EXPECT_TRUE(all.contains("b\r\nBodyContent\r\n0\r\n"));
-  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Trailer", "TrailerValue1")));
-  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Trailer-2", "TrailerValue-2")));
-  EXPECT_FALSE(all.contains(MakeHttp1HeaderLine(http::Connection, http::close)));
-  EXPECT_FALSE(all.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
-  EXPECT_TRUE(all.contains(kExpectedDateRaw));
-}
-
-TEST_F(HttpResponseTest, GlobalHeadersShouldNotOverrideUserHeaders) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-Global", "UserValue");
-  ConcatenatedHeaders globalHeaders;
-  globalHeaders.append("X-Global: GlobalValue");
-  globalHeaders.append("X-Another: AnotherValue");
-  resp.reason("Some Reason");
-  auto full = concatenated(std::move(resp), globalHeaders);
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 Some Reason\r\n"));
-  EXPECT_TRUE(full.contains("X-Global: UserValue\r\n"));
-  EXPECT_TRUE(full.contains("X-Another: AnotherValue\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
-
-TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("X-Val", "LEN10VALUE");  // length 10
-  resp.body("Data");                   // length 4
-  resp.header("x-val", "0123456789");  // same length replacement
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Val: 0123456789\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "4")));
-  EXPECT_TRUE(full.ends_with("\r\n\r\nData"));
-}
-
-TEST_F(HttpResponseTest, HeaderGetterAfterSet) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  // Mix of headers to exercise several lookup cases:
-  // - customHeader replaces case-insensitively
-  // - addCustomHeader allows duplicates (first occurrence should be returned by headerValue)
-  // - empty value is a present-but-empty header
-  resp.header("X-Simple", "hello");
-  resp.headerAddLine("X-Dup", "1");
-  resp.headerAddLine("X-Dup", "2");
-  // Replace X-Simple with different casing (should replace existing header)
-  resp.header("x-simple", "HELLO2");
-  // Present but empty value
-  resp.header("X-Empty", "");
-
-  // headerValue should see the replaced value (case-insensitive replace)
-  auto opt = resp.headerValue("X-Simple");
-  EXPECT_EQ(opt.value_or(""), "HELLO2");
-
-  // duplicate headers: headerValue returns the first occurrence
-  auto dup = resp.headerValue("X-Dup");
-  EXPECT_EQ(dup.value_or(""), "1");
-
-  // empty-but-present header: headerValue returns an empty string_view but present
-  auto emptyOpt = resp.headerValue("X-Empty");
-  EXPECT_EQ(emptyOpt.value_or("something"), std::string_view{});
-
-  // missing header should return nullopt via headerValue and empty view via headerValueOrEmpty
-  auto missing = resp.headerValue("No-Such-Header");
-  EXPECT_FALSE(missing.has_value());
-  EXPECT_EQ(resp.headerValueOrEmpty("No-Such-Header"), std::string_view{});
-}
-
-// Interleaved reason/header mutations stress test:
-// 1. Start with empty reason
-// 2. Append two headers
-// 3. Add longer reason
-// 4. Replace first header with larger value
-// 5. Shrink reason to empty
-// 6. Replace header with smaller value
-// 7. Finalize and assert exact layout
-TEST_F(HttpResponseTest, InterleavedReasonAndHeaderMutations) {
-  HttpResponse resp(http::StatusCodeOK, "");
-  resp.headerAddLine("X-A", "1");
-  resp.headerAddLine("X-B", "2");
-  resp.reason("LONGER-REASON");
-  resp.header("X-a", "LARGER-VALUE-123");
-  resp.reason("");
-  resp.header("x-A", "S");
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
-  EXPECT_TRUE(full.contains("X-A: S\r\n"));
-  EXPECT_TRUE(full.contains("X-B: 2\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+    EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
+    resp.body(std::make_unique<char[]>(0), 0);  // set empty body
+    EXPECT_EQ(resp.bodyInMemory(), "");
+    EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
+    auto full = concatenated(std::move(resp), {}, head);
+    EXPECT_TRUE(full.starts_with("HTTP/1.1 200 Longer Reason\r\n"));
+    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+    EXPECT_TRUE(full.contains(kExpectedDateRaw));
+    EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+  }
 }
 
 TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeString) {
@@ -1715,22 +1639,6 @@ TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentType
   EXPECT_EQ(resp.bodyInMemory(), "");
   EXPECT_FALSE(resp.hasBodyFile());
   EXPECT_FALSE(resp.hasBody());
-  EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
-
-TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeVectorBytes) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.body("Non-empty body");
-  EXPECT_EQ(resp.bodyInMemory(), "Non-empty body");
-  EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
-  resp.body(std::vector<std::byte>{});  // set empty body
-  EXPECT_EQ(resp.bodyInMemory(), "");
   EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
@@ -1761,35 +1669,221 @@ TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentType
   }
 }
 
-TEST_F(HttpResponseTest, SetCapturedBodyEmptyFromUniquePtrShouldResetBodyAndRemoveContentType) {
-  for (bool head : {false, true}) {
-    auto resp = MakePrepared(head, head);
-    resp.reason("Longer Reason");
-    static constexpr const char text[] = "UniquePtrBody";
-    auto bodyPtr = std::make_unique<std::byte[]>(sizeof(text) - 1);
-    for (size_t i = 0; i < sizeof(text) - 1; ++i) {
-      bodyPtr[i] = static_cast<std::byte>(text[i]);
-    }
-    resp.body(std::move(bodyPtr), sizeof(text) - 1);
-    if (head) {
-      EXPECT_EQ(resp.bodyInMemory(), "");
-    } else {
-      EXPECT_EQ(resp.bodyInMemory(), "UniquePtrBody");
-    }
+TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeVectorBytes) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.body("Non-empty body");
+  EXPECT_EQ(resp.bodyInMemory(), "Non-empty body");
+  EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
+  resp.body(std::vector<std::byte>{});  // set empty body
+  EXPECT_EQ(resp.bodyInMemory(), "");
+  EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+  EXPECT_TRUE(full.contains(kExpectedDateRaw));
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+}
 
-    EXPECT_TRUE(resp.headerValue(http::ContentType).has_value());
-    resp.body(std::make_unique<char[]>(0), 0);  // set empty body
-    EXPECT_EQ(resp.bodyInMemory(), "");
-    EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
-    auto full = concatenated(std::move(resp), {}, head);
-    EXPECT_TRUE(full.starts_with("HTTP/1.1 200 Longer Reason\r\n"));
-    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-    EXPECT_TRUE(full.contains(kExpectedDateRaw));
-    EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
+TEST_F(HttpResponseTest, SetInlineBodyFromWriterCharPtrDefaultContentType) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.bodyInlineSet(8U, kAppendZeroOrOneA);
+  EXPECT_FALSE(resp.headerValue(http::ContentType));
+  EXPECT_EQ(resp.bodyInMemory(), "");
+  resp.bodyInlineSet(8U, kAppendZeroOrOneA, "text/custom");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/custom");
+  EXPECT_EQ(resp.bodyInMemory(), "A");
+  resp.bodyInlineSet(8U, kAppendZeroOrOneABytes);
+  EXPECT_FALSE(resp.headerValue(http::ContentType));
+  EXPECT_EQ(resp.bodyInMemory(), "");
+
+  resp.bodyInlineSet(8U, kAppendZeroOrOneABytes, "text/custom");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/custom");
+  EXPECT_EQ(resp.bodyInMemory(), "A");
+
+  // should be ok after captured payload
+  resp.body(std::string{"captured body"}, "text/captured");
+  resp.bodyInlineSet(8U, kAppendZeroOrOneA);
+  resp.bodyInlineSet(8U, kAppendZeroOrOneA);
+  EXPECT_EQ(resp.bodyInMemory(), "A");
+  resp.bodyInlineSet(8U, kAppendZeroOrOneABytes);
+  resp.bodyInlineSet(8U, kAppendZeroOrOneABytes);
+  EXPECT_EQ(resp.bodyInMemory(), "A");
+}
+
+TEST_F(HttpResponseTest, SetInlineBodyFromWriterEmptyWriteNoContentType) {
+  HttpResponse resp(http::StatusCodeOK);
+  // writer that writes nothing - should not add any content type header
+  resp.bodyInlineSet(8U, kAppendZeroOrOneA);
+  counter = 0;
+  resp.bodyInlineSet(8U, kAppendZeroOrOneABytes);
+  counter = 0;
+  EXPECT_EQ(resp.bodyInMemory(), "");
+  EXPECT_FALSE(resp.headerValue(http::ContentType));
+}
+
+TEST_F(HttpResponseTest, SeveralBodyAppend) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.bodyAppend("Some body data that takes roughly 50 characters.\n", "text/plain");
+  EXPECT_EQ(resp.bodyInMemory(), "Some body data that takes roughly 50 characters.\n");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/plain");
+  EXPECT_EQ(resp.headerValue(http::ContentLength), "49");
+  resp.bodyAppend(" Additional data to be appended");
+  EXPECT_EQ(resp.bodyInMemory(), "Some body data that takes roughly 50 characters.\n Additional data to be appended");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/plain");
+  EXPECT_EQ(resp.headerValue(http::ContentLength), "80");
+  resp.bodyAppend(
+      " And some more to reach more than 100 characters in total. Lorem ipsum dolor sit amet, "
+      "consectetur adipiscing elit.",
+      "text/custom");
+  EXPECT_EQ(resp.bodyInMemory(),
+            "Some body data that takes roughly 50 characters.\n Additional data to be appended And some more to reach "
+            "more than 100 characters in total. Lorem ipsum dolor sit amet, consectetur adipiscing elit.");
+  EXPECT_EQ(resp.bodyLength(), 195UL);
+  EXPECT_EQ(resp.bodySize(), 195UL);
+  EXPECT_EQ(resp.bodyInMemoryLength(), 195UL);
+  EXPECT_EQ(resp.bodyInMemorySize(), 195UL);
+  EXPECT_EQ(resp.bodyInlinedLength(), 195UL);
+  EXPECT_EQ(resp.bodyInlinedSize(), 195UL);
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/custom");
+  EXPECT_EQ(resp.headerValue(http::ContentLength), "195");
+}
+
+TEST_F(HttpResponseTest, SimpleBodyWithoutGlobalHeaders) {
+  static constexpr std::size_t kMinCapturedBodySize[] = {1ULL, 13ULL, 4096ULL};
+  for (const auto minCapturedBodySize : kMinCapturedBodySize) {
+    HttpResponse resp;
+    resp.body(std::string("Hello, World!"));
+    EXPECT_FALSE(resp.hasBodyFile());
+    EXPECT_TRUE(resp.hasBody());
+    EXPECT_TRUE(resp.hasBodyCaptured());
+    auto full = concatenated(std::move(resp), {}, false, true, minCapturedBodySize);
+    EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
+    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "13")));
+    EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
   }
 }
 
-// ---------------- Additional Stress / Fuzz Tests ----------------
+TEST_F(HttpResponseTest, SingleTerminatingCRLF) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.headerAddLine("X-Header", "v1");
+  auto full = concatenated(std::move(resp));
+  ASSERT_TRUE(full.size() >= 4);
+  EXPECT_EQ(full.substr(full.size() - 4), http::DoubleCRLF);
+  EXPECT_TRUE(full.contains("X-Header: v1"));
+}
+
+// =============================================================================
+// TRAILERS TESTS
+// =============================================================================
+
+TEST_F(HttpResponseTest, AddTrailerAfterEmptyBodyThrows) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("");
+  // Explicitly-empty body should still be considered 'no body' for trailers
+  EXPECT_THROW(resp.trailerAddLine("X-Checksum", "abc123"), std::logic_error);
+}
+
+TEST_F(HttpResponseTest, AddTrailerWithoutBodyThrows) {
+  HttpResponse resp(http::StatusCodeOK);
+  // No body set at all -> adding trailer should throw
+  EXPECT_THROW(resp.trailerAddLine("X-Checksum", "abc123"), std::logic_error);
+}
+
+TEST_F(HttpResponseTest, AppendBodyAfterTrailersShouldThrow) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("some body");
+  resp.trailerAddLine("X-Trailer", "value");
+  EXPECT_THROW(resp.bodyInlineAppend(16U, kAppendZeroOrOneA), std::logic_error);
+  EXPECT_THROW(resp.bodyInlineAppend(1U, kAppendZeroOrOneABytes), std::logic_error);
+}
+
+TEST_F(HttpResponseTest, AppendBodyFromStringAfterTrailersIsLogicError) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("some body");
+  resp.trailerAddLine("X-Trailer", "value");
+  EXPECT_THROW(resp.bodyAppend("additional body"), std::logic_error);
+}
+
+TEST_F(HttpResponseTest, CannotSendFileAfterTrailers) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.body("some body");
+  resp.trailerAddLine("X-trailer", "value");
+  constexpr std::string_view kPayload = "static file payload";
+
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
+  File file(tmp.filePath().string());
+
+  EXPECT_THROW(resp.file(std::move(file)), std::logic_error);
+}
+
+TEST_F(HttpResponseTest, CapturedBodyWithTrailersAppendsFinalCRLF) {
+  // Create a captured body larger than minCapturedBodySize (4096) so it remains external
+  std::string bigBody(5000, 'x');
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::move(bigBody));
+  resp.trailerAddLine("X-Custom-Trail", "trail-value");
+
+  // Finalize and inspect the serialized response which concatenates head + external payload
+  auto prepared = finalizePrepared(std::move(resp));
+  std::string tail(prepared.secondBuffer());
+
+  // The external payload (tail) should contain the body followed by the trailer line and a terminating CRLF
+  EXPECT_TRUE(tail.contains("X-Custom-Trail: trail-value\r\n"));
+  EXPECT_TRUE(tail.size() >= 2 && tail.substr(tail.size() - 2) == "\r\n");
+}
+
+TEST_F(HttpResponseTest, LoopOnTrailers) {
+  HttpResponse resp("some body");
+  auto trailers = resp.trailers();
+
+  EXPECT_EQ(trailers.begin(), trailers.end());
+  resp.trailerAddLine("Header-1", "Value1");
+
+  trailers = resp.trailers();
+  EXPECT_EQ(std::distance(trailers.begin(), trailers.end()), 1);
+  EXPECT_EQ((*trailers.begin()).name, "Header-1");
+  EXPECT_EQ((*trailers.begin()).value, "Value1");
+
+  resp.trailerAddLine("Header-2", "Value2").trailerAddLine("Header-3", "Value3");
+
+  trailers = resp.trailers();
+  EXPECT_EQ(std::distance(trailers.begin(), trailers.end()), 3);
+  auto it = trailers.begin();
+  EXPECT_EQ((*it).name, "Header-1");
+  EXPECT_EQ((*it).value, "Value1");
+  ++it;
+  EXPECT_EQ((*it).name, "Header-2");
+  EXPECT_EQ((*it).value, "Value2");
+  ++it;
+  EXPECT_EQ((*it).name, "Header-3");
+  EXPECT_EQ((*it).value, "Value3");
+  EXPECT_EQ(++it, trailers.end());
+}
+
+TEST_F(HttpResponseTest, SetBodyAfterTrailerThrows) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("initial");
+  resp.trailerAddLine("X-Test", "val");
+  // Once a trailer was inserted, setting body later must throw
+  EXPECT_THROW(resp.body("later"), std::logic_error);
+}
+
+TEST_F(HttpResponseTest, SetInlineBodyFromWriterShouldThrowAfterTrailers) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body("some body");
+  resp.trailerAddLine("X-Trailer", "value");
+  EXPECT_THROW(resp.bodyInlineSet(8U, kAppendZeroOrOneA), std::logic_error);
+  EXPECT_THROW(resp.bodyInlineSet(8U, kAppendZeroOrOneABytes), std::logic_error);
+}
+
+// =============================================================================
+// OTHER TESTS
+// =============================================================================
 
 TEST_F(HttpResponseTest, RepeatedGrowShrinkCycles) {
   HttpResponse resp(http::StatusCodeOK, "");
@@ -1825,64 +1919,9 @@ TEST_F(HttpResponseTest, RepeatedGrowShrinkCycles) {
   EXPECT_TRUE(full.ends_with("\r\n\r\nEND"));
 }
 
-// --- Trailer-related tests (response-side) ---
-
-TEST_F(HttpResponseTest, AddTrailerWithoutBodyThrows) {
-  HttpResponse resp(http::StatusCodeOK);
-  // No body set at all -> adding trailer should throw
-  EXPECT_THROW(resp.trailerAddLine("X-Checksum", "abc123"), std::logic_error);
-}
-
-TEST_F(HttpResponseTest, AddTrailerAfterEmptyBodyThrows) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body("");
-  // Explicitly-empty body should still be considered 'no body' for trailers
-  EXPECT_THROW(resp.trailerAddLine("X-Checksum", "abc123"), std::logic_error);
-}
-
-TEST_F(HttpResponseTest, SetBodyAfterTrailerThrows) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body("initial");
-  resp.trailerAddLine("X-Test", "val");
-  // Once a trailer was inserted, setting body later must throw
-  EXPECT_THROW(resp.body("later"), std::logic_error);
-}
-
-TEST_F(HttpResponseTest, LargeHeaderCountStress) {
-  constexpr int kCount = 600;
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  for (int i = 0; i < kCount; ++i) {
-    resp.headerAddLine("X-" + std::to_string(i), std::to_string(i));
-  }
-  auto full = concatenated(std::move(resp));
-  ASSERT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  // Count custom headers (exclude Date/Connection)
-  auto pos = full.find(http::CRLF) + 2;  // after status line CRLF
-  int userHeaders = 0;
-  std::string datePrefix(http::Date);
-  datePrefix += ": ";
-
-  std::string connectionPrefix(http::Connection);
-  connectionPrefix += ": ";
-  while (pos < full.size()) {
-    auto lineEnd = full.find(http::CRLF, pos);
-    ASSERT_NE(lineEnd, std::string_view::npos);
-    if (lineEnd == pos) {
-      pos += 2;
-      break;
-    }
-    auto line = full.substr(pos, lineEnd - pos);
-    if (!line.starts_with(datePrefix) && !line.starts_with(connectionPrefix)) {
-      ++userHeaders;
-    }
-    pos = lineEnd + 2;
-  }
-  EXPECT_EQ(userHeaders, kCount);
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
-  EXPECT_TRUE(full.contains(kExpectedDateRaw));
-  EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
-}
+// =============================================================================
+// FUZZ / VALIDATION TESTS - Testing many things together
+// =============================================================================
 
 namespace {  // local helpers for fuzz test
 struct ParsedResponse {
@@ -2015,6 +2054,7 @@ auto ExpectedGlobalHeaderValues(const HttpResponse& resp, const ConcatenatedHead
   }
   return expected;
 }
+
 }  // namespace
 
 TEST_F(HttpResponseTest, RandomGlobalHeadersApplyOnce) {
