@@ -64,8 +64,12 @@ std::string_view HttpPayload::view() const noexcept {
   return std::visit(
       [](auto const& val) -> std::string_view {
         using T = std::decay_t<decltype(val)>;
-        if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::string_view> ||
-                      std::is_same_v<T, RawChars>) {
+        if constexpr (std::is_same_v<T, std::string_view>) {
+          if (val.data() == nullptr) {
+            return {};
+          }
+          return val;
+        } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, RawChars>) {
           return val;
         } else if constexpr (std::is_same_v<T, std::vector<char>>) {
           return std::string_view(val.data(), val.size());
