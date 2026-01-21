@@ -76,7 +76,7 @@ constexpr void InitData(char* data) {
   data[http::HTTP10Sv.size()] = ' ';
   data[HttpResponse::kReasonBeg] = '\n';  // marker for no reason
 #ifndef NDEBUG
-  // In debug, this allows for easier inspection of the response data.
+  // In debug, this allows for easier inspection of the response data before finalization.
   http::HTTP_1_1.writeFull(data);
   WriteCRLFDateHeader(data + kStatusLineMinLenWithoutCRLF, SysClock::now());
 #endif
@@ -96,15 +96,18 @@ constexpr std::string_view kTransferEncodingChunkedCRLF =
     JoinStringView_v<http::TransferEncoding, http::HeaderSep, http::chunked, http::CRLF>;
 constexpr std::string_view kEndChunkedBody = "\r\n0\r\n";
 
-constexpr void Copy(std::string_view sv, char* dst) noexcept { std::memcpy(dst, sv.data(), sv.size()); }
+constexpr void Copy(std::string_view sv, char* dst) noexcept {
+  assert(!sv.empty());
+  std::memcpy(dst, sv.data(), sv.size());
+}
 
 // Using std::memcpy for better performance
-[[nodiscard]] constexpr char* Append(std::string_view sv, char* dst) {
+[[nodiscard]] constexpr char* Append(std::string_view sv, char* dst) noexcept {
   Copy(sv, dst);
   return dst + sv.size();
 }
 
-// Returns the size difference between the new Transfer-Encoding: chunked header.
+// Returns the size difference between the new Transfer-Encoding: chunked header and Content-Length header.
 // For very large payloads, this can be negative, as Content-Length can be larger than
 // Transfer-Encoding: chunked.
 constexpr int64_t TransferEncodingHeaderSizeDiff(std::size_t bodySz) {
@@ -274,7 +277,9 @@ bool HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
 
   const auto diff = static_cast<int64_t>(newValue.size()) - static_cast<int64_t>(oldHeaderValueSz);
   if (diff == 0) {
-    Copy(newValue, valueFirst);
+    if (!newValue.empty()) {
+      Copy(newValue, valueFirst);
+    }
     return true;
   }
 
@@ -285,7 +290,9 @@ bool HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
   }
 
   std::memmove(valueFirst + newValue.size(), valueFirst + oldHeaderValueSz, _data.size() - valuePos - oldHeaderValueSz);
-  Copy(newValue, valueFirst);
+  if (!newValue.empty()) {
+    Copy(newValue, valueFirst);
+  }
 
   // Works even if diff is negative, the unsigned value will overflow and have a resulting value of exactly sz - diff.
   // In C++, unsigned overflow is well-defined.
@@ -370,9 +377,23 @@ HttpResponse& HttpResponse::bodyAppend(std::string_view body, std::string_view c
       throw std::logic_error("Cannot append to a captured file body");
     }
     if (hasBodyCaptured()) {
+      const auto oldBodyLen = _payloadVariant.size();
+      const auto newBodyLen = oldBodyLen + body.size();
+      const auto nCharsOldBodyLen = nchars(oldBodyLen);
+      const auto nCharsNewBodyLen = nchars(newBodyLen);
+
+      int64_t neededCapacity = nCharsNewBodyLen - nCharsOldBodyLen;
       if (!contentType.empty()) {
-        setHeader(http::ContentType, contentType);
+        char* pContentTypeValuePtr = getContentTypeValuePtr(static_cast<std::size_t>(nCharsOldBodyLen));
+        const auto it =
+            std::search(pContentTypeValuePtr, _data.data() + _data.size(), http::CRLF.begin(), http::CRLF.end());
+        assert(it != _data.data() + _data.size());
+        const std::size_t oldContentTypeValueSize = static_cast<std::size_t>(it - pContentTypeValuePtr);
+        neededCapacity += static_cast<int64_t>(contentType.size()) - static_cast<int64_t>(oldContentTypeValueSize);
       }
+      _data.ensureAvailableCapacity(neededCapacity);
+      bodyAppendUpdateHeaders(contentType, http::ContentTypeTextPlain, newBodyLen);
+
       _payloadVariant.append(body);
     } else {
       const bool setContentTypeIfPresent = !contentType.empty();
@@ -592,7 +613,7 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
   Date: Tue, 12 Jan 2026 10:15:30 GMT\r\n
   Content-Type: text/plain\r\n
   Transfer-Encoding: chunked\r\n
-  Trailer: Expires, Digest\r\n     <-- SHOULD, but not MUST, be present if trailers are used. TODO: implement this
+  Trailer: Expires, Digest\r\n
   \r\n
   7\r\n
   Mozilla\r\n
@@ -716,7 +737,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
           // Move \r\n\r\n to its final place
           std::memmove(headersInsertPtr + totalNewHeadersSize, headersInsertPtr, http::DoubleCRLF.size());
         }
-        auto bodyAndTrailersView = _payloadVariant.view();
+        const auto bodyAndTrailersView = _payloadVariant.view();
         Copy(bodyAndTrailersView, oldBodyStart + totalNewHeadersSize);
 
         _data.addSize(bodySz);
@@ -953,7 +974,6 @@ void HttpResponse::replaceHeaderValueNoRealloc(char* first, std::string_view new
   }
   // This function is only called to set reserved headers Content-Length (which is never empty) and Content-Type
   // (which we never set to empty, it would be rejected by a std::invalid_argument).
-  assert(!newValue.empty());
   Copy(newValue, first);
 }
 

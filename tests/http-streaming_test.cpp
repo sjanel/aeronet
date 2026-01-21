@@ -1311,3 +1311,101 @@ TEST(HttpStreamingMakeResponse, PrefillsGlobalHeadersHttp11) {
   EXPECT_TRUE(resp.contains("X-Stream: yes"));
   EXPECT_TRUE(resp.contains("stream-body"));
 }
+
+// Test chunked request body with Expect: 100-continue header.
+// Verifies the server correctly sends 100 Continue before reading the chunked body.
+TEST(HttpStreaming, ChunkedRequestWithExpect100Continue) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = false; });
+
+  ts.router().setPath(http::Method::POST, "/chunked-expect",
+                      [](const HttpRequest& req) { return HttpResponse(req.body()); });
+
+  test::ClientConnection cnx(port);
+  int fd = cnx.fd();
+
+  // Send headers first with Expect: 100-continue
+  std::string headers =
+      "POST /chunked-expect HTTP/1.1\r\n"
+      "Host: test\r\n"
+      "Transfer-Encoding: chunked\r\n"
+      "Expect: 100-continue\r\n"
+      "Connection: close\r\n\r\n";
+  test::sendAll(fd, headers);
+
+  // Wait for 100 Continue interim response
+  std::string interim = test::recvWithTimeout(fd, std::chrono::milliseconds(200));
+  ASSERT_TRUE(interim.contains("100 Continue")) << "Expected 100 Continue response, got: " << interim;
+
+  // Now send the chunked body
+  std::string chunkedBody =
+      "5\r\nhello\r\n"
+      "6\r\n world\r\n"
+      "0\r\n\r\n";
+  test::sendAll(fd, chunkedBody);
+
+  // Collect final response
+  std::string full = interim + test::recvUntilClosed(fd);
+  EXPECT_TRUE(full.contains("HTTP/1.1 200")) << "Expected 200 OK response, got: " << full;
+  EXPECT_TRUE(full.contains("hello world")) << "Expected echoed body, got: " << full;
+}
+
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
+// Test chunked request with malformed Content-Encoding header.
+// When decompression is enabled, a malformed Content-Encoding (e.g., empty token)
+// should be rejected with 400 Bad Request during chunked body decoding.
+TEST(HttpStreaming, ChunkedRequestWithMalformedContentEncodingRejects400) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.enableKeepAlive = false;
+    cfg.decompression = {};  // Enable decompression with defaults
+  });
+
+  ts.router().setPath(http::Method::POST, "/chunked-bad-encoding",
+                      [](const HttpRequest& req) { return HttpResponse(req.body()); });
+
+  test::ClientConnection cnx(port);
+  int fd = cnx.fd();
+
+  // Send chunked request with malformed Content-Encoding (double comma = empty token)
+  std::string req =
+      "POST /chunked-bad-encoding HTTP/1.1\r\n"
+      "Host: test\r\n"
+      "Transfer-Encoding: chunked\r\n"
+      "Content-Encoding: identity,,identity\r\n"
+      "Connection: close\r\n\r\n"
+      "3\r\nabc\r\n"
+      "0\r\n\r\n";
+  test::sendAll(fd, req);
+
+  std::string resp = test::recvUntilClosed(fd);
+  EXPECT_TRUE(resp.contains("HTTP/1.1 400"))
+      << "Expected 400 Bad Request for malformed Content-Encoding, got: " << resp;
+}
+
+// Test chunked request with empty Content-Encoding header value.
+TEST(HttpStreaming, ChunkedRequestWithEmptyContentEncodingRejects400) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.enableKeepAlive = false;
+    cfg.decompression = {};  // Enable decompression with defaults
+  });
+
+  ts.router().setPath(http::Method::POST, "/chunked-empty-encoding",
+                      [](const HttpRequest& req) { return HttpResponse(req.body()); });
+
+  test::ClientConnection cnx(port);
+  int fd = cnx.fd();
+
+  // Send chunked request with empty Content-Encoding header value
+  std::string req =
+      "POST /chunked-empty-encoding HTTP/1.1\r\n"
+      "Host: test\r\n"
+      "Transfer-Encoding: chunked\r\n"
+      "Content-Encoding: \r\n"
+      "Connection: close\r\n\r\n"
+      "3\r\nxyz\r\n"
+      "0\r\n\r\n";
+  test::sendAll(fd, req);
+
+  std::string resp = test::recvUntilClosed(fd);
+  EXPECT_TRUE(resp.contains("HTTP/1.1 400")) << "Expected 400 Bad Request for empty Content-Encoding, got: " << resp;
+}
+#endif

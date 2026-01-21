@@ -431,6 +431,24 @@ TEST_F(HttpResponseTest, AppendBodyFromStringAfterTrailersIsLogicError) {
   EXPECT_THROW(resp.bodyAppend("additional body"), std::logic_error);
 }
 
+TEST_F(HttpResponseTest, BodyAppendToCapturedBody) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::string{"captured"}, "text/captured");
+  EXPECT_EQ(resp.bodyInMemory(), "captured");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "8");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/captured");
+
+  resp.bodyAppend(" appended body", "");
+  EXPECT_EQ(resp.bodyInMemory(), "captured appended body");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "22");           // updated content-length
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/captured");  // unchanged since contentType was empty
+
+  resp.bodyAppend(" more", "text/more");
+  EXPECT_EQ(resp.bodyInMemory(), "captured appended body more");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "27");       // updated content-length
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/more");  // changed since contentType was provided
+}
+
 TEST_F(HttpResponseTest, AppendBodyAfterFileCapturedIsLogicError) {
   HttpResponse resp(http::StatusCodeOK);
   test::ScopedTempDir tmpDir;
@@ -473,6 +491,15 @@ TEST_F(HttpResponseTest, AppendBodyInlineStringView) {
   HttpResponse resp(http::StatusCodeOK);
   resp.bodyAppend(std::string_view("hello"));
   EXPECT_EQ(resp.bodyInMemory(), "hello");
+  // Check content-length and content-type headers
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "5");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/plain");
+
+  resp.bodyAppend(std::string_view(" world"), "text/greeting");
+  EXPECT_EQ(resp.bodyInMemory(), "hello world");
+  // Check content-length and content-type headers
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "11");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/greeting");
 }
 
 TEST_F(HttpResponseTest, BodyStaticSv) {
@@ -503,6 +530,11 @@ TEST_F(HttpResponseTest, BodyStaticBytes) {
   EXPECT_EQ(resp.bodyInMemory(), "Static");
   EXPECT_EQ(resp.headerValue(http::ContentType), "application/data");
   EXPECT_EQ(resp.headerValue(http::ContentLength), std::to_string(sizeof(bodyBytes)));
+
+  resp = HttpResponse{}.bodyStatic(std::span<const std::byte>{}, "text/empty");
+  EXPECT_EQ(resp.bodyInMemory(), "");
+  EXPECT_FALSE(resp.hasHeader(http::ContentType));
+  EXPECT_FALSE(resp.hasHeader(http::ContentLength));
 }
 
 TEST_F(HttpResponseTest, AppendBodyCapturedStringView) {
@@ -541,6 +573,13 @@ TEST_F(HttpResponseTest, AppendBodyBytesSpan) {
   resp.bodyAppend(std::span<const std::byte>{vec}, "text/another2");
   EXPECT_EQ(resp.bodyInMemory(), "XYXY");
   EXPECT_EQ(resp.headerValue(http::ContentType), "text/another2");
+  EXPECT_EQ(resp.headerValue(http::ContentLength), "4");
+
+  while (resp.bodyInMemoryLength() != 10) {
+    resp.bodyAppend(std::span<const std::byte>(vec));
+  }
+  EXPECT_EQ(resp.bodyInMemory(), "XYXYXYXYXY");
+  EXPECT_EQ(resp.headerValue(http::ContentLength), "10");
 }
 
 TEST_F(HttpResponseTest, AppendBodyRvalueSpanBytesDefaultContentType) {
@@ -630,6 +669,15 @@ TEST_F(HttpResponseTest, AppendBodyCStrRvalue) {
   auto resp =
       HttpResponse(http::StatusCodeOK).bodyAppend("Hello, C-String!").bodyAppend(static_cast<const char*>(nullptr));
   EXPECT_EQ(resp.bodyInMemory(), "Hello, C-String!");
+}
+
+TEST_F(HttpResponseTest, AppendToCapturedBody) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::string("Body"), "text/captured");
+  resp.bodyAppend(" plus appended part");
+  EXPECT_EQ(resp.bodyInMemory(), "Body plus appended part");
+  EXPECT_EQ(resp.headerValue(http::ContentType), "text/captured");
+  EXPECT_EQ(resp.headerValue(http::ContentLength), "23");
 }
 
 TEST_F(HttpResponseTest, BodyFromSpanBytesRValue) {
@@ -813,8 +861,8 @@ TEST_F(HttpResponseTest, HeaderValueContentTypeAreTrimmed) {
   resp.bodyInlineSet(16U, kAppendZeroOrOneA, " \t  text/inline \t ");
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/inline");
 
-  resp.bodyInlineAppend(16, kAppendZeroOrOneA, " \t  text/append \t ");
-  resp.bodyInlineAppend(16, kAppendZeroOrOneA, " \t  text/append \t ");
+  resp.bodyInlineAppend(16, kAppendZeroOrOneABytes, " \t  text/append \t ");
+  resp.bodyInlineAppend(16, kAppendZeroOrOneABytes, " \t  text/append \t ");
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/append");
 
   resp.bodyStatic("Static body", "   text/static   ");
@@ -2557,7 +2605,6 @@ TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_MultipleHeadersAndValue
 
 TEST_F(HttpResponseTest, FinalizationCombinations) {
   static constexpr std::size_t kMinCapturedBodySz[] = {1UL, 4096UL};
-  static constexpr bool kBools[] = {true, false};
   static constexpr std::string_view kConcatenatedGlobalHeaders[] = {"", "server: aeronet\r\n",
                                                                     "x-custom: value\r\nx-another: another-value\r\n"};
 
@@ -2577,11 +2624,11 @@ TEST_F(HttpResponseTest, FinalizationCombinations) {
       gh.append(tmp.substr(0, crlfPos));
       tmp.remove_prefix(crlfPos + http::CRLF.size());
     }
-    for (bool isPrepared : kBools) {
-      for (bool knownAddTrailerAtConstruction : kBools) {
-        for (bool head : kBools) {
-          for (bool keepAlive : kBools) {
-            for (bool addTrailerHeader : kBools) {
+    for (bool isPrepared : {true, false}) {
+      for (bool knownAddTrailerAtConstruction : {true, false}) {
+        for (bool head : {true, false}) {
+          for (bool keepAlive : {true, false}) {
+            for (bool addTrailerHeader : {true, false}) {
               for (std::size_t minCapturedBodySz : kMinCapturedBodySz) {
                 // Captured body
                 HttpResponse resp = MakePrepared(isPrepared, gh);
