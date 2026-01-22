@@ -10,9 +10,9 @@ using namespace aeronet;
 // A simple awaitable that suspends and immediately resumes, just to demonstrate co_await mechanics.
 // In a real application, this would be an async I/O operation, a database query, or a timer.
 struct Yield {
-  static bool await_ready() noexcept { return false; }
-  static void await_suspend(std::coroutine_handle<> handle) noexcept { handle.resume(); }
-  static void await_resume() noexcept {}
+  bool await_ready() const noexcept { return false; }
+  void await_suspend(std::coroutine_handle<> handle) const noexcept { handle.resume(); }
+  void await_resume() const noexcept {}
 };
 
 int main(int argc, char** argv) {

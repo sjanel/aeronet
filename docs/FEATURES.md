@@ -215,6 +215,85 @@ Notes and implementation details
 - [ ] Benchmarks & profiling docs
 - [x] Zero-copy sendfile() support for static files
 
+### Memory Management & std::string_view Safety
+
+**aeronet** extensively uses `std::string_view` throughout its API for zero-copy performance. This approach is safe because of careful buffer lifetime management:
+
+#### Per-Connection Buffer Lifetime
+
+- Each connection maintains its own read buffer (`inBuffer`) for incoming data read from the socket
+- All request data (headers, path, query parameters, body) is stored in this per-connection buffer
+- The `HttpRequest` object is populated with `std::string_view` instances that point directly into this buffer
+- URL decoding (for query parameters) is performed in-place on the buffer, which is safe because URL decoding can only shrink the data
+
+#### Lifetime Guarantees
+
+**Critical safety guarantee**: The connection buffer remains valid and unchanged for the entire duration of the request handler execution. This means:
+
+- All `std::string_view` members of `HttpRequest` (path, query params, headers, body) are safe to use throughout your handler
+- The buffer is only deallocated after the handler completes and the connection processing finishes
+- For keep-alive connections, the buffer is reused for subsequent requests, but only after the previous handler has fully completed
+
+#### Connection Object Caching
+
+To avoid frequent memory allocations and deallocations:
+
+- Connection objects (including their buffers) are cached and reused via a configurable caching system
+- When a connection closes, the connection object may be cached for reuse with future connections
+- This optimization is transparent to handlers - lifetime guarantees remain unchanged
+
+#### Why This Pattern Is Safe
+
+Using `std::string_view` extensively would typically be an anti-pattern due to dangling reference risks. However, in **aeronet**'s architecture:
+
+1. The single-threaded event loop per server instance eliminates concurrency concerns
+2. Synchronous handler execution ensures the buffer cannot be modified during handler execution
+3. The per-connection buffer design provides clear ownership boundaries
+4. For asynchronous handlers awaiting body data, the server automatically copies head data (path, query params, headers) into a pinned buffer via `pinHeadStorage()`, so these views remain valid across suspensions
+
+#### Best Practices for Handlers
+
+✅ **Safe**: Use `std::string_view` from `HttpRequest` directly in synchronous handlers:
+
+```cpp
+Router router;
+router.setPath(http::Method::GET, "/api/user/{id}", [](const HttpRequest& req) {
+  auto idIt = req.pathParams().find("id");
+  std::string_view userId = idIt->second; // Safe - points into connection buffer
+  // Use userId throughout handler
+  // processUser(userId)...
+  return HttpResponse("User ID: " + std::string(userId));
+});
+```
+
+✅ **Safe**: Use head data (path, query params, headers) in async handlers — the server pins this data automatically when the handler needs to await the body:
+
+```cpp
+Router router;
+router.setPath(http::Method::GET, "/api/async", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+  std::string_view body = co_await req.bodyAwaitable(); // safe to use request data after await
+  co_return HttpResponse(200).body(std::string(body));
+});
+```
+
+⚠️ **Requires care**: If you have the strange need to store `std::string_view` for use outside the handler scope (e.g., in a cache or callback), copy the data:
+
+```cpp
+// Example: storing data for later use outside the handler
+std::string storedUserId;  // external storage
+Router router;
+router.setPath(http::Method::GET, "/api/store", [&](const HttpRequest& req) {
+  for (const auto& [k, v] : req.queryParams()) {
+    // process query params...
+    if (k == "id") {
+      // Copy the value to external storage to ensure safety
+      storedUserId = std::string(v); // Copy required for external storage
+    }
+  }
+  return HttpResponse(200);
+});
+```
+
 ### Safety / robustness
 
 - [x] Configurable header/body limits
