@@ -147,11 +147,6 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    tchars_test
-    test/tchars_test.cpp
-)
-
-AeronetAddUnitTest(
     url-encode-decode_test
     test/url-encode-decode_test.cpp
     LIBRARIES

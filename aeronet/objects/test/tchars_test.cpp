@@ -1,4 +1,3 @@
-// Tests for RFC7230 tchar classification helper.
 #include "aeronet/tchars.hpp"
 
 #include <gtest/gtest.h>
@@ -6,6 +5,8 @@
 #include <ios>
 #include <string>
 #include <string_view>
+
+// Tests for RFC7230 tchar classification helper.
 
 namespace aeronet {
 

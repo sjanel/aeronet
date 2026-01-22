@@ -15,7 +15,8 @@ All notable changes to aeronet are documented in this file.
 - Minor validation enforcement: `HttpServerConfig::globalHeaders` now MUST be key value separated by `http::HeaderSep`.
 - Removed `telemetryContext()` methods from `HttpServer` and `SingleHttpServer`. You can construct a custom `TelemetryContext` instead if needed.
 - Telemetry metric methods (including `DogStatsD` ones) are no more `const` qualified
-- Now check at runtime if header name about to be inserted in a response is valid, otherwise throws `std::invalid_argument`
+- Check at runtime if header name and value about to be inserted in a response are valid, otherwise throws `std::invalid_argument`
+- HttpResponse constructor with concatenated headers throws `std::invalid_argument` if expected format is not respected.
 
 ### Improvements
 
