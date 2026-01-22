@@ -16,7 +16,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-header.hpp"
+#include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
@@ -144,10 +144,49 @@ constexpr char* ReplaceContentLengthWithTransferEncoding(char* insertPtr, std::s
   return insertPtr - http::CRLF.size();
 }
 
+constexpr std::string_view CheckContentType(bool isBodyEmpty, std::string_view contentType) {
+  contentType = TrimOws(contentType);
+  if (!isBodyEmpty && (contentType.empty() || !http::IsValidHeaderValue(contentType))) [[unlikely]] {
+    throw std::invalid_argument("HTTP content-type header value is invalid");
+  }
+  return contentType;
+}
+
+constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
+  const char* first = concatenatedHeaders.data();
+  const char* last = first + concatenatedHeaders.size();
+
+  while (first < last) {
+    const char* headerNameEnd = std::search(first, last, http::HeaderSep.begin(), http::HeaderSep.end());
+    if (headerNameEnd == last) {
+      throw std::invalid_argument("header missing http::HeaderSep separator in concatenated headers");
+    }
+
+    std::string_view headerName(first, headerNameEnd);
+    if (!http::IsValidHeaderName(headerName)) {
+      throw std::invalid_argument("Invalid header name in concatenated headers");
+    }
+    first += headerName.size() + http::HeaderSep.size();
+
+    const char* endLine = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
+    if (endLine == last) {
+      throw std::invalid_argument("header missing CRLF terminator in concatenated headers");
+    }
+
+    std::string_view headerValue(first, endLine);
+    if (!http::IsValidHeaderValue(headerValue)) {
+      throw std::invalid_argument("Invalid header value in concatenated headers");
+    }
+
+    first = endLine + http::CRLF.size();
+  }
+}
+
 }  // namespace
 
-HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::string_view contentType)
-    : _data(kHttpResponseInitialSize + NeededBodyHeadersSize(body.size(), contentType.size()) + body.size()) {
+HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::string_view contentType) {
+  contentType = CheckContentType(body.empty(), contentType);
+  _data.reserve(kHttpResponseInitialSize + NeededBodyHeadersSize(body.size(), contentType.size()) + body.size());
   InitData(_data.data());
   status(code);
   setHeadersStartPos(static_cast<std::uint16_t>(kStatusLineMinLenWithoutCRLF));
@@ -178,10 +217,13 @@ HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code
 }
 
 HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
-                           std::string_view body, std::string_view contentType)
-    : _data(kHttpResponseInitialSize + concatenatedHeaders.size() +
-            NeededBodyHeadersSize(body.size(), contentType.size()) + body.size() + additionalCapacity) {
-  assert(concatenatedHeaders.empty() || concatenatedHeaders.ends_with(http::CRLF));
+                           std::string_view body, std::string_view contentType, Check check) {
+  contentType = CheckContentType(body.empty(), contentType);
+  if (check == Check::Yes) {
+    CheckConcatenatedHeaders(concatenatedHeaders);
+  }
+  _data.reserve(kHttpResponseInitialSize + concatenatedHeaders.size() +
+                NeededBodyHeadersSize(body.size(), contentType.size()) + body.size() + additionalCapacity);
   InitData(_data.data());
   status(code);
   setHeadersStartPos(static_cast<std::uint16_t>(kStatusLineMinLenWithoutCRLF));
@@ -302,7 +344,7 @@ bool HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
 }
 
 namespace {
-inline void SetBodyEnsureNoTrailers(std::size_t trailerLen) {
+constexpr void SetBodyEnsureNoTrailers(std::size_t trailerLen) {
   if (trailerLen != 0) [[unlikely]] {
     throw std::logic_error("Cannot set body after the first trailer");
   }
@@ -313,10 +355,7 @@ inline void SetBodyEnsureNoTrailers(std::size_t trailerLen) {
 void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize,
                                   bool setContentTypeIfPresent) {
   SetBodyEnsureNoTrailers(_trailerLen);
-  contentTypeValue = TrimOws(contentTypeValue);
-  if (contentTypeValue.empty() && newBodySize != 0) [[unlikely]] {
-    throw std::invalid_argument("Content-Type value cannot be empty for non-empty body");
-  }
+  contentTypeValue = CheckContentType(newBodySize == 0, contentTypeValue);
 
   const auto oldBodyLen = bodyLength();
   if (newBodySize == 0) {
@@ -384,6 +423,9 @@ HttpResponse& HttpResponse::bodyAppend(std::string_view body, std::string_view c
 
       int64_t neededCapacity = nCharsNewBodyLen - nCharsOldBodyLen;
       if (!contentType.empty()) {
+        if (!http::IsValidHeaderValue(contentType)) [[unlikely]] {
+          throw std::invalid_argument("HTTP content-type header value is invalid");
+        }
         char* pContentTypeValuePtr = getContentTypeValuePtr(static_cast<std::size_t>(nCharsOldBodyLen));
         const auto it =
             std::search(pContentTypeValuePtr, _data.data() + _data.size(), http::CRLF.begin(), http::CRLF.end());
@@ -405,6 +447,8 @@ HttpResponse& HttpResponse::bodyAppend(std::string_view body, std::string_view c
 
       if (contentType.empty()) {
         contentType = http::ContentTypeTextPlain;
+      } else if (!http::IsValidHeaderValue(contentType)) [[unlikely]] {
+        throw std::invalid_argument("HTTP content-type header value is invalid");
       }
 
       setBodyHeaders(contentType, internalBodyAndTrailersLen() + body.size(), setContentTypeIfPresent);
@@ -440,7 +484,7 @@ HttpResponse& HttpResponse::file(File fileObj, std::size_t offset, std::size_t l
   if (contentType.empty()) {
     setHeader(http::ContentType, fileObj.detectedContentType());
   } else {
-    setHeader(http::ContentType, contentType);
+    setHeader(http::ContentType, CheckContentType(false, contentType));
   }
   // If file is empty, we emit on purpose Content-Length: 0 and no body.
   // This is to distinguish an empty file response from a response with no body at all.
@@ -526,6 +570,9 @@ HttpResponse& HttpResponse::headerAddLine(std::string_view key, std::string_view
   assert(!CaseInsensitiveEqual(key, http::Date));
   if (!http::IsValidHeaderName(key)) [[unlikely]] {
     throw std::invalid_argument("HTTP header name is invalid");
+  }
+  if (!http::IsValidHeaderValue(value)) [[unlikely]] {
+    throw std::invalid_argument("HTTP header value is invalid");
   }
 
   value = TrimOws(value);
@@ -613,6 +660,9 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
   assert(!http::IsForbiddenTrailerHeader(name));
   if (!http::IsValidHeaderName(name)) [[unlikely]] {
     throw std::invalid_argument("Invalid trailer header name");
+  }
+  if (!http::IsValidHeaderValue(value)) [[unlikely]] {
+    throw std::invalid_argument("HTTP header value is invalid");
   }
   if (!hasBodyInMemory()) [[unlikely]] {
     throw std::logic_error("Trailers must be added after non empty (nor file) body is set");
@@ -741,7 +791,6 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
     // bodies we still erase the inline bytes.
     if (isHeadMethod && !hasBodyFile()) {
       if (_trailerLen != 0 && addTrailerHeader) {
-        assert(isHeadMethod);
         // Strategy: we will override Content-Length header with Trailer header, so that we know we will not override
         // trailers themselves during the append. At the end, we will append the Content-Length header back.
         std::size_t trailerHeaderValueSize = 0;

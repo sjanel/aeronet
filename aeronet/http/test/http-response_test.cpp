@@ -183,6 +183,21 @@ TEST_F(HttpResponseTest, ConstructorWithBody) {
   EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
 }
 
+TEST_F(HttpResponseTest, ConstructorWithConcatenatedHeadersBadFormat) {
+  static constexpr std::string_view kBadConcatenatedHeaders[] = {
+      "HeaderWithoutSep\r\n",
+      "HeaderWithNoValue: \r\nAnotherHeaderWithoutSep\r\n",
+      "HeaderWithNoCRLF: Value",
+      "NotUsingHeaderSep:Value",
+      "Invalid Header Name!: Value\r\n",
+      "Valid-Header: Invalid\x01Value\r\n",
+  };
+
+  for (std::string_view badHeaders : kBadConcatenatedHeaders) {
+    EXPECT_THROW(HttpResponse(0, 200, badHeaders), std::invalid_argument);
+  }
+}
+
 TEST_F(HttpResponseTest, HttpPartsSizes) {
   HttpResponse resp("Hello, World!");
 
@@ -543,6 +558,22 @@ TEST_F(HttpResponseTest, InsertingInvalidHeaderNameShouldThrow) {
   EXPECT_THROW(resp.header("", "value"), std::invalid_argument);
 }
 
+TEST_F(HttpResponseTest, InsertingInvalidHeaderValueShouldThrow) {
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_THROW(resp.headerAddLine("X-Test", "value\r\n"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAddLine("X-Test", "value\x7F"), std::invalid_argument);
+
+  EXPECT_THROW(resp.headerAppendValue("X-Test", "value\r\n"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAppendValue("X-Test", "value\x7F"), std::invalid_argument);
+
+  resp.body("some body");
+  EXPECT_THROW(resp.trailerAddLine("X-Trailer", "value\r\n"), std::invalid_argument);
+  EXPECT_THROW(resp.trailerAddLine("X-Trailer", "value\x7F"), std::invalid_argument);
+
+  EXPECT_THROW(resp.header("X-Test", "value\r\n"), std::invalid_argument);
+  EXPECT_THROW(resp.header("X-Test", "value\x7F"), std::invalid_argument);
+}
+
 TEST_F(HttpResponseTest, AllowsDuplicates) {
   HttpResponse resp;
   resp.headerAddLine("X-Dup", "1").headerAddLine("X-Dup", "2");
@@ -646,6 +677,16 @@ TEST_F(HttpResponseTest, EmptyContentTypeIsDisallowed) {
   HttpResponse resp(http::StatusCodeOK);
   EXPECT_THROW(resp.body("some body", ""), std::invalid_argument);
   EXPECT_NO_THROW(resp.body("", ""));  // empty body with empty content type is allowed
+}
+
+TEST_F(HttpResponseTest, InvalidContentTypeIsDisallowed) {
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_THROW(resp.body("some body", "text/\x7Fplain"), std::invalid_argument);
+  EXPECT_THROW(resp.body("some body", "text/\r\nplain"), std::invalid_argument);
+
+  EXPECT_THROW(resp.bodyAppend("some body", "text/\r\nplain"), std::invalid_argument);
+  resp.body(std::string("captured body"));
+  EXPECT_THROW(resp.bodyAppend("some body", "text/\x7Fplain"), std::invalid_argument);
 }
 
 TEST_F(HttpResponseTest, FileOffsetExceedsSizeThrows) {
@@ -1027,6 +1068,12 @@ TEST_F(HttpResponseTest, AppendBodyAfterCapturedPayloadShouldThrow) {
   resp.body(std::string{"some body"}, "text/captured");
   EXPECT_THROW(resp.bodyInlineAppend(16U, kAppendZeroOrOneA), std::logic_error);
   EXPECT_THROW(resp.bodyInlineAppend(1U, kAppendZeroOrOneABytes), std::logic_error);
+}
+
+TEST_F(HttpResponseTest, AppendBodyInvalidContentTypeShouldThrow) {
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_THROW(resp.bodyInlineAppend(16U, kAppendZeroOrOneA, "\x7F"), std::invalid_argument);
+  EXPECT_THROW(resp.bodyInlineAppend(1U, kAppendZeroOrOneABytes, "\x7F"), std::invalid_argument);
 }
 
 TEST_F(HttpResponseTest, AppendBodyAfterFileCapturedIsLogicError) {
@@ -1720,6 +1767,12 @@ TEST_F(HttpResponseTest, SetInlineBodyFromWriterEmptyWriteNoContentType) {
   counter = 0;
   EXPECT_EQ(resp.bodyInMemory(), "");
   EXPECT_FALSE(resp.headerValue(http::ContentType));
+}
+
+TEST_F(HttpResponseTest, BodyInlineSetInvalidContentTypeThrows) {
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_THROW(resp.bodyInlineSet(8U, kAppendZeroOrOneA, "\x7F"), std::invalid_argument);
+  EXPECT_THROW(resp.bodyInlineSet(8U, kAppendZeroOrOneABytes, "\x7F"), std::invalid_argument);
 }
 
 TEST_F(HttpResponseTest, SeveralBodyAppend) {
