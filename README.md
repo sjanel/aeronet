@@ -276,6 +276,12 @@ Key characteristics:
 - You can modify most of its **configuration safely at runtime** via `postConfigUpdate()` and `postRouterUpdate()`.
 - Graceful draining is available via `beginDrain(std::chrono::milliseconds maxWait = 0)`: it stops accepting new connections, lets in-flight responses finish with `Connection: close`, and optionally enforces a deadline before forcing the remaining connections to close.
 
+##### Memory Management & std::string_view Safety
+
+**aeronet**'s API extensively uses `std::string_view` for zero-copy performance. This is safe because each connection maintains its own buffer, and all `HttpRequest` data (path, query params, headers, body) consists of `std::string_view` instances pointing into this per-connection buffer. The buffer remains valid for the entire duration of the handler execution, making all request data safe to access without copies.
+
+For detailed information about buffer lifetime guarantees and best practices (especially for coroutines), see [Memory Management & std::string_view Safety](docs/FEATURES.md#memory-management--stdstring_view-safety).
+
 ##### Configuration
 
 All configuration of the `SingleHttpServer` is applied per **server instance** (the server **owns** its configuration).

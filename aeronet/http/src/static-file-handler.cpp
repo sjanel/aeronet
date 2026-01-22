@@ -778,7 +778,8 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     return resp;
   }
 
-  // TODO: is it possible to make only one system call to open file and get its size/metadata?
+  // Note: Two syscalls required - open() returns fd only, fstat() needed for size/metadata.
+  // POSIX provides no combined operation.
   const std::size_t fileSize = file.size();
   if (fileSize == File::kError) {
     resp.body("Unable to read file size\n");
