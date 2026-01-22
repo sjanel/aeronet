@@ -240,6 +240,7 @@ TEST(ZstdEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIteratio
   static constexpr std::size_t kChunkSize = 1UL;  // small to force multiple iterations; encoder will grow as needed
 #endif
   CompressionConfig cfg;
+  cfg.zstd.windowLog = 15;
   ZstdEncoder encoder(buf, cfg);
   auto ctx = encoder.makeContext();
   RawChars compressed;
