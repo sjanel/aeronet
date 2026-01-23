@@ -3,6 +3,7 @@ option(AERONET_BENCH_ENABLE_OATPP "Fetch and build oatpp for comparative benchma
 option(AERONET_BENCH_ENABLE_DROGON "Fetch and build drogon for comparative benchmarks" ON)
 option(AERONET_BENCH_ENABLE_HTTPLIB "Fetch and build cpp-httplib for comparative benchmarks" ON)
 option(AERONET_BENCH_ENABLE_PISTACHE "Build pistache benchmark server if pistache is found" ON)
+option(AERONET_BENCH_ENABLE_CROW "Build Crow benchmark server (CrowCpp/Crow)" ON)
 
 include(FetchContent)
 

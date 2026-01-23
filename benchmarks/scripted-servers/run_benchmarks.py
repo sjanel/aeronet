@@ -65,9 +65,10 @@ class BenchmarkRunner:
         "go": 8083,
         "python": 8084,
         "rust": 8086,
+        "crow": 8087,
     }
 
-    SERVER_ORDER = ["aeronet", "drogon", "pistache", "rust", "undertow", "go", "python"]
+    SERVER_ORDER = ["aeronet", "drogon", "pistache", "crow", "rust", "undertow", "go", "python"]
 
     SCENARIOS: Dict[str, Scenario] = {
         "headers": Scenario("headers", "lua/headers_stress.lua", "/headers"),
@@ -215,7 +216,7 @@ class BenchmarkRunner:
         self, name: str, extra_args: Optional[Sequence[str]]
     ) -> Tuple[List[str], Optional[Path]]:
         extra_args = list(extra_args or [])
-        if name in {"aeronet", "drogon", "pistache"}:
+        if name in {"aeronet", "drogon", "pistache", "crow"}:
             binary = self.build_dir / f"{name}-bench-server"
             if not binary.is_file():
                 raise BenchmarkError(f"Binary not found for {name}: {binary}")
@@ -1311,7 +1312,7 @@ def parse_args() -> argparse.Namespace:
         "--server",
         type=str,
         default="all",
-        help="Comma-separated list of servers (aeronet,drogon,pistache,undertow,go,python,rust)",
+        help="Comma-separated list of servers (aeronet,drogon,pistache,crow,undertow,go,python,rust)",
     )
     parser.add_argument(
         "--scenario",

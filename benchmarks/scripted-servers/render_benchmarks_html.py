@@ -204,7 +204,7 @@ def render_html(summary: Dict[str, Any]) -> str:
         ("memory", "Memory Usage (RSS & Peak)"),
     ]
     metric_options_html = "\n".join(
-        f"<option value=\"{key}\"{' selected' if key == 'all' else ''}>{label}</option>"
+        f"<option value=\"{key}\"{' selected' if key == 'rps' else ''}>{label}</option>"
         for key, label in metric_labels
     )
 
