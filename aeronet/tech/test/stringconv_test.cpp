@@ -53,7 +53,7 @@ TEST(StringToIntegral, NegativeValue) {
   EXPECT_EQ(StringToIntegral<int64_t>("-00"), 0);
   EXPECT_EQ(StringToIntegral<int64_t>("-036"), -36);
   EXPECT_EQ(StringToIntegral<int64_t>("-9105470"), -9105470);
-  EXPECT_EQ(StringToIntegral<char>("-10YT"), -10);
+  EXPECT_EQ(StringToIntegral<signed char>("-10YT"), -10);
 }
 
 TEST(StringToIntegral, InvalidValue) {

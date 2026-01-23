@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "aeronet/case-insensitive-city.hpp"
+#include "aeronet/city-hash.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -39,16 +39,10 @@ struct CaseInsensitiveHashFnv1Style {
   }
 };
 
-struct CaseInsensitiveCityHash {
-  std::size_t operator()(std::string_view str) const noexcept {
-    return static_cast<std::size_t>(City::CityHash64(str.data(), str.size()));
-  }
-};
-
 std::vector<std::string> GenerateTestStrings() {
   constexpr std::size_t kCount = 100'000;
   constexpr std::size_t kMinLen = 4;
-  constexpr std::size_t kMaxLen = 96;
+  constexpr std::size_t kMaxLen = 192;
 
   std::vector<std::string> strings;
   strings.reserve(kCount);
@@ -99,7 +93,7 @@ void BuildMap(const std::vector<std::string>& storage, auto& map) {
 // Benchmarks
 // ------------------------------------------------------------
 
-static void BM_Hash_Boost(benchmark::State& state) {
+static void BM_Hash_CI_Boost(benchmark::State& state) {
   CaseInsensitiveHashBoostStyle hasher;
 
   for (auto _ : state) {
@@ -111,7 +105,7 @@ static void BM_Hash_Boost(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
 
-static void BM_Hash_FNV1a(benchmark::State& state) {
+static void BM_Hash_CI_FNV1a(benchmark::State& state) {
   CaseInsensitiveHashFnv1Style hasher;
 
   for (auto _ : state) {
@@ -124,7 +118,7 @@ static void BM_Hash_FNV1a(benchmark::State& state) {
 }
 
 static void BM_Hash_City(benchmark::State& state) {
-  CaseInsensitiveCityHash hasher;
+  CityHash hasher;
 
   for (auto _ : state) {
     for (std::string_view s : kStorage) {
@@ -135,7 +129,7 @@ static void BM_Hash_City(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
 
-static void BM_UnorderedMap_Find_Boost(benchmark::State& state) {
+static void BM_UnorderedMap_Find_CI_Boost(benchmark::State& state) {
   std::unordered_map<std::string_view, std::string_view, CaseInsensitiveHashBoostStyle, CaseInsensitiveEqualFunc> map;
   BuildMap<CaseInsensitiveHashBoostStyle>(kStorage, map);
 
@@ -148,7 +142,7 @@ static void BM_UnorderedMap_Find_Boost(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
 
-static void BM_UnorderedMap_Find_FNV1a(benchmark::State& state) {
+static void BM_UnorderedMap_Find_CI_FNV1a(benchmark::State& state) {
   std::unordered_map<std::string_view, std::string_view, CaseInsensitiveHashFnv1Style, CaseInsensitiveEqualFunc> map;
   BuildMap<CaseInsensitiveHashFnv1Style>(kStorage, map);
 
@@ -161,8 +155,8 @@ static void BM_UnorderedMap_Find_FNV1a(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
 static void BM_UnorderedMap_Find_City(benchmark::State& state) {
-  std::unordered_map<std::string_view, std::string_view, CaseInsensitiveCityHash, CaseInsensitiveEqualFunc> map;
-  BuildMap<CaseInsensitiveCityHash>(kStorage, map);
+  std::unordered_map<std::string_view, std::string_view, CityHash, CaseInsensitiveEqualFunc> map;
+  BuildMap<CityHash>(kStorage, map);
 
   for (auto _ : state) {
     for (std::string_view s : kStorage) {
@@ -173,7 +167,7 @@ static void BM_UnorderedMap_Find_City(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
 
-static void BM_FlatHashMap_Find_Boost(benchmark::State& state) {
+static void BM_FlatHashMap_Find_CI_Boost(benchmark::State& state) {
   flat_hash_map<std::string_view, std::string_view, CaseInsensitiveHashBoostStyle, CaseInsensitiveEqualFunc> map;
   BuildMap<CaseInsensitiveHashBoostStyle>(kStorage, map);
 
@@ -186,7 +180,7 @@ static void BM_FlatHashMap_Find_Boost(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
 
-static void BM_FlatHashMap_Find_FNV1a(benchmark::State& state) {
+static void BM_FlatHashMap_Find_CI_FNV1a(benchmark::State& state) {
   flat_hash_map<std::string_view, std::string_view, CaseInsensitiveHashFnv1Style, CaseInsensitiveEqualFunc> map;
   BuildMap<CaseInsensitiveHashFnv1Style>(kStorage, map);
 
@@ -200,8 +194,8 @@ static void BM_FlatHashMap_Find_FNV1a(benchmark::State& state) {
 }
 
 static void BM_FlatHashMap_Find_City(benchmark::State& state) {
-  flat_hash_map<std::string_view, std::string_view, CaseInsensitiveCityHash, CaseInsensitiveEqualFunc> map;
-  BuildMap<CaseInsensitiveCityHash>(kStorage, map);
+  flat_hash_map<std::string_view, std::string_view, CityHash, CaseInsensitiveEqualFunc> map;
+  BuildMap<CityHash>(kStorage, map);
 
   for (auto _ : state) {
     for (std::string_view s : kStorage) {
@@ -214,16 +208,16 @@ static void BM_FlatHashMap_Find_City(benchmark::State& state) {
 
 // ------------------------------------------------------------
 
-BENCHMARK(BM_Hash_Boost);
-BENCHMARK(BM_Hash_FNV1a);
+BENCHMARK(BM_Hash_CI_Boost);
+BENCHMARK(BM_Hash_CI_FNV1a);
 BENCHMARK(BM_Hash_City);
 
-BENCHMARK(BM_UnorderedMap_Find_Boost);
-BENCHMARK(BM_UnorderedMap_Find_FNV1a);
+BENCHMARK(BM_UnorderedMap_Find_CI_Boost);
+BENCHMARK(BM_UnorderedMap_Find_CI_FNV1a);
 BENCHMARK(BM_UnorderedMap_Find_City);
 
-BENCHMARK(BM_FlatHashMap_Find_Boost);
-BENCHMARK(BM_FlatHashMap_Find_FNV1a);
+BENCHMARK(BM_FlatHashMap_Find_CI_Boost);
+BENCHMARK(BM_FlatHashMap_Find_CI_FNV1a);
 BENCHMARK(BM_FlatHashMap_Find_City);
 
 BENCHMARK_MAIN();
