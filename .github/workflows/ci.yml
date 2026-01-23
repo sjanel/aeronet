@@ -199,7 +199,7 @@ jobs:
           OBJECTS=$(find aeronet -type f -executable -name "*_test" | tail -n+2 | sed 's/^/-object /' | tr '\n' ' ')
 
           # Ignore patterns: test files, test_support, CompilerId, _deps, and generated protobuf
-          IGNORE='(_test\.cpp$|test_support|CompilerId|_deps|generated/|static-string-view-helpers.hpp)'
+          IGNORE='(_test\.cpp$|test_support|CompilerId|_deps|generated/|static-string-view-helpers.hpp|internal/city_impl.hpp|internal/flat_hash_map.hpp|internal/bytell_hash_map.hpp)'
 
           # Generate lcov report for Codecov
           llvm-cov-21 export --format=lcov \

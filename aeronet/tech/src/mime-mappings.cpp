@@ -6,7 +6,7 @@
 #include <limits>
 #include <string_view>
 
-#include "aeronet/toupperlower.hpp"
+#include "aeronet/tolower-str.hpp"
 
 namespace aeronet {
 
@@ -24,12 +24,13 @@ MIMETypeIdx DetermineMIMETypeIdx(std::string_view path) {
         return lhs.extension.size() < rhs.extension.size();
       })->extension.size();
 
-  if (dotPos != std::string_view::npos && (path.size() - dotPos - 1U) <= kMaximumKnownExtensionSize) {
+  const std::size_t extLen = path.size() - dotPos - 1U;
+  if (dotPos != std::string_view::npos && extLen <= kMaximumKnownExtensionSize) {
     char extBuf[kMaximumKnownExtensionSize];
-    const auto endIt =
-        std::transform(path.begin() + dotPos + 1U, path.end(), extBuf, [](char ch) { return tolower(ch); });
 
-    const std::string_view ext(extBuf, endIt);
+    tolower_n(path.data() + dotPos + 1U, extLen, extBuf);
+
+    const std::string_view ext(extBuf, extLen);
     const auto it = std::ranges::lower_bound(kMIMEMappings, ext, {}, &MIMEMapping::extension);
     if (it != std::end(kMIMEMappings) && it->extension == ext) {
       return static_cast<MIMETypeIdx>(std::distance(std::begin(kMIMEMappings), it));

@@ -142,6 +142,11 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    tolower-str_test
+    test/tolower-str_test.cpp
+)
+
+AeronetAddUnitTest(
     toupperlower_test
     test/toupperlower_test.cpp
 )
