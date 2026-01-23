@@ -11,6 +11,10 @@ constexpr unsigned char tolower(unsigned char ch) {
 
 constexpr char tolower(char ch) { return static_cast<char>(tolower(static_cast<unsigned char>(ch))); }
 
+constexpr signed char tolower(signed char ch) {
+  return static_cast<signed char>(tolower(static_cast<unsigned char>(ch)));
+}
+
 constexpr unsigned char toupper(unsigned char ch) {
   if (ch >= 'a' && ch <= 'z') {
     ch &= 0xDF;  // clear lowercase bit
@@ -19,5 +23,9 @@ constexpr unsigned char toupper(unsigned char ch) {
 }
 
 constexpr char toupper(char ch) { return static_cast<char>(toupper(static_cast<unsigned char>(ch))); }
+
+constexpr signed char toupper(signed char ch) {
+  return static_cast<signed char>(toupper(static_cast<unsigned char>(ch)));
+}
 
 }  // namespace aeronet
