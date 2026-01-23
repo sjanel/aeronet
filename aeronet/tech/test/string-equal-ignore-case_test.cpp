@@ -95,17 +95,22 @@ TEST(StringEqualIgnoreCase, FuzzRandomAsciiEqual) {
   std::mt19937_64 rng(123456789);
   std::uniform_int_distribution<std::size_t> lenDist(0, 32);
   std::uniform_int_distribution<int> charDist(0x20, 0x7E);  // printable ASCII
+  std::uniform_int_distribution<int> caseDist(0, 1);
   std::string s1;
   std::string s2;
-  for (int iteration = 0; iteration < 2000; ++iteration) {
+
+  CaseInsensitiveHashFunc hashFunc;
+
+  for (int iteration = 0; iteration < 5000; ++iteration) {
     std::size_t sz = lenDist(rng);
+    std::uniform_int_distribution<std::size_t> nbCharsToChange(0, sz / 4);
     s1.clear();
     s2.clear();
     for (std::size_t i = 0; i < sz; ++i) {
       char ch = static_cast<char>(charDist(rng));
       // randomly change case for letters
       if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')) {
-        if (std::uniform_int_distribution<int>(0, 1)(rng) != 0) {
+        if (caseDist(rng) != 0) {
           ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
         } else {
           ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
@@ -115,14 +120,26 @@ TEST(StringEqualIgnoreCase, FuzzRandomAsciiEqual) {
       // produce s2 by randomizing case per character
       char ch2 = ch;
       if ((ch2 >= 'A' && ch2 <= 'Z') || (ch2 >= 'a' && ch2 <= 'z')) {
-        if (std::uniform_int_distribution<int>(0, 1)(rng) != 0) {
+        if (caseDist(rng) != 0) {
           ch2 = static_cast<char>(std::toupper(static_cast<unsigned char>(ch2)));
         } else {
           ch2 = static_cast<char>(std::tolower(static_cast<unsigned char>(ch2)));
         }
       }
+
       s2.push_back(ch2);
     }
+
+    if (sz != 0) {
+      // to introduce some differences, occasionally change a random number of characters
+      std::uniform_int_distribution<std::size_t> changePos(0, sz - 1);
+      std::size_t nbChanges = nbCharsToChange(rng);
+      for (std::size_t changeIdx = 0; changeIdx < nbChanges; ++changeIdx) {
+        std::size_t pos = changePos(rng);
+        s2[pos] = static_cast<char>(s2[pos] ^ 0x20);  // flip case
+      }
+    }
+
     EXPECT_EQ(CaseInsensitiveEqual(s1, s2), ReferenceCaseInsensitiveEqual(s1, s2));
     EXPECT_EQ(StartsWithCaseInsensitive(s1, s2), ReferenceStartsWithCaseInsensitive(s1, s2));
     // also cross-compare with different lengths occasionally
@@ -130,6 +147,10 @@ TEST(StringEqualIgnoreCase, FuzzRandomAsciiEqual) {
       std::string s3 = s1 + static_cast<char>(charDist(rng));
       EXPECT_EQ(CaseInsensitiveEqual(s1, s3), ReferenceCaseInsensitiveEqual(s1, s3));
     }
+    // The hash is not guaranteed to be different for unequal strings, but it's the case for this randomly (but
+    // deterministic) set of data, and it's a good sanity check. However, we expect case insensitive equal strings to
+    // always have the same hash.
+    EXPECT_EQ(hashFunc(s1) == hashFunc(s2), CaseInsensitiveEqual(s1, s2));
   }
 }
 

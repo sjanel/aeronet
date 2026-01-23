@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <string_view>
 
+#include "aeronet/case-insensitive-city.hpp"
 #include "aeronet/toupperlower.hpp"
 
 namespace aeronet {
@@ -62,13 +63,8 @@ constexpr bool StartsWithCaseInsensitive(std::string_view value, std::string_vie
 }
 
 struct CaseInsensitiveHashFunc {
-  static constexpr std::size_t operator()(std::string_view str) noexcept {
-    std::size_t hash = 0;
-    for (const char *beg = str.data(), *end = beg + str.size(); beg != end; ++beg) {
-      hash ^= static_cast<std::size_t>(tolower(*beg)) + static_cast<std::size_t>(0x9e3779b97f4a7c15ULL) + (hash << 6) +
-              (hash >> 2);
-    }
-    return hash;
+  static std::size_t operator()(std::string_view str) noexcept {
+    return static_cast<std::size_t>(CityHash64CI(str.data(), str.size()));
   }
 };
 

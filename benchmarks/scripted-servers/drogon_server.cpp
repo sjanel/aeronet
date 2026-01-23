@@ -300,7 +300,7 @@ int main(int argc, char* argv[]) {
           [routeIdx](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
             auto resp = drogon::HttpResponse::newHttpResponse();
             resp->setStatusCode(drogon::k200OK);
-            resp->setBody(std::format("route {}", routeIdx));
+            resp->setBody(std::format("route-{}", routeIdx));
             callback(resp);
           },
           {drogon::Get});
