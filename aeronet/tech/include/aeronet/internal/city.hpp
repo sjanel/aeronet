@@ -112,4 +112,4 @@ constexpr uint64 Hash128to64(const uint128 &val) {
 
 #endif  // CITY_HASH_H_
 
-#include "internal/city_impl.hpp"
+#include "city_impl.hpp"  // IWYU pragma: export

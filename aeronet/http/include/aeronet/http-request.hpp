@@ -8,6 +8,7 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/city-hash.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-constants.hpp"
@@ -352,7 +353,7 @@ class HttpRequest {
 
   HeadersViewMap _headers;
   HeadersViewMap _trailers;  // Trailer headers (RFC 7230 §4.1.2) from chunked requests
-  flat_hash_map<std::string_view, std::string_view> _pathParams;
+  flat_hash_map<std::string_view, std::string_view, CityHash> _pathParams;
 
   std::string_view _body;
   std::string_view _activeStreamingChunk;

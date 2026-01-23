@@ -4,14 +4,15 @@
 #include <functional>
 #include <string_view>
 
+#include "aeronet/city-hash.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 
 struct TlsMetricsInternal {
-  using RawChars32Uint64Map = flat_hash_map<RawChars32, uint64_t, std::hash<std::string_view>, std::equal_to<>>;
-  using SvUint64Map = flat_hash_map<std::string_view, uint64_t, std::hash<std::string_view>, std::equal_to<>>;
+  using RawChars32Uint64Map = flat_hash_map<RawChars32, uint64_t, CityHash, std::equal_to<>>;
+  using SvUint64Map = flat_hash_map<std::string_view, uint64_t, CityHash, std::equal_to<>>;
 
   uint64_t handshakesSucceeded{};
   uint64_t handshakesFull{};
