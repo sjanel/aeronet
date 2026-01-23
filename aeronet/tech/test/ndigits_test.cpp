@@ -19,7 +19,7 @@ class S8NDigitsTest : public ::testing::Test {
   using List = typename std::list<T>;
 };
 
-using S8Types = ::testing::Types<char, int8_t>;
+using S8Types = ::testing::Types<signed char, int8_t>;
 TYPED_TEST_SUITE(S8NDigitsTest, S8Types, );
 
 TYPED_TEST(S8NDigitsTest, NDigitsS8) {

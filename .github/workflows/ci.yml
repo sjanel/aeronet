@@ -126,7 +126,72 @@ jobs:
           path: install
           if-no-files-found: ignore
           retention-days: 7
-          
+
+  arm:
+    name: arm
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [ON]
+        build: [Debug, Release]
+    runs-on: ubuntu-24.04-arm
+
+    env:
+      CMAKE_BUILD_TYPE: ${{ matrix.build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Release dependencies
+        if: ${{ matrix.build == 'Release' }}
+        run: | 
+          sudo apt update
+          sudo apt install -y libjsoncpp-dev uuid-dev
+
+      - name: Install all dependencies with features
+        if: ${{ matrix.features == 'ON' }}
+        run: |
+          sudo apt update
+          sudo apt install -y libssl-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
+
+      - name: Configure (CMake)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+            -DAERONET_BUILD_TESTS=ON \
+            -DAERONET_BUILD_EXAMPLES=OFF \
+            -DAERONET_BUILD_BENCHMARKS=OFF \
+            -DAERONET_ENABLE_ASAN=OFF \
+            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=OFF \
+            -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
+            -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
+            -DAERONET_ENABLE_HTTP2=${{ matrix.features }} \
+            -DAERONET_ENABLE_BROTLI=${{ matrix.features }} \
+            -DAERONET_ENABLE_ZLIB=${{ matrix.features }} \
+            -DAERONET_ENABLE_ZSTD=${{ matrix.features }} \
+            -DAERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }} \
+            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }}
+
+      - name: Build
+        run: |
+          cmake --build build --parallel
+
+      - name: Run unit tests
+        run: |
+          NUM_PROC=$(nproc)
+          # Use half the CPUs for parallelism, but at least 1
+          JOBS=$(( (NUM_PROC / 2) > 0 ? (NUM_PROC / 2) : 1 ))
+          echo "Running ctest with -j=${JOBS} (NUM_PROC=${NUM_PROC})"
+          ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 100 -j ${JOBS}
+
+      - name: Summary
+        run: |
+          echo "Compiler: $CXX" >> $GITHUB_STEP_SUMMARY
+          echo "features: ${{ matrix.features }}" >> $GITHUB_STEP_SUMMARY
+          echo "Commit: $GITHUB_SHA" >> $GITHUB_STEP_SUMMARY
+          echo "Tests executed:" >> $GITHUB_STEP_SUMMARY
+          ctest --test-dir build -N | sed 's/^/  /' >> $GITHUB_STEP_SUMMARY
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
@@ -199,7 +264,7 @@ jobs:
           OBJECTS=$(find aeronet -type f -executable -name "*_test" | tail -n+2 | sed 's/^/-object /' | tr '\n' ' ')
 
           # Ignore patterns: test files, test_support, CompilerId, _deps, and generated protobuf
-          IGNORE='(_test\.cpp$|test_support|CompilerId|_deps|generated/|static-string-view-helpers.hpp|internal/city_impl.hpp|internal/flat_hash_map.hpp|internal/bytell_hash_map.hpp)'
+          IGNORE='(_test\.cpp$|test_support|CompilerId|_deps|generated/|static-string-view-helpers.hpp|internal/city_impl.hpp|internal/flat_hash_map.hpp|internal/bytell_hash_map.hpp|internal/city.hpp)'
 
           # Generate lcov report for Codecov
           llvm-cov-21 export --format=lcov \

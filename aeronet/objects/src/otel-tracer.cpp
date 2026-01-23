@@ -13,7 +13,6 @@
 #include <utility>
 
 #include "aeronet/dogstatsd.hpp"
-#include "aeronet/flat-hash-map.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
@@ -61,6 +60,9 @@
 #include <opentelemetry/sdk/metrics/view/meter_selector_factory.h>
 #include <opentelemetry/sdk/metrics/view/view.h>
 #include <opentelemetry/sdk/metrics/view/view_registry.h>
+
+#include "aeronet/city-hash.hpp"
+#include "aeronet/flat-hash-map.hpp"
 #endif
 
 // Detect OTLP metrics exporter
@@ -142,10 +144,11 @@ class TelemetryContextImpl {
 #ifdef AERONET_HAVE_METRICS_SDK
   std::unique_ptr<opentelemetry::sdk::metrics::MeterProvider> _meterProvider;
   opentelemetry::nostd::shared_ptr<opentelemetry::metrics::Meter> _meter;
-  flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Counter<uint64_t>>>
+  flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Counter<uint64_t>>, CityHash>
       _counters;
-  flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Gauge<int64_t>>> _gauges;
-  flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Histogram<double>>>
+  flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Gauge<int64_t>>, CityHash>
+      _gauges;
+  flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Histogram<double>>, CityHash>
       _histograms;
 #endif
 
