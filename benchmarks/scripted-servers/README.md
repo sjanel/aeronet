@@ -93,6 +93,16 @@ ninja pistache-bench-server
 
 **Note:** Pistache requires explicit `Connection: keep-alive` header in requests, otherwise it defaults to `Connection: Close` which severely impacts performance. All Lua benchmark scripts include this header automatically. The `mixed_workload.lua` scenario also injects a small percentage of `Connection: close` requests to simulate real-world connection churn.
 
+### Crow (built from source)
+
+Crow (CrowCpp/Crow - the maintained fork) is automatically fetched and built from source via CMake FetchContent when `AERONET_BENCH_ENABLE_CROW=ON`. Crow is a header-only C++ web framework similar to Python Flask.
+
+```bash
+# In your build directory
+cmake .. -DAERONET_BENCH_ENABLE_CROW=ON
+ninja crow-bench-server
+```
+
 ## Benchmark Scenarios
 
 ### 1. Pure Header Parsing (`headers_stress.lua`)
