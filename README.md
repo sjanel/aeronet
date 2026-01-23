@@ -964,6 +964,12 @@ Details merged into: [TLS Features](docs/FEATURES.md#tls-features)
 
 Compression libraries (zlib, zstd, brotli), OpenSSL, Opentelemetry and spdlog provide the optional feature foundation; thanks to their maintainers & contributors.
 
+This project also includes code from the following open source projects:
+
+- [amc](https://github.com/amadeusitgroup/amc), licensed under the MIT License.
+- [flat_hash_map](https://github.com/skarupke/flat_hash_map), no license.
+- [CityHash](https://github.com/google/cityhash), licensed under the MIT License.
+
 ## License
 
 Licensed under the MIT License. See [LICENSE](LICENSE).

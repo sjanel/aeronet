@@ -460,6 +460,7 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
   if (const auto* asyncHandler = routingResult.asyncRequestHandler(); asyncHandler != nullptr) {
     // Async handlers: run the coroutine to completion synchronously
     // HTTP/2 streams are independent and don't block each other
+    // TODO: make them really asynchronous
     auto task = (*asyncHandler)(request);
     if (task.valid()) {
       auto handle = task.release();
@@ -477,7 +478,7 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
   }
 
   if (routingResult.streamingHandler() != nullptr) {
-    // Streaming handlers not yet supported for HTTP/2
+    // TODO: Streaming handlers not yet supported for HTTP/2
     // Full implementation requires:
     // 1. Create Http2ResponseWriter that emits HEADERS frame when headers are first sent
     // 2. Emit DATA frames for each writeBody() call (respecting peer's maxFrameSize)

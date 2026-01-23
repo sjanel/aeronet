@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <string_view>
 
-#include "aeronet/toupperlower.hpp"
+#include "aeronet/tolower-str.hpp"
 
 namespace aeronet::http {
 
@@ -32,7 +32,7 @@ constexpr bool IsReservedResponseHeader(std::string_view name) noexcept {
   }
 
   char lowerCaseName[kMaxLenReserved];
-  std::ranges::transform(name, lowerCaseName, [](char ch) { return tolower(ch); });
+  tolower_n(name.data(), name.size(), lowerCaseName);
   return std::ranges::binary_search(kReservedOrderedLowerCaseHeaders, std::string_view{lowerCaseName, name.size()});
 }
 
@@ -78,7 +78,7 @@ constexpr bool IsForbiddenTrailerHeader(std::string_view name) noexcept {
   }
 
   char lowerCaseName[kMaxLenReserved];
-  std::ranges::transform(name, lowerCaseName, [](char ch) { return tolower(ch); });
+  tolower_n(name.data(), name.size(), lowerCaseName);
   return std::ranges::binary_search(kForbiddenOrderedTrailersLowercase, std::string_view{lowerCaseName, name.size()});
 }
 

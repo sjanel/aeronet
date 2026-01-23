@@ -10,8 +10,8 @@ include(FetchContent)
 if(NOT TARGET benchmark)
   FetchContent_Declare(
     google_benchmark
-    URL https://github.com/google/benchmark/archive/refs/tags/v1.9.4.tar.gz
-    URL_HASH SHA256=b334658edd35efcf06a99d9be21e4e93e092bd5f95074c1673d5c8705d95c104
+    URL https://github.com/google/benchmark/archive/refs/tags/v1.9.5.tar.gz
+    URL_HASH SHA256=9631341c82bac4a288bef951f8b26b41f69021794184ece969f8473977eaa340
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
   set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
@@ -74,9 +74,12 @@ if(NOT EXISTS "${AERONET_BENCH_ROOT}")
 endif()
 
 # Internal microbenchmarks
-set(AERONET_BENCH_INTERNAL_SOURCES
-  ${AERONET_BENCH_ROOT}/internal/bench_request_parse.cpp
-)
+## Internal microbenchmarks: build each source as its own executable
+# Keep individual files separate because each defines its own benchmark main.
+# If you add more files here, add a corresponding AeronetAddProjectBenchmark call.
+
+set(AERONET_BENCH_INTERNAL_REQUEST_PARSE ${AERONET_BENCH_ROOT}/internal/request-parse_bench.cpp)
+set(AERONET_BENCH_INTERNAL_STRING_EQUAL ${AERONET_BENCH_ROOT}/internal/string-equal-ignore-case_bench.cpp)
 
 include(CheckIPOSupported)
 
@@ -110,8 +113,11 @@ function(AeronetAddProjectBenchmark target)
 endfunction()
 
 
-# Internal microbenchmarks (Google Benchmark main contained in bench_request_parse.cpp)
-AeronetAddProjectBenchmark(aeronet-bench-internal ${AERONET_BENCH_INTERNAL_SOURCES})
+AeronetAddProjectBenchmark(aeronet-bench-internal-request-parse ${AERONET_BENCH_INTERNAL_REQUEST_PARSE})
+set_target_properties(aeronet-bench-internal-request-parse PROPERTIES FOLDER "benchmarks/internal")
+
+AeronetAddProjectBenchmark(aeronet-bench-internal-string-equal-ignore-case ${AERONET_BENCH_INTERNAL_STRING_EQUAL})
+set_target_properties(aeronet-bench-internal-string-equal-ignore-case PROPERTIES FOLDER "benchmarks/internal")
 
 # Throughput benchmark (simple skeleton; not using Google Benchmark intentionally)
 AeronetAddProjectBenchmark(aeronet-bench-throughput ${AERONET_BENCH_ROOT}/e2e/bench_throughput_local.cpp)
@@ -157,8 +163,9 @@ set_target_properties(aeronet-bench-frameworks PROPERTIES FOLDER "benchmarks")
 
 # Convenience run targets
 add_custom_target(run-aeronet-bench
-  COMMAND aeronet-bench-internal --benchmark_report_aggregates_only=true
-  DEPENDS aeronet-bench-internal
+  COMMAND aeronet-bench-internal-request-parse --benchmark_report_aggregates_only=true
+  COMMAND aeronet-bench-internal-string-equal-ignore-case --benchmark_report_aggregates_only=true
+  DEPENDS aeronet-bench-internal-request-parse aeronet-bench-internal-string-equal-ignore-case
   COMMENT "Running aeronet internal microbenchmarks")
 
 if(TARGET aeronet-bench-throughput)
@@ -172,8 +179,8 @@ endif()
 
 # JSON output helper for Google Benchmark (writes a JSON file under build dir)
 add_custom_target(run-aeronet-bench-json
-  COMMAND aeronet-bench-internal --benchmark_format=json > aeronet-benchmarks.json
-  DEPENDS aeronet-bench-internal
+  COMMAND aeronet-bench-internal-request-parse --benchmark_format=json > aeronet-benchmarks.json
+  DEPENDS aeronet-bench-internal-request-parse
   COMMENT "Running aeronet benchmarks (JSON output -> aeronet-benchmarks.json)")
 
 # Scripted server benchmarks (wrk-based external load testing)

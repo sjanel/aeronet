@@ -15,7 +15,7 @@
 #include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/safe-cast.hpp"
-#include "aeronet/toupperlower.hpp"
+#include "aeronet/tolower-str.hpp"
 
 namespace aeronet::http2 {
 
@@ -437,7 +437,7 @@ HpackDynamicEntry::HpackDynamicEntry(std::string_view name, std::string_view val
     : _data(std::make_unique<char[]>(name.size() + value.size())),
       _nameLength(SafeCast<uint32_t>(name.size())),
       _valueLength(SafeCast<uint32_t>(value.size())) {
-  std::ranges::transform(name, _data.get(), [](char ch) { return tolower(ch); });
+  tolower_n(name.data(), name.size(), _data.get());
   std::memcpy(_data.get() + name.size(), value.data(), value.size());
 }
 
