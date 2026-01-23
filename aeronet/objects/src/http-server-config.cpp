@@ -24,7 +24,7 @@
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-config.hpp"
-#include "aeronet/toupperlower.hpp"
+#include "aeronet/tolower-str.hpp"
 #endif
 
 namespace aeronet {
@@ -318,12 +318,7 @@ void HttpServerConfig::validate() {
 
 #ifdef AERONET_ENABLE_HTTP2
     // forces lower-case header names for HTTP/2
-    char* first = const_cast<char*>(headerName.data());
-    char* last = first + headerName.size();
-    while (first != last) {
-      *first = tolower(*first);
-      ++first;
-    }
+    tolower(const_cast<char*>(headerName.data()), headerName.size());
 #endif
   }
 

@@ -8,14 +8,14 @@
 
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/toupperlower.hpp"
+#include "aeronet/tolower-str.hpp"
 
 namespace aeronet {
 
 namespace {
 auto NormalizeHostname(std::string_view host) {
   RawChars normalized(host.size());
-  std::ranges::transform(host, normalized.data(), [](char ch) { return tolower(ch); });
+  tolower_n(host.data(), host.size(), normalized.data());
   normalized.setSize(host.size());
   return normalized;
 }
