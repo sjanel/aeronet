@@ -367,7 +367,7 @@ func getRouteCount() int {
 			}
 		}
 	}
-	return 0
+	return 1000
 }
 
 func getQueryInt(r *http.Request, key string, defaultValue int) int {

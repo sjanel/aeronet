@@ -40,7 +40,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 num_threads = 1
 static_dir = ""
-route_count = 0
+route_count = 1000
 
 
 def random_string(length: int) -> str:
@@ -197,22 +197,21 @@ def create_routes():
         base_routes.append(Mount("/", StaticFiles(directory=env_static), name="static"))
 
     # Add routing stress routes if configured
-    env_routes = int(os.environ.get("BENCH_ROUTE_COUNT", "0"))
-    if env_routes > 0:
-        for i in range(env_routes):
-            base_routes.append(Route(f"/r{i}", route_handler, methods=["GET"]))
-        base_routes.append(
-            Route(
-                "/users/{user_id}/posts/{post_id}", user_post_handler, methods=["GET"]
-            )
+    env_routes = int(os.environ.get("BENCH_ROUTE_COUNT", "1000"))
+    for i in range(env_routes):
+        base_routes.append(Route(f"/r{i}", route_handler, methods=["GET"]))
+    base_routes.append(
+        Route(
+            "/users/{user_id}/posts/{post_id}", user_post_handler, methods=["GET"]
         )
-        base_routes.append(
-            Route(
-                "/api/v1/resources/{resource}/items/{item}/actions/{action}",
-                api_pattern_handler,
-                methods=["GET"],
-            )
+    )
+    base_routes.append(
+        Route(
+            "/api/v1/resources/{resource}/items/{item}/actions/{action}",
+            api_pattern_handler,
+            methods=["GET"],
         )
+    )
 
     return base_routes
 
@@ -252,7 +251,7 @@ if __name__ == "__main__":
     port = args.port or get_port()
     num_threads = args.threads or get_threads()
     static_dir = args.static or ""
-    route_count = args.routes or 0
+    route_count = args.routes or 1000
 
     try:
         import uvicorn
@@ -263,8 +262,7 @@ if __name__ == "__main__":
     print(f"python benchmark server starting on port {port} with {num_threads} workers")
     if static_dir:
         print(f"Static files: {static_dir}")
-    if route_count > 0:
-        print(f"Routes: {route_count} literal + pattern routes")
+    print(f"Routes: {route_count} literal + pattern routes")
 
     # Set environment variables for worker processes and app configuration
     os.environ["BENCH_THREADS"] = str(num_threads)

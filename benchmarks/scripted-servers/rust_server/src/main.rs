@@ -250,7 +250,7 @@ async fn async_main(threads: usize) {
                 i += 2;
             }
             "--routes" if i + 1 < args.len() => {
-                route_count = args[i + 1].parse().unwrap_or(0);
+                route_count = args[i + 1].parse().unwrap_or(1000);
                 i += 2;
             }
             "--help" | "-h" => {
