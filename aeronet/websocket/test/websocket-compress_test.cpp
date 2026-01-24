@@ -2,12 +2,16 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "aeronet/raw-bytes.hpp"
 
@@ -20,9 +24,7 @@ std::span<const std::byte> StringToBytes(std::string_view sv) noexcept {
 }
 
 // Helper function to convert RawBytes to string for comparison
-std::string BytesToString(const RawBytes& buf) {
-  return std::string(reinterpret_cast<const char*>(buf.data()), buf.size());
-}
+std::string BytesToString(const RawBytes& buf) { return {reinterpret_cast<const char*>(buf.data()), buf.size()}; }
 
 // Helper to compress data
 std::pair<bool, std::string> CompressData(std::string_view input, bool resetContext = false) {
@@ -106,9 +108,7 @@ TEST_F(WebSocketCompressorTest, CompressLargeData) {
 }
 
 TEST_F(WebSocketCompressorTest, CompressRandomData) {
-  std::string random(
-      "\x48\x65\x6c\x6c\x6f\x20\x57\x6f\x72\x6c\x64\x21\x20\x54\x68\x69\x73\x20\x69\x73\x20\x61\x20"
-      "\x74\x65\x73\x74\x2e");
+  std::string random(R"(Hello World! This is a test.)");
   const char* error = compressor.compress(StringToBytes(random), output, false);
   EXPECT_EQ(error, nullptr);
   EXPECT_GT(output.size(), 0);
