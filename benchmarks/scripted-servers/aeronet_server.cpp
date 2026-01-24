@@ -40,66 +40,10 @@ T GetQueryParamOrThrow(const HttpRequest& req, std::string_view key) {
   throw std::invalid_argument("Query parameter not found");
 }
 
-uint16_t GetPort() {
-  const char* envPort = std::getenv("BENCH_PORT");
-  if (envPort != nullptr) {
-    return static_cast<uint16_t>(std::atoi(envPort));
-  }
-  return 8080;
-}
-
-struct BenchConfig {
-  uint16_t port{8080};
-  int numThreads{1};
-  bool tlsEnabled{false};
-  std::string certFile;
-  std::string keyFile;
-  std::string staticDir;
-  int routeCount{1000};  // Number of literal routes for routing stress test
-};
-
-BenchConfig ParseArgs(int argc, char* argv[]) {
-  BenchConfig cfg;
-  cfg.port = GetPort();
-  cfg.numThreads = bench::GetNumThreads();
-
-  for (int argPos = 1; argPos < argc; ++argPos) {
-    std::string_view arg(argv[argPos]);
-    if (arg == "--port" && argPos + 1 < argc) {
-      cfg.port = static_cast<uint16_t>(std::atoi(argv[++argPos]));
-    } else if (arg == "--threads" && argPos + 1 < argc) {
-      cfg.numThreads = std::atoi(argv[++argPos]);
-    } else if (arg == "--tls") {
-      cfg.tlsEnabled = true;
-    } else if (arg == "--cert" && argPos + 1 < argc) {
-      cfg.certFile = argv[++argPos];
-    } else if (arg == "--key" && argPos + 1 < argc) {
-      cfg.keyFile = argv[++argPos];
-    } else if (arg == "--static" && argPos + 1 < argc) {
-      cfg.staticDir = argv[++argPos];
-    } else if (arg == "--routes" && argPos + 1 < argc) {
-      cfg.routeCount = std::atoi(argv[++argPos]);
-    } else if (arg == "--help" || arg == "-h") {
-      std::cout << "Usage: " << argv[0] << " [options]\n"
-                << "Options:\n"
-                << "  --port N      Listen port (default: 8080, env: BENCH_PORT)\n"
-                << "  --threads N   Worker threads (default: nproc/2, env: BENCH_THREADS)\n"
-                << "  --tls         Enable TLS (requires --cert and --key)\n"
-                << "  --cert FILE   TLS certificate file (PEM)\n"
-                << "  --key FILE    TLS private key file (PEM)\n"
-                << "  --static DIR  Directory for static file serving\n"
-                << "  --routes N    Number of literal routes (default: 1000)\n"
-                << "  --help        Show this help\n";
-      std::exit(0);
-    }
-  }
-  return cfg;
-}
-
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  BenchConfig benchCfg = ParseArgs(argc, argv);
+  bench::BenchConfig benchCfg(8080, argc, argv);
 
   log::set_level(log::level::warn);
 
@@ -289,14 +233,16 @@ int main(int argc, char* argv[]) {
   });
 
   // ============================================================
-  // Endpoint: /api/v{version}/items/{item} - Another pattern route
+  // Endpoint: /api/v1/resources/{resource}/items/{item}/actions/{action} - Another pattern route
   // ============================================================
-  router.setPath(http::Method::GET, "/api/v{version}/items/{item}", [](const HttpRequest& req) {
-    const auto& params = req.pathParams();
-    std::string_view version = params.find("version")->second;
-    std::string_view item = params.find("item")->second;
-    return req.makeResponse(std::format("v={},item={}", version, item));
-  });
+  router.setPath(http::Method::GET, "/api/v1/resources/{resource}/items/{item}/actions/{action}",
+                 [](const HttpRequest& req) {
+                   const auto& params = req.pathParams();
+                   std::string_view resource = params.find("resource")->second;
+                   std::string_view item = params.find("item")->second;
+                   std::string_view action = params.find("action")->second;
+                   return req.makeResponse(std::format("resource={},item={},action={}", resource, item, action));
+                 });
 
   std::cout << "aeronet benchmark server starting on port " << benchCfg.port << " with " << benchCfg.numThreads
             << " threads\n";

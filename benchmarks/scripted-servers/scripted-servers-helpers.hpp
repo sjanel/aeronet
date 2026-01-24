@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <format>
+#include <iostream>
 #include <random>
 #include <string>
 #include <string_view>
@@ -82,5 +82,52 @@ inline std::string BuildJson(std::size_t itemCount) {
   json += "]}";
   return json;
 }
+
+struct BenchConfig {
+  BenchConfig(uint16_t defaultPort, int argc, char* argv[]) : port(defaultPort), numThreads(GetNumThreads()) {
+    const char* envPort = std::getenv("BENCH_PORT");
+    if (envPort != nullptr) {
+      port = static_cast<uint16_t>(std::atoi(envPort));
+    }
+    for (int argPos = 1; argPos < argc; ++argPos) {
+      std::string_view arg(argv[argPos]);
+      if (arg == "--port" && argPos + 1 < argc) {
+        port = static_cast<uint16_t>(std::atoi(argv[++argPos]));
+      } else if (arg == "--threads" && argPos + 1 < argc) {
+        numThreads = std::atoi(argv[++argPos]);
+      } else if (arg == "--tls") {
+        tlsEnabled = true;
+      } else if (arg == "--cert" && argPos + 1 < argc) {
+        certFile = argv[++argPos];
+      } else if (arg == "--key" && argPos + 1 < argc) {
+        keyFile = argv[++argPos];
+      } else if (arg == "--static" && argPos + 1 < argc) {
+        staticDir = argv[++argPos];
+      } else if (arg == "--routes" && argPos + 1 < argc) {
+        routeCount = std::atoi(argv[++argPos]);
+      } else if (arg == "--help" || arg == "-h") {
+        std::cout << "Usage: " << argv[0] << " [options]\n"
+                  << "Options:\n"
+                  << "  --port N      Listen port (default: " << defaultPort << ", env: BENCH_PORT)\n"
+                  << "  --threads N   Worker threads (default: nproc/2, env: BENCH_THREADS)\n"
+                  << "  --tls         Enable TLS (requires --cert and --key)\n"
+                  << "  --cert FILE   TLS certificate file (PEM)\n"
+                  << "  --key FILE    TLS private key file (PEM)\n"
+                  << "  --static DIR  Directory for static file serving\n"
+                  << "  --routes N    Number of literal routes (default: 1000)\n"
+                  << "  --help        Show this help\n";
+        std::exit(0);
+      }
+    }
+  }
+
+  uint16_t port;
+  int numThreads;
+  bool tlsEnabled{false};
+  std::string certFile;
+  std::string keyFile;
+  std::string staticDir;
+  int routeCount{1000};  // Number of literal routes for routing stress test
+};
 
 }  // namespace bench

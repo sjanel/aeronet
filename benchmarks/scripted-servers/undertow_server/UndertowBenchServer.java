@@ -148,45 +148,43 @@ public class UndertowBenchServer {
     }
 
     // Endpoint 10: /r{N} - Routing stress test (literal routes)
-    if (routeCount > 0) {
-      for (int i = 0; i < routeCount; i++) {
-        final int routeNum = i;
-        pathHandler.addExactPath("/r" + i, exchange -> {
-          exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "text/plain");
-          exchange.getResponseSender().send("route " + routeNum);
-        });
-      }
-
-      // Pattern routes - use prefix handlers with regex matching
-      pathHandler.addPrefixPath("/users", exchange -> {
-        String path = exchange.getRequestPath();
-        Matcher matcher = USER_POST_PATTERN.matcher(path);
-        if (matcher.matches()) {
-          String userId = matcher.group(1);
-          String postId = matcher.group(2);
-          exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "text/plain");
-          exchange.getResponseSender().send("user " + userId + " post " + postId);
-        } else {
-          exchange.setStatusCode(404);
-          exchange.getResponseSender().send("Not Found");
-        }
-      });
-
-      pathHandler.addPrefixPath("/api/v1/resources", exchange -> {
-        String path = exchange.getRequestPath();
-        Matcher matcher = API_PATTERN.matcher(path);
-        if (matcher.matches()) {
-          String resource = matcher.group(1);
-          String item = matcher.group(2);
-          String action = matcher.group(3);
-          exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "text/plain");
-          exchange.getResponseSender().send("resource " + resource + " item " + item + " action " + action);
-        } else {
-          exchange.setStatusCode(404);
-          exchange.getResponseSender().send("Not Found");
-        }
+    for (int i = 0; i < routeCount; i++) {
+      final int routeNum = i;
+      pathHandler.addExactPath("/r" + i, exchange -> {
+        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "text/plain");
+        exchange.getResponseSender().send("route " + routeNum);
       });
     }
+
+    // Pattern routes - use prefix handlers with regex matching
+    pathHandler.addPrefixPath("/users", exchange -> {
+      String path = exchange.getRequestPath();
+      Matcher matcher = USER_POST_PATTERN.matcher(path);
+      if (matcher.matches()) {
+        String userId = matcher.group(1);
+        String postId = matcher.group(2);
+        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "text/plain");
+        exchange.getResponseSender().send("user " + userId + " post " + postId);
+      } else {
+        exchange.setStatusCode(404);
+        exchange.getResponseSender().send("Not Found");
+      }
+    });
+
+    pathHandler.addPrefixPath("/api/v1/resources", exchange -> {
+      String path = exchange.getRequestPath();
+      Matcher matcher = API_PATTERN.matcher(path);
+      if (matcher.matches()) {
+        String resource = matcher.group(1);
+        String item = matcher.group(2);
+        String action = matcher.group(3);
+        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "text/plain");
+        exchange.getResponseSender().send("resource " + resource + " item " + item + " action " + action);
+      } else {
+        exchange.setStatusCode(404);
+        exchange.getResponseSender().send("Not Found");
+      }
+    });
 
     Undertow server = Undertow.builder()
                           .addHttpListener(port, "127.0.0.1")
@@ -266,7 +264,7 @@ public class UndertowBenchServer {
         return Integer.parseInt(args[i + 1]);
       }
     }
-    return 0;
+    return 1000;
   }
 
   private static String getContentType(String path) {

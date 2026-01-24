@@ -32,14 +32,6 @@ constexpr unsigned char toupper(unsigned char ch) {
 
 constexpr char toupper(char ch) { return static_cast<char>(toupper(static_cast<unsigned char>(ch))); }
 
-uint16_t GetPort() {
-  const char* envPort = std::getenv("BENCH_PORT");
-  if (envPort != nullptr) {
-    return static_cast<uint16_t>(std::atoi(envPort));
-  }
-  return 8087;  // Different default port than aeronet and other servers
-}
-
 std::string GetContentType(std::string_view path) {
   if (path.ends_with(".html")) {
     return "text/html";
@@ -68,32 +60,7 @@ std::string ReadFile(const std::filesystem::path& path) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  uint16_t port = GetPort();
-  int numThreads = bench::GetNumThreads();
-  std::string staticDir;
-  int routeCount = 0;
-
-  for (int argPos = 1; argPos < argc; ++argPos) {
-    std::string_view arg(argv[argPos]);
-    if (arg == "--port" && argPos + 1 < argc) {
-      port = static_cast<uint16_t>(std::atoi(argv[++argPos]));
-    } else if (arg == "--threads" && argPos + 1 < argc) {
-      numThreads = std::atoi(argv[++argPos]);
-    } else if (arg == "--static" && argPos + 1 < argc) {
-      staticDir = argv[++argPos];
-    } else if (arg == "--routes" && argPos + 1 < argc) {
-      routeCount = std::atoi(argv[++argPos]);
-    } else if (arg == "--help" || arg == "-h") {
-      std::cout << "Usage: " << argv[0] << " [options]\n"
-                << "Options:\n"
-                << "  --port N      Listen port (default: 8087, env: BENCH_PORT)\n"
-                << "  --threads N   Worker threads (default: nproc/2, env: BENCH_THREADS)\n"
-                << "  --static DIR  Static files directory\n"
-                << "  --routes N    Number of /r{N} routes for routing stress test\n"
-                << "  --help        Show this help\n";
-      return 0;
-    }
-  }
+  bench::BenchConfig benchCfg(8087, argc, argv);
 
   crow::SimpleApp app;
 
@@ -217,7 +184,7 @@ int main(int argc, char* argv[]) {
   // Endpoint 8: /status - Health check
   // ============================================================
   CROW_ROUTE(app, "/status")
-  ([numThreads]() {
+  ([numThreads = benchCfg.numThreads]() {
     crow::response res(200);
     res.add_header("Content-Type", "application/json");
     res.body = std::format(R"({{"server":"crow","threads":{},"status":"ok"}})", numThreads);
@@ -227,9 +194,9 @@ int main(int argc, char* argv[]) {
   // ============================================================
   // Endpoint 9: Static file serving (catch-all for files)
   // ============================================================
-  if (!staticDir.empty()) {
+  if (!benchCfg.staticDir.empty()) {
     CROW_ROUTE(app, "/<path>")
-    ([staticDir](const std::string& filePath) {
+    ([staticDir = benchCfg.staticDir](const std::string& filePath) {
       std::filesystem::path fullPath = std::filesystem::path(staticDir) / filePath;
 
       if (!std::filesystem::exists(fullPath) || !std::filesystem::is_regular_file(fullPath)) {
@@ -247,43 +214,40 @@ int main(int argc, char* argv[]) {
   // ============================================================
   // Endpoint 10: /r{N} - Routing stress test (literal routes)
   // ============================================================
-  if (routeCount > 0) {
-    // Note: Crow doesn't support dynamic route registration at runtime the same way
-    // Drogon does. For routing stress test, we use a pattern-based catch-all approach.
-    // This is done via a catch-all handler that parses the route number.
+  // Note: Crow doesn't support dynamic route registration at runtime the same way
+  // Drogon does. For routing stress test, we use a pattern-based catch-all approach.
+  // This is done via a catch-all handler that parses the route number.
 
-    // Pattern routes for routing stress
-    CROW_ROUTE(app, "/users/<string>/posts/<string>")
-    ([](const std::string& userId, const std::string& postId) {
-      return std::format("user {} post {}", userId, postId);
-    });
+  // Pattern routes for routing stress
+  CROW_ROUTE(app, "/users/<string>/posts/<string>")
+  ([](const std::string& userId, const std::string& postId) { return std::format("user {} post {}", userId, postId); });
 
-    CROW_ROUTE(app, "/api/v1/resources/<string>/items/<string>/actions/<string>")
-    ([](const std::string& resource, const std::string& item, const std::string& action) {
-      return std::format("resource {} item {} action {}", resource, item, action);
-    });
-  }
+  CROW_ROUTE(app, "/api/v1/resources/<string>/items/<string>/actions/<string>")
+  ([](const std::string& resource, const std::string& item, const std::string& action) {
+    return std::format("resource {} item {} action {}", resource, item, action);
+  });
 
   // For routing stress test with /r{N} routes, use a regex-based catchall
   // Note: Crow doesn't have native dynamic route generation, so we handle /r<int> pattern
   CROW_ROUTE(app, "/r<int>")
-  ([routeCount](int routeIdx) {
+  ([routeCount = benchCfg.routeCount](int routeIdx) {
     if (routeIdx >= 0 && routeIdx < routeCount) {
       return crow::response(200, std::format("route-{}", routeIdx));
     }
     return crow::response(404, "Not Found");
   });
 
-  std::cout << "Crow benchmark server starting on port " << port << " with " << numThreads << " threads\n";
-  if (!staticDir.empty()) {
-    std::cout << "Static files: " << staticDir << "\n";
+  std::cout << "Crow benchmark server starting on port " << benchCfg.port << " with " << benchCfg.numThreads
+            << " threads\n";
+  if (!benchCfg.staticDir.empty()) {
+    std::cout << "Static files: " << benchCfg.staticDir << "\n";
   }
-  if (routeCount > 0) {
-    std::cout << "Routes: " << routeCount << " literal + pattern routes\n";
+  if (benchCfg.routeCount > 0) {
+    std::cout << "Routes: " << benchCfg.routeCount << " literal + pattern routes\n";
   }
   std::cout << "Server running. Press Ctrl+C to stop.\n";
 
-  app.port(port).concurrency(static_cast<uint16_t>(numThreads)).run();
+  app.port(benchCfg.port).concurrency(static_cast<uint16_t>(benchCfg.numThreads)).run();
 
   return 0;
 }

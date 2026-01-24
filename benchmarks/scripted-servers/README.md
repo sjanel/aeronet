@@ -229,10 +229,11 @@ All servers implement identical endpoints:
 | aeronet | C++ | `aeronet_server.cpp` | Primary benchmark target |
 | drogon | C++ | `drogon_server.cpp` | Popular C++ async framework |
 | pistache | C++ | `pistache_server.cpp` | REST framework for C++ |
+| crow | C++ | `crow_server.cpp` | Header-only C++ microframework |
+| rust | Rust | `rust_server/` | axum async framework |
 | undertow | Java | `undertow_server/UndertowBenchServer.java` | High-perf Java NIO server |
 | go | Go | `go_server.go` | Standard library net/http |
 | python | Python | `python_server.py` | uvicorn + starlette (async) |
-| rust | Rust | `rust_server/` | axum async framework |
 
 ### Building/Running Non-C++ Servers
 
@@ -428,4 +429,4 @@ Notes:
 - [ ] Integrate with CI for regression detection
 - [ ] WebSocket scenarios
 - [ ] Add streaming/chunked benchmark when comparable APIs exist across frameworks
-- [ ] Add automatic compression / decompression benchmarks when supported
+- [ ] Add automatic compression / decompression benchmarks for frameworks that support it

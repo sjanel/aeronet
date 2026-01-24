@@ -30,14 +30,6 @@ constexpr unsigned char toupper(unsigned char ch) {
 
 constexpr char toupper(char ch) { return static_cast<char>(toupper(static_cast<unsigned char>(ch))); }
 
-uint16_t GetPort() {
-  const char* envPort = std::getenv("BENCH_PORT");
-  if (envPort != nullptr) {
-    return static_cast<uint16_t>(std::atoi(envPort));
-  }
-  return 8081;  // Different default port than aeronet
-}
-
 drogon::ContentType GetContentType(std::string_view path) {
   if (path.ends_with(".html")) {
     return drogon::ContentType::CT_TEXT_HTML;
@@ -57,38 +49,13 @@ drogon::ContentType GetContentType(std::string_view path) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  uint16_t port = GetPort();
-  int numThreads = bench::GetNumThreads();
-  std::string staticDir;
-  int routeCount = 0;
-
-  for (int argPos = 1; argPos < argc; ++argPos) {
-    std::string_view arg(argv[argPos]);
-    if (arg == "--port" && argPos + 1 < argc) {
-      port = static_cast<uint16_t>(std::atoi(argv[++argPos]));
-    } else if (arg == "--threads" && argPos + 1 < argc) {
-      numThreads = std::atoi(argv[++argPos]);
-    } else if (arg == "--static" && argPos + 1 < argc) {
-      staticDir = argv[++argPos];
-    } else if (arg == "--routes" && argPos + 1 < argc) {
-      routeCount = std::atoi(argv[++argPos]);
-    } else if (arg == "--help" || arg == "-h") {
-      std::cout << "Usage: " << argv[0] << " [options]\n"
-                << "Options:\n"
-                << "  --port N      Listen port (default: 8081, env: BENCH_PORT)\n"
-                << "  --threads N   Worker threads (default: nproc/2, env: BENCH_THREADS)\n"
-                << "  --static DIR  Static files directory\n"
-                << "  --routes N    Number of /r{N} routes for routing stress test\n"
-                << "  --help        Show this help\n";
-      return 0;
-    }
-  }
+  bench::BenchConfig benchCfg(8081, argc, argv);
 
   auto& app = drogon::app();
 
   // Configure Drogon
-  app.addListener("127.0.0.1", port);
-  app.setThreadNum(static_cast<std::size_t>(numThreads));
+  app.addListener("127.0.0.1", benchCfg.port);
+  app.setThreadNum(static_cast<std::size_t>(benchCfg.numThreads));
   app.setIdleConnectionTimeout(0);                      // No timeout for benchmarks
   app.setPipeliningRequestsNumber(1000000000);          // Allow many pipelined requests
   app.setClientMaxBodySize(4ULL * 1024 * 1024 * 1024);  // 4GB body limit
@@ -253,7 +220,8 @@ int main(int argc, char* argv[]) {
   // ============================================================
   app.registerHandler(
       "/status",
-      [numThreads](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+      [numThreads = benchCfg.numThreads](const drogon::HttpRequestPtr&,
+                                         std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
         auto resp = drogon::HttpResponse::newHttpResponse();
         resp->setStatusCode(drogon::k200OK);
         resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
@@ -265,77 +233,72 @@ int main(int argc, char* argv[]) {
   // ============================================================
   // Endpoint 9: /* - Static file serving
   // ============================================================
-  if (!staticDir.empty()) {
-    app.registerHandler(
-        "/{file_path}",
-        [staticDir]([[maybe_unused]] const drogon::HttpRequestPtr& req,
-                    std::function<void(const drogon::HttpResponsePtr&)>&& callback, std::string filePath) {
-          std::filesystem::path fullPath = std::filesystem::path(staticDir) / filePath;
+  if (!benchCfg.staticDir.empty()) {
+    app.registerHandler("/{file_path}",
+                        [staticDir = benchCfg.staticDir]([[maybe_unused]] const drogon::HttpRequestPtr& req,
+                                                         std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                                                         std::string filePath) {
+                          std::filesystem::path fullPath = std::filesystem::path(staticDir) / filePath;
 
-          if (!std::filesystem::exists(fullPath) || !std::filesystem::is_regular_file(fullPath)) {
-            auto resp = drogon::HttpResponse::newHttpResponse();
-            resp->setStatusCode(drogon::k404NotFound);
-            resp->setBody("Not Found");
-            callback(resp);
-            return;
-          }
+                          if (!std::filesystem::exists(fullPath) || !std::filesystem::is_regular_file(fullPath)) {
+                            auto resp = drogon::HttpResponse::newHttpResponse();
+                            resp->setStatusCode(drogon::k404NotFound);
+                            resp->setBody("Not Found");
+                            callback(resp);
+                            return;
+                          }
 
-          static constexpr std::string kAttachmentFileName{};
+                          static constexpr std::string kAttachmentFileName{};
 
-          auto resp = drogon::HttpResponse::newFileResponse(fullPath, kAttachmentFileName, GetContentType(filePath));
-          resp->setStatusCode(drogon::k200OK);
-          callback(resp);
-        },
-        {drogon::Get});
+                          auto resp = drogon::HttpResponse::newFileResponse(fullPath, kAttachmentFileName,
+                                                                            GetContentType(filePath));
+                          resp->setStatusCode(drogon::k200OK);
+                          callback(resp);
+                        },
+                        {drogon::Get});
   }
 
   // ============================================================
   // Endpoint 10: /r{N} - Routing stress test (literal routes)
   // ============================================================
-  if (routeCount > 0) {
-    for (int routeIdx = 0; routeIdx < routeCount; ++routeIdx) {
-      std::string path = std::format("/r{}", routeIdx);
-      app.registerHandler(
-          path,
-          [routeIdx](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
-            auto resp = drogon::HttpResponse::newHttpResponse();
-            resp->setStatusCode(drogon::k200OK);
-            resp->setBody(std::format("route-{}", routeIdx));
-            callback(resp);
-          },
-          {drogon::Get});
-    }
-
-    // Pattern routes for routing stress
+  for (int routeIdx = 0; routeIdx < benchCfg.routeCount; ++routeIdx) {
+    std::string path = std::format("/r{}", routeIdx);
     app.registerHandler(
-        "/users/{user_id}/posts/{post_id}",
-        [](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback,
-           std::string userId, std::string postId) {
+        path,
+        [routeIdx](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
           auto resp = drogon::HttpResponse::newHttpResponse();
           resp->setStatusCode(drogon::k200OK);
-          resp->setBody(std::format("user {} post {}", userId, postId));
-          callback(resp);
-        },
-        {drogon::Get});
-
-    app.registerHandler(
-        "/api/v1/resources/{resource}/items/{item}/actions/{action}",
-        [](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback,
-           std::string resource, std::string item, std::string action) {
-          auto resp = drogon::HttpResponse::newHttpResponse();
-          resp->setStatusCode(drogon::k200OK);
-          resp->setBody(std::format("resource {} item {} action {}", resource, item, action));
+          resp->setBody(std::format("route-{}", routeIdx));
           callback(resp);
         },
         {drogon::Get});
   }
+  std::cout << "Routes: " << benchCfg.routeCount << " literal + pattern routes\n";
+  // Pattern routes for routing stress
+  app.registerHandler("/users/{user_id}/posts/{post_id}",
+                      [](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                         std::string userId, std::string postId) {
+                        auto resp = drogon::HttpResponse::newHttpResponse();
+                        resp->setStatusCode(drogon::k200OK);
+                        resp->setBody(std::format("user {} post {}", userId, postId));
+                        callback(resp);
+                      },
+                      {drogon::Get});
 
-  std::cout << "drogon benchmark server starting on port " << port << " with " << numThreads << " threads\n";
-  if (!staticDir.empty()) {
-    std::cout << "Static files: " << staticDir << "\n";
-  }
-  if (routeCount > 0) {
-    std::cout << "Routes: " << routeCount << " literal + pattern routes\n";
+  app.registerHandler("/api/v{version}/items/{item}",
+                      [](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                         std::string version, std::string item) {
+                        auto resp = drogon::HttpResponse::newHttpResponse();
+                        resp->setStatusCode(drogon::k200OK);
+                        resp->setBody(std::format("version {} item {}", version, item));
+                        callback(resp);
+                      },
+                      {drogon::Get});
+
+  std::cout << "drogon benchmark server starting on port " << benchCfg.port << " with " << benchCfg.numThreads
+            << " threads\n";
+  if (!benchCfg.staticDir.empty()) {
+    std::cout << "Static files: " << benchCfg.staticDir << "\n";
   }
   std::cout << "Server running. Press Ctrl+C to stop.\n";
 
