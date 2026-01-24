@@ -12,7 +12,9 @@
 #include <string_view>
 #include <system_error>
 
+#include "aeronet/nchars.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"

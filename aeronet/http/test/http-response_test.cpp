@@ -114,7 +114,7 @@ class HttpResponseTest : public ::testing::Test {
     std::string out;
     out.reserve(firstBuf.size() + secondBuf.size());
     out.append(firstBuf);
-    EXPECT_TRUE(secondBuf.data() != nullptr || secondBuf.size() == 0);
+    EXPECT_TRUE(secondBuf.data() != nullptr || secondBuf.empty());
     out.append(secondBuf);
     return out;
   }

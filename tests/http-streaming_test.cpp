@@ -1087,7 +1087,7 @@ TEST(HttpResponseWriterFailures, MultipleStatusCalls) {
 // tries to write large amounts of data that might exceed socket buffers.
 // Ignore SIGPIPE to prevent process termination on broken pipe
 static const int kSigpipeIgnored = []() {
-  ::signal(SIGPIPE, SIG_IGN);
+  ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
   return 0;
 }();
 
