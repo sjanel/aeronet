@@ -7,6 +7,7 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/city-hash.hpp"
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/dogstatsd.hpp"
 #include "aeronet/flat-hash-map.hpp"
@@ -18,8 +19,7 @@ namespace aeronet {
 
 class TelemetryConfig {
  public:
-  using HistogramBoundariesMap =
-      flat_hash_map<RawChars32, vector<double>, std::hash<std::string_view>, std::equal_to<>>;
+  using HistogramBoundariesMap = flat_hash_map<RawChars32, vector<double>, CityHash, std::equal_to<>>;
 
   void validate();
 

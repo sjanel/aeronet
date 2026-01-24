@@ -42,7 +42,7 @@ struct CaseInsensitiveHashFnv1Style {
 std::vector<std::string> GenerateTestStrings() {
   constexpr std::size_t kCount = 100'000;
   constexpr std::size_t kMinLen = 4;
-  constexpr std::size_t kMaxLen = 192;
+  constexpr std::size_t kMaxLen = 96;
 
   std::vector<std::string> strings;
   strings.reserve(kCount);
@@ -194,8 +194,21 @@ static void BM_FlatHashMap_Find_CI_FNV1a(benchmark::State& state) {
 }
 
 static void BM_FlatHashMap_Find_City(benchmark::State& state) {
-  flat_hash_map<std::string_view, std::string_view, CityHash, CaseInsensitiveEqualFunc> map;
+  flat_hash_map<std::string_view, std::string_view, CityHash> map;
   BuildMap<CityHash>(kStorage, map);
+
+  for (auto _ : state) {
+    for (std::string_view s : kStorage) {
+      benchmark::DoNotOptimize(map.find(s));
+    }
+  }
+
+  state.SetItemsProcessed(state.iterations() * kStorage.size());
+}
+
+static void BM_FlatHashMap_Find_Sv(benchmark::State& state) {
+  flat_hash_map<std::string_view, std::string_view, std::hash<std::string_view>> map;
+  BuildMap<std::hash<std::string_view>>(kStorage, map);
 
   for (auto _ : state) {
     for (std::string_view s : kStorage) {
@@ -219,5 +232,6 @@ BENCHMARK(BM_UnorderedMap_Find_City);
 BENCHMARK(BM_FlatHashMap_Find_CI_Boost);
 BENCHMARK(BM_FlatHashMap_Find_CI_FNV1a);
 BENCHMARK(BM_FlatHashMap_Find_City);
+BENCHMARK(BM_FlatHashMap_Find_Sv);
 
 BENCHMARK_MAIN();
