@@ -7,6 +7,7 @@
 #include <type_traits>
 #include <variant>
 
+#include "aeronet/city-hash.hpp"
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/flat-hash-map.hpp"
@@ -316,7 +317,7 @@ class Router {
     RouteNode* child{nullptr};
   };
 
-  using RouteNodeMap = flat_hash_map<RawChars32, RouteNode*, std::hash<std::string_view>, std::equal_to<>>;
+  using RouteNodeMap = flat_hash_map<RawChars32, RouteNode*, CityHash, std::equal_to<>>;
 
   struct RouteNode {
     // Return a human-readable pattern string reconstructed from the compiled route

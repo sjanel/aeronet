@@ -24,7 +24,7 @@
 
 ### Performance at a glance
 
-`aeronet` is designed to be **very fast**. In our automated [wrk](https://github.com/wg/wrk)-based benchmarks (HTTP/1.1 based) against other popular frameworks (run in CI against a fixed set of competitors such as [drogon](https://github.com/drogonframework/drogon), [pistache](https://github.com/pistacheio/pistache), a Rust Axum server, Java Undertow, Go and Python), `aeronet`:
+`aeronet` is designed to be **very fast**. In our automated [wrk](https://github.com/wg/wrk)-based benchmarks (HTTP/1.1 based) against other popular frameworks (run in CI against a fixed set of competitors such as [drogon](https://github.com/drogonframework/drogon), [pistache](https://github.com/pistacheio/pistache), [Crow](https://github.com/CrowCpp/Crow), a [Rust Axum server](https://docs.rs/axum/latest/axum/), [Undertow in Java](https://github.com/undertow-io/undertow), Go and Python), `aeronet`:
 
 - Achieves the **highest requests/sec** in most scenarios
 - Consistently delivers **lower average latency** in those same scenarios
