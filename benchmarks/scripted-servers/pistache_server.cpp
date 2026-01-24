@@ -34,9 +34,9 @@ constexpr unsigned char toupper(unsigned char ch) {
 constexpr char toupper(char ch) { return static_cast<char>(toupper(static_cast<unsigned char>(ch))); }
 
 // Global config (set before server starts, read-only during request handling)
-int gNumThreads = 1;
+int gNumThreads;
 std::string gStaticDir;
-int gRouteCount = 0;
+int gRouteCount;
 
 // Parse query parameter as integer
 int GetQueryParamOr(const Pistache::Http::Request& req, const std::string& key, int defaultValue) {
@@ -48,14 +48,6 @@ int GetQueryParamOr(const Pistache::Http::Request& req, const std::string& key, 
     }
   }
   return defaultValue;
-}
-
-uint16_t GetPort() {
-  const char* envPort = std::getenv("BENCH_PORT");
-  if (envPort != nullptr) {
-    return static_cast<uint16_t>(std::atoi(envPort));
-  }
-  return 8085;
 }
 
 std::string GetContentType(std::string_view path) {
@@ -223,7 +215,7 @@ class BenchHandler : public Pistache::Http::Handler {
     }
 
     // Routing stress test: /r{N}
-    if (method == Pistache::Http::Method::Get && gRouteCount > 0) {
+    if (method == Pistache::Http::Method::Get) {
       if (auto routeNum = ParseRouteNumber(path)) {
         response.send(Pistache::Http::Code::Ok, std::format("route {}", *routeNum));
         return;
@@ -250,42 +242,16 @@ class BenchHandler : public Pistache::Http::Handler {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  uint16_t port = GetPort();
-  int numThreads = bench::GetNumThreads();
-  std::string staticDir;
-  int routeCount = 0;
-
-  for (int argPos = 1; argPos < argc; ++argPos) {
-    std::string arg(argv[argPos]);
-    if (arg == "--port" && argPos + 1 < argc) {
-      port = static_cast<uint16_t>(std::atoi(argv[++argPos]));
-    } else if (arg == "--threads" && argPos + 1 < argc) {
-      numThreads = std::atoi(argv[++argPos]);
-    } else if (arg == "--static" && argPos + 1 < argc) {
-      staticDir = argv[++argPos];
-    } else if (arg == "--routes" && argPos + 1 < argc) {
-      routeCount = std::atoi(argv[++argPos]);
-    } else if (arg == "--help" || arg == "-h") {
-      std::cout << "Usage: " << argv[0] << " [options]\n"
-                << "Options:\n"
-                << "  --port N      Listen port (default: 8085, env: BENCH_PORT)\n"
-                << "  --threads N   Worker threads (default: nproc/2, env: BENCH_THREADS)\n"
-                << "  --static DIR  Static files directory\n"
-                << "  --routes N    Number of /r{N} routes for routing stress test\n"
-                << "  --help        Show this help\n";
-      return 0;
-    }
-  }
+  bench::BenchConfig benchCfg(8085, argc, argv);
 
   // Store in global for handler access
-  gNumThreads = numThreads;
-  gStaticDir = staticDir;
-  gRouteCount = routeCount;
+  gNumThreads = benchCfg.numThreads;
+  gStaticDir = benchCfg.staticDir;
+  gRouteCount = benchCfg.routeCount;
 
-  Pistache::Address addr(Pistache::Ipv4::loopback(), Pistache::Port(port));
-
+  Pistache::Address addr(Pistache::Ipv4::loopback(), Pistache::Port(benchCfg.port));
   auto opts = Pistache::Http::Endpoint::options()
-                  .threads(numThreads)
+                  .threads(benchCfg.numThreads)
                   .maxRequestSize(static_cast<size_t>(4ULL * 1024 * 1024 * 1024))
                   .maxResponseSize(static_cast<size_t>(4ULL * 1024 * 1024 * 1024));
 
@@ -293,13 +259,12 @@ int main(int argc, char* argv[]) {
   server.init(opts);
   server.setHandler(Pistache::Http::make_handler<BenchHandler>());
 
-  std::cout << "pistache benchmark server starting on port " << port << " with " << numThreads << " threads\n";
-  if (!staticDir.empty()) {
-    std::cout << "Static files: " << staticDir << "\n";
+  std::cout << "pistache benchmark server starting on port " << benchCfg.port << " with " << benchCfg.numThreads
+            << " threads\n";
+  if (!benchCfg.staticDir.empty()) {
+    std::cout << "Static files: " << benchCfg.staticDir << "\n";
   }
-  if (routeCount > 0) {
-    std::cout << "Routes: " << routeCount << " literal + pattern routes\n";
-  }
+  std::cout << "Routes: " << benchCfg.routeCount << " literal + pattern routes\n";
 
   server.serve();
 
