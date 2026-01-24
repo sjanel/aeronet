@@ -11,6 +11,7 @@
 #include <string_view>
 
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet::websocket {
 namespace {

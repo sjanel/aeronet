@@ -739,9 +739,13 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRe
   asyncState.responseMiddlewareCount = responseMiddleware.size();
   asyncState.pendingResponse = {};
 
-  if (asyncState.needsBody) {
-    state.request.pinHeadStorage(state);
-  }
+  // Keep header storage stable while async work runs so header string_views stay valid
+  state.request.pinHeadStorage(state);
+
+  // Install the postCallback function for deferred work
+  asyncState.postCallback = [this, fd = cnxIt->first.fd()](std::coroutine_handle<> handle, std::function<void()> work) {
+    postAsyncCallback(fd, handle, std::move(work));
+  };
 
   resumeAsyncHandler(cnxIt);
   return asyncState.active;
@@ -1223,6 +1227,49 @@ void SingleHttpServer::applyPendingUpdates() {
   if (_updates.hasRouter.load(std::memory_order_acquire)) {
     ApplyPendingUpdates(_updates.lock, _updates.router, _updates.hasRouter, _router, "router");
   }
+
+  // Process async callbacks posted from background threads
+  if (_updates.hasAsyncCallbacks.load(std::memory_order_acquire)) {
+    vector<internal::PendingUpdates::AsyncCallback> callbacks;
+    {
+      std::scoped_lock lock(_updates.lock);
+      callbacks = std::move(_updates.asyncCallbacks);
+      _updates.asyncCallbacks.clear();
+      _updates.hasAsyncCallbacks.store(false, std::memory_order_release);
+    }
+
+    for (auto& cb : callbacks) {
+      // Execute any pre-resume work
+      if (cb.work) {
+        try {
+          cb.work();
+        } catch (const std::exception& ex) {
+          log::error("Exception in async callback work: {}", ex.what());
+        } catch (...) {
+          log::error("Unknown exception in async callback work");
+        }
+      }
+
+      // Use O(1) hash map lookup with the connection fd
+      auto it = _connections.active.find(cb.connectionFd);
+      if (it != _connections.active.end()) {
+        auto& asyncState = it->second->asyncState;
+        if (asyncState.active && asyncState.handle == cb.handle) {
+          asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::None;
+          resumeAsyncHandler(it);
+        }
+      }
+    }
+  }
+}
+
+void SingleHttpServer::postAsyncCallback(int connectionFd, std::coroutine_handle<> handle, std::function<void()> work) {
+  {
+    std::scoped_lock lock(_updates.lock);
+    _updates.asyncCallbacks.push_back({connectionFd, handle, std::move(work)});
+    _updates.hasAsyncCallbacks.store(true, std::memory_order_release);
+  }
+  _lifecycle.wakeupFd.send();
 }
 
 #ifdef AERONET_ENABLE_HTTP2

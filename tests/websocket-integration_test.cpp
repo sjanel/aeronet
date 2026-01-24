@@ -203,7 +203,7 @@ TEST_F(WebSocketTest, UpgradeSuccessful) {
   test::sendAll(conn.fd(), upgradeReq);
 
   // Read response
-  std::string response = test::recvWithTimeout(conn.fd(), 1000ms, 129UL);  // NOLINT(misc-include-cleaner)
+  std::string response = test::recvWithTimeout(conn.fd(), std::chrono::seconds{1}, 129UL);
 
   // Verify 101 response
   EXPECT_TRUE(response.contains("HTTP/1.1 101")) << "Response: " << response;

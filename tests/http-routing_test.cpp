@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -1116,4 +1117,226 @@ TEST(HttpRouting, AsyncHandlerNonStdExceptionWithBodyNotReady) {
   }
   EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
   EXPECT_TRUE(response.contains("Unknown error")) << response;
+}
+
+// Test deferWork(): basic async work execution returning a value
+TEST(HttpRouting, DeferWorkBasicReturnValue) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-basic", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+    // Run blocking work on background thread
+    int result = co_await req.deferWork([]() {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      return 42;
+    });
+    co_return HttpResponse(http::StatusCodeOK).body("result=" + std::to_string(result));
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/defer-basic");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.contains("result=42")) << response;
+}
+
+// Test deferWork(): work returning a string
+TEST(HttpRouting, DeferWorkReturnsString) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-string", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+    std::string result = co_await req.deferWork([]() -> std::string {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      return "computed-value";
+    });
+    co_return HttpResponse(http::StatusCodeOK).body(result);
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/defer-string");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.contains("computed-value")) << response;
+}
+
+// Test deferWork(): work returning an optional
+TEST(HttpRouting, DeferWorkReturnsOptional) {
+  ts.resetRouterAndGet().setPath(
+      http::Method::GET, "/defer-optional", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+        std::optional<int> result = co_await req.deferWork([]() -> std::optional<int> {
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+          return 123;
+        });
+        if (result) {
+          co_return HttpResponse(http::StatusCodeOK).body("found=" + std::to_string(*result));
+        }
+        co_return HttpResponse(http::StatusCodeNotFound).body("not found");
+      });
+
+  const std::string response = test::simpleGet(ts.port(), "/defer-optional");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.contains("found=123")) << response;
+}
+
+// Test deferWork(): multiple sequential defers in same handler
+TEST(HttpRouting, DeferWorkMultipleSequential) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-sequential",
+                                 [](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                   int first = co_await req.deferWork([]() {
+                                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                                     return 10;
+                                   });
+                                   int second = co_await req.deferWork([first]() {
+                                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                                     return first * 2;
+                                   });
+                                   co_return HttpResponse(http::StatusCodeOK)
+                                       .body("first=" + std::to_string(first) + ",second=" + std::to_string(second));
+                                 });
+
+  const std::string response = test::simpleGet(ts.port(), "/defer-sequential");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.contains("first=10,second=20")) << response;
+}
+
+// Test deferWork(): combined with bodyAwaitable
+TEST(HttpRouting, DeferWorkCombinedWithBody) {
+  ts.resetRouterAndGet().setPath(
+      http::Method::POST, "/defer-with-body", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+        // First, wait for body
+        std::string_view body = co_await req.bodyAwaitable();
+        std::string bodyCopy(body);
+
+        // Then, process body on background thread
+        int result = co_await req.deferWork([bodyCopy]() {
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+          return static_cast<int>(bodyCopy.size());
+        });
+
+        co_return HttpResponse(http::StatusCodeOK).body("body_size=" + std::to_string(result));
+      });
+
+  test::RequestOptions opt;
+  opt.method = "POST";
+  opt.target = "/defer-with-body";
+  opt.connection = "close";
+  opt.body = "hello world!";
+  const std::string response = test::requestOrThrow(ts.port(), opt);
+
+  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.contains("body_size=12")) << response;
+}
+
+// Test deferWork(): event loop can process other requests while waiting
+TEST(HttpRouting, DeferWorkEventLoopContinues) {
+  std::atomic<int> concurrentRequests{0};
+  std::atomic<int> maxConcurrent{0};
+
+  ts.resetRouterAndGet().setPath(
+      http::Method::GET, "/defer-concurrent", [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+        int current = ++concurrentRequests;
+        // Update max concurrent
+        int expected = maxConcurrent.load();
+        while (current > expected && !maxConcurrent.compare_exchange_weak(expected, current)) {
+        }
+
+        (void)co_await req.deferWork([&]() {
+          std::this_thread::sleep_for(std::chrono::milliseconds(50));
+          return 0;
+        });
+
+        --concurrentRequests;
+        co_return HttpResponse(http::StatusCodeOK).body("done");
+      });
+
+  // Launch multiple requests in parallel
+  std::vector<std::thread> threads;
+  std::atomic<int> successCount{0};
+  constexpr int kNumRequests = 5;
+
+  threads.reserve(kNumRequests);
+  for (int idx = 0; idx < kNumRequests; ++idx) {
+    threads.emplace_back([&]() {
+      const std::string response = test::simpleGet(ts.port(), "/defer-concurrent");
+      if (response.contains("HTTP/1.1 200") && response.contains("done")) {
+        ++successCount;
+      }
+    });
+  }
+
+  for (auto& th : threads) {
+    th.join();
+  }
+
+  EXPECT_EQ(successCount.load(), kNumRequests);
+  // With proper deferWork implementation, multiple requests should be processed concurrently
+  // The maxConcurrent should be > 1 if the event loop is properly handling multiple requests
+  EXPECT_GT(maxConcurrent.load(), 1) << "Event loop should handle multiple concurrent requests while waiting for "
+                                        "deferWork";
+}
+
+// Test deferWork(): work returning bool
+TEST(HttpRouting, DeferWorkReturnsBool) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-bool", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+    bool result = co_await req.deferWork([]() {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      return true;
+    });
+    co_return HttpResponse(http::StatusCodeOK).body(result ? "success" : "failure");
+  });
+
+  const std::string response = test::simpleGet(ts.port(), "/defer-bool");
+  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.contains("success")) << response;
+}
+
+// Test deferWork(): exception (std::exception) thrown in work function
+TEST(HttpRouting, DeferWorkThrowsStdException) {
+  ts.resetRouterAndGet().setPath(
+      http::Method::GET, "/defer-throw-std", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+        // The work function throws - exception is captured and rethrown in await_resume
+        try {
+          (void)co_await req.deferWork([]() -> int {
+            throw std::runtime_error("work failed");
+            return 0;  // never reached
+          });
+          co_return HttpResponse(http::StatusCodeOK).body("should not reach");
+        } catch (const std::runtime_error& ex) {
+          co_return HttpResponse(http::StatusCodeInternalServerError).body(std::string("caught: ") + ex.what());
+        }
+      });
+
+  const std::string response = test::simpleGet(ts.port(), "/defer-throw-std");
+  EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
+  EXPECT_TRUE(response.contains("caught: work failed")) << response;
+}
+
+// Test deferWork(): non-std exception thrown in work function
+TEST(HttpRouting, DeferWorkThrowsNonStdException) {
+  ts.resetRouterAndGet().setPath(
+      http::Method::GET, "/defer-throw-nonstd", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+        // The work function throws a non-std exception
+        try {
+          (void)co_await req.deferWork([]() -> int {
+            throw 42;  // non-std exception
+            return 0;
+          });
+          co_return HttpResponse(http::StatusCodeOK).body("should not reach");
+        } catch (int ex) {
+          co_return HttpResponse(http::StatusCodeInternalServerError).body("caught int: " + std::to_string(ex));
+        }
+      });
+
+  const std::string response = test::simpleGet(ts.port(), "/defer-throw-nonstd");
+  EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
+  EXPECT_TRUE(response.contains("caught int: 42")) << response;
+}
+
+// Test deferWork(): unhandled exception propagates to coroutine promise
+TEST(HttpRouting, DeferWorkUnhandledException) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-unhandled",
+                                 [](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                   // Exception not caught in coroutine - propagates to promise
+                                   (void)co_await req.deferWork([]() -> int {
+                                     throw std::runtime_error("unhandled in work");
+                                     return 0;
+                                   });
+                                   co_return HttpResponse(http::StatusCodeOK).body("should not reach");
+                                 });
+
+  const std::string response = test::simpleGet(ts.port(), "/defer-unhandled");
+  // Server catches unhandled exception and returns 500
+  EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
+  EXPECT_TRUE(response.contains("unhandled in work")) << response;
 }

@@ -4,9 +4,11 @@
 #include <cassert>
 #include <cctype>
 #include <chrono>
+#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -364,6 +366,17 @@ void HttpRequest::end(http::StatusCode respStatusCode) {
 void HttpRequest::markAwaitingBody() const noexcept {
   assert(_ownerState->asyncState.active);
   _ownerState->asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::WaitingForBody;
+}
+
+void HttpRequest::markAwaitingCallback() const noexcept {
+  assert(_ownerState->asyncState.active);
+  _ownerState->asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::WaitingForCallback;
+}
+
+void HttpRequest::postCallback(std::coroutine_handle<> handle, std::function<void()> work) const {
+  assert(_ownerState->asyncState.active);
+  assert(_ownerState->asyncState.postCallback);
+  _ownerState->asyncState.postCallback(handle, std::move(work));
 }
 
 HttpResponse::Options HttpRequest::makeResponseOptions() const noexcept {

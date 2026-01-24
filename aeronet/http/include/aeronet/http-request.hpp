@@ -4,9 +4,13 @@
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string_view>
+#include <thread>
+#include <type_traits>
 
 #include "aeronet/city-hash.hpp"
 #include "aeronet/concatenated-headers.hpp"
@@ -65,6 +69,60 @@ class HttpRequest {
 
    private:
     HttpRequest& _request;
+  };
+
+  // DeferredWork: awaitable for running work on a background thread and resuming in the server's event loop.
+  // This enables true async operations (database queries, API calls, file I/O) without blocking the event loop.
+  //
+  // Usage:
+  //   auto result = co_await req.deferWork([&]() -> MyResult {
+  //     // This lambda runs on a background thread
+  //     return slowDatabaseQuery();  // blocking I/O is fine here
+  //   });
+  //
+  // The coroutine suspends immediately, the work function executes on a new thread, and when complete,
+  // the server's event loop is notified to resume the coroutine with the result.
+  //
+  // Exception handling: If the work function throws, the exception is captured and rethrown when
+  // await_resume() is called, propagating it through the coroutine normally.
+  template <typename Result>
+  class DeferredWorkAwaitable {
+   public:
+    using WorkFn = std::function<Result()>;
+
+    DeferredWorkAwaitable(HttpRequest& request, WorkFn work) noexcept : _request(request), _work(std::move(work)) {}
+
+    [[nodiscard]] bool await_ready() const noexcept { return false; }
+
+    void await_suspend(std::coroutine_handle<> handle) noexcept {
+      _request.markAwaitingCallback();
+
+      auto work = std::move(_work);
+      Result* resultPtr = &_result;
+      std::exception_ptr* exPtr = &_exception;
+
+      std::thread([&req = _request, handle, work = std::move(work), resultPtr, exPtr]() mutable {
+        try {
+          *resultPtr = work();
+        } catch (...) {
+          *exPtr = std::current_exception();
+        }
+        req.postCallback(handle, nullptr);
+      }).detach();
+    }
+
+    [[nodiscard]] Result await_resume() {
+      if (_exception) {
+        std::rethrow_exception(_exception);
+      }
+      return std::move(_result);
+    }
+
+   private:
+    HttpRequest& _request;
+    WorkFn _work;
+    Result _result{};
+    std::exception_ptr _exception;
   };
 
   // Returns the (possibly merged) HTTP header value for the given key or an empty string_view if absent.
@@ -185,6 +243,26 @@ class HttpRequest {
   // Awaitable helper returning the fully buffered body. Currently completes synchronously but exposes an
   // awaitable interface so coroutine-based handlers can share the same API surface as future streaming support.
   [[nodiscard]] BodyAggregateAwaitable bodyAwaitable() { return BodyAggregateAwaitable(*this); }
+
+  // Defer work to a background thread and resume in the server's event loop when complete.
+  // This is the idiomatic way to perform blocking operations (database queries, API calls, file I/O)
+  // in async handlers without blocking the server's event loop.
+  //
+  // The work function executes on a detached thread. When it completes, the server's event loop
+  // is notified and the coroutine resumes with the result.
+  //
+  // Usage:
+  //   auto user = co_await req.deferWork([userId = std::string(userId)]() {
+  //     return database.query("SELECT * FROM users WHERE id = ?", userId);
+  //   });
+  //
+  // Thread safety: The work function runs on a background thread. Be careful with captured references.
+  // Copy any data you need, or use thread-safe data structures.
+  template <typename WorkFn>
+  [[nodiscard]] auto deferWork(WorkFn&& work) {
+    using Result = std::invoke_result_t<WorkFn>;
+    return DeferredWorkAwaitable<Result>(*this, std::forward<WorkFn>(work));
+  }
 
   // Indicates whether additional body data remains to be read via readBody().
   [[nodiscard]] bool hasMoreBody() const;
@@ -330,6 +408,10 @@ class HttpRequest {
   void end(http::StatusCode respStatusCode);
 
   void markAwaitingBody() const noexcept;
+  void markAwaitingCallback() const noexcept;
+
+  // Post a callback to be executed in the server's event loop, then resume the coroutine.
+  void postCallback(std::coroutine_handle<> handle, std::function<void()> work) const;
 
   [[nodiscard]] HttpResponse::Options makeResponseOptions() const noexcept;
 

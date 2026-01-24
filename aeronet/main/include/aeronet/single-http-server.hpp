@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -478,6 +479,10 @@ class SingleHttpServer {
 
   void submitRouterUpdate(std::function<void(Router&)> updater,
                           std::shared_ptr<std::promise<std::exception_ptr>> completion);
+
+  // Post an async callback to be processed in the event loop, then resume the coroutine.
+  // Called from background threads via ConnectionState::asyncState.postCallback.
+  void postAsyncCallback(int connectionFd, std::coroutine_handle<> handle, std::function<void()> work);
 
   // Helpers to enable/disable writable interest (EPOLLOUT) for a connection. They wrap
   // ModWithCloseOnFailure and update `ConnectionState::waitingWritable` and internal stats

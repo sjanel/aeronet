@@ -184,7 +184,7 @@ struct ConnectionState {
   struct AsyncHandlerState {
     AsyncHandlerState() = default;
 
-    enum class AwaitReason : uint8_t { None, WaitingForBody };
+    enum class AwaitReason : uint8_t { None, WaitingForBody, WaitingForCallback };
 
     void clear();
 
@@ -199,6 +199,9 @@ struct ConnectionState {
     const void* responseMiddleware{nullptr};
     std::size_t responseMiddlewareCount{0};
     std::optional<HttpResponse> pendingResponse;
+    // Callback to post async work completion to the server's event loop.
+    // Set by the server when dispatching an async handler.
+    std::function<void(std::coroutine_handle<>, std::function<void()>)> postCallback;
   } asyncState;
 };
 

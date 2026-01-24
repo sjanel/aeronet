@@ -18,12 +18,16 @@ All notable changes to aeronet are documented in this file.
 - Check at runtime if header name and value about to be inserted in a response are valid, otherwise throws `std::invalid_argument`
 - HttpResponse constructor with concatenated headers throws `std::invalid_argument` if expected format is not respected.
 
+### New Features
+
+- `HttpRequest::makeResponse()` factory methods for simplified response creation with body and content-type.
+- `HttpRequest::deferWork()` method to let the main thread come back to the event loop and launch an asynchronous task (in a dedicated thread) to process the request.
+- `size` / `length` method helpers in `HttpResponse`, with `reserve` and capacity getters.
+- Option `HttpServerConfig::addTrailerHeader` to automatically emit `trailer` header when trailers are added to responses in `HTTP/1.1` only.
+
 ### Improvements
 
-- New `HttpRequest::makeResponse()` factory methods for simplified response creation with body and content-type.
-- New size / length method helpers in `HttpResponse`, with `reserve` and capacity getters.
 - All Header values stored in `HttpResponse` and `HttpResponseWriter` are now trimmed of leading/trailing whitespace on set.
-- New option `HttpServerConfig::addTrailerHeader` to automatically emit `trailer` header when trailers are added to responses in `HTTP/1.1` only.
 - `DogStatsD` is now able to reconnect automatically if the UDS socket becomes unavailable. The client is also more efficient.
 - Make sure that `WebSocketConfig.maxMessageSize` is strictly respected when decompressing a `WebSocket` message
 - Optimized *prepared* (built from `makeResponse()`) `HttpResponse` to avoid allocating body and trailers memory for **HEAD** requests.
