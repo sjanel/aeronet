@@ -69,6 +69,55 @@ else()
   message(STATUS "[aeronet][bench] Pistache benchmark server disabled (AERONET_BENCH_ENABLE_PISTACHE=${AERONET_BENCH_ENABLE_PISTACHE})")
 endif()
 
+## Crow benchmark server (build from source with FetchContent)
+if(AERONET_BENCH_ENABLE_CROW)
+  include(FetchContent)
+  
+  find_package(Threads REQUIRED)
+  
+  # Crow requires standalone ASIO - fetch it first
+  FetchContent_Declare(
+    asio
+    GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
+    GIT_TAG        asio-1-32-0
+    GIT_SHALLOW    TRUE
+  )
+  FetchContent_MakeAvailable(asio)
+  
+  # Set ASIO include dir for Crow to find it
+  set(ASIO_INCLUDE_DIR ${asio_SOURCE_DIR}/asio/include CACHE PATH "ASIO include directory" FORCE)
+  
+  # Fetch Crow from source (CrowCpp - maintained fork)
+  FetchContent_Declare(
+    Crow
+    GIT_REPOSITORY https://github.com/CrowCpp/Crow.git
+    GIT_TAG        v1.3.0
+    GIT_SHALLOW    TRUE
+  )
+  
+  # Crow is header-only, configure options
+  set(CROW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(CROW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(CROW_ENABLE_SSL OFF CACHE BOOL "" FORCE)
+  set(CROW_ENABLE_COMPRESSION OFF CACHE BOOL "" FORCE)
+  
+  FetchContent_MakeAvailable(Crow)
+  
+  AeronetAddProjectExecutable(crow-bench-server crow_server.cpp)
+  target_link_libraries(crow-bench-server PRIVATE Crow::Crow Threads::Threads)
+  set_target_properties(crow-bench-server PROPERTIES FOLDER "benchmarks/servers")
+  
+  # Enable LTO for Release builds
+  if(AERONET_IPO_SUPPORTED AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    set_property(TARGET crow-bench-server PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    message(STATUS "[aeronet][bench] LTO enabled for crow-bench-server")
+  endif()
+  
+  message(STATUS "[aeronet][bench] Crow benchmark server enabled (built from source)")
+else()
+  message(STATUS "[aeronet][bench] Crow benchmark server disabled (AERONET_BENCH_ENABLE_CROW=${AERONET_BENCH_ENABLE_CROW})")
+endif()
+
 # Copy Lua scripts and runner to build directory for convenience
 set(SCRIPTED_SERVERS_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(SCRIPTED_SERVERS_BUILD_DIR ${CMAKE_CURRENT_BINARY_DIR})
@@ -115,6 +164,10 @@ endif()
 
 if(TARGET pistache-bench-server)
   add_dependencies(run-scripted-benchmarks pistache-bench-server)
+endif()
+
+if(TARGET crow-bench-server)
+  add_dependencies(run-scripted-benchmarks crow-bench-server)
 endif()
 
 message(STATUS "[aeronet][bench] Scripted server benchmarks configured")
