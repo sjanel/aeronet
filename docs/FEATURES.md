@@ -1299,6 +1299,75 @@ You can `co_await` any type that satisfies the C++ coroutine awaitable concept.
 
 - `req.bodyAwaitable()`: Suspends until the full request body is available (buffered).
 - `req.readBodyAsync(maxBytes)`: (Future) Suspends until a chunk of body data is available.
+- `req.deferWork(work)`: Runs blocking work on a background thread, suspends the coroutine, and resumes when the work completes.
+
+#### Deferring Blocking Work to Background Threads
+
+When your async handler needs to perform blocking operations (database queries, file I/O, CPU-intensive computations), you can use `req.deferWork(work)` to run the work on a background thread without blocking the event loop. This allows the server to continue handling other requests while waiting for the blocking operation to complete.
+
+```cpp
+
+struct User {
+  int id;
+  std::string toJson() const { return "{\"id\": " + std::to_string(id) + "}"; }
+};
+
+Router router;
+router.setPath(http::Method::GET, "/users/{id}", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+  int userId = std::stoi(std::string(req.pathParams().at("id")));
+
+  // Run blocking database query on background thread
+  // Event loop continues handling other requests while we wait
+  std::optional<User> user = co_await req.deferWork([userId]() {
+    // databaseLookup(userId);
+    return User{userId};  // Simulated DB result
+  });
+
+  if (!user) {
+    co_return HttpResponse(http::StatusCodeNotFound).body("User not found");
+  }
+  co_return HttpResponse(http::StatusCodeOK).body(user->toJson());
+});
+```
+
+**Key Features:**
+
+- **Non-blocking**: The event loop remains responsive while the work executes on a background thread.
+- **Type-safe**: The return type of `deferWork` matches the return type of the work function.
+- **Sequential composition**: You can chain multiple `deferWork` calls:
+
+Runnable demo: [examples/async-handlers.cpp](examples/async-handlers.cpp) (binary `aeronet-async-handlers`) exposes `/async` and `/users/{id}` endpoints showing deferWork with and without request bodies.
+
+```cpp
+Router router;
+router.setPath(http::Method::POST, "/process", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+  // First, wait for body
+  std::string_view body = co_await req.bodyAwaitable();
+  std::string bodyCopy(body);
+
+  // Then, process on background thread
+  auto result = co_await req.deferWork([data = std::move(bodyCopy)]() {
+    // expensiveProcessing(data);
+    return data;
+  });
+
+  // Finally, save result on background thread
+  bool saved = co_await req.deferWork([result]() {
+    // saveToDatabase(result);
+    return true;
+  });
+
+  co_return HttpResponse(saved ? 200 : 500);
+});
+```
+
+**Implementation Notes:**
+
+- Each `deferWork` call spawns a new `std::thread` (consider using a thread pool for high-throughput scenarios).
+- The coroutine resumes on the event loop thread, maintaining thread-safety for server state access.
+- The work function is moved into the background thread, so capture by value or use `std::move` for non-copyable types.
+- **Exception Handling**: If the work function throws an exception, it is captured and rethrown when the coroutine resumes, propagating normally through the coroutine.
+- **HTTP/2 Limitation**: `deferWork()` is currently only fully non-blocking for HTTP/1.1. HTTP/2 executes coroutines synchronously, so `deferWork()` will block the connection thread until the work completes. This is a known limitation; HTTP/2 async handler support is planned for future releases.
 
 #### Implementation Details
 

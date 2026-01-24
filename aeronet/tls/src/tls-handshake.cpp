@@ -7,9 +7,11 @@
 #include <openssl/x509.h>
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <string_view>
 #include <utility>
 
 #include "aeronet/log.hpp"

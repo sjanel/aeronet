@@ -8,6 +8,7 @@
 #include <array>
 #include <cerrno>
 #include <cstdarg>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>

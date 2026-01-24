@@ -2,7 +2,15 @@
 
 #include <dlfcn.h>
 #include <gtest/gtest.h>
+#include <openssl/asn1.h>
+#include <openssl/bio.h>
+#include <openssl/obj_mac.h>
 #include <openssl/ssl.h>
+#include <openssl/types.h>
+#include <openssl/x509.h>
+
+#include <chrono>
+#include <cstring>
 
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
@@ -72,16 +80,16 @@ extern "C" X509_NAME* X509_get_subject_name(const X509* /*x") */) {
   return g_test_x509_name;
 }
 
-extern "C" int X509_NAME_print_ex(BIO* bp, const X509_NAME* name, int indent, unsigned long flags) {
+extern "C" int X509_NAME_print_ex(BIO* out, const X509_NAME* nm, int indent, unsigned long flags) {
   if (g_tls_handshake_test_mode == 2) {
     return -1;  // simulate failure
   }
   // Simple emulation: write a short subject string into BIO and return length
-  (void)name;
+  (void)nm;
   (void)indent;
   (void)flags;
   const char* str = "CN=test";
-  return ::BIO_write(bp, str, static_cast<int>(strlen(str)));
+  return ::BIO_write(out, str, static_cast<int>(strlen(str)));
 }
 
 // Interpose BIO_ctrl to simulate BIO_get_mem_ptr failing to set BUF_MEM pointer
