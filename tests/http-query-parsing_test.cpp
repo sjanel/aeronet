@@ -1,11 +1,14 @@
 #include <gtest/gtest.h>
 
+#include <ranges>
+#include <stdexcept>
 #include <string>
 
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -51,7 +54,7 @@ TEST(HttpQueryParsing, PercentDecodedQuery) {
   ts.router().setPath(http::Method::GET, "/d", [](const HttpRequest& req) -> HttpResponse {
     // Query is now fully percent-decoded by parser.
     EXPECT_EQ(req.path(), "/d");
-    auto range = req.queryParams();
+    auto range = req.queryParamsRange();
     auto it = range.begin();
     EXPECT_NE(it, range.end());
     EXPECT_EQ((*it).key, "x");
@@ -65,7 +68,7 @@ TEST(HttpQueryParsing, PercentDecodedQuery) {
     HttpResponse resp;
     // Echo decoded query back in body for client-side verification
     std::string body;
-    for (const auto& [key, val] : req.queryParams()) {
+    for (const auto& [key, val] : req.queryParamsRange()) {
       if (!body.empty()) {
         body.push_back('&');
       }
@@ -99,8 +102,8 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeAtEndShouldBeAccepted) {
     EXPECT_EQ(req.path(), "/e");
     // "%" at end remains literal
     // Malformed escape -> fallback leaves query raw
-    auto it = req.queryParams().begin();
-    EXPECT_NE(it, req.queryParams().end());
+    auto it = req.queryParamsRange().begin();
+    EXPECT_NE(it, req.queryParamsRange().end());
     EXPECT_EQ((*it).key, "x");
     EXPECT_EQ((*it).value, "%");
     HttpResponse resp(200);
@@ -115,8 +118,8 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeAtEndShouldBeAccepted) {
 
 TEST(HttpQueryParsingEdge, IncompleteEscapeOneHexShouldBeAccepted) {
   ts.router().setPath(http::Method::GET, "/e2", [](const HttpRequest& req) -> HttpResponse {
-    auto it = req.queryParams().begin();
-    EXPECT_NE(it, req.queryParams().end());
+    auto it = req.queryParamsRange().begin();
+    EXPECT_NE(it, req.queryParamsRange().end());
     EXPECT_EQ((*it).key, "a");
     // Invalid -> left as literal
     EXPECT_EQ((*it).value, "%A");
@@ -130,7 +133,22 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeOneHexShouldBeAccepted) {
 
 TEST(HttpQueryParsingEdge, MultiplePairsAndEmptyValue) {
   ts.router().setPath(http::Method::GET, "/m", [](const HttpRequest& req) -> HttpResponse {
-    auto range = req.queryParams();
+    auto range = req.queryParamsRange();
+    // Check that HttpRequest::queryParamsRange works with std::ranges
+    for (const auto& [index, keyValue] : range | std::views::enumerate) {
+      if (index == 0) {
+        EXPECT_EQ(keyValue.key, "k");
+        EXPECT_EQ(keyValue.value, "1");
+      } else if (index == 1) {
+        EXPECT_EQ(keyValue.key, "empty");
+        EXPECT_EQ(keyValue.value, "");
+      } else if (index == 2) {
+        EXPECT_EQ(keyValue.key, "novalue");
+        EXPECT_EQ(keyValue.value, "");
+      } else {
+        throw std::logic_error("Too many query params");
+      }
+    }
     auto it = range.begin();
     EXPECT_NE(it, range.end());
     EXPECT_EQ((*it).key, "k");
@@ -155,8 +173,8 @@ TEST(HttpQueryParsingEdge, PercentDecodingKeyAndValue) {
   ts.router().setPath(http::Method::GET, "/pd", [](const HttpRequest& req) -> HttpResponse {
     // encoded: %66 -> 'f'
     // Fully decodable -> parser decodes now
-    auto it = req.queryParams().begin();
-    EXPECT_NE(it, req.queryParams().end());
+    auto it = req.queryParamsRange().begin();
+    EXPECT_NE(it, req.queryParamsRange().end());
     EXPECT_EQ((*it).key, "fo");
     EXPECT_EQ((*it).value, "bar baz");
     HttpResponse resp;
@@ -176,30 +194,40 @@ TEST(HttpQueryStructuredBindings, IterateKeyValues) {
     bool sawB = false;
     bool sawEmpty = false;
     bool sawNoValue = false;
-    for (const auto& [k, v] : req.queryParams()) {
+    for (const auto& [key, value] : req.queryParams()) {
       ++count;
-      if (k == "a") {
-        EXPECT_EQ(v, "1");
+      if (key == "a") {
+        EXPECT_EQ(value, "1");
         sawA = true;
-      } else if (k == "b") {
-        EXPECT_EQ(v, "two words");
+      } else if (key == "b") {
+        EXPECT_EQ(value, "two words");
         sawB = true;
-      } else if (k == "empty") {
-        EXPECT_TRUE(v.empty());
+      } else if (key == "empty") {
+        EXPECT_TRUE(value.empty());
         sawEmpty = true;
-      } else if (k == "novalue") {
-        EXPECT_TRUE(v.empty());
+      } else if (key == "novalue") {
+        EXPECT_TRUE(value.empty());
         sawNoValue = true;
       }
     }
     EXPECT_EQ(count, 4);
-    EXPECT_TRUE(sawA && sawB && sawEmpty && sawNoValue);
-    return HttpResponse("OK");
+    EXPECT_TRUE(sawA);
+    EXPECT_TRUE(sawB);
+    EXPECT_TRUE(sawEmpty);
+    EXPECT_TRUE(sawNoValue);
+    EXPECT_EQ(req.queryParamValue("a").value_or(""), "1");
+    EXPECT_FALSE(req.queryParamValue("c"));
+    EXPECT_EQ(req.queryParamValueOrEmpty("b"), "two words");
+    EXPECT_EQ(req.queryParamValueOrEmpty("c"), "");
+    EXPECT_TRUE(req.hasQueryParam("empty"));
+    EXPECT_TRUE(req.hasQueryParam("novalue"));
+    EXPECT_FALSE(req.hasQueryParam("missing"));
+    return HttpResponse(http::StatusCodeOK);
   });
   // Build raw HTTP request using helpers
   test::ClientConnection client(ts.port());
   std::string req = "GET /sb?a=1&b=two%20words&empty=&novalue HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
   test::sendAll(client.fd(), req);
   auto resp = test::recvUntilClosed(client.fd());
-  EXPECT_TRUE(resp.contains("OK"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }

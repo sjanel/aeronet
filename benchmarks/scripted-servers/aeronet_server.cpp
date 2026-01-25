@@ -28,25 +28,8 @@
 
 using namespace aeronet;
 
-namespace {
-
-// Parse query parameter as integer
-template <typename T>
-T GetQueryParamOrThrow(const HttpRequest& req, std::string_view key) {
-  for (auto qp : req.queryParams()) {
-    if (qp.key == key) {
-      return StringToIntegral<T>(qp.value);
-    }
-  }
-  throw std::invalid_argument("Query parameter not found");
-}
-
-}  // namespace
-
 int main(int argc, char* argv[]) {
   bench::BenchConfig benchCfg(8080, argc, argv);
-
-  log::set_level(log::level::warn);
 
   HttpServerConfig config;
   config.port = benchCfg.port;
@@ -80,17 +63,19 @@ int main(int argc, char* argv[]) {
   // Returns N headers based on ?count=N query param
   // ============================================================
   router.setPath(http::Method::GET, "/headers", [](const HttpRequest& req) {
-    std::size_t count = 10;
-    std::size_t headerSize = 64;
-    for (auto qp : req.queryParams()) {
-      if (qp.key == "count") {
-        count = StringToIntegral<std::size_t>(qp.value);
-      } else if (qp.key == "size") {
-        headerSize = StringToIntegral<std::size_t>(qp.value);
-      }
+    const auto optCount = req.queryParamInt<std::size_t>("count");
+    if (!optCount) {
+      return req.makeResponse(http::StatusCodeBadRequest);
     }
+    const std::size_t count = *optCount;
+    const auto optHeaderSize = req.queryParamInt<std::size_t>("size");
+    if (!optHeaderSize) {
+      return req.makeResponse(http::StatusCodeBadRequest);
+    }
+    const std::size_t headerSize = *optHeaderSize;
+
     static constexpr std::string_view kHeaderNamePrefix = "X-Bench-Header-";
-    HttpResponse resp = req.makeResponse(
+    auto resp = req.makeResponse(
         count * HttpResponse::HeaderSize(kHeaderNamePrefix.size() + ndigits(count), headerSize), http::StatusCodeOK);
     for (std::size_t headerPos = 0; headerPos < count; ++headerPos) {
       resp.headerAddLine(std::format("{}{}", kHeaderNamePrefix, headerPos), bench::GenerateRandomString(headerSize));
@@ -105,7 +90,7 @@ int main(int argc, char* argv[]) {
   // ============================================================
   router.setPath(http::Method::POST, "/uppercase", [](const HttpRequest& req) {
     std::string_view body = req.body();
-    HttpResponse resp = req.makeResponse(HttpResponse::BodySize(body.size()), http::StatusCodeOK);
+    auto resp = req.makeResponse(HttpResponse::BodySize(body.size()), http::StatusCodeOK);
     resp.bodyInlineSet(body.size(), [body](char* buf) {
       std::ranges::transform(body, buf, [](char ch) { return toupper(ch); });
       return body.size();
@@ -118,15 +103,17 @@ int main(int argc, char* argv[]) {
   // Performs expensive computation based on ?complexity=N
   // ============================================================
   router.setPath(http::Method::GET, "/compute", [](const HttpRequest& req) {
-    int complexity = 10;
-    int hashIters = 64;
-    for (auto qp : req.queryParams()) {
-      if (qp.key == "complexity") {
-        complexity = StringToIntegral<int>(qp.value);
-      } else if (qp.key == "hash_iters") {
-        hashIters = StringToIntegral<int>(qp.value);
-      }
+    const auto optComplexity = req.queryParamInt<int>("complexity");
+    if (!optComplexity) {
+      return req.makeResponse(http::StatusCodeBadRequest);
     }
+    const int complexity = *optComplexity;
+
+    const auto optHashIters = req.queryParamInt<int>("hash_iters");
+    if (!optHashIters) {
+      return req.makeResponse(http::StatusCodeBadRequest);
+    }
+    const int hashIters = *optHashIters;
 
     // Fibonacci computation
     const uint64_t fibResult = bench::Fibonacci(complexity);
@@ -136,7 +123,7 @@ int main(int argc, char* argv[]) {
     const uint64_t hashResult = bench::ComputeHash(data, hashIters);
     auto body = std::format("fib({})={}, hash={}", complexity, fibResult, hashResult);
 
-    HttpResponse resp = req.makeResponse(64UL + HttpResponse::BodySize(body.size()), http::StatusCodeOK);
+    auto resp = req.makeResponse(64UL + HttpResponse::BodySize(body.size()), http::StatusCodeOK);
     resp.headerAddLine("X-Fib-Result", fibResult);
     resp.headerAddLine("X-Hash-Result", hashResult);
     resp.body(std::move(body));
@@ -147,9 +134,9 @@ int main(int argc, char* argv[]) {
   // Endpoint 5: /json - JSON response test
   // ============================================================
   router.setPath(http::Method::GET, "/json", [](const HttpRequest& req) {
-    const std::size_t items = GetQueryParamOrThrow<std::size_t>(req, "items");
+    const std::size_t items = req.queryParamInt<std::size_t>("items").value();
 
-    HttpResponse resp = req.makeResponse(200);
+    auto resp = req.makeResponse(200);
     resp.bodyAppend("{\"items\":[", "application/json");
     for (std::size_t itemPos = 0; itemPos < items; ++itemPos) {
       if (itemPos > 0) {
@@ -167,7 +154,7 @@ int main(int argc, char* argv[]) {
   // Sleeps for ?ms=N milliseconds
   // ============================================================
   router.setPath(http::Method::GET, "/delay", [](const HttpRequest& req) {
-    const int delayMs = GetQueryParamOrThrow<int>(req, "ms");
+    const int delayMs = req.queryParamInt<int>("ms").value();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
 
@@ -179,7 +166,7 @@ int main(int argc, char* argv[]) {
   // Returns body of size ?size=N bytes
   // ============================================================
   router.setPath(http::Method::GET, "/body", [](const HttpRequest& req) {
-    return req.makeResponse(bench::GenerateRandomString(GetQueryParamOrThrow<std::size_t>(req, "size")));
+    return req.makeResponse(bench::GenerateRandomString(req.queryParamInt<std::size_t>("size").value()));
   });
 
   // ============================================================

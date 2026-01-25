@@ -17,6 +17,7 @@ All notable changes to aeronet are documented in this file.
 - Telemetry metric methods (including `DogStatsD` ones) are no more `const` qualified
 - Check at runtime if header name and value about to be inserted in a response are valid, otherwise throws `std::invalid_argument`
 - HttpResponse constructor with concatenated headers throws `std::invalid_argument` if expected format is not respected.
+- `HttpRequest` query parameter API changed: `queryParams()` no longer returns the non-alloc iterable range — it now exposes a map-like view over parsed query parameters where duplicate keys are collapsed (last-value wins). The previous iteration semantics (preserve duplicate order) are available via the new `queryParamsRange()` method. If you used `queryParams()` with structured bindings and that there were no duplicate keys in your URLs, no code change is needed.
 
 ### New Features
 
@@ -24,6 +25,8 @@ All notable changes to aeronet are documented in this file.
 - `HttpRequest::deferWork()` method to let the main thread come back to the event loop and launch an asynchronous task (in a dedicated thread) to process the request.
 - `size` / `length` method helpers in `HttpResponse`, with `reserve` and capacity getters.
 - Option `HttpServerConfig::addTrailerHeader` to automatically emit `trailer` header when trailers are added to responses in `HTTP/1.1` only.
+- `HttpRequest` now exposes a new map-like for query parameters: `queryParams()` which collapses duplicate keys (last-value wins)
+- `HttpRequest` gains the following methods: `hasHeader(key)`, `hasTrailer(key)`, `hasPathParam(key)`, `hasQueryParam(key)`, `pathParamValue(key)`, `pathParamValueOrEmpty(key)`, `queryParamValue(key)`, `queryParamValueOrEmpty(key)`, `queryParamInt(key)`.
 
 ### Improvements
 
@@ -32,6 +35,7 @@ All notable changes to aeronet are documented in this file.
 - Make sure that `WebSocketConfig.maxMessageSize` is strictly respected when decompressing a `WebSocket` message
 - Optimized *prepared* (built from `makeResponse()`) `HttpResponse` to avoid allocating body and trailers memory for **HEAD** requests.
 - Faster case insensitive hash using FNV-1a algorithm for header name lookups, and optimized version of `tolower` - Use [City hash](https://github.com/google/cityhash/tree/master) elsewhere (for standard strings)
+- `HttpRequest::queryParamsRange()` satisfies the C++20 range concept.
 
 ### Other
 

@@ -79,18 +79,9 @@ struct AeronetServerRunner {
     });
 
     server.router().setPath(http::Method::GET, benchutil::kHeaderPath, [](const HttpRequest &req) {
-      HttpResponse resp;
+      HttpResponse resp = req.makeResponse(http::StatusCodeOK);
       // Read requested header count from query param 'size'
-      size_t headerCount = 0;
-      for (auto qp : req.queryParams()) {
-        if (qp.key == "size") {
-          headerCount = StringToIntegral<std::size_t>(qp.value);
-          break;
-        }
-      }
-      if (headerCount == 0) {
-        throw std::runtime_error("Should have found number of headers");
-      }
+      const std::size_t headerCount = req.queryParamInt<std::size_t>("size").value();
       for (size_t headerPos = 0; headerPos < headerCount; ++headerPos) {
         resp.headerAddLine(g_stringPool.next(), g_stringPool.next());
       }
