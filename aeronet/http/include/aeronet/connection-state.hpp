@@ -107,15 +107,13 @@ struct ConnectionState {
     std::size_t offset{0};
   };
 
-  // Buffer used for tunneling raw bytes when peer is not writable, or for send file buffer (they are both mutually
-  // exclusive).
-  RawChars tunnelOrFileBuffer;
   // accumulated input raw data
   RawChars inBuffer;
   // decoded body + optional trailer headers (RFC 7230 §4.1.2)
   RawChars bodyAndTrailersBuffer;
-  // stable storage for the current request head when async body progress is needed
-  RawChars headBuffer;
+  // Buffer used for tunneling raw bytes when peer is not writable, or for send file buffer (they are both mutually
+  // exclusive).
+  RawChars tunnelOrFileBuffer;
   // per-connection request object reused across dispatches
   HttpRequest request;
   AggregatedBodyStreamContext bodyStreamContext;
@@ -189,6 +187,8 @@ struct ConnectionState {
     void clear();
 
     std::coroutine_handle<> handle;
+    // stable storage for the current request head when async body progress is needed
+    RawChars headBuffer;
     AwaitReason awaitReason{AwaitReason::None};
     bool active{false};
     bool needsBody{false};

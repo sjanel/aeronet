@@ -149,7 +149,7 @@ class HttpResponse {
   static constexpr std::size_t BodySize(std::size_t bodyLen,
                                         std::size_t contentTypeLen = http::ContentTypeTextPlain.size()) {
     return bodyLen + HeaderSize(http::ContentType.size(), contentTypeLen) +
-           HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(bodyLen)));
+           HeaderSize(http::ContentLength.size(), nchars(bodyLen));
   }
 
   // -------------/
@@ -745,8 +745,7 @@ class HttpResponse {
     const auto contentTypeHeaderSize = HeaderSize(http::ContentType.size(), contentTypeValueSize);
     const std::size_t oldBodyLen = _payloadVariant.isSizeOnly() ? _payloadVariant.size() : internalBodyAndTrailersLen();
     const auto maxBodyLen = oldBodyLen + maxLen;
-    const auto contentLengthHeaderSize =
-        HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(maxBodyLen)));
+    const auto contentLengthHeaderSize = HeaderSize(http::ContentLength.size(), nchars(maxBodyLen));
 
     _data.ensureAvailableCapacityExponential(maxLen + contentTypeHeaderSize + contentLengthHeaderSize);
 
@@ -828,8 +827,7 @@ class HttpResponse {
       contentType = defaultContentType;
     }
     const auto contentTypeHeaderSize = HeaderSize(http::ContentType.size(), contentType.size());
-    const auto contentLengthHeaderSize =
-        HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(maxLen)));
+    const auto contentLengthHeaderSize = HeaderSize(http::ContentLength.size(), nchars(maxLen));
 
     // Reserve exact capacity (no exponential growth)
     _data.reserve(_data.size() + contentTypeHeaderSize + contentLengthHeaderSize + maxLen);
@@ -1148,8 +1146,7 @@ class HttpResponse {
   }
 
   char* getContentLengthHeaderLinePtr(std::size_t bodyLen) {
-    const auto contentLengthHeaderLineSize =
-        HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(bodyLen)));
+    const auto contentLengthHeaderLineSize = HeaderSize(http::ContentLength.size(), nchars(bodyLen));
     return _data.data() + bodyStartPos() - http::DoubleCRLF.size() - contentLengthHeaderLineSize;
   }
 

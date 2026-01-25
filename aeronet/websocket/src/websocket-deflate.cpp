@@ -151,12 +151,10 @@ std::size_t ComputeDeflateResponseSize(DeflateNegotiatedParams params) {
     size += kSemicolonSpace.size() + kClientNoContextTakeover.size();
   }
   if (params.serverMaxWindowBits < 15) {
-    size += kSemicolonSpace.size() + kServerMaxWindowBits.size() + 1U +
-            static_cast<std::size_t>(nchars(params.serverMaxWindowBits));
+    size += kSemicolonSpace.size() + kServerMaxWindowBits.size() + 1U + nchars(params.serverMaxWindowBits);
   }
   if (params.clientMaxWindowBits < 15) {
-    size += kSemicolonSpace.size() + kClientMaxWindowBits.size() + 1U +
-            static_cast<std::size_t>(nchars(params.clientMaxWindowBits));
+    size += kSemicolonSpace.size() + kClientMaxWindowBits.size() + 1U + nchars(params.clientMaxWindowBits);
   }
   return size;
 }

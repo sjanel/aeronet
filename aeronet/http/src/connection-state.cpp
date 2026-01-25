@@ -201,20 +201,20 @@ bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(int fd, const TlsHands
 void ConnectionState::reset() {
   // In order to avoid retaining large buffers in cached ConnectionState objects,
   // we shrink (before clear, otherwise it would free all memory) and clear them before reuse.
-  tunnelOrFileBuffer.shrink_to_fit();
-  inBuffer.shrink_to_fit();
-  bodyAndTrailersBuffer.shrink_to_fit();
-  headBuffer.shrink_to_fit();
-  request.shrinkAndMaybeClear();
-  outBuffer.shrink_to_fit();
+  const auto shrinkAndClear = [](auto& buffer) {
+    buffer.shrink_to_fit();
+    buffer.clear();
+  };
+  shrinkAndClear(inBuffer);
+  shrinkAndClear(bodyAndTrailersBuffer);
+  shrinkAndClear(asyncState.headBuffer);
+  shrinkAndClear(tunnelOrFileBuffer);
 
-  tunnelOrFileBuffer.clear();
-  inBuffer.clear();
-  bodyAndTrailersBuffer.clear();
-  headBuffer.clear();
+  request.shrinkAndMaybeClear();
+
+  shrinkAndClear(outBuffer);
   // no need to clear request, it's built from scratch from initTrySetHead
   bodyStreamContext = {};
-  outBuffer.clear();
   transport.reset();
   lastActivity = std::chrono::steady_clock::now();
   headerStartTp = {};
