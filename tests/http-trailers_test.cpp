@@ -29,6 +29,17 @@ TEST(HttpTrailers, BasicTrailer) {
     EXPECT_EQ(req.body(), "Wikipedia");
     // Check trailer headers
     EXPECT_EQ(req.trailers().size(), 1U);
+    EXPECT_EQ(req.trailerValueOrEmpty("X-Checksum"), "abc123");
+    EXPECT_EQ(req.trailerValueOrEmpty("missing"), "");
+    EXPECT_EQ(req.trailerValue("X-Checksum").value_or(""), "abc123");
+    EXPECT_FALSE(req.trailerValue("Non-Existent").has_value());
+
+    EXPECT_TRUE(req.hasHeader("Host"));
+    EXPECT_FALSE(req.hasHeader("Non-Existent"));
+
+    EXPECT_TRUE(req.hasTrailer("X-Checksum"));
+    EXPECT_FALSE(req.hasTrailer("Non-Existent"));
+
     auto it = req.trailers().find("X-Checksum");
     EXPECT_NE(it, req.trailers().end());
     if (it != req.trailers().end()) {

@@ -25,7 +25,6 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
-#include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-error-build.hpp"
 #include "aeronet/http-header.hpp"
@@ -513,11 +512,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       break;
     }
 
-    // Populate path params map view from router captures
-    request._pathParams.clear();
-    for (const auto& capture : routingResult.pathParams) {
-      request._pathParams.emplace(capture.key, capture.value);
-    }
+    request.finalizeBeforeHandlerCall(routingResult.pathParams);
 
     auto requestMiddlewareRange = routingResult.requestMiddlewareRange;
     auto responseMiddlewareRange = routingResult.responseMiddlewareRange;

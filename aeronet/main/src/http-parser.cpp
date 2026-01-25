@@ -14,6 +14,7 @@
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-payload.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"

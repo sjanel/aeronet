@@ -444,11 +444,7 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
     }
   };
 
-  // Populate path params map view from router captures
-  request._pathParams.clear();
-  for (const auto& capture : routingResult.pathParams) {
-    request._pathParams.emplace(capture.key, capture.value);
-  }
+  request.finalizeBeforeHandlerCall(routingResult.pathParams);
 
   // Handle the request based on handler type
   if (const auto* reqHandler = routingResult.requestHandler(); reqHandler != nullptr) {

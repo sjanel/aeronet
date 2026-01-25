@@ -1,16 +1,19 @@
 #pragma once
 
+#include <charconv>
 #include <chrono>
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string_view>
 #include <thread>
 #include <type_traits>
+#include <utility>
 
 #include "aeronet/city-hash.hpp"
 #include "aeronet/concatenated-headers.hpp"
@@ -20,6 +23,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/path-param-capture.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tracing/tracer.hpp"
 
@@ -125,35 +129,6 @@ class HttpRequest {
     std::exception_ptr _exception;
   };
 
-  // Returns the (possibly merged) HTTP header value for the given key or an empty string_view if absent.
-  // Semantics / behavior:
-  //   * Lookup is case-insensitive (RFC 7230 token rules).
-  //   * Duplicate request headers are canonicalized in-place during parsing according to a constexpr
-  //     classification table (see README section "Request Header Duplicate Handling"):
-  //       - List-style headers (e.g. Accept, Via, Warning) are comma-joined:  "v1,v2"
-  //       - Cookie is semicolon-joined:                                       "c1;c2" (no added space)
-  //       - User-Agent tokens are space-joined:                               "Foo Bar"
-  //       - Override headers (Authorization, Range, From, select conditionals) keep ONLY the last occurrence.
-  //       - Disallowed duplicates (Host, Content-Length) trigger 400 before a value is returned here.
-  //     Unknown headers currently default to list (comma) merge.
-  //   * Empty value handling avoids manufacturing leading/trailing separators:
-  //       first="" + second="v"  -> "v"
-  //       first="v" + second=""  -> "v" (unchanged)
-  //   * Leading & trailing horizontal whitespaces around the original field value are trimmed; internal whitespaces
-  //     are preserved verbatim (except for deliberate single-space joins in the User-Agent merge case).
-  //   * The returned view points into the connection's receive buffer; it is valid only for the lifetime of the
-  //     handler invocation (do not persist it beyond the request scope).
-  //   * If you need to distinguish between a missing header and an explicitly present empty header, use headerValue().
-  [[nodiscard]] std::string_view headerValueOrEmpty(std::string_view headerKey) const noexcept;
-
-  // Like headerValueOrEmpty() but preserves the distinction between absence and an explicitly empty value.
-  //   * std::nullopt  => header not present in the request.
-  //   * engaged empty => header present with zero-length (after trimming) value.
-  //   * engaged non-empty => possibly merged / override-normalized value (see duplicate handling above).
-  // All trimming, merge, override, and lifetime notes from headerValueOrEmpty() apply here.
-  // Use this when protocol logic must differentiate between omitted vs intentionally blank headers.
-  [[nodiscard]] std::optional<std::string_view> headerValue(std::string_view headerKey) const noexcept;
-
   // The method of the request (GET, PUT, ...)
   [[nodiscard]] http::Method method() const noexcept { return _method; }
 
@@ -179,6 +154,83 @@ class HttpRequest {
   //     headerValue().
   [[nodiscard]] const HeadersViewMap& headers() const noexcept { return _headers; }
 
+  // Returns the (possibly merged) HTTP header value for the given key or an empty string_view if absent.
+  // Semantics / behavior:
+  //   * Lookup is case-insensitive (RFC 7230 token rules).
+  //   * Duplicate request headers are canonicalized in-place during parsing according to a constexpr
+  //     classification table (see README section "Request Header Duplicate Handling"):
+  //       - List-style headers (e.g. Accept, Via, Warning) are comma-joined:  "v1,v2"
+  //       - Cookie is semicolon-joined:                                       "c1;c2" (no added space)
+  //       - User-Agent tokens are space-joined:                               "Foo Bar"
+  //       - Override headers (Authorization, Range, From, select conditionals) keep ONLY the last occurrence.
+  //       - Disallowed duplicates (Host, Content-Length) trigger 400 before a value is returned here.
+  //     Unknown headers currently default to list (comma) merge.
+  //   * Empty value handling avoids manufacturing leading/trailing separators:
+  //       first="" + second="v"  -> "v"
+  //       first="v" + second=""  -> "v" (unchanged)
+  //   * Leading & trailing horizontal whitespaces around the original field value are trimmed; internal whitespaces
+  //     are preserved verbatim (except for deliberate single-space joins in the User-Agent merge case).
+  //   * The returned view points into the connection's receive buffer; it is valid only for the lifetime of the
+  //     handler invocation (do not persist it beyond the request scope).
+  //   * If you need to distinguish between a missing header and an explicitly present empty header, use headerValue().
+  [[nodiscard]] std::string_view headerValueOrEmpty(std::string_view headerKey) const noexcept {
+    return headerValue(headerKey).value_or(std::string_view{});
+  }
+
+  // Like headerValueOrEmpty() but preserves the distinction between absence and an explicitly empty value.
+  //   * std::nullopt  => header not present in the request.
+  //   * engaged empty => header present with zero-length (after trimming) value.
+  //   * engaged non-empty => possibly merged / override-normalized value (see duplicate handling above).
+  // All trimming, merge, override, and lifetime notes from headerValueOrEmpty() apply here.
+  // Use this when protocol logic must differentiate between omitted vs intentionally blank headers.
+  [[nodiscard]] std::optional<std::string_view> headerValue(std::string_view headerKey) const noexcept {
+    const auto it = _headers.find(headerKey);
+    return it != _headers.end() ? std::optional<std::string_view>{it->second} : std::nullopt;
+  }
+
+  // Returns true if the given header is present (regardless of value).
+  [[nodiscard]] bool hasHeader(std::string_view headerKey) const noexcept { return _headers.contains(headerKey); }
+
+  // Returns a map-like view over the parsed & URL decoded query parameters.
+  // - Duplicated keys are collapsed; only the last occurrence is retained.
+  // - Key/value views point into the connection buffer; valid only during the handler call.
+  // - The order of entries and duplicates is NOT preserved.
+  // If you need to preserve order and manage duplicates, use queryParamsRange().
+  [[nodiscard]] const auto& queryParams() const noexcept { return _queryParams; }
+
+  // Returns true if the given query parameter key is present (regardless of value).
+  [[nodiscard]] bool hasQueryParam(std::string_view key) const noexcept { return _queryParams.contains(key); }
+
+  // Get the last value for the given query parameter key, or std::nullopt if not present.
+  [[nodiscard]] std::optional<std::string_view> queryParamValue(std::string_view key) const noexcept {
+    const auto it = _queryParams.find(key);
+    return it != _queryParams.end() ? std::optional<std::string_view>{it->second} : std::nullopt;
+  }
+
+  // Convenient typed accessor for integer query parameters.
+  // Returns std::nullopt if the key is not present or if the value cannot be parsed as an integer of the requested
+  // type. Example:
+  //   GET /path?count=42&invalid=abc
+  //   auto count = req.queryParamInt("count");      // returns std::optional<int> with value 42
+  //   auto invalid = req.queryParamInt("invalid");  //   // returns std::nullopt because "abc" is not a valid integer
+  template <typename IntType = int>
+  [[nodiscard]] std::optional<IntType> queryParamInt(std::string_view key) const noexcept {
+    if (const auto valOpt = queryParamValue(key); valOpt) {
+      IntType intVal;
+      const auto [ptr, ec] = std::from_chars(valOpt->data(), valOpt->data() + valOpt->size(), intVal);
+      if (ec == std::errc() && ptr == valOpt->data() + valOpt->size()) {
+        return intVal;
+      }
+    }
+    return std::nullopt;
+  }
+
+  // Like queryParamValue() but returns empty string_view if the key is not present.
+  // To differentiate between absent and empty values, use queryParamValue().
+  [[nodiscard]] std::string_view queryParamValueOrEmpty(std::string_view key) const noexcept {
+    return queryParamValue(key).value_or(std::string_view{});
+  }
+
   // Provides zero-allocation iteration over key/value pairs in the raw query string.
   // Decoding rules (application/x-www-form-urlencoded semantics for each component ONLY):
   //  - Percent escapes decoded independently for key & value; malformed/incomplete escapes left verbatim.
@@ -194,6 +246,13 @@ class HttpRequest {
    public:
     class iterator {
      public:
+      using difference_type = std::ptrdiff_t;
+      using value_type = QueryParam;
+      using reference = QueryParam;
+      using iterator_category = std::forward_iterator_tag;
+
+      iterator() noexcept : _begKey(nullptr), _endFullQuery(nullptr) {}
+
       iterator(const char* begKey, const char* endFullQuery) : _begKey(begKey), _endFullQuery(endFullQuery) {}
 
       QueryParam operator*() const;
@@ -201,6 +260,12 @@ class HttpRequest {
       iterator& operator++() {
         advance();
         return *this;
+      }
+
+      iterator operator++(int) {
+        auto ret = *this;
+        advance();
+        return ret;
       }
 
       bool operator==(iterator other) const noexcept { return _begKey == other._begKey; }
@@ -213,27 +278,31 @@ class HttpRequest {
     };
 
     [[nodiscard]] iterator begin() const noexcept { return {_first, _first + _length}; }
-
     [[nodiscard]] iterator end() const noexcept { return {_first + _length, _first + _length}; }
 
    private:
     friend class HttpRequest;
 
-    explicit QueryParamRange(const char* first, uint32_t length) noexcept : _first(first), _length(length) {}
+    QueryParamRange(const char* first, uint32_t length) noexcept : _first(first), _length(length) {}
 
-    const char* _first{nullptr};
-    uint32_t _length{0};
+    const char* _first;
+    uint32_t _length;
   };
 
   // Get an iterable range on URL decoded query params.
   // The order of entries and duplicates are preserved.
   // This function is non-allocating.
+  // Empty values are possible (missing '=' also results in empty value).
   // Example:
-  //    for (const auto &[queryParamKey, queryParamValue] : httpRequest.queryParams()) {
-  //       // do something with queryParamKey and queryParamValue
+  //    GET /path?k=1&empty=&novalue&k=2
+  //    for (const auto &[key, value] : httpRequest.queryParamsRange()) {
+  //      // [0] key="k",       value="1"
+  //      // [1] key="empty",   value=""
+  //      // [2] key="novalue", value=""
+  //      // [3] key="k",       value="2"
   //    }
-  [[nodiscard]] QueryParamRange queryParams() const noexcept {
-    return QueryParamRange(_pDecodedQueryParams, _decodedQueryParamsLength);
+  [[nodiscard]] QueryParamRange queryParamsRange() const noexcept {
+    return {_pDecodedQueryParams, _decodedQueryParamsLength};
   }
 
   // Get the (already received) body of the request.
@@ -293,7 +362,21 @@ class HttpRequest {
   //   * Values are string_view slices into the connection buffer; valid only during the handler call.
   //   * Forbidden trailer fields (transfer-encoding, content-length, host, etc.) are rejected with 400.
   //   * Trailers count toward the maxHeadersBytes limit (combined with initial headers).
-  [[nodiscard]] const auto& trailers() const noexcept { return _trailers; }
+  [[nodiscard]] const HeadersViewMap& trailers() const noexcept { return _trailers; }
+
+  // Like headerValueOrEmpty() but for trailers.
+  [[nodiscard]] std::string_view trailerValueOrEmpty(std::string_view trailerKey) const noexcept {
+    return trailerValue(trailerKey).value_or(std::string_view{});
+  }
+
+  // Like headerValue() but for trailers.
+  [[nodiscard]] std::optional<std::string_view> trailerValue(std::string_view trailerKey) const noexcept {
+    const auto it = _trailers.find(trailerKey);
+    return it != _trailers.end() ? std::optional<std::string_view>{it->second} : std::nullopt;
+  }
+
+  // Returns true if the given trailer is present (regardless of value).
+  [[nodiscard]] bool hasTrailer(std::string_view trailerKey) const noexcept { return _trailers.contains(trailerKey); }
 
   // Returns a map-like view over path parameters extracted during route matching.
   // Characteristics:
@@ -302,6 +385,26 @@ class HttpRequest {
   //   * The order of entries is not specified.
   //   * If the patterns were unnamed, the keys are numeric strings representing the 0-based index of the match.
   [[nodiscard]] const auto& pathParams() const noexcept { return _pathParams; }
+
+  // Returns true if the given path parameter key was captured.
+  [[nodiscard]] bool hasPathParam(std::string_view key) const noexcept { return _pathParams.contains(key); }
+
+  // Get the value for the given path parameter key, or std::nullopt if not present.
+  // Captured path parameter values may be empty (zero-length). Both accessors below
+  // are therefore useful: `pathParamValue()` preserves the distinction between
+  // "absent" and "present-but-empty", while `pathParamValueOrEmpty()` conveniently
+  // returns an empty `string_view` when the key is not present.
+  [[nodiscard]] std::optional<std::string_view> pathParamValue(std::string_view key) const noexcept {
+    const auto it = _pathParams.find(key);
+    return it != _pathParams.end() ? std::optional<std::string_view>{it->second} : std::nullopt;
+  }
+
+  // Like `pathParamValue()` but returns an empty `string_view` if the key is not present.
+  // Use this when a default empty view is preferred and you don't need to distinguish
+  // between absent and explicitly empty captures.
+  [[nodiscard]] std::string_view pathParamValueOrEmpty(std::string_view key) const noexcept {
+    return pathParamValue(key).value_or(std::string_view{});
+  }
 
   // Selected ALPN protocol (if negotiated); empty if none or not TLS.
   [[nodiscard]] std::string_view alpnProtocol() const noexcept;
@@ -401,6 +504,8 @@ class HttpRequest {
   http::StatusCode initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
                                   bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan);
 
+  void finalizeBeforeHandlerCall(std::span<const PathParamCapture> pathParams);
+
   void pinHeadStorage(ConnectionState& state);
 
   void shrinkAndMaybeClear();
@@ -436,6 +541,7 @@ class HttpRequest {
   HeadersViewMap _headers;
   HeadersViewMap _trailers;  // Trailer headers (RFC 7230 §4.1.2) from chunked requests
   flat_hash_map<std::string_view, std::string_view, CityHash> _pathParams;
+  flat_hash_map<std::string_view, std::string_view, CityHash> _queryParams;
 
   std::string_view _body;
   std::string_view _activeStreamingChunk;

@@ -15,6 +15,7 @@
 #include "aeronet/middleware.hpp"
 #include "aeronet/object-pool.hpp"
 #include "aeronet/path-handler-entry.hpp"
+#include "aeronet/path-param-capture.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/vector.hpp"
@@ -156,11 +157,6 @@ class Router {
   // The returned reference is valid until the next call to setPath or setWebSocket.
   PathHandlerEntry& setWebSocket(std::string_view path, WebSocketEndpoint endpoint);
 #endif
-
-  struct PathParamCapture {
-    std::string_view key;
-    std::string_view value;
-  };
 
   struct RoutingResult {
     enum class RedirectSlashMode : int8_t {
