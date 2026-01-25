@@ -304,9 +304,9 @@ void HttpRequest::pinHeadStorage(ConnectionState& state) {
     return;
   }
   const char* oldBase = state.inBuffer.data();
-  state.headBuffer.assign(oldBase, _headSpanSize);
+  state.asyncState.headBuffer.assign(oldBase, _headSpanSize);
 
-  const auto remapPtr = [newBase = state.headBuffer.data(), oldBase,
+  const auto remapPtr = [newBase = state.asyncState.headBuffer.data(), oldBase,
                          oldLimit = oldBase + _headSpanSize](const char* ptr) -> const char* {
     if (ptr < oldBase || ptr >= oldLimit) {
       return ptr;

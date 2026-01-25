@@ -38,10 +38,10 @@ bool MayNormalizeHasTrailingSlash(RouterConfig::TrailingSlashPolicy policy, std:
     throw std::invalid_argument("Path cannot be empty");
   }
   const bool pathHasTrailingSlash = sz > 1U && path.back() == '/';
-  if (pathHasTrailingSlash && (policy == RouterConfig::TrailingSlashPolicy::Normalize ||
-                               policy == RouterConfig::TrailingSlashPolicy::Redirect)) {
-    path.remove_suffix(1U);
+  if (policy == RouterConfig::TrailingSlashPolicy::Strict) {
+    return pathHasTrailingSlash;
   }
+  path.remove_suffix(static_cast<std::string_view::size_type>(pathHasTrailingSlash));
   return pathHasTrailingSlash;
 }
 

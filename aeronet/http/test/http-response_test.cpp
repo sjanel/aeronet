@@ -332,7 +332,7 @@ TEST_F(HttpResponseTest, HeaderAndBodySize) {
 
   EXPECT_EQ(HttpResponse::BodySize(buf.size(), buf2.size()),
             buf.size() + HttpResponse::HeaderSize(http::ContentType.size(), buf2.size()) +
-                HttpResponse::HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(buf.size()))));
+                HttpResponse::HeaderSize(http::ContentLength.size(), nchars(buf.size())));
 }
 
 namespace {
