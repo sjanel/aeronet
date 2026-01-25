@@ -745,7 +745,8 @@ class HttpResponse {
     const auto contentTypeHeaderSize = HeaderSize(http::ContentType.size(), contentTypeValueSize);
     const std::size_t oldBodyLen = _payloadVariant.isSizeOnly() ? _payloadVariant.size() : internalBodyAndTrailersLen();
     const auto maxBodyLen = oldBodyLen + maxLen;
-    const auto contentLengthHeaderSize = HeaderSize(http::ContentLength.size(), nchars(maxBodyLen));
+    const auto nCharsMaxBodyLen = nchars(maxBodyLen);
+    const auto contentLengthHeaderSize = HeaderSize(http::ContentLength.size(), nCharsMaxBodyLen);
 
     _data.ensureAvailableCapacityExponential(maxLen + contentTypeHeaderSize + contentLengthHeaderSize);
 
@@ -769,7 +770,7 @@ class HttpResponse {
       } else {
         // we need to restore the previous content-length value
         const auto newBodyLenCharVec = IntegralToCharVector(maxBodyLen - (maxLen - written));
-        replaceHeaderValueNoRealloc(getContentLengthValuePtr(maxBodyLen), std::string_view(newBodyLenCharVec));
+        replaceHeaderValueNoRealloc(getContentLengthValuePtr(nCharsMaxBodyLen), std::string_view(newBodyLenCharVec));
       }
     } else {
       if (isHead()) {
@@ -778,7 +779,7 @@ class HttpResponse {
         _data.addSize(written);
       }
       const auto newBodyLenCharVec = IntegralToCharVector(maxBodyLen - (maxLen - written));
-      replaceHeaderValueNoRealloc(getContentLengthValuePtr(maxBodyLen), std::string_view(newBodyLenCharVec));
+      replaceHeaderValueNoRealloc(getContentLengthValuePtr(nCharsMaxBodyLen), std::string_view(newBodyLenCharVec));
     }
 
     return *this;
@@ -859,7 +860,7 @@ class HttpResponse {
       }
 
       const auto newBodyLenCharVec = IntegralToCharVector(written);
-      replaceHeaderValueNoRealloc(getContentLengthValuePtr(maxLen), std::string_view(newBodyLenCharVec));
+      replaceHeaderValueNoRealloc(getContentLengthValuePtr(nchars(maxLen)), std::string_view(newBodyLenCharVec));
     }
 
     // Clear any payload variant
@@ -1145,26 +1146,27 @@ class HttpResponse {
     setBodyStartPos(static_cast<std::uint64_t>(static_cast<int64_t>(bodyStartPos()) + diff));
   }
 
-  char* getContentLengthHeaderLinePtr(std::size_t bodyLen) {
-    const auto contentLengthHeaderLineSize = HeaderSize(http::ContentLength.size(), nchars(bodyLen));
+  char* getContentLengthHeaderLinePtr(std::uint8_t nCharsBodyLen) {
+    const auto contentLengthHeaderLineSize = HeaderSize(http::ContentLength.size(), nCharsBodyLen);
     return _data.data() + bodyStartPos() - http::DoubleCRLF.size() - contentLengthHeaderLineSize;
   }
 
-  char* getContentLengthValuePtr(std::size_t bodyLen) {
-    return getContentLengthHeaderLinePtr(bodyLen) + http::CRLF.size() + http::ContentLength.size() +
+  char* getContentLengthValuePtr(std::uint8_t nCharsBodyLen) {
+    return getContentLengthHeaderLinePtr(nCharsBodyLen) + http::CRLF.size() + http::ContentLength.size() +
            http::HeaderSep.size();
   }
 
   // Returns a pointer to the beginning of the Content-Type header line (starting on CRLF before the header name).
-  char* getContentTypeHeaderLinePtr(std::size_t bodyLen) {
-    char* ptr = getContentLengthHeaderLinePtr(bodyLen) - HeaderSize(http::ContentType.size(), 0U);
+  char* getContentTypeHeaderLinePtr(std::uint8_t nCharsBodyLen) {
+    char* ptr = getContentLengthHeaderLinePtr(nCharsBodyLen) - HeaderSize(http::ContentType.size(), 0U);
     for (; *ptr != '\r'; --ptr) {
     }
     return ptr;
   }
 
-  char* getContentTypeValuePtr(std::size_t bodyLen) {
-    return getContentTypeHeaderLinePtr(bodyLen) + http::CRLF.size() + http::ContentType.size() + http::HeaderSep.size();
+  char* getContentTypeValuePtr(std::uint8_t nCharsBodyLen) {
+    return getContentTypeHeaderLinePtr(nCharsBodyLen) + http::CRLF.size() + http::ContentType.size() +
+           http::HeaderSep.size();
   }
 
   void replaceHeaderValueNoRealloc(char* first, std::string_view newValue);
