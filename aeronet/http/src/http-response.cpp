@@ -88,7 +88,7 @@ constexpr std::size_t NeededBodyHeadersSize(std::size_t bodySize, std::size_t co
     return 0;
   }
   return HttpResponse::HeaderSize(http::ContentType.size(), contentTypeSize) +
-         HttpResponse::HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(bodySize)));
+         HttpResponse::HeaderSize(http::ContentLength.size(), nchars(bodySize));
 }
 
 constexpr std::string_view kTrailerValueSep = ", ";
@@ -112,8 +112,7 @@ constexpr void Copy(std::string_view sv, char* dst) noexcept {
 // For very large payloads, this can be negative, as Content-Length can be larger than
 // Transfer-Encoding: chunked.
 constexpr int64_t TransferEncodingHeaderSizeDiff(std::size_t bodySz) {
-  const auto oldContentLengthHeaderSize =
-      HttpResponse::HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(bodySz)));
+  const auto oldContentLengthHeaderSize = HttpResponse::HeaderSize(http::ContentLength.size(), nchars(bodySz));
 
   return static_cast<int64_t>(kTransferEncodingChunkedCRLF.size()) - static_cast<int64_t>(oldContentLengthHeaderSize);
 }
@@ -419,15 +418,15 @@ HttpResponse& HttpResponse::bodyAppend(std::string_view body, std::string_view c
     if (hasBodyCaptured()) {
       const auto oldBodyLen = _payloadVariant.size();
       const auto newBodyLen = oldBodyLen + body.size();
-      const auto nCharsOldBodyLen = nchars(oldBodyLen);
-      const auto nCharsNewBodyLen = nchars(newBodyLen);
+      const uint8_t nCharsOldBodyLen = nchars(oldBodyLen);
+      const uint8_t nCharsNewBodyLen = nchars(newBodyLen);
 
-      int64_t neededCapacity = nCharsNewBodyLen - nCharsOldBodyLen;
+      int64_t neededCapacity = static_cast<int64_t>(nCharsNewBodyLen) - static_cast<int64_t>(nCharsOldBodyLen);
       if (!contentType.empty()) {
         if (!http::IsValidHeaderValue(contentType)) [[unlikely]] {
           throw std::invalid_argument("HTTP content-type header value is invalid");
         }
-        char* pContentTypeValuePtr = getContentTypeValuePtr(static_cast<std::size_t>(nCharsOldBodyLen));
+        char* pContentTypeValuePtr = getContentTypeValuePtr(nCharsOldBodyLen);
         const auto it =
             std::search(pContentTypeValuePtr, _data.data() + _data.size(), http::CRLF.begin(), http::CRLF.end());
         assert(it != _data.data() + _data.size());

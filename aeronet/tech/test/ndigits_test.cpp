@@ -25,19 +25,19 @@ TYPED_TEST_SUITE(S8NDigitsTest, S8Types, );
 TYPED_TEST(S8NDigitsTest, NDigitsS8) {
   using T = TypeParam;
   if constexpr (sizeof(T) == 1) {
-    EXPECT_EQ(ndigits(static_cast<T>(0)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(3)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(78)), 2);
-    EXPECT_EQ(ndigits(static_cast<T>(112)), 3);
-    EXPECT_EQ(ndigits(std::numeric_limits<T>::max()), 3);
-    EXPECT_EQ(ndigits(static_cast<T>(-128)), 3);
-    EXPECT_EQ(ndigits(static_cast<T>(-125)), 3);
-    EXPECT_EQ(ndigits(static_cast<T>(-78)), 2);
-    EXPECT_EQ(ndigits(static_cast<T>(-10)), 2);
-    EXPECT_EQ(ndigits(static_cast<T>(-1)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(0)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(3)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(78)), 2U);
+    EXPECT_EQ(ndigits(static_cast<T>(112)), 3U);
+    EXPECT_EQ(ndigits(std::numeric_limits<T>::max()), 3U);
+    EXPECT_EQ(ndigits(static_cast<T>(-128)), 3U);
+    EXPECT_EQ(ndigits(static_cast<T>(-125)), 3U);
+    EXPECT_EQ(ndigits(static_cast<T>(-78)), 2U);
+    EXPECT_EQ(ndigits(static_cast<T>(-10)), 2U);
+    EXPECT_EQ(ndigits(static_cast<T>(-1)), 1U);
 
-    static_assert(ndigits(std::numeric_limits<T>::max()) == 3);
-    static_assert(ndigits(std::numeric_limits<T>::min()) == 3);
+    static_assert(ndigits(std::numeric_limits<T>::max()) == 3U);
+    static_assert(ndigits(std::numeric_limits<T>::min()) == 3U);
   }
 }
 
@@ -53,20 +53,20 @@ TYPED_TEST_SUITE(S16NDigitsTest, S16Types, );
 TYPED_TEST(S16NDigitsTest, NDigitsS16) {
   using T = TypeParam;
   if constexpr (sizeof(T) == 2) {
-    EXPECT_EQ(ndigits(static_cast<T>(0)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(3)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(78)), 2);
-    EXPECT_EQ(ndigits(static_cast<T>(170)), 3);
-    EXPECT_EQ(ndigits(static_cast<T>(9245)), 4);
-    EXPECT_EQ(ndigits(static_cast<T>(31710)), 5);
-    EXPECT_EQ(ndigits(static_cast<T>(-26816)), 5);
-    EXPECT_EQ(ndigits(static_cast<T>(-3686)), 4);
-    EXPECT_EQ(ndigits(static_cast<T>(-686)), 3);
-    EXPECT_EQ(ndigits(static_cast<T>(-10)), 2);
-    EXPECT_EQ(ndigits(static_cast<T>(-2)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(0)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(3)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(78)), 2U);
+    EXPECT_EQ(ndigits(static_cast<T>(170)), 3U);
+    EXPECT_EQ(ndigits(static_cast<T>(9245)), 4U);
+    EXPECT_EQ(ndigits(static_cast<T>(31710)), 5U);
+    EXPECT_EQ(ndigits(static_cast<T>(-26816)), 5U);
+    EXPECT_EQ(ndigits(static_cast<T>(-3686)), 4U);
+    EXPECT_EQ(ndigits(static_cast<T>(-686)), 3U);
+    EXPECT_EQ(ndigits(static_cast<T>(-10)), 2U);
+    EXPECT_EQ(ndigits(static_cast<T>(-2)), 1U);
 
-    static_assert(ndigits(std::numeric_limits<T>::max()) == 5);
-    static_assert(ndigits(std::numeric_limits<T>::min()) == 5);
+    static_assert(ndigits(std::numeric_limits<T>::max()) == 5U);
+    static_assert(ndigits(std::numeric_limits<T>::min()) == 5U);
   }
 }
 
@@ -82,30 +82,30 @@ TYPED_TEST_SUITE(S32NDigitsTest, S32Types, );
 TYPED_TEST(S32NDigitsTest, NDigitsS32) {
   using T = TypeParam;
   if constexpr (sizeof(T) == 4) {
-    EXPECT_EQ(ndigits(static_cast<T>(0)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(3)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(78)), 2);
-    EXPECT_EQ(ndigits(static_cast<T>(170)), 3);
-    EXPECT_EQ(ndigits(static_cast<T>(9245)), 4);
-    EXPECT_EQ(ndigits(static_cast<T>(35710)), 5);
-    EXPECT_EQ(ndigits(static_cast<T>(100000)), 6);
-    EXPECT_EQ(ndigits(static_cast<T>(1035710)), 7);
-    EXPECT_EQ(ndigits(static_cast<T>(21035710)), 8);
-    EXPECT_EQ(ndigits(static_cast<T>(461035710)), 9);
-    EXPECT_EQ(ndigits(static_cast<T>(1905614858)), 10);
-    EXPECT_EQ(ndigits(static_cast<T>(-1000000000)), 10);
-    EXPECT_EQ(ndigits(static_cast<T>(-908561485)), 9);
-    EXPECT_EQ(ndigits(static_cast<T>(-18561485)), 8);
-    EXPECT_EQ(ndigits(static_cast<T>(-1861485)), 7);
-    EXPECT_EQ(ndigits(static_cast<T>(-186148)), 6);
-    EXPECT_EQ(ndigits(static_cast<T>(-36816)), 5);
-    EXPECT_EQ(ndigits(static_cast<T>(-3686)), 4);
-    EXPECT_EQ(ndigits(static_cast<T>(-686)), 3);
-    EXPECT_EQ(ndigits(static_cast<T>(-10)), 2);
-    EXPECT_EQ(ndigits(static_cast<T>(-1)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(0)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(3)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(78)), 2U);
+    EXPECT_EQ(ndigits(static_cast<T>(170)), 3U);
+    EXPECT_EQ(ndigits(static_cast<T>(9245)), 4U);
+    EXPECT_EQ(ndigits(static_cast<T>(35710)), 5U);
+    EXPECT_EQ(ndigits(static_cast<T>(100000)), 6U);
+    EXPECT_EQ(ndigits(static_cast<T>(1035710)), 7U);
+    EXPECT_EQ(ndigits(static_cast<T>(21035710)), 8U);
+    EXPECT_EQ(ndigits(static_cast<T>(461035710)), 9U);
+    EXPECT_EQ(ndigits(static_cast<T>(1905614858)), 10U);
+    EXPECT_EQ(ndigits(static_cast<T>(-1000000000)), 10U);
+    EXPECT_EQ(ndigits(static_cast<T>(-908561485)), 9U);
+    EXPECT_EQ(ndigits(static_cast<T>(-18561485)), 8U);
+    EXPECT_EQ(ndigits(static_cast<T>(-1861485)), 7U);
+    EXPECT_EQ(ndigits(static_cast<T>(-186148)), 6U);
+    EXPECT_EQ(ndigits(static_cast<T>(-36816)), 5U);
+    EXPECT_EQ(ndigits(static_cast<T>(-3686)), 4U);
+    EXPECT_EQ(ndigits(static_cast<T>(-686)), 3U);
+    EXPECT_EQ(ndigits(static_cast<T>(-10)), 2U);
+    EXPECT_EQ(ndigits(static_cast<T>(-1)), 1U);
 
-    static_assert(ndigits(std::numeric_limits<T>::max()) == 10);
-    static_assert(ndigits(std::numeric_limits<T>::min()) == 10);
+    static_assert(ndigits(std::numeric_limits<T>::max()) == 10U);
+    static_assert(ndigits(std::numeric_limits<T>::min()) == 10U);
   }
 }
 
@@ -121,46 +121,46 @@ TYPED_TEST_SUITE(S64NDigitsTest, S64Types, );
 TYPED_TEST(S64NDigitsTest, NDigitsS64) {
   using T = TypeParam;
   if constexpr (sizeof(T) == 8) {
-    EXPECT_EQ(ndigits(static_cast<T>(0)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(3)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(78)), 2);
-    EXPECT_EQ(ndigits(static_cast<T>(170)), 3);
-    EXPECT_EQ(ndigits(static_cast<T>(9245)), 4);
-    EXPECT_EQ(ndigits(static_cast<T>(35710)), 5);
-    EXPECT_EQ(ndigits(static_cast<T>(100000)), 6);
-    EXPECT_EQ(ndigits(static_cast<T>(1035710)), 7);
-    EXPECT_EQ(ndigits(static_cast<T>(18561485)), 8);
-    EXPECT_EQ(ndigits(static_cast<T>(908561485)), 9);
-    EXPECT_EQ(ndigits(static_cast<T>(5905614858)), 10);
-    EXPECT_EQ(ndigits(static_cast<T>(59085614858)), 11);
-    EXPECT_EQ(ndigits(static_cast<T>(590385614858)), 12);
-    EXPECT_EQ(ndigits(static_cast<T>(2938502856265)), 13);
-    EXPECT_EQ(ndigits(static_cast<T>(29938502856265)), 14);
-    EXPECT_EQ(ndigits(static_cast<T>(299385028562659)), 15);
-    EXPECT_EQ(ndigits(static_cast<T>(7299385028562659)), 16);
-    static_assert(ndigits(static_cast<T>(72993850285626590)) == 17);
-    EXPECT_EQ(ndigits(static_cast<T>(372993850285626590)), 18);
-    EXPECT_EQ(ndigits(static_cast<T>(1000000000000000000)), 19);
-    EXPECT_EQ(ndigits(std::numeric_limits<T>::max()), 19);
-    EXPECT_EQ(ndigits(std::numeric_limits<T>::min()), 19);
-    EXPECT_EQ(ndigits(static_cast<T>(-372909385028562659L)), 18);
-    EXPECT_EQ(ndigits(static_cast<T>(-87299385028566509L)), 17);
-    EXPECT_EQ(ndigits(static_cast<T>(-7299385028562659L)), 16);
-    EXPECT_EQ(ndigits(static_cast<T>(-299385028562659L)), 15);
-    EXPECT_EQ(ndigits(static_cast<T>(-29938502856265L)), 14);
-    EXPECT_EQ(ndigits(static_cast<T>(-2938502856265L)), 13);
-    EXPECT_EQ(ndigits(static_cast<T>(-590385614858L)), 12);
-    EXPECT_EQ(ndigits(static_cast<T>(-59085614858L)), 11);
-    EXPECT_EQ(ndigits(static_cast<T>(-5905614858L)), 10);
-    EXPECT_EQ(ndigits(static_cast<T>(-908561485L)), 9);
-    EXPECT_EQ(ndigits(static_cast<T>(-93058365L)), 8);
-    EXPECT_EQ(ndigits(static_cast<T>(-1861485L)), 7);
-    EXPECT_EQ(ndigits(static_cast<T>(-186148L)), 6);
-    EXPECT_EQ(ndigits(static_cast<T>(-73686L)), 5);
-    EXPECT_EQ(ndigits(static_cast<T>(-3686L)), 4);
-    EXPECT_EQ(ndigits(static_cast<T>(-686L)), 3);
-    EXPECT_EQ(ndigits(static_cast<T>(-10L)), 2);
-    EXPECT_EQ(ndigits(static_cast<T>(-7L)), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(0)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(3)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(78)), 2U);
+    EXPECT_EQ(ndigits(static_cast<T>(170)), 3U);
+    EXPECT_EQ(ndigits(static_cast<T>(9245)), 4U);
+    EXPECT_EQ(ndigits(static_cast<T>(35710)), 5U);
+    EXPECT_EQ(ndigits(static_cast<T>(100000)), 6U);
+    EXPECT_EQ(ndigits(static_cast<T>(1035710)), 7U);
+    EXPECT_EQ(ndigits(static_cast<T>(18561485)), 8U);
+    EXPECT_EQ(ndigits(static_cast<T>(908561485)), 9U);
+    EXPECT_EQ(ndigits(static_cast<T>(5905614858)), 10U);
+    EXPECT_EQ(ndigits(static_cast<T>(59085614858)), 11U);
+    EXPECT_EQ(ndigits(static_cast<T>(590385614858)), 12U);
+    EXPECT_EQ(ndigits(static_cast<T>(2938502856265)), 13U);
+    EXPECT_EQ(ndigits(static_cast<T>(29938502856265)), 14U);
+    EXPECT_EQ(ndigits(static_cast<T>(299385028562659)), 15U);
+    EXPECT_EQ(ndigits(static_cast<T>(7299385028562659)), 16U);
+    static_assert(ndigits(static_cast<T>(72993850285626590)) == 17U);
+    EXPECT_EQ(ndigits(static_cast<T>(372993850285626590)), 18U);
+    EXPECT_EQ(ndigits(static_cast<T>(1000000000000000000)), 19U);
+    EXPECT_EQ(ndigits(std::numeric_limits<T>::max()), 19U);
+    EXPECT_EQ(ndigits(std::numeric_limits<T>::min()), 19U);
+    EXPECT_EQ(ndigits(static_cast<T>(-372909385028562659L)), 18U);
+    EXPECT_EQ(ndigits(static_cast<T>(-87299385028566509L)), 17U);
+    EXPECT_EQ(ndigits(static_cast<T>(-7299385028562659L)), 16U);
+    EXPECT_EQ(ndigits(static_cast<T>(-299385028562659L)), 15U);
+    EXPECT_EQ(ndigits(static_cast<T>(-29938502856265L)), 14U);
+    EXPECT_EQ(ndigits(static_cast<T>(-2938502856265L)), 13U);
+    EXPECT_EQ(ndigits(static_cast<T>(-590385614858L)), 12U);
+    EXPECT_EQ(ndigits(static_cast<T>(-59085614858L)), 11U);
+    EXPECT_EQ(ndigits(static_cast<T>(-5905614858L)), 10U);
+    EXPECT_EQ(ndigits(static_cast<T>(-908561485L)), 9U);
+    EXPECT_EQ(ndigits(static_cast<T>(-93058365L)), 8U);
+    EXPECT_EQ(ndigits(static_cast<T>(-1861485L)), 7U);
+    EXPECT_EQ(ndigits(static_cast<T>(-186148L)), 6U);
+    EXPECT_EQ(ndigits(static_cast<T>(-73686L)), 5U);
+    EXPECT_EQ(ndigits(static_cast<T>(-3686L)), 4U);
+    EXPECT_EQ(ndigits(static_cast<T>(-686L)), 3U);
+    EXPECT_EQ(ndigits(static_cast<T>(-10L)), 2U);
+    EXPECT_EQ(ndigits(static_cast<T>(-7L)), 1U);
   }
 }
 
@@ -176,13 +176,13 @@ TYPED_TEST_SUITE(U8NDigitsTest, U8Types, );
 TYPED_TEST(U8NDigitsTest, NDigitsU8) {
   using T = TypeParam;
   if constexpr (sizeof(T) == 1) {
-    EXPECT_EQ(ndigits(static_cast<T>(0)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(3)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(78)), 2);
-    EXPECT_EQ(ndigits(static_cast<T>(200)), 3);
+    EXPECT_EQ(ndigits(static_cast<T>(0)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(3)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(78)), 2U);
+    EXPECT_EQ(ndigits(static_cast<T>(200)), 3U);
 
-    static_assert(ndigits(std::numeric_limits<T>::max()) == 3);
-    static_assert(ndigits(std::numeric_limits<T>::min()) == 1);
+    static_assert(ndigits(std::numeric_limits<T>::max()) == 3U);
+    static_assert(ndigits(std::numeric_limits<T>::min()) == 1U);
   }
 }
 
@@ -198,14 +198,14 @@ TYPED_TEST_SUITE(U16NDigitsTest, U16Types, );
 TYPED_TEST(U16NDigitsTest, NDigitsU16) {
   using T = TypeParam;
   if constexpr (sizeof(T) == 2) {
-    EXPECT_EQ(ndigits(static_cast<T>(0)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(10)), 2);
-    EXPECT_EQ(ndigits(static_cast<T>(170)), 3);
-    EXPECT_EQ(ndigits(static_cast<T>(4710)), 4);
-    EXPECT_EQ(ndigits(static_cast<T>(46816)), 5);
+    EXPECT_EQ(ndigits(static_cast<T>(0)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(10)), 2U);
+    EXPECT_EQ(ndigits(static_cast<T>(170)), 3U);
+    EXPECT_EQ(ndigits(static_cast<T>(4710)), 4U);
+    EXPECT_EQ(ndigits(static_cast<T>(46816)), 5U);
 
-    static_assert(ndigits(std::numeric_limits<T>::max()) == 5);
-    static_assert(ndigits(std::numeric_limits<T>::min()) == 1);
+    static_assert(ndigits(std::numeric_limits<T>::max()) == 5U);
+    static_assert(ndigits(std::numeric_limits<T>::min()) == 1U);
   }
 }
 
@@ -221,20 +221,20 @@ TYPED_TEST_SUITE(U32NDigitsTest, U32Types, );
 TYPED_TEST(U32NDigitsTest, NDigitsU32) {
   using T = TypeParam;
   if constexpr (sizeof(T) == 4) {
-    EXPECT_EQ(ndigits(static_cast<T>(0U)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(3U)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(78U)), 2);
-    EXPECT_EQ(ndigits(static_cast<T>(170U)), 3);
-    EXPECT_EQ(ndigits(static_cast<T>(9245U)), 4);
-    EXPECT_EQ(ndigits(static_cast<T>(35710U)), 5);
-    EXPECT_EQ(ndigits(static_cast<T>(100000U)), 6);
-    EXPECT_EQ(ndigits(static_cast<T>(1035710U)), 7);
-    EXPECT_EQ(ndigits(static_cast<T>(31035710U)), 8);
-    EXPECT_EQ(ndigits(static_cast<T>(561035710U)), 9);
-    EXPECT_EQ(ndigits(static_cast<T>(4105614858U)), 10);
+    EXPECT_EQ(ndigits(static_cast<T>(0U)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(3U)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(78U)), 2U);
+    EXPECT_EQ(ndigits(static_cast<T>(170U)), 3U);
+    EXPECT_EQ(ndigits(static_cast<T>(9245U)), 4U);
+    EXPECT_EQ(ndigits(static_cast<T>(35710U)), 5U);
+    EXPECT_EQ(ndigits(static_cast<T>(100000U)), 6U);
+    EXPECT_EQ(ndigits(static_cast<T>(1035710U)), 7U);
+    EXPECT_EQ(ndigits(static_cast<T>(31035710U)), 8U);
+    EXPECT_EQ(ndigits(static_cast<T>(561035710U)), 9U);
+    EXPECT_EQ(ndigits(static_cast<T>(4105614858U)), 10U);
 
-    static_assert(ndigits(std::numeric_limits<T>::max()) == 10);
-    static_assert(ndigits(std::numeric_limits<T>::min()) == 1);
+    static_assert(ndigits(std::numeric_limits<T>::max()) == 10U);
+    static_assert(ndigits(std::numeric_limits<T>::min()) == 1U);
   }
 }
 
@@ -250,28 +250,28 @@ TYPED_TEST_SUITE(U64NDigitsTest, U64Types, );
 TYPED_TEST(U64NDigitsTest, NDigitsU64) {
   using T = TypeParam;
   if constexpr (sizeof(T) == 8) {
-    EXPECT_EQ(ndigits(static_cast<T>(0UL)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(3UL)), 1);
-    EXPECT_EQ(ndigits(static_cast<T>(78UL)), 2);
-    EXPECT_EQ(ndigits(static_cast<T>(170UL)), 3);
-    EXPECT_EQ(ndigits(static_cast<T>(9245UL)), 4);
-    EXPECT_EQ(ndigits(static_cast<T>(35710UL)), 5);
-    EXPECT_EQ(ndigits(static_cast<T>(100000UL)), 6);
-    EXPECT_EQ(ndigits(static_cast<T>(1035710UL)), 7);
-    EXPECT_EQ(ndigits(static_cast<T>(18561485UL)), 8);
-    EXPECT_EQ(ndigits(static_cast<T>(908561485UL)), 9);
-    EXPECT_EQ(ndigits(static_cast<T>(5905614858UL)), 10);
-    EXPECT_EQ(ndigits(static_cast<T>(59085614858UL)), 11);
-    EXPECT_EQ(ndigits(static_cast<T>(590385614858UL)), 12);
-    EXPECT_EQ(ndigits(static_cast<T>(2938502856265UL)), 13);
-    EXPECT_EQ(ndigits(static_cast<T>(29938502856265UL)), 14);
-    EXPECT_EQ(ndigits(static_cast<T>(299385028562659UL)), 15);
-    EXPECT_EQ(ndigits(static_cast<T>(7299385028562659UL)), 16);
-    static_assert(ndigits(static_cast<T>(72993850285626590UL)) == 17);
-    EXPECT_EQ(ndigits(static_cast<T>(372993850285626590UL)), 18);
-    EXPECT_EQ(ndigits(static_cast<T>(8729938502856126509UL)), 19);
-    EXPECT_EQ(ndigits(std::numeric_limits<T>::max()), 20);
-    EXPECT_EQ(ndigits(std::numeric_limits<T>::min()), 1);
+    EXPECT_EQ(ndigits(static_cast<T>(0UL)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(3UL)), 1U);
+    EXPECT_EQ(ndigits(static_cast<T>(78UL)), 2U);
+    EXPECT_EQ(ndigits(static_cast<T>(170UL)), 3U);
+    EXPECT_EQ(ndigits(static_cast<T>(9245UL)), 4U);
+    EXPECT_EQ(ndigits(static_cast<T>(35710UL)), 5U);
+    EXPECT_EQ(ndigits(static_cast<T>(100000UL)), 6U);
+    EXPECT_EQ(ndigits(static_cast<T>(1035710UL)), 7U);
+    EXPECT_EQ(ndigits(static_cast<T>(18561485UL)), 8U);
+    EXPECT_EQ(ndigits(static_cast<T>(908561485UL)), 9U);
+    EXPECT_EQ(ndigits(static_cast<T>(5905614858UL)), 10U);
+    EXPECT_EQ(ndigits(static_cast<T>(59085614858UL)), 11U);
+    EXPECT_EQ(ndigits(static_cast<T>(590385614858UL)), 12U);
+    EXPECT_EQ(ndigits(static_cast<T>(2938502856265UL)), 13U);
+    EXPECT_EQ(ndigits(static_cast<T>(29938502856265UL)), 14U);
+    EXPECT_EQ(ndigits(static_cast<T>(299385028562659UL)), 15U);
+    EXPECT_EQ(ndigits(static_cast<T>(7299385028562659UL)), 16U);
+    static_assert(ndigits(static_cast<T>(72993850285626590UL)) == 17U);
+    EXPECT_EQ(ndigits(static_cast<T>(372993850285626590UL)), 18U);
+    EXPECT_EQ(ndigits(static_cast<T>(8729938502856126509UL)), 19U);
+    EXPECT_EQ(ndigits(std::numeric_limits<T>::max()), 20U);
+    EXPECT_EQ(ndigits(std::numeric_limits<T>::min()), 1U);
   }
 }
 
@@ -281,7 +281,7 @@ template <typename T>
 void ExpectThresholdsUnsigned() {
   using U = T;
   U val = 1;
-  for (int digits = 1; digits <= 20; ++digits) {
+  for (std::uint8_t digits = 1; digits <= 20U; ++digits) {
     // v == 10^(digits-1)
     EXPECT_EQ(ndigits(static_cast<U>(val)), digits);
 
@@ -311,7 +311,7 @@ void ExpectThresholdSigned() {
 
   // positive thresholds
   U val = 1;
-  for (int digits = 1; digits <= 20; ++digits) {
+  for (std::uint8_t digits = 1; digits <= 20U; ++digits) {
     if (val <= static_cast<U>(std::numeric_limits<S>::max())) {
       EXPECT_EQ(ndigits(static_cast<S>(val)), digits);
       if (val > 1) {
@@ -445,8 +445,8 @@ TEST(NDigitsTest, CompareToReferenceImplementationNormalDistribution) {
   std::normal_distribution<double> digit_dist(6.0, 5.0);
   std::bernoulli_distribution sign_dist(0.5);
 
-  static constexpr int kTests = 1000000;
-  for (int i = 0; i < kTests; ++i) {
+  static constexpr std::size_t kTests = 1000000;
+  for (std::size_t i = 0; i < kTests; ++i) {
     int digits = static_cast<int>(std::llround(digit_dist(rng)));
     digits = std::max(digits, 1);
     digits = std::min(digits, kMaxDigits);
@@ -463,8 +463,8 @@ TEST(NDigitsTest, CompareToReferenceImplementationNormalDistribution) {
     uint64_t mag = mag_dist(rng);
 
     int expected = CountDigitsReference(mag);
-    int actual = ndigits(mag);
-    EXPECT_EQ(actual, expected) << "Mismatch for value: " << mag;
+    auto actual = ndigits(mag);
+    EXPECT_EQ(actual, static_cast<decltype(actual)>(expected)) << "Mismatch for value: " << mag;
 
     bool negative = sign_dist(rng);
     mag = std::min(mag, kI64Max);
@@ -478,7 +478,7 @@ TEST(NDigitsTest, CompareToReferenceImplementationNormalDistribution) {
 
     expected = CountDigitsReference(val);
     actual = ndigits(val);
-    EXPECT_EQ(actual, expected) << "Mismatch for value: " << val;
+    EXPECT_EQ(actual, static_cast<decltype(actual)>(expected)) << "Mismatch for value: " << val;
   }
 }
 

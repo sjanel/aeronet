@@ -24,7 +24,7 @@ inline auto IntegralToCharVector(std::integral auto val) {
 
   using CharVector = FixedCapacityVector<char, kMaxSize>;
 
-  CharVector ret(static_cast<CharVector::size_type>(nchars(val)));
+  CharVector ret(nchars(val));
 
   // no need to check the return value here, it cannot fail as we sized the vector accordingly
   std::to_chars(ret.data(), ret.data() + ret.size(), val);
@@ -67,7 +67,7 @@ constexpr char *AppendIntegralToCharBuf(char *buf, std::integral auto val) {
 constexpr std::span<char> IntegralToCharBuffer(std::span<char> buf, std::integral auto val) {
   const auto nbDigitsInt = nchars(val);
 
-  if (buf.size() < static_cast<std::size_t>(nbDigitsInt)) {
+  if (buf.size() < nbDigitsInt) {
     throw std::invalid_argument("Buffer size too small for integral conversion");
   }
 

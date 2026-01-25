@@ -59,7 +59,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(Conne
     return BodyDecodeStatus::Error;
   }
   if (expectContinue && declaredContentLen > 0) {
-    queueData(cnxIt, HttpResponseData(http::HTTP11_100_CONTINUE));
+    queueData(cnxIt, HttpResponseData(RawChars{}, HttpPayload(http::HTTP11_100_CONTINUE)));
   }
   std::size_t totalNeeded = headerEnd + declaredContentLen;
   if (state.inBuffer.size() < totalNeeded) {
@@ -75,7 +75,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
   ConnectionState& state = *cnxIt->second;
   HttpRequest& request = state.request;
   if (expectContinue) {
-    queueData(cnxIt, HttpResponseData(http::HTTP11_100_CONTINUE));
+    queueData(cnxIt, HttpResponseData(RawChars{}, HttpPayload(http::HTTP11_100_CONTINUE)));
   }
   std::size_t pos = request.headSpanSize();
   RawChars& bodyAndTrailers = state.bodyAndTrailersBuffer;

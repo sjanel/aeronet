@@ -148,7 +148,7 @@ struct VaryResult {
 
 inline std::string_view FinalizeDecompressedBody(HeadersViewMap& headersMap, HeadersViewMap::iterator encodingHeaderIt,
                                                  std::string_view src, RawChars& buf) {
-  const std::size_t decompressedSizeNbChars = static_cast<std::size_t>(nchars(src.size()));
+  const std::size_t decompressedSizeNbChars = nchars(src.size());
   buf.ensureAvailableCapacity(decompressedSizeNbChars);
 
   // Set the new decompressed body AFTER reallocating the buffer above.
@@ -385,8 +385,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   //   - temp compressed output (capped by maxAllowedCompressed + 1)
   //   - final compressed output (capped by maxAllowedCompressed)
   const std::size_t contentTypeLineLen = contentLengthLinePos - contentTypeLinePos;
-  const auto upperContentLengthLineLen =
-      HttpResponse::HeaderSize(http::ContentLength.size(), static_cast<std::size_t>(nchars(bodySz)));
+  const auto upperContentLengthLineLen = HttpResponse::HeaderSize(http::ContentLength.size(), nchars(bodySz));
   const std::size_t upperTailLen = varyHeaderLineSz + contentEncodingHeaderLineSz + contentTypeLineLen +
                                    upperContentLengthLineLen + http::DoubleCRLF.size();
 
@@ -466,7 +465,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
 
   const std::size_t contentTypeLineLen2 = contentLengthLinePos2 - contentTypeLinePos2;
 
-  const uint32_t nbCharsCompressedSize = static_cast<uint32_t>(nchars(compressedSize));
+  const uint32_t nbCharsCompressedSize = nchars(compressedSize);
   const std::size_t newContentLengthLineLen =
       HttpResponse::HeaderSize(http::ContentLength.size(), nbCharsCompressedSize);
   const std::size_t newTailLen = varyHeaderLineSz + contentEncodingHeaderLineSz + contentTypeLineLen2 +
