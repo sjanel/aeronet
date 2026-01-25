@@ -111,8 +111,8 @@ constexpr void Copy(std::string_view sv, char* dst) noexcept {
 // Returns the size difference between the new Transfer-Encoding: chunked header and Content-Length header.
 // For very large payloads, this can be negative, as Content-Length can be larger than
 // Transfer-Encoding: chunked.
-constexpr int64_t TransferEncodingHeaderSizeDiff(std::size_t bodySz) {
-  const auto oldContentLengthHeaderSize = HttpResponse::HeaderSize(http::ContentLength.size(), nchars(bodySz));
+constexpr int64_t TransferEncodingHeaderSizeDiff(std::uint8_t nCharsBodyLen) {
+  const auto oldContentLengthHeaderSize = HttpResponse::HeaderSize(http::ContentLength.size(), nCharsBodyLen);
 
   return static_cast<int64_t>(kTransferEncodingChunkedCRLF.size()) - static_cast<int64_t>(oldContentLengthHeaderSize);
 }
@@ -358,9 +358,10 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
   contentTypeValue = CheckContentType(newBodySize == 0, contentTypeValue);
 
   const auto oldBodyLen = bodyLength();
+  const auto nCharsOldBodyLen = nchars(oldBodyLen);
   if (newBodySize == 0) {
     if (oldBodyLen != 0) {
-      char* contentTypeHeaderLinePtr = getContentTypeHeaderLinePtr(oldBodyLen);
+      char* contentTypeHeaderLinePtr = getContentTypeHeaderLinePtr(nCharsOldBodyLen);
       assert(std::string_view(contentTypeHeaderLinePtr + http::CRLF.size(), http::ContentType.size()) ==
              http::ContentType);
       _data.setSize(static_cast<std::size_t>(contentTypeHeaderLinePtr - _data.data()) + http::CRLF.size());
@@ -379,16 +380,16 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
       headerAddLine(http::ContentLength, std::string_view(newBodyLenCharVec));
     } else {
       const auto oldContentTypeAndLengthSize =
-          bodyStartPos() - static_cast<std::size_t>(getContentTypeHeaderLinePtr(oldBodyLen) - _data.data()) -
+          bodyStartPos() - static_cast<std::size_t>(getContentTypeHeaderLinePtr(nCharsOldBodyLen) - _data.data()) -
           http::DoubleCRLF.size();
 
       if (neededNewSize > oldContentTypeAndLengthSize + oldBodyLen) {
         _data.ensureAvailableCapacityExponential(neededNewSize - oldContentTypeAndLengthSize - oldBodyLen);
       }
       if (setContentTypeIfPresent) {
-        replaceHeaderValueNoRealloc(getContentTypeValuePtr(oldBodyLen), contentTypeValue);
+        replaceHeaderValueNoRealloc(getContentTypeValuePtr(nCharsOldBodyLen), contentTypeValue);
       }
-      replaceHeaderValueNoRealloc(getContentLengthValuePtr(oldBodyLen), std::string_view(newBodyLenCharVec));
+      replaceHeaderValueNoRealloc(getContentLengthValuePtr(nCharsOldBodyLen), std::string_view(newBodyLenCharVec));
     }
   }
 }
@@ -591,7 +592,7 @@ HttpResponse& HttpResponse::headerAddLine(std::string_view key, std::string_view
     // We want to keep Content-Type and Content-Length together with the body (we use this property for optimization)
     // so we insert new headers before them. Of course, this code takes time, but it should be rare to add headers
     // after setting the body, so we can consider this as a 'slow' path.
-    insertPtr = getContentTypeHeaderLinePtr(bodySz);
+    insertPtr = getContentTypeHeaderLinePtr(nchars(bodySz));
     std::memmove(insertPtr + headerLineSize, insertPtr, static_cast<std::size_t>(_data.end() - insertPtr));
   }
   WriteCRLFHeader(insertPtr, key, value);
@@ -719,7 +720,7 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
     if (addTrailerHeader) {
       neededCapacity += static_cast<int64_t>(HeaderSize(http::Trailer.size(), name.size()));
     }
-    neededCapacity += TransferEncodingHeaderSizeDiff(bodyInMemoryLength());
+    neededCapacity += TransferEncodingHeaderSizeDiff(nchars(bodyInMemoryLength()));
   } else if (addTrailerHeader) {
     neededCapacity += static_cast<int64_t>(name.size() + kTrailerValueSep.size());
   }
@@ -811,7 +812,9 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
           flatTrailersView = std::string_view(newTrailersDataPtr, flatTrailersView.size());
         }
 
-        char* insertPtr = Append(http::Trailer, getContentLengthHeaderLinePtr(bodySz) + http::CRLF.size());
+        const auto bodySzStrVec = IntegralToCharVector(bodySz);
+
+        char* insertPtr = Append(http::Trailer, getContentLengthHeaderLinePtr(bodySzStrVec.size()) + http::CRLF.size());
         insertPtr = Append(http::HeaderSep, insertPtr);
         bool isFirst = true;
         for (const auto& [name, value] : HeadersView(flatTrailersView)) {
@@ -826,7 +829,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
         insertPtr = Append(http::ContentLength, insertPtr);
         insertPtr = Append(http::HeaderSep, insertPtr);
 
-        insertPtr = Append(std::string_view(IntegralToCharVector(bodySz)), insertPtr);
+        insertPtr = Append(std::string_view(bodySzStrVec), insertPtr);
         insertPtr = Append(http::DoubleCRLF, insertPtr);
         const auto newBodyStartPos = static_cast<std::size_t>(insertPtr - _data.data());
         _data.setSize(newBodyStartPos);
@@ -880,7 +883,8 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
       // Content-Length: N -> Transfer-Encoding: chunked
       // Old header size: CRLF + "content-length" + ": " + nchars(bodySz)
       // New header size: CRLF + "transfer-encoding" + ": " + "chunked"
-      int64_t headerSizeDiff = TransferEncodingHeaderSizeDiff(bodySz);
+      const auto nCharsBodyLen = nchars(bodySz);
+      int64_t headerSizeDiff = TransferEncodingHeaderSizeDiff(nCharsBodyLen);
 
       if (addTrailerHeader) {
         // We need to add the Trailer header as well
@@ -918,7 +922,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
 
         // Now update headers in _data: replace Content-Length with Transfer-Encoding: chunked
         // Find and replace Content-Length header
-        headersInsertPtr = ReplaceContentLengthWithTransferEncoding(getContentLengthHeaderLinePtr(bodySz),
+        headersInsertPtr = ReplaceContentLengthWithTransferEncoding(getContentLengthHeaderLinePtr(nCharsBodyLen),
                                                                     trailersFlatView(), addTrailerHeader);
 
         char* insertPtr = to_lower_hex(bodySz, headersInsertPtr + totalNewHeadersSize + http::DoubleCRLF.size());
@@ -964,7 +968,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
         // with constantDiff = len("transfer-encoding") - len("content-length") + len(endChunkedBody) + len(\r\n\r\n)
         //                   = 19
         static constexpr std::size_t kMaxTheoreticalBodySize = std::numeric_limits<std::size_t>::max();
-        static constexpr int64_t kMinHeaderSizeDiff = TransferEncodingHeaderSizeDiff(kMaxTheoreticalBodySize);
+        static constexpr int64_t kMinHeaderSizeDiff = TransferEncodingHeaderSizeDiff(nchars(kMaxTheoreticalBodySize));
         static constexpr std::size_t kMaxHexDigits = hex_digits(kMaxTheoreticalBodySize);
         static constexpr int64_t kMinAddedSizeForChunked =
             static_cast<int64_t>(kMaxHexDigits + kEndChunkedBody.size() + http::DoubleCRLF.size());
@@ -1010,7 +1014,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
         // Move and update headers: replace Content-Length with Transfer-Encoding: chunked
         // Move everything before body (headers and DoubleCRLF)
         // Find Content-Length header position (relative to start)
-        headersInsertPtr = ReplaceContentLengthWithTransferEncoding(getContentLengthHeaderLinePtr(bodySz),
+        headersInsertPtr = ReplaceContentLengthWithTransferEncoding(getContentLengthHeaderLinePtr(nCharsBodyLen),
                                                                     newTrailersFlatView, addTrailerHeader);
 
         Copy(http::DoubleCRLF, headersInsertPtr + totalNewHeadersSize);
@@ -1063,9 +1067,9 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
 void HttpResponse::bodyAppendUpdateHeaders(std::string_view givenContentType, std::string_view defaultContentType,
                                            std::size_t totalBodyLen) {
   assert(_trailerLen == 0);
-  const auto bodySz = bodyLength();
+  const auto oldBodyLen = bodyLength();
   const auto newBodyLenCharVec = IntegralToCharVector(totalBodyLen);
-  if (bodySz == 0) {
+  if (oldBodyLen == 0) {
     if (givenContentType.empty()) {
       headerAddLine(http::ContentType, defaultContentType);
     } else {
@@ -1073,10 +1077,11 @@ void HttpResponse::bodyAppendUpdateHeaders(std::string_view givenContentType, st
     }
     headerAddLine(http::ContentLength, std::string_view(newBodyLenCharVec));
   } else {
+    const auto nCharsOldBodyLen = nchars(oldBodyLen);
     if (!givenContentType.empty()) {
-      replaceHeaderValueNoRealloc(getContentTypeValuePtr(bodySz), givenContentType);
+      replaceHeaderValueNoRealloc(getContentTypeValuePtr(nCharsOldBodyLen), givenContentType);
     }
-    replaceHeaderValueNoRealloc(getContentLengthValuePtr(bodySz), std::string_view(newBodyLenCharVec));
+    replaceHeaderValueNoRealloc(getContentLengthValuePtr(nCharsOldBodyLen), std::string_view(newBodyLenCharVec));
   }
 }
 
