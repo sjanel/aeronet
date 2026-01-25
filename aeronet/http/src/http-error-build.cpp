@@ -24,7 +24,7 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
                        http::Date.size() + http::HeaderSep.size();
 
   const std::size_t globalHeadersSize = globalHeaders.fullSizeWithLastSep();
-  const auto nbCharsBodyLen = static_cast<std::size_t>(nchars(body.size()));
+  const auto nbCharsBodyLen = nchars(body.size());
 
   // Exact allocation size
   RawChars out(datePos + kRFC7231DateStrLen + http::CRLF.size() + http::ContentLength.size() + http::HeaderSep.size() +

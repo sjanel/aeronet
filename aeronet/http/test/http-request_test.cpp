@@ -854,7 +854,7 @@ TEST_F(HttpRequestTest, PinHeadStorageRemapsViews) {
   auto hostView = req.headerValueOrEmpty("X-Custom");
   const char* originalPtr = hostView.data();
 
-  // now pin head storage which moves data into state.headBuffer
+  // now pin head storage which moves data into state.asyncState.headBuffer
   callPinHeadStorage();
 
   // after pinning, header view should point into headBuffer (ownerState.headBuffer)
@@ -863,9 +863,9 @@ TEST_F(HttpRequestTest, PinHeadStorageRemapsViews) {
 
   ASSERT_NE(originalPtr, pinnedPtr);
   // pinned pointer should be within headBuffer data range
-  const char* hb = cs.headBuffer.data();
+  const char* hb = cs.asyncState.headBuffer.data();
   EXPECT_GE(pinnedPtr, hb);
-  EXPECT_LT(pinnedPtr, hb + static_cast<std::ptrdiff_t>(cs.headBuffer.size()));
+  EXPECT_LT(pinnedPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState.headBuffer.size()));
 }
 
 TEST_F(HttpRequestTest, PinHead_SkipsRemapForViewsBeyondOldLimit) {
@@ -901,8 +901,8 @@ TEST_F(HttpRequestTest, PinHead_SkipsRemapForViewsBeyondOldLimit) {
   EXPECT_GE(afterPtr, inBase);
   EXPECT_LT(afterPtr, inBase + static_cast<std::ptrdiff_t>(cs.inBuffer.size()));
   // And ensure it's not inside headBuffer
-  const char* hb = cs.headBuffer.data();
-  EXPECT_FALSE(afterPtr >= hb && afterPtr < hb + static_cast<std::ptrdiff_t>(cs.headBuffer.size()));
+  const char* hb = cs.asyncState.headBuffer.data();
+  EXPECT_FALSE(afterPtr >= hb && afterPtr < hb + static_cast<std::ptrdiff_t>(cs.asyncState.headBuffer.size()));
 }
 
 TEST_F(HttpRequestTest, PinHead_SkipsRemapForViewsBeforeOldBase) {
@@ -932,8 +932,8 @@ TEST_F(HttpRequestTest, PinHead_SkipsRemapForViewsBeforeOldBase) {
   EXPECT_EQ(beforePtr, afterPtr);
 
   // Ensure it still points into tmp buffer (not into headBuffer)
-  const char* hb = cs.headBuffer.data();
-  EXPECT_FALSE(afterPtr >= hb && afterPtr < hb + static_cast<std::ptrdiff_t>(cs.headBuffer.size()));
+  const char* hb = cs.asyncState.headBuffer.data();
+  EXPECT_FALSE(afterPtr >= hb && afterPtr < hb + static_cast<std::ptrdiff_t>(cs.asyncState.headBuffer.size()));
 }
 
 TEST_F(HttpRequestTest, PinHead_RemapsEntriesInsideOldSpan) {
@@ -970,13 +970,13 @@ TEST_F(HttpRequestTest, PinHead_RemapsEntriesInsideOldSpan) {
   EXPECT_NE(origPtr, ppPtr);
 
   // All remapped pointers should be inside headBuffer
-  const char* hb = cs.headBuffer.data();
+  const char* hb = cs.asyncState.headBuffer.data();
   EXPECT_GE(pinnedPtr, hb);
-  EXPECT_LT(pinnedPtr, hb + static_cast<std::ptrdiff_t>(cs.headBuffer.size()));
+  EXPECT_LT(pinnedPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState.headBuffer.size()));
   EXPECT_GE(trPtr, hb);
-  EXPECT_LT(trPtr, hb + static_cast<std::ptrdiff_t>(cs.headBuffer.size()));
+  EXPECT_LT(trPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState.headBuffer.size()));
   EXPECT_GE(ppPtr, hb);
-  EXPECT_LT(ppPtr, hb + static_cast<std::ptrdiff_t>(cs.headBuffer.size()));
+  EXPECT_LT(ppPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState.headBuffer.size()));
 }
 
 TEST_F(HttpRequestTest, WantCloseAndHasExpectContinue) {

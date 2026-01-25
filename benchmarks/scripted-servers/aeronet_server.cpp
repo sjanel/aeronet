@@ -20,6 +20,7 @@
 
 #include "aeronet/aeronet.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/static-file-handler.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -53,7 +54,6 @@ int main(int argc, char* argv[]) {
   config.maxRequestsPerConnection = std::numeric_limits<uint32_t>::max();
   config.maxHeaderBytes = 256UL * 1024;  // 256KB headers for stress tests
   config.maxBodyBytes = 64UL << 20;      // 64MB bodies for large body tests
-  config.reusePort = true;
   config.globalHeaders.clear();
 
   // Configure TLS if enabled
@@ -66,7 +66,9 @@ int main(int argc, char* argv[]) {
     std::cout << "TLS enabled with cert=" << benchCfg.certFile << " key=" << benchCfg.keyFile << "\n";
   }
 
-  Router router;
+  RouterConfig routerConfig;
+  routerConfig.trailingSlashPolicy = RouterConfig::TrailingSlashPolicy::Strict;
+  Router router(std::move(routerConfig));
 
   // ============================================================
   // Endpoint 1: /ping - Minimal latency test
@@ -87,9 +89,11 @@ int main(int argc, char* argv[]) {
         headerSize = StringToIntegral<std::size_t>(qp.value);
       }
     }
-    HttpResponse resp = req.makeResponse(count * HttpResponse::HeaderSize(20U, headerSize), http::StatusCodeOK);
+    static constexpr std::string_view kHeaderNamePrefix = "X-Bench-Header-";
+    HttpResponse resp = req.makeResponse(
+        count * HttpResponse::HeaderSize(kHeaderNamePrefix.size() + ndigits(count), headerSize), http::StatusCodeOK);
     for (std::size_t headerPos = 0; headerPos < count; ++headerPos) {
-      resp.headerAddLine(std::format("X-Bench-Header-{}", headerPos), bench::GenerateRandomString(headerSize));
+      resp.headerAddLine(std::format("{}{}", kHeaderNamePrefix, headerPos), bench::GenerateRandomString(headerSize));
     }
     resp.body(std::format("Generated {} headers", count));
     return resp;

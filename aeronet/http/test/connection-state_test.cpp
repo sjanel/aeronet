@@ -365,24 +365,24 @@ TEST(ConnectionStateBufferTest, ShrinkToFitReducesNonEmptyBuffers) {
   state.bodyAndTrailersBuffer.reserve(1025);
   state.bodyAndTrailersBuffer.append(std::string_view("chunked body"));
 
-  state.headBuffer.reserve(4096);
-  state.headBuffer.append(std::string_view("GET / HTTP/1.1\r\nHost: a\r\n\r\n"));
+  state.asyncState.headBuffer.reserve(4096);
+  state.asyncState.headBuffer.append(std::string_view("GET / HTTP/1.1\r\nHost: a\r\n\r\n"));
 
   // Sanity: capacities should be larger than sizes prior to shrink
   EXPECT_GT(state.inBuffer.capacity(), state.inBuffer.size());
   EXPECT_GT(state.bodyAndTrailersBuffer.capacity(), state.bodyAndTrailersBuffer.size());
-  EXPECT_GT(state.headBuffer.capacity(), state.headBuffer.size());
+  EXPECT_GT(state.asyncState.headBuffer.capacity(), state.asyncState.headBuffer.size());
 
   const auto oldCapacityInBuffer = state.inBuffer.capacity();
   const auto oldCapacityBodyBuffer = state.bodyAndTrailersBuffer.capacity();
-  const auto oldCapacityHeadBuffer = state.headBuffer.capacity();
+  const auto oldCapacityHeadBuffer = state.asyncState.headBuffer.capacity();
 
   state.reset();
 
   // After shrink and clear, capacities should be bounded by sizes
   EXPECT_LT(state.inBuffer.capacity(), oldCapacityInBuffer);
   EXPECT_LT(state.bodyAndTrailersBuffer.capacity(), oldCapacityBodyBuffer);
-  EXPECT_LT(state.headBuffer.capacity(), oldCapacityHeadBuffer);
+  EXPECT_LT(state.asyncState.headBuffer.capacity(), oldCapacityHeadBuffer);
 }
 
 TEST(ConnectionStateBufferTest, ShrinkToFitOnEmptyBuffersYieldsZeroCapacity) {
@@ -392,7 +392,7 @@ TEST(ConnectionStateBufferTest, ShrinkToFitOnEmptyBuffersYieldsZeroCapacity) {
   state.tunnelOrFileBuffer.clear();
   state.inBuffer.clear();
   state.bodyAndTrailersBuffer.clear();
-  state.headBuffer.clear();
+  state.asyncState.headBuffer.clear();
 
   state.reset();
 
@@ -400,7 +400,7 @@ TEST(ConnectionStateBufferTest, ShrinkToFitOnEmptyBuffersYieldsZeroCapacity) {
   EXPECT_EQ(state.tunnelOrFileBuffer.capacity(), 0U);
   EXPECT_EQ(state.inBuffer.capacity(), 0U);
   EXPECT_EQ(state.bodyAndTrailersBuffer.capacity(), 0U);
-  EXPECT_EQ(state.headBuffer.capacity(), 0U);
+  EXPECT_EQ(state.asyncState.headBuffer.capacity(), 0U);
 }
 
 TEST(ConnectionStateBridgeTest, InstallAggregatedBodyBridgeMakesBodyAvailable) {
