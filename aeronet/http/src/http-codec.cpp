@@ -372,10 +372,11 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   const std::size_t varyHeaderLineSz = addVaryHeaderLine ? kVaryHeaderLine.size() : 0UL;
 
   // Compute offsets for the reserved tail (Content-Type + Content-Length + DoubleCRLF).
+  const auto nCharsBodySz = nchars(bodySz);
   const std::size_t contentTypeLinePos =
-      static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr(bodySz) - resp._data.data());
+      static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr(nCharsBodySz) - resp._data.data());
   const std::size_t contentLengthLinePos =
-      static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr(bodySz) - resp._data.data());
+      static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr(nCharsBodySz) - resp._data.data());
 
   const std::size_t oldDataSz = resp._data.size();
 
@@ -385,7 +386,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   //   - temp compressed output (capped by maxAllowedCompressed + 1)
   //   - final compressed output (capped by maxAllowedCompressed)
   const std::size_t contentTypeLineLen = contentLengthLinePos - contentTypeLinePos;
-  const auto upperContentLengthLineLen = HttpResponse::HeaderSize(http::ContentLength.size(), nchars(bodySz));
+  const auto upperContentLengthLineLen = HttpResponse::HeaderSize(http::ContentLength.size(), nCharsBodySz);
   const std::size_t upperTailLen = varyHeaderLineSz + contentEncodingHeaderLineSz + contentTypeLineLen +
                                    upperContentLengthLineLen + http::DoubleCRLF.size();
 
@@ -459,9 +460,9 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
 
   // Recompute tail offsets after the optional Vary merge above (it can shift Content-Type/Length positions).
   const std::size_t contentTypeLinePos2 =
-      static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr(bodySz) - resp._data.data());
+      static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr(nCharsBodySz) - resp._data.data());
   const std::size_t contentLengthLinePos2 =
-      static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr(bodySz) - resp._data.data());
+      static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr(nCharsBodySz) - resp._data.data());
 
   const std::size_t contentTypeLineLen2 = contentLengthLinePos2 - contentTypeLinePos2;
 

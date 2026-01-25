@@ -1088,21 +1088,39 @@ TEST_F(HttpResponseTest, AppendBodyAfterFileCapturedIsLogicError) {
 }
 
 TEST_F(HttpResponseTest, AppendBodyBytesSpan) {
-  // span of bytes
-  static constexpr std::byte vec[]{std::byte{'X'}, std::byte{'Y'}};
-  HttpResponse resp(http::StatusCodeOK);
-  resp.bodyAppend(std::span<const std::byte>(vec));
-  resp.bodyAppend(std::span<const std::byte>{}, "text/another");
-  resp.bodyAppend(std::span<const std::byte>{vec}, "text/another2");
-  EXPECT_EQ(resp.bodyInMemory(), "XYXY");
-  EXPECT_EQ(resp.headerValue(http::ContentType), "text/another2");
-  EXPECT_EQ(resp.headerValue(http::ContentLength), "4");
+  for (bool captured : {true, false}) {
+    static constexpr std::byte vec[]{std::byte{'X'}, std::byte{'Y'}};
+    HttpResponse resp(http::StatusCodeOK);
+    if (captured) {
+      resp.body(std::string{"XY"}, "text/initial");
+    } else {
+      resp.bodyAppend(std::span<const std::byte>(vec), "text/initial");
+    }
 
-  while (resp.bodyInMemoryLength() != 10) {
-    resp.bodyAppend(std::span<const std::byte>(vec));
+    resp.bodyAppend(std::span<const std::byte>{}, "text/another");
+    resp.bodyAppend(std::span<const std::byte>{vec}, "text/another2");
+    EXPECT_EQ(resp.bodyInMemory(), "XYXY");
+    EXPECT_EQ(resp.headerValue(http::ContentType), "text/another2");
+    EXPECT_EQ(resp.headerValue(http::ContentLength), "4");
+
+    while (resp.bodyInMemoryLength() != 10) {
+      resp.bodyAppend(std::span<const std::byte>(vec));
+    }
+    std::string expected = "XYXYXYXYXY";
+    EXPECT_EQ(resp.bodyInMemory(), expected);
+    EXPECT_EQ(resp.headerValue(http::ContentLength), "10");
+
+    auto bodyLen = resp.bodyInMemoryLength();
+    EXPECT_EQ(bodyLen, 10U);
+    while (resp.bodyInMemoryLength() < 1024UL) {
+      resp.bodyAppend(std::span<const std::byte>(vec));
+      bodyLen += std::size(vec);
+      expected += "XY";
+      EXPECT_EQ(resp.bodyInMemory(), expected);
+      EXPECT_EQ(resp.bodyInMemoryLength(), bodyLen);
+      EXPECT_EQ(resp.headerValue(http::ContentLength), std::string_view(IntegralToCharVector(bodyLen)));
+    }
   }
-  EXPECT_EQ(resp.bodyInMemory(), "XYXYXYXYXY");
-  EXPECT_EQ(resp.headerValue(http::ContentLength), "10");
 }
 
 TEST_F(HttpResponseTest, AppendBodyCStrRvalue) {
