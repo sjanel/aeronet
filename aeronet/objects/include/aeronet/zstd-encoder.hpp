@@ -12,50 +12,52 @@
 
 namespace aeronet {
 
-namespace details {
-
-struct ZstdCtxDeleter {
-  void operator()(ZSTD_CCtx* ctx) const noexcept { ZSTD_freeCCtx(ctx); }
-};
-
-struct ZstdContextRAII {
-  ZstdContextRAII() noexcept = default;
-
-  ZstdContextRAII(int level, int windowLog);
-
-  std::unique_ptr<ZSTD_CCtx, ZstdCtxDeleter> ctx;
-  int level{0};
-};
-
-}  // namespace details
-
 class ZstdEncoderContext final : public EncoderContext {
  public:
-  ZstdEncoderContext(RawChars& sharedBuf, const CompressionConfig::Zstd& cfg)
-      : _buf(sharedBuf), _zs(cfg.compressionLevel, cfg.windowLog) {}
+  ZstdEncoderContext() noexcept = default;
+
+  explicit ZstdEncoderContext(RawChars& sharedBuf) : _pBuf(&sharedBuf) {}
+
+  ZstdEncoderContext(const ZstdEncoderContext&) = delete;
+  ZstdEncoderContext(ZstdEncoderContext&& rhs) noexcept;
+  ZstdEncoderContext& operator=(const ZstdEncoderContext&) = delete;
+  ZstdEncoderContext& operator=(ZstdEncoderContext&& rhs) noexcept;
+
+  ~ZstdEncoderContext() override = default;
 
   std::string_view encodeChunk(std::string_view chunk) override;
 
+  /// Initialize (or reinitialize) the compression context with given parameters.
+  /// Reuses internal allocations if already initialized.
+  void init(int level, int windowLog);
+
  private:
-  RawChars& _buf;
-  details::ZstdContextRAII _zs;
+  friend class ZstdEncoder;
+
+  struct ZstdCtxDeleter {
+    void operator()(ZSTD_CCtx* ctx) const noexcept { ZSTD_freeCCtx(ctx); }
+  };
+
+  RawChars* _pBuf{nullptr};
+  std::unique_ptr<ZSTD_CCtx, ZstdCtxDeleter> _ctx;
 };
 
 class ZstdEncoder {
  public:
   ZstdEncoder() noexcept = default;
 
-  explicit ZstdEncoder(RawChars& buf, const CompressionConfig& cfg)
-      : pBuf(&buf), _cfg(cfg.zstd), _zs(_cfg.compressionLevel, _cfg.windowLog) {}
+  explicit ZstdEncoder(RawChars& buf, CompressionConfig::Zstd cfg) : _cfg(cfg), _ctx(buf) {}
 
-  std::size_t encodeFull(std::string_view data, std::size_t availableCapacity, char* buf) const;
+  std::size_t encodeFull(std::string_view data, std::size_t availableCapacity, char* buf);
 
-  std::unique_ptr<EncoderContext> makeContext() { return std::make_unique<ZstdEncoderContext>(*pBuf, _cfg); }
+  EncoderContext* makeContext() {
+    _ctx.init(_cfg.compressionLevel, _cfg.windowLog);
+    return &_ctx;
+  }
 
  private:
-  RawChars* pBuf{nullptr};
   CompressionConfig::Zstd _cfg;
-  details::ZstdContextRAII _zs;
+  ZstdEncoderContext _ctx;
 };
 
 }  // namespace aeronet

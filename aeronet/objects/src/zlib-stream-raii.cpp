@@ -3,6 +3,7 @@
 #include <zconf.h>
 #include <zlib.h>
 
+#include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <format>
@@ -25,24 +26,82 @@ constexpr int ComputeWindowBits(ZStreamRAII::Variant variant) {
 }
 }  // namespace
 
-ZStreamRAII::ZStreamRAII(Variant variant) : _isDeflate(false) {
+ZStreamRAII::ZStreamRAII(Variant variant) : stream(), _variant(variant), _mode(Mode::decompress) {
   const auto ret = inflateInit2(&stream, ComputeWindowBits(variant));
   if (ret != Z_OK) [[unlikely]] {
     throw std::runtime_error(std::format("Error from inflateInit2 - error {}", ret));
   }
 }
 
-ZStreamRAII::ZStreamRAII(Variant variant, int8_t level) : _isDeflate(true) {
-  const auto ret = deflateInit2(&stream, level, Z_DEFLATED, ComputeWindowBits(variant), 8, Z_DEFAULT_STRATEGY);
-  if (ret != Z_OK) [[unlikely]] {
-    throw std::runtime_error(std::format("Error from deflateInit2 - error {}", ret));
+ZStreamRAII::ZStreamRAII(ZStreamRAII&& rhs) noexcept : _variant(rhs._variant), _mode(rhs._mode), _level(rhs._level) {
+  rhs.end();
+}
+
+ZStreamRAII& ZStreamRAII::operator=(ZStreamRAII&& rhs) noexcept {
+  if (this != &rhs) [[likely]] {
+    const auto variant = rhs._variant;
+    const auto mode = rhs._mode;
+    const auto level = rhs._level;
+
+    end();
+    rhs.end();
+
+    _variant = variant;
+    _mode = mode;
+    _level = level;
+  }
+  return *this;
+}
+
+void ZStreamRAII::initCompress(Variant variant, int8_t level) {
+  if (_variant == variant) {
+    assert(_mode == Mode::compress);
+    // Reuse existing deflate state by resetting it
+    const auto ret = deflateReset(&stream);
+    if (ret != Z_OK) [[unlikely]] {
+      throw std::runtime_error(std::format("Error from deflateReset - error {}", ret));
+    }
+
+    if (level != _level) {
+      // Update compression level if different
+      const auto retLevel = deflateParams(&stream, level, Z_DEFAULT_STRATEGY);
+      if (retLevel != Z_OK) [[unlikely]] {
+        throw std::runtime_error(std::format("Error from deflateParams - error {}", retLevel));
+      }
+      _level = level;
+    }
+  } else {
+    assert(_mode == Mode::uninitialized);
+    stream = {};
+    const auto ret = deflateInit2(&stream, level, Z_DEFLATED, ComputeWindowBits(variant), 8, Z_DEFAULT_STRATEGY);
+    if (ret != Z_OK) [[unlikely]] {
+      throw std::runtime_error(std::format("Error from deflateInit2 - error {}", ret));
+    }
+    _variant = variant;
+    _mode = Mode::compress;
+    _level = level;
   }
 }
 
-ZStreamRAII::~ZStreamRAII() {
-  const auto ret = _isDeflate ? deflateEnd(&stream) : inflateEnd(&stream);
-  if (ret != Z_OK) [[unlikely]] {
-    log::error("zlib: isDeflate:{} end returned {} (ignored)", _isDeflate, ret);
+void ZStreamRAII::end() noexcept {
+  auto ret = Z_OK;
+  switch (_mode) {
+    case Mode::decompress:
+      ret = inflateEnd(&stream);
+      break;
+    case Mode::compress:
+      ret = deflateEnd(&stream);
+      break;
+    default:
+      assert(_mode == Mode::uninitialized);
+      return;  // nothing to clean up
   }
+  if (ret != Z_OK) [[unlikely]] {
+    log::error("zlib: end returned {} (ignored)", ret);
+  }
+  _variant = Variant::uninitialized;
+  _mode = Mode::uninitialized;
+  _level = 0;
 }
+
 }  // namespace aeronet

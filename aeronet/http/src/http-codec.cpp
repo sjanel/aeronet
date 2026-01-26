@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -258,14 +257,14 @@ inline bool UseStreamingDecompression(const HeadersViewMap& headersMap,
 
 void ResponseCompressionState::createEncoders([[maybe_unused]] const CompressionConfig& cfg) {
 #ifdef AERONET_ENABLE_ZLIB
-  gzipEncoder = ZlibEncoder(ZStreamRAII::Variant::gzip, sharedBuffer, cfg);
-  deflateEncoder = ZlibEncoder(ZStreamRAII::Variant::deflate, sharedBuffer, cfg);
+  gzipEncoder = ZlibEncoder(ZStreamRAII::Variant::gzip, sharedBuffer, cfg.zlib.level);
+  deflateEncoder = ZlibEncoder(ZStreamRAII::Variant::deflate, sharedBuffer, cfg.zlib.level);
 #endif
 #ifdef AERONET_ENABLE_ZSTD
-  zstdEncoder = ZstdEncoder(sharedBuffer, cfg);
+  zstdEncoder = ZstdEncoder(sharedBuffer, cfg.zstd);
 #endif
 #ifdef AERONET_ENABLE_BROTLI
-  brotliEncoder = BrotliEncoder(sharedBuffer, cfg);
+  brotliEncoder = BrotliEncoder(sharedBuffer, cfg.brotli);
 #endif
 }
 
@@ -294,7 +293,7 @@ std::size_t ResponseCompressionState::encodeFull([[maybe_unused]] Encoding encod
   throw std::invalid_argument("No encoder for 'none' encoding");
 }
 
-std::unique_ptr<EncoderContext> ResponseCompressionState::makeContext([[maybe_unused]] Encoding encoding) {
+EncoderContext* ResponseCompressionState::makeContext([[maybe_unused]] Encoding encoding) {
 #ifdef AERONET_ENABLE_BROTLI
   if (encoding == Encoding::br) {
     return brotliEncoder.makeContext();

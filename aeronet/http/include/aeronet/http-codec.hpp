@@ -37,7 +37,8 @@ struct ResponseCompressionState {
 
   std::size_t encodeFull(Encoding encoding, std::string_view data, std::size_t availableCapacity, char* buf);
 
-  std::unique_ptr<EncoderContext> makeContext(Encoding encoding);
+  /// Returns a pointer to an internally-owned encoder context (reused across calls).
+  EncoderContext* makeContext(Encoding encoding);
 
   EncodingSelector selector;
 
