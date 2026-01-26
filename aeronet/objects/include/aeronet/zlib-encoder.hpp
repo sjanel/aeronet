@@ -2,11 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
-#include <memory>
 #include <string_view>
 
-#include "aeronet/compression-config.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
@@ -15,12 +12,29 @@ namespace aeronet {
 
 class ZlibEncoderContext final : public EncoderContext {
  public:
-  ZlibEncoderContext(ZStreamRAII::Variant variant, RawChars& sharedBuf, int8_t level);
+  ZlibEncoderContext() noexcept = default;
+
+  explicit ZlibEncoderContext(RawChars& sharedBuf) : _pBuf(&sharedBuf) {}
+
+  ZlibEncoderContext(const ZlibEncoderContext&) = delete;
+  ZlibEncoderContext(ZlibEncoderContext&& rhs) noexcept = default;
+  ZlibEncoderContext& operator=(const ZlibEncoderContext&) = delete;
+  ZlibEncoderContext& operator=(ZlibEncoderContext&& rhs) noexcept = default;
+
+  ~ZlibEncoderContext() override = default;
 
   std::string_view encodeChunk(std::string_view chunk) override;
 
+  /// Initialize (or reinitialize) the compression context with given parameters.
+  /// Reuses internal zlib state if already initialized.
+  void init(int8_t level, ZStreamRAII::Variant variant) { _zs.initCompress(variant, level); }
+
+  void end() noexcept { _zs.end(); }
+
  private:
-  RawChars& _buf;
+  friend class ZlibEncoder;
+
+  RawChars* _pBuf{nullptr};
   ZStreamRAII _zs;
 };
 
@@ -28,19 +42,20 @@ class ZlibEncoder {
  public:
   ZlibEncoder() noexcept = default;
 
-  ZlibEncoder(ZStreamRAII::Variant variant, RawChars& buf, const CompressionConfig& cfg)
-      : pBuf(&buf), _level(cfg.zlib.level), _variant(variant) {}
+  ZlibEncoder(ZStreamRAII::Variant variant, RawChars& buf, int8_t level)
+      : _level(level), _variant(variant), _ctx(buf) {}
 
   std::size_t encodeFull(std::string_view data, std::size_t availableCapacity, char* buf);
 
-  std::unique_ptr<EncoderContext> makeContext() {
-    return std::make_unique<ZlibEncoderContext>(_variant, *pBuf, _level);
+  EncoderContext* makeContext() {
+    _ctx.init(_level, _variant);
+    return &_ctx;
   }
 
  private:
-  RawChars* pBuf{nullptr};  // shared output buffer reused (single-thread guarantee)
   int8_t _level{};
   ZStreamRAII::Variant _variant{ZStreamRAII::Variant::gzip};
+  ZlibEncoderContext _ctx;
 };
 
 }  // namespace aeronet

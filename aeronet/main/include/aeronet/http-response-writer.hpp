@@ -214,9 +214,9 @@ class HttpResponseWriter {
   HttpResponse _fixedResponse;
   std::size_t _declaredLength{0};
   std::size_t _bytesWritten{0};
-  std::unique_ptr<EncoderContext> _activeEncoderCtx;  // streaming context
-  RawChars _preCompressBuffer;                        // threshold buffering before activation
-  RawChars _trailers;                                 // Trailer headers (RFC 7230 §4.1.2) buffered until end()
+  EncoderContext* _activeEncoderCtx{nullptr};  // streaming context (owned by compression state)
+  RawChars _preCompressBuffer;                 // threshold buffering before activation
+  RawChars _trailers;                          // Trailer headers (RFC 7230 §4.1.2) buffered until end()
   const CorsPolicy* _pCorsPolicy{nullptr};
   std::span<const ResponseMiddleware> _routeResponseMiddleware;
 };

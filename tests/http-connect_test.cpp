@@ -37,13 +37,13 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   // Build CONNECT request to our upstream
   std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
-  test::sendAll(fd, req);
+  test::sendAll(fd, req, std::chrono::milliseconds{5000});
   auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{5000}, 93UL);
   EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
 
   // Now send data through the tunnel and expect echo
   std::string_view simpleHello = "hello-tunnel";
-  test::sendAll(fd, simpleHello);
+  test::sendAll(fd, simpleHello, std::chrono::milliseconds{5000});
   auto echoedHello = test::recvWithTimeout(fd, std::chrono::milliseconds{5000}, simpleHello.size());
   EXPECT_TRUE(echoedHello.contains(simpleHello));
 
@@ -54,7 +54,7 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
 #else
   std::string payload(16UL * 1024 * 1024, 'a');
 #endif
-  test::sendAll(fd, payload);
+  test::sendAll(fd, payload, std::chrono::milliseconds{5000});
 
   // Wait to receive the full payload (some arrives quickly, remainder after upstream sleeps)
   auto echoed = test::recvWithTimeout(fd, std::chrono::milliseconds{10000}, payload.size());
@@ -63,7 +63,7 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   // now simulate some epoll mod failures, server should be able to recover from these
   test::EventLoopHookGuard guard;
   test::FailAllEpollCtlMod(EACCES);
-  test::sendAll(fd, payload);
+  test::sendAll(fd, payload, std::chrono::milliseconds{5000});
 
   // Get out of the recv as soon as we receive some data to decrease the unit test time, but don't assert anything here
   test::recvWithTimeout(fd, std::chrono::milliseconds{500}, 16UL);

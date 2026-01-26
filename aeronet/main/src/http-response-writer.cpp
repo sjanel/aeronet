@@ -6,7 +6,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -244,7 +243,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
 
   ensureHeadersSent();
 
-  if (_activeEncoderCtx) {
+  if (_activeEncoderCtx != nullptr) {
     data = _activeEncoderCtx->encodeChunk(data);
     if (data.empty()) {
       return true;
