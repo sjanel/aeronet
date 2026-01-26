@@ -61,15 +61,23 @@ class HttpRequestTest : public ::testing::Test {
                           std::size_t maxHeaderSize = 4096UL) {
     cs.inBuffer = std::move(raw);
     RawChars tmpBuffer;
-    return req.initTrySetHead(cs.inBuffer, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders, nullptr);
+    auto ret = req.initTrySetHead(cs.inBuffer, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders, nullptr);
+    if (ret == http::StatusCodeOK) {
+      req.finalizeBeforeHandlerCall({});
+    }
+    return ret;
   }
 
   http::StatusCode reqSetWithSpan(RawChars raw, tracing::SpanPtr span, bool mergeAllowedForUnknownRequestHeaders = true,
                                   std::size_t maxHeaderSize = 4096UL) {
     cs.inBuffer = std::move(raw);
     RawChars tmpBuffer;
-    return req.initTrySetHead(cs.inBuffer, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders,
-                              std::move(span));
+    auto ret = req.initTrySetHead(cs.inBuffer, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders,
+                                  std::move(span));
+    if (ret == http::StatusCodeOK) {
+      req.finalizeBeforeHandlerCall({});
+    }
+    return ret;
   }
 
   void checkHeaders(std::initializer_list<http::HeaderView> headers) {
@@ -422,8 +430,8 @@ TEST_F(HttpRequestTest, QueryParamsDecodingPlusAndPercent) {
   auto st = reqSet(BuildRaw("GET", "/p?a=1+2&b=hello%20world&c=%zz"));
   ASSERT_EQ(st, http::StatusCodeOK);
   std::vector<http::HeaderView> seen;
-  for (auto [k, v] : req.queryParams()) {
-    seen.emplace_back(k, v);
+  for (auto [key, val] : req.queryParamsRange()) {
+    seen.emplace_back(key, val);
   }
   ASSERT_EQ(seen.size(), 3U);
   EXPECT_EQ(seen[0].name, "a");
@@ -434,12 +442,28 @@ TEST_F(HttpRequestTest, QueryParamsDecodingPlusAndPercent) {
   EXPECT_EQ(seen[2].value, "%zz");  // invalid escape left as-is
 }
 
+TEST_F(HttpRequestTest, QueryParamInt) {
+  auto st = reqSet(BuildRaw("GET", "/p?num=42&str=hello&almost=123abc"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+  auto valOpt = req.queryParamInt("num");
+  ASSERT_TRUE(valOpt.has_value());
+  EXPECT_EQ(valOpt.value_or(0), 42);
+
+  valOpt = req.queryParamInt("str");
+  EXPECT_FALSE(valOpt.has_value());
+
+  valOpt = req.queryParamInt("almost");
+  EXPECT_FALSE(valOpt.has_value());
+
+  EXPECT_FALSE(req.queryParamInt("missing").has_value());
+}
+
 TEST_F(HttpRequestTest, EmptyAndMissingValues) {
   auto st = reqSet(BuildRaw("GET", "/p?k1=&k2&=v"));
   ASSERT_EQ(st, http::StatusCodeOK);
   std::vector<http::HeaderView> seen;
-  for (auto [k, v] : req.queryParams()) {
-    seen.emplace_back(k, v);
+  for (auto [key, value] : req.queryParamsRange()) {
+    seen.emplace_back(key, value);
   }
   ASSERT_EQ(seen.size(), 3U);
   EXPECT_EQ(seen[0].name, "k1");
@@ -448,21 +472,41 @@ TEST_F(HttpRequestTest, EmptyAndMissingValues) {
   EXPECT_EQ(seen[1].value, "");
   EXPECT_EQ(seen[2].name, "");
   EXPECT_EQ(seen[2].value, "v");
+
+  EXPECT_EQ(req.queryParams().size(), 3U);
+  EXPECT_EQ(req.queryParams().at("k1"), "");
+  EXPECT_EQ(req.queryParams().at("k2"), "");
+  EXPECT_EQ(req.queryParams().at(""), "v");  // last occurrence retained
 }
 
-TEST_F(HttpRequestTest, DuplicateKeysPreservedOrder) {
+TEST_F(HttpRequestTest, QueryParamsRangeDuplicateKeysPreservedOrder) {
   auto st = reqSet(BuildRaw("GET", "/p?x=1&x=2&x=3"));
   ASSERT_EQ(st, http::StatusCodeOK);
   std::vector<std::string_view> values;
-  for (auto [k, v] : req.queryParams()) {
-    if (k == "x") {
-      values.push_back(v);
+  for (auto [key, value] : req.queryParamsRange()) {
+    if (key == "x") {
+      values.push_back(value);
     }
   }
   ASSERT_EQ(values.size(), 3U);
   EXPECT_EQ(values[0], "1");
   EXPECT_EQ(values[1], "2");
   EXPECT_EQ(values[2], "3");
+
+  EXPECT_EQ(req.queryParams().size(), 1U);
+  EXPECT_EQ(req.queryParams().at("x"), "3");  // last occurrence retained in map view
+
+  auto it = req.queryParamsRange().begin();
+  EXPECT_EQ((*it).key, "x");
+  EXPECT_EQ((*it).value, "1");
+  EXPECT_EQ((*it++).key, "x");
+  EXPECT_EQ((*it).value, "2");
+  EXPECT_EQ((*++it).key, "x");
+  EXPECT_EQ((*it).value, "3");
+
+  // iterator should be default constructible
+  decltype(req.queryParamsRange().begin()) defIt;
+  EXPECT_TRUE(defIt == decltype(req.queryParamsRange().begin()){});
 }
 
 TEST_F(HttpRequestTest, InvalidPathEscapeCauses400) {

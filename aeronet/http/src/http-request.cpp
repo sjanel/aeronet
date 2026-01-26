@@ -25,6 +25,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/major-minor-version.hpp"
+#include "aeronet/path-param-capture.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -51,22 +52,6 @@ HttpRequest::QueryParam HttpRequest::QueryParamRange::iterator::operator*() cons
     ret.value = std::string_view(equalPtr + 1, commaPtr);
   }
   return ret;
-}
-
-std::string_view HttpRequest::headerValueOrEmpty(std::string_view headerKey) const noexcept {
-  const auto it = headers().find(headerKey);
-  if (it != headers().end()) {
-    return it->second;
-  }
-  return {};
-}
-
-std::optional<std::string_view> HttpRequest::headerValue(std::string_view headerKey) const noexcept {
-  const auto it = headers().find(headerKey);
-  if (it != headers().end()) {
-    return it->second;
-  }
-  return {};
 }
 
 std::string_view HttpRequest::body() const {
@@ -195,6 +180,7 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
   if (std::cmp_less(lineLast - first, http::kHttpReqLineMinLen - http::CRLF.size())) {
     return http::StatusCodeBadRequest;
   }
+
   char* nextSep = std::find(first, lineLast, ' ');
   if (nextSep == lineLast) {
     // we have a new line, but no spaces in the first line. This is definitely a bad request.
@@ -293,10 +279,23 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
   _bodyAccessContext = nullptr;
   _trailers.clear();
   _pathParams.clear();
+  _queryParams.clear();
 
   _headPinned = false;
 
   return http::StatusCodeOK;
+}
+
+void HttpRequest::finalizeBeforeHandlerCall(std::span<const PathParamCapture> pathParams) {
+  // Populate path params map view from router captures
+  _pathParams.clear();
+  for (const auto& capture : pathParams) {
+    _pathParams.emplace(capture.key, capture.value);
+  }
+  _queryParams.clear();
+  for (const auto& [key, value] : queryParamsRange()) {
+    _queryParams.insert_or_assign(key, value);
+  }
 }
 
 void HttpRequest::pinHeadStorage(ConnectionState& state) {
