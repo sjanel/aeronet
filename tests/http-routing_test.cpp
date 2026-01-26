@@ -121,6 +121,18 @@ TEST(HttpRouting, PathParametersInjectedIntoRequest) {
   std::string seenUser;
   std::string seenPost;
   ts.router().setPath(http::Method::GET, "/users/{userId}/posts/{postId}", [&](const HttpRequest& req) {
+    EXPECT_TRUE(req.hasPathParam("userId"));
+    EXPECT_TRUE(req.hasPathParam("postId"));
+    EXPECT_FALSE(req.hasPathParam("missingParam"));
+
+    EXPECT_EQ(req.pathParamValueOrEmpty("userId"), "42");
+    EXPECT_EQ(req.pathParamValueOrEmpty("postId"), "abcd");
+    EXPECT_EQ(req.pathParamValueOrEmpty("missing"), "");
+
+    EXPECT_EQ(req.pathParamValue("userId").value_or(""), req.pathParams().at("userId"));
+    EXPECT_EQ(req.pathParamValue("postId").value_or(""), req.pathParams().at("postId"));
+    EXPECT_FALSE(req.pathParamValue("missing"));
+
     const auto& params = req.pathParams();
     if (const auto itUser = params.find("userId"); itUser != params.end()) {
       seenUser.assign(itUser->second);
