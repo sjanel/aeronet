@@ -73,6 +73,7 @@ class BenchmarkRunner:
     SCENARIOS: Dict[str, Scenario] = {
         "headers": Scenario("headers", "lua/headers_stress.lua", "/headers"),
         "body": Scenario("body", "lua/large_body.lua", "/uppercase"),
+        "body-codec": Scenario("body-codec", "lua/body_codec.lua", "/body-codec"),
         "static": Scenario("static", "lua/static_routes.lua", "/ping"),
         "cpu": Scenario("cpu", "lua/cpu_bound.lua", "/compute"),
         "mixed": Scenario("mixed", "lua/mixed_workload.lua", "/"),
@@ -196,7 +197,16 @@ class BenchmarkRunner:
 
     def _resolve_scenario_filter(self, scenario_arg: str) -> List[str]:
         if scenario_arg == "all":
-            return ["headers", "body", "static", "cpu", "mixed", "files", "routing"]
+            return [
+                "headers",
+                "body",
+                "body-codec",
+                "static",
+                "cpu",
+                "mixed",
+                "files",
+                "routing",
+            ]
         scenarios = [s.strip() for s in scenario_arg.split(",") if s.strip()]
         for sc in scenarios:
             if sc not in self.SCENARIOS:
@@ -245,20 +255,23 @@ class BenchmarkRunner:
         if not go_exe:
             raise BenchmarkError("Go toolchain not found (go)")
         script_binary = self.script_dir / "go-bench-server"
-        if script_binary.is_file():
-            return script_binary
         source_candidates = [self.script_dir, self.repo_script_dir]
+        go_file = None
         for src in source_candidates:
-            go_file = src / "go_server.go"
-            if go_file.is_file():
-                print("Building Go server...")
-                subprocess.run(
-                    [go_exe, "build", "-o", str(script_binary), str(go_file)],
-                    cwd=src,
-                    check=True,
-                )
-                return script_binary
-        raise BenchmarkError("go_server.go not found")
+            candidate = src / "go_server.go"
+            if candidate.is_file():
+                go_file = candidate
+                break
+        if go_file is None:
+            raise BenchmarkError("go_server.go not found")
+        if (not script_binary.is_file()) or (go_file.stat().st_mtime > script_binary.stat().st_mtime):
+            print("Building Go server...")
+            subprocess.run(
+                [go_exe, "build", "-o", str(script_binary), str(go_file)],
+                cwd=go_file.parent,
+                check=True,
+            )
+        return script_binary
 
     def _ensure_rust_server_built(self) -> Path:
         cargo = shutil.which("cargo")
@@ -286,11 +299,10 @@ class BenchmarkRunner:
         repo_undertow = self.repo_script_dir / "undertow_server"
         undertow_dir.mkdir(parents=True, exist_ok=True)
         source_file = undertow_dir / "UndertowBenchServer.java"
-        if (
-            not source_file.is_file()
-            and repo_undertow.joinpath("UndertowBenchServer.java").is_file()
-        ):
-            shutil.copy2(repo_undertow / "UndertowBenchServer.java", source_file)
+        repo_source = repo_undertow / "UndertowBenchServer.java"
+        if repo_source.is_file():
+            if (not source_file.is_file()) or (repo_source.stat().st_mtime > source_file.stat().st_mtime):
+                shutil.copy2(repo_source, source_file)
         if not source_file.is_file():
             raise BenchmarkError("UndertowBenchServer.java not found")
         jars = [
@@ -330,7 +342,11 @@ class BenchmarkRunner:
                 urllib.request.urlretrieve(url, jar_path)
         classpath = ":".join(["."] + [jar for jar in jars])
         class_files = list(undertow_dir.glob("*.class"))
-        if not class_files:
+        needs_recompile = not class_files
+        if not needs_recompile:
+            source_mtime = source_file.stat().st_mtime
+            needs_recompile = any(source_mtime > class_file.stat().st_mtime for class_file in class_files)
+        if needs_recompile:
             print("Compiling Undertow benchmark server...")
             subprocess.run(
                 [javac, "-cp", classpath, "UndertowBenchServer.java"],
@@ -1318,7 +1334,7 @@ def parse_args() -> argparse.Namespace:
         "--scenario",
         type=str,
         default="all",
-        help="Comma-separated list of scenarios (headers,body,static,cpu,mixed,files,routing,tls)",
+        help="Comma-separated list of scenarios (headers,body,body-codec,static,cpu,mixed,files,routing,tls)",
     )
     return parser.parse_args()
 

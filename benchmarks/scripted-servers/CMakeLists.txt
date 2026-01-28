@@ -16,9 +16,14 @@ if(AERONET_IPO_SUPPORTED AND CMAKE_BUILD_TYPE STREQUAL "Release")
 endif()
 
 # Drogon benchmark server (only if drogon is enabled and available)
+if(AERONET_BENCH_ENABLE_DROGON OR AERONET_BENCH_ENABLE_PISTACHE OR AERONET_BENCH_ENABLE_CROW)
+  find_package(ZLIB REQUIRED)
+endif()
+
+# Drogon benchmark server (only if drogon is enabled and available)
 if(AERONET_BENCH_ENABLE_DROGON AND TARGET drogon)
   AeronetAddProjectExecutable(drogon-bench-server drogon_server.cpp)
-  target_link_libraries(drogon-bench-server PRIVATE drogon)
+  target_link_libraries(drogon-bench-server PRIVATE drogon ZLIB::ZLIB)
   set_target_properties(drogon-bench-server PROPERTIES FOLDER "benchmarks/servers")
   
   if(AERONET_IPO_SUPPORTED AND CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -55,7 +60,7 @@ if(AERONET_BENCH_ENABLE_PISTACHE)
   FetchContent_MakeAvailable(pistache)
   
   AeronetAddProjectExecutable(pistache-bench-server pistache_server.cpp)
-  target_link_libraries(pistache-bench-server PRIVATE pistache Threads::Threads)
+  target_link_libraries(pistache-bench-server PRIVATE pistache Threads::Threads ZLIB::ZLIB)
   set_target_properties(pistache-bench-server PROPERTIES FOLDER "benchmarks/servers")
   
   # Enable LTO for Release builds (now safe with static linking)
@@ -104,7 +109,7 @@ if(AERONET_BENCH_ENABLE_CROW)
   FetchContent_MakeAvailable(Crow)
   
   AeronetAddProjectExecutable(crow-bench-server crow_server.cpp)
-  target_link_libraries(crow-bench-server PRIVATE Crow::Crow Threads::Threads)
+  target_link_libraries(crow-bench-server PRIVATE Crow::Crow Threads::Threads ZLIB::ZLIB)
   set_target_properties(crow-bench-server PROPERTIES FOLDER "benchmarks/servers")
   
   # Enable LTO for Release builds
@@ -128,6 +133,12 @@ foreach(script ${LUA_SCRIPTS})
   get_filename_component(script_name ${script} NAME)
   configure_file(${script} ${SCRIPTED_SERVERS_BUILD_DIR}/lua/${script_name} COPYONLY)
 endforeach()
+
+# Copy body-codec payloads
+set(BODY_CODEC_PAYLOADS "${SCRIPTED_SERVERS_DIR}/lua/body_codec_payloads.txt")
+if(EXISTS ${BODY_CODEC_PAYLOADS})
+  configure_file(${BODY_CODEC_PAYLOADS} ${SCRIPTED_SERVERS_BUILD_DIR}/lua/body_codec_payloads.txt COPYONLY)
+endif()
 
 # Copy runner script
 configure_file(

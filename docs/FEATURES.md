@@ -214,6 +214,7 @@ Notes and implementation details
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
 - [ ] Benchmarks & profiling docs
 - [x] Zero-copy sendfile() support for static files
+- [x] Scripted benchmarks include a gzip round-trip body codec scenario (`/body-codec`) to measure automatic request decompression + response compression (no public API changes). See `benchmarks/scripted-servers/lua/body_codec.lua` and `benchmarks/scripted-servers/run_benchmarks.py`.
 
 ### Memory Management & std::string_view Safety
 

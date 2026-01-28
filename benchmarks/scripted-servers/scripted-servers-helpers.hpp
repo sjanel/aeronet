@@ -1,10 +1,15 @@
 #pragma once
 
+#include <zlib.h>
+
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <random>
 #include <string>
 #include <string_view>
@@ -83,6 +88,81 @@ inline std::string BuildJson(std::size_t itemCount) {
   return json;
 }
 
+inline bool ContainsTokenInsensitive(std::string_view haystack, std::string_view needle) {
+  if (needle.empty()) {
+    return false;
+  }
+  auto lower = [](unsigned char ch) { return static_cast<unsigned char>(std::tolower(ch)); };
+  for (std::size_t pos = 0; pos + needle.size() <= haystack.size(); ++pos) {
+    bool match = true;
+    for (std::size_t idx = 0; idx < needle.size(); ++idx) {
+      if (lower(static_cast<unsigned char>(haystack[pos + idx])) != lower(static_cast<unsigned char>(needle[idx]))) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      return true;
+    }
+  }
+  return false;
+}
+
+inline std::optional<std::string> GzipCompress(std::string_view input, int level = Z_DEFAULT_COMPRESSION) {
+  z_stream stream{};
+  if (deflateInit2(&stream, level, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+    return std::nullopt;
+  }
+
+  stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(input.data()));
+  stream.avail_in = static_cast<uInt>(input.size());
+
+  std::string output;
+  output.resize(deflateBound(&stream, static_cast<uLong>(input.size())));
+  stream.next_out = reinterpret_cast<Bytef*>(output.data());
+  stream.avail_out = static_cast<uInt>(output.size());
+
+  int ret = deflate(&stream, Z_FINISH);
+  if (ret != Z_STREAM_END) {
+    deflateEnd(&stream);
+    return std::nullopt;
+  }
+
+  output.resize(stream.total_out);
+  deflateEnd(&stream);
+  return output;
+}
+
+inline std::optional<std::string> GzipDecompress(std::string_view input) {
+  z_stream stream{};
+  if (inflateInit2(&stream, 15 + 16) != Z_OK) {
+    return std::nullopt;
+  }
+
+  stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(input.data()));
+  stream.avail_in = static_cast<uInt>(input.size());
+
+  std::string output;
+  std::array<char, 8192> buffer{};
+  int ret = Z_OK;
+  while (ret == Z_OK) {
+    stream.next_out = reinterpret_cast<Bytef*>(buffer.data());
+    stream.avail_out = static_cast<uInt>(buffer.size());
+    ret = inflate(&stream, Z_NO_FLUSH);
+    if (ret != Z_OK && ret != Z_STREAM_END) {
+      inflateEnd(&stream);
+      return std::nullopt;
+    }
+    const auto produced = buffer.size() - stream.avail_out;
+    if (produced > 0) {
+      output.append(buffer.data(), produced);
+    }
+  }
+
+  inflateEnd(&stream);
+  return output;
+}
+
 struct BenchConfig {
   BenchConfig(uint16_t defaultPort, int argc, char* argv[]) : port(defaultPort), numThreads(GetNumThreads()) {
     const char* envPort = std::getenv("BENCH_PORT");
@@ -122,12 +202,12 @@ struct BenchConfig {
   }
 
   uint16_t port;
-  int numThreads;
   bool tlsEnabled{false};
-  std::string certFile;
-  std::string keyFile;
-  std::string staticDir;
+  int numThreads;
   int routeCount{1000};  // Number of literal routes for routing stress test
+  std::string_view certFile;
+  std::string_view keyFile;
+  std::string_view staticDir;
 };
 
 }  // namespace bench
