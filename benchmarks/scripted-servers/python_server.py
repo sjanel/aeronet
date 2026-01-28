@@ -9,6 +9,7 @@ Run: python python_server.py [--port N] [--threads N] [--static DIR] [--routes N
 """
 
 import argparse
+import gzip
 import json
 import os
 import random
@@ -150,6 +151,31 @@ async def body(request: Request) -> Response:
     return PlainTextResponse(random_string(size))
 
 
+async def body_codec(request: Request) -> Response:
+    """Endpoint 7b: /body-codec - Gzip decode/encode stress test"""
+    data = await request.body()
+    encoding = request.headers.get("content-encoding", "")
+    if "gzip" in encoding.lower():
+        try:
+            data = gzip.decompress(data)
+        except Exception:
+            return PlainTextResponse("Invalid gzip body", status_code=400)
+
+    buf = bytearray(data)
+    for i in range(len(buf)):
+        buf[i] = (buf[i] + 1) & 0xFF
+    payload = bytes(buf)
+
+    accept = request.headers.get("accept-encoding", "")
+    headers = {"Content-Type": "application/octet-stream"}
+    if "gzip" in accept.lower():
+        payload = gzip.compress(payload, compresslevel=6)
+        headers["Content-Encoding"] = "gzip"
+        headers["Vary"] = "Accept-Encoding"
+
+    return Response(content=payload, headers=headers, media_type="application/octet-stream")
+
+
 async def status(request: Request) -> Response:
     """Endpoint 8: /status - Health check"""
     threads = int(os.environ.get("BENCH_THREADS", str(num_threads)))
@@ -184,6 +210,7 @@ def create_routes():
         Route("/ping", ping, methods=["GET"]),
         Route("/headers", headers, methods=["GET"]),
         Route("/uppercase", uppercase, methods=["POST"]),
+        Route("/body-codec", body_codec, methods=["POST"]),
         Route("/compute", compute, methods=["GET"]),
         Route("/json", json_endpoint, methods=["GET"]),
         Route("/delay", delay, methods=["GET"]),

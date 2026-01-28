@@ -19,6 +19,7 @@
 #include <utility>
 
 #include "aeronet/aeronet.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/static-file-handler.hpp"
@@ -38,6 +39,9 @@ int main(int argc, char* argv[]) {
   config.maxHeaderBytes = 256UL * 1024;  // 256KB headers for stress tests
   config.maxBodyBytes = 64UL << 20;      // 64MB bodies for large body tests
   config.globalHeaders.clear();          // No global headers
+  config.compression.addVaryAcceptEncodingHeader = true;
+  config.compression.minBytes = 512;  // Compress responses larger than 512 bytes
+  config.compression.preferredFormats = {Encoding::gzip};
 
   // Configure TLS if enabled
   if (benchCfg.tlsEnabled) {
@@ -170,13 +174,30 @@ int main(int argc, char* argv[]) {
   });
 
   // ============================================================
+  // Endpoint 7b: /body-codec - Gzip decode/encode stress test
+  // aeronet automatically decompresses request body, then we add +1 to each byte
+  // returns response that will be automatically compressed
+  // ============================================================
+  router.setPath(http::Method::POST, "/body-codec", [](const HttpRequest& req) {
+    std::string_view body = req.body();
+    auto resp = req.makeResponse(HttpResponse::BodySize(body.size()), http::StatusCodeOK);
+    resp.bodyInlineSet(body.size(), [body](std::byte* out) {
+      std::ranges::transform(
+          body, out, [](unsigned char ch) { return static_cast<std::byte>(static_cast<unsigned char>(ch + 1U)); });
+      return body.size();
+    });
+    return resp;
+  });
+
+  // ============================================================
   // Endpoint 8: /status - Health check
   // ============================================================
-  router.setPath(http::Method::GET, "/status", [&benchCfg](const HttpRequest& req) {
-    return req.makeResponse(std::format(R"({{"server":"aeronet","threads":{},"tls":{},"status":"ok"}})",
-                                        benchCfg.numThreads, benchCfg.tlsEnabled),
-                            "application/json");
-  });
+  router.setPath(http::Method::GET, "/status",
+                 [numThreads = benchCfg.numThreads, tlsEnabled = benchCfg.tlsEnabled](const HttpRequest& req) {
+                   return req.makeResponse(std::format(R"({{"server":"aeronet","threads":{},"tls":{},"status":"ok"}})",
+                                                       numThreads, tlsEnabled),
+                                           "application/json");
+                 });
 
   // ============================================================
   // Endpoint 9: /* - Static file serving (if --static DIR given)

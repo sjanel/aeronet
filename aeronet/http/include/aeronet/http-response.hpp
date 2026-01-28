@@ -815,25 +815,25 @@ class HttpResponse {
     if (!contentType.empty() && !http::IsValidHeaderValue(contentType)) [[unlikely]] {
       throw std::invalid_argument("Invalid Content-Type header value");
     }
-    // Determine default content type based on writer signature
-    std::string_view defaultContentType;
-    if constexpr (std::is_invocable_r_v<std::size_t, W, std::byte*>) {
-      defaultContentType = http::ContentTypeApplicationOctetStream;
-    } else if constexpr (std::is_invocable_r_v<std::size_t, W, char*>) {
-      defaultContentType = http::ContentTypeTextPlain;
-    } else {
-      static_assert(false, "Writer must be callable with either (char*) or (std::byte*) and return std::size_t");
-    }
+
     if (contentType.empty()) {
-      contentType = defaultContentType;
+      // Determine default content type based on writer signature
+      if constexpr (std::is_invocable_r_v<std::size_t, W, std::byte*>) {
+        contentType = http::ContentTypeApplicationOctetStream;
+      } else if constexpr (std::is_invocable_r_v<std::size_t, W, char*>) {
+        contentType = http::ContentTypeTextPlain;
+      } else {
+        static_assert(false, "Writer must be callable with either (char*) or (std::byte*) and return std::size_t");
+      }
     }
+
     const auto contentTypeHeaderSize = HeaderSize(http::ContentType.size(), contentType.size());
     const auto contentLengthHeaderSize = HeaderSize(http::ContentLength.size(), nchars(maxLen));
 
     // Reserve exact capacity (no exponential growth)
     _data.reserve(_data.size() + contentTypeHeaderSize + contentLengthHeaderSize + maxLen);
 
-    bodyAppendUpdateHeaders(contentType, defaultContentType, maxLen);
+    bodyAppendUpdateHeaders(contentType, {}, maxLen);
 
     // Call writer at body start position
     std::size_t written;

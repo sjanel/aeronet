@@ -36,11 +36,13 @@ All notable changes to aeronet are documented in this file.
 - Optimized *prepared* (built from `makeResponse()`) `HttpResponse` to avoid allocating body and trailers memory for **HEAD** requests.
 - Faster case insensitive hash using FNV-1a algorithm for header name lookups, and optimized version of `tolower` - Use [City hash](https://github.com/google/cityhash/tree/master) elsewhere (for standard strings)
 - `HttpRequest::queryParamsRange()` satisfies the C++20 range concept.
+- Reuse encoders contexts instead of recreating them on each request for better performance.
 
 ### Other
 
 - Support of ARM64 (aarch64) architecture in CI builds and tests.
 - Added [Crow](https://github.com/CrowCpp/Crow) to benchmark comparisons in CI.
+- Added `body-codec` scenario to scripted servers benchmarks in CI.
 
 ## [1.0.0] - 2026-01-17
 

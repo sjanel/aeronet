@@ -7,6 +7,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -49,6 +51,7 @@ func main() {
 	literalRoutes["/ping"] = handlePing
 	literalRoutes["/headers"] = handleHeaders
 	literalRoutes["/uppercase"] = handleUppercase
+	literalRoutes["/body-codec"] = handleBodyCodec
 	literalRoutes["/compute"] = handleCompute
 	literalRoutes["/json"] = handleJSON
 	literalRoutes["/delay"] = handleDelay
@@ -184,6 +187,52 @@ func handleUppercase(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func handleBodyCodec(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+		var reader io.ReadCloser = r.Body
+		if strings.Contains(r.Header.Get("Content-Encoding"), "gzip") {
+			gz, err := gzip.NewReader(r.Body)
+			if err != nil {
+				http.Error(w, "Invalid gzip body", http.StatusBadRequest)
+				return
+			}
+			reader = gz
+			defer gz.Close()
+		}
+		defer reader.Close()
+
+		data, err := io.ReadAll(reader)
+	if err != nil {
+		http.Error(w, "Failed to read body", http.StatusInternalServerError)
+		return
+	}
+	for i := range data {
+		data[i] = data[i] + 1
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		if _, err := gz.Write(data); err != nil {
+			_ = gz.Close()
+			http.Error(w, "Compression failed", http.StatusInternalServerError)
+			return
+		}
+		if err := gz.Close(); err != nil {
+			http.Error(w, "Compression failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Add("Vary", "Accept-Encoding")
+		_, _ = w.Write(buf.Bytes())
+		return
+	}
+	_, _ = w.Write(data)
 }
 
 func handleCompute(w http.ResponseWriter, r *http.Request) {

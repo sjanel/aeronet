@@ -19,6 +19,7 @@
 #include "pistache/endpoint.h"
 #include "pistache/http.h"
 #include "pistache/http_defs.h"
+#include "pistache/http_headers.h"
 #include "pistache/mime.h"
 #include "pistache/net.h"
 #include "scripted-servers-helpers.hpp"
@@ -189,6 +190,55 @@ class BenchHandler : public Pistache::Http::Handler {
     if (method == Pistache::Http::Method::Get && path == "/body") {
       std::size_t size = static_cast<std::size_t>(GetQueryParamOr(req, "size", 1024));
       response.send(Pistache::Http::Code::Ok, bench::GenerateRandomString(size));
+      return;
+    }
+
+    if (method == Pistache::Http::Method::Post && path == "/body-codec") {
+      const std::string& body = req.body();
+      std::string decoded;
+      if (auto encHeader = req.headers().tryGet<Pistache::Http::Header::ContentEncoding>(); encHeader != nullptr) {
+        if (encHeader->encoding() == Pistache::Http::Header::Encoding::Gzip) {
+          auto decompressed = bench::GzipDecompress(body);
+          if (!decompressed) {
+            response.send(Pistache::Http::Code::Bad_Request, "Invalid gzip body");
+            return;
+          }
+          decoded = std::move(*decompressed);
+        } else {
+          decoded = body;
+        }
+      } else {
+        decoded = body;
+      }
+
+      for (char& ch : decoded) {
+        ch = static_cast<char>(static_cast<unsigned char>(ch + 1U));
+      }
+
+      response.headers().addRaw(Pistache::Http::Header::Raw("Content-Type", "application/octet-stream"));
+
+      bool acceptGzip = false;
+      if (auto acceptHeader = req.headers().tryGet<Pistache::Http::Header::AcceptEncoding>(); acceptHeader != nullptr) {
+        for (const auto& encPair : acceptHeader->encodings()) {
+          if (encPair.first == Pistache::Http::Header::Encoding::Gzip) {
+            acceptGzip = true;
+            break;
+          }
+        }
+      }
+
+      if (acceptGzip) {
+        auto compressed = bench::GzipCompress(decoded);
+        if (!compressed) {
+          response.send(Pistache::Http::Code::Internal_Server_Error, "Compression failed");
+          return;
+        }
+        response.headers().addRaw(Pistache::Http::Header::Raw("Content-Encoding", "gzip"));
+        response.headers().addRaw(Pistache::Http::Header::Raw("Vary", "Accept-Encoding"));
+        response.send(Pistache::Http::Code::Ok, std::move(*compressed));
+      } else {
+        response.send(Pistache::Http::Code::Ok, std::move(decoded));
+      }
       return;
     }
 
