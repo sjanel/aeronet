@@ -21,12 +21,15 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
-#include "aeronet/request-task.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/request-task.hpp"
+#endif
 
 using namespace aeronet;
 
@@ -99,6 +102,7 @@ TEST(HttpRouting, BasicPathDispatch) {
   EXPECT_TRUE(resp4.contains("POST!"));
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST(HttpRouting, AsyncHandlerDispatch) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/async-route", [](HttpRequest& req) -> RequestTask<HttpResponse> {
     std::string payload("async:");
@@ -110,6 +114,7 @@ TEST(HttpRouting, AsyncHandlerDispatch) {
   EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("async:/async-route")) << response;
 }
+#endif
 
 TEST(HttpRouting, GlobalFallbackWithPathHandlers) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(200); });
@@ -530,6 +535,7 @@ TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
 
   ts.server.setMiddlewareMetricsCallback({});
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   std::vector<MiddlewareMetrics> metrics;
   {
     std::scoped_lock lock(metricsMutex);
@@ -551,6 +557,7 @@ TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
   EXPECT_TRUE(metrics[2].isGlobal);
   EXPECT_FALSE(metrics[2].shortCircuited);
   EXPECT_FALSE(metrics[2].streaming);
+#endif
 }
 
 TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
@@ -632,6 +639,7 @@ TEST(HttpMiddleware, RouterOwnsGlobalMiddleware) {
   EXPECT_TRUE(postSeen.load(std::memory_order_relaxed));
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST(HttpRouting, AsyncBodyReadTimeout) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   std::atomic_bool handlerInvoked{false};
@@ -866,6 +874,8 @@ TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete_ReadBodyAsync) {
   EXPECT_TRUE(response.ends_with("\r\n\r\n1234567890")) << response;
 }
 
+#endif
+
 TEST(RouterUpdateProxy, ClearRemovesAllHandlers) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   router.setPath(http::Method::GET, "/will-be-cleared",
@@ -899,6 +909,7 @@ TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndStreamingHandler) {
   EXPECT_TRUE(postResp.contains("POST")) << postResp;
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndAsyncHandler) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   router.setDefault([](HttpRequest& req) -> RequestTask<HttpResponse> {
@@ -1352,3 +1363,5 @@ TEST(HttpRouting, DeferWorkUnhandledException) {
   EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
   EXPECT_TRUE(response.contains("unhandled in work")) << response;
 }
+
+#endif

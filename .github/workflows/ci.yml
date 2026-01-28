@@ -86,7 +86,8 @@ jobs:
             -DAERONET_ENABLE_ZLIB=${{ matrix.features }} \
             -DAERONET_ENABLE_ZSTD=${{ matrix.features }} \
             -DAERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }} \
-            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }}
+            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }} \
+            -DAERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }}
 
       - name: Build
         run: |
@@ -170,7 +171,8 @@ jobs:
             -DAERONET_ENABLE_ZLIB=${{ matrix.features }} \
             -DAERONET_ENABLE_ZSTD=${{ matrix.features }} \
             -DAERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }} \
-            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }}
+            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }} \
+            -DAERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }}
 
       - name: Build
         run: |
@@ -233,6 +235,7 @@ jobs:
             -DAERONET_ENABLE_ZSTD=ON \
             -DAERONET_ENABLE_OPENTELEMETRY=ON \
             -DAERONET_ENABLE_WEBSOCKET=ON \
+            -DAERONET_ENABLE_ASYNC_HANDLERS=ON \
             -DCMAKE_C_COMPILER=clang-21 \
             -DCMAKE_CXX_COMPILER=clang++-21 \
             -DCMAKE_C_FLAGS="-DNDEBUG -fprofile-instr-generate -fcoverage-mapping -O0 -fno-omit-frame-pointer" \
@@ -331,13 +334,13 @@ jobs:
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
             -DAERONET_ENABLE_OPENTELEMETRY=ON \
-            -DAERONET_ENABLE_WEBSOCKET=ON
+            -DAERONET_ENABLE_WEBSOCKET=ON \
+            -DAERONET_ENABLE_ASYNC_HANDLERS=ON
 
       - name: Build examples
         run: |
           cmake --build ${BUILD_DIR} --parallel --target \
           aeronet \
-          aeronet-async-handle \
           aeronet-async-handlers \
           aeronet-http2 \
           aeronet-minimal \
@@ -403,9 +406,6 @@ jobs:
             echo "Logs stored in $logfile"
             echo "::endgroup::"
           }
-
-          run_server_and_curl async-handle "http://127.0.0.1:18080/hello" -- \
-            "${EXAMPLE_DIR}/aeronet-async-handle" 18080
 
           run_server_and_curl async-handlers "http://127.0.0.1:18081/async" -- \
             "${EXAMPLE_DIR}/aeronet-async-handlers" 18081
@@ -485,7 +485,8 @@ jobs:
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
             -DAERONET_ENABLE_OPENTELEMETRY=ON \
-            -DAERONET_ENABLE_WEBSOCKET=ON
+            -DAERONET_ENABLE_WEBSOCKET=ON \
+            -DAERONET_ENABLE_ASYNC_HANDLERS=ON
 
         shell: alpine.sh {0}
 

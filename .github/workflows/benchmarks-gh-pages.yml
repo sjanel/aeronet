@@ -100,7 +100,8 @@ jobs:
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
             -DAERONET_ENABLE_OPENTELEMETRY=OFF \
-            -DAERONET_ENABLE_WEBSOCKET=ON
+            -DAERONET_ENABLE_WEBSOCKET=ON \
+            -DAERONET_ENABLE_ASYNC_HANDLERS=ON
 
       - name: Build
         run: |

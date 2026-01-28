@@ -2,18 +2,21 @@
 
 #include <charconv>
 #include <chrono>
-#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
-#include <functional>
 #include <iterator>
 #include <optional>
 #include <span>
 #include <string_view>
-#include <thread>
 #include <type_traits>
 #include <utility>
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+#include <functional>
+#include <thread>
+#endif
 
 #include "aeronet/city-hash.hpp"
 #include "aeronet/concatenated-headers.hpp"
@@ -44,6 +47,7 @@ class HttpRequest {
  public:
   static constexpr std::size_t kDefaultReadBodyChunk = 4096;
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   class BodyChunkAwaitable {
    public:
     BodyChunkAwaitable(HttpRequest& request, std::size_t maxBytes) noexcept : _request(request), _maxBytes(maxBytes) {}
@@ -128,6 +132,7 @@ class HttpRequest {
     Result _result{};
     std::exception_ptr _exception;
   };
+#endif
 
   // The method of the request (GET, PUT, ...)
   [[nodiscard]] http::Method method() const noexcept { return _method; }
@@ -309,6 +314,7 @@ class HttpRequest {
   // Throws if readBody() was previously called on this request.
   [[nodiscard]] std::string_view body() const;
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Awaitable helper returning the fully buffered body. Currently completes synchronously but exposes an
   // awaitable interface so coroutine-based handlers can share the same API surface as future streaming support.
   [[nodiscard]] BodyAggregateAwaitable bodyAwaitable() { return BodyAggregateAwaitable(*this); }
@@ -333,6 +339,13 @@ class HttpRequest {
     return DeferredWorkAwaitable<Result>(*this, std::forward<WorkFn>(work));
   }
 
+  // Awaitable helper for streaming body reads. Suspends cooperatively once real async body pipelines are wired; for
+  // now it completes synchronously while providing a coroutine-friendly API surface.
+  [[nodiscard]] BodyChunkAwaitable readBodyAsync(std::size_t maxBytes = kDefaultReadBodyChunk) {
+    return {*this, maxBytes};
+  }
+#endif
+
   // Indicates whether additional body data remains to be read via readBody().
   [[nodiscard]] bool hasMoreBody() const;
 
@@ -343,12 +356,6 @@ class HttpRequest {
   //   - hasMoreBody() must be true, otherwise behavior is undefined
   //   - body() must not have been called prior.
   [[nodiscard]] std::string_view readBody(std::size_t maxBytes = kDefaultReadBodyChunk);
-
-  // Awaitable helper for streaming body reads. Suspends cooperatively once real async body pipelines are wired; for
-  // now it completes synchronously while providing a coroutine-friendly API surface.
-  [[nodiscard]] BodyChunkAwaitable readBodyAsync(std::size_t maxBytes = kDefaultReadBodyChunk) {
-    return {*this, maxBytes};
-  }
 
   // Indicates whether the body is ready to be read (either fully buffered or streaming bridge established).
   [[nodiscard]] bool isBodyReady() const noexcept {
@@ -506,17 +513,21 @@ class HttpRequest {
 
   void finalizeBeforeHandlerCall(std::span<const PathParamCapture> pathParams);
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void pinHeadStorage(ConnectionState& state);
+#endif
 
   void shrinkAndMaybeClear();
 
   void end(http::StatusCode respStatusCode);
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void markAwaitingBody() const noexcept;
   void markAwaitingCallback() const noexcept;
 
   // Post a callback to be executed in the server's event loop, then resume the coroutine.
   void postCallback(std::coroutine_handle<> handle, std::function<void()> work) const;
+#endif
 
   [[nodiscard]] HttpResponse::Options makeResponseOptions() const noexcept;
 

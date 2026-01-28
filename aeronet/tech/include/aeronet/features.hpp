@@ -50,4 +50,10 @@ constexpr bool webSocketEnabled() { return true; }
 constexpr bool webSocketEnabled() { return false; }
 #endif
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+constexpr bool asyncHandlersEnabled() { return true; }
+#else
+constexpr bool asyncHandlersEnabled() { return false; }
+#endif
+
 }  // namespace aeronet

@@ -5,7 +5,6 @@
 #include <cassert>
 #include <cerrno>
 #include <chrono>
-#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -18,6 +17,10 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+#endif
 
 #include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/connection-state.hpp"
@@ -42,7 +45,9 @@
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/request-task.hpp"
+#endif
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
@@ -328,10 +333,12 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
 
 bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   if (state.asyncState.active) {
     handleAsyncBodyProgress(cnxIt);
     return state.isAnyCloseRequested();
   }
+#endif
   HttpRequest& request = state.request;
   do {
     // If we don't yet have a full request line (no '\n' observed) wait for more data
@@ -496,9 +503,13 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         state.waitingForBody = true;
         state.bodyLastActivity = std::chrono::steady_clock::now();
       }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
       if (routingResult.asyncRequestHandler() == nullptr) {
         break;
       }
+#else
+      break;
+#endif
     }
 
     // Handle OPTIONS and TRACE per RFC 7231 §4.3
@@ -552,6 +563,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       if (streamingClose) {
         break;
       }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
     } else if (routingResult.asyncRequestHandler() != nullptr) {
       if (corsRejected()) {
         continue;
@@ -563,6 +575,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       if (handlerActive) {
         return state.isAnyCloseRequested();
       }
+#endif
     } else if (routingResult.requestHandler() != nullptr) {
       if (corsRejected()) {
         continue;
@@ -694,6 +707,7 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
   return shouldClose;
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 bool SingleHttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady,
                                             bool isChunked, bool expectContinue, std::size_t consumedBytes,
                                             const CorsPolicy* pCorsPolicy,
@@ -859,6 +873,7 @@ void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt) {
   finalizeAndSendResponseForHttp1(cnxIt, std::move(*async.pendingResponse), async.consumedBytes, async.corsPolicy);
   state.asyncState.clear();
 }
+#endif
 
 void SingleHttpServer::emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
                                           bool reusedConnection) const {
@@ -1223,6 +1238,7 @@ void SingleHttpServer::applyPendingUpdates() {
     ApplyPendingUpdates(_updates.lock, _updates.router, _updates.hasRouter, _router, "router");
   }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Process async callbacks posted from background threads
   if (_updates.hasAsyncCallbacks.load(std::memory_order_acquire)) {
     vector<internal::PendingUpdates::AsyncCallback> callbacks;
@@ -1256,8 +1272,10 @@ void SingleHttpServer::applyPendingUpdates() {
       }
     }
   }
+#endif
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 void SingleHttpServer::postAsyncCallback(int connectionFd, std::coroutine_handle<> handle, std::function<void()> work) {
   {
     std::scoped_lock lock(_updates.lock);
@@ -1266,6 +1284,7 @@ void SingleHttpServer::postAsyncCallback(int connectionFd, std::coroutine_handle
   }
   _lifecycle.wakeupFd.send();
 }
+#endif
 
 #ifdef AERONET_ENABLE_HTTP2
 void SingleHttpServer::setupHttp2Connection(ConnectionState& state) {

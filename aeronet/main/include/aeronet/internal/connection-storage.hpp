@@ -33,10 +33,12 @@ class ConnectionStorage {
 #else
   ConnectionMapIt recycleOrRelease(uint32_t maxCachedConnections, ConnectionMapIt cnxIt) {
 #endif
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
     auto& asyncState = cnxIt->second->asyncState;
     if (asyncState.active || asyncState.handle) {
       asyncState.clear();
     }
+#endif
 
     // Best-effort graceful TLS shutdown
 #ifdef AERONET_ENABLE_OPENSSL

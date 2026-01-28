@@ -18,7 +18,9 @@ namespace aeronet {
 PathHandlerEntry::PathHandlerEntry(const PathHandlerEntry& rhs)
     : _normalMethodBmp(rhs._normalMethodBmp),
       _streamingMethodBmp(rhs._streamingMethodBmp),
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
       _asyncMethodBmp(rhs._asyncMethodBmp),
+#endif
 #ifdef AERONET_ENABLE_WEBSOCKET
       _websocketEndpoint(rhs._websocketEndpoint ? std::make_unique<WebSocketEndpoint>(*rhs._websocketEndpoint)
                                                 : nullptr),
@@ -34,9 +36,11 @@ PathHandlerEntry::PathHandlerEntry(const PathHandlerEntry& rhs)
     if (http::IsMethodIdxSet(_normalMethodBmp, methodIdx)) {
       std::construct_at(&reinterpret_cast<RequestHandler&>(lhsStorage),
                         reinterpret_cast<const RequestHandler&>(rhsStorage));
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
     } else if (http::IsMethodIdxSet(_asyncMethodBmp, methodIdx)) {
       std::construct_at(&reinterpret_cast<AsyncRequestHandler&>(lhsStorage),
                         reinterpret_cast<const AsyncRequestHandler&>(rhsStorage));
+#endif
     } else if (http::IsMethodIdxSet(_streamingMethodBmp, methodIdx)) {
       std::construct_at(&reinterpret_cast<StreamingHandler&>(lhsStorage),
                         reinterpret_cast<const StreamingHandler&>(rhsStorage));
@@ -60,9 +64,11 @@ PathHandlerEntry::PathHandlerEntry(PathHandlerEntry&& rhs) noexcept
     if (http::IsMethodIdxSet(rhs._normalMethodBmp, methodIdx)) {
       std::construct_at(&reinterpret_cast<RequestHandler&>(lhsStorage),
                         std::move(reinterpret_cast<RequestHandler&>(rhsStorage)));
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
     } else if (http::IsMethodIdxSet(rhs._asyncMethodBmp, methodIdx)) {
       std::construct_at(&reinterpret_cast<AsyncRequestHandler&>(lhsStorage),
                         std::move(reinterpret_cast<AsyncRequestHandler&>(rhsStorage)));
+#endif
     } else if (http::IsMethodIdxSet(rhs._streamingMethodBmp, methodIdx)) {
       std::construct_at(&reinterpret_cast<StreamingHandler&>(lhsStorage),
                         std::move(reinterpret_cast<StreamingHandler&>(rhsStorage)));
@@ -71,7 +77,9 @@ PathHandlerEntry::PathHandlerEntry(PathHandlerEntry&& rhs) noexcept
 
   _normalMethodBmp = std::exchange(rhs._normalMethodBmp, 0U);
   _streamingMethodBmp = std::exchange(rhs._streamingMethodBmp, 0U);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   _asyncMethodBmp = std::exchange(rhs._asyncMethodBmp, 0U);
+#endif
 }
 
 PathHandlerEntry& PathHandlerEntry::operator=(const PathHandlerEntry& rhs) {
@@ -96,6 +104,7 @@ PathHandlerEntry& PathHandlerEntry::operator=(const PathHandlerEntry& rhs) {
           std::construct_at(&reinterpret_cast<RequestHandler&>(lhsStorage),
                             reinterpret_cast<const RequestHandler&>(rhsStorage));
         }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
       } else if (http::IsMethodIdxSet(rhs._asyncMethodBmp, methodIdx)) {
         if (http::IsMethodIdxSet(_asyncMethodBmp, methodIdx)) {
           reinterpret_cast<AsyncRequestHandler&>(lhsStorage) = reinterpret_cast<const AsyncRequestHandler&>(rhsStorage);
@@ -103,6 +112,7 @@ PathHandlerEntry& PathHandlerEntry::operator=(const PathHandlerEntry& rhs) {
           std::construct_at(&reinterpret_cast<AsyncRequestHandler&>(lhsStorage),
                             reinterpret_cast<const AsyncRequestHandler&>(rhsStorage));
         }
+#endif
       } else if (http::IsMethodIdxSet(rhs._streamingMethodBmp, methodIdx)) {
         if (http::IsMethodIdxSet(_streamingMethodBmp, methodIdx)) {
           reinterpret_cast<StreamingHandler&>(lhsStorage) = reinterpret_cast<const StreamingHandler&>(rhsStorage);
@@ -117,7 +127,9 @@ PathHandlerEntry& PathHandlerEntry::operator=(const PathHandlerEntry& rhs) {
 
     _normalMethodBmp = rhs._normalMethodBmp;
     _streamingMethodBmp = rhs._streamingMethodBmp;
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
     _asyncMethodBmp = rhs._asyncMethodBmp;
+#endif
   }
   return *this;
 }
@@ -143,6 +155,7 @@ PathHandlerEntry& PathHandlerEntry::operator=(PathHandlerEntry&& rhs) noexcept {
           std::construct_at(&reinterpret_cast<RequestHandler&>(lhsStorage),
                             std::move(reinterpret_cast<RequestHandler&>(rhsStorage)));
         }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
       } else if (http::IsMethodIdxSet(rhs._asyncMethodBmp, methodIdx)) {
         if (http::IsMethodIdxSet(_asyncMethodBmp, methodIdx)) {
           reinterpret_cast<AsyncRequestHandler&>(lhsStorage) =
@@ -151,6 +164,7 @@ PathHandlerEntry& PathHandlerEntry::operator=(PathHandlerEntry&& rhs) noexcept {
           std::construct_at(&reinterpret_cast<AsyncRequestHandler&>(lhsStorage),
                             std::move(reinterpret_cast<AsyncRequestHandler&>(rhsStorage)));
         }
+#endif
       } else if (http::IsMethodIdxSet(rhs._streamingMethodBmp, methodIdx)) {
         if (http::IsMethodIdxSet(_streamingMethodBmp, methodIdx)) {
           reinterpret_cast<StreamingHandler&>(lhsStorage) = std::move(reinterpret_cast<StreamingHandler&>(rhsStorage));
@@ -165,7 +179,9 @@ PathHandlerEntry& PathHandlerEntry::operator=(PathHandlerEntry&& rhs) noexcept {
 
     _normalMethodBmp = std::exchange(rhs._normalMethodBmp, 0U);
     _streamingMethodBmp = std::exchange(rhs._streamingMethodBmp, 0U);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
     _asyncMethodBmp = std::exchange(rhs._asyncMethodBmp, 0U);
+#endif
   }
   return *this;
 }
@@ -210,8 +226,10 @@ void PathHandlerEntry::assignNormalHandler(http::MethodBmp methodBmp, RequestHan
       }
     } else if ((localMethodBmp & _streamingMethodBmp) != 0) {
       throw std::logic_error("Cannot register normal handler: streaming handler already present for path+method");
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
     } else if ((localMethodBmp & _asyncMethodBmp) != 0) {
       throw std::logic_error("Cannot register normal handler: async handler already present for path+method");
+#endif
     } else {
       _normalMethodBmp |= localMethodBmp;
       if (pLastRequestHandler == nullptr) {
@@ -225,6 +243,7 @@ void PathHandlerEntry::assignNormalHandler(http::MethodBmp methodBmp, RequestHan
   }
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 void PathHandlerEntry::assignAsyncHandler(http::MethodBmp methodBmp, AsyncRequestHandler handler) {
   const AsyncRequestHandler* pLastAsyncHandler = nullptr;
   for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
@@ -258,6 +277,7 @@ void PathHandlerEntry::assignAsyncHandler(http::MethodBmp methodBmp, AsyncReques
     }
   }
 }
+#endif
 
 void PathHandlerEntry::assignStreamingHandler(http::MethodBmp methodBmp, StreamingHandler handler) {
   const StreamingHandler* pLastStreamingHandler = nullptr;
@@ -278,8 +298,10 @@ void PathHandlerEntry::assignStreamingHandler(http::MethodBmp methodBmp, Streami
       }
     } else if ((localMethodBmp & _normalMethodBmp) != 0) {
       throw std::logic_error("Cannot register streaming handler: normal handler already present for path+method");
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
     } else if ((localMethodBmp & _asyncMethodBmp) != 0) {
       throw std::logic_error("Cannot register streaming handler: async handler already present for path+method");
+#endif
     } else {
       _streamingMethodBmp |= localMethodBmp;
       if (pLastStreamingHandler == nullptr) {
@@ -298,8 +320,10 @@ void PathHandlerEntry::destroyIdx(http::MethodIdx methodIdx) {
 
   if (http::IsMethodIdxSet(_normalMethodBmp, methodIdx)) {
     std::destroy_at(&reinterpret_cast<RequestHandler&>(storage));
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   } else if (http::IsMethodIdxSet(_asyncMethodBmp, methodIdx)) {
     std::destroy_at(&reinterpret_cast<AsyncRequestHandler&>(storage));
+#endif
   } else if (http::IsMethodIdxSet(_streamingMethodBmp, methodIdx)) {
     std::destroy_at(&reinterpret_cast<StreamingHandler&>(storage));
   }

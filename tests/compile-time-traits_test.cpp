@@ -68,4 +68,10 @@ TEST(CompileTimeTraits, Features) {
 #else
   EXPECT_FALSE(aeronet::webSocketEnabled());
 #endif
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  EXPECT_TRUE(aeronet::asyncHandlersEnabled());
+#else
+  EXPECT_FALSE(aeronet::asyncHandlersEnabled());
+#endif
 }
