@@ -181,6 +181,44 @@ int main(int argc, char* argv[]) {
   });
 
   // ============================================================
+  // Endpoint 7b: /body-codec - Gzip decode/encode stress test
+  // ============================================================
+  CROW_ROUTE(app, "/body-codec").methods(crow::HTTPMethod::POST)([](const crow::request& req) {
+    std::string_view body = req.body;
+    std::string decoded;
+    auto encoding = req.get_header_value("Content-Encoding");
+    if (!encoding.empty() && bench::ContainsTokenInsensitive(encoding, "gzip")) {
+      auto decompressed = bench::GzipDecompress(body);
+      if (!decompressed) {
+        return crow::response(400, "Invalid gzip body");
+      }
+      decoded = std::move(*decompressed);
+    } else {
+      decoded.assign(body.data(), body.size());
+    }
+
+    for (char& ch : decoded) {
+      ch = static_cast<char>(static_cast<unsigned char>(ch + 1U));
+    }
+
+    crow::response res(200);
+    res.add_header("Content-Type", "application/octet-stream");
+    auto acceptEncoding = req.get_header_value("Accept-Encoding");
+    if (!acceptEncoding.empty() && bench::ContainsTokenInsensitive(acceptEncoding, "gzip")) {
+      auto compressed = bench::GzipCompress(decoded);
+      if (!compressed) {
+        return crow::response(500, "Compression failed");
+      }
+      res.add_header("Content-Encoding", "gzip");
+      res.add_header("Vary", "Accept-Encoding");
+      res.body = std::move(*compressed);
+    } else {
+      res.body = std::move(decoded);
+    }
+    return res;
+  });
+
+  // ============================================================
   // Endpoint 8: /status - Health check
   // ============================================================
   CROW_ROUTE(app, "/status")

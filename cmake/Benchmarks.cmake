@@ -38,7 +38,7 @@ if(AERONET_BENCH_ENABLE_DROGON)
   FetchContent_Declare(
     drogon
     GIT_REPOSITORY https://github.com/drogonframework/drogon.git
-    GIT_TAG v1.9.11
+    GIT_TAG v1.9.12
     GIT_SHALLOW TRUE
     GIT_PROGRESS TRUE
     # Ensure the 'trantor' submodule is fetched so add_subdirectory(trantor) succeeds

@@ -3,17 +3,19 @@
 //! Implements standard benchmark endpoints for comparison with other frameworks.
 
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{Path, Query, State},
     http::{header::CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
+use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
+    io::{Read, Write},
     net::SocketAddr,
     path::{Component, Path as StdPath, PathBuf},
     time::Duration,
@@ -176,6 +178,65 @@ async fn body(Query(params): Query<BodyParams>) -> String {
     random_string(size)
 }
 
+/// POST /body-codec - Gzip decode/encode stress test
+async fn body_codec(headers: HeaderMap, body: Bytes) -> Response {
+    let mut data = if let Some(enc) = headers.get("content-encoding") {
+        let enc = enc.to_str().unwrap_or("");
+        if enc.to_ascii_lowercase().contains("gzip") {
+            let mut decoder = GzDecoder::new(body.as_ref());
+            let mut decoded = Vec::new();
+            if decoder.read_to_end(&mut decoded).is_err() {
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::from("Invalid gzip body"))
+                    .unwrap();
+            }
+            decoded
+        } else {
+            body.to_vec()
+        }
+    } else {
+        body.to_vec()
+    };
+
+    for byte in data.iter_mut() {
+        *byte = byte.wrapping_add(1);
+    }
+
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "application/octet-stream");
+
+    let accept = headers
+        .get("accept-encoding")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if accept.to_ascii_lowercase().contains("gzip") {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        if encoder.write_all(&data).is_err() {
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from("Compression failed"))
+                .unwrap();
+        }
+        let compressed = match encoder.finish() {
+            Ok(buf) => buf,
+            Err(_) => {
+                return Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("Compression failed"))
+                    .unwrap();
+            }
+        };
+        response = response
+            .header("content-encoding", "gzip")
+            .header("vary", "Accept-Encoding");
+        return response.body(Body::from(compressed)).unwrap();
+    }
+
+    response.body(Body::from(data)).unwrap()
+}
+
 /// GET /status - Server status endpoint
 async fn status() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
@@ -278,6 +339,7 @@ async fn async_main(threads: usize) {
         .route("/ping", get(ping))
         .route("/headers", get(headers))
         .route("/uppercase", post(uppercase))
+        .route("/body-codec", post(body_codec))
         .route("/compute", get(compute))
         .route("/json", get(json_endpoint))
         .route("/delay", get(delay))
