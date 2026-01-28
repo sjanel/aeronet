@@ -13,8 +13,10 @@ import io.undertow.server.handlers.resource.FileResourceManager;
 import io.undertow.server.handlers.resource.ResourceHandler;
 import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -24,6 +26,8 @@ import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 
 public class UndertowBenchServer {
   private static final String CHARSET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -127,6 +131,47 @@ public class UndertowBenchServer {
                   int size = getQueryParamInt(exchange, "size", 1024);
                   exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "text/plain");
                   exchange.getResponseSender().send(randomString(size));
+                })
+
+            // Endpoint 7b: /body-codec - Gzip decode/encode stress test
+            .addExactPath("/body-codec",
+                exchange -> {
+                  exchange.getRequestReceiver().receiveFullBytes((ex, data) -> {
+                    byte[] body = data;
+                    String enc = ex.getRequestHeaders().getFirst(Headers.CONTENT_ENCODING);
+                    if (enc != null && enc.equalsIgnoreCase("gzip")) {
+                      try {
+                        body = decompressGzip(data);
+                      } catch (IOException e) {
+                        ex.setStatusCode(400);
+                        ex.getResponseSender().send("Invalid gzip body");
+                        return;
+                      }
+                    }
+
+                    byte[] out = new byte[body.length];
+                    for (int i = 0; i < body.length; i++) {
+                      out[i] = (byte) (body[i] + 1);
+                    }
+
+                    ex.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/octet-stream");
+
+                    String accept = ex.getRequestHeaders().getFirst(Headers.ACCEPT_ENCODING);
+                    if (accept != null && accept.toLowerCase().contains("gzip")) {
+                      try {
+                        byte[] compressed = compressGzip(out);
+                        ex.getResponseHeaders().put(Headers.CONTENT_ENCODING, "gzip");
+                        ex.getResponseHeaders().put(Headers.VARY, "Accept-Encoding");
+                        ex.getResponseSender().send(ByteBuffer.wrap(compressed));
+                      } catch (IOException e) {
+                        ex.setStatusCode(500);
+                        ex.getResponseSender().send("Compression failed");
+                      }
+                      return;
+                    }
+
+                    ex.getResponseSender().send(ByteBuffer.wrap(out));
+                  });
                 })
 
             // Endpoint 8: /status - Health check
@@ -322,5 +367,25 @@ public class UndertowBenchServer {
       }
     }
     return hash;
+  }
+
+  private static byte[] decompressGzip(byte[] data) throws IOException {
+    try (InputStream in = new GZIPInputStream(new java.io.ByteArrayInputStream(data));
+        ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+      byte[] buf = new byte[8192];
+      int n;
+      while ((n = in.read(buf)) > 0) {
+        out.write(buf, 0, n);
+      }
+      return out.toByteArray();
+    }
+  }
+
+  private static byte[] compressGzip(byte[] data) throws IOException {
+    try (ByteArrayOutputStream out = new ByteArrayOutputStream(); GZIPOutputStream gz = new GZIPOutputStream(out)) {
+      gz.write(data);
+      gz.finish();
+      return out.toByteArray();
+    }
   }
 }

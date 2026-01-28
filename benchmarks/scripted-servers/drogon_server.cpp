@@ -216,6 +216,55 @@ int main(int argc, char* argv[]) {
       {drogon::Get});
 
   // ============================================================
+  // Endpoint 7b: /body-codec - Gzip decode/encode stress test
+  // ============================================================
+  app.registerHandler(
+      "/body-codec",
+      [](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+        std::string_view body = req->body();
+        std::string decoded;
+        auto encoding = req->getHeader("Content-Encoding");
+        if (!encoding.empty() && bench::ContainsTokenInsensitive(encoding, "gzip")) {
+          auto decompressed = bench::GzipDecompress(body);
+          if (!decompressed) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k400BadRequest);
+            resp->setBody("Invalid gzip body");
+            callback(resp);
+            return;
+          }
+          decoded = std::move(*decompressed);
+        } else {
+          decoded.assign(body.data(), body.size());
+        }
+
+        for (char& ch : decoded) {
+          ch = static_cast<char>(static_cast<unsigned char>(ch + 1U));
+        }
+
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k200OK);
+        resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
+
+        auto acceptEncoding = req->getHeader("Accept-Encoding");
+        if (!acceptEncoding.empty() && bench::ContainsTokenInsensitive(acceptEncoding, "gzip")) {
+          auto compressed = bench::GzipCompress(decoded);
+          if (!compressed) {
+            resp->setStatusCode(drogon::k500InternalServerError);
+            resp->setBody("Compression failed");
+          } else {
+            resp->addHeader("Content-Encoding", "gzip");
+            resp->addHeader("Vary", "Accept-Encoding");
+            resp->setBody(std::move(*compressed));
+          }
+        } else {
+          resp->setBody(std::move(decoded));
+        }
+        callback(resp);
+      },
+      {drogon::Post});
+
+  // ============================================================
   // Endpoint 8: /status - Health check
   // ============================================================
   app.registerHandler(
