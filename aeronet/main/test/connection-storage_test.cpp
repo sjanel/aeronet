@@ -3,9 +3,12 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
-#include <coroutine>
 #include <cstdint>
 #include <utility>
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+#endif
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/connection-state.hpp"
@@ -26,6 +29,7 @@ ConnectionStorage::ConnectionMapIt RecycleConnection(ConnectionStorage& storage,
 #endif
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 // A minimal coroutine that creates a proper coroutine frame for testing
 struct TestCoroutine {
   struct promise_type {
@@ -67,6 +71,7 @@ struct TestCoroutine {
 };
 
 TestCoroutine makeTestCoroutine() { co_return; }
+#endif
 
 }  // namespace
 
@@ -119,6 +124,7 @@ TEST(ConnectionStorage, SweepCachedConnectionsRemovesAll) {
   EXPECT_EQ(storage.nbCachedConnections(), 0U);
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST(ConnectionStorage, RecycleOrReleaseWithActiveAsyncState) {
   ConnectionStorage storage;
 
@@ -158,5 +164,6 @@ TEST(ConnectionStorage, RecycleOrReleaseWithHandleButNotActive) {
 
   EXPECT_EQ(storage.nbCachedConnections(), 1U);
 }
+#endif
 
 }  // namespace aeronet::internal

@@ -55,7 +55,9 @@ Router& Router::operator=(Router&&) noexcept = default;
 Router::Router(const Router& other)
     : _config(other._config),
       _handler(other._handler),
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
       _asyncHandler(other._asyncHandler),
+#endif
       _streamingHandler(other._streamingHandler),
       _globalPreMiddleware(other._globalPreMiddleware),
       _globalPostMiddleware(other._globalPostMiddleware) {
@@ -66,7 +68,9 @@ Router& Router::operator=(const Router& other) {
   if (this != &other) {
     _config = other._config;
     _handler = other._handler;
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
     _asyncHandler = other._asyncHandler;
+#endif
     _streamingHandler = other._streamingHandler;
     _globalPreMiddleware = other._globalPreMiddleware;
     _globalPostMiddleware = other._globalPostMiddleware;
@@ -113,7 +117,9 @@ void Router::setDefault(RequestHandler handler) {
   }
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 void Router::setDefault(AsyncRequestHandler handler) { _asyncHandler = std::move(handler); }
+#endif
 
 void Router::setDefault(StreamingHandler handler) {
   _streamingHandler = std::move(handler);
@@ -139,6 +145,7 @@ PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, St
   return setPathInternal(static_cast<http::MethodBmp>(method), path, std::move(handler));
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string_view path, AsyncRequestHandler handler) {
   return setPathInternal(methods, path, std::move(handler));
 }
@@ -146,6 +153,7 @@ PathHandlerEntry& Router::setPath(http::MethodBmp methods, std::string_view path
 PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, AsyncRequestHandler handler) {
   return setPathInternal(static_cast<http::MethodBmp>(method), path, std::move(handler));
 }
+#endif
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 PathHandlerEntry& Router::setWebSocket(std::string_view path, WebSocketEndpoint endpoint) {
@@ -215,6 +223,7 @@ PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_v
             log::warn("Overwriting existing streaming path handler for {}", std::string_view(pNode->patternString()));
           }
           entry.assignStreamingHandler(methods, std::forward<decltype(handler)>(handler));
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
         } else if constexpr (std::is_same_v<T, AsyncRequestHandler>) {
           if (!handler) {
             throw std::invalid_argument("Cannot set empty AsyncRequestHandler");
@@ -223,6 +232,7 @@ PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_v
             log::warn("Overwriting existing async path handler for {}", std::string_view(pNode->patternString()));
           }
           entry.assignAsyncHandler(methods, std::forward<decltype(handler)>(handler));
+#endif
 #ifdef AERONET_ENABLE_WEBSOCKET
         } else if constexpr (std::is_same_v<T, WebSocketEndpoint>) {
           entry.assignWebSocketEndpoint(std::forward<decltype(handler)>(handler));
@@ -460,8 +470,10 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
   if (pMatchedNode == nullptr) {
     if (_streamingHandler) {
       result.setStreamingHandler(&_streamingHandler);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
     } else if (_asyncHandler) {
       result.setAsyncRequestHandler(&_asyncHandler);
+#endif
     } else if (_handler) {
       result.setRequestHandler(&_handler);
     }
@@ -498,7 +510,11 @@ http::MethodBmp Router::allowedMethods(std::string_view path) {
   if (const auto it = _literalOnlyRoutes.find(path); it != _literalOnlyRoutes.end()) {
     const RouteNode* pMatchedNode = it->second;
     const auto& entry = pathHasTrailingSlash ? pMatchedNode->handlersWithSlash : pMatchedNode->handlersNoSlash;
-    return static_cast<http::MethodBmp>(entry._normalMethodBmp | entry._streamingMethodBmp | entry._asyncMethodBmp);
+    return static_cast<http::MethodBmp>(entry._normalMethodBmp | entry._streamingMethodBmp
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+                                        | entry._asyncMethodBmp
+#endif
+    );
   }
 
   // Slow path: split segments and match patterns via trie
@@ -507,10 +523,18 @@ http::MethodBmp Router::allowedMethods(std::string_view path) {
   const RouteNode* pMatchedNode = matchImpl(pathHasTrailingSlash);
   if (pMatchedNode != nullptr) {
     const auto& entry = pathHasTrailingSlash ? pMatchedNode->handlersWithSlash : pMatchedNode->handlersNoSlash;
-    return static_cast<http::MethodBmp>(entry._normalMethodBmp | entry._streamingMethodBmp | entry._asyncMethodBmp);
+    return static_cast<http::MethodBmp>(entry._normalMethodBmp | entry._streamingMethodBmp
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+                                        | entry._asyncMethodBmp
+#endif
+    );
   }
 
-  if (_streamingHandler || _handler || _asyncHandler) {
+  if (_streamingHandler || _handler
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+      || _asyncHandler
+#endif
+  ) {
     static constexpr http::MethodBmp kAllMethods = (1U << http::kNbMethods) - 1U;
     return kAllMethods;
   }
@@ -680,8 +704,16 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
   if (method == http::Method::HEAD) {
     static constexpr http::MethodIdx kGetIdx = MethodToIdx(http::Method::GET);
     static constexpr http::MethodIdx kHeadIdx = MethodToIdx(http::Method::HEAD);
-    if (!entry.hasNormalHandler(kHeadIdx) && !entry.hasStreamingHandler(kHeadIdx) && !entry.hasAsyncHandler(kHeadIdx)) {
-      if (entry.hasNormalHandler(kGetIdx) || entry.hasStreamingHandler(kGetIdx) || entry.hasAsyncHandler(kGetIdx)) {
+    if (!entry.hasNormalHandler(kHeadIdx) && !entry.hasStreamingHandler(kHeadIdx)
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+        && !entry.hasAsyncHandler(kHeadIdx)
+#endif
+    ) {
+      if (entry.hasNormalHandler(kGetIdx) || entry.hasStreamingHandler(kGetIdx)
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+          || entry.hasAsyncHandler(kGetIdx)
+#endif
+      ) {
         method = http::Method::GET;
         methodIdx = kGetIdx;
       }
@@ -691,9 +723,11 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
   if (entry.hasStreamingHandler(methodIdx)) {
     assert(http::IsMethodSet(entry._streamingMethodBmp, method));
     result.setStreamingHandler(entry.streamingHandlerPtr(methodIdx));
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   } else if (entry.hasAsyncHandler(methodIdx)) {
     assert(http::IsMethodSet(entry._asyncMethodBmp, method));
     result.setAsyncRequestHandler(entry.asyncHandlerPtr(methodIdx));
+#endif
   } else if (entry.hasNormalHandler(methodIdx)) {
     assert(http::IsMethodSet(entry._normalMethodBmp, method));
     result.setRequestHandler(entry.requestHandlerPtr(methodIdx));
@@ -867,7 +901,9 @@ void Router::cloneNodesFrom(const Router& other) {
 
 void Router::clear() noexcept {
   _handler = {};
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   _asyncHandler = {};
+#endif
   _streamingHandler = {};
   _globalPreMiddleware.clear();
   _globalPostMiddleware.clear();

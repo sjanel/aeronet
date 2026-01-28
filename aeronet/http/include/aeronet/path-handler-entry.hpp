@@ -79,11 +79,13 @@ class PathHandlerEntry {
   friend class PathHandlerEntryTest;
 
   struct HandlerStorage {
-    static_assert(sizeof(RequestHandler) == sizeof(AsyncRequestHandler));
     static_assert(sizeof(RequestHandler) == sizeof(StreamingHandler));
 
-    static_assert(std::alignment_of_v<RequestHandler> == std::alignment_of_v<AsyncRequestHandler>);
     static_assert(std::alignment_of_v<RequestHandler> == std::alignment_of_v<StreamingHandler>);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    static_assert(sizeof(RequestHandler) == sizeof(AsyncRequestHandler));
+    static_assert(std::alignment_of_v<RequestHandler> == std::alignment_of_v<AsyncRequestHandler>);
+#endif
 
     alignas(RequestHandler) std::byte normalHandlerStorage[sizeof(RequestHandler)];
   };
@@ -91,16 +93,20 @@ class PathHandlerEntry {
   PathHandlerEntry() noexcept = default;
 
   void assignNormalHandler(http::MethodBmp methodBmp, RequestHandler handler);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void assignAsyncHandler(http::MethodBmp methodBmp, AsyncRequestHandler handler);
+#endif
   void assignStreamingHandler(http::MethodBmp methodBmp, StreamingHandler handler);
 
   [[nodiscard]] bool hasNormalHandler(http::MethodIdx methodIdx) const {
     return http::IsMethodIdxSet(_normalMethodBmp, methodIdx);
   }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   [[nodiscard]] bool hasAsyncHandler(http::MethodIdx methodIdx) const {
     return http::IsMethodIdxSet(_asyncMethodBmp, methodIdx);
   }
+#endif
 
   [[nodiscard]] bool hasStreamingHandler(http::MethodIdx methodIdx) const {
     return http::IsMethodIdxSet(_streamingMethodBmp, methodIdx);
@@ -114,9 +120,11 @@ class PathHandlerEntry {
     return &reinterpret_cast<const StreamingHandler&>(_handlers[methodIdx]);
   }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   [[nodiscard]] const AsyncRequestHandler* asyncHandlerPtr(http::MethodIdx methodIdx) const {
     return &reinterpret_cast<const AsyncRequestHandler&>(_handlers[methodIdx]);
   }
+#endif
 
 #ifdef AERONET_ENABLE_WEBSOCKET
   void assignWebSocketEndpoint(WebSocketEndpoint endpoint);
@@ -129,9 +137,17 @@ class PathHandlerEntry {
   /// Check if this entry has any handlers (HTTP or WebSocket).
   [[nodiscard]] bool hasAnyHandler() const {
 #ifdef AERONET_ENABLE_WEBSOCKET
-    return _normalMethodBmp != 0U || _streamingMethodBmp != 0U || _asyncMethodBmp != 0U || hasWebSocketEndpoint();
+    return _normalMethodBmp != 0U || _streamingMethodBmp != 0U
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+           || _asyncMethodBmp != 0U
+#endif
+           || hasWebSocketEndpoint();
 #else
-    return _normalMethodBmp != 0U || _streamingMethodBmp != 0U || _asyncMethodBmp != 0U;
+    return _normalMethodBmp != 0U || _streamingMethodBmp != 0U
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+           || _asyncMethodBmp != 0U
+#endif
+        ;
 #endif
   }
 
@@ -139,7 +155,9 @@ class PathHandlerEntry {
 
   http::MethodBmp _normalMethodBmp{};
   http::MethodBmp _streamingMethodBmp{};
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   http::MethodBmp _asyncMethodBmp{};
+#endif
   std::array<HandlerStorage, http::kNbMethods> _handlers;
 #ifdef AERONET_ENABLE_WEBSOCKET
   // Optional WebSocket endpoint for this route. If set, upgrade requests are handled here.

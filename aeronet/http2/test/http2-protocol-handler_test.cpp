@@ -32,7 +32,9 @@
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/request-task.hpp"
+#endif
 #include "aeronet/router.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
@@ -665,6 +667,7 @@ TEST(Http2ProtocolHandler, StreamResetAndClosedCallbacksEraseStreamState) {
   loop.pumpClientToServer();
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST(Http2ProtocolHandler, AsyncHandlerRunsToCompletion) {
   Router router;
   router.setPath(http::Method::GET, "/async",
@@ -713,6 +716,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerInvalidTaskReturns500) {
   ASSERT_FALSE(loop.clientData.empty());
   EXPECT_EQ(loop.clientData[0].data, "Async handler inactive");
 }
+#endif
 
 TEST(Http2ProtocolHandler, StreamingHandlerReturns501NotImplemented) {
   Router router;

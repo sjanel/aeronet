@@ -194,19 +194,19 @@ func handleBodyCodec(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-		var reader io.ReadCloser = r.Body
-		if strings.Contains(r.Header.Get("Content-Encoding"), "gzip") {
-			gz, err := gzip.NewReader(r.Body)
-			if err != nil {
-				http.Error(w, "Invalid gzip body", http.StatusBadRequest)
-				return
-			}
-			reader = gz
-			defer gz.Close()
+	var reader io.ReadCloser = r.Body
+	if strings.Contains(r.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(r.Body)
+		if err != nil {
+			http.Error(w, "Invalid gzip body", http.StatusBadRequest)
+			return
 		}
-		defer reader.Close()
+		reader = gz
+		defer gz.Close()
+	}
+	defer reader.Close()
 
-		data, err := io.ReadAll(reader)
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		http.Error(w, "Failed to read body", http.StatusInternalServerError)
 		return

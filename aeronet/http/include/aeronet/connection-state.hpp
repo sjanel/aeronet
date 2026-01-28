@@ -1,18 +1,15 @@
 #pragma once
 
 #include <chrono>
-#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <string_view>
 
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
-#include "aeronet/http-response.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tls-info.hpp"
@@ -25,13 +22,23 @@
 #include "aeronet/tls-metrics.hpp"
 #endif
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+#include <functional>
+#include <optional>
+
+#include "aeronet/http-response.hpp"
+#endif
+
 namespace aeronet {
 
 #ifdef AERONET_ENABLE_OPENSSL
 class TlsContext;
 #endif
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 class CorsPolicy;
+#endif
 
 struct ConnectionState {
   [[nodiscard]] bool isImmediateCloseRequested() const noexcept { return closeMode == CloseMode::Immediate; }
@@ -179,6 +186,7 @@ struct ConnectionState {
   // When set, the server routes data through this handler instead of HTTP parsing.
   std::unique_ptr<IProtocolHandler> protocolHandler;
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   struct AsyncHandlerState {
     AsyncHandlerState() = default;
 
@@ -203,6 +211,7 @@ struct ConnectionState {
     // Set by the server when dispatching an async handler.
     std::function<void(std::coroutine_handle<>, std::function<void()>)> postCallback;
   } asyncState;
+#endif
 };
 
 }  // namespace aeronet
