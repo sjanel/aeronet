@@ -37,7 +37,9 @@
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/request-task.hpp"
+#endif
 #include "aeronet/router.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/string-trim.hpp"
@@ -453,6 +455,7 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
     return resp;
   }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   if (const auto* asyncHandler = routingResult.asyncRequestHandler(); asyncHandler != nullptr) {
     // Async handlers: run the coroutine to completion synchronously
     // HTTP/2 streams are independent and don't block each other
@@ -472,6 +475,7 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
     log::error("HTTP/2 async handler returned invalid task for path {}", request.path());
     return {http::StatusCodeInternalServerError, "Async handler inactive"};
   }
+#endif
 
   if (routingResult.streamingHandler() != nullptr) {
     // TODO: Streaming handlers not yet supported for HTTP/2

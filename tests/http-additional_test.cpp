@@ -26,13 +26,16 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/request-task.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/request-task.hpp"
+#endif
 
 // Enable epoll/socket syscall overrides from sys-test-support.hpp
 #define AERONET_WANT_SOCKET_OVERRIDES
@@ -804,6 +807,7 @@ TEST(HttpChunked, RejectTooLarge) {
   ASSERT_TRUE(resp.contains("413"));
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST(HttpAsync, FlushPendingResponseAfterBody) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
   // Handler completes immediately but body wasn't ready when started.
@@ -830,6 +834,7 @@ TEST(HttpAsync, FlushPendingResponseAfterBody) {
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("async-ok")) << resp;
 }
+#endif
 
 TEST(HttpHead, MaxRequestsApplied) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(3); });
@@ -912,7 +917,9 @@ TEST(SingleHttpServer, RequestHandlerNonStdException) {
 
 // Test body read timeout is set when configured and body not ready
 TEST(SingleHttpServer, BodyReadTimeoutSetWhenNotReady) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withBodyReadTimeout(1s); });  // NOLINT(misc-include-cleaner)
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withMaxBodyBytes(256 << 20).withBodyReadTimeout(1s);  // NOLINT(misc-include-cleaner)
+  });
   ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
@@ -928,7 +935,7 @@ TEST(SingleHttpServer, BodyReadTimeoutSetWhenNotReady) {
 
 // Test body read timeout cleared when body is ready
 TEST(SingleHttpServer, BodyReadTimeoutClearedWhenReady) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withBodyReadTimeout(1s); });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(256 << 20).withBodyReadTimeout(1s); });
   ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
   test::ClientConnection clientConnection(ts.port());
   int fd = clientConnection.fd();
@@ -973,7 +980,10 @@ TEST(SingleHttpServer, RequestBodyIdentityEncodingNoDecompression) {
 
 // Test request decompression disabled (passthrough mode)
 TEST(SingleHttpServer, RequestBodyDecompressionDisabledPassthrough) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression.enable = false; });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withMaxBodyBytes(256 << 20);
+    cfg.decompression.enable = false;
+  });
   ts.router().setDefault([](const HttpRequest& req) {
     // Body will still be compressed since decompression is disabled
     return HttpResponse(req.headerValueOrEmpty(http::ContentEncoding));
@@ -1040,7 +1050,10 @@ TEST(SingleHttpServer, TelemetryConfigModificationIgnored) {
 // Test decompression enabled with large body
 TEST(SingleHttpServer, DecompressionConfigurable) {
   // Update decompression limit
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression.maxDecompressedBytes = 1024; });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withMaxBodyBytes(256 << 20);
+    cfg.decompression.maxDecompressedBytes = 1024;
+  });
 
   ts.router().setDefault([](const HttpRequest& req) {
     std::string body(req.body().begin(), req.body().end());

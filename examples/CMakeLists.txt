@@ -1,8 +1,7 @@
-AeronetAddProjectExecutable(aeronet-async-handle async-handle.cpp)
-target_link_libraries(aeronet-async-handle PRIVATE aeronet)
-
-AeronetAddProjectExecutable(aeronet-async-handlers async-handlers.cpp)
-target_link_libraries(aeronet-async-handlers PRIVATE aeronet)
+if(AERONET_ENABLE_ASYNC_HANDLERS)
+	AeronetAddProjectExecutable(aeronet-async-handlers async-handlers.cpp)
+	target_link_libraries(aeronet-async-handlers PRIVATE aeronet)
+endif()
 
 AeronetAddProjectExecutable(aeronet-minimal minimal.cpp)
 target_link_libraries(aeronet-minimal PRIVATE aeronet)

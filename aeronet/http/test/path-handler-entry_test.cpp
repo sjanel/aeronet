@@ -13,7 +13,9 @@
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/raw-chars.hpp"
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/request-task.hpp"
+#endif
 #include "aeronet/router.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
@@ -34,11 +36,13 @@ StreamingHandler MakeStreamingHandler() {
   return [data = RawChars("some data 12")](const HttpRequest&, HttpResponseWriter&) {};
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 AsyncRequestHandler MakeAsyncHandler() {
   return [data = RawChars("some data 123")](HttpRequest&) -> RequestTask<HttpResponse> {
     co_return HttpResponse(http::StatusCodeOK);
   };
 }
+#endif
 
 }  // namespace
 
@@ -49,9 +53,11 @@ class PathHandlerEntryTest : public ::testing::Test {
 
   void assignNormal(http::MethodBmp bmp, RequestHandler handler) { entry.assignNormalHandler(bmp, std::move(handler)); }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void assignAsync(http::MethodBmp bmp, AsyncRequestHandler handler) {
     entry.assignAsyncHandler(bmp, std::move(handler));
   }
+#endif
 
 #ifdef AERONET_ENABLE_WEBSOCKET
   static void assignWebSocketEndpoint(PathHandlerEntry& entry) {
@@ -70,16 +76,20 @@ class PathHandlerEntryTest : public ::testing::Test {
     router.setPath(http::Method::GET, "/ctor", MakeNormalHandler());  // should override previous
     router.setPath(http::Method::POST, "/ctor", MakeStreamingHandler());
     router.setPath(http::Method::POST, "/ctor", MakeStreamingHandler());  // should override previous
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
     router.setPath(http::Method::PUT, "/ctor", MakeAsyncHandler());
     entry = router.setPath(http::Method::PUT, "/ctor", MakeAsyncHandler());  // should override previous
+#endif
   }
 
   static auto getCorsPolicy(const PathHandlerEntry& entry) { return entry._corsPolicy; }
   static auto getPreMiddleware(const PathHandlerEntry& entry) { return entry._preMiddleware; }
   static auto getPostMiddleware(const PathHandlerEntry& entry) { return entry._postMiddleware; }
   static auto getNormalMethodBmp(const PathHandlerEntry& entry) { return entry._normalMethodBmp; }
-  static auto getAsyncMethodBmp(const PathHandlerEntry& entry) { return entry._asyncMethodBmp; }
   static auto getStreamingMethodBmp(const PathHandlerEntry& entry) { return entry._streamingMethodBmp; }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  static auto getAsyncMethodBmp(const PathHandlerEntry& entry) { return entry._asyncMethodBmp; }
+#endif
 
 #ifdef AERONET_ENABLE_WEBSOCKET
   static bool hasWebSocketEndpoint(const PathHandlerEntry& entry) { return entry.hasWebSocketEndpoint(); }
@@ -89,15 +99,19 @@ class PathHandlerEntryTest : public ::testing::Test {
   static auto* normalHandlerPtr(const PathHandlerEntry& entry, http::MethodIdx idx) {
     return entry.requestHandlerPtr(idx);
   }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   static auto* asyncHandlerPtr(const PathHandlerEntry& entry, http::MethodIdx idx) {
     return entry.asyncHandlerPtr(idx);
   }
+#endif
 };
 
 TEST_F(PathHandlerEntryTest, SetPathEmpty) {
   EXPECT_THROW(router.setPath(http::Method::GET, "/", RequestHandler{}), std::invalid_argument);
   EXPECT_THROW(router.setPath(http::Method::GET, "/", StreamingHandler{}), std::invalid_argument);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   EXPECT_THROW(router.setPath(http::Method::GET, "/", AsyncRequestHandler{}), std ::invalid_argument);
+#endif
 }
 
 TEST_F(PathHandlerEntryTest, SpecialOperationsWithoutWebSocket) {
@@ -212,17 +226,6 @@ TEST_F(PathHandlerEntryTest, CopyAssignmentConstructsNewStreamingHandler) {
   EXPECT_TRUE(result.hasHandler());
 }
 
-TEST_F(PathHandlerEntryTest, CopyAssignmentConstructsAsyncHandler) {
-  auto& sourceEntry = router.setPath(http::Method::PUT, "/async-src", MakeAsyncHandler());
-  Router target;
-  auto& targetEntry = target.setPath(http::Method::DELETE, "/async-target", MakeNormalHandler());
-
-  targetEntry = sourceEntry;
-  auto result = target.match(http::Method::PUT, "/async-target");
-  EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Async);
-  EXPECT_TRUE(result.hasHandler());
-}
-
 TEST_F(PathHandlerEntryTest, MoveAssignmentTransfersStreamingHandlers) {
   auto& sourceEntry = router.setPath(http::Method::POST, "/move-stream-src", MakeStreamingHandler());
   Router target;
@@ -250,6 +253,19 @@ TEST_F(PathHandlerEntryTest, SeveralStreamingAssignments) {
   EXPECT_EQ(router.match(http::Method::GET, "/streaming2").streamingHandler(), nullptr);
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+
+TEST_F(PathHandlerEntryTest, CopyAssignmentConstructsAsyncHandler) {
+  auto& sourceEntry = router.setPath(http::Method::PUT, "/async-src", MakeAsyncHandler());
+  Router target;
+  auto& targetEntry = target.setPath(http::Method::DELETE, "/async-target", MakeNormalHandler());
+
+  targetEntry = sourceEntry;
+  auto result = target.match(http::Method::PUT, "/async-target");
+  EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Async);
+  EXPECT_TRUE(result.hasHandler());
+}
+
 TEST_F(PathHandlerEntryTest, MoveAssignmentConstructsNewAsyncHandler) {
   auto& sourceEntry = router.setPath(http::Method::PATCH, "/move-async-src", MakeAsyncHandler());
   Router target;
@@ -259,6 +275,8 @@ TEST_F(PathHandlerEntryTest, MoveAssignmentConstructsNewAsyncHandler) {
   auto result = target.match(http::Method::PATCH, "/move-async-target");
   EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Async);
 }
+
+#endif
 
 TEST_F(PathHandlerEntryTest, CorsAndMiddlewarePopulatedOnMatch) {
   auto& entry = router.setPath(http::Method::GET, "/middleware", MakeNormalHandler());
@@ -278,6 +296,8 @@ TEST_F(PathHandlerEntryTest, NormalAfterStreamingThrows) {
   EXPECT_THROW(router.setPath(http::Method::GET, "/conflict", MakeNormalHandler()), std::logic_error);
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+
 TEST_F(PathHandlerEntryTest, NormalAfterAsyncThrows) {
   router.setPath(http::Method::GET, "/conflict-async", MakeAsyncHandler());
   EXPECT_THROW(router.setPath(http::Method::GET, "/conflict-async", MakeNormalHandler()), std::logic_error);
@@ -293,15 +313,21 @@ TEST_F(PathHandlerEntryTest, AsyncAfterStreamingThrows) {
   EXPECT_THROW(router.setPath(http::Method::GET, "/conflict-async-3", MakeAsyncHandler()), std::logic_error);
 }
 
+#endif
+
 TEST_F(PathHandlerEntryTest, StreamingAfterNormalThrows) {
   router.setPath(http::Method::GET, "/conflict-stream-1", MakeNormalHandler());
   EXPECT_THROW(router.setPath(http::Method::GET, "/conflict-stream-1", MakeStreamingHandler()), std::logic_error);
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+
 TEST_F(PathHandlerEntryTest, StreamingAfterAsyncThrows) {
   router.setPath(http::Method::GET, "/conflict-stream-2", MakeAsyncHandler());
   EXPECT_THROW(router.setPath(http::Method::GET, "/conflict-stream-2", MakeStreamingHandler()), std::logic_error);
 }
+
+#endif
 
 TEST_F(PathHandlerEntryTest, AssignNormalHandlerCopiesWithinSingleCall) {
   // Assign one handler to two methods in a single call so the implementation will
@@ -319,6 +345,8 @@ TEST_F(PathHandlerEntryTest, AssignNormalHandlerCopiesWithinSingleCall) {
   EXPECT_NE(p0, p1);
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+
 TEST_F(PathHandlerEntryTest, AssignAsyncHandlerCopiesWithinSingleCall) {
   // Assign one handler to two methods in a single call so the implementation will
   // construct the handler for the first method and copy it for the second (pLastAsyncHandler reuse).
@@ -333,5 +361,7 @@ TEST_F(PathHandlerEntryTest, AssignAsyncHandlerCopiesWithinSingleCall) {
   // Distinct storage slots are constructed from the same handler instance.
   EXPECT_NE(p0, p1);
 }
+
+#endif
 
 }  // namespace aeronet

@@ -163,7 +163,9 @@ class HttpRequestTest : public ::testing::Test {
 
   void setOwnerState(ConnectionState* st) { req._ownerState = st; }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void callPinHeadStorage() { req.pinHeadStorage(cs); }
+#endif
 
   // Helper to set a header view pointing at arbitrary bytes (fixture has friend access)
   void setHeaderViewToPtr(std::string_view key, const char* dataPtr, std::size_t len) {
@@ -321,6 +323,8 @@ TEST_F(HttpRequestTest, TraceSpanNotSetWhenNoHostHeader) {
   EXPECT_FALSE(FakeSpan::sawHttpHost);
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+
 TEST_F(HttpRequestTest, PinHead_NoHeadSpan_Noop) {
   // When no head span is present, pinHeadStorage should be a no-op.
   EXPECT_EQ(req.headSpanSize(), 0);
@@ -382,6 +386,8 @@ TEST_F(HttpRequestTest, HasMoreBodyNeedsBothActiveAndNeedsBody) {
   cs.asyncState.needsBody = true;
   EXPECT_TRUE(req.hasMoreBody());
 }
+
+#endif
 
 TEST_F(HttpRequestTest, NotEnoughDataNoEndOfHeaders) {
   EXPECT_EQ(reqSet(BuildRaw("GET", "/", "HTTP/1.1", "Server: aeronet", false)), 0);
@@ -888,6 +894,8 @@ TEST_F(HttpRequestTest, BodyShouldBeReadyIfBodyCalled) {
   EXPECT_TRUE(req.isBodyReady());
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+
 TEST_F(HttpRequestTest, PinHeadStorageRemapsViews) {
   // Build raw request with a header value we can inspect pointer for
   RawChars raw = BuildRaw("GET", "/p", "HTTP/1.1", "X-Custom: original_value\r\n");
@@ -1022,6 +1030,8 @@ TEST_F(HttpRequestTest, PinHead_RemapsEntriesInsideOldSpan) {
   EXPECT_GE(ppPtr, hb);
   EXPECT_LT(ppPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState.headBuffer.size()));
 }
+
+#endif
 
 TEST_F(HttpRequestTest, WantCloseAndHasExpectContinue) {
   {  // Connection: close
