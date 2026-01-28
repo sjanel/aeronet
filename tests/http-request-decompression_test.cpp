@@ -113,7 +113,7 @@ RawChars compress(std::string_view alg, std::string_view input) {
 #ifdef AERONET_ENABLE_ZLIB
     // NOLINTNEXTLINE(readability-else-after-return)
   } else if (CaseInsensitiveEqual(alg, "gzip")) {
-    ZlibEncoder encoder(ZStreamRAII::Variant::gzip, buf, cc);
+    ZlibEncoder encoder(ZStreamRAII::Variant::gzip, buf, cc.zlib.level);
     buf.reserve(64UL + deflateBound(nullptr, input.size()));
     const std::size_t written = encoder.encodeFull(input, buf.capacity(), buf.data());
     if (written == 0) {
@@ -121,7 +121,7 @@ RawChars compress(std::string_view alg, std::string_view input) {
     }
     buf.setSize(written);
   } else if (CaseInsensitiveEqual(alg, "deflate")) {
-    ZlibEncoder encoder(ZStreamRAII::Variant::deflate, buf, cc);
+    ZlibEncoder encoder(ZStreamRAII::Variant::deflate, buf, cc.zlib.level);
     buf.reserve(64UL + deflateBound(nullptr, input.size()));
     const std::size_t written = encoder.encodeFull(input, buf.capacity(), buf.data());
     if (written == 0) {
@@ -131,7 +131,7 @@ RawChars compress(std::string_view alg, std::string_view input) {
 #endif
 #ifdef AERONET_ENABLE_ZSTD
   } else if (CaseInsensitiveEqual(alg, "zstd")) {
-    ZstdEncoder encoder(buf, cc);
+    ZstdEncoder encoder(buf, cc.zstd);
     buf.reserve(ZSTD_compressBound(input.size()));
     const std::size_t written = encoder.encodeFull(input, buf.capacity(), buf.data());
     if (written == 0) {
@@ -141,7 +141,7 @@ RawChars compress(std::string_view alg, std::string_view input) {
 #endif
 #ifdef AERONET_ENABLE_BROTLI
   } else if (CaseInsensitiveEqual(alg, "br")) {
-    BrotliEncoder encoder(buf, cc);
+    BrotliEncoder encoder(buf, cc.brotli);
     buf.reserve(BrotliEncoderMaxCompressedSize(input.size()));
     const std::size_t written = encoder.encodeFull(input, buf.capacity(), buf.data());
     if (written == 0) {

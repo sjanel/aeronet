@@ -6,6 +6,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "aeronet/compression-config.hpp"
@@ -51,7 +52,7 @@ void EncodeFull(ZstdEncoder& encoder, std::string_view payload, RawChars& out, s
 
 void ExpectOneShotRoundTrip(std::string_view payload) {
   CompressionConfig cfg;
-  ZstdEncoder encoder(buf, cfg);
+  ZstdEncoder encoder(buf, cfg.zstd);
   RawChars compressed;
   EncodeFull(encoder, payload, compressed, kExtraCapacity);
 
@@ -63,7 +64,7 @@ void ExpectOneShotRoundTrip(std::string_view payload) {
 
 RawChars BuildStreamingCompressed(std::string_view payload, std::size_t split) {
   CompressionConfig cfg;
-  ZstdEncoder encoder(buf, cfg);
+  ZstdEncoder encoder(buf, cfg.zstd);
   RawChars compressed;
   auto ctx = encoder.makeContext();
   std::string_view remaining = payload;
@@ -114,15 +115,16 @@ TEST(ZstdEncoderDecoderTest, MallocConstructorFails) {
   EXPECT_THROW(ZstdDecoder::decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, buf), std::bad_alloc);
 }
 
-TEST(ZstdEncoderDecoderTest, ZstdContext) {
-  auto compressed = BuildStreamingCompressed("some-data", 4096U);
+TEST(ZstdEncoderDecoderTest, ZstdContextInitFails) {
+  CompressionConfig cfg;
+  ZstdEncoder encoder(buf, cfg.zstd);
   test::FailNextMalloc();
-  EXPECT_THROW(details::ZstdContextRAII ctx(3, 0), std::bad_alloc);
+  EXPECT_THROW(encoder.makeContext(), std::bad_alloc);
 }
 
 TEST(ZstdEncoderDecoderTest, EncodeFails) {
   CompressionConfig cfg;
-  ZstdEncoder encoder(buf, cfg);
+  ZstdEncoder encoder(buf, cfg.zstd);
   RawChars buf(std::string_view{"some-data"}.size());
   EXPECT_EQ(encoder.encodeFull("some-data", 0UL, buf.data()), 0UL);
 
@@ -132,6 +134,27 @@ TEST(ZstdEncoderDecoderTest, EncodeFails) {
 }
 
 #endif
+
+TEST(ZstdEncoderContext, MoveConstructor) {
+  ZstdEncoderContext ctx1(buf);
+  ctx1.init(2, 15);
+  std::string produced;
+  produced.append(ctx1.encodeChunk("some-data"));
+  produced.append(ctx1.encodeChunk({}));
+
+  EXPECT_GT(produced.size(), 0UL);
+
+  ZstdEncoderContext ctx2(std::move(ctx1));
+  ctx2.init(2, 15);
+  produced.assign(ctx2.encodeChunk("more-data"));
+  produced.append(ctx2.encodeChunk({}));
+
+  EXPECT_GT(produced.size(), 0UL);
+
+  // self move does nothing
+  auto& self = ctx2;
+  ctx2 = std::move(self);
+}
 
 TEST(ZstdEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
   for (const auto& payload : SamplePayloads()) {
@@ -143,7 +166,7 @@ TEST(ZstdEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
 TEST(ZstdEncoderDecoderTest, MaxDecompressedBytesFull) {
   for (const auto& payload : SamplePayloads()) {
     CompressionConfig cfg;
-    ZstdEncoder encoder(buf, cfg);
+    ZstdEncoder encoder(buf, cfg.zstd);
     RawChars compressed;
     EncodeFull(encoder, payload, compressed, kExtraCapacity);
 
@@ -190,7 +213,7 @@ TEST(ZstdEncoderDecoderTest, DecodeInvalidDataFailsFullContentSizeError) {
 
 TEST(ZstdEncoderDecoderTest, DecodeInvalidDataFailsFull) {
   CompressionConfig cfg;
-  ZstdEncoder encoder(buf, cfg);
+  ZstdEncoder encoder(buf, cfg.zstd);
   RawChars compressed;
   EncodeFull(encoder, std::string(512, 'A'), compressed, kExtraCapacity);
 
@@ -217,7 +240,7 @@ TEST(ZstdEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
   const std::string payload = test::MakePatternedPayload(1024);
 
   CompressionConfig cfg;
-  ZstdEncoder encoder(buf, cfg);
+  ZstdEncoder encoder(buf, cfg.zstd);
   auto ctx = encoder.makeContext();
   RawChars compressed;
   const auto produced = ctx->encodeChunk(std::string_view(payload));
@@ -241,7 +264,7 @@ TEST(ZstdEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIteratio
 #endif
   CompressionConfig cfg;
   cfg.zstd.windowLog = 15;
-  ZstdEncoder encoder(buf, cfg);
+  ZstdEncoder encoder(buf, cfg.zstd);
   auto ctx = encoder.makeContext();
   RawChars compressed;
 
@@ -263,7 +286,7 @@ TEST(ZstdEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIteratio
 
 TEST(ZstdEncoderDecoderTest, RepeatedDecompressDoesNotGrowCapacity) {
   CompressionConfig cfg;
-  ZstdEncoder encoder(buf, cfg);
+  ZstdEncoder encoder(buf, cfg.zstd);
   RawChars compressed;
   EncodeFull(encoder, "Zstd keeps strings sharp.", compressed, kExtraCapacity);
 

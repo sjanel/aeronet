@@ -5,7 +5,6 @@
 #include <charconv>
 #include <cmath>
 #include <cstddef>
-#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -504,7 +503,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_ExpansionTooLargeReturnsPaylo
 
   CompressionConfig encCfg;  // default encoder config is fine for generating compressed bytes
   RawChars buf;
-  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, buf, encCfg);
+  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, buf, encCfg.zlib.level);
   RawChars compressedOut(plain.size());
   {
     const std::size_t written =
@@ -710,7 +709,7 @@ TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithou
   const std::string plain = "small payload";
   CompressionConfig encCfg;
   RawChars buf;
-  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, buf, encCfg);
+  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, buf, encCfg.zlib.level);
   RawChars compressedOut(64UL + plain.size());
   {
     const std::size_t written = encoder.encodeFull(plain, compressedOut.capacity(), compressedOut.data());
@@ -718,7 +717,7 @@ TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithou
     compressedOut.setSize(static_cast<RawChars::size_type>(written));
   }
   cs.installAggregatedBodyBridge();
-  cs.bodyStreamContext.body = std::string_view(compressedOut.data(), compressedOut.size());
+  cs.bodyStreamContext.body = compressedOut;
   cs.bodyStreamContext.offset = 0;
 
   RawChars tmpBuf;
