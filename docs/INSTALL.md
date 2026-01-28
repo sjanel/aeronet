@@ -29,6 +29,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 | `AERONET_ENABLE_OPENSSL` | ON* | Enable TLS module (`aeronet_tls`) |
 | `AERONET_ENABLE_OPENTELEMETRY` | ON* | Enable OpenTelemetry instrumentation (build-time flag; opt-in) |
 | `AERONET_ENABLE_WEBSOCKET` | ON | Enable WebSocket protocol support |
+| `AERONET_ENABLE_ASYNC_HANDLERS` | ON | Enable asynchronous routing handlers |
 | `AERONET_ENABLE_HTTP2` | ON | Enable HTTP/2 protocol support |
 | `AERONET_ENABLE_ZLIB` | ON* | Enable gzip/deflate (zlib) compression + decompression |
 | `AERONET_ENABLE_ZSTD` | ON* | Enable zstd compression + decompression |

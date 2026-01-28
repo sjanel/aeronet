@@ -365,24 +365,32 @@ TEST(ConnectionStateBufferTest, ShrinkToFitReducesNonEmptyBuffers) {
   state.bodyAndTrailersBuffer.reserve(1025);
   state.bodyAndTrailersBuffer.append(std::string_view("chunked body"));
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   state.asyncState.headBuffer.reserve(4096);
   state.asyncState.headBuffer.append(std::string_view("GET / HTTP/1.1\r\nHost: a\r\n\r\n"));
+#endif
 
   // Sanity: capacities should be larger than sizes prior to shrink
   EXPECT_GT(state.inBuffer.capacity(), state.inBuffer.size());
   EXPECT_GT(state.bodyAndTrailersBuffer.capacity(), state.bodyAndTrailersBuffer.size());
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   EXPECT_GT(state.asyncState.headBuffer.capacity(), state.asyncState.headBuffer.size());
+#endif
 
   const auto oldCapacityInBuffer = state.inBuffer.capacity();
   const auto oldCapacityBodyBuffer = state.bodyAndTrailersBuffer.capacity();
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   const auto oldCapacityHeadBuffer = state.asyncState.headBuffer.capacity();
+#endif
 
   state.reset();
 
   // After shrink and clear, capacities should be bounded by sizes
   EXPECT_LT(state.inBuffer.capacity(), oldCapacityInBuffer);
   EXPECT_LT(state.bodyAndTrailersBuffer.capacity(), oldCapacityBodyBuffer);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   EXPECT_LT(state.asyncState.headBuffer.capacity(), oldCapacityHeadBuffer);
+#endif
 }
 
 TEST(ConnectionStateBufferTest, ShrinkToFitOnEmptyBuffersYieldsZeroCapacity) {
@@ -392,7 +400,9 @@ TEST(ConnectionStateBufferTest, ShrinkToFitOnEmptyBuffersYieldsZeroCapacity) {
   state.tunnelOrFileBuffer.clear();
   state.inBuffer.clear();
   state.bodyAndTrailersBuffer.clear();
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   state.asyncState.headBuffer.clear();
+#endif
 
   state.reset();
 
@@ -400,7 +410,9 @@ TEST(ConnectionStateBufferTest, ShrinkToFitOnEmptyBuffersYieldsZeroCapacity) {
   EXPECT_EQ(state.tunnelOrFileBuffer.capacity(), 0U);
   EXPECT_EQ(state.inBuffer.capacity(), 0U);
   EXPECT_EQ(state.bodyAndTrailersBuffer.capacity(), 0U);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   EXPECT_EQ(state.asyncState.headBuffer.capacity(), 0U);
+#endif
 }
 
 TEST(ConnectionStateBridgeTest, InstallAggregatedBodyBridgeMakesBodyAvailable) {
@@ -466,6 +478,7 @@ TEST(ConnectionStateBridgeTest, AggregatedBridgeReadWithZeroMaxBytesReturnsEmpty
   EXPECT_FALSE(chunk2.empty());
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST(ConnectionStateAsyncStateTest, AsyncHandlerStateClearResetsState) {
   ConnectionState::AsyncHandlerState st;
 
@@ -534,6 +547,7 @@ TEST(ConnectionStateAsyncStateTest, ClearDestroysNonNullHandle) {
   state.reset();
   EXPECT_EQ(state.asyncState.handle, std::coroutine_handle<>());
 }
+#endif
 
 TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSetsTlsEstablished) {
   int sv[2];

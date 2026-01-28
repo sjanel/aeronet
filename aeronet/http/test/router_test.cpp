@@ -15,7 +15,9 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/path-handlers.hpp"
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/request-task.hpp"
+#endif
 #include "aeronet/router-config.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
@@ -201,6 +203,7 @@ TEST_F(RouterTest, HeadFallbackToStreamingGet) {
   EXPECT_FALSE(res.methodNotAllowed);
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST_F(RouterTest, HeadFallbackToAsyncGet) {
   // If GET is registered as an async handler, HEAD should fallback to that async handler
   router.setPath(http::Method::GET, "/haasync",
@@ -214,6 +217,7 @@ TEST_F(RouterTest, HeadFallbackToAsyncGet) {
   EXPECT_NE(res.asyncRequestHandler(), nullptr);
   EXPECT_FALSE(res.methodNotAllowed);
 }
+#endif
 
 TEST_F(RouterTest, ExplicitHeadStreamingAndAsyncHandlers) {
   // Explicit streaming HEAD handler
@@ -223,6 +227,7 @@ TEST_F(RouterTest, ExplicitHeadStreamingAndAsyncHandlers) {
   EXPECT_EQ(r1res.requestHandler(), nullptr);
   EXPECT_NE(r1res.streamingHandler(), nullptr);
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Explicit async HEAD handler
   Router r2;
   r2.setPath(http::Method::HEAD, "/hda",
@@ -232,6 +237,7 @@ TEST_F(RouterTest, ExplicitHeadStreamingAndAsyncHandlers) {
   EXPECT_EQ(r2res.requestHandler(), nullptr);
   EXPECT_EQ(r2res.streamingHandler(), nullptr);
   EXPECT_NE(r2res.asyncRequestHandler(), nullptr);
+#endif
 }
 
 TEST_F(RouterTest, HeadMethodNotAllowedWhenNoGetOrHead) {
@@ -683,6 +689,7 @@ TEST_F(RouterTest, InvalidTrailingSlashPolicyNeverMatches) {
   EXPECT_EQ(res.requestHandler(), nullptr);
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST_F(RouterTest, AllowedMethodsGlobalAsyncFallback) {
   // Install an async global handler and ensure allowedMethods returns all methods
   router.setDefault(AsyncRequestHandler(
@@ -695,6 +702,7 @@ TEST_F(RouterTest, AllowedMethodsGlobalAsyncFallback) {
   EXPECT_TRUE(http::IsMethodIdxSet(allAllowed, MethodToIdx(http::Method::GET)));
   EXPECT_TRUE(http::IsMethodIdxSet(allAllowed, MethodToIdx(http::Method::POST)));
 }
+#endif
 
 TEST_F(RouterTest, TrailingSlashEdgeCases) {
   // Normalize should accept both

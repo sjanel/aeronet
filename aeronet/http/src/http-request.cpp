@@ -4,16 +4,19 @@
 #include <cassert>
 #include <cctype>
 #include <chrono>
-#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <functional>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+#include <functional>
+#endif
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/header-line-parse.hpp"
@@ -72,6 +75,7 @@ bool HttpRequest::hasMoreBody() const {
     return false;
   }
   if (_bodyAccessBridge == nullptr) {
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
     // If an async handler started before the body was ready, the server will
     // set asyncState.needsBody and later install the aggregated bridge when
     // body bytes arrive. In that intermediate state, treat the request as
@@ -80,6 +84,9 @@ bool HttpRequest::hasMoreBody() const {
     assert(_ownerState != nullptr);
     const auto& async = _ownerState->asyncState;
     return async.active && async.needsBody;
+#else
+    return false;
+#endif
   }
   return _bodyAccessBridge->hasMore(*this, _bodyAccessContext);
 }
@@ -298,6 +305,7 @@ void HttpRequest::finalizeBeforeHandlerCall(std::span<const PathParamCapture> pa
   }
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 void HttpRequest::pinHeadStorage(ConnectionState& state) {
   if (_headPinned || _headSpanSize == 0) {
     return;
@@ -329,6 +337,7 @@ void HttpRequest::pinHeadStorage(ConnectionState& state) {
 
   _headPinned = true;
 }
+#endif
 
 void HttpRequest::shrinkAndMaybeClear() {
   // we cannot simply rehash(0) for std::string_view maps because if the maps are not empty,
@@ -362,6 +371,7 @@ void HttpRequest::end(http::StatusCode respStatusCode) {
   }
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 void HttpRequest::markAwaitingBody() const noexcept {
   assert(_ownerState->asyncState.active);
   _ownerState->asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::WaitingForBody;
@@ -377,6 +387,7 @@ void HttpRequest::postCallback(std::coroutine_handle<> handle, std::function<voi
   assert(_ownerState->asyncState.postCallback);
   _ownerState->asyncState.postCallback(handle, std::move(work));
 }
+#endif
 
 HttpResponse::Options HttpRequest::makeResponseOptions() const noexcept {
   HttpResponse::Options opts;

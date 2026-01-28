@@ -87,7 +87,9 @@ class Router {
   //   - Keep handlers lightweight; long-running operations should be dispatched to worker
   //     threads to avoid blocking the event loop.
   void setDefault(RequestHandler handler);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void setDefault(AsyncRequestHandler handler);
+#endif
 
   // Register a global streaming handler that can produce responses incrementally via
   // HttpResponseWriter. Use streaming handlers for large or long-lived responses where
@@ -139,11 +141,13 @@ class Router {
   // Register an async-friendly handler (produces a RequestTask) for the provided method bitmap.
   // The handler runs inside the event loop and may `co_await` I/O-friendly awaitables (e.g.
   // HttpRequest::bodyAwaitable()).
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   PathHandlerEntry& setPath(http::MethodBmp methods, std::string_view path, AsyncRequestHandler handler);
 
   // Register an async-friendly handler for a single HTTP method. HEAD requests automatically fallback to the GET
   // async handler following the standard HEAD→GET semantics.
   PathHandlerEntry& setPath(http::Method method, std::string_view path, AsyncRequestHandler handler);
+#endif
 
 #ifdef AERONET_ENABLE_WEBSOCKET
   // Register a WebSocket endpoint for the provided path.
@@ -165,7 +169,15 @@ class Router {
       RemoveSlash  // Indicates that a redirection to remove a trailing slash is needed
     };
 
-    enum class HandlerKind : uint8_t { None, Request, Streaming, Async };
+    enum class HandlerKind : uint8_t {
+      None,
+      Request,
+      Streaming
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+      ,
+      Async
+#endif
+    };
 
     [[nodiscard]] const RequestHandler* requestHandler() const {
       return handlerKind == HandlerKind::Request ? handler.request : nullptr;
@@ -173,9 +185,11 @@ class Router {
     [[nodiscard]] const StreamingHandler* streamingHandler() const {
       return handlerKind == HandlerKind::Streaming ? handler.streaming : nullptr;
     }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
     [[nodiscard]] const AsyncRequestHandler* asyncRequestHandler() const {
       return handlerKind == HandlerKind::Async ? handler.async : nullptr;
     }
+#endif
     [[nodiscard]] bool hasHandler() const { return handlerKind != HandlerKind::None; }
 
     void setRequestHandler(const RequestHandler* ptr) {
@@ -188,10 +202,12 @@ class Router {
       handler.streaming = ptr;
     }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
     void setAsyncRequestHandler(const AsyncRequestHandler* ptr) {
       handlerKind = HandlerKind::Async;
       handler.async = ptr;
     }
+#endif
 
     void resetHandler() {
       handlerKind = HandlerKind::None;
@@ -202,7 +218,9 @@ class Router {
       HandlerPointer() noexcept : request(nullptr) {}
       const RequestHandler* request;
       const StreamingHandler* streaming;
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
       const AsyncRequestHandler* async;
+#endif
     } handler;
 
     HandlerKind handlerKind{HandlerKind::None};
@@ -331,9 +349,20 @@ class Router {
   };
 
 #ifdef AERONET_ENABLE_WEBSOCKET
-  using HandlerVariant = std::variant<RequestHandler, StreamingHandler, AsyncRequestHandler, WebSocketEndpoint>;
+  using HandlerVariant = std::variant<RequestHandler, StreamingHandler
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+                                      ,
+                                      AsyncRequestHandler
+#endif
+                                      ,
+                                      WebSocketEndpoint>;
 #else
-  using HandlerVariant = std::variant<RequestHandler, StreamingHandler, AsyncRequestHandler>;
+  using HandlerVariant = std::variant<RequestHandler, StreamingHandler
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+                                      ,
+                                      AsyncRequestHandler
+#endif
+                                      >;
 #endif
 
   PathHandlerEntry& setPathInternal(http::MethodBmp methods, std::string_view path, HandlerVariant handlerVariant);
@@ -371,7 +400,9 @@ class Router {
   RouterConfig _config;
 
   RequestHandler _handler;
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   AsyncRequestHandler _asyncHandler;
+#endif
   StreamingHandler _streamingHandler;
 
   vector<RequestMiddleware> _globalPreMiddleware;

@@ -2,7 +2,6 @@
 
 #include <cerrno>
 #include <chrono>
-#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -12,6 +11,10 @@
 #include <span>
 #include <string_view>
 #include <thread>
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+#endif
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/event-loop.hpp"
@@ -480,15 +483,16 @@ class SingleHttpServer {
   void submitRouterUpdate(std::function<void(Router&)> updater,
                           std::shared_ptr<std::promise<std::exception_ptr>> completion);
 
-  // Post an async callback to be processed in the event loop, then resume the coroutine.
-  // Called from background threads via ConnectionState::asyncState.postCallback.
-  void postAsyncCallback(int connectionFd, std::coroutine_handle<> handle, std::function<void()> work);
-
   // Helpers to enable/disable writable interest (EPOLLOUT) for a connection. They wrap
   // ModWithCloseOnFailure and update `ConnectionState::waitingWritable` and internal stats
   // consistently. Return true on success, false on failure (caller should handle close).
   bool enableWritableInterest(ConnectionMapIt cnxIt);
   bool disableWritableInterest(ConnectionMapIt cnxIt);
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  // Post an async callback to be processed in the event loop, then resume the coroutine.
+  // Called from background threads via ConnectionState::asyncState.postCallback.
+  void postAsyncCallback(int connectionFd, std::coroutine_handle<> handle, std::function<void()> work);
 
   bool dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady, bool isChunked,
                             bool expectContinue, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
@@ -497,6 +501,7 @@ class SingleHttpServer {
   void handleAsyncBodyProgress(ConnectionMapIt cnxIt);
   void onAsyncHandlerCompleted(ConnectionMapIt cnxIt);
   void tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt);
+#endif
 
   [[nodiscard]] bool isInMultiHttpServer() const noexcept { return _lifecycleTracker.use_count() != 0; }
 

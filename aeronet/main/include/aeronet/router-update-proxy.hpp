@@ -51,10 +51,12 @@ class RouterUpdateProxy {
   }
 
   /** Set the default asynchronous handler. See Router::setDefault(AsyncRequestHandler) */
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   RouterUpdateProxy& setDefault(AsyncRequestHandler handler) {
     (*_dispatcher)([handler = std::move(handler)](Router& router) mutable { router.setDefault(std::move(handler)); });
     return *this;
   }
+#endif
 
   /** Add a global request middleware. See Router::addRequestMiddleware */
   RouterUpdateProxy& addRequestMiddleware(RequestMiddleware middleware) {
@@ -167,9 +169,11 @@ class RouterUpdateProxy {
    *
    * See also: Router::setPath(http::Method, std::string_view, AsyncRequestHandler)
    */
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   PathEntryProxy setPath(http::Method method, std::string_view path, AsyncRequestHandler handler) {
     return setPathImpl(method, path, std::move(handler));
   }
+#endif
 
   /**
    * Register an async handler for a bitmap of HTTP methods and a path.
@@ -178,9 +182,11 @@ class RouterUpdateProxy {
    *
    * See also: Router::setPath(http::MethodBmp, std::string_view, AsyncRequestHandler)
    */
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   PathEntryProxy setPath(http::MethodBmp methods, std::string_view path, AsyncRequestHandler handler) {
     return setPathImpl(methods, path, std::move(handler));
   }
+#endif
 
  private:
   friend class SingleHttpServer;

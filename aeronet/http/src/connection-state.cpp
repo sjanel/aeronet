@@ -207,7 +207,9 @@ void ConnectionState::reset() {
   };
   shrinkAndClear(inBuffer);
   shrinkAndClear(bodyAndTrailersBuffer);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   shrinkAndClear(asyncState.headBuffer);
+#endif
   shrinkAndClear(tunnelOrFileBuffer);
 
   request.shrinkAndMaybeClear();
@@ -240,7 +242,9 @@ void ConnectionState::reset() {
   protocolHandler.reset();
   protocol = ProtocolType::Http11;
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   asyncState.clear();
+#endif
 }
 
 bool ConnectionState::attachFilePayload(FilePayload filePayload) {
@@ -260,6 +264,7 @@ bool ConnectionState::attachFilePayload(FilePayload filePayload) {
   return false;
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
 void ConnectionState::AsyncHandlerState::clear() {
   if (handle) {
     handle.destroy();
@@ -267,5 +272,6 @@ void ConnectionState::AsyncHandlerState::clear() {
   }
   *this = {};
 }
+#endif
 
 }  // namespace aeronet
