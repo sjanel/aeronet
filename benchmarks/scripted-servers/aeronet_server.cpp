@@ -37,7 +37,7 @@ int main(int argc, char* argv[]) {
   config.maxRequestsPerConnection = std::numeric_limits<uint32_t>::max();
   config.maxHeaderBytes = 256UL * 1024;  // 256KB headers for stress tests
   config.maxBodyBytes = 64UL << 20;      // 64MB bodies for large body tests
-  config.globalHeaders.clear();
+  config.globalHeaders.clear();          // No global headers
 
   // Configure TLS if enabled
   if (benchCfg.tlsEnabled) {

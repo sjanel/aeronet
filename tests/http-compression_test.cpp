@@ -674,10 +674,29 @@ TEST(HttpCompression, StreamingBelowThresholdIdentity) {
 }
 
 TEST(HttpCompression, StreamingUserProvidedContentEncodingIdentityPreventsActivation) {
-  ts.postConfigUpdate([](HttpServerConfig &cfg) {
-    cfg.compression.minBytes = 16;
-    cfg.compression.preferredFormats = {Encoding::gzip};
-  });
+  static_assert(brotliEnabled() || zlibEnabled(), "At least one compression encoder must be available");
+  if constexpr (!brotliEnabled() && !zlibEnabled()) {
+    GTEST_SKIP();
+  }
+
+  std::string expectedEncoding;
+  std::string acceptEncoding;
+  if constexpr (brotliEnabled()) {
+    expectedEncoding = "br";
+    acceptEncoding = "br";
+    ts.postConfigUpdate([](HttpServerConfig &cfg) {
+      cfg.compression.minBytes = 16;
+      cfg.compression.preferredFormats = {Encoding::br};
+    });
+  } else if constexpr (zlibEnabled()) {
+    expectedEncoding = "gzip";
+    acceptEncoding = "gzip";
+    ts.postConfigUpdate([](HttpServerConfig &cfg) {
+      cfg.compression.minBytes = 16;
+      cfg.compression.preferredFormats = {Encoding::gzip};
+    });
+  }
+
   std::string big(200, 'Z');
   ts.router().setDefault([big](const HttpRequest &, HttpResponseWriter &writer) {
     writer.status(http::StatusCodeOK);
@@ -686,7 +705,7 @@ TEST(HttpCompression, StreamingUserProvidedContentEncodingIdentityPreventsActiva
     writer.writeBody(big.substr(50));
     writer.end();
   });
-  auto resp = test::simpleGet(ts.port(), "/soff", {{"Accept-Encoding", "gzip"}});
+  auto resp = test::simpleGet(ts.port(), "/soff", {{"Accept-Encoding", acceptEncoding}});
   auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "identity");
@@ -717,10 +736,23 @@ TEST(HttpCompression, StreamingQValuesInfluenceStreamingSelection) {
 }
 
 TEST(HttpCompression, GzipStreamingIdentityForbiddenNoAlternativesReturns406) {
-  ts.postConfigUpdate([](HttpServerConfig &cfg) {
-    cfg.compression.minBytes = 1;
-    cfg.compression.preferredFormats = {Encoding::gzip};
-  });
+  static_assert(brotliEnabled() || zlibEnabled(), "At least one compression encoder must be available");
+  if constexpr (!brotliEnabled() && !zlibEnabled()) {
+    GTEST_SKIP();
+  }
+
+  if constexpr (brotliEnabled()) {
+    ts.postConfigUpdate([](HttpServerConfig &cfg) {
+      cfg.compression.minBytes = 1;
+      cfg.compression.preferredFormats = {Encoding::br};
+    });
+  } else if constexpr (zlibEnabled()) {
+    ts.postConfigUpdate([](HttpServerConfig &cfg) {
+      cfg.compression.minBytes = 1;
+      cfg.compression.preferredFormats = {Encoding::gzip};
+    });
+  }
+
   ts.router().setDefault([](const HttpRequest &, HttpResponseWriter &writer) {
     writer.status(http::StatusCodeOK);  // will be overridden to 406 before handler invoked if negotiation rejects
     writer.contentType("text/plain");
