@@ -37,6 +37,7 @@ namespace aeronet {
 namespace internal {
 class ConnectionStorage;
 class HttpCodec;
+struct ResponseCompressionState;
 }  // namespace internal
 
 struct ConnectionState;
@@ -565,6 +566,7 @@ class HttpRequest {
   const BodyAccessBridge* _bodyAccessBridge{nullptr};
   void* _bodyAccessContext{nullptr};
   ConnectionState* _ownerState{nullptr};
+  internal::ResponseCompressionState* _pCompressionState{nullptr};
 
   std::chrono::steady_clock::time_point _reqStart;
   std::size_t _headSpanSize{0};
@@ -580,6 +582,7 @@ class HttpRequest {
   Encoding _responsePossibleEncoding{Encoding::none};
   bool _headPinned{false};
   bool _addTrailerHeader{false};
+  bool _addVaryAcceptEncoding{false};
 };
 
 }  // namespace aeronet

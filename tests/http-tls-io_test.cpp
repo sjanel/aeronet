@@ -203,7 +203,7 @@ TEST(HttpTlsStreaming, SendFileFallbackBuffers) {
 
   ASSERT_FALSE(raw.empty());
   ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
-  ASSERT_TRUE(raw.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(kPayload.size()))));
+  ASSERT_TRUE(raw.contains(MakeHttp1HeaderLine(http::ContentLength, test::PaddedContentLength(kPayload.size()))));
   ASSERT_FALSE(raw.contains(http::TransferEncoding));
 
   auto headerEnd = raw.find(http::DoubleCRLF);

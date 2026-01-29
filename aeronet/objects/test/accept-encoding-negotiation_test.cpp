@@ -460,4 +460,117 @@ TEST(AcceptEncodingNegotiationTest, QCharFollowedByNonEqualsIsIgnored) {
 }
 #endif
 
+// ============================
+// ParseAcceptEncodingToBmp Tests
+// ============================
+
+TEST(ParseAcceptEncodingToBmpTest, EmptyHeader_ReturnsZero) {
+  EXPECT_EQ(ParseAcceptEncodingToBmp(""), 0);
+  EXPECT_EQ(ParseAcceptEncodingToBmp("   "), 0);
+}
+
+#ifdef AERONET_ENABLE_ZLIB
+TEST(ParseAcceptEncodingToBmpTest, SingleEncoding_SetsBit) {
+  EncodingBmp bmp = ParseAcceptEncodingToBmp("gzip");
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::gzip));
+  EXPECT_FALSE(EncodingBmpContains(bmp, Encoding::deflate));
+
+  bmp = ParseAcceptEncodingToBmp("deflate");
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::deflate));
+  EXPECT_FALSE(EncodingBmpContains(bmp, Encoding::gzip));
+}
+
+TEST(ParseAcceptEncodingToBmpTest, MultipleEncodings_SetsMultipleBits) {
+  EncodingBmp bmp = ParseAcceptEncodingToBmp("gzip, deflate");
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::gzip));
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::deflate));
+}
+
+TEST(ParseAcceptEncodingToBmpTest, CaseInsensitive) {
+  EncodingBmp bmp = ParseAcceptEncodingToBmp("GZIP, DeFlAtE");
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::gzip));
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::deflate));
+}
+
+TEST(ParseAcceptEncodingToBmpTest, WithQualityValues) {
+  // q > 0 should be included
+  EncodingBmp bmp = ParseAcceptEncodingToBmp("gzip;q=0.5, deflate;q=0.9");
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::gzip));
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::deflate));
+}
+
+TEST(ParseAcceptEncodingToBmpTest, QualityZeroExcludesEncoding) {
+  // q=0 means not acceptable - should not be in bitmap
+  EncodingBmp bmp = ParseAcceptEncodingToBmp("gzip;q=0, deflate;q=1");
+  EXPECT_FALSE(EncodingBmpContains(bmp, Encoding::gzip));
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::deflate));
+}
+
+TEST(ParseAcceptEncodingToBmpTest, WildcardSetsAllSupportedEncodings) {
+  EncodingBmp bmp = ParseAcceptEncodingToBmp("*");
+  // Wildcard should enable all supported encodings
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::gzip));
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::deflate));
+#ifdef AERONET_ENABLE_ZSTD
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::zstd));
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::br));
+#endif
+}
+
+TEST(ParseAcceptEncodingToBmpTest, WildcardWithExplicitExclusion) {
+  // Explicit gzip;q=0 should override wildcard for gzip
+  EncodingBmp bmp = ParseAcceptEncodingToBmp("gzip;q=0, *");
+  EXPECT_FALSE(EncodingBmpContains(bmp, Encoding::gzip));
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::deflate));
+}
+
+TEST(ParseAcceptEncodingToBmpTest, WildcardWithQualityZero) {
+  // *;q=0 means nothing via wildcard
+  EncodingBmp bmp = ParseAcceptEncodingToBmp("*;q=0, gzip;q=1");
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::gzip));
+  // deflate was not explicitly mentioned and wildcard has q=0, so shouldn't be set
+  EXPECT_FALSE(EncodingBmpContains(bmp, Encoding::deflate));
+}
+
+TEST(ParseAcceptEncodingToBmpTest, WhitespaceHandling) {
+  EncodingBmp bmp = ParseAcceptEncodingToBmp("  gzip  ,  deflate  ;  q=0.8  ");
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::gzip));
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::deflate));
+}
+
+TEST(ParseAcceptEncodingToBmpTest, UnknownEncodingIgnored) {
+  EncodingBmp bmp = ParseAcceptEncodingToBmp("snappy, gzip, lz4");
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::gzip));
+  // Unknown encodings should be silently ignored
+}
+#endif  // AERONET_ENABLE_ZLIB
+
+#ifdef AERONET_ENABLE_ZSTD
+TEST(ParseAcceptEncodingToBmpTest, ZstdEncoding) {
+  EncodingBmp bmp = ParseAcceptEncodingToBmp("zstd");
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::zstd));
+}
+#endif
+
+#ifdef AERONET_ENABLE_BROTLI
+TEST(ParseAcceptEncodingToBmpTest, BrotliEncoding) {
+  EncodingBmp bmp = ParseAcceptEncodingToBmp("br");
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::br));
+}
+
+TEST(ParseAcceptEncodingToBmpTest, AllEncodings) {
+  EncodingBmp bmp = ParseAcceptEncodingToBmp("gzip, deflate, br, zstd");
+#ifdef AERONET_ENABLE_ZLIB
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::gzip));
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::deflate));
+#endif
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::br));
+#ifdef AERONET_ENABLE_ZSTD
+  EXPECT_TRUE(EncodingBmpContains(bmp, Encoding::zstd));
+#endif
+}
+#endif
+
 }  // namespace aeronet

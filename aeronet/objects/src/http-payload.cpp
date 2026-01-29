@@ -1,5 +1,6 @@
 #include "aeronet/http-payload.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstring>
@@ -202,14 +203,7 @@ void HttpPayload::ensureAvailableCapacityExponential(std::size_t capa) {
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
           val.reserve(val.size() + capa);
 #else
-          auto neededCapa = val.size() + capa;
-          if (val.capacity() < neededCapa) {
-            const auto doubledCapa = val.capacity() * 2U;
-            if (neededCapa < doubledCapa) {
-              neededCapa = doubledCapa;
-            }
-            val.reserve(neededCapa);
-          }
+          val.reserve(std::max(val.size() + capa, val.capacity() * 2U));
 #endif
         } else if constexpr (std::is_same_v<T, RawChars>) {
           val.ensureAvailableCapacityExponential(capa);
@@ -284,6 +278,7 @@ void HttpPayload::addSize(std::size_t sz) {
         using T = std::decay_t<decltype(val)>;
         if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
                       std::is_same_v<T, std::vector<std::byte>>) {
+          assert(val.size() + sz <= val.capacity());  // it should not reallocate at this point
           val.resize(val.size() + sz);
         } else if constexpr (std::is_same_v<T, RawChars>) {
           val.addSize(sz);

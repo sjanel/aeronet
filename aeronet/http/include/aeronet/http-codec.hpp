@@ -36,6 +36,8 @@ struct ResponseCompressionState {
 
   void createEncoders(const CompressionConfig& cfg);
 
+  std::size_t maxCompressedSize(Encoding encoding, std::size_t inputSize);
+
   std::size_t encodeFull(Encoding encoding, std::string_view data, std::size_t availableCapacity, char* buf);
 
   /// Returns a pointer to an internally-owned encoder context (reused across calls).

@@ -19,8 +19,10 @@
 #endif
 
 #include "aeronet/connection-state.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/header-line-parse.hpp"
 #include "aeronet/header-merge.hpp"
+#include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
@@ -120,14 +122,14 @@ bool HttpRequest::wantClose() const { return CaseInsensitiveEqual(headerValueOrE
 HttpResponse HttpRequest::makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const {
   HttpResponse resp(additionalCapacity, statusCode, _pGlobalHeaders->fullStringWithLastSep(), {}, {},
                     HttpResponse::Check::No);
-  resp._knownOptions = makeResponseOptions();
+  resp._opts = makeResponseOptions();
   return resp;
 }
 
 HttpResponse HttpRequest::makeResponse(std::string_view body, std::string_view contentType) const {
   HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), body, contentType,
                     HttpResponse::Check::No);
-  resp._knownOptions = makeResponseOptions();
+  resp._opts = makeResponseOptions();
   return resp;
 }
 
@@ -135,7 +137,7 @@ HttpResponse HttpRequest::makeResponse(http::StatusCode statusCode, std::string_
                                        std::string_view contentType) const {
   HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), body, contentType,
                     HttpResponse::Check::No);
-  resp._knownOptions = makeResponseOptions();
+  resp._opts = makeResponseOptions();
   return resp;
 }
 
@@ -143,7 +145,7 @@ HttpResponse HttpRequest::makeResponse(std::span<const std::byte> body, std::str
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
   HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType,
                     HttpResponse::Check::No);
-  resp._knownOptions = makeResponseOptions();
+  resp._opts = makeResponseOptions();
   return resp;
 }
 
@@ -152,7 +154,7 @@ HttpResponse HttpRequest::makeResponse(http::StatusCode statusCode, std::span<co
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
   HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType,
                     HttpResponse::Check::No);
-  resp._knownOptions = makeResponseOptions();
+  resp._opts = makeResponseOptions();
   return resp;
 }
 
@@ -390,9 +392,10 @@ void HttpRequest::postCallback(std::coroutine_handle<> handle, std::function<voi
 #endif
 
 HttpResponse::Options HttpRequest::makeResponseOptions() const noexcept {
-  HttpResponse::Options opts;
+  HttpResponse::Options opts(*_pCompressionState, _responsePossibleEncoding);
   opts.close(wantClose());
   opts.addTrailerHeader(_addTrailerHeader);
+  opts.addVaryAcceptEncoding(_addVaryAcceptEncoding);
   opts.headMethod(method() == http::Method::HEAD);
   opts.setPrepared();
   return opts;

@@ -28,6 +28,7 @@
 #include "aeronet/base-fd.hpp"
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -442,7 +443,11 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
     while (vs < line.size() && line[vs] == ' ') {
       ++vs;
     }
-    std::string val(line.substr(vs));
+    std::size_t ve = line.size();
+    while (ve > vs && line[ve - 1] == ' ') {
+      --ve;
+    }
+    std::string val(line.substr(vs, ve - vs));
     out.headers.emplace(std::move(key), std::move(val));
   }
   out.body = raw.substr(hEnd + http::DoubleCRLF.size());
@@ -505,12 +510,16 @@ std::optional<ParsedResponse> parseResponse(std::string_view raw) {
       continue;
     }
     std::string_view key = line.substr(0, colon);
-    // skip space after colon if present
+    // skip spaces after colon if present
     std::size_t valueStart = colon + 1;
-    if (valueStart < line.size() && line[valueStart] == ' ') {
+    while (valueStart < line.size() && line[valueStart] == ' ') {
       ++valueStart;
     }
-    std::string_view value = line.substr(valueStart);
+    std::size_t valueEnd = line.size();
+    while (valueEnd > valueStart && line[valueEnd - 1] == ' ') {
+      --valueEnd;
+    }
+    std::string_view value = line.substr(valueStart, valueEnd - valueStart);
     pr.headers.insert_or_assign(std::string(key), std::string(value));
   }
   pr.chunked = false;
@@ -721,6 +730,15 @@ std::string requestOrThrow(uint16_t port, const RequestOptions &opt) {
     throw std::runtime_error("requestOrThrow: request failed (socket/connect/send/recv) ");
   }
   return std::move(*resp);
+}
+
+std::string PaddedContentLength(std::size_t value) {
+  std::string out(HttpResponse::kContentLengthValueWidth, ' ');
+  const auto [ptr, ec] = std::to_chars(out.data(), out.data() + out.size(), value);
+  if (ec != std::errc{}) {
+    throw std::runtime_error("PaddedContentLength: unable to format value");
+  }
+  return out;
 }
 
 bool AttemptConnect(uint16_t port) {

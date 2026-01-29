@@ -119,7 +119,7 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
   ASSERT_TRUE(resp.contains("HTTP/1.1 201 Created"));
   ASSERT_TRUE(resp.contains("X-One: 1"));
   ASSERT_TRUE(resp.contains("X-Two: two"));
-  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "1")));   // auto generated
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, test::PaddedContentLength(1))));  // auto generated
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, "close")));  // auto generated (keep-alive or close)
 }
 

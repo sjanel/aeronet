@@ -44,6 +44,8 @@ class ZlibEncoder {
 
   ZlibEncoder(ZStreamRAII::Variant variant, int8_t level) : _level(level), _variant(variant) {}
 
+  std::size_t maxCompressedSize(std::size_t inputSize);
+
   std::size_t encodeFull(std::string_view data, std::size_t availableCapacity, char* buf);
 
   EncoderContext* makeContext() {

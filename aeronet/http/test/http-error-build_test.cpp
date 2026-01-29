@@ -9,6 +9,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/test_util.hpp"
 
 using namespace aeronet;
 
@@ -22,7 +23,7 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorOnly) {
     EXPECT_TRUE(full.rfind(expected, 0) == 0) << "Response did not start with '" << expected << "':\n" << full;
 
     // Check required headers exist
-    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "3"))) << full;
+    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, test::PaddedContentLength(3)))) << full;
     EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close"))) << full;
     EXPECT_TRUE(full.ends_with("\r\n\r\nErr")) << full;
 
@@ -66,7 +67,7 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorWithEmptyBody) {
   auto data = BuildSimpleError(http::StatusCode{404}, {}, "");
   std::string_view full(data);
 
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "0"))) << full;
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, test::PaddedContentLength(0)))) << full;
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF)) << full;
 }
 
@@ -76,6 +77,6 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorWithLargeBody) {
   auto data = BuildSimpleError(http::StatusCode{413}, {}, largeBody);
   std::string_view full(data);
 
-  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "1024"))) << full;
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, test::PaddedContentLength(1024)))) << full;
   EXPECT_TRUE(full.ends_with("\r\n\r\n" + largeBody)) << full;
 }

@@ -97,4 +97,8 @@ std::size_t ZstdEncoder::encodeFull(std::string_view data, std::size_t available
   return written;
 }
 
+std::size_t ZstdEncoder::maxCompressedSize(std::size_t inputSize) const noexcept {
+  return ZSTD_compressBound(inputSize);
+}
+
 }  // namespace aeronet
