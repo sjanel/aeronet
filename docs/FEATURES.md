@@ -447,6 +447,13 @@ Supported (build‑flag gated): gzip, deflate (zlib), zstd, brotli.
   [aeronet/objects/test/zlib-encoder-decoder_test.cpp](aeronet/objects/test/zlib-encoder-decoder_test.cpp),
   [aeronet/objects/test/zstd-encoder-decoder_test.cpp](aeronet/objects/test/zstd-encoder-decoder_test.cpp).
 
+Direct response compression (fixed responses):
+
+- Standard `HttpResponse::body(...)` and `bodyAppend(...)` can apply automatic compression when the response was
+  created from a request and an acceptable encoding was negotiated. Captured-body overloads remain uncompressed.
+- Use `HttpResponse::directCompressionEnabled()` to preflight whether automatic compression can be applied for inline bodies.
+- Tests: aeronet/http/test/http-response_test.cpp and aeronet/objects/test/accept-encoding-negotiation_test.cpp.
+
 #### Per-Response Manual `Content-Encoding` (Automatic Compression Suppression)
 
 When you stream or build a response using `HttpResponseWriter`, aeronet will decide whether to apply

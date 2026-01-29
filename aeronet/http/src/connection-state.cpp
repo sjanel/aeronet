@@ -54,9 +54,12 @@ bool IsSockaddrLoopback(const sockaddr_storage& addr) noexcept {
 
 }  // namespace
 
-void ConnectionState::initializeStateNewConnection(const HttpServerConfig& config, int cnxFd) {
+void ConnectionState::initializeStateNewConnection(const HttpServerConfig& config, int cnxFd,
+                                                   internal::ResponseCompressionState& compressionState) {
   request._pGlobalHeaders = &config.globalHeaders;
   request._addTrailerHeader = config.addTrailerHeader;
+  request._addVaryAcceptEncoding = config.compression.addVaryAcceptEncodingHeader;
+  request._pCompressionState = &compressionState;
   // Decide per-connection zerocopy preference at accept time.
 
   // Compute whether we should attempt to enable zerocopy for this connection.

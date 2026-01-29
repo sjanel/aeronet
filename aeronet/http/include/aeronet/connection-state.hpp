@@ -43,7 +43,8 @@ class CorsPolicy;
 #endif
 
 struct ConnectionState {
-  void initializeStateNewConnection(const HttpServerConfig& config, int cnxFd);
+  void initializeStateNewConnection(const HttpServerConfig& config, int cnxFd,
+                                    internal::ResponseCompressionState& compressionState);
 
   [[nodiscard]] bool isImmediateCloseRequested() const noexcept { return closeMode == CloseMode::Immediate; }
   [[nodiscard]] bool isDrainCloseRequested() const noexcept { return closeMode == CloseMode::DrainThenClose; }

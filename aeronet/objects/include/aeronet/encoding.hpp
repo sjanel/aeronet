@@ -43,4 +43,22 @@ constexpr bool IsEncodingEnabled(Encoding enc) {
   return kEncodingEnabled[static_cast<std::underlying_type_t<Encoding>>(enc)];
 }
 
+// Bitmap type for tracking Accept-Encoding header values from client request.
+// Each bit corresponds to an Encoding enum value.
+using EncodingBmp = std::uint8_t;
+
+// Convert Encoding enum to its bitmap representation.
+constexpr EncodingBmp EncodingToBmp(Encoding enc) noexcept {
+  return static_cast<EncodingBmp>(1U << static_cast<std::underlying_type_t<Encoding>>(enc));
+}
+
+// Check if a specific encoding is present in the bitmap.
+constexpr bool EncodingBmpContains(EncodingBmp bmp, Encoding enc) noexcept { return (bmp & EncodingToBmp(enc)) != 0; }
+
+// Parse Accept-Encoding header value into a bitmap of accepted encodings.
+// This is a simplified parser that checks presence of encoding names (case-insensitive).
+// Encodings with q=0 are excluded. Wildcard '*' matches all supported encodings.
+// Returns a bitmap where each bit represents whether the corresponding encoding is accepted.
+EncodingBmp ParseAcceptEncodingToBmp(std::string_view acceptEncoding);
+
 }  // namespace aeronet

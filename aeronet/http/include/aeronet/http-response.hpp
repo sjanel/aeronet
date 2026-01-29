@@ -1,9 +1,12 @@
 #pragma once
 
+#include <array>
 #include <cassert>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -15,6 +18,7 @@
 #include <vector>
 
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
@@ -23,7 +27,6 @@
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
-#include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-trim.hpp"
@@ -32,8 +35,11 @@
 
 namespace aeronet {
 
+class EncoderContext;
+
 namespace internal {
 class HttpCodec;
+struct ResponseCompressionState;
 }  // namespace internal
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -144,6 +150,9 @@ class HttpResponse {
   // "HTTP/1.1 200\r\nDate: Tue, 07 Jan 2025 12:34:56 GMT\r\n\r\n" (53 bytes).
   static constexpr std::size_t kHttpResponseMinInitialCapacity = 64UL;
 
+  // Fixed width for Content-Length values to avoid shifting the body on size updates.
+  static constexpr std::size_t kContentLengthValueWidth = std::numeric_limits<std::size_t>::digits10 + 1;
+
   // Returns the size needed to store a header / trailer with given name and value lengths.
   static constexpr std::size_t HeaderSize(std::size_t nameLen, std::size_t valueLen) {
     return http::CRLF.size() + nameLen + http::HeaderSep.size() + valueLen;
@@ -154,7 +163,7 @@ class HttpResponse {
   static constexpr std::size_t BodySize(std::size_t bodyLen,
                                         std::size_t contentTypeLen = http::ContentTypeTextPlain.size()) {
     return bodyLen + HeaderSize(http::ContentType.size(), contentTypeLen) +
-           HeaderSize(http::ContentLength.size(), nchars(bodyLen));
+           HeaderSize(http::ContentLength.size(), kContentLengthValueWidth);
   }
 
   // -------------/
@@ -304,7 +313,7 @@ class HttpResponse {
 
   // Get the length of the current inlined or captured (but no file) body stored in this HttpResponse.
   [[nodiscard]] std::size_t bodyInMemoryLength() const noexcept {
-    return hasBodyCaptured() ? (_payloadVariant.size() - _trailerLen) : bodyInlinedLength();
+    return hasBodyCaptured() ? (_payloadVariant.size() - _opts._trailerLen) : bodyInlinedLength();
   }
 
   // Synonym for bodyInMemoryLength().
@@ -320,7 +329,9 @@ class HttpResponse {
   [[nodiscard]] std::size_t capacityInlined() const noexcept { return _data.capacity(); }
 
   // Get the length of the current inlined body stored in this HttpResponse.
-  [[nodiscard]] std::size_t bodyInlinedLength() const noexcept { return _data.size() - bodyStartPos() - _trailerLen; }
+  [[nodiscard]] std::size_t bodyInlinedLength() const noexcept {
+    return _data.size() - bodyStartPos() - _opts._trailerLen;
+  }
 
   // Synonym for bodyInlinedLength().
   [[nodiscard]] std::size_t bodyInlinedSize() const noexcept { return bodyInlinedLength(); }
@@ -400,6 +411,8 @@ class HttpResponse {
 
   // RValue overload of contentEncoding(enc).
   HttpResponse&& contentEncoding(std::string_view enc) && { return std::move(header(http::ContentEncoding, enc)); }
+
+  [[nodiscard]] bool hasContentEncoding() const noexcept { return _opts.hasContentEncoding(); }
 
   // Append a header line (duplicates allowed, fastest path).
   // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
@@ -481,22 +494,15 @@ class HttpResponse {
   // The whole buffer is copied internally in the HttpResponse. If the body is large, prefer the capture by value of
   // body() overloads to avoid a copy (and possibly an allocation).
   // Body referencing internal memory of this HttpResponse is undefined behavior.
-  HttpResponse& body(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain) & {
-    setBodyHeaders(contentType, body.size(), OverrideContentTypeAndNewBodyIsInline);
-    setBodyInternal(body);
-    if (isHead()) {
-      setHeadSize(body.size());
-    } else {
-      _payloadVariant = {};
-    }
-    return *this;
-  }
+  // If compression is available for this response, this method may apply automatic compression.
+  HttpResponse& body(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain) &;
 
   // Assigns the given body to this HttpResponse.
   // Empty body is allowed - this will remove any existing body.
   // The whole buffer is copied internally in the HttpResponse. If the body is large, prefer the capture by value of
   // body() overloads to avoid a copy (and possibly an allocation).
   // Body referencing internal memory of this HttpResponse is undefined behavior.
+  // If compression is available for this response, this method may apply automatic compression.
   HttpResponse&& body(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain) && {
     return std::move(this->body(body, contentType));
   }
@@ -544,6 +550,7 @@ class HttpResponse {
   // Empty body is allowed - this will remove any existing body.
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::string body, std::string_view contentType = http::ContentTypeTextPlain) & {
+    clearCompressionState();
     setBodyHeaders(contentType, body.size(), NewBodyIsCaptured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body));
@@ -561,6 +568,7 @@ class HttpResponse {
   // Empty body is allowed - this will remove any existing body.
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::vector<char> body, std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
+    clearCompressionState();
     setBodyHeaders(contentType, body.size(), NewBodyIsCaptured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body));
@@ -580,6 +588,7 @@ class HttpResponse {
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::vector<std::byte> body,
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
+    clearCompressionState();
     setBodyHeaders(contentType, body.size(), NewBodyIsCaptured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body));
@@ -599,6 +608,7 @@ class HttpResponse {
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::unique_ptr<char[]> body, std::size_t size,
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
+    clearCompressionState();
     setBodyHeaders(contentType, size, NewBodyIsCaptured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body), size);
@@ -618,6 +628,7 @@ class HttpResponse {
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::unique_ptr<std::byte[]> body, std::size_t size,
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
+    clearCompressionState();
     setBodyHeaders(contentType, size, NewBodyIsCaptured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body), size);
@@ -635,6 +646,7 @@ class HttpResponse {
   // Sets the body of this HttpResponse to point to a static buffer.
   // No copy is performed, the lifetime of pointed storage MUST be constant.
   HttpResponse& bodyStatic(std::string_view staticBody, std::string_view contentType = http::ContentTypeTextPlain) & {
+    clearCompressionState();
     setBodyHeaders(contentType, staticBody.size(), NewBodyIsCaptured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(staticBody);
@@ -668,6 +680,8 @@ class HttpResponse {
   //   If empty and no Content-Type header exists yet, the header is set to
   //   `text/plain` only when the appended data is non-empty.
   // - Safe to call multiple times; data is appended to any existing inline body.
+  // - If a compressed body stream is active, this continues streaming compression using the
+  //   previously selected encoding.
   // Trailers should not be added before calling this method.
   HttpResponse& bodyAppend(std::string_view body, std::string_view contentType = {}) &;
 
@@ -701,6 +715,23 @@ class HttpResponse {
   HttpResponse&& bodyAppend(const char* body, std::string_view contentType = {}) && {
     return std::move(bodyAppend(body, contentType));
   }
+
+  // Returns true if automatic compression can be applied with the negotiated encoding.
+  // This checks that compression state is available and that an acceptable encoding was negotiated.
+  [[nodiscard]] bool directCompressionEnabled() const noexcept { return _opts.canApplyDirectCompression(); }
+
+  // Disables direct compression for this HttpResponse.
+  // Once disabled, body setters will not apply direct compression even if compression state is available.
+  // Note that this does not disable automatic compression that may happen after response finalization.
+  // To do so, you can explicitly insert a Content-Encoding header with the desired encoding
+  // (including 'identity' to disable compression).
+  HttpResponse& disableDirectCompression() & {
+    _opts.disableDirectCompression();
+    return *this;
+  }
+
+  // Rvalue overload of disableDirectCompression().
+  HttpResponse&& disableDirectCompression() && { return std::move(disableDirectCompression()); }
 
   // Appends directly inside the body up to 'maxLen' bytes of data.
   // 'writer' provides as a single argument the start of the buffer where to append body data and
@@ -736,8 +767,7 @@ class HttpResponse {
     const auto contentTypeHeaderSize = HeaderSize(http::ContentType.size(), contentTypeValueSize);
     const std::size_t oldBodyLen = _payloadVariant.isSizeOnly() ? _payloadVariant.size() : internalBodyAndTrailersLen();
     const auto maxBodyLen = oldBodyLen + maxLen;
-    const auto nCharsMaxBodyLen = nchars(maxBodyLen);
-    const auto contentLengthHeaderSize = HeaderSize(http::ContentLength.size(), nCharsMaxBodyLen);
+    const auto contentLengthHeaderSize = HeaderSize(http::ContentLength.size(), kContentLengthValueWidth);
 
     _data.ensureAvailableCapacityExponential(maxLen + contentTypeHeaderSize + contentLengthHeaderSize);
 
@@ -760,8 +790,9 @@ class HttpResponse {
         adjustBodyStart(-static_cast<int64_t>(contentLengthHeaderSize) - static_cast<int64_t>(contentTypeHeaderSize));
       } else {
         // we need to restore the previous content-length value
-        const auto newBodyLenCharVec = IntegralToCharVector(maxBodyLen - (maxLen - written));
-        replaceHeaderValueNoRealloc(getContentLengthValuePtr(nCharsMaxBodyLen), std::string_view(newBodyLenCharVec));
+        const auto newBodyLenCharVec = MakePaddedContentLengthValue(maxBodyLen - (maxLen - written));
+        replaceHeaderValueNoRealloc(getContentLengthValuePtr(),
+                                    std::string_view(newBodyLenCharVec.data(), newBodyLenCharVec.size()));
       }
     } else {
       if (isHead()) {
@@ -769,8 +800,9 @@ class HttpResponse {
       } else {
         _data.addSize(written);
       }
-      const auto newBodyLenCharVec = IntegralToCharVector(maxBodyLen - (maxLen - written));
-      replaceHeaderValueNoRealloc(getContentLengthValuePtr(nCharsMaxBodyLen), std::string_view(newBodyLenCharVec));
+      const auto newBodyLenCharVec = MakePaddedContentLengthValue(maxBodyLen - (maxLen - written));
+      replaceHeaderValueNoRealloc(getContentLengthValuePtr(),
+                                  std::string_view(newBodyLenCharVec.data(), newBodyLenCharVec.size()));
     }
 
     return *this;
@@ -813,7 +845,7 @@ class HttpResponse {
     }
 
     const auto contentTypeHeaderSize = HeaderSize(http::ContentType.size(), contentType.size());
-    const auto contentLengthHeaderSize = HeaderSize(http::ContentLength.size(), nchars(maxLen));
+    const auto contentLengthHeaderSize = HeaderSize(http::ContentLength.size(), kContentLengthValueWidth);
 
     // Reserve exact capacity (no exponential growth)
     _data.reserve(_data.size() + contentTypeHeaderSize + contentLengthHeaderSize + maxLen);
@@ -844,8 +876,9 @@ class HttpResponse {
         _data.setSize(bodyStartPos() + written);
       }
 
-      const auto newBodyLenCharVec = IntegralToCharVector(written);
-      replaceHeaderValueNoRealloc(getContentLengthValuePtr(nchars(maxLen)), std::string_view(newBodyLenCharVec));
+      const auto newBodyLenCharVec = MakePaddedContentLengthValue(written);
+      replaceHeaderValueNoRealloc(getContentLengthValuePtr(),
+                                  std::string_view(newBodyLenCharVec.data(), newBodyLenCharVec.size()));
     }
 
     // Clear any payload variant
@@ -860,6 +893,10 @@ class HttpResponse {
   HttpResponse&& bodyInlineSet(std::size_t maxLen, Writer&& writer, std::string_view contentType = {}) && {
     return std::move(bodyInlineSet(maxLen, std::forward<Writer>(writer), contentType));
   }
+
+  // ============================
+  // Direct compression support
+  // ============================
 
   // Stream the contents of an already-open file as the response body.
   // This methods takes ownership of the 'file' object into the response and sends the entire file.
@@ -981,7 +1018,7 @@ class HttpResponse {
   HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
                std::string_view body, std::string_view contentType, Check check);
 
-  [[nodiscard]] constexpr bool isHead() const noexcept { return _knownOptions.isHeadMethod(); }
+  [[nodiscard]] constexpr bool isHead() const noexcept { return _opts.isHeadMethod(); }
 
   constexpr void setHeadSize(std::size_t size) {
     _payloadVariant = HttpPayload(std::string_view(static_cast<const char*>(nullptr), size));
@@ -1007,11 +1044,13 @@ class HttpResponse {
     }
   }
 
-  [[nodiscard]] std::string_view internalTrailers() const noexcept { return {_data.end() - _trailerLen, _data.end()}; }
+  [[nodiscard]] std::string_view internalTrailers() const noexcept {
+    return {_data.end() - _opts._trailerLen, _data.end()};
+  }
 
   [[nodiscard]] std::string_view externalTrailers() const noexcept {
     const char* last = _payloadVariant.view().end();
-    return {last - _trailerLen, last};
+    return {last - _opts._trailerLen, last};
   }
 
   // Check if this HttpResponse has an inline body stored in its internal buffer.
@@ -1022,7 +1061,23 @@ class HttpResponse {
     return _data.size() - bodyStartPos();
   }
 
+  void clearCompressionState() noexcept {
+    _opts._currentEncoding = Encoding::none;
+    _pCompressionContext = nullptr;
+  }
+
+  void startCompressionStream(bool& isFirstChunk);
+
   void setBodyInternal(std::string_view newBody);
+
+  HttpResponse& bodyAppendRaw(std::string_view body, std::string_view contentType);
+
+  void appendCompressedChunkDirect(std::string_view body, std::string_view contentType);
+
+  void appendCompressedTailDirect();
+
+  void bodyAppendUpdateHeadersWithOldLen(std::string_view givenContentType, std::string_view defaultContentType,
+                                         std::size_t oldBodyLen, std::size_t totalBodyLen);
 
   enum class OnlyIfNew : std::uint8_t { No, Yes };
 
@@ -1040,10 +1095,24 @@ class HttpResponse {
   // is easy to get it wrong).
   class Options {
    public:
-    static constexpr uint8_t Close = 1U << 0;
-    static constexpr uint8_t AddTrailerHeader = 1U << 1;
-    static constexpr uint8_t IsHeadMethod = 1U << 2;
-    static constexpr uint8_t Prepared = 1U << 3;
+    using BmpType = uint8_t;
+
+    static constexpr BmpType Close = 1U << 0;
+    static constexpr BmpType AddTrailerHeader = 1U << 1;
+    static constexpr BmpType IsHeadMethod = 1U << 2;
+    static constexpr BmpType Prepared = 1U << 3;
+    static constexpr BmpType AddVaryAcceptEncoding = 1U << 4;
+    static constexpr BmpType CanApplyDirectCompression = 1U << 5;
+    static constexpr BmpType HasContentEncoding = 1U << 6;
+
+    Options() noexcept = default;
+
+    Options(internal::ResponseCompressionState& compressionState, Encoding expectedEncoding)
+        : _pCompressionState(&compressionState), _expectedEncoding(expectedEncoding) {
+      if (expectedEncoding != Encoding::none) {
+        _optionsBitmap |= CanApplyDirectCompression;
+      }
+    }
 
     [[nodiscard]] constexpr bool isClose() const noexcept { return (_optionsBitmap & Close) != 0; }
     [[nodiscard]] constexpr bool isAddTrailerHeader() const noexcept {
@@ -1051,16 +1120,32 @@ class HttpResponse {
     }
     [[nodiscard]] constexpr bool isHeadMethod() const noexcept { return (_optionsBitmap & IsHeadMethod) != 0; }
 
+    [[nodiscard]] constexpr bool isAddVaryAcceptEncoding() const noexcept {
+      return (_optionsBitmap & AddVaryAcceptEncoding) != 0;
+    }
+
+    [[nodiscard]] constexpr bool hasContentEncoding() const noexcept {
+      return (_optionsBitmap & HasContentEncoding) != 0;
+    }
+
     // Tells whether the response has been pre-configured already.
     // If it's the case, then global headers have already been applied, addTrailerHeader and headMethod options
     // are known. Close is only best effort - it may still be changed later (from not close to close).
     [[nodiscard]] constexpr bool isPrepared() const noexcept { return (_optionsBitmap & Prepared) != 0; }
 
+    [[nodiscard]] constexpr bool canApplyDirectCompression() const noexcept {
+      return (_optionsBitmap & CanApplyDirectCompression) != 0;
+    }
+
+    constexpr void disableDirectCompression() noexcept {
+      _optionsBitmap &= static_cast<BmpType>(~CanApplyDirectCompression);
+    }
+
     constexpr void close(bool val) noexcept {
       if (val) {
         _optionsBitmap |= Close;
       } else {
-        _optionsBitmap &= static_cast<uint8_t>(~Close);
+        _optionsBitmap &= static_cast<BmpType>(~Close);
       }
     }
 
@@ -1068,7 +1153,7 @@ class HttpResponse {
       if (val) {
         _optionsBitmap |= AddTrailerHeader;
       } else {
-        _optionsBitmap &= static_cast<uint8_t>(~AddTrailerHeader);
+        _optionsBitmap &= static_cast<BmpType>(~AddTrailerHeader);
       }
     }
 
@@ -1076,14 +1161,45 @@ class HttpResponse {
       if (val) {
         _optionsBitmap |= IsHeadMethod;
       } else {
-        _optionsBitmap &= static_cast<uint8_t>(~IsHeadMethod);
+        _optionsBitmap &= static_cast<BmpType>(~IsHeadMethod);
       }
     }
 
+    constexpr void addVaryAcceptEncoding(bool val) noexcept {
+      if (val) {
+        _optionsBitmap |= AddVaryAcceptEncoding;
+      } else {
+        _optionsBitmap &= static_cast<BmpType>(~AddVaryAcceptEncoding);
+      }
+    }
+
+    constexpr void setHasContentEncoding() noexcept { _optionsBitmap |= HasContentEncoding; }
+
     constexpr void setPrepared() noexcept { _optionsBitmap |= Prepared; }
 
+    // Gets the negotiated encoding from Accept-Encoding negotiation.
+    [[nodiscard]] constexpr Encoding expectedEncoding() const noexcept { return _expectedEncoding; }
+
+    // Sets the compression state pointer for direct compression support.
+    constexpr void setCompressionState(internal::ResponseCompressionState* state) noexcept {
+      _pCompressionState = state;
+    }
+
+    // Gets the compression state pointer for direct compression.
+    [[nodiscard]] constexpr internal::ResponseCompressionState* compressionState() const noexcept {
+      return _pCompressionState;
+    }
+
    private:
-    uint8_t _optionsBitmap{};
+    friend class HttpResponse;
+    friend class internal::HttpCodec;
+
+    internal::ResponseCompressionState* _pCompressionState{nullptr};
+
+    std::uint32_t _trailerLen{0};  // trailer length - no logical reason to be there, it's just to benefit from packing
+    BmpType _optionsBitmap{};
+    Encoding _expectedEncoding{Encoding::none};
+    Encoding _currentEncoding{Encoding::none};
   };
 
   // IMPORTANT: This method finalizes the response by appending reserved headers,
@@ -1111,6 +1227,7 @@ class HttpResponse {
 
   [[nodiscard]] constexpr std::uint64_t headersStartPos() const noexcept { return _posBitmap & kHeadersStartMask; }
   [[nodiscard]] constexpr std::uint64_t bodyStartPos() const noexcept {
+    // TODO: check if this can be replaced with _data.size() - trailersLen() ?
     return (_posBitmap >> kHeaderPosNbBits) & kBodyStartMask;
   }
 
@@ -1131,31 +1248,38 @@ class HttpResponse {
     setBodyStartPos(static_cast<std::uint64_t>(static_cast<int64_t>(bodyStartPos()) + diff));
   }
 
-  char* getContentLengthHeaderLinePtr(std::uint8_t nCharsBodyLen) {
-    const auto contentLengthHeaderLineSize = HeaderSize(http::ContentLength.size(), nCharsBodyLen);
+  char* getContentLengthHeaderLinePtr() {
+    static constexpr std::size_t contentLengthHeaderLineSize =
+        HeaderSize(http::ContentLength.size(), kContentLengthValueWidth);
     return _data.data() + bodyStartPos() - http::DoubleCRLF.size() - contentLengthHeaderLineSize;
   }
 
-  char* getContentLengthValuePtr(std::uint8_t nCharsBodyLen) {
-    return getContentLengthHeaderLinePtr(nCharsBodyLen) + http::CRLF.size() + http::ContentLength.size() +
-           http::HeaderSep.size();
+  char* getContentLengthValuePtr() {
+    return getContentLengthHeaderLinePtr() + http::CRLF.size() + http::ContentLength.size() + http::HeaderSep.size();
   }
 
   // Returns a pointer to the beginning of the Content-Type header line (starting on CRLF before the header name).
-  char* getContentTypeHeaderLinePtr(std::uint8_t nCharsBodyLen) {
-    char* ptr = getContentLengthHeaderLinePtr(nCharsBodyLen) - HeaderSize(http::ContentType.size(), 0U);
+  char* getContentTypeHeaderLinePtr() {
+    char* ptr = getContentLengthHeaderLinePtr() - HeaderSize(http::ContentType.size(), 0U);
     for (; *ptr != '\r'; --ptr) {
     }
     return ptr;
   }
 
-  char* getContentTypeValuePtr(std::uint8_t nCharsBodyLen) {
-    return getContentTypeHeaderLinePtr(nCharsBodyLen) + http::CRLF.size() + http::ContentType.size() +
-           http::HeaderSep.size();
+  char* getContentTypeValuePtr() {
+    return getContentTypeHeaderLinePtr() + http::CRLF.size() + http::ContentType.size() + http::HeaderSep.size();
+  }
+
+  [[nodiscard]] static std::array<char, kContentLengthValueWidth> MakePaddedContentLengthValue(std::size_t value) {
+    std::array<char, kContentLengthValueWidth> out;
+    const auto [ptr, ec] = std::to_chars(out.data(), out.data() + kContentLengthValueWidth, value);
+    assert(ec == std::errc{});
+    std::memset(ptr, ' ', static_cast<std::size_t>(out.data() + kContentLengthValueWidth - ptr));
+    return out;
   }
 
   void bodyPrecheckContentType(std::string_view& contentType) const {
-    if (_trailerLen != 0) [[unlikely]] {
+    if (_opts._trailerLen != 0) [[unlikely]] {
       throw std::logic_error("Cannot set body after trailers have been added");
     }
     contentType = TrimOws(contentType);
@@ -1173,9 +1297,8 @@ class HttpResponse {
   std::uint64_t _posBitmap{0};
   // Variant that can hold an external captured payload (HttpPayload).
   HttpPayload _payloadVariant;
-  std::uint32_t _trailerLen{0};  // trailer length
   // When HEAD is known (prepared options), body/trailer storage can be suppressed while preserving lengths.
-  Options _knownOptions;
+  Options _opts;
+  EncoderContext* _pCompressionContext{nullptr};
 };
-
 }  // namespace aeronet

@@ -66,7 +66,7 @@ AeronetAddUnitTest(
     test/http-error-build_test.cpp
     LIBRARIES
     aeronet_http
-    aeronet_basic_test_support
+    aeronet_test_support
 )
 
 AeronetAddUnitTest(

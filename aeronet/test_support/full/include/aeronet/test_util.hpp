@@ -116,4 +116,7 @@ bool WaitForPeerClose(int fd, std::chrono::milliseconds timeout);
 
 bool WaitForListenerClosed(uint16_t port, std::chrono::milliseconds timeout);
 
+// Format Content-Length values using the fixed-width padding employed by HttpResponse.
+std::string PaddedContentLength(std::size_t value);
+
 }  // namespace aeronet::test

@@ -51,6 +51,8 @@ class ZstdEncoder {
 
   explicit ZstdEncoder(CompressionConfig::Zstd cfg) : _cfg(cfg) {}
 
+  [[nodiscard]] std::size_t maxCompressedSize(std::size_t inputSize) const noexcept;
+
   std::size_t encodeFull(std::string_view data, std::size_t availableCapacity, char* buf);
 
   EncoderContext* makeContext() {

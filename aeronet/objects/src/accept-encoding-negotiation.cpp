@@ -23,9 +23,10 @@
 #include "aeronet/string-trim.hpp"
 
 namespace aeronet {
-namespace {
 
 using EncodingInt = std::underlying_type_t<Encoding>;
+
+namespace {
 
 constexpr std::string_view kWhitespace = " \t";
 
@@ -235,6 +236,73 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
   }
   ret.encoding = chosen;
   return ret;
+}
+
+EncodingBmp ParseAcceptEncodingToBmp(std::string_view acceptEncoding) {
+  EncodingBmp bmp = 0;
+
+  if (acceptEncoding.empty()) {
+    return bmp;
+  }
+
+  bool sawWildcard = false;
+  double wildcardQ = 0.0;
+
+  // Track which encodings were explicitly mentioned (to apply wildcard correctly)
+  EncodingBmp explicitMentioned = 0;
+  // Track which encodings were rejected (q=0)
+  EncodingBmp rejected = 0;
+
+  for (auto part : acceptEncoding | std::views::split(',')) {
+    std::string_view raw{&*part.begin(), static_cast<std::size_t>(std::ranges::distance(part))};
+    raw = TrimOws(raw);
+    if (raw.empty()) {
+      continue;
+    }
+    auto sc = raw.find(';');
+    std::string_view name = TrimOws(sc == std::string_view::npos ? raw : raw.substr(0, sc));
+    double quality = ParseQ(raw);
+
+    if (CaseInsensitiveEqual(name, "*")) {
+      sawWildcard = true;
+      wildcardQ = quality;
+      continue;
+    }
+
+    // Check against all known encoding names
+    for (EncodingInt pos = 0; pos < kNbContentEncodings; ++pos) {
+      const auto enc = static_cast<Encoding>(pos);
+      if (!IsEncodingEnabled(enc)) {
+        continue;
+      }
+      if (CaseInsensitiveEqual(name, GetEncodingStr(enc))) {
+        explicitMentioned |= EncodingToBmp(enc);
+        if (quality > 0.0) {
+          bmp |= EncodingToBmp(enc);
+        } else {
+          rejected |= EncodingToBmp(enc);
+        }
+        break;
+      }
+    }
+  }
+
+  // Apply wildcard to encodings not explicitly mentioned
+  if (sawWildcard && wildcardQ > 0.0) {
+    for (EncodingInt pos = 0; pos < kNbContentEncodings; ++pos) {
+      const auto enc = static_cast<Encoding>(pos);
+      if (!IsEncodingEnabled(enc)) {
+        continue;
+      }
+      const EncodingBmp encBmp = EncodingToBmp(enc);
+      // Only apply wildcard to encodings not explicitly mentioned
+      if ((explicitMentioned & encBmp) == 0) {
+        bmp |= encBmp;
+      }
+    }
+  }
+
+  return bmp;
 }
 
 }  // namespace aeronet

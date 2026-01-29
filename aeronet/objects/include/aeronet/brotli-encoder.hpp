@@ -91,6 +91,10 @@ class BrotliEncoder {
 
   ~BrotliEncoder() = default;
 
+  static std::size_t maxCompressedSize(std::size_t inputSize) noexcept {
+    return BrotliEncoderMaxCompressedSize(inputSize);
+  }
+
   std::size_t encodeFull(std::string_view data, std::size_t availableCapacity, char* buf) const;
 
   EncoderContext* makeContext() {

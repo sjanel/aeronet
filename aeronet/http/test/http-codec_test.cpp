@@ -40,6 +40,12 @@ namespace {
   std::size_t out = 0;
   const auto* first = value.data();
   const auto* last = value.data() + value.size();
+  while (first < last && http::IsHeaderWhitespace(*first)) {
+    ++first;
+  }
+  while (last > first && http::IsHeaderWhitespace(*(last - 1))) {
+    --last;
+  }
   const auto [ptr, ec] = std::from_chars(first, last, out);
   EXPECT_EQ(ec, std::errc()) << "Invalid Content-Length value: '" << value << "'";
   EXPECT_EQ(ptr, last) << "Trailing characters in Content-Length value: '" << value << "'";
@@ -335,6 +341,7 @@ TEST(HttpCodecCompression, ImpossibleCompressionZstd) {
   HttpCodec::TryCompressResponse(state, cfg, Encoding::zstd, resp);
 
   EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));
+  EXPECT_FALSE(resp.hasContentEncoding());
   EXPECT_EQ(resp.bodyInMemoryLength(), body.size());
 }
 #endif

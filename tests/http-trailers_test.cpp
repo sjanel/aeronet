@@ -632,7 +632,7 @@ TEST(HttpResponseWriterTrailers, IgnoredForFixedLength) {
   std::string resp = test::recvUntilClosed(fd);
 
   // Should use Content-Length, not chunked
-  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "4")));
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, test::PaddedContentLength(4))));
   EXPECT_FALSE(resp.contains(http::TransferEncoding));
 
   // Trailer should NOT appear

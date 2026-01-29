@@ -91,4 +91,9 @@ std::size_t ZlibEncoder::encodeFull(ZStreamRAII::Variant variant, std::string_vi
   return written;
 }
 
+std::size_t ZlibEncoder::maxCompressedSize(ZStreamRAII::Variant variant, std::size_t inputSize) {
+  _ctx.init(_level, variant);
+  return deflateBound(&_ctx._zs.stream, static_cast<uLong>(inputSize));
+}
+
 }  // namespace aeronet
