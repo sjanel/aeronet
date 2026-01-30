@@ -45,8 +45,13 @@ if (CMAKE_GENERATOR MATCHES "Ninja")
     set(_MEM_GB 1)
   endif()
 
-  # link_pool depth = floor(total_gb / 3), minimum 1
-  math(EXPR _LINK_POOL "${_MEM_GB} / 3")
+  # link_pool depth - minimum 1
+  if (AERONET_ENABLE_ASAN)
+    # ASAN builds are very memory intensive, reduce link pool further
+    math(EXPR _LINK_POOL "${_MEM_GB} / 6")
+  else()
+    math(EXPR _LINK_POOL "${_MEM_GB} / 2")
+  endif()
   if(_LINK_POOL LESS 1)
     set(_LINK_POOL 1)
   endif()
