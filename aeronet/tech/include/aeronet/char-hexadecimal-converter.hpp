@@ -84,8 +84,7 @@ constexpr char* to_lower_hex(std::size_t value, char* buf) noexcept {
 
   // Write backwards to avoid reversal.
   do {
-    --out;
-    *out = kHexits[value & 0x0FU];
+    *--out = kHexits[value & 0x0FU];
     value >>= 4U;
   } while (value != 0);
 
