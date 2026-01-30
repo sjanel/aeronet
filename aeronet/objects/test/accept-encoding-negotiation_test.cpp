@@ -221,9 +221,14 @@ TEST(AcceptEncodingNegotiationTest, ExplicitQZeroSkipsEncoding) {
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0, deflate;q=0.5").encoding, Encoding::deflate);
 }
 
-TEST(AcceptEncodingNegotiationTest, DuplicatesFirstOccurrenceWinsEvenIfLaterHigherQ) {
+TEST(AcceptEncodingNegotiationTest, SameKeyMultipleEntriesTakesHighestQ1) {
   auto sel = MakeSelector({Encoding::deflate, Encoding::gzip});
-  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.2, gzip;q=0.9, deflate;q=0.2").encoding, Encoding::deflate);
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.2, gzip;q=0.9, deflate;q=0.2").encoding, Encoding::gzip);
+}
+
+TEST(AcceptEncodingNegotiationTest, SameKeyMultipleEntriesTakesHighestQ2) {
+  auto sel = MakeSelector({Encoding::deflate, Encoding::gzip});
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.9, gzip;q=0.1, deflate;q=0.2").encoding, Encoding::gzip);
 }
 
 TEST(AcceptEncodingNegotiationTest, DuplicateWithLowerQLaterDoesNotChangeChoice) {

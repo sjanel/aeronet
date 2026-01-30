@@ -47,55 +47,6 @@ namespace aeronet::internal {
 
 namespace {
 
-// Helper to iterate Content-Encoding header values in reverse order.
-class CSVReverseTokensIterator {
- public:
-  explicit CSVReverseTokensIterator(std::string_view headerValue)
-      : first(headerValue.data()), last(first + headerValue.size()) {}
-
-  // Returns true if there is another value to read.
-  [[nodiscard]] bool hasNext() const noexcept { return first < last; }
-
-  // Returns the next value token (trimmed), or empty string_view if malformed.
-  std::string_view next() {
-    // Header values are already trimmed, so we should not start with an OWS char.
-    assert(!http::IsHeaderWhitespace(*(last - 1)));
-
-    // Let's find the next separator to the left, that is the next comma, or OWS, or last.
-    const char* nextSep = last - 1;
-    while (nextSep >= first && *nextSep != ',' && !http::IsHeaderWhitespace(*nextSep)) {
-      --nextSep;
-    }
-
-    std::string_view value(nextSep + 1, last);
-    if (value.empty()) {
-      // empty token forbidden
-      return value;
-    }
-
-    // go to next non-OWS/comma char to the left and reject multiple commas in a row
-    bool seenComma = false;
-    while (nextSep >= first && (http::IsHeaderWhitespace(*nextSep) || *nextSep == ',')) {
-      if (*nextSep == ',') {
-        if (seenComma) {
-          // two commas in a row, malformed
-          value = {};
-          return value;
-        }
-        seenComma = true;
-      }
-      --nextSep;
-    }
-    last = nextSep + 1;
-
-    return value;
-  }
-
- private:
-  const char* first;
-  const char* last;
-};
-
 constexpr std::size_t kNoVaryHeader = 0;
 constexpr std::size_t kVaryAcceptEncodingNotNeeded = 1;
 
@@ -125,7 +76,7 @@ struct VaryResult {
     // Response headers are guaranteed to be trimmed on the extreme sides.
     // We can therefore use the reverse CSV iterator (order doesn't matter).
     const std::string_view value = hdr.value;
-    for (CSVReverseTokensIterator it(value); it.hasNext();) {
+    for (http::HeaderValueReverseTokensIterator<','> it(value); it.hasNext();) {
       const std::string_view token = it.next();
       assert(!token.empty() && "Malformed Vary header value");
       if (token == "*" || CaseInsensitiveEqual(token, http::AcceptEncoding)) {
@@ -158,7 +109,7 @@ inline std::string_view FinalizeDecompressedBody(HeadersViewMap& headersMap, Hea
   assert(errc == std::errc{} && ptr == buf.end() + decompressedSizeNbChars);
   buf.addSize(decompressedSizeNbChars);
 
-  // Update Content encoding and Content-Length headers, and set special aeronet headers containing orignal values.
+  // Update Content encoding and Content-Length headers, and set special aeronet headers containing original values.
   const std::string_view encodingStr = encodingHeaderIt->second;
   const auto contentLenIt = headersMap.find(http::ContentLength);
   const std::string_view originalContentLenStr = contentLenIt != headersMap.end() ? contentLenIt->second : "";
@@ -182,7 +133,7 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] auto&& r
 
   // Decode in reverse order, algorithm by algorithm.
   // For the first stage, we read from chunks. For subsequent stages, we read from the previous output buffer.
-  for (CSVReverseTokensIterator encIt(encodingHeaderIt->second); encIt.hasNext();) {
+  for (http::HeaderValueReverseTokensIterator<','> encIt(encodingHeaderIt->second); encIt.hasNext();) {
     auto encoding = encIt.next();
     if (encoding.empty()) {
       return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
@@ -290,7 +241,7 @@ std::size_t ResponseCompressionState::encodeFull([[maybe_unused]] Encoding encod
     return zstdEncoder.encodeFull(data, availableCapacity, buf);
   }
 #endif
-  throw std::invalid_argument("No encoder for 'none' encoding");
+  throw std::invalid_argument("Unsupported encoding for encodeFull");
 }
 
 EncoderContext* ResponseCompressionState::makeContext([[maybe_unused]] Encoding encoding) {
@@ -312,7 +263,7 @@ EncoderContext* ResponseCompressionState::makeContext([[maybe_unused]] Encoding 
     return zstdEncoder.makeContext();
   }
 #endif
-  throw std::invalid_argument("No encoder for 'none' encoding");
+  throw std::invalid_argument("Unsupported encoding for makeContext");
 }
 
 void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
@@ -604,19 +555,24 @@ http::StatusCode HttpCodec::WillDecompress(const DecompressionConfig& decompress
     return http::StatusCodeBadRequest;
   }
 
+  bool foundNonIdentity = false;
+
   // Parse the encoding string to check for non-identity encodings
-  CSVReverseTokensIterator encIt(encodingHeaderIt->second);
+  http::HeaderValueReverseTokensIterator<','> encIt(encodingStr);
   assert(encIt.hasNext());
   do {
-    auto encoding = encIt.next();
+    std::string_view encoding = encIt.next();
     if (encoding.empty()) {
       return http::StatusCodeBadRequest;
     }
-    if (!CaseInsensitiveEqual(encoding, http::identity)) {
-      return http::StatusCodeOK;  // Found a non-identity encoding
+    if (!foundNonIdentity && !CaseInsensitiveEqual(encoding, http::identity)) {
+      foundNonIdentity = true;
     }
   } while (encIt.hasNext());
 
+  if (foundNonIdentity) {
+    return http::StatusCodeOK;
+  }
   // Only identity
   return http::StatusCodeNotModified;
 }
