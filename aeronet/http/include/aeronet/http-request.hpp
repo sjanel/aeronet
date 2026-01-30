@@ -12,6 +12,8 @@
 #include <type_traits>
 #include <utility>
 
+#include "aeronet/encoding.hpp"
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 #include <functional>
@@ -483,6 +485,10 @@ class HttpRequest {
   [[nodiscard]] HttpResponse makeResponse(http::StatusCode statusCode, std::span<const std::byte> body,
                                           std::string_view contentType = http::ContentTypeApplicationOctetStream) const;
 
+  // Returns the best encoding that can be used for the response based on the
+  // Accept-Encoding header of the request and the server compression configuration.
+  [[nodiscard]] Encoding responsePossibleEncoding() const noexcept { return _responsePossibleEncoding; }
+
  private:
   friend class SingleHttpServer;
   friend class HttpRequestTest;
@@ -571,6 +577,7 @@ class HttpRequest {
   http::Version _version;
   http::Method _method;
   BodyAccessMode _bodyAccessMode{BodyAccessMode::Undecided};
+  Encoding _responsePossibleEncoding{Encoding::none};
   bool _headPinned{false};
   bool _addTrailerHeader{false};
 };

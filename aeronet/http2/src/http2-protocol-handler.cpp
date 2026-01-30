@@ -20,6 +20,7 @@
 #include "aeronet/header-write.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
@@ -203,9 +204,21 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
     }
   }
 
+  const auto [encoding, reject] =
+      _pCompressionState->selector.negotiateAcceptEncoding(req.headerValueOrEmpty(http::AcceptEncoding));
+  // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
+  // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
+  if (reject) {
+    (void)sendResponse(streamId, HttpResponse(http::StatusCodeNotAcceptable, "No acceptable content-coding available"),
+                       /*isHeadMethod=*/false);
+    _streamRequests.erase(streamId);
+    return;
+  }
+
   req._streamId = streamId;
   req._version = http::HTTP_2_0;
   req._reqStart = std::chrono::steady_clock::now();
+  req._responsePossibleEncoding = encoding;
 
   if (endStream) {
     dispatchRequest(it);

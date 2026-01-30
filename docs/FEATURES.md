@@ -431,6 +431,13 @@ Supported (build‑flag gated): gzip, deflate (zlib), zstd, brotli.
 - Per-response opt‑out: user `Content-Encoding` prevents auto compression.
 - Adds `Vary: Accept-Encoding` automatically (configurable) when compression applied.
 - Identity rejection: forbidding `identity` with no acceptable alternative ⇒ `406 Not Acceptable`.
+- Encoder streaming API: `EncoderContext::encodeChunk()` returns `int64_t` where `-1` signals error and `0` is a valid
+  successful write with no output; `maxCompressedBytes()` is only for sizing `encodeChunk()` output buffers.
+  Use `maxFinalizationBytes()` to size buffers for `end()` calls. `end()` may need multiple calls; loop until it
+  returns `0` (finished) or `<0` (error).
+  Tests: [aeronet/objects/test/brotli-encoder-decoder_test.cpp](aeronet/objects/test/brotli-encoder-decoder_test.cpp),
+  [aeronet/objects/test/zlib-encoder-decoder_test.cpp](aeronet/objects/test/zlib-encoder-decoder_test.cpp),
+  [aeronet/objects/test/zstd-encoder-decoder_test.cpp](aeronet/objects/test/zstd-encoder-decoder_test.cpp).
 
 #### Per-Response Manual `Content-Encoding` (Automatic Compression Suppression)
 

@@ -384,6 +384,17 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       }
     }
 
+    const auto [encoding, reject] =
+        _compression.selector.negotiateAcceptEncoding(request.headerValueOrEmpty(http::AcceptEncoding));
+    // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
+    // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
+    if (reject) {
+      emitSimpleError(cnxIt, http::StatusCodeNotAcceptable, true, "No acceptable content-coding available");
+      continue;
+    }
+
+    request._responsePossibleEncoding = encoding;
+
     // Route matching
     const Router::RoutingResult routingResult = _router.match(request.method(), request.path());
     const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
@@ -598,9 +609,8 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         // Emit 301 redirect to canonical form.
         resp.status(http::StatusCodeMovedPermanently).body("Redirecting");
         if (routingResult.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
-          _tmp.buf.assign(request.path());
-          _tmp.buf.push_back('/');
-          resp.location(_tmp.buf);
+          resp.header(http::Location, request.path());
+          resp.headerAppendValue(http::Location, '/', "");
         } else {
           resp.location(request.path().substr(0, request.path().size() - 1));
         }

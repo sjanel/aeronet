@@ -5,48 +5,67 @@
 
 #include <cassert>
 #include <cstddef>
-#include <format>
-#include <stdexcept>
+#include <cstdint>
 #include <string_view>
 
 #include "aeronet/zlib-stream-raii.hpp"
 
 namespace aeronet {
 
-std::string_view ZlibEncoderContext::encodeChunk(std::string_view chunk) {
-  assert(_pBuf != nullptr);
-  auto& buf = *_pBuf;
-  buf.clear();
+int64_t ZlibEncoderContext::encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) {
+  if (data.empty()) {
+    return 0;
+  }
 
-  _zs.stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(chunk.data()));
-  _zs.stream.avail_in = static_cast<uInt>(chunk.size());
+  _zs.stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
+  _zs.stream.avail_in = static_cast<uInt>(data.size());
 
-  const auto flush = chunk.empty() ? Z_FINISH : Z_NO_FLUSH;
-  const auto chunkCapacity = deflateBound(&_zs.stream, static_cast<uLong>(chunk.size()));
-  do {
-    buf.ensureAvailableCapacityExponential(chunkCapacity);
+  _zs.stream.next_out = reinterpret_cast<unsigned char*>(buf);
+  _zs.stream.avail_out = static_cast<decltype(_zs.stream.avail_out)>(availableCapacity);
 
-    const auto availableCapacity = buf.availableCapacity();
+  const auto ret = deflate(&_zs.stream, Z_NO_FLUSH);
+  if (ret == Z_STREAM_ERROR) [[unlikely]] {
+    return -1;
+  }
 
-    _zs.stream.next_out = reinterpret_cast<unsigned char*>(buf.data() + buf.size());
-    _zs.stream.avail_out = static_cast<decltype(_zs.stream.avail_out)>(availableCapacity);
+  if (_zs.stream.avail_in != 0) [[unlikely]] {
+    return -1;
+  }
 
-    const auto ret = deflate(&_zs.stream, flush);
-    if (ret == Z_STREAM_ERROR) [[unlikely]] {
-      throw std::runtime_error(std::format("Zlib streaming error {}", ret));
+  const std::size_t writtenNow = availableCapacity - _zs.stream.avail_out;
+  return static_cast<int64_t>(writtenNow);
+}
+
+std::size_t ZlibEncoderContext::maxCompressedBytes(std::size_t uncompressedSize) const {
+  return deflateBound(const_cast<z_stream*>(&_zs.stream), static_cast<uLong>(uncompressedSize));
+}
+
+int64_t ZlibEncoderContext::end(std::size_t availableCapacity, char* buf) noexcept {
+  _zs.stream.next_in = nullptr;
+  _zs.stream.avail_in = 0;
+
+  _zs.stream.next_out = reinterpret_cast<unsigned char*>(buf);
+  _zs.stream.avail_out = static_cast<decltype(_zs.stream.avail_out)>(availableCapacity);
+
+  const int ret = deflate(&_zs.stream, Z_FINISH);
+  if (ret == Z_STREAM_ERROR) {
+    return -1;
+  }
+
+  const std::size_t writtenNow = availableCapacity - _zs.stream.avail_out;
+  if (ret == Z_STREAM_END) {
+    if (writtenNow == 0) {
+      _zs.end();
+      return 0;
     }
+    return static_cast<int64_t>(writtenNow);
+  }
 
-    buf.addSize(availableCapacity - _zs.stream.avail_out);
+  if (writtenNow == 0) {
+    return -1;
+  }
 
-    if (ret == Z_STREAM_END) {
-      end();
-      break;
-    }
-  } while (_zs.stream.avail_out == 0);
-
-  assert(_zs.stream.avail_in == 0);
-
-  return buf;
+  return static_cast<int64_t>(writtenNow);
 }
 
 std::size_t ZlibEncoder::encodeFull(std::string_view data, std::size_t availableCapacity, char* buf) {

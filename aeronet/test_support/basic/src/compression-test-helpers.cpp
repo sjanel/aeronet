@@ -1,6 +1,7 @@
 #include "aeronet/compression-test-helpers.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <numeric>
 #include <random>
 #include <stdexcept>
@@ -11,6 +12,7 @@
 #include <zstd.h>
 #endif
 
+#include "aeronet/encoder.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -95,6 +97,73 @@ void CorruptData(std::string_view encoding, RawChars& data) {
   } else {
     throw std::invalid_argument("Unsupported encoding for corruption");
   }
+}
+
+int64_t EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& out) {
+  out.clear();
+  out.reserve(ctx.maxCompressedBytes(data.size()));
+  const auto written = ctx.encodeChunk(data, out.capacity(), out.data());
+  if (written > 0) {
+    out.setSize(static_cast<RawChars::size_type>(written));
+  }
+  return written;
+}
+
+RawChars EndStream(EncoderContext& ctx) {
+  RawChars out;
+  while (true) {
+    out.ensureAvailableCapacityExponential(ctx.endChunkSize());
+    const auto written = ctx.end(out.availableCapacity(), out.data() + out.size());
+    if (written < 0) {
+      out.clear();
+      return out;
+    }
+    if (written == 0) {
+      break;
+    }
+    out.addSize(static_cast<RawChars::size_type>(written));
+  }
+  return out;
+}
+
+RawChars BuildStreamingCompressed(EncoderContext& ctx, std::string_view payload, std::size_t split) {
+  RawChars compressed;
+  std::string_view remaining = payload;
+
+  while (!remaining.empty()) {
+    const std::size_t take = std::min(split, remaining.size());
+    const auto chunk = remaining.substr(0, take);
+    remaining.remove_prefix(take);
+
+    RawChars chunkOut;
+    // Reserve maximum possible compressed size for this chunk
+    chunkOut.reserve(ctx.maxCompressedBytes(chunk.size()));
+
+    int64_t written = ctx.encodeChunk(chunk, chunkOut.capacity(), chunkOut.data());
+
+    // If insufficient output buffer, try with more space
+    if (written < 0) {
+      chunkOut.ensureAvailableCapacityExponential(ctx.maxCompressedBytes(chunk.size()) * 2);
+      written = ctx.encodeChunk(chunk, chunkOut.capacity(), chunkOut.data());
+    }
+
+    if (written < 0) {
+      // Still failed, give up
+      return {};
+    }
+
+    if (written > 0) {
+      chunkOut.setSize(static_cast<RawChars::size_type>(written));
+      compressed.append(chunkOut);
+    }
+  }
+
+  const auto tail = test::EndStream(ctx);
+  if (!tail.empty()) {
+    compressed.append(tail);
+  }
+
+  return compressed;
 }
 
 }  // namespace aeronet::test

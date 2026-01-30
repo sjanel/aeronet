@@ -9,7 +9,6 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/object-array-pool.hpp"
-#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 
@@ -45,7 +44,7 @@ class BrotliEncoderContext final : public EncoderContext {
  public:
   BrotliEncoderContext() noexcept = default;
 
-  explicit BrotliEncoderContext(RawChars& sharedBuf, BrotliScratch& scratch) : _pBuf(&sharedBuf), _scratch(&scratch) {}
+  explicit BrotliEncoderContext(BrotliScratch& scratch) : _scratch(&scratch) {}
 
   BrotliEncoderContext(const BrotliEncoderContext&) = delete;
   BrotliEncoderContext(BrotliEncoderContext&& rhs) noexcept;
@@ -54,7 +53,13 @@ class BrotliEncoderContext final : public EncoderContext {
 
   ~BrotliEncoderContext() override = default;
 
-  std::string_view encodeChunk(std::string_view chunk) override;
+  [[nodiscard]] std::size_t maxCompressedBytes(std::size_t uncompressedSize) const override;
+
+  [[nodiscard]] std::size_t endChunkSize() const override { return 128UL; }
+
+  int64_t encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) override;
+
+  int64_t end(std::size_t availableCapacity, char* buf) noexcept override;
 
   /// Initialize (or reinitialize) the compression context with given parameters.
   /// Since Brotli has no public reset API, a new state is created each time.
@@ -67,7 +72,6 @@ class BrotliEncoderContext final : public EncoderContext {
     void operator()(BrotliEncoderState* ptr) const { BrotliEncoderDestroyInstance(ptr); }
   };
 
-  RawChars* _pBuf{nullptr};
   BrotliScratch* _scratch{nullptr};
   std::unique_ptr<BrotliEncoderState, BrotliStateDeleter> _state;
 };
@@ -76,8 +80,9 @@ class BrotliEncoder {
  public:
   BrotliEncoder() noexcept = default;
 
-  explicit BrotliEncoder(RawChars& buf, CompressionConfig::Brotli cfg)
-      : _quality(cfg.quality), _window(cfg.window), _ctx(buf, _scratch) {}
+  explicit BrotliEncoder(CompressionConfig::Brotli cfg) : _quality(cfg.quality), _window(cfg.window) {
+    _ctx._scratch = &_scratch;
+  }
 
   BrotliEncoder(const BrotliEncoder&) = delete;
   BrotliEncoder& operator=(const BrotliEncoder&) = delete;

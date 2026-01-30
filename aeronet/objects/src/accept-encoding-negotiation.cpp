@@ -7,6 +7,7 @@
 #include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <numeric>
 #include <string_view>

@@ -208,14 +208,14 @@ inline bool UseStreamingDecompression(const HeadersViewMap& headersMap,
 
 void ResponseCompressionState::createEncoders([[maybe_unused]] const CompressionConfig& cfg) {
 #ifdef AERONET_ENABLE_ZLIB
-  gzipEncoder = ZlibEncoder(ZStreamRAII::Variant::gzip, sharedBuffer, cfg.zlib.level);
-  deflateEncoder = ZlibEncoder(ZStreamRAII::Variant::deflate, sharedBuffer, cfg.zlib.level);
+  gzipEncoder = ZlibEncoder(ZStreamRAII::Variant::gzip, cfg.zlib.level);
+  deflateEncoder = ZlibEncoder(ZStreamRAII::Variant::deflate, cfg.zlib.level);
 #endif
 #ifdef AERONET_ENABLE_ZSTD
-  zstdEncoder = ZstdEncoder(sharedBuffer, cfg.zstd);
+  zstdEncoder = ZstdEncoder(cfg.zstd);
 #endif
 #ifdef AERONET_ENABLE_BROTLI
-  brotliEncoder = BrotliEncoder(sharedBuffer, cfg.brotli);
+  brotliEncoder = BrotliEncoder(cfg.brotli);
 #endif
 }
 
@@ -267,20 +267,9 @@ EncoderContext* ResponseCompressionState::makeContext([[maybe_unused]] Encoding 
 }
 
 void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
-                                    const CompressionConfig& compressionConfig, std::string_view requestAcceptEncoding,
-                                    HttpResponse& resp) {
+                                    const CompressionConfig& compressionConfig, Encoding encoding, HttpResponse& resp) {
   const auto bodySz = resp.bodyInMemoryLength();
   if (bodySz < compressionConfig.minBytes) {
-    return;
-  }
-  const auto [encoding, reject] = compressionState.selector.negotiateAcceptEncoding(requestAcceptEncoding);
-  // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
-  // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
-  if (reject) {
-    resp.status(http::StatusCodeNotAcceptable).body("No acceptable content-coding available");
-    return;
-  }
-  if (encoding == Encoding::none) {
     return;
   }
 
@@ -341,8 +330,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
                                    upperContentLengthLineLen + http::DoubleCRLF.size();
 
   // We will only commit compression if the configured compression ratio is satisfied.
-  const std::size_t maxAllowedCompressed =
-      static_cast<std::size_t>(std::ceil(static_cast<double>(bodySz) * compressionConfig.maxCompressRatio));
+  const std::size_t maxAllowedCompressed = compressionConfig.maxCompressedBytes(bodySz);
   assert(maxAllowedCompressed != 0);
 
   const std::size_t tmpAreaStartPos =

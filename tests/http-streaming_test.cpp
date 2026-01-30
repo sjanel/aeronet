@@ -958,16 +958,20 @@ TEST(HttpResponseWriterFailures, TrailerForFixedLength) {
     writer.status(http::StatusCodeOK);
     writer.contentLength(4);  // Fixed length = non-chunked
 
-    // trailerAddLine should be ignored for fixed-length responses
+    // trailerAddLine should be ignored before writing body ...
     writer.trailerAddLine("X-Trailer", "ignored");
 
     writer.writeBody("test");
+
+    // ... and because not chunked
+    writer.trailerAddLine("X-Trailer", "ignored");
     writer.end();
   });
 
   const std::string response = test::simpleGet(ts.port(), "/trailer-fixed-len");
   auto parsed = test::parseResponseOrThrow(response);
-  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(response.ends_with("\r\n\r\ntest"));
   EXPECT_EQ(4, parsed.body.size());
 }
 
