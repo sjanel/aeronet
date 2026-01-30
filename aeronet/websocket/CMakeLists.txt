@@ -34,12 +34,14 @@ if(AERONET_ENABLE_OPENSSL AND AERONET_BUILD_TESTS)
     target_link_libraries(sha1_test PRIVATE OpenSSL::Crypto)
 endif()
 
-AeronetAddUnitTest(
-    websocket-compress_test
-    test/websocket-compress_test.cpp
-    LIBRARIES
-    aeronet_websocket
-)
+if(AERONET_ENABLE_ZLIB)
+    AeronetAddUnitTest(
+        websocket-compress_test
+        test/websocket-compress_test.cpp
+        LIBRARIES
+        aeronet_websocket
+    )
+endif()
 
 AeronetAddUnitTest(
     websocket-deflate_test
