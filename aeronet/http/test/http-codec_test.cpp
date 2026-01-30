@@ -483,7 +483,11 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_MalformedEncodingReturnsBadRe
   RawChars tmpBuf;
 
   const auto res = HttpCodec::DecompressChunkedBody(cfg, req, chunks, /*compressedSize=*/1, bodyBuf, tmpBuf);
+#ifdef AERONET_ENABLE_ZLIB
   EXPECT_EQ(res.status, http::StatusCodeBadRequest);
+#else
+  EXPECT_EQ(res.status, http::StatusCodeUnsupportedMediaType);
+#endif
 }
 
 #ifdef AERONET_ENABLE_ZLIB

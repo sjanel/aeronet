@@ -7,10 +7,8 @@
 #include <climits>
 #include <cstddef>
 #include <cstdint>
-#include <iterator>
 #include <limits>
 #include <numeric>
-#include <ranges>
 #include <string_view>
 #include <system_error>
 #include <type_traits>
@@ -19,6 +17,7 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/fixedcapacityvector.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 
@@ -154,44 +153,29 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
     return ret;
   }
 
-  struct ParsedToken {
-    std::string_view name;
-    double quality{1.0};
-  };
-
-  FixedCapacityVector<ParsedToken, kNbContentEncodings> knownEncodings;  // only supported encodings captured
+  std::array<double, kNbSupportedEncodings> knownEncodingsQuality;  // per supported encoding, highest q
+  knownEncodingsQuality.fill(-1.0);
   bool sawWildcard = false;
   double wildcardQ = 0.0;
 
-  using SeenBmp = EncodingInt;  // accommodate additional encodings (gzip, deflate, zstd, none)
-
-  static_assert(sizeof(SeenBmp) * CHAR_BIT >= kNbContentEncodings);
-
-  SeenBmp seenMask = 0;  // bit i set => supported[i] already stored
-
   bool identityExplicit = false;
-  for (auto part : acceptEncoding | std::views::split(',')) {
-    std::string_view raw{&*part.begin(), static_cast<std::size_t>(std::ranges::distance(part))};
-    raw = TrimOws(raw);
+  for (http::HeaderValueReverseTokensIterator<','> it(acceptEncoding); it.hasNext();) {
+    std::string_view raw = it.next();
     if (raw.empty()) {
       continue;
     }
     auto sc = raw.find(';');
     std::string_view name = TrimOws(sc == std::string_view::npos ? raw : raw.substr(0, sc));
     double quality = ParseQ(raw);
-    if (CaseInsensitiveEqual(name, "*")) {
+    if (name == "*") {
       sawWildcard = true;
       wildcardQ = quality;
       continue;
     }
     for (std::size_t pos = 0; pos < kSupportedEncodings.size(); ++pos) {
-      if ((seenMask & (1 << pos)) != 0) {
-        continue;  // already captured earliest occurrence
-      }
       assert(IsEncodingEnabled(kSupportedEncodings[pos].enc));
       if (CaseInsensitiveEqual(name, kSupportedEncodings[pos].name)) {
-        knownEncodings.emplace_back(kSupportedEncodings[pos].name, quality);
-        seenMask |= static_cast<SeenBmp>(1 << pos);
+        knownEncodingsQuality[pos] = std::max(quality, knownEncodingsQuality[pos]);
         break;
       }
     }
@@ -217,11 +201,13 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
 
   // Evaluate explicitly listed supported encodings. We map back to server preference index (via _serverPrefIndex)
   // and pick highest q; ties resolved by lower preference index instead of client header order.
-  for (const auto &pt : knownEncodings) {
-    const auto it = std::ranges::find_if(kSupportedEncodings,
-                                         [&](const Sup &sup) { return CaseInsensitiveEqual(pt.name, sup.name); });
-    assert(it != kSupportedEncodings.end());
-    consider(it->enc, pt.quality, _serverPrefIndex[static_cast<EncodingInt>(it->enc)]);
+  for (std::size_t pos = 0; pos < kSupportedEncodings.size(); ++pos) {
+    const double quality = knownEncodingsQuality[pos];
+    if (quality < 0.0) {
+      continue;
+    }
+    const auto enc = kSupportedEncodings[pos].enc;
+    consider(enc, quality, _serverPrefIndex[static_cast<EncodingInt>(enc)]);
   }
 
   // Apply wildcard to any supported encoding not explicitly mentioned, iterating in server preference order.
@@ -229,8 +215,10 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
     for (EncodingInt pos = 0; pos < _nbPreferences; ++pos) {
       const Encoding enc = _preferenceOrdered[pos];
 
-      if (std::ranges::none_of(knownEncodings,
-                               [enc](const auto &pt) { return CaseInsensitiveEqual(pt.name, GetEncodingStr(enc)); })) {
+      const auto encPos = std::ranges::find_if(kSupportedEncodings, [enc](const Sup &sup) { return sup.enc == enc; });
+      const auto idx = static_cast<std::size_t>(std::distance(kSupportedEncodings.begin(), encPos));
+      assert(idx < kSupportedEncodings.size());
+      if (knownEncodingsQuality[idx] < 0.0) {
         consider(enc, wildcardQ, _serverPrefIndex[static_cast<EncodingInt>(enc)]);
       }
     }
