@@ -2,7 +2,6 @@
 
 #include <cassert>
 #include <cerrno>
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -11,6 +10,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoder.hpp"
@@ -20,6 +20,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-payload.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -32,10 +33,6 @@
 #include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/timedef.hpp"
-
-#ifndef NDEBUG
-#include <system_error>
-#endif
 
 namespace aeronet {
 
@@ -170,30 +167,6 @@ void HttpResponseWriter::ensureHeadersSent() {
   _state = HttpResponseWriter::State::HeadersSent;
 }
 
-void HttpResponseWriter::emitChunk(std::string_view data) {
-  assert(_state != State::Failed && _state != State::Ended);
-  assert(chunked());
-
-  // enough for 64-bit length in hex + CRLF
-  static constexpr std::size_t kMaxHexLen = 2UL * sizeof(uint64_t);
-
-  RawChars chunkBuf(kMaxHexLen + http::CRLF.size() + data.size() + http::CRLF.size());
-
-  auto res = std::to_chars(chunkBuf.data(), chunkBuf.data() + kMaxHexLen, static_cast<uint64_t>(data.size()), 16);
-  assert(res.ec == std::errc());
-  std::memcpy(res.ptr, http::CRLF.data(), http::CRLF.size());
-  chunkBuf.setSize(static_cast<std::size_t>(res.ptr + http::CRLF.size() - chunkBuf.data()));
-
-  chunkBuf.unchecked_append(data);
-  chunkBuf.unchecked_append(http::CRLF);
-  if (!enqueue(HttpResponseData(std::move(chunkBuf)))) [[unlikely]] {
-    _state = HttpResponseWriter::State::Failed;
-    log::error("Streaming: failed enqueuing coalesced chunk fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
-    return;
-  }
-  _bytesWritten += data.size();
-}
-
 void HttpResponseWriter::emitLastChunk() {
   if (!chunked() || _head || _state == State::Failed) {
     return;
@@ -243,24 +216,40 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
 
   ensureHeadersSent();
 
-  if (_activeEncoderCtx != nullptr) {
-    data = _activeEncoderCtx->encodeChunk(data);
-    if (data.empty()) {
-      return true;
-    }
-  }
-
-  if (chunked()) {
-    emitChunk(data);
-  } else if (!_head) {
-    if (!enqueue(HttpResponseData(data))) [[unlikely]] {
+  if (_activeEncoderCtx != nullptr && _compressionFormat != Encoding::none) {
+    // CRLF size will be needed for chunked framing.
+    RawChars compressedBuffer(_activeEncoderCtx->maxCompressedBytes(data.size()) +
+                              (chunked() ? http::CRLF.size() : 0UL));
+    const auto written = _activeEncoderCtx->encodeChunk(data, compressedBuffer.capacity(), compressedBuffer.data());
+    if (written < 0) [[unlikely]] {
       _state = HttpResponseWriter::State::Failed;
-      log::error("Streaming: failed enqueuing fixed body fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
+      log::error("Streaming: encoder encodeChunk() failed fd # {}", _fd);
       return false;
     }
-    _bytesWritten += data.size();
+    if (written > 0) {
+      compressedBuffer.setSize(static_cast<RawChars::size_type>(written));
+      return tryPush(std::move(compressedBuffer));
+    }
+    return true;
   }
-  return _state != State::Failed;  // backpressure signaled via connection close flag, failure sets failed state
+  if (chunked()) {
+    // chunked without compression - the size is known so we can write the chunk prefix before the actual body.
+    const auto nbDigitsHex = hex_digits(data.size());
+    const auto totalSize = nbDigitsHex + http::CRLF.size() + data.size() + http::CRLF.size();
+
+    RawChars chunkBuffer(totalSize);
+
+    to_lower_hex(data.size(), chunkBuffer.data());
+    std::memcpy(chunkBuffer.data() + nbDigitsHex, http::CRLF.data(), http::CRLF.size());
+    std::memcpy(chunkBuffer.data() + nbDigitsHex + http::CRLF.size(), data.data(), data.size());
+    std::memcpy(chunkBuffer.data() + nbDigitsHex + http::CRLF.size() + data.size(), http::CRLF.data(),
+                http::CRLF.size());
+
+    chunkBuffer.setSize(totalSize);
+
+    return tryPush(std::move(chunkBuffer), true);
+  }
+  return tryPush(RawChars(data));
 }
 
 void HttpResponseWriter::trailerAddLine(std::string_view name, std::string_view value) {
@@ -316,34 +305,31 @@ void HttpResponseWriter::end() {
   // If compression was delayed and threshold reached earlier, write() already emitted headers and compressed data.
   // Otherwise we may still have buffered identity bytes (below threshold case) — emit headers now then flush.
   ensureHeadersSent();
+
   if (_compressionActivated) {
-    auto last = _activeEncoderCtx->encodeChunk(std::string_view{});
-    if (!last.empty()) {
-      if (chunked()) {
-        emitChunk(last);
-      } else if (!_head) {
-        if (!enqueue(HttpResponseData(last))) [[unlikely]] {
-          _state = HttpResponseWriter::State::Failed;
-          log::error("Streaming: failed enqueuing final encoder output fd # {} errno={} msg={}", _fd, errno,
-                     std::strerror(errno));
-          return;
-        }
+    const std::size_t endChunkSize = _activeEncoderCtx->endChunkSize();
+    // encoders may need several calls to end() to flush all remaining data. We loop until they indicate completion.
+    RawChars last;
+    while (true) {
+      last.ensureAvailableCapacityExponential(endChunkSize + (chunked() ? http::CRLF.size() : 0UL));
+      const auto written = _activeEncoderCtx->end(last.availableCapacity(), last.data() + last.size());
+      if (written < 0) [[unlikely]] {
+        _state = HttpResponseWriter::State::Failed;
+        log::error("Streaming: encoder end() failed fd # {}", _fd);
+        return;
       }
+      if (written == 0) {
+        break;
+      }
+      last.addSize(static_cast<RawChars::size_type>(written));
+    }
+    if (!tryPush(std::move(last))) {
+      return;
     }
   } else {
     // Identity path; emit headers now (they may not have been sent yet due to delayed strategy) then flush buffered.
-    if (!_preCompressBuffer.empty()) {
-      if (chunked()) {
-        emitChunk(_preCompressBuffer);
-      } else if (!_head) {
-        if (!enqueue(HttpResponseData(std::move(_preCompressBuffer)))) [[unlikely]] {
-          _state = HttpResponseWriter::State::Failed;
-          log::error("Streaming: failed enqueuing buffered body fd # {} errno={} msg={}", _fd, errno,
-                     std::strerror(errno));
-          return;
-        }
-      }
-      _preCompressBuffer.clear();
+    if (!_preCompressBuffer.empty() && !tryPush(std::move(_preCompressBuffer))) {
+      return;
     }
   }
 
@@ -369,7 +355,7 @@ void HttpResponseWriter::end() {
 
 bool HttpResponseWriter::enqueue(HttpResponseData httpResponseData) {
   // Access the connection state to determine backpressure / closure.
-  auto cnxIt = _server->_connections.active.find(_fd);
+  const auto cnxIt = _server->_connections.active.find(_fd);
   if (cnxIt == _server->_connections.active.end()) {
     return false;
   }
@@ -403,13 +389,30 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
   const auto& compressionConfig = _server->_config.compression;
   // Accumulate data into the pre-compression buffer up to minBytes. Always buffer the entire incoming data until
   // we cross the threshold (or end() is called).
-  _preCompressBuffer.append(data);
+  const auto additionalChunkedCapacity = (chunked() ? http::CRLF.size() : 0UL);
+  _preCompressBuffer.ensureAvailableCapacityExponential(data.size() + additionalChunkedCapacity);
+  _preCompressBuffer.unchecked_append(data);
   if (_preCompressBuffer.size() < compressionConfig.minBytes) {
     // Still below threshold; do not emit headers/body yet.
     return true;
   }
   // Threshold reached exactly or exceeded: activate encoder.
   _activeEncoderCtx = _server->_compression.makeContext(_compressionFormat);
+
+  RawChars compressedBuffer(_activeEncoderCtx->maxCompressedBytes(_preCompressBuffer.size()) +
+                            additionalChunkedCapacity);
+  const auto written =
+      _activeEncoderCtx->encodeChunk(_preCompressBuffer, compressedBuffer.capacity(), compressedBuffer.data());
+  if (written < 0) [[unlikely]] {
+    _state = HttpResponseWriter::State::Failed;
+    log::error("Streaming: encoder encodeChunk() failed fd # {}", _fd);
+    return false;
+  }
+
+  if (written > 0) {
+    compressedBuffer.setSize(static_cast<RawChars::size_type>(written));
+  }
+
   _compressionActivated = true;
   // Set Content-Encoding prior to emitting headers.
   // We can use headerAddLine instead of header because at this point the user has not set it.
@@ -419,17 +422,53 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
       _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
     }
   }
+
   ensureHeadersSent();
-  // Compress buffered bytes.
-  auto firstOut = _activeEncoderCtx->encodeChunk(_preCompressBuffer);
+
   _preCompressBuffer.clear();
-  if (!firstOut.empty()) {
-    if (chunked()) {
-      emitChunk(firstOut);
-    } else {
-      return enqueue(HttpResponseData(firstOut));
-    }
+  if (written > 0) {
+    return tryPush(std::move(compressedBuffer));
   }
+  return true;
+}
+
+bool HttpResponseWriter::tryPush(RawChars data, bool doNotWriteHexPrefix) {
+  assert(_state != State::Failed);
+  assert(_state != State::Ended);
+  if (_head) {
+    return true;
+  }
+  const auto dataSize = data.size();
+
+  HttpResponseData responseData;
+
+  if (doNotWriteHexPrefix || !chunked()) {
+    responseData = HttpResponseData(std::move(data));
+  } else {
+    const auto nbDigitsHex = hex_digits(dataSize);
+
+    RawChars prefix(nbDigitsHex + http::CRLF.size());
+
+    to_lower_hex(dataSize, prefix.data());
+    std::memcpy(prefix.data() + nbDigitsHex, http::CRLF.data(), http::CRLF.size());
+    prefix.setSize(nbDigitsHex + http::CRLF.size());
+
+    // do not use append here to avoid exponential growth of the buffer
+    // capacity of the additional CRLF is already reserved
+    assert(data.availableCapacity() >= http::CRLF.size());
+    data.unchecked_append(http::CRLF);
+
+    // use the dual buffers with writev to avoid a memmove (a small allocation + writev with dual buffers is probably
+    // cheaper than a big memmove)
+    responseData = HttpResponseData(std::move(prefix), HttpPayload(std::move(data)));
+  }
+
+  if (!enqueue(std::move(responseData))) [[unlikely]] {
+    _state = HttpResponseWriter::State::Failed;
+    log::error("Streaming: failed enqueuing coalesced chunk fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
+    return false;
+  }
+  _bytesWritten += dataSize;
   return true;
 }
 

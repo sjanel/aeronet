@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <new>
-#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -23,13 +22,10 @@ void* BrotliScratch::Alloc(void* opaque, size_t size) {
 }
 
 BrotliEncoderContext::BrotliEncoderContext(BrotliEncoderContext&& rhs) noexcept
-    : _pBuf(std::exchange(rhs._pBuf, nullptr)),
-      _scratch(std::exchange(rhs._scratch, nullptr)),
-      _state(std::move(rhs._state)) {}
+    : _scratch(std::exchange(rhs._scratch, nullptr)), _state(std::move(rhs._state)) {}
 
 BrotliEncoderContext& BrotliEncoderContext::operator=(BrotliEncoderContext&& rhs) noexcept {
   if (this != &rhs) [[likely]] {
-    _pBuf = std::exchange(rhs._pBuf, nullptr);
     _scratch = std::exchange(rhs._scratch, nullptr);
     _state = std::move(rhs._state);
   }
@@ -53,46 +49,57 @@ void BrotliEncoderContext::init(int quality, int window) {
   assert(res == BROTLI_TRUE);
 }
 
-std::string_view BrotliEncoderContext::encodeChunk(std::string_view chunk) {
-  const uint8_t* nextIn = reinterpret_cast<const uint8_t*>(chunk.data());
-  const BrotliEncoderOperation op = chunk.empty() ? BROTLI_OPERATION_FINISH : BROTLI_OPERATION_PROCESS;
-  const auto chunkCapacity = BrotliEncoderMaxCompressedSize(chunk.size());
-  std::size_t availIn = chunk.size();
-
-  assert(_pBuf != nullptr);
-  auto& buf = *_pBuf;
-
-  // Semantics:
-  //  - If finish == false: process input until all provided bytes are consumed; do not attempt to finish stream.
-  //  - If finish == true: keep invoking the encoder until the stream reports finished (all input consumed and flush
-  //  complete).
-  for (buf.clear();;) {
-    buf.ensureAvailableCapacityExponential(chunkCapacity);
-
-    uint8_t* nextOut = reinterpret_cast<uint8_t*>(buf.data() + buf.size());
-    std::size_t availOut = buf.availableCapacity();
-
-    if (BrotliEncoderCompressStream(_state.get(), op, &availIn, &nextIn, &availOut, &nextOut, nullptr) == BROTLI_FALSE)
-        [[unlikely]] {
-      throw std::runtime_error("BrotliEncoderCompressStream failed");
-    }
-    buf.setSize(buf.capacity() - availOut);
-
-    if (chunk.empty()) {
-      // Finishing mode: break only when encoder reports finished after issuing FINISH op
-      if (BrotliEncoderIsFinished(_state.get()) == BROTLI_TRUE) [[likely]] {
-        break;
-      }
-    } else {
-      // Non-finishing mode: stop once caller's input fully consumed OR output buffer filled (loop continues on fill)
-      if (availIn == 0) {
-        break;
-      }
-    }
-
-    // If encoder produced output filling current buffer chunk, loop to grow and continue.
+int64_t BrotliEncoderContext::encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) {
+  if (data.empty()) {
+    return 0;
   }
-  return buf;
+
+  const uint8_t* nextIn = reinterpret_cast<const uint8_t*>(data.data());
+  std::size_t availIn = data.size();
+
+  uint8_t* nextOut = reinterpret_cast<uint8_t*>(buf);
+  std::size_t availOut = availableCapacity;
+
+  if (BrotliEncoderCompressStream(_state.get(), BROTLI_OPERATION_PROCESS, &availIn, &nextIn, &availOut, &nextOut,
+                                  nullptr) == BROTLI_FALSE) [[unlikely]] {
+    return -1;  // immediate error
+  }
+
+  if (availIn != 0) [[unlikely]] {
+    // Brotli refused to consume all input → fatal
+    return -1;
+  }
+
+  return static_cast<int64_t>(availableCapacity - availOut);
+}
+
+std::size_t BrotliEncoderContext::maxCompressedBytes(std::size_t uncompressedSize) const {
+  return BrotliEncoderMaxCompressedSize(uncompressedSize);
+}
+
+int64_t BrotliEncoderContext::end(std::size_t availableCapacity, char* buf) noexcept {
+  const uint8_t* nextIn = nullptr;
+  std::size_t availIn = 0;
+
+  auto* nextOut = reinterpret_cast<uint8_t*>(buf);
+  std::size_t availOut = availableCapacity;
+  const std::size_t beforeOut = availOut;
+
+  if (BrotliEncoderCompressStream(_state.get(), BROTLI_OPERATION_FINISH, &availIn, &nextIn, &availOut, &nextOut,
+                                  nullptr) == BROTLI_FALSE) [[unlikely]] {
+    return -1;
+  }
+
+  const std::size_t writtenNow = beforeOut - availOut;
+  if (BrotliEncoderIsFinished(_state.get()) == BROTLI_TRUE) {
+    return static_cast<int64_t>(writtenNow);
+  }
+
+  if (writtenNow == 0) [[unlikely]] {
+    return -1;
+  }
+
+  return static_cast<int64_t>(writtenNow);
 }
 
 BrotliEncoder::BrotliEncoder(BrotliEncoder&& rhs) noexcept

@@ -1085,4 +1085,159 @@ TEST(Http2ProtocolHandler, ResponseMiddlewareExecutes) {
   EXPECT_EQ(GetHeaderValue(resp, "x-middleware-added"), "test-value");
 }
 
+TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEncoding) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2Config serverCfg;
+  Http2Config clientCfg;
+  HttpServerConfig serverConfig;
+
+  // Configure server with NO supported encodings
+  serverConfig.compression.preferredFormats.clear();
+
+  internal::ResponseCompressionState compressionState(serverConfig.compression);
+
+  Http2ProtocolHandler handler(serverCfg, router, serverConfig, compressionState, telemetry, tmpBuffer);
+  Http2Connection client(clientCfg, false);
+  ::aeronet::ConnectionState state;
+
+  vector<HeaderEvent> clientHeaders;
+  client.setOnHeadersDecoded([&clientHeaders](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
+    HeaderEvent ev;
+    ev.streamId = streamId;
+    ev.endStream = endStream;
+    for (const auto& [name, value] : headers) {
+      ev.headers.emplace_back(name, value);
+    }
+    clientHeaders.push_back(std::move(ev));
+  });
+
+  // Establish connection: send client preface
+  client.sendClientPreface();
+  {
+    auto out = client.getPendingOutput();
+    std::span<const std::byte> bytes = out;
+    std::size_t safetyIters = 0;
+    while (!bytes.empty()) {
+      ++safetyIters;
+      if (safetyIters > 64U) {
+        ADD_FAILURE() << "feedHandler got stuck";
+        return;
+      }
+      auto res = handler.processInput(bytes, state);
+      if (res.bytesConsumed == 0) {
+        ADD_FAILURE() << "No progress feeding handler";
+        return;
+      }
+      bytes = bytes.subspan(res.bytesConsumed);
+    }
+    client.onOutputWritten(client.getPendingOutput().size());
+  }
+
+  // Pump server response
+  while (handler.hasPendingOutput()) {
+    auto out = handler.getPendingOutput();
+    std::span<const std::byte> bytes = out;
+    std::size_t safetyIters = 0;
+    while (!bytes.empty()) {
+      ++safetyIters;
+      if (safetyIters > 64U) {
+        ADD_FAILURE() << "feedConn got stuck";
+        return;
+      }
+      const auto prevState = client.state();
+      auto res = client.processInput(bytes);
+      if (res.action == Http2Connection::ProcessResult::Action::Error ||
+          res.action == Http2Connection::ProcessResult::Action::Closed ||
+          res.action == Http2Connection::ProcessResult::Action::GoAway) {
+        if (res.bytesConsumed > 0) {
+          bytes = bytes.subspan(res.bytesConsumed);
+        }
+        break;
+      }
+      if (res.bytesConsumed > 0) {
+        bytes = bytes.subspan(res.bytesConsumed);
+        continue;
+      }
+      if (client.state() != prevState) {
+        continue;
+      }
+      break;
+    }
+    handler.onOutputWritten(out.size());
+  }
+
+  // Send request with Accept-Encoding that explicitly forbids identity with q=0
+  // and requests only unsupported encodings. This should trigger rejection.
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/test"));
+  // Accept only unsupported "hypothetical-encoding" and forbid identity explicitly
+  hdrs.append(MakeHttp1HeaderLine("accept-encoding", "hypothetical-encoding, identity;q=0"));
+  const auto ok = client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  // Pump client request to server
+  {
+    auto out = client.getPendingOutput();
+    std::span<const std::byte> bytes = out;
+    std::size_t safetyIters = 0;
+    while (!bytes.empty()) {
+      ++safetyIters;
+      if (safetyIters > 64U) {
+        ADD_FAILURE() << "feedHandler got stuck";
+        return;
+      }
+      auto res = handler.processInput(bytes, state);
+      if (res.bytesConsumed == 0) {
+        ADD_FAILURE() << "No progress feeding handler";
+        return;
+      }
+      bytes = bytes.subspan(res.bytesConsumed);
+    }
+    client.onOutputWritten(client.getPendingOutput().size());
+  }
+
+  // Pump server response back to client
+  while (handler.hasPendingOutput()) {
+    auto out = handler.getPendingOutput();
+    std::span<const std::byte> bytes = out;
+    std::size_t safetyIters = 0;
+    while (!bytes.empty()) {
+      ++safetyIters;
+      if (safetyIters > 64U) {
+        ADD_FAILURE() << "feedConn got stuck";
+        return;
+      }
+      const auto prevState = client.state();
+      auto res = client.processInput(bytes);
+      if (res.action == Http2Connection::ProcessResult::Action::Error ||
+          res.action == Http2Connection::ProcessResult::Action::Closed ||
+          res.action == Http2Connection::ProcessResult::Action::GoAway) {
+        if (res.bytesConsumed > 0) {
+          bytes = bytes.subspan(res.bytesConsumed);
+        }
+        break;
+      }
+      if (res.bytesConsumed > 0) {
+        bytes = bytes.subspan(res.bytesConsumed);
+        continue;
+      }
+      if (client.state() != prevState) {
+        continue;
+      }
+      break;
+    }
+    handler.onOutputWritten(out.size());
+  }
+
+  // Verify that server responded with 406 Not Acceptable
+  ASSERT_FALSE(clientHeaders.empty());
+  const auto& resp = clientHeaders.back();
+  EXPECT_EQ(GetHeaderValue(resp, ":status"), "406");
+}
+
 }  // namespace aeronet::http2

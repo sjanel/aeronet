@@ -8,6 +8,7 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoder.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -42,8 +43,6 @@ struct ResponseCompressionState {
 
   EncodingSelector selector;
 
-  RawChars sharedBuffer;
-
 #ifdef AERONET_ENABLE_BROTLI
   BrotliEncoder brotliEncoder;
 #endif
@@ -66,8 +65,7 @@ struct RequestDecompressionResult {
 class HttpCodec {
  public:
   static void TryCompressResponse(ResponseCompressionState& compressionState,
-                                  const CompressionConfig& compressionConfig, std::string_view requestAcceptEncoding,
-                                  HttpResponse& resp);
+                                  const CompressionConfig& compressionConfig, Encoding encoding, HttpResponse& resp);
 
   /// Decompress request body for fixed-length requests (so they cannot contain any trailers).
   static RequestDecompressionResult MaybeDecompressRequestBody(const DecompressionConfig& decompressionConfig,
