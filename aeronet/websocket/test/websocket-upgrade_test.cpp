@@ -39,6 +39,7 @@ TEST(UpgradeHandlerTest, IsValidWebSocketKey_NootEndingWithDoubleEquals) {
 TEST(UpgradeHandlerTest, IsValidWebSocketKey_ExactlyWrongPadding) {
   // Key with wrong padding position
   EXPECT_FALSE(IsValidWebSocketKey("dGhlIHNhbXBsZSBub25jZQA="));  // Single = at wrong position
+  EXPECT_FALSE(IsValidWebSocketKey("dGhlIHNhbXBsZSBub25jZQ=A"));  // Single = at wrong position
 }
 
 TEST(UpgradeHandlerTest, IsValidWebSocketKey_NonBase64InMiddle) {
