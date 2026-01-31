@@ -1,22 +1,22 @@
 #include "aeronet/zstd-encoder.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
-#include <format>
+#include <cstdint>
 #include <new>
-#include <stdexcept>
 #include <string_view>
 #include <utility>
 
 namespace aeronet {
 
 ZstdEncoderContext::ZstdEncoderContext(ZstdEncoderContext&& rhs) noexcept
-    : _pBuf(std::exchange(rhs._pBuf, nullptr)), _ctx(std::move(rhs._ctx)) {}
+    : _ctx(std::move(rhs._ctx)), _endDone(std::exchange(rhs._endDone, false)) {}
 
 ZstdEncoderContext& ZstdEncoderContext::operator=(ZstdEncoderContext&& rhs) noexcept {
   if (this != &rhs) [[likely]] {
-    _pBuf = std::exchange(rhs._pBuf, nullptr);
     _ctx = std::move(rhs._ctx);
+    _endDone = std::exchange(rhs._endDone, false);
   }
   return *this;
 }
@@ -38,40 +38,54 @@ void ZstdEncoderContext::init(int level, int windowLog) {
     ret = ZSTD_CCtx_setParameter(_ctx.get(), ZSTD_c_windowLog, windowLog);
     assert(ZSTD_isError(ret) == 0U);
   }
+  _endDone = false;
 }
 
-std::string_view ZstdEncoderContext::encodeChunk(std::string_view chunk) {
-  assert(_pBuf != nullptr);
-  auto& buf = *_pBuf;
-
-  ZSTD_inBuffer inBuf{chunk.data(), chunk.size(), 0};
-  const auto mode = chunk.empty() ? ZSTD_e_end : ZSTD_e_continue;
-  const auto chunkCapacity = ZSTD_CStreamOutSize();
-
-  for (buf.clear();;) {
-    buf.ensureAvailableCapacityExponential(chunkCapacity);
-
-    // Provide zstd an output window starting at the current end of buf.
-    // Important: ZSTD_outBuffer.pos is relative to dst, so always 0 here.
-    ZSTD_outBuffer outBuf{buf.data() + buf.size(), buf.availableCapacity(), 0};
-
-    const std::size_t ret = ZSTD_compressStream2(_ctx.get(), &outBuf, &inBuf, mode);
-    if (ZSTD_isError(ret) != 0U) [[unlikely]] {
-      throw std::runtime_error(std::format("ZSTD_compressStream2 error: {}", ZSTD_getErrorName(ret)));
-    }
-
-    buf.addSize(outBuf.pos);
-    if (chunk.empty()) {
-      if (ret == 0) [[likely]] {
-        break;
-      }
-    } else {
-      if (inBuf.pos == inBuf.size) {
-        break;
-      }
-    }
+int64_t ZstdEncoderContext::encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) {
+  if (data.empty()) {
+    return 0;
   }
-  return buf;
+
+  ZSTD_inBuffer inBuf{data.data(), data.size(), 0};
+  ZSTD_outBuffer outBuf{buf, availableCapacity, 0};
+  const std::size_t ret = ZSTD_compressStream2(_ctx.get(), &outBuf, &inBuf, ZSTD_e_continue);
+  if (ZSTD_isError(ret) != 0U) [[unlikely]] {
+    return -1;
+  }
+
+  if (inBuf.pos != inBuf.size) [[unlikely]] {
+    return -1;
+  }
+
+  return static_cast<int64_t>(outBuf.pos);
+}
+
+std::size_t ZstdEncoderContext::maxCompressedBytes(std::size_t uncompressedSize) const {
+  return std::max(ZSTD_compressBound(uncompressedSize), ZSTD_CStreamOutSize());
+}
+
+int64_t ZstdEncoderContext::end(std::size_t availableCapacity, char* buf) noexcept {
+  if (_endDone) {
+    return 0;
+  }
+
+  ZSTD_inBuffer inBuf{nullptr, 0, 0};
+  ZSTD_outBuffer outBuf{buf, availableCapacity, 0};
+  const std::size_t ret = ZSTD_compressStream2(_ctx.get(), &outBuf, &inBuf, ZSTD_e_end);
+  if (ZSTD_isError(ret) != 0U) [[unlikely]] {
+    return -1;
+  }
+
+  if (ret == 0) {
+    _endDone = true;
+    return static_cast<int64_t>(outBuf.pos);
+  }
+
+  if (outBuf.pos == 0) [[unlikely]] {
+    return -1;
+  }
+
+  return static_cast<int64_t>(outBuf.pos);
 }
 
 std::size_t ZstdEncoder::encodeFull(std::string_view data, std::size_t availableCapacity, char* buf) {

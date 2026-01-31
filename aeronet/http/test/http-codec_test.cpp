@@ -5,6 +5,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -105,13 +106,17 @@ TEST(HttpCodecCompression, ContentTypeAllowListBlocksCompression) {
   resp.body(body, http::ContentTypeApplicationJson);
 
   // Try compress - application/json response Content-Type is not in allowlist -> no compression
-  HttpCodec::TryCompressResponse(state, cfg, "gzip, deflate", resp);
+  HttpCodec::TryCompressResponse(state, cfg, Encoding::gzip, resp);
   EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
 
   // Now use an allowed response Content-Type
   HttpResponse resp2(http::StatusCodeOK);
   resp2.body(body, http::ContentTypeTextPlain);
-  HttpCodec::TryCompressResponse(state, cfg, "gzip, deflate", resp2);
+#ifdef AERONET_ENABLE_ZLIB
+  HttpCodec::TryCompressResponse(state, cfg, Encoding::gzip, resp2);
+#else
+  EXPECT_THROW(HttpCodec::TryCompressResponse(state, cfg, Encoding::gzip, resp2), std::invalid_argument);
+#endif
 
   // If encoders present, compression should be applied (Content-Encoding set). Otherwise no-op.
 #ifdef AERONET_ENABLE_ZLIB
@@ -141,13 +146,8 @@ TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
   CompressionConfig cfg;
   cfg.minBytes = 16U;
   cfg.addVaryAcceptEncodingHeader = true;
-#ifdef AERONET_ENABLE_ZLIB
   cfg.contentTypeAllowList.clear();
   cfg.contentTypeAllowList.append("text/plain");
-#else
-  cfg.contentTypeAllowList.clear();
-  cfg.contentTypeAllowList.append("text/plain");
-#endif
 #ifdef AERONET_ENABLE_ZLIB
   cfg.preferredFormats.push_back(Encoding::gzip);
 #endif
@@ -157,20 +157,17 @@ TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
   std::string_view acceptEncoding = "gzip";
 
   for (std::string_view varyContent : kVaryHeaderContent) {
-    HttpResponse resp(http::StatusCodeOK);
-    resp.body(body, http::ContentTypeTextPlain);
+    HttpResponse resp(http::StatusCodeOK, body, http::ContentTypeTextPlain);
     if (varyContent.data() != nullptr) {
       resp.header(http::Vary, varyContent);
     }
     // Diagnostics: ensure negotiation chooses gzip and encoder is present when expected.
-    [[maybe_unused]] auto neg = state.selector.negotiateAcceptEncoding(acceptEncoding);
+    const auto neg = state.selector.negotiateAcceptEncoding(acceptEncoding);
 #ifdef AERONET_ENABLE_ZLIB
     EXPECT_EQ(neg.encoding, Encoding::gzip);
-#endif
 
-    HttpCodec::TryCompressResponse(state, cfg, acceptEncoding, resp);
+    HttpCodec::TryCompressResponse(state, cfg, neg.encoding, resp);
 
-#ifdef AERONET_ENABLE_ZLIB
     EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), acceptEncoding);
     const auto contentLen = resp.headerValueOrEmpty(http::ContentLength);
     ASSERT_FALSE(contentLen.empty());
@@ -201,9 +198,8 @@ TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
       expected.append(http::AcceptEncoding);
       EXPECT_EQ(varyValue, expected);
     }
-
 #else
-    SUCCEED();  // no encoder built, nothing to assert
+    EXPECT_EQ(neg.encoding, Encoding::none);
 #endif
   }
 }
@@ -223,12 +219,10 @@ TEST(HttpCodecCompression, VaryHeaderNotAddedWhenDisabled) {
 
   const std::string body(4096, 'A');
 
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body(body, http::ContentTypeTextPlain);
-
-  HttpCodec::TryCompressResponse(state, cfg, "gzip", resp);
+  HttpResponse resp(body, http::ContentTypeTextPlain);
 
 #ifdef AERONET_ENABLE_ZLIB
+  HttpCodec::TryCompressResponse(state, cfg, Encoding::gzip, resp);
   // Compression should be applied but Vary must NOT be set because addVaryHeader == false
   EXPECT_FALSE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
   EXPECT_TRUE(resp.headerValueOrEmpty(http::Vary).empty());
@@ -268,7 +262,7 @@ TEST(HttpCodecCompression, GzipCompressedBodyRoundTrips) {
     EXPECT_EQ(static_cast<unsigned char>(direct[1]), 0x8bU);
   }
 
-  HttpCodec::TryCompressResponse(state, cfg, "gzip", resp);
+  HttpCodec::TryCompressResponse(state, cfg, Encoding::gzip, resp);
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), http::gzip);
 
   const std::string_view compressedBody = resp.bodyInMemory();
@@ -300,7 +294,7 @@ TEST(HttpCodecCompression, MaxCompressRatioCanDisableCompression) {
   auto body = test::MakePatternedPayload(cfg.minBytes);
 
   HttpResponse resp(body);
-  HttpCodec::TryCompressResponse(state, cfg, "gzip", resp);
+  HttpCodec::TryCompressResponse(state, cfg, Encoding::gzip, resp);
 
   ASSERT_FALSE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
   const std::size_t compressedSize = resp.bodyInMemoryLength();
@@ -315,7 +309,7 @@ TEST(HttpCodecCompression, MaxCompressRatioCanDisableCompression) {
   state2.createEncoders(cfg2);
 
   HttpResponse resp2(body);
-  HttpCodec::TryCompressResponse(state2, cfg2, "gzip", resp2);
+  HttpCodec::TryCompressResponse(state2, cfg2, Encoding::gzip, resp2);
 
   EXPECT_TRUE(resp2.headerValueOrEmpty(http::ContentEncoding).empty());
 }
@@ -338,7 +332,7 @@ TEST(HttpCodecCompression, ImpossibleCompressionZstd) {
   auto body = test::MakeRandomPayload(cfg.minBytes);
 
   HttpResponse resp(body);
-  HttpCodec::TryCompressResponse(state, cfg, "zstd", resp);
+  HttpCodec::TryCompressResponse(state, cfg, Encoding::zstd, resp);
 
   EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));
   EXPECT_EQ(resp.bodyInMemoryLength(), body.size());
@@ -507,7 +501,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_ExpansionTooLargeReturnsPaylo
 
   CompressionConfig encCfg;  // default encoder config is fine for generating compressed bytes
   RawChars buf;
-  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, buf, encCfg.zlib.level);
+  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, encCfg.zlib.level);
   RawChars compressedOut(plain.size());
   {
     const std::size_t written =
@@ -626,33 +620,55 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
   {
     auto ctx = state.makeContext(Encoding::gzip);
     ASSERT_NE(ctx, nullptr);
-    const std::string_view produced = ctx->encodeChunk(plain);
-    const std::string_view producedFinal = ctx->encodeChunk(std::string_view());
-    EXPECT_TRUE(!produced.empty() || !producedFinal.empty());
+    RawChars produced(ctx->maxCompressedBytes(plain.size()));
+    const auto written = ctx->encodeChunk(plain, produced.capacity(), produced.data());
+    EXPECT_EQ(ctx->encodeChunk({}, produced.capacity(), produced.data()), 0);
+    RawChars producedFinal(ctx->endChunkSize());
+    int64_t tailWritten = 0;
+    do {
+      tailWritten = ctx->end(producedFinal.capacity(), producedFinal.data());
+      EXPECT_GE(tailWritten, 0);
+    } while (tailWritten > 0);
+    EXPECT_GE(written, 0);
   }
 
   {
     auto ctx = state.makeContext(Encoding::gzip);
     ASSERT_NE(ctx, nullptr);
-    // Simulate extremely small output by asking context to encode an empty chunk first
-    // (some encoders may still produce headers); we at least assert that encodeChunk can be called.
-    [[maybe_unused]] const std::string_view produced = ctx->encodeChunk(std::string_view());
-    // produced may be empty for some implementations but call must succeed
+    // End the stream without payload: call must succeed without throwing.
+    RawChars tail(ctx->endChunkSize());
+    int64_t tailWritten = 0;
+    do {
+      tailWritten = ctx->end(tail.capacity(), tail.data());
+      ASSERT_GE(tailWritten, 0);
+    } while (tailWritten > 0);
     SUCCEED();
   }
 
   {
     auto ctx = state.makeContext(Encoding::deflate);
     ASSERT_NE(ctx, nullptr);
-    const std::string_view produced = ctx->encodeChunk(plain);
-    const std::string_view producedFinal = ctx->encodeChunk(std::string_view());
-    EXPECT_TRUE(!produced.empty() || !producedFinal.empty());
+    RawChars produced(ctx->maxCompressedBytes(plain.size()));
+    const auto written = ctx->encodeChunk(plain, produced.capacity(), produced.data());
+    EXPECT_EQ(ctx->encodeChunk({}, produced.capacity(), produced.data()), 0);
+    RawChars producedFinal(ctx->endChunkSize());
+    int64_t tailWritten = 0;
+    do {
+      tailWritten = ctx->end(producedFinal.capacity(), producedFinal.data());
+      EXPECT_GE(tailWritten, 0);
+    } while (tailWritten > 0);
+    EXPECT_GE(written, 0);
   }
 
   {
     auto ctx = state.makeContext(Encoding::deflate);
     ASSERT_NE(ctx, nullptr);
-    [[maybe_unused]] const std::string_view produced = ctx->encodeChunk(std::string_view());
+    RawChars tail(ctx->endChunkSize());
+    int64_t tailWritten = 0;
+    do {
+      tailWritten = ctx->end(tail.capacity(), tail.data());
+      ASSERT_GE(tailWritten, 0);
+    } while (tailWritten > 0);
     SUCCEED();
   }
 #endif
@@ -661,15 +677,27 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
   {
     auto ctx = state.makeContext(Encoding::zstd);
     ASSERT_NE(ctx, nullptr);
-    const std::string_view produced = ctx->encodeChunk(plain);
-    const std::string_view producedFinal = ctx->encodeChunk(std::string_view());
-    EXPECT_TRUE(!produced.empty() || !producedFinal.empty());
+    RawChars produced(ctx->maxCompressedBytes(plain.size()));
+    const auto written = ctx->encodeChunk(plain, produced.capacity(), produced.data());
+    EXPECT_EQ(ctx->encodeChunk({}, produced.capacity(), produced.data()), 0);
+    RawChars producedFinal(ctx->endChunkSize());
+    int64_t tailWritten = 0;
+    do {
+      tailWritten = ctx->end(producedFinal.capacity(), producedFinal.data());
+      EXPECT_GE(tailWritten, 0);
+    } while (tailWritten > 0);
+    EXPECT_GE(written, 0);
   }
 
   {
     auto ctx = state.makeContext(Encoding::zstd);
     ASSERT_NE(ctx, nullptr);
-    [[maybe_unused]] const std::string_view produced = ctx->encodeChunk(std::string_view());
+    RawChars tail(ctx->endChunkSize());
+    int64_t tailWritten = 0;
+    do {
+      tailWritten = ctx->end(tail.capacity(), tail.data());
+      ASSERT_GE(tailWritten, 0);
+    } while (tailWritten > 0);
     SUCCEED();
   }
 #endif
@@ -678,15 +706,27 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
   {
     auto ctx = state.makeContext(Encoding::br);
     ASSERT_NE(ctx, nullptr);
-    const std::string_view produced = ctx->encodeChunk(plain);
-    const std::string_view producedFinal = ctx->encodeChunk(std::string_view());
-    EXPECT_TRUE(!produced.empty() || !producedFinal.empty());
+    RawChars produced(ctx->maxCompressedBytes(plain.size()));
+    const auto written = ctx->encodeChunk(plain, produced.capacity(), produced.data());
+    EXPECT_EQ(ctx->encodeChunk({}, produced.capacity(), produced.data()), 0);
+    RawChars producedFinal(ctx->endChunkSize());
+    int64_t tailWritten = 0;
+    do {
+      tailWritten = ctx->end(producedFinal.capacity(), producedFinal.data());
+      EXPECT_GE(tailWritten, 0);
+    } while (tailWritten > 0);
+    EXPECT_GE(written, 0);
   }
 
   {
     auto ctx = state.makeContext(Encoding::br);
     ASSERT_NE(ctx, nullptr);
-    [[maybe_unused]] const std::string_view produced = ctx->encodeChunk(std::string_view());
+    RawChars tail(ctx->endChunkSize());
+    int64_t tailWritten = 0;
+    do {
+      tailWritten = ctx->end(tail.capacity(), tail.data());
+      ASSERT_GE(tailWritten, 0);
+    } while (tailWritten > 0);
     SUCCEED();
   }
 #endif
@@ -713,7 +753,7 @@ TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithou
   const std::string plain = "small payload";
   CompressionConfig encCfg;
   RawChars buf;
-  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, buf, encCfg.zlib.level);
+  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, encCfg.zlib.level);
   RawChars compressedOut(64UL + plain.size());
   {
     const std::size_t written = encoder.encodeFull(plain, compressedOut.capacity(), compressedOut.data());

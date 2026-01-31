@@ -8,15 +8,12 @@
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoder.hpp"
-#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 
 class ZstdEncoderContext final : public EncoderContext {
  public:
   ZstdEncoderContext() noexcept = default;
-
-  explicit ZstdEncoderContext(RawChars& sharedBuf) : _pBuf(&sharedBuf) {}
 
   ZstdEncoderContext(const ZstdEncoderContext&) = delete;
   ZstdEncoderContext(ZstdEncoderContext&& rhs) noexcept;
@@ -25,7 +22,13 @@ class ZstdEncoderContext final : public EncoderContext {
 
   ~ZstdEncoderContext() override = default;
 
-  std::string_view encodeChunk(std::string_view chunk) override;
+  [[nodiscard]] std::size_t maxCompressedBytes(std::size_t uncompressedSize) const override;
+
+  [[nodiscard]] std::size_t endChunkSize() const override { return ZSTD_CStreamOutSize(); }
+
+  int64_t encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) override;
+
+  int64_t end(std::size_t availableCapacity, char* buf) noexcept override;
 
   /// Initialize (or reinitialize) the compression context with given parameters.
   /// Reuses internal allocations if already initialized.
@@ -38,15 +41,15 @@ class ZstdEncoderContext final : public EncoderContext {
     void operator()(ZSTD_CCtx* ctx) const noexcept { ZSTD_freeCCtx(ctx); }
   };
 
-  RawChars* _pBuf{nullptr};
   std::unique_ptr<ZSTD_CCtx, ZstdCtxDeleter> _ctx;
+  bool _endDone{false};
 };
 
 class ZstdEncoder {
  public:
   ZstdEncoder() noexcept = default;
 
-  explicit ZstdEncoder(RawChars& buf, CompressionConfig::Zstd cfg) : _cfg(cfg), _ctx(buf) {}
+  explicit ZstdEncoder(CompressionConfig::Zstd cfg) : _cfg(cfg) {}
 
   std::size_t encodeFull(std::string_view data, std::size_t availableCapacity, char* buf);
 

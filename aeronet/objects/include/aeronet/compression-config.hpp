@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -23,6 +24,10 @@ namespace aeronet {
 
 struct CompressionConfig {
   void validate() const;
+
+  [[nodiscard]] std::size_t maxCompressedBytes(std::size_t uncompressedBytes) const {
+    return static_cast<std::size_t>(std::ceil(static_cast<double>(uncompressedBytes) * maxCompressRatio));
+  }
 
   // Preferred order of formats to negotiate (first supported & accepted wins).
   // If empty, defaults to enumeration order of Encoding.

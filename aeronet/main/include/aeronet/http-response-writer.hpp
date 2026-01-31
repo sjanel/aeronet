@@ -189,12 +189,13 @@ class HttpResponseWriter {
                      std::span<const ResponseMiddleware> routeResponseMiddleware);
 
   void ensureHeadersSent();
-  void emitChunk(std::string_view data);
   void emitLastChunk();
 
   bool enqueue(HttpResponseData httpResponseData);
 
   bool accumulateInPreCompressBuffer(std::string_view data);
+
+  bool tryPush(RawChars data, bool doNotWriteHexPrefix = false);
 
   [[nodiscard]] bool chunked() const { return _declaredLength == 0 && !_head; }
 
