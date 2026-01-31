@@ -489,7 +489,11 @@ TYPED_TEST(RawBaseTest, MallocFails) {
   test::FailNextMalloc();
   EXPECT_NO_THROW(RawT(0UL));  // zero-size allocation should not fail
   RawT buf1(10);
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+  test::FailNextMalloc();
+#else
   test::FailNextRealloc();
+#endif
   EXPECT_THROW(buf1.reserve(32UL), std::bad_alloc);
 }
 
