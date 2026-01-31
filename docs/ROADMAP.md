@@ -3,6 +3,7 @@
 ## Recently completed
 
 - `makeResponse` helpers from the handlers to reduce memory moves by adding all global headers at once.
+- `MSG_ZEROCOPY` support for large payloads on Linux (with fallback path). Configurable via `HttpServerConfig::withZerocopyMode()` with modes: `Disabled`, `Opportunistic` (default), `Enabled`. Threshold is 16KB. See [zerocopy.hpp](../aeronet/sys/include/aeronet/zerocopy.hpp). Now supports kTLS connections by bypassing OpenSSL's SSL_write and using sendmsg() directly on the kTLS socket.
 
 ## High priority
 
@@ -24,17 +25,14 @@
 - **Structured logging / pluggable sinks** - Basic logging functional; advanced hooks allow custom formatters/destinations
 - **Enhanced parser diagnostics** (byte offset in parse errors for better debugging)
 - **Performance improvements**:
-  - `MSG_ZEROCOPY` support for large payloads on Linux (with fallback)
   - `TCP_CORK` / `TCP_NOPUSH` for response header/body coalescing
   - Further hot-path cache locality optimization
 
 ### Performance improvement ideas
 
-- Reduce syscalls via batching (`writev`), response buffering strategy, header/body coalescing.
 - Use kernel helpers where appropriate: `sendfile`, `TCP_CORK` / `TCP_NOPUSH` to coalesce.
 - Enforce backpressure correctness to avoid overload and wasted work.
 - Focus on cache locality in hot paths; measure before/after.
-- `MSG_ZEROCOPY` for large payloads on Linux (requires fallback path).
 - Profile and optimize HTTP/2 HPACK decoding (currently identified as optimization candidate).
 - Reduce memmove overhead in HTTP/2 body handling (see TODOs in http2-protocol-handler.cpp).
 

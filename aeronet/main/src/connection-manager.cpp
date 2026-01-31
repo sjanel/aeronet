@@ -1,4 +1,3 @@
-#include <asm-generic/socket.h>
 #include <netinet/in.h>  //NOLINT(misc-include-cleaner) used by socket options
 #include <netinet/tcp.h>
 #include <sys/socket.h>
@@ -21,21 +20,21 @@
 #include "aeronet/event.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
-#ifdef AERONET_ENABLE_HTTP2
-#include "aeronet/http2-frame-types.hpp"
-#include "aeronet/http2-protocol-handler.hpp"
-#endif
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/tls-info.hpp"
 #include "aeronet/transport.hpp"
 
+#ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/http2-frame-types.hpp"
+#include "aeronet/http2-protocol-handler.hpp"
+#endif
+
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/ssl.h>
 #include <openssl/types.h>
 
-#include "aeronet/http-server-config.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-context.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
@@ -50,8 +49,9 @@
 
 namespace aeronet {
 
-#ifdef AERONET_ENABLE_OPENSSL
 namespace {
+
+#ifdef AERONET_ENABLE_OPENSSL
 inline void IncrementTlsFailureReason(TlsMetricsInternal& metrics, std::string_view reason) {
   auto [it, inserted] = metrics.handshakeFailureReasons.emplace(reason, 1);
   if (!inserted) {
@@ -70,9 +70,9 @@ inline void FailTlsHandshakeOnce(ConnectionState& state, TlsMetricsInternal& met
   EmitTlsHandshakeEvent(state.tlsInfo, cb, TlsHandshakeEvent::Result::Failed, fd, reason, resumed, clientCertPresent);
   state.tlsHandshakeEventEmitted = true;
 }
+#endif
 
 }  // namespace
-#endif
 
 void SingleHttpServer::sweepIdleConnections() {
   // Periodic maintenance of live connections: applies keep-alive timeout (if enabled) and
@@ -182,8 +182,9 @@ void SingleHttpServer::acceptNewConnections() {
     _telemetry.counterAdd("aeronet.connections.accepted", 1UL);
 
     ConnectionState& state = *cnxIt->second;
-    state.request._pGlobalHeaders = &_config.globalHeaders;
-    state.request._addTrailerHeader = _config.addTrailerHeader;
+
+    state.initializeStateNewConnection(_config, cnxFd);
+
 #ifdef AERONET_ENABLE_OPENSSL
     if (_tls.ctxHolder) {
       // TLS handshake admission control (Phase 2): concurrency and basic token bucket rate limiting.
@@ -264,23 +265,20 @@ void SingleHttpServer::acceptNewConnections() {
       state.tlsInfo.handshakeStart = std::chrono::steady_clock::now();
       ++_tls.handshakesInFlight;
     } else {
-      state.transport = std::make_unique<PlainTransport>(cnxFd);
+      state.transport = std::make_unique<PlainTransport>(cnxFd, _config.zerocopyMode, state.zerocopyRequested);
     }
 #else
-    state.transport = std::make_unique<PlainTransport>(cnxFd);
+    state.transport = std::make_unique<PlainTransport>(cnxFd, _config.zerocopyMode, state.zerocopyRequested);
 #endif
     ConnectionState* pCnx = &state;
     std::size_t bytesReadThisEvent = 0;
     while (true) {
       std::size_t chunkSize = _config.minReadChunkBytes;
       if (_config.maxPerEventReadBytes != 0) {
-        std::size_t remainingBudget = (_config.maxPerEventReadBytes > bytesReadThisEvent)
-                                          ? (_config.maxPerEventReadBytes - bytesReadThisEvent)
-                                          : 0;
-        if (remainingBudget == 0) {
+        if (_config.maxPerEventReadBytes <= bytesReadThisEvent) {
           break;  // fairness cap reached for this epoll cycle
         }
-        chunkSize = std::min(chunkSize, remainingBudget);
+        chunkSize = std::min(chunkSize, _config.maxPerEventReadBytes - bytesReadThisEvent);
       }
       const auto [bytesRead, want] = pCnx->transportRead(chunkSize);
       // Check for handshake completion
@@ -294,6 +292,7 @@ void SingleHttpServer::acceptNewConnections() {
       // transport error/EOF handling below.
       if (!pCnx->tlsEstablished && pCnx->transport->handshakeDone()) {
 #ifdef AERONET_ENABLE_OPENSSL
+        // Use per-connection preference determined at accept time
         pCnx->finalizeAndEmitTlsHandshakeIfNeeded(cnxFd, _callbacks.tlsHandshake, _tls.metrics, _config.tls);
         if (pCnx->tlsHandshakeInFlight) {
           pCnx->tlsHandshakeInFlight = false;
@@ -437,6 +436,7 @@ void SingleHttpServer::handleWritableClient(int fd) {
   if (state.connectPending) {
     int err = 0;
     socklen_t len = sizeof(err);
+    // NOLINTNEXTLINE(misc-include-cleaner)
     if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == -1) [[unlikely]] {
       log::error("getsockopt(SO_ERROR) failed for fd # {} errno={} ({})", fd, errno, std::strerror(errno));
       // Treat as connect failure
@@ -512,12 +512,10 @@ void SingleHttpServer::handleReadableClient(int fd) {
   while (true) {
     std::size_t chunkSize = _config.minReadChunkBytes;
     if (_config.maxPerEventReadBytes != 0) {
-      std::size_t remainingBudget =
-          (_config.maxPerEventReadBytes > bytesReadThisEvent) ? (_config.maxPerEventReadBytes - bytesReadThisEvent) : 0;
-      if (remainingBudget == 0) {
+      if (_config.maxPerEventReadBytes <= bytesReadThisEvent) {
         break;  // fairness budget exhausted
       }
-      chunkSize = std::min(chunkSize, remainingBudget);
+      chunkSize = std::min(chunkSize, _config.maxPerEventReadBytes - bytesReadThisEvent);
     }
     const auto [count, want] = cnx.transportRead(chunkSize);
     if (!cnx.tlsEstablished && cnx.transport->handshakeDone()) {
@@ -636,13 +634,23 @@ void SingleHttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
       break;
     }
   }
-  assert(!state.inBuffer.empty());
+  if (state.inBuffer.empty()) {
+    return;
+  }
   auto peerIt = _connections.active.find(state.peerFd);
   if (peerIt == _connections.active.end()) [[unlikely]] {
     closeConnection(cnxIt);
     return;
   }
   ConnectionState& peer = *peerIt->second;
+  if (!peer.tunnelOrFileBuffer.empty() || peer.waitingWritable) {
+    peer.tunnelOrFileBuffer.append(state.inBuffer);
+    state.inBuffer.clear();
+    if (!peer.waitingWritable) {
+      enableWritableInterest(peerIt);
+    }
+    return;
+  }
   const auto [written, want] = peer.transportWrite(state.inBuffer);
   if (want == TransportHint::Error) [[unlikely]] {
     // Fatal transport error while forwarding to peer: close both sides.

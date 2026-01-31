@@ -159,7 +159,7 @@ http::Method ParseHttpMethod(std::string_view method) noexcept {
 }  // namespace
 
 void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
-  [[maybe_unused]] auto [it, inserted] = _streamRequests.try_emplace(streamId);
+  auto [it, inserted] = _streamRequests.try_emplace(streamId);
   assert(inserted);  // logic below should be adapted if we can call this multiple times per stream
   StreamRequest& streamReq = it->second;
 
@@ -186,6 +186,7 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
     std::memcpy(buf, value.data(), value.size());
     buf += value.size();
 
+    assert(!name.empty());
     if (name[0] == ':') {
       if (storedName == ":method") {
         req._method = ParseHttpMethod(storedValue);

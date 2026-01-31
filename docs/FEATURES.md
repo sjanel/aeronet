@@ -214,6 +214,14 @@ Notes and implementation details
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
 - [ ] Benchmarks & profiling docs
 - [x] Zero-copy sendfile() support for static files
+- [x] MSG_ZEROCOPY for large payload sends (Linux-only, with automatic fallback for small payloads). Enables kernel DMA of user-space buffers directly to NIC, avoiding memcpy overhead for payloads ≥16KB. Configurable via `HttpServerConfig::withZerocopyMode()` with options: `Disabled`, `Opportunistic` (default), `Enabled` (logs warning if unavailable). Works with plain TCP and kTLS connections. For kTLS, bypasses OpenSSL's SSL_write and uses sendmsg() directly on the kTLS socket.
+  
+  Configuration notes: The feature is controlled per-server via `withZerocopyMode()` and evaluated per accepted connection. Modes are:
+  - `Disabled`: never attempt MSG_ZEROCOPY.
+  - `Opportunistic` (default): attempt zerocopy on real network connections but automatically disable it for loopback-to-loopback connections (to keep localhost benchmarks stable).
+  - `Enabled`: force attempts to enable zerocopy; failures are logged and the transport falls back to the regular send path.
+
+  Implementation details: the decision is made after `accept()` (per connection) so a single listener can accept both loopback and remote peers. The zerocopy path uses `sendmsg(..., MSG_ZEROCOPY)` for large payloads (threshold: 16KiB) and falls back to normal `write`/`SSL_write` when unsupported or on retryable errors.
 - [x] Scripted benchmarks include a gzip round-trip body codec scenario (`/body-codec`) to measure automatic request decompression + response compression (no public API changes). See `benchmarks/scripted-servers/lua/body_codec.lua` and `benchmarks/scripted-servers/run_benchmarks.py`.
 
 ### Memory Management & std::string_view Safety

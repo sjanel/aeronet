@@ -15,14 +15,13 @@
 #include <thread>
 #include <vector>
 
-#include "aeronet/http-helpers.hpp"
-
 #define AERONET_WANT_SOCKET_OVERRIDES
 #define AERONET_WANT_READ_WRITE_OVERRIDES
 #define AERONET_WANT_SENDFILE_PREAD_OVERRIDES
 
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
@@ -38,6 +37,7 @@
 #include "aeronet/test_server_tls_fixture.hpp"
 #include "aeronet/test_tls_client.hpp"
 #include "aeronet/tls-config.hpp"
+#include "aeronet/tls-handshake-callback.hpp"
 #endif
 
 using namespace std::chrono_literals;
@@ -533,3 +533,149 @@ TEST(ConnectionManagerErrors, MaxBufferOverflow) {
     EXPECT_TRUE(resp.contains("HTTP/1.1 413")) << resp;
   }
 }
+
+// Test maxPerEventReadBytes fairness cap in acceptNewConnections (line 294-297)
+// This exercises the path where remainingBudget reaches 0 within a single accept cycle
+// by sending enough data that multiple transportRead calls exhaust the budget.
+TEST(ConnectionManagerErrors, MaxPerEventReadBytesFairnessBudgetExhausted) {
+  // Set a very small read budget so it gets exhausted in a single iteration
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withMaxPerEventReadBytes(64);  // Very small budget
+    cfg.withMinReadChunkBytes(64);     // Match budget to trigger exhaustion
+  });
+
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("OK"); });
+
+  test::ClientConnection client(ts.port());
+
+  // Send a request that exceeds the budget - this should still work since
+  // we parse what we have and yield, but it exercises the fairness cap path
+  std::string largeRequest = "POST /budget HTTP/1.1\r\nHost: x\r\nContent-Length: 256\r\n\r\n";
+  largeRequest += std::string(256, 'X');
+  test::sendAll(client.fd(), largeRequest);
+
+  const auto resp = test::recvWithTimeout(client.fd(), 2000ms);
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+}
+
+// Test waitingForBody flag update path (line 330-332 and 555-556)
+// This exercises the body activity tracking used for bodyReadTimeout enforcement.
+TEST(ConnectionManagerErrors, WaitingForBodyActivityTracking) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withMaxBodyBytes(1 << 20);
+    cfg.withBodyReadTimeout(5s);  // Enable body timeout which activates waitingForBody
+  });
+
+  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(http::StatusCodeOK).body(req.body()); });
+
+  test::ClientConnection client(ts.port());
+
+  // Send headers first, indicating a large body
+  std::string headers = "POST /body-tracking HTTP/1.1\r\nHost: x\r\nContent-Length: 512\r\nConnection: close\r\n\r\n";
+  test::sendAll(client.fd(), headers);
+
+  // Wait a bit, then send body in chunks to exercise bodyLastActivity update
+  std::this_thread::sleep_for(20ms);
+  test::sendAll(client.fd(), std::string(256, 'A'));
+  std::this_thread::sleep_for(20ms);
+  test::sendAll(client.fd(), std::string(256, 'B'));
+
+  const auto resp = test::recvUntilClosed(client.fd());
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  // Verify the body was received correctly
+  EXPECT_TRUE(resp.find(std::string(256, 'A')) != std::string::npos) << resp;
+}
+
+#ifdef AERONET_ENABLE_OPENSSL
+// Test TLS handshake failure with EOF reason (line 370, 582)
+// This exercises the code path where a client closes connection during TLS handshake.
+TEST(ConnectionManagerTlsErrors, TlsHandshakeFailureOnEof) {
+  test::TlsTestServer tlsServer;
+  tlsServer.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  std::atomic_bool failureDetected{false};
+  std::string_view capturedReason;
+
+  tlsServer.server.server.setTlsHandshakeCallback([&](const TlsHandshakeEvent& ev) {
+    if (ev.result == TlsHandshakeEvent::Result::Failed) {
+      capturedReason = ev.reason;
+      failureDetected.store(true);
+    }
+  });
+
+  // Connect but close immediately without completing handshake
+  {
+    test::ClientConnection client(tlsServer.port());
+    // Close without sending any TLS data - this triggers EOF during handshake
+  }
+
+  // Wait for callback
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (std::chrono::steady_clock::now() < deadline && !failureDetected.load()) {
+    std::this_thread::sleep_for(5ms);
+  }
+
+  const auto stats = tlsServer.stats();
+  tlsServer.stop();
+
+  EXPECT_TRUE(failureDetected.load());
+  EXPECT_GE(stats.tlsHandshakesFailed, 1UL);
+}
+
+// Test TLS error diagnostics path (lines 344-358, 557-564)
+// This exercises the detailed TLS error logging when transport returns Error.
+TEST(ConnectionManagerTlsErrors, TlsTransportErrorDiagnostics) {
+  test::TlsTestServer tlsServer({}, [](HttpServerConfig& cfg) { cfg.withTlsHandshakeLogging(true); });
+  tlsServer.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  std::atomic_bool failureDetected{false};
+
+  tlsServer.server.server.setTlsHandshakeCallback([&](const TlsHandshakeEvent& ev) {
+    if (ev.result == TlsHandshakeEvent::Result::Failed) {
+      failureDetected.store(true);
+    }
+  });
+
+  // Send garbage data that will cause TLS parsing errors
+  {
+    test::ClientConnection client(tlsServer.port());
+    test::sendAll(client.fd(), "NOT_TLS_DATA_AT_ALL\r\n\r\n");
+    // Wait briefly for server to process
+    std::this_thread::sleep_for(50ms);
+  }
+
+  // Wait for failure callback
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (std::chrono::steady_clock::now() < deadline && !failureDetected.load()) {
+    std::this_thread::sleep_for(5ms);
+  }
+
+  const auto stats = tlsServer.stats();
+  tlsServer.stop();
+
+  EXPECT_TRUE(failureDetected.load());
+  EXPECT_GE(stats.tlsHandshakesFailed, 1UL);
+}
+
+// Test TransportHint::WriteReady path during handshake (lines 379-386)
+// This exercises the epoll mod to add EPOLLOUT interest when TLS needs write.
+// This is triggered during TLS handshake when the transport signals it needs
+// socket write-readiness to proceed (e.g., to send ClientHello response).
+TEST(ConnectionManagerTlsErrors, TlsHandshakeWriteReadyEpollMod) {
+  test::TlsTestServer tlsServer;
+  tlsServer.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  // A proper TLS client triggers the WriteReady path naturally during
+  // the handshake when the server needs to send its response.
+  test::TlsClient::Options opts;
+  test::TlsClient client(tlsServer.port(), opts);
+
+  EXPECT_TRUE(client.handshakeOk());
+
+  // Make a request to verify the connection works after handshake
+  const auto resp = client.get("/test");
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+
+  tlsServer.stop();
+}
+#endif  // AERONET_ENABLE_OPENSSL

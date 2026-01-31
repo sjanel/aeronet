@@ -1,6 +1,6 @@
 #include "aeronet/transport.hpp"
 
-#include <sys/uio.h>
+#include <sys/uio.h>  // NOLINT(misc-include-cleaner) used by iovec
 #include <unistd.h>
 
 #include <array>
@@ -8,9 +8,23 @@
 #include <cstddef>
 #include <string_view>
 
+#include "aeronet/log.hpp"
+#include "aeronet/zerocopy-mode.hpp"
+#include "aeronet/zerocopy.hpp"
+
 namespace aeronet {
 
 static_assert(EAGAIN == EWOULDBLOCK, "Add handling for EWOULDBLOCK if different from EAGAIN");
+
+PlainTransport::PlainTransport(int fd, ZerocopyMode zerocopyMode, bool isZerocopyEnabled) : _fd(fd) {
+  if (isZerocopyEnabled && zerocopyMode != ZerocopyMode::Disabled) {
+    const auto result = EnableZeroCopy(_fd);
+    _zerocopyState.enabled = result == ZeroCopyEnableResult::Enabled;
+    if (!_zerocopyState.enabled && zerocopyMode == ZerocopyMode::Enabled) {
+      log::warn("Failed to enable MSG_ZEROCOPY on fd # {}", fd);
+    }
+  }
+}
 
 ITransport::TransportResult PlainTransport::read(char* buf, std::size_t len) {
   const auto nbRead = ::read(_fd, buf, len);
@@ -27,9 +41,31 @@ ITransport::TransportResult PlainTransport::read(char* buf, std::size_t len) {
   return ret;
 }
 
-ITransport::TransportResult PlainTransport::write(std::string_view data) {
+ITransport::TransportResult PlainTransport::writeInternal(std::string_view data) {
   TransportResult ret{0, TransportHint::None};
 
+  // Try zerocopy for large payloads if enabled
+  if (_zerocopyState.enabled && data.size() >= kZeroCopyMinPayloadSize) {
+    const auto nbWritten = ZerocopySend(_fd, data, _zerocopyState);
+    if (nbWritten >= 0) {
+      ret.bytesProcessed = static_cast<std::size_t>(nbWritten);
+      return ret;
+    }
+    // On error, check if retryable
+    if (errno == EINTR) {
+      // Fall through to regular write loop
+    } else if (errno == EAGAIN) {
+      ret.want = TransportHint::WriteReady;
+      return ret;
+    } else {
+      ret.want = TransportHint::Error;
+      return ret;
+    }
+  }
+
+  // Regular write path (fallback or small payloads)
+  // Note: Using write() for compatibility with existing test infrastructure.
+  // SIGPIPE is handled at the error level (EPIPE).
   while (ret.bytesProcessed < data.size()) {
     const auto nbWritten = ::write(_fd, data.data() + ret.bytesProcessed, data.size() - ret.bytesProcessed);
     if (nbWritten == -1) {
@@ -53,10 +89,18 @@ ITransport::TransportResult PlainTransport::write(std::string_view data) {
   return ret;
 }
 
+ITransport::TransportResult PlainTransport::write(std::string_view data) { return writeInternal(data); }
+
+void PlainTransport::disableZerocopy() noexcept {
+  _zerocopyState.enabled = false;
+  _zerocopyState.pendingCompletions = false;
+}
+
 ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std::string_view secondBuf) {
   // Use writev for scatter-gather I/O - single syscall for both buffers.
   // This avoids extra memcpy and allows optimal TCP segmentation.
   // NOLINTNEXTLINE(misc-include-cleaner)
+
   std::array<iovec, 2> iov{{// NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
                             {const_cast<char*>(firstBuf.data()), firstBuf.size()},
                             // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
@@ -64,6 +108,25 @@ ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std
 
   TransportResult ret{0, TransportHint::None};
   const std::size_t totalSize = firstBuf.size() + secondBuf.size();
+
+  // Try zerocopy for large payloads if enabled
+  if (_zerocopyState.enabled && totalSize >= kZeroCopyMinPayloadSize) {
+    const auto nbWritten = ZerocopySend(_fd, firstBuf, secondBuf, _zerocopyState);
+    if (nbWritten >= 0) {
+      ret.bytesProcessed = static_cast<std::size_t>(nbWritten);
+      return ret;
+    }
+    // On error, check if retryable
+    if (errno == EINTR) {
+      // Fall through to regular write loop
+    } else if (errno == EAGAIN) {
+      ret.want = TransportHint::WriteReady;
+      return ret;
+    } else {
+      ret.want = TransportHint::Error;
+      return ret;
+    }
+  }
 
   while (ret.bytesProcessed < totalSize) {
     // Adjust iovec based on bytes already written
@@ -102,5 +165,7 @@ ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std
 
   return ret;
 }
+
+std::size_t PlainTransport::pollZerocopyCompletions() noexcept { return PollZeroCopyCompletions(_fd, _zerocopyState); }
 
 }  // namespace aeronet

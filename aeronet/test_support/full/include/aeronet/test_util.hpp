@@ -19,6 +19,8 @@ using namespace std::chrono_literals;
 
 class ClientConnection {
  public:
+  ClientConnection() noexcept = default;
+
   explicit ClientConnection(uint16_t port, std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
 
   [[nodiscard]] int fd() const noexcept { return _socket.fd(); }
