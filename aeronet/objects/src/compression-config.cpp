@@ -21,8 +21,8 @@ void CompressionConfig::validate() const {
   if (maxCompressRatio <= 0.0 || maxCompressRatio >= 1.0) {
     throw std::invalid_argument(std::format("Invalid maxCompressRatio {} (expected 0 < ratio < 1)", maxCompressRatio));
   }
-  if (minBytes < 16U) {
-    throw std::invalid_argument("minBytes must be at least 16");
+  if (minBytes < 1U) {
+    throw std::invalid_argument("minBytes must be at least 1");
   }
   if constexpr (zlibEnabled()) {
     if (zlib.level != Zlib::kDefaultLevel && (zlib.level < Zlib::kMinLevel || zlib.level > Zlib::kMaxLevel)) {

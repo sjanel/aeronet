@@ -1,13 +1,18 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 
-namespace aeronet::test {
+namespace aeronet {
+
+class EncoderContext;
+
+namespace test {
 
 // Decompress a single zstd frame contained in 'compressed'. If the frame size is known
 // (via frame header) we trust it; otherwise we fall back to an expected size hint.
@@ -28,6 +33,13 @@ std::string MakePatternedPayload(std::size_t size);
 RawBytes MakeRandomPayload(std::size_t size);
 
 // Corrupt the compressed data in-place for the given encoding.
-void CorruptData(std::string_view encoding, RawChars &data);
+void CorruptData(std::string_view encoding, RawChars& data);
 
-}  // namespace aeronet::test
+int64_t EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& out);
+
+RawChars EndStream(EncoderContext& ctx);
+
+RawChars BuildStreamingCompressed(EncoderContext& ctx, std::string_view payload, std::size_t split);
+
+}  // namespace test
+}  // namespace aeronet
