@@ -118,7 +118,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionMa
   assert(inserted && "Duplicate upstream fd indicates library bug - connection not properly removed");
 
   // Set upstream transport to plain (no TLS)
-  upIt->second->transport = std::make_unique<PlainTransport>(upstreamFd);
+  upIt->second->transport = std::make_unique<PlainTransport>(upstreamFd, _config.zerocopyMode, false);
 
   // If the connector indicated the connect is still in progress on this
   // non-blocking socket, mark state so the event loop's writable handler
@@ -138,6 +138,10 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionMa
   cnxIt->second->peerFd = upstreamFd;
   upIt->second->peerFd = cnxIt->first.fd();
   upIt->second->connectPending = cres.connectPending;
+
+  if (auto* clientPlain = dynamic_cast<PlainTransport*>(cnxIt->second->transport.get())) {
+    clientPlain->disableZerocopy();
+  }
 
   // From now on, both connections bypass HTTP parsing; we simply proxy bytes. We'll rely on handleReadableClient
   // to read from each side and forward to the other by writing into the peer's transport directly.

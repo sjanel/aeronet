@@ -3,6 +3,7 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#include <sys/socket.h>
 
 #include <cerrno>
 #include <cstddef>
@@ -11,6 +12,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/tls-ktls.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/zerocopy.hpp"
 
 namespace aeronet {
 
@@ -75,7 +77,24 @@ ITransport::TransportResult TlsTransport::write(std::string_view data) {
   // Avoid calling OpenSSL with a zero-length buffer. Some OpenSSL builds
   // treat a null/zero-length pointer as an invalid argument and return
   // 'bad length'. If there's nothing to write, simply return 0.
-  if (data.empty() || ::SSL_write_ex(_ssl.get(), data.data(), data.size(), &ret.bytesProcessed) == 1) {
+  if (data.empty()) {
+    return ret;
+  }
+
+  // When kTLS send is enabled and zerocopy is active, try to bypass SSL_write.
+  // The kernel handles encryption directly on the socket, allowing us to use
+  // MSG_ZEROCOPY for large payloads (DMA from user pages to NIC).
+  // If zerocopy write fails with an unsupported operation (EOPNOTSUPP), we
+  // disable zerocopy and fall back to SSL_write for this and future calls.
+  if (_zerocopyState.enabled && data.size() >= kZeroCopyMinPayloadSize) {
+    ret = writeZerocopy(data);
+    if (ret.want != TransportHint::None || ret.bytesProcessed > 0) {
+      return ret;
+    }
+  }
+
+  // Standard SSL_write path (user-space encryption or kTLS without zerocopy).
+  if (::SSL_write_ex(_ssl.get(), data.data(), data.size(), &ret.bytesProcessed) == 1) {
     return ret;
   }
 
@@ -88,7 +107,7 @@ ITransport::TransportResult TlsTransport::write(std::string_view data) {
 
   // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
   if (err == SSL_ERROR_SYSCALL) {
-    auto saved_errno = errno;
+    const auto saved_errno = errno;
     if (saved_errno == EAGAIN || (saved_errno == 0 && ERR_peek_error() == 0)) {
       ret.want = TransportHint::WriteReady;
       ret.bytesProcessed = 0;
@@ -177,6 +196,45 @@ KtlsEnableResult TlsTransport::enableKtlsSend() {
   _ktlsResult = KtlsEnableResult::Unsupported;
 #endif
   return _ktlsResult;
+}
+
+bool TlsTransport::enableZerocopy() noexcept {
+  const auto result = EnableZeroCopy(_fd);
+  _zerocopyState.enabled = result == ZeroCopyEnableResult::Enabled;
+  return _zerocopyState.enabled;
+}
+
+std::size_t TlsTransport::pollZerocopyCompletions() noexcept { return PollZeroCopyCompletions(_fd, _zerocopyState); }
+
+void TlsTransport::disableZerocopy() noexcept {
+  _zerocopyState.enabled = false;
+  _zerocopyState.pendingCompletions = false;
+}
+
+ITransport::TransportResult TlsTransport::writeZerocopy(std::string_view data) {
+  TransportResult ret{0, TransportHint::None};
+
+  // Use zerocopy sendmsg for large payloads when kTLS is active.
+  // The kernel handles encryption, so we can DMA directly from user pages.
+  const auto nbWritten = ZerocopySend(_fd, data, _zerocopyState);
+  if (nbWritten >= 0) {
+    ret.bytesProcessed = static_cast<std::size_t>(nbWritten);
+    return ret;
+  }
+  static_assert(EOPNOTSUPP == ENOTSUP);
+  if (errno == EOPNOTSUPP) {
+    log::debug("MSG_ZEROCOPY not supported on kTLS socket fd # {}", _fd);
+    // Disable zerocopy for this transport and fall through to SSL_write
+    disableZerocopy();
+  } else if (errno == EINTR) {
+    // Fall through to regular send
+  } else if (errno == EAGAIN) {
+    ret.want = TransportHint::WriteReady;
+  } else {
+    ret.want = TransportHint::Error;
+  }
+
+  return ret;
 }
 
 }  // namespace aeronet

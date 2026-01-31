@@ -15,6 +15,7 @@
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/telemetry-config.hpp"
+#include "aeronet/zerocopy-mode.hpp"
 #include "compression-config.hpp"
 #include "decompression-config.hpp"
 #include "tls-config.hpp"
@@ -74,6 +75,8 @@ struct HttpServerConfig {
   // (duplicates will be handled according to parser singleton logic or rejected). This allows stricter deployments
   // to avoid accidentally merging custom singleton semantics.
   bool mergeUnknownRequestHeaders{true};
+
+  ZerocopyMode zerocopyMode{ZerocopyMode::Opportunistic};
 
   enum class TraceMethodPolicy : std::uint8_t {
     Disabled,
@@ -390,6 +393,9 @@ struct HttpServerConfig {
 
   // Set TRACE handling policy. Default: Disabled.
   HttpServerConfig& withTracePolicy(TraceMethodPolicy policy);
+
+  // Set MSG_ZEROCOPY mode for large outbound writes. Default: Opportunistic.
+  HttpServerConfig& withZerocopyMode(ZerocopyMode mode);
 
   // Enable and configure builtin probes
   HttpServerConfig& withBuiltinProbes(BuiltinProbesConfig cfg);

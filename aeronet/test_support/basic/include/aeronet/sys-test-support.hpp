@@ -32,6 +32,11 @@
 #include <openssl/ssl.h>
 #endif
 
+#ifdef __linux__
+#include <linux/errqueue.h>
+#include <netinet/in.h>
+#endif
+
 #ifdef __GLIBC__
 extern "C" void* __libc_malloc(size_t) noexcept;          // NOLINT(bugprone-reserved-identifier)
 extern "C" void* __libc_realloc(void*, size_t) noexcept;  // NOLINT(bugprone-reserved-identifier)
@@ -794,8 +799,10 @@ inline void PushWriteAction(int fd, IoAction action) { g_write_actions.push(fd, 
 using ReadFn = ssize_t (*)(int, void*, size_t);
 using WriteFn = ssize_t (*)(int, const void*, size_t);
 using WritevFn = ssize_t (*)(int, const struct iovec*, int);
+using SendmsgFn = ssize_t (*)(int, const struct msghdr*, int);
 
 inline KeyedActionQueue<int, IoAction> g_writev_actions;
+inline KeyedActionQueue<int, IoAction> g_sendmsg_actions;
 
 inline ReadFn ResolveRealRead() {
   static ReadFn fn = nullptr;
@@ -824,9 +831,24 @@ inline WritevFn ResolveRealWritev() {
   return fn;
 }
 
+inline SendmsgFn ResolveRealSendmsg() {
+  static SendmsgFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<SendmsgFn>("sendmsg");
+  return fn;
+}
+
 inline void SetWritevActions(int fd, std::initializer_list<IoAction> actions) {
   g_writev_actions.setActions(fd, actions);
 }
+
+inline void SetSendmsgActions(int fd, std::initializer_list<IoAction> actions) {
+  g_sendmsg_actions.setActions(fd, actions);
+}
+
+inline void PushSendmsgAction(int fd, IoAction action) { g_sendmsg_actions.push(fd, action); }
 
 }  // namespace aeronet::test
 
@@ -1005,6 +1027,27 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t writev(int fd, const 
   }
   auto real = aeronet::test::ResolveRealWritev();
   return real(fd, iov, iovcnt);
+}
+
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
+extern "C" __attribute__((no_sanitize("address"))) ssize_t sendmsg(int fd, const struct msghdr* msg, int flags) {
+  auto act = aeronet::test::g_sendmsg_actions.pop(fd);
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      // Real sendmsg(2) never returns more than the sum of iov lengths.
+      std::size_t total = 0;
+      for (std::size_t idx = 0; idx < msg->msg_iovlen; ++idx) {
+        total += msg->msg_iov[idx].iov_len;
+      }
+      ret = std::min<ssize_t>(ret, static_cast<ssize_t>(total));
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealSendmsg();
+  return real(fd, msg, flags);
 }
 
 #endif
@@ -1254,5 +1297,70 @@ extern "C" __attribute__((no_sanitize("address"))) int epoll_wait(int epfd, stru
   auto real = aeronet::test::ResolveRealEpollWait();
   return real(epfd, events, maxevents, timeout);
 }
+
+#ifdef __linux__
+
+namespace aeronet::test {
+inline KeyedActionQueue<int, IoAction> g_recvmsg_actions;
+}
+
+namespace aeronet::test {
+inline KeyedActionQueue<int, int> g_recvmsg_modes;
+}
+
+extern "C" __attribute__((no_sanitize("address"))) ssize_t recvmsg(int fd, struct msghdr* msg, int flags) {
+  using RecvmsgFn = ssize_t (*)(int, struct msghdr*, int);
+  if (auto act = ::aeronet::test::g_recvmsg_actions.pop(fd)) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      if (msg != nullptr && msg->msg_control != nullptr &&
+          msg->msg_controllen >= static_cast<socklen_t>(CMSG_LEN(sizeof(struct sock_extended_err)))) {
+        std::optional<int> modeOpt = ::aeronet::test::g_recvmsg_modes.pop(fd);
+        if (modeOpt && *modeOpt == 8) {
+          // Tests requested no control message: leave msg_controllen 0
+          if (msg) msg->msg_controllen = 0;
+        } else {
+          auto* c = reinterpret_cast<struct cmsghdr*>(msg->msg_control);
+          c->cmsg_len = CMSG_LEN(sizeof(struct sock_extended_err));
+          // default to IPv4 errqueue entry
+          c->cmsg_level = SOL_IP;
+          c->cmsg_type = IP_RECVERR;
+          if (modeOpt && *modeOpt == 6) {
+            c->cmsg_level = SOL_IPV6;
+            c->cmsg_type = IPV6_RECVERR;
+          } else if (modeOpt && *modeOpt == 7) {
+            // synthesize an unknown control message (not IP_RECVERR)
+            c->cmsg_level = SOL_IP;
+            c->cmsg_type = 0;
+          } else if (modeOpt && *modeOpt == 9) {
+            // synthesize an IPv6 control message with wrong type (not IPV6_RECVERR)
+            c->cmsg_level = SOL_IPV6;
+            c->cmsg_type = 0;
+          }
+
+          auto* serr = reinterpret_cast<struct sock_extended_err*>(CMSG_DATA(c));
+          std::memset(serr, 0, sizeof(*serr));
+          // allow tests to synthesize non-zerocopy origins
+          if (modeOpt && *modeOpt == 2) {
+            serr->ee_origin = 0;  // not SO_EE_ORIGIN_ZEROCOPY
+          } else {
+            serr->ee_origin = SO_EE_ORIGIN_ZEROCOPY;
+          }
+          serr->ee_data = 42;
+          msg->msg_controllen = c->cmsg_len;
+        }
+      }
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  static RecvmsgFn real = nullptr;
+  if (real == nullptr) {
+    real = ::aeronet::test::ResolveNext<RecvmsgFn>("recvmsg");
+  }
+  return real(fd, msg, flags);
+}
+#endif
 
 #endif

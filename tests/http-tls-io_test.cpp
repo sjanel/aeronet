@@ -582,5 +582,30 @@ TEST(HttpTlsKtlsUnsupported, AutoOrEnabledFallBackWithoutForcedClose) {
   ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
 }
 #endif
+#if defined(__linux__)
+// Integration test: request kTLS + zerocopy via server config and exercise large response path.
+TEST(HttpTlsKtlsZerocopy, EnabledZerocopyWithKtls) {
+  using namespace aeronet::test;
+  // Ask the server to enable both kTLS send and MSG_ZEROCOPY (may fall back depending on kernel).
+  TlsTestServer ts({}, [](HttpServerConfig& cfg) {
+    cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled);
+    cfg.withZerocopyMode(ZerocopyMode::Enabled);
+  });
+
+  // Response slightly above zerocopy threshold
+  std::string body(aeronet::kZeroCopyMinPayloadSize + 1024, 'Z');
+  ts.setDefault([&body](const HttpRequest&) { return HttpResponse(body); });
+
+  test::TlsClient client(ts.port());
+  ASSERT_TRUE(client.handshakeOk());
+  auto raw = client.get("/zerocopy", {});
+  ASSERT_FALSE(raw.empty());
+  ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
+
+  const auto stats = ts.stats();
+  // kTLS should have been attempted; either enabled or fallback is acceptable.
+  EXPECT_GE(stats.ktlsSendEnabledConnections + stats.ktlsSendEnableFallbacks, 1U);
+}
+#endif
 #endif
 }  // namespace aeronet

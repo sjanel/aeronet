@@ -1,6 +1,8 @@
 #include "aeronet/connection-state.hpp"
 
+#include <netinet/in.h>
 #include <sys/sendfile.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -16,9 +18,11 @@
 #include "aeronet/file-payload.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-config.hpp"
@@ -29,6 +33,58 @@
 #endif
 
 namespace aeronet {
+
+namespace {
+
+// Helper: determine if a sockaddr_storage represents a loopback address.
+bool IsSockaddrLoopback(const sockaddr_storage& addr) noexcept {
+  if (addr.ss_family == AF_INET) {
+    const auto* in = reinterpret_cast<const sockaddr_in*>(&addr);
+    // 127.0.0.0/8
+    return (ntohl(in->sin_addr.s_addr) & 0xFF000000U) == 0x7F000000U;
+  }
+#ifdef AF_INET6
+  if (addr.ss_family == AF_INET6) {
+    const auto* in6 = reinterpret_cast<const sockaddr_in6*>(&addr);
+    return IN6_IS_ADDR_LOOPBACK(&in6->sin6_addr);
+  }
+#endif
+  return false;
+}
+
+}  // namespace
+
+void ConnectionState::initializeStateNewConnection(const HttpServerConfig& config, int cnxFd) {
+  request._pGlobalHeaders = &config.globalHeaders;
+  request._addTrailerHeader = config.addTrailerHeader;
+  // Decide per-connection zerocopy preference at accept time.
+
+  // Compute whether we should attempt to enable zerocopy for this connection.
+  switch (config.zerocopyMode) {
+    case ZerocopyMode::Disabled:
+      zerocopyRequested = false;
+      break;
+    case ZerocopyMode::Enabled:
+      zerocopyRequested = true;
+      break;
+    case ZerocopyMode::Opportunistic:
+      [[fallthrough]];
+    default: {
+      sockaddr_storage local;
+      sockaddr_storage peer;
+      socklen_t len = sizeof(local);
+      const bool localOk = (::getsockname(cnxFd, reinterpret_cast<sockaddr*>(&local), &len) == 0);
+      len = sizeof(peer);
+      const bool peerOk = (::getpeername(cnxFd, reinterpret_cast<sockaddr*>(&peer), &len) == 0);
+
+      // In Opportunistic mode, it's auto-disabled for loopback-to-loopback connections.
+      const bool isLoopbackConn = localOk && peerOk && IsSockaddrLoopback(local) && IsSockaddrLoopback(peer);
+
+      zerocopyRequested = !isLoopbackConn;
+      break;
+    }
+  }
+}
 
 ITransport::TransportResult ConnectionState::transportRead(std::size_t chunkSize) {
   inBuffer.ensureAvailableCapacityExponential(chunkSize);
@@ -191,7 +247,15 @@ bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(int fd, const TlsHands
     if (application == KtlsApplication::CloseConnection) {
       requestImmediateClose();
     }
-    // No need to store ktlsSendEnabled separately - query tlsTr->isKtlsSendEnabled() when needed
+
+    // When kTLS send is enabled, we can use MSG_ZEROCOPY for large payloads.
+    // This bypasses SSL_write and uses sendmsg() directly on the kTLS socket,
+    // allowing the kernel to DMA from user pages directly to the NIC.
+    if (zerocopyRequested && tlsTr->isKtlsSendEnabled()) {
+      // Store the fd for direct socket I/O when using zerocopy.
+      tlsTr->setUnderlyingFd(fd);
+      tlsTr->enableZerocopy();
+    }
   }
 
   return true;

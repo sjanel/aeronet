@@ -11,11 +11,12 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/zerocopy-mode.hpp"
 
 namespace aeronet {
 
 TEST(TransportTest, ReadReturnsErrorWhenFdIsInvalid) {
-  PlainTransport plainTransport(-1);  // invalid fd -> read should fail with EBADF
+  PlainTransport plainTransport(-1, ZerocopyMode::Disabled, false);  // invalid fd -> read should fail with EBADF
   char buf[16];
   const auto res = plainTransport.read(buf, sizeof(buf));
   EXPECT_EQ(res.bytesProcessed, 0U);
@@ -23,7 +24,7 @@ TEST(TransportTest, ReadReturnsErrorWhenFdIsInvalid) {
 }
 
 TEST(TransportTest, WriteReturnsErrorWhenFdIsInvalid) {
-  PlainTransport plainTransport(-1);  // invalid fd -> write should fail with EBADF
+  PlainTransport plainTransport(-1, ZerocopyMode::Disabled, true);  // invalid fd -> write should fail with EBADF
   const auto res = plainTransport.write("hello");
   // When a fatal error occurs the implementation leaves bytesProcessed
   // at the amount written so far (0) and sets want to Error.
@@ -43,7 +44,7 @@ TEST(PlainTransport, ReadHandlesEINTRAndEAGAIN) {
   // Install actions: EINTR, EAGAIN, then EWOULDBLOCK, then success
   test::SetReadActions(readFd, {IoAction{-1, EINTR}, IoAction{-1, EAGAIN}, IoAction{-1, EWOULDBLOCK}});
 
-  PlainTransport transport(readFd);
+  PlainTransport transport(readFd, ZerocopyMode::Opportunistic, false);
   char buf[8]{};
 
   // First call: EINTR -> ReadReady
@@ -84,7 +85,7 @@ TEST(PlainTransport, WriteHandlesEAGAINAndSuccess) {
   // Simulate: EINTR (retried internally), EAGAIN, EWOULDBLOCK, then success
   test::SetWriteActions(writeFd, {IoAction{-1, EINTR}, IoAction{-1, EAGAIN}, IoAction{-1, EWOULDBLOCK}});
 
-  PlainTransport transport(writeFd);
+  PlainTransport transport(writeFd, ZerocopyMode::Enabled, false);
   std::string_view data("foobar");
 
   // First write: EINTR is retried internally, then hits EAGAIN -> WriteReady with 0 bytes written
@@ -121,7 +122,7 @@ TEST(PlainTransport, TwoBufWriteReturnsEarlyWhenWritevNeedsRetry) {
   // receive a result with want != None and no data written.
   test::SetWritevActions(writeFd, {IoAction{-1, EAGAIN}});
 
-  PlainTransport transport(writeFd);
+  PlainTransport transport(writeFd, ZerocopyMode::Disabled, false);
   std::string_view head("HEAD");
   std::string_view body("BODY-BODY");
 
@@ -139,7 +140,7 @@ TEST(PlainTransport, TwoBufWriteUsesWritevSuccessfully) {
   BaseFd readFdGuard(readFd);
   BaseFd writeFdGuard(writeFd);
 
-  PlainTransport transport(writeFd);
+  PlainTransport transport(writeFd, ZerocopyMode::Disabled, true);
   std::string_view head("HEAD");
   std::string_view body("BODY");
 
@@ -163,7 +164,7 @@ TEST(PlainTransport, TwoBufWriteHandlesPartialWrite) {
   BaseFd readFdGuard(readFd);
   BaseFd writeFdGuard(writeFd);
 
-  PlainTransport transport(writeFd);
+  PlainTransport transport(writeFd, ZerocopyMode::Disabled, true);
   std::string_view head("HEAD");
   std::string_view body("BODY-DATA");
 
@@ -192,7 +193,7 @@ TEST(PlainTransport, TwoBufWriteRetriesOnEINTR) {
   const ssize_t total = static_cast<ssize_t>(head.size() + body.size());
   test::SetWritevActions(writeFd, {IoAction{-1, EINTR}, IoAction{total, 0}});
 
-  PlainTransport transport(writeFd);
+  PlainTransport transport(writeFd, ZerocopyMode::Disabled, true);
   auto res = transport.write(head, body);
 
   // After EINTR the transport should retry internally and eventually report full write

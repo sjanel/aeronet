@@ -13,6 +13,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/tls-config.hpp"
+#include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-config.hpp"
@@ -266,6 +267,49 @@ TEST(HttpServerConfigTest, CachedConnections) {
 
   config.withMaxCachedConnections(100);
   EXPECT_EQ(config.maxCachedConnections, 100U);
+  EXPECT_NO_THROW(config.validate());
+}
+
+// ============================
+// Zerocopy configuration tests
+// ============================
+
+TEST(HttpServerConfigTest, ZerocopyModeDefault) {
+  HttpServerConfig config;
+  // Default should be Opportunistic
+  EXPECT_EQ(config.zerocopyMode, ZerocopyMode::Opportunistic);
+  EXPECT_NO_THROW(config.validate());
+}
+
+TEST(HttpServerConfigTest, ZerocopyModeDisabled) {
+  HttpServerConfig config;
+  config.withZerocopyMode(ZerocopyMode::Disabled);
+  EXPECT_EQ(config.zerocopyMode, ZerocopyMode::Disabled);
+  EXPECT_NO_THROW(config.validate());
+}
+
+TEST(HttpServerConfigTest, ZerocopyModeOpportunistic) {
+  HttpServerConfig config;
+  config.withZerocopyMode(ZerocopyMode::Opportunistic);
+  EXPECT_EQ(config.zerocopyMode, ZerocopyMode::Opportunistic);
+  EXPECT_NO_THROW(config.validate());
+}
+
+TEST(HttpServerConfigTest, ZerocopyModeEnabled) {
+  HttpServerConfig config;
+  config.withZerocopyMode(ZerocopyMode::Enabled);
+  EXPECT_EQ(config.zerocopyMode, ZerocopyMode::Enabled);
+  EXPECT_NO_THROW(config.validate());
+}
+
+TEST(HttpServerConfigTest, ZerocopyModeBuilderChaining) {
+  // Verify builder pattern chaining works correctly
+  HttpServerConfig config =
+      HttpServerConfig{}.withPort(8080).withZerocopyMode(ZerocopyMode::Enabled).withTcpNoDelay(true);
+
+  EXPECT_EQ(config.port, 8080U);
+  EXPECT_EQ(config.zerocopyMode, ZerocopyMode::Enabled);
+  EXPECT_TRUE(config.tcpNoDelay);
   EXPECT_NO_THROW(config.validate());
 }
 
