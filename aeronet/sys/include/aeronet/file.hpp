@@ -39,17 +39,13 @@ class File {
   // Returns true when the File currently holds an opened descriptor.
   explicit operator bool() const noexcept { return static_cast<bool>(_fd); }
 
-  // Return the file size in bytes. Logs and returns kError on failure.
-  [[nodiscard]] std::size_t size() const;
+  // Return the file size in bytes, at the time of opening.
+  [[nodiscard]] std::size_t size() const noexcept { return _fileSize; }
 
   // Read up to dst.size() bytes starting at the given absolute offset.
   // Uses pread() so it does not modify the file's current offset.
   // Returns the number of bytes read (0 on EOF). Returns kError on error.
   [[nodiscard]] std::size_t readAt(std::span<std::byte> dst, std::size_t offset) const;
-
-  // Duplicate the underlying file descriptor and return a new File that owns the duplicate.
-  // Returns an invalid File on failure.
-  [[nodiscard]] File duplicate() const;
 
   // Returns the probable content type based on the file extension.
   // If not found, return 'application/octet-stream'.
@@ -63,11 +59,9 @@ class File {
   // responsible for closing it (unless you explicitly adopt the fd elsewhere first).
   [[nodiscard]] int fd() const noexcept { return _fd.fd(); }
 
-  // Private constructor used to create a File instance from an existing BaseFd (takes ownership).
-  explicit File(BaseFd&& baseFd, MIMETypeIdx mimeIdx) noexcept;
-
   BaseFd _fd;
   MIMETypeIdx _mimeMappingIdx = kUnknownMIMEMappingIdx;
+  std::size_t _fileSize{kError};
 };
 
 }  // namespace aeronet

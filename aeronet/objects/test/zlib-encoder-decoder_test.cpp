@@ -79,10 +79,7 @@ void ExpectStreamingRoundTrip(ZStreamRAII::Variant variant, std::string_view pay
       compressed.append(chunkOut);
     }
   }
-  const auto tail = test::EndStream(*ctx);
-  if (!tail.empty()) {
-    compressed.append(tail);
-  }
+  test::EndStream(*ctx, compressed);
 
   const bool isGzip = variant == ZStreamRAII::Variant::gzip;
   RawChars decompressed;
@@ -168,10 +165,7 @@ TEST_P(ZlibEncoderDecoderTest, MoveConstructor) {
       produced.append(chunkOut);
     }
   }
-  const auto tail1 = test::EndStream(ctx1);
-  if (!tail1.empty()) {
-    produced.append(tail1);
-  }
+  test::EndStream(ctx1, produced);
 
   EXPECT_GT(produced.size(), 0UL);
 
@@ -186,10 +180,7 @@ TEST_P(ZlibEncoderDecoderTest, MoveConstructor) {
       produced.append(chunkOut);
     }
   }
-  const auto tail2 = test::EndStream(ctx2);
-  if (!tail2.empty()) {
-    produced.append(tail2);
-  }
+  test::EndStream(ctx2, produced);
 
   EXPECT_GT(produced.size(), 0UL);
 
@@ -244,13 +235,13 @@ TEST_P(ZlibEncoderDecoderTest, EncodeChunkAfterFinalizationReturnsZero) {
   ZlibEncoder encoder(GetParam(), cfg.zlib.level);
   auto ctx = encoder.makeContext();
   // Produce some initial data.
-  {
-    RawChars chunkOut;
-    const auto written = test::EncodeChunk(*ctx, "Test data", chunkOut);
-    ASSERT_GE(written, 0);
-  }
+
+  RawChars chunkOut;
+  const auto written = test::EncodeChunk(*ctx, "Test data", chunkOut);
+  ASSERT_GE(written, 0);
+
   // Finalize the stream.
-  (void)test::EndStream(*ctx);
+  test::EndStream(*ctx, chunkOut);
   // Encoding after finalization should return -1 to signal an error.
   RawChars extra;
   extra.reserve(deflateBound(nullptr, std::string_view{"More data"}.size()));
@@ -274,10 +265,7 @@ TEST_P(ZlibEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
       compressed.append(chunkOut);
     }
   }
-  const auto tail = test::EndStream(*ctx);
-  if (!tail.empty()) {
-    compressed.append(tail);
-  }
+  test::EndStream(*ctx, compressed);
 
   const bool isGzip = GetParam() == ZStreamRAII::Variant::gzip;
   RawChars decompressed;
@@ -307,10 +295,7 @@ TEST_P(ZlibEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIterat
       compressed.append(chunkOut);
     }
   }
-  const auto tail = test::EndStream(*ctx);
-  if (!tail.empty()) {
-    compressed.append(tail);
-  }
+  test::EndStream(*ctx, compressed);
 
   // Expect more than one chunk worth of output, implying multiple loop iterations.
   ASSERT_GT(compressed.size(), kChunkSize);
@@ -404,10 +389,7 @@ TEST_P(ZlibEncoderDecoderTest, StreamingAndOneShotProduceSameOutput) {
       streaming.append(chunkOut);
     }
   }
-  const auto tail = test::EndStream(*ctx);
-  if (!tail.empty()) {
-    streaming.append(tail);
-  }
+  test::EndStream(*ctx, streaming);
 
   // Both should decompress to the same plaintext
   const bool isGzip = GetParam() == ZStreamRAII::Variant::gzip;
@@ -441,10 +423,7 @@ TEST_P(ZlibEncoderDecoderTest, MultipleStreamingSessionsReuseBuffer) {
         compressed.append(chunkOut);
       }
     }
-    const auto tail = test::EndStream(*ctx);
-    if (!tail.empty()) {
-      compressed.append(tail);
-    }
+    test::EndStream(*ctx, compressed);
 
     const bool isGzip = GetParam() == ZStreamRAII::Variant::gzip;
     RawChars decompressed;

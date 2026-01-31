@@ -37,7 +37,7 @@ void CorruptData(std::string_view encoding, RawChars& data);
 
 int64_t EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& out);
 
-RawChars EndStream(EncoderContext& ctx);
+void EndStream(EncoderContext& ctx, RawChars& out);
 
 RawChars BuildStreamingCompressed(EncoderContext& ctx, std::string_view payload, std::size_t split);
 
