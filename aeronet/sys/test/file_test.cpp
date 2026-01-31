@@ -35,7 +35,6 @@ TEST(FileTest, DefaultConstructedIsFalse) {
   EXPECT_FALSE(static_cast<bool>(fileObj));
 
   EXPECT_EQ(fileObj.size(), File::kError);
-  EXPECT_FALSE(fileObj.duplicate());
 }
 
 TEST(FileTest, InvalidOpenMode) {
@@ -170,19 +169,21 @@ TEST(FileTest, ReadAtReturnsErrorOnFatalPread) {
   EXPECT_EQ(readBytes, File::kError);
 }
 
-TEST(FileTest, SizeUsesFstatOverride) {
+TEST(FileTest, Size) {
   test::FileSyscallHookGuard guard;
   ScopedTempDir dir("aeronet-file-fstat");
   ScopedTempFile tmp(dir, "content123");
   const std::string path = tmp.filePath().string();
-  File fileObj(path, File::OpenMode::ReadOnly);
-  ASSERT_TRUE(static_cast<bool>(fileObj));
   // Set a fake size via the fstat override for this path
   test::gFstatSizes.setActions(path, {static_cast<std::int64_t>(12345)});
+  File fileObj(path, File::OpenMode::ReadOnly);
+  ASSERT_TRUE(static_cast<bool>(fileObj));
+
   EXPECT_EQ(fileObj.size(), 12345U);
 
   test::gFstatSizes.setActions(path, {static_cast<std::int64_t>(-1)});
-  EXPECT_EQ(fileObj.size(), File::kError);
+  File fileObj2(path, File::OpenMode::ReadOnly);
+  EXPECT_EQ(fileObj2.size(), File::kError);
 }
 
 TEST(FileTest, RestoreToStartLogsWhenLseekFails) {
@@ -194,40 +195,4 @@ TEST(FileTest, RestoreToStartLogsWhenLseekFails) {
   ASSERT_TRUE(static_cast<bool>(fileObj));
   test::SetLseekErrors(path, {EIO});
   EXPECT_EQ(LoadAllContent(fileObj), "abc");
-}
-
-TEST(FileTest, DupCreatesIndependentDescriptor) {
-  ScopedTempDir dir("aeronet-file-dup");
-  ScopedTempFile tmp(dir, "dup-content");
-  const std::string path = tmp.filePath().string();
-
-  File original(path, File::OpenMode::ReadOnly);
-  ASSERT_TRUE(static_cast<bool>(original));
-  const auto originalSize = original.size();
-  EXPECT_EQ(LoadAllContent(original), "dup-content");
-
-  File duplicated = original.duplicate();
-  ASSERT_TRUE(static_cast<bool>(duplicated));
-
-  // Both should report the same size and content
-  EXPECT_EQ(duplicated.size(), originalSize);
-  EXPECT_EQ(LoadAllContent(duplicated), "dup-content");
-
-  // Destroy original and ensure duplicated still works
-  original = File();
-  ASSERT_TRUE(static_cast<bool>(duplicated));
-  EXPECT_EQ(LoadAllContent(duplicated), "dup-content");
-}
-
-TEST(FileTest, DuplicateThrowsWhenFcntlFails) {
-  test::FileSyscallHookGuard guard;
-  ScopedTempDir dir("aeronet-file-dup-fail");
-  ScopedTempFile tmp(dir, "dup-content-fail");
-  const std::string path = tmp.filePath().string();
-
-  File original(path, File::OpenMode::ReadOnly);
-  ASSERT_TRUE(static_cast<bool>(original));
-  // Simulate fcntl failure for dup
-  test::SetFcntlErrors(path, {EBADF});
-  EXPECT_FALSE(original.duplicate());
 }

@@ -128,6 +128,11 @@ class HttpResponse {
  private:
   enum class Check : std::uint8_t { Yes, No };
 
+  using BodyHeadersOpts = std::uint8_t;
+  static constexpr BodyHeadersOpts OverrideContentTypeAndNewBodyIsInline = 0;
+  static constexpr BodyHeadersOpts DoNotOverrideContentType = 1U << 0;
+  static constexpr BodyHeadersOpts NewBodyIsCaptured = 1U << 1;
+
  public:
   // "HTTP/x.y". Should be changed if version major / minor exceed 1 digit
   static constexpr std::size_t kHttp1VersionLen = http::HTTP10Sv.size();
@@ -477,7 +482,7 @@ class HttpResponse {
   // body() overloads to avoid a copy (and possibly an allocation).
   // Body referencing internal memory of this HttpResponse is undefined behavior.
   HttpResponse& body(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain) & {
-    setBodyHeaders(contentType, body.size());
+    setBodyHeaders(contentType, body.size(), OverrideContentTypeAndNewBodyIsInline);
     setBodyInternal(body);
     if (isHead()) {
       setHeadSize(body.size());
@@ -493,7 +498,7 @@ class HttpResponse {
   // body() overloads to avoid a copy (and possibly an allocation).
   // Body referencing internal memory of this HttpResponse is undefined behavior.
   HttpResponse&& body(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain) && {
-    setBodyHeaders(contentType, body.size());
+    setBodyHeaders(contentType, body.size(), OverrideContentTypeAndNewBodyIsInline);
     setBodyInternal(body);
     if (isHead()) {
       setHeadSize(body.size());
@@ -546,7 +551,7 @@ class HttpResponse {
   // Empty body is allowed - this will remove any existing body.
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::string body, std::string_view contentType = http::ContentTypeTextPlain) & {
-    setBodyHeaders(contentType, body.size());
+    setBodyHeaders(contentType, body.size(), NewBodyIsCaptured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body));
     return *this;
@@ -563,7 +568,7 @@ class HttpResponse {
   // Empty body is allowed - this will remove any existing body.
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::vector<char> body, std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
-    setBodyHeaders(contentType, body.size());
+    setBodyHeaders(contentType, body.size(), NewBodyIsCaptured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body));
     return *this;
@@ -582,7 +587,7 @@ class HttpResponse {
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::vector<std::byte> body,
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
-    setBodyHeaders(contentType, body.size());
+    setBodyHeaders(contentType, body.size(), NewBodyIsCaptured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body));
     return *this;
@@ -601,7 +606,7 @@ class HttpResponse {
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::unique_ptr<char[]> body, std::size_t size,
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
-    setBodyHeaders(contentType, size);
+    setBodyHeaders(contentType, size, NewBodyIsCaptured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body), size);
     return *this;
@@ -620,7 +625,7 @@ class HttpResponse {
   // The body instance is moved into this HttpResponse.
   HttpResponse& body(std::unique_ptr<std::byte[]> body, std::size_t size,
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
-    setBodyHeaders(contentType, size);
+    setBodyHeaders(contentType, size, NewBodyIsCaptured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body), size);
     return *this;
@@ -637,7 +642,7 @@ class HttpResponse {
   // Sets the body of this HttpResponse to point to a static buffer.
   // No copy is performed, the lifetime of pointed storage MUST be constant.
   HttpResponse& bodyStatic(std::string_view staticBody, std::string_view contentType = http::ContentTypeTextPlain) & {
-    setBodyHeaders(contentType, staticBody.size());
+    setBodyHeaders(contentType, staticBody.size(), NewBodyIsCaptured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(staticBody);
     return *this;
@@ -720,14 +725,7 @@ class HttpResponse {
     if (!hasNoExternalPayload() && !_payloadVariant.isSizeOnly()) [[unlikely]] {
       throw std::logic_error("bodyInlineAppend can only be used with inline body responses");
     }
-    if (_trailerLen != 0) [[unlikely]] {
-      throw std::logic_error("Cannot set body after the first trailer");
-    }
-
-    contentType = TrimOws(contentType);
-    if (!contentType.empty() && !http::IsValidHeaderValue(contentType)) [[unlikely]] {
-      throw std::invalid_argument("Invalid Content-Type header value");
-    }
+    bodyPrecheckContentType(contentType);
 
     using W = std::remove_reference_t<Writer>;
     // Accept writers callable as either: std::size_t(char*) or std::size_t(std::byte*)
@@ -808,13 +806,7 @@ class HttpResponse {
   template <class Writer>
   HttpResponse& bodyInlineSet(std::size_t maxLen, Writer&& writer, std::string_view contentType = {}) & {
     using W = std::remove_reference_t<Writer>;
-    if (_trailerLen != 0) [[unlikely]] {
-      throw std::logic_error("Cannot set body after trailers have been added");
-    }
-    contentType = TrimOws(contentType);
-    if (!contentType.empty() && !http::IsValidHeaderValue(contentType)) [[unlikely]] {
-      throw std::invalid_argument("Invalid Content-Type header value");
-    }
+    bodyPrecheckContentType(contentType);
 
     if (contentType.empty()) {
       // Determine default content type based on writer signature
@@ -1044,7 +1036,7 @@ class HttpResponse {
   // Return true if a new header was added or replaced.
   bool setHeader(std::string_view key, std::string_view value, OnlyIfNew onlyIfNew = OnlyIfNew::No);
 
-  void setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize, bool setContentTypeIfPresent = true);
+  void setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize, BodyHeadersOpts opts);
 
   // Convert all header names to lower-case (for HTTP/2).
   void makeAllHeaderNamesLowerCase();
@@ -1167,6 +1159,16 @@ class HttpResponse {
   char* getContentTypeValuePtr(std::uint8_t nCharsBodyLen) {
     return getContentTypeHeaderLinePtr(nCharsBodyLen) + http::CRLF.size() + http::ContentType.size() +
            http::HeaderSep.size();
+  }
+
+  void bodyPrecheckContentType(std::string_view& contentType) const {
+    if (_trailerLen != 0) [[unlikely]] {
+      throw std::logic_error("Cannot set body after trailers have been added");
+    }
+    contentType = TrimOws(contentType);
+    if (!contentType.empty() && !http::IsValidHeaderValue(contentType)) [[unlikely]] {
+      throw std::invalid_argument("Invalid Content-Type header value");
+    }
   }
 
   void replaceHeaderValueNoRealloc(char* first, std::string_view newValue);

@@ -116,10 +116,7 @@ TEST(BrotliEncoderDecoderTest, MoveConstructor) {
       produced.append(chunkOut);
     }
   }
-  const auto tail1 = test::EndStream(ctx1);
-  if (!tail1.empty()) {
-    produced.append(tail1);
-  }
+  test::EndStream(ctx1, produced);
 
   EXPECT_GT(produced.size(), 0UL);
 
@@ -134,10 +131,7 @@ TEST(BrotliEncoderDecoderTest, MoveConstructor) {
       produced.append(chunkOut);
     }
   }
-  const auto tail2 = test::EndStream(ctx2);
-  if (!tail2.empty()) {
-    produced.append(tail2);
-  }
+  test::EndStream(ctx2, produced);
 
   EXPECT_GT(produced.size(), 0UL);
 
@@ -162,13 +156,13 @@ TEST(BrotliEncoderDecoderTest, EncodeChunkAfterFinalizationReturnsZero) {
   BrotliEncoder encoder(cfg.brotli);
   auto ctx = encoder.makeContext();
   // Produce some initial data.
-  {
-    RawChars chunkOut;
-    const auto written = test::EncodeChunk(*ctx, "Test data", chunkOut);
-    ASSERT_GE(written, 0);
-  }
+
+  RawChars chunkOut;
+  const auto written = test::EncodeChunk(*ctx, "Test data", chunkOut);
+  ASSERT_GE(written, 0);
+
   // Finalize the stream.
-  (void)test::EndStream(*ctx);
+  test::EndStream(*ctx, chunkOut);
   // Encoding after finalization should return -1 to signal an error.
   RawChars extra;
   extra.reserve(BrotliEncoderMaxCompressedSize(std::string_view{"More data"}.size()));
@@ -289,10 +283,7 @@ TEST(BrotliEncoderDecoderTest, StreamingAndOneShotProduceSameOutput) {
         streamingCompressed.append(chunkOut);
       }
     }
-    const auto tail = test::EndStream(*ctx);
-    if (!tail.empty()) {
-      streamingCompressed.append(tail);
-    }
+    test::EndStream(*ctx, streamingCompressed);
 
     // Decode both datas to ensure validity
     RawChars decompressedOneShot;
@@ -329,10 +320,7 @@ TEST(BrotliEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
       compressed.append(chunkOut);
     }
   }
-  const auto tail = test::EndStream(*ctx);
-  if (!tail.empty()) {
-    compressed.append(tail);
-  }
+  test::EndStream(*ctx, compressed);
 
   RawChars decompressed;
   ASSERT_TRUE(
@@ -362,10 +350,7 @@ TEST(BrotliEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIterat
       compressed.append(chunkOut);
     }
   }
-  const auto tail = test::EndStream(*ctx);
-  if (!tail.empty()) {
-    compressed.append(tail);
-  }
+  test::EndStream(*ctx, compressed);
 
   // Expect more than one chunk worth of output, implying multiple loop iterations.
   ASSERT_GT(compressed.size(), kChunkSize);
