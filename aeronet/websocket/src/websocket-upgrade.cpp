@@ -1,20 +1,37 @@
 #include "aeronet/websocket-upgrade.hpp"
 
 #include <algorithm>
+#include <array>
+#include <limits>
 #include <string_view>
 
 #include "aeronet/base64-encode.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/sha1.hpp"
 #include "aeronet/websocket-constants.hpp"
 
 namespace aeronet {
 
 namespace {
+constexpr auto kIsBase64CharTable = []() {
+  std::array<bool, std::numeric_limits<char>::max()> table{};
+  for (unsigned char ch = 'A'; ch <= 'Z'; ++ch) {
+    table[ch] = true;
+  }
+  for (unsigned char ch = 'a'; ch <= 'z'; ++ch) {
+    table[ch] = true;
+  }
+  for (unsigned char ch = '0'; ch <= '9'; ++ch) {
+    table[ch] = true;
+  }
+  table[static_cast<unsigned char>('+')] = true;
+  table[static_cast<unsigned char>('/')] = true;
+  table[static_cast<unsigned char>('=')] = true;
+  return table;
+}();
+
 // Check if a character is valid base64
 [[nodiscard]] constexpr bool IsBase64Char(char ch) noexcept {
-  return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '+' || ch == '/' ||
-         ch == '=';
+  return kIsBase64CharTable[static_cast<unsigned char>(ch)];
 }
 }  // namespace
 
@@ -34,14 +51,10 @@ bool IsValidWebSocketKey(std::string_view key) {
 }
 
 B64EncodedSha1 ComputeWebSocketAccept(std::string_view key) {
-  // Concatenate key with WebSocket GUID
-  RawChars concat(key.size() + websocket::kGUID.size());
-  concat.unchecked_append(key);
-  concat.unchecked_append(websocket::kGUID);
-
   // Compute SHA-1 hash
   SHA1 sha1Ctx;
-  sha1Ctx.update(concat.data(), concat.size());
+  sha1Ctx.update(key.data(), key.size());
+  sha1Ctx.update(websocket::kGUID.data(), websocket::kGUID.size());
   const Sha1Digest hash = sha1Ctx.final();
 
   static constexpr auto b64EncodedSz = B64EncodedLen(sizeof(hash));
