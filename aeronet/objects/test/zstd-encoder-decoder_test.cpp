@@ -115,9 +115,8 @@ TEST(ZstdEncoderDecoderTest, EncodeFails) {
   EXPECT_EQ(encoder.encodeFull("some-data", 0UL, buf.data()), 0UL);
 
   auto ctx = encoder.makeContext();
+  RawChars out(ZSTD_compressBound(std::string_view{"some-data"}.size()));
   test::FailNextMalloc();
-  RawChars out;
-  out.reserve(ZSTD_compressBound(std::string_view{"some-data"}.size()));
   EXPECT_LT(ctx->encodeChunk("some-data", out.capacity(), out.data()), 0);
 }
 
@@ -135,10 +134,7 @@ TEST(ZstdEncoderContext, MoveConstructor) {
       produced.append(chunkOut);
     }
   }
-  const auto tail1 = test::EndStream(ctx1);
-  if (!tail1.empty()) {
-    produced.append(tail1);
-  }
+  test::EndStream(ctx1, produced);
 
   EXPECT_GT(produced.size(), 0UL);
 
@@ -153,10 +149,8 @@ TEST(ZstdEncoderContext, MoveConstructor) {
       produced.append(chunkOut);
     }
   }
-  const auto tail2 = test::EndStream(ctx2);
-  if (!tail2.empty()) {
-    produced.append(tail2);
-  }
+
+  test::EndStream(ctx2, produced);
 
   EXPECT_GT(produced.size(), 0UL);
 
@@ -298,10 +292,7 @@ TEST(ZstdEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
       compressed.append(chunkOut);
     }
   }
-  const auto tail = test::EndStream(*ctx);
-  if (!tail.empty()) {
-    compressed.append(tail);
-  }
+  test::EndStream(*ctx, compressed);
 
   RawChars decompressed;
   ASSERT_TRUE(ZstdDecoder::decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
@@ -331,10 +322,8 @@ TEST(ZstdEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIteratio
       compressed.append(chunkOut);
     }
   }
-  const auto tail = test::EndStream(*ctx);
-  if (!tail.empty()) {
-    compressed.append(tail);
-  }
+
+  test::EndStream(*ctx, compressed);
 
   // Expect more than one chunk worth of output, implying multiple loop iterations.
   ASSERT_GT(compressed.size(), kChunkSize);

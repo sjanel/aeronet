@@ -781,11 +781,6 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   // Note: Two syscalls required - open() returns fd only, fstat() needed for size/metadata.
   // POSIX provides no combined operation.
   const std::size_t fileSize = file.size();
-  if (fileSize == File::kError) {
-    resp.body("Unable to read file size\n");
-    return resp;
-  }
-
   SysTimePoint lastModified = kInvalidTimePoint;
   if (_config.addLastModified || _config.enableConditional || _config.addEtag) {
     const auto writeTime = std::filesystem::last_write_time(targetPath, ec);

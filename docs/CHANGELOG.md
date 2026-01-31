@@ -38,6 +38,8 @@ All notable changes to aeronet are documented in this file.
 - Faster case insensitive hash using FNV-1a algorithm for header name lookups, and optimized version of `tolower` - Use [City hash](https://github.com/google/cityhash/tree/master) elsewhere (for standard strings)
 - `HttpRequest::queryParamsRange()` satisfies the C++20 range concept.
 - Reuse encoders contexts instead of recreating them on each request for better performance.
+- Faster `HttpResponse::file()` by optimizing body headers update.
+- Smaller memory reallocations when using captured body in `HttpResponse`.
 
 ### Other
 

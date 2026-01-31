@@ -1040,9 +1040,9 @@ TEST_F(HttpResponseTest, SendInvalidFile) {
 
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, "some-data");
-  File file(tmp.filePath().string());
 
   test::gFstatSizes.setActions(tmp.filePath().string(), {-1});
+  File file(tmp.filePath().string());
 
   auto resp = HttpResponse(http::StatusCodeOK, "OK");
   EXPECT_THROW(resp.file(std::move(file)), std::invalid_argument);
