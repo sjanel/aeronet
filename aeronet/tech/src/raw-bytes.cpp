@@ -181,15 +181,25 @@ bool RawBytesBase<T, ViewType, SizeType>::operator==(const RawBytesBase &rhs) co
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::reallocUp(size_type newCapacity) {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+  // force allocation of a new buffer to catch invalid accesses more easily
+  pointer newBuf = static_cast<pointer>(std::malloc(newCapacity));
+  if (newBuf == nullptr) [[unlikely]] {
+    throw std::bad_alloc();
+  }
+  if (_size != 0) {
+    std::memcpy(newBuf, _buf, _size);
+  }
+  std::free(_buf);
+  std::memset(newBuf + _size, 255, newCapacity - _size);
+#else
   pointer newBuf = static_cast<pointer>(std::realloc(_buf, newCapacity));
   if (newBuf == nullptr) [[unlikely]] {
     throw std::bad_alloc();
   }
+#endif
   _buf = newBuf;
   _capacity = newCapacity;
-#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
-  std::memset(_buf + _size, 255, _capacity - _size);
-#endif
 }
 
 // Explicit instantiations for commonly used concrete types

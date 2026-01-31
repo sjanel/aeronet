@@ -109,21 +109,19 @@ int64_t EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& out) {
   return written;
 }
 
-RawChars EndStream(EncoderContext& ctx) {
-  RawChars out;
+void EndStream(EncoderContext& ctx, RawChars& out) {
   while (true) {
     out.ensureAvailableCapacityExponential(ctx.endChunkSize());
     const auto written = ctx.end(out.availableCapacity(), out.data() + out.size());
     if (written < 0) {
       out.clear();
-      return out;
+      break;
     }
     if (written == 0) {
       break;
     }
     out.addSize(static_cast<RawChars::size_type>(written));
   }
-  return out;
 }
 
 RawChars BuildStreamingCompressed(EncoderContext& ctx, std::string_view payload, std::size_t split) {
@@ -135,33 +133,20 @@ RawChars BuildStreamingCompressed(EncoderContext& ctx, std::string_view payload,
     const auto chunk = remaining.substr(0, take);
     remaining.remove_prefix(take);
 
-    RawChars chunkOut;
     // Reserve maximum possible compressed size for this chunk
-    chunkOut.reserve(ctx.maxCompressedBytes(chunk.size()));
+    compressed.ensureAvailableCapacityExponential(ctx.maxCompressedBytes(chunk.size()));
 
-    int64_t written = ctx.encodeChunk(chunk, chunkOut.capacity(), chunkOut.data());
-
-    // If insufficient output buffer, try with more space
-    if (written < 0) {
-      chunkOut.ensureAvailableCapacityExponential(ctx.maxCompressedBytes(chunk.size()) * 2);
-      written = ctx.encodeChunk(chunk, chunkOut.capacity(), chunkOut.data());
-    }
+    int64_t written = ctx.encodeChunk(chunk, compressed.availableCapacity(), compressed.data() + compressed.size());
 
     if (written < 0) {
       // Still failed, give up
       return {};
     }
 
-    if (written > 0) {
-      chunkOut.setSize(static_cast<RawChars::size_type>(written));
-      compressed.append(chunkOut);
-    }
+    compressed.addSize(static_cast<RawChars::size_type>(written));
   }
 
-  const auto tail = test::EndStream(ctx);
-  if (!tail.empty()) {
-    compressed.append(tail);
-  }
+  test::EndStream(ctx, compressed);
 
   return compressed;
 }
