@@ -305,8 +305,12 @@ jobs:
 
   examples-smoke:
     name: Examples and Docs
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [clang-21]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       BUILD_DIR: build-examples
     steps:
@@ -319,6 +323,39 @@ jobs:
           sudo apt install -y ninja-build libjsoncpp-dev uuid-dev \
             libssl-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
 
+      - name: Install GCC toolchain
+        if: ${{ startsWith(matrix.compiler, 'gcc') }}
+        run: |
+          sudo apt update
+          sudo apt install -y ${{ matrix.compiler }}
+
+      - name: Install Clang/LLVM toolchain
+        if: ${{ startsWith(matrix.compiler, 'clang') }}
+        run: |
+            wget --retry-connrefused --waitretry=5 --tries=5 https://apt.llvm.org/llvm.sh
+            chmod +x llvm.sh
+            compiler="${{ matrix.compiler }}"
+            version="${compiler##*-}"
+            echo "Detected clang version: $version"
+            sudo ./llvm.sh "$version"
+            sudo apt-get install -y "clang-tidy-$version" "lld-$version"
+
+      - name: Derive CC/CXX environment
+        run: |
+          compiler="${{ matrix.compiler }}"
+          echo "CC=$compiler" >> $GITHUB_ENV
+          ver="${compiler##*-}"
+          if [[ "$compiler" == gcc-* ]]; then
+            echo "CXX=g++-$ver" >> $GITHUB_ENV
+          else
+            echo "CXX=clang++-$ver" >> $GITHUB_ENV
+          fi
+          echo "Derived compilers: CC=$compiler CXX set for version $ver"
+
+      - name: Show compiler version
+        run: |
+          $CXX --version
+
       - name: Configure examples build
         run: |
           cmake -S . -B ${BUILD_DIR} -G Ninja \
@@ -326,7 +363,9 @@ jobs:
             -DAERONET_BUILD_EXAMPLES=ON \
             -DAERONET_BUILD_TESTS=OFF \
             -DAERONET_BUILD_BENCHMARKS=OFF \
+            -DAERONET_BUILD_MODULES=ON \
             -DAERONET_ENABLE_ASAN=OFF \
+            ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
             -DAERONET_ENABLE_SPDLOG=ON \
             -DAERONET_ENABLE_OPENSSL=ON \
             -DAERONET_ENABLE_HTTP2=ON \
