@@ -81,6 +81,7 @@ endif()
 
 set(AERONET_BENCH_INTERNAL_REQUEST_PARSE ${AERONET_BENCH_ROOT}/internal/request-parse_bench.cpp)
 set(AERONET_BENCH_INTERNAL_STRING_EQUAL ${AERONET_BENCH_ROOT}/internal/string-equal-ignore-case_bench.cpp)
+set(AERONET_BENCH_INTERNAL_ROUTER ${AERONET_BENCH_ROOT}/internal/router_bench.cpp)
 
 include(CheckIPOSupported)
 
@@ -119,6 +120,9 @@ set_target_properties(aeronet-bench-internal-request-parse PROPERTIES FOLDER "be
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-string-equal-ignore-case ${AERONET_BENCH_INTERNAL_STRING_EQUAL})
 set_target_properties(aeronet-bench-internal-string-equal-ignore-case PROPERTIES FOLDER "benchmarks/internal")
+
+AeronetAddProjectBenchmark(aeronet-bench-internal-router ${AERONET_BENCH_INTERNAL_ROUTER})
+set_target_properties(aeronet-bench-internal-router PROPERTIES FOLDER "benchmarks/internal")
 
 # Throughput benchmark (simple skeleton; not using Google Benchmark intentionally)
 AeronetAddProjectBenchmark(aeronet-bench-throughput ${AERONET_BENCH_ROOT}/e2e/bench_throughput_local.cpp)
@@ -166,7 +170,8 @@ set_target_properties(aeronet-bench-frameworks PROPERTIES FOLDER "benchmarks")
 add_custom_target(run-aeronet-bench
   COMMAND aeronet-bench-internal-request-parse --benchmark_report_aggregates_only=true
   COMMAND aeronet-bench-internal-string-equal-ignore-case --benchmark_report_aggregates_only=true
-  DEPENDS aeronet-bench-internal-request-parse aeronet-bench-internal-string-equal-ignore-case
+  COMMAND aeronet-bench-internal-router --benchmark_report_aggregates_only=true
+  DEPENDS aeronet-bench-internal-request-parse aeronet-bench-internal-string-equal-ignore-case aeronet-bench-internal-router
   COMMENT "Running aeronet internal microbenchmarks")
 
 if(TARGET aeronet-bench-throughput)
