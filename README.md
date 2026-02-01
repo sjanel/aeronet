@@ -111,7 +111,117 @@ Call `co_await req.bodyAwaitable()` (or the chunked helpers) before touching the
 
 You can refer to the [complete async handlers example](examples/async-handlers.cpp) for more details.
 
-### HTTP/2 support
+## Quick Start with provided examples
+
+Minimal server examples for typical use cases are provided in [examples](examples) directory.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+
+./build/examples/aeronet-minimal 8080   # or omit 8080 for ephemeral
+```
+
+Test with curl:
+
+```bash
+curl -i http://localhost:8080/hello
+
+HTTP/1.1 200
+content-type: text/plain
+server: aeronet
+date: Sun, 04 Jan 2026 15:49:40 GMT
+content-length: 151
+
+Hello from aeronet minimal server! You requested /hello
+...
+```
+
+## Handler registration
+
+Two approaches:
+
+1. Per method and path handlers: `router.setPath(http::Method::GET | http::Method::POST, "/hello", handler)` – exact path match.
+1. Global handler: `router.setDefault([](const HttpRequest&){ ... })` catchs all requests not matched by path handlers.
+
+Rules:
+
+- If a default handler is not registered and a request does not match a path handler -> 404 Not Found.
+- If path exists but method not allowed -> 405 Method Not Allowed.
+- You can call `setPath` repeatedly on the same path to extend the allowed method mask (handler is replaced, methods merged).
+- You can also call `setPath` once for several methods by using the `|` operator (for example: `http::Method::GET | http::Method::POST`)
+
+Example:
+
+```cpp
+Router router;
+router.setPath(http::Method::GET | http::Method::PUT, "/hello", [](const HttpRequest&){
+  return HttpResponse(200).body("world");
+});
+router.setPath(http::Method::POST, "/echo", [](const HttpRequest& req){
+  return HttpResponse(200).body(req.body());
+});
+// Add another method later (merges method mask, replaces handler)
+router.setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
+  return HttpResponse(200).body("Echo via GET");
+});
+```
+
+## Routing Patterns & Path Parameters
+
+**Path Parameters**: Use `{name}` for named parameters or `{}` for unnamed (zero-indexed) parameters (but you cannot mix both named and unnamed in the same path):
+
+```cpp
+Router router;
+// Matches: /users/42/posts/hello
+router.setPath(http::Method::GET, "/users/{id}/posts/{name}", [](const HttpRequest& req) { 
+  std::string_view id = req.pathParamValueOrEmpty("id"); // "42"
+  std::string_view name = req.pathParamValueOrEmpty("name"); // "hello"
+  return HttpResponse(200); 
+});
+```
+
+```cpp
+Router router;
+// Matches: /api/v3/search-something
+router.setPath(http::Method::GET, "/api/v{}/search-{}", [](const HttpRequest& req) { 
+  std::string_view version = req.pathParamValueOrEmpty("0"); // "3"
+  std::string_view type = req.pathParamValueOrEmpty("1"); // "something"
+  return HttpResponse(200); 
+});
+```
+
+**Wildcard**: If the last segment is exactly `*`, it matches any remaining path segments:
+
+```cpp
+Router router;
+router.setPath(http::Method::GET, "/files/*", [](const HttpRequest& req) { return HttpResponse(200); });
+// Matches: /files/a.txt
+// Matches: /files/a/b.txt
+```
+
+At any other position in the path, `*` is the literal asterisk character. Example:
+
+```cpp
+Router router;
+router.setPath(http::Method::GET, "/glob/*/file.txt", [](const HttpRequest& req) { return HttpResponse(200); });  
+// Matches: /glob/*/file.txt but not /glob/a/file.txt
+```
+
+**Escape Sequences**: To use literal special characters in paths, escape them:
+
+- `{{` → literal `{`
+- `}}` → literal `}`
+
+```cpp
+Router router;
+router.setPath(http::Method::GET, "/api/{{version}}/data", [](const HttpRequest& req) { return HttpResponse(200); });
+// Matches: /api/{version}/data (literal braces)
+```
+
+See [docs/FEATURES.md](docs/FEATURES.md#routing-patterns--path-parameters) for complete routing syntax.
+
+## HTTP/2 support
 
 `aeronet` is compatible with HTTP/2, with or without TLS, when built with `-DAERONET_ENABLE_HTTP2=ON`.
 
@@ -149,32 +259,6 @@ int main() {
 Test: `curl -k --http2 https://localhost:8443/hello`
 
 See the [full HTTP/2 example](examples/http2.cpp) for more details.
-
-## Quick Start with provided examples
-
-Minimal server examples for typical use cases are provided in [examples](examples) directory.
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-
-./build/examples/aeronet-minimal 8080   # or omit 8080 for ephemeral
-```
-
-Test with curl:
-
-```bash
-curl -i http://localhost:8080/hello
-
-HTTP/1.1 200
-content-type: text/plain
-server: aeronet
-date: Sun, 04 Jan 2026 15:49:40 GMT
-content-length: 151
-
-Hello from aeronet minimal server! You requested /hello
-...
-```
 
 ## Detailed Documentation
 
@@ -584,7 +668,7 @@ See: [Connection Close Semantics](docs/FEATURES.md#connection-close-semantics)
 
 ### Compression (gzip, deflate, zstd, brotli)
 
-`aeronet` has built-in support for automatic outbound response compression (and inbound requests decompression) with multiple algorithms, provided that the library is built with each available encoder compile time flag.
+`aeronet` has built-in support for automatic outbound response compression and inbound requests decompression with multiple algorithms, provided that the library is built with each available encoder compile time flag.
 
 Detailed negotiation rules, thresholds, opt-outs, and tuning have moved:
 See: [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
@@ -738,7 +822,7 @@ Full resolution algorithm and matrix moved to: [Trailing Slash Policy](docs/FEAT
 
 Overview relocated to: [Construction Model (RAII & Ephemeral Ports)](docs/FEATURES.md#construction-model-raii--ephemeral-ports)
 
-## TLS Features (Current)
+## TLS Features
 
 See: [TLS Features](docs/FEATURES.md#tls-features)
 
@@ -748,7 +832,7 @@ Metrics example: [TLS Features](docs/FEATURES.md#tls-features)
 
 ## OpenTelemetry Support (Experimental)
 
-Aeronet provides optional OpenTelemetry integration for distributed tracing and metrics. Enable with the CMake flag `-DAERONET_ENABLE_OPENTELEMETRY=ON`. Be aware that it pulls also `protobuf` dependencies.
+`aeronet` provides optional OpenTelemetry integration for distributed tracing and metrics. Enable with the CMake flag`-DAERONET_ENABLE_OPENTELEMETRY=ON`. Be aware that it pulls also `protobuf` dependencies.
 
 ### Architecture
 
@@ -761,77 +845,9 @@ Aeronet provides optional OpenTelemetry integration for distributed tracing and 
 
 All telemetry operations log errors via `log::error()` for debuggability—no silent failures.
 
-### Dependencies
+You may create your own `TelemetryContext` instance for your custom metrics/traces if needed.
 
-When OpenTelemetry is enabled, aeronet requires the following system packages:
-
-**Debian/Ubuntu:**
-
-```bash
-sudo apt-get install libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
-```
-
-**Alpine Linux:**
-
-```bash
-apk add curl-dev protobuf-dev protobuf-c-compiler
-```
-
-**Fedora/RHEL:**
-
-```bash
-sudo dnf install libcurl-devel protobuf-devel protobuf-compiler
-```
-
-**Arch Linux:**
-
-```bash
-sudo pacman -S curl protobuf
-```
-
-### Configuration Example
-
-Configure OpenTelemetry via `HttpServerConfig`:
-
-```cpp
-#include <aeronet/aeronet.hpp>
-
-using namespace aeronet;
-
-int main() {
-  HttpServerConfig cfg;
-  cfg.withPort(8080)
-     .withTelemetryConfig(TelemetryConfig{}
-                              .withEndpoint("http://localhost:4318")  // OTLP HTTP endpoint
-                              .withServiceName("my-service")
-                              .withSampleRate(1.0)  // 100% sampling for traces
-                              .enableDogStatsDMetrics());  // Optional DogStatsD metrics via UDS
-  
-  SingleHttpServer server(cfg);
-  // Telemetry is automatically initialized when server.init() is called
-  // Each server has its own independent TelemetryContext
-  
-  // ... register handlers ...
-  server.run();
-}
-```
-
-### Built-in Instrumentation
-
-When OpenTelemetry is enabled, aeronet automatically tracks:
-
-**Traces:**
-
-- `http.request` spans for each HTTP request with attributes (method, path, status_code, etc.)
-
-**Metrics (non exhaustive list):**
-
-- `aeronet.events.processed` – epoll events successfully processed per iteration
-- `aeronet.connections.accepted` – new connections accepted
-- `aeronet.bytes.read` – bytes read from client connections
-- `aeronet.bytes.written` – bytes written to client connections
-
-All instrumentation happens automatically—no manual API calls required in handler code.
+More information in [OpenTelemetry Support](docs/FEATURES.md#opentelemetry-integration).
 
 ### Query String & Parameters
 
@@ -863,38 +879,7 @@ cfg.withPort(8080)
   .withMaxRequestsPerConnection(500)
   .withKeepAliveMode(true);
 
-SingleHttpServer server(cfg); // or SingleHttpServer(8080) then server.setConfig(cfgWithoutPort);
-```
-
-### Handler Registration / Routing (Detailed)
-
-Two mutually exclusive approaches:
-
-1. Global handler: `router.setDefault([](const HttpRequest&){ ... })` (receives every request if no specific path matches).
-2. Per-path handlers: `router.setPath(http::Method::GET | http::Method::POST, "/hello", handler)` – exact path match.
-
-Rules:
-
-- Mixing the two modes (calling `setPath` after `setDefault` or vice-versa) throws.
-- If a path is not registered -> 404 Not Found.
-- If path exists but method not allowed -> 405 Method Not Allowed.
-- You can call `setPath` repeatedly on the same path to extend the allowed method mask (handler is replaced, methods merged).
-- You can also call `setPath` once for several methods by using the `|` operator (for example: `http::Method::GET | http::Method::POST`)
-
-Example:
-
-```cpp
-Router router;
-router.setPath(http::Method::GET | http::Method::PUT, "/hello", [](const HttpRequest&){
-  return HttpResponse(200).body("world");
-});
-router.setPath(http::Method::POST, "/echo", [](const HttpRequest& req){
-  return HttpResponse(200).body(req.body());
-});
-// Add another method later (merges method mask, replaces handler)
-router.setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
-  return HttpResponse(200).body("Echo via GET");
-});
+SingleHttpServer server(std::move(cfg)); // or SingleHttpServer(8080) then server.setConfig(cfgWithoutPort);
 ```
 
 ### Limits

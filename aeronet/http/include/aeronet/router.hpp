@@ -2,9 +2,11 @@
 
 #include <cstdint>
 #include <functional>
+#include <iosfwd>
 #include <span>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <variant>
 
 #include "aeronet/city-hash.hpp"
@@ -44,7 +46,7 @@ class Router {
   // The RouterConfig controls routing behavior such as trailing slash handling and
   // other matching policies. Constructing a Router with a custom RouterConfig allows
   // the caller to opt into strict trailing slash semantics or automatic normalization.
-  explicit Router(RouterConfig config);
+  explicit Router(RouterConfig config) : _config(std::move(config)) {}
 
   // Register a request middleware executed before any matched handler (including defaults).
   void addRequestMiddleware(RequestMiddleware middleware);
@@ -66,8 +68,8 @@ class Router {
 
   // Move operations transfer ownership of the router state.
   // The Router being moved from should not be used except for destruction or assignment.
-  Router(Router&&) noexcept;
-  Router& operator=(Router&&) noexcept;
+  Router(Router&&) noexcept = default;
+  Router& operator=(Router&&) noexcept = default;
 
   ~Router();
 
@@ -88,7 +90,7 @@ class Router {
   //     threads to avoid blocking the event loop.
   void setDefault(RequestHandler handler);
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  void setDefault(AsyncRequestHandler handler);
+  void setDefault(AsyncRequestHandler handler) { _asyncHandler = std::move(handler); }
 #endif
 
   // Register a global streaming handler that can produce responses incrementally via
@@ -286,7 +288,11 @@ class Router {
   // The configuration stays unchanged.
   void clear() noexcept;
 
+  // Prints in given ostream a representation of the path hold by the Router.
+  void printTree(std::ostream& os) const;
+
  private:
+  // Part of a segment pattern (either literal text or a parameter placeholder)
   struct SegmentPart {
     enum class Kind : std::uint8_t { Literal, Param };
 
@@ -299,52 +305,65 @@ class Router {
     RawChars32 literal;  // non empty when Kind::Literal
   };
 
-  struct CompiledSegment {
-    enum class Type : std::uint8_t { Literal, Pattern };
-
-    [[nodiscard]] Type type() const noexcept { return literal.empty() ? Type::Pattern : Type::Literal; }
-
-    bool operator==(const CompiledSegment&) const noexcept = default;
-
-    using trivially_relocatable = std::true_type;
-
-    RawChars32 literal;         // non empty when Type::Literal
-    vector<SegmentPart> parts;  // used when Type::Pattern
-  };
-
+  // Metadata about a compiled route pattern
   struct CompiledRoute {
     using trivially_relocatable = std::true_type;
 
-    vector<CompiledSegment> segments;
     ConcatenatedStrings32 paramNames;
     bool hasWildcard{false};
     bool hasNoSlashRegistered{false};
     bool hasWithSlashRegistered{false};
   };
 
-  struct RouteNode;
-
-  struct DynamicEdge {
-    using trivially_relocatable = std::true_type;
-
-    CompiledSegment segment;
-    RouteNode* child{nullptr};
+  // Type of a radix tree node
+  enum class NodeType : std::uint8_t {
+    Static,    // default - static path fragment
+    Param,     // parameter node (matches until next '/')
+    CatchAll,  // catch-all wildcard (matches everything)
   };
 
-  using RouteNodeMap = flat_hash_map<RawChars32, RouteNode*, CityHash, std::equal_to<>>;
+  struct RadixNode;
 
-  struct RouteNode {
-    // Return a human-readable pattern string reconstructed from the compiled route
-    // e.g. "/users/{param}/files/*" or "<empty>" when no route present.
-    // Prerequisite: pRoute should not be nullptr.
-    [[nodiscard]] RawChars32 patternString() const;
+  struct LiteralRouteEntry {
+    PathHandlerEntry handlers;
+    bool hasNoSlashRegistered{false};
+    bool hasWithSlashRegistered{false};
+  };
 
-    RouteNodeMap literalChildren;
-    vector<DynamicEdge> dynamicChildren;
-    RouteNode* wildcardChild{nullptr};
+  using LiteralRouteMap = flat_hash_map<RawChars32, LiteralRouteEntry, CityHash, std::equal_to<>>;
 
-    PathHandlerEntry handlersNoSlash;
-    PathHandlerEntry handlersWithSlash;
+  // A radix tree node using common prefix compression
+  struct RadixNode {
+    // Increment child priority and reorder if needed, returns new position
+    std::size_t incrementChildPrio(std::size_t pos);
+
+    // The path fragment stored at this node (common prefix or param name)
+    RawChars32 path;
+
+    // First character of each static child's path for O(1) lookup
+    // indices[i] corresponds to children[i]
+    RawChars32 indices;
+
+    // Static children (ordered by priority, highest first)
+    vector<RadixNode*> children;
+
+    // Priority for this subtree (number of handlers in children + self)
+    // Used to order children for faster lookups of common routes
+    uint32_t priority{0};
+
+    // Type of this node
+    NodeType nodeType{NodeType::Static};
+
+    // True if this node has a param/wildcard child (for quick check during lookup)
+    bool hasWildChild{false};
+
+    // Pattern info for param nodes (the parts within a segment like "prefix{id}suffix")
+    vector<SegmentPart> paramParts;
+
+    // Handlers registered at this node (single entry, slash variants tracked in CompiledRoute)
+    PathHandlerEntry handlers;
+
+    // Route metadata (param names, wildcard flag, etc.)
     CompiledRoute* pRoute{nullptr};
   };
 
@@ -367,35 +386,39 @@ class Router {
 
   PathHandlerEntry& setPathInternal(http::MethodBmp methods, std::string_view path, HandlerVariant handlerVariant);
 
-  static CompiledRoute CompilePattern(std::string_view path);
+  // Compile a route pattern and extract param names, wildcard flag, etc.
+  // Returns information needed to build the radix tree.
+  struct ParsedRoute {
+    ConcatenatedStrings32 paramNames;
+    bool hasWildcard{false};
+    bool hasNoSlashRegistered{false};
+    bool hasWithSlashRegistered{false};
+  };
 
-  RouteNode* ensureLiteralChild(RouteNode& node, std::string_view segmentLiteral);
-  RouteNode* ensureDynamicChild(RouteNode& node, const CompiledSegment& segmentPattern);
+  static ParsedRoute ParsePattern(std::string_view path);
 
-  void ensureRouteMetadata(RouteNode& node, CompiledRoute&& route);
+  // Insert a route into the radix tree, splitting edges as needed
+  RadixNode* insertRoute(std::string_view path, ParsedRoute&& route, bool pathHasTrailingSlash);
 
-  bool matchPatternSegment(const CompiledSegment& segmentPattern, std::string_view segmentValue);
+  // Insert a child node at the appropriate position based on priority
+  void insertChild(RadixNode& node, std::string_view path, const ParsedRoute& route);
 
-  const RouteNode* matchImpl(bool requestHasTrailingSlash);
+  // Match a parameter pattern against a path segment
+  bool matchParamParts(std::span<const SegmentPart> parts, std::string_view segment);
 
-  [[nodiscard]] const RouteNode* matchWithWildcard(const RouteNode& node, bool requestHasTrailingSlash) const;
+  // Main matching implementation using radix tree traversal
+  const RadixNode* matchImpl(std::string_view path, bool requestHasTrailingSlash);
 
-  // prerequisite: path should not be empty
-  void splitPathSegments(std::string_view path);
-
-  const PathHandlerEntry* computePathHandlerEntry(const RouteNode& matchedNode, bool pathHasTrailingSlash,
+  const PathHandlerEntry* computePathHandlerEntry(const RadixNode& matchedNode, bool pathHasTrailingSlash,
                                                   RoutingResult::RedirectSlashMode& redirectSlashMode) const;
 
   void setMatchedHandler(http::Method method, const PathHandlerEntry& entry, RoutingResult& result) const;
 
   void cloneNodesFrom(const Router& other);
 
-  struct StackFrame {
-    const RouteNode* node;
-    uint32_t segmentIndex;
-    uint32_t dynamicChildIdx;
-    uint32_t matchStateSize;
-  };
+  static const char* nodeTypeToString(NodeType nodeType);
+
+  void printNode(std::ostream& os, const RadixNode& node, int depth) const;
 
   RouterConfig _config;
 
@@ -408,20 +431,17 @@ class Router {
   vector<RequestMiddleware> _globalPreMiddleware;
   vector<ResponseMiddleware> _globalPostMiddleware;
 
-  ObjectPool<RouteNode> _nodePool;
+  ObjectPool<RadixNode> _nodePool;
   ObjectPool<CompiledRoute> _compiledRoutePool;
-  RouteNode* _pRootRouteNode{nullptr};
+  RadixNode* _pRootNode{nullptr};
 
-  // Fast-path optimization: O(1) lookup for literal-only routes (no patterns, no wildcards).
+  // Literal-only routes are managed exclusively by this map (no radix insertion).
   // Keys are normalized paths (trailing slash handled according to policy).
-  // This avoids segment splitting and trie traversal for the common case of static routes.
-  RouteNodeMap _literalOnlyRoutes;
+  LiteralRouteMap _literalOnlyRoutes;
 
   // Temporary buffers used during matching; reused across match() calls to minimize allocations.
   vector<PathParamCapture> _pathParamCaptureBuffer;
   vector<std::string_view> _matchStateBuffer;
-  vector<std::string_view> _segmentBuffer;
-  vector<StackFrame> _stackBuffer;
 };
 
 }  // namespace aeronet

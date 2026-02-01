@@ -12,7 +12,6 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
-#include "aeronet/raw-chars.hpp"
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/request-task.hpp"
 #endif
@@ -29,18 +28,16 @@ class HttpResponseWriter;
 namespace {
 
 RequestHandler MakeNormalHandler() {
-  return [data = RawChars("some data 1")](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); };
+  return [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); };
 }
 
 StreamingHandler MakeStreamingHandler() {
-  return [data = RawChars("some data 12")](const HttpRequest&, HttpResponseWriter&) {};
+  return [](const HttpRequest&, HttpResponseWriter&) {};
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 AsyncRequestHandler MakeAsyncHandler() {
-  return [data = RawChars("some data 123")](HttpRequest&) -> RequestTask<HttpResponse> {
-    co_return HttpResponse(http::StatusCodeOK);
-  };
+  return [](HttpRequest&) -> RequestTask<HttpResponse> { co_return HttpResponse(http::StatusCodeOK); };
 }
 #endif
 
@@ -82,6 +79,8 @@ class PathHandlerEntryTest : public ::testing::Test {
 #endif
   }
 
+  static auto hasAnyHandler(const PathHandlerEntry& entry) { return entry.hasAnyHandler(); }
+
   static auto getCorsPolicy(const PathHandlerEntry& entry) { return entry._corsPolicy; }
   static auto getPreMiddleware(const PathHandlerEntry& entry) { return entry._preMiddleware; }
   static auto getPostMiddleware(const PathHandlerEntry& entry) { return entry._postMiddleware; }
@@ -105,6 +104,8 @@ class PathHandlerEntryTest : public ::testing::Test {
   }
 #endif
 };
+
+TEST_F(PathHandlerEntryTest, DefaultConstructor) { EXPECT_FALSE(hasAnyHandler(entry)); }
 
 TEST_F(PathHandlerEntryTest, SetPathEmpty) {
   EXPECT_THROW(router.setPath(http::Method::GET, "/", RequestHandler{}), std::invalid_argument);

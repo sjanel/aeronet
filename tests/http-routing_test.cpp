@@ -1360,8 +1360,175 @@ TEST(HttpRouting, DeferWorkUnhandledException) {
 
   const std::string response = test::simpleGet(ts.port(), "/defer-unhandled");
   // Server catches unhandled exception and returns 500
-  EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
   EXPECT_TRUE(response.contains("unhandled in work")) << response;
 }
 
 #endif
+
+TEST(HttpRoutingCoverageImprovements, CatchAllRoute) {
+  // Tests the /* catch-all path handling and IsWildcardStart with '*'
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/api/*",
+                                 [](const HttpRequest& req) { return HttpResponse(req.path()); });
+
+  auto resp1 = test::simpleGet(ts.port(), "/api/anything");
+  EXPECT_TRUE(resp1.starts_with("HTTP/1.1 200")) << resp1;
+  EXPECT_TRUE(resp1.contains("/api/anything")) << resp1;
+
+  auto resp2 = test::simpleGet(ts.port(), "/api/deeply/nested/path");
+  EXPECT_TRUE(resp2.starts_with("HTTP/1.1 200")) << resp2;
+  EXPECT_TRUE(resp2.contains("/api/deeply/nested/path")) << resp2;
+}
+
+TEST(HttpRoutingCoverageImprovements, SimpleParameter) {
+  // Tests basic parameter parsing
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/users/{id}", [](const HttpRequest& req) {
+    const auto& params = req.pathParams();
+    if (params.empty()) {
+      return HttpResponse("empty");
+    }
+    return HttpResponse(std::string(params.begin()->second));
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/users/123");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("123")) << resp;
+}
+
+TEST(HttpRoutingCoverageImprovements, ParameterWithLiteralPrefix) {
+  // Tests parameter with literal prefix like "id-{value}"
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/data/id-{identifier}", [](const HttpRequest& req) {
+    const auto& params = req.pathParams();
+    return HttpResponse(std::string(params.begin()->second));
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/data/id-abc123");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("abc123")) << resp;
+}
+
+TEST(HttpRoutingCoverageImprovements, ParameterWithLiteralSuffix) {
+  // Tests parameter with literal suffix like "{value}.html"
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/pages/{name}.html", [](const HttpRequest& req) {
+    const auto& params = req.pathParams();
+    return HttpResponse(std::string(params.begin()->second));
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/pages/index.html");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("index")) << resp;
+}
+
+TEST(HttpRoutingCoverageImprovements, MultipleParametersWithSeparators) {
+  // Tests parameter parsing with literal separators between params
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/users/{id}/posts/{postId}", [](const HttpRequest& req) {
+    const auto& params = req.pathParams();
+    std::string result;
+    for (const auto& [key, value] : params) {
+      if (!result.empty()) {
+        result += ":";
+      }
+      result += std::string(value);
+    }
+    return HttpResponse(result);
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/users/123/posts/456");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("123")) << resp;
+  EXPECT_TRUE(resp.contains("456")) << resp;
+}
+
+TEST(HttpRoutingCoverageImprovements, CatchAllAfterParameters) {
+  // Tests catch-all after parameter segment
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/api/{version}/files/*",
+                                 [](const HttpRequest& req) { return HttpResponse(req.path()); });
+
+  auto resp = test::simpleGet(ts.port(), "/api/v1/files/some/deep/path");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("/api/v1/files/some/deep/path")) << resp;
+}
+
+TEST(HttpRoutingCoverageImprovements, RootPathOnly) {
+  // Tests root path "/"
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/", [](const HttpRequest&) { return HttpResponse("root"); });
+
+  auto resp = test::simpleGet(ts.port(), "/");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("root")) << resp;
+}
+
+TEST(HttpRoutingCoverageImprovements, DeepNestedParameters) {
+  // Tests multiple levels of nested parameters
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/org/{org}/team/{team}/project/{project}/issue/{issue}",
+                                 [](const HttpRequest& req) {
+                                   const auto& params = req.pathParams();
+                                   std::string result;
+                                   for (const auto& [key, value] : params) {
+                                     if (!result.empty()) {
+                                       result += "-";
+                                     }
+                                     result += std::string(value);
+                                   }
+                                   return HttpResponse(result);
+                                 });
+
+  auto resp = test::simpleGet(ts.port(), "/org/myorg/team/devteam/project/web/issue/42");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("myorg")) << resp;
+  EXPECT_TRUE(resp.contains("devteam")) << resp;
+  EXPECT_TRUE(resp.contains("web")) << resp;
+  EXPECT_TRUE(resp.contains("42")) << resp;
+}
+
+TEST(HttpRoutingCoverageImprovements, PathWithTrailingWildcard) {
+  // Tests a path that ends with /*
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/assets/*",
+                                 [](const HttpRequest& req) { return HttpResponse(req.path()); });
+
+  auto resp = test::simpleGet(ts.port(), "/assets/css/style.css");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("/assets/css/style.css")) << resp;
+}
+
+TEST(HttpRoutingCoverageImprovements, WildcardChildWithStaticSiblings) {
+  // Tests the branch where we insert a static child before a wildcard child
+  // This covers: if (pNode->hasWildChild && !pNode->children.empty()) { insert before wildcard }
+  // Structure: /api/{id}/files/* and /api/{id}/metadata should create both children
+  // where metadata is static and * is wildcard, requiring insertion before wildcard
+  ts.resetRouterAndGet();
+  ts.router().setPath(http::Method::GET, "/api/{id}/files/*",
+                      [](const HttpRequest& req) { return HttpResponse("files-" + std::string(req.path())); });
+  ts.router().setPath(http::Method::GET, "/api/{id}/metadata",
+                      [](const HttpRequest&) { return HttpResponse("metadata"); });
+
+  // Test the catch-all route
+  auto resp1 = test::simpleGet(ts.port(), "/api/123/files/document.txt");
+  EXPECT_TRUE(resp1.starts_with("HTTP/1.1 200")) << resp1;
+  EXPECT_TRUE(resp1.contains("files-")) << resp1;
+
+  // Test the static metadata route
+  auto resp2 = test::simpleGet(ts.port(), "/api/123/metadata");
+  EXPECT_TRUE(resp2.starts_with("HTTP/1.1 200")) << resp2;
+  EXPECT_TRUE(resp2.contains("metadata")) << resp2;
+}
+
+TEST(HttpRoutingCoverageImprovements, CatchAllAfterMultipleStaticPaths) {
+  // Tests insertion of static children followed by catch-all on same node
+  // This exercises the insertion logic when hasWildChild is true
+  ts.resetRouterAndGet();
+  ts.router().setPath(http::Method::GET, "/v1/api/users", [](const HttpRequest&) { return HttpResponse("users"); });
+  ts.router().setPath(http::Method::GET, "/v1/api/posts", [](const HttpRequest&) { return HttpResponse("posts"); });
+  ts.router().setPath(http::Method::GET, "/v1/api/*",
+                      [](const HttpRequest& req) { return HttpResponse("catch-" + std::string(req.path())); });
+
+  auto resp1 = test::simpleGet(ts.port(), "/v1/api/users");
+  EXPECT_TRUE(resp1.contains("users")) << resp1;
+
+  auto resp2 = test::simpleGet(ts.port(), "/v1/api/posts");
+  EXPECT_TRUE(resp2.contains("posts")) << resp2;
+
+  // Test catch-all for other paths
+  auto resp3 = test::simpleGet(ts.port(), "/v1/api/items");
+  EXPECT_TRUE(resp3.contains("catch-")) << resp3;
+}

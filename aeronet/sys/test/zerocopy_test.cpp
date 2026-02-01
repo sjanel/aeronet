@@ -24,6 +24,7 @@ namespace {
 bool IsZeroCopyEnabled(int fd) noexcept {
   int optVal = 0;
   socklen_t optLen = sizeof(optVal);
+  // NOLINTNEXTLINE(misc-include-cleaner)
   if (::getsockopt(fd, SOL_SOCKET, SO_ZEROCOPY, &optVal, &optLen) == -1) {
     return false;
   }

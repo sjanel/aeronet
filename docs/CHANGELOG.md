@@ -7,7 +7,7 @@ All notable changes to aeronet are documented in this file.
 ### Bug fixes
 
 - Correctly update the `Content-Length` header when using `bodyAppend()` on `HttpResponse` from captured body.
-- Correctly format the HttpResponse when using HEAD method with trailers (previously erroneously kept the full payload).
+- Correctly format the `HttpResponse` when using **HEAD** method with **trailers** (previously erroneously kept the full payload).
 - **HEAD** responses with trailers now correctly omit the body as per RFC 7230 Section 4.3.2, and do not switch to chunked encoding.
 - `Accept-Encoding` header parsing is now closer to RFC 7231 Section 5.3.4 when duplicate encodings with different `q` values are present and picks the highest `q` value.
 
@@ -15,10 +15,10 @@ All notable changes to aeronet are documented in this file.
 
 - Minor validation enforcement: `HttpServerConfig::globalHeaders` now MUST be key value separated by `http::HeaderSep`.
 - Removed `telemetryContext()` methods from `HttpServer` and `SingleHttpServer`. You can construct a custom `TelemetryContext` instead if needed.
-- Telemetry metric methods (including `DogStatsD` ones) are no more `const` qualified
+- Telemetry metric methods (including `DogStatsD` ones) are no more `const` qualified (see why in [improvements](#improvements) section).
 - Check at runtime if header name and value about to be inserted in a response are valid, otherwise throws `std::invalid_argument`
 - HttpResponse constructor with concatenated headers throws `std::invalid_argument` if expected format is not respected.
-- `HttpRequest` query parameter API changed: `queryParams()` no longer returns the non-alloc iterable range — it now exposes a map-like view over parsed query parameters where duplicate keys are collapsed (last-value wins). The previous iteration semantics (preserve duplicate order) are available via the new `queryParamsRange()` method. If you used `queryParams()` with structured bindings and that there were no duplicate keys in your URLs, no code change is needed.
+- `HttpRequest` query parameter API changed: `queryParams()` no longer returns the non-alloc iterable range — it now exposes a map-like view over parsed query parameters where duplicate keys are collapsed (last-value wins). The previous iteration semantics (preserve duplicate order) are available via the new `queryParamsRange()` method. If you used `queryParams()` with **structured bindings** and that there were no **duplicate** keys in your URLs, **no code change is needed**.
 
 ### New Features
 
@@ -28,6 +28,7 @@ All notable changes to aeronet are documented in this file.
 - Option `HttpServerConfig::addTrailerHeader` to automatically emit `trailer` header when trailers are added to responses in `HTTP/1.1` only.
 - `HttpRequest` now exposes a new map-like for query parameters: `queryParams()` which collapses duplicate keys (last-value wins)
 - `HttpRequest` gains the following methods: `hasHeader(key)`, `hasTrailer(key)`, `hasPathParam(key)`, `hasQueryParam(key)`, `pathParamValue(key)`, `pathParamValueOrEmpty(key)`, `queryParamValue(key)`, `queryParamValueOrEmpty(key)`, `queryParamInt(key)`.
+- Router paths now accepts asterisk as non terminal segments which are matched as a literal (e.g. `/files/*/metadata`).
 
 ### Improvements
 
@@ -36,11 +37,12 @@ All notable changes to aeronet are documented in this file.
 - Make sure that `WebSocketConfig.maxMessageSize` is strictly respected when decompressing a `WebSocket` message
 - Optimized *prepared* (built from `makeResponse()`) `HttpResponse` to avoid allocating body and trailers memory for **HEAD** requests.
 - Faster case insensitive hash using FNV-1a algorithm for header name lookups, and optimized version of `tolower` - Use [City hash](https://github.com/google/cityhash/tree/master) elsewhere (for standard strings)
-- `HttpRequest::queryParamsRange()` satisfies the C++20 range concept.
+- `HttpRequest::queryParamsRange()` satisfies the **C++20 range** concept.
 - Reuse encoders contexts instead of recreating them on each request for better performance.
 - Faster `HttpResponse::file()` by optimizing body headers update.
 - Smaller memory reallocations when using captured body in `HttpResponse`.
 - `MSG_ZEROCOPY` support for plain text and kTLS transport TCP connections on Linux (with fallback path). Configurable via `HttpServerConfig::withZerocopyMode()` with modes: `Disabled`, `Opportunistic` (default), `Enabled`.
+- Router now uses a more efficient path matching algorithm with a radix tree structure, **it gains around - 40%** in pattern based routes matching speed. Handlers also consume less memory.
 
 ### Other
 
