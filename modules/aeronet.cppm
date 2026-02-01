@@ -4,7 +4,6 @@
 
 module;
 
-#undef AERONET_ENABLE_SPDLOG
 #include <aeronet/aeronet.hpp>
 
 export module aeronet;

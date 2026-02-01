@@ -72,6 +72,8 @@ SYSTEM_LINK_FLAGS = [
 class Snippet:
     source: Path
     path: Path
+    needs_std_module: bool = False
+    needs_aeronet_module: bool = False
 
 
 @dataclass
@@ -288,18 +290,35 @@ def extract_snippets(source: Path, target_dir: Path) -> List[Snippet]:
     for idx, block in enumerate(blocks, start=1):
         dest = target_dir / f"{sanitized}_block_{idx:03d}.cpp"
         has_main = any(re.search(r"\bint\s+main\s*\(", line) for line in block)
+        
+        needs_std_module = any(re.search(r"^\s*import\s+std\s*;", line) for line in block)
+        needs_aeronet_module = any(re.search(r"^\s*import\s+aeronet\s*;", line) for line in block)
+        
         include_lines = [line for line in block if line.strip().startswith("#include")]
-        body_lines = [line for line in block if not line.strip().startswith("#include")]
+        import_lines = [line for line in block if re.search(r"^\s*import\s+", line.strip())]
+        body_lines = [line for line in block 
+                     if not line.strip().startswith("#include") 
+                     and not re.search(r"^\s*import\s+", line.strip())]
+        
         if not has_main:
             indented = [f"  {line}" if line.strip() else "" for line in body_lines]
             body_lines = ["int main() {", *indented, "  return 0;", "}"]
-        final_lines = include_lines + body_lines
-        dest.write_text(
-            "// extracted from {}\n#include <aeronet/aeronet.hpp>\nusing namespace aeronet;\n{}\n".format(
-                source.name, "\n".join(final_lines)
+        
+        final_lines = import_lines + include_lines + body_lines
+        
+        if needs_std_module or needs_aeronet_module:
+            dest.write_text(
+                "// extracted from {}\n{}\n".format(
+                    source.name, "\n".join(final_lines)
+                )
             )
-        )
-        snippets.append(Snippet(source=source, path=dest))
+        else:
+            dest.write_text(
+                "// extracted from {}\n#include <aeronet/aeronet.hpp>\nusing namespace aeronet;\n{}\n".format(
+                    source.name, "\n".join(final_lines)
+                )
+            )
+        snippets.append(Snippet(source=source, path=dest, needs_std_module=needs_std_module, needs_aeronet_module=needs_aeronet_module))
     return snippets
 
 
@@ -463,6 +482,102 @@ def load_target_usage(
     )
 
 
+def build_std_module(build_dir: Path) -> Optional[Path]:
+    """Build the C++23 std module and return path to std.pcm if successful."""
+    std_pcm = build_dir / "std.pcm"
+    if std_pcm.exists():
+        return std_pcm
+    
+    # Common locations for std.cppm with libc++
+    std_cppm_locations = [
+        Path("/usr/lib/libc++/v1/std.cppm"),
+        Path("/usr/include/c++/v1/std.cppm.in"),
+        Path("/usr/lib/llvm-21/lib/clang/21/share/std.cppm"),
+    ]
+    
+    std_cppm = None
+    for location in std_cppm_locations:
+        if location.exists():
+            std_cppm = location
+            break
+    
+    if not std_cppm:
+        print("Warning: Could not find std.cppm for module build", file=sys.stderr)
+        return None
+    
+    print(f"Building std.pcm module from {std_cppm}")
+    
+    cmd = [
+        "clang++-21",
+        "-std=c++23",
+        "-stdlib=libc++",
+        "--precompile",
+        "-o", str(std_pcm),
+        str(std_cppm),
+        "-Wno-reserved-module-identifier",
+    ]
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Failed to build std.pcm module", file=sys.stderr)
+        if result.stderr:
+            dump_output(result.stderr)
+        return None
+    
+    print(f"Successfully built std.pcm at {std_pcm}")
+    return std_pcm
+
+
+def build_aeronet_module(
+    build_dir: Path,
+    include_dirs: List[str],
+    compile_definitions: List[str],
+    std_pcm_path: Optional[Path] = None,
+) -> Optional[Path]:
+    """Build the aeronet C++ module and return path to aeronet.pcm if successful."""
+    aeronet_pcm = build_dir / "aeronet.pcm"
+    if aeronet_pcm.exists():
+        return aeronet_pcm
+    
+    aeronet_cppm = Path("modules/aeronet.cppm")
+    if not aeronet_cppm.exists():
+        print(f"Warning: Could not find {aeronet_cppm} for module build", file=sys.stderr)
+        return None
+    
+    print(f"Building aeronet.pcm module from {aeronet_cppm}")
+    
+    cmd = [
+        "clang++-21",
+        "-std=c++23",
+        "-stdlib=libc++",
+        "--precompile",
+        "-o", str(aeronet_pcm),
+        str(aeronet_cppm),
+    ]
+    
+    for inc_dir in include_dirs:
+        cmd.extend(["-I", inc_dir])
+    
+    for define in compile_definitions:
+        if define.startswith("-D"):
+            cmd.append(define)
+        else:
+            cmd.append(f"-D{define}")
+    
+    if std_pcm_path:
+        cmd.append(f"-fmodule-file=std={std_pcm_path}")
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Failed to build aeronet.pcm module", file=sys.stderr)
+        if result.stderr:
+            dump_output(result.stderr)
+        return None
+    
+    print(f"Successfully built aeronet.pcm at {aeronet_pcm}")
+    return aeronet_pcm
+
+
 def cmake_escape(value: str) -> str:
     return value.replace("\\", "/").replace('"', '\\"')
 
@@ -479,6 +594,8 @@ def write_cmake_project(
     system_link_flags: List[str],
     sanitize_flags: List[str],
     link_mode: bool,
+    std_pcm_path: Optional[Path] = None,
+    aeronet_pcm_path: Optional[Path] = None,
 ) -> Path:
     cmakelists = project_dir / "CMakeLists.txt"
     env_target = "aeronet_doc_env"
@@ -538,6 +655,22 @@ def write_cmake_project(
         else:
             lines.append(f'add_library({target.target} OBJECT "{source}")')
         lines.append(f"target_link_libraries({target.target} PRIVATE {env_target})")
+        
+        module_flags: List[str] = []
+        if target.snippet.needs_std_module and std_pcm_path:
+            std_pcm = cmake_escape(str(std_pcm_path))
+            module_flags.append(f'-fmodule-file=std="{std_pcm}"')
+        if target.snippet.needs_aeronet_module and aeronet_pcm_path:
+            aeronet_pcm = cmake_escape(str(aeronet_pcm_path))
+            module_flags.append(f'-fmodule-file=aeronet="{aeronet_pcm}"')
+        
+        if module_flags:
+            lines.append(f"target_compile_options({target.target} PRIVATE")
+            lines.append("  -stdlib=libc++")
+            for flag in module_flags:
+                lines.append(f"  {flag}")
+            lines.append(")")
+            lines.append(f"target_link_options({target.target} PRIVATE -stdlib=libc++ -lc++)")
 
     cmakelists.write_text("\n".join(lines) + "\n")
     return cmakelists
@@ -652,6 +785,26 @@ def main() -> None:
         if not snippets:
             print("Checked 0 code snippets, 0 failures")
             return
+        
+        needs_std = any(snippet.needs_std_module for snippet in snippets)
+        needs_aeronet = any(snippet.needs_aeronet_module for snippet in snippets)
+        
+        std_pcm_path = None
+        if needs_std:
+            std_pcm_path = build_std_module(tmp_path)
+            if not std_pcm_path:
+                print("Warning: Some snippets need std module but build failed", file=sys.stderr)
+        
+        aeronet_pcm_path = None
+        if needs_aeronet:
+            aeronet_pcm_path = build_aeronet_module(
+                tmp_path,
+                include_dirs,
+                compile_definitions,
+                std_pcm_path,
+            )
+            if not aeronet_pcm_path:
+                print("Warning: Some snippets need aeronet module but build failed", file=sys.stderr)
 
         snippet_targets: List[SnippetTarget] = []
         for idx, snippet in enumerate(snippets, start=1):
@@ -676,6 +829,8 @@ def main() -> None:
             SYSTEM_LINK_FLAGS,
             sanitize_flags,
             args.link,
+            std_pcm_path,
+            aeronet_pcm_path,
         )
 
         build_type = args.cmake_build_type or read_cache_entry(
