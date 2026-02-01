@@ -35,6 +35,8 @@
 #include "aeronet/test_util.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-ticket-key-store.hpp"
+#include "aeronet/zerocopy-mode.hpp"
+#include "aeronet/zerocopy.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/test_server_http2_tls_fixture.hpp"
@@ -582,7 +584,7 @@ TEST(HttpTlsKtlsUnsupported, AutoOrEnabledFallBackWithoutForcedClose) {
   ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
 }
 #endif
-#if defined(__linux__)
+#ifdef __linux__
 // Integration test: request kTLS + zerocopy via server config and exercise large response path.
 TEST(HttpTlsKtlsZerocopy, EnabledZerocopyWithKtls) {
   using namespace aeronet::test;
