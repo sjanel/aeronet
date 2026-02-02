@@ -90,3 +90,11 @@ AeronetAddUnitTest(
     aeronet_sys
     aeronet_basic_test_support
 )
+
+AeronetAddUnitTest(
+    zerocopy_test
+    test/zerocopy_test.cpp
+    LIBRARIES
+    aeronet_sys
+    aeronet_basic_test_support
+)

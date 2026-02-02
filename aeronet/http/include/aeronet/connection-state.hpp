@@ -32,6 +32,8 @@
 
 namespace aeronet {
 
+struct HttpServerConfig;
+
 #ifdef AERONET_ENABLE_OPENSSL
 class TlsContext;
 #endif
@@ -41,6 +43,8 @@ class CorsPolicy;
 #endif
 
 struct ConnectionState {
+  void initializeStateNewConnection(const HttpServerConfig& config, int cnxFd);
+
   [[nodiscard]] bool isImmediateCloseRequested() const noexcept { return closeMode == CloseMode::Immediate; }
   [[nodiscard]] bool isDrainCloseRequested() const noexcept { return closeMode == CloseMode::DrainThenClose; }
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }
@@ -100,6 +104,7 @@ struct ConnectionState {
 #ifdef AERONET_ENABLE_OPENSSL
   // Finalize TLS handshake (if this transport is TLS) and emit the handshake event.
   // Returns true if a TLS transport was finalized (caller may perform transport-specific book-keeping).
+  // zerocopyEnabled: if true and kTLS is active, enables MSG_ZEROCOPY on the kTLS socket.
   bool finalizeAndEmitTlsHandshakeIfNeeded(int fd, const TlsHandshakeCallback& cb, TlsMetricsInternal& metrics,
                                            const TLSConfig& cfg);
 #endif
@@ -154,6 +159,10 @@ struct ConnectionState {
 
   // Current protocol type. Http11 by default, changes after successful upgrade.
   ProtocolType protocol{ProtocolType::Http11};
+
+  // Whether the connection should attempt to enable MSG_ZEROCOPY when possible.
+  // Determined at accept time based on server configuration and peer/local addresses.
+  bool zerocopyRequested{false};
 
 #ifdef AERONET_ENABLE_OPENSSL
   // Observability / attribution for handshake failures.

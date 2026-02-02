@@ -21,6 +21,7 @@
 #include "aeronet/string-trim.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tls-config.hpp"
+#include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-config.hpp"
@@ -247,6 +248,11 @@ HttpServerConfig& HttpServerConfig::addGlobalHeader(const http::Header& header) 
 
 HttpServerConfig& HttpServerConfig::withTracePolicy(TraceMethodPolicy policy) {
   traceMethodPolicy = policy;
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::withZerocopyMode(ZerocopyMode mode) {
+  zerocopyMode = mode;
   return *this;
 }
 

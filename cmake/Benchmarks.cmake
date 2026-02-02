@@ -82,6 +82,7 @@ endif()
 set(AERONET_BENCH_INTERNAL_REQUEST_PARSE ${AERONET_BENCH_ROOT}/internal/request-parse_bench.cpp)
 set(AERONET_BENCH_INTERNAL_STRING_EQUAL ${AERONET_BENCH_ROOT}/internal/string-equal-ignore-case_bench.cpp)
 set(AERONET_BENCH_INTERNAL_ROUTER ${AERONET_BENCH_ROOT}/internal/router_bench.cpp)
+set(AERONET_BENCH_INTERNAL_ZEROCOPY ${AERONET_BENCH_ROOT}/internal/zerocopy_bench.cpp)
 
 include(CheckIPOSupported)
 
@@ -123,6 +124,9 @@ set_target_properties(aeronet-bench-internal-string-equal-ignore-case PROPERTIES
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-router ${AERONET_BENCH_INTERNAL_ROUTER})
 set_target_properties(aeronet-bench-internal-router PROPERTIES FOLDER "benchmarks/internal")
+
+AeronetAddProjectBenchmark(aeronet-bench-internal-zerocopy ${AERONET_BENCH_INTERNAL_ZEROCOPY})
+set_target_properties(aeronet-bench-internal-zerocopy PROPERTIES FOLDER "benchmarks/internal")
 
 # Throughput benchmark (simple skeleton; not using Google Benchmark intentionally)
 AeronetAddProjectBenchmark(aeronet-bench-throughput ${AERONET_BENCH_ROOT}/e2e/bench_throughput_local.cpp)

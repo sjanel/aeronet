@@ -29,6 +29,7 @@
 #include "aeronet/test_util.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/unix-dogstatsd-sink.hpp"
+#include "aeronet/zerocopy-mode.hpp"
 
 using namespace std::chrono_literals;
 
@@ -607,7 +608,7 @@ TEST(HttpUrlDecoding, SpaceDecoding) {
   auto respOwned = test::requestOrThrow(ts.server.port(), optHello);
   std::string_view resp = respOwned;
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200 OK"));
-  EXPECT_TRUE(resp.contains("hello world"));
+  EXPECT_TRUE(resp.ends_with("hello world"));
 }
 
 TEST(HttpUrlDecoding, Utf8Decoded) {
@@ -662,7 +663,99 @@ TEST(HttpUrlDecoding, MixedSegmentsDecoding) {
   opt2.target = "/seg%20one/part%25/two";
   auto resp = test::requestOrThrow(ts.server.port(), opt2);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
-  EXPECT_TRUE(resp.contains("/seg one/part%/two"));
+  EXPECT_TRUE(resp.ends_with("/seg one/part%/two"));
+}
+
+// ============================
+// Zerocopy mode integration tests
+// ============================
+
+TEST(ZerocopyMode, LargeResponseWithZerocopyOpportunistic) {
+  // Create a server with zerocopy enabled in Opportunistic mode (default)
+  HttpServerConfig cfg;
+  cfg.withZerocopyMode(ZerocopyMode::Opportunistic);
+
+  test::TestServer localTs(cfg);
+
+  // Create a payload larger than the zerocopy threshold (16KB)
+  constexpr std::size_t kLargePayloadSize = 32UL * 1024;  // 32 KB
+  const std::string largePayload(kLargePayloadSize, 'Z');
+
+  localTs.router().setPath(http::Method::GET, "/large",
+                           [&largePayload](const HttpRequest&) { return HttpResponse(largePayload); });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/large";
+  auto resp = test::requestOrThrow(localTs.port(), opt);
+
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.ends_with(largePayload));
+}
+
+TEST(ZerocopyMode, LargeResponseWithZerocopyDisabled) {
+  // Create a server with zerocopy explicitly disabled
+  HttpServerConfig cfg;
+  cfg.withZerocopyMode(ZerocopyMode::Disabled);
+
+  test::TestServer localTs(cfg);
+
+  constexpr std::size_t kLargePayloadSize = 32UL * 1024;  // 32 KB
+  const std::string largePayload(kLargePayloadSize, 'D');
+
+  localTs.router().setPath(http::Method::GET, "/large-disabled",
+                           [&largePayload](const HttpRequest&) { return HttpResponse(largePayload); });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/large-disabled";
+  auto resp = test::requestOrThrow(localTs.port(), opt);
+
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.ends_with(largePayload));
+}
+
+TEST(ZerocopyMode, LargeResponseWithZerocopyEnabled) {
+  // Create a server with zerocopy explicitly enabled (logs warning if unavailable)
+  HttpServerConfig cfg;
+  cfg.withZerocopyMode(ZerocopyMode::Enabled);
+
+  test::TestServer localTs(cfg);
+
+  constexpr std::size_t kLargePayloadSize = 32UL * 1024;  // 32 KB
+  const std::string largePayload(kLargePayloadSize, 'E');
+
+  localTs.router().setPath(http::Method::GET, "/large-enabled",
+                           [&largePayload](const HttpRequest&) { return HttpResponse(largePayload); });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/large-enabled";
+  auto resp = test::requestOrThrow(localTs.port(), opt);
+
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.ends_with(largePayload));
+}
+
+TEST(ZerocopyMode, SmallResponseDoesNotUseZerocopy) {
+  // Small responses (< 16KB) should bypass zerocopy even when enabled
+  HttpServerConfig cfg;
+  cfg.withZerocopyMode(ZerocopyMode::Enabled);
+
+  test::TestServer localTs(cfg);
+
+  const std::string smallPayload = "Small response body";
+
+  localTs.router().setPath(http::Method::GET, "/small",
+                           [&smallPayload](const HttpRequest&) { return HttpResponse(smallPayload); });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/small";
+  auto resp = test::requestOrThrow(localTs.port(), opt);
+
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.ends_with(smallPayload));
 }
 
 }  // namespace aeronet

@@ -4,6 +4,9 @@
 #include <cstdint>
 #include <string_view>
 
+#include "aeronet/zerocopy-mode.hpp"
+#include "aeronet/zerocopy.hpp"
+
 namespace aeronet {
 
 // Indicates what the transport layer needs to proceed after a non-blocking I/O operation returns EAGAIN/WANT.
@@ -15,6 +18,7 @@ enum class TransportHint : uint8_t {
 };
 
 // Base transport abstraction; allows transparent TLS or plain socket IO.
+// TODO: check if we cannot simply make a unique Transport non virtual class with internal variants.
 class ITransport {
  public:
   virtual ~ITransport() = default;
@@ -66,9 +70,10 @@ class ITransport {
 };
 
 // Plain transport directly operates on a non-blocking fd.
+// Supports optional MSG_ZEROCOPY for large payloads on Linux.
 class PlainTransport final : public ITransport {
  public:
-  explicit PlainTransport(int fd) : _fd(fd) {}
+  PlainTransport(int fd, ZerocopyMode zerocopyMode, bool isZerocopyEnabled);
 
   TransportResult read(char* buf, std::size_t len) override;
 
@@ -77,8 +82,27 @@ class PlainTransport final : public ITransport {
   /// Scatter write using writev - single syscall for two buffers.
   TransportResult write(std::string_view firstBuf, std::string_view secondBuf) override;
 
+  /// Check if zerocopy is enabled on this transport.
+  [[nodiscard]] bool isZerocopyEnabled() const noexcept { return _zerocopyState.enabled; }
+
+  /// Poll for zerocopy completion notifications from the kernel error queue.
+  /// This is non-blocking and should be called periodically when there are pending
+  /// zerocopy sends. Returns the number of completions processed.
+  std::size_t pollZerocopyCompletions() noexcept;
+
+  /// Disable zerocopy for this transport (useful when buffer lifetimes are not stable,
+  /// e.g. CONNECT tunneling that reuses read buffers).
+  void disableZerocopy() noexcept;
+
+  /// Check if there are any outstanding zerocopy sends waiting for completion.
+  [[nodiscard]] bool hasZerocopyPending() const noexcept { return _zerocopyState.pendingCompletions; }
+
  private:
+  /// Internal write implementation with optional zerocopy support.
+  TransportResult writeInternal(std::string_view data);
+
   int _fd;
+  ZeroCopyState _zerocopyState{};
 };
 
 }  // namespace aeronet

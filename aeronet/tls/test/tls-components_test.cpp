@@ -1033,6 +1033,79 @@ TEST(TlsContextTest, SessionTicketsStoreCreatedWithoutStaticKeys) {
   TlsContext ctx(cfg);
 }
 
+TEST(TlsTransportTest, ZerocopyNotEnabledByDefault) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  EXPECT_FALSE(transport.isZerocopyEnabled());
+  EXPECT_FALSE(transport.hasZerocopyPending());
+}
+
+TEST(TlsTransportTest, ZerocopyRequiresKtlsSend) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  // Set fd (in real use, this is done after SSL_set_fd)
+  transport.setUnderlyingFd(pair.serverFd.fd());
+
+  // Zerocopy should NOT be enabled because kTLS send is not active
+  // (enableKtlsSend was not called, or kTLS is not supported)
+  EXPECT_FALSE(transport.enableZerocopy());
+  EXPECT_FALSE(transport.isZerocopyEnabled());
+}
+
+TEST(TlsTransportTest, ZerocopyWithoutFdReturnsFalse) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  // Even if kTLS were enabled, without fd set, enableZerocopy should fail
+  EXPECT_FALSE(transport.enableZerocopy());
+  EXPECT_EQ(transport.underlyingFd(), -1);
+}
+
+TEST(TlsTransportTest, SetUnderlyingFdStoresFd) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  transport.setUnderlyingFd(42);
+  EXPECT_EQ(transport.underlyingFd(), 42);
+}
+
+TEST(TlsTransportTest, DisableZerocopyClearsState) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  // disableZerocopy should work even if it was never enabled
+  transport.disableZerocopy();
+  EXPECT_FALSE(transport.isZerocopyEnabled());
+  EXPECT_FALSE(transport.hasZerocopyPending());
+}
+
+TEST(TlsTransportTest, PollZerocopyCompletionsNoFdReturnsZero) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  // Without fd set, poll should return 0
+  EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
+}
+
+TEST(TlsTransportTest, PollZerocopyCompletionsWithFdNoCompletions) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  transport.setUnderlyingFd(pair.serverFd.fd());
+
+  // With fd set but nothing pending, should return 0
+  EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
+}
+
 #if AERONET_WANT_MALLOC_OVERRIDES
 
 TEST(TlsContextTest, TlsContextBadAlloc) {
