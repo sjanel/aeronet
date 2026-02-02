@@ -1,5 +1,6 @@
 #include "aeronet/compression-test-helpers.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <numeric>

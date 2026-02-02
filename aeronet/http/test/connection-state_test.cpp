@@ -28,6 +28,7 @@
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/zerocopy-mode.hpp"
 
 using namespace aeronet;
 using test::ScopedTempFile;
@@ -269,7 +270,7 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   state.fileSend.active = true;
 
   // Attach a PlainTransport that writes to sv[0]. We'll read from sv[1].
-  state.transport = std::make_unique<PlainTransport>(sv[0]);
+  state.transport = std::make_unique<PlainTransport>(sv[0], ZerocopyMode::Disabled, true);
 
   // Loop until we've consumed the whole file; on each iteration read from file into
   // tunnelOrFileBuffer then write it to the transport and read on the peer socket.
@@ -556,7 +557,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSetsTlsEstablished)
 
   ConnectionState state;
   // attach a plain transport that writes to sv[0]
-  state.transport = std::make_unique<PlainTransport>(sv[0]);
+  state.transport = std::make_unique<PlainTransport>(sv[0], ZerocopyMode::Disabled, true);
 
   // ensure tlsEstablished is initially false
   state.tlsEstablished = false;
@@ -696,7 +697,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSkipsHandshakeWhenA
   BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
 
   ConnectionState state;
-  state.transport = std::make_unique<PlainTransport>(sv[0]);
+  state.transport = std::make_unique<PlainTransport>(sv[0], ZerocopyMode::Disabled, true);
   state.tlsEstablished = true;  // simulate prior completion
 
   HttpResponseData resp("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");

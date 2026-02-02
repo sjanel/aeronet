@@ -12,7 +12,6 @@
 #include <format>
 #include <iostream>
 #include <limits>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -20,10 +19,8 @@
 
 #include "aeronet/aeronet.hpp"
 #include "aeronet/encoding.hpp"
-#include "aeronet/http-constants.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/static-file-handler.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/toupperlower.hpp"
 #include "scripted-servers-helpers.hpp"
 
@@ -34,7 +31,7 @@ int main(int argc, char* argv[]) {
 
   HttpServerConfig config;
   config.port = benchCfg.port;
-  config.nbThreads = benchCfg.numThreads;
+  config.nbThreads = static_cast<decltype(config.nbThreads)>(benchCfg.numThreads);
   config.maxRequestsPerConnection = std::numeric_limits<uint32_t>::max();
   config.maxHeaderBytes = 256UL * 1024;  // 256KB headers for stress tests
   config.maxBodyBytes = 64UL << 20;      // 64MB bodies for large body tests

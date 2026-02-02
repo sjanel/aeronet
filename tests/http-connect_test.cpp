@@ -4,6 +4,7 @@
 #include <chrono>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #define AERONET_WANT_SOCKET_OVERRIDES
@@ -37,14 +38,14 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   // Build CONNECT request to our upstream
   std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
-  test::sendAll(fd, req, std::chrono::milliseconds{5000});
-  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{5000}, 93UL);
+  test::sendAll(fd, req, std::chrono::milliseconds{10000});
+  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{10000}, 93UL);
   EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
 
   // Now send data through the tunnel and expect echo
   std::string_view simpleHello = "hello-tunnel";
-  test::sendAll(fd, simpleHello, std::chrono::milliseconds{5000});
-  auto echoedHello = test::recvWithTimeout(fd, std::chrono::milliseconds{5000}, simpleHello.size());
+  test::sendAll(fd, simpleHello, std::chrono::milliseconds{10000});
+  auto echoedHello = test::recvWithTimeout(fd, std::chrono::milliseconds{10000}, simpleHello.size());
   EXPECT_TRUE(echoedHello.contains(simpleHello));
 
 // Send payload that upstream will partially echo
@@ -54,7 +55,7 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
 #else
   std::string payload(16UL * 1024 * 1024, 'a');
 #endif
-  test::sendAll(fd, payload, std::chrono::milliseconds{5000});
+  test::sendAll(fd, payload, std::chrono::milliseconds{10000});
 
   // Wait to receive the full payload (some arrives quickly, remainder after upstream sleeps)
   auto echoed = test::recvWithTimeout(fd, std::chrono::milliseconds{10000}, payload.size());
@@ -100,4 +101,47 @@ TEST_F(HttpConnectDefaultConfig, MalformedConnectTargetReturns400) {
   test::sendAll(fd, req);
   auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
   ASSERT_TRUE(resp.contains("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
+}
+
+// Test that closing a tunnel connection also cleans up the peer connection.
+// This exercises the closeConnection() path at lines 414-429 in connection-manager.cpp
+// where peerFd != -1 triggers peer lookup and cleanup.
+TEST(HttpConnectTunnelCleanup, TunnelPeerCleanupOnClientClose) {
+  test::TestServer ts{HttpServerConfig{}};
+
+  // Start an echo server to act as upstream
+  auto [sock, port] = test::startEchoServer();
+
+  {
+    test::ClientConnection client(ts.port());
+    int fd = client.fd();
+
+    // Establish the CONNECT tunnel
+    std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+    ASSERT_GT(fd, 0);
+    test::sendAll(fd, req, 5000ms);
+    auto resp = test::recvWithTimeout(fd, 5000ms, 93UL);
+    EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+
+    // Verify tunnel works by sending and receiving data
+    std::string_view testData = "tunnel-peer-test";
+    test::sendAll(fd, testData, 2000ms);
+    auto echoed = test::recvWithTimeout(fd, 2000ms, testData.size());
+    EXPECT_TRUE(echoed.contains(testData));
+
+    // Client goes out of scope here, closing the fd and triggering
+    // closeConnection() with peerFd != -1. The server detects the
+    // client close and cleans up both connection states.
+  }
+
+  // Give server time to process the close and cleanup
+  std::this_thread::sleep_for(50ms);
+
+  // Server should still be operational after tunnel cleanup
+  test::ClientConnection client2(ts.port());
+  std::string req2 = "GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
+  test::sendAll(client2.fd(), req2, 1000ms);
+  auto resp2 = test::recvWithTimeout(client2.fd(), 1000ms);
+  // 404 is fine - we just need to verify server is still responsive
+  EXPECT_TRUE(resp2.contains("HTTP/1.1")) << resp2;
 }

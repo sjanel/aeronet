@@ -40,6 +40,7 @@ All notable changes to aeronet are documented in this file.
 - Reuse encoders contexts instead of recreating them on each request for better performance.
 - Faster `HttpResponse::file()` by optimizing body headers update.
 - Smaller memory reallocations when using captured body in `HttpResponse`.
+- `MSG_ZEROCOPY` support for plain text and kTLS transport TCP connections on Linux (with fallback path). Configurable via `HttpServerConfig::withZerocopyMode()` with modes: `Disabled`, `Opportunistic` (default), `Enabled`.
 
 ### Other
 
