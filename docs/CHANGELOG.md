@@ -51,6 +51,7 @@ All notable changes to aeronet are documented in this file.
 - Added `body-codec` scenario to scripted servers benchmarks in CI.
 - New compile time option `AERONET_ENABLE_ASYNC_HANDLERS` to enable asynchronous request handlers (enabled by default)
 - Fix test compilation when `AERONET_ENABLE_WEBSOCKET` is on but `AERONET_ENABLE_ZLIB` is off.
+- In scripted servers benchmarks, `all-except-python` (default) server selection now excludes `python` server by default to avoid skewing results (`all` and `python` are still available).
 
 ## [1.0.0] - 2026-01-17
 

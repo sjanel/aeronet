@@ -498,14 +498,7 @@ class HttpResponse {
   // body() overloads to avoid a copy (and possibly an allocation).
   // Body referencing internal memory of this HttpResponse is undefined behavior.
   HttpResponse&& body(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain) && {
-    setBodyHeaders(contentType, body.size(), OverrideContentTypeAndNewBodyIsInline);
-    setBodyInternal(body);
-    if (isHead()) {
-      setHeadSize(body.size());
-    } else {
-      _payloadVariant = {};
-    }
-    return std::move(*this);
+    return std::move(this->body(body, contentType));
   }
 
   // Assigns the given body to this HttpResponse.
