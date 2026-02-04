@@ -177,9 +177,11 @@ class BenchmarkRunner:
         return self.script_dir
 
     def _resolve_server_filter(self, server_arg: str) -> List[str]:
-        if server_arg == "all":
+        if server_arg.startswith("all"):
             available = []
             for name in self.SERVER_ORDER:
+                if name == "python" and server_arg.endswith("-except-python"):
+                    continue
                 if self._server_available(name):
                     available.append(name)
             if not available:
@@ -1327,8 +1329,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--server",
         type=str,
-        default="all",
-        help="Comma-separated list of servers (aeronet,drogon,pistache,crow,undertow,go,python,rust)",
+        default="all-except-python",
+        help="Comma-separated list of servers (aeronet,drogon,pistache,crow,undertow,go,python,rust), or 'all' or 'all-except-python'",
     )
     parser.add_argument(
         "--scenario",
