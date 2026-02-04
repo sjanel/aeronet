@@ -164,7 +164,8 @@ inline std::optional<std::string> GzipDecompress(std::string_view input) {
 }
 
 struct BenchConfig {
-  BenchConfig(uint16_t defaultPort, int argc, char* argv[]) : port(defaultPort), numThreads(GetNumThreads()) {
+  BenchConfig(uint16_t defaultPort, int argc, char* argv[])
+      : port(defaultPort), numThreads(static_cast<uint32_t>(GetNumThreads())) {
     const char* envPort = std::getenv("BENCH_PORT");
     if (envPort != nullptr) {
       port = static_cast<uint16_t>(std::atoi(envPort));
@@ -174,7 +175,7 @@ struct BenchConfig {
       if (arg == "--port" && argPos + 1 < argc) {
         port = static_cast<uint16_t>(std::atoi(argv[++argPos]));
       } else if (arg == "--threads" && argPos + 1 < argc) {
-        numThreads = std::atoi(argv[++argPos]);
+        numThreads = static_cast<uint32_t>(std::atoi(argv[++argPos]));
       } else if (arg == "--tls") {
         tlsEnabled = true;
       } else if (arg == "--cert" && argPos + 1 < argc) {
@@ -203,7 +204,7 @@ struct BenchConfig {
 
   uint16_t port;
   bool tlsEnabled{false};
-  int numThreads;
+  uint32_t numThreads;
   int routeCount{1000};  // Number of literal routes for routing stress test
   std::string_view certFile;
   std::string_view keyFile;
