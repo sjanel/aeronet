@@ -1485,52 +1485,73 @@ Rationale: Normalize avoids duplicate handler registration while preserving SEO-
 
 ### Routing patterns & path parameters
 
-- Path pattern syntax
+#### Path pattern syntax
 
-  - Paths are absolute and must begin with `/`.
-  - A path is split into segments by the `/` character. Each segment may be:
-    - A literal segment with no braces (e.g. `hello`, `v1`).
-    - A pattern segment containing parameter fragments interleaved with literals. Example: `v{}/foo{}bar`.
-    - A terminal wildcard segment `*` which must be the final segment in the pattern (e.g. `/files/*`).
+- Paths are absolute and must begin with `/`.
+- A path is split into segments by the `/` character. Each segment may be:
+  - A literal segment with no braces (e.g. `hello`, `v1`).
+  - A pattern segment containing parameter fragments interleaved with literals. Example: `foo{}bar`.
 
-- Parameter fragments
+Empty segments (double slashes `//`) are not allowed.
 
-  - Named captures use `{name}` and become available under the provided key (`name`).
-  - Unnamed captures use `{}`; the router assigns sequential numeric string keys (`"0"`, `"1"`, ...) in segment order.
-  - Mixing named and unnamed captures in the same pattern is not allowed — registration (`setPath`) will throw if you mix them.
-  - Consecutive parameter fragments with no literal separator (e.g. `{}{}` within a segment) are rejected.
-  - If you want to have literal braces in a segment, escape them by doubling: `{{` and `}}` become `{` and `}` respectively.
+#### Parameter fragments
 
-- Wildcard semantics
+- Named captures use `{name}` and become available under the provided key (`name`).
+- Unnamed captures use `{}`; the router assigns sequential numeric string keys (`"0"`, `"1"`, ...) in segment order.
+- Mixing named and unnamed captures in the same pattern is not allowed — registration (`setPath`) will throw if you mix them.
+- Consecutive parameter fragments with no literal separator (e.g. `{}{}` within a segment) are rejected.
 
-  - `*` must appear alone in a segment and must be the final segment. A wildcard matches the remainder of the
-    path but does not populate path-parameter captures.
-  - Exact registrations take precedence over wildcard matches (e.g. `/a/b` wins over `/a/*` for `/a/b`).
+#### Escape sequences for literal special characters
 
-- Registration errors
+To use literal braces in path segments, escape them by doubling:
 
-  - `setPath()` will throw on:
-    - pattern not starting with `/`
-    - empty segment (double slash `//`)
-    - unterminated `{` in a segment
-    - consecutive parameters without a literal separator
-    - wildcard `*` used in a non-terminal position
-    - mixing named and unnamed parameters within the same pattern
-    - conflicting parameter naming or wildcard usage for an identical registered pattern
+- `{{` → literal `{`
+- `}}` → literal `}`
 
-- Matching & capture lifetime
+Examples:
 
-  - Patterns are compiled at registration; matching returns captures as `string_view`s (no copies of the captured
+- `/api/{{version}}/data` matches the literal path `/api/{version}/data`
+- `/glob/{{{{}}/file.txt` matches the literal path `/glob/{{}/file.txt`
+
+This allows registering handlers for paths that contain these characters literally.
+
+#### Wildcard semantics
+
+The asterisk `*` is allowed in a URL and is considered as a literal character unless it is equal to the entire final segment of the patternm, in which case it acts as a **wildcard** matching any remaining path suffix.
+
+- Exact registrations take precedence over wildcard matches (e.g. `/a/b` wins over `/a/*` for `/a/b`).
+- Asterisks can be part of a parameter fragment (e.g. `/files/{name*}` matches `/files/report2024` with `name*` = `report2024`).
+
+Examples:
+
+- `/assets/*` matches `/assets/images/logo.png` with wildcard capture `images/logo.png`
+- `/path/seg*/*` matches `/path/seg*/something` but not `/path/segment/extra` (second segment is literal `seg*`)
+- `/path/*/*` matches `/path/*/something` but not `/path/foo/something` (second segment is literal `*`)
+
+#### Registration errors
+
+- `setPath()` will throw on:
+  - pattern not starting with `/`
+  - empty segment (double slash `//`)
+  - unterminated `{` in a segment
+  - consecutive parameters without a literal separator
+  - wildcard `*` used in a non-terminal position
+  - mixing named and unnamed parameters within the same pattern
+  - conflicting parameter naming or wildcard usage for an identical registered pattern
+
+#### Matching & capture lifetime
+
+- Patterns are compiled at registration; matching returns captures as `string_view`s (no copies of the captured
     substrings). Captures returned by the router are transient and reference the original request path buffer
     and the router's internal transient storage.
-  - Callers must copy captured values if they need them to survive beyond the original request buffer lifetime or
+- Callers must copy captured values if they need them to survive beyond the original request buffer lifetime or
     beyond a subsequent `match()` call which may mutate the router's transient buffers.
 
-- How to retrieve path params from handlers
+#### How to retrieve path params from handlers
 
-  - When `SingleHttpServer` dispatches to a handler, it copies routing captures into the `HttpRequest` object. Within
+- When `SingleHttpServer` dispatches to a handler, it copies routing captures into the `HttpRequest` object. Within
     your handler you can access them via `req.pathParams()` which returns a `flat_hash_map<std::string_view, std::string_view>`.
-  - Example:
+- Example:
 
 ```cpp
 Router router;
@@ -1545,7 +1566,7 @@ router.setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const HttpReque
 });
 ```
 
-- Unnamed capture example (keys are "0", "1", ...):
+#### Unnamed capture example (keys are "0", "1", ...)
 
 ```cpp
 Router router;
@@ -2240,12 +2261,26 @@ Key design principles:
 Configuration via `HttpServerConfig::telemetry`:
 
 ```cpp
-HttpServerConfig cfg;
-cfg.withTelemetryConfig(TelemetryConfig{}
-                            .withEndpoint("http://localhost:4318")  // OTLP HTTP endpoint base URL
-                            .withServiceName("my-service")
-                            .withSampleRate(1.0)  // trace sampling rate (0.0 to 1.0)
-                            .enableDogStatsDMetrics());  // Optional DogStatsD emission
+#include <aeronet/aeronet.hpp>
+
+using namespace aeronet;
+
+int main() {
+  HttpServerConfig cfg;
+  cfg.withPort(8080)
+     .withTelemetryConfig(TelemetryConfig{}
+                              .withEndpoint("http://localhost:4318")  // OTLP HTTP endpoint
+                              .withServiceName("my-service")
+                              .withSampleRate(1.0)  // 100% sampling for traces
+                              .enableDogStatsDMetrics());  // Optional DogStatsD metrics via UDS
+  
+  SingleHttpServer server(cfg);
+  // Telemetry is automatically initialized when server.init() is called
+  // Each server has its own independent TelemetryContext
+  
+  // ... register handlers ...
+  server.run();
+}
 ```
 
 `dogStatsDEnabled` convenience flag plus socket/tag helpers so lightweight DogStatsD
@@ -2323,6 +2358,34 @@ service:
     metrics:
       receivers: [otlp]
       exporters: [logging]
+```
+
+### Dependencies
+
+When OpenTelemetry is enabled, aeronet requires the following system packages:
+
+**Debian/Ubuntu:**
+
+```bash
+sudo apt-get install libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
+```
+
+**Alpine Linux:**
+
+```bash
+apk add curl-dev protobuf-dev protobuf-c-compiler
+```
+
+**Fedora/RHEL:**
+
+```bash
+sudo dnf install libcurl-devel protobuf-devel protobuf-compiler
+```
+
+**Arch Linux:**
+
+```bash
+sudo pacman -S curl protobuf
 ```
 
 ## Access-Control (CORS) Helpers
