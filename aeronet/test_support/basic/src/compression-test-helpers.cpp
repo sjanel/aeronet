@@ -3,14 +3,30 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 
+#include "aeronet/zlib-stream-raii.hpp"
+
+#ifdef AERONET_ENABLE_BROTLI
+#include "aeronet/brotli-decoder.hpp"
+#include "aeronet/brotli-encoder.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/zlib-decoder.hpp"
+#include "aeronet/zlib-encoder.hpp"
+#endif
+
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
+
+#include "aeronet/zstd-decoder.hpp"
+#include "aeronet/zstd-encoder.hpp"
 #endif
 
 #include "aeronet/encoder.hpp"
@@ -62,6 +78,110 @@ std::string MakePatternedPayload(std::size_t size) {
     return size;
   });
   return payload;
+}
+
+RawChars Compress(Encoding encoding, std::string_view payload) {
+  RawChars compressed(payload.size() + 1024UL);
+
+  switch (encoding) {
+#ifdef AERONET_ENABLE_ZLIB
+    case Encoding::gzip: {
+      ZlibEncoder encoder(3);
+      const auto written =
+          encoder.encodeFull(ZStreamRAII::Variant::gzip, payload, compressed.capacity(), compressed.data());
+      if (written == 0) {
+        throw std::runtime_error("ZlibEncoder error");
+      }
+      compressed.setSize(static_cast<RawChars::size_type>(written));
+      break;
+    }
+    case Encoding::deflate: {
+      ZlibEncoder encoder(3);
+      const auto written =
+          encoder.encodeFull(ZStreamRAII::Variant::deflate, payload, compressed.capacity(), compressed.data());
+      if (written == 0) {
+        throw std::runtime_error("ZlibEncoder error");
+      }
+      compressed.setSize(static_cast<RawChars::size_type>(written));
+      break;
+    }
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+    case Encoding::zstd: {
+      ZstdEncoder encoder(CompressionConfig::Zstd{});
+      const auto written = encoder.encodeFull(payload, compressed.capacity(), compressed.data());
+      if (written == 0) {
+        throw std::runtime_error("ZstdEncoder error");
+      }
+      compressed.setSize(static_cast<RawChars::size_type>(written));
+      break;
+    }
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+    case Encoding::br: {
+      BrotliEncoder encoder(CompressionConfig::Brotli{});
+      const auto written = encoder.encodeFull(payload, compressed.capacity(), compressed.data());
+      if (written == 0) {
+        throw std::runtime_error("BrotliEncoder error");
+      }
+      compressed.setSize(static_cast<RawChars::size_type>(written));
+      break;
+    }
+#endif
+    case Encoding::none:
+      compressed.assign(payload.data(), payload.size());
+      break;
+    default:
+      throw std::invalid_argument("Unsupported encoding");
+  }
+  return compressed;
+}
+
+RawChars Decompress(Encoding encoding, std::string_view compressed) {
+  RawChars decompressed;
+
+  switch (encoding) {
+#ifdef AERONET_ENABLE_ZLIB
+    case Encoding::gzip: {
+      ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
+      if (!decoder.decompressFull(compressed, std::numeric_limits<std::size_t>::max(), 1024, decompressed)) {
+        throw std::runtime_error("ZlibDecoder error gzip");
+      }
+      break;
+    }
+    case Encoding::deflate: {
+      ZlibDecoder decoder(ZStreamRAII::Variant::deflate);
+      if (!decoder.decompressFull(compressed, std::numeric_limits<std::size_t>::max(), 1024, decompressed)) {
+        throw std::runtime_error("ZlibDecoder error deflate");
+      }
+      break;
+    }
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+    case Encoding::zstd: {
+      ZstdDecoder decoder;
+      if (!decoder.decompressFull(compressed, std::numeric_limits<std::size_t>::max(), 1024, decompressed)) {
+        throw std::runtime_error("ZstdDecoder error");
+      }
+      break;
+    }
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+    case Encoding::br: {
+      BrotliDecoder decoder;
+      if (!decoder.decompressFull(compressed, std::numeric_limits<std::size_t>::max(), 1024, decompressed)) {
+        throw std::runtime_error("BrotliDecoder error");
+      }
+      break;
+    }
+#endif
+    case Encoding::none:
+      decompressed.assign(compressed.data(), compressed.size());
+      break;
+    default:
+      throw std::invalid_argument("Unsupported encoding");
+  }
+  return decompressed;
 }
 
 RawBytes MakeRandomPayload(std::size_t size) {

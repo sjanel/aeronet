@@ -2,28 +2,40 @@
 
 #include <gtest/gtest.h>
 
+#include <list>
+
 namespace aeronet {
 
-TEST(ToUpperLowerTest, ToUpperTest) {
-  EXPECT_EQ(toupper('h'), 'H');
-  EXPECT_EQ(toupper('e'), 'E');
-  EXPECT_EQ(toupper('l'), 'L');
-  EXPECT_EQ(toupper('o'), 'O');
-  EXPECT_EQ(toupper(' '), ' ');
+template <typename T>
+class ToUpperLowerTest : public ::testing::Test {
+ public:
+  using List = typename std::list<T>;
+};
 
-  EXPECT_EQ(toupper('O'), 'O');
-  EXPECT_EQ(toupper('2'), '2');
+using MyTypes = ::testing::Types<char, unsigned char, signed char>;
+TYPED_TEST_SUITE(ToUpperLowerTest, MyTypes, );
+
+TYPED_TEST(ToUpperLowerTest, ToUpperTest) {
+  using T = TypeParam;
+  EXPECT_EQ(toupper(static_cast<T>('h')), static_cast<T>('H'));
+  EXPECT_EQ(toupper(static_cast<T>('e')), static_cast<T>('E'));
+  EXPECT_EQ(toupper(static_cast<T>('l')), static_cast<T>('L'));
+  EXPECT_EQ(toupper(static_cast<T>('o')), static_cast<T>('O'));
+  EXPECT_EQ(toupper(static_cast<T>(' ')), static_cast<T>(' '));
+
+  EXPECT_EQ(toupper(static_cast<T>('O')), static_cast<T>('O'));
+  EXPECT_EQ(toupper(static_cast<T>('2')), static_cast<T>('2'));
 }
 
-TEST(ToUpperLowerTest, ToLowerTest) {
-  EXPECT_EQ(tolower('H'), 'h');
-  EXPECT_EQ(tolower('E'), 'e');
-  EXPECT_EQ(tolower('L'), 'l');
-  EXPECT_EQ(tolower('O'), 'o');
-  EXPECT_EQ(tolower(' '), ' ');
+TYPED_TEST(ToUpperLowerTest, ToLowerTest) {
+  using T = TypeParam;
+  EXPECT_EQ(tolower(static_cast<T>('E')), static_cast<T>('e'));
+  EXPECT_EQ(tolower(static_cast<T>('L')), static_cast<T>('l'));
+  EXPECT_EQ(tolower(static_cast<T>('O')), static_cast<T>('o'));
+  EXPECT_EQ(tolower(static_cast<T>(' ')), static_cast<T>(' '));
 
-  EXPECT_EQ(tolower('o'), 'o');
-  EXPECT_EQ(tolower('2'), '2');
+  EXPECT_EQ(tolower(static_cast<T>('o')), static_cast<T>('o'));
+  EXPECT_EQ(tolower(static_cast<T>('2')), static_cast<T>('2'));
 }
 
 }  // namespace aeronet

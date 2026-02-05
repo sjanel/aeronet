@@ -55,12 +55,14 @@ namespace aeronet::http2 {
 
 Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
                                            internal::ResponseCompressionState& compressionState,
+                                           internal::RequestDecompressionState& decompressionState,
                                            tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer)
     : _connection(config, true),
       _pRouter(&router),
       _fileSendBuffer(64UL * 1024UL),
       _pServerConfig(&serverConfig),
       _pCompressionState(&compressionState),
+      _pDecompressionState(&decompressionState),
       _pTmpBuffer(&tmpBuffer),
       _pTelemetryContext(&telemetryContext) {
   setupCallbacks();
@@ -243,10 +245,10 @@ void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std
     streamReq.request._body = streamReq.bodyBuffer;
 
     if (!streamReq.request._body.empty()) {
-      const auto res = internal::HttpCodec::MaybeDecompressRequestBody(_pServerConfig->decompression, streamReq.request,
-                                                                       streamReq.bodyBuffer, *_pTmpBuffer);
+      const auto res = internal::HttpCodec::MaybeDecompressRequestBody(
+          *_pDecompressionState, _pServerConfig->decompression, streamReq.request, streamReq.bodyBuffer, *_pTmpBuffer);
       if (res.message != nullptr) {
-        (void)sendResponse(streamId, HttpResponse(res.status).body(res.message), /*isHeadMethod=*/false);
+        (void)sendResponse(streamId, HttpResponse(res.status, res.message), /*isHeadMethod=*/false);
         _streamRequests.erase(streamId);
         return;
       }
@@ -603,10 +605,11 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, Router& router,
                                                              HttpServerConfig& serverConfig,
                                                              internal::ResponseCompressionState& compressionState,
+                                                             internal::RequestDecompressionState& decompressionState,
                                                              tracing::TelemetryContext& telemetryContext,
                                                              RawChars& tmpBuffer, bool sendServerPrefaceForTls) {
   auto protocolHandler = std::make_unique<Http2ProtocolHandler>(config, router, serverConfig, compressionState,
-                                                                telemetryContext, tmpBuffer);
+                                                                decompressionState, telemetryContext, tmpBuffer);
   if (sendServerPrefaceForTls) {
     // For TLS ALPN "h2", the server must send SETTINGS immediately after TLS handshake
     protocolHandler->connection().sendServerPreface();

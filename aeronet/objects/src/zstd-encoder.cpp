@@ -91,7 +91,7 @@ int64_t ZstdEncoderContext::end(std::size_t availableCapacity, char* buf) noexce
 std::size_t ZstdEncoder::encodeFull(std::string_view data, std::size_t availableCapacity, char* buf) {
   _ctx.init(_cfg.compressionLevel, _cfg.windowLog);
   std::size_t written = ZSTD_compress2(_ctx._ctx.get(), buf, availableCapacity, data.data(), data.size());
-  if (ZSTD_isError(written) != 0U) [[unlikely]] {
+  if (ZSTD_isError(written) != 0U) {
     written = 0;
   }
   return written;

@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstring>
 #include <iterator>
-#include <span>
 #include <string_view>
 #include <system_error>
 
@@ -242,8 +241,8 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       _tmp.trailers.assign(bodyAndTrailers);
     }
 
-    const auto res = internal::HttpCodec::DecompressChunkedBody(_config.decompression, request, _tmp.sv,
-                                                                totalCompressedSize, bodyAndTrailers, _tmp.buf);
+    const auto res = internal::HttpCodec::DecompressChunkedBody(
+        _decompressionState, _config.decompression, request, _tmp.sv, totalCompressedSize, bodyAndTrailers, _tmp.buf);
     if (res.message != nullptr) {
       emitSimpleError(cnxIt, res.status, true, res.message);
       return BodyDecodeStatus::Error;

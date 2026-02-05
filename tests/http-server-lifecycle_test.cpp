@@ -14,6 +14,9 @@
 #include <utility>
 
 #include "aeronet/builtin-probes-config.hpp"
+#include "aeronet/compression-test-helpers.hpp"
+#include "aeronet/encoding.hpp"
+#include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -230,27 +233,68 @@ TEST(HttpServerRestart, RestartPossible) {
 }
 
 TEST(HttpServerCopy, CopyAssignWhileStopped) {
-  SingleHttpServer destination(HttpServerConfig{}.withReusePort());
-  destination.router().setDefault([]([[maybe_unused]] const HttpRequest&) { return HttpResponse("DEST"); });
+  HttpServerConfig config;
+  config.compression.minBytes = 64;
 
-  uint16_t copiedPort = 0;
+  std::string payload(128, 'x');
+
+  SingleHttpServer destination(config);
+  destination.router().setDefault([&payload]([[maybe_unused]] const HttpRequest&) {
+    HttpResponse resp(payload);
+    resp.header("X-Who", "destination");
+    return resp;
+  });
+
+  auto launchSomeQueries = [&payload](SingleHttpServer& server, std::string_view expectedHeaderValue) {
+    server.start();
+    test::WaitForServer(server);
+
+    for (std::underlying_type_t<Encoding> i = 0; i <= kNbContentEncodings; ++i) {
+      const auto enc = static_cast<Encoding>(i);
+      if (!IsEncodingEnabled(enc)) {
+        continue;
+      }
+
+      test::RequestOptions opts;
+      opts.headers = {{http::AcceptEncoding, GetEncodingStr(enc)}, {http::ContentEncoding, GetEncodingStr(enc)}};
+      opts.body = test::Compress(enc, payload);
+
+      for (int nbConsecutiveReq = 0; nbConsecutiveReq < 3; ++nbConsecutiveReq) {
+        auto optResp = test::request(server.port(), opts);
+        ASSERT_TRUE(optResp.has_value());
+        auto resp = optResp.value_or("");
+
+        EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
+        EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("X-Who", expectedHeaderValue)));
+        auto bodyStart = resp.find(http::DoubleCRLF);
+        ASSERT_NE(bodyStart, std::string::npos);
+        bodyStart += http::DoubleCRLF.size();
+        auto body = resp.substr(bodyStart);
+        auto decodedBody = test::Decompress(enc, body);
+        EXPECT_EQ(std::string_view(decodedBody), payload);
+      }
+    }
+
+    server.stop();
+    test::WaitForServer(server, false);
+  };
+
+  launchSomeQueries(destination, "destination");
+
   {
-    SingleHttpServer source(HttpServerConfig{}.withReusePort());
-    source.router().setDefault([]([[maybe_unused]] const HttpRequest&) { return HttpResponse("COPY"); });
-    copiedPort = source.port();
+    SingleHttpServer source(config);
+    source.router().setDefault([&]([[maybe_unused]] const HttpRequest&) {
+      HttpResponse resp(payload);
+      resp.header("X-Who", "source");
+      return resp;
+    });
+
+    launchSomeQueries(source, "source");
+
     destination = source;
-    EXPECT_EQ(destination.port(), copiedPort);
+
+    launchSomeQueries(destination, "source");
   }
-
-  std::atomic_bool stop{false};
-  std::jthread worker([&] { destination.runUntil([&] { return stop.load(); }); });
-  ASSERT_TRUE(test::WaitForServer(destination));
-
-  auto resp = test::simpleGet(destination.port(), "/cpy");
-  EXPECT_TRUE(resp.contains("COPY"));
-
-  stop.store(true);
-  worker.join();
 }
 
 TEST(HttpServerCopy, CopyAssignWhileRunningThrows) {

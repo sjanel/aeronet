@@ -24,6 +24,7 @@ struct HttpServerConfig;
 
 namespace internal {
 struct ResponseCompressionState;
+struct RequestDecompressionState;
 }  // namespace internal
 class Router;
 
@@ -50,6 +51,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// @param dispatcher Callback that dispatches an HttpRequest to handlers and returns a response
   Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
                        internal::ResponseCompressionState& compressionState,
+                       internal::RequestDecompressionState& decompressionState,
                        tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer);
 
   Http2ProtocolHandler(const Http2ProtocolHandler&) = delete;
@@ -154,6 +156,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 
   HttpServerConfig* _pServerConfig;
   internal::ResponseCompressionState* _pCompressionState;
+  internal::RequestDecompressionState* _pDecompressionState;
   RawChars* _pTmpBuffer;
   tracing::TelemetryContext* _pTelemetryContext;
 };
@@ -167,6 +170,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, Router& router,
                                                              HttpServerConfig& serverConfig,
                                                              internal::ResponseCompressionState& compressionState,
+                                                             internal::RequestDecompressionState& decompressionState,
                                                              tracing::TelemetryContext& telemetryContext,
                                                              RawChars& tmpBuffer, bool sendServerPrefaceForTls = false);
 

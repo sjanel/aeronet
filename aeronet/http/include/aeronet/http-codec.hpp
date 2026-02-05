@@ -16,18 +16,37 @@
 #include "aeronet/raw-chars.hpp"
 
 #ifdef AERONET_ENABLE_BROTLI
+#include "aeronet/brotli-decoder.hpp"
 #include "aeronet/brotli-encoder.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_ZSTD
+#include "aeronet/zstd-decoder.hpp"
 #include "aeronet/zstd-encoder.hpp"
 #endif
 
 namespace aeronet::internal {
+
+// TODO: can we override all alloc / free calls from these decoders / encoders to use a shared arena or pool?
+
+struct RequestDecompressionState {
+#ifdef AERONET_ENABLE_BROTLI
+  BrotliDecoder brotliDecoder;
+#endif
+
+#ifdef AERONET_ENABLE_ZLIB
+  ZlibDecoder zlibDecoder;
+#endif
+
+#ifdef AERONET_ENABLE_ZSTD
+  ZstdDecoder zstdDecoder;
+#endif
+};
 
 struct ResponseCompressionState {
   ResponseCompressionState() noexcept = default;
@@ -48,8 +67,7 @@ struct ResponseCompressionState {
 #endif
 
 #ifdef AERONET_ENABLE_ZLIB
-  ZlibEncoder gzipEncoder;
-  ZlibEncoder deflateEncoder;
+  ZlibEncoder zlibEncoder;
 #endif
 
 #ifdef AERONET_ENABLE_ZSTD
@@ -68,7 +86,8 @@ class HttpCodec {
                                   const CompressionConfig& compressionConfig, Encoding encoding, HttpResponse& resp);
 
   /// Decompress request body for fixed-length requests (so they cannot contain any trailers).
-  static RequestDecompressionResult MaybeDecompressRequestBody(const DecompressionConfig& decompressionConfig,
+  static RequestDecompressionResult MaybeDecompressRequestBody(RequestDecompressionState& decompressionState,
+                                                               const DecompressionConfig& decompressionConfig,
                                                                HttpRequest& request, RawChars& bodyAndTrailersBuffer,
                                                                RawChars& tmpBuffer);
 
@@ -84,7 +103,8 @@ class HttpCodec {
   /// The chunks span points to non-contiguous compressed data (from chunked transfer).
   /// Decompressed output goes to bodyAndTrailersBuffer.
   /// Returns error result on failure, or empty result on success.
-  static RequestDecompressionResult DecompressChunkedBody(const DecompressionConfig& decompressionConfig,
+  static RequestDecompressionResult DecompressChunkedBody(RequestDecompressionState& decompressionState,
+                                                          const DecompressionConfig& decompressionConfig,
                                                           HttpRequest& request,
                                                           std::span<const std::string_view> compressedChunks,
                                                           std::size_t compressedSize, RawChars& bodyAndTrailersBuffer,

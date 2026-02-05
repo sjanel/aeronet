@@ -68,8 +68,9 @@ int64_t ZlibEncoderContext::end(std::size_t availableCapacity, char* buf) noexce
   return static_cast<int64_t>(writtenNow);
 }
 
-std::size_t ZlibEncoder::encodeFull(std::string_view data, std::size_t availableCapacity, char* buf) {
-  _ctx.init(_level, _variant);
+std::size_t ZlibEncoder::encodeFull(ZStreamRAII::Variant variant, std::string_view data, std::size_t availableCapacity,
+                                    char* buf) {
+  _ctx.init(_level, variant);
 
   auto& zstream = _ctx._zs.stream;
 
@@ -81,7 +82,7 @@ std::size_t ZlibEncoder::encodeFull(std::string_view data, std::size_t available
 
   const auto rc = deflate(&zstream, Z_FINISH);
   std::size_t written = availableCapacity - zstream.avail_out;
-  if (rc != Z_STREAM_END) [[unlikely]] {
+  if (rc != Z_STREAM_END) {
     written = 0;
   } else {
     assert(zstream.avail_in == 0);

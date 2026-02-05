@@ -534,7 +534,8 @@ class SingleHttpServer {
 
   internal::PendingUpdates _updates;
 
-  internal::ResponseCompressionState _compression;
+  internal::ResponseCompressionState _compressionState;
+  internal::RequestDecompressionState _decompressionState;
 
   HttpServerConfig _config;
 
