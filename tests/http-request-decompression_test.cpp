@@ -113,17 +113,17 @@ RawChars compress(std::string_view alg, std::string_view input) {
 #ifdef AERONET_ENABLE_ZLIB
     // NOLINTNEXTLINE(readability-else-after-return)
   } else if (CaseInsensitiveEqual(alg, "gzip")) {
-    ZlibEncoder encoder(ZStreamRAII::Variant::gzip, cc.zlib.level);
+    ZlibEncoder encoder(cc.zlib.level);
     buf.reserve(64UL + deflateBound(nullptr, input.size()));
-    const std::size_t written = encoder.encodeFull(input, buf.capacity(), buf.data());
+    const std::size_t written = encoder.encodeFull(ZStreamRAII::Variant::gzip, input, buf.capacity(), buf.data());
     if (written == 0) {
       throw std::runtime_error("gzip compression failed");
     }
     buf.setSize(written);
   } else if (CaseInsensitiveEqual(alg, "deflate")) {
-    ZlibEncoder encoder(ZStreamRAII::Variant::deflate, cc.zlib.level);
+    ZlibEncoder encoder(cc.zlib.level);
     buf.reserve(64UL + deflateBound(nullptr, input.size()));
-    const std::size_t written = encoder.encodeFull(input, buf.capacity(), buf.data());
+    const std::size_t written = encoder.encodeFull(ZStreamRAII::Variant::deflate, input, buf.capacity(), buf.data());
     if (written == 0) {
       throw std::runtime_error("deflate compression failed");
     }

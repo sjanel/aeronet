@@ -123,8 +123,7 @@ BrotliEncoder& BrotliEncoder::operator=(BrotliEncoder&& rhs) noexcept {
 std::size_t BrotliEncoder::encodeFull(std::string_view data, std::size_t availableCapacity, char* buf) const {
   uint8_t* dst = reinterpret_cast<uint8_t*>(buf);
   if (BrotliEncoderCompress(_quality, _window, BROTLI_MODE_GENERIC, data.size(),
-                            reinterpret_cast<const uint8_t*>(data.data()), &availableCapacity, dst) == BROTLI_FALSE)
-      [[unlikely]] {
+                            reinterpret_cast<const uint8_t*>(data.data()), &availableCapacity, dst) == BROTLI_FALSE) {
     availableCapacity = 0U;
   }
 

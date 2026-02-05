@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/encoding.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 
@@ -28,6 +29,10 @@ constexpr bool HasZstdMagic(std::string_view body) {
 }
 
 std::string MakePatternedPayload(std::size_t size);
+
+RawChars Compress(Encoding encoding, std::string_view payload);
+
+RawChars Decompress(Encoding encoding, std::string_view compressed);
 
 // Create a random payload of given size so that it's very difficult to compress.
 RawBytes MakeRandomPayload(std::size_t size);

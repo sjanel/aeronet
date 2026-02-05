@@ -30,17 +30,9 @@
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/stringconv.hpp"
 
-#ifdef AERONET_ENABLE_BROTLI
-#include "aeronet/brotli-decoder.hpp"
-#endif
-
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
-#endif
-
-#ifdef AERONET_ENABLE_ZSTD
-#include "aeronet/zstd-decoder.hpp"
 #endif
 
 namespace aeronet::internal {
@@ -123,7 +115,8 @@ inline std::string_view FinalizeDecompressedBody(HeadersViewMap& headersMap, Hea
   return body;
 }
 
-inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] auto&& runDecoder, double maxExpansionRatio,
+inline RequestDecompressionResult DualBufferDecodeLoop(RequestDecompressionState& decompressionState,
+                                                       [[maybe_unused]] auto&& runDecoder, double maxExpansionRatio,
                                                        std::string_view& src, HeadersViewMap::iterator encodingHeaderIt,
                                                        std::size_t compressedSize, RawChars& bodyAndTrailersBuffer,
                                                        RawChars& tmpBuffer) {
@@ -145,21 +138,21 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] auto&& r
 #ifdef AERONET_ENABLE_ZLIB
       // NOLINTNEXTLINE(readability-else-after-return)
     } else if (CaseInsensitiveEqual(encoding, http::gzip)) {
-      ZlibDecoder decoder(/*isGzip=*/true);
+      ZlibDecoder& decoder = decompressionState.zlibDecoder;
+      decoder.setVariant(ZStreamRAII::Variant::gzip);
       stageOk = runDecoder(decoder, *dst);
     } else if (CaseInsensitiveEqual(encoding, http::deflate)) {
-      ZlibDecoder decoder(/*isGzip=*/false);
+      ZlibDecoder& decoder = decompressionState.zlibDecoder;
+      decoder.setVariant(ZStreamRAII::Variant::deflate);
       stageOk = runDecoder(decoder, *dst);
 #endif
 #ifdef AERONET_ENABLE_ZSTD
     } else if (CaseInsensitiveEqual(encoding, http::zstd)) {
-      ZstdDecoder decoder;
-      stageOk = runDecoder(decoder, *dst);
+      stageOk = runDecoder(decompressionState.zstdDecoder, *dst);
 #endif
 #ifdef AERONET_ENABLE_BROTLI
     } else if (CaseInsensitiveEqual(encoding, http::br)) {
-      BrotliDecoder decoder;
-      stageOk = runDecoder(decoder, *dst);
+      stageOk = runDecoder(decompressionState.brotliDecoder, *dst);
 #endif
     } else {
       return {.status = http::StatusCodeUnsupportedMediaType, .message = "Unsupported Content-Encoding"};
@@ -208,8 +201,7 @@ inline bool UseStreamingDecompression(const HeadersViewMap& headersMap,
 
 void ResponseCompressionState::createEncoders([[maybe_unused]] const CompressionConfig& cfg) {
 #ifdef AERONET_ENABLE_ZLIB
-  gzipEncoder = ZlibEncoder(ZStreamRAII::Variant::gzip, cfg.zlib.level);
-  deflateEncoder = ZlibEncoder(ZStreamRAII::Variant::deflate, cfg.zlib.level);
+  zlibEncoder = ZlibEncoder(cfg.zlib.level);
 #endif
 #ifdef AERONET_ENABLE_ZSTD
   zstdEncoder = ZstdEncoder(cfg.zstd);
@@ -230,10 +222,10 @@ std::size_t ResponseCompressionState::encodeFull([[maybe_unused]] Encoding encod
 #endif
 #ifdef AERONET_ENABLE_ZLIB
   if (encoding == Encoding::gzip) {
-    return gzipEncoder.encodeFull(data, availableCapacity, buf);
+    return zlibEncoder.encodeFull(ZStreamRAII::Variant::gzip, data, availableCapacity, buf);
   }
   if (encoding == Encoding::deflate) {
-    return deflateEncoder.encodeFull(data, availableCapacity, buf);
+    return zlibEncoder.encodeFull(ZStreamRAII::Variant::deflate, data, availableCapacity, buf);
   }
 #endif
 #ifdef AERONET_ENABLE_ZSTD
@@ -252,10 +244,10 @@ EncoderContext* ResponseCompressionState::makeContext([[maybe_unused]] Encoding 
 #endif
 #ifdef AERONET_ENABLE_ZLIB
   if (encoding == Encoding::gzip) {
-    return gzipEncoder.makeContext();
+    return zlibEncoder.makeContext(ZStreamRAII::Variant::gzip);
   }
   if (encoding == Encoding::deflate) {
-    return deflateEncoder.makeContext();
+    return zlibEncoder.makeContext(ZStreamRAII::Variant::deflate);
   }
 #endif
 #ifdef AERONET_ENABLE_ZSTD
@@ -269,6 +261,7 @@ EncoderContext* ResponseCompressionState::makeContext([[maybe_unused]] Encoding 
 void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
                                     const CompressionConfig& compressionConfig, Encoding encoding, HttpResponse& resp) {
   const auto bodySz = resp.bodyInMemoryLength();
+
   if (bodySz < compressionConfig.minBytes) {
     return;
   }
@@ -347,6 +340,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   char* pTmpCompressed = resp._data.data() + tmpAreaStartPos;
   const std::size_t compressedSize =
       compressionState.encodeFull(encoding, resp.bodyInMemory(), maxAllowedCompressed, pTmpCompressed);
+
   if (compressedSize == 0) {
     // compression failed or did not fit in maxAllowedCompressed
     // abort compression, it's not worth it
@@ -460,7 +454,8 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   resp._payloadVariant = {};
 }
 
-RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(const DecompressionConfig& decompressionConfig,
+RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(RequestDecompressionState& decompressionState,
+                                                                 const DecompressionConfig& decompressionConfig,
                                                                  HttpRequest& request, RawChars& bodyAndTrailersBuffer,
                                                                  RawChars& tmpBuffer) {
   if (!decompressionConfig.enable) {
@@ -488,6 +483,7 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(const Decompres
   std::string_view src = request.body();
 
   RequestDecompressionResult res = DualBufferDecodeLoop(
+      decompressionState,
       [useStreamingDecode =
            UseStreamingDecompression(headersMap, decompressionConfig.streamingDecompressionThresholdBytes),
        &src, &decompressionConfig](auto& decoder, RawChars& dst) {
@@ -496,7 +492,7 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(const Decompres
           return decoder.decompressFull(src, decompressionConfig.maxDecompressedBytes,
                                         decompressionConfig.decoderChunkSize, dst);
         }
-        auto ctx = decoder.makeContext();
+        auto* ctx = decoder.makeContext();
         // The decompress body function cannot be called without body
         assert(!src.empty());
         for (std::size_t processed = 0; processed < src.size();) {
@@ -505,8 +501,8 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(const Decompres
           const std::string_view chunk(src.data() + processed, chunkLen);
           processed += chunkLen;
           const bool lastChunk = processed == src.size();
-          if (!ctx.decompressChunk(chunk, lastChunk, decompressionConfig.maxDecompressedBytes,
-                                   decompressionConfig.decoderChunkSize, dst)) {
+          if (!ctx->decompressChunk(chunk, lastChunk, decompressionConfig.maxDecompressedBytes,
+                                    decompressionConfig.decoderChunkSize, dst)) {
             return false;
           }
         }
@@ -565,7 +561,8 @@ http::StatusCode HttpCodec::WillDecompress(const DecompressionConfig& decompress
   return http::StatusCodeNotModified;
 }
 
-RequestDecompressionResult HttpCodec::DecompressChunkedBody(const DecompressionConfig& decompressionConfig,
+RequestDecompressionResult HttpCodec::DecompressChunkedBody(RequestDecompressionState& decompressionState,
+                                                            const DecompressionConfig& decompressionConfig,
                                                             HttpRequest& request,
                                                             std::span<const std::string_view> compressedChunks,
                                                             std::size_t compressedSize, RawChars& bodyAndTrailersBuffer,
@@ -578,6 +575,7 @@ RequestDecompressionResult HttpCodec::DecompressChunkedBody(const DecompressionC
   std::string_view src;
 
   RequestDecompressionResult res = DualBufferDecodeLoop(
+      decompressionState,
       [&src, compressedChunks, maxPlainBytes = decompressionConfig.maxDecompressedBytes,
        decoderChunkSize = decompressionConfig.decoderChunkSize,
        firstStage = true](auto& decoder, RawChars& dst) mutable {
@@ -585,10 +583,10 @@ RequestDecompressionResult HttpCodec::DecompressChunkedBody(const DecompressionC
 
         if (firstStage) {
           firstStage = false;
-          auto ctx = decoder.makeContext();
+          auto* ctx = decoder.makeContext();
           for (std::size_t idx = 0; idx < compressedChunks.size(); ++idx) {
             const bool lastChunk = (idx == compressedChunks.size() - 1);
-            if (!ctx.decompressChunk(compressedChunks[idx], lastChunk, maxPlainBytes, decoderChunkSize, dst)) {
+            if (!ctx->decompressChunk(compressedChunks[idx], lastChunk, maxPlainBytes, decoderChunkSize, dst)) {
               return false;
             }
           }

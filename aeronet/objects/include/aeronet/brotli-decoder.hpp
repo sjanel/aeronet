@@ -3,20 +3,21 @@
 #include <cstddef>
 #include <string_view>
 
+#include "aeronet/buffer-cache.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 
-class BrotliStreamingContext {
+class BrotliDecoderContext {
  public:
-  BrotliStreamingContext();
+  BrotliDecoderContext() noexcept = default;
 
-  BrotliStreamingContext(const BrotliStreamingContext &) = delete;
-  BrotliStreamingContext &operator=(const BrotliStreamingContext &) = delete;
-  BrotliStreamingContext(BrotliStreamingContext &&) noexcept = delete;
-  BrotliStreamingContext &operator=(BrotliStreamingContext &&) noexcept = delete;
+  BrotliDecoderContext(const BrotliDecoderContext &) = delete;
+  BrotliDecoderContext &operator=(const BrotliDecoderContext &) = delete;
+  BrotliDecoderContext(BrotliDecoderContext &&rhs) noexcept;
+  BrotliDecoderContext &operator=(BrotliDecoderContext &&rhs) noexcept;
 
-  ~BrotliStreamingContext();
+  ~BrotliDecoderContext();
 
   // Feed a compressed chunk into the context.
   // When finalChunk is true, the caller does not provide any additional input.
@@ -24,18 +25,28 @@ class BrotliStreamingContext {
   bool decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
                        std::size_t decoderChunkSize, RawChars &out);
 
+  void init();
+
  private:
-  void *_pState;
+  internal::BufferCache _cache;  // MUST be before _pState so it's destroyed AFTER (inverse order)
+  void *_pState{};
 };
 
 class BrotliDecoder {
  public:
-  static bool decompressFull(std::string_view input, std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
-                             RawChars &out) {
-    return makeContext().decompressChunk(input, true, maxDecompressedBytes, decoderChunkSize, out);
+  bool decompressFull(std::string_view input, std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
+                      RawChars &out) {
+    _ctx.init();  // Reset decoder before decompression
+    return _ctx.decompressChunk(input, true, maxDecompressedBytes, decoderChunkSize, out);
   }
 
-  static BrotliStreamingContext makeContext() { return BrotliStreamingContext{}; }
+  BrotliDecoderContext *makeContext() {
+    _ctx.init();
+    return &_ctx;
+  }
+
+ private:
+  BrotliDecoderContext _ctx;
 };
 
 }  // namespace aeronet

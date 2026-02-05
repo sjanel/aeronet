@@ -271,7 +271,7 @@ TEST(HttpCodecCompression, GzipCompressedBodyRoundTrips) {
   EXPECT_EQ(static_cast<unsigned char>(compressedBody[1]), 0x8bU);
 
   RawChars out;
-  ZlibDecoder decoder(/*isGzip=*/true);
+  ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
   ASSERT_TRUE(decoder.decompressFull(compressedBody, /*maxDecompressedBytes=*/(1UL << 20), 32UL * 1024UL, out));
   EXPECT_EQ(std::string_view(out), std::string_view(body));
 }
@@ -475,8 +475,10 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_MalformedEncodingReturnsBadRe
 
   RawChars bodyBuf;
   RawChars tmpBuf;
+  RequestDecompressionState decompressionState;
 
-  const auto res = HttpCodec::DecompressChunkedBody(cfg, req, chunks, /*compressedSize=*/1, bodyBuf, tmpBuf);
+  const auto res =
+      HttpCodec::DecompressChunkedBody(decompressionState, cfg, req, chunks, /*compressedSize=*/1, bodyBuf, tmpBuf);
 #ifdef AERONET_ENABLE_ZLIB
   EXPECT_EQ(res.status, http::StatusCodeBadRequest);
 #else
@@ -501,11 +503,11 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_ExpansionTooLargeReturnsPaylo
 
   CompressionConfig encCfg;  // default encoder config is fine for generating compressed bytes
   RawChars buf;
-  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, encCfg.zlib.level);
+  ZlibEncoder encoder(encCfg.zlib.level);
   RawChars compressedOut(plain.size());
   {
-    const std::size_t written =
-        encoder.encodeFull(std::string_view(plain), compressedOut.capacity(), compressedOut.data());
+    const std::size_t written = encoder.encodeFull(ZStreamRAII::Variant::gzip, std::string_view(plain),
+                                                   compressedOut.capacity(), compressedOut.data());
     ASSERT_GT(written, 0UL);
     compressedOut.setSize(static_cast<RawChars::size_type>(written));
   }
@@ -516,14 +518,16 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_ExpansionTooLargeReturnsPaylo
   RawChars bodyBuf;
   RawChars tmpBuf;
 
-  const auto res =
-      HttpCodec::DecompressChunkedBody(cfg, req, chunks, /*compressedSize=*/compressedView.size(), bodyBuf, tmpBuf);
+  RequestDecompressionState decompressionState;
+
+  const auto res = HttpCodec::DecompressChunkedBody(decompressionState, cfg, req, chunks,
+                                                    /*compressedSize=*/compressedView.size(), bodyBuf, tmpBuf);
   EXPECT_EQ(res.status, http::StatusCodePayloadTooLarge);
 
   // Check with a large enough expansion ratio to ensure success
   cfg.maxExpansionRatio = (plainSize / static_cast<double>(compressedView.size())) + 1.0;
-  const auto res2 =
-      HttpCodec::DecompressChunkedBody(cfg, req, chunks, /*compressedSize=*/compressedView.size(), bodyBuf, tmpBuf);
+  const auto res2 = HttpCodec::DecompressChunkedBody(decompressionState, cfg, req, chunks,
+                                                     /*compressedSize=*/compressedView.size(), bodyBuf, tmpBuf);
   EXPECT_EQ(res2.status, http::StatusCodeOK);
 }
 #endif
@@ -542,8 +546,9 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_IdentityAndUnknownEncodingRet
 
   RawChars bodyBuf;
   RawChars tmpBuf;
-
-  const auto res = HttpCodec::DecompressChunkedBody(cfg, req, chunks, /*compressedSize=*/1, bodyBuf, tmpBuf);
+  RequestDecompressionState decompressionState;
+  const auto res =
+      HttpCodec::DecompressChunkedBody(decompressionState, cfg, req, chunks, /*compressedSize=*/1, bodyBuf, tmpBuf);
   EXPECT_EQ(res.status, http::StatusCodeUnsupportedMediaType);
 }
 
@@ -753,10 +758,11 @@ TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithou
   const std::string plain = "small payload";
   CompressionConfig encCfg;
   RawChars buf;
-  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, encCfg.zlib.level);
+  ZlibEncoder encoder(encCfg.zlib.level);
   RawChars compressedOut(64UL + plain.size());
   {
-    const std::size_t written = encoder.encodeFull(plain, compressedOut.capacity(), compressedOut.data());
+    const std::size_t written = encoder.encodeFull(ZStreamRAII::Variant::gzip, std::string_view(plain),
+                                                   compressedOut.capacity(), compressedOut.data());
     ASSERT_GT(written, 0UL);
     compressedOut.setSize(static_cast<RawChars::size_type>(written));
   }
@@ -765,12 +771,14 @@ TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithou
   cs.bodyStreamContext.offset = 0;
 
   RawChars tmpBuf;
+  RequestDecompressionState decompressionState;
 
   // Call MaybeDecompressRequestBody - UseStreamingDecompression should see no Content-Length and return false,
   // so decoder should be invoked in aggregated mode. We accept several possible outcomes depending on
   // available decoders (OK when a decoder succeeds, UnsupportedMediaType when decoder missing, BadRequest
   // for corrupted data). The important part is we do not modify production code and do not crash.
-  const auto res = HttpCodec::MaybeDecompressRequestBody(cfg, req, cs.bodyAndTrailersBuffer, tmpBuf);
+  const auto res =
+      HttpCodec::MaybeDecompressRequestBody(decompressionState, cfg, req, cs.bodyAndTrailersBuffer, tmpBuf);
   EXPECT_TRUE(res.status == http::StatusCodeOK || res.status == http::StatusCodeBadRequest ||
               res.status == http::StatusCodeUnsupportedMediaType || res.status == http::StatusCodePayloadTooLarge);
 }

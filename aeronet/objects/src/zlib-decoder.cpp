@@ -13,13 +13,13 @@
 
 namespace aeronet {
 
-bool ZlibStreamingContext::decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
-                                           std::size_t decoderChunkSize, RawChars &out) {
+bool ZlibDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
+                                         std::size_t decoderChunkSize, RawChars &out) {
   if (chunk.empty()) {
     return true;
   }
 
-  auto &stream = _context.stream;
+  auto &stream = _zs.stream;
 
   stream.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(chunk.data()));
   stream.avail_in = static_cast<uInt>(chunk.size());
@@ -27,7 +27,7 @@ bool ZlibStreamingContext::decompressChunk(std::string_view chunk, bool finalChu
   DecoderBufferManager decoderBufferManager(out, decoderChunkSize, maxDecompressedBytes);
 
   while (true) {
-    bool forceEnd = decoderBufferManager.nextReserve();
+    const bool forceEnd = decoderBufferManager.nextReserve();
 
     stream.avail_out = static_cast<uInt>(out.availableCapacity());
     stream.next_out = reinterpret_cast<unsigned char *>(out.data() + out.size());
@@ -38,7 +38,7 @@ bool ZlibStreamingContext::decompressChunk(std::string_view chunk, bool finalChu
       return stream.avail_in == 0;
     }
     if (ret != Z_OK) [[unlikely]] {
-      log::error("decompressChunk - inflate failed with error {}", ret);
+      log::debug("decompressChunk - inflate failed with error {}", ret);
       return false;
     }
     if (forceEnd) {

@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+#include "aeronet/buffer-cache.hpp"
+
 namespace aeronet {
 
 struct ZStreamRAII {
@@ -15,7 +17,7 @@ struct ZStreamRAII {
 
   // Initialize a z_stream for decompression.
   // Throws std::runtime_error on failure.
-  explicit ZStreamRAII(Variant variant);
+  explicit ZStreamRAII(Variant variant) { initDecompress(variant); }
 
   // Initialize a z_stream for compression.
   // Throws std::runtime_error on failure.
@@ -33,11 +35,18 @@ struct ZStreamRAII {
   /// Reuses internal state if already initialized for compression.
   void initCompress(Variant variant, int8_t level);
 
+  // Initialize (or reinitialize) a z_stream for decompression.
+  // Reuses internal state if already initialized for decompression.
+  void initDecompress(Variant variant);
+
   void end() noexcept;
 
   z_stream stream;
 
  private:
+  void initZcache();
+
+  internal::BufferCache _cache;
   Variant _variant{Variant::uninitialized};
   Mode _mode{Mode::uninitialized};
   int8_t _level{};
