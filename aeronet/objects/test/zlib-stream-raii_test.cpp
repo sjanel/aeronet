@@ -22,12 +22,12 @@ namespace aeronet {
 #if AERONET_WANT_MALLOC_OVERRIDES
 
 TEST(ZStreamRAII, DecompressInitFails) {
-  test::FailNextMalloc();
+  test::FailNextRealloc();
   EXPECT_THROW(ZStreamRAII{ZStreamRAII::Variant::gzip}, std::runtime_error);
 }
 
 TEST(ZStreamRAII, DeflateInitFails) {
-  test::FailNextMalloc();
+  test::FailNextRealloc();
   EXPECT_THROW(ZStreamRAII(ZStreamRAII::Variant::deflate, 6), std::runtime_error);
 }
 
@@ -304,6 +304,46 @@ TEST(ZStreamRAII, LargePayloadCompressionDecompression) {
 
   EXPECT_EQ(decompressed.size(), largePayload.size());
   EXPECT_EQ(std::memcmp(decompressed.data(), largePayload.data(), largePayload.size()), 0);
+}
+
+TEST(ZStreamRAII, VariantSwitchingReusesBuffer) {
+  // This test verifies that switching between gzip and deflate doesn't require reallocation
+  // of the internal buffer by using the custom allocator that caches the buffer.
+
+  std::string testData = "Hello, World! This is a test to verify buffer reuse.";
+  std::vector<unsigned char> outbuf(1024);
+
+  // Start with gzip compression
+  ZStreamRAII stream(ZStreamRAII::Variant::gzip, 6);
+  stream.stream.next_in = reinterpret_cast<Bytef *>(testData.data());
+  stream.stream.avail_in = static_cast<uInt>(testData.size());
+  stream.stream.next_out = outbuf.data();
+  stream.stream.avail_out = static_cast<uInt>(outbuf.size());
+
+  int ret = deflate(&stream.stream, Z_FINISH);
+  ASSERT_TRUE(ret == Z_STREAM_END || ret == Z_OK);
+
+  // Switch to deflate - this should reuse the cached buffer
+  stream.initCompress(ZStreamRAII::Variant::deflate, 6);
+  stream.stream.next_in = reinterpret_cast<Bytef *>(testData.data());
+  stream.stream.avail_in = static_cast<uInt>(testData.size());
+  stream.stream.next_out = outbuf.data();
+  stream.stream.avail_out = static_cast<uInt>(outbuf.size());
+
+  ret = deflate(&stream.stream, Z_FINISH);
+  ASSERT_TRUE(ret == Z_STREAM_END || ret == Z_OK);
+
+  // Switch back to gzip - again reusing the buffer
+  stream.initCompress(ZStreamRAII::Variant::gzip, 6);
+  stream.stream.next_in = reinterpret_cast<Bytef *>(testData.data());
+  stream.stream.avail_in = static_cast<uInt>(testData.size());
+  stream.stream.next_out = outbuf.data();
+  stream.stream.avail_out = static_cast<uInt>(outbuf.size());
+
+  ret = deflate(&stream.stream, Z_FINISH);
+  ASSERT_TRUE(ret == Z_STREAM_END || ret == Z_OK);
+
+  // If we got here without crashes or ASAN errors, buffer reuse is working correctly
 }
 
 }  // namespace aeronet

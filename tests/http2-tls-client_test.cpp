@@ -103,7 +103,7 @@ TEST(TlsHttp2Client, AutomaticResponseCompressionRespectsConfig) {
   });
 
   const std::string plainBody(16UL * 1024UL, 'A');
-  ts.setDefault([&](const HttpRequest& /*req*/) { return HttpResponse().status(200).body(plainBody); });
+  ts.setDefault([&](const HttpRequest& /*req*/) { return HttpResponse(200, plainBody); });
 
   TlsHttp2Client client(ts.port());
   ASSERT_TRUE(client.isConnected());
@@ -114,7 +114,7 @@ TEST(TlsHttp2Client, AutomaticResponseCompressionRespectsConfig) {
   EXPECT_EQ(response.header("vary"), http::AcceptEncoding);
 
   RawChars out;
-  ZlibDecoder decoder(/*isGzip=*/true);
+  ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
   ASSERT_TRUE(decoder.decompressFull(response.body, std::numeric_limits<std::size_t>::max(), 32UL * 1024UL, out));
   EXPECT_EQ(std::string_view(out), plainBody);
 }
@@ -141,9 +141,10 @@ TEST(TlsHttp2Client, AutomaticRequestDecompressionDeliversCanonicalBody) {
 
   CompressionConfig compressionCfg;
   RawChars buf;
-  ZlibEncoder encoder(ZStreamRAII::Variant::gzip, compressionCfg.zlib.level);
+  ZlibEncoder encoder(compressionCfg.zlib.level);
   RawChars compressed(64UL + plain.size());
-  const std::size_t written = encoder.encodeFull(plain, compressed.capacity(), compressed.data());
+  const std::size_t written =
+      encoder.encodeFull(ZStreamRAII::Variant::gzip, plain, compressed.capacity(), compressed.data());
   ASSERT_GT(written, 0UL);
   compressed.setSize(static_cast<std::size_t>(written));
   const std::string compressedBody(compressed.data(), compressed.size());

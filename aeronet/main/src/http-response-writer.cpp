@@ -397,7 +397,7 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
     return true;
   }
   // Threshold reached exactly or exceeded: activate encoder.
-  _activeEncoderCtx = _server->_compression.makeContext(_compressionFormat);
+  _activeEncoderCtx = _server->_compressionState.makeContext(_compressionFormat);
 
   RawChars compressedBuffer(_activeEncoderCtx->maxCompressedBytes(_preCompressBuffer.size()) +
                             additionalChunkedCapacity);

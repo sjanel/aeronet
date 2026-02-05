@@ -677,9 +677,10 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
 #ifdef AERONET_ENABLE_ZLIB
     if (encLower.contains("gzip") || encLower.contains("deflate")) {
       RawChars tmp;
-      if (ZlibDecoder{encLower.contains("gzip")}.decompressFull(out.body,
-                                                                /*maxDecompressedBytes=*/(1 << 20),
-                                                                /*decoderChunkSize=*/65536, tmp)) {
+      ZlibDecoder decoder(encLower.contains("gzip") ? ZStreamRAII::Variant::gzip : ZStreamRAII::Variant::deflate);
+      if (decoder.decompressFull(out.body,
+                                 /*maxDecompressedBytes=*/(1 << 20),
+                                 /*decoderChunkSize=*/65536, tmp)) {
         out.body.assign(tmp.data(), tmp.data() + tmp.size());
         return out;
       }
@@ -689,8 +690,9 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
 #ifdef AERONET_ENABLE_ZSTD
     if (encLower.contains("zstd")) {
       RawChars tmp;
-      if (ZstdDecoder::decompressFull(out.body, /*maxDecompressedBytes=*/(1 << 20),
-                                      /*decoderChunkSize=*/65536, tmp)) {
+      ZstdDecoder decoder;
+      if (decoder.decompressFull(out.body, /*maxDecompressedBytes=*/(1 << 20),
+                                 /*decoderChunkSize=*/65536, tmp)) {
         out.body.assign(tmp.data(), tmp.data() + tmp.size());
         return out;
       }
@@ -700,8 +702,9 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
 #ifdef AERONET_ENABLE_BROTLI
     if (encLower.contains("br")) {
       RawChars tmp;
-      if (BrotliDecoder::decompressFull(out.body, /*maxDecompressedBytes=*/(1 << 20),
-                                        /*decoderChunkSize=*/65536, tmp)) {
+      BrotliDecoder decoder;
+      if (decoder.decompressFull(out.body, /*maxDecompressedBytes=*/(1 << 20),
+                                 /*decoderChunkSize=*/65536, tmp)) {
         out.body.assign(tmp.data(), tmp.data() + tmp.size());
         return out;
       }
