@@ -6,25 +6,54 @@
 #include <cstdint>
 #include <new>
 #include <string_view>
+#include <utility>
 
+#include "aeronet/buffer-cache.hpp"
 #include "aeronet/decoder-buffer-manager.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 
-BrotliStreamingContext::BrotliStreamingContext() : _pState(BrotliDecoderCreateInstance(nullptr, nullptr, nullptr)) {
+namespace {
+
+void *BrotliAlloc(void *opaque, std::size_t size) {
+  return static_cast<internal::BufferCache *>(opaque)->allocate(size);
+}
+
+void BrotliFree(void *opaque, void *address) noexcept {
+  static_cast<internal::BufferCache *>(opaque)->deallocate(address);
+}
+
+}  // namespace
+
+BrotliDecoderContext::BrotliDecoderContext(BrotliDecoderContext &&rhs) noexcept
+    : _cache(std::move(rhs._cache)), _pState(std::exchange(rhs._pState, nullptr)) {}
+
+BrotliDecoderContext &BrotliDecoderContext::operator=(BrotliDecoderContext &&rhs) noexcept {
+  if (this != &rhs) [[likely]] {
+    BrotliDecoderDestroyInstance(reinterpret_cast<BrotliDecoderState *>(_pState));
+    _cache = std::move(rhs._cache);
+    _pState = std::exchange(rhs._pState, nullptr);
+  }
+  return *this;
+}
+
+BrotliDecoderContext::~BrotliDecoderContext() {
+  BrotliDecoderDestroyInstance(reinterpret_cast<BrotliDecoderState *>(_pState));
+}
+
+void BrotliDecoderContext::init() {
+  // Destroy and recreate with custom allocator to reuse cached buffers
+  BrotliDecoderDestroyInstance(reinterpret_cast<BrotliDecoderState *>(_pState));
+  _pState = BrotliDecoderCreateInstance(BrotliAlloc, BrotliFree, &_cache);
   if (_pState == nullptr) [[unlikely]] {
     throw std::bad_alloc();
   }
 }
 
-BrotliStreamingContext::~BrotliStreamingContext() {
-  BrotliDecoderDestroyInstance(reinterpret_cast<BrotliDecoderState *>(_pState));
-}
-
-bool BrotliStreamingContext::decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
-                                             std::size_t decoderChunkSize, RawChars &out) {
+bool BrotliDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
+                                           std::size_t decoderChunkSize, RawChars &out) {
   if (chunk.empty()) {
     return true;
   }
@@ -43,7 +72,7 @@ bool BrotliStreamingContext::decompressChunk(std::string_view chunk, bool finalC
 
     const auto res = BrotliDecoderDecompressStream(pState, &availIn, &nextIn, &availOut, &nextOut, nullptr);
     if (res == BROTLI_DECODER_RESULT_ERROR) [[unlikely]] {
-      log::error("BrotliDecoderDecompressStream failed with error code {}",
+      log::debug("BrotliDecoderDecompressStream failed with error code {}",
                  static_cast<int>(BrotliDecoderGetErrorCode(pState)));
       return false;
     }

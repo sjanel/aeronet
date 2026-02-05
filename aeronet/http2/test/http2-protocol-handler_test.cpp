@@ -75,7 +75,7 @@ class Http2ProtocolLoopback {
  public:
   explicit Http2ProtocolLoopback(Router& router)
       : compressionState(serverConfig.compression),
-        handler(serverCfg, router, serverConfig, compressionState, telemetry, tmpBuffer),
+        handler(serverCfg, router, serverConfig, compressionState, decompressionState, telemetry, tmpBuffer),
         client(clientCfg, false) {
     client.setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
       HeaderEvent ev;
@@ -202,6 +202,7 @@ class Http2ProtocolLoopback {
 
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState;
+  internal::RequestDecompressionState decompressionState;
 
   Http2ProtocolHandler handler;
   Http2Connection client;
@@ -219,13 +220,15 @@ TEST(Http2ProtocolHandler, Creation) {
 
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState(serverConfig.compression);
+  internal::RequestDecompressionState decompressionState;
 
   router.setDefault([&handlerCalled](const HttpRequest& /*req*/) {
     handlerCalled = true;
     return HttpResponse(200);
   });
 
-  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
+                                            telemetry, tmpBuffer);
 
   ASSERT_NE(handler, nullptr);
   EXPECT_EQ(handler->type(), ProtocolType::Http2);
@@ -237,7 +240,9 @@ TEST(Http2ProtocolHandler, HasNoPendingOutputInitially) {
   Router router;
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState(serverConfig.compression);
-  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
+  internal::RequestDecompressionState decompressionState;
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
+                                            telemetry, tmpBuffer);
 
   EXPECT_FALSE(handler->hasPendingOutput());
 }
@@ -247,7 +252,9 @@ TEST(Http2ProtocolHandler, ConnectionPreface) {
   Router router;
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState(serverConfig.compression);
-  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
+  internal::RequestDecompressionState decompressionState;
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
+                                            telemetry, tmpBuffer);
 
   EXPECT_FALSE(handler->hasPendingOutput());
 }
@@ -257,7 +264,9 @@ TEST(Http2ProtocolHandler, InitiateClose) {
   Router router;
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState(serverConfig.compression);
-  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
+  internal::RequestDecompressionState decompressionState;
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
+                                            telemetry, tmpBuffer);
 
   if (handler->hasPendingOutput()) {
     auto output = handler->getPendingOutput();
@@ -283,7 +292,9 @@ TEST(CreateHttp2ProtocolHandler, ReturnsValidHandler) {
   Router router;
   router.setDefault([](const HttpRequest& req) { return HttpResponse("Hello from " + std::string(req.path())); });
 
-  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
+  internal::RequestDecompressionState decompressionState;
+  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
+                                            telemetry, tmpBuffer);
 
   ASSERT_NE(handler, nullptr);
   EXPECT_EQ(handler->type(), ProtocolType::Http2);
@@ -297,8 +308,9 @@ TEST(CreateHttp2ProtocolHandler, SendServerPrefaceForTlsQueuesSettingsImmediatel
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState(serverConfig.compression);
 
-  auto handlerBase =
-      CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, telemetry, tmpBuffer, true);
+  internal::RequestDecompressionState decompressionState;
+  auto handlerBase = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
+                                                telemetry, tmpBuffer, true);
   auto* handler = dynamic_cast<Http2ProtocolHandler*>(handlerBase.get());
   ASSERT_NE(handler, nullptr);
 
@@ -313,7 +325,9 @@ TEST(Http2ProtocolHandler, ProcessInputInvalidPrefaceRequestsImmediateClose) {
   Router router;
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState(serverConfig.compression);
-  Http2ProtocolHandler handler(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
+  internal::RequestDecompressionState decompressionState;
+  Http2ProtocolHandler handler(config, router, serverConfig, compressionState, decompressionState, telemetry,
+                               tmpBuffer);
   ::aeronet::ConnectionState st;
 
   std::array<std::byte, 24> invalidPreface{};
@@ -332,7 +346,9 @@ TEST(Http2ProtocolHandler, MoveConstructAndAssignAreNoexceptAndUsable) {
   Router router;
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState(serverConfig.compression);
-  Http2ProtocolHandler original(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
+  internal::RequestDecompressionState decompressionState;
+  Http2ProtocolHandler original(config, router, serverConfig, compressionState, decompressionState, telemetry,
+                                tmpBuffer);
 
   static_assert(noexcept(Http2ProtocolHandler(std::declval<Http2ProtocolHandler&&>())));
   static_assert(noexcept(std::declval<Http2ProtocolHandler&>() = std::declval<Http2ProtocolHandler&&>()));
@@ -340,7 +356,8 @@ TEST(Http2ProtocolHandler, MoveConstructAndAssignAreNoexceptAndUsable) {
   Http2ProtocolHandler moved(std::move(original));
   EXPECT_FALSE(moved.hasPendingOutput());
 
-  Http2ProtocolHandler assigned(config, router, serverConfig, compressionState, telemetry, tmpBuffer);
+  Http2ProtocolHandler assigned(config, router, serverConfig, compressionState, decompressionState, telemetry,
+                                tmpBuffer);
   assigned = std::move(moved);
   EXPECT_FALSE(assigned.hasPendingOutput());
 }
@@ -1097,8 +1114,10 @@ TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEnco
   serverConfig.compression.preferredFormats.clear();
 
   internal::ResponseCompressionState compressionState(serverConfig.compression);
+  internal::RequestDecompressionState decompressionState;
 
-  Http2ProtocolHandler handler(serverCfg, router, serverConfig, compressionState, telemetry, tmpBuffer);
+  Http2ProtocolHandler handler(serverCfg, router, serverConfig, compressionState, decompressionState, telemetry,
+                               tmpBuffer);
   Http2Connection client(clientCfg, false);
   ::aeronet::ConnectionState state;
 

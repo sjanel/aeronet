@@ -253,8 +253,8 @@ bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
       // Verify full preface
       if (bufView.starts_with(http2::kConnectionPreface)) {
         // Switch to HTTP/2 protocol handler using unified dispatch
-        state.protocolHandler =
-            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _telemetry, _tmp.buf);
+        state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
+                                                                  _decompressionState, _telemetry, _tmp.buf);
         return processSpecialProtocolHandler(cnxIt);
       }
       log::error("Invalid HTTP/2 preface, falling back to HTTP/1.1");
@@ -385,7 +385,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
     }
 
     const auto [encoding, reject] =
-        _compression.selector.negotiateAcceptEncoding(request.headerValueOrEmpty(http::AcceptEncoding));
+        _compressionState.selector.negotiateAcceptEncoding(request.headerValueOrEmpty(http::AcceptEncoding));
     // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
     // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
     if (reject) {
@@ -414,8 +414,8 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       state.inBuffer.erase_front(consumedBytesUpgrade);
 
       // Create HTTP/2 protocol handler using unified dispatch
-      state.protocolHandler =
-          http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _telemetry, _tmp.buf);
+      state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
+                                                                _decompressionState, _telemetry, _tmp.buf);
       state.protocol = ProtocolType::Http2;
 
       // Queue the upgrade response
@@ -629,7 +629,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
 bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
   HttpRequest& request = state.request;
-  const auto res = internal::HttpCodec::MaybeDecompressRequestBody(_config.decompression, request,
+  const auto res = internal::HttpCodec::MaybeDecompressRequestBody(_decompressionState, _config.decompression, request,
                                                                    state.bodyAndTrailersBuffer, _tmp.buf);
 
   if (res.message != nullptr) {
@@ -672,7 +672,7 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
 
   if (!isHead) {
     auto encHeader = request.headerValueOrEmpty(http::AcceptEncoding);
-    auto negotiated = _compression.selector.negotiateAcceptEncoding(encHeader);
+    auto negotiated = _compressionState.selector.negotiateAcceptEncoding(encHeader);
     if (negotiated.reject) {
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
       HttpResponse resp(http::StatusCodeNotAcceptable);
@@ -1226,11 +1226,11 @@ void SingleHttpServer::applyPendingUpdates() {
     ApplyPendingUpdates(_updates.lock, _updates.config, _updates.hasConfig, _config, "config");
 
     // Reinitialize components dependent on config values.
-    _compression.selector = EncodingSelector(_config.compression);
+    _compressionState.selector = EncodingSelector(_config.compression);
     _eventLoop.updatePollTimeout(_config.pollInterval);
     updateMaintenanceTimer();
     registerBuiltInProbes();
-    _compression.createEncoders(_config.compression);
+    _compressionState.createEncoders(_config.compression);
 
 #ifdef AERONET_ENABLE_OPENSSL
     // If TLS config changed, rebuild the OpenSSL context.
@@ -1300,8 +1300,8 @@ void SingleHttpServer::postAsyncCallback(int connectionFd, std::coroutine_handle
 void SingleHttpServer::setupHttp2Connection(ConnectionState& state) {
   // Create HTTP/2 protocol handler with unified dispatcher
   // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
-  state.protocolHandler =
-      http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compression, _telemetry, _tmp.buf, true);
+  state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
+                                                            _decompressionState, _telemetry, _tmp.buf, true);
   state.protocol = ProtocolType::Http2;
 
   // Immediately flush the server preface (SETTINGS frame) that was queued during handler creation

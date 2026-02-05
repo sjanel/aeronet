@@ -7,16 +7,16 @@
 
 namespace aeronet {
 
-class ZstdStreamingContext {
+class ZstdDecoderContext {
  public:
-  ZstdStreamingContext();
+  ZstdDecoderContext() noexcept = default;
 
-  ZstdStreamingContext(const ZstdStreamingContext &) = delete;
-  ZstdStreamingContext &operator=(const ZstdStreamingContext &) = delete;
-  ZstdStreamingContext(ZstdStreamingContext &&) noexcept = delete;
-  ZstdStreamingContext &operator=(ZstdStreamingContext &&) noexcept = delete;
+  ZstdDecoderContext(const ZstdDecoderContext &) = delete;
+  ZstdDecoderContext &operator=(const ZstdDecoderContext &) = delete;
+  ZstdDecoderContext(ZstdDecoderContext &&rhs) noexcept;
+  ZstdDecoderContext &operator=(ZstdDecoderContext &&rhs) noexcept;
 
-  ~ZstdStreamingContext();
+  ~ZstdDecoderContext();
 
   // Feed a compressed chunk into the context.
   // When finalChunk is true, the caller does not provide any additional input.
@@ -24,8 +24,10 @@ class ZstdStreamingContext {
   bool decompressChunk(std::string_view chunk, [[maybe_unused]] bool finalChunk, std::size_t maxDecompressedBytes,
                        std::size_t decoderChunkSize, RawChars &out);
 
+  void init();
+
  private:
-  void *_pState;
+  void *_pState{};
 };
 
 class ZstdDecoder {
@@ -33,10 +35,16 @@ class ZstdDecoder {
   // Attempts to fully decompress input into out (append). Returns true on success; false on error
   // or if decompressed size would exceed maxDecompressedBytes. Uses an adaptive growth strategy
   // since the uncompressed size may be unknown (no content size header present in frame).
-  static bool decompressFull(std::string_view input, std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
-                             RawChars &out);
+  bool decompressFull(std::string_view input, std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
+                      RawChars &out);
 
-  static ZstdStreamingContext makeContext() { return ZstdStreamingContext{}; }
+  ZstdDecoderContext *makeContext() {
+    _ctx.init();
+    return &_ctx;
+  }
+
+ private:
+  ZstdDecoderContext _ctx;
 };
 
 }  // namespace aeronet

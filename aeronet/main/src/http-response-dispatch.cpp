@@ -164,7 +164,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, Ht
   ++_stats.totalRequestsServed;
 
   const bool isHead = (request.method() == http::Method::HEAD);
-  internal::PrefinalizeHttpResponse(request, resp, isHead, _compression, _config);
+  internal::PrefinalizeHttpResponse(request, resp, isHead, _compressionState, _config);
 
   bool keepAlive =
       request.isKeepAliveForHttp1(_config.enableKeepAlive, _config.maxRequestsPerConnection, _lifecycle.isRunning());
