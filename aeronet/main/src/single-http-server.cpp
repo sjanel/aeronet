@@ -553,7 +553,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         return false;
       }
       if (pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
-        sendResponse(HttpResponse(http::StatusCodeForbidden).body("Forbidden by CORS policy"));
+        sendResponse(HttpResponse(http::StatusCodeForbidden, "Forbidden by CORS policy"));
         return true;
       }
       return false;
@@ -604,22 +604,30 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         sendResponse(HttpResponse(http::StatusCodeInternalServerError, "Unknown error"));
       }
     } else {
-      HttpResponse resp(http::StatusCodeNotFound);
       if (routingResult.redirectPathIndicator != Router::RoutingResult::RedirectSlashMode::None) {
         // Emit 301 redirect to canonical form.
-        resp.status(http::StatusCodeMovedPermanently).body("Redirecting");
+        static constexpr std::string_view kRedirecting = "Redirecting";
+        const std::string_view reqPath = request.path();
+        HttpResponse resp(HttpResponse::BodySize(kRedirecting.size()) +
+                              HttpResponse::HeaderSize(http::Location.size(), reqPath.size() + 1U),
+                          http::StatusCodeMovedPermanently);
         if (routingResult.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
-          resp.header(http::Location, request.path());
+          resp.headerAddLine(http::Location, reqPath);
           resp.headerAppendValue(http::Location, '/', "");
         } else {
-          resp.location(request.path().substr(0, request.path().size() - 1));
+          resp.headerAddLine(http::Location, reqPath.substr(0, reqPath.size() - 1));
         }
+
+        resp.body(kRedirecting);
+
+        sendResponse(std::move(resp));
 
         consumedBytes = 0;  // already advanced
       } else if (routingResult.methodNotAllowed) {
-        resp.status(http::StatusCodeMethodNotAllowed).body(http::ReasonMethodNotAllowed);
+        sendResponse(HttpResponse(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed));
+      } else {
+        sendResponse(HttpResponse(http::StatusCodeNotFound));
       }
-      sendResponse(std::move(resp));
     }
 
   } while (!state.isAnyCloseRequested());

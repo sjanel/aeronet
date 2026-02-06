@@ -40,6 +40,7 @@
 #endif
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-decoder.hpp"
+#include "aeronet/zlib-stream-raii.hpp"
 #endif
 #ifdef AERONET_ENABLE_ZSTD
 #include "aeronet/zstd-decoder.hpp"
