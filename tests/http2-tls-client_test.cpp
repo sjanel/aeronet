@@ -36,7 +36,7 @@ TEST(TlsHttp2Client, BasicGetRequest) {
   // Create TLS server with HTTP/2 support
   TlsHttp2TestServer ts;
   ts.setDefault([](const HttpRequest& req) {
-    return HttpResponse().status(http::StatusCodeOK).body("Hello from HTTP/2 server! Path: " + std::string(req.path()));
+    return HttpResponse("Hello from HTTP/2 server! Path: " + std::string(req.path()));
   });
 
   // Create HTTP/2 client and verify connection
@@ -56,7 +56,7 @@ TEST(TlsHttp2Client, MultipleSequentialRequests) {
   int requestCount = 0;
   ts.setDefault([&requestCount](const HttpRequest& req) {
     ++requestCount;
-    return HttpResponse().status(200).body("Request #" + std::to_string(requestCount) + ": " + std::string(req.path()));
+    return HttpResponse("Request #" + std::to_string(requestCount) + ": " + std::string(req.path()));
   });
 
   TlsHttp2Client client(ts.port());
@@ -83,7 +83,7 @@ TEST(TlsHttp2Client, PostRequestWithBody) {
   ts.setDefault([&](const HttpRequest& req) {
     receivedBody = std::string(req.body());
     receivedContentType = std::string(req.headerValueOrEmpty("content-type"));
-    return HttpResponse().status(200).body("Received: " + receivedBody);
+    return HttpResponse("Received: " + receivedBody);
   });
 
   TlsHttp2Client client(ts.port());
@@ -134,7 +134,7 @@ TEST(TlsHttp2Client, AutomaticRequestDecompressionDeliversCanonicalBody) {
     receivedOriginalEncoding = std::string(req.headerValueOrEmpty(http::OriginalEncodingHeaderName));
     receivedOriginalEncodedLen = std::string(req.headerValueOrEmpty(http::OriginalEncodedLengthHeaderName));
     receivedContentLen = std::string(req.headerValueOrEmpty("content-length"));
-    return HttpResponse().status(200).body("ok");
+    return HttpResponse("ok");
   });
 
   const std::string plain = "Hello request decompression over h2";
@@ -170,7 +170,7 @@ TEST(TlsHttp2Client, CustomHeaders) {
   std::string receivedCustomHeader;
   ts.setDefault([&](const HttpRequest& req) {
     receivedCustomHeader = std::string(req.headerValueOrEmpty("x-custom-header"));
-    return HttpResponse().status(200).headerAddLine("x-response-header", "response-value").body("Headers received");
+    return HttpResponse().headerAddLine("x-response-header", "response-value").body("Headers received");
   });
 
   TlsHttp2Client client(ts.port());
@@ -238,7 +238,7 @@ TEST(TlsHttp2Client, MakeResponsePrefillsGlobalHeaders) {
 
 TEST(TlsHttp2Client, HeadOmitsBodyButSetsContentLengthAndDate) {
   TlsHttp2TestServer ts;
-  ts.setDefault([](const HttpRequest& /*req*/) { return HttpResponse().status(200).body("abc"); });
+  ts.setDefault([](const HttpRequest& /*req*/) { return HttpResponse("abc"); });
 
   TlsHttp2Client client(ts.port());
   ASSERT_TRUE(client.isConnected());
@@ -257,12 +257,12 @@ TEST(TlsHttp2Client, StatusCodes) {
   TlsHttp2TestServer ts;
   ts.setDefault([](const HttpRequest& req) {
     if (req.path() == "/not-found") {
-      return HttpResponse().status(404).body("Resource not found");
+      return HttpResponse(404, "Resource not found");
     }
     if (req.path() == "/error") {
-      return HttpResponse().status(500).body("Server error");
+      return HttpResponse(500, "Server error");
     }
-    return HttpResponse().status(200).body("Success");
+    return HttpResponse("Success");
   });
 
   TlsHttp2Client client(ts.port());
@@ -282,9 +282,7 @@ TEST(TlsHttp2Client, TrailersAreSentAfterBody) {
   // Test that HTTP/2 trailers are correctly sent as a HEADERS frame with END_STREAM after DATA frames
   TlsHttp2TestServer ts;
   ts.setDefault([](const HttpRequest& /*req*/) {
-    return HttpResponse()
-        .status(200)
-        .body("Body content")
+    return HttpResponse("Body content")
         .trailerAddLine("x-checksum", "abc123")
         .trailerAddLine("x-processing-time-ms", "42");
   });
@@ -315,7 +313,7 @@ TEST(TlsHttp2Client, ResponseWithoutBodyNoTrailers) {
 
 TEST(TlsHttp2Client, ResponseWithBodyNoTrailers) {
   TlsHttp2TestServer ts;
-  ts.setDefault([](const HttpRequest& /*req*/) { return HttpResponse().status(200).body("Simple body"); });
+  ts.setDefault([](const HttpRequest& /*req*/) { return HttpResponse("Simple body"); });
 
   TlsHttp2Client client(ts.port());
   ASSERT_TRUE(client.isConnected());

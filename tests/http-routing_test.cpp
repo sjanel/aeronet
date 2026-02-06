@@ -179,46 +179,46 @@ class HttpTrailingSlash : public ::testing::Test {
 
 TEST_F(HttpTrailingSlash, StrictPolicyDifferent) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Strict);
-  ts.router().setPath(http::Method::GET, "/alpha", [](const HttpRequest&) { return HttpResponse().body("alpha"); });
+  ts.router().setPath(http::Method::GET, "/alpha", [](const HttpRequest&) { return HttpResponse("alpha"); });
   auto resp = rawRequest(ts.port(), "/alpha/");
   ASSERT_TRUE(resp.contains("404"));
 }
 
 TEST_F(HttpTrailingSlash, NormalizeSingleSlash) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Normalize);
-  ts.router().setPath(http::Method::GET, "/", [](const HttpRequest&) { return HttpResponse().body("beta"); });
+  ts.router().setPath(http::Method::GET, "/", [](const HttpRequest&) { return HttpResponse("beta"); });
   auto resp = rawRequest(ts.port(), "/");
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("beta"));
 
   resp = rawRequest(ts.port(), "//");
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("beta"));
 }
 
 TEST_F(HttpTrailingSlash, NormalizePolicyStrips) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Normalize);
-  ts.router().setPath(http::Method::GET, "/beta", [](const HttpRequest&) { return HttpResponse().body("beta"); });
+  ts.router().setPath(http::Method::GET, "/beta", [](const HttpRequest&) { return HttpResponse("beta"); });
   auto resp = rawRequest(ts.port(), "/beta/");
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("beta"));
 }
 
 TEST_F(HttpTrailingSlash, NormalizePolicyAddSlash) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Normalize);
-  ts.router().setPath(http::Method::GET, "/beta/", [](const HttpRequest&) { return HttpResponse().body("beta/"); });
+  ts.router().setPath(http::Method::GET, "/beta/", [](const HttpRequest&) { return HttpResponse("beta/"); });
   auto resp = rawRequest(ts.port(), "/beta");
 
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("beta"));
 }
 
 TEST_F(HttpTrailingSlash, RedirectPolicy) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
-  ts.router().setPath(http::Method::GET, "/gamma", [](const HttpRequest&) { return HttpResponse().body("gamma"); });
+  ts.router().setPath(http::Method::GET, "/gamma", [](const HttpRequest&) { return HttpResponse("gamma"); });
   auto resp = rawRequest(ts.port(), "/gamma/");
   // Expect 301 and Location header
-  ASSERT_TRUE(resp.contains("301"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 301"));
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, "/gamma")));
 }
 
@@ -226,63 +226,61 @@ TEST_F(HttpTrailingSlash, RedirectPolicy) {
 
 TEST_F(HttpTrailingSlash, StrictPolicyRegisteredWithSlashDoesNotMatchWithout) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Strict);
-  ts.router().setPath(http::Method::GET, "/sigma/", [](const HttpRequest&) { return HttpResponse().body("sigma"); });
+  ts.router().setPath(http::Method::GET, "/sigma/", [](const HttpRequest&) { return HttpResponse("sigma"); });
   auto ok = rawRequest(ts.port(), "/sigma/");
   auto notFound = rawRequest(ts.port(), "/sigma");
-  ASSERT_TRUE(ok.contains("200"));
-  ASSERT_TRUE(notFound.contains("404"));
+  ASSERT_TRUE(ok.starts_with("HTTP/1.1 200"));
+  ASSERT_TRUE(notFound.starts_with("HTTP/1.1 404"));
 }
 
 TEST_F(HttpTrailingSlash, NormalizePolicyRegisteredWithSlashAcceptsWithout) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Normalize);
-  ts.router().setPath(http::Method::GET, "/norm/", [](const HttpRequest&) { return HttpResponse().body("norm"); });
+  ts.router().setPath(http::Method::GET, "/norm/", [](const HttpRequest&) { return HttpResponse("norm"); });
   auto withSlash = rawRequest(ts.port(), "/norm/");
   auto withoutSlash = rawRequest(ts.port(), "/norm");
-  ASSERT_TRUE(withSlash.contains("200"));
-  ASSERT_TRUE(withoutSlash.contains("200"));
+  ASSERT_TRUE(withSlash.starts_with("HTTP/1.1 200"));
+  ASSERT_TRUE(withoutSlash.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(withoutSlash.contains("norm"));
 }
 
 TEST_F(HttpTrailingSlash, RedirectPolicyRemoveSlash) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
-  ts.router().setPath(http::Method::GET, "/redir", [](const HttpRequest&) { return HttpResponse().body("redir"); });
+  ts.router().setPath(http::Method::GET, "/redir", [](const HttpRequest&) { return HttpResponse("redir"); });
   auto redirect = rawRequest(ts.port(), "/redir/");  // should 301 -> /redir
   auto canonical = rawRequest(ts.port(), "/redir");  // should 200
-  ASSERT_TRUE(redirect.contains("301"));
+  ASSERT_TRUE(redirect.starts_with("HTTP/1.1 301"));
   ASSERT_TRUE(redirect.contains(MakeHttp1HeaderLine(http::Location, "/redir")));
-  ASSERT_TRUE(canonical.contains("200"));
+  ASSERT_TRUE(canonical.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(canonical.contains("redir"));
 }
 
 TEST_F(HttpTrailingSlash, RedirectPolicyAddSlash) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
-  ts.router().setPath(http::Method::GET, "/only/", [](const HttpRequest&) { return HttpResponse().body("only"); });
+  ts.router().setPath(http::Method::GET, "/only/", [](const HttpRequest&) { return HttpResponse("only"); });
   auto withSlash = rawRequest(ts.port(), "/only/");
   auto withoutSlash = rawRequest(ts.port(), "/only");
 
-  ASSERT_TRUE(withSlash.contains("200"));
-  ASSERT_TRUE(withoutSlash.contains("301"));
+  ASSERT_TRUE(withSlash.starts_with("HTTP/1.1 200"));
+  ASSERT_TRUE(withoutSlash.starts_with("HTTP/1.1 301"));
 }
 
 TEST_F(HttpTrailingSlash, RootPathNotRedirected) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
   auto resp = rawRequest(ts.port(), "/");  // no handlers => 404 but not 301
-  ASSERT_TRUE(resp.contains("404"));
-  ASSERT_FALSE(resp.contains("301"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 404"));
+  ASSERT_FALSE(resp.starts_with("HTTP/1.1 301"));
 }
 
 TEST_F(HttpTrailingSlash, StrictPolicyBothVariants_Independent) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Strict);
-  ts.router().setPath(http::Method::GET, "/both",
-                      [](const HttpRequest&) { return HttpResponse().body("both-no-slash"); });
-  ts.router().setPath(http::Method::GET, "/both/",
-                      [](const HttpRequest&) { return HttpResponse().body("both-with-slash"); });
+  ts.router().setPath(http::Method::GET, "/both", [](const HttpRequest&) { return HttpResponse("both-no-slash"); });
+  ts.router().setPath(http::Method::GET, "/both/", [](const HttpRequest&) { return HttpResponse("both-with-slash"); });
   auto respNoSlash = rawRequest(ts.port(), "/both");
   auto respWithSlash = rawRequest(ts.port(), "/both/");
 
-  ASSERT_TRUE(respNoSlash.contains("200"));
+  ASSERT_TRUE(respNoSlash.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(respNoSlash.contains("both-no-slash"));
-  ASSERT_TRUE(respWithSlash.contains("200"));
+  ASSERT_TRUE(respWithSlash.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(respWithSlash.contains("both-with-slash"));
 }
 
@@ -360,7 +358,7 @@ TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
   });
 
   const std::string response = test::simpleGet(ts.port(), "/mw-route");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("route:handler")) << response;
   EXPECT_TRUE(response.contains("X-Route-Middleware: post")) << response;
   EXPECT_TRUE(response.contains("X-Global-Middleware: post")) << response;
@@ -420,7 +418,7 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
   });
 
   const std::string response = test::simpleGet(ts.port(), "/mw-stream");
-  EXPECT_TRUE(response.contains("HTTP/1.1 202")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 202")) << response;
   EXPECT_TRUE(response.contains("X-Handler: emitted")) << response;
   EXPECT_TRUE(response.contains("X-Route-Streaming: post")) << response;
   EXPECT_TRUE(response.contains("X-Global-Streaming: post")) << response;
@@ -460,7 +458,7 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
   entry.after([](const HttpRequest&, HttpResponse&) {});
 
   const std::string response = test::simpleGet(ts.port(), "/mw-metrics");
-  ASSERT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  ASSERT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
 
   ts.server.setMiddlewareMetricsCallback({});
 
@@ -523,14 +521,12 @@ TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
   });
 
   entry.before([](HttpRequest&) {
-    HttpResponse resp(http::StatusCodeServiceUnavailable);
-    resp.body("shorted");
-    return MiddlewareResult::ShortCircuit(std::move(resp));
+    return MiddlewareResult::ShortCircuit(HttpResponse(http::StatusCodeServiceUnavailable, "shorted"));
   });
   entry.after([](const HttpRequest&, HttpResponse&) {});
 
   const std::string response = test::simpleGet(ts.port(), "/mw-short-metrics");
-  EXPECT_TRUE(response.contains("HTTP/1.1 503")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 503")) << response;
   EXPECT_FALSE(handlerInvoked.load(std::memory_order_relaxed));
 
   ts.server.setMiddlewareMetricsCallback({});
@@ -629,8 +625,7 @@ TEST(HttpMiddleware, RouterOwnsGlobalMiddleware) {
     resp.header("X-Router-Post", "ok");
   });
 
-  ts.router().setPath(http::Method::GET, "/router-owned",
-                      [](const HttpRequest&) { return HttpResponse().body("payload"); });
+  ts.router().setPath(http::Method::GET, "/router-owned", [](const HttpRequest&) { return HttpResponse("payload"); });
 
   const std::string response = test::simpleGet(ts.port(), "/router-owned");
   EXPECT_TRUE(response.contains("payload")) << response;

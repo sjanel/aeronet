@@ -565,7 +565,7 @@ TEST(HttpExpectation, HandlerCanEmit100Continue) {
       "close\r\n\r\nHELLO";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("100 Continue")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue")) << resp;
   ASSERT_TRUE(resp.contains("200")) << resp;
 }
 
@@ -591,7 +591,7 @@ TEST(HttpExpectation, HandlerCanEmit102Interim) {
       "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 102-processing\r\nConnection: close\r\n\r\nHELLO";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("102 Processing")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 102 Processing")) << resp;
   ASSERT_TRUE(resp.contains("200")) << resp;
 }
 
@@ -617,7 +617,7 @@ TEST(HttpExpectation, HandlerCanEmitArbitraryInterimStatus) {
       "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 103-early-hints\r\nConnection: close\r\n\r\nHELLO";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 103")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 103")) << resp;
   ASSERT_TRUE(resp.contains("200")) << resp;
 }
 
@@ -727,8 +727,8 @@ TEST(HttpExpectation, Mixed100AndCustomWithHandlerContinue) {
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   // Should see 100 Continue (from expectContinue path) and final 200
-  ASSERT_TRUE(resp.contains("100 Continue")) << resp;
-  ASSERT_TRUE(resp.contains("200")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue")) << resp;
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("DONE")) << resp;
 }
 
@@ -1028,7 +1028,7 @@ TEST(SingleHttpServer, TLSConfigModificationIgnored) {
   int fd = clientConnection.fd();
   test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
 // Test telemetry config modification attempt at runtime (should be ignored)
@@ -1044,7 +1044,7 @@ TEST(SingleHttpServer, TelemetryConfigModificationIgnored) {
   int fd = clientConnection.fd();
   test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
 // Test decompression enabled with large body
@@ -1064,7 +1064,7 @@ TEST(SingleHttpServer, DecompressionConfigurable) {
   int fd = clientConnection.fd();
   test::sendAll(fd, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n0123456789");
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("200")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
 // Test HEAD method doesn't send body

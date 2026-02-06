@@ -7,6 +7,7 @@
 #include <new>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/decoder-buffer-manager.hpp"
 #include "aeronet/log.hpp"

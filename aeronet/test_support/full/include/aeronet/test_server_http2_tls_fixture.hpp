@@ -26,7 +26,7 @@ namespace aeronet::test {
 /// Usage:
 ///   TlsHttp2TestServer ts;
 ///   ts.setDefault([](const HttpRequest& req) {
-///     return HttpResponse(200).body("Hello HTTP/2!");
+///     return HttpResponse("Hello HTTP/2!");
 ///   });
 struct TlsHttp2TestServer {
   TestServer server;
