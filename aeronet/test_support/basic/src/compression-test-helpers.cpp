@@ -10,7 +10,12 @@
 #include <string>
 #include <string_view>
 
-#include "aeronet/zlib-stream-raii.hpp"
+#include "aeronet/compression-config.hpp"
+#include "aeronet/encoder.hpp"
+#include "aeronet/encoding.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/raw-bytes.hpp"
+#include "aeronet/raw-chars.hpp"
 
 #ifdef AERONET_ENABLE_BROTLI
 #include "aeronet/brotli-decoder.hpp"
@@ -20,6 +25,7 @@
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
+#include "aeronet/zlib-stream-raii.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_ZSTD
@@ -28,11 +34,6 @@
 #include "aeronet/zstd-decoder.hpp"
 #include "aeronet/zstd-encoder.hpp"
 #endif
-
-#include "aeronet/encoder.hpp"
-#include "aeronet/http-constants.hpp"
-#include "aeronet/raw-bytes.hpp"
-#include "aeronet/raw-chars.hpp"
 
 namespace aeronet::test {
 

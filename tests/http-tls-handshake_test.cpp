@@ -473,7 +473,7 @@ TEST(HttpTlsHandshakeCallback, BucketsReasonWhenSslSetFdFails) {
     }
   });
 
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("OK"); });
+  ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
 
   g_aeronetTestFailNextSslSetFd.store(1, std::memory_order_relaxed);
   {

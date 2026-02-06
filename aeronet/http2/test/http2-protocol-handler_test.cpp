@@ -364,7 +364,7 @@ TEST(Http2ProtocolHandler, MoveConstructAndAssignAreNoexceptAndUsable) {
 
 TEST(Http2ProtocolHandler, SimpleGetWithBodyProducesHeadersAndData) {
   Router router;
-  router.setPath(http::Method::GET, "/hello", [](const HttpRequest&) { return HttpResponse(200).body("abc"); });
+  router.setPath(http::Method::GET, "/hello", [](const HttpRequest&) { return HttpResponse(200, "abc"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -451,7 +451,7 @@ TEST(Http2ProtocolHandler, HttpRequestHttp2FieldsSetCorrectly) {
 TEST(Http2ProtocolHandler, ResponseWithTrailersEndsOnTrailerHeaders) {
   Router router;
   router.setPath(http::Method::GET, "/trailers",
-                 [](const HttpRequest&) { return HttpResponse(200).body("abc").trailerAddLine("x-check", "ok"); });
+                 [](const HttpRequest&) { return HttpResponse(200, "abc").trailerAddLine("x-check", "ok"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -688,7 +688,7 @@ TEST(Http2ProtocolHandler, StreamResetAndClosedCallbacksEraseStreamState) {
 TEST(Http2ProtocolHandler, AsyncHandlerRunsToCompletion) {
   Router router;
   router.setPath(http::Method::GET, "/async",
-                 [](HttpRequest&) -> RequestTask<HttpResponse> { co_return HttpResponse(200).body("async-ok"); });
+                 [](HttpRequest&) -> RequestTask<HttpResponse> { co_return HttpResponse("async-ok"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
