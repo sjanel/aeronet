@@ -420,7 +420,7 @@ INSTANTIATE_TEST_SUITE_P(
                                 "400"}));
 
 TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse().body("ok"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("ok"); });
   // HTTP/1.0 without Connection: keep-alive should close
   test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
@@ -440,7 +440,7 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
 }
 
 TEST(HttpKeepAlive10, OptInWithHeader) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse().body("ok"); });
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("ok"); });
   test::ClientConnection clientConnection(port);
   int fd = clientConnection.fd();
   ASSERT_GE(fd, 0);

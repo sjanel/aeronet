@@ -4,19 +4,18 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
-#include <cstdint>
 #include <cstdio>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 
 #include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoding.hpp"
-#include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"

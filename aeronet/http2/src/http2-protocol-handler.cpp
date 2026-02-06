@@ -388,11 +388,11 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
     }
   } catch (const std::exception& ex) {
     log::error("HTTP/2 dispatcher exception on stream {}: {}", streamId, ex.what());
-    err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError).body(ex.what()),
+    err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError, ex.what()),
                        /*isHeadMethod=*/false);
   } catch (...) {
     log::error("HTTP/2 unknown exception on stream {}", streamId);
-    err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError).body("Unknown error"),
+    err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError, "Unknown error"),
                        /*isHeadMethod=*/false);
   }
 
@@ -405,7 +405,7 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
   // Per RFC 7540 §8.3, CONNECT omits :scheme and :path, but tunneling requires bidirectional stream setup.
   // For now, return 405 Method Not Allowed and recommend HTTP/1.1 CONNECT.
   if (request.method() == http::Method::CONNECT) {
-    return HttpResponse(http::StatusCodeMethodNotAllowed).body("CONNECT tunneling not yet implemented in HTTP/2");
+    return {http::StatusCodeMethodNotAllowed, "CONNECT tunneling not yet implemented in HTTP/2"};
   }
 
   auto routingResult = _pRouter->match(request.method(), request.path());

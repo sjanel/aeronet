@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
   SignalHandler::Enable();
 
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(404).body("Not found\n"); });
+  router.setDefault([](const HttpRequest&) { return HttpResponse(404, "Not found\n"); });
 
   // GET /async — minimal deferWork demonstration for CI smoke test
   router.setPath(http::Method::GET, "/async", [](HttpRequest& req) -> RequestTask<HttpResponse> {
@@ -87,12 +87,12 @@ int main(int argc, char** argv) {
     std::optional<User> user = co_await req.deferWork([id]() { return simulateDatabaseLookup(id); });
 
     if (!user) {
-      co_return HttpResponse(404).body("User not found\n");
+      co_return HttpResponse(404, "User not found\n");
     }
 
     std::string response =
         "ID: " + std::to_string(user->id) + "\nName: " + user->name + "\nEmail: " + user->email + "\n";
-    co_return HttpResponse(200).body(response);
+    co_return HttpResponse(200).body(std::move(response));
   });
 
   // POST /users/{id}/email — async handler updating user email
@@ -110,14 +110,14 @@ int main(int argc, char** argv) {
         co_await req.deferWork([id, email = std::string(newEmail)]() { return simulateDatabaseUpdate(id, email); });
 
     if (!updated) {
-      co_return HttpResponse(404).body("User not found\n");
+      co_return HttpResponse(404, "User not found\n");
     }
 
-    co_return HttpResponse(200).body("Email updated successfully\n");
+    co_return HttpResponse("Email updated successfully\n");
   });
 
   // GET /health — sync handler for comparison
-  router.setPath(http::Method::GET, "/health", [](const HttpRequest&) { return HttpResponse(200).body("OK\n"); });
+  router.setPath(http::Method::GET, "/health", [](const HttpRequest&) { return HttpResponse("OK\n"); });
 
   SingleHttpServer server(HttpServerConfig{}.withPort(port), std::move(router));
 

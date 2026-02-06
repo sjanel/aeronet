@@ -139,8 +139,8 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
       "POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\nHELLO";
   test::sendAll(fd2, post);
   std::string resp = test::recvUntilClosed(fd2);
-  ASSERT_TRUE(resp.contains("100 Continue"));
-  ASSERT_TRUE(resp.contains("200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue"));
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
 }
 
 // Fuzz-ish incremental chunk framing with random chunk sizes & boundaries.
