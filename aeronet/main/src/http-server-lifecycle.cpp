@@ -80,8 +80,8 @@ void SingleHttpServer::AsyncHandle::rethrowIfError() {
 }
 
 SingleHttpServer::SingleHttpServer(HttpServerConfig config, RouterConfig routerConfig)
-    : _compressionState(config.compression),
-      _config(std::move(config)),
+    : _config(std::move(config)),
+      _compressionState(_config.compression),
       _listenSocket(Socket::Type::StreamNonBlock),
       _eventLoop(_config.pollInterval),
       _router(std::move(routerConfig)),
@@ -90,8 +90,8 @@ SingleHttpServer::SingleHttpServer(HttpServerConfig config, RouterConfig routerC
 }
 
 SingleHttpServer::SingleHttpServer(HttpServerConfig cfg, Router router)
-    : _compressionState(cfg.compression),
-      _config(std::move(cfg)),
+    : _config(std::move(cfg)),
+      _compressionState(_config.compression),
       _listenSocket(Socket::Type::StreamNonBlock),
       _eventLoop(_config.pollInterval),
       _router(std::move(router)),
@@ -110,9 +110,9 @@ SingleHttpServer::SingleHttpServer(const SingleHttpServer& other)
         return other._callbacks;
       }()),
       _updates(other._updates),
-      _compressionState(other._config.compression),
-      // do not copy the decompression state, we just use our own.
       _config(other._config),
+      _compressionState(_config.compression),
+      // do not copy the decompression state, we just use our own.
       _listenSocket(Socket::Type::StreamNonBlock),
       _eventLoop(_config.pollInterval),
       _router(other._router),
@@ -155,9 +155,9 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
       }()),
       _callbacks(std::move(other._callbacks)),
       _updates(std::move(other._updates)),
+      _config(std::move(other._config)),
       _compressionState(std::move(other._compressionState)),
       _decompressionState(std::move(other._decompressionState)),
-      _config(std::move(other._config)),
       _listenSocket(std::move(other._listenSocket)),
       _maintenanceTimer(std::move(other._maintenanceTimer)),
       _eventLoop(std::move(other._eventLoop)),
@@ -173,6 +173,7 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
       _tls(std::move(other._tls))
 #endif
 {
+  _compressionState.pCompressionConfig = &_config.compression;
   other._lifecycle.reset();
 }
 
@@ -188,9 +189,12 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
     _stats = std::exchange(other._stats, {});
     _callbacks = std::move(other._callbacks);
     _updates = std::move(other._updates);
-    _compressionState = std::move(other._compressionState);
-    _decompressionState = std::move(other._decompressionState);
     _config = std::move(other._config);
+
+    _compressionState = std::move(other._compressionState);
+    _compressionState.pCompressionConfig = &_config.compression;
+
+    _decompressionState = std::move(other._decompressionState);
     _listenSocket = std::move(other._listenSocket);
     _maintenanceTimer = std::move(other._maintenanceTimer);
     _eventLoop = std::move(other._eventLoop);
@@ -272,9 +276,6 @@ void SingleHttpServer::initListener() {
 
   updateMaintenanceTimer();
   _eventLoop.addOrThrow(EventLoop::EventFd{_maintenanceTimer.fd(), EventIn});
-
-  // Pre-allocate encoders (one per supported format if available at compile time) so per-response paths can reuse them.
-  _compressionState.createEncoders(_config.compression);
 }
 
 void SingleHttpServer::prepareRun() {

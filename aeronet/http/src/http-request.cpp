@@ -25,6 +25,7 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/major-minor-version.hpp"
@@ -120,14 +121,14 @@ bool HttpRequest::wantClose() const { return CaseInsensitiveEqual(headerValueOrE
 HttpResponse HttpRequest::makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const {
   HttpResponse resp(additionalCapacity, statusCode, _pGlobalHeaders->fullStringWithLastSep(), {}, {},
                     HttpResponse::Check::No);
-  resp._knownOptions = makeResponseOptions();
+  resp._opts = makeResponseOptions();
   return resp;
 }
 
 HttpResponse HttpRequest::makeResponse(std::string_view body, std::string_view contentType) const {
   HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), body, contentType,
                     HttpResponse::Check::No);
-  resp._knownOptions = makeResponseOptions();
+  resp._opts = makeResponseOptions();
   return resp;
 }
 
@@ -135,7 +136,7 @@ HttpResponse HttpRequest::makeResponse(http::StatusCode statusCode, std::string_
                                        std::string_view contentType) const {
   HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), body, contentType,
                     HttpResponse::Check::No);
-  resp._knownOptions = makeResponseOptions();
+  resp._opts = makeResponseOptions();
   return resp;
 }
 
@@ -143,7 +144,7 @@ HttpResponse HttpRequest::makeResponse(std::span<const std::byte> body, std::str
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
   HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType,
                     HttpResponse::Check::No);
-  resp._knownOptions = makeResponseOptions();
+  resp._opts = makeResponseOptions();
   return resp;
 }
 
@@ -152,7 +153,7 @@ HttpResponse HttpRequest::makeResponse(http::StatusCode statusCode, std::span<co
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
   HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType,
                     HttpResponse::Check::No);
-  resp._knownOptions = makeResponseOptions();
+  resp._opts = makeResponseOptions();
   return resp;
 }
 
@@ -171,6 +172,13 @@ bool HttpRequest::isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequests
     return version() == http::HTTP_1_1;
   }
   return !CaseInsensitiveEqual(connVal, http::close);
+}
+
+void HttpRequest::init(const HttpServerConfig& config, internal::ResponseCompressionState& compressionState) {
+  _pGlobalHeaders = &config.globalHeaders;
+  _addTrailerHeader = config.addTrailerHeader;
+  _addVaryAcceptEncoding = config.compression.addVaryAcceptEncodingHeader;
+  _pCompressionState = &compressionState;
 }
 
 http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
@@ -390,7 +398,13 @@ void HttpRequest::postCallback(std::coroutine_handle<> handle, std::function<voi
 #endif
 
 HttpResponse::Options HttpRequest::makeResponseOptions() const noexcept {
+  assert(_pCompressionState != nullptr);
+#ifdef AERONET_HAS_ANY_CODEC
+  HttpResponse::Options opts(*_pCompressionState, _responsePossibleEncoding);
+  opts.addVaryAcceptEncoding(_addVaryAcceptEncoding);
+#else
   HttpResponse::Options opts;
+#endif
   opts.close(wantClose());
   opts.addTrailerHeader(_addTrailerHeader);
   opts.headMethod(method() == http::Method::HEAD);

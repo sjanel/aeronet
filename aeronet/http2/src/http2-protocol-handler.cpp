@@ -166,7 +166,7 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
   StreamRequest& streamReq = it->second;
 
   HttpRequest& req = streamReq.request;
-  req._pGlobalHeaders = &_pServerConfig->globalHeaders;
+  req.init(*_pServerConfig, *_pCompressionState);
   req._addTrailerHeader = false;  // no trailer header in HTTP/2
 
   // Pass 1 : compute total headers storage
@@ -527,7 +527,7 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
   // Inject server-managed headers into the response object so they flow through
   // the same encoding path as other response headers.
 
-  if (!response._knownOptions.isPrepared()) {
+  if (!response._opts.isPrepared()) {
     // TODO: perf - avoid memmove of the whole body by appending reserved headers here.
     for (std::string_view headerKeyVal : _pServerConfig->globalHeaders) {
       const auto colonPos = headerKeyVal.find(':');

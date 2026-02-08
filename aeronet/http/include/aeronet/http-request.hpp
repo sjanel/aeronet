@@ -37,9 +37,11 @@ namespace aeronet {
 namespace internal {
 class ConnectionStorage;
 class HttpCodec;
+struct ResponseCompressionState;
 }  // namespace internal
 
 struct ConnectionState;
+struct HttpServerConfig;
 
 namespace http2 {
 class Http2ProtocolHandler;
@@ -511,6 +513,8 @@ class HttpRequest {
   [[nodiscard]] bool isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequestsPerConnection,
                                          bool isServerRunning) const;
 
+  void init(const HttpServerConfig& config, internal::ResponseCompressionState& compressionState);
+
   // Attempts to set this HttpRequest (except body) from given ConnectionState.
   // Returns StatusCode OK if the request is good (it will be fully set) or an HTTP error status to forward.
   // If 0 is returned, it means the connection state buffer is not filled up to the first newline.
@@ -565,6 +569,7 @@ class HttpRequest {
   const BodyAccessBridge* _bodyAccessBridge{nullptr};
   void* _bodyAccessContext{nullptr};
   ConnectionState* _ownerState{nullptr};
+  internal::ResponseCompressionState* _pCompressionState{nullptr};
 
   std::chrono::steady_clock::time_point _reqStart;
   std::size_t _headSpanSize{0};
@@ -580,6 +585,7 @@ class HttpRequest {
   Encoding _responsePossibleEncoding{Encoding::none};
   bool _headPinned{false};
   bool _addTrailerHeader{false};
+  bool _addVaryAcceptEncoding{false};
 };
 
 }  // namespace aeronet

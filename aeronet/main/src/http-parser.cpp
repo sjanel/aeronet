@@ -236,10 +236,8 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     // Save trailers if present (they were appended to bodyAndTrailers with trailerStartPos = 0)
     // In direct decompression mode, bodyAndTrailers only contains trailers (no body chunks were copied)
     const bool hasTrailers = !bodyAndTrailers.empty();
-    _tmp.trailers.clear();
-    if (hasTrailers) {
-      _tmp.trailers.assign(bodyAndTrailers);
-    }
+
+    _tmp.trailers.assign(bodyAndTrailers);
 
     const auto res = internal::HttpCodec::DecompressChunkedBody(
         _decompressionState, _config.decompression, request, _tmp.sv, totalCompressedSize, bodyAndTrailers, _tmp.buf);

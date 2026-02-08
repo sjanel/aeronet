@@ -71,7 +71,7 @@ constexpr std::string_view fullVersionStringView() {
 #endif
 
   // Compression section fragment
-#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD) || defined(AERONET_ENABLE_BROTLI)
+#ifdef AERONET_HAS_ANY_CODEC
   static constexpr std::string_view _sv_compression_prefix = "compression: ";
 #ifdef AERONET_ENABLE_ZLIB
   static constexpr std::string_view _sv_zlib = "zlib ";
