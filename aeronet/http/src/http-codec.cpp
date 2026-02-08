@@ -115,7 +115,7 @@ inline std::string_view FinalizeDecompressedBody(HeadersViewMap& headersMap, Hea
   return body;
 }
 
-inline RequestDecompressionResult DualBufferDecodeLoop(RequestDecompressionState& decompressionState,
+inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] RequestDecompressionState& decompressionState,
                                                        [[maybe_unused]] auto&& runDecoder, double maxExpansionRatio,
                                                        std::string_view& src, HeadersViewMap::iterator encodingHeaderIt,
                                                        std::size_t compressedSize, RawChars& bodyAndTrailersBuffer,

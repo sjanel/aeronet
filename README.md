@@ -591,6 +591,8 @@ You can build it thanks to the numerous provided methods to store the main compo
 | `reason()`         | O(trailing)          | One tail `memmove` if size delta       |
 | `header()`         | O(headers + bodyLen) | Linear scan + maybe one shift          |
 | `headerAddLine()`      | O(bodyLen)           | Shift tail once; no scan               |
+| `headerRemoveLine()`   | O(headers + bodyLen) | Linear scan (reverse) + maybe one shift          |
+| `headerRemoveValue()`   | O(headers + bodyLen) | Linear scan (reverse) + maybe one shift          |
 | `body()` (inline)  | O(delta) + realloc   | Exponential growth strategy            |
 | `body()` (capture) | O(1)                 | Zero copy client buffer capture        |
 | `bodyStatic()` (capture) | O(1)                 | Zero copy client buffer capture        |

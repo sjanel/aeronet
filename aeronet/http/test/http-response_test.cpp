@@ -752,13 +752,14 @@ TEST_F(HttpResponseTest, HeaderRemoveLineWithBody) {
   HttpResponse resp(http::StatusCodeOK);
   resp.headerAddLine("X-Before-Body", "value");
   resp.body("Test body content");
+  EXPECT_EQ(resp.bodyLength(), 17U);
 
   EXPECT_TRUE(resp.hasHeader("X-Before-Body"));
   resp.headerRemoveLine("X-Before-Body");
 
   EXPECT_FALSE(resp.hasHeader("X-Before-Body"));
   EXPECT_EQ(resp.bodyInMemory(), "Test body content");
-  EXPECT_EQ(resp.bodyLength(), 17);
+  EXPECT_EQ(resp.bodyLength(), 17U);
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveLineRValue) {

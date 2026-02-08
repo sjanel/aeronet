@@ -28,6 +28,8 @@ namespace aeronet {
 
 namespace {
 
+#ifdef AERONET_ENABLE_WEBSOCKET
+
 // Helper to write a header line to RawChars
 void AppendHeaderCRLF(RawChars& buf, std::string_view name, std::string_view value) {
   const auto headerSize = name.size() + http::HeaderSep.size() + value.size() + http::CRLF.size();
@@ -36,7 +38,6 @@ void AppendHeaderCRLF(RawChars& buf, std::string_view name, std::string_view val
   buf.addSize(headerSize);
 }
 
-#ifdef AERONET_ENABLE_WEBSOCKET
 // Parse a comma-separated list of tokens (for Sec-WebSocket-Protocol, etc.)
 ConcatenatedStrings ParseTokenList(std::string_view header) {
   ConcatenatedStrings result;
