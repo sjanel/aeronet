@@ -534,10 +534,10 @@ class SingleHttpServer {
 
   internal::PendingUpdates _updates;
 
+  HttpServerConfig _config;
+
   internal::ResponseCompressionState _compressionState;
   internal::RequestDecompressionState _decompressionState;
-
-  HttpServerConfig _config;
 
   Socket _listenSocket;
   TimerFd _maintenanceTimer;

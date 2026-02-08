@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
@@ -32,8 +33,11 @@
 
 namespace aeronet {
 
+class EncoderContext;
+
 namespace internal {
 class HttpCodec;
+struct ResponseCompressionState;
 }  // namespace internal
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -238,18 +242,18 @@ class HttpResponse {
 
   // Retrieves the value of the first occurrence of the given header key (case-insensitive search per RFC 7230).
   // If the header is not found, returns std::nullopt.
+  // The Date header cannot be retrieved nor changed, it it managed by aeronet.
   [[nodiscard]] std::optional<std::string_view> headerValue(std::string_view key) const noexcept;
 
   // Retrieves the value of the first occurrence of the given header key (case-insensitive search per RFC 7230).
   // If the header is not found, returns an empty string_view.
+  // The Date header cannot be retrieved nor changed, it it managed by aeronet.
   // To distinguish between missing and present-but-empty header values, use headerValue().
-  [[nodiscard]] std::string_view headerValueOrEmpty(std::string_view key) const noexcept {
-    return headerValue(key).value_or(std::string_view{});
-  }
+  [[nodiscard]] std::string_view headerValueOrEmpty(std::string_view key) const noexcept;
 
-  // Get a contiguous view of the current headers stored in this HttpResponse.
-  // Each header line is formatted as: name + ": " + value + CRLF.
-  // If no headers are present, it returns an empty view.
+  // Get a contiguous view of the current headers stored in this HttpResponse, except for the Date header which is
+  // managed by aeronet. Each header line is formatted as: name + ": " + value + CRLF. If no headers are present, it
+  // returns an empty view.
   [[nodiscard]] std::string_view headersFlatView() const noexcept;
 
   // Return a non-allocating, iterable view over headers.
@@ -304,7 +308,7 @@ class HttpResponse {
 
   // Get the length of the current inlined or captured (but no file) body stored in this HttpResponse.
   [[nodiscard]] std::size_t bodyInMemoryLength() const noexcept {
-    return hasBodyCaptured() ? (_payloadVariant.size() - _trailerLen) : bodyInlinedLength();
+    return hasBodyCaptured() ? (_payloadVariant.size() - trailersSize()) : bodyInlinedLength();
   }
 
   // Synonym for bodyInMemoryLength().
@@ -320,7 +324,9 @@ class HttpResponse {
   [[nodiscard]] std::size_t capacityInlined() const noexcept { return _data.capacity(); }
 
   // Get the length of the current inlined body stored in this HttpResponse.
-  [[nodiscard]] std::size_t bodyInlinedLength() const noexcept { return _data.size() - bodyStartPos() - _trailerLen; }
+  [[nodiscard]] std::size_t bodyInlinedLength() const noexcept {
+    return _data.size() - bodyStartPos() - trailersSize();
+  }
 
   // Synonym for bodyInlinedLength().
   [[nodiscard]] std::size_t bodyInlinedSize() const noexcept { return bodyInlinedLength(); }
@@ -332,12 +338,16 @@ class HttpResponse {
   // Checks if the given trailer key is present (case-insensitive search per RFC 7230).
   [[nodiscard]] bool hasTrailer(std::string_view key) const noexcept { return trailerValue(key).has_value(); }
 
+  // Get the total size of all trailers, counting exactly one CRLF per trailer line.
+  [[nodiscard]] std::size_t trailersSize() const noexcept { return _opts._trailerLen; }
+
+  // Synonym for trailersSize().
+  [[nodiscard]] std::size_t trailersLength() const noexcept { return trailersSize(); }
+
   // Retrieves the value of the first occurrence of the given trailer key (case-insensitive search per RFC 7230).
   // If the trailer is not found, returns an empty string_view.
   // To distinguish between missing and present-but-empty trailer values, use trailerValue().
-  [[nodiscard]] std::string_view trailerValueOrEmpty(std::string_view key) const noexcept {
-    return trailerValue(key).value_or(std::string_view{});
-  }
+  [[nodiscard]] std::string_view trailerValueOrEmpty(std::string_view key) const noexcept;
 
   // Get a view of the current trailers stored in this HttpResponse, starting at the first
   // trailer key (if any).
@@ -401,6 +411,9 @@ class HttpResponse {
   // RValue overload of contentEncoding(enc).
   HttpResponse&& contentEncoding(std::string_view enc) && { return std::move(header(http::ContentEncoding, enc)); }
 
+  // Checks if this HttpResponse has a Content-Encoding header.
+  [[nodiscard]] bool hasContentEncoding() const noexcept { return _opts.hasContentEncoding(); }
+
   // Append a header line (duplicates allowed, fastest path).
   // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
   // Header name and value must be valid per HTTP specifications.
@@ -423,29 +436,28 @@ class HttpResponse {
     return std::move(headerAddLine(key, std::string_view(IntegralToCharVector(value))));
   }
 
-  // Append 'value' to an existing header value, separated with separator, or call headerAddLine(key, value) if header
+  // Append 'value' to an existing header value, separated with 'sep', or call headerAddLine(key, value) if header
   // is missing. Example, from an empty HttpResponse, calling successively
   //   headerAppendValue("accept", "text/html", ", ")
   //   headerAppendValue("Accept", "application/json", ", ")
   // will produce:
   //   "Accept: text/html"
   //   "Accept: text/html, application/json"
-  HttpResponse& headerAppendValue(std::string_view key, std::string_view value, std::string_view separator = ", ") &;
+  HttpResponse& headerAppendValue(std::string_view key, std::string_view value, std::string_view sep = ", ") &;
 
   // Rvalue overload of headerAppendValue.
-  HttpResponse&& headerAppendValue(std::string_view key, std::string_view value, std::string_view separator = ", ") && {
-    return std::move(headerAppendValue(key, value, separator));
+  HttpResponse&& headerAppendValue(std::string_view key, std::string_view value, std::string_view sep = ", ") && {
+    return std::move(headerAppendValue(key, value, sep));
   }
 
   // Convenient overload appending a numeric value.
-  HttpResponse& headerAppendValue(std::string_view key, std::integral auto value, std::string_view separator = ", ") & {
-    return headerAppendValue(key, std::string_view(IntegralToCharVector(value)), separator);
+  HttpResponse& headerAppendValue(std::string_view key, std::integral auto value, std::string_view sep = ", ") & {
+    return headerAppendValue(key, std::string_view(IntegralToCharVector(value)), sep);
   }
 
   // Convenient overload appending a numeric value.
-  HttpResponse&& headerAppendValue(std::string_view key, std::integral auto value,
-                                   std::string_view separator = ", ") && {
-    return std::move(headerAppendValue(key, std::string_view(IntegralToCharVector(value)), separator));
+  HttpResponse&& headerAppendValue(std::string_view key, std::integral auto value, std::string_view sep = ", ") && {
+    return std::move(headerAppendValue(key, std::string_view(IntegralToCharVector(value)), sep));
   }
 
   // Add or replace first header 'key' with 'value'.
@@ -470,6 +482,27 @@ class HttpResponse {
   // Convenient overload setting a header to a numeric value.
   HttpResponse&& header(std::string_view key, std::integral auto value) && {
     return std::move(header(key, std::string_view(IntegralToCharVector(value))));
+  }
+
+  // Remove the first occurrence of the header with the given key, search starting from backwards (case-insensitive
+  // search per RFC 7230). If the header is not found, the HttpResponse is not modified.
+  HttpResponse& headerRemoveLine(std::string_view key) &;
+
+  // RValue overload of headerRemoveLine.
+  HttpResponse&& headerRemoveLine(std::string_view key) && { return std::move(headerRemoveLine(key)); }
+
+  // Remove the first 'value' from the header with the given key, search starting from backwards (case-insensitive
+  // search per RFC 7230). If the value is the only one for the header, the whole header line is removed. If there are
+  // multiple values for the header, only the first specified value is removed (starting from the beginning) and the
+  // other values are kept, according to the split made by given 'sep'. If the header or value is not found, the
+  // HttpResponse is not modified. Separator must not be empty, and should be the same as the one used in
+  // headerAppendValue() for the same header. The behavior is undefined if the header values can contain the separator
+  // string.
+  HttpResponse& headerRemoveValue(std::string_view key, std::string_view value, std::string_view sep = ", ") &;
+
+  // RValue overload of headerRemoveValue.
+  HttpResponse&& headerRemoveValue(std::string_view key, std::string_view value, std::string_view sep = ", ") && {
+    return std::move(headerRemoveValue(key, value, sep));
   }
 
   // -------------/
@@ -702,6 +735,23 @@ class HttpResponse {
     return std::move(bodyAppend(body, contentType));
   }
 
+  // Returns true if automatic compression can be applied with the negotiated encoding.
+  // This checks that compression state is available and that an acceptable encoding was negotiated.
+  [[nodiscard]] bool directCompressionEnabled() const noexcept { return _opts._expectedEncoding != Encoding::none; }
+
+  // Disables direct compression for this HttpResponse.
+  // Once disabled, body setters will not apply direct compression even if compression state is available.
+  // Note that this does not disable automatic compression that may happen after response finalization.
+  // To do so, you can explicitly insert a Content-Encoding header with the desired encoding
+  // (including 'identity' to disable compression).
+  HttpResponse& disableDirectCompression() & {
+    _opts.disableDirectCompression();
+    return *this;
+  }
+
+  // Rvalue overload of disableDirectCompression().
+  HttpResponse&& disableDirectCompression() && { return std::move(disableDirectCompression()); }
+
   // Appends directly inside the body up to 'maxLen' bytes of data.
   // 'writer' provides as a single argument the start of the buffer where to append body data and
   // should return the actual number of bytes written (should be <= 'maxLen').
@@ -761,7 +811,7 @@ class HttpResponse {
       } else {
         // we need to restore the previous content-length value
         const auto newBodyLenCharVec = IntegralToCharVector(maxBodyLen - (maxLen - written));
-        replaceHeaderValueNoRealloc(getContentLengthValuePtr(nCharsMaxBodyLen), std::string_view(newBodyLenCharVec));
+        replaceHeaderValueNoRealloc(getContentLengthValuePtr(), std::string_view(newBodyLenCharVec));
       }
     } else {
       if (isHead()) {
@@ -770,7 +820,7 @@ class HttpResponse {
         _data.addSize(written);
       }
       const auto newBodyLenCharVec = IntegralToCharVector(maxBodyLen - (maxLen - written));
-      replaceHeaderValueNoRealloc(getContentLengthValuePtr(nCharsMaxBodyLen), std::string_view(newBodyLenCharVec));
+      replaceHeaderValueNoRealloc(getContentLengthValuePtr(), std::string_view(newBodyLenCharVec));
     }
 
     return *this;
@@ -845,7 +895,7 @@ class HttpResponse {
       }
 
       const auto newBodyLenCharVec = IntegralToCharVector(written);
-      replaceHeaderValueNoRealloc(getContentLengthValuePtr(nchars(maxLen)), std::string_view(newBodyLenCharVec));
+      replaceHeaderValueNoRealloc(getContentLengthValuePtr(), std::string_view(newBodyLenCharVec));
     }
 
     // Clear any payload variant
@@ -981,7 +1031,7 @@ class HttpResponse {
   HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
                std::string_view body, std::string_view contentType, Check check);
 
-  [[nodiscard]] constexpr bool isHead() const noexcept { return _knownOptions.isHeadMethod(); }
+  [[nodiscard]] constexpr bool isHead() const noexcept { return _opts.isHeadMethod(); }
 
   constexpr void setHeadSize(std::size_t size) {
     _payloadVariant = HttpPayload(std::string_view(static_cast<const char*>(nullptr), size));
@@ -1007,11 +1057,13 @@ class HttpResponse {
     }
   }
 
-  [[nodiscard]] std::string_view internalTrailers() const noexcept { return {_data.end() - _trailerLen, _data.end()}; }
+  [[nodiscard]] std::string_view internalTrailers() const noexcept {
+    return {_data.end() - trailersSize(), _data.end()};
+  }
 
   [[nodiscard]] std::string_view externalTrailers() const noexcept {
     const char* last = _payloadVariant.view().end();
-    return {last - _trailerLen, last};
+    return {last - trailersSize(), last};
   }
 
   // Check if this HttpResponse has an inline body stored in its internal buffer.
@@ -1040,10 +1092,19 @@ class HttpResponse {
   // is easy to get it wrong).
   class Options {
    public:
-    static constexpr uint8_t Close = 1U << 0;
-    static constexpr uint8_t AddTrailerHeader = 1U << 1;
-    static constexpr uint8_t IsHeadMethod = 1U << 2;
-    static constexpr uint8_t Prepared = 1U << 3;
+    using BmpType = uint8_t;
+
+    static constexpr BmpType Close = 1U << 0;
+    static constexpr BmpType AddTrailerHeader = 1U << 1;
+    static constexpr BmpType IsHeadMethod = 1U << 2;
+    static constexpr BmpType Prepared = 1U << 3;
+    static constexpr BmpType AddVaryAcceptEncoding = 1U << 4;
+    static constexpr BmpType HasContentEncoding = 1U << 5;
+
+    Options() noexcept = default;
+
+    Options(internal::ResponseCompressionState& compressionState, Encoding expectedEncoding)
+        : _pCompressionState(&compressionState), _expectedEncoding(expectedEncoding) {}
 
     [[nodiscard]] constexpr bool isClose() const noexcept { return (_optionsBitmap & Close) != 0; }
     [[nodiscard]] constexpr bool isAddTrailerHeader() const noexcept {
@@ -1051,16 +1112,26 @@ class HttpResponse {
     }
     [[nodiscard]] constexpr bool isHeadMethod() const noexcept { return (_optionsBitmap & IsHeadMethod) != 0; }
 
+    [[nodiscard]] constexpr bool addVaryAcceptEncoding() const noexcept {
+      return (_optionsBitmap & AddVaryAcceptEncoding) != 0;
+    }
+
+    [[nodiscard]] constexpr bool hasContentEncoding() const noexcept {
+      return (_optionsBitmap & HasContentEncoding) != 0;
+    }
+
     // Tells whether the response has been pre-configured already.
     // If it's the case, then global headers have already been applied, addTrailerHeader and headMethod options
     // are known. Close is only best effort - it may still be changed later (from not close to close).
     [[nodiscard]] constexpr bool isPrepared() const noexcept { return (_optionsBitmap & Prepared) != 0; }
 
+    constexpr void disableDirectCompression() noexcept { _expectedEncoding = Encoding::none; }
+
     constexpr void close(bool val) noexcept {
       if (val) {
         _optionsBitmap |= Close;
       } else {
-        _optionsBitmap &= static_cast<uint8_t>(~Close);
+        _optionsBitmap &= static_cast<BmpType>(~Close);
       }
     }
 
@@ -1068,7 +1139,7 @@ class HttpResponse {
       if (val) {
         _optionsBitmap |= AddTrailerHeader;
       } else {
-        _optionsBitmap &= static_cast<uint8_t>(~AddTrailerHeader);
+        _optionsBitmap &= static_cast<BmpType>(~AddTrailerHeader);
       }
     }
 
@@ -1076,14 +1147,48 @@ class HttpResponse {
       if (val) {
         _optionsBitmap |= IsHeadMethod;
       } else {
-        _optionsBitmap &= static_cast<uint8_t>(~IsHeadMethod);
+        _optionsBitmap &= static_cast<BmpType>(~IsHeadMethod);
       }
     }
 
+    constexpr void addVaryAcceptEncoding(bool val) noexcept {
+      if (val) {
+        _optionsBitmap |= AddVaryAcceptEncoding;
+      } else {
+        _optionsBitmap &= static_cast<BmpType>(~AddVaryAcceptEncoding);
+      }
+    }
+
+    constexpr void setHasContentEncoding() noexcept { _optionsBitmap |= HasContentEncoding; }
+
     constexpr void setPrepared() noexcept { _optionsBitmap |= Prepared; }
 
+    // Gets the negotiated encoding from Accept-Encoding negotiation.
+    [[nodiscard]] constexpr Encoding expectedEncoding() const noexcept { return _expectedEncoding; }
+
+    [[nodiscard]] bool isEligibleForDirectCompression(std::string_view contentTypeValue,
+                                                      std::size_t newBodySize) const noexcept;
+
+    // Sets the compression state pointer for direct compression support.
+    constexpr void setCompressionState(internal::ResponseCompressionState* state) noexcept {
+      _pCompressionState = state;
+    }
+
+    // Gets the compression state pointer for direct compression.
+    [[nodiscard]] constexpr internal::ResponseCompressionState* compressionState() const noexcept {
+      return _pCompressionState;
+    }
+
    private:
-    uint8_t _optionsBitmap{};
+    friend class HttpResponse;
+    friend class internal::HttpCodec;
+
+    internal::ResponseCompressionState* _pCompressionState{nullptr};
+
+    std::uint32_t _trailerLen{0};  // trailer length - no logical reason to be there, it's just to benefit from packing
+    BmpType _optionsBitmap{};
+    Encoding _expectedEncoding{Encoding::none};
+    Encoding _currentEncoding{Encoding::none};
   };
 
   // IMPORTANT: This method finalizes the response by appending reserved headers,
@@ -1131,31 +1236,40 @@ class HttpResponse {
     setBodyStartPos(static_cast<std::uint64_t>(static_cast<int64_t>(bodyStartPos()) + diff));
   }
 
-  char* getContentLengthHeaderLinePtr(std::uint8_t nCharsBodyLen) {
-    const auto contentLengthHeaderLineSize = HeaderSize(http::ContentLength.size(), nCharsBodyLen);
-    return _data.data() + bodyStartPos() - http::DoubleCRLF.size() - contentLengthHeaderLineSize;
-  }
-
-  char* getContentLengthValuePtr(std::uint8_t nCharsBodyLen) {
-    return getContentLengthHeaderLinePtr(nCharsBodyLen) + http::CRLF.size() + http::ContentLength.size() +
-           http::HeaderSep.size();
-  }
-
-  // Returns a pointer to the beginning of the Content-Type header line (starting on CRLF before the header name).
-  char* getContentTypeHeaderLinePtr(std::uint8_t nCharsBodyLen) {
-    char* ptr = getContentLengthHeaderLinePtr(nCharsBodyLen) - HeaderSize(http::ContentType.size(), 0U);
+  char* getContentLengthHeaderLinePtr() {
+    char* ptr = _data.data() + bodyStartPos() - http::DoubleCRLF.size() - http::HeaderSep.size() -
+                http::ContentLength.size() - http::CRLF.size() - 1U;
     for (; *ptr != '\r'; --ptr) {
     }
     return ptr;
   }
 
-  char* getContentTypeValuePtr(std::uint8_t nCharsBodyLen) {
-    return getContentTypeHeaderLinePtr(nCharsBodyLen) + http::CRLF.size() + http::ContentType.size() +
-           http::HeaderSep.size();
+  char* getContentLengthValueEndPtr() { return _data.data() + bodyStartPos() - http::DoubleCRLF.size(); }
+
+  char* getContentLengthValuePtr() {
+    char* ptr = getContentLengthValueEndPtr() - http::HeaderSep.size() - 1U;
+    for (; *ptr != ':'; --ptr) {
+    }
+    return ptr + http::HeaderSep.size();
+  }
+
+  // Returns a pointer to the beginning of the Content-Type header line (starting on CRLF before the header name).
+  char* getContentTypeHeaderLinePtr() {
+    char* ptr = getContentLengthHeaderLinePtr() - HeaderSize(http::ContentType.size(), 1U);
+    for (; *ptr != '\r'; --ptr) {
+    }
+    return ptr;
+  }
+
+  char* getContentTypeValuePtr() {
+    char* ptr = getContentLengthHeaderLinePtr() - http::HeaderSep.size() - 1U;
+    for (; *ptr != ':'; --ptr) {
+    }
+    return ptr + http::HeaderSep.size();
   }
 
   void bodyPrecheckContentType(std::string_view& contentType) const {
-    if (_trailerLen != 0) [[unlikely]] {
+    if (trailersSize() != 0) [[unlikely]] {
       throw std::logic_error("Cannot set body after trailers have been added");
     }
     contentType = TrimOws(contentType);
@@ -1173,9 +1287,8 @@ class HttpResponse {
   std::uint64_t _posBitmap{0};
   // Variant that can hold an external captured payload (HttpPayload).
   HttpPayload _payloadVariant;
-  std::uint32_t _trailerLen{0};  // trailer length
   // When HEAD is known (prepared options), body/trailer storage can be suppressed while preserving lengths.
-  Options _knownOptions;
+  Options _opts;
 };
 
 }  // namespace aeronet

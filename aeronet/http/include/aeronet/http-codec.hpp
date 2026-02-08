@@ -51,9 +51,7 @@ struct RequestDecompressionState {
 struct ResponseCompressionState {
   ResponseCompressionState() noexcept = default;
 
-  explicit ResponseCompressionState(const CompressionConfig& cfg) : selector(cfg) {}
-
-  void createEncoders(const CompressionConfig& cfg);
+  explicit ResponseCompressionState(const CompressionConfig& cfg);
 
   std::size_t encodeFull(Encoding encoding, std::string_view data, std::size_t availableCapacity, char* buf);
 
@@ -61,6 +59,7 @@ struct ResponseCompressionState {
   EncoderContext* makeContext(Encoding encoding);
 
   EncodingSelector selector;
+  const CompressionConfig* pCompressionConfig{nullptr};
 
 #ifdef AERONET_ENABLE_BROTLI
   BrotliEncoder brotliEncoder;

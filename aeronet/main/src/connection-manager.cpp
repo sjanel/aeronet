@@ -183,7 +183,7 @@ void SingleHttpServer::acceptNewConnections() {
 
     ConnectionState& state = *cnxIt->second;
 
-    state.initializeStateNewConnection(_config, cnxFd);
+    state.initializeStateNewConnection(_config, cnxFd, _compressionState);
 
 #ifdef AERONET_ENABLE_OPENSSL
     if (_tls.ctxHolder) {

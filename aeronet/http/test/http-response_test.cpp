@@ -53,7 +53,7 @@ class HttpResponseTest : public ::testing::Test {
   static HttpResponse MakePrepared(bool isPrepared, bool head, const ConcatenatedHeaders& globalHeaders = {}) {
     HttpResponse resp;
     if (isPrepared) {
-      resp._knownOptions.setPrepared();
+      resp._opts.setPrepared();
       for (std::string_view headerNameAndValue : globalHeaders) {
         const auto sepPos = headerNameAndValue.find(http::HeaderSep);
         if (sepPos == std::string_view::npos) {
@@ -62,14 +62,14 @@ class HttpResponseTest : public ::testing::Test {
         resp.headerAddLine(headerNameAndValue.substr(0, sepPos),
                            headerNameAndValue.substr(sepPos + http::HeaderSep.size()));
       }
-      resp._knownOptions.headMethod(head);
+      resp._opts.headMethod(head);
     }
     return resp;
   }
 
   static void AddTrailerHeader(HttpResponse& resp, bool addTrailerHeader) {
-    if (resp._knownOptions.isPrepared()) {
-      resp._knownOptions.addTrailerHeader(addTrailerHeader);
+    if (resp._opts.isPrepared()) {
+      resp._opts.addTrailerHeader(addTrailerHeader);
     }
   }
 
@@ -646,6 +646,392 @@ TEST_F(HttpResponseTest, AppendHeaderValueSupportsNumericOverload) {
   EXPECT_TRUE(full.contains("X-Numeric: 1|42\r\n")) << full;
 }
 
+TEST_F(HttpResponseTest, HeaderRemoveLineNotFound) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-First", "value1");
+  resp.headerAddLine("X-Second", "value2");
+
+  resp.headerRemoveLine("X-NotExists");
+
+  EXPECT_TRUE(resp.hasHeader("X-First"));
+  EXPECT_TRUE(resp.hasHeader("X-Second"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-First"), "value1");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Second"), "value2");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveLineEmptyName) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Test", "value");
+
+  resp.headerRemoveLine("");
+
+  EXPECT_TRUE(resp.hasHeader("X-Test"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "value");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveLineSimple) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Remove", "value");
+  resp.headerAddLine("X-Keep", "keep-value");
+
+  EXPECT_TRUE(resp.hasHeader("X-Remove"));
+  resp.headerRemoveLine("X-Remove");
+
+  EXPECT_FALSE(resp.hasHeader("X-Remove"));
+  EXPECT_TRUE(resp.hasHeader("X-Keep"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Keep"), "keep-value");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveLinePartialMatch) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Remove", "value");
+  resp.headerAddLine("X-Keep", "keep-value");
+
+  ASSERT_EQ(resp.headerValueOrEmpty("X-Remove"), "value");
+
+  resp.headerRemoveLine("-Remove");  // should do nothing
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Remove"), "value");
+
+  resp.headerRemoveLine("-Keep");  // should do nothing
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Keep"), "keep-value");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveLineCaseInsensitive) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-CasE-TeSt", "value");
+  resp.headerAddLine("X-Other", "other-value");
+
+  EXPECT_TRUE(resp.hasHeader("X-CasE-TeSt"));
+  resp.headerRemoveLine("x-case-test");
+
+  EXPECT_FALSE(resp.hasHeader("X-CasE-TeSt"));
+  EXPECT_FALSE(resp.hasHeader("x-case-test"));
+  EXPECT_TRUE(resp.hasHeader("X-Other"));
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveLineRemovesLast) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Duplicate", "first");
+  resp.headerAddLine("X-Duplicate", "second");
+  resp.headerAddLine("X-Duplicate", "third");
+
+  resp.headerRemoveLine("X-Duplicate");
+
+  // Should remove the last occurrence (from reverse search)
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Duplicate"), "first");
+
+  resp.headerRemoveLine("X-Duplicate");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Duplicate"), "first");
+
+  resp.headerRemoveLine("X-Duplicate");
+  EXPECT_FALSE(resp.hasHeader("X-Duplicate"));
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveLineMultipleTimes) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Multi", "value1");
+  resp.headerAddLine("X-Multi", "value2");
+  resp.headerAddLine("X-Multi", "value3");
+
+  // Removes value3 (last), headerValue still returns value1 (first)
+  resp.headerRemoveLine("X-Multi");
+  EXPECT_TRUE(resp.hasHeader("X-Multi"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Multi"), "value1");
+
+  // Removes value2 (now last), headerValue still returns value1 (first and only)
+  resp.headerRemoveLine("X-Multi");
+  EXPECT_TRUE(resp.hasHeader("X-Multi"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Multi"), "value1");
+
+  // Removes value1 (only remaining)
+  resp.headerRemoveLine("X-Multi");
+  EXPECT_FALSE(resp.hasHeader("X-Multi"));
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveLineWithBody) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Before-Body", "value");
+  resp.body("Test body content");
+
+  EXPECT_TRUE(resp.hasHeader("X-Before-Body"));
+  resp.headerRemoveLine("X-Before-Body");
+
+  EXPECT_FALSE(resp.hasHeader("X-Before-Body"));
+  EXPECT_EQ(resp.bodyInMemory(), "Test body content");
+  EXPECT_EQ(resp.bodyLength(), 17);
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveLineRValue) {
+  auto resp = HttpResponse(http::StatusCodeOK)
+                  .headerAddLine("X-Remove", "value")
+                  .headerAddLine("X-Keep", "keep")
+                  .headerRemoveLine("X-Remove");
+
+  EXPECT_FALSE(resp.hasHeader("X-Remove"));
+  EXPECT_TRUE(resp.hasHeader("X-Keep"));
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueNotFound) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Test", "value1, value2");
+
+  resp.headerRemoveValue("X-NotExists", "value1");
+  EXPECT_TRUE(resp.hasHeader("X-Test"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "value1, value2");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueNotInHeader) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Test", "value1, value2");
+
+  resp.headerRemoveValue("X-Test", "value3");
+  EXPECT_TRUE(resp.hasHeader("X-Test"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "value1, value2");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueFullLineRemoval) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Single", "only-value");
+  resp.headerAddLine("X-Keep", "keep-me");
+
+  EXPECT_TRUE(resp.hasHeader("X-Single"));
+  resp.headerRemoveValue("X-Single", "only-value");
+
+  EXPECT_FALSE(resp.hasHeader("X-Single"));
+  EXPECT_TRUE(resp.hasHeader("X-Keep"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Keep"), "keep-me");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueAtStart) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Multi", "first, second, third");
+
+  resp.headerRemoveValue("X-Multi", "first");
+
+  EXPECT_TRUE(resp.hasHeader("X-Multi"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Multi"), "second, third");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueAtEnd) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Multi", "first, second, third");
+
+  resp.headerRemoveValue("X-Multi", "third");
+
+  EXPECT_TRUE(resp.hasHeader("X-Multi"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Multi"), "first, second");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueInMiddle) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Multi", "first, second, third");
+
+  resp.headerRemoveValue("X-Multi", "second");
+
+  EXPECT_TRUE(resp.hasHeader("X-Multi"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Multi"), "first, third");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueCustomSeparator) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Custom", "alpha;beta;gamma");
+
+  resp.headerRemoveValue("X-Custom", "beta", ";");
+
+  EXPECT_TRUE(resp.hasHeader("X-Custom"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "alpha;gamma");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueLongSeparator) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Custom", "sep>alpha<sep>beta<sep>gamma<sep");
+
+  resp.headerRemoveValue("X-Custom", "alpha", "<sep>");  // should do nothing
+
+  EXPECT_TRUE(resp.hasHeader("X-Custom"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "sep>alpha<sep>beta<sep>gamma<sep");
+
+  resp.headerRemoveValue("X-Custom", "gamma", "<sep>");  // should do nothing
+  EXPECT_TRUE(resp.hasHeader("X-Custom"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "sep>alpha<sep>beta<sep>gamma<sep");
+
+  resp.headerRemoveValue("X-Custom", "beta", "<sep>");
+  EXPECT_TRUE(resp.hasHeader("X-Custom"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "sep>alpha<sep>gamma<sep");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueCustomSeparatorAtStart) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Custom", "alpha|beta|gamma");
+
+  resp.headerRemoveValue("X-Custom", "alpha", "|");
+
+  EXPECT_TRUE(resp.hasHeader("X-Custom"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "beta|gamma");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueCustomSeparatorAtEnd) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Custom", "alpha|beta|gamma");
+
+  resp.headerRemoveValue("X-Custom", "gamma", "|");
+
+  EXPECT_TRUE(resp.hasHeader("X-Custom"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "alpha|beta");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueNotProperlyDelimited) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Test", "somevalue, valueanother, value");
+
+  // Try to remove "value" which is a substring but not properly delimited
+  resp.headerRemoveValue("X-Test", "value");
+
+  // Should not remove anything because "value" is not properly delimited
+  EXPECT_TRUE(resp.hasHeader("X-Test"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "somevalue, valueanother");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValuePartialMatch) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Test", "value1, value2, value3");
+
+  // Try to remove "value" which is a substring of all values
+  resp.headerRemoveValue("X-Test", "value");
+
+  // Should not remove anything because "value" is not properly delimited
+  EXPECT_TRUE(resp.hasHeader("X-Test"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "value1, value2, value3");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueMultipleOccurrences) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Multi", "apple, banana, apple, cherry");
+
+  // Removes first occurrence within the value (left-to-right search)
+  resp.headerRemoveValue("X-Multi", "apple");
+
+  EXPECT_TRUE(resp.hasHeader("X-Multi"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Multi"), "banana, apple, cherry");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueWithSpaces) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Spaced", "value1, value2, value3");
+
+  resp.headerRemoveValue("X-Spaced", "value2");
+
+  EXPECT_TRUE(resp.hasHeader("X-Spaced"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Spaced"), "value1, value3");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueEmptyValueFromEmptyHeader) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Test", "");
+
+  resp.headerRemoveValue("X-Test", "");
+
+  EXPECT_FALSE(resp.hasHeader("X-Test"));
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueEmptyValueInMiddle) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Test", "value1, , value2");
+
+  resp.headerRemoveValue("X-Test", "");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "value1, value2");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueEmptyValueAtFirst) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Test", ", value2");
+
+  resp.headerRemoveValue("X-Test", "", ", ");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "value2");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueEmptyValueAtLast) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Test", "value2-");
+
+  resp.headerRemoveValue("X-Test", "", "-");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "value2");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueCaseInsensitiveHeader) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-CaSe", "val1, val2, val3");
+
+  resp.headerRemoveValue("x-case", "val2");
+
+  EXPECT_TRUE(resp.hasHeader("X-CaSe"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-CaSe"), "val1, val3");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueFromDuplicateHeaders) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Dup", "alpha, beta");
+  resp.headerAddLine("X-Dup", "gamma, delta");
+
+  // Works on the last header (reverse search), but headerValue returns first
+  resp.headerRemoveValue("X-Dup", "gamma");
+
+  // Both headers still exist, second is now just "delta"
+  EXPECT_TRUE(resp.hasHeader("X-Dup"));
+  // headerValue returns the first header
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Dup"), "alpha, beta");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueWithBody) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Values", "a, b, c");
+  resp.body("Body content here");
+
+  resp.headerRemoveValue("X-Values", "b");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Values"), "a, c");
+  EXPECT_EQ(resp.bodyInMemory(), "Body content here");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueRValue) {
+  auto resp =
+      HttpResponse(http::StatusCodeOK).headerAddLine("X-Multi", "v1, v2, v3").headerRemoveValue("X-Multi", "v2");
+
+  EXPECT_TRUE(resp.hasHeader("X-Multi"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Multi"), "v1, v3");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueLeavesSingleValue) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Two", "first, second");
+
+  resp.headerRemoveValue("X-Two", "first", ", ");
+
+  EXPECT_TRUE(resp.hasHeader("X-Two"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Two"), "second");
+
+  // Removing the only remaining value removes the whole header line
+  resp.headerRemoveValue("X-Two", "second", ", ");
+  EXPECT_FALSE(resp.hasHeader("X-Two"));
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueComplexSeparator) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("X-Complex", "item1::item2::item3");
+
+  resp.headerRemoveValue("X-Complex", "item2", "::");
+
+  EXPECT_TRUE(resp.hasHeader("X-Complex"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Complex"), "item1::item3");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueWithEmptySepartorShouldThrow) {
+  EXPECT_THROW(HttpResponse{}.headerRemoveValue("X-Test", "value1", ""), std::invalid_argument);
+}
+
 TEST_F(HttpResponseTest, ContentEncodingHeader) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
@@ -994,6 +1380,8 @@ TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
   resp.body("BodyContent");
   resp.trailerAddLine("X-Trailer", "TrailerValue1");
   resp.trailerAddLine("X-Trailer-2", "TrailerValue-2");
+
+  EXPECT_EQ(resp.trailersLength(), HttpResponse::HeaderSize(9U, 13U) + HttpResponse::HeaderSize(11U, 14U));
 
   static constexpr bool kHead = false;
   static constexpr bool kAddTrailerHeader = true;
