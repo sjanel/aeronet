@@ -815,12 +815,13 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
 
   // Check if we need to split into CONTINUATION frames
   if (headerBlockSize <= _peerSettings.maxFrameSize) {
-    _outputBuffer.setSize(outputSizeBeforeHeaders);
     const auto flags = ComputeHeaderFrameFlags(endStream, endHeaders);
-    // Only write the HEADERS frame prefix without the header block which is already written at the correct position!
-    WriteFrame(_outputBuffer, FrameType::Headers, flags, streamId, headerBlockSize);
-    // WriteFrame already added FrameHeader::kSize, so we only add headerBlockSize here
-    _outputBuffer.addSize(headerBlockSize);
+    // Write the HEADERS frame header directly into the reserved gap.
+    // We must NOT use setSize() to shrink + WriteFrame() + addSize() here, because
+    // with AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS, setSize() poisons the bytes being
+    // "freed" (the HPACK-encoded data) with 0xFF before we can re-claim them.
+    WriteFrameHeader(_outputBuffer.data() + outputSizeBeforeHeaders,
+                     {headerBlockSize, FrameType::Headers, flags, streamId});
     return;
   }
   // We will have at least one CONTINUATION frame.
@@ -836,25 +837,31 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
   // reserve enough capacity in output buffer (no more reallocations)
   const auto remainingHeaderBlockSize = headerBlockSize - _peerSettings.maxFrameSize;
   // IMPORTANT:
-  // - The HPACK-encoded header block bytes currently live *past* outputSizeBeforeHeaders.
-  // - In AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS mode, RawBytesBase::reallocUp() fills
-  //   bytes from `_size` to `_capacity` with 0xFF.
-  // - If we shrink `_size` first and then grow capacity, we'd overwrite the encoded bytes.
-  // So reserve required capacity before shrinking size.
-  _outputBuffer.reserve(outputSizeBeforeHeaders + totalSize + remainingHeaderBlockSize);
+  // - The HPACK-encoded header block bytes currently live at [oldSize, oldSize + headerBlockSize).
+  // - With AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS, both reallocUp() (in reserve/ensureCapacity)
+  //   and setSize() (when shrinking) poison bytes that become logically unused with 0xFF.
+  // - We must reserve capacity first (to prevent reallocUp from poisoning within [_size, _capacity)),
+  //   then move the ENTIRE header block to the end of the reserved space BEFORE shrinking the size,
+  //   so the memmove reads the data before setSize poisons it.
+  _outputBuffer.reserve(outputSizeBeforeHeaders + totalSize + headerBlockSize);
+
+  // Move the ENTIRE header block data to the end of the reserved space BEFORE shrinking.
+  const auto savedHeaderBlock = _outputBuffer.data() + _outputBuffer.capacity() - headerBlockSize;
+  std::memmove(savedHeaderBlock, _outputBuffer.data() + oldSize, headerBlockSize);
+
+  // Now it's safe to rewind the buffer size — the HPACK data is safe at the end of capacity.
   _outputBuffer.setSize(outputSizeBeforeHeaders);
 
   // Write the HEADERS frame WITHOUT END_HEADERS (it will be on the last CONTINUATION)
   const auto headersFlags = ComputeHeaderFrameFlags(endStream, false);
   WriteFrame(_outputBuffer, FrameType::Headers, headersFlags, streamId, _peerSettings.maxFrameSize);
+  // Copy the first chunk of the header block data right after the HEADERS frame header
+  std::memcpy(_outputBuffer.end(), savedHeaderBlock, _peerSettings.maxFrameSize);
   _outputBuffer.addSize(_peerSettings.maxFrameSize);
 
-  // Move the header block data to the end of the reserved space
-  const auto begRemainingHeaderBlock = _outputBuffer.data() + _outputBuffer.capacity() - remainingHeaderBlockSize;
-  std::memmove(begRemainingHeaderBlock, _outputBuffer.end(), remainingHeaderBlockSize);
-
-  // Capture the header block span (which will stay valid because no reallocation can occur now)
-  std::span<const std::byte> remainingHeaderBlock(begRemainingHeaderBlock, remainingHeaderBlockSize);
+  // Capture the remaining header block span (past the first chunk)
+  std::span<const std::byte> remainingHeaderBlock(savedHeaderBlock + _peerSettings.maxFrameSize,
+                                                  remainingHeaderBlockSize);
 
   // Write continuation frames
   for (uint32_t offset = 0; offset < remainingHeaderBlockSize;) {
