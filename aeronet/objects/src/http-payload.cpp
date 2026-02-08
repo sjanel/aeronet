@@ -281,6 +281,7 @@ void HttpPayload::addSize(std::size_t sz) {
         using T = std::decay_t<decltype(val)>;
         if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
                       std::is_same_v<T, std::vector<std::byte>>) {
+          assert(val.size() + sz <= val.capacity());  // it should not reallocate at this point
           val.resize(val.size() + sz);
         } else if constexpr (std::is_same_v<T, RawChars>) {
           val.addSize(sz);

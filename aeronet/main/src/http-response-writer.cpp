@@ -53,7 +53,7 @@ HttpResponseWriter::HttpResponseWriter(SingleHttpServer& srv, int fd, const Http
   opts.addTrailerHeader(srv.config().addTrailerHeader);
   opts.headMethod(_head);
   opts.setPrepared();
-  _fixedResponse._knownOptions = opts;
+  _fixedResponse._opts = opts;
 }
 
 void HttpResponseWriter::status(http::StatusCode code) {
@@ -156,9 +156,8 @@ void HttpResponseWriter::ensureHeadersSent() {
   }
 
   auto cnxIt = _server->_connections.active.find(_fd);
-  _server->queueData(
-      cnxIt, _fixedResponse.finalizeForHttp1(SysClock::now(), http::HTTP_1_1, _fixedResponse._knownOptions, nullptr,
-                                             _server->config().minCapturedBodySize));
+  _server->queueData(cnxIt, _fixedResponse.finalizeForHttp1(SysClock::now(), http::HTTP_1_1, _fixedResponse._opts,
+                                                            nullptr, _server->config().minCapturedBodySize));
   if (cnxIt->second->isAnyCloseRequested()) {
     _state = HttpResponseWriter::State::Failed;
     log::error("Streaming: failed to enqueue headers fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));

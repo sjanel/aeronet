@@ -98,7 +98,6 @@ TEST(HttpCodecCompression, ContentTypeAllowListBlocksCompression) {
   cfg.contentTypeAllowList.append("text/plain");
 
   ResponseCompressionState state(cfg);
-  state.createEncoders(cfg);
 
   const std::string body(4096, 'A');
 
@@ -152,7 +151,6 @@ TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
   cfg.preferredFormats.push_back(Encoding::gzip);
 #endif
   ResponseCompressionState state(cfg);
-  state.createEncoders(cfg);
 
   std::string_view acceptEncoding = "gzip";
 
@@ -215,8 +213,6 @@ TEST(HttpCodecCompression, VaryHeaderNotAddedWhenDisabled) {
 #endif
   ResponseCompressionState state(cfg);
 
-  state.createEncoders(cfg);
-
   const std::string body(4096, 'A');
 
   HttpResponse resp(body, http::ContentTypeTextPlain);
@@ -244,7 +240,6 @@ TEST(HttpCodecCompression, GzipCompressedBodyRoundTrips) {
   cfg.contentTypeAllowList.clear();
 
   ResponseCompressionState state(cfg);
-  state.createEncoders(cfg);
 
   const std::string body(16UL * 1024UL, 'A');
   HttpResponse resp(http::StatusCodeOK);
@@ -289,7 +284,6 @@ TEST(HttpCodecCompression, MaxCompressRatioCanDisableCompression) {
   cfg.maxCompressRatio = std::nextafter(1.0F, 0.0F);  // just below 1.0 to allow any compression
 
   ResponseCompressionState state(cfg);
-  state.createEncoders(cfg);
 
   auto body = test::MakePatternedPayload(cfg.minBytes);
 
@@ -306,7 +300,6 @@ TEST(HttpCodecCompression, MaxCompressRatioCanDisableCompression) {
   cfg2.maxCompressRatio = std::nextafter(tightRatio, 0.0F);
 
   ResponseCompressionState state2(cfg2);
-  state2.createEncoders(cfg2);
 
   HttpResponse resp2(body);
   HttpCodec::TryCompressResponse(state2, cfg2, Encoding::gzip, resp2);
@@ -327,7 +320,6 @@ TEST(HttpCodecCompression, ImpossibleCompressionZstd) {
   cfg.maxCompressRatio = std::nextafter(1.0F, 0.0F);  // just below 1.0 to allow any compression
 
   ResponseCompressionState state(cfg);
-  state.createEncoders(cfg);
 
   auto body = test::MakeRandomPayload(cfg.minBytes);
 
@@ -559,7 +551,6 @@ TEST(HttpCodecCompression, ResponseCompressionStateEncodeFull_BehaviorPerEncoder
   // request negotiation doesn't matter for these direct encodeFull tests
 
   ResponseCompressionState state(cfg);
-  state.createEncoders(cfg);
 
   const std::string plain(4096, 'A');
 
@@ -614,7 +605,6 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
   cfg.contentTypeAllowList.clear();
 
   ResponseCompressionState state(cfg);
-  state.createEncoders(cfg);
 
   const std::string plain(4096, 'A');
 

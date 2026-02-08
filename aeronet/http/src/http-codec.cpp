@@ -115,7 +115,7 @@ inline std::string_view FinalizeDecompressedBody(HeadersViewMap& headersMap, Hea
   return body;
 }
 
-inline RequestDecompressionResult DualBufferDecodeLoop(RequestDecompressionState& decompressionState,
+inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] RequestDecompressionState& decompressionState,
                                                        [[maybe_unused]] auto&& runDecoder, double maxExpansionRatio,
                                                        std::string_view& src, HeadersViewMap::iterator encodingHeaderIt,
                                                        std::size_t compressedSize, RawChars& bodyAndTrailersBuffer,
@@ -199,16 +199,22 @@ inline bool UseStreamingDecompression(const HeadersViewMap& headersMap,
 
 }  // namespace
 
-void ResponseCompressionState::createEncoders([[maybe_unused]] const CompressionConfig& cfg) {
+ResponseCompressionState::ResponseCompressionState(const CompressionConfig& cfg)
+    : selector(cfg),
+      pCompressionConfig(&cfg)
+#ifdef AERONET_ENABLE_BROTLI
+      ,
+      brotliEncoder(pCompressionConfig->brotli)
+#endif
 #ifdef AERONET_ENABLE_ZLIB
-  zlibEncoder = ZlibEncoder(cfg.zlib.level);
+      ,
+      zlibEncoder(pCompressionConfig->zlib.level)
 #endif
 #ifdef AERONET_ENABLE_ZSTD
-  zstdEncoder = ZstdEncoder(cfg.zstd);
+      ,
+      zstdEncoder(pCompressionConfig->zstd)
 #endif
-#ifdef AERONET_ENABLE_BROTLI
-  brotliEncoder = BrotliEncoder(cfg.brotli);
-#endif
+{
 }
 
 std::size_t ResponseCompressionState::encodeFull([[maybe_unused]] Encoding encoding,
@@ -273,7 +279,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
     }
   }
 
-  if (resp.hasHeader(http::ContentEncoding)) {
+  if (resp.hasContentEncoding()) {
     return;
   }
 
@@ -284,7 +290,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   assert(resp.hasHeader(http::ContentType));
 
   const bool hasExternalPayload = resp.hasBodyCaptured();
-  const auto trailersLen = resp._trailerLen;
+  const auto trailersLen = resp.trailersSize();
 
   const char* const basePtr = resp._data.data();
   const VaryResult varyResult =
@@ -306,9 +312,9 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   // Compute offsets for the reserved tail (Content-Type + Content-Length + DoubleCRLF).
   const auto nCharsBodySz = nchars(bodySz);
   const std::size_t contentTypeLinePos =
-      static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr(nCharsBodySz) - resp._data.data());
+      static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr() - resp._data.data());
   const std::size_t contentLengthLinePos =
-      static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr(nCharsBodySz) - resp._data.data());
+      static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr() - resp._data.data());
 
   const std::size_t oldDataSz = resp._data.size();
 
@@ -392,9 +398,9 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
 
   // Recompute tail offsets after the optional Vary merge above (it can shift Content-Type/Length positions).
   const std::size_t contentTypeLinePos2 =
-      static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr(nCharsBodySz) - resp._data.data());
+      static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr() - resp._data.data());
   const std::size_t contentLengthLinePos2 =
-      static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr(nCharsBodySz) - resp._data.data());
+      static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr() - resp._data.data());
 
   const std::size_t contentTypeLineLen2 = contentLengthLinePos2 - contentTypeLinePos2;
 
