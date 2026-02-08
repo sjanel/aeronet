@@ -621,8 +621,12 @@ TYPED_TEST(RawBaseTest, Swap) {
     GTEST_SKIP() << "malloc overrides disabled on this toolchain; skipping";
   }
   buf2.ensureAvailableCapacity(1024UL);
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+  test::FailNextMalloc();
+#else
   test::FailNextRealloc();
-  EXPECT_NO_THROW(buf2.shrink_to_fit());  // should not throw even if realloc fails
+#endif
+  EXPECT_NO_THROW(buf2.shrink_to_fit());  // should not throw even if realloc/malloc fails
 }
 
 TYPED_TEST(RawBaseTest, EqualityCheck) {
