@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <string_view>
 #include <type_traits>
 
@@ -64,7 +66,12 @@ class RawBytesBase {
   void append(ViewType data) { append(data.data(), SafeCast<size_type>(data.size())); }
 
   // Appends a single byte to the end of the buffer without checking capacity.
-  void unchecked_push_back(value_type byte) noexcept { _buf[_size++] = byte; }
+  void unchecked_push_back(value_type byte) noexcept {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    assert(_size < _capacity);
+#endif
+    _buf[_size++] = byte;
+  }
 
   // Appends a single byte to the end of the buffer, reallocating if necessary.
   void push_back(value_type byte);
@@ -76,16 +83,45 @@ class RawBytesBase {
   void assign(ViewType data) { assign(data.data(), SafeCast<size_type>(data.size())); }
 
   // Clears the buffer, setting its size to zero.
-  void clear() noexcept { _size = 0; }
+  void clear() noexcept {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    if (_size != 0) {
+      std::memset(_buf, 255, _size);
+    }
+#endif
+    _size = 0;
+  }
 
   // Erases the first n bytes from the buffer.
   void erase_front(size_type n) noexcept;
 
   // Sets the size of the buffer.
-  void setSize(size_type newSize) noexcept { _size = newSize; }
+  void setSize(size_type newSize) noexcept {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    assert(newSize <= _capacity);
+#endif
+    _size = newSize;
+  }
 
   // Increases the size of the buffer by delta.
-  void addSize(size_type delta) noexcept { _size += delta; }
+  void addSize(size_type delta) noexcept {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    assert(delta <= _capacity - _size);
+#endif
+    _size += delta;
+  }
+
+  // Adjusts the size of the buffer by a signed delta (can shrink or grow).
+  void adjustSize(int64_t delta) noexcept {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    if (delta > 0) {
+      assert(static_cast<size_type>(delta) <= _capacity - _size);
+    } else if (delta < 0) {
+      assert(static_cast<size_type>(-delta) <= _size);
+    }
+#endif
+    _size += static_cast<size_type>(delta);
+  }
 
   // Returns the current size of the buffer.
   [[nodiscard]] size_type size() const noexcept { return _size; }
@@ -148,8 +184,18 @@ class RawBytesBase {
   // Swaps the contents of this buffer with another buffer.
   void swap(RawBytesBase &rhs) noexcept;
 
-  value_type &operator[](size_type pos) { return _buf[pos]; }
-  value_type operator[](size_type pos) const { return _buf[pos]; }
+  value_type &operator[](size_type pos) {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    assert(pos < _capacity);
+#endif
+    return _buf[pos];
+  }
+  value_type operator[](size_type pos) const {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    assert(pos < _capacity);
+#endif
+    return _buf[pos];
+  }
 
   template <class V = ViewType>
     requires std::same_as<V, std::string_view>
