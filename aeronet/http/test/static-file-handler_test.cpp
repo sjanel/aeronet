@@ -34,6 +34,7 @@
 #include "aeronet/temp-file.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 

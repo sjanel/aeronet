@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -16,10 +17,8 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
-#include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
-#include "aeronet/http-header.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
@@ -346,73 +345,18 @@ bool HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
 }
 
 namespace {
+
 constexpr void SetBodyEnsureNoTrailers(std::size_t trailerLen) {
   if (trailerLen != 0) [[unlikely]] {
     throw std::logic_error("Cannot set body after the first trailer");
   }
 }
 
-constexpr std::string_view kVaryHeaderValueSep = ", ";
-
-[[nodiscard]] bool VaryContainsAcceptEncodingToken(std::string_view value) {
-  const char* first = value.data();
-  const char* last = first + value.size();
-  while (first < last) {
-    while (first < last && http::IsHeaderWhitespace(*first)) {
-      ++first;
-    }
-    const char* end = std::find(first, last, ',');
-    while (first < end && http::IsHeaderWhitespace(*(end - 1))) {
-      --end;
-    }
-    if (first != end) {
-      const std::string_view token(first, end);
-      if (token == "*" || CaseInsensitiveEqual(token, http::AcceptEncoding)) {
-        return true;
-      }
-    }
-    first = end + 1;
-  }
-  return false;
-}
-
 }  // namespace
-
-bool HttpResponse::Options::isEligibleForDirectCompression(std::string_view contentTypeValue,
-                                                           std::size_t bodySize) const noexcept {
-  if (_expectedEncoding == Encoding::none) {
-    return false;
-  }
-  const auto& compressionConfig = _pCompressionState->pCompressionConfig;
-  if (bodySize < compressionConfig->minBytes) {
-    return false;
-  }
-  if (!compressionConfig->contentTypeAllowList.empty()) {
-    return compressionConfig->contentTypeAllowList.contains(contentTypeValue);
-  }
-  return true;
-}
 
 void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize, BodyHeadersOpts opts) {
   SetBodyEnsureNoTrailers(trailersSize());
   contentTypeValue = CheckContentType(newBodySize == 0, contentTypeValue);
-
-  const bool tryCompress = _opts.isEligibleForDirectCompression(contentTypeValue, newBodySize);
-
-  const bool wantCompressionHeaders = _opts._currentEncoding != Encoding::none;
-  const bool addContentEncodingHeader = wantCompressionHeaders;
-  const std::size_t oldBodyLenInlined = internalBodyAndTrailersLen();
-
-  bool addVaryHeader = false;
-  bool appendVaryValue = false;
-  if (wantCompressionHeaders && oldBodyLenInlined == 0 && _opts.addVaryAcceptEncoding()) {
-    const auto varyValue = headerValue(http::Vary);
-    if (!varyValue) {
-      addVaryHeader = true;
-    } else if (!VaryContainsAcceptEncodingToken(*varyValue)) {
-      appendVaryValue = true;
-    }
-  }
 
   const auto oldBodyLen = bodyLength();
   if (newBodySize == 0) {
@@ -769,7 +713,7 @@ HttpResponse& HttpResponse::headerRemoveLine(std::string_view key) & {
   }
 
   const std::size_t lineSize = HeaderSize(key.size(), static_cast<std::size_t>(last - first));
-  const std::size_t sizeToMove = _data.size() - static_cast<std::size_t>(last - _data.data());
+  const std::size_t sizeToMove = _data.size() - static_cast<std::size_t>(last + http::CRLF.size() - _data.data());
   char* dest = _data.data() + (first - _data.data()) - key.size() - http::HeaderSep.size();
 
   std::memmove(dest, last + http::CRLF.size(), sizeToMove);
@@ -792,7 +736,7 @@ HttpResponse& HttpResponse::headerRemoveValue(std::string_view key, std::string_
   if (value == headerValue) {
     // value matches the whole header value, we remove the whole header line
     const std::size_t lineSize = HeaderSize(key.size(), headerValue.size());
-    const std::size_t sizeToMove = _data.size() - static_cast<std::size_t>(last - _data.data());
+    const std::size_t sizeToMove = _data.size() - static_cast<std::size_t>(last + http::CRLF.size() - _data.data());
     char* dest = _data.data() + (first - _data.data()) - key.size() - http::HeaderSep.size();
 
     std::memmove(dest, last + http::CRLF.size(), sizeToMove);

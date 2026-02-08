@@ -735,23 +735,6 @@ class HttpResponse {
     return std::move(bodyAppend(body, contentType));
   }
 
-  // Returns true if automatic compression can be applied with the negotiated encoding.
-  // This checks that compression state is available and that an acceptable encoding was negotiated.
-  [[nodiscard]] bool directCompressionEnabled() const noexcept { return _opts._expectedEncoding != Encoding::none; }
-
-  // Disables direct compression for this HttpResponse.
-  // Once disabled, body setters will not apply direct compression even if compression state is available.
-  // Note that this does not disable automatic compression that may happen after response finalization.
-  // To do so, you can explicitly insert a Content-Encoding header with the desired encoding
-  // (including 'identity' to disable compression).
-  HttpResponse& disableDirectCompression() & {
-    _opts.disableDirectCompression();
-    return *this;
-  }
-
-  // Rvalue overload of disableDirectCompression().
-  HttpResponse&& disableDirectCompression() && { return std::move(disableDirectCompression()); }
-
   // Appends directly inside the body up to 'maxLen' bytes of data.
   // 'writer' provides as a single argument the start of the buffer where to append body data and
   // should return the actual number of bytes written (should be <= 'maxLen').
@@ -1103,18 +1086,16 @@ class HttpResponse {
 
     Options() noexcept = default;
 
+#ifdef AERONET_HAS_ANY_CODEC
     Options(internal::ResponseCompressionState& compressionState, Encoding expectedEncoding)
         : _pCompressionState(&compressionState), _expectedEncoding(expectedEncoding) {}
+#endif
 
     [[nodiscard]] constexpr bool isClose() const noexcept { return (_optionsBitmap & Close) != 0; }
     [[nodiscard]] constexpr bool isAddTrailerHeader() const noexcept {
       return (_optionsBitmap & AddTrailerHeader) != 0;
     }
     [[nodiscard]] constexpr bool isHeadMethod() const noexcept { return (_optionsBitmap & IsHeadMethod) != 0; }
-
-    [[nodiscard]] constexpr bool addVaryAcceptEncoding() const noexcept {
-      return (_optionsBitmap & AddVaryAcceptEncoding) != 0;
-    }
 
     [[nodiscard]] constexpr bool hasContentEncoding() const noexcept {
       return (_optionsBitmap & HasContentEncoding) != 0;
@@ -1124,8 +1105,6 @@ class HttpResponse {
     // If it's the case, then global headers have already been applied, addTrailerHeader and headMethod options
     // are known. Close is only best effort - it may still be changed later (from not close to close).
     [[nodiscard]] constexpr bool isPrepared() const noexcept { return (_optionsBitmap & Prepared) != 0; }
-
-    constexpr void disableDirectCompression() noexcept { _expectedEncoding = Encoding::none; }
 
     constexpr void close(bool val) noexcept {
       if (val) {
@@ -1163,27 +1142,13 @@ class HttpResponse {
 
     constexpr void setPrepared() noexcept { _optionsBitmap |= Prepared; }
 
-    // Gets the negotiated encoding from Accept-Encoding negotiation.
-    [[nodiscard]] constexpr Encoding expectedEncoding() const noexcept { return _expectedEncoding; }
-
-    [[nodiscard]] bool isEligibleForDirectCompression(std::string_view contentTypeValue,
-                                                      std::size_t newBodySize) const noexcept;
-
-    // Sets the compression state pointer for direct compression support.
-    constexpr void setCompressionState(internal::ResponseCompressionState* state) noexcept {
-      _pCompressionState = state;
-    }
-
-    // Gets the compression state pointer for direct compression.
-    [[nodiscard]] constexpr internal::ResponseCompressionState* compressionState() const noexcept {
-      return _pCompressionState;
-    }
-
    private:
     friend class HttpResponse;
     friend class internal::HttpCodec;
 
+#ifdef AERONET_HAS_ANY_CODEC
     internal::ResponseCompressionState* _pCompressionState{nullptr};
+#endif
 
     std::uint32_t _trailerLen{0};  // trailer length - no logical reason to be there, it's just to benefit from packing
     BmpType _optionsBitmap{};

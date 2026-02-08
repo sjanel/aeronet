@@ -399,10 +399,14 @@ void HttpRequest::postCallback(std::coroutine_handle<> handle, std::function<voi
 
 HttpResponse::Options HttpRequest::makeResponseOptions() const noexcept {
   assert(_pCompressionState != nullptr);
+#ifdef AERONET_HAS_ANY_CODEC
   HttpResponse::Options opts(*_pCompressionState, _responsePossibleEncoding);
+  opts.addVaryAcceptEncoding(_addVaryAcceptEncoding);
+#else
+  HttpResponse::Options opts;
+#endif
   opts.close(wantClose());
   opts.addTrailerHeader(_addTrailerHeader);
-  opts.addVaryAcceptEncoding(_addVaryAcceptEncoding);
   opts.headMethod(method() == http::Method::HEAD);
   opts.setPrepared();
   return opts;
