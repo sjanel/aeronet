@@ -297,7 +297,7 @@ HttpResponse& HttpResponse::reason(std::string_view newReason) & {
     _data[kReasonBeg - 1UL] = ' ';
     Copy(newReason, _data.data() + kReasonBeg);
   }
-  _data.addSize(static_cast<std::size_t>(diff));
+  _data.adjustSize(diff);
   return *this;
 }
 
@@ -335,9 +335,7 @@ bool HttpResponse::setHeader(std::string_view newKey, std::string_view newValue,
     Copy(newValue, valueFirst);
   }
 
-  // Works even if diff is negative, the unsigned value will overflow and have a resulting value of exactly sz - diff.
-  // In C++, unsigned overflow is well-defined.
-  _data.addSize(static_cast<std::size_t>(diff));
+  _data.adjustSize(diff);
 
   adjustBodyStart(diff);
 
@@ -410,12 +408,13 @@ void HttpResponse::setBodyInternal(std::string_view newBody) {
   }
   const int64_t diff = static_cast<int64_t>(newBody.size()) - static_cast<int64_t>(internalBodyAndTrailersLen());
   // Capacity should already have been ensured in setBodyHeaders
-  assert(_data.size() + static_cast<std::size_t>(diff) <= _data.capacity());
+  assert(static_cast<int64_t>(_data.size()) + diff >= 0);
+  assert(static_cast<uint64_t>(static_cast<int64_t>(_data.size()) + diff) <= _data.capacity());
 
   // should not point to internal memory
   assert(newBody.empty() || newBody.data() <= _data.data() || newBody.data() > _data.data() + _data.size());
 
-  _data.addSize(static_cast<std::size_t>(diff));
+  _data.adjustSize(diff);
   if (!newBody.empty()) {
     Copy(newBody, _data.data() + bodyStartPos());
   }
@@ -1248,7 +1247,7 @@ void HttpResponse::replaceHeaderValueNoRealloc(char* first, std::string_view new
   if (newValue.size() != oldValueLen) {
     const auto diff = static_cast<int64_t>(newValue.size()) - static_cast<int64_t>(oldValueLen);
     std::memmove(last + diff, last, static_cast<std::size_t>(_data.end() - last));
-    _data.addSize(static_cast<std::size_t>(diff));
+    _data.adjustSize(diff);
     adjustBodyStart(diff);
   }
   // This function is only called to set reserved headers Content-Length (which is never empty) and Content-Type

@@ -70,6 +70,11 @@ template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType> &RawBytesBase<T, ViewType, SizeType>::operator=(const RawBytesBase &rhs) {
   if (this != &rhs) [[likely]] {
     reserve(rhs.size());
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    if (rhs.size() < _size) {
+      std::memset(_buf + rhs.size(), 255, _size - rhs.size());
+    }
+#endif
     _size = rhs.size();
     if (_size != 0) {
       std::memcpy(_buf, rhs.data(), _size);
@@ -125,10 +130,16 @@ template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::erase_front(size_type n) noexcept {
   if (n == _size) {
     _size = 0;
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    std::memset(_buf, 255, n);
+#endif
   } else if (n != 0) {
     assert(n <= _size);
     _size -= n;
     std::memmove(_buf, _buf + n, _size);
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    std::memset(_buf + _size, 255, n);
+#endif
   }
 }
 
@@ -143,11 +154,25 @@ template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() noexcept {
   static constexpr std::size_t kMinCapacity = 1024;
   if (kMinCapacity < _capacity && 4UL * _size < _capacity) {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    const size_type newCap = _capacity / 2;
+    pointer newBuf = static_cast<pointer>(std::malloc(newCap));
+    if (newBuf != nullptr) [[likely]] {
+      if (_size != 0) {
+        std::memcpy(newBuf, _buf, _size);
+      }
+      std::memset(newBuf + _size, 255, newCap - _size);
+      std::free(_buf);
+      _buf = newBuf;
+      _capacity = newCap;
+    }
+#else
     pointer newBuf = static_cast<pointer>(std::realloc(_buf, _capacity / 2));
     if (newBuf != nullptr) [[likely]] {
       _buf = newBuf;
       _capacity /= 2;
     }
+#endif
   }
 }
 
@@ -159,6 +184,10 @@ void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacityExponential(uin
   const uintmax_t required = availableCapacity + _size;
 
   if (_capacity < required) {
+    if (required < availableCapacity) [[unlikely]] {
+      throw std::overflow_error("capacity overflow");
+    }
+
     const uintmax_t doubled = 2ULL * _capacity;
     reallocUp(SafeCast<size_type>(std::max(required, doubled)));
   }
