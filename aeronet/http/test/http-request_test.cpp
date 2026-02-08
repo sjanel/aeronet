@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "aeronet/connection-state.hpp"
+#include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -55,6 +56,7 @@ class HttpRequestTest : public ::testing::Test {
     globalHeaders.append("server: aeronet");
     req._ownerState = &cs;
     req._pGlobalHeaders = &globalHeaders;
+    req._pCompressionState = &compressionState;
   }
 
   http::StatusCode reqSet(RawChars raw, bool mergeAllowedForUnknownRequestHeaders = true,
@@ -197,6 +199,7 @@ class HttpRequestTest : public ::testing::Test {
   }
 
   ConcatenatedHeaders globalHeaders;
+  internal::ResponseCompressionState compressionState;
   HttpRequest req;
   ConnectionState cs;
 };

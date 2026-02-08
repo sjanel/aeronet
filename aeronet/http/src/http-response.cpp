@@ -16,8 +16,10 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
+#include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
@@ -350,17 +352,73 @@ constexpr void SetBodyEnsureNoTrailers(std::size_t trailerLen) {
   }
 }
 
+constexpr std::string_view kVaryHeaderValueSep = ", ";
+
+[[nodiscard]] bool VaryContainsAcceptEncodingToken(std::string_view value) {
+  const char* first = value.data();
+  const char* last = first + value.size();
+  while (first < last) {
+    while (first < last && http::IsHeaderWhitespace(*first)) {
+      ++first;
+    }
+    const char* end = std::find(first, last, ',');
+    while (first < end && http::IsHeaderWhitespace(*(end - 1))) {
+      --end;
+    }
+    if (first != end) {
+      const std::string_view token(first, end);
+      if (token == "*" || CaseInsensitiveEqual(token, http::AcceptEncoding)) {
+        return true;
+      }
+    }
+    first = end + 1;
+  }
+  return false;
+}
+
 }  // namespace
 
+bool HttpResponse::Options::isEligibleForDirectCompression(std::string_view contentTypeValue,
+                                                           std::size_t bodySize) const noexcept {
+  if (_expectedEncoding == Encoding::none) {
+    return false;
+  }
+  const auto& compressionConfig = _pCompressionState->pCompressionConfig;
+  if (bodySize < compressionConfig->minBytes) {
+    return false;
+  }
+  if (!compressionConfig->contentTypeAllowList.empty()) {
+    return compressionConfig->contentTypeAllowList.contains(contentTypeValue);
+  }
+  return true;
+}
+
 void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize, BodyHeadersOpts opts) {
-  SetBodyEnsureNoTrailers(_trailerLen);
+  SetBodyEnsureNoTrailers(trailersSize());
   contentTypeValue = CheckContentType(newBodySize == 0, contentTypeValue);
 
+  const bool tryCompress = _opts.isEligibleForDirectCompression(contentTypeValue, newBodySize);
+
+  const bool wantCompressionHeaders = _opts._currentEncoding != Encoding::none;
+  const bool addContentEncodingHeader = wantCompressionHeaders;
+  const std::size_t oldBodyLenInlined = internalBodyAndTrailersLen();
+
+  bool addVaryHeader = false;
+  bool appendVaryValue = false;
+  if (wantCompressionHeaders && oldBodyLenInlined == 0 && _opts.addVaryAcceptEncoding()) {
+    const auto varyValue = headerValue(http::Vary);
+    if (!varyValue) {
+      addVaryHeader = true;
+    } else if (!VaryContainsAcceptEncodingToken(*varyValue)) {
+      appendVaryValue = true;
+    }
+  }
+
   const auto oldBodyLen = bodyLength();
-  const auto nCharsOldBodyLen = nchars(oldBodyLen);
   if (newBodySize == 0) {
     if (oldBodyLen != 0) {
-      char* contentTypeHeaderLinePtr = getContentTypeHeaderLinePtr(nCharsOldBodyLen);
+      // Remove all body, Content-Length and Content-Encoding headers at once.
+      char* contentTypeHeaderLinePtr = getContentTypeHeaderLinePtr();
       assert(std::string_view(contentTypeHeaderLinePtr + http::CRLF.size(), http::ContentType.size()) ==
              http::ContentType);
       _data.setSize(static_cast<std::size_t>(contentTypeHeaderLinePtr - _data.data()) + http::DoubleCRLF.size());
@@ -383,15 +441,14 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
     } else {
       const auto bodyStart = bodyStartPos();
       const auto oldContentTypeAndLengthSize =
-          bodyStart - static_cast<std::size_t>(getContentTypeHeaderLinePtr(nCharsOldBodyLen) - _data.data()) -
-          http::DoubleCRLF.size();
+          bodyStart - static_cast<std::size_t>(getContentTypeHeaderLinePtr() - _data.data()) - http::DoubleCRLF.size();
       const std::size_t oldBodyLenInlined = internalBodyAndTrailersLen();
 
       if (neededNewSize > oldContentTypeAndLengthSize + oldBodyLenInlined) {
         _data.ensureAvailableCapacityExponential(neededNewSize - oldContentTypeAndLengthSize - oldBodyLenInlined);
       }
 
-      char* insertPtr = getContentTypeValuePtr(nCharsOldBodyLen);
+      char* insertPtr = getContentTypeValuePtr();
       insertPtr = Append(contentTypeValue, insertPtr);
       insertPtr = WriteCRLFHeader(insertPtr, http::ContentLength, std::string_view(newBodyLenCharVec));
       insertPtr = Append(http::DoubleCRLF, insertPtr);
@@ -440,7 +497,7 @@ HttpResponse& HttpResponse::bodyAppend(std::string_view body, std::string_view c
         neededCapacity += static_cast<int64_t>(body.size());
       }
       if (!contentType.empty()) {
-        char* pContentTypeValuePtr = getContentTypeValuePtr(nCharsOldBodyLen);
+        char* pContentTypeValuePtr = getContentTypeValuePtr();
         const auto it =
             std::search(pContentTypeValuePtr, _data.data() + _data.size(), http::CRLF.begin(), http::CRLF.end());
         assert(it != _data.data() + _data.size());
@@ -493,7 +550,7 @@ HttpResponse& HttpResponse::file(File fileObj, std::size_t offset, std::size_t l
   setBodyHeaders(contentType, std::max(1UL, resolvedLength), NewBodyIsCaptured);
   if (resolvedLength == 0) {
     // we need to reset the '1' char that was written above
-    *getContentLengthValuePtr(1U) = '0';
+    *getContentLengthValuePtr() = '0';
   }
 
   setBodyInternal(std::string_view());
@@ -508,19 +565,23 @@ const File* HttpResponse::file() const noexcept {
 
 std::string_view HttpResponse::bodyInMemory() const noexcept {
   auto ret = hasBodyCaptured() ? _payloadVariant.view() : std::string_view{_data.begin() + bodyStartPos(), _data.end()};
-  ret.remove_suffix(_trailerLen);
+  ret.remove_suffix(trailersSize());
   return ret;
 }
 
 namespace {
+
+struct HeaderSearchResult {
+  // if nullptr, not found. It's different from valueBegin == valueEnd, which means found but empty value.
+  const char* valueBegin = nullptr;
+  const char* valueEnd = nullptr;
+};
+
 // Performs a linear search for the header 'key' in the headers block defined by flatHeaders.
 // flatHeaders should start at the start of the first header, without any leading CRLF.
 // flatHeaders should end immediately after the last header CRLF.
-// Returns std::nullopt if the header is not found, or the value as a std::string_view otherwise.
-constexpr std::optional<std::string_view> HeadersLinearSearch(std::string_view flatHeaders,
-                                                              std::string_view key) noexcept {
-  std::optional<std::string_view> ret;
-
+// Returns {nullptr, nullptr} if the header is not found, or a value {valueFirst, valueLast} (may be empty) otherwise.
+constexpr HeaderSearchResult HeadersLinearSearch(std::string_view flatHeaders, std::string_view key) noexcept {
   const char* endKey = key.end();
   const char* headersBeg = flatHeaders.data();
   const char* headersEnd = headersBeg + flatHeaders.size();
@@ -528,10 +589,8 @@ constexpr std::optional<std::string_view> HeadersLinearSearch(std::string_view f
   while (headersBeg < headersEnd) {
     // Perform an inplace case-insensitive 'starts_with' algorithm
     const char* begKey = key.begin();
-    bool icharsDiffer = false;
     for (; *headersBeg != ':' && begKey != endKey; ++headersBeg, ++begKey) {
       if (tolower(*headersBeg) != tolower(*begKey)) {
-        icharsDiffer = true;
         break;
       }
     }
@@ -539,22 +598,68 @@ constexpr std::optional<std::string_view> HeadersLinearSearch(std::string_view f
     const char* nextCRLF =
         std::search(headersBeg + http::HeaderSep.size(), headersEnd, http::CRLF.begin(), http::CRLF.end());
 
-    if (!icharsDiffer && *headersBeg == ':' && begKey == endKey) {
+    if (*headersBeg == ':' && begKey == endKey) {
       // Found the header we are looking for
-      ret = {headersBeg + http::CRLF.size(), nextCRLF};
-      break;
+      return {headersBeg + http::HeaderSep.size(), nextCRLF};
     }
 
     // Not the header we are looking for - move headersBeg to next header
     headersBeg = nextCRLF + http::CRLF.size();
   }
-  return ret;
+  return {};
+}
+
+// Performs a linear search in reverse for the header 'key' in the headers block defined by flatHeaders.
+// flatHeaders should start at the start of the first header, without any leading CRLF.
+// flatHeaders should end immediately after the last header CRLF.
+// Returns {nullptr, nullptr} if the header is not found, or a value {valueFirst, valueLast} (may be empty) otherwise.
+constexpr HeaderSearchResult HeadersReverseLinearSearch(std::string_view flatHeaders, std::string_view key) noexcept {
+  if (key.empty()) {
+    return {};
+  }
+  const char* begKey = key.begin();
+  const char* headersBeg = flatHeaders.data();
+  const char* headersEnd = headersBeg + flatHeaders.size();
+
+  while (headersBeg < headersEnd) {
+    const char* endValue = headersEnd - http::CRLF.size();
+
+    // Move headersEnd to the beginning of the current header line
+    headersEnd = std::search(std::make_reverse_iterator(headersEnd - http::CRLF.size()),
+                             std::make_reverse_iterator(headersBeg), http::HeaderSep.rbegin(), http::HeaderSep.rend())
+                     .base();
+    const char* begValue = headersEnd;
+    headersEnd -= http::HeaderSep.size();  // move to the end of the header name
+
+    assert(headersBeg < headersEnd);  // a header name cannot be empty
+
+    // Perform an inplace case-insensitive 'ends_with' algorithm
+    const char* endKey = key.end();
+    for (; headersBeg < headersEnd && *(headersEnd - 1) != '\n' && begKey != endKey;) {
+      if (tolower(*--headersEnd) != tolower(*--endKey)) {
+        break;
+      }
+    }
+
+    if (begKey == endKey && (headersEnd == headersBeg || *(headersEnd - 1) == '\n')) {
+      // Found the header we are looking for
+      return {begValue, endValue};
+    }
+    headersEnd = std::search(std::make_reverse_iterator(headersEnd), std::make_reverse_iterator(headersBeg),
+                             http::CRLF.rbegin(), http::CRLF.rend())
+                     .base();
+  }
+  return {};
 }
 
 }  // namespace
 
 std::optional<std::string_view> HttpResponse::trailerValue(std::string_view key) const noexcept {
-  return HeadersLinearSearch(trailersFlatView(), key);
+  const auto [first, last] = HeadersLinearSearch(trailersFlatView(), key);
+  if (first == nullptr) {
+    return std::nullopt;
+  }
+  return std::string_view(first, last);
 }
 
 std::string_view HttpResponse::headersFlatView() const noexcept {
@@ -567,8 +672,16 @@ std::string_view HttpResponse::headersFlatViewWithDate() const noexcept {
 }
 
 std::optional<std::string_view> HttpResponse::headerValue(std::string_view key) const noexcept {
-  // Start the search after reserved headers unconditionally added at response creation
-  return HeadersLinearSearch(headersFlatView(), key);
+  const auto [first, last] = HeadersLinearSearch(headersFlatView(), key);
+  if (first == nullptr) {
+    return std::nullopt;
+  }
+  return std::string_view(first, last);
+}
+
+[[nodiscard]] std::string_view HttpResponse::headerValueOrEmpty(std::string_view key) const noexcept {
+  const auto [first, last] = HeadersLinearSearch(headersFlatView(), key);
+  return {first, last};
 }
 
 HttpResponse& HttpResponse::headerAddLine(std::string_view key, std::string_view value) & {
@@ -596,7 +709,7 @@ HttpResponse& HttpResponse::headerAddLine(std::string_view key, std::string_view
     // We want to keep Content-Type and Content-Length together with the body (we use this property for optimization)
     // so we insert new headers before them. Of course, this code takes time, but it should be rare to add headers
     // after setting the body, so we can consider this as a 'slow' path.
-    insertPtr = getContentTypeHeaderLinePtr(nchars(bodySz));
+    insertPtr = getContentTypeHeaderLinePtr();
     std::memmove(insertPtr + headerLineSize, insertPtr, static_cast<std::size_t>(_data.end() - insertPtr));
   }
   WriteCRLFHeader(insertPtr, key, value);
@@ -604,11 +717,14 @@ HttpResponse& HttpResponse::headerAddLine(std::string_view key, std::string_view
 
   adjustBodyStart(static_cast<int64_t>(headerLineSize));
 
+  if (CaseInsensitiveEqual(key, http::ContentEncoding)) {
+    _opts.setHasContentEncoding();
+  }
+
   return *this;
 }
 
-HttpResponse& HttpResponse::headerAppendValue(std::string_view key, std::string_view value,
-                                              std::string_view separator) & {
+HttpResponse& HttpResponse::headerAppendValue(std::string_view key, std::string_view value, std::string_view sep) & {
   auto optValue = headerValue(key);
   if (!optValue) {
     headerAddLine(key, value);
@@ -617,7 +733,7 @@ HttpResponse& HttpResponse::headerAppendValue(std::string_view key, std::string_
 
   value = TrimOws(value);
 
-  const std::size_t extraLen = separator.size() + value.size();
+  const std::size_t extraLen = sep.size() + value.size();
   if (extraLen == 0) {
     return *this;
   }
@@ -633,8 +749,8 @@ HttpResponse& HttpResponse::headerAppendValue(std::string_view key, std::string_
   std::memmove(insertPtr + extraLen, insertPtr, tailLen);
 
   char* out = insertPtr;
-  if (!separator.empty()) {
-    out = Append(separator, out);
+  if (!sep.empty()) {
+    out = Append(sep, out);
   }
   if (!value.empty()) {
     Copy(value, out);
@@ -642,6 +758,93 @@ HttpResponse& HttpResponse::headerAppendValue(std::string_view key, std::string_
 
   _data.addSize(extraLen);
   adjustBodyStart(static_cast<int64_t>(extraLen));
+
+  return *this;
+}
+
+HttpResponse& HttpResponse::headerRemoveLine(std::string_view key) & {
+  const auto [first, last] = HeadersReverseLinearSearch(headersFlatView(), key);
+  if (first == nullptr) {
+    return *this;
+  }
+
+  const std::size_t lineSize = HeaderSize(key.size(), static_cast<std::size_t>(last - first));
+  const std::size_t sizeToMove = _data.size() - static_cast<std::size_t>(last - _data.data());
+  char* dest = _data.data() + (first - _data.data()) - key.size() - http::HeaderSep.size();
+
+  std::memmove(dest, last + http::CRLF.size(), sizeToMove);
+  _data.setSize(_data.size() - lineSize);
+  adjustBodyStart(static_cast<int64_t>(-lineSize));
+
+  return *this;
+}
+
+HttpResponse& HttpResponse::headerRemoveValue(std::string_view key, std::string_view value, std::string_view sep) & {
+  if (sep.empty()) [[unlikely]] {
+    throw std::invalid_argument("Separator cannot be empty when removing a header value");
+  }
+  const auto [first, last] = HeadersReverseLinearSearch(headersFlatView(), key);
+  if (first == nullptr) {
+    return *this;
+  }
+
+  const std::string_view headerValue(first, last);
+  if (value == headerValue) {
+    // value matches the whole header value, we remove the whole header line
+    const std::size_t lineSize = HeaderSize(key.size(), headerValue.size());
+    const std::size_t sizeToMove = _data.size() - static_cast<std::size_t>(last - _data.data());
+    char* dest = _data.data() + (first - _data.data()) - key.size() - http::HeaderSep.size();
+
+    std::memmove(dest, last + http::CRLF.size(), sizeToMove);
+    _data.setSize(_data.size() - lineSize);
+    adjustBodyStart(static_cast<int64_t>(-lineSize));
+    return *this;
+  }
+
+  const std::string_view occ = value.empty() ? sep : value;
+
+  auto valueIt = first;
+  while (true) {
+    valueIt = std::search(valueIt, last, occ.begin(), occ.end());
+    if (valueIt == last) {
+      break;
+    }
+
+    // check if value is correctly surrounded by 'sep' (or at the beginning/end of the header value)
+    if (valueIt != first && !value.empty() &&
+        (first + sep.size() > valueIt || !std::equal(sep.begin(), sep.end(), valueIt - sep.size(), valueIt))) {
+      // not preceded by separator, go to next occurrence (if any)
+      valueIt += occ.size();
+      continue;
+    }
+
+    if (valueIt + occ.size() != last && !value.empty() &&
+        (last < valueIt + occ.size() + sep.size() ||
+         !std::equal(sep.begin(), sep.end(), valueIt + occ.size(), valueIt + occ.size() + sep.size()))) {
+      // not followed by separator, go to next occurrence (if any)
+      valueIt += occ.size();
+      continue;
+    }
+
+    // we found value to remove, we need to remove it along with the separator (if any)
+    char* toRemoveFirst = _data.data() + (valueIt - _data.data());
+    char* toRemoveLast = toRemoveFirst + occ.size();
+
+    if (!value.empty()) {
+      if (valueIt != first) {
+        toRemoveFirst -= sep.size();
+      } else {
+        assert(valueIt + occ.size() != last);
+        toRemoveLast += sep.size();
+      }
+    }
+
+    std::memmove(toRemoveFirst, toRemoveLast, _data.size() - static_cast<std::size_t>(toRemoveLast - _data.data()));
+    _data.setSize(_data.size() - static_cast<std::size_t>(toRemoveLast - toRemoveFirst));
+    adjustBodyStart(-static_cast<int64_t>(toRemoveLast - toRemoveFirst));
+
+    break;
+  }
 
   return *this;
 }
@@ -659,6 +862,11 @@ void HttpResponse::makeAllHeaderNamesLowerCase() {
     headersBeg = std::search(headersBeg + http::HeaderSep.size(), headersEnd, http::CRLF.begin(), http::CRLF.end()) +
                  http::CRLF.size();
   }
+}
+
+[[nodiscard]] std::string_view HttpResponse::trailerValueOrEmpty(std::string_view key) const noexcept {
+  const auto [first, last] = HeadersLinearSearch(trailersFlatView(), key);
+  return {first, last};
 }
 
 HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_view value) & {
@@ -706,21 +914,21 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
     // If there are trailers in a HEAD response, we can keep content-length header as is, no need to convert to chunked
     // transfer-encoding. We add the Trailer header if the option is set. Indeed, if isHead is true here, then
     // necessarily the isAddTrailerHeader option is known as well.
-    if (_knownOptions.isAddTrailerHeader()) {
+    if (_opts.isAddTrailerHeader()) {
       headerAppendValue(http::Trailer, name, kTrailerValueSep);
     }
     return *this;
   }
 
   const std::size_t lineSize = HeaderSize(name.size(), value.size());
-  const auto newTrailerLen = SafeCast<decltype(_trailerLen)>(lineSize + _trailerLen);
+  const auto newTrailerLen = SafeCast<decltype(_opts._trailerLen)>(lineSize + trailersSize());
 
   // Optim - if we know that option is not set, no need to pre-reserve additional capacity for Trailer header
-  const bool addTrailerHeader = !_knownOptions.isPrepared() || _knownOptions.isAddTrailerHeader();
+  const bool addTrailerHeader = !_opts.isPrepared() || _opts.isAddTrailerHeader();
 
   // Add an extra CRLF space for the last CRLF that will terminate trailers in finalize
   int64_t neededCapacity = static_cast<int64_t>(lineSize + http::CRLF.size());
-  if (_trailerLen == 0) {
+  if (trailersSize() == 0) {
     if (addTrailerHeader) {
       neededCapacity += static_cast<int64_t>(HeaderSize(http::Trailer.size(), name.size()));
     }
@@ -741,7 +949,7 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
     _data.addSize(lineSize);
   }
 
-  _trailerLen = newTrailerLen;
+  _opts._trailerLen = newTrailerLen;
 
   WriteHeaderCRLF(insertPtr, name, value);
   return *this;
@@ -761,7 +969,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
       (opts.isClose() && version == http::HTTP_1_1) || (!opts.isClose() && version == http::HTTP_1_0);
   const bool hasHeaders = !headersFlatView().empty();
   const bool isHeadMethod = opts.isHeadMethod();
-  const bool addTrailerHeader = _trailerLen != 0 && opts.isAddTrailerHeader();
+  const bool addTrailerHeader = trailersSize() != 0 && opts.isAddTrailerHeader();
 
   std::size_t totalNewHeadersSize =
       addConnectionHeader ? HeaderSize(http::Connection.size(), connectionValue.size()) : 0;
@@ -769,7 +977,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
   std::bitset<HttpServerConfig::kMaxGlobalHeaders> globalHeadersToSkipBmp;
 
   bool writeAllGlobalHeaders = true;
-  if (!_knownOptions.isPrepared()) {
+  if (!_opts.isPrepared()) {
     std::size_t pos = 0;
     assert(pGlobalHeaders != nullptr);
     for (std::string_view headerKeyVal : *pGlobalHeaders) {
@@ -795,7 +1003,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
     // intact so ownership can be transferred by finalizeForHttp1. For inline
     // bodies we still erase the inline bytes.
     if (isHeadMethod && !hasBodyFile()) {
-      if (_trailerLen != 0 && addTrailerHeader) {
+      if (trailersSize() != 0 && addTrailerHeader) {
         // Strategy: we will override Content-Length header with Trailer header, so that we know we will not override
         // trailers themselves during the append. At the end, we will append the Content-Length header back.
         std::size_t trailerHeaderValueSize = 0;
@@ -818,7 +1026,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
 
         const auto bodySzStrVec = IntegralToCharVector(bodySz);
 
-        char* insertPtr = Append(http::Trailer, getContentLengthHeaderLinePtr(bodySzStrVec.size()) + http::CRLF.size());
+        char* insertPtr = Append(http::Trailer, getContentLengthHeaderLinePtr() + http::CRLF.size());
         insertPtr = Append(http::HeaderSep, insertPtr);
         bool isFirst = true;
         for (const auto& [name, value] : HeadersView(flatTrailersView)) {
@@ -839,9 +1047,9 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
         _data.setSize(newBodyStartPos);
         setBodyStartPos(newBodyStartPos);
       } else if (hasBodyInlined()) {
-        _data.setSize(_data.size() - bodySz - _trailerLen);
+        _data.setSize(_data.size() - bodySz - trailersSize());
       }
-      _trailerLen = 0;
+      _opts._trailerLen = 0;
       _payloadVariant = {};
     }
 
@@ -853,8 +1061,8 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
     }
   } else {
     // body > 0 && !isHeadMethod && !hasFileBody()
-    bool moveBodyInline = hasBodyCaptured() && bodySz + _trailerLen <= minCapturedBodySize;
-    if (_trailerLen == 0) {
+    bool moveBodyInline = hasBodyCaptured() && bodySz + trailersSize() <= minCapturedBodySize;
+    if (trailersSize() == 0) {
       _data.ensureAvailableCapacity((moveBodyInline ? bodySz : 0) + totalNewHeadersSize);
       char* oldBodyStart = _data.data() + bodyStartPos();
       headersInsertPtr = oldBodyStart - http::DoubleCRLF.size();
@@ -926,8 +1134,8 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
 
         // Now update headers in _data: replace Content-Length with Transfer-Encoding: chunked
         // Find and replace Content-Length header
-        headersInsertPtr = ReplaceContentLengthWithTransferEncoding(getContentLengthHeaderLinePtr(nCharsBodyLen),
-                                                                    trailersFlatView(), addTrailerHeader);
+        headersInsertPtr = ReplaceContentLengthWithTransferEncoding(getContentLengthHeaderLinePtr(), trailersFlatView(),
+                                                                    addTrailerHeader);
 
         char* insertPtr = to_lower_hex(bodySz, headersInsertPtr + totalNewHeadersSize + http::DoubleCRLF.size());
         insertPtr = Append(http::CRLF, insertPtr);
@@ -945,8 +1153,8 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
           insertPtr = Append(kEndChunkedBody, insertPtr);
 
           // trailers
-          std::memcpy(insertPtr, bodyAndTrailersView.data() + bodySz, _trailerLen);
-          insertPtr += _trailerLen;
+          std::memcpy(insertPtr, bodyAndTrailersView.data() + bodySz, trailersSize());
+          insertPtr += trailersSize();
 
           // Final CRLF
           Copy(http::CRLF, insertPtr);
@@ -998,13 +1206,13 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
         const auto newBodyDataStart = newHexStart + hexDigits + http::CRLF.size();
         const auto newLastChunkStart = newBodyDataStart + bodySz + http::CRLF.size();
         const auto newTrailersStart = newLastChunkStart + 1UL + http::CRLF.size();  // "0\r\n"
-        std::string_view newTrailersFlatView(_data.data() + newTrailersStart, static_cast<std::size_t>(_trailerLen));
+        std::string_view newTrailersFlatView(_data.data() + newTrailersStart, static_cast<std::size_t>(trailersSize()));
 
         // Write final CRLF first (it's at the very end)
-        Copy(http::CRLF, _data.data() + newTrailersStart + _trailerLen);
+        Copy(http::CRLF, _data.data() + newTrailersStart + trailersSize());
 
         // Move trailers (they go before final CRLF) - use offset, not old view
-        std::memmove(_data.data() + newTrailersStart, _data.data() + oldTrailerStart, _trailerLen);
+        std::memmove(_data.data() + newTrailersStart, _data.data() + oldTrailerStart, trailersSize());
 
         // Write last-chunk "\r\n0\r\n"
         Copy(kEndChunkedBody, _data.data() + newLastChunkStart - http::CRLF.size());
@@ -1018,7 +1226,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
         // Move and update headers: replace Content-Length with Transfer-Encoding: chunked
         // Move everything before body (headers and DoubleCRLF)
         // Find Content-Length header position (relative to start)
-        headersInsertPtr = ReplaceContentLengthWithTransferEncoding(getContentLengthHeaderLinePtr(nCharsBodyLen),
+        headersInsertPtr = ReplaceContentLengthWithTransferEncoding(getContentLengthHeaderLinePtr(),
                                                                     newTrailersFlatView, addTrailerHeader);
 
         Copy(http::DoubleCRLF, headersInsertPtr + totalNewHeadersSize);
@@ -1029,7 +1237,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
     }
   }
 
-  if (!_knownOptions.isPrepared() && !pGlobalHeaders->empty()) {
+  if (!_opts.isPrepared() && !pGlobalHeaders->empty()) {
     if (writeAllGlobalHeaders) {
       // Optim: single copy for all global headers
       headersInsertPtr = Append(http::CRLF, headersInsertPtr);
@@ -1070,7 +1278,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
 
 void HttpResponse::bodyAppendUpdateHeaders(std::string_view givenContentType, std::string_view defaultContentType,
                                            std::size_t totalBodyLen) {
-  assert(_trailerLen == 0);
+  assert(trailersSize() == 0);
   const auto oldBodyLen = bodyLength();
   const auto newBodyLenCharVec = IntegralToCharVector(totalBodyLen);
   if (oldBodyLen == 0) {
@@ -1080,11 +1288,10 @@ void HttpResponse::bodyAppendUpdateHeaders(std::string_view givenContentType, st
     headerAddLine(http::ContentType, givenContentType);
     headerAddLine(http::ContentLength, std::string_view(newBodyLenCharVec));
   } else {
-    const auto nCharsOldBodyLen = nchars(oldBodyLen);
     if (!givenContentType.empty()) {
-      replaceHeaderValueNoRealloc(getContentTypeValuePtr(nCharsOldBodyLen), givenContentType);
+      replaceHeaderValueNoRealloc(getContentTypeValuePtr(), givenContentType);
     }
-    replaceHeaderValueNoRealloc(getContentLengthValuePtr(nCharsOldBodyLen), std::string_view(newBodyLenCharVec));
+    replaceHeaderValueNoRealloc(getContentLengthValuePtr(), std::string_view(newBodyLenCharVec));
   }
 }
 

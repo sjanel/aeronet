@@ -24,6 +24,7 @@
 #include "aeronet/file-helpers.hpp"
 #include "aeronet/file-sys-test-support.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -33,7 +34,6 @@
 #include "aeronet/temp-file.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
-#include "aeronet/vector.hpp"
 
 namespace aeronet {
 
@@ -45,12 +45,14 @@ class StaticFileHandlerTest : public ::testing::Test {
  protected:
   HttpRequest req;
   ConcatenatedHeaders globalHeaders;
+  internal::ResponseCompressionState compressionState;
 
   test::ScopedTempDir tmpDir;
 
   void SetUp() override {
     req._ownerState = &cs;
     req._pGlobalHeaders = &globalHeaders;
+    req._pCompressionState = &compressionState;
   }
 
   void buildReq(std::string_view filePath) {
